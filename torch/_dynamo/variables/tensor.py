@@ -6,7 +6,9 @@ from typing import Dict, List
 
 import torch.fx
 import torch.random
+from torch._guards import TracingContext
 from torch.fx.experimental.symbolic_shapes import guard_scalar, SymTypes
+from torch.utils._pytree import tree_map_only
 
 from .. import config, variables
 from ..exc import unimplemented
@@ -350,7 +352,7 @@ class TensorVariable(VariableTracker):
             and not config.dynamic_shapes
         ):
             unimplemented("dynamic Tensor.repeat")
-        elif name in ("tolist", "numpy", "backward", "data_ptr"):
+        elif name in ("tolist", "numpy", "data_ptr"):
             unimplemented(f"Tensor.{name}")
         elif name == "nonzero" and not config.dynamic_shapes:
             unimplemented(f"Tensor.{name}")
@@ -435,6 +437,38 @@ class TensorVariable(VariableTracker):
             result = TorchVariable(torch.any, **options).call_function(tx, [result], {})
             return result.call_method(tx, "item", [], {})
         else:
+            if name == "backward":
+                if not TracingContext.train_step_context():
+                    # go back to graph-break behavior
+                    unimplemented("Tensor.backward only supported with trainstep=True")
+
+                # Dynamo is tracing a train step graph.
+
+                # 1. we need to assert some things for safety, such as no double backward and no input grad_fns
+                # 2. call special version of aot before going to real backend
+                # TODO - how to check current compiler?
+
+                def check_no_grad(tensor):
+                    # TODO beter to report which local/global (name) caused the assert
+                    assert tensor.grad_fn is None, (
+                        "Attempted to compile .backwards(), but an input tensor has a grad_fn, meaning it has already"
+                        " been used in a gradient-requiring operation."
+                        " The invariant for train step compilation is that no backward"
+                        " operations have been recorded on inputs to the train step graph."
+                    )
+
+                tree_map_only(torch.Tensor, check_no_grad, tx.f_locals)
+                tree_map_only(torch.Tensor, check_no_grad, tx.f_globals)
+
+                tc = TracingContext.train_step_context(assert_if_missing=True)
+                assert (
+                    not tc.backward_called
+                ), "Compiling multiple .backward() calls NYI"
+                tc.backward_called = True
+                assert (
+                    len(args) == 0
+                ), "train step compile of .backward() call with non-empty args is not supported."
+
             # Convert x.new(torch.Size) into x.new_empty(torch.Size),
             # as Tensor.new acts differently with a Size input versus a tuple input.
             if (
