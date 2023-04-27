@@ -2008,7 +2008,7 @@ else:
             t.bernoulli_(torch.rand_like(t, dtype=p_dtype))
             self.assertTrue(isBinary(t))
 
-    @slowTest
+    @slowTest()
     @dtypes(*floating_types())
     @dtypesIfCUDA(*floating_types_and(torch.half))
     def test_bernoulli_edge_cases(self, device, dtype):
@@ -2148,7 +2148,7 @@ else:
                 res = stats.kstest(t.cpu().to(torch.double), 'cauchy', args=(median, sigma))
                 self.assertTrue(res.statistic < 0.1)
 
-    @slowTest
+    @slowTest()
     @onlyCUDA
     @dtypes(torch.bfloat16, torch.float32)
     def test_cauchy_no_inf(self, device, dtype):
@@ -2305,7 +2305,7 @@ else:
             expected = self._brute_cdist(x, y, p=2)
             self.assertEqual(expected, actual)
 
-    @slowTest
+    @slowTest()
     @tf32_on_and_off(0.01)
     def test_cdist_large_batch(self, device):
         for cm in ['use_mm_for_euclid_dist_if_necessary', 'use_mm_for_euclid_dist', 'donot_use_mm_for_euclid_dist']:
@@ -4979,7 +4979,7 @@ else:
             self.assertEqual(samples_1.size(1), n_sample, msg="wrong number of samples")
 
     # FIXME: move to test distributions
-    @slowTest
+    @slowTest()
     @dtypes(torch.float)
     def test_multinomial_rng_state_advance(self, device, dtype):
         corpus_size = 100000
@@ -7391,7 +7391,7 @@ tensor([[[1.+1.j, 1.+1.j, 1.+1.j,  ..., 1.+1.j, 1.+1.j, 1.+1.j],
     def test_parallel_info(self):
         torch.__config__.parallel_info()
 
-    @slowTest
+    @slowTest()
     def test_slow_test(self):
         # Just a smoketest to make sure our slowTest decorator works.
         pass
@@ -8256,7 +8256,7 @@ tensor([[[1.+1.j, 1.+1.j, 1.+1.j,  ..., 1.+1.j, 1.+1.j, 1.+1.j],
         torch.backends.quantized.engine = original_qe
 
     # FIXME: port to a distributed test suite -- also... how could this be OOMing on Windows CUDA?
-    @slowTest
+    @slowTest()
     @unittest.skipIf(NO_MULTIPROCESSING_SPAWN, "Disabled for environments that \
                         don't support multiprocessing with spawn start method")
     @unittest.skipIf(IS_WINDOWS, 'FIXME: CUDA OOM error on Windows')
