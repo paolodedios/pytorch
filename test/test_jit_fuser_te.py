@@ -1749,6 +1749,7 @@ class TestTEFuser(JitTestCase):
                     " ".join(["Failed:", str(dtype), op.__name__, device])
                 ) from e
 
+    @slowTest(TEST_WITH_ASAN)
     def test_ternary_norm_ops(self):
         def apply(fn):
             return lambda x, y, z: fn(x, y, z)
