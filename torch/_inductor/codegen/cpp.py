@@ -1276,7 +1276,6 @@ class CppVecKernel(CppKernel):
         assert reduction_type in {"max", "min", "sum", "prod", "xor_sum"}
         assert dtype == torch.float
         assert src_dtype == torch.float
-        reduce_map = {"max": "maximum", "min": "minimum"}
 
         vec_ns = "at::vec"
         vec = f"{vec_ns}::Vectorized<{DTYPE_TO_CPP[dtype]}>"
@@ -1284,16 +1283,7 @@ class CppVecKernel(CppKernel):
         if reduction_type not in self.reduction_omp_dec:
             vec_reduc_prefix = "#pragma omp declare reduction("
             vec_reduc_prefix += f"{RTYPE_TO_CPP[reduction_type]}:{vec}:"
-            if reduction_type == "sum":
-                vec_reduc_prefix += "omp_out += omp_in"
-            elif reduction_type == "prod":
-                vec_reduc_prefix += "omp_out *= omp_in"
-            elif reduction_type == "xor_sum":
-                vec_reduc_prefix += "omp_out ^= omp_in"
-            else:
-                vec_reduc_prefix += (
-                    f"omp_out = {vec_ns}::{reduce_map[reduction_type]}(omp_out, omp_in)"
-                )
+            vec_reduc_prefix += reduction_combine_vec(reduction_type, "omp_out", "omp_in")
             vec_reduc_prefix += ")"
             vec_reduc_prefix += " initializer("
             vec_reduc_prefix += "omp_priv={{"
@@ -1321,20 +1311,13 @@ class CppVecKernel(CppKernel):
 
         if self.tiling_idx >= self.reduction_depth:
             # Horizontal reduction
-            reduce_all_body = "{"
-            if reduction_type == "sum":
-                reduce_all_body += "return x + y;"
-            elif reduction_type == "prod":
-                reduce_all_body += "return x * y;"
-            elif reduction_type == "xor_sum":
-                reduce_all_body += "return x ^ y;"
-            else:
-                reduce_all_body += (
-                    f"return {vec_ns}::{reduce_map[reduction_type]}(x, y);"
-                )
-            reduce_all_body += "}"
+            reduce_all_body = (
+                "{ return " +
+                reduction_combine_vec(reduction_type, "x", "y") +
+                "; }"
+            )
             vec_reduce_all_func = f"{vec_ns}::vec_reduce_all<{DTYPE_TO_CPP[dtype]}>"
-            next_value = f"{vec_reduce_all_func}([]({vec}& x, {vec}&y) {reduce_all_body}, {tmpvar_vec})"
+            next_value = f"{vec_reduce_all_func}([]({vec} x, {vec} y) {reduce_all_body}, {tmpvar_vec})"
             self.reduction_suffix.writeline(
                 DeferredLine(
                     name, f"{reduction_combine(reduction_type, tmpvar, next_value)};"
