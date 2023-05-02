@@ -2,17 +2,25 @@ import collections
 import dataclasses
 import itertools
 import logging
+import re
 import typing
 from typing import Callable, Dict, List, Optional, Set, Tuple, Union
 
 import sympy
 
 from .codegen.common import index_prevent_reordering
-from .utils import get_dtype_size, sympy_str, sympy_subs, sympy_symbol, VarRanges
+from .utils import (
+    get_dtype_size,
+    sympy_product,
+    sympy_str,
+    sympy_subs,
+    sympy_symbol,
+    VarRanges,
+)
 from .virtualized import V
 
 log = logging.getLogger(__name__)
-
+is_indirect = re.compile(r"indirect|tmp").search
 Dep = Union["MemoryDep", "StarDep", "WeakDep"]
 
 
@@ -38,21 +46,60 @@ class MemoryDep(typing.NamedTuple):
         return self
 
     def numbytes_hint(self):
-        vars = set(self.index.free_symbols)
-        numel = sympy.Integer(1)
-        for var in vars:
-            if var in self.var_names:
-                numel = numel * self.size[self.var_names.index(var)]
-            else:
-                # indirect indexing, just assume entire buffer is read
-                numel = V.graph.get_numel(self.name)
-                break
+        if self.is_indirect():
+            numel = V.graph.get_numel(self.name)
+        else:
+            vars = set(self.index.free_symbols)
+            numel = sympy.Integer(1)
+            for var, size in zip(self.var_names, self.size):
+                if var in vars:
+                    numel = numel * size
         return V.graph.sizevars.size_hint(numel) * get_dtype_size(
             V.graph.get_dtype(self.name)
         )
 
     def is_contiguous(self) -> bool:
-        return isinstance(self.index, (sympy.Symbol, sympy.Integer))
+        return isinstance(self.index, sympy.Symbol) and self.index in self.var_names
+
+    def is_scalar(self) -> bool:
+        if isinstance(self.index, sympy.Symbol):
+            return self.index not in self.var_names
+        return isinstance(self.index, (int, sympy.Integer))
+
+    def is_indirect(self) -> bool:
+        return any(is_indirect(v.name) for v in self.index.free_symbols)
+
+    def generalize_for_scheduling(self):
+        if self.is_indirect():
+            return StarDep(
+                self.name,
+            )
+        elif len(self.index.free_symbols) == 0:
+            return MemoryDep(
+                self.name,
+                self.index,
+                (),
+                (),
+            )
+        else:
+            vars = set(self.index.free_symbols)
+            a = sympy.Symbol("a")
+            return MemoryDep(
+                self.name,
+                a,
+                (a,),
+                (
+                    sympy_product(
+                        s for v, s in zip(self.var_names, self.size) if v in vars
+                    ),
+                ),
+            )
+
+    def can_read_from(self, other: Dep):
+        """Check if self can read from other in a single fused kernel"""
+        if not isinstance(other, MemoryDep) or other.is_indirect():
+            return False
+        return self == other
 
 
 class StarDep(typing.NamedTuple):
@@ -72,6 +119,18 @@ class StarDep(typing.NamedTuple):
     def is_contiguous(self) -> bool:
         return False
 
+    def is_scalar(self) -> bool:
+        return False
+
+    def is_indirect(self) -> bool:
+        return False
+
+    def generalize_for_scheduling(self):
+        return self
+
+    def can_read_from(self, other: Dep):
+        return False
+
 
 # Used for tracking mutation ordering
 # if A reads a buffer and B mutates it
@@ -89,6 +148,9 @@ class WeakDep(typing.NamedTuple):
 
     def is_contiguous(self) -> bool:
         return False
+
+    def can_read_from(self, other: Dep):
+        return True
 
 
 class IndexExprDep(typing.NamedTuple):
@@ -146,6 +208,15 @@ class ReadWrites:
             self.range_vars,
             self.var_ranges,
             op_counts=self.op_counts,
+        )
+
+    def generalize_for_scheduling(self):
+        return ReadWrites(
+            {dep.generalize_for_scheduling() for dep in self.reads},
+            {dep.generalize_for_scheduling() for dep in self.writes},
+            self.index_exprs,
+            self.range_vars,
+            self.var_ranges,
         )
 
 
@@ -249,7 +320,7 @@ class RecordLoadStore(V.KernelFormatterHandler):
 
 def var_builder(prefix: str) -> Tuple[VarRanges, Callable[[sympy.Expr], sympy.Symbol]]:
     cnt = itertools.count()
-    var_ranges: VarRanges = collections.OrderedDict()
+    var_ranges: VarRanges = dict()
 
     def add_var(length: sympy.Expr) -> sympy.Symbol:
         v = sympy_symbol(f"{prefix}{next(cnt)}")
@@ -277,7 +348,7 @@ def index_vars_squeeze(*argsizes: Tuple[sympy.Expr, ...], prefix: str = "d"):
         new_size, reindex = SqueezeView.squeezer(size)
         new_sizes.append(new_size)
         args.append(reindex(list(map(add_var, new_size))))
-    return new_sizes, args, var_ranges
+    return args, var_ranges
 
 
 def extract_read_writes(
@@ -286,7 +357,7 @@ def extract_read_writes(
     normalize: bool = False,
     prefix: str = "d",
 ):
-    _, args, var_ranges = index_vars_squeeze(*argsizes, prefix=prefix)
+    args, var_ranges = index_vars_squeeze(*argsizes, prefix=prefix)
     rw = RecordLoadStore(var_ranges, normalize=normalize)
     with V.set_ops_handler(rw):  # type: ignore[call-arg]
         fn(*args)
