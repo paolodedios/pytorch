@@ -24,11 +24,11 @@
 #include <c10/core/Event.h>
 #include <c10/core/Stream.h>
 #include <c10/core/StreamGuard.h>
+#include <c10/util/AbortHandler.h>
 #include <c10/util/Exception.h>
 #include <c10/util/Optional.h>
 #include <c10/util/ThreadLocal.h>
 #include <c10/util/irange.h>
-#include <c10/util/AbortHandler.h>
 
 #include <atomic>
 #include <chrono>
@@ -326,7 +326,7 @@ void Engine::thread_init(
     const std::shared_ptr<ReadyQueue>& ready_queue,
     bool should_increment) {
 #ifdef _WIN32
-    c10::set_terminate_handler();
+  c10::set_terminate_handler();
 #endif
   if (should_increment) {
     increment_non_reentrant_thread_count();

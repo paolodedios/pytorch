@@ -1,16 +1,16 @@
 #include <c10/util/Backtrace.h>
 #include <cstdlib>
-#include <iostream>
 #include <exception>
+#include <iostream>
 
 namespace c10 {
 class AbortHandlerHelper {
-public:
+ public:
   static AbortHandlerHelper& getInstance() {
 #ifdef _WIN32
     thread_local
 #endif // _WIN32
-    static AbortHandlerHelper instance;
+        static AbortHandlerHelper instance;
     return instance;
   }
 
@@ -26,7 +26,7 @@ public:
     return prev;
   }
 
-private:
+ private:
   std::terminate_handler prev = nullptr;
   std::terminate_handler curr = nullptr;
   bool inited = false;
@@ -38,14 +38,15 @@ private:
     }
   }
 
-public:
+ public:
   AbortHandlerHelper(AbortHandlerHelper const&) = delete;
   void operator=(AbortHandlerHelper const&) = delete;
 };
 
 namespace detail {
 void terminate_handler() {
-  std::cout << "Unhandled exception caught in c10/util/AbortHandler.h" << std::endl;
+  std::cout << "Unhandled exception caught in c10/util/AbortHandler.h"
+            << std::endl;
   auto backtrace = get_backtrace();
   std::cout << backtrace << std::endl;
   auto prev_handler = AbortHandlerHelper::getInstance().getPrev();
@@ -65,17 +66,16 @@ void set_terminate_handler() {
   const char* value_str = std::getenv("USE_CUSTOM_TERMINATE");
   std::string value{value_str != nullptr ? value_str : ""};
   if (!value.empty()) {
-	
     use_custom_terminate = false;
     std::transform(
-      value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return toupper(c);
-      });
+        value.begin(), value.end(), value.begin(), [](unsigned char c) {
+          return toupper(c);
+        });
     if (value == "1" || value == "ON") {
       use_custom_terminate = true;
     }
   }
-  if(use_custom_terminate){
+  if (use_custom_terminate) {
     AbortHandlerHelper::getInstance().set(detail::terminate_handler);
   }
 }
