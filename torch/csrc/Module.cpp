@@ -1296,9 +1296,7 @@ PyObject* initModule() {
   HANDLE_TH_ERRORS
 
   c10::initLogging();
-  
   c10::set_terminate_handler();
-  
   at::internal::lazy_init_num_threads();
 
   C10_LOG_API_USAGE_ONCE("torch.python.import");

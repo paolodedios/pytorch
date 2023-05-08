@@ -8317,7 +8317,8 @@ tensor([[[1.+1.j, 1.+1.j, 1.+1.j,  ..., 1.+1.j, 1.+1.j, 1.+1.j],
         torch.backends.quantized.engine = original_qe
 
     def test_terminate_handler_on_crash(self):
-        cmd = [sys.executable, '-c',"import os; os.environ[\"USE_CUSTOM_TERMINATE\"] ='1'; import torch; import torch._C; torch._C._crash_immediately()"]
+        cmd = [sys.executable, '-c', "import os; os.environ[\"USE_CUSTOM_TERMINATE\"] ='on'; \
+               import torch; import torch._C; torch._C._crash_immediately()"]
         with self.assertRaises(subprocess.CalledProcessError) as cm:
             subprocess.check_output(cmd, shell=False)
         e = cm.exception
