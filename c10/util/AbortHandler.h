@@ -65,6 +65,7 @@ void set_terminate_handler() {
   const char* value_str = std::getenv("USE_CUSTOM_TERMINATE");
   std::string value{value_str != nullptr ? value_str : ""};
   if (!value.empty()) {
+	
     use_custom_terminate = false;
     std::transform(
       value.begin(), value.end(), value.begin(), [](unsigned char c) {

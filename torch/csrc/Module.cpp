@@ -1297,7 +1297,7 @@ PyObject* initModule() {
 
   c10::initLogging();
   
-  //c10::set_terminate_handler();
+  c10::set_terminate_handler();
   
   at::internal::lazy_init_num_threads();
 
