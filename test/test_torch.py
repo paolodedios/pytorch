@@ -8322,6 +8322,10 @@ tensor([[[1.+1.j, 1.+1.j, 1.+1.j,  ..., 1.+1.j, 1.+1.j, 1.+1.j],
         with self.assertRaises(subprocess.CalledProcessError) as cm:
             subprocess.check_output(cmd, shell=False)
         e = cm.exception
+        print('ionut')
+        print(e)
+        print(e.output)
+        print('ionut end')
         self.assertNotEqual(e.returncode, 0)
         self.assertNotEqual(e.output, None)
         self.assertIn(b'Unhandled exception caught in c10/util/AbortHandler.h', e.output)
