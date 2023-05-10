@@ -8321,10 +8321,14 @@ tensor([[[1.+1.j, 1.+1.j, 1.+1.j,  ..., 1.+1.j, 1.+1.j, 1.+1.j],
                import torch; import torch._C; torch._C._crash_immediately()"]
         with self.assertRaises(subprocess.CalledProcessError) as cm:
             subprocess.check_output(cmd, shell=False)
+        print('ionut 0')
         e = cm.exception
-        print('ionut')
         print(e)
-        print(e.output)
+        print('ionut')
+        print(e.stderr)
+        print("ionut middle")
+        print(e.stdout)
+        print(e.returncode)
         print('ionut end')
         self.assertNotEqual(e.returncode, 0)
         self.assertNotEqual(e.output, None)
