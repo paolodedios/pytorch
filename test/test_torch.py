@@ -8327,12 +8327,13 @@ tensor([[[1.+1.j, 1.+1.j, 1.+1.j,  ..., 1.+1.j, 1.+1.j, 1.+1.j],
         print('ionut')
         print(e.stderr)
         print("ionut middle")
-        print(e.stdout)
+        print(e.stdout.decode("utf-8"))
         print(e.returncode)
         print('ionut end')
+        output = e.stdout.decode("utf-8")
         self.assertNotEqual(e.returncode, 0)
-        self.assertNotEqual(e.output, None)
-        self.assertIn(b'Unhandled exception caught in c10/util/AbortHandler.h', e.output)
+        self.assertNotEqual(output, None)
+        self.assertIn(b'Unhandled exception caught in c10/util/AbortHandler.h', output)
 
     # FIXME: port to a distributed test suite -- also... how could this be OOMing on Windows CUDA?
     @slowTest
