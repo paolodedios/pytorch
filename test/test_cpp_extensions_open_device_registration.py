@@ -276,8 +276,14 @@ class TestCppExtensionOpenRgistration(common.TestCase):
                 cpu_untyped_storage_pinned.is_pinned("foo1", "foo2")
 
         def test_open_device_serialization():
+            self.module.set_custom_device_index(-1)
             storage = torch.UntypedStorage(4, device=torch.device('foo'))
             self.assertEqual(torch.serialization.location_tag(storage), 'foo')
+
+            self.module.set_custom_device_index(0)
+            storage = torch.UntypedStorage(4, device=torch.device('foo'))
+            self.assertEqual(torch.serialization.location_tag(storage), 'foo:0')
+
             cpu_storage = torch.empty(4, 4).storage()
             foo_storage = torch.serialization.default_restore_location(cpu_storage, 'foo:0')
             self.assertTrue(foo_storage.is_foo)
