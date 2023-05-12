@@ -8,12 +8,12 @@ import warnings
 from copy import deepcopy
 from typing import Any, Callable, Dict, List, Optional
 
-from functorch.compile import min_cut_rematerialization_partition
-
 import torch._dynamo.config as dynamo_config
 
 import torch.fx
 import torch.utils._pytree as pytree
+
+from functorch.compile import min_cut_rematerialization_partition
 from torch._dynamo import logging as dynamo_logging, utils as dynamo_utils
 from torch._dynamo.utils import defake, detect_fake_mode
 from torch._functorch.aot_autograd import make_boxed_func
@@ -32,6 +32,14 @@ from .fx_passes.pre_grad import pre_grad_passes
 from .graph import GraphLowering
 from .utils import developer_warning, get_dtype_size, has_incompatible_cudagraph_ops
 from .virtualized import V
+
+if config.is_fbcode():
+    from torch._inductor.fb.logging import time_and_log
+else:
+    def time_and_log(attr: str):
+        def wrap(f):
+            return f
+        return wrap
 
 log = logging.getLogger(__name__)
 ALIGNMENT = 16
@@ -195,6 +203,7 @@ def inner_compile_with_cpp_wrapper(inner_compile):
 
 @DebugContext.wrap
 @torch.utils._python_dispatch._disable_current_modes()
+@time_and_log(attr="compilation time (ms)")
 def compile_fx_inner(
     gm: torch.fx.GraphModule,
     example_inputs: List[torch.Tensor],
