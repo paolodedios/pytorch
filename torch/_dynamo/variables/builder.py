@@ -830,7 +830,6 @@ class VariableBuilder:
             assert type(value) in (
                 torch.Tensor,
                 torch.nn.Parameter,
-                torch._subclasses.fake_tensor.FakeTensor,
             ), type(value)
             ignore_subclass = False
 
