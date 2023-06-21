@@ -51,7 +51,7 @@ inline bool is_pointwise(const IntArrayRef weight_size) {
   return true;
 }
 
-Conv2dMethod determine_method(
+static Conv2dMethod determine_method(
     const IntArrayRef weight_size,
     const IntArrayRef stride,
     const IntArrayRef padding,
@@ -356,7 +356,7 @@ struct Params final {
   api::utils::vec2 clamp;
 };
 
-void record_op(
+static void record_op(
     api::Context* const context,
     api::ShaderInfo& compute_shader,
     vTensor& v_output,
@@ -429,7 +429,7 @@ struct QParams final {
   api::utils::vec2 clamp;
 };
 
-void record_quantized_op(
+static void record_quantized_op(
     api::Context* const context,
     api::ShaderInfo& compute_shader,
     vTensor& v_output,
@@ -1001,29 +1001,7 @@ c10::intrusive_ptr<Conv2dPackedContext> create_qconv2d_context(
       output_max));
 }
 
-c10::intrusive_ptr<Conv2dPackedContext> convert_qconv2d_context(
-    const c10::intrusive_ptr<ConvPackedParamsBase<2>>& packed_params,
-    const c10::optional<Scalar>& output_min,
-    const c10::optional<Scalar>& output_max) {
-  std::tuple<Tensor, c10::optional<Tensor>> wb = packed_params->unpack();
-  Tensor weight = std::get<0>(wb);
-  c10::optional<Tensor> bias = std::get<1>(wb);
-
-  return c10::make_intrusive<Conv2dPackedContext>(Conv2dPackedContext(
-      weight,
-      bias,
-      packed_params->stride().vec(),
-      packed_params->padding().vec(),
-      packed_params->dilation().vec(),
-      /* transposed = */ false,
-      /* quantized = */ true,
-      /* output_padding_arg = */ {0},
-      packed_params->groups(),
-      output_min,
-      output_max));
-}
-
-Tensor run_conv2d_context_impl(
+static Tensor run_conv2d_context_impl(
     const Tensor& input_arg,
     const c10::intrusive_ptr<Conv2dPackedContext>& conv_context,
     double scale,
@@ -1170,7 +1148,7 @@ Tensor run_qconv2d_context(
   return run_conv2d_context_impl(input_arg, conv_context, scale, zero_point);
 }
 
-Tensor quantized_conv2d(
+static Tensor quantized_conv2d(
     const Tensor& input,
     const Tensor& weight,
     const c10::optional<Tensor>& bias,
