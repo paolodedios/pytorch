@@ -6652,19 +6652,29 @@ class CommonTemplate:
             R = R_rodrigues
             return R
 
-        @torch.compile(dynamic=True)
         def f(coord, rot, trans):
             rot_mat = rotvec_to_rotmat(rot)
             coord = torch.einsum("...ij,...bj->...bi", rot_mat, coord) + trans
             return coord.sum()
 
-        coord = torch.ones((2, 3))
-        rot = nn.Parameter(torch.ones((2, 3)))
-        trans = nn.Parameter(torch.ones((2, 3)))
+        foo_c = torch.compile(f, dynamic=True)
 
-        U = f(coord, rot, trans)
-        # this will throw an AttributError if the test fails
-        U.backward()
+        def run(fn):
+            coord = torch.ones((2, 3), device=self.device)
+            rot = nn.Parameter(torch.ones((2, 3), device=self.device))
+            trans = nn.Parameter(torch.ones((2, 3), device=self.device))
+
+            U = fn(coord, rot, trans)
+            U.backward()
+
+            return U, rot, trans
+
+        U_e, rot_e, trans_e = run(f)
+        U, rot, trans = run(foo_c)
+
+        self.assertEqual(U, U_e)
+        self.assertEqual(rot.grad, rot_e.grad)
+        self.assertEqual(trans.grad, trans_e.grad)
 
 
 @dataclasses.dataclass
