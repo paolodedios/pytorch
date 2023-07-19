@@ -50,7 +50,7 @@ from .quantizer import (
 
 
 __all__ = [
-    "QNNPackQuantizer",
+    "XNNPACKQuantizer",
     "get_symmetric_quantization_config",
 ]
 
@@ -224,7 +224,7 @@ def _is_annotated(nodes: List[Node]):
     return annotated
 
 
-class QNNPackQuantizer(Quantizer):
+class XNNPACKQuantizer(Quantizer):
     supported_config_and_operators = _get_supported_config_and_operators()
 
     def __init__(self):
@@ -259,13 +259,13 @@ class QNNPackQuantizer(Quantizer):
                 return ops
         return []
 
-    def set_global(self, quantization_config: QuantizationConfig) -> QNNPackQuantizer:
+    def set_global(self, quantization_config: QuantizationConfig) -> XNNPACKQuantizer:
         self.global_config = quantization_config
         return self
 
     def set_config_for_operator_type(
         self, operator_type: str, quantization_config: QuantizationConfig
-    ) -> QNNPackQuantizer:
+    ) -> XNNPACKQuantizer:
         self.operator_type_config[operator_type] = quantization_config
         return self
 
