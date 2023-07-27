@@ -467,9 +467,6 @@ class TestOpVersioning(TestCase):
 unittest.expectedFailure(
     TestDeserialize.test_exportdb_supported_case_tensor_setattr
 )
-unittest.expectedFailure(
-    TestDeserialize.test_exportdb_supported_case_pytree_flatten
-)
 # getattr node in the graph from a torch.tensor call
 unittest.expectedFailure(
     TestDeserialize.test_exportdb_supported_case_cond_branch_nonlocal_variables
