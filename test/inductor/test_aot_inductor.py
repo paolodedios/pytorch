@@ -85,10 +85,10 @@ class AotInductorTests(TestCase):
                 return x + torch.nn.functional.linear(y, self.weight)
 
         model = Repro()
-        example_inputs = [
+        example_inputs = (
             torch.randn(10, 10, device="cuda"),
             torch.randn(10, 10, device="cuda"),
-        ]
+        )
         expected = model(*example_inputs)
         actual = AOTInductorModelRunner.run(model, example_inputs, expected)
         self.assertTrue(same(actual, expected))
