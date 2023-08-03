@@ -1,7 +1,6 @@
 from typing import Any, Dict, List, Optional
 
 import torch.fx
-import torch.fx._pytree as fx_pytree
 
 __all__ = ["compile", "list_mode_options", "list_options", "cudagraph_mark_step_begin"]
 
@@ -29,7 +28,7 @@ def compile(
 
 
 def aot_compile(
-    ep: "ExportedProgram",
+    gm: torch.fx.GraphModule,
     example_inputs: List[torch.Tensor],
     options: Optional[Dict[str, Any]] = None,
 ) -> str:

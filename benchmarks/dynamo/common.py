@@ -1131,11 +1131,8 @@ class AOTInductorModelCache:
                 example_args, example_kwargs
             )
 
-            exported = torch._export.export(model, example_args, example_kwargs)
-            # The exact API is subject to change
             so_path, exported = torch._export.aot_compile(
-                model,
-                example_inputs,
+                model, example_args, example_kwargs
             )
 
             output_node = list(exported.graph.nodes)[-1]

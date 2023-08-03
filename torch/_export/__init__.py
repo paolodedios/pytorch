@@ -349,6 +349,7 @@ def aot_compile(
     args: Tuple[Any],
     kwargs: Optional[Dict[str, Any]] = None,
     constraints: Optional[List[Constraint]] = None,
+    options: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, ExportedProgram]:
     """
     Note: this function is not stable yet
@@ -367,12 +368,15 @@ def aot_compile(
         constraints: A optional list of constraints on the dynamic arguments specifying
             their possible range of their shapes
 
+        options: A dictionary of options to control inductor
+
     Returns:
         Path to the generated shared library, and the exported program
     """
     from torch._inductor.compile_fx import compile_fx_aot
     from torch._inductor.decomposition import select_decomp_table
 
+    global DECOMP_TABLE
     DECOMP_TABLE = select_decomp_table()
     ep = export(f, args, kwargs, constraints)
     # Reset the global value
@@ -387,5 +391,6 @@ def aot_compile(
     so_path = compile_fx_aot(
         ep.graph_module,
         all_args,  # type: ignore[arg-type]
+        config_patches=options,
     )
     return so_path, ep

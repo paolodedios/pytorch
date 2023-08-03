@@ -221,16 +221,13 @@ def inner_compile_with_cpp_wrapper(inner_compile):
                         return x
 
                 if torch._guards.TracingContext.get():
+                    params_flat = [
+                        param
+                        for param in torch._guards.TracingContext.get().params_flat
+                        if param is not None
+                    ]
                     real_inputs = [
-                        materialize(x)
-                        for x in [
-                            *[
-                                param
-                                for param in torch._guards.TracingContext.get().params_flat
-                                if param is not None
-                            ],
-                            *V.real_inputs,
-                        ]
+                        materialize(x) for x in [*params_flat, *V.real_inputs]
                     ]
                 else:
                     real_inputs = [materialize(x) for x in V.real_inputs]
