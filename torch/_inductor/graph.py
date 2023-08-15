@@ -44,13 +44,7 @@ from .lowering import (
     unsupported_output_tensor,
 )
 from .sizevars import SizeVarAllocator
-from .utils import (
-    convert_shape_to_inductor,
-    gather_origins,
-    get_dtype_size,
-    get_sympy_Expr_dtype,
-    sympy_product,
-)
+from .utils import convert_shape_to_inductor, gather_origins, get_sympy_Expr_dtype
 from .virtualized import V
 
 log = logging.getLogger(__name__)
@@ -881,7 +875,7 @@ class GraphLowering(torch.fx.Interpreter):
         return self.wrapper_code.generate()
 
     def count_bytes(self):
-        from .scheduler import FusedSchedulerNode, NopKernelSchedulerNode, Scheduler
+        from .scheduler import Scheduler
 
         scheduler = Scheduler(self.buffers)
 
