@@ -12,6 +12,7 @@ from torch._dynamo.variables.base import VariableTracker
 from torch._dynamo.variables.tensor import SymNodeVariable
 from torch._guards import Source
 from torch.utils import _pytree as pytree
+from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 from ..exc import (
     UncapturedHigherOrderOpError,
@@ -21,7 +22,7 @@ from ..exc import (
     UserErrorType,
 )
 from ..guards import GuardBuilder
-from ..source import FSDPNNModuleSource, GetItemSource, NNModuleSource
+from ..source import FSDPNNModuleSource, GetItemSource, LocalSource, NNModuleSource
 from ..utils import proxy_args_kwargs
 from .lists import ListVariable, TupleVariable
 from .nn_module import NNModuleVariable
@@ -88,8 +89,21 @@ def validate_args_and_maybe_create_graph_inputs(
             if manually_set_subgraph_inputs:
                 new_proxy = tracer.create_graph_input(a.as_proxy().node.name)
                 example_value = a.as_proxy().node.meta["example_value"]
+
+                options = {}
+                if is_traceable_wrapper_subclass(example_value):
+                    # Note: this is a temporary hack to unblock a single tensor
+                    # subclass use case. Passing these options in the general
+                    # case breaks various tests. We should fix it more properly
+                    # in the future.
+                    options = VariableTracker.propagate(a)
+                    options["source"] = LocalSource(a.as_proxy().node.name)
+
                 new_arg = wrap_fx_proxy(
-                    tx=tx, proxy=new_proxy, example_value=example_value
+                    tx=tx,
+                    proxy=new_proxy,
+                    example_value=example_value,
+                    **options,
                 )
             else:
                 new_arg = a
