@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace torch {
 
@@ -36,11 +37,10 @@ struct MultiType : public Type {
       : types(accepted_types){};
 
   bool is_matching(PyObject* object) override {
-    auto it = std::find(types.begin(), types.end(), py_typename(object));
-    return it != types.end();
+    return types.find(py_typename(object)) != types.end();
   }
 
-  std::vector<std::string> types;
+  std::unordered_set<std::string> types;
 };
 
 struct NullableType : public Type {
