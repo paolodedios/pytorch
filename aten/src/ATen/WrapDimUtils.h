@@ -14,6 +14,10 @@ namespace at {
 // [-dim_post_expr, dim_post_expr-1].
 using c10::maybe_wrap_dim;
 
+inline int64_t maybe_wrap_dim(int64_t dim, size_t size) {
+  return maybe_wrap_dim(dim, static_cast<int64_t>(size));
+}
+
 inline int64_t maybe_wrap_dim(int64_t dim, TensorImpl* tensor) {
   return maybe_wrap_dim(dim, tensor->dim());
 }

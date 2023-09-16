@@ -140,7 +140,7 @@ int64_t _safe_size(IntArrayRef sizes, IntArrayRef dim) {
     return 1;
   }
   for (auto d : dim) {
-    d = at::maybe_wrap_dim(d, static_cast<int64_t>(sizes.size()));
+    d = at::maybe_wrap_dim(d, sizes.size());
     size *= sizes[d];
   }
   return size;
@@ -152,7 +152,7 @@ static c10::SymInt _safe_size(c10::SymIntArrayRef sizes, c10::IntArrayRef dim) {
     return 1;
   }
   for (auto d : dim) {
-    d = at::maybe_wrap_dim(d, static_cast<int64_t>(sizes.size()));
+    d = at::maybe_wrap_dim(d, sizes.size());
     size *= sizes[d];
   }
   return size;
@@ -562,7 +562,8 @@ Tensor angle_backward(const Tensor& grad, const Tensor& self) {
 }
 
 Tensor mvlgamma_backward(const Tensor& grad, const Tensor& self, int64_t p) {
-  Tensor args = at::arange(-p / 2. + 0.5, 0.5, 0.5, self.options());
+  Tensor args =
+      at::arange(-static_cast<double>(p) / 2. + 0.5, 0.5, 0.5, self.options());
   args = args.add(self.unsqueeze(-1));
   return grad * args.digamma_().sum(-1);
 }
@@ -644,7 +645,7 @@ Tensor div_tensor_other_backward(
 Tensor div_tensor_other_backward(
     const Tensor& grad,
     const Tensor& self,
-    Tensor other) {
+    const Tensor& other) {
   return div_tensor_other_backward(grad, self, other, c10::nullopt);
 }
 
@@ -653,8 +654,7 @@ Tensor permute_backwards(const Tensor& grad, IntArrayRef fwd_dims) {
   auto ndims = fwd_dims.size();
   std::vector<int64_t> dims(ndims);
   for (const auto i : c10::irange(ndims)) {
-    dims[at::maybe_wrap_dim(fwd_dims[i], static_cast<int64_t>(ndims))] =
-        static_cast<int64_t>(i);
+    dims[at::maybe_wrap_dim(fwd_dims[i], ndims)] = static_cast<int64_t>(i);
   }
   return grad.permute(dims);
 }
@@ -840,7 +840,7 @@ Tensor prod_backward(
   if (input.dim() == 0) {
     return grad;
   }
-  dim = at::maybe_wrap_dim(dim, static_cast<int64_t>(input.sizes().size()));
+  dim = at::maybe_wrap_dim(dim, input.sizes().size());
   if (!keepdim) {
     // `prod` reduces the dimension at `dim`,
     // so, unsqueeze `grad` and `result` at dim.
@@ -1600,7 +1600,7 @@ Tensor renorm_jvp(
     int64_t dim,
     const Scalar& maxnorm) {
   auto self_sizes = self_p.sizes();
-  dim = c10::maybe_wrap_dim(dim, static_cast<int64_t>(self_sizes.size()));
+  dim = at::maybe_wrap_dim(dim, self_sizes.size());
 
   at::DimVector reduce_dims(self_sizes.size());
   std::iota(reduce_dims.begin(), reduce_dims.end(), 0);
@@ -2071,7 +2071,7 @@ Tensor split_with_sizes_backward(
     int64_t dim,
     c10::SymIntArrayRef sizes,
     const at::TensorOptions& options) {
-  dim = at::maybe_wrap_dim(dim, static_cast<int64_t>(sizes.size()));
+  dim = at::maybe_wrap_dim(dim, sizes.size());
 
   // it's possible some of the grads are not defined (represents tensors of all
   // 0s). Since at::cat can't handle those, let's define them
@@ -2105,7 +2105,7 @@ Tensor split_backward(
     int64_t dim,
     c10::SymIntArrayRef sym_sizes,
     const at::TensorOptions& options) {
-  dim = at::maybe_wrap_dim(dim, static_cast<int64_t>(sym_sizes.size()));
+  dim = at::maybe_wrap_dim(dim, sym_sizes.size());
   const auto& dim_size = sym_sizes[dim];
   auto num_splits = grads.size();
   std::vector<c10::SymInt> split_sizes(num_splits, split_size);
@@ -4501,8 +4501,7 @@ Tensor fft_r2c_backward(
   //     3. discard the complex dim
   auto half_sizes = grad.sym_sizes();
   std::vector<c10::SymInt> new_grad_shape(half_sizes.begin(), half_sizes.end());
-  const auto last_dim =
-      at::maybe_wrap_dim(dim.back(), static_cast<int64_t>(half_sizes.size()));
+  const auto last_dim = at::maybe_wrap_dim(dim.back(), half_sizes.size());
   new_grad_shape[last_dim] = last_dim_size;
 
   const auto zero_length = last_dim_size - grad.sym_size(dim.back());
@@ -4609,10 +4608,10 @@ std::tuple<Tensor, Tensor, Tensor> batchnorm_double_backward(
   if (ggI.defined() && training) {
     auto ggI_sum = sum_exclude_dim1(ggI);
     auto ggIinmu_sum = sum_exclude_dim1(ggI * input_sub_mu);
-    auto all_sub =
-        ((ggI_sum * gO_sum).div_(M))
-            .sub_(sum_exclude_dim1(gO * ggI))
-            .add_((sigma2_eps_neg_1 * gOinmu_sum * ggIinmu_sum).mul_(3. / M));
+    auto all_sub = ((ggI_sum * gO_sum).div_(M))
+                       .sub_(sum_exclude_dim1(gO * ggI))
+                       .add_((sigma2_eps_neg_1 * gOinmu_sum * ggIinmu_sum)
+                                 .mul_(3. / static_cast<double>(M)));
     auto gI_0t = (input_mu_sigma2_neg_3_2 * all_sub).div_(M);
     auto gI_1t =
         (ggIinmu_sum * sigma2_eps_neg_3_2).div_(M) * (gO_sum.div(M) - gO);
@@ -4755,10 +4754,10 @@ std::tuple<Tensor, Tensor, Tensor> layer_norm_double_backward(
     auto ggI_sum = ggI_expanded.sum(1, true);
     auto ggI_mu_sum = (ggI_expanded * input_sub_mu).sum(1, true);
 
-    auto all_sub =
-        ((ggI_sum * gxhat_sum).div_(N))
-            .sub_((ggI_expanded * gxhat).sum(1, true))
-            .add_((sigma2_eps_neg_1 * gxhat_mu_sum * ggI_mu_sum).mul_(3. / N));
+    auto all_sub = ((ggI_sum * gxhat_sum).div_(N))
+                       .sub_((ggI_expanded * gxhat).sum(1, true))
+                       .add_((sigma2_eps_neg_1 * gxhat_mu_sum * ggI_mu_sum)
+                                 .mul_(3. / static_cast<double>(N)));
     auto gI_0t = (input_mu_sigma2_neg_3_2 * all_sub).div_(N);
     auto gI_1t =
         (ggI_mu_sum * sigma2_eps_neg_3_2).div_(N) * (gxhat_sum.div(N) - gxhat);
