@@ -13418,6 +13418,14 @@ op_db: List[OpInfo] = [
            supports_out=False),
     OpInfo('nn.functional.glu',
            aten_name='glu',
+           skips=(
+               DecorateInfo(
+                   unittest.skip("Skipped - glu decomp does not have enough precision for 16-bit float"),
+                   'TestDecomp',
+                   'test_comprehensive',
+                   dtypes=(torch.bfloat16, torch.float16),
+               ),
+           ),
            # Runs very slowly on slow gradcheck - alternatively reduce input sizes
            gradcheck_fast_mode=True,
            sample_inputs_func=sample_inputs_glu,
