@@ -31,6 +31,7 @@ from .utils import (
     do_bench,
     get_num_bytes,
     has_triton,
+    has_triton_package,
     next_power_of_2,
     triton_config_to_hashable,
 )
@@ -38,15 +39,19 @@ from .utils import (
 
 log = logging.getLogger(__name__)
 
-if has_triton():
+if has_triton_package():
     import triton
     from triton import Config
-    from triton.runtime.jit import get_cuda_stream, KernelInterface
+    from triton.runtime.jit import KernelInterface
 else:
     Config = object
-    get_cuda_stream = None
-    KernelInterface = object
     triton = None
+    KernelInterface = object
+
+if has_triton():
+    from triton.runtime.jit import get_cuda_stream
+else:
+    get_cuda_stream = None
 
 
 class HeuristicType(Enum):

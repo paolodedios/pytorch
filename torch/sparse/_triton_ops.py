@@ -1,18 +1,7 @@
 import math
 
 import torch
-from torch._inductor.cuda_properties import get_device_capability
-
-
-def _has_triton():
-    if not torch.cuda.is_available():
-        return False
-    try:
-        import triton
-
-        return triton is not None and get_device_capability() >= (7, 0)
-    except ImportError:
-        return False
+from torch._inductor.utils import has_triton as _has_triton
 
 
 def check(cond, msg):
