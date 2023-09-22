@@ -3908,9 +3908,14 @@ class MultiOutput(ExternKernel):
             return basename
 
     def codegen(self, wrapper):
-        line = V.graph.wrapper_code.declare
-        line += f"{self.get_name()} = {self.codegen_list_tuple_access(self.inputs[0].get_name(), self.indices)}"
-        line += V.graph.wrapper_code.ending
+        old_name = (
+            f"{self.codegen_list_tuple_access(self.inputs[0].get_name(), self.indices)}"
+        )
+        new_name = f"{self.get_name()}"
+        del_line = ""
+        line = V.graph.wrapper_code.codegen_exact_buffer_reuse(
+            old_name, new_name, del_line
+        )
         V.graph.wrapper_code.writeline(line)
         self.codegen_size_asserts(V.graph.wrapper_code)
 

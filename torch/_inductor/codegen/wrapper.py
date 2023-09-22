@@ -816,7 +816,7 @@ class WrapperCodeGen(CodeGen):
         return f"del {buffer.get_name()}"
 
     def codegen_exact_buffer_reuse(self, old_name: str, new_name: str, del_line: str):
-        return f"{self.declare}{new_name} = {old_name}{del_line}  {self.comment} reuse"
+        return f"{self.declare}{new_name} = {old_name}{del_line}{self.ending}  {self.comment} reuse"
 
     def make_buffer_reuse(self, old, new):
         assert old.get_dtype() == new.get_dtype()
@@ -1600,10 +1600,16 @@ class CppWrapperCodeGen(WrapperCodeGen):
                 torch.Type,
                 torch.DeviceObjType,
             )
+            inductor_tensor_buffers = (
+                ir.InputBuffer,
+                ir.ComputedBuffer,
+                ir.ConcatKernel,
+                ir.ExternKernelOut,
+            )
 
             if isinstance(arg_type, torch.TensorType):
-                assert isinstance(arg, (ir.InputBuffer, ir.ComputedBuffer))
-                new_tensor_args.append(f"&{arg.name}")
+                assert isinstance(arg, inductor_tensor_buffers)
+                new_tensor_args.append(f"{arg.name}.get()")
             elif isinstance(arg_type, (torch.IntType, torch.SymIntType)):
                 # int or SymInt
                 assert isinstance(arg, int)
@@ -1619,14 +1625,16 @@ class CppWrapperCodeGen(WrapperCodeGen):
 
                 # List[Tensor]
                 if isinstance(arg_type.getElementType(), torch.TensorType):
-                    new_tensor_args.extend([f"&{a.name}" for a in arg])
+                    new_tensor_args.extend([f"{a.name}.get()" for a in arg])
                 # List[Optional[Tensor]]
                 elif isinstance(
                     arg_type.getElementType(), torch.OptionalType
                 ) and isinstance(
                     arg_type.getElementType().getElementType(), torch.TensorType
                 ):
-                    new_tensor_args.extend([f"&{a.name}" for a in arg if a is not None])
+                    new_tensor_args.extend(
+                        [f"{a.name}.get()" for a in arg if a is not None]
+                    )
                 # List [int] or List[SymInt]
                 elif isinstance(
                     arg_type.getElementType(), (torch.IntType, torch.SymIntType)
@@ -1659,8 +1667,12 @@ class CppWrapperCodeGen(WrapperCodeGen):
 
         def fill_output_arg(arg, return_type):
             if isinstance(return_type, torch.TensorType):
-                self.writeline(f"at::Tensor {arg};  // output buffer")
-                new_tensor_args.append(f"&{output_arg}")
+                self.writeline(f"AtenTensorHandle {arg}_handle;  // output buffer")
+                self.writeline(
+                    f"AOTI_TORCH_ERROR_CODE_CHECK(aoti_torch_new_uninitialized_tensor(&{arg}_handle));"
+                )
+                self.writeline(f"RAIIAtenTensorHandle {arg}({arg}_handle);")
+                new_tensor_args.append(f"{arg}.get()")
             elif isinstance(return_type, torch.ListType) and isinstance(
                 return_type.getElementType(), torch.TensorType
             ):
@@ -1761,7 +1773,9 @@ class CppWrapperCodeGen(WrapperCodeGen):
 
         tensor_args_var = f"tensor_args_var_{next(self.kernel_callsite_id)}"
         tensor_call_args_str = ", ".join(tensor_call_args)
-        self.writeline(f"void* {tensor_args_var}[] = {{{tensor_call_args_str}}};")
+        self.writeline(
+            f"AtenTensorHandle {tensor_args_var}[] = {{{tensor_call_args_str}}};"
+        )
 
         int_args_var = f"int_args_var_{next(self.kernel_callsite_id)}"
         int_call_args_str = ", ".join(int_call_args)
