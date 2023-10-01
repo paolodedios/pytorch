@@ -82,6 +82,7 @@ constant_fold_functions = [
     torch.is_floating_point,
     torch.nn.functional._Reduction.get_enum,
     torch._C._get_privateuse1_backend_name,
+    torch.promote_types,
 ]
 
 
