@@ -560,6 +560,8 @@ class GraphModuleSerializer:
             arg_name = arg.get_name()
             assert arg_name is not None, "Buffer must have valid name"
             return Argument.create(as_tensor=TensorArgument(name=arg_name))
+        elif isinstance(arg, torch.SymInt):
+            return Argument.create(as_sym_int=SymIntArgument.create(as_name=str(arg)))
         elif isinstance(arg, bool):
             return Argument.create(as_bool=arg)
         elif isinstance(arg, str):
@@ -580,6 +582,11 @@ class GraphModuleSerializer:
                 return Argument.create(as_floats=list(arg))
             elif all(isinstance(a, str) for a in arg):
                 return Argument.create(as_strings=list(arg))
+            elif all(isinstance(a, torch.SymInt) for a in arg):
+                values = []
+                for a in arg:
+                    values.append(SymIntArgument.create(as_name=str(a)))
+                return Argument.create(as_sym_ints=values)
             elif all(self.is_sym_int_arg(a) for a in arg):
                 # list of sym_ints
                 values = []
