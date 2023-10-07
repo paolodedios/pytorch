@@ -62,8 +62,6 @@ constexpr int64_t _max_to() {
 template<typename RNG, c10::ScalarType S, typename T>
 void test_random_from_to(const at::Device& device) {
 
-  constexpr int64_t min_val = _min_val<T>();
-
   constexpr int64_t max_val = _max_val<T>();
   constexpr int64_t max_to = _max_to<T>();
 
