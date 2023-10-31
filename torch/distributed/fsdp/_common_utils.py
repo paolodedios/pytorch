@@ -25,13 +25,13 @@ from typing import (
 import torch
 import torch.distributed as dist
 import torch.distributed.fsdp._flat_param as flat_param_file
-import torch.distributed.fsdp._fsdp_extensions as _fsdp_extensions
 import torch.nn as nn
 from torch.distributed._composable_state import _get_module_state, _State
 from torch.distributed._tensor.device_mesh import DeviceMesh
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     _CHECKPOINT_PREFIX,
 )
+from torch.distributed.fsdp._fsdp_extensions import FSDPExtensions
 from torch.distributed.utils import _apply_to_tensors
 from torch.utils._mode_utils import no_dispatch
 
@@ -142,7 +142,7 @@ class _FSDPState(_State):
         # Save these static lists to avoid the repeated tree traversals
         self._all_fsdp_states: List[_FSDPState] = []
         self._all_handles: List[flat_param_file.FlatParamHandle] = []
-        self._extension: Optional[_fsdp_extensions.FSDPExtensions] = None
+        self._fsdp_extension: FSDPExtensions = None
 
 
 def _get_module_fsdp_state(module: nn.Module) -> Optional[_FSDPState]:

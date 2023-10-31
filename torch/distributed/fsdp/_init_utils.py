@@ -512,7 +512,11 @@ def _init_extension(state: _FSDPState, device_mesh: DeviceMesh = None) -> _FSDPS
     # TODO: we need to add additional check once we support FSDP + PiPPy.
     # This check is currently sufficient, since we only support FSDP + TP.
     if device_mesh and _mesh_resources.get_parent_mesh(state._device_mesh) is not None:
-        state._extension = DTensorExtensions()
+        state._fsdp_extension = DTensorExtensions()
+    else:
+        # We need to explicilty set _fsdp_extension to None.
+        # Otherwise, we will run into an infinite recursion when getting the attribute.
+        state._fsdp_extension = None
     return state
 
 
@@ -611,7 +615,7 @@ def _init_param_handle_from_params(
         state.mixed_precision.keep_low_precision_grads,
         state.process_group,
         state._use_orig_params,
-        state._extension,
+        fsdp_extension=state._fsdp_extension,
     )
     handle.shard()
     assert not state._handle
