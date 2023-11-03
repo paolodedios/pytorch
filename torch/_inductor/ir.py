@@ -6461,7 +6461,6 @@ class MultiOutputNoSizeAssert(MultiOutput):
 
 
 class Broadcast(InPlaceCollectiveKernel):
-
     def __init__(self, layout, inputs, constant_args, src):
         super().__init__(layout, inputs, constant_args)
         self.src = src
