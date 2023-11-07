@@ -6665,6 +6665,9 @@ class Broadcast(InPlaceCollectiveKernel):
     def get_mutation_names(self):
         return [self.inputs[0].get_name()]
 
+    def get_unbacked_symbol_defs(self):
+        return {}
+
     @classmethod
     def create(
         cls, x: "TensorBox", src: int, tag: str, ranks: List[int], group_size: int
