@@ -139,6 +139,18 @@ class AutogradCompilerInstance:
             self.bind_tensors_to_proxies(outputs, proxies)
         return outputs
 
+    def post_acc_grad_hook(self, inputs, hook_id):
+        assert self.hooks_proxy is not None
+        hook = self.hooks_proxy[hook_id]
+        proxies = self.proxy_call_hook(
+            hook,
+            inputs,
+        )
+        with disable_proxy_modes_tracing():
+            inputs = [maybe_clone(x) for x in inputs]
+            self.bind_tensors_to_proxies(inputs, proxies)
+        return inputs
+
     def end_capture(self, outputs):
         self.stack.close()
         self.fx_tracer.create_node(
@@ -182,18 +194,23 @@ def enable(compiler_fn):
     )
     global compiled_autograd_enabled
     compiled_autograd_enabled = True
-    with torch.autograd.set_multithreading_enabled(False):
-        yield
-    if not prior:
-        compiled_autograd_enabled = False
-    torch._C._dynamo.compiled_autograd.set_autograd_compiler(prior)
+    try:
+        with torch.autograd.set_multithreading_enabled(False):
+            yield
+    finally:
+        if not prior:
+            compiled_autograd_enabled = False
+        torch._C._dynamo.compiled_autograd.set_autograd_compiler(prior)
 
 
 @contextlib.contextmanager
 def disable():
     prior = torch._C._dynamo.compiled_autograd.set_autograd_compiler(None)
+    global compiled_autograd_enabled
     compiled_autograd_enabled = False
-    yield
-    if prior:
-        compiled_autograd_enabled = True
-    torch._C._dynamo.compiled_autograd.set_autograd_compiler(prior)
+    try:
+        yield
+    finally:
+        if prior:
+            compiled_autograd_enabled = True
+        torch._C._dynamo.compiled_autograd.set_autograd_compiler(prior)
