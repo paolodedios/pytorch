@@ -564,6 +564,7 @@ from torch._C._autograd import (
     _KinetoEvent,
     _pop_saved_tensors_default_hooks,
     _prepare_profiler,
+    _toggle_collection_dynamic,
     _profiler_enabled,
     _ProfilerResult,
     _push_saved_tensors_default_hooks,
