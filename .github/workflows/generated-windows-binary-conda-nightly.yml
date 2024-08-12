@@ -389,7 +389,7 @@ jobs:
   conda-py3_9-cuda11_8-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_9-cuda11_8-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -634,7 +634,7 @@ jobs:
   conda-py3_9-cuda12_1-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_9-cuda12_1-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -879,7 +879,7 @@ jobs:
   conda-py3_9-cuda12_4-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_9-cuda12_4-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -1366,7 +1366,7 @@ jobs:
   conda-py3_10-cuda11_8-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_10-cuda11_8-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -1611,7 +1611,7 @@ jobs:
   conda-py3_10-cuda12_1-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_10-cuda12_1-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -1856,7 +1856,7 @@ jobs:
   conda-py3_10-cuda12_4-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_10-cuda12_4-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -2343,7 +2343,7 @@ jobs:
   conda-py3_11-cuda11_8-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_11-cuda11_8-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -2588,7 +2588,7 @@ jobs:
   conda-py3_11-cuda12_1-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_11-cuda12_1-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -2833,7 +2833,7 @@ jobs:
   conda-py3_11-cuda12_4-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_11-cuda12_4-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -3320,7 +3320,7 @@ jobs:
   conda-py3_12-cuda11_8-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_12-cuda11_8-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -3565,7 +3565,7 @@ jobs:
   conda-py3_12-cuda12_1-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_12-cuda12_1-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -3810,7 +3810,7 @@ jobs:
   conda-py3_12-cuda12_4-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: conda-py3_12-cuda12_4-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch

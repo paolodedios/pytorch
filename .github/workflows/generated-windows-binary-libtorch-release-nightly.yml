@@ -405,7 +405,7 @@ jobs:
   libtorch-cuda11_8-shared-with-deps-release-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: libtorch-cuda11_8-shared-with-deps-release-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -662,7 +662,7 @@ jobs:
   libtorch-cuda12_1-shared-with-deps-release-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: libtorch-cuda12_1-shared-with-deps-release-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
@@ -919,7 +919,7 @@ jobs:
   libtorch-cuda12_4-shared-with-deps-release-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
     needs: libtorch-cuda12_4-shared-with-deps-release-build
-    runs-on: windows.8xlarge.nvidia.gpu
+    runs-on: windows.g4dn.xlarge
     timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
