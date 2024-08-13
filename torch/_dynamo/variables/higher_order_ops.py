@@ -24,7 +24,12 @@ from torch.fx.passes.shape_prop import _extract_tensor_metadata
 from torch.utils import _pytree as pytree
 
 from .. import variables
-from ..exc import UncapturedHigherOrderOpError, unimplemented, Unsupported
+from ..exc import (
+    IncorrectUsage,
+    UncapturedHigherOrderOpError,
+    unimplemented,
+    Unsupported,
+)
 from ..source import AttrSource
 from ..utils import proxy_args_kwargs
 from .dicts import ConstDictVariable
@@ -1364,12 +1369,22 @@ class WrapHigherOrderVariable(TorchHigherOrderOperatorVariable):
 
 
 class HintsWrapperHigherOrderVariable(TorchHigherOrderOperatorVariable):
+    @raise_hard_error_if_graph_break(
+        reason="Hints_wrapper doesn't work unless it is captured completely with torch.compile."
+    )
     def call_function(
         self, tx, args: "List[VariableTracker]", kwargs: "Dict[str, VariableTracker]"
     ) -> "VariableTracker":
         _check_supported_callable_arg(tx, args[0], "body_fn")
 
         # inputs
+        if len(args) != 3:
+            unimplemented(
+                f"Expected 3 arguments but got {len(args)}.\n"
+                f"Usage: hints_wrapper(body_fn, args, kwargs, hints).\n"
+                f"kwargs required to be provided explicitly."
+            )
+
         if not isinstance(args[1], (ListVariable, TupleVariable)):
             unimplemented(
                 f"Expected a tuple but got {args[1].python_type()}",
@@ -1380,6 +1395,9 @@ class HintsWrapperHigherOrderVariable(TorchHigherOrderOperatorVariable):
             unimplemented(
                 f"Expected a dict but got {args[2].python_type()}",
             )
+
+        if "hints" not in kwargs:
+            raise IncorrectUsage("hints_wrapper - key hints not provided")
 
         (
             (body_r, treespec),
@@ -1404,15 +1422,12 @@ class HintsWrapperHigherOrderVariable(TorchHigherOrderOperatorVariable):
 
         body_node = make_attr(tx, body_name)
 
-
         # Since, we call `speculate_subgraph` with `set_subgraph_inputs="automatic`,
         # all the arguments are lifted.
         lifted_args = tuple(arg for arg in body_lifted_freevars.keys())
         p_args = (body_node, lifted_args, {})
 
         p_kwargs = {}
-        if "hints" not in kwargs:
-            raise Unsupported("hints_wrapper - key hints not provided")
         # add hints into p_kwargs
         p_kwargs["hints"] = kwargs["hints"].as_python_constant()
 
