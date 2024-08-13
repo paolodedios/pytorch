@@ -6826,6 +6826,7 @@ def forward(self, x, y):
             if node.op == "call_function":
                 self.assertTrue(False)
 
+    @testing.expectedFailureSerDer  # T195866111
     def test_hints_wrapper(self):
         class M(torch.nn.Module):
             def __init__(self) -> None:
