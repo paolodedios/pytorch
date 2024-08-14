@@ -709,7 +709,7 @@ def _tree_map_with_path(
         raise
 
 
-def _combine_args(f, args, kwargs, dynamic_shapes=None, _is_torch_jit_trace=False) -> Dict[str, Any]:
+def _combine_args(f, args, kwargs, _is_torch_jit_trace=False) -> Dict[str, Any]:
     # combine args and kwargs following the signature of f, as it happens
     # in the body of f when called with *args, **kwargs
     if isinstance(f, ExportedProgram):
@@ -721,10 +721,7 @@ def _combine_args(f, args, kwargs, dynamic_shapes=None, _is_torch_jit_trace=Fals
             else inspect.signature(f)
         )
         kwargs = kwargs if kwargs is not None else {}
-        combined_args = signature.bind(*args, **kwargs).arguments
-        if isinstance(dynamic_shapes, (tuple, list)):
-            return type(dynamic_shapes)(combined_args.values())
-        return combined_args
+        return signature.bind(*args, **kwargs).arguments
     return args
 
 
@@ -799,13 +796,23 @@ class ShapesCollection:
         return dynamic_shapes
 
 
-def _sanity_check_shapes_spec(combined_args, dynamic_shapes):
+def _check_dynamic_shapes(
+    combined_args: Dict[str, Any],
+    dynamic_shapes: Union[Dict[str, Any], Tuple[Any], List[Any], None],
+):
+    """
+    Checks the dynamic_shapes specification for correctness,
+    using combined args + kwargs as reference for inputs structure.
+    """
     from torch._dynamo.exc import UserError, UserErrorType
 
     if dynamic_shapes is None or len(dynamic_shapes) == 0:
         return None
+    if isinstance(dynamic_shapes, (tuple, list)):
+        combined_args = type(dynamic_shapes)(combined_args.values())
 
     bounds: Dict[str, Tuple[int, int]] = {}
+
     def check_same_bounds(dim):
         if dim.__name__ in bounds:
             min_, max_ = bounds[dim.__name__]
@@ -859,8 +866,6 @@ def _sanity_check_shapes_spec(combined_args, dynamic_shapes):
         got_keys = list(dynamic_shapes.keys())
         expected_arg_names = list(combined_args.keys())
         if sorted(got_keys) != sorted(expected_arg_names):
-            # This error would be caught by `assoc_shapes` below, but we can give
-            # a more helpful error message here.
             msg = (
                 f"When `dynamic_shapes` is specified as a dict, its top-level keys "
                 f"must be the arg names {expected_arg_names} of `inputs`, but "
@@ -897,16 +902,22 @@ def _sanity_check_shapes_spec(combined_args, dynamic_shapes):
                     case_name="dynamic_shapes_validation",
                 )
 
-    _tree_map_with_path(
-        check_shape, combined_args, dynamic_shapes, tree_name="inputs"
-    )
+    _tree_map_with_path(check_shape, combined_args, dynamic_shapes, tree_name="inputs")
 
 
-def _process_dynamic_shapes(combined_args, dynamic_shapes) -> Optional[List[Constraint]]:
+def _process_dynamic_shapes(
+    combined_args: Dict[str, Any],
+    dynamic_shapes: Union[Dict[str, Any], Tuple[Any], List[Any], None],
+) -> Optional[List[Constraint]]:
+    """
+    Reads the dynamic_shapes specification and produces a list of constraints.
+    """
     from torch._dynamo.exc import UserError, UserErrorType
 
     if dynamic_shapes is None or len(dynamic_shapes) == 0:
         return None
+    if isinstance(dynamic_shapes, (tuple, list)):
+        combined_args = type(dynamic_shapes)(combined_args.values())
 
     # map of Dim names representing input shape dimensions to constraints on them
     symbols: Dict[str, List[Constraint]] = defaultdict(list)
@@ -1002,7 +1013,7 @@ def _process_dynamic_shapes(combined_args, dynamic_shapes) -> Optional[List[Cons
             return _StaticDim(str(value), (int,), {"value": value})
 
         if isinstance(shape, dict):
-            for i, dim in list(shape.items()):
+            for i, dim in shape.items():
                 if isinstance(dim, (int, _Dim)):
                     if isinstance(dim, int):
                         dim = _create_static_dim(tensor, i, dim)
@@ -1020,9 +1031,7 @@ def _process_dynamic_shapes(combined_args, dynamic_shapes) -> Optional[List[Cons
         if isinstance(t, torch.Tensor):
             update_symbols(path, t, dynamic_shape)
 
-    _tree_map_with_path(
-        assoc_shape, combined_args, dynamic_shapes, tree_name="inputs"
-    )
+    _tree_map_with_path(assoc_shape, combined_args, dynamic_shapes, tree_name="inputs")
 
     constraints = []
     for derived_constraint_with_phantom_root in derived_constraints_with_phantom_root:

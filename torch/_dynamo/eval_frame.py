@@ -58,7 +58,7 @@ from torch._utils_internal import justknobs_check, log_export_usage
 from torch.export.dynamic_shapes import (
     _combine_args,
     _process_dynamic_shapes,
-    _sanity_check_shapes_spec,
+    _check_dynamic_shapes,
 )
 from torch.fx import GraphModule
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -1306,8 +1306,8 @@ def export(
     _assume_static_by_default = assume_static_by_default
 
     def inner(*args, **kwargs):
-        combined_args = _combine_args(_f, args, kwargs, dynamic_shapes)
-        _sanity_check_shapes_spec(combined_args, dynamic_shapes)
+        combined_args = _combine_args(_f, args, kwargs)
+        _check_dynamic_shapes(combined_args, dynamic_shapes)
         constraints = _process_dynamic_shapes(combined_args, dynamic_shapes)
         f = _f
         assume_static_by_default = _assume_static_by_default

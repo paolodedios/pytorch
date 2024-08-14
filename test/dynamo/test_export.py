@@ -2766,7 +2766,7 @@ def forward(self, x):
         )(*example_inputs)
 
         constraints = torch.export.dynamic_shapes._process_dynamic_shapes(
-            example_inputs, dynamic_shapes=dynamic_shapes
+            {"x": x, "y": y}, dynamic_shapes=dynamic_shapes
         )
         self.assertEqual(
             gm.meta["input_shape_constraints"],

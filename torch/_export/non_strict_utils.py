@@ -23,7 +23,7 @@ from torch.export import Constraint
 from torch.export.dynamic_shapes import (
     _combine_args,
     _process_dynamic_shapes,
-    _sanity_check_shapes_spec,
+    _check_dynamic_shapes,
     _tree_map_with_path,
 )
 from torch.export.graph_signature import CustomObjArgument
@@ -126,9 +126,9 @@ def make_fake_inputs(
     #   - [post-tracing] guards.py processes input shape equalities.
 
     combined_args = _combine_args(
-        nn_module, args, kwargs, dynamic_shapes, _is_torch_jit_trace=_is_torch_jit_trace
+        nn_module, args, kwargs, _is_torch_jit_trace=_is_torch_jit_trace
     )
-    _sanity_check_shapes_spec(combined_args, dynamic_shapes)
+    _check_dynamic_shapes(combined_args, dynamic_shapes)
     constraints = _process_dynamic_shapes(combined_args, dynamic_shapes) or []
     t_constraints: Dict[int, Dict[int, Constraint]] = defaultdict(dict)
     for constraint in constraints:
