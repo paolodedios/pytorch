@@ -68,9 +68,9 @@ function install_rhel() {
     fi
 
     dnf install -y 'dnf-command(config-manager)'
-    # To add the online network package repository for the GPU Driver LTS releases
+    # To add the online network package repository for the GPU Driver Rolling releases
     dnf config-manager --add-repo \
-        https://repositories.intel.com/gpu/rhel/${VERSION_ID}/lts/2350/unified/intel-gpu-${VERSION_ID}.repo
+        https://repositories.intel.com/gpu/rhel/${VERSION_ID}/unified/intel-gpu-${VERSION_ID}.repo
     # To add the online network network package repository for the Intel Support Packages
     tee > /etc/yum.repos.d/intel-for-pytorch-gpu-dev.repo << EOF
 [intel-for-pytorch-gpu-dev]
