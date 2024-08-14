@@ -832,7 +832,7 @@ def _check_dynamic_shapes(
             for i, dim in shape.items():
                 if isinstance(dim, _Dim):
                     check_same_bounds(dim)
-                elif not isinstance(dim, int) and dim not in [True, None]:
+                elif not isinstance(dim, int) and dim is not None:
                     raise UserError(
                         UserErrorType.INVALID_INPUT,
                         f"Unexpected dimension mapped to index {i} in input tensor shape {shape} "
@@ -844,7 +844,7 @@ def _check_dynamic_shapes(
             for i, dim in enumerate(shape):
                 if isinstance(dim, _Dim):
                     check_same_bounds(dim)
-                elif not isinstance(dim, int) and dim not in [True, None]:
+                elif not isinstance(dim, int) and dim is not None:
                     raise UserError(
                         UserErrorType.INVALID_INPUT,
                         f"Unexpected dimension #{i} in input tensor shape {shape} "
