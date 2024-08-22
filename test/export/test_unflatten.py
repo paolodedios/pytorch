@@ -23,7 +23,6 @@ from torch._higher_order_ops.torchbind import enable_torchbind_tracing
 from torch.export import (
     Constraint,
     Dim,
-    dynamic_dim,
     export,
     FlatArgsAdapter,
     unflatten,
