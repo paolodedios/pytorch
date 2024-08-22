@@ -1576,12 +1576,21 @@ class CppKernel(Kernel):
         MSVC don't support dynamic array(VLA). Please use std::unique_ptr to instead of it.
         Ref: https://stackoverflow.com/questions/56555406/creating-dynamic-sized-array-using-msvc-c-compiler
         """
-        acc_per_thread_decl = f"std::unique_ptr<{acc_type}[]> {acc_per_thread_var_name}(new {acc_type}[{num_threads}])"
+        acc_per_thread_decl = f"auto {acc_per_thread_var_name} = std::make_unique<{acc_type}[]>({num_threads})"
+        acc_per_thread_vla_decl = f"{acc_per_thread_var_name}[{num_threads}]"
         acc_local_in_array = acc_per_thread.replace(f"[{num_threads}]", "[tid]")
         self.local_reduction_init.writeline(
             f"{acc_type} {acc_local} = {reduction_init_fn(reduction_type, dtype)};"
         )
-        self.parallel_reduction_prefix.writeline(f"{acc_per_thread_decl};")
+        self.parallel_reduction_prefix.writelines(
+            [
+                "#ifdef __msvc_cl__",
+                f"{acc_per_thread_decl};",
+                "#else",
+                f"{acc_type} {acc_per_thread_vla_decl};",
+                "#endif",
+            ]
+        )
         self.parallel_reduction_prefix.writelines(
             [
                 f"for (int tid = 0; tid < {num_threads}; tid++)",
