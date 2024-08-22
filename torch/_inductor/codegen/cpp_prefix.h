@@ -40,6 +40,15 @@
 #include <ATen/native/Math.h>
 #endif
 
+#if defined(_MSC_FULL_VER)
+/*
+https://learn.microsoft.com/en-us/cpp/overview/compiler-versions?view=msvc-170
+Use _MSC_FULL_VER to identify current compiler is msvc,
+Windows llvm will not have this defination.
+*/
+#define __msvc_cl__
+#endif
+
 typedef at::Half half;
 typedef at::BFloat16 bfloat16;
 
