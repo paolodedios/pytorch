@@ -31,6 +31,8 @@
 #include <ATen/ops/empty_strided.h>
 #include <ATen/ops/fbgemm_linear_fp16_weight_fp32_activation.h>
 #include <ATen/ops/fbgemm_pack_gemm_matrix_fp16.h>
+#include <ATen/ops/wrapped_linear_prepack.h>
+#include <ATen/ops/wrapped_quantized_linear_prepacked.h>
 #include <ATen/ops/from_blob.h>
 #include <ATen/ops/index_put.h>
 #include <ATen/ops/mm.h>
@@ -802,6 +804,22 @@ AOTITorchError aoti_torch_cpu_wrapped_fbgemm_pack_gemm_matrix_fp16(
   });
 }
 
+AOTITorchError aoti_torch_cpu_wrapped_linear_prepack(
+    AtenTensorHandle weight,
+    AtenTensorHandle weight_scale,
+    AtenTensorHandle weight_zero_point,
+    AtenTensorHandle bias,
+    AtenTensorHandle* out) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    at::Tensor* weight_tensor = tensor_handle_to_tensor_pointer(weight);
+    at::Tensor* weight_scale_tensor = tensor_handle_to_tensor_pointer(weight_scale);
+    at::Tensor* weight_zero_point_tensor = tensor_handle_to_tensor_pointer(weight_zero_point);
+    at::Tensor* bias_tensor = tensor_handle_to_tensor_pointer(bias);
+
+    *out = new_tensor_handle(at::wrapped_linear_prepack(*weight_tensor, *weight_scale_tensor, *weight_zero_point_tensor, *bias_tensor));
+  });
+}
+
 AOTITorchError aoti_torch_cpu_wrapped_fbgemm_linear_fp16_weight(
     AtenTensorHandle input,
     AtenTensorHandle weight,
@@ -815,6 +833,26 @@ AOTITorchError aoti_torch_cpu_wrapped_fbgemm_linear_fp16_weight(
 
     *out = new_tensor_handle(at::fbgemm_linear_fp16_weight_fp32_activation(
         *input_tensor, *weight_tensor, *bias_tensor));
+  });
+}
+
+AOTITorchError aoti_torch_cpu_wrapped_quantized_linear_prepacked(
+    AtenTensorHandle input,
+    AtenTensorHandle input_scale,
+    AtenTensorHandle input_zero_point,
+    AtenTensorHandle weight,
+    AtenTensorHandle out_scale,
+    AtenTensorHandle out_zeropoint,
+    int64_t out_channel,
+    AtenTensorHandle* out) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    at::Tensor* input_tensor = tensor_handle_to_tensor_pointer(input);
+    at::Tensor* input_scale_tensor = tensor_handle_to_tensor_pointer(input_scale);
+    at::Tensor* input_zero_point_tensor = tensor_handle_to_tensor_pointer(input_zero_point);
+    at::Tensor* weight_tensor = tensor_handle_to_tensor_pointer(weight);
+    at::Tensor* out_scale_tensor = tensor_handle_to_tensor_pointer(out_scale);
+    at::Tensor* out_zeropoint_tensor = tensor_handle_to_tensor_pointer(out_zeropoint);
+    *out = new_tensor_handle(at::wrapped_quantized_linear_prepacked(*input_tensor, *input_scale_tensor, *input_zero_point_tensor, *weight_tensor, *out_scale_tensor, *out_zeropoint_tensor, out_channel));
   });
 }
 
