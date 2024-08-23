@@ -18,6 +18,15 @@ import torch._dynamo.test_case
 from torch.utils._traceback import report_compile_source_on_error
 
 
+_IS_WINDOWS = sys.platform == "win32"
+
+
+def normalize_path_separator(orig_path: str) -> str:
+    if _IS_WINDOWS:
+        return orig_path.replace(os.sep, "/")
+    return orig_path
+
+
 @dataclasses.dataclass
 class MinifierTestResult:
     minifier_code: str
@@ -92,6 +101,8 @@ torch._inductor.config.{"cpp" if device == "cpu" else "triton"}.inject_relu_bug_
                     code = f.read()
                 args = args[1:]
 
+            code = normalize_path_separator(code)
+
             # WARNING: This is not a perfect simulation of running
             # the program out of tree.  We only interpose on things we KNOW we
             # need to handle for tests.  If you need more stuff, you will
@@ -107,8 +118,9 @@ torch._inductor.config.{"cpp" if device == "cpu" else "triton"}.inject_relu_bug_
                 log = logging.getLogger("torch._dynamo")
                 log.addHandler(log_handler)
                 try:
-                    prev_cwd = os.getcwd()
+                    prev_cwd = normalize_path_separator(os.getcwd())
                     if cwd is not None:
+                        cwd = normalize_path_separator(cwd)
                         os.chdir(cwd)
                     with patch("sys.argv", args), report_compile_source_on_error():
                         exec(code, {"__name__": "__main__", "__compile_source__": code})
