@@ -309,16 +309,15 @@ class OpDispatcher:
 
         for arg in args_list:
             if isinstance(arg, dtensor.DTensor):
-                args_schema.append(arg._spec)
                 local_args.append(arg._local_tensor)
-                if mesh is not None:
-                    if mesh != arg.device_mesh:
-                        raise NotImplementedError(
-                            f"{op_call}: DTensor does not support cross-mesh operation yet!"
-                            f"Got meshes: {mesh} {arg.device_mesh}"
-                        )
+                if mesh is not None and mesh != arg.device_mesh:
+                    spec = self._try_replicate_dtensor_spec_in_missing_dim(
+                        op_call, arg, mesh
+                    )
+                    args_schema.append(spec)
                 else:
                     mesh = arg.device_mesh
+                    args_schema.append(arg._spec)
             elif isinstance(arg, torch.Tensor):
                 mesh = mesh or try_find_mesh_from_args(op_call, args_list)
                 args_schema.append(
@@ -331,15 +330,15 @@ class OpDispatcher:
 
         for k, v in kwargs.items():
             if isinstance(v, dtensor.DTensor):
-                kwargs_schema[k] = v._spec
                 local_kwargs[k] = v._local_tensor
-                if mesh is not None:
-                    if mesh != v.device_mesh:
-                        raise NotImplementedError(
-                            f"{op_call}: DTensor does not support cross-mesh operation yet!"
-                        )
+                if mesh is not None and mesh != v.device_mesh:
+                    spec = self._try_replicate_dtensor_spec_in_missing_dim(
+                        op_call, v, mesh
+                    )
+                    kwargs_schema[k] = spec
                 else:
                     mesh = v.device_mesh
+                    kwargs_schema[k] = v._spec
             elif isinstance(v, torch.Tensor):
                 mesh = mesh or try_find_mesh_from_args(op_call, args_list)
                 kwargs_schema[k] = self._try_replicate_spec_for_scalar_tensor(
@@ -426,3 +425,39 @@ class OpDispatcher:
                 " torch.Tensor to DTensor before calling distributed operators!"
             )
         return replication_spec
+
+    def _try_replicate_dtensor_spec_in_missing_dim(
+        self,
+        op_call: torch._ops.OpOverload,
+        dtensor_arg: "dtensor.DTensor",
+        mesh: "DeviceMesh",
+    ) -> DTensorSpec:
+        # util function to produce a new spec for a DTensor arg/kwarg
+        # that puts Replicate() placement in the missing dimension for foreach ops
+        from torch.distributed.device_mesh import _mesh_resources
+
+        cur_mesh = dtensor_arg.device_mesh
+        root_mesh = _mesh_resources.get_root_mesh(cur_mesh)
+        if (
+            self._allow_implicit_replication
+            and "foreach" in op_call.__name__
+            and root_mesh == mesh
+        ):
+            placements = [Replicate() for _ in range(root_mesh.ndim)]
+            cur_mesh_root_idx = _mesh_resources.get_root_mesh_dim(cur_mesh)
+            placements[cur_mesh_root_idx] = dtensor_arg.placements[0]  # type: ignore[call-overload]
+            replicate_spec = DTensorSpec(
+                root_mesh,
+                tuple(placements),
+                tensor_meta=TensorMeta(
+                    shape=dtensor_arg.shape,
+                    stride=dtensor_arg.stride(),
+                    dtype=dtensor_arg.dtype,
+                ),
+            )
+        else:
+            raise NotImplementedError(
+                f"{op_call}: DTensor does not support cross-mesh operation yet! "
+                f"Got meshes: {mesh} {cur_mesh}"
+            )
+        return replicate_spec
