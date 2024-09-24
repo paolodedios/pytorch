@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 import functools
 import hashlib
+import importlib.util
 import itertools
 import json
 import logging
@@ -724,11 +725,8 @@ def _parse_log_settings(settings):
 
 
 def _is_valid_module(qname):
-    try:
-        __import__(qname)
-        return True
-    except ImportError:
-        return False
+    spec = importlib.util.find_spec(qname)
+    return spec is not None
 
 
 def _update_log_state_from_env():
