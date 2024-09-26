@@ -21,7 +21,6 @@ import weakref
 from pathlib import Path
 from types import CodeType, FrameType, FunctionType, ModuleType
 from typing import Any, Callable, Dict, List, Optional, Set, TypeVar, Union
-from typing_extensions import ParamSpec
 from weakref import ReferenceType
 
 import torch
@@ -49,6 +48,7 @@ from torch.utils._python_dispatch import (
     is_in_torch_dispatch_mode,
 )
 from torch.utils._traceback import CapturedTraceback, format_traceback_short
+from typing_extensions import ParamSpec
 
 from . import config, exc, trace_rules
 from .bytecode_analysis import remove_dead_code, remove_pointless_jumps
@@ -334,9 +334,9 @@ def exception_handler(
 
 
 FRAME_COUNTER = 0
-FRAME_COMPILE_COUNTER: typing.Counter[
-    Union[int, FrameStateSizeEntry]
-] = collections.Counter()
+FRAME_COMPILE_COUNTER: typing.Counter[Union[int, FrameStateSizeEntry]] = (
+    collections.Counter()
+)
 
 
 def maybe_cprofile(func: Callable[_P, _T]) -> Callable[_P, _T]:
@@ -605,9 +605,9 @@ def _compile(
     output: Optional[OutputGraph] = None
     tracer: Optional[InstructionTranslator] = None
 
-    tf_mode_stack: List[
-        torch.overrides.TorchFunctionMode
-    ] = torch.overrides._get_current_function_mode_stack()
+    tf_mode_stack: List[torch.overrides.TorchFunctionMode] = (
+        torch.overrides._get_current_function_mode_stack()
+    )
 
     @preserve_global_state
     def transform(
@@ -924,6 +924,9 @@ def _compile(
         start_possibly_missed_reinplacing_opportunities = torch._dynamo.utils.counters[
             "inductor"
         ]["possibly_missed_reinplacing_opportunities"]
+        start_possibly_missed_reinplacing_bytes = torch._dynamo.utils.counters[
+            "inductor"
+        ]["start_possibly_missed_reinplacing_bytes"]
         guarded_code = None
         try:
             guarded_code = compile_inner(code, one_graph, hooks, transform)
@@ -1006,6 +1009,18 @@ def _compile(
                 remote_cache_time_saved = frame_phase_timing[frame_key].get(
                     "remote_cache_time_saved", 0
                 )
+                possibly_missed_reinplacing_bytes = (
+                    torch._dynamo.utils.counters["inductor"][
+                        "possibly_missed_reinplacing_bytes"
+                    ]
+                    - start_possibly_missed_reinplacing_bytes
+                )
+                if possibly_missed_reinplacing_bytes != 0:
+                    signpost_event(
+                        "inductor",
+                        "auto_functionalize",
+                        {"missed_reinplacing_bytes": possibly_missed_reinplacing_bytes},
+                    )
             else:
                 guard_count = None
                 shape_env_guard_count = None
@@ -1211,8 +1226,7 @@ class ConvertFrameProtocol(typing.Protocol):
         frame_state: Dict[str, Union[int, FrameStateSizeEntry]],
         *,
         skip: int = 0,
-    ) -> Optional[GuardedCode]:
-        ...
+    ) -> Optional[GuardedCode]: ...
 
 
 class CatchErrorsWrapper:
