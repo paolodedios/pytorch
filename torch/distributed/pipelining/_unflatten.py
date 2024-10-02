@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 # Copyright (c) Meta Platforms, Inc. and affiliates
-from typing import Dict
+from collections import defaultdict
+from typing import Dict, List
 
 import torch
 from torch.export.unflatten import _ModuleFrame
@@ -10,7 +11,7 @@ def _outline_submodules(orig_graph: torch.fx.Graph):
     # Create an empty GraphModule to hold the outlined modules
     new_module = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
     seen_nodes: Dict[str, torch.fx.Node] = {}
-    seen_modules: Dict[int, torch.nn.Module] = {}
+    seen_modules: Dict[int, List[torch.nn.Module]] = defaultdict(list)
     _ModuleFrame(
         orig_graph,
         tuple(orig_graph.nodes),
