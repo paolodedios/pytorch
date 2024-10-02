@@ -2961,7 +2961,7 @@ class FuncTorchHigherOrderOpTests(torch._dynamo.test_case.TestCase):
             warnings.warn(msg)
 
     def _compile_check(self, fn, inputs, fullgraph=True, graph_idx=0):
-        backend = CompileCounterWithBackend("inductor")
+        backend = CompileCounterWithBackend("aot_eager")
         actual = fn(*inputs)
         expected = torch.compile(fn, backend=backend, fullgraph=fullgraph)(*inputs)
 
