@@ -262,6 +262,10 @@ def lift_constants_pass(
                 node.replace_all_uses_with(const_placeholder_node)
                 gm.graph.erase_node(node)
 
+                for spec in graph_signature.output_specs:
+                    if spec.arg.name == node.target:
+                        spec.arg.name = const_placeholder_node.name
+
                 # Add the constant as a buffer to the graph signature
                 graph_signature.input_specs.insert(
                     first_user_input_loc,

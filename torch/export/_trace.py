@@ -707,6 +707,7 @@ def _export_to_aten_ir(
         + len(graph_signature.buffers)
         + len(graph_signature.input_tokens)
     )
+    fake_mode = detect_fake_mode(flat_fake_args)
     for node in gm.graph.nodes:
         if node.op == "placeholder":
             if index >= total_non_user_inputs:
@@ -714,6 +715,10 @@ def _export_to_aten_ir(
                 if not isinstance(user_arg, torch.Tensor):
                     node.meta["val"] = user_arg
             index += 1
+        if node.op == "get_attr" and "val" not in node.meta:
+            val = getattr(gm, node.target)
+            if val in constant_attrs and isinstance(val, torch.Tensor):
+                node.meta["val"] = fake_mode.from_tensor(val, static_shapes=True)
 
     export_graph_signature = _convert_to_export_graph_signature(
         graph_signature, gm, _get_non_persistent_buffers(mod)
@@ -1531,6 +1536,7 @@ def _export_to_aten_ir_make_fx(
 
     flat_args = pytree.tree_leaves((fake_args, fake_kwargs))
     index = 0
+    fake_mode = detect_fake_mode(flat_args)
     for node in gm.graph.nodes:
         if node.op == "placeholder":
             if index >= params_len:
@@ -1538,6 +1544,10 @@ def _export_to_aten_ir_make_fx(
                 if not isinstance(user_arg, torch.Tensor):
                     node.meta["val"] = user_arg
             index += 1
+        if node.op == "get_attr" and "val" not in node.meta:
+            val = getattr(gm, node.target)
+            if val in constant_attrs and isinstance(val, torch.Tensor):
+                node.meta["val"] = fake_mode.from_tensor(val, static_shapes=True)
 
     export_graph_signature = _convert_to_export_graph_signature(
         graph_signature, gm, _get_non_persistent_buffers(mod)
