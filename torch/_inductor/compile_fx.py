@@ -35,6 +35,7 @@ from torch._dynamo import (
     logging as dynamo_logging,
     utils as dynamo_utils,
 )
+from torch._utils_internal import compile_time_strobelight_meta
 from torch._dynamo.device_interface import get_interface_for_device
 from torch._dynamo.repro.after_aot import wrap_compiler_debug
 from torch._dynamo.utils import (
@@ -1526,6 +1527,7 @@ def compile_fx(
                 gm, joint_inputs, **kwargs, compiler="inductor"
             )
 
+        @compile_time_strobelight_meta(phase_name="backaward")
         def bw_compiler(
             model: torch.fx.GraphModule, example_inputs: List[torch.Tensor]
         ):
