@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ATen/Parallel.h>
+#include <ATen/core/TensorAccessor.h>
 #include <ATen/cpu/vec/vec.h>
 #include <c10/util/llvmMathExtras.h>
 
@@ -8,8 +9,7 @@
 #include <fbgemm/Fbgemm.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
 template <typename T>
 inline void _store(T* dst, at::vec::Vectorized<T> src) {
@@ -159,6 +159,12 @@ inline void transpose<float>(int64_t M, int64_t N, const float* src, int64_t ld_
   TORCH_CHECK(fbgemm::fbgemmSupportedCPU(), "Your CPU does not support FBGEMM.");
   fbgemm::transpose_simd<float>(M, N, src, ld_src, dst, ld_dst);
 }
+
+template <>
+inline void transpose<uint16_t>(int64_t M, int64_t N, const uint16_t* src, int64_t ld_src, uint16_t* dst, int64_t ld_dst) {
+  TORCH_CHECK(fbgemm::fbgemmSupportedCPU(), "Your CPU does not support FBGEMM.");
+  fbgemm::transpose_simd<uint16_t>(M, N, src, ld_src, dst, ld_dst);
+}
 #endif
 
 template <typename index_t, typename F>
@@ -203,5 +209,4 @@ inline void parallel_sparse_csr(
 
 } // namespace utils
 
-} // namespace native
-} // namespace at
+} // namespace at::native
