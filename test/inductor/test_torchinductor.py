@@ -10768,6 +10768,7 @@ class CommonTemplate:
     @torch._inductor.config.patch("layout_optimization", True)
     @torch._inductor.config.patch("keep_output_stride", False)
     @config.patch(implicit_fallbacks=True)
+    @tf32_on_and_off(0.005)
     def test_custom_op_fixed_layout_sequential(self):
         import torch.library
 
@@ -10811,6 +10812,7 @@ class CommonTemplate:
 
     @requires_gpu()
     @config.patch(implicit_fallbacks=True)
+    @tf32_on_and_off(0.005)
     def test_mutable_custom_op_fixed_layout2(self):
         with torch.library._scoped_library("mylib", "DEF") as lib:
             mod = nn.Conv2d(3, 128, 1, stride=1, bias=False).to(device=GPU_TYPE)
