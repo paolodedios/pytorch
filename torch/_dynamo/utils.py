@@ -14,6 +14,7 @@ import gc
 import importlib
 import inspect
 import itertools
+import json
 import linecache
 import logging
 import math
@@ -44,6 +45,7 @@ from typing import (
     Deque,
     Dict,
     Generator,
+    get_args,
     Iterable,
     Iterator,
     KeysView,
@@ -863,6 +865,7 @@ class CompilationMetrics:
     post_grad_pass_time_us: Optional[int] = None
     joint_graph_pass_time_us: Optional[int] = None
     log_format_version: int = LOG_FORMAT_VERSION
+    inductor_config: Optional[str] = None
 
 
 DEFAULT_COMPILATION_METRICS_LIMIT = 64
@@ -910,6 +913,23 @@ def add_compilation_metrics_to_chromium(c: Dict[str, Any]) -> None:
     )
 
 
+def _scrubbed_inductor_config_for_logging() -> Dict[str, Any]:
+    configs_to_scrub_re = r"((^TYPE_CHECKING$)|(.*_progress$)|(.*TESTING.*)|(.*(rocm|halide).*)|(^trace\..*)|(^_))"
+    keys_to_scrub = set()
+    allowed_value_types = Union[str, bool, int, float]
+    inductor_config_copy = inductor_config.get_config_copy()
+    for key, val in inductor_config_copy.items():
+        if re.search(configs_to_scrub_re, key):
+            keys_to_scrub.add(key)
+        if not isinstance(val, get_args(allowed_value_types)):
+            keys_to_scrub.add(key)
+
+    for key in keys_to_scrub:
+        del inductor_config_copy[key]
+
+    return inductor_config_copy
+
+
 def record_compilation_metrics(metrics: Dict[str, Any]):
     # TODO: Temporary; populate legacy fields from their replacements.
     # Remove when we decide we can really deprecate them.
@@ -921,6 +941,8 @@ def record_compilation_metrics(metrics: Dict[str, Any]):
         metric = metrics.get(field, None)
         return metric // 1000 if metric is not None else None
 
+    # Log inductor_config to compilation metrics
+    metrics["inductor_config"] = json.dumps(_scrubbed_inductor_config_for_logging())
     legacy_metrics = {
         "entire_frame_compile_time_s": us_to_s("dynamo_cumulative_compile_time_us"),
         "backend_compile_time_s": us_to_s("aot_autograd_cumulative_compile_time_us"),

@@ -197,6 +197,7 @@ class TestDynamoTimed(TestCase):
             e.dynamo_config = None
             e.co_filename = None
             e.co_firstlineno = None
+            e.inductor_config = None
 
         # First event is for the forward. Formatting makes reading diffs
         # much easier.
@@ -237,6 +238,7 @@ class TestDynamoTimed(TestCase):
  'has_guarded_code': True,
  'inductor_code_gen_cumulative_compile_time_us': 0,
  'inductor_compile_time_s': 0.0,
+ 'inductor_config': None,
  'inductor_cumulative_compile_time_us': 0,
  'is_forward': True,
  'joint_graph_pass_time_us': 0,
@@ -300,6 +302,7 @@ class TestDynamoTimed(TestCase):
  'has_guarded_code': None,
  'inductor_code_gen_cumulative_compile_time_us': 0,
  'inductor_compile_time_s': 0.0,
+ 'inductor_config': None,
  'inductor_cumulative_compile_time_us': 0,
  'is_forward': False,
  'joint_graph_pass_time_us': None,
