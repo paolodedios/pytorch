@@ -19,6 +19,7 @@ def _outline_submodules(orig_graph: torch.fx.Graph):
         seen_nodes,
         seen_modules,
         seen_attrs,
+        {},
         None,
         [("", 0)],
         "",

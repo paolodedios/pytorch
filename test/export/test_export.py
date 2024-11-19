@@ -6737,7 +6737,15 @@ graph():
                 else:
                     return x + 2 * (self.buf + 1) - self.const
 
-        class M(torch.nn.Module):
+        class K(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.n = N()
+
+            def forward(self, x0):
+                return self.n(x0, True)
+
+        class P(torch.nn.Module):
             def __init__(self):
                 super().__init__()
                 self.n = N()
@@ -6748,29 +6756,27 @@ graph():
                 x2 = self.n(x0, False)
                 return x1 + x2
 
-        m = M()
-        eager_result = m(*inp)
+        class Q(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.k = K()
 
-        def test(ep, swap):
-            epm = ep.module()
-            ufm = torch.export.unflatten(ep)
+            def forward(self, x):
+                x0 = x + 3
+                x1 = self.k.n(x0, True)
+                x2 = self.k.n(x0, False)
+                return x1 + x2
 
-            exported_result = epm(*inp)
-            self.assertTrue(torch.allclose(exported_result, eager_result))
+        class R(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.k = K()
 
-            unflattened_result = ufm(*inp)
-            self.assertTrue(torch.allclose(unflattened_result, eager_result))
-
-            for fqn, mod in swap.items():
-                ufm.set_submodule(fqn, mod)
-            unflattened_result = ufm(*inp)
-            self.assertTrue(torch.allclose(unflattened_result, eager_result))
-
-        if not is_retracebility_test(self._testMethodName):
-            test(
-                export(M(), inp, preserve_module_call_signature=("n",)),
-                swap={"n": N()},
-            )
+            def forward(self, x):
+                x0 = x + 3
+                x1 = self.k(x0)
+                x2 = self.k.n(x0, False)
+                return x1 + x2
 
         class _N(torch.nn.Module):
             def forward(self, x):
@@ -6780,10 +6786,35 @@ graph():
             def forward(self, x):
                 return x + 6
 
-        test(
-            export(M(), inp),
-            swap={"n": _N(), "n@1": _N_1()},
-        )
+        for Mod, path_n in [(P, "n"), (Q, "k.n"), (R, "k.n")]:
+            m = Mod()
+            eager_result = m(*inp)
+
+            def test(ep, swap):
+                epm = ep.module()
+                ufm = torch.export.unflatten(ep)
+
+                exported_result = epm(*inp)
+                self.assertTrue(torch.allclose(exported_result, eager_result))
+
+                unflattened_result = ufm(*inp)
+                self.assertTrue(torch.allclose(unflattened_result, eager_result))
+
+                for fqn, mod in swap.items():
+                    ufm.set_submodule(fqn, mod)
+                unflattened_result = ufm(*inp)
+                self.assertTrue(torch.allclose(unflattened_result, eager_result))
+
+            if not is_retracebility_test(self._testMethodName):
+                test(
+                    export(Mod(), inp, preserve_module_call_signature=(path_n,)),
+                    swap={path_n: N()},
+                )
+
+            test(
+                export(Mod(), inp),
+                swap={path_n: _N(), path_n + "@1": _N_1()},
+            )
 
     def test_preserve_module_call_signature_unflatten_specialization(self):
         class N(torch.nn.Module):
