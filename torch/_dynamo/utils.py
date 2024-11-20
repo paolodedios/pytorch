@@ -864,6 +864,8 @@ class CompilationMetrics:
     joint_graph_pass_time_us: Optional[int] = None
     log_format_version: int = LOG_FORMAT_VERSION
     inductor_config: Optional[str] = None
+    cuda_version: Optional[str] = None
+    triton_version: Optional[str] = None
 
 
 DEFAULT_COMPILATION_METRICS_LIMIT = 64

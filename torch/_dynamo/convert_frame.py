@@ -25,7 +25,6 @@ from types import CellType, CodeType, FunctionType, ModuleType
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar, Union
 from typing_extensions import ParamSpec
 from weakref import ReferenceType
-
 import torch
 import torch._logging
 from torch._C._dynamo.guards import GlobalStateGuard
@@ -133,7 +132,10 @@ try:
     import numpy as np
 except ModuleNotFoundError:
     np = None
-
+try:
+    import triton
+except ImportError:
+    triton = None
 
 if typing.TYPE_CHECKING:
     from .backends.registry import CompilerFn
@@ -1150,6 +1152,8 @@ def _compile(
                 "structured_logging_overhead_us": to_int_us(
                     structured_logging_overhead_s
                 ),
+                "cuda_version":torch.version.cuda,
+                "triton_version":triton.__version__ if triton is not None else "",
             }
             metrics_context.update_outer(metrics)
             add_compilation_metrics_to_chromium(metrics)

@@ -201,6 +201,8 @@ class TestDynamoTimed(TestCase):
             e.co_filename = None
             e.co_firstlineno = None
             e.inductor_config = None
+            e.cuda_version = None
+            e.triton_version = None
 
         # First event is for the forward. Formatting makes reading diffs
         # much easier.
