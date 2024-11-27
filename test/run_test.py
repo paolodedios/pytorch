@@ -515,6 +515,8 @@ S390X_TESTLIST = [
 ]
 
 XPU_BLOCKLIST = [
+    # temporarily skip doctests caused by https://github.com/pytorch/pytorch/issues/141705
+    "doctests",
     "test_autograd",
     "profiler/test_cpp_thread",
     "profiler/test_execution_trace",
