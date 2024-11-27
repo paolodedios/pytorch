@@ -779,6 +779,7 @@ endif()
 
 if(NOT BUILD_LIBTORCHLESS)
 add_library(torch_cpu ${Caffe2_CPU_SRCS})
+target_compile_definitions(torch_cpu PRIVATE -DEXPORT_AOTI_FUNCTIONS)
 if(HAVE_SOVERSION)
   set_target_properties(torch_cpu PROPERTIES
       VERSION ${TORCH_VERSION} SOVERSION ${TORCH_SOVERSION})
