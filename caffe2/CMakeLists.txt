@@ -964,6 +964,7 @@ elseif(USE_CUDA)
   set(CUDA_LINK_LIBRARIES_KEYWORD)
   torch_compile_options(torch_cuda)  # see cmake/public/utils.cmake
   target_compile_definitions(torch_cuda PRIVATE USE_CUDA)
+  target_compile_definitions(torch_cuda PRIVATE -DEXPORT_AOTI_FUNCTIONS)
 
   if(USE_CUFILE)
     target_link_libraries(torch_cuda PRIVATE torch::cufile)
@@ -1054,6 +1055,7 @@ if(USE_XPU)
   add_library(torch_xpu ${Caffe2_XPU_SRCS})
   torch_compile_options(torch_xpu)  # see cmake/public/utils.cmake
   target_compile_definitions(torch_xpu PRIVATE USE_XPU)
+  target_compile_definitions(torch_xpu PRIVATE -DEXPORT_AOTI_FUNCTIONS)
   if(WIN32)
     target_compile_options(torch_xpu PRIVATE /permissive-)
   endif()
