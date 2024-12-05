@@ -998,9 +998,10 @@ class CppGemmTemplate(CppTemplate):
         padding = padded_n - n
 
         if should_block_weight:
-            W = cls.block_weight(W, new_size, padding)
-        W = cls.pack_vnni_weight(W, micro_gemm, new_size)
-        new_inputs[1] = W
+            blocked_w = cls.block_weight(W, new_size, padding)
+        else:
+            blocked_w = W
+        new_inputs[1] = cls.pack_vnni_weight(blocked_w, micro_gemm, new_size)
 
         def _is_int8_gemm(inputs):
             return (
@@ -1018,6 +1019,7 @@ class CppGemmTemplate(CppTemplate):
                     W.get_name() + "_BMatrixCompens",
                 )
             else:
+                # Use the original W, not the blocked_w in new_inputs[1] to calculate BCompensate
                 BCompensate = torch.sum(W.to_dense().to(torch.float), dim=0)  # type: ignore[assignment]
             new_inputs.append(BCompensate)
         return new_inputs, layout
@@ -1030,7 +1032,7 @@ class CppGemmTemplate(CppTemplate):
     def block_weight(cls, W, new_size, padding):
         # These are separated into two methods to allow subclasses to override them separately
         if isinstance(W, ir.IRNode):
-            if W.get_name() in V.graph.constants:
+            if W.get_name() in V.graph.constants or W.get_name() + "_BMatrixCompens" in V.graph.constants:
                 # Create a new buffer, representing the constant blocked tensor
                 blocked_w = ir.Buffer(
                     name=W.get_name(),  # Borrow the registered buffer name
