@@ -1551,7 +1551,10 @@ def cat(inputs, dim=0):
     # TODO: We observed negative performance impact of pointwise_cat optimization on CPU so disabled it.
     #             We will revisit this later after enabling vectorization on index_expr.
     if cpu_device:
-        return TensorBox(ir.ConcatKernel.create(inputs, dim))
+        if config.force_pointwise_cat:
+            return pointwise_cat(inputs, dim)
+        else:
+            return TensorBox(ir.ConcatKernel.create(inputs, dim))
 
     def op_count(x):
         if isinstance(x, (TensorBox, ir.StorageBox)):
@@ -1577,9 +1580,13 @@ def cat(inputs, dim=0):
     def additional_pointwise_ops(op: torch._ops.OpOverload):
         return op in (aten.cat.default, aten.constant_pad_nd.default)
 
-    if len(inputs) <= MAX_COMPLEX_POINTWISE_CAT or (
-        (len(inputs) <= config.max_pointwise_cat_inputs)
-        and all(op_count(t) <= MAX_SIMPLE_OP_COUNT for t in inputs)
+    if (
+        config.force_pointwise_cat
+        or len(inputs) <= MAX_COMPLEX_POINTWISE_CAT
+        or (
+            (len(inputs) <= config.max_pointwise_cat_inputs)
+            and all(op_count(t) <= MAX_SIMPLE_OP_COUNT for t in inputs)
+        )
     ):
         pointwise_uses = all(
             is_pointwise_use(use, additional_pointwise_ops)
