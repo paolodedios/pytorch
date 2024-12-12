@@ -1783,6 +1783,7 @@ def get_selected_tests(options) -> List[str]:
             "test_view_ops",
             "test_nn",
             "inductor/test_mps_basic",
+            "test_ops",
         ]
     else:
         # Exclude all mps tests otherwise
