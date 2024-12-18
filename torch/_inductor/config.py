@@ -854,6 +854,14 @@ class cpp:
         == "1"
     )
 
+    # Use ffp-contract=fast when compiling
+    enable_floating_point_contract_fast_flag = (
+        os.environ.get(
+            "TORCHINDUCTOR_CPP_ENABLE_FLOATING_POINT_CONTRACT_FAST_FLAG", "0"
+        )
+        == "1"
+    )
+
     # Disable the tiling select heuristic
     enable_tiling_heuristics = (
         os.environ.get("TORCHINDUCTOR_CPP_ENABLE_TILING_HEURISTIC", "1") == "1"
