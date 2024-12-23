@@ -458,7 +458,7 @@ class BenchmarkRunner:
         return False
 
     def _output_csv(self, filename, headers, row):
-        if self.args.disable_output is False:
+        if self.args.disable_output is True:
             return
         if os.path.exists(filename):
             with open(filename) as fd:
