@@ -7,7 +7,7 @@ if not "%CUDA_VERSION%" == "xpu" (
     exit /b 0
 )
 
-set SRC_DIR=%NIGHTLIES_PYTORCH_ROOT%
+set SRC_DIR=%CD%
 if not exist "%SRC_DIR%\temp_build" mkdir "%SRC_DIR%\temp_build"
 
 set XPU_INSTALL_MODE=%~1
@@ -118,5 +118,7 @@ echo "Installing level zero SDK..."
 7z x "%SRC_DIR%\temp_build\level_zero_sdk.zip -o"%SRC_DIR%\temp_build\level_zero_sdk"
 set "INCLUDE=%SRC_DIR%\temp_build\level_zero_sdk\include;%INCLUDE%"
 set "LIB=%SRC_DIR%\temp_build\level_zero_sdk\lib;%LIB%"
+
+set
 
 :xpu_install_end
