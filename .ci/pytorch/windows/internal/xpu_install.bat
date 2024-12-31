@@ -40,7 +40,7 @@ set XPU_BUNDLE_PRODUCT_NAME=intel.oneapi.win.intel-for-pytorch-gpu-dev.product
 set XPU_BUNDLE_VERSION=0.5.3+31
 set XPU_BUNDLE_INSTALLED=0
 set XPU_BUNDLE_UNINSTALL=0
-set XPU_EXTRA_URL=https://github.com/oneapi-src/level-zero/releases/download/v1.14.0/level-zero-sdk_1.14.0.zip
+set XPU_EXTRA_URL=https://registrationcenter-download.intel.com/akdlm/IRC_NAS/9d1a91e2-e8b8-40a5-8c7f-5db768a6a60c/w_intel-pti-dev_p_0.9.0.37_offline.exe
 set XPU_EXTRA_PRODUCT_NAME=intel.oneapi.win.intel-pti-dev.product
 set XPU_EXTRA_VERSION=0.9.0+36
 set XPU_EXTRA_INSTALLED=0
@@ -113,7 +113,8 @@ goto xpu_extra_check
 
 :xpu_extra_install
 
-curl -o "%SRC_DIR%\temp_build\level_zero_sdk.zip" --retry 3 --retry-all-errors -k %XPU_EXTRA_URL%
+set XPU_EXTRA_LZ_URL=https://github.com/oneapi-src/level-zero/releases/download/v1.14.0/level-zero-sdk_1.14.0.zip
+curl -o "%SRC_DIR%\temp_build\level_zero_sdk.zip" --retry 3 --retry-all-errors -k %XPU_EXTRA_LZ_URL%
 echo "Installing level zero SDK..."
 7z x "%SRC_DIR%\temp_build\level_zero_sdk.zip" -o"%SRC_DIR%\temp_build\level_zero_sdk"
 set "INCLUDE=%SRC_DIR%\temp_build\level_zero_sdk\include;%INCLUDE%"
