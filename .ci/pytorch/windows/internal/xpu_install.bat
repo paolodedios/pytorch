@@ -104,15 +104,6 @@ goto xpu_install_end
 
 :xpu_bundle_install
 
-curl -o xpu_bundle.exe --retry 3 --retry-all-errors -k %XPU_BUNDLE_URL%
-echo "XPU Bundle installing..."
-start /wait "Intel Pytorch Bundle Installer" "xpu_bundle.exe" --action=install --eula=accept --silent --log-dir install_bundle
-if errorlevel 1 exit /b 1
-del xpu_bundle.exe
-goto xpu_extra_check
-
-:xpu_extra_install
-
 set XPU_EXTRA_LZ_URL=https://github.com/oneapi-src/level-zero/releases/download/v1.14.0/level-zero-sdk_1.14.0.zip
 curl -o "%SRC_DIR%\temp_build\level_zero_sdk.zip" --retry 3 --retry-all-errors -k %XPU_EXTRA_LZ_URL%
 echo "Installing level zero SDK..."
@@ -131,5 +122,16 @@ set
 tree . /f
 
 set
+
+curl -o xpu_bundle.exe --retry 3 --retry-all-errors -k %XPU_BUNDLE_URL%
+echo "XPU Bundle installing..."
+start /wait "Intel Pytorch Bundle Installer" "xpu_bundle.exe" --action=install --eula=accept --silent --log-dir install_bundle
+if errorlevel 1 exit /b 1
+del xpu_bundle.exe
+goto xpu_extra_check
+
+:xpu_extra_install
+
+
 
 :xpu_install_end
