@@ -120,6 +120,8 @@ echo "Installing level zero SDK..."
 set "CMAKE_INCLUDE_PATH=%SRC_DIR%\temp_build\level_zero_sdk\include;%CMAKE_INCLUDE_PATH%"
 :: set "LIB=%SRC_DIR%\temp_build\level_zero_sdk\lib;%LIB%"
 
+tree . /f
+
 set
 
 :xpu_install_end
