@@ -117,8 +117,8 @@ set XPU_EXTRA_LZ_URL=https://github.com/oneapi-src/level-zero/releases/download/
 curl -o "%SRC_DIR%\temp_build\level_zero_sdk.zip" --retry 3 --retry-all-errors -k %XPU_EXTRA_LZ_URL%
 echo "Installing level zero SDK..."
 7z x "%SRC_DIR%\temp_build\level_zero_sdk.zip" -o"%SRC_DIR%\temp_build\level_zero_sdk"
-set "INCLUDE=%SRC_DIR%\temp_build\level_zero_sdk\include;%INCLUDE%"
-set "LIB=%SRC_DIR%\temp_build\level_zero_sdk\lib;%LIB%"
+set "CMAKE_INCLUDE_PATH=%SRC_DIR%\temp_build\level_zero_sdk\include;%CMAKE_INCLUDE_PATH%"
+:: set "LIB=%SRC_DIR%\temp_build\level_zero_sdk\lib;%LIB%"
 
 set
 
