@@ -113,9 +113,9 @@ goto xpu_extra_check
 
 :xpu_extra_install
 
-curl -o "%SRC_DIR%\temp_build\level_zero_sdk.zip --retry 3 --retry-all-errors -k %XPU_EXTRA_URL%
+curl -o "%SRC_DIR%\temp_build\level_zero_sdk.zip" --retry 3 --retry-all-errors -k %XPU_EXTRA_URL%
 echo "Installing level zero SDK..."
-7z x "%SRC_DIR%\temp_build\level_zero_sdk.zip -o"%SRC_DIR%\temp_build\level_zero_sdk"
+7z x "%SRC_DIR%\temp_build\level_zero_sdk.zip" -o"%SRC_DIR%\temp_build\level_zero_sdk"
 set "INCLUDE=%SRC_DIR%\temp_build\level_zero_sdk\include;%INCLUDE%"
 set "LIB=%SRC_DIR%\temp_build\level_zero_sdk\lib;%LIB%"
 
