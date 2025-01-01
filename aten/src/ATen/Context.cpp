@@ -410,6 +410,10 @@ bool Context::hasMKLDNN() {
 #endif
 }
 
+bool Context::hasKleidiAI() {
+  return AT_KLEIDIAI_ENABLED();
+}
+
 bool Context::hasOpenMP() {
 #ifdef _OPENMP
   return true;
@@ -575,6 +579,10 @@ bool Context::areVmapFallbackWarningsEnabled() const {
 
 void Context::setDisplayVmapFallbackWarnings(bool enabled) {
   display_vmap_fallback_warnings_ = enabled;
+}
+
+bool Context::isDefaultMobileCPUAllocatorSet() {
+  return prev_allocator_ptr_ != nullptr;
 }
 
 void Context::setDefaultMobileCPUAllocator() {

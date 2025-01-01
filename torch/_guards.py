@@ -27,7 +27,9 @@ from typing import (
     Union,
 )
 
+import torch
 from torch.utils import _pytree as pytree
+from torch.utils._backport_slots import dataclass_slots
 from torch.utils._traceback import CapturedTraceback, format_frame
 from torch.utils.weak import WeakTensorKeyDictionary
 
@@ -37,11 +39,6 @@ log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     import sympy
-
-    # Import the following modules during type checking to enable code intelligence features,
-    # such as auto-completion in tools like pylance, even when these modules are not explicitly
-    # imported in user code.
-    import torch
 
 
 """
@@ -63,6 +60,19 @@ class CompileId(NamedTuple):
 
     def __str__(self):
         return f"{self.frame_id}/{self.frame_compile_id}"
+
+    @classmethod
+    def from_string(cls, compile_id: Optional[str]):
+        """
+        Factory method that creates a CompileId from its string representation.
+        """
+        if compile_id is None:
+            return None
+        try:
+            frame_id, frame_compile_id = compile_id.split("/")
+            return cls(int(frame_id), int(frame_compile_id))
+        except Exception as e:
+            raise ValueError(f"Invalid compile_id '{compile_id}'") from e
 
 
 class TraceId(NamedTuple):
@@ -100,6 +110,17 @@ class GuardSource(enum.Enum):
         return self in (GuardSource.GLOBAL_FSDP_MODULE, GuardSource.LOCAL_FSDP_MODULE)
 
     def is_specialized_nn_module(self) -> bool:
+        import torch._dynamo.config as config
+
+        if config._unsafe_skip_fsdp_module_guards:
+            return (
+                self
+                in (
+                    GuardSource.GLOBAL_SPECIALIZED_NN_MODULE,
+                    GuardSource.LOCAL_SPECIALIZED_NN_MODULE,
+                )
+                or self.is_fsdp_module()
+            )
         return self in (
             GuardSource.GLOBAL_SPECIALIZED_NN_MODULE,
             GuardSource.LOCAL_SPECIALIZED_NN_MODULE,
@@ -169,6 +190,7 @@ class ShapeGuard(NamedTuple):
     sloc: SLoc
 
 
+@dataclass_slots
 @dataclasses.dataclass
 class Guard:
     # originating_source is the source that called the make_guard method to
@@ -209,11 +231,10 @@ class Guard:
     def sort_key(self):
         # Put the duplicate input guards at the end. The duplicate guards have
         # two sources while guard.name only considers one source.
-        from torch._dynamo.guards import GuardBuilder
 
         is_duplicate_input = (
             isinstance(self.create_fn, functools.partial)
-            and self.create_fn.func is GuardBuilder.DUPLICATE_INPUT
+            and self.create_fn.func is torch._dynamo.guards.GuardBuilder.DUPLICATE_INPUT
         )
         return (
             is_duplicate_input,
