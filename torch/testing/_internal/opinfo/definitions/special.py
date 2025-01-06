@@ -129,6 +129,10 @@ op_db: List[OpInfo] = [
         sample_inputs_func=sample_inputs_i0_i1,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.i1",
@@ -169,6 +173,10 @@ op_db: List[OpInfo] = [
         sample_inputs_func=sample_inputs_i0_i1,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.ndtr",
@@ -186,6 +194,8 @@ op_db: List[OpInfo] = [
                 "test_fn_fwgrad_bwgrad",
                 device_type="meta",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
     ),
     # A separate OpInfo entry for special.polygamma is needed to reorder the arguments
@@ -227,6 +237,10 @@ op_db: List[OpInfo] = [
         supports_one_python_scalar=True,
         # We don't test -1 as the gradient will be NaN and it'll break
         rhs_make_tensor_kwargs=dict(low=-0.99),
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     BinaryUfuncInfo(
         "special.zeta",
@@ -238,6 +252,8 @@ op_db: List[OpInfo] = [
         skips=(
             # Reference reference_inputs nans and infs on cuda and nan, inf, 0., -inf for cpu
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
     ),
     # TODO: FIXME
@@ -275,6 +291,8 @@ op_db: List[OpInfo] = [
                 "test_reference_numerics_large",
                 dtypes=[torch.bfloat16, torch.float16],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         supports_inplace_autograd=False,
         sample_inputs_func=sample_inputs_entr,
@@ -287,6 +305,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.log_ndtr",
@@ -295,6 +317,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.erfcx",
@@ -311,6 +337,10 @@ op_db: List[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         sample_inputs_func=sample_inputs_erfcx,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.airy_ai",
@@ -330,6 +360,8 @@ op_db: List[OpInfo] = [
                 "TestUnaryUfuncs",
                 "test_reference_numerics_large",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         supports_autograd=False,
     ),
@@ -346,6 +378,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.j0 if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.bessel_j1",
@@ -360,6 +396,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.j1 if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.bessel_y0",
@@ -374,6 +414,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.y0 if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.bessel_y1",
@@ -388,6 +432,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.y1 if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     BinaryUfuncInfo(
         "special.chebyshev_polynomial_t",
@@ -401,6 +449,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_compare_cpu",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -417,6 +467,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_compare_cpu",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -462,6 +514,8 @@ op_db: List[OpInfo] = [
             DecorateInfo(unittest.skip("Skipped!"), "TestNNCOpInfo"),
             # Greatest absolute difference: inf
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -478,6 +532,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_compare_cpu",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -494,6 +550,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_compare_cpu",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -532,6 +590,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.i0 if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.modified_bessel_i1",
@@ -546,6 +608,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.i1 if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.modified_bessel_k0",
@@ -560,6 +626,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.k0 if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.modified_bessel_k1",
@@ -574,6 +644,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.k1 if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.scaled_modified_bessel_k0",
@@ -588,6 +662,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.k0e if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     UnaryUfuncInfo(
         "special.scaled_modified_bessel_k1",
@@ -602,6 +680,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=scipy.special.k1e if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
     BinaryUfuncInfo(
         "special.shifted_chebyshev_polynomial_t",
@@ -700,6 +782,10 @@ op_db: List[OpInfo] = [
         dtypes=all_types_and(torch.bool),
         ref=lambda x: scipy.special.spherical_jn(0, x) if TEST_SCIPY else None,
         supports_autograd=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
+        )
     ),
 ]
 

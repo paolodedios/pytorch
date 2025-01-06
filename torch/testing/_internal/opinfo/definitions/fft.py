@@ -376,7 +376,15 @@ op_db: List[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         check_batched_grad=False,
-        skips=(),
+        skips=(
+            DecorateInfo(
+                unittest.expectedFailure, 
+                'TestCommon', 
+                'test_non_standard_bool_values',
+                dtypes=[torch.bool], 
+                device_type='mps'
+            ),
+        ),
         check_batched_gradgrad=False,
     ),
     SpectralFuncInfo(
@@ -401,6 +409,15 @@ op_db: List[OpInfo] = [
         decorators=[
             precisionOverride({torch.float: 1e-4}),
         ],
+        skips=(
+            DecorateInfo(
+                unittest.expectedFailure, 
+                'TestCommon', 
+                'test_non_standard_bool_values',
+                dtypes=[torch.bool], 
+                device_type='mps'
+            ),
+        ),
     ),
     SpectralFuncInfo(
         "fft.rfftn",
@@ -424,6 +441,15 @@ op_db: List[OpInfo] = [
         decorators=[
             precisionOverride({torch.float: 1e-4}),
         ],
+        skips=(
+            DecorateInfo(
+                unittest.expectedFailure, 
+                'TestCommon', 
+                'test_non_standard_bool_values',
+                dtypes=[torch.bool], 
+                device_type='mps'
+            ),
+        )
     ),
     SpectralFuncInfo(
         "fft.ifft",

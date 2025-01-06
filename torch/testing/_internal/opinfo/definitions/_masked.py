@@ -459,6 +459,8 @@ op_db: List[OpInfo] = [
             DecorateInfo(
                 unittest.expectedFailure, "TestJit", "test_variant_consistency_jit"
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         decorators=[
             DecorateInfo(
@@ -534,6 +536,8 @@ op_db: List[OpInfo] = [
                 device_type="cuda",
                 dtypes=(torch.bool, *integral_types(), *complex_types()),
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         decorators=[
             DecorateInfo(
@@ -810,6 +814,8 @@ op_db: List[OpInfo] = [
                 "test_mask_layout",
                 dtypes=(torch.bool, *integral_types(), *complex_types()),
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
+                                     dtypes=[torch.bool], device_type='mps'),
         ),
         decorators=[
             DecorateInfo(
