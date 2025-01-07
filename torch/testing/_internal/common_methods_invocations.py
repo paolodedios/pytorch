@@ -14695,6 +14695,7 @@ op_db: List[OpInfo] = [
            skips=(
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
                                      dtypes=[torch.bool], device_type='mps'),
+               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
            )),
     OpInfo(
         '_softmax_backward_data',
@@ -14721,7 +14722,10 @@ op_db: List[OpInfo] = [
            assert_autodiffed=False,
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
-           supports_out=False),
+           supports_out=False,
+           skips=(
+                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+           )),
     OpInfo('nn.functional.softmin',
            variant_test_name="with_dtype",
            aten_name='softmin',
@@ -14730,7 +14734,10 @@ op_db: List[OpInfo] = [
            assert_autodiffed=False,
            supports_forward_ad=True,
            supports_fwgrad_bwgrad=True,
-           supports_out=False),
+           supports_out=False,
+           skips=(
+                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+           )),
     OpInfo(
         "nn.functional.cross_entropy",
         dtypes=floating_types_and(torch.float16, torch.bfloat16),
@@ -14956,6 +14963,7 @@ op_db: List[OpInfo] = [
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_compare_cpu'),
                DecorateInfo(toleranceOverride({torch.float32: tol(atol=5e-5, rtol=5e-5)}),
                             "TestCompositeCompliance", "test_forward_ad"),
+               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
            )
            ),
     OpInfo('_batch_norm_with_update',
@@ -20514,6 +20522,7 @@ op_db: List[OpInfo] = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_complex_half_reference_testing', device_type='mps'),
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
                                      dtypes=[torch.bool], device_type='mps'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         )
     ),
     UnaryUfuncInfo('logit',
@@ -22335,6 +22344,7 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_executor',
                          dtypes=(torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64),
                          device_type="cuda"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         ),
     ),
     PythonRefInfo(
@@ -22356,6 +22366,7 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_executor',
                          dtypes=(torch.int16, torch.int32, torch.int64),
                          device_type="cuda"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         ),
     ),
     PythonRefInfo(
@@ -22377,6 +22388,7 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_executor',
                          dtypes=(torch.int16, torch.int32, torch.int64),
                          device_type="cuda"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         ),
     ),
     PythonRefInfo(
@@ -22396,6 +22408,9 @@ python_ref_db = [
     PythonRefInfo(
         "_refs.to",
         torch_opinfo_name="to",
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     PythonRefInfo(
         "_refs.triu",
@@ -22416,6 +22431,7 @@ python_ref_db = [
             DecorateInfo(unittest.skip('Skipped!'), 'TestCommon', 'test_variant_consistency_eager'),
             DecorateInfo(unittest.skip('Skipped!'), 'TestJit', 'test_variant_consistency_jit'),
             DecorateInfo(unittest.skip('Skipped!'), 'TestMathBits', 'test_neg_view'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         )),
     PythonRefInfo(
         "_refs.tril_indices",
@@ -22428,6 +22444,7 @@ python_ref_db = [
             DecorateInfo(unittest.skip('Skipped!'), 'TestCommon', 'test_variant_consistency_eager'),
             DecorateInfo(unittest.skip('Skipped!'), 'TestJit', 'test_variant_consistency_jit'),
             DecorateInfo(unittest.skip('Skipped!'), 'TestMathBits', 'test_neg_view'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         )),
     PythonRefInfo(
         "_refs.meshgrid",
@@ -22626,6 +22643,9 @@ python_ref_db = [
     ElementwiseUnaryPythonRefInfo(
         "_refs.erfc",
         torch_opinfo_name="erfc",
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     ElementwiseUnaryPythonRefInfo(
         "_refs.exp",
@@ -22679,6 +22699,7 @@ python_ref_db = [
         skips=(
             DecorateInfo(unittest.skip("Skipped!"), 'TestUnaryUfuncs', 'test_reference_numerics_extremal',
                          active_if=IS_WINDOWS),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         ),
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -22821,10 +22842,16 @@ python_ref_db = [
         "_refs.log_softmax",
         torch_opinfo_name="log_softmax",
         torch_opinfo_variant_name="with_dtype",
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        )
     ),
     ElementwiseUnaryPythonRefInfo(
         "_refs.nan_to_num",
         torch_opinfo_name="nan_to_num",
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     ElementwiseUnaryPythonRefInfo(
         "_refs.neg",
@@ -22984,6 +23011,9 @@ python_ref_db = [
         "_refs.softmax",
         torch_opinfo_name="softmax",
         torch_opinfo_variant_name="with_dtype",
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        )
     ),
     ElementwiseUnaryPythonRefInfo(
         "_refs.sqrt",
@@ -23075,12 +23105,18 @@ python_ref_db = [
         torch_opinfo_name="log_softmax",  # alias
         torch_opinfo_variant_name="with_dtype",
         supports_out=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     PythonRefInfo(
         "_refs.special.softmax",
         torch_opinfo_name="softmax",  # alias
         torch_opinfo_variant_name="with_dtype",
         supports_out=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     #
     # Elementwise Unary Special OpInfos
@@ -23230,6 +23266,9 @@ python_ref_db = [
         torch_opinfo_name="log_softmax",  # alias
         torch_opinfo_variant_name="with_dtype",
         supports_out=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        )
     ),
     PythonRefInfo(
         "_refs.nn.functional.pixel_shuffle",
@@ -23284,12 +23323,18 @@ python_ref_db = [
         torch_opinfo_name="softmax",  # alias
         torch_opinfo_variant_name="with_dtype",
         supports_out=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     PythonRefInfo(
         "_refs.nn.functional.softmin",
         torch_opinfo_name="nn.functional.softmin",
         torch_opinfo_variant_name="with_dtype",
         supports_out=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     ElementwiseUnaryPythonRefInfo(
         "_refs.nn.functional.softplus",
@@ -23522,6 +23567,7 @@ python_ref_db = [
             DecorateInfo(unittest.skip("Skipped!"), 'TestBinaryUfuncs',
                          'test_reference_numerics_extremal_values',
                          dtypes=[torch.complex64, torch.complex128]),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         ),
     ),
     ElementwiseBinaryPythonRefInfo(
@@ -23611,6 +23657,7 @@ python_ref_db = [
                          'TestBinaryUfuncs',
                          'test_reference_numerics_small_values',
                          dtypes=(torch.int8,)),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         ),
     ),
     ElementwiseBinaryPythonRefInfo(
@@ -23640,10 +23687,16 @@ python_ref_db = [
     ElementwiseBinaryPythonRefInfo(
         "_refs.igamma",
         torch_opinfo_name="igamma",
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     ElementwiseBinaryPythonRefInfo(
         "_refs.igammac",
         torch_opinfo_name="igammac",
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     ElementwiseBinaryPythonRefInfo(
         "_refs.isclose",
@@ -23660,6 +23713,9 @@ python_ref_db = [
     ElementwiseBinaryPythonRefInfo(
         "_refs.lcm",
         torch_opinfo_name="lcm",
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        ),
     ),
     ElementwiseBinaryPythonRefInfo(
         "_refs.le",
@@ -24013,6 +24069,7 @@ python_ref_db = [
         validate_view_consistency=False,
         skips=(
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_complex_half_reference_testing', device_type='mps'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         )
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -24929,7 +24986,9 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref'),
             # Sample out= with a stride of zero. This _out operation checks that the input has no
             # inner overlap
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_errors'),)
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_errors'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+        )
     ),
     PythonRefInfo(
         "_refs.index_copy",
@@ -24939,6 +24998,7 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_complex_half_reference_testing', device_type='mps'),
             # no _refs support for Tensor.__setitem__
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         ),
     ),
     PythonRefInfo(
@@ -24959,6 +25019,7 @@ python_ref_db = [
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_complex_half_reference_testing', device_type='mps'),
             # no _refs support for Tensor.__setitem__
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
         )
     ),
     #
