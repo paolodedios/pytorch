@@ -551,11 +551,11 @@ class GraphModuleSerializer(metaclass=Final):
             assert len(node.kwargs) == 0
 
             # Serialize the node
-            if isinstance(meta_val, torch.SymInt):
-                sym_output = Argument.create(as_sym_int=self.serialize_sym_int_output(node.name, meta_val))
-            elif isinstance(meta_val, torch.SymFloat):
+            if isinstance(meta_val, torch.SymFloat) or node.target in _SYM_FLOAT_OPS:
                 sym_output = Argument.create(as_sym_float=self.serialize_sym_float_output(node.name, meta_val))
-            elif isinstance(meta_val, torch.SymBool):
+            elif isinstance(meta_val, torch.SymInt) or node.target in _SYM_INT_OPS:
+                sym_output = Argument.create(as_sym_int=self.serialize_sym_int_output(node.name, meta_val))
+            elif isinstance(meta_val, torch.SymBool) or node.target in _SYM_BOOL_OPS:
                 sym_output = Argument.create(as_sym_bool=self.serialize_sym_bool_output(node.name, meta_val))
             else:
                 raise SerializeError(f"Unsupported symbolic type: {type(meta_val)}")
