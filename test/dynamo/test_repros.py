@@ -6353,7 +6353,6 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         f(torch.ones(2, device=device, dtype=torch.float64))
 
     @requires_cuda
-    @skipIfHpu
     def test_norm_dtype(self, device):
         def foo(_stack0):
             getitem = _stack0[(slice(None, None, None), -1)]
@@ -6473,7 +6472,6 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         self.assertEqual(out1, out2)
 
     @requires_cuda
-    @skipIfHpu
     def test_memleak_when_graph_input_has_tensor_attr(self, device):
         @torch.compile(backend="eager")
         def f(x):
@@ -6481,8 +6479,8 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
 
         mem_before = torch.cuda.memory_allocated()
 
-        x = torch.ones(2, device="cuda")
-        x.foo = torch.zeros(2, device="cuda")
+        x = torch.ones(2, device=device)
+        x.foo = torch.zeros(2, device=device)
         f(x)
         del x.foo
         del x
@@ -6495,8 +6493,8 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
             x.add_(1)
 
         mem_before = torch.cuda.memory_allocated()
-        x = torch.ones(2, device="cuda")
-        x.foo = [torch.zeros(2, device="cuda") for _ in range(5)]
+        x = torch.ones(2, device=device)
+        x.foo = [torch.zeros(2, device=device) for _ in range(5)]
         f(x)
         del x.foo
         del x
@@ -6509,8 +6507,8 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
             return x + y
 
         mem_before = torch.cuda.memory_allocated()
-        x = torch.ones(2, device="cuda")
-        y = torch.zeros(2, device="cuda")
+        x = torch.ones(2, device=device)
+        y = torch.zeros(2, device=device)
         x.foo = [y]
         y.foo = [x]
         g(x, y)
@@ -6522,7 +6520,6 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         self.assertEqual(mem_before, mem_after)
 
     @requires_cuda
-    @skipIfHpu
     def test_sdpa_dynamic_shapes(self, device):
         def f(x, s0, s1, s2):
             q = x.view(2, s0, s2, s0)
