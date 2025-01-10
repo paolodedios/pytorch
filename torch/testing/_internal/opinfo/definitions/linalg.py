@@ -1187,6 +1187,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_numpy_ref_mps",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
     ),
     OpInfo(
@@ -1200,6 +1202,10 @@ op_db: List[OpInfo] = [
         sample_inputs_func=sample_inputs_linalg_det_logdet_slogdet,
         decorators=[skipCPUIfNoLapack, skipCUDAIfNoMagmaAndNoCusolver],
         check_batched_gradgrad=False,
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        )
     ),
     OpInfo(
         "linalg.det",
@@ -1306,6 +1312,10 @@ op_db: List[OpInfo] = [
         sample_inputs_func=sample_inputs_linalg_cholesky,
         gradcheck_wrapper=gradcheck_wrapper_hermitian_input,
         decorators=[skipCUDAIfNoMagmaAndNoCusolver, skipCPUIfNoLapack],
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        )
     ),
     OpInfo(
         "linalg.cholesky_ex",
@@ -1318,6 +1328,10 @@ op_db: List[OpInfo] = [
         sample_inputs_func=sample_inputs_linalg_cholesky,
         gradcheck_wrapper=gradcheck_wrapper_hermitian_input,
         decorators=[skipCUDAIfNoMagmaAndNoCusolver, skipCPUIfNoLapack],
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        )
     ),
     OpInfo(
         "linalg.vecdot",
@@ -1347,6 +1361,8 @@ op_db: List[OpInfo] = [
                 "test_comprehensive",
                 device_type="cuda",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.complex64]),
         ),
     ),
     OpInfo(
@@ -1377,6 +1393,8 @@ op_db: List[OpInfo] = [
                 dtypes=[torch.float32],
                 active_if=TEST_WITH_ROCM,
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1416,6 +1434,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
         decorators=[skipCUDAIfNoMagma, skipCPUIfNoLapack, with_tf32_off],
     ),
@@ -1453,6 +1473,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1489,6 +1511,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1526,6 +1550,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1556,6 +1582,8 @@ op_db: List[OpInfo] = [
                 device_type="cpu",
                 dtypes=(torch.complex128,),
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ],
     ),
     OpInfo(
@@ -1565,6 +1593,10 @@ op_db: List[OpInfo] = [
         supports_autograd=False,
         sample_inputs_func=sample_inputs_linalg_ldl_factor,
         decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack],
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        )
     ),
     OpInfo(
         "linalg.ldl_factor_ex",
@@ -1573,6 +1605,10 @@ op_db: List[OpInfo] = [
         supports_autograd=False,
         sample_inputs_func=sample_inputs_linalg_ldl_factor,
         decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack],
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        ),
     ),
     OpInfo(
         "linalg.ldl_solve",
@@ -1588,6 +1624,10 @@ op_db: List[OpInfo] = [
             skipCUDAIfRocm,
             skipCPUIfNoLapack,
         ],
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        ),
     ),
     OpInfo(
         "linalg.lstsq",
@@ -1625,6 +1665,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1653,6 +1695,8 @@ op_db: List[OpInfo] = [
                 "TestOperatorSignatures",
                 "test_get_torch_func_signature_exhaustive",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1668,6 +1712,13 @@ op_db: List[OpInfo] = [
         check_batched_grad=False,
         decorators=[skipCUDAIfNoMagmaAndNoCusolver, skipCPUIfNoLapack, with_tf32_off],
         sample_inputs_func=sample_inputs_linalg_matrix_power,
+        skips=(
+            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with `Number of columns in source exceeds source matrix size`
+            DecorateInfo(unittest.skip("Skipped on MPS due to hard crash"), 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32]),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
+        )
     ),
     OpInfo(
         "linalg.multi_dot",
@@ -1739,6 +1790,8 @@ op_db: List[OpInfo] = [
                 dtypes=[torch.float32],
                 active_if=TEST_WITH_ROCM,
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1769,6 +1822,8 @@ op_db: List[OpInfo] = [
                 unittest.expectedFailure, "TestFwdGradients", "test_forward_mode_AD"
             ),
             DecorateInfo(unittest.expectedFailure, "TestBwdGradients", "test_fn_grad"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1798,6 +1853,8 @@ op_db: List[OpInfo] = [
                 dtypes=[torch.float32],
                 active_if=TEST_WITH_ROCM,
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1811,6 +1868,10 @@ op_db: List[OpInfo] = [
         check_batched_gradgrad=False,
         sample_inputs_func=sample_inputs_linalg_qr_geqrf,
         decorators=[skipCUDAIfNoCusolver, skipCPUIfNoLapack],
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        )
     ),
     OpInfo(
         "linalg.slogdet",
@@ -1821,6 +1882,10 @@ op_db: List[OpInfo] = [
         supports_fwgrad_bwgrad=True,
         sample_inputs_func=sample_inputs_linalg_det_logdet_slogdet,
         decorators=[skipCUDAIfNoMagmaAndNoCusolver, skipCPUIfNoLapack],
+        skips=(
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        )
     ),
     OpInfo(
         "linalg.vander",
@@ -1838,6 +1903,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_numpy_ref_mps",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
     ),
     ReductionOpInfo(
@@ -1861,6 +1928,8 @@ op_db: List[OpInfo] = [
             DecorateInfo(
                 unittest.expectedFailure, "TestReductions", "test_dim_empty_keepdim"
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
     ),
     OpInfo(
@@ -1878,6 +1947,11 @@ op_db: List[OpInfo] = [
         skips=(
             # linalg.lu_factor: LU without pivoting is not implemented on the CPU
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
+            #FIXME[MPS] - test_noncontiguous_samples_linalg_lu_factor_mps_float32 fails with error 'A command encoder is already encoding to this command buffer'
+            DecorateInfo(unittest.skip("Skipped on MPS due to hard crash"), 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32]),
         ),
     ),
     OpInfo(
@@ -1894,6 +1968,8 @@ op_db: List[OpInfo] = [
         skips=(
             # linalg.lu_factor: LU without pivoting is not implemented on the CPU
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1911,6 +1987,8 @@ op_db: List[OpInfo] = [
         skips=(
             # linalg.lu_factor: LU without pivoting is not implemented on the CPU
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -1930,6 +2008,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_floating_inputs_are_differentiable",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
         decorators=[skipCPUIfNoLapack, skipCUDAIfNoMagmaAndNoCusolver],
     ),
@@ -1966,6 +2046,11 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
+            #FIXME[MPS] - Hard crash on MPS with error 'Number of columns in source exceeds source matrix size'
+            DecorateInfo(unittest.skip("Skipped due to hard crash on MPS"), 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32]),
         ),
     ),
     OpInfo(
@@ -2000,6 +2085,11 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with `Number of columns in source exceeds source matrix size`
+            DecorateInfo(unittest.skip("Skipped on MPS due to hard crash"), 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32]),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
     ),
     OpInfo(
@@ -2044,6 +2134,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -2086,6 +2178,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -2095,9 +2189,13 @@ op_db: List[OpInfo] = [
         dtypes=floating_and_complex_types(),
         sample_inputs_func=sample_inputs_linalg_solve_triangular,
         supports_fwgrad_bwgrad=True,
-        skips=(skipCPUIfNoLapack,),
         # linalg.solve_triangular cannot be batched over because of a call to out.copy_(result);
         supports_forward_ad=True,
+        skips=(
+            skipCPUIfNoLapack,
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
+        ),
     ),
     OpInfo(
         "linalg.matrix_rank",
@@ -2128,6 +2226,8 @@ op_db: List[OpInfo] = [
                 "test_variant_consistency_jit",
                 dtypes=[torch.complex64, torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -2153,6 +2253,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -2267,6 +2369,8 @@ op_db: List[OpInfo] = [
                 "test_fn_fwgrad_bwgrad",
                 device_type="cuda",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -2323,6 +2427,8 @@ op_db: List[OpInfo] = [
                 dtypes=[torch.float32],
                 active_if=TEST_WITH_ROCM,
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
     ),
     OpInfo(
@@ -2355,6 +2461,8 @@ op_db: List[OpInfo] = [
                 dtypes=[torch.float32],
                 active_if=TEST_WITH_ROCM,
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
     OpInfo(
@@ -2373,6 +2481,11 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_numpy_ref_mps",
             ),
+            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with `Number of columns in source exceeds source matrix size`
+            DecorateInfo(unittest.skip("Skipped on MPS due to hard crash"), 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32]),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
     ),
     OpInfo(
@@ -2404,6 +2517,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_numpy_ref_mps",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64, torch.float32]),
         ),
     ),
 ]

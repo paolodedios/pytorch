@@ -591,6 +591,8 @@ op_db: List[OpInfo] = [
             DecorateInfo(
                 unittest.skip("Skipped!"), "TestJit", "test_variant_consistency_jit"
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
         # Can reuse the same inputs; dim is required in both
         sample_inputs_func=sample_inputs_masked_cumops,
@@ -628,6 +630,8 @@ op_db: List[OpInfo] = [
                 "test_comprehensive",
                 device_type="cuda",
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
         # Can reuse the same inputs; dim is required in both
         sample_inputs_func=sample_inputs_masked_cumops,
@@ -861,6 +865,8 @@ op_db: List[OpInfo] = [
             DecorateInfo(
                 unittest.skip("Skipped!"), "TestJit", "test_variant_consistency_jit"
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32]),
         ),
         sample_inputs_func=partial(
             sample_inputs_masked_softmax, use_zero_dimensions=False
@@ -1150,6 +1156,8 @@ op_db: List[OpInfo] = [
             DecorateInfo(
                 unittest.expectedFailure, "TestJit", "test_variant_consistency_jit"
             ),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
+                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.complex64]),
         ),
         gradcheck_wrapper=gradcheck_wrapper_masked_operation,
         # Runs very slowly on slow gradcheck - alternatively reduce input sizes
