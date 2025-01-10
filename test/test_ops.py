@@ -12,10 +12,6 @@ from collections.abc import Sequence
 from functools import partial
 from importlib import import_module
 
-# test_out
-# test_out_warning
-# test_variant_consistency_eager
-
 import torch
 import torch._prims as prims
 import torch.utils._pytree as pytree
@@ -79,6 +75,11 @@ from torch.testing._internal.common_utils import (
 )
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_map
+
+
+# test_out
+# test_out_warning
+# test_variant_consistency_eager
 
 
 assert torch.get_default_dtype() == torch.float32

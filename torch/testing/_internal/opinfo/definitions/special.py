@@ -130,12 +130,24 @@ op_db: List[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.i1",
@@ -177,12 +189,24 @@ op_db: List[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.ndtr",
@@ -200,9 +224,16 @@ op_db: List[OpInfo] = [
                 "test_fn_fwgrad_bwgrad",
                 device_type="meta",
             ),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
         ),
     ),
     # A separate OpInfo entry for special.polygamma is needed to reorder the arguments
@@ -227,8 +258,13 @@ op_db: List[OpInfo] = [
                 "TestNormalizeOperators",
                 "test_normalize_operator_exhaustive",
             ),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
         sample_kwargs=lambda device, dtype, input: ({"n": 0}, {"n": 0}),
         # polygamma functions have multiple singularities at x having non-positive integer value
@@ -247,12 +283,24 @@ op_db: List[OpInfo] = [
         # We don't test -1 as the gradient will be NaN and it'll break
         rhs_make_tensor_kwargs=dict(low=-0.99),
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     BinaryUfuncInfo(
         "special.zeta",
@@ -264,11 +312,23 @@ op_db: List[OpInfo] = [
         skips=(
             # Reference reference_inputs nans and infs on cuda and nan, inf, 0., -inf for cpu
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
     ),
     # TODO: FIXME
@@ -306,11 +366,23 @@ op_db: List[OpInfo] = [
                 "test_reference_numerics_large",
                 dtypes=[torch.bfloat16, torch.float16],
             ),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
         supports_inplace_autograd=False,
         sample_inputs_func=sample_inputs_entr,
@@ -324,12 +396,24 @@ op_db: List[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.log_ndtr",
@@ -339,12 +423,24 @@ op_db: List[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.erfcx",
@@ -362,12 +458,24 @@ op_db: List[OpInfo] = [
         supports_fwgrad_bwgrad=True,
         sample_inputs_func=sample_inputs_erfcx,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.airy_ai",
@@ -387,11 +495,23 @@ op_db: List[OpInfo] = [
                 "TestUnaryUfuncs",
                 "test_reference_numerics_large",
             ),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
         supports_autograd=False,
     ),
@@ -409,12 +529,24 @@ op_db: List[OpInfo] = [
         ref=scipy.special.j0 if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.bessel_j1",
@@ -430,12 +562,24 @@ op_db: List[OpInfo] = [
         ref=scipy.special.j1 if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.bessel_y0",
@@ -451,12 +595,24 @@ op_db: List[OpInfo] = [
         ref=scipy.special.y0 if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.bessel_y1",
@@ -472,12 +628,24 @@ op_db: List[OpInfo] = [
         ref=scipy.special.y1 if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     BinaryUfuncInfo(
         "special.chebyshev_polynomial_t",
@@ -491,11 +659,23 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_compare_cpu",
             ),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -512,11 +692,23 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_compare_cpu",
             ),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -562,10 +754,20 @@ op_db: List[OpInfo] = [
             DecorateInfo(unittest.skip("Skipped!"), "TestNNCOpInfo"),
             # Greatest absolute difference: inf
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -582,11 +784,23 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_compare_cpu",
             ),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -603,10 +817,20 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_compare_cpu",
             ),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -646,11 +870,21 @@ op_db: List[OpInfo] = [
         ref=scipy.special.i0 if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.modified_bessel_i1",
@@ -666,11 +900,21 @@ op_db: List[OpInfo] = [
         ref=scipy.special.i1 if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.modified_bessel_k0",
@@ -686,13 +930,28 @@ op_db: List[OpInfo] = [
         ref=scipy.special.k0 if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.modified_bessel_k1",
@@ -708,11 +967,21 @@ op_db: List[OpInfo] = [
         ref=scipy.special.k1 if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.scaled_modified_bessel_k0",
@@ -728,11 +997,21 @@ op_db: List[OpInfo] = [
         ref=scipy.special.k0e if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.int64, torch.float32]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.int64, torch.float32],
+            ),
+        ),
     ),
     UnaryUfuncInfo(
         "special.scaled_modified_bessel_k1",
@@ -748,11 +1027,21 @@ op_db: List[OpInfo] = [
         ref=scipy.special.k1e if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
     BinaryUfuncInfo(
         "special.shifted_chebyshev_polynomial_t",
@@ -852,11 +1141,21 @@ op_db: List[OpInfo] = [
         ref=lambda x: scipy.special.spherical_jn(0, x) if TEST_SCIPY else None,
         supports_autograd=False,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
-                                     dtypes=[torch.bool], device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 
-                            'test_noncontiguous_samples', device_type='mps', dtypes=[torch.float32, torch.int64]),
-        )
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_non_standard_bool_values",
+                dtypes=[torch.bool],
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_noncontiguous_samples",
+                device_type="mps",
+                dtypes=[torch.float32, torch.int64],
+            ),
+        ),
     ),
 ]
 
@@ -877,7 +1176,9 @@ python_ref_db: List[OpInfo] = [
             ),
         ),
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
         ),
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -893,7 +1194,9 @@ python_ref_db: List[OpInfo] = [
             ),
         ),
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
         ),
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -922,7 +1225,9 @@ python_ref_db: List[OpInfo] = [
             ),
         ),
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
         ),
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -931,8 +1236,10 @@ python_ref_db: List[OpInfo] = [
         op_db=op_db,
         decorators=(precisionOverride({torch.bfloat16: 3e-1, torch.float16: 3e-1}),),
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-        )
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+        ),
     ),
     ElementwiseUnaryPythonRefInfo(
         "_refs.special.i1",
@@ -962,7 +1269,9 @@ python_ref_db: List[OpInfo] = [
         torch_opinfo_name="special.i1e",
         op_db=op_db,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
         ),
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -970,8 +1279,10 @@ python_ref_db: List[OpInfo] = [
         torch_opinfo_name="special.log_ndtr",
         op_db=op_db,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
-        )
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
+        ),
     ),
     ElementwiseUnaryPythonRefInfo(
         "_refs.special.ndtr",
@@ -983,7 +1294,9 @@ python_ref_db: List[OpInfo] = [
         torch_opinfo_name="special.ndtri",
         op_db=op_db,
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
         ),
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -999,7 +1312,9 @@ python_ref_db: List[OpInfo] = [
             ),
         ),
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
         ),
     ),
     #
@@ -1013,7 +1328,9 @@ python_ref_db: List[OpInfo] = [
         skips=(
             # Reference reference_inputs nans and infs on cuda and nan, inf, 0., -inf for cpu
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
+            DecorateInfo(
+                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
+            ),
         ),
     ),
 ]
