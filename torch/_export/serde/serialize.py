@@ -16,7 +16,7 @@ import traceback
 import typing
 
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -40,6 +40,7 @@ import torch
 import torch.export.exported_program as ep
 from torch._export.serde.schema import SchemaVersion
 from torch._export.verifier import load_verifier
+from torch._export.non_strict_utils import _enable_graph_inputs_of_type_nn_module
 from torch._library.fake_class_registry import FakeScriptObject
 from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 from torch.fx.experimental import symbolic_shapes
@@ -1985,9 +1986,10 @@ class GraphModuleDeserializer(metaclass=Final):
                 self.example_inputs = None
             self.deserialize_graph(serialized_graph_module.graph)
 
-            module_call_graph = self.deserialize_module_call_graph(
-                serialized_graph_module.module_call_graph
-            )
+            with _enable_graph_inputs_of_type_nn_module(self.example_inputs):
+                module_call_graph = self.deserialize_module_call_graph(
+                    serialized_graph_module.module_call_graph
+                )
             graph_module = ep._create_graph_module_for_export(
                 self.module, self.graph
             )
@@ -2491,9 +2493,10 @@ def serialize(
     exported_program: ep.ExportedProgram,
     opset_version: Optional[Dict[str, int]] = None,
 ) -> SerializedArtifact:
-    serialized_program = ExportedProgramSerializer(opset_version).serialize(
-        exported_program
-    )
+    with _enable_graph_inputs_of_type_nn_module(exported_program.example_inputs):
+        serialized_program = ExportedProgramSerializer(opset_version).serialize(
+            exported_program
+        )
     assert isinstance(serialized_program.exported_program, ExportedProgram)
 
     json_program = json.dumps(
