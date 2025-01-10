@@ -1793,7 +1793,8 @@ op_db: List[OpInfo] = [
         decorators=[skipCUDAIfNoMagmaAndNoCusolver, skipCPUIfNoLapack, with_tf32_off],
         sample_inputs_func=sample_inputs_linalg_matrix_power,
         skips=(
-            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with `Number of columns in source exceeds source matrix size`
+            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with
+            # `Number of columns in source exceeds source matrix size`
             DecorateInfo(
                 unittest.skip("Skipped on MPS due to hard crash"),
                 "TestCommon",
@@ -2079,7 +2080,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.complex64],
             ),
-            # FIXME[MPS] - test_noncontiguous_samples_linalg_lu_factor_mps_float32 fails with error 'A command encoder is already encoding to this command buffer'
+            # FIXME[MPS] - test_noncontiguous_samples_linalg_lu_factor_mps_float32 fails with error
+            # 'A command encoder is already encoding to this command buffer'
             DecorateInfo(
                 unittest.skip("Skipped on MPS due to hard crash"),
                 "TestCommon",
@@ -2245,7 +2247,8 @@ op_db: List[OpInfo] = [
                 device_type="mps",
                 dtypes=[torch.float32],
             ),
-            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with `Number of columns in source exceeds source matrix size`
+            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with
+            # `Number of columns in source exceeds source matrix size`
             DecorateInfo(
                 unittest.skip("Skipped on MPS due to hard crash"),
                 "TestCommon",
@@ -2691,7 +2694,8 @@ op_db: List[OpInfo] = [
                 "TestCommon",
                 "test_numpy_ref_mps",
             ),
-            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with `Number of columns in source exceeds source matrix size`
+            # FIXME[MPS] test_noncontiguous_samples_linalg_inv_ex_mps_float32 crashes with
+            # `Number of columns in source exceeds source matrix size`
             DecorateInfo(
                 unittest.skip("Skipped on MPS due to hard crash"),
                 "TestCommon",
