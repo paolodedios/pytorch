@@ -140,10 +140,10 @@ op_db: List[OpInfo] = [
         check_batched_forward_grad=False,
         skips=(
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         )
@@ -179,10 +179,10 @@ op_db: List[OpInfo] = [
                 active_if=TEST_WITH_ROCM,
             ),
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         ),
@@ -210,10 +210,10 @@ op_db: List[OpInfo] = [
         decorators=[precisionOverride({torch.float: 1e-4, torch.cfloat: 1e-4})],
         skips=(
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         )
@@ -255,10 +255,10 @@ op_db: List[OpInfo] = [
                 device_type='mps'
             ),
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         ),
@@ -306,10 +306,10 @@ op_db: List[OpInfo] = [
                 device_type="cuda",
             ),
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         ),
@@ -350,10 +350,10 @@ op_db: List[OpInfo] = [
                 "test_schema_correctness",
             ),
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         ),
@@ -378,10 +378,10 @@ op_db: List[OpInfo] = [
         check_batched_grad=False,
         skips=(
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         ),
@@ -411,10 +411,10 @@ op_db: List[OpInfo] = [
         ],
         skips=(
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         ),
@@ -443,10 +443,10 @@ op_db: List[OpInfo] = [
         ],
         skips=(
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         )
@@ -473,10 +473,10 @@ op_db: List[OpInfo] = [
         ),
         skips=(
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         )
@@ -510,10 +510,10 @@ op_db: List[OpInfo] = [
         ],
         skips=(
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         )
@@ -547,10 +547,10 @@ op_db: List[OpInfo] = [
         ],
         skips=(
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
+                unittest.expectedFailure,
+                'TestCommon',
                 'test_non_standard_bool_values',
-                dtypes=[torch.bool], 
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         )
@@ -573,7 +573,7 @@ op_db: List[OpInfo] = [
             torch.bool, *(() if (not SM53OrLater) else (torch.half,))
         ),
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values', 
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
                                     dtypes=[torch.bool], device_type='mps'),
         ),
         check_batched_grad=False,
@@ -610,7 +610,7 @@ op_db: List[OpInfo] = [
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_out_warnings"),
         ),
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values', 
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
                                     dtypes=[torch.bool], device_type='mps'),
         )
     ),
@@ -645,7 +645,7 @@ op_db: List[OpInfo] = [
             ),
         ],
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values', 
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
                                     dtypes=[torch.bool], device_type='mps'),
         )
     ),
@@ -679,10 +679,10 @@ op_db: List[OpInfo] = [
                 device_type='mps',
             ),
             DecorateInfo(
-                unittest.expectedFailure, 
-                'TestCommon', 
-                'test_non_standard_bool_values', 
-                dtypes=[torch.bool], 
+                unittest.expectedFailure,
+                'TestCommon',
+                'test_non_standard_bool_values',
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         )
@@ -725,9 +725,9 @@ op_db: List[OpInfo] = [
             ),
             DecorateInfo(
                 unittest.expectedFailure,
-                'TestCommon', 
-                'test_non_standard_bool_values', 
-                dtypes=[torch.bool], 
+                'TestCommon',
+                'test_non_standard_bool_values',
+                dtypes=[torch.bool],
                 device_type='mps'
             ),
         )
@@ -761,7 +761,7 @@ op_db: List[OpInfo] = [
             )
         ],
         skips=(
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values', 
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_non_standard_bool_values',
                                     dtypes=[torch.bool], device_type='mps'),
         )
     ),
