@@ -37,6 +37,7 @@ exit /b 1
 echo "install wheel package"
 
 set PYTHON_INSTALLER_URL=
+if "%DESIRED_PYTHON%" == "3.13t" set "PYTHON_INSTALLER_URL=https://www.python.org/ftp/python/3.13.0/amd64/freethreaded.msi"
 if "%DESIRED_PYTHON%" == "3.13" set "PYTHON_INSTALLER_URL=https://www.python.org/ftp/python/3.13.0/python-3.13.0-amd64.exe"
 if "%DESIRED_PYTHON%" == "3.12" set "PYTHON_INSTALLER_URL=https://www.python.org/ftp/python/3.12.0/python-3.12.0-amd64.exe"
 if "%DESIRED_PYTHON%" == "3.11" set "PYTHON_INSTALLER_URL=https://www.python.org/ftp/python/3.11.0/python-3.11.0-amd64.exe"
@@ -59,8 +60,8 @@ start /wait "" python-amd64.exe /quiet InstallAllUsers=1 PrependPath=0 Include_t
 if errorlevel 1 exit /b 1
 
 set "PATH=%CD%\Python%PYTHON_VERSION%\Scripts;%CD%\Python;%PATH%"
-
-if "%DESIRED_PYTHON%" == "3.13" pip install -q --pre numpy==2.1.0 protobuf
+if "%DESIRED_PYTHON%" == "3.13t" pip install -q --pre numpy==2.1.2 protobuf
+if "%DESIRED_PYTHON%" == "3.13" pip install -q --pre numpy==2.1.2 protobuf
 if "%DESIRED_PYTHON%" == "3.12" pip install -q --pre numpy==2.0.2 protobuf
 if "%DESIRED_PYTHON%" == "3.11" pip install -q --pre numpy==2.0.2 protobuf
 if "%DESIRED_PYTHON%" == "3.10" pip install -q --pre numpy==2.0.2 protobuf
@@ -103,7 +104,12 @@ if ERRORLEVEL 1 exit /b 1
 
 set "PATH=%CONDA_HOME%;%CONDA_HOME%\scripts;%CONDA_HOME%\Library\bin;%PATH%"
 
-conda create -qyn testenv python=%DESIRED_PYTHON%
+if "%DESIRED_PYTHON%" == "3.13t" (
+    conda create -qyn testenv python=3.13 python-gil -c=conda-forge
+) ELSE (
+    conda create -qyn testenv python=%DESIRED_PYTHON%
+)
+
 if errorlevel 1 exit /b 1
 call conda install -yq conda-build
 if errorlevel 1 exit /b 1
