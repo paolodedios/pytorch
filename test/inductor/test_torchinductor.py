@@ -6544,8 +6544,12 @@ class CommonTemplate:
         def fn(a):
             return a + torch.full_like(a, 7.777)
 
+        device_interface = get_interface_for_device(self.device)
         for dtype in all_types():
-            self.common(fn, (make_tensor(8, dtype=dtype, device=self.device),))
+            if device_interface.is_dtype_supported(dtype):
+                self.common(fn, (make_tensor(8, dtype=dtype, device=self.device),))
+            else:
+                self.assertRaises(TypeError)
 
     def test_full_boolean(self):
         def fn(n):
