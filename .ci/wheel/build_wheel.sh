@@ -130,7 +130,15 @@ export CMAKE_PREFIX_PATH=${CONDA_PREFIX:-"$(dirname $(which conda))/../"}
 SETUPTOOLS_PINNED_VERSION="=46.0.0"
 PYYAML_PINNED_VERSION="=5.3"
 EXTRA_CONDA_INSTALL_FLAGS=""
+CONDA_ENV_CREATE_FLAGS=""
 case $desired_python in
+    3.13t)
+        echo "Using 3.13 deps"
+        SETUPTOOLS_PINNED_VERSION=">=68.0.0"
+        PYYAML_PINNED_VERSION=">=6.0.1"
+        NUMPY_PINNED_VERSION="=2.1.0"
+        CONDA_ENV_CREATE_FLAGS="python-gil -c conda-forge"
+        ;;
     3.13)
         echo "Using 3.13 deps"
         SETUPTOOLS_PINNED_VERSION=">=68.0.0"
@@ -169,7 +177,7 @@ esac
 
 # Install into a fresh env
 tmp_env_name="wheel_py$python_nodot"
-conda create ${EXTRA_CONDA_INSTALL_FLAGS} -yn "$tmp_env_name" python="$desired_python"
+conda create ${EXTRA_CONDA_INSTALL_FLAGS} -yn "$tmp_env_name" python="$desired_python" ${CONDA_ENV_CREATE_FLAGS}
 source activate "$tmp_env_name"
 
 pip install -q "numpy=${NUMPY_PINNED_VERSION}"  "pyyaml${PYYAML_PINNED_VERSION}" requests
