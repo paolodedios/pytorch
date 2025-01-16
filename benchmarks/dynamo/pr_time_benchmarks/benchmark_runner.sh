@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # Check if the output file argument was provided
 if [ $# -eq 0 ]
 then
@@ -23,8 +24,11 @@ start=`date +%s`
 
 for file in $python_programs_dir/*.py
 do
+    if [ "$file" != "$python_programs_dir/benchmark_base.py" ]; then
+        python $file $output_file
+    fi
     # Execute the Python program and append the output to the output file
-   python $file $output_file
+    python $file $output_file
 done
 end=`date +%s`
 
