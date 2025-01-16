@@ -66,12 +66,12 @@ start /wait "" python-amd64.exe /quiet InstallAllUsers=1 PrependPath=0 Include_t
 if errorlevel 1 exit /b 1
 
 set "PATH=%CD%\Python%PYTHON_VERSION%\Scripts;%CD%\Python;%PATH%"
-if "%DESIRED_PYTHON%" == "3.13t" %PYTHON_EXEC% -m pip install -q --pre numpy==2.1.2 protobuf
-if "%DESIRED_PYTHON%" == "3.13" %PYTHON_EXEC% -m pip install -q --pre numpy==2.1.2 protobuf
-if "%DESIRED_PYTHON%" == "3.12" %PYTHON_EXEC% -m pip install -q --pre numpy==2.0.2 protobuf
-if "%DESIRED_PYTHON%" == "3.11" %PYTHON_EXEC% -m pip install -q --pre numpy==2.0.2 protobuf
-if "%DESIRED_PYTHON%" == "3.10" %PYTHON_EXEC% -m pip install -q --pre numpy==2.0.2 protobuf
-if "%DESIRED_PYTHON%" == "3.9" %PYTHON_EXEC% -m pip install -q --pre numpy==2.0.2 protobuf
+if "%DESIRED_PYTHON%" == "3.13t" %PYTHON_EXEC% -m pip install --pre numpy==2.2.1 protobuf
+if "%DESIRED_PYTHON%" == "3.13" %PYTHON_EXEC% -m pip install --pre numpy==2.1.2 protobuf
+if "%DESIRED_PYTHON%" == "3.12" %PYTHON_EXEC% -m pip install --pre numpy==2.0.2 protobuf
+if "%DESIRED_PYTHON%" == "3.11" %PYTHON_EXEC% -m pip install --pre numpy==2.0.2 protobuf
+if "%DESIRED_PYTHON%" == "3.10" %PYTHON_EXEC% -m pip install --pre numpy==2.0.2 protobuf
+if "%DESIRED_PYTHON%" == "3.9" %PYTHON_EXEC% -m pip install --pre numpy==2.0.2 protobuf
 
 if errorlevel 1 exit /b 1
 
