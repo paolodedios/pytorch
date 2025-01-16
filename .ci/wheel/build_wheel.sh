@@ -138,6 +138,7 @@ case $desired_python in
         PYYAML_PINNED_VERSION=">=6.0.1"
         NUMPY_PINNED_VERSION="=2.1.0"
         CONDA_ENV_CREATE_FLAGS="python-gil -c conda-forge"
+        desired_python="3.13"
         ;;
     3.13)
         echo "Using 3.13 deps"
