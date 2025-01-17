@@ -113,7 +113,12 @@ jobs:
           pip uninstall -y "$TORCH_PACKAGE_NAME" || true
 
           # Create new "clean" conda environment for testing
-          conda create -yn "test_conda_env" python="$DESIRED_PYTHON"
+
+          if [[ $DESIRED_PYTHON == "3.13t" ]]; then
+            conda create -yn "test_conda_env" python="3.13" -c conda-forge  python-gil
+          else
+            conda create -yn "test_conda_env" python="$DESIRED_PYTHON"
+          fi
           conda activate test_conda_env
 
           pip install "$PYTORCH_FINAL_PACKAGE_DIR"/*.whl numpy -v
