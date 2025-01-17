@@ -115,7 +115,7 @@ jobs:
           # Create new "clean" conda environment for testing
 
           if [[ $DESIRED_PYTHON == "3.13t" ]]; then
-            conda create -yn "test_conda_env" python="3.13" -c conda-forge  python-gil
+            conda create -yn "test_conda_env" python="3.13" -c conda-forge  python-freethreading
           else
             conda create -yn "test_conda_env" python="$DESIRED_PYTHON"
           fi

@@ -137,7 +137,7 @@ case $desired_python in
         SETUPTOOLS_PINNED_VERSION=">=68.0.0"
         PYYAML_PINNED_VERSION=">=6.0.1"
         NUMPY_PINNED_VERSION="=2.1.0"
-        CONDA_ENV_CREATE_FLAGS="python-gil -c conda-forge"
+        CONDA_ENV_CREATE_FLAGS="python-freethreading -c conda-forge"
         desired_python="3.13"
         ;;
     3.13)
