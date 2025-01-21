@@ -849,9 +849,12 @@ def _get_non_persistent_buffers(mod: torch.nn.Module) -> Set[str]:
     """
     result: Set[str] = set()
     for name, m in mod.named_modules(remove_duplicate=False):
-        result.update(
-            f"{name}.{b}" if name else b for b in m._non_persistent_buffers_set
-        )
+        if name:
+            result.update(
+                f"{name}.{b}" for b in m._non_persistent_buffers_set
+            )
+        else:
+            result.update(m._non_persistent_buffers_set)
     return result
 
 
