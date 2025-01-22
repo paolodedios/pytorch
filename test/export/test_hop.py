@@ -85,6 +85,7 @@ class TestHOP(TestCase):
             kwargs = inp.kwargs
             ep = export(model, args, kwargs, strict=True)
             self._compare(model, ep, args, kwargs)
+        torch._dynamo.reset()
 
     @ops(hop_tests, allowed_dtypes=(torch.float,))
     def test_pre_dispatch_export(self, device, dtype, op):
@@ -100,6 +101,7 @@ class TestHOP(TestCase):
             kwargs = inp.kwargs
             ep = _export(model, args, kwargs, pre_dispatch=True)
             self._compare(model, ep, args, kwargs)
+        torch._dynamo.reset()
 
     @ops(hop_tests, allowed_dtypes=(torch.float,))
     def test_retrace_export(self, device, dtype, op):
@@ -116,6 +118,7 @@ class TestHOP(TestCase):
             ep = _export(model, args, kwargs, pre_dispatch=True)
             ep = ep.run_decompositions()
             self._compare(model, ep, args, kwargs)
+        torch._dynamo.reset()
 
     @ops(hop_tests, allowed_dtypes=(torch.float,))
     def test_serialize_export(self, device, dtype, op):
@@ -144,6 +147,7 @@ class TestHOP(TestCase):
                     self._compare(model, ep, args, kwargs)
             else:
                 self._compare(model, ep, args, kwargs)
+        torch._dynamo.reset()
 
 
 instantiate_device_type_tests(TestHOP, globals())
