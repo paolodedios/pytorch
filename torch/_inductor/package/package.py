@@ -268,6 +268,9 @@ class AOTICompiledModel:
     def get_constant_fqns(self) -> list[str]:
         return self.loader.get_constant_fqns()  # type: ignore[attr-defined]
 
+    def __deepcopy__(self, memo) -> "AOTICompiledModel":
+        return AOTICompiledModel(self.loader)  # type: ignore[attr-defined]
+
 
 def load_package(path: Union[str, io.BytesIO], model_name: str = "model") -> AOTICompiledModel:  # type: ignore[type-arg]
     assert isinstance(path, io.BytesIO) or (
