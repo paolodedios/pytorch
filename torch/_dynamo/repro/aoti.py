@@ -46,21 +46,51 @@ class AOTIMinifierError(Exception):
 def dump_to_minify(
     exported_program: ExportedProgram,
     compiler_name: str,
+    command: str = "minify",
     options: Optional[dict[str, Any]] = None,
 ):
-    out = io.StringIO()
+    """
+    If command is "minify":
+        Dump exported_program to `debug_dir/minifier/minifier_launcher.py`, with minify command.
+    If command is "run":
+        Dump exported_program to `cwd/repro.py`, with run command.
+    """
+    assert command in ["minify", "run"]
+
     subdir = os.path.join(minifier_dir(), "checkpoints")
     if not os.path.exists(subdir):
         os.makedirs(subdir, exist_ok=True)
-    save_graph_repro_ep(
-        out,
-        compiler_name,
-        exported_program=exported_program,
-        save_dir=subdir,
-        command="minify",
-        config_patches=options,
-    )
-    return helper_for_dump_minify(out.getvalue())
+
+    if command == "minify":
+        out = io.StringIO()
+        save_graph_repro_ep(
+            out,
+            compiler_name,
+            exported_program=exported_program,
+            save_dir=subdir,
+            command="minify",
+            config_patches=options,
+        )
+        return helper_for_dump_minify(out.getvalue())
+    else:
+        curdir = os.getcwd()
+        file_name = os.path.join(curdir, "repro.py")
+        try:
+            with open(file_name, "w") as fd:
+                save_graph_repro_ep(
+                    fd,
+                    compiler_name,
+                    exported_program=exported_program,
+                    config_patches=options,
+                    save_dir=subdir,
+                    command="run",
+                    module_in_comment=True,
+                )
+            log.warning("Writing repro file to %s", file_name)
+            if use_buck:
+                BuckTargetWriter(file_name).write()
+        except OSError:
+            log.warning("No write permissions for %s", file_name)
 
 
 def get_module_string(gm):
@@ -371,6 +401,7 @@ def repro_minify(options, exported_program, config_patches):
                 gm,
                 tuple_inputs,
                 load_and_run=True,
+                check_accuracy=options.accuracy,
                 inductor_configs=inductor_configs,
             )
             if need_sync:
@@ -420,7 +451,6 @@ def run_repro(
 
     if accuracy is True:
         accuracy = "accuracy"
-        raise NotImplementedError("check for accuracy is not supported yet")
     elif accuracy is False:
         accuracy = ""
 
@@ -441,6 +471,55 @@ default settings on this script:
     )
 
     def common_flags(parser):
+        accuracy_group = parser.add_mutually_exclusive_group()
+        accuracy_group.add_argument(
+            "--no-accuracy",
+            dest="accuracy",
+            action="store_const",
+            const="",
+            default=accuracy,
+            help="do not test accuracy, just run the module and see if it errors",
+        )
+        accuracy_group.add_argument(
+            "--accuracy",
+            action="store_const",
+            const="accuracy",
+            default=accuracy,
+            help="""\
+test if the RMSE between the compiled module and the fp64 reference is greater
+than eager and the fp64 reference. This is usually more reliable than the
+standard allclose test, as we expect numeric differences from compiling, often
+improving accuracy over eager.  RMSE test allows for compiled module to
+diverge greatly from eager, as long as this divergence moves it closer to the
+'true' mathematical value of the network.  Caveats: (1) double precision can
+still suffer from rounding error, so it is not a perfect reference (see for
+example 'Herbie: Automatically Improving Floating Point Accuracy') for
+approaches that detect the necessary working precision and compute it in
+arbitrary precision floating point; unfortunately, this is not practical for
+tensor computation; (2) if there are not enough samples in the output being
+compared, we may get unlucky and have an unlucky greater RMSE than eager; this
+could be overcome by applying a more rigorous statistical test at some
+p-value, which we leave for future work.
+""",
+        )
+        accuracy_group.add_argument(
+            "--strict-accuracy",
+            dest="accuracy",
+            action="store_const",
+            const="strict_accuracy",
+            default=accuracy,
+            help="""\
+by default, when doing accuracy minification we will reject reductions which
+change the divergence from a floating point divergence to a integral/boolean
+divergence.  This is because some operations like ReLU involve temporarily
+sharp boundaries that smooth out again afterwards; without requiring
+divergence on floating point, the minifier will often fixate on divergent
+boolean tensor even though this is not the true source of the divergence.
+However, rejecting these reductions makes it more difficult for the minifier
+to make process.  Using this option will let the minifier progress for ALL
+divergences--you just might not end up with a useful repro in the end.""",
+        )
+
         parser.add_argument(
             "--save-dir",
             type=str,
