@@ -101,10 +101,12 @@ class FailureReport:
 """
 
         elif self.failure_type == FailureType.DATA_DEPENDENT_ERROR:
-            frame = self.data["stack"][-1]
-            loc = (
-                f"`{get_loc(str_to_filename[frame['filename']], frame['line'])}`" or ""
-            )
+            loc = None
+            if self.data["stack"]:
+                frame = self.data["stack"][-1]
+                loc = (
+                    f"`{get_loc(str_to_filename[frame['filename']], frame['line'])}`" or ""
+                )
             return f"""Data dependent error.
     When exporting, we were unable to evaluate the value of `{self.data["expr"]}`.
     This was encountered {self.data["occurrences"]} times.
