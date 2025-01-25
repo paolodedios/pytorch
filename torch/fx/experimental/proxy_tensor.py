@@ -419,7 +419,7 @@ def extract_val(val: _ExtractValType) -> _ExtractValType:
     elif val is None:
         return None
 
-    typing_extensions.assert_never(val)
+    typing_extensions.assert_never(val)  # type: ignore[arg-type]
 
 
 @contextmanager
