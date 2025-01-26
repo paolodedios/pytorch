@@ -332,7 +332,11 @@ __global__ void radixFindKthValues(
   // if blocks_per_slice == 1, there is no need to do cross-block reduction
   // in this case we use counts saved at registers directly
   if (blocks_per_slice > 1) {
+#if defined(USE_ROCM)
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "agent"); // make sure writes are globally visible
+#else
     __threadfence(); // make sure writes are globally visible
+#endif
     __syncthreads(); // make sure all writes are finished before update semaphores
   }
 
@@ -356,7 +360,11 @@ __global__ void radixFindKthValues(
   // accumulates counters from multiple blocks
   if (tidx < RADIX_DIGITS && blocks_per_slice > 1) {
     // the reading thread needs to complete acquire pattern
+#if defined(USE_ROCM)
+    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "agent");
+#else
     __threadfence();
+#endif
     digit_count = 0;
     for (int blk = 0; blk < blocks_per_slice; ++blk) {
       digit_count += counts[(slice_idx * blocks_per_slice + blk) * RADIX_DIGITS + tidx];
