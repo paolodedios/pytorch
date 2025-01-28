@@ -385,7 +385,7 @@ if(INTERN_BUILD_ATEN_OPS)
       endif(MSVC)
 
       # Only parallelize the SortingKernel for now to avoid side effects
-      if (${NAME} STREQUAL "native/cpu/SortingKernel.cpp" AND NOT MSVC)
+      if (${NAME} STREQUAL "native/cpu/SortingKernel.cpp" AND NOT MSVC AND USE_OPENMP)
         string(APPEND EXTRA_FLAGS " -D_GLIBCXX_PARALLEL")
       endif()
 
