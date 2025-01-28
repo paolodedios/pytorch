@@ -27,6 +27,7 @@ import warnings
 from collections import defaultdict, deque, namedtuple, OrderedDict
 from collections.abc import Hashable, Iterable, Mapping, Sequence
 from enum import Enum
+from functools import lru_cache
 from typing import (
     Any,
     Callable,
@@ -1486,6 +1487,7 @@ def treespec_dumps(treespec: TreeSpec, protocol: Optional[int] = None) -> str:
     return str_spec
 
 
+@lru_cache
 def treespec_loads(serialized: str) -> TreeSpec:
     protocol, json_schema = json.loads(serialized)
 
