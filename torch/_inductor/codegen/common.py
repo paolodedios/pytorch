@@ -339,7 +339,7 @@ class BackendFeature(Enum):
 
 
 def get_backend_features(
-    device: Union[torch.device, str, None]
+    device: Union[torch.device, str, None],
 ) -> OrderedSet[BackendFeature]:
     if device is None:
         return OrderedSet()
@@ -841,6 +841,7 @@ class OpOverrides(BasicMathOpsMixin, OpDecompositions, OpsHandler[Any]):
         # TODO: this is wrong
         # TODO: an easy bandaid is to generate runtime asserts that it's
         # <= 2**53, which is when this equation is correct
+        # TODO: remove triton.py:TritonOverrides:int_truediv after the above is fixed
         return ops.truediv(a, b)
 
     @staticmethod

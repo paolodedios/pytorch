@@ -346,7 +346,8 @@ def transform_args(
             # only consider tensor kwargs for promotion, for now
             promoting_args.extend(a for a in kwargs.values() if hasattr(a, "dtype"))
             dtype = get_promoted_dtype(
-                *promoting_args, type_promotion_kind=type_promotion_kind  # type: ignore[arg-type]
+                *promoting_args,
+                type_promotion_kind=type_promotion_kind,  # type: ignore[arg-type]
             )
 
         device = (
@@ -5165,7 +5166,14 @@ def _avg_poolnd(
         else:
 
             def fn(idx):
-                return ops.truediv(fn_sum(idx, x_loader), ops.constant(divisor, dtype))
+                # int_truediv performs int / int -> float
+                # truncate to int as done in native/cpu/AvgPoolKernel.cpp
+                return ops.to_dtype(
+                    ops.int_truediv(
+                        fn_sum(idx, x_loader), ops.constant(divisor, dtype)
+                    ),
+                    dtype,
+                )
 
     else:
 
@@ -5182,7 +5190,13 @@ def _avg_poolnd(
                 factor = ops.index_expr(hend - hstart, torch.int32)
                 divide_factors.append(factor)
             divide_factor = functools.reduce(ops.mul, divide_factors)
-            return ops.truediv(fn_sum(idx, x_loader), divide_factor)
+            if dtype.is_floating_point:
+                return ops.truediv(fn_sum(idx, x_loader), divide_factor)
+            # int_truediv performs int / int -> float
+            # truncate to int as done in native/cpu/AvgPoolKernel.cpp
+            return ops.to_dtype(
+                ops.int_truediv(fn_sum(idx, x_loader), divide_factor), dtype
+            )
 
     rv = Pointwise.create(
         device=x.get_device(),
@@ -5648,7 +5662,8 @@ def make_reduction(reduction_type: ReductionType, override_return_dtype=None):
         )
         result = Reduction.create(reduction_type=reduction_type, input_node=x, **kwargs)
         if isinstance(
-            result.data.data, Reduction  # type: ignore[attr-defined]
+            result.data.data,  # type: ignore[attr-defined]
+            Reduction,
         ):  # Only realize if reduction isn't unrolled
             result.realize()
         return result
