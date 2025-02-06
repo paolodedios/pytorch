@@ -3,6 +3,7 @@
 
 import contextlib
 import copy
+import functools
 import gc
 import gzip
 import io
@@ -4242,7 +4243,7 @@ class TestSerialization(TestCase, SerializationMixin):
         bias_nbytes = sd['bias'].untyped_storage().nbytes()
         # TemporaryFileName will give a string
         # NamedTemporaryFile will be treated as a buffer
-        file_creation_func = TemporaryFileName if filename else tempfile.NamedTemporaryFile
+        file_creation_func = TemporaryFileName if filename else functools.partial(tempfile.NamedTemporaryFile, delete=False)
 
         with file_creation_func() as f, file_creation_func() as g:
             # save state_dict in f
@@ -4255,6 +4256,8 @@ class TestSerialization(TestCase, SerializationMixin):
                     data_file = io.BytesIO(zip_file.get_record('data.pkl'))
                     data_0_offset = zip_file.get_record_offset('data/0')
                     data_1_offset = zip_file.get_record_offset('data/1')
+            if not filename:
+                f.close()
 
             # write nulls for 'data/0' and 'data/1'
             with open(f if filename else f.name, 'rb+') as opened_f:
@@ -4272,11 +4275,15 @@ class TestSerialization(TestCase, SerializationMixin):
                 zip_file.write_record_metadata('data/1', bias_nbytes)
 
             if not filename:
-                f.seek(0)
                 g.seek(0)
             sd_loaded = torch.load(g)
-            sd_loaded_ref = torch.load(f)
-            self.assertEqual(sd_loaded, sd_loaded_ref)
+            with open(f if filename else f.name, 'rb') as opened_f:
+                sd_loaded_ref = torch.load(opened_f)
+                self.assertEqual(sd_loaded, sd_loaded_ref)
+            if not filename:
+                os.unlink(f.name)
+                g.close()
+                os.unlink(g.name)
 
     @parametrize("materialize_fake", (True, False))
     def test_skip_data_serialization(self, materialize_fake):
