@@ -392,6 +392,7 @@ class TunableOp {
 struct OpParams {
   virtual ~OpParams() = default;
   virtual std::string Signature() const = 0;
+  virtual std::string BLASSignature() const = 0;
 };
 
 } // namespace at::cuda::tunable
