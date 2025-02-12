@@ -346,8 +346,7 @@ def transform_args(
             # only consider tensor kwargs for promotion, for now
             promoting_args.extend(a for a in kwargs.values() if hasattr(a, "dtype"))
             dtype = get_promoted_dtype(
-                *promoting_args,
-                type_promotion_kind=type_promotion_kind,  # type: ignore[arg-type]
+                *promoting_args, type_promotion_kind=type_promotion_kind  # type: ignore[arg-type]
             )
 
         device = (
@@ -5662,8 +5661,7 @@ def make_reduction(reduction_type: ReductionType, override_return_dtype=None):
         )
         result = Reduction.create(reduction_type=reduction_type, input_node=x, **kwargs)
         if isinstance(
-            result.data.data,  # type: ignore[attr-defined]
-            Reduction,
+            result.data.data, Reduction  # type: ignore[attr-defined]
         ):  # Only realize if reduction isn't unrolled
             result.realize()
         return result

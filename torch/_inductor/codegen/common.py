@@ -339,7 +339,7 @@ class BackendFeature(Enum):
 
 
 def get_backend_features(
-    device: Union[torch.device, str, None],
+    device: Union[torch.device, str, None]
 ) -> OrderedSet[BackendFeature]:
     if device is None:
         return OrderedSet()
