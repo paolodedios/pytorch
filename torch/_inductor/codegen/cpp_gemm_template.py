@@ -1006,7 +1006,6 @@ class CppGemmTemplate(CppTemplate):
         else:
             blocked_w = W
 
-
         def _is_int8_gemm(inputs):
             return (
                 isinstance(inputs[0], ir.IRNode)
