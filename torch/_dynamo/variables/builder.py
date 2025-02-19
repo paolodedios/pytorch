@@ -341,7 +341,7 @@ class GraphArg:
             assert is_fake(self.fake_tensor)
 
     def reconstruct(self, codegen):
-        self.source.reconstruct(codegen)
+        codegen(self.source, allow_cache=True)
 
     def erase(self):
         self._example = None
