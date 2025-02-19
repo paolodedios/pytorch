@@ -21397,7 +21397,7 @@ op_db: list[OpInfo] = [
                 "TestJit",
                 "test_variant_consistency_jit",
                 dtypes=(torch.float32,),
-            )),
+            ),),
     ),
     OpInfo(
         "repeat_interleave",
