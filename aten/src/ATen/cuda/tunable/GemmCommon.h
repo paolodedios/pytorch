@@ -152,6 +152,11 @@ inline std::string ComputeTypeFor<Float8_e5m2>() {
 }
 
 template <>
+inline std::string ComputeTypeFor<Float8_e4m3fnuz>() {
+  return "float";
+}
+
+template <>
 inline std::string ComputeTypeFor<Float8_e5m2fnuz>() {
   return "float";
 }
