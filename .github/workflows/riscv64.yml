@@ -1,9 +1,7 @@
 name: riscv64
 
 on:
-  push:
-    branches:
-      - main
+  pull_request:
     tags:
       - ciflow/riscv64/*
   workflow_dispatch:
