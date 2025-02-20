@@ -487,6 +487,7 @@ class _TorchDynamoContext:
         export=False,
         dynamic=None,
         compiler_config=None,
+        sticky_cache=None,
     ) -> None:
         super().__init__()
         assert callable(callback) or callback is False or callback is None
@@ -499,6 +500,7 @@ class _TorchDynamoContext:
         self.compiler_config = compiler_config
         self.cleanup_fns: list[Callable[[], Any]] = []
         self.enter_exit_hooks = []
+        self._sticky_cache = sticky_cache
         patch_fn()
 
         # Save the backends so that we can reset them during torch._dynamo.reset
@@ -575,6 +577,10 @@ class _TorchDynamoContext:
             # provide public api OptimizedModule.get_compiler_config()
             assert not hasattr(new_mod, "get_compiler_config")
             new_mod.get_compiler_config = get_compiler_config
+            if self._sticky_cache is not None:
+                new_mod.save_sticky_cache = self._sticky_cache.save  # type: ignore[attr-defined]
+                new_mod.load_sticky_cache = self._sticky_cache.load  # type: ignore[attr-defined]
+                new_mod.reset_sticky_cache = self._sticky_cache.reset  # type: ignore[attr-defined]
 
             return new_mod
 
@@ -635,6 +641,13 @@ class _TorchDynamoContext:
                         "a dynamo-optimized function. This is not supported at the moment."
                     )
 
+                if self._sticky_cache is not None:
+                    if compiled_wrapper := self._sticky_cache.lookup(args, kwargs):
+                        if inspect.ismethod(fn):
+                            return compiled_wrapper(fn.__self__, *args, **kwargs)
+                        else:
+                            return compiled_wrapper(*args, **kwargs)
+
                 cleanups = [enter() for enter in self.enter_exit_hooks]
                 prior_skip_guard_eval_unsafe = set_skip_guard_eval_unsafe(
                     _is_skip_guard_eval_unsafe_stance()
@@ -685,6 +698,11 @@ class _TorchDynamoContext:
         # provide public api _fn.get_compiler_config()
         assert not hasattr(_fn, "get_compiler_config")
         _fn.get_compiler_config = get_compiler_config  # type: ignore[attr-defined]
+
+        if self._sticky_cache is not None:
+            _fn.save_sticky_cache = self._sticky_cache.save  # type: ignore[attr-defined]
+            _fn.load_sticky_cache = self._sticky_cache.load  # type: ignore[attr-defined]
+            _fn.reset_sticky_cache = self._sticky_cache.reset  # type: ignore[attr-defined]
 
         # If the function is called using torch._dynamo.optimize decorator, we
         # should prevent any type of skipping.
@@ -741,6 +759,7 @@ class OptimizeContext(_TorchDynamoContext):
         rebuild_ctx: Optional[
             Callable[[], Union[OptimizeContext, _NullDecorator]]
         ] = None,
+        sticky_cache=None,
     ) -> None:
         def on_enter():
             install_generation_tagging_init()
@@ -754,6 +773,7 @@ class OptimizeContext(_TorchDynamoContext):
             export=export,
             dynamic=dynamic,
             compiler_config=compiler_config,
+            sticky_cache=sticky_cache,
         )
 
         if config.compiled_autograd:
@@ -862,6 +882,7 @@ def _optimize_catch_errors(
     dynamic=None,
     compiler_config=None,
     rebuild_ctx=None,
+    sticky_cache=None,
 ):
     return OptimizeContext(
         convert_frame.catch_errors_wrapper(compile_fn, hooks),
@@ -871,6 +892,7 @@ def _optimize_catch_errors(
         dynamic=dynamic,
         compiler_config=compiler_config,
         rebuild_ctx=rebuild_ctx,
+        sticky_cache=sticky_cache,
     )
 
 
@@ -924,9 +946,9 @@ def is_inductor_supported():
 
 def check_for_incompatible_configs():
     # Some of the configs should be mutually exclusive
-    assert not (config.suppress_errors and config.fail_on_recompile_limit_hit), (
-        "Dynamo configs suppress_error and fail_on_recompile_limit_hit can not both be active at the same time."
-    )
+    assert not (
+        config.suppress_errors and config.fail_on_recompile_limit_hit
+    ), "Dynamo configs suppress_error and fail_on_recompile_limit_hit can not both be active at the same time."
 
 
 def optimize(*args, **kwargs):
@@ -935,9 +957,9 @@ def optimize(*args, **kwargs):
         if ca_kwargs_override:
             # NOTE: The process of translating other `torch.compile` kwargs to `torch._dynamo.optimize` kwargs
             # is more complicated, we will add it in the future when needed.
-            assert set(ca_kwargs_override.keys()) == {"fullgraph"}, (
-                f"Only `fullgraph` kwarg override is supported for now, but got {ca_kwargs_override.keys()}"
-            )
+            assert set(ca_kwargs_override.keys()) == {
+                "fullgraph"
+            }, f"Only `fullgraph` kwarg override is supported for now, but got {ca_kwargs_override.keys()}"
             kwargs["nopython"] = ca_kwargs_override["fullgraph"]
         return optimize(*args, **kwargs)
 
@@ -953,6 +975,7 @@ def _optimize(
     guard_fail_fn=None,
     disable=False,
     dynamic=None,
+    sticky_cache=None,
 ) -> Union[OptimizeContext, _NullDecorator]:
     """
     The main entrypoint of TorchDynamo.  Do graph capture and call
@@ -1006,7 +1029,14 @@ def _optimize(
             dynamic=dynamic,
             hooks=hooks,
             rebuild_ctx=rebuild_ctx,
+            sticky_cache=sticky_cache,
         )
+
+    if sticky_cache is not None:
+        raise RuntimeError(
+            "sticky cache is only supported with torch.compile(fullgraph=True)"
+        )
+
     # The backend function is stashed in the callable returned by
     # _optimize_catch_errors in the field _torchdynamo_orig_callable. This can
     # be used by eval_frame.c to insert a guard on the backend.
@@ -1444,9 +1474,9 @@ def rewrite_signature(
         # as part of the function signature.
         for kwonly_arg in fullargspec.kwonlyargs:
             kwonlydefaults = fullargspec.kwonlydefaults or {}
-            assert kwonly_arg in kwargs or kwonly_arg in kwonlydefaults, (
-                f"Missing keyword only argument {kwonly_arg}"
-            )
+            assert (
+                kwonly_arg in kwargs or kwonly_arg in kwonlydefaults
+            ), f"Missing keyword only argument {kwonly_arg}"
 
         return input_strs
 
@@ -1550,9 +1580,9 @@ def export(
         check_if_dynamo_supported()
         torch._C._log_api_usage_once("torch._dynamo.export")
         if decomposition_table is not None:
-            assert aten_graph, (
-                "Specifying a decomposition_table table or tracing mode is illegal without setting aten_graph=True"
-            )
+            assert (
+                aten_graph
+            ), "Specifying a decomposition_table table or tracing mode is illegal without setting aten_graph=True"
         if pre_dispatch:
             assert aten_graph, "pre_dispatch=True can only be used when aten_graph=True"
         f = innermost_fn(f)
@@ -1567,9 +1597,9 @@ def export(
 
         def guard_export_print(guards: _guards.GuardsSet):
             nonlocal out_guards
-            assert out_guards is None, (
-                "whole graph export entails exactly one guard export"
-            )
+            assert (
+                out_guards is None
+            ), "whole graph export entails exactly one guard export"
             out_guards = guards
 
         example_inputs = []
@@ -1578,9 +1608,9 @@ def export(
             gm: torch.fx.GraphModule, inner_example_inputs
         ):
             nonlocal graph
-            assert graph is None, (
-                "Tried to emit a second graph during export. Tracing through 'f' must produce a single graph."
-            )
+            assert (
+                graph is None
+            ), "Tried to emit a second graph during export. Tracing through 'f' must produce a single graph."
             graph = gm
 
             nonlocal fake_mode, example_inputs
@@ -1722,9 +1752,9 @@ def export(
             raise constraint_violation_error
 
         if graph is None:
-            assert same_signature, (
-                "Failed to produce a graph during tracing as no tensor operations were found and same_signature is False."
-            )
+            assert (
+                same_signature
+            ), "Failed to produce a graph during tracing as no tensor operations were found and same_signature is False."
             # If the module does not contain any tensor computation, we would create a graph with inputs and outputs.
             # To be consitant with the graph traced by dynano, `graph` will have only tensor inputs as placeholders
             # and tensor outputs as output nodes. non-tensor inputs and outputs will be added when rewriting signature.
@@ -1853,6 +1883,7 @@ def optimize_assert(
     export_constraints=None,
     dynamic=None,
     rebuild_ctx=None,
+    sticky_cache=None,
 ):
     """
     The same as `torch._dynamo.optimize(backend, nopython=True)`
@@ -1864,13 +1895,17 @@ def optimize_assert(
 
     return _optimize_catch_errors(
         convert_frame.convert_frame_assert(
-            backend, export=export, export_constraints=export_constraints
+            backend,
+            export=export,
+            export_constraints=export_constraints,
+            sticky_cache=sticky_cache,
         ),
         hooks,
         backend_ctx_ctor,
         export=export,
         dynamic=dynamic,
         rebuild_ctx=rebuild_ctx,
+        sticky_cache=sticky_cache,
     )
 
 

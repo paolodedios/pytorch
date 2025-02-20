@@ -42,12 +42,12 @@ import weakref
 from pathlib import Path
 from types import CellType, CodeType, FunctionType, ModuleType
 from typing import Any, Callable, Optional, TypeVar, Union
-from typing_extensions import ParamSpec
 from weakref import ReferenceType
 
 import torch
 import torch._logging
 from torch._C._dynamo.guards import GlobalStateGuard
+from torch._dynamo import sticky_cache
 from torch._dynamo.distributed import get_compile_pg
 from torch._dynamo.symbolic_convert import TensorifyState
 from torch._guards import compile_context, CompileContext, CompileId, tracing
@@ -71,6 +71,7 @@ from torch.utils._python_dispatch import (
     is_in_torch_dispatch_mode,
 )
 from torch.utils._traceback import CapturedTraceback, format_traceback_short
+from typing_extensions import ParamSpec
 
 from . import config, exc, graph_break_hints, trace_rules
 from .bytecode_analysis import remove_dead_code, remove_pointless_jumps
@@ -157,6 +158,7 @@ except ModuleNotFoundError:
 if typing.TYPE_CHECKING:
     from .backends.registry import CompilerFn
     from .repro.after_dynamo import WrapBackendDebug
+    from .sticky_cache import _StickyCache
     from .types import BytecodeHook, CacheEntry, DynamoFrameType
     from .variables.builder import FrameStateSizeEntry
 
@@ -256,9 +258,9 @@ def preserve_global_state(fn: Callable[_P, _T]) -> Callable[_P, _T]:
                 return fn(*args, **kwargs)
             finally:
                 cleanup.close()
-                assert torch._C._len_torch_function_stack() == 0, (
-                    "Torch function mode stack state changed while dynamo tracing, please report a bug"
-                )
+                assert (
+                    torch._C._len_torch_function_stack() == 0
+                ), "Torch function mode stack state changed while dynamo tracing, please report a bug"
                 exit_stack.close()
                 torch._C._set_grad_enabled(prior_grad_mode)
                 torch.autograd.grad_mode._enter_inference_mode(prior_inference_mode)
@@ -277,9 +279,9 @@ def preserve_global_state(fn: Callable[_P, _T]) -> Callable[_P, _T]:
                     torch.cuda.set_rng_state(cuda_rng_state)
                 torch._C._set_cublas_allow_tf32(allow_tf32)
                 torch.fx.graph_module._forward_from_src = prior_fwd_from_src
-                assert guards.check(), (
-                    f"Global {guards.reason()}state changed while dynamo tracing, please report a bug"
-                )
+                assert (
+                    guards.check()
+                ), f"Global {guards.reason()}state changed while dynamo tracing, please report a bug"
 
     _fn._torchdynamo_orig_callable = fn  # type: ignore[attr-defined]
     return _fn
@@ -463,6 +465,7 @@ class ConvertFrameAssert:
         one_graph: bool = True,
         export: bool = False,
         export_constraints: Optional[typing.Never] = None,
+        sticky_cache: Optional[_StickyCache] = None,
     ) -> None:
         # assert export_constraints is None
         reset_graph_break_dup_checker()
@@ -470,6 +473,7 @@ class ConvertFrameAssert:
         self._one_graph = one_graph
         self._export = export
         self._export_constraints = export_constraints
+        self._sticky_cache = sticky_cache
 
     @property
     def _clone_with_backend(self) -> Callable[[CompilerFn], ConvertFrameAssert]:
@@ -611,6 +615,7 @@ class ConvertFrameAssert:
                 frame_state=frame_state,
                 compile_id=compile_id,
                 skip=skip + 1,
+                sticky_cache=self._sticky_cache,
             )
 
 
@@ -619,9 +624,12 @@ def convert_frame_assert(
     one_graph: bool = True,
     export: bool = False,
     export_constraints: Optional[typing.Never] = None,
+    sticky_cache: Optional[_StickyCache] = None,
 ) -> ConvertFrameAssert:
     """Fully convert a frame into an FX graph"""
-    return ConvertFrameAssert(compiler_fn, one_graph, export, export_constraints)
+    return ConvertFrameAssert(
+        compiler_fn, one_graph, export, export_constraints, sticky_cache
+    )
 
 
 from collections import OrderedDict
@@ -664,6 +672,7 @@ def _compile(
     *,
     compile_id: CompileId,
     skip: int = 0,
+    sticky_cache: Optional[_StickyCache] = None,
 ) -> ConvertFrameReturn:
     from torch.fx.experimental.validator import (
         bisect,
@@ -705,6 +714,7 @@ def _compile(
             frame_state=frame_state,
             speculation_log=speculation_log,
             distributed_state=distributed_state,
+            sticky_cache=sticky_cache,
         )
 
         try:
@@ -828,9 +838,9 @@ def _compile(
                     log.debug("No graph captured with one_graph=True")
                 return ConvertFrameReturn()
 
-        assert distributed_state is None or distributed_state.all_states is not None, (
-            "compiler collective wasn't run before compilation completed"
-        )
+        assert (
+            distributed_state is None or distributed_state.all_states is not None
+        ), "compiler collective wasn't run before compilation completed"
 
         assert out_code is not None
         log_bytecode(
@@ -897,6 +907,9 @@ def _compile(
         if output.export and output.is_empty_graph():
             return ConvertFrameReturn()
 
+        if sticky_cache is not None:
+            sticky_cache.current_precompile.add_dynamo_code(out_code)
+
         assert output.guards is not None
         CleanupManager.instance[out_code] = output.cleanups
         nonlocal cache_entry
@@ -927,6 +940,11 @@ def _compile(
         return wrap_guarded_code(guarded_code)
 
     metrics_context = get_metrics_context()
+    precompile_context = (
+        sticky_cache.precompile_context()
+        if sticky_cache is not None
+        else contextlib.nullcontext()
+    )
     with (
         _use_lazy_graph_module(config.use_lazy_graph_module),
         compile_context(CompileContext(compile_id)),
@@ -934,6 +952,7 @@ def _compile(
             "dynamo", reset_event_log_on_exit=True, log_pt2_compile_event=True
         ),
         metrics_context,
+        precompile_context,
     ):
         restart_reasons: set[str] = set()
         # This is shared across restarts
@@ -1412,9 +1431,7 @@ class CatchErrorsWrapper:
                     )
                     assert hasattr(
                         self._torchdynamo_orig_callable, "_clone_with_backend"
-                    ), (
-                        "DDPOptimizer only supports callback fns that know how to clone themselves."
-                    )
+                    ), "DDPOptimizer only supports callback fns that know how to clone themselves."
                     hijacked_callback = (
                         self._torchdynamo_orig_callable._clone_with_backend(
                             ddp_optimizer.compile_fn,
