@@ -105,7 +105,6 @@ inline std::string ComputeTypeFor() {
   return "Unknown ComputeType";
 }
 
-#ifdef USE_ROCM
 // This is a union of the compute types for
 // ROCBLAS and hipBLASLt.
 template <>
@@ -156,7 +155,6 @@ template <>
 inline std::string ComputeTypeFor<Float8_e5m2fnuz>() {
   return "float";
 }
-#endif
 
 // Convert opmath_type<T> to string
 template <typename T>
