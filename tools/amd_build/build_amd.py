@@ -144,6 +144,16 @@ ignores = [
 ignores = [os.path.join(proj_dir, ignore) for ignore in ignores]
 
 
+# Check if the compiler is hip-clang.
+def is_hip_clang() -> bool:
+    try:
+        hip_path = os.getenv("HIP_PATH", "/opt/rocm/hip")
+        with open(hip_path + "/lib/.hipInfo") as f:
+            return "HIP_COMPILER=clang" in f.read()
+    except OSError:
+        return False
+
+
 # TODO Remove once the following submodules are updated
 hip_platform_files = [
     "third_party/fbgemm/fbgemm_gpu/CMakeLists.txt",
@@ -203,5 +213,5 @@ hipify_python.hipify(
         "torch/_inductor/codegen/wrapper.py",
     ],
     out_of_place_only=args.out_of_place_only,
-    hip_clang_launch=True
+    hip_clang_launch=is_hip_clang(),
 )
