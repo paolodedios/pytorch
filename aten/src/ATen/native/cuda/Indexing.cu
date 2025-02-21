@@ -682,9 +682,11 @@ void index_put_with_sort_kernel(Tensor & self, const c10::List<std::optional<Ten
         // Adapt grid size to smaller virtual warp size:
         dim3 new_grid(ceil_div(num_indices, (int64_t) (indices_per_block * warp_size)), grid.y, grid.z);
         size_t smem_dups_size = indices_per_block * warp_size * sizeof(int64_t);
-#define KERNEL_LAUNCH_PARAMS new_grid, block, smem_dups_size, stream
+#define KERNEL_GRID new_grid
+#define KERNEL_SMEM smem_dups_size
 #else
-#define KERNEL_LAUNCH_PARAMS grid, block, 0, stream
+#define KERNEL_GRID grid
+#define KERNEL_SMEM 0
 #endif
         // This implementation is faster with high amounts of duplicates but could overflow
         // if FP16 / BF16 is used
@@ -692,7 +694,7 @@ void index_put_with_sort_kernel(Tensor & self, const c10::List<std::optional<Ten
           expandedValue.scalar_type(),
           "indexing_backward_kernel_stride_1",
           AT_WRAP([&] {
-            indexing_backward_kernel_stride_1<scalar_t><<<KERNEL_LAUNCH_PARAMS>>>
+            indexing_backward_kernel_stride_1<scalar_t><<<KERNEL_GRID, block, KERNEL_SMEM, stream>>>
             (
               sorted_indices.const_data_ptr<int64_t>(),
               orig_indices.const_data_ptr<int64_t>(),
