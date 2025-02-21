@@ -719,7 +719,8 @@ void index_put_with_sort_kernel(Tensor & self, const c10::List<std::optional<Ten
           kHalf,
           kBool,
           kBFloat16);
-#undef KERNEL_LAUNCH_PARAMS
+#undef KERNEL_GRID
+#undef KERNEL_SMEM
       } else {
         if (sliceSize <= warp_size) {
           AT_DISPATCH_V2(
