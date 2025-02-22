@@ -8424,6 +8424,11 @@ class TestMPS(TestCaseMPS):
             x.random_()
             self.assertNotEqual(x.max().item(), 0)
 
+    def test_random_5d(self):
+        # See https://github.com/pytorch/pytorch/issues/147624 / FB16550905
+        x = torch.rand((2, 3, 4, 5, 6), device="mps")
+        self.assertNotEqual(x[0], x[1])
+
     # Test exponential
     @unittest.skip("This does not test anything")
     def test_exponential(self):

@@ -47,7 +47,7 @@ typedef MPSGraphTensor* (^RandomOpBlock)(RandomCachedGraph*, MPSGraphTensor*);
 // for Uniform distributions with scalar from (val1) and to (val2) intervals
 // for Normal distributions with scalar mean (val1) and std (val2) values
 template <typename scalar_t>
-Tensor& random_mps_impl(Tensor& self,
+Tensor& random_mps_impl(Tensor& self_,
                         scalar_t val1,
                         scalar_t val2,
                         const std::optional<Tensor>& mean_opt,
@@ -56,14 +56,22 @@ Tensor& random_mps_impl(Tensor& self,
                         std::optional<Generator> gen,
                         std::string op_name,
                         RandomOpBlock randomBlock) {
-  if (self.numel() == 0) {
-    return self;
+  if (self_.numel() == 0) {
+    return self_;
+  }
+  auto self = self_;
+  if (self_.ndimension() > 4) {
+    if (self.is_contiguous()) {
+      self = self.view({self.numel()});
+    } else {
+      TORCH_WARN("MPS random is broken for 5D+ tensors, see https://github.com/pytorch/pytorch/issues/147624")
+    }
   }
   auto mps_gen = get_generator_or_default<MPSGeneratorImpl>(gen, at::mps::detail::getDefaultMPSGenerator());
-  MPSStream* stream = getCurrentMPSStream();
+  auto stream = getCurrentMPSStream();
 
   @autoreleasepool {
-    string key = op_name + getTensorsStringKey({self, mean_opt.value_or(Tensor()), std_opt.value_or(Tensor())}) + ":" +
+    auto key = op_name + getTensorsStringKey({self, mean_opt.value_or(Tensor()), std_opt.value_or(Tensor())}) + ":" +
         std::to_string(val1) + ":" + std::to_string(val2);
     auto cachedGraph = LookUpOrCreateCachedGraph<RandomCachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
       newCachedGraph->stateTensor =
@@ -152,7 +160,7 @@ Tensor& random_mps_impl(Tensor& self,
     runMPSGraph(stream, cachedGraph->graph(), feeds, outputPlaceholder);
   }
 
-  return self;
+  return self_;
 }
 
 static Tensor& normal_mps_impl(Tensor& self,
