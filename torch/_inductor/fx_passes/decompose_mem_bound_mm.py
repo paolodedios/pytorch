@@ -62,6 +62,7 @@ def should_decompose_bmm(mat1, mat2) -> bool:
 
 
 def should_decompose_mm(mat1, mat2) -> bool:
+    # breakpoint()
     if is_node_meta_valid(mat1) and is_node_meta_valid(mat2):
         mat1 = mat1.meta["val"]
         mat2 = mat2.meta["val"]
@@ -78,7 +79,7 @@ def should_decompose_mm(mat1, mat2) -> bool:
         check_device(mat1, mat2, device="cpu")
         and mat1.shape[0] == 1
         and mat2.shape[0] <= 64
-        and mat2.shape[1] <= 16
+        and mat2.shape[1] <= 512
     )
 
 
