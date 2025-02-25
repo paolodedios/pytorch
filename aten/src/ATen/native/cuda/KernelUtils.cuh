@@ -236,21 +236,37 @@ __device__ __forceinline__ void opportunistic_fastAtomicAdd(
     if constexpr (std::is_same<scalar_t, c10::BFloat16>::value || std::is_same<scalar_t, c10::Half>::value)
     {
         typedef unsigned short __attribute__((ext_vector_type(2))) vec_short2;
-        union ill { unsigned int i[2]; int64_t il; } iil_ = { .il = (int64_t)dst }; ill ill_oneUpDst;
-        int oneUpDst = __builtin_amdgcn_mov_dpp(index, 0x130, 0xf, 0xf, 0);
-        int oneDnDst = __builtin_amdgcn_mov_dpp(index, 0x138, 0xf, 0xf, 0);
-        union bfi { __hip_bfloat16 bf; short s; } bfi_ = { .bf = (__hip_bfloat16)value }; bfi bfi_oneUpVal;
+        //union ill { unsigned int i[2]; int64_t il; } iil_ = { .il = (int64_t)dst }; ill ill_oneUpDst;
+        //int oneUpDst = __builtin_amdgcn_mov_dpp(index, 0x130, 0xf, 0xf, 0);
+        //int oneDnDst = __builtin_amdgcn_mov_dpp(index, 0x138, 0xf, 0xf, 0);
+        //union bfi { __hip_bfloat16 bf; short s; } bfi_ = { .bf = (__hip_bfloat16)value }; bfi bfi_oneUpVal;
+
+        union ill { unsigned int i[2]; int64_t il;  } iil_ = { .il = (int64_t)dst  }; ill ill_oneUpDst, ill_oneDnDst;
+        ill_oneUpDst.i[0] = __builtin_amdgcn_mov_dpp(iil_.i[0], 0x130, 0xf, 0xf, 0);
+        ill_oneUpDst.i[1] = __builtin_amdgcn_mov_dpp(iil_.i[1], 0x130, 0xf, 0xf, 0);
+        ill_oneDnDst.i[0] = __builtin_amdgcn_mov_dpp(iil_.i[0], 0x138, 0xf, 0xf, 0);
+        ill_oneDnDst.i[1] = __builtin_amdgcn_mov_dpp(iil_.i[1], 0x138, 0xf, 0xf, 0);
+        union bfi {scalar_t bf; short s; } bfi_ = { .bf = value  }; bfi bfi_oneUpVal;
+
         bfi_oneUpVal.s = __builtin_amdgcn_mov_dpp(bfi_.s, 0x130, 0xf, 0xf, 0);
         auto oneUpVal = bfi_oneUpVal.bf;
-        if (oneUpDst - (int64_t)dst == 1) {
+        //if (oneUpDst - (int64_t)dst == 1) {
+        if ((ill_oneUpDst.il - reinterpret_cast<int64_t>(dst) == sizeof(scalar_t)) &&
+                +   (__lane_id()%2==0))
+        {
           union bfvs { __hip_bfloat16 bf[2]; vec_short2 vs2; } bfvs_;
-          bfvs_.bf[0] = (__hip_bfloat16)value;
-          bfvs_.bf[1] = (__hip_bfloat16)oneUpVal;
+          //bfvs_.bf[0] = (__hip_bfloat16)value;
+          //bfvs_.bf[1] = (__hip_bfloat16)oneUpVal;
+          bfvs_.bf[0] = value;
+          bfvs_.bf[1] = oneUpVal;
           __builtin_amdgcn_flat_atomic_fadd_v2bf16((vec_short2*)dst, bfvs_.vs2);
           return;
-        } else if ((int64_t)dst - oneDnDst == 1) {
-          return;
-        }
+        //} else if ((int64_t)dst - oneDnDst == 1) {
+          } else if ((reinterpret_cast<int64_t>(dst) - ill_oneDnDst.il == sizeof(scalar_t)) &&
+                  + (__lane_id()%2==1))
+          {
+            return;
+          }
     }
     // not coalsced, so now let try to capture lane-matches...
 
