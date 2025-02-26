@@ -457,7 +457,7 @@ class _ScaledMatmul(_Matmul):
 
         # This is a temporary workaround to handle the reshape -> scaled_mm -> reshape
         # pattern when scales are row-wise, and have been reshaped along with the target
-        # tensor. See (PR) for details.
+        # tensor. See https://github.com/pytorch/pytorch/pull/148001 for details.
         #
         # If tensor dim does not match scale dim, check if the scale node follows
         # the "reshape -> reciprocal" pattern. If so, we can insert a reshape op after
