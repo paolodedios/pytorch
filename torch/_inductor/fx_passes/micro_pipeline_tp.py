@@ -401,17 +401,23 @@ class _ScaledMatmul(_Matmul):
             Returns the new reshape node.
             """
             # ensure the node has exactly one input node (parent)
-            assert node.target == aten.reciprocal.default, "Node must be a aten.reciprocal.default op"
+            assert (
+                node.target == aten.reciprocal.default
+            ), "Node must be a aten.reciprocal.default op"
             assert len(node.all_input_nodes) == 1, "Node must have exactly one parent"
 
             parent_node = node.all_input_nodes[0]
-            assert parent_node.target == aten.reshape.default, "Parent node must be a aten.reshape.default op"
-            assert len(parent_node.all_input_nodes) == 1, "Parent node must have exactly one input node"
+            assert (
+                parent_node.target == aten.reshape.default
+            ), "Parent node must be a aten.reshape.default op"
+            assert (
+                len(parent_node.all_input_nodes) == 1
+            ), "Parent node must have exactly one input node"
 
             parent_input_node = parent_node.all_input_nodes[0]
             parent_input_shape = list(_get_tensor(parent_input_node).shape)
 
-            # insert reshape back to shape from before the parent reshape op 
+            # insert reshape back to shape from before the parent reshape op
             graph = node.graph
             with graph.inserting_after(node):
                 reshape_node = graph.call_function(
@@ -425,7 +431,6 @@ class _ScaledMatmul(_Matmul):
                     user.replace_input_with(node, reshape_node)
 
             return reshape_node
-
 
         is_reshape_mm_reshape_pattern = match[0].target == aten.reshape.default
         mm_node = match[1] if is_reshape_mm_reshape_pattern else match[0]
@@ -451,27 +456,27 @@ class _ScaledMatmul(_Matmul):
         tensorwise_scaling = A_scale_ndim <= 1
 
         # This is a temporary workaround to handle the reshape -> scaled_mm -> reshape
-        # pattern when scales are row-wise, and have been reshaped along with the target 
+        # pattern when scales are row-wise, and have been reshaped along with the target
         # tensor. See (PR) for details.
-        # 
+        #
         # If tensor dim does not match scale dim, check if the scale node follows
-        # the "reshape -> reciprocal" pattern. If so, we can insert a reshape op after 
+        # the "reshape -> reciprocal" pattern. If so, we can insert a reshape op after
         # the reciprocal, to reshape the reciprocal back to the original shape before
         # the first reshape op.
         if (
-            is_reshape_mm_reshape_pattern and \
-            A_ndim != A_scale_ndim and \
-            A_scale_has_single_parent and \
-            not tensorwise_scaling
+            is_reshape_mm_reshape_pattern
+            and A_ndim != A_scale_ndim
+            and A_scale_has_single_parent
+            and not tensorwise_scaling
         ):
             A_scale_parent = A_scale_node.all_input_nodes[0]
 
             if (
-                A_scale_parent.target == aten.reshape.default and \
-                A_scale_node.target == aten.reciprocal.default
+                A_scale_parent.target == aten.reshape.default
+                and A_scale_node.target == aten.reciprocal.default
             ):
                 A_scale_node = insert_reshape_op(A_scale_node)
-            
+
         return _ScaledMatmul(
             nodes=match,
             A_node=cast(torch.fx.Node, A_node),
