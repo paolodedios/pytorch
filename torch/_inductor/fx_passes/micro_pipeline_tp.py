@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Any, cast, Optional
 
 import torch
-from torch._inductor.fx_passes.split_cat import reshape_cat_node
 from torch.utils._ordered_set import OrderedSet
 
 from .. import config, inductor_prims
@@ -389,15 +388,20 @@ class _ScaledMatmul(_Matmul):
 
         def insert_reshape_op(node: torch.fx.Node):
             """
-            Insert reshape op after this node, to get it back in the original shape before the prior reshape.
-            
-            Args:
-                node (torch.fx.Node): The node to swap with its parent
+            Given a reciprocal node with a parent reshape node,
+            insert a reshape node after the reciprocal node which reshapes
+            the reciprocal output back to the original shape before the first reshape.
 
-            Returns:
-                new Node at the given node's location after swapping it with its parent in place.
+            Before:
+                reshape (a,bc,) to (a*b,c) -> reciprocal
+
+            After:
+                reshape (a,bc,) to (a*b,c) -> reciprocal -> reshape (a*b,c) to (a,b,c)
+
+            Returns the new reshape node.
             """
             # ensure the node has exactly one input node (parent)
+            assert node.target == aten.reciprocal.default, "Node must be a aten.reciprocal.default op"
             assert len(node.all_input_nodes) == 1, "Node must have exactly one parent"
 
             parent_node = node.all_input_nodes[0]
@@ -461,7 +465,7 @@ class _ScaledMatmul(_Matmul):
             not tensorwise_scaling
         ):
             A_scale_parent = A_scale_node.all_input_nodes[0]
-            
+
             if (
                 A_scale_parent.target == aten.reshape.default and \
                 A_scale_node.target == aten.reciprocal.default
