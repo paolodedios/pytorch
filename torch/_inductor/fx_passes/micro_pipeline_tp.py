@@ -452,8 +452,12 @@ class _ScaledMatmul(_Matmul):
 
         A_ndim = _get_tensor(A_node).ndim
         A_scale_ndim = _get_tensor(A_scale_node).ndim
-        A_scale_has_single_parent = len(A_scale_node.all_input_nodes) == 1
-        tensorwise_scaling = A_scale_ndim <= 1
+        is_reciprocal_with_reshape_parent = (
+            A_scale_node.target == aten.reciprocal.default
+            and len(A_scale_node.all_input_nodes) == 1
+            and A_scale_node.all_input_nodes[0].target == aten.reshape.default
+        )
+        is_tensorwise_scaling = A_scale_ndim <= 1
 
         # This is a temporary workaround to handle the reshape -> scaled_mm -> reshape
         # pattern when scales are row-wise, and have been reshaped along with the target
@@ -469,16 +473,10 @@ class _ScaledMatmul(_Matmul):
         if (
             is_reshape_mm_reshape_pattern
             and A_ndim != A_scale_ndim
-            and A_scale_has_single_parent
-            and not tensorwise_scaling
+            and not is_tensorwise_scaling
+            and is_reciprocal_with_reshape_parent
         ):
-            A_scale_parent = A_scale_node.all_input_nodes[0]
-
-            if (
-                A_scale_parent.target == aten.reshape.default
-                and A_scale_node.target == aten.reciprocal.default
-            ):
-                A_scale_node = insert_reshape_op(A_scale_node)
+            A_scale_node = insert_reshape_op(A_scale_node)
 
         return _ScaledMatmul(
             nodes=match,
