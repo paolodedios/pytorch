@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast, Optional
 
 import torch
+from torch._inductor.fx_passes.split_cat import reshape_cat_node
 from torch.utils._ordered_set import OrderedSet
 
 from .. import config, inductor_prims
@@ -386,12 +387,93 @@ class _ScaledMatmul(_Matmul):
                 return default
             return node.args[idx]
 
+        def insert_reshape_op(node: torch.fx.Node):
+            """
+            Insert reshape op after this node, to get it back in the original shape before the prior reshape.
+            
+            Args:
+                node (torch.fx.Node): The node to swap with its parent
+
+            Returns:
+                new Node at the given node's location after swapping it with its parent in place.
+            """
+            # ensure the node has exactly one input node (parent)
+            assert len(node.all_input_nodes) == 1, "Node must have exactly one parent"
+
+            parent_node = node.all_input_nodes[0]
+            assert parent_node.target == aten.reshape.default, "Parent node must be a aten.reshape.default op"
+            assert len(parent_node.all_input_nodes) == 1, "Parent node must have exactly one input node"
+
+            parent_input_node = parent_node.all_input_nodes[0]
+            parent_input_shape = list(_get_tensor(parent_input_node).shape)
+
+            # insert reshape back to shape from before the parent reshape op 
+            graph = node.graph
+            with graph.inserting_after(node):
+                reshape_node = graph.call_function(
+                    aten.reshape.default, (node, parent_input_shape)
+                )
+
+            # ensure all users of original node (except the reshape node) now use the reshaped node instead
+            node_users = list(node.users)
+            for user in node_users:
+                if user != reshape_node:
+                    user.replace_input_with(node, reshape_node)
+
+            return reshape_node
+
+
+        is_reshape_mm_reshape_pattern = match[0].target == aten.reshape.default
+        mm_node = match[1] if is_reshape_mm_reshape_pattern else match[0]
+
+        # `A_node` is pulled directly from match rather than `mm_node` because it needs to handle
+        # both of the following cases:
+        #
+        # Case 1: single node match (mm):
+        # - match[0].args[0] will be the "A tensor" node of scaled_mm
+        # - Has 2D shape
+        #
+        # Case 2: 3 node match (reshape -> mm -> reshape)
+        # - match[0].args[0] will be the "A tensor" input to the reshape op
+        # - Has 3D+ shape
+        A_node = match[0].args[0]
+        B_node = mm_node.args[1]
+        A_scale_node = mm_node.args[2]
+        B_scale_node = mm_node.args[3]
+
+        A_ndim = _get_tensor(A_node).ndim
+        A_scale_ndim = _get_tensor(A_scale_node).ndim
+        A_scale_has_single_parent = len(A_scale_node.all_input_nodes) == 1
+        tensorwise_scaling = A_scale_ndim <= 1
+
+        # This is a temporary workaround to handle the reshape -> scaled_mm -> reshape
+        # pattern when scales are row-wise, and have been reshaped along with the target 
+        # tensor. See (PR) for details.
+        # 
+        # If tensor dim does not match scale dim, check if the scale node follows
+        # the "reshape -> reciprocal" pattern. If so, we can insert a reshape op after 
+        # the reciprocal, to reshape the reciprocal back to the original shape before
+        # the first reshape op.
+        if (
+            is_reshape_mm_reshape_pattern and \
+            A_ndim != A_scale_ndim and \
+            A_scale_has_single_parent and \
+            not tensorwise_scaling
+        ):
+            A_scale_parent = A_scale_node.all_input_nodes[0]
+            
+            if (
+                A_scale_parent.target == aten.reshape.default and \
+                A_scale_node.target == aten.reciprocal.default
+            ):
+                A_scale_node = insert_reshape_op(A_scale_node)
+            
         return _ScaledMatmul(
             nodes=match,
-            A_node=cast(torch.fx.Node, match[0].args[0]),
-            B_node=cast(torch.fx.Node, mm_node.args[1]),
-            A_scale_node=cast(torch.fx.Node, mm_node.args[2]),
-            B_scale_node=cast(torch.fx.Node, mm_node.args[3]),
+            A_node=cast(torch.fx.Node, A_node),
+            B_node=cast(torch.fx.Node, B_node),
+            A_scale_node=cast(torch.fx.Node, A_scale_node),
+            B_scale_node=cast(torch.fx.Node, B_scale_node),
             bias_node=get_arg(mm_node, 4, None),
             result_scale_node=get_arg(mm_node, 5, None),
             out_dtype=get_arg(mm_node, 6, None),
