@@ -463,6 +463,9 @@ class _ScaledMatmul(_Matmul):
         # the "reshape -> reciprocal" pattern. If so, we can insert a reshape op after
         # the reciprocal, to reshape the reciprocal back to the original shape before
         # the first reshape op.
+        #
+        # TODO: remove this workaround once torch._scaled_matmul exists and can be used
+        # to implement a more robust long-term support for 3D+ scaled matmuls.
         if (
             is_reshape_mm_reshape_pattern
             and A_ndim != A_scale_ndim
