@@ -400,7 +400,7 @@ class _ScaledMatmul(_Matmul):
 
             Returns the new reshape node.
             """
-            # ensure the node has exactly one input node (parent)
+            # ensure the given node matches the pattern described in the docstring
             assert (
                 node.target == aten.reciprocal.default
             ), "Node must be a aten.reciprocal.default op"
