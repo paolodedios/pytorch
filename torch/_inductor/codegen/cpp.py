@@ -4960,7 +4960,7 @@ class CppScheduling(BaseScheduling):
         ]
         # The counter cpp_templated_kernel_counter is used for verifying if a
         # a templated kernel was successfully compiled in a UT
-        counters["inductor"]["cpp_compiled_kernels_counter"] += 1
+        counters["inductor"]["cpp_templated_kernel_counter"] += 1
         counters["inductor"]["cpp_epilogue_fusion_counter"] += len(epilogue_nodes)
         assert self.is_cpp_template(
             template_node
