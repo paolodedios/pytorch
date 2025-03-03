@@ -514,6 +514,223 @@ void f8f8bf16_rowwise_impl_sm89(
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+// Cutlass rowwise kernel for SM100
+template <
+    typename FastAccum,
+    typename DtypeA,
+    typename DtypeB,
+    typename DtypeBias>
+void f8f8bf16_rowwise_impl_sm100(
+    at::Tensor XQ, // FP8
+    at::Tensor WQ, // FP8
+    at::Tensor x_scale,
+    at::Tensor w_scale,
+    std::optional<at::Tensor> bias,
+    at::Tensor out) {
+  int M = XQ.size(0);
+  int N = WQ.size(1);
+  int K = XQ.size(1);
+
+  using LayoutInputA = cutlass::layout::RowMajor;
+  constexpr int AlignmentInputA = 16 / sizeof(DtypeA);
+
+  using LayoutInputB = cutlass::layout::ColumnMajor;
+  constexpr int AlignmentInputB = 16 / sizeof(DtypeB);
+
+  using LayoutOutput = cutlass::layout::RowMajor;
+  constexpr int AlignmentOutput = 16 / sizeof(DtypeOutput);
+
+  // Tag indicating the minimum SM that supports the intended feature
+  using ArchTag = cutlass::arch::Sm100;
+  using OperatorClass = cutlass::arch::OpClassTensorOp;
+
+  using ThreadblockSwizzle =
+      cutlass::gemm::threadblock::ThreadblockSwizzleStreamK;
+
+  // TODO: instead of fixing these values, implement logic alike to
+  // what is used for SM90+.
+  using ThreadblockShape = cutlass::gemm::GemmShape<64, 128, 64>;
+  using WarpShape = cutlass::gemm::GemmShape<32, 64, 64>;
+  using InstructionShape = cutlass::gemm::GemmShape<16, 8, 32>;
+  constexpr auto NumStages = 4;
+
+  using Operator = std::conditional_t<
+      FastAccum::value,
+      cutlass::arch::OpMultiplyAddFastAccum,
+      cutlass::arch::OpMultiplyAdd>;
+  constexpr auto NumEVTEpilogueStages = 1;
+
+  using OutputTileThreadMap =
+      cutlass::epilogue::threadblock::OutputTileThreadLayout<
+          ThreadblockShape,
+          WarpShape,
+          DtypeOutput,
+          AlignmentOutput,
+          NumEVTEpilogueStages>;
+
+  using Accum = cutlass::epilogue::threadblock::VisitorAccFetch;
+
+  using XScale = cutlass::epilogue::threadblock::VisitorColBroadcast<
+      OutputTileThreadMap, DtypeScale,
+      cute::Stride<cute::_1, cute::_0, int64_t>>;
+  using XScaleArguments = typename XScale::Arguments;
+
+  using WScale = cutlass::epilogue::threadblock::VisitorRowBroadcast<
+      OutputTileThreadMap, DtypeScale,
+      cute::Stride<cute::_0, cute::_1, int64_t>>;
+  using WScaleArguments = typename WScale::Arguments;
+
+  using Bias = cutlass::epilogue::threadblock::VisitorRowBroadcast<
+      OutputTileThreadMap, DtypeBias,
+      cute::Stride<cute::_0, cute::_1, int64_t>>;
+  using BiasArguments = typename Bias::Arguments;
+
+  using ApplyXScale = cutlass::epilogue::threadblock::VisitorCompute<
+      cutlass::multiplies, DtypeEpilogue, DtypeEpilogue,
+      cutlass::FloatRoundStyle::round_to_nearest
+  >;
+  using EVTApplyXScale = cutlass::epilogue::threadblock::Sm80EVT<
+      ApplyXScale,
+      Accum,
+      XScale>;
+
+  using ApplyWScale = cutlass::epilogue::threadblock::VisitorCompute<
+      cutlass::multiplies, DtypeEpilogue, DtypeEpilogue,
+      cutlass::FloatRoundStyle::round_to_nearest
+  >;
+  using EVTApplyWScale = cutlass::epilogue::threadblock::Sm80EVT<
+      ApplyWScale,
+      EVTApplyXScale,
+      WScale>;
+
+  using ApplyBias = cutlass::epilogue::threadblock::VisitorCompute<
+      cutlass::plus, DtypeEpilogue, DtypeEpilogue,
+      cutlass::FloatRoundStyle::round_to_nearest
+  >;
+  using EVTApplyBias = cutlass::epilogue::threadblock::Sm80EVT<
+      ApplyBias,
+      EVTApplyWScale,
+      Bias>;
+
+  using Output = cutlass::epilogue::threadblock::VisitorAuxStore<
+      OutputTileThreadMap, DtypeOutput,
+      cutlass::FloatRoundStyle::round_to_nearest,
+      cute::Stride<int64_t, cute::_1, int64_t> // StrideMNL
+  >;
+
+  using EVTOutput = cutlass::epilogue::threadblock::Sm80EVT<
+      Output,
+      EVTApplyBias>;
+
+  using EVTKernel = typename cutlass::gemm::kernel::DefaultGemmWithVisitor<
+      DtypeA, LayoutInputA, cutlass::ComplexTransform::kNone, AlignmentInputA,
+      DtypeB, LayoutInputB, cutlass::ComplexTransform::kNone, AlignmentInputB,
+      DtypeOutput, LayoutOutput, AlignmentOutput,
+      DtypeAccum,
+      DtypeEpilogue,
+      OperatorClass,
+      ArchTag,
+      ThreadblockShape,
+      WarpShape,
+      InstructionShape,
+      EVTOutput,
+      ThreadblockSwizzle,
+      NumStages,
+      Operator,
+      NumEVTEpilogueStages
+  >::GemmKernel;
+
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<EVTKernel>;
+
+  cutlass::gemm::GemmCoord problem_size(M, N, K);
+  constexpr auto SplitKFactor = 1;
+
+  XScaleArguments x_scale_arguments{
+      (DtypeScale*)x_scale.data_ptr(),
+      DtypeScale(1),
+      {cute::_1{}, cute::_0{}, problem_size.m()}
+  };
+  WScaleArguments w_scale_arguments{
+      (DtypeScale*)w_scale.data_ptr(),
+      DtypeScale(1),
+      {cute::_0{}, cute::_1{}, problem_size.n()}
+  };
+  BiasArguments bias_arguments{
+      bias.has_value() ? reinterpret_cast<DtypeBias*>(bias->data_ptr()) : nullptr,
+      DtypeBias(0),
+      {cute::_0{}, cute::_1{}, problem_size.n()}
+  };
+  typename Output::Arguments output_arguments{
+    (DtypeOutput*)out.data_ptr(),
+    {problem_size.n(), cute::_1{}, problem_size.mn().product()}
+  };
+  typename EVTOutput::Arguments callback_arguments{
+    {
+      {
+        {
+          {},                 // Accum
+          x_scale_arguments,  // XScale
+          {}                  // ApplyXScale
+        },                    // EVTApplyXScale
+        w_scale_arguments,    // WScale
+        {}                    // ApplyWScale
+      },                      // EVTApplyWScale
+      bias_arguments,         // Bias
+      {}                      // ApplyBias
+    },                        // EVTApplyBias
+    output_arguments          // Output
+  };                          // EVTOutput
+
+  typename Gemm::Arguments arguments(
+    cutlass::gemm::GemmUniversalMode::kGemm,
+    problem_size,
+    SplitKFactor,
+    callback_arguments,           // arguments of EVT callbacks
+    (DtypeA*)XQ.data_ptr(),
+    (DtypeB*)WQ.data_ptr(),
+    nullptr,                      // ptr C (unused)
+    nullptr,                      // ptr D (unused)
+    problem_size.mk().product(),  // batch stride A
+    problem_size.nk().product(),  // batch stride B
+    0,                            // batch stride C (unused)
+    0,                            // batch stride D (unused)
+    problem_size.k(),             // stride A
+    problem_size.k(),             // stride B
+    0,                            // stride C (unused)
+    0);                           // stride D (unused)
+
+  Gemm gemm;
+
+  // Using the arguments, query for extra workspace required for matrix
+  // multiplication computation
+  size_t workspace_size = Gemm::get_workspace_size(arguments);
+
+  // Allocate workspace memory
+  auto workspace = XQ.new_empty(
+      {static_cast<int64_t>(workspace_size)},
+      at::TensorOptions().dtype(at::kByte));
+
+  // Check the problem size is supported or not
+  cutlass::Status status = gemm.can_implement(arguments);
+  if (status != cutlass::Status::kSuccess) {
+    throw std::runtime_error("cutlass cannot implement");
+  }
+
+  // Initialize CUTLASS kernel with arguments and workspace pointer
+  status = gemm.initialize(arguments, workspace.data_ptr());
+  if (status != cutlass::Status::kSuccess) {
+    throw std::runtime_error("cutlass cannot initialize");
+  }
+
+  status = gemm(at::cuda::getCurrentCUDAStream());
+  if (status != cutlass::Status::kSuccess) {
+    throw std::runtime_error(
+        std::string("cutlass cannot run") +
+        cutlass::cutlassGetStatusString(status));
+  }
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 template <typename ClusterShape, typename... Types>
 void dispatch_fp8_rowwise_kernel_on_tile_size(
     at::Tensor XQ,
@@ -701,8 +918,10 @@ void dispatch_fp8_rowwise_kernel_on_sm(
 
   if (sm9x) {
     dispatch_fp8_rowwise_kernel_on_cluster_size_and_transpose<Types...>(XQ, WQ, x_scale, w_scale, bias, out);
-  } else {
+  } else if (sm89) {
     f8f8bf16_rowwise_impl_sm89<Types...>(XQ, WQ, x_scale, w_scale, bias, out);
+  } else if (sm10x) {
+    f8f8bf16_rowwise_impl_sm100<Types...>(XQ, WQ, x_scale, w_scale, bias, out);
   }
 }
 
