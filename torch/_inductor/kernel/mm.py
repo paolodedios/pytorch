@@ -54,7 +54,7 @@ from .mm_common import (
 
 try:
     import triton
-    
+
     triton_version = triton.__version__
     has_triton = True
 except ImportError:
