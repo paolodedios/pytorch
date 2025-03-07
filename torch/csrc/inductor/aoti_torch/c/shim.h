@@ -623,6 +623,40 @@ AOTI_TORCH_EXPORT void aoti_torch_save_tensor_handle(
     const char* launch_prefix,
     const char* kernel_name);
 
+class TorchLibraryOpaque;
+using TorchLibraryHandle = TorchLibraryOpaque*;
+
+AOTI_TORCH_EXPORT AOTITorchError aoti_torch_library_init_impl(
+    const char* ns,
+    const char* k,
+    const char* file,
+    uint32_t line,
+    TorchLibraryHandle* ret_new_torch_lib);
+
+AOTI_TORCH_EXPORT AOTITorchError aoti_torch_library_init_def(
+    const char* ns,
+    const char* file,
+    uint32_t line,
+    TorchLibraryHandle* ret_new_torch_lib);
+
+AOTI_TORCH_EXPORT AOTITorchError aoti_torch_library_init_fragment(
+    const char* ns,
+    const char* file,
+    uint32_t line,
+    TorchLibraryHandle* ret_new_torch_lib);
+
+AOTI_TORCH_EXPORT AOTITorchError aoti_torch_library_impl(
+    TorchLibraryHandle self,
+    const char* name,
+    void (*fn)(uint64_t*, int64_t, int64_t));
+
+AOTI_TORCH_EXPORT AOTITorchError
+aoti_torch_library_def(TorchLibraryHandle self, const char* name);
+
+// Free the torch::Library object
+AOTI_TORCH_EXPORT AOTITorchError
+aoti_torch_delete_library_object(TorchLibraryHandle tlh);
+
 #ifdef USE_CUDA
 
 struct CUDAGuardOpaque;
