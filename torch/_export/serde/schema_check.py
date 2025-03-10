@@ -446,7 +446,7 @@ class ForwardRef {{
 
  public:
   ForwardRef(): ptr_(std::make_unique<T>()) {{}}
-  ForwardRef(ForwardRef<T>&&) = default;
+  ForwardRef(ForwardRef<T>&&);
   ForwardRef(const ForwardRef<T>& other): ptr_(std::make_unique<T>(*other.ptr_)) {{}}
   ForwardRef<T>& operator=(ForwardRef<T>&&) = default;
   ForwardRef<T>& operator=(const ForwardRef<T>& other) {{
@@ -521,6 +521,8 @@ inline void from_json(const nlohmann::json& j, F64& f) {{
 {"".join(cpp_enum_defs.values())}
 {"".join(dict(sorted(cpp_class_defs.items(), key=lambda x: class_ordering[x[0]])).values())}
 {chr(10).join(cpp_json_defs)}
+
+template <typename T> ForwardRef<T>::ForwardRef(ForwardRef<T>&&) = default;
 }} // namespace _export
 }} // namespace torch
 """
