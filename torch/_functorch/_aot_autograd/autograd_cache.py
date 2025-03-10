@@ -757,9 +757,9 @@ class GenericAOTAutogradCacheEntry(Generic[TForward, TBackward]):
 
     # Code of the joint graph using print_readable()
     # Used for logging purposes
-    aot_joint_graph_str: Optional[str]
-    aot_forward_graph_str: Optional[str]
-    aot_backward_graph_str: Optional[str]
+    aot_joint_graph_str: str | None
+    aot_forward_graph_str: str | None
+    aot_backward_graph_str: str | None
 
     # Runtime_metadata saved right before compilation
     runtime_metadata: ViewAndMutationMeta
@@ -768,8 +768,8 @@ class GenericAOTAutogradCacheEntry(Generic[TForward, TBackward]):
     dispatch_wrappers: list[CompilerWrapper]
 
     # Used by AOTSubclassWrapper
-    maybe_subclass_meta: Optional[SubclassMeta]
-    num_fw_outs_saved_for_bw: Optional[int]
+    maybe_subclass_meta: SubclassMeta | None
+    num_fw_outs_saved_for_bw: int | None
 
     # Used by RuntimeWrapepr
     indices_of_inps_to_detach: list[int]
