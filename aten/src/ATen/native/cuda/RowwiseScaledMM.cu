@@ -239,6 +239,7 @@ void f8f8bf16_rowwise_impl(
   StrideOutput stride_output = cutlass::make_cute_packed_stride(
       StrideOutput{}, cute::make_shape(M, static_cast<int>(out.stride(0)), 1));
 
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wmissing-field-initializers")
   typename Gemm::Arguments arguments{
       cutlass::gemm::GemmUniversalMode::kGemm,
       {M, N, K},
@@ -254,6 +255,7 @@ void f8f8bf16_rowwise_impl(
        stride_output,
        reinterpret_cast<DtypeOutput*>(out.data_ptr()),
        stride_output}};
+C10_DIAGNOSTIC_POP()
 
   Gemm gemm;
 
@@ -420,6 +422,7 @@ void f8f8bf16_rowwise_impl_sm100(
   StrideOutput stride_output = cutlass::make_cute_packed_stride(
       StrideOutput{}, cute::make_shape(M, static_cast<int>(out.stride(0)), 1));
 
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wmissing-field-initializers")
   typename Gemm::Arguments arguments{
       cutlass::gemm::GemmUniversalMode::kGemm,
       {M, N, K},
@@ -435,6 +438,7 @@ void f8f8bf16_rowwise_impl_sm100(
        stride_output,
        reinterpret_cast<DtypeOutput*>(out.data_ptr()),
        stride_output}};
+C10_DIAGNOSTIC_POP()
 
   Gemm gemm;
 
@@ -645,6 +649,7 @@ void f8f8bf16_rowwise_impl_sm89(
     output_arguments          // Output
   };                          // EVTOutput
 
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wmissing-field-initializers")
   typename Gemm::Arguments arguments(
     cutlass::gemm::GemmUniversalMode::kGemm,
     problem_size,
@@ -662,6 +667,7 @@ void f8f8bf16_rowwise_impl_sm89(
     problem_size.k(),             // stride B
     0,                            // stride C (unused)
     0);                           // stride D (unused)
+C10_DIAGNOSTIC_POP()
 
   Gemm gemm;
 

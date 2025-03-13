@@ -471,6 +471,7 @@ void f8f8bf16_grouped_gemm_impl_sm90(
   //   cutlass::KernelHardwareInfo kernel_hw_info =
   //   cutlass::KernelHardwareInfo::make_kernel_hardware_info<Gemm::GemmKernel>(device_id);
 
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wmissing-field-initializers")
   typename Gemm::Arguments arguments{
       cutlass::gemm::GemmUniversalMode::kGrouped,
       {group_count, problem_sizes, nullptr},
@@ -483,6 +484,7 @@ void f8f8bf16_grouped_gemm_impl_sm90(
        stride_output,
        output_ptrs,
        stride_output}};
+C10_DIAGNOSTIC_POP()
 
   int sm_count = at::cuda::getDeviceProperties(out.device().index())->multiProcessorCount;
   if (at::globalContext()._SMCarveout_EXPERIMENTAL().has_value()) {
