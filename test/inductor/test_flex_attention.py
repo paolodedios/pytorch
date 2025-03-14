@@ -4722,7 +4722,6 @@ supports_learnable_bias = unittest.skipUnless(
     "Requires Triton + CUDA or Triton + ROCm",
 )
 
-
 @supports_learnable_bias
 class TestLearnableBiases(InductorTestCase):
     def setUp(self):
