@@ -45,7 +45,8 @@
 [submodule "third_party/cpuinfo"]
     ignore = dirty
     path = third_party/cpuinfo
-    url = https://github.com/pytorch/cpuinfo.git
+    url = https://github.com/ozanMSFT/cpuinfo.git
+    branch = users/ozanMSFT/refactor-chip-detection
 [submodule "third_party/python-peachpy"]
     ignore = dirty
     path = third_party/python-peachpy
