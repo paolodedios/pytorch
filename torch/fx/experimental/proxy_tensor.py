@@ -124,7 +124,7 @@ null_ctx_type = type(nullcontext)
 pytree.register_pytree_node(
     torch.Size,
     lambda xs: (list(xs), None),
-    lambda xs, _: tuple(xs),
+    lambda xs, _: torch.Size(xs) if all(type(x) is int for x in xs) else tuple(xs),
     flatten_with_keys_fn=lambda xs: (
         [(pytree.SequenceKey(i), x) for i, x in enumerate(xs)],
         None,

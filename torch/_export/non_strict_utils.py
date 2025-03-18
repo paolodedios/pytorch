@@ -79,7 +79,7 @@ def key_path_to_source(kp: KeyPath) -> Source:
 
 
 def _is_constant_argument(t):
-    return t is None or isinstance(t, (int, float, bool, str))
+    return t is None or isinstance(t, (int, float, bool, str, torch.Size))
 
 
 def fakify(
