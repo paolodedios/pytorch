@@ -291,10 +291,10 @@ def _get_sycl_arch_list():
     if 'TORCH_XPU_ARCH_LIST' in os.environ:
         return os.environ.get('TORCH_XPU_ARCH_LIST')
     arch_list = torch.xpu.get_arch_list()
-    # Dropping dg2-* archs since they lack hardware support for fp64 and require
+    # Dropping dg2* archs since they lack hardware support for fp64 and require
     # special consideration from the user. If needed these platforms can
     # be requested thru TORCH_XPU_ARCH_LIST environment variable.
-    arch_list = [x for x in arch_list if not x.startswith('dg2-')]
+    arch_list = [x for x in arch_list if not x.startswith('dg2')]
     return ','.join(arch_list)
 
 _SYCL_DLINK_FLAGS = [
@@ -624,6 +624,9 @@ class BuildExtension(build_ext):
                         extension.extra_compile_args[ext] = []
 
             self._add_compile_flag(extension, '-DTORCH_API_INCLUDE_EXTENSION_H')
+
+            if IS_HIP_EXTENSION:
+                self._hipify_compile_flags(extension)
 
             if extension.py_limited_api:
                 # compile any extension that has passed in py_limited_api to the
@@ -1045,6 +1048,29 @@ class BuildExtension(build_ext):
         else:
             extension.extra_compile_args.append(flag)
 
+    # Simple hipify, replace the first occurrence of CUDA with HIP
+    # in flags starting with "-" and containing "CUDA", but exclude -I flags
+    def _hipify_compile_flags(self, extension):
+        if isinstance(extension.extra_compile_args, dict) and 'nvcc' in extension.extra_compile_args:
+            modified_flags = []
+            for flag in extension.extra_compile_args['nvcc']:
+                if flag.startswith("-") and "CUDA" in flag and not flag.startswith("-I"):
+                    # check/split flag into flag and value
+                    parts = flag.split("=", 1)
+                    if len(parts) == 2:
+                        flag_part, value_part = parts
+                        # replace fist instance of "CUDA" with "HIP" only in the flag and not flag value
+                        modified_flag_part = flag_part.replace("CUDA", "HIP", 1)
+                        modified_flag = f"{modified_flag_part}={value_part}"
+                    else:
+                        # replace fist instance of "CUDA" with "HIP" in flag
+                        modified_flag = flag.replace("CUDA", "HIP", 1)
+                    modified_flags.append(modified_flag)
+                    print(f'Modified flag: {flag} -> {modified_flag}', file=sys.stderr)
+                else:
+                    modified_flags.append(flag)
+            extension.extra_compile_args['nvcc'] = modified_flags
+
     def _define_torch_extension_name(self, extension):
         # pybind11 doesn't support dots in the names
         # so in order to support extensions in the packages
@@ -1332,7 +1358,7 @@ def SyclExtension(name, sources, *args, **kwargs):
     All arguments are forwarded to the :class:`setuptools.Extension`
     constructor.
 
-    .. note::
+    .. warning::
         The PyTorch python API (as provided in libtorch_python) cannot be built
         with the flag ``py_limited_api=True``.  When this flag is passed, it is
         the user's responsibility in their library to not use APIs from
@@ -1340,6 +1366,14 @@ def SyclExtension(name, sources, *args, **kwargs):
         APIs from libtorch (aten objects, operators and the dispatcher). For
         example, to give access to custom ops from python, the library should
         register the ops through the dispatcher.
+
+        Contrary to CPython setuptools, who does not define -DPy_LIMITED_API
+        as a compile flag when py_limited_api is specified as an option for
+        the "bdist_wheel" command in ``setup``, PyTorch does! We will specify
+        -DPy_LIMITED_API=min_supported_cpython to best enforce consistency,
+        safety, and sanity in order to encourage best practices. To target a
+        different version, set min_supported_cpython to the hexcode of the
+        CPython version of choice.
 
     Example:
         >>> # xdoctest: +SKIP
