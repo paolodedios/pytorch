@@ -35,7 +35,7 @@ elif [[ "$OS_NAME" == *"Ubuntu"* ]]; then
     sed -i 's/.*nvidia.*/# &/' $(find /etc/apt/ -type f -name "*.list")
 
     retry apt-get update
-    retry apt-get -y install zip openssl
+    retry apt-get -y install zip openssl cmake
 fi
 
 # We use the package name to test the package by passing this to 'pip install'
