@@ -90,14 +90,22 @@ RUN if [ -n "${CMAKE_VERSION}" ]; then bash ./install_cmake.sh; fi
 RUN rm install_cmake.sh
 
 ARG TRITON
+
+# Create a separate stage for building Triton
+FROM base as triton-builder
 # Install triton, this needs to be done before sccache because the latter will
 # try to reach out to S3, which docker build runners don't have access
 COPY ./common/install_triton.sh install_triton.sh
 COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/triton.txt triton.txt
 COPY triton_version.txt triton_version.txt
-RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; fi
+RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton-CPU build"; mkdir -p /var/lib/jenkins/triton; fi
 RUN rm install_triton.sh common_utils.sh triton.txt triton_version.txt
+
+FROM base as final
+COPY --from=triton-builder /var/lib/jenkins/triton /var/lib/jenkins/triton/
+# Clean up triton directory if neither arg is set
+RUN if [ -z "${TRITON}" ]; then rm -rf /var/lib/jenkins/triton; fi
 
 ARG HALIDE
 # Build and install halide
