@@ -103,7 +103,7 @@ RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Tr
 RUN rm install_triton.sh common_utils.sh triton.txt triton_version.txt
 
 FROM base as final
-COPY --from=triton-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton/
+COPY --chown=jenkins:jenkins --from=triton-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton/
 # Clean up triton directory if arg is not set
 RUN if [ -z "${TRITON}" ]; then rm -rf /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton; fi
 

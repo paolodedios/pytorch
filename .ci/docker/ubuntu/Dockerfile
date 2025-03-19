@@ -129,8 +129,8 @@ RUN if [ -n "${TRITON_CPU}" ]; then bash ./install_triton.sh; else echo "Skippin
 RUN rm install_triton.sh common_utils.sh triton-cpu.txt
 
 FROM base as final
-COPY --from=triton-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton
-COPY --from=triton-cpu-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton
+COPY --chown=jenkins:jenkins --from=triton-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton
+COPY --chown=jenkins:jenkins --from=triton-cpu-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton
 # Clean up triton directory if neither arg is set
 RUN if [ -z "${TRITON}" ] && [ -z "${TRITON_CPU}" ]; then rm -rf /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton; fi
 
