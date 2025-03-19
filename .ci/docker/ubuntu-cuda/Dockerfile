@@ -99,13 +99,13 @@ COPY ./common/install_triton.sh install_triton.sh
 COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/triton.txt triton.txt
 COPY triton_version.txt triton_version.txt
-RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton build"; mkdir -p /var/lib/jenkins/triton; fi
+RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton build"; mkdir -p /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton; fi
 RUN rm install_triton.sh common_utils.sh triton.txt triton_version.txt
 
 FROM base as final
-COPY --from=triton-builder /var/lib/jenkins/triton /var/lib/jenkins/triton/
+COPY --from=triton-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton/
 # Clean up triton directory if arg is not set
-RUN if [ -z "${TRITON}" ]; then rm -rf /var/lib/jenkins/triton; fi
+RUN if [ -z "${TRITON}" ]; then rm -rf /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton; fi
 
 ARG HALIDE
 # Build and install halide

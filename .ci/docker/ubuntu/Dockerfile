@@ -117,7 +117,7 @@ FROM base as triton-builder
 COPY ./common/install_triton.sh install_triton.sh
 COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/triton.txt triton.txt
-RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton build"; mkdir -p /var/lib/jenkins/triton; fi
+RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton build"; mkdir -p /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton; fi
 RUN rm install_triton.sh common_utils.sh triton.txt
 
 # Create a separate stage for building Triton-CPU
@@ -125,14 +125,14 @@ FROM base as triton-cpu-builder
 COPY ./common/install_triton.sh install_triton.sh
 COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/triton-cpu.txt triton-cpu.txt
-RUN if [ -n "${TRITON_CPU}" ]; then bash ./install_triton.sh; else echo "Skipping Triton-CPU build"; mkdir -p /var/lib/jenkins/triton; fi
+RUN if [ -n "${TRITON_CPU}" ]; then bash ./install_triton.sh; else echo "Skipping Triton-CPU build"; mkdir -p /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton; fi
 RUN rm install_triton.sh common_utils.sh triton-cpu.txt
 
 FROM base as final
-COPY --from=triton-builder /var/lib/jenkins/triton /var/lib/jenkins/triton/
-COPY --from=triton-cpu-builder /var/lib/jenkins/triton /var/lib/jenkins/triton/
+COPY --from=triton-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton
+COPY --from=triton-cpu-builder /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton
 # Clean up triton directory if neither arg is set
-RUN if [ -z "${TRITON}" ] && [ -z "${TRITON_CPU}" ]; then rm -rf /var/lib/jenkins/triton; fi
+RUN if [ -z "${TRITON}" ] && [ -z "${TRITON_CPU}" ]; then rm -rf /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages/triton; fi
 
 ARG EXECUTORCH
 # Build and install executorch
