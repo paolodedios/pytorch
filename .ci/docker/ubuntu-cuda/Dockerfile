@@ -99,12 +99,12 @@ COPY ./common/install_triton.sh install_triton.sh
 COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/triton.txt triton.txt
 COPY triton_version.txt triton_version.txt
-RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton-CPU build"; mkdir -p /var/lib/jenkins/triton; fi
+RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton build"; mkdir -p /var/lib/jenkins/triton; fi
 RUN rm install_triton.sh common_utils.sh triton.txt triton_version.txt
 
 FROM base as final
 COPY --from=triton-builder /var/lib/jenkins/triton /var/lib/jenkins/triton/
-# Clean up triton directory if neither arg is set
+# Clean up triton directory if arg is not set
 RUN if [ -z "${TRITON}" ]; then rm -rf /var/lib/jenkins/triton; fi
 
 ARG HALIDE

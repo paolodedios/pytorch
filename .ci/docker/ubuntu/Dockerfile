@@ -117,7 +117,7 @@ FROM base as triton-builder
 COPY ./common/install_triton.sh install_triton.sh
 COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/triton.txt triton.txt
-RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton-CPU build"; mkdir -p /var/lib/jenkins/triton; fi
+RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Triton build"; mkdir -p /var/lib/jenkins/triton; fi
 RUN rm install_triton.sh common_utils.sh triton.txt
 
 # Create a separate stage for building Triton-CPU
