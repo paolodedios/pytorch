@@ -113,8 +113,6 @@ ARG TRITON_CPU
 ENV PIP_PACKAGE_PATH /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/lib/python$ANACONDA_PYTHON_VERSION/site-packages
 # Create a separate stage for building Triton
 FROM base as triton-builder
-# Install triton, this needs to be done before sccache because the latter will
-# try to reach out to S3, which docker build runners don't have access
 COPY ./common/install_triton.sh install_triton.sh
 COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/triton.txt triton.txt
