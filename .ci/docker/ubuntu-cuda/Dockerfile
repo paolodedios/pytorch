@@ -104,7 +104,7 @@ RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; else echo "Skipping Tr
 RUN rm install_triton.sh common_utils.sh triton.txt triton_version.txt
 
 FROM base as final
-COPY --chown=jenkins:jenkins --from=triton-builder $PIP_PACKAGE_PATH/triton $PIP_PACKAGE_PATH/triton/
+COPY --chown=jenkins:jenkins --from=triton-builder $PIP_PACKAGE_PATH/triton $PIP_PACKAGE_PATH/triton
 # Clean up triton directory if arg is not set
 RUN if [ -z "${TRITON}" ]; then rm -rf $PIP_PACKAGE_PATH/triton; fi
 
