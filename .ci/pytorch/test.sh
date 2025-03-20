@@ -210,6 +210,18 @@ fi
 
 install_tlparse
 
+# Check if Triton is installed, error if not
+check_triton_installation() {
+  echo "Checking Triton installation..."
+  python -c "import triton" 2>/dev/null
+  if [ $? -ne 0 ]; then
+    echo "ERROR: Triton is not installed. Please install Triton before proceeding."
+    exit 1
+  fi
+  echo "Triton is installed."
+}
+check_triton_installation
+
 # DANGER WILL ROBINSON.  The LD_PRELOAD here could cause you problems
 # if you're not careful.  Check this if you made some changes and the
 # ASAN test is not working
