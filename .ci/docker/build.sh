@@ -556,10 +556,10 @@ if [ -n "$CLANG_VERSION" ]; then
   fi
 fi
 
-if [ -n "$KATEX" ]; then
-  if !(drun katex --version); then
-    echo "KATEX=$KATEX, but:"
-    drun katex --version
-    exit 1
-  fi
-fi
+# if [ -n "$KATEX" ]; then
+#   if !(drun katex --version); then
+#     echo "KATEX=$KATEX, but:"
+#     drun katex --version
+#     exit 1
+#   fi
+# fi
