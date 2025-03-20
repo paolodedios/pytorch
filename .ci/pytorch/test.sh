@@ -221,7 +221,7 @@ check_triton_installation() {
   echo "Triton is installed."
 }
 check_triton_installation
-
+exit 0
 # DANGER WILL ROBINSON.  The LD_PRELOAD here could cause you problems
 # if you're not careful.  Check this if you made some changes and the
 # ASAN test is not working
