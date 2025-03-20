@@ -655,7 +655,9 @@ def _scatter_dim_after_reshape(
         "reshape must produce 2D tensor for scaled_mm"
     )
 
-    reshape_op_input_tensor = _get_tensor(reshape_node.args[0])
+    assert len(reshape_node.args) >= 1, "reshape node must have at least 1 arg"
+    input_tensor_node = cast(torch.fx.Node, reshape_node.args[0])
+    reshape_op_input_tensor = _get_tensor(input_tensor_node)
     assert reshape_op_input_tensor.ndim > reshape_op_output_tensor.ndim, (
         "reshape must be from 3D+ to 2D"
     )
