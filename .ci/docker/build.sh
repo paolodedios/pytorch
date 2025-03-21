@@ -564,6 +564,7 @@ if [ -n "$KATEX" ]; then
   fi
 fi
 
+drun python -c "import triton"
 HAS_TRITON=$(drun python -c "import triton" > /dev/null 2>&1 && echo "yes" || echo "no")
 if [[ -n "$TRITON" || -n "$TRITON_CPU" ]]; then
   if [ "$HAS_TRITON" = "no" ]; then
