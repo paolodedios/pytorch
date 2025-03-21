@@ -70,7 +70,6 @@ elif [ -n "${UBUNTU_VERSION}" ] && [ -n "${CLANG_VERSION}" ]; then
 else
   pip_install .
 fi
-python3 -m pip show triton
 
 if [ -n "${CONDA_CMAKE}" ]; then
   # TODO: This is to make sure that the same cmake and numpy version from install conda
