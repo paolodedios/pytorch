@@ -1676,24 +1676,40 @@ class CppBuilder:
         It is must need a temperary directory to store object files in Windows.
         After build completed, delete the temperary directory to save disk space.
         """
-        if self._use_relative_path:
-            # remote build uses relative path
-            return self.build_fbcode_re()
-        _create_if_dir_not_exist(self._output_dir)
-        _build_tmp_dir = os.path.join(
-            self._output_dir, f"{self._name}_{_BUILD_TEMP_DIR}"
-        )
-        _create_if_dir_not_exist(_build_tmp_dir)
 
-        build_cmd = self.get_command_line()
-        if self._preprocessing:
-            with open(self.get_target_file_path(), "wb") as preprocessed_file:
-                run_compile_cmd(
-                    build_cmd, cwd=_build_tmp_dir, write_stdout_to=preprocessed_file
+        try:
+            if self._use_relative_path:
+                # remote build uses relative path
+                return self.build_fbcode_re()
+            _create_if_dir_not_exist(self._output_dir)
+            _build_tmp_dir = os.path.join(
+                self._output_dir, f"{self._name}_{_BUILD_TEMP_DIR}"
+            )
+            _create_if_dir_not_exist(_build_tmp_dir)
+
+            build_cmd = self.get_command_line()
+            if self._preprocessing:
+                with open(self.get_target_file_path(), "wb") as preprocessed_file:
+                    run_compile_cmd(
+                        build_cmd, cwd=_build_tmp_dir, write_stdout_to=preprocessed_file
+                    )
+            else:
+                run_compile_cmd(build_cmd, cwd=_build_tmp_dir)
+            _remove_dir(_build_tmp_dir)
+        except subprocess.CalledProcessError as e:
+            error_str = str(e)
+            if (
+                "__check_inputs_outputs" in error_str
+                and " is too big to optimize" in error_str
+            ):
+                modified_message = (
+                    f"{error_str}\n"
+                    "The runtime check __check_inputs_outputs() is too big to optimize. "
+                    "Please use torch._inductor.config.aot_inductor.compile_wrapper_opt_level = 'O0' flag."
                 )
-        else:
-            run_compile_cmd(build_cmd, cwd=_build_tmp_dir)
-        _remove_dir(_build_tmp_dir)
+                raise subprocess.CalledProcessError(modified_message) from e
+            else:
+                raise e
 
     def save_compile_cmd_to_cmake(
         self,
