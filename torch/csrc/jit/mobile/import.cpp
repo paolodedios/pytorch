@@ -11,6 +11,7 @@
 #include <caffe2/serialize/inline_container.h>
 #include <caffe2/serialize/istream_adapter.h>
 #include <caffe2/serialize/versions.h>
+#include <torch/library.h>
 #include <torch/csrc/jit/api/compilation_unit.h>
 #include <torch/csrc/jit/mobile/file_format.h>
 #include <torch/csrc/jit/mobile/flatbuffer_loader.h>
@@ -646,6 +647,9 @@ mobile::Module _load_for_mobile(
     std::optional<at::Device> device,
     ExtraFilesMap& extra_files,
     uint64_t module_load_options) {
+#ifdef TORCH_LIBRARY_THREAD_UNSAFE_LAZY_INIT
+  torch::initialize_torch_libraries();
+#endif
   auto observer = torch::observerConfig().getModuleObserver();
   if (observer) {
     extra_files.insert(std::make_pair("model_path", filename));
