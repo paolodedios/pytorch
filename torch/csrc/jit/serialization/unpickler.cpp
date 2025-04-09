@@ -273,7 +273,7 @@ void Unpickler::setInput(size_t memo_id) {
 // emplace_back on bool vectors does not exist on some systems
 // avoid it by calling push_back for bool
 template <typename T>
-inline void append(std::vector<T>& a, T&& e) {
+static inline void append(std::vector<T>& a, T&& e) {
   a.emplace_back(std::forward<T>(e));
 }
 template <>
@@ -1189,7 +1189,7 @@ void Unpickler::readList(IValue list_ivalue) {
   readListElements(std::move(list_ivalue), start);
 }
 
-inline bool is_valid_python_id_char(char c) {
+static inline bool is_valid_python_id_char(char c) {
   return c == '_' || c == '.' || (c >= '0' && c <= '9') ||
       (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }

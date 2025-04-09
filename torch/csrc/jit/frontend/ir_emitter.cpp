@@ -624,7 +624,7 @@ static Value* materializeConstant(
   return new_constant;
 }
 
-inline bool isSupportedListElementType(const TypePtr& type) {
+static inline bool isSupportedListElementType(const TypePtr& type) {
   return type->isSubtypeOf(*TensorType::get()) ||
       type->isSubtypeOf(*NumberType::get());
 }

@@ -292,7 +292,7 @@ c10::intrusive_ptr<LinearPackedParamsBase> PackedLinearWeightsOnednn::prepack(
   return ret_ptr;
 }
 
-inline at::Tensor pack_weight_to_onednn_tensor(
+static inline at::Tensor pack_weight_to_onednn_tensor(
     const at::Tensor& weight,
     std::optional<torch::List<int64_t>>& input_shape) {
   std::vector<int64_t> w_dims = weight.sizes().vec();
@@ -312,7 +312,7 @@ inline at::Tensor pack_weight_to_onednn_tensor(
   return packed_weight;
 }
 
-inline at::Tensor pack_weight_to_fp16_onednn_tensor(
+static inline at::Tensor pack_weight_to_fp16_onednn_tensor(
     at::Tensor& weight,
     std::optional<torch::List<int64_t>>& input_shape) {
   TORCH_CHECK(weight.scalar_type() == at::kHalf || weight.scalar_type() == at::kFloat, "Weight should be of type float or float16");
@@ -342,12 +342,12 @@ at::Tensor _saturate_weight_to_fp16(const Tensor& weight) {
 }
 
 template <class... Inputs>
-inline std::vector<c10::IValue> makeStack(Inputs&&... inputs) {
+static inline std::vector<c10::IValue> makeStack(Inputs&&... inputs) {
   return {std::forward<Inputs>(inputs)...};
 }
 
 template <class... Args>
-inline std::vector<c10::IValue> callOpByHandle(
+static inline std::vector<c10::IValue> callOpByHandle(
     const c10::OperatorHandle& op,
     Args... args) {
   auto stack = makeStack(std::forward<Args>(args)...);
@@ -356,7 +356,7 @@ inline std::vector<c10::IValue> callOpByHandle(
 }
 
 template <class... Args>
-inline std::vector<c10::IValue> callOpByName(
+static inline std::vector<c10::IValue> callOpByName(
     const char* func_name,
     const char* overload_name,
     Args... args) {
@@ -366,7 +366,7 @@ inline std::vector<c10::IValue> callOpByName(
   return callOpByHandle(op_handle.value(), std::forward<Args>(args)...);
 }
 
-at::Tensor wrapped_quantized_linear(
+static at::Tensor wrapped_quantized_linear(
     at::Tensor input,
     const at::Tensor& input_scale,
     const at::Tensor& input_zero_point,
@@ -422,7 +422,7 @@ at::Tensor wrapped_quantized_linear(
 #endif // USE_FBGEMM
 }
 
-at::Tensor wrapped_quantized_linear_meta(
+static at::Tensor wrapped_quantized_linear_meta(
     at::Tensor input,
     [[maybe_unused]] const at::Tensor& input_scale,
     [[maybe_unused]] const at::Tensor& input_zero_point,

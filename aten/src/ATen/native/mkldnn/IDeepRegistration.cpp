@@ -9,7 +9,7 @@
 
 using namespace ideep;
 
-RegisterEngineAllocator cpu_alloc(
+static RegisterEngineAllocator cpu_alloc(
   engine::cpu_engine(),
   [](size_t size) {
     return c10::GetAllocator(c10::DeviceType::CPU)->raw_allocate(size);

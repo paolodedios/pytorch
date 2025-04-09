@@ -353,5 +353,5 @@ static std::shared_ptr<FusedKernel> createFusionKernel(
       has_random);
 }
 
-RegisterFusionBackend reg(DeviceType::CPU, createFusionKernel);
+static RegisterFusionBackend reg(DeviceType::CPU, createFusionKernel);
 } // namespace torch::jit::fuser::cpu

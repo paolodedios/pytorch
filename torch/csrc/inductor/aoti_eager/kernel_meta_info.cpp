@@ -92,7 +92,7 @@ bool TensorMetadata::operator==(const TensorMetadata& other) const {
   }
 }
 
-std::ostream& operator<<(
+static std::ostream& operator<<(
     std::ostream& stream,
     const TensorMetadata& tensor_metadata) {
   stream << "is_symbolic_: " << tensor_metadata.is_symbolic_ << '\n';

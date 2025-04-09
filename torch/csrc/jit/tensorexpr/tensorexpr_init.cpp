@@ -25,7 +25,7 @@ struct pybind11::detail::type_caster<torch::jit::tensorexpr::ArgValue>
 namespace torch::jit {
 using namespace torch::jit::tensorexpr;
 
-ArgValue convertPyToArgValue(py::handle inp) {
+static ArgValue convertPyToArgValue(py::handle inp) {
   if (py::isinstance<BufHandle>(inp)) {
     return py::cast<BufHandle>(inp);
   } else if (py::isinstance<VarHandle>(inp)) {
@@ -54,7 +54,7 @@ ArgValue convertPyToArgValue(py::handle inp) {
   }
 }
 
-Dtype parsePythonDtype(py::handle obj) {
+static Dtype parsePythonDtype(py::handle obj) {
   if (THPDtype_Check(obj.ptr())) {
     return Dtype(reinterpret_cast<THPDtype*>(obj.ptr())->scalar_type);
   } else {
@@ -62,7 +62,7 @@ Dtype parsePythonDtype(py::handle obj) {
   }
 }
 
-void initTensorExprBindings(PyObject* module) {
+static void initTensorExprBindings(PyObject* module) {
   auto m = py::handle(module).cast<py::module>();
 
   // Tensor Expr Classes

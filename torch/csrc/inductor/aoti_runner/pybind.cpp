@@ -12,7 +12,7 @@
 
 namespace torch::inductor {
 
-void initAOTIRunnerBindings(PyObject* module) {
+static void initAOTIRunnerBindings(PyObject* module) {
   auto rootModule = py::handle(module).cast<py::module>();
   auto m = rootModule.def_submodule("_aoti");
 

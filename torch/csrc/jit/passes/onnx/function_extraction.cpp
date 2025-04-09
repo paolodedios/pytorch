@@ -1125,7 +1125,7 @@ NodeAttrNameMap ONNXFunctionExtraction(
   return fe.run();
 }
 
-Node* ONNXGetPreviousScope(std::shared_ptr<Graph>& graph) {
+static Node* ONNXGetPreviousScope(std::shared_ptr<Graph>& graph) {
   auto* last_node = graph->nodes().back()->prev();
   auto* scope_node = NodeOfMostRecentScope(last_node);
   auto* attr_node = scope_attr_graph_->create(prim::TracedModuleForward);

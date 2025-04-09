@@ -166,7 +166,7 @@ std::optional<IValue> toTypeInferredIValueOptional(py::handle input) {
 TORCH_API void runJITCPPTests();
 #endif
 
-void initJITBindings(PyObject* module) {
+static void initJITBindings(PyObject* module) {
   auto m = py::handle(module).cast<py::module>();
   auto jit = m.def_submodule("_jit");
 
