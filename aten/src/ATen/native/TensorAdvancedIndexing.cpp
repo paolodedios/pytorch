@@ -147,7 +147,6 @@
 
 namespace at::native {
 
-static std::string shapes_as_str(TensorList tensors);
 AdvancedIndex make_info(Tensor self, IOptTensorListRef orig);
 
 } // namespace at::native
@@ -591,21 +590,6 @@ static bool all_strides_match(TensorList tensors) {
     }
   }
   return true;
-}
-
-inline std::string shapes_as_str(TensorList tensors) {
-  std::ostringstream os;
-  bool first = true;
-  for (auto& tensor : tensors) {
-    if (tensor.defined()) {
-      if (!first) {
-        os << ", ";
-      }
-      os << tensor.sizes();
-      first = false;
-    }
-  }
-  return os.str();
 }
 
 // Replace indexed dimensions in src with stride 0 and the size of the result

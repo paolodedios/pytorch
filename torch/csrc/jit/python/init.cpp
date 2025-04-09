@@ -77,6 +77,7 @@
 #include <torch/csrc/jit/passes/utils/check_alias_annotation.h>
 #include <torch/csrc/jit/passes/vulkan_rewrite.h>
 #include <torch/csrc/jit/passes/xnnpack_rewrite.h>
+#include <torch/csrc/jit/python/init.h>
 #include <torch/csrc/jit/python/pybind_utils.h>
 #include <torch/csrc/jit/python/python_arg_flatten.h>
 #include <torch/csrc/jit/python/python_custom_class.h>
@@ -166,7 +167,7 @@ std::optional<IValue> toTypeInferredIValueOptional(py::handle input) {
 TORCH_API void runJITCPPTests();
 #endif
 
-static void initJITBindings(PyObject* module) {
+void initJITBindings(PyObject* module) {
   auto m = py::handle(module).cast<py::module>();
   auto jit = m.def_submodule("_jit");
 
