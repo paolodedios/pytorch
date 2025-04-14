@@ -226,6 +226,7 @@ at::Tensor one_shot_all_reduce_copy_meta(
 }
 
 TORCH_LIBRARY_FRAGMENT(symm_mem, m) {
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 12030
   m.def(
       "multimem_all_reduce_(Tensor(a!) input, str reduce_op, str group_name) -> Tensor(a!)");
   m.def(
@@ -265,6 +266,7 @@ TORCH_LIBRARY_FRAGMENT(symm_mem, m) {
   //     # Compute output tiles that consumes the input chunk
   m.def(
       "_async_input_mm(Tensor a, Tensor b, Tensor a_chunk_signals, int a_chunk_pivot) -> Tensor");
+#endif
   m.def(
       "stream_write_value32_(Tensor(a!) input, int offset, int val) -> Tensor(a!)");
   m.def(
