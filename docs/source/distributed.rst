@@ -141,7 +141,7 @@ network bandwidth. These two environment variables have been pre-tuned by NCCL
 for some cloud providers, such as AWS or GCP.
 
 For a full list of NCCL environment variables, please refer to
-`NVIDIA NCCL's official documentation <https://docs.nvidia.com/deeplearning/sdk/nccl-developer-guide/docs/env.html>`_
+`NVIDIA NCCL's official documentation <https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html>`_
 
 
 .. _distributed-basics:
