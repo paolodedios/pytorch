@@ -379,14 +379,19 @@ test_inductor_shard() {
   fi
 
   python tools/dynamo/verify_dynamo.py
-  python test/run_test.py --inductor \
-    --include test_modules test_ops test_ops_gradients test_torch \
-    --shard "$1" "$NUM_TEST_SHARDS" \
-    --verbose
+
+  if [[ "$BUILD_ENVIRONMENT" == *xpu* ]]; then
+    XPU_INDUCTOR_EXTRA_TEST="inductor/test_codecache.py inductor/test_kernel_benchmark.py inductor/test_max_autotune.py inductor/test_mkldnn_pattern_matcher.py inductor/test_triton_kernels.py inductor/test_compile_subprocess.py inductor/test_compiled_optimizers.py inductor/test_compiled_autograd.py"
+  else
+    python test/run_test.py --inductor \
+      --include test_modules test_ops test_ops_gradients test_torch \
+      --shard "$1" "$NUM_TEST_SHARDS" \
+      --verbose
+  fi
 
   # Do not add --inductor for the following inductor unit tests, otherwise we will fail because of nested dynamo state
   python test/run_test.py \
-    --include inductor/test_torchinductor inductor/test_torchinductor_opinfo inductor/test_aot_inductor \
+    --include inductor/test_torchinductor inductor/test_torchinductor_opinfo inductor/test_aot_inductor "$XPU_INDUCTOR_EXTRA_TEST" \
     --shard "$1" "$NUM_TEST_SHARDS" \
     --verbose
 }
