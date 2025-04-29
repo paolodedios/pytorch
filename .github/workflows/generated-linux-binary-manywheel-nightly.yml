@@ -393,7 +393,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -507,7 +507,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -621,7 +621,7 @@ jobs:
         working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -1006,7 +1006,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -1120,7 +1120,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -1234,7 +1234,7 @@ jobs:
         working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -1687,7 +1687,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -1801,7 +1801,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -1915,7 +1915,7 @@ jobs:
         working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -2300,7 +2300,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -2414,7 +2414,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -2528,7 +2528,7 @@ jobs:
         working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -2913,7 +2913,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -3027,7 +3027,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -3141,7 +3141,7 @@ jobs:
         working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -3526,7 +3526,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -3640,7 +3640,7 @@ jobs:
           role-duration-seconds: 18000
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder
@@ -3754,7 +3754,7 @@ jobs:
         working-directory: pytorch
       - name: Calculate docker image
         id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           docker-registry: ${{ startsWith(github.event.ref, 'refs/tags/ciflow/') && '308535385114.dkr.ecr.us-east-1.amazonaws.com' || 'docker.io' }}
           docker-image-name: manylinux2_28-builder

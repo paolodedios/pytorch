@@ -222,7 +222,7 @@ jobs:
       - name: Calculate docker image
         id: calculate-docker-image
         if: ${{ steps.filter.outputs.is-test-matrix-empty == 'False' && inputs.build_environment != 'linux-s390x-binary-manywheel' }}
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@csl/maybe_better_calc_docker_imge
         with:
           # If doing this in main or release branch, use docker.io. Otherwise
           # use ECR
