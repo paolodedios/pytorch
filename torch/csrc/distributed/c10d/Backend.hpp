@@ -77,6 +77,15 @@ class TORCH_API Backend : public torch::CustomClassHolder {
     return false;
   }
 
+  virtual int64_t getCommPtr() {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ",
+            getBackendName(),
+            " does not support getCommPtr"));
+  }
+
   virtual void startCoalescing() {
     TORCH_CHECK(
         false,

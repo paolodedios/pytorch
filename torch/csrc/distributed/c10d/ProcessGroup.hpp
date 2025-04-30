@@ -149,6 +149,11 @@ class TORCH_API ProcessGroup : public torch::CustomClassHolder {
     return reinterpret_cast<std::intptr_t>(getBackend(backend_type).get());
   }
 
+  int64_t getCommPtr() const {
+    auto backend = getDefaultBackend();
+    return backend->getCommPtr();
+  }
+
   virtual const std::string getBackendName() const {
     return backendTypeToString(backendType_);
   }

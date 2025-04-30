@@ -2057,6 +2057,11 @@ communication mechanism.
               &::c10d::ProcessGroup::getBackendID,
               py::arg("backend_type"))
           .def(
+              "_comm_ptr", &::c10d::ProcessGroup::getCommPtr,
+              R"(Get the communicator of the current device.
+
+              WARNING: unsafe to use, and this could lead to untracked timeout.)")
+          .def(
               "broadcast",
               &::c10d::ProcessGroup::broadcast,
               py::arg("tensors"),

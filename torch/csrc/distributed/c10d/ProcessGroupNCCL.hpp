@@ -658,6 +658,8 @@ class TORCH_API ProcessGroupNCCL : public Backend {
 #endif
   }
 
+  int64_t getCommPtr() override;
+
   void startCoalescing() override;
 
   c10::intrusive_ptr<Work> endCoalescing() override;
