@@ -5096,6 +5096,7 @@ class TestQuantizeFx(QuantizationTestCase):
         self.checkGraphModuleNodes(m_ref, expected_node_occurrence=node_occurrence_ref)
 
     @skipIfNoFBGEMM
+    @skipIfTorchDynamo("No kernel for Meta on quantized::linear_relu_dynamic_fp16")
     def test_dynamic_with_fusion(self):
         """
         Tests that dynamic quantization APIs work with Linear + Relu fusion
@@ -5154,6 +5155,7 @@ class TestQuantizeFx(QuantizationTestCase):
                 self.checkGraphModuleNodes(m, expected_node_list=node_list)
 
     @skipIfNoFBGEMM
+    @skipIfTorchDynamo("No kernel for Meta on quantized::linear_relu_dynamic_fp16")
     def test_dynamic_with_fusion_multiple_uses(self):
         """
         Tests that dynamic quantization APIs work with Linear + Relu fusion
@@ -5195,6 +5197,7 @@ class TestQuantizeFx(QuantizationTestCase):
                 self.checkGraphModuleNodes(m, expected_node_list=node_list)
 
     @skipIfNoFBGEMM
+    @skipIfTorchDynamo("No kernel for Meta on quantized::linear_relu_dynamic_fp16")
     def test_dynamic_linear_input_multiple_use(self):
         """
         Tests input for dynamic linear being used by multiple ops
@@ -6942,6 +6945,7 @@ class TestQuantizeFxOps(QuantizationTestCase):
                     self.assertIn("_packed_weight_0", result_dict["quantized"].state_dict().keys())
 
     @skipIfNoFBGEMM
+    @skipIfTorchDynamo("No kernel for Meta on quantized::linear_relu_dynamic_fp16")
     def test_linear_dynamic_fp16(self):
         with override_quantized_engine('fbgemm'):
             class FuncLinear(torch.nn.Module):
@@ -8841,6 +8845,7 @@ class TestQuantizeFxOps(QuantizationTestCase):
             self.checkScriptable(model_graph, [[sample_input]], True)
 
     @override_qengines
+    @skipIfTorchDynamo("No kernel for Meta on quantized::quantized_lstm_cell_dynamic")
     def test_rnn_cell(self):
         if torch.backends.quantized.engine not in ('fbgemm', 'qnnpack'):
             return

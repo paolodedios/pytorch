@@ -71,7 +71,10 @@ from torch.testing._internal.common_quantized import (
     qengine_is_fbgemm,
     qengine_is_qnnpack,
 )
-from torch.testing._internal.common_utils import set_default_dtype
+from torch.testing._internal.common_utils import (
+    set_default_dtype,
+    skipIfTorchDynamo,
+)
 from torch.testing._internal.jit_utils import (
     attrs_with_prefix,
     get_forward,
@@ -3859,6 +3862,7 @@ class TestQuantizeJit(QuantizationTestCase):
                 )
 
     @skipIfNoFBGEMM
+    @skipIfTorchDynamo("No kernel for Meta on quantized::linear_relu_dynamic_fp16")
     def test_linear_dynamic_fp16(self):
         linear_model = SingleLayerLinearModel().eval()
         # Create weight tensor values that are beyond fp16 max
