@@ -1927,7 +1927,7 @@ def choose_saved_values_set(
     )[0]
 
 
-def _broadcast_rank0_decision(joint_graph, saved_values):
+def _broadcast_rank0_decision(joint_graph: torch.fx.Graph, saved_values: list[torch.fx.Node]):
     # use the same policy across different GPUs
     from torch._subclasses.fake_tensor import unset_fake_temporarily
 
@@ -2107,7 +2107,7 @@ def min_cut_rematerialization_partition(
         memory_budget=memory_budget,
     )
     if config._broadcast_rank0_decision:
-        saved_values = _broadcast_rank0_decision(joint_module, saved_values)
+        saved_values = _broadcast_rank0_decision(joint_graph, saved_values)
     # save_for_backward on tensors and stashes symints in autograd .ctx
     saved_sym_nodes = list(filter(is_sym_node, saved_values))
     saved_values = list(filter(lambda n: not is_sym_node(n), saved_values))
