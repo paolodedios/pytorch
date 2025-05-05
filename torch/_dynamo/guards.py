@@ -1917,9 +1917,6 @@ class GuardBuilder(GuardBuilderBase):
             return
         self.SEQUENCE_LENGTH(guard)
 
-    def OBJECT_MUTATION(self, guard: Guard):
-        mutation_guard.watch(self.get(guard.name), self.check_fn_manager)
-
     def GRAD_MODE(self, guard: Guard):
         pass  # we always guard on this via GlobalStateGuard()
 
