@@ -133,4 +133,62 @@ TEST(tryToTest, Double) {
   EXPECT_FALSE(c10::tryToNumber<double>(nullptr).has_value());
 }
 } // namespace test_try_to
+
+namespace test_join_split {
+TEST(SplitTest, NormalCase) {
+  std::string str = "torch.ops.aten.linear";
+  auto result = c10::split(str, '.');
+  ASSERT_EQ(4, result.size());
+  EXPECT_EQ("torch", result[0]);
+  EXPECT_EQ("ops", result[1]);
+  EXPECT_EQ("aten", result[2]);
+  EXPECT_EQ("linear", result[3]);
+}
+TEST(SplitTest, EmptyString) {
+  std::string str = "";
+  auto result = c10::split(str, '.');
+  EXPECT_TRUE(result.empty());
+}
+TEST(SplitTest, NoDelimiter) {
+  std::string str = "single";
+  auto result = c10::split(str, '.');
+  ASSERT_EQ(1, result.size());
+  EXPECT_EQ("single", result[0]);
+}
+TEST(SplitTest, ConsecutiveDelimiters) {
+  std::string str = "atom1..atom2";
+  auto result = c10::split(str, '.');
+  ASSERT_EQ(3, result.size());
+  EXPECT_EQ("atom1", result[0]);
+  EXPECT_EQ("", result[1]);
+  EXPECT_EQ("atom2", result[2]);
+}
+
+TEST(JoinTest, NormalCase) {
+  std::vector<std::string> vec = {"torch", "ops", "aten", "linear"};
+  auto result = c10::join(".", vec);
+  EXPECT_EQ("torch.ops.aten.linear", result);
+}
+TEST(JoinTest, EmptyVector) {
+  std::vector<std::string> vec;
+  auto result = c10::join(".", vec);
+  EXPECT_EQ("", result);
+}
+TEST(JoinTest, SingleElement) {
+  std::vector<std::string> vec = {"single"};
+  auto result = c10::join(".", vec);
+  EXPECT_EQ("single", result);
+}
+TEST(JoinTest, EmptyDelimiter) {
+  std::vector<std::string> vec = {"key1", "key2", "key3"};
+  auto result = c10::join("", vec);
+  EXPECT_EQ("key1key2key3", result);
+}
+TEST(JoinTest, EmptyStrings) {
+  std::vector<std::string> vec = {"", "", ""};
+  auto result = c10::join(".", vec);
+  EXPECT_EQ("..", result);
+}
+} // namespace test_join_split
+
 } // namespace
