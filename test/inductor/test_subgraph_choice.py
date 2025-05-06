@@ -30,6 +30,7 @@ class TestSubgraphChoice(TestCase):
 
     @skipIfXpu
     @unittest.skipIf(TEST_WITH_ROCM, "decompose_k not supported on ROCm")
+    @unittest.skipIf(not SM90OrLater, "decompose_k only supported on SM90 or later")
     def test_subgraph_decompose_k(self):
         from torch._inductor.kernel.mm import aten_mm
         from torch._inductor.kernel.mm_common import mm_args
