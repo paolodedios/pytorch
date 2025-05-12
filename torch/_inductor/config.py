@@ -40,11 +40,35 @@ def bundle_triton_into_fx_graph_cache_default() -> Optional[bool]:
 
 
 def static_cuda_launcher_default() -> bool:
-    result = get_tristate_env(
-        "TORCHINDUCTOR_USE_STATIC_CUDA_LAUNCHER", True if not is_fbcode() else False
-    )
-    assert result is not None
-    return result
+    STATIC_CUDA_LAUNCHER_VERSION = 0
+
+    if "TORCHINDUCTOR_USE_STATIC_CUDA_LAUNCHER" in os.environ:
+        return os.environ.get("TORCHINDUCTOR_USE_STATIC_CUDA_LAUNCHER") == "1"
+    elif is_fbcode():
+        version = torch._utils_internal.justknobs_getval_int(
+            "pytorch/inductor:static_cuda_launcher_version"
+        )
+        # First we check static cuda launcher jk version, which also
+        # acts as a killswitch
+        if  STATIC_CUDA_LAUNCHER_VERSION < version:
+            return False
+
+        # Next, we do a fractional rollout on mast jobs
+        result = torch._utils_internal.get_mast_job_name_version()
+        if result is not None:
+            # Mast jobs pass in a hashval for fractional rollout
+            # Each mast job will have a consistent jk value
+            jk_name = "pytorch/inductor:use_static_cuda_launcher"
+            name, version = result
+            return torch._utils_internal.justknobs_check(
+                jk_name, hashval=f"{name}_{version}"
+            )
+        else:
+            # Non mast jobs and unit tests default to on (as long as version check passes)
+            return True
+    else:
+        # Default true in OSS
+        return True
 
 
 def prologue_fusion_enabled() -> bool:

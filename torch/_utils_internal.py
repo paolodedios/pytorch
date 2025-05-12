@@ -173,7 +173,9 @@ def log_torch_jit_trace_exportability(
     return
 
 
-def justknobs_check(name: str, default: bool = True) -> bool:
+def justknobs_check(
+    name: str, default: bool = True, hashval: Optional[str] = None
+) -> bool:
     """
     This function can be used to killswitch functionality in FB prod,
     where you can toggle this value to False in JK without having to
