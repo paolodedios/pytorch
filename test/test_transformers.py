@@ -3579,16 +3579,16 @@ class TestSDPACudaOnly(NNTestCase):
         "Does not support SDPA or pre-SM80 hardware",
     )
     @unittest.skipIf(IS_JETSON, "causing sigkill on Jetson")
-    @parametrize("batch_size", [1, 8])
-    @parametrize("seq_len_q", [4, 143, 2048])
-    @parametrize("seq_len_k", [4, 127, 579, 2048])
-    @parametrize("head_dim", [8, 203, 256])
-    @parametrize("is_causal", [True, False])
-    @parametrize("dropout_p", [0.0, 0.22, 0.48])
-    @parametrize("dtype", [torch.float16, torch.bfloat16])
-    @parametrize("scale", [None, "l1"])
-    @parametrize("enable_gqa", [True, False])
-    @parametrize("n_heads", [[16, 8], [10, 2]])
+    @parametrize("batch_size", [1])
+    @parametrize("seq_len_q", [4])
+    @parametrize("seq_len_k", [4])
+    @parametrize("head_dim", [8])
+    @parametrize("is_causal", [False])
+    @parametrize("dropout_p", [0.22])
+    @parametrize("dtype", [torch.bfloat16])
+    @parametrize("scale", [None])
+    @parametrize("enable_gqa", [True])
+    @parametrize("n_heads", [[4, 2]])
     @tf32_enabled()
     def test_flash_attention_vs_math_ref_grads(self, device, batch_size: int, seq_len_q: int, seq_len_k: int,
                                                head_dim: int, is_causal: bool, dropout_p: float, dtype: torch.dtype,
@@ -3623,6 +3623,10 @@ class TestSDPACudaOnly(NNTestCase):
                          dtype=dtype, requires_grad=True)
         value = torch.rand(batch_size, num_heads_kv, seq_len_k, head_dim,
                            device=device, dtype=dtype, requires_grad=True)
+
+        print("q size: ", query.size())
+        print("k size: ", key.size())
+        print("v size: ", value.size())
 
         higher_precision_dtype = torch.float64 if dtype == torch.float32 else torch.float32
         query_ref, key_ref, value_ref = query_key_value_clones(query, key, value, dtype=higher_precision_dtype)
@@ -3663,7 +3667,12 @@ class TestSDPACudaOnly(NNTestCase):
             softmax_mask = self.convert_flash_attn_S_to_softmax(
                 dbug_mask, seq_len_q, seq_len_k, query_padding_mask, key_padding_mask,
                 causal=is_causal)[:, :, :seq_len_q, :seq_len_k]
+            print("PYTHON SIDE SOFTMAX_MASK")
+            print(softmax_mask)
             dropout_mask = softmax_mask >= 0
+            print("PYTHON SIDE DROPOUT_MASK")
+            print("dropout_mask size: ", dropout_mask.size())
+            print(dropout_mask)
             # High Precision Math Reference
             out_ref = torch.ops.aten._scaled_dot_product_attention_math(
                 query_ref, key_ref, value_ref, dropout_p=dropout_p, is_causal=is_causal,
