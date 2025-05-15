@@ -933,7 +933,8 @@ class TestMaxAutotune(TestCase):
                         f"Could not find a split in {divisors} in {kernel}",
                     )
 
-        compiled_func = torch.compile(lambda a, b: a @ b, dynamic=dynamic)
+        # Fix input as FlexibleLayout to catch changes to stride
+        compiled_func = torch.compile(lambda a, b: (a + 1.0) @ b, dynamic=dynamic)
         # We assume with the large k dim relative to m, n, decompose_k will be most performant
         out, code = run_and_get_code(compiled_func, a, b)
 
@@ -946,7 +947,7 @@ class TestMaxAutotune(TestCase):
                 "triton_.*_fused_0.run"
             ).check("decompose_k").run(code[0])
             check_divisors(code)
-            torch.testing.assert_close(out, a @ b, atol=1e-2, rtol=1e-2)
+            torch.testing.assert_close(out, (a + 1.0) @ b, atol=1e-2, rtol=1e-2)
 
         # Test adding epilogue also equivalent to eager
         compiled_func = torch.compile(lambda a, b: (a @ b).relu(), dynamic=dynamic)

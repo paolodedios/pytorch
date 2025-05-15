@@ -5,7 +5,7 @@ from typing import Any, Callable
 import torch
 from torch._inductor import ir
 from torch._inductor.codegen.common import KernelTemplate
-from torch._inductor.ir import Buffer, Layout
+from torch._inductor.ir import Buffer, ir_node_to_tensor, Layout
 from torch._inductor.runtime.benchmarking import benchmarker
 from torch._inductor.virtualized import V
 
@@ -25,12 +25,17 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
         input_nodes: list[Buffer],
         layout: Layout,
         description: str,
-        gm: torch.fx.GraphModule,
-        example_inputs: list[Any],
+        make_fx_graph: Callable[..., Any],
     ) -> None:
         super().__init__(name, input_nodes, layout, description)
-        self.gm = gm
-        self.example_inputs = example_inputs
+
+        self.example_inputs = []
+        with V.fake_mode:
+            for inp in self.input_nodes:
+                inp.data.freeze_layout()
+                self.example_inputs.append(ir_node_to_tensor(inp))
+
+        self.gm = make_fx_graph(*self.example_inputs)
 
     def __str__(self) -> str:
         return f"SubgraphCaller({self.name})"
@@ -54,6 +59,10 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
             name=f"benchmark_{self.name}",
         )
 
+        for ar, example_inp in zip(args, self.example_inputs):
+            assert ar.shape == example_inp.shape, f"Subgraph input shape mismatch: {ar.shape} vs {example_inp.shape}"
+            assert ar.stride() == example_inp.stride(), f"Subgraph input stride mismatch: {ar.stride()} vs {example_inp.stride()}"
+
         with V.set_graph_handler(bm_graph_lowering):
             # Don't bother autotuning on Triton here
             with inductor_config.patch(
@@ -61,7 +70,7 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
                 max_autotune_gemm=False,
                 max_autotune_gemm_backends="ATEN",
             ):
-                bm_graph_lowering.run(*self.example_inputs)
+                bm_graph_lowering.run(*args)
                 mod = bm_graph_lowering.compile_to_module()
                 bm_func = mod.call
 
@@ -139,7 +148,6 @@ class SubgraphTemplate(KernelTemplate):
         self,
         input_nodes: list[Buffer],
         layout: Layout,
-        example_inputs: list[Any],
         **kwargs: Any,
     ) -> SubgraphChoiceCaller:
         """
@@ -154,13 +162,11 @@ class SubgraphTemplate(KernelTemplate):
         Returns:
             SubgraphChoiceCaller: A callable object that can be used for autotuning
         """
-        gm = self.make_fx_graph(*example_inputs)
 
         return SubgraphChoiceCaller(
             name=self.name,
             input_nodes=input_nodes,
             layout=layout,
             description="",
-            gm=gm,
-            example_inputs=example_inputs,
+            make_fx_graph=self.make_fx_graph,
         )
