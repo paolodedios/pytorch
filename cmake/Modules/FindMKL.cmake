@@ -456,11 +456,27 @@ IF (MKL_LIBRARIES)
   ENDFOREACH(mkl64)
 ENDIF (MKL_LIBRARIES)
 
+function(check_files_exist FILE_LIST RESULT_VAR)
+    set(${RESULT_VAR} TRUE PARENT_SCOPE)  # Default all existing.
+    foreach(file IN LISTS FILE_LIST)
+        if(NOT EXISTS "${file}")
+            set(${RESULT_VAR} FALSE PARENT_SCOPE)
+            break()  # Found missing file, break loop.
+        endif()
+    endforeach()
+endfunction()
+
 # Final
 SET(CMAKE_LIBRARY_PATH ${saved_CMAKE_LIBRARY_PATH})
 SET(CMAKE_INCLUDE_PATH ${saved_CMAKE_INCLUDE_PATH})
 IF (MKL_LIBRARIES AND MKL_INCLUDE_DIR)
-  SET(MKL_FOUND TRUE)
+  check_files_exist("${MKL_LIBRARIES}" ALL_FILES_EXIST)
+  if(ALL_FILES_EXIST)
+    SET(MKL_FOUND TRUE)
+  else()
+    SET(MKL_FOUND FALSE)
+    SET(MKL_VERSION)
+  endif()
 ELSE (MKL_LIBRARIES AND MKL_INCLUDE_DIR)
   if (MKL_LIBRARIES AND NOT MKL_INCLUDE_DIR)
     MESSAGE(WARNING "MKL libraries files are found, but MKL header files are \
