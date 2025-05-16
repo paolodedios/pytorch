@@ -1160,6 +1160,12 @@ class _InProcessFxCompile(FxCompile):
                 # has some issues with memory in training
                 cuda_context = get_cuda_device_context(gm)
                 with cuda_context:
+                    trace_structured(
+                        "before_post_grad_graph",
+                        payload_fn=lambda: gm.print_readable(
+                            print_output=False, include_stride=True, include_device=True
+                        ),
+                    )
                     _recursive_post_grad_passes(gm, is_inference=is_inference)
                 V.debug.fx_graph_transformed(gm, example_inputs)
                 post_grad_graphs_log.debug(
@@ -1183,7 +1189,7 @@ class _InProcessFxCompile(FxCompile):
                     fast_sympy_print=True,
                 )
                 trace_structured(
-                    "inductor_post_grad_graph",
+                    "after_post_grad_graph",
                     payload_fn=lambda: inductor_post_grad_graph_str,
                 )
                 if config.trace.enabled:
@@ -2030,7 +2036,7 @@ def compile_fx(
         # TODO: Get rid of this?
         if isinstance(model_, GraphModule):
             trace_structured(
-                "inductor_pre_grad_graph",
+                "before_pre_grad_graph",
                 payload_fn=lambda: model_.print_readable(
                     print_output=False, include_stride=True, include_device=True
                 )
@@ -2049,6 +2055,13 @@ def compile_fx(
             torch._inductor.debug._pre_grad_graph_id = id(model_.graph)
 
             model_ = _recursive_pre_grad_passes(model_, example_inputs_)
+            trace_structured(
+                "after_pre_grad_graph",
+                payload_fn=lambda: model_.print_readable(
+                    print_output=False, include_stride=True, include_device=True
+                )
+                + f"\n\n # graph id: {id(model_.graph)}",
+            )
 
         # TODO: Move this before recursive pre-grad passes
         # NB: This short circuit never occurs for Dynamo produced graphs
