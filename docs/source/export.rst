@@ -831,6 +831,7 @@ API Reference
 .. autofunction:: torch.export.exported_program.default_decompositions
 
 .. automodule:: torch.export.exported_program
+.. automodule:: torch.export.pt2_archive
 .. automodule:: torch.export.graph_signature
 .. autoclass:: ExportGraphSignature
 
