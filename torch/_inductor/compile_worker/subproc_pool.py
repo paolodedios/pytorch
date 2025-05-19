@@ -24,6 +24,9 @@ import torch._thread_safe_fork  # noqa: F401
 from torch._inductor.codecache import torch_key
 from torch._inductor.compile_worker.utils import _async_compile_initializer
 from torch._inductor.utils import get_ld_library_path
+from torch._environment import is_fbcode
+from torch._inductor import config
+
 
 
 log = logging.getLogger(__name__)
@@ -130,6 +133,11 @@ class SubprocPool:
             f"--write-fd={str(subproc_write_fd)}",
             f"--torch-key={torch_key_str}",
         ]
+        local = False
+        if config.worker_suppress_logging:
+            log.info("Suppressing compile worker output due to config")
+            local = True
+
         self.process = subprocess.Popen(
             cmd,
             env={
@@ -146,6 +154,8 @@ class SubprocPool:
                 "LD_LIBRARY_PATH": get_ld_library_path(),
             },
             pass_fds=(subproc_read_fd, subproc_write_fd),
+            stdout = subprocess.DEVNULL if local else None,
+            stderr = subprocess.DEVNULL if local else None,
         )
         self.write_lock = threading.Lock()
         self.read_thread = threading.Thread(target=self._read_thread, daemon=True)
