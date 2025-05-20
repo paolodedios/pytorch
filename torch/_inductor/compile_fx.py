@@ -1394,7 +1394,6 @@ class _InProcessFxCompile(FxCompile):
                                 compiled_module, "runner", None
                             )
 
-                    breakpoint()
                     if inductor_metrics_log.isEnabledFor(logging.INFO):
                         num_bytes, nodes_num_elem, node_runtimes = graph.count_bytes()
                         metrics.num_bytes_accessed += num_bytes
