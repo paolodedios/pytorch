@@ -3593,7 +3593,9 @@ class AOTInductorTestsTemplate:
             def forward(self, x):
                 return torch.ops.aten.permute.default(x, [0, 2, 1])
 
-        ep = torch.export.export(M(), (torch.randn((1, 3001, 201), dtype=torch.complex64),))
+        ep = torch.export.export(
+            M(), (torch.randn((1, 3001, 201), dtype=torch.complex64),)
+        )
         torch._inductor.aoti_compile_and_package(ep)
 
     def test_proxy_executor_abs(self):
@@ -3601,7 +3603,9 @@ class AOTInductorTestsTemplate:
             def forward(self, x):
                 return torch.ops.aten.abs.default(x)
 
-        ep = torch.export.export(M(), (torch.randn((201, 3001), dtype=torch.complex64),))
+        ep = torch.export.export(
+            M(), (torch.randn((201, 3001), dtype=torch.complex64),)
+        )
         torch._inductor.aoti_compile_and_package(ep)
 
     def test_proxy_executor_squeeze(self):
@@ -3609,7 +3613,9 @@ class AOTInductorTestsTemplate:
             def forward(self, x):
                 return torch.ops.aten.squeeze.dim(x, 0)
 
-        ep = torch.export.export(M(), (torch.randn((1, 201, 3001), dtype=torch.complex64),))
+        ep = torch.export.export(
+            M(), (torch.randn((1, 201, 3001), dtype=torch.complex64),)
+        )
         torch._inductor.aoti_compile_and_package(ep)
 
     def test_proxy_executor_hann(self):
