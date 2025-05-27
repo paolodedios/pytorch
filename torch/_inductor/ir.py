@@ -4700,8 +4700,7 @@ class ChoiceCaller:
         algo = self.to_callable()
         if using_profiler:
             return do_bench_using_profiling(lambda: algo(*args))
-        else:
-            return benchmarker.benchmark(algo, args, {"out": out})
+        return benchmarker.benchmark(algo, args, {"out": out})
 
     def call_name(self) -> str:
         raise NotImplementedError

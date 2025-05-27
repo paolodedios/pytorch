@@ -1866,8 +1866,7 @@ class ExternKernelCaller(ChoiceCaller):
             out.copy_(out_new)  # for correctness checking
             if using_profiler:
                 return do_bench_using_profiling(lambda: algo(*args))
-            else:
-                return benchmarker.benchmark(algo, args, {})
+            return benchmarker.benchmark(algo, args, {})
 
     def to_callable(self):
         fn = self.choice.to_callable()
