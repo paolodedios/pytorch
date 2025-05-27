@@ -14,6 +14,7 @@ from torch._inductor.ir import (
     Layout,
 )
 from torch._inductor.runtime.benchmarking import benchmarker
+from torch._inductor.utils import do_bench_using_profiling
 from torch._inductor.virtualized import V
 
 
@@ -51,7 +52,9 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
     def __str__(self) -> str:
         return f"SubgraphCaller({self.name})"
 
-    def benchmark(self, *args: list[Any], out: torch.Tensor) -> float:
+    def benchmark(
+        self, *args: list[Any], out: torch.Tensor, using_profiler: bool = False
+    ) -> float:
         # Codegen Subgraph for benchmarking
         # Need GraphLowering instead of SubgraphLowering to generate
         # fully callable module
@@ -113,6 +116,8 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
                 bm_func = mod.call
 
                 bm_func([*sym_inputs, *args])
+        if using_profiler:
+            return do_bench_using_profiling(lambda: bm_func([*sym_inputs, *args]))
         return benchmarker.benchmark_gpu(lambda: bm_func([*sym_inputs, *args]))
 
     def hash_key(self) -> str:

@@ -1777,11 +1777,12 @@ class TritonTemplateCaller(ir.TritonTemplateCallerBase):
         )
 
     def benchmark(self, *args, out, using_profiler=False):
+        assert self.bmreq is not None
         if using_profiler:
             algo = self.bmreq.make_run_fn(*args, out=out)
             return do_bench_using_profiling(algo)
         else:
-            return benchmarker.benchmark(algo, args, {})
+            return self.bmreq.benchmark(*args, out=out)
 
     def precompile(self):
         assert self.bmreq is not None
@@ -1965,9 +1966,9 @@ class DataProcessorChoiceCallerWrapper:
     def __getattr__(self, name):
         return getattr(self._wrapped, name)
 
-    def benchmark(self, *args, out) -> float:
+    def benchmark(self, *args, out, using_profiler=False) -> float:
         new_args, new_out = self._preprocessor(args, out)
-        result = self._wrapped.benchmark(*new_args, out=new_out)
+        result = self._wrapped.benchmark(*new_args, out=new_out, using_profiler=using_profiler)
         new_out = self._postprocessor(new_out)
         if out is not new_out:
             out.copy_(new_out)
@@ -2676,10 +2677,11 @@ class AlgorithmSelectorCache(PersistentCache):
             extern, input_nodes, layout, input_gen_fns, using_profiler
         )
         timings.update(
-            autotune_process.benchmark_in_sub_process(
-                triton, using_profiler=using_profiler
+            autotune_process.benchmark_in_sub_process(  # type: ignore[call-arg]
+                triton,  # type: ignore[arg-type]
+                using_profiler=using_profiler,
             )
-        )  # type: ignore[arg-type]
+        )
         return timings
 
     @classmethod
