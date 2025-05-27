@@ -69,6 +69,7 @@ from .runtime.triton_compat import HAS_WARP_SPEC
 from .runtime.triton_heuristics import FixedGrid
 from .utils import (
     ceildiv,
+    do_bench_using_profiling,
     FakeIndentedBuffer,
     get_dtype_size,
     is_gpu,
@@ -80,7 +81,6 @@ from .utils import (
     triton_type,
     triton_type_to_torch,
     unique,
-    do_bench_using_profiling,
 )
 from .virtualized import V
 
@@ -1780,6 +1780,8 @@ class TritonTemplateCaller(ir.TritonTemplateCallerBase):
         if using_profiler:
             algo = self.bmreq.make_run_fn(*args, out=out)
             return do_bench_using_profiling(algo)
+        else:
+            return benchmarker.benchmark(algo, args, {})
 
     def precompile(self):
         assert self.bmreq is not None
@@ -2069,13 +2071,24 @@ def create_precompile_key(
         + [choice.hash_key() for choice in choices]
     )
 
+
 # Args to FeedbackFunctions
 # timings: mapping from choices to the benchmark time
 # name: name of the op
 # input_nodes: list of input ir.py Nodes
 # choices: list of choices
 # size_hints: Callable that resolves sympy expressions in context of the graph.
-FeedbackFunction = Callable[[dict[ChoiceCaller, float], str, list[Any], list[ChoiceCaller], Callable[[], dict[ChoiceCaller, float]]], None]
+FeedbackFunction = Callable[
+    [
+        dict[ChoiceCaller, float],
+        str,
+        list[Any],
+        list[ChoiceCaller],
+        Callable[[], dict[ChoiceCaller, float]],
+    ],
+    None,
+]
+
 
 class AlgorithmSelectorCache(PersistentCache):
     """
@@ -2174,8 +2187,10 @@ class AlgorithmSelectorCache(PersistentCache):
                 return choices[0].output_node()
 
         @functools.lru_cache(None)
-        def make_benchmark_fn(using_profiler = False):
-            return self.make_benchmark_fn(choices, input_nodes, layout, input_gen_fns, using_profiler)
+        def make_benchmark_fn(using_profiler=False):
+            return self.make_benchmark_fn(
+                choices, input_nodes, layout, input_gen_fns, using_profiler
+            )
 
         inputs_key = create_inputs_key(input_nodes)
 
@@ -2244,10 +2259,15 @@ class AlgorithmSelectorCache(PersistentCache):
                     name, input_nodes, timings, autotune_elapse, precompile_elapse
                 )
 
-
             for feedback_fn in self.feedback_saver_fns:
                 # re-benchmarking the same choices with profiler is a bit expensive, so pass it in as a thunk.
-                feedback_fn(timings, name, input_nodes, choices, lambda: make_benchmark_fn(using_profiler=True)(choices))
+                feedback_fn(
+                    timings,
+                    name,
+                    input_nodes,
+                    choices,
+                    lambda: make_benchmark_fn(using_profiler=True)(choices),
+                )
 
             return timings
 
@@ -2521,7 +2541,9 @@ class AlgorithmSelectorCache(PersistentCache):
         )
         expected = None
         if VERIFY:
-            choices[0].benchmark(*example_inputs_extern, out=out_extern, using_profiler=using_profiler)
+            choices[0].benchmark(
+                *example_inputs_extern, out=out_extern, using_profiler=using_profiler
+            )
             expected = out_extern.clone()
 
         return AutotuneArgs.from_choice_args(
@@ -2534,7 +2556,10 @@ class AlgorithmSelectorCache(PersistentCache):
 
     @classmethod
     def benchmark_choice(
-        cls, choice: ChoiceCaller, autotune_args: AutotuneArgs, using_profiler: bool = False
+        cls,
+        choice: ChoiceCaller,
+        autotune_args: AutotuneArgs,
+        using_profiler: bool = False,
     ) -> float:
         is_extern = isinstance(choice, (ExternKernelCaller, SubgraphChoiceCaller))
         benchmark_tensors = autotune_args.get_benchmark_tensors(is_extern)
@@ -2626,7 +2651,9 @@ class AlgorithmSelectorCache(PersistentCache):
         input_gen_fns: Optional[dict[int, Callable[[ir.Buffer], torch.Tensor]]],
         using_profiler: bool = False,
     ) -> dict[ChoiceCaller, float]:
-        inputs = cls.get_inputs(choices, input_nodes, layout, input_gen_fns, using_profiler=using_profiler)
+        inputs = cls.get_inputs(
+            choices, input_nodes, layout, input_gen_fns, using_profiler=using_profiler
+        )
         return cls.benchmark_choices(choices, inputs)
 
     @classmethod
@@ -2648,7 +2675,11 @@ class AlgorithmSelectorCache(PersistentCache):
         timings = cls.benchmark_in_current_process(
             extern, input_nodes, layout, input_gen_fns, using_profiler
         )
-        timings.update(autotune_process.benchmark_in_sub_process(triton, using_profiler=using_profiler))  # type: ignore[arg-type]
+        timings.update(
+            autotune_process.benchmark_in_sub_process(
+                triton, using_profiler=using_profiler
+            )
+        )  # type: ignore[arg-type]
         return timings
 
     @classmethod
