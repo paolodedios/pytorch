@@ -11,7 +11,7 @@ from sympy import Expr, symbols
 from torch import dtype as torch_dtype
 from torch._inductor.codegen.cpp_wrapper_cpu import CppWrapperCpu
 from torch._inductor.scheduler import BaseSchedulerNode
-from torch._inductor.utils import Placeholder
+from torch._inductor.utils import do_bench_using_profiling, Placeholder
 from torch.utils._sympy.value_ranges import ValueRanges
 
 from .cutlass_utils import DTYPE_TO_CUTLASS_TYPE

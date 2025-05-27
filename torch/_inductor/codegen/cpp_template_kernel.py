@@ -7,6 +7,7 @@ import sympy
 from sympy.parsing.sympy_parser import parse_expr
 
 import torch
+from torch._inductor.utils import do_bench_using_profiling
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._sympy.symbol import SymT
 

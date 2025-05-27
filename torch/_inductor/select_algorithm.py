@@ -1966,7 +1966,9 @@ class DataProcessorChoiceCallerWrapper:
 
     def benchmark(self, *args, out, using_profiler=False) -> float:
         new_args, new_out = self._preprocessor(args, out)
-        result = self._wrapped.benchmark(*new_args, out=new_out, using_profiler=using_profiler)
+        result = self._wrapped.benchmark(
+            *new_args, out=new_out, using_profiler=using_profiler
+        )
         new_out = self._postprocessor(new_out)
         if out is not new_out:
             out.copy_(new_out)
