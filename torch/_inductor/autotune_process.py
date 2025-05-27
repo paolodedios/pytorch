@@ -318,10 +318,12 @@ class TuningProcessPool:
     def benchmark(
         self,
         choices: list[TritonTemplateCaller],
+        using_profiler: bool = False,
     ) -> dict[TritonTemplateCaller, float]:
         """
         Benchmark each choice in a separate process.
         """
+        # ignore using_profiler for now, not sure it's supported in the subprocess
 
         # Use a ThreadExecutorPool to spread the work across the subprocesses and
         # to grab subprocesses as soon as they're free.
