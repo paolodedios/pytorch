@@ -1781,8 +1781,7 @@ class TritonTemplateCaller(ir.TritonTemplateCallerBase):
         if using_profiler:
             algo = self.bmreq.make_run_fn(*args, out=out)
             return do_bench_using_profiling(algo)
-        else:
-            return self.bmreq.benchmark(*args, out=out)
+        return self.bmreq.benchmark(*args, out=out)
 
     def precompile(self):
         assert self.bmreq is not None
