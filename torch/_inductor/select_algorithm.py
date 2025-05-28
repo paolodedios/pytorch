@@ -2078,7 +2078,7 @@ def create_precompile_key(
 # name: name of the op
 # input_nodes: list of input ir.py Nodes
 # choices: list of choices
-# size_hints: Callable that resolves sympy expressions in context of the graph.
+# profiled time: Callable that returns a dict mapping from choices to the profiled time
 FeedbackFunction = Callable[
     [
         dict[ChoiceCaller, float],
