@@ -331,6 +331,14 @@ long CUDAHooks::versionCuDNN() const {
 #endif
 }
 
+long CUDAHooks::versionROCm() const {
+#if AT_ROCM_ENABLED()
+  return ROCM_VERSION;
+#else
+  TORCH_CHECK(false, "Cannot query ROCm version if ATen_cuda is not built with ROCm");
+#endif
+}
+
 long CUDAHooks::versionCUDART() const {
 #ifdef CUDART_VERSION
   return CUDART_VERSION;

@@ -524,8 +524,9 @@ BatchNormBackend _select_batch_norm_backend(
       input.is_cuda()
       && input.dim() <= MIOPEN_DIM_MAX
       && input.scalar_type() != at::kDouble
-      && input.scalar_type() != at::kBFloat16
-      && (weight.scalar_type() != at::kHalf)
+      // MIOpen does not support BFloat16 batchnorm in ROCm < 6.4
+      && (detail::getCUDAHooks().versionROCm() >= 60400 || input.scalar_type() != at::kBFloat16)
+      && weight.scalar_type() == at::kFloat // only FP32 weight for FP32 or FP16/BF16(mixed) input
       && weight.defined() && bias.defined()
       && ((running_mean.defined() && running_var.defined())
         || (!running_mean.defined() && !running_var.defined() && training))
