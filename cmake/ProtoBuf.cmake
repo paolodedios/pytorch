@@ -52,6 +52,7 @@ macro(custom_protobuf_find)
           string(REGEX REPLACE "/Z[iI]" "/Z7" ${flag_var} "${${flag_var}}")
         endif(${flag_var} MATCHES "/Z[iI]")
       endif(MSVC_Z7_OVERRIDE)
+      set(${flag_var} "${${flag_var}} /FS")
     endforeach(flag_var)
 
     foreach(flag_var
