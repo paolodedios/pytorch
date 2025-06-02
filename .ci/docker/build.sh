@@ -170,21 +170,21 @@ case "$tag" in
     UCC_COMMIT=${_UCC_COMMIT}
     TRITON=yes
     ;;
-  pytorch-linux-jammy-py3-clang10-onnx)
+  pytorch-linux-jammy-py3-clang12-onnx)
     ANACONDA_PYTHON_VERSION=3.9
-    CLANG_VERSION=10
+    CLANG_VERSION=12
     VISION=yes
     ONNX=yes
     ;;
-  pytorch-linux-jammy-py3.9-clang10)
+  pytorch-linux-jammy-py3.9-clang12)
     ANACONDA_PYTHON_VERSION=3.9
-    CLANG_VERSION=10
+    CLANG_VERSION=12
     VISION=yes
     TRITON=yes
     ;;
-  pytorch-linux-jammy-py3.11-clang10)
+  pytorch-linux-jammy-py3.11-clang12)
     ANACONDA_PYTHON_VERSION=3.11
-    CLANG_VERSION=10
+    CLANG_VERSION=12
     VISION=yes
     TRITON=yes
     ;;
