@@ -709,6 +709,9 @@ class ConstDictVariable(VariableTracker):
                 msg = VariableTracker.build(tx, "popitem(): dictionary is empty")
                 raise_observed_exception(KeyError, tx, args=[msg])
 
+            self.should_reconstruct_all = True
+            tx.output.side_effects.mutation(self)
+
             if self.user_cls is collections.OrderedDict and (
                 len(args) == 1 or "last" in kwargs
             ):
