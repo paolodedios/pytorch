@@ -12,7 +12,7 @@ import contextlib
 import copy
 import itertools
 import pprint
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import Any, Callable, Optional, TYPE_CHECKING, Union
@@ -316,8 +316,22 @@ def _create_runtime_wrapper(
             make_output_handler(info, runtime_metadata, trace_joint)
             for info in runtime_metadata.output_info
         )
+    def record_runtime_wrapper_prologue_enter() -> AbstractContextManager[None]:
+        cm: AbstractContextManager[None] = (
+            torch._C._profiler._RecordFunctionFast("AOTDispatcher Runtime Wrapper Prologue")
+            if torch.autograd.profiler._is_profiler_enabled
+            else contextlib.nullcontext()
+        )
+        cm.__enter__()
+        return cm
+
+    def record_runtime_wrapper_prologue_exit(cm: AbstractContextManager[None]) -> None:
+        cm.__exit__(None, None, None)
 
     def runtime_wrapper(args: list[Any]):
+        # Create context manager for profiler
+        cm = record_runtime_wrapper_prologue_enter()
+
         # stash a ref to each input tensor we plan to use after the compiled function
         orig_inputs = {i: args[i] for i in epilogue_args_idx}
 
@@ -341,6 +355,7 @@ def _create_runtime_wrapper(
             with torch.autograd._force_original_view_tracking(
                 True
             ), torch.enable_grad():
+                record_runtime_wrapper_prologue_exit(cm)
                 all_outs = call_func_at_runtime_with_args(
                     compiled_fn, args_, disable_amp=disable_amp, steal_args=True
                 )
@@ -354,6 +369,7 @@ def _create_runtime_wrapper(
             try:
                 if grad_enabled:
                     torch._C._set_grad_enabled(False)
+                record_runtime_wrapper_prologue_exit(cm)
                 all_outs = call_func_at_runtime_with_args(
                     compiled_fn, args, disable_amp=disable_amp, steal_args=True
                 )
