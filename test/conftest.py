@@ -305,6 +305,18 @@ class StepcurrentPlugin:
 
     def pytest_collection_modifyitems(self, config: Config, items: list[Any]) -> None:
         if not self.lastrun:
+            if self.run_single:
+                # Only situation that I can think of where this would happen is if
+                # in the previous run pytest exited cleanly but the process did
+                # not, which is usually because of an error on process exit, ex
+                # double free.  The rerun logic can't currently handle this so
+                # this is a stop gap to prevent regressions while I figure out
+                # how to deal with it.
+                raise RuntimeError(
+                    "Running with --run-single, but failed to find last run test. "
+                    "This is likely an error in the test suite. "
+                    "Check the exit status of the previous run."
+                )
             self.report_status = "Cannot find last run test, not skipping"
             return
 
