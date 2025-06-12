@@ -20,6 +20,7 @@ from typing import Any, Callable, Optional, TYPE_CHECKING, Union
 import torch
 import torch.utils.dlpack
 from torch import Tensor
+from torch._dynamo import config as dynamo_config
 from torch._dynamo.callback import callback_handler, CallbackTrigger
 from torch._dynamo.utils import CompileEventLogger, dynamo_timed, get_metrics_context
 from torch._guards import (
@@ -319,7 +320,7 @@ def _create_runtime_wrapper(
     def record_runtime_wrapper_prologue_enter() -> AbstractContextManager[None]:
         cm: AbstractContextManager[None] = (
             torch._C._profiler._RecordFunctionFast("AOTDispatcher Runtime Wrapper Prologue")
-            if torch.autograd.profiler._is_profiler_enabled
+            if torch.autograd.profiler._is_profiler_enabled and dynamo_config.record_runtime_overhead
             else contextlib.nullcontext()
         )
         cm.__enter__()
