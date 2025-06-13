@@ -318,7 +318,7 @@ def _create_runtime_wrapper(
             for info in runtime_metadata.output_info
         )
     def record_runtime_wrapper_prologue_enter() -> AbstractContextManager[None] | None:
-        if torch.autograd.profiler._is_profiler_enabled and dynamo_config.record_runtime_overhead
+        if torch.autograd.profiler._is_profiler_enabled and dynamo_config.record_runtime_overhead:
             cm = torch._C._profiler._RecordFunctionFast("AOTDispatcher Runtime Wrapper Prologue")
             cm.__enter__()
             return cm
