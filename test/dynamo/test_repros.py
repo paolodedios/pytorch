@@ -44,6 +44,7 @@ from torch import nn
 from torch._dynamo.debug_utils import same_two_models
 from torch._dynamo.testing import CompileCounter, rand_strided, same, skipIfPy312
 from torch._inductor.utils import fresh_inductor_cache
+from torch.profiler import profile, ProfilerActivity
 from torch.nn import functional as F
 from torch.testing._internal.common_cuda import (
     PLATFORM_SUPPORTS_FLASH_ATTENTION,
@@ -5800,6 +5801,40 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         self.assertEqual(result, result_test)
         self.assertEqual(x, x_test)
+
+    def test_aot_autograd_runtime_wrapper_prologue_profiled(self):
+        # Names for profiling events of interest
+        prologue_name = "AOTDispatcher Runtime Wrapper Prologue"
+        compiled_function_name = "CompiledFunction"
+
+        # Simple linear op to compile
+        mod = torch.nn.Linear(4, 4)
+        opt_mod = torch.compile(mod)
+        x = torch.randn(4, 4)
+        
+        # warm up
+        opt_mod(x)
+
+        # Run compiled op with profiling
+        with profile(activities=[ProfilerActivity.CPU]) as prof:
+            opt_mod(x)
+
+        # Make sure events are populated then find events of interest
+        events = prof.events()
+        self.assertTrue(events is not None)
+        for event in events:
+            if hasattr(event, "name" ) and prologue_name in event.name:
+                prologue_event = event
+            if hasattr(event, "name" ) and compiled_function_name in event.name:
+                compiled_function_event = event
+
+        # Make sure prologue and compiled functtion events exist
+        self.assertTrue(prologue_event is not None)
+        self.assertTrue(compiled_function_event is not None)
+
+        # Make sure prologue ends strictly before compiled function starts
+        self.assertTrue(prologue_event.time_range.end < compiled_function_event.time_range.start)
+
 
     def test_changing_stride(self):
         cnt = torch._dynamo.testing.CompileCounter()
