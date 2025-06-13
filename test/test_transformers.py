@@ -129,6 +129,8 @@ def _check_equal(
     # Compute error between golden
     test_error = (golden - test).abs().max()
     ref_error = (golden - reference).abs().max()
+    #print("TEST_ERROR: " , test_error)
+    #print("REF_ERROR : " , ref_error)
 
     if torch.isnan(test_error).any() and not torch.isnan(ref_error).any():
         raise ValueError("Output/Grad with NaN")
@@ -3723,10 +3725,10 @@ class TestSDPACudaOnly(NNTestCase):
         grads_ref = torch.autograd.grad(out_ref, (query_ref, key_ref, value_ref), upstream_grad)
 
         fudge_factors = {
-            'out': 5,
+            'out': 5, # NEW CK MIN
             'grad_query': 180.0,
             'grad_key': 16,
-            'grad_value': 10,
+            'grad_value': 6, # NEW CK MIN
         }
         if TEST_WITH_ROCM:
             fudge_factors['grad_value'] = 6.0
