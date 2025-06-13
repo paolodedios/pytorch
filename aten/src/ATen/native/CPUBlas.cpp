@@ -353,23 +353,36 @@ void gemm(
      return;
    }
 #endif
-#if AT_BUILD_WITH_BLAS() && defined(BLAS_HAS_SBGEMM) && !defined(__aarch64__)
+#if AT_BUILD_WITH_BLAS() && defined(BLAS_HAS_SBGEMM)
    if (use_blas_gemm(transa, transb, m, n, k, lda, ldb, ldc)) {
       int m_ = m, n_ = n, k_ = k, lda_ = lda, ldb_ = ldb, ldc_ = ldc;
       char transa_ = to_blas(transa), transb_ = to_blas(transb);
       float alpha_ = alpha, beta_ = beta;
-      int c_size = n_ * ldc_;
+      int c_size = n_ * m_;
       // C matrix in OpenBLAS sbgemm are of type "float" so we have to convert, copy and copy back.
-      std::vector<float> float_v(c, c + c_size);
+      at::BFloat16 * c_ptr = c; 
+      std::vector<float> float_v(c_size, 0.0f);
+      for (const auto j : c10::irange(n)) {
+        for (const auto i : c10::irange(m)) {
+          // allow the openblas to handle beta op
+          float_v[j * m + i] = c10::convert<float>(*(c_ptr + i));
+        }
+        c_ptr += ldc_;
+      }
       sbgemm_(&transa_, &transb_,
               &m_, &n_, &k_,
               &alpha_,
               a, &lda_,
               b, &ldb_,
               &beta_,
-              float_v.data(), &ldc_);
-      for (auto cv: float_v) {
-        *(c++) = c10::convert<at::BFloat16>(cv);
+              float_v.data(), &m_);
+      
+      c_ptr = c;
+      for (const auto j : c10::irange(n)) {
+        for (const auto i : c10::irange(m)) {
+          *(c_ptr + i) = c10::convert<at::BFloat16>(float_v[j * m + i]);
+        }
+        c_ptr += ldc_;
       }
       return;
    }
