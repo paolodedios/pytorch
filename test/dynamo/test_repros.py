@@ -5836,7 +5836,8 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
             # Make sure prologue event exist
             self.assertTrue(prologue_event is not None)
 
-            # Make sure prologue ends strictly before compiled function starts
+            # Make sure there is at least one other event (compiled function) that starts 
+            # after prologue starts
             self.assertLess(prologue_event.time_range.end, last_start_time)
 
 
