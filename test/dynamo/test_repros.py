@@ -5813,7 +5813,6 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         # Run this test with grad and no-grad to test both boolean cases trace_joint
         for c in [contextlib.nullcontext, torch.no_grad]:
-
             # Run compiled op with profiling
             with c():
                 # warmup before profiling

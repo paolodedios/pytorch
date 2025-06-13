@@ -104,9 +104,7 @@ def reset():
 class TestCompiledAutograd(TestCase):
     def setUp(self) -> None:
         self.exit_stack = contextlib.ExitStack()
-        self.exit_stack.enter_context(
-            config.patch("record_runtime_overhead", False)
-        )
+        self.exit_stack.enter_context(config.patch("record_runtime_overhead", False))
         super().setUp()
         reset()
 
