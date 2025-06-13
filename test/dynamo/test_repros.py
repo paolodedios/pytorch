@@ -44,8 +44,8 @@ from torch import nn
 from torch._dynamo.debug_utils import same_two_models
 from torch._dynamo.testing import CompileCounter, rand_strided, same, skipIfPy312
 from torch._inductor.utils import fresh_inductor_cache
-from torch.profiler import profile, ProfilerActivity
 from torch.nn import functional as F
+from torch.profiler import profile, ProfilerActivity
 from torch.testing._internal.common_cuda import (
     PLATFORM_SUPPORTS_FLASH_ATTENTION,
     PLATFORM_SUPPORTS_FP8,
@@ -5828,7 +5828,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
             prologue_event = None
             last_start_time = 0
             for event in events:
-                if hasattr(event, "name" ) and prologue_name in event.name:
+                if hasattr(event, "name") and prologue_name in event.name:
                     prologue_event = event
                 if event.time_range.start > last_start_time:
                     last_start_time = event.time_range.start
@@ -5836,10 +5836,9 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
             # Make sure prologue event exist
             self.assertTrue(prologue_event is not None)
 
-            # Make sure there is at least one other event (compiled function) that starts 
+            # Make sure there is at least one other event (compiled function) that starts
             # after prologue starts
             self.assertLess(prologue_event.time_range.end, last_start_time)
-
 
     def test_changing_stride(self):
         cnt = torch._dynamo.testing.CompileCounter()
@@ -6855,9 +6854,12 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
         ):
             torch.compile(lambda: None)
 
-        with torch._dynamo.config.patch(
-            suppress_errors=True, fail_on_recompile_limit_hit=True
-        ), self.assertRaises(AssertionError):
+        with (
+            torch._dynamo.config.patch(
+                suppress_errors=True, fail_on_recompile_limit_hit=True
+            ),
+            self.assertRaises(AssertionError),
+        ):
             torch.compile(lambda: None)
 
     def test_str_isalnum(self):
