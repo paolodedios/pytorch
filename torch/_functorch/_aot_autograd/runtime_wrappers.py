@@ -317,17 +317,16 @@ def _create_runtime_wrapper(
             make_output_handler(info, runtime_metadata, trace_joint)
             for info in runtime_metadata.output_info
         )
-    def record_runtime_wrapper_prologue_enter() -> AbstractContextManager[None]:
-        cm: AbstractContextManager[None] = (
-            torch._C._profiler._RecordFunctionFast("AOTDispatcher Runtime Wrapper Prologue")
-            if torch.autograd.profiler._is_profiler_enabled and dynamo_config.record_runtime_overhead
-            else contextlib.nullcontext()
-        )
-        cm.__enter__()
-        return cm
+    def record_runtime_wrapper_prologue_enter() -> AbstractContextManager[None] | None:
+        if torch.autograd.profiler._is_profiler_enabled and dynamo_config.record_runtime_overhead
+            cm = torch._C._profiler._RecordFunctionFast("AOTDispatcher Runtime Wrapper Prologue")
+            cm.__enter__()
+            return cm
+        return None
 
-    def record_runtime_wrapper_prologue_exit(cm: AbstractContextManager[None]) -> None:
-        cm.__exit__(None, None, None)
+    def record_runtime_wrapper_prologue_exit(cm: AbstractContextManager[None] | None) -> None:
+        if cm is not None:
+            cm.__exit__(None, None, None)
 
     def runtime_wrapper(args: list[Any]):
         # Create context manager for profiler

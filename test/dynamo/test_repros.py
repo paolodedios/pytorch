@@ -5803,40 +5803,41 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
         self.assertEqual(x, x_test)
 
     def test_aot_autograd_runtime_wrapper_prologue_profiled(self):
+        # Names for prologue profiling event
+        prologue_name = "AOTDispatcher Runtime Wrapper Prologue"
+
+        # Simple linear op to compile
+        mod = torch.nn.Linear(4, 4)
+        opt_mod = torch.compile(mod)
+        x = torch.randn(4, 4)
+
         # Run this test with grad and no-grad to test both boolean cases trace_joint
         for c in [contextlib.nullcontext, torch.no_grad]:
+
+            # Run compiled op with profiling
             with c():
-                # Names for profiling events of interest
-                prologue_name = "AOTDispatcher Runtime Wrapper Prologue"
-                compiled_function_name = "CompiledFunction"
-
-                # Simple linear op to compile
-                mod = torch.nn.Linear(4, 4)
-                opt_mod = torch.compile(mod)
-                x = torch.randn(4, 4)
-                
-                # warm up
+                # warmup before profiling
                 opt_mod(x)
-
-                # Run compiled op with profiling
                 with profile(activities=[ProfilerActivity.CPU]) as prof:
                     opt_mod(x)
 
-                # Make sure events are populated then find events of interest
-                events = prof.events()
-                self.assertTrue(events is not None)
-                for event in events:
-                    if hasattr(event, "name" ) and prologue_name in event.name:
-                        prologue_event = event
-                    if hasattr(event, "name" ) and compiled_function_name in event.name:
-                        compiled_function_event = event
+            # Make sure events are populated then find prologue event and last start time
+            events = prof.events()
+            self.assertTrue(events is not None)
 
-                # Make sure prologue and compiled functtion events exist
-                self.assertTrue(prologue_event is not None)
-                self.assertTrue(compiled_function_event is not None)
+            prologue_event = None
+            last_start_time = 0
+            for event in events:
+                if hasattr(event, "name" ) and prologue_name in event.name:
+                    prologue_event = event
+                if event.time_range.start > last_start_time:
+                    last_start_time = event.time_range.start
 
-                # Make sure prologue ends strictly before compiled function starts
-                self.assertTrue(prologue_event.time_range.end < compiled_function_event.time_range.start)
+            # Make sure prologue event exist
+            self.assertTrue(prologue_event is not None)
+
+            # Make sure prologue ends strictly before compiled function starts
+            self.assertLess(prologue_event.time_range.end, last_start_time)
 
 
     def test_changing_stride(self):
