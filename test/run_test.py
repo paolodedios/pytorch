@@ -774,6 +774,8 @@ def run_test_retries(
             print_to_file("Retrying single test...")
         print_items = []  # do not continue printing them, massive waste of space
 
+    if "null" in num_failures:
+        num_failures["the suite as a whole"] = num_failures.pop("null")
     consistent_failures = [x[1:-1] for x in num_failures.keys() if num_failures[x] >= 3]
     flaky_failures = [x[1:-1] for x in num_failures.keys() if 0 < num_failures[x] < 3]
     if len(flaky_failures) > 0:
