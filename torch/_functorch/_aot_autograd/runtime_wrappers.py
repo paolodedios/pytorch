@@ -317,14 +317,24 @@ def _create_runtime_wrapper(
             make_output_handler(info, runtime_metadata, trace_joint)
             for info in runtime_metadata.output_info
         )
-    def record_runtime_wrapper_prologue_enter() -> Union[AbstractContextManager[None], None]:
-        if torch.autograd.profiler._is_profiler_enabled and dynamo_config.record_runtime_overhead:
-            cm = torch._C._profiler._RecordFunctionFast("AOTDispatcher Runtime Wrapper Prologue")
+
+    def record_runtime_wrapper_prologue_enter() -> (
+        Union[AbstractContextManager[None], None]
+    ):
+        if (
+            torch.autograd.profiler._is_profiler_enabled
+            and dynamo_config.record_runtime_overhead
+        ):
+            cm = torch._C._profiler._RecordFunctionFast(
+                "AOTDispatcher Runtime Wrapper Prologue"
+            )
             cm.__enter__()
             return cm
         return None
 
-    def record_runtime_wrapper_prologue_exit(cm: Union[AbstractContextManager[None], None]) -> None:
+    def record_runtime_wrapper_prologue_exit(
+        cm: Union[AbstractContextManager[None], None],
+    ) -> None:
         if cm is not None:
             cm.__exit__(None, None, None)
 
@@ -352,9 +362,10 @@ def _create_runtime_wrapper(
             # It's possible to have trace_joint inside user specified with no_grad() region,
             # if there is a nested with enable_grad(), that forces some outputs to require gradients.
             # Therefore, we unconditionally turn on enable_grad() for compiled_fn execution.
-            with torch.autograd._force_original_view_tracking(
-                True
-            ), torch.enable_grad():
+            with (
+                torch.autograd._force_original_view_tracking(True),
+                torch.enable_grad(),
+            ):
                 record_runtime_wrapper_prologue_exit(cm)
                 all_outs = call_func_at_runtime_with_args(
                     compiled_fn, args_, disable_amp=disable_amp, steal_args=True
@@ -2296,20 +2307,24 @@ To fix this, your tensor subclass must implement the dunder method __force_to_sa
 
                     context = torch._C._DisableAutocast if disable_amp else nullcontext
                     metrics_context = get_metrics_context()
-                    with tracing(saved_context), compile_context(
-                        saved_compile_context
-                    ), context(), track_graph_compiling(
-                        aot_config, "backward"
-                    ), metrics_context, dynamo_timed(
-                        "backward._backward_impl",
-                        phase_name="entire_backward_compile",
-                        log_pt2_compile_event=True,
-                        dynamo_compile_column_us="backward_cumulative_compile_time_us",
-                        log_waitcounter=True,
-                        waitcounter_name_override="entire_backward_compile",
-                    ), callback_handler.install_callbacks(
-                        CallbackTrigger.LAZY_BACKWARD,
-                        str(CompileContext.current_compile_id()),
+                    with (
+                        tracing(saved_context),
+                        compile_context(saved_compile_context),
+                        context(),
+                        track_graph_compiling(aot_config, "backward"),
+                        metrics_context,
+                        dynamo_timed(
+                            "backward._backward_impl",
+                            phase_name="entire_backward_compile",
+                            log_pt2_compile_event=True,
+                            dynamo_compile_column_us="backward_cumulative_compile_time_us",
+                            log_waitcounter=True,
+                            waitcounter_name_override="entire_backward_compile",
+                        ),
+                        callback_handler.install_callbacks(
+                            CallbackTrigger.LAZY_BACKWARD,
+                            str(CompileContext.current_compile_id()),
+                        ),
                     ):
                         CompileEventLogger.compilation_metric(is_forward=False)
                         # See Note: [Backward graph lazy lowering]
