@@ -319,7 +319,7 @@ def _create_runtime_wrapper(
         )
 
     def record_runtime_wrapper_prologue_enter() -> (
-        Union[AbstractContextManager[None], None]
+        Optional[AbstractContextManager[None]]
     ):
         if (
             torch.autograd.profiler._is_profiler_enabled
@@ -333,7 +333,7 @@ def _create_runtime_wrapper(
         return None
 
     def record_runtime_wrapper_prologue_exit(
-        cm: Union[AbstractContextManager[None], None],
+        cm: Optional[AbstractContextManager[None]],
     ) -> None:
         if cm is not None:
             cm.__exit__(None, None, None)
