@@ -1542,6 +1542,7 @@ class GraphModule(torch.nn.Module):
 
         true_graph_0 = self.true_graph_0
         false_graph_0 = self.false_graph_0
+
         cond = torch.ops.higher_order.cond(gt, true_graph_0, false_graph_0, ());  gt = true_graph_0 = false_graph_0 = None
 
         getitem_1: "Sym(u0)" = cond[0];  cond = None
@@ -1593,7 +1594,9 @@ class GraphModule(torch.nn.Module):
 
         true_graph_0 = self.true_graph_0
         false_graph_0 = self.false_graph_0
+
         cond = torch.ops.higher_order.cond(gt, true_graph_0, false_graph_0, ());  gt = true_graph_0 = false_graph_0 = None
+
         getitem = cond[0];  cond = getitem = None
 
         select: "f32[3]" = torch.ops.aten.select.int(x, 0, 0);  x = None
@@ -11586,7 +11589,9 @@ graph():
                 return x
 
         inp = torch.randn(4, 4)
-        gm = torch.fx.experimental.proxy_tensor.make_fx(Foo(), stack_trace=True)(
+        gm = torch.fx.experimental.proxy_tensor.make_fx(
+            Foo(), record_stack_traces=True
+        )(
             inp,
         )
 

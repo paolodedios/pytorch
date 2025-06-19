@@ -667,6 +667,10 @@ class TestDeserialize(TestCase):
                     self.assertEqual(str(val1), str(val2))
 
                 # Check "stack_trace" metadata
+                if node1.meta.get("stack_trace", None) != node2.meta.get(
+                    "stack_trace", None
+                ):
+                    breakpoint()
                 self.assertEqual(
                     node1.meta.get("stack_trace", None),
                     node2.meta.get("stack_trace", None),
