@@ -611,6 +611,7 @@ libtorch_nativert_sources = [
     "torch/nativert/kernels/C10Kernel.cpp",
     "torch/nativert/kernels/AutoFunctionalizeKernel.cpp",
     "torch/nativert/kernels/HigherOrderKernel.cpp",
+    "torch/nativert/kernels/PrimKernelRegistry.cpp",
 ]
 
 torch_mobile_tracer_sources = [
