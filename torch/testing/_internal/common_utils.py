@@ -5707,8 +5707,8 @@ def scoped_load_inline(func):
     return wrapper
 
 def skipIfPythonVersionMismatch(predicate):
-    from torch._vendor.packaging import version
     vi = sys.version_info
+
     def dec_fn(fn):
         @wraps(fn)
         def wrap_fn(self, *args, **kwargs):
