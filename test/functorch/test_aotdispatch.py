@@ -26,6 +26,7 @@ from common_utils import (
 
 import torch
 import torch._dynamo as torchdynamo
+import torch.distributed as dist
 import torch.nn as nn
 import torch.utils._pytree as pytree
 from functorch import grad, jacrev, make_fx, vjp, vmap
@@ -55,10 +56,12 @@ from torch._functorch.aot_autograd import (
     aot_export_module,
     SerializableAOTDispatchCompiler,
 )
+from torch._functorch.partitioners import _sync_decision_cross_ranks
 from torch._higher_order_ops.out_dtype import out_dtype
 from torch._inductor.codecache import compiled_fx_graph_hash
 from torch._inductor.output_code import MockFXGraphCacheOutput
 from torch._subclasses.fake_tensor import DynamicOutputShapeException, FakeTensorMode
+from torch.fx import Graph
 from torch.fx.experimental.proxy_tensor import is_sym_node
 from torch.fx.experimental.symbolic_shapes import GuardOnDataDependentSymNode, ShapeEnv
 from torch.nn.attention.flex_attention import flex_attention
@@ -70,6 +73,11 @@ from torch.testing._internal.common_device_type import (
     ops,
     tol,
     toleranceOverride,
+)
+from torch.testing._internal.common_distributed import (
+    MultiProcessTestCase,
+    requires_nccl,
+    skip_if_lt_x_gpu,
 )
 from torch.testing._internal.common_methods_invocations import op_db
 from torch.testing._internal.common_modules import module_db, modules
@@ -8091,6 +8099,72 @@ class TestAOTAutogradWithCache(TestAOTAutogradWithDynamo):
         # But also can't be xfailed because it causes undefined behavior for
         # ASAN
         self.skipTest("Skipping because it fails in strict cache mode")
+
+
+@requires_nccl()
+class TestSyncDecisionCrossRanks(MultiProcessTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self._spawn_processes()
+
+    @property
+    def world_size(self) -> int:
+        return 2
+
+    @property
+    def ranks(self) -> list[int]:
+        return list(range(self.world_size))
+
+    @property
+    def device(self) -> torch.device:
+        return torch.device(f"cuda:{self.rank}")
+
+    def _init_process_group(self) -> None:
+        torch._inductor.config.triton.store_cubin = True
+        torch._inductor.config.debug = True
+
+        torch.cuda.set_device(self.device)
+        store = dist.FileStore(self.file_name, self.world_size)
+        dist.init_process_group(
+            backend="nccl",
+            world_size=self.world_size,
+            rank=self.rank,
+            store=store,
+        )
+        torch._C._distributed_c10d._register_process_group("default", dist.group.WORLD)
+
+    @skip_if_lt_x_gpu(2)
+    def test_sync_decision_cross_ranks(self):
+        test_graph = Graph()
+        node1 = test_graph.placeholder("x")
+
+        ag1 = test_graph.create_node(
+            "call_function",
+            torch.ops._c10d_functional.all_gather_into_tensor.default,
+            (node1,),
+        )
+        wt1 = test_graph.create_node(
+            "call_function", torch.ops._c10d_functional.wait_tensor.default, (ag1,)
+        )
+        wt1.meta["val"] = torch.randn(10, 10)
+
+        ag2 = test_graph.create_node(
+            "call_function",
+            torch.ops._c10d_functional.all_gather_into_tensor.default,
+            (node1,),
+        )
+        wt2 = test_graph.create_node(
+            "call_function", torch.ops._c10d_functional.wait_tensor.default, (ag2,)
+        )
+        wt2.meta["val"] = torch.randn(10, 20)
+        if self.rank == 0:
+            saved_values = [wt1]
+        else:
+            saved_values = [wt2]
+
+        self._init_process_group()
+        saved_values = _sync_decision_cross_ranks(test_graph, saved_values)
+        self.assertEqual(saved_values, [wt1])
 
 
 if __name__ == "__main__":
