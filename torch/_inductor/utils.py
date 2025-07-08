@@ -806,10 +806,37 @@ def gather_origins(
             return is_unrealized_node(n.data)
         if isinstance(n, ir.StorageBox):
             return is_unrealized_node(n.data)
-        return isinstance(n, ir.IRNode) and isinstance(n, ir.Pointwise)
+        return isinstance(n, ir.IRNode) and not isinstance(
+            n,
+            (
+                ir.ComputedBuffer,
+                ir.InputsKernel,
+                ir.InputBuffer,
+                ir.ReinterpretView,
+                ir.TemplateBuffer,
+            ))
 
-    kwarg_origins = [val.origins for val in kwargs.values() if is_unrealized_node(val)]
-    arg_origins = [arg.origins for arg in args if is_unrealized_node(arg)]
+    def get_unrealized_nodes(obj):
+        node_list = []
+        if isinstance(obj, (list, tuple, set, dict)):
+            if isinstance(obj, dict):
+                for value in obj.values():
+                    node_list.extend(get_unrealized_nodes(value))
+            else:
+                for element in obj:
+                    node_list.extend(get_unrealized_nodes(element))
+        elif  not isinstance(obj, type(None)) and is_unrealized_node(obj):
+            node_list.append(obj.origins)
+        return node_list
+
+    kwarg_origins = []
+    for val in kwargs.values():
+        kwarg_origins.extend(get_unrealized_nodes(val))
+
+    arg_origins = []
+    for arg in args:
+        arg_origins.extend(get_unrealized_nodes(arg))
+
     return OrderedSet(itertools.chain(*arg_origins, *kwarg_origins))
 
 
