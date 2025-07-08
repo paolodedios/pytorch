@@ -1096,6 +1096,8 @@ class cpp:
     # Use a small dequant buffer for wgt of woq int4 size as: [q_group_size, Nr]
     use_small_dequant_buffer = False
 
+    # Whether to enable link-time-optimization
+    enable_lto = os.environ.get("TORCHINDUCTOR_CPP_ENABLE_LTO", "0") == "1"
 
 # config specific to codegen/triton.py
 class triton:

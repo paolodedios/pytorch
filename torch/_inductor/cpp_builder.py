@@ -630,6 +630,9 @@ def _get_optimization_cflags(
                 else:
                     cflags.append("march=native")
 
+        if config.cpp.enable_lto and _is_clang(cpp_compiler):
+            cflags.append("flto=thin")
+
         return cflags
 
 
@@ -670,6 +673,10 @@ def get_cpp_options(
         + _get_cpp_std_cflag()
         + _get_os_related_cpp_cflags(cpp_compiler)
     )
+
+    if not _IS_WINDOWS and config.cpp.enable_lto and _is_clang(cpp_compiler):
+        ldflags.append("fuse-ld=lld")
+        ldflags.append("flto=thin")
 
     passthrough_args.append(" ".join(extra_flags))
 
