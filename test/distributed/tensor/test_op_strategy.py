@@ -568,9 +568,7 @@ class DistTensorReplicateStrategyRegistrationTest(DTensorTestBase):
             self.assertEqual(output_dt.placements, [Replicate(), Replicate()])
 
     @with_comms
-    def test_no_identical_strategies(
-        self,
-    ):
+    def test_no_identical_strategies(self):
         # Test if there are any identical OpSpecs in the output strategy.
         mesh = init_device_mesh(self.device_type, (2, self.world_size // 2))
         test_op = torch.ops.mylib.numpy_sin

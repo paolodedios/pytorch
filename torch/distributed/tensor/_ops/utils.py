@@ -120,7 +120,6 @@ def replicate_op_strategy(op_schema: OpSchema) -> StrategyType:
     inputs_strategy = op_schema.args_schema
     # TODO(zpcore): handle kwarg_inputs_strategy
     # kwarg_inputs_strategy = op_schema.kwargs_schema
-    output_strategy = OpStrategy([])
     output_type = [str(ret.type) for ret in op_schema.op._schema.returns]
     # TODO(zpcore): Confirm if view op can be handle properly or not. Prevent
     # handling view ops until confirmed.
@@ -134,43 +133,12 @@ def replicate_op_strategy(op_schema: OpSchema) -> StrategyType:
             "because size of the list may depend on the op's input value"
         )
 
-    mesh = None
-    ndim = -1
     inputs_strategy_flatten = flatten_strategy_args(inputs_strategy)  # type: ignore[arg-type]
+    mesh = inputs_strategy_flatten[0].mesh
 
-    # check no cross mesh
-    for input_strategy in inputs_strategy_flatten:
-        assert mesh is None or mesh == input_strategy.mesh
-        mesh = input_strategy.mesh
-        ndim = mesh.ndim
-
-    assert mesh
-    costs = []
-    new_input_specs = []
-    placements = [Replicate() for _ in range(ndim)]
-    output_spec = DTensorSpec(
-        mesh,
-        placements=tuple(placements),
-    )
-    # build DTensorSpec for all input args
-    for input_strategy in inputs_strategy_flatten:
-        # check for each input arg
-        new_input_spec = DTensorSpec(
-            mesh,
-            tuple([Replicate()] * ndim),
-            tensor_meta=input_strategy.strategies[0].output_spec.tensor_meta,
-        )
-        # all args use replicate strategy
-        new_input_specs.append(new_input_spec)
-        costs.append(generate_redistribute_costs(input_strategy, new_input_spec))
-    op_spec = OpSpec(
-        output_specs=output_spec,
-        input_specs=new_input_specs,
-        redistribute_cost=costs,
-    )
-    output_strategy.strategies.append(op_spec)
-
-    return output_strategy
+    dim_sharding: PlacementList = [Replicate()] * (len(inputs_strategy_flatten) + 1)
+    single_dim_placement = [dim_sharding]
+    return expand_to_full_mesh_op_strategy(mesh, op_schema, single_dim_placement)
 
 
 def as_list(
@@ -367,8 +335,9 @@ def expand_to_full_mesh_op_strategy(
         input_specs: list[DTensorSpec] = [
             s for s in spec_list[input_index:] if isinstance(s, DTensorSpec)
         ]
-
-        input_args_strategy = op_schema.args_strategy
+        # do not use op_schema.args_strategy because args_strategy won't be
+        # properly flatten when it contains TupleStrategy.
+        input_args_strategy = flatten_strategy_args(op_schema.args_schema)  # type: ignore[arg-type]
         assert len(input_specs) == len(input_args_strategy)
         self_spec = input_args_strategy[0].strategies[0].output_spec
 
