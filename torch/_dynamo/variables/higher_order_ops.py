@@ -991,7 +991,7 @@ class CondHigherOrderVariable(TorchHigherOrderOperatorVariable):
                 f"{operands.python_type()}",
             )
         operands_seq = operands.unpack_var_sequence(tx)
-        if not only_consist_of(operands, (TensorVariable, ConstantVariable)):
+        if not only_consist_of(operands, (TensorVariable, ConstantVariable, SymNodeVariable)):
             unimplemented(
                 "Expect operands to be a tuple of pytrees that only consists of tensor leaves."
             )

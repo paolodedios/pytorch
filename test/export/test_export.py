@@ -11066,6 +11066,84 @@ graph():
         self.assertEqual(ep.module()(3, 5), 8)
         self.assertEqual(ep.module()(5, 4), 9)
 
+    @testing.expectedFailureCppRuntimeNonStrict
+    def test_symint_inputs_with_cond(self):
+        class Example1(torch.nn.Module):
+            def forward(self, x, trigger):
+                return torch.cond(
+                    trigger == 1,
+                    lambda: x + 1,
+                    lambda: x * 2,
+                    (),
+                )
+
+        m = Example1()
+        x = torch.randn(2)
+        trigger = 0
+        ep = export(m, (x, trigger), dynamic_shapes=(None, Dim.DYNAMIC))
+        print("example 1 [ep]", ep)
+        em = ep.module()
+        print("example 1 [em]", em)
+        self.assertTrue(torch.allclose(em(x, trigger), x * 2))
+        trigger = 1
+        self.assertTrue(torch.allclose(em(x, trigger), x + 1))
+        trigger = 0
+        self.assertTrue(torch.allclose(em(x, trigger), x * 2))
+
+        class Example2(torch.nn.Module):
+            def forward(self, x, trigger, target):
+                return torch.cond(
+                    trigger == 1,
+                    lambda: x + target,
+                    lambda: x * target,
+                    (),
+                )
+
+        m = Example2()
+        x = torch.randn(2)
+        trigger = 0
+        target = 2
+        ep = export(m, (x, trigger, target), dynamic_shapes=(None, Dim.DYNAMIC, Dim.DYNAMIC))
+        print("example 2 [ep]", ep)
+        em = ep.module()
+        print("example 2 [em]", em)
+        self.assertTrue(torch.allclose(em(x, trigger, target), x * 2))
+        trigger = 1
+        target = 1
+        self.assertTrue(torch.allclose(em(x, trigger, target), x + 1))
+        trigger = 0
+        target = 2
+        self.assertTrue(torch.allclose(em(x, trigger, target), x * 2))
+
+        class Example3(torch.nn.Module):
+            def forward(self, x, trigger):
+                target = torch.cond(
+                    trigger == 1,
+                    lambda: 1,
+                    lambda: 2,
+                    (),
+                )
+
+                return torch.cond(
+                    trigger == 1,
+                    lambda: x + target,
+                    lambda: x * target,
+                    (),
+                )
+
+        m = Example3()
+        x = torch.randn(2)
+        trigger = 0
+        ep = export(m, (x, trigger), dynamic_shapes=(None, Dim.DYNAMIC))
+        print("example 3 [ep]", ep)
+        em = ep.module()
+        print("example 3 [em]", em)
+        self.assertTrue(torch.allclose(em(x, trigger), x * 2))
+        trigger = 1
+        self.assertTrue(torch.allclose(em(x, trigger), x + 1))
+        trigger = 0
+        self.assertTrue(torch.allclose(em(x, trigger), x * 2))
+
     def test_dynamic_shapes_bounds(self):
         class M(torch.nn.Module):
             """
