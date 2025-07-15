@@ -275,14 +275,13 @@ class ShardingPropagator:
         # scalar. TODO: figure out a better way to handle this
         if op_schema.op is aten._local_scalar_dense.default:
             return OutputSharding(None, op_schema)
+
         out_tensor_meta = self._propagate_tensor_meta_non_cached(op_schema)
 
         if op_schema.op in self.op_strategy_funcs:
             # wrap the op_schema with op strategy for sharding strategy propagation
-            strategy_schema = self._wrap_with_op_strategy(
-                op_schema
-            )  # <----- strategy_schema.schema_info lost
-            # strategy_schema.schema_info = op_schema.schema_info
+            strategy_schema = self._wrap_with_op_strategy(op_schema)
+
             # run sharding strategy propagation/generation
             op_strategy = self.op_strategy_funcs[op_schema.op](strategy_schema)
 
