@@ -4,6 +4,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <torch/csrc/inductor/aoti_torch/c/shim_deprecated.h>
+
 // This header defines a stable C API for certain ATen functionality in
 // libtorch. The AOTInductor compiled model.so will only refer to this header
 // instead of other headers from aten/c10, which means it will NOT be able to
@@ -349,31 +351,6 @@ AOTI_TORCH_EXPORT AOTITorchError aoti_torch_create_tensor_from_blob_v2(
     const uint8_t* opaque_metadata,
     int64_t opaque_metadata_size);
 
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch__embedding_bag(
-    AtenTensorHandle weight,
-    AtenTensorHandle indices,
-    AtenTensorHandle offsets,
-    int32_t scale_grad_by_freq,
-    int32_t mode,
-    int32_t sparse,
-    AtenTensorHandle per_sample_weights, // optional argument
-    int32_t include_last_offset,
-    int32_t padding_idx,
-    AtenTensorHandle* ret0, // returns new reference
-    AtenTensorHandle* ret1, // returns new reference
-    AtenTensorHandle* ret2, // returns new reference
-    AtenTensorHandle* ret3 // returns new reference
-);
-
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch__fft_c2c(
-    AtenTensorHandle self,
-    const int64_t* dim_ptr,
-    int64_t dim_size,
-    int64_t normalization,
-    int32_t forward,
-    AtenTensorHandle* ret // returns new reference
-);
-
 // This version is deprecated. We will remove it later
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch__scaled_dot_product_flash_attention(
     AtenTensorHandle query,
@@ -430,46 +407,6 @@ aoti_torch__scaled_dot_product_efficient_attention(
     AtenTensorHandle* ret3 // returns new reference
 );
 
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch__scaled_mm(
-    AtenTensorHandle self,
-    AtenTensorHandle mat2,
-    AtenTensorHandle bias,
-    int32_t* out_dtype,
-    AtenTensorHandle scale_a,
-    AtenTensorHandle scale_b,
-    AtenTensorHandle scale_result,
-    int8_t use_fast_accum,
-    AtenTensorHandle* ret0,
-    AtenTensorHandle* ret1);
-
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch__scaled_mm_v2(
-    AtenTensorHandle self,
-    AtenTensorHandle mat2,
-    AtenTensorHandle scale_a,
-    AtenTensorHandle scale_b,
-    AtenTensorHandle bias,
-    AtenTensorHandle scale_result,
-    int32_t* out_dtype,
-    int8_t use_fast_accum,
-    AtenTensorHandle* ret0);
-
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch_convolution(
-    AtenTensorHandle input,
-    AtenTensorHandle weight,
-    AtenTensorHandle bias, // optional argument
-    const int64_t* stride_ptr,
-    int64_t stride_size,
-    const int64_t* padding_ptr,
-    int64_t padding_size,
-    const int64_t* dilation_ptr,
-    int64_t dilation_size,
-    int transposed,
-    const int64_t* output_padding_ptr,
-    int64_t output_padding_size,
-    int64_t groups,
-    AtenTensorHandle* ret // returns new reference
-);
-
 // This function will create a new uninitialized tensor object
 // and its pointer is returned through *ret.
 AOTI_TORCH_EXPORT AOTITorchError
@@ -502,28 +439,10 @@ aoti_torch_clone(AtenTensorHandle self, AtenTensorHandle* ret);
 AOTI_TORCH_EXPORT AOTITorchError
 aoti_torch_clone_preserve_strides(AtenTensorHandle self, AtenTensorHandle* ret);
 
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch_addmm_out(
-    AtenTensorHandle out,
-    AtenTensorHandle self,
-    AtenTensorHandle mat1,
-    AtenTensorHandle mat2,
-    float beta,
-    float alpha);
-
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch_bmm_out(
-    AtenTensorHandle out,
-    AtenTensorHandle self,
-    AtenTensorHandle mat2);
-
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_copy_(
     AtenTensorHandle self,
     AtenTensorHandle src,
     int32_t non_blocking);
-
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch_mm_out(
-    AtenTensorHandle out,
-    AtenTensorHandle self,
-    AtenTensorHandle mat2);
 
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch__mm_plus_mm_out(
     AtenTensorHandle out,
@@ -571,15 +490,7 @@ aoti_torch_cpu__wrapped_quantized_linear_prepacked(
     int64_t out_channel,
     AtenTensorHandle* out);
 
-AOTI_TORCH_EXPORT AOTITorchError
-aoti_torch_nonzero(AtenTensorHandle self, AtenTensorHandle* out);
-
 AOTI_TORCH_EXPORT AOTITorchError aoti_torch_zero_(AtenTensorHandle self);
-
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch_repeat_interleave_Tensor(
-    AtenTensorHandle repeats,
-    int64_t* output_size,
-    AtenTensorHandle* out);
 
 AOTI_TORCH_EXPORT AOTITorchError
 aoti_torch_check_inf_and_nan(const char* tensor_name, AtenTensorHandle tensor);
@@ -607,17 +518,6 @@ AOTI_TORCH_EXPORT AOTITorchError aoti_torch_index_put_out(
     const uint32_t num_indices,
     const AtenTensorHandle values,
     bool accumulate);
-
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch_view_as_real(
-    AtenTensorHandle self,
-    AtenTensorHandle* ret // returns new reference
-);
-
-AOTI_TORCH_EXPORT AOTITorchError aoti_torch_view_dtype(
-    AtenTensorHandle self,
-    int32_t dtype,
-    AtenTensorHandle* ret // returns new reference
-);
 
 AOTI_TORCH_EXPORT void aoti_torch_print_tensor_handle(
     AtenTensorHandle self,
