@@ -1,5 +1,3 @@
-# mypy: allow-untyped-decorators
-
 """
 This module implements TorchDynamo's core frame conversion functionality, transforming Python
 frames into FX graphs. It handles:
@@ -308,7 +306,7 @@ def preserve_global_state(fn: Callable[_P, _T]) -> Callable[_P, _T]:
     return _fn
 
 
-@TorchPatcher.suppress_torch_distributed_warnings
+@TorchPatcher.suppress_torch_distributed_warnings  # type: ignore[misc]
 def has_tensor_in_frame(frame: DynamoFrameType) -> bool:
     """Check if the frame has torch.* related bits"""
     # Check if the function was decorated using torch._dynamo.optimize
