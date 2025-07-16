@@ -143,6 +143,8 @@ _TORCH_TO_SERIALIZE_DTYPE = {
     torch.bfloat16: ScalarType.BFLOAT16,
     torch.float8_e4m3fn: ScalarType.FLOAT8E4M3FN,
     torch.float8_e5m2: ScalarType.FLOAT8E5M2,
+    torch.float8_e4m3fnuz: ScalarType.FLOAT8E4M3FNUZ,
+    torch.float8_e5m2fnuz: ScalarType.FLOAT8E5M2FNUZ,
 }
 
 
@@ -322,9 +324,9 @@ def _reconstruct_fake_tensor(
     json_tensor_meta = json.loads(serialized_tensor_meta.decode("utf-8"))
     tensor_meta = _dict_to_dataclass(TensorMeta, json_tensor_meta)
     # Find the current fake mode
-    assert _CURRENT_DESERIALIZER is not None, (
-        "Need access to current deserializer state"
-    )
+    assert (
+        _CURRENT_DESERIALIZER is not None
+    ), "Need access to current deserializer state"
     fake_tensor = _CURRENT_DESERIALIZER.deserialize_tensor_meta(tensor_meta)
     if is_parameter:
         fake_tensor = torch.nn.Parameter(fake_tensor)  # type: ignore[assignment]
@@ -337,9 +339,9 @@ def serialize_torch_artifact(
     if artifact is None:
         return b""
 
-    assert FakeTensor not in copyreg.dispatch_table, (
-        "Refusing to stomp on existing FakeTensor reducer"
-    )
+    assert (
+        FakeTensor not in copyreg.dispatch_table
+    ), "Refusing to stomp on existing FakeTensor reducer"
     try:
         copyreg.pickle(FakeTensor, _reduce_fake_tensor)
         buffer = io.BytesIO()
@@ -627,9 +629,9 @@ class GraphModuleSerializer(metaclass=Final):
                 )
         elif type(node.target) in _serialization_registry:
             # Sanity check for unhandled serialization.
-            assert type(node.target) in _serialization_registry, (
-                f"{type(node.target)} is not supported in export serialization."
-            )
+            assert (
+                type(node.target) in _serialization_registry
+            ), f"{type(node.target)} is not supported in export serialization."
 
             handler = _serialization_registry[type(node.target)]
             namespace = handler.namespace()
@@ -1516,9 +1518,9 @@ class GraphModuleSerializer(metaclass=Final):
 
         idx_to_name = {}
         for user in node.users:
-            assert user.target is operator.getitem, (
-                f"User node {user} of {node} is incorrect"
-            )
+            assert (
+                user.target is operator.getitem
+            ), f"User node {user} of {node} is incorrect"
             idx_to_name[user.args[1]] = user.name
 
         for idx, _ in enumerate(meta_val):
@@ -3529,9 +3531,9 @@ def register_extension(
     extension_handler: type[ExtensionHandler],
 ):
     """Register custom de/serialization method for a node with non-standard type."""
-    assert issubclass(extension_handler, ExtensionHandler), (
-        f"Expected ExtensionHandler, got {extension_handler}."
-    )
+    assert issubclass(
+        extension_handler, ExtensionHandler
+    ), f"Expected ExtensionHandler, got {extension_handler}."
     assert op_type not in _serialization_registry, f"{op_type} is already registered."
     assert isinstance(op_type, type)  # Maybe a good idea to enforce this first.
     assert not (
