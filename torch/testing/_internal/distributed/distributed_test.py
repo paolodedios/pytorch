@@ -967,9 +967,10 @@ class DistributedTest:
         @require_world_size(4)
         @skip_if_lt_x_gpu(4)
         def test_new_subgroups_world_size_not_divisible_by_group_size(self):
+            expected_msg = f"The world size ({dist.get_world_size()}) must be divisible by 'group_size=3'"
             with self.assertRaisesRegex(
                 ValueError,
-                re.escape("The world size (4) must be divisible by 'group_size=3'"),
+                re.escape(expected_msg),
             ):
                 dist.new_subgroups(3)
 
