@@ -1067,6 +1067,7 @@ class SchedulerNode(BaseSchedulerNode):
     def refresh_dependencies(
         self, normalize: bool, need_clear_tiling_cache: bool
     ) -> None:
+
         # Fake dependencies are added manually. They can not be analyzed from
         # extract_read_writes. Find them out and apply manually.
         fake_deps: OrderedSet[Dep] = OrderedSet(
@@ -2333,6 +2334,9 @@ class Scheduler:
         # if foo aliases bar then we will make name_to_users["foo"] point
         # to the same python list as name_to_users["bar"]
         for node in self.nodes:
+            if "93" in node.get_name():
+                print("hi")
+
             for buf1 in node.get_outputs():
                 buf1_name = buf1.get_name()
                 # This is for handling auto functionized ops which return None
@@ -2359,6 +2363,7 @@ class Scheduler:
                     elif buf1_name in name_to_users:
                         name_to_users[buf2_name] = name_to_users[buf1_name]
                     else:
+
                         name_to_users[buf1_name] = name_to_users[buf2_name]
 
         def rename(n: str) -> str:
@@ -2394,6 +2399,9 @@ class Scheduler:
                         unbacked_symbol_to_origin_node[fs] = None
 
         for node in self.nodes:
+            if "93" in node.get_name():
+                print("hi")
+
             log.debug("scheduling %s", node.node)
             # unbacked symbols don't follow ordinary buffer dependencies, so
             # we track their def/uses separately
@@ -2408,7 +2416,9 @@ class Scheduler:
                 # symint to multiple outputs, they will all claim to def it.
                 if s not in unbacked_symbol_to_origin_node:
                     unbacked_symbol_to_origin_node[s] = node.get_name()
-
+            
+  
+            print(node)
             unbacked_symbol_uses = sorted(
                 node.node.get_free_symbol_uses(unbacked_only=True), key=lambda x: x.name
             )
@@ -3367,6 +3377,10 @@ class Scheduler:
             if self.can_fuse(node1, node2) and not self.will_fusion_create_cycle(
                 node1, node2
             ):
+                if "op102" in str(node1) or "op102" in str(node2):
+                    print("hi")
+
+
                 speedup = self.speedup_by_fusion(node1, node2)
                 if callable(speedup):
                     pending_fusions[node1] = (speedup, node1, node2)
@@ -4937,6 +4951,14 @@ class Scheduler:
 
         self.current_device = None
         for node in nodes:
+            print(f"codegen:{str(node)}")
+
+
+            if "102" in str(node):
+                import fbvscode
+
+                fbvscode.set_trace()
+
             if log.isEnabledFor(logging.DEBUG):
                 try:
                     log.debug(
@@ -4949,6 +4971,8 @@ class Scheduler:
                         "Generating code for node %s with estimated runtime 0.0",
                         node.get_name(),
                     )
+
+
 
             self.enter_context(node)
 
@@ -5004,14 +5028,14 @@ class Scheduler:
             self.available_buffer_names.update(node.get_buffer_names())
             self.completed_operations.update(node.get_operation_names())
 
-            if not isinstance(node, NopKernelSchedulerNode):
-                device = node.get_device()
-                if (
-                    device is not None
-                    and device.type != "meta"
-                    and self.get_backend(device).ready_to_flush()
-                ):
-                    self.flush()
+            # if not isinstance(node, NopKernelSchedulerNode):
+            device = node.get_device()
+            if (
+                device is not None
+                and device.type != "meta"
+                and self.get_backend(device).ready_to_flush()
+            ):
+                self.flush()
 
         if self.current_device and device_need_guard(self.current_device.type):
             # exit the outermost CUDA device guard. this is

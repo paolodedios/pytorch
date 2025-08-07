@@ -2876,6 +2876,8 @@ class PythonWrapperCodegen(CodeGen):
     def codegen_allocation(self, buffer: ir.Buffer):
         name = buffer.get_name()
 
+        print(f"name:{name}")
+
         if (
             name in V.graph.removed_buffers
             or name in self.allocated

@@ -1575,6 +1575,10 @@ def cat(inputs, dim=0):
     if len(inputs) == 1:
         return clone(inputs[0])
 
+    if any(has_free_unbacked_symbols(input.get_size()) for input in inputs):
+        import fbvscode
+        # fbvscode.set_trace()
+
     dim = _validate_dim(inputs[0], dim, 0)
     dtype = get_promoted_dtype(
         *inputs, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
