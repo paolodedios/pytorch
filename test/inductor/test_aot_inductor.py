@@ -4380,11 +4380,19 @@ class AOTInductorTestsTemplate:
         dynamic_shapes = {
             "x": {0: torch.export.Dim.DYNAMIC},
         }
-        package_path = AOTIRunnerUtil.compile(
-            model,
-            input1,
-            dynamic_shapes=dynamic_shapes,
-        )
+
+        # AOTIRunnerUtil.compile calls export, which now emits guards instead of runtime asserts.
+        # We use an internal API for now to test the functionality of running these asserts.
+        # Later we will find a way to turn guards back into runtime asserts.
+        with torch.no_grad():
+            ep = torch.export._trace._export(
+                model,
+                input1,
+                dynamic_shapes=dynamic_shapes,
+                strict=True,
+                allow_complex_guards_as_runtime_asserts=True,  # needed for runtime asserts
+            )
+            package_path = torch._inductor.aoti_compile_and_package(ep)
         optimized = torch._inductor.aoti_load_package(package_path)
         self.assertEqual(model(*input1), optimized(*input1))
         with self.assertRaisesRegex(Exception, "run_func_(.*) API call failed "):
