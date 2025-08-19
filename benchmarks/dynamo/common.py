@@ -4271,6 +4271,9 @@ def run(runner, args, original_dir=None):
                 timeout = args.timeout
                 if should_diff_branch(args):
                     timeout *= 2
+                # Give more time to slow models
+                if name in runner.slow_models:
+                    timeout = int(timeout * 1.5)  # 50% more time for slow models
                 env = os.environ.copy()
                 if args.ci and name in CI_PRESERVE_COMPILE_DEBUG:
                     env["TORCH_COMPILE_DEBUG"] = "1"

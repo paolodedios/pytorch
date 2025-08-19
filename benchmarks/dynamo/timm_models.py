@@ -250,6 +250,14 @@ class TimmRunner(BenchmarkRunner):
         return self._skip["all"]
 
     @property
+    def slow_models(self):
+        config = self._config
+        slow_models = config.get("slow_models", set())
+        if slow_models == {"~"}:
+            return set()
+        return slow_models
+
+    @property
     def force_amp_for_fp16_bf16_models(self):
         return FORCE_AMP_FOR_FP16_BF16_MODELS
 
