@@ -47,6 +47,7 @@ from torch.testing._internal.common_utils import (
     TestCase,
 )
 from torch.testing._internal.torchbind_impls import init_torchbind_implementations
+from torch._export.serde.serialize import _dict_to_dataclass
 
 
 def get_filtered_export_db_tests():
@@ -1459,6 +1460,16 @@ def forward(self, x):
             m = MyModule()
             inputs = (torch.ones(2, 3),)
             self.check_graph(m, inputs, strict=False)
+
+    def test_forward_compatibility(self):
+        self.assertEqual(
+            schema.TensorArgument(
+                name="x",
+            ),
+            _dict_to_dataclass(schema.TensorArgument, {
+            "shiny_new_field": "hello world",
+            "name": "x",
+        }))
 
 
 instantiate_parametrized_tests(TestDeserialize)
