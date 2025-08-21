@@ -5,11 +5,11 @@ to facilitate writing device-agnostic code.
 """
 
 from contextlib import AbstractContextManager
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import torch
-from torch.types import Device
 
+from .. import device as _device
 from . import amp
 
 
@@ -26,7 +26,6 @@ __all__ = [
     "StreamContext",
     "Event",
 ]
-
 
 
 def _is_avx2_supported() -> bool:
@@ -74,7 +73,7 @@ def is_available() -> bool:
     return True
 
 
-def synchronize(device: Device = None) -> None:
+def synchronize(device: torch.types.Device = None) -> None:
     r"""Waits for all kernels in all streams on the CPU device to complete.
 
     Args:
@@ -120,7 +119,7 @@ _default_cpu_stream = Stream()
 _current_stream = _default_cpu_stream
 
 
-def current_stream(device: Device = None) -> Stream:
+def current_stream(device: torch.types.Device = None) -> Stream:
     r"""Returns the currently selected :class:`Stream` for a given device.
 
     Args:
@@ -180,7 +179,7 @@ def device_count() -> int:
     return 1
 
 
-def set_device(device: Device) -> None:
+def set_device(device: torch.types.Device) -> None:
     r"""Sets the current device, in CPU we do nothing.
 
     N.B. This function only exists to facilitate device-agnostic code
