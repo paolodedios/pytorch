@@ -14,8 +14,8 @@ from typing import Any, Callable, Optional, Union
 
 import torch
 import torch._C
-from torch.types import Device
 from torch._utils import _dummy_type, _LazySeedTracker
+from torch.types import Device
 
 from ._utils import _get_device_index
 from .streams import Event, Stream
@@ -384,9 +384,7 @@ def current_stream(device: Optional[Device] = None) -> Stream:
     )
 
 
-def get_stream_from_external(
-    data_ptr: int, device: Optional[Device] = None
-) -> Stream:
+def get_stream_from_external(data_ptr: int, device: Optional[Device] = None) -> Stream:
     r"""Return a :class:`Stream` from an external SYCL queue.
 
     This function is used to wrap SYCL queue created in other libraries in order

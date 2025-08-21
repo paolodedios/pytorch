@@ -15,7 +15,6 @@ from torch.types import Device
 from ._utils import _get_device_index
 
 
-
 # torch.mtia.Event/Stream is alias of torch.Event/Stream
 Event = torch.Event
 Stream = torch.Stream

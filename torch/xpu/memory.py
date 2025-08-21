@@ -1,12 +1,10 @@
 import collections
-from typing import Any, Union
+from typing import Any
 
 import torch
 from torch.types import Device
 
 from . import _get_device_index, is_initialized
-
-
 
 
 def empty_cache() -> None:
