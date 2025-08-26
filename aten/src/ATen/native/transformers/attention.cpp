@@ -922,7 +922,7 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
       }
     }
 
-    return std::make_tuple(at::matmul(attn, value_expanded).to(origin_dtype), attn.to(origin_dtype));
+    return std::make_tuple(at::matmul(attn.to(value_expanded.scalar_type()), value_expanded).to(origin_dtype), attn.to(origin_dtype));
 }
 
 std::tuple<at::Tensor, at::Tensor>

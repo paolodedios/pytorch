@@ -1249,6 +1249,38 @@ class TestTransformers(NNTestCase):
 
             self.assertRaises(RuntimeError, func)
 
+    @sdpa_kernel(backends=[SDPBackend.MATH])
+    def test_scaled_dot_product_attention_amp(self, device):
+        def sdp_ref(
+                q,
+                k,
+                v):
+            E = q.size(-1)
+            q = q / math.sqrt(E)
+            attn = torch.matmul(q, k.transpose(-2, -1))
+            attn = torch.nn.functional.softmax(attn, dim=-1)
+            output = torch.matmul(attn, v)
+            return output
+
+        dtypes = [torch.bfloat16, torch.float16]
+        for dtype in dtypes:
+
+            def rand_tensor(*shape):
+                return torch.rand(shape, device=device, dtype=dtype)
+
+            size = (2, 4, 2)
+
+            query = rand_tensor(*size)
+            key = rand_tensor(*size)
+            value = rand_tensor(*size)
+
+            with torch.amp.autocast(device_type=device, dtype=dtype, cache_enabled=False):
+                expected = sdp_ref(query, key, value)
+                actual = torch.nn.functional.scaled_dot_product_attention(
+                    query, key, value, None, 0.0, False)
+                self.assertEqual(actual, expected)
+
+
     @unittest.skipIf(TEST_WITH_CROSSREF, 'Fastpath not available with crossref')
     @torch.no_grad()
     def test_mask_check_fastpath(self):
