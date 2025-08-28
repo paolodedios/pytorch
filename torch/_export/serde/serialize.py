@@ -41,6 +41,7 @@ from .schema import (  # type: ignore[attr-defined]
     Argument,
     ArgumentKind,
     BufferMutationSpec,
+    ComplexValue,
     ConstantValue,
     CustomObjArgument,
     Device,
@@ -977,6 +978,10 @@ class GraphModuleSerializer(metaclass=Final):
             return Argument.create(as_int=arg)
         elif type(arg) is float:
             return Argument.create(as_float=arg)
+        elif type(arg) is complex:
+            return Argument.create(
+                as_complex=ComplexValue(real=arg.real, imag=arg.imag)
+            )
         elif arg is None:
             return Argument.create(as_none=True)
         elif isinstance(arg, (list, tuple)):
@@ -2493,6 +2498,8 @@ class GraphModuleDeserializer(metaclass=Final):
             return inp.as_bool
         elif typ_ == "as_string":
             return inp.as_string
+        elif typ_ == "as_complex":
+            return complex(inp.as_complex.real, inp.as_complex.imag)
         elif typ_ == "as_sym_int":
             return self.deserialize_sym_argument(inp.as_sym_int)
         elif typ_ == "as_sym_float":
@@ -3091,6 +3098,8 @@ def _canonicalize_graph(
         elif a.type == "as_string":
             return None
         elif a.type == "as_strings":
+            return None
+        elif a.type == "as_complex":
             return None
         elif a.type == "as_sym_int":
             return a.as_sym_int
