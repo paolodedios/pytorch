@@ -19,6 +19,9 @@ inline namespace CPU_CAPABILITY {
 
 #define VEC_INT_SVE_TEMPLATE(vl, bit)                                         \
   template <>                                                                 \
+  struct is_vec_specialized_for<int##bit##_t> : std::bool_constant<true> {};  \
+                                                                              \
+  template <>                                                                 \
   class Vectorized<int##bit##_t> {                                            \
    private:                                                                   \
     vls_int##bit##_t values;                                                  \
@@ -29,7 +32,9 @@ inline namespace CPU_CAPABILITY {
     static constexpr size_type size() {                                       \
       return vl;                                                              \
     }                                                                         \
-    Vectorized() {}                                                           \
+    Vectorized() {                                                            \
+      values = svdup_n_s##bit(0);                                             \
+    }                                                                         \
     Vectorized(svint##bit##_t v) : values(v) {}                               \
     Vectorized(int##bit##_t val) {                                            \
       values = svdup_n_s##bit(val);                                           \

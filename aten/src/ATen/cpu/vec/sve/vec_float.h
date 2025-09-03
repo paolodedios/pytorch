@@ -25,6 +25,9 @@ inline namespace CPU_CAPABILITY {
 #if defined(CPU_CAPABILITY_SVE)
 
 template <>
+struct is_vec_specialized_for<float> : std::bool_constant<true> {};
+
+template <>
 class Vectorized<float> {
  private:
   vls_float32_t values;
@@ -35,7 +38,9 @@ class Vectorized<float> {
   static constexpr size_type size() {
     return VECTOR_WIDTH / sizeof(float);
   }
-  Vectorized() {}
+  Vectorized() {
+    values = svdup_n_f32(0);
+  }
   Vectorized(svfloat32_t v) : values(v) {}
   Vectorized(float val) {
     values = svdup_n_f32(val);
@@ -311,6 +316,9 @@ class Vectorized<float> {
   Vectorized<float> exp_u20() const {
     return exp();
   }
+  Vectorized<float> fexp_u20() const {
+    return exp();
+  }
   Vectorized<float> fmod(const Vectorized<float>& q) const {USE_SLEEF(
       { return Vectorized<float>(Sleef_fmodfx_sve(values, q)); },
       {
@@ -494,8 +502,7 @@ class Vectorized<float> {
       })} // Comparison using the _CMP_**_OQ predicate.
           //   `O`: get false if an operand is NaN
           //   `Q`: do not raise if an operand is NaN
-  Vectorized<float>
-  operator==(const Vectorized<float>& other) const {
+  Vectorized<float> operator==(const Vectorized<float>& other) const {
     svbool_t mask = svcmpeq_f32(ptrue, values, other);
     return svsel_f32(mask, ALL_F32_TRUE_MASK, ALL_F32_FALSE_MASK);
   }
@@ -749,6 +756,30 @@ Vectorized<float> inline fmadd(
     const Vectorized<float>& b,
     const Vectorized<float>& c) {
   return svmad_f32_x(ptrue, a, b, c);
+}
+
+template <>
+Vectorized<float> inline fnmadd(
+    const Vectorized<float>& a,
+    const Vectorized<float>& b,
+    const Vectorized<float>& c) {
+  return svmsb_f32_x(ptrue, a, b, c);
+}
+
+template <>
+Vectorized<float> inline fmsub(
+    const Vectorized<float>& a,
+    const Vectorized<float>& b,
+    const Vectorized<float>& c) {
+  return svnmsb_f32_x(ptrue, a, b, c);
+}
+
+template <>
+Vectorized<float> inline fnmsub(
+    const Vectorized<float>& a,
+    const Vectorized<float>& b,
+    const Vectorized<float>& c) {
+  return svnmad_f32_x(ptrue, a, b, c);
 }
 
 #endif // defined(CPU_CAPABILITY_SVE)

@@ -72,15 +72,13 @@ bool priority_order_init_ = false;
 // TODO(eqy): more benchmarking to determine whether this should include sm86/89
 // Needs to be kept in-sync with test_fused_chocie in test_transformers.py
 bool check_prefer_cudnn_attention() {
-#if defined(CUDNN_VERSION)
-
-#if CUDNN_VERSION > 90000
+  static const bool prefer_cudnn = c10::utils::check_env("TORCH_CUDNN_SDPA_PREFERRED") == true;
+  if (!prefer_cudnn) {
+    return false;
+  }
+#if (defined(CUDNN_VERSION) && (CUDNN_VERSION > 90000))
   auto dprops = at::cuda::getCurrentDeviceProperties();
-  return dprops->major >= 9;
-#else
-  return false;
-#endif
-
+  return dprops->major >= 9 && !dprops->minor;
 #else
   return false;
 #endif
@@ -397,7 +395,7 @@ bool check_flash_causal_non_square_seqlens(sdp_params const& params, bool debug)
 
 bool check_all_tensors_on_device(sdp_params const& params, bool debug) {
   // Check that all tensors are on the GPU device
-  // This should be handled by the stub dispatch, but whe call can_use_*_attention
+  // This should be handled by the stub dispatch, but we call can_use_*_attention
   // directly from python we need to ensure that the tensors are on cuda
   if (params.query.device().type() != at::DeviceType::CUDA) {
     if (debug) {
@@ -433,9 +431,9 @@ bool check_cudnn_tensor_shapes(sdp_params const& params, bool debug) {
     return false;
   }
   auto head_dim_limit = 128;
-  if (cudnn_version >= 90501) {
+  if (cudnn_version >= 91000) {
     auto dprops = at::cuda::getCurrentDeviceProperties();
-    if (dprops->major == 9  && !dprops->minor) {
+    if (dprops->major == 9 && !dprops->minor) {
       head_dim_limit = 256;
     }
   }
@@ -866,6 +864,11 @@ SDPBackend select_sdp_backend(sdp_params const& kernel_params) {
       case SDPBackend::math:
         if (ctx.userEnabledMathSDP()) {
           return SDPBackend::math;
+        }
+        break;
+      case SDPBackend::overrideable:
+        if (ctx.userEnabledOverrideableSDP()) {
+          TORCH_CHECK(false, "Invalid backend");
         }
         break;
       default:

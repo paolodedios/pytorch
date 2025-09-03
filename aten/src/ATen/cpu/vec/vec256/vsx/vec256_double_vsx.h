@@ -13,6 +13,9 @@ namespace vec {
 inline namespace CPU_CAPABILITY {
 
 template <>
+struct is_vec_specialized_for<double> : std::bool_constant<true> {};
+
+template <>
 class Vectorized<double> {
  private:
   union {
@@ -268,6 +271,9 @@ class Vectorized<double> {
     return {Sleef_expm1d2_u10(_vec0), Sleef_expm1d2_u10(_vec1)};
   }
   Vectorized<double> C10_ALWAYS_INLINE exp_u20() const {
+    return exp();
+  }
+  Vectorized<double> C10_ALWAYS_INLINE fexp_u20() const {
     return exp();
   }
 

@@ -129,6 +129,9 @@ struct BlendBFloat16Regs<index, false> {
 };
 
 template <>
+struct is_vec_specialized_for<c10::BFloat16> : std::bool_constant<true> {};
+
+template <>
 class Vectorized<c10::BFloat16> : public Vectorized16<
                                       at_bfloat16x8_t,
                                       c10::BFloat16,
@@ -550,12 +553,30 @@ Vectorized<c10::BFloat16> inline fmadd(
 }
 
 template <>
+Vectorized<c10::BFloat16> inline fnmadd(
+    const Vectorized<c10::BFloat16>& a,
+    const Vectorized<c10::BFloat16>& b,
+    const Vectorized<c10::BFloat16>& c) {
+  // See NOTE [BF16 FMA] above.
+  return -a * b + c;
+}
+
+template <>
 Vectorized<c10::BFloat16> inline fmsub(
     const Vectorized<c10::BFloat16>& a,
     const Vectorized<c10::BFloat16>& b,
     const Vectorized<c10::BFloat16>& c) {
   // See NOTE [BF16 FMA] above.
   return a * b - c;
+}
+
+template <>
+Vectorized<c10::BFloat16> inline fnmsub(
+    const Vectorized<c10::BFloat16>& a,
+    const Vectorized<c10::BFloat16>& b,
+    const Vectorized<c10::BFloat16>& c) {
+  // See NOTE [BF16 FMA] above.
+  return -a * b - c;
 }
 
 #endif // !defined(C10_MOBILE) && defined(__aarch64__)

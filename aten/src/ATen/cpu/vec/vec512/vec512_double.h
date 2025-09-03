@@ -18,6 +18,9 @@ inline namespace CPU_CAPABILITY {
 #if defined(CPU_CAPABILITY_AVX512)
 
 template <>
+struct is_vec_specialized_for<double> : std::bool_constant<true> {};
+
+template <>
 class Vectorized<double> {
  private:
   static constexpr __m512i zero_vector{0, 0, 0, 0, 0, 0, 0, 0};
@@ -31,7 +34,9 @@ class Vectorized<double> {
   static constexpr size_type size() {
     return 8;
   }
-  Vectorized() {}
+  Vectorized() {
+    values = _mm512_setzero_pd();
+  }
   Vectorized(__m512d v) : values(v) {}
   Vectorized(double val) {
     values = _mm512_set1_pd(val);
@@ -216,6 +221,9 @@ class Vectorized<double> {
     return Vectorized<double>(Sleef_expm1d8_u10(values));
   }
   Vectorized<double> exp_u20() const {
+    return exp();
+  }
+  Vectorized<double> fexp_u20() const {
     return exp();
   }
   Vectorized<double> fmod(const Vectorized<double>& q) const {
@@ -529,11 +537,27 @@ Vectorized<double> inline fmadd(
 }
 
 template <>
+Vectorized<double> inline fnmadd(
+    const Vectorized<double>& a,
+    const Vectorized<double>& b,
+    const Vectorized<double>& c) {
+  return _mm512_fnmadd_pd(a, b, c);
+}
+
+template <>
 Vectorized<double> inline fmsub(
     const Vectorized<double>& a,
     const Vectorized<double>& b,
     const Vectorized<double>& c) {
   return _mm512_fmsub_pd(a, b, c);
+}
+
+template <>
+Vectorized<double> inline fnmsub(
+    const Vectorized<double>& a,
+    const Vectorized<double>& b,
+    const Vectorized<double>& c) {
+  return _mm512_fnmsub_pd(a, b, c);
 }
 
 #endif

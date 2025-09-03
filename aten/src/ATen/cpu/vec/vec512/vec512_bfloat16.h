@@ -192,7 +192,9 @@ class Vectorized16 {
   static constexpr size_type size() {
     return 32;
   }
-  Vectorized16() {}
+  Vectorized16() {
+    values = _mm512_setzero_si512();
+  }
   Vectorized16(__m512i v) : values(v) {}
   Vectorized16(T val) {
     value_type uw = val.x;
@@ -535,6 +537,9 @@ class Vectorized16 {
   Vectorized<T> expm1() const {
     return map(Sleef_expm1f16_u10);
   }
+  Vectorized<T> fexp_u20() const {
+    return exp();
+  }
   Vectorized<T> exp_u20() const {
     return exp();
   }
@@ -818,6 +823,9 @@ static inline Vectorized<T> binary_op_as_fp32(
   auto o2 = op(a_hi, b_hi);
   return cvt_from_fp32<T>(o1, o2);
 }
+
+template <>
+struct is_vec_specialized_for<BFloat16> : std::bool_constant<true> {};
 
 template <>
 class Vectorized<BFloat16> : public Vectorized16<BFloat16> {
@@ -1574,6 +1582,9 @@ inline void transpose_mxn(
     int64_t ld_dst) {
   transpose_mxn<Half>(src, ld_src, dst, ld_dst, M, N);
 }
+
+template <>
+struct is_vec_specialized_for<Half> : std::bool_constant<true> {};
 
 template <>
 class Vectorized<Half> : public Vectorized16<Half> {

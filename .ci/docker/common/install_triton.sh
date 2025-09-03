@@ -51,8 +51,13 @@ as_jenkins git clone --recursive ${TRITON_REPO} triton
 cd triton
 as_jenkins git checkout ${TRITON_PINNED_COMMIT}
 as_jenkins git submodule update --init --recursive
-cd python
-pip_install pybind11==2.13.6
+
+# Old versions of python have setup.py in ./python; newer versions have it in ./
+if [ ! -f setup.py ]; then
+  cd python
+fi
+
+pip_install pybind11==3.0.1
 
 # TODO: remove patch setup.py once we have a proper fix for https://github.com/triton-lang/triton/issues/4527
 as_jenkins sed -i -e 's/https:\/\/tritonlang.blob.core.windows.net\/llvm-builds/https:\/\/oaitriton.blob.core.windows.net\/public\/llvm-builds/g' setup.py
@@ -92,4 +97,11 @@ if [ -n "${CMAKE_VERSION}" ]; then
 fi
 if [ -n "${NUMPY_VERSION}" ]; then
   pip_install "numpy==${NUMPY_VERSION}"
+fi
+
+# IMPORTANT: helion needs to be installed without dependencies.
+# It depends on torch and triton. We don't want to install
+# triton and torch from production on Docker CI images
+if [[ "$ANACONDA_PYTHON_VERSION" != 3.9* ]]; then
+  pip_install helion --no-deps
 fi

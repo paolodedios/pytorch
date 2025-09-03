@@ -12,6 +12,9 @@ from itertools import product
 import numpy as np
 
 import torch
+import torch._inductor.decomposition
+from torch._higher_order_ops.out_dtype import out_dtype
+from torch.fx.experimental.proxy_tensor import make_fx
 from torch.testing import make_tensor
 from torch.testing._internal.common_device_type import (
     dtypes,
@@ -235,6 +238,27 @@ class TestBasicGEMM(TestCase):
     @tf32_on_and_off(0.05)
     def test_addmm(self, device, dtype):
         self._test_addmm_impl(torch.addmm, None, device, dtype)
+
+    @precisionOverride({torch.float: 1e-4, torch.double: 1e-6, torch.half: 1e-1})
+    @dtypes(torch.float, torch.half, torch.double)
+    def test_addmm_badmm_scalar_tnesor_input(self, device, dtype):
+        input = torch.tensor(1).to(device=device, dtype=dtype)
+
+        # test addmm
+        mat1 = torch.randn(10, 25, device=device).to(dtype)
+        mat2 = torch.randn(25, 10, device=device).to(dtype)
+        result = torch.addmm(input, mat1, mat2)
+
+        ref = mat1.cpu().numpy() @ mat2.cpu().numpy() + 1
+        self.assertEqual(result, ref)
+
+        # test baddbmm
+        mat1 = torch.randn(3, 10, 25, device=device).to(dtype)
+        mat2 = torch.randn(3, 25, 10, device=device).to(dtype)
+        result = torch.baddbmm(input, mat1, mat2)
+
+        ref = mat1.cpu().numpy() @ mat2.cpu().numpy() + 1
+        self.assertEqual(result, ref)
 
     @precisionOverride({torch.bfloat16: 1e-0, torch.half: 1e-3, torch.float: 1e-4})
     @dtypes(torch.bfloat16, torch.half, torch.float, torch.double)
@@ -1322,6 +1346,105 @@ class TestBasicGEMM(TestCase):
 
             mean_err = ((res - ref).abs() / ref).mean()
             self.assertTrue(mean_err < 0.05)
+
+    def test_mm_with_offset(self, device):
+        from torch._dynamo.testing import rand_strided
+
+        offset = 997
+        a = rand_strided(
+            (2, 4, 128, 64),
+            (65536, 16384, 64, 1),
+            dtype=torch.float16,
+            device=device,
+            extra_size=offset,
+        )
+        a = a.as_strided((2, 4, 128, 64), (65536, 16384, 64, 1), storage_offset=offset)
+        b = rand_strided(
+            (2, 4, 64, 256), (65536, 16384, 1, 64), dtype=torch.float16, device=device
+        )
+
+        gpu_out = torch.matmul(a, b)
+        cpu_out = torch.matmul(a.cpu(), b.cpu())
+        self.assertEqual(gpu_out.cpu(), cpu_out)
+
+    @parametrize("m", [0, 8, 17])
+    @parametrize("k", [0, 16, 32])
+    @parametrize("n", [16, 32])
+    @parametrize("use_transpose_a", [True, False])
+    @parametrize("use_transpose_b", [True, False])
+    @parametrize("non_contig_type", [0, 1, 2])
+    def test__int_mm(
+        self, device, m, k, n, use_transpose_a, use_transpose_b, non_contig_type
+    ):
+        # non_contig_type:
+        # 0: the whole data buffer is contiguous (can be transposed)
+        # 1: stride of one dimension is 1, but the whole buffer is not contiguous
+        # 2: Neither stride is 1
+
+        def genf_int_float(x, y, use_transpose, non_contig_type):
+            if use_transpose:
+                x, y = y, x
+            if non_contig_type != 0:
+                y = y * 2
+            x_int8 = torch.randint(-128, 127, (x, y), dtype=torch.int8, device=device)
+            x_float = x_int8.to(torch.float32)
+            if non_contig_type == 1:
+                x_int8 = x_int8[:, : y // 2]
+                x_float = x_float[:, : y // 2]
+            elif non_contig_type == 2:
+                x_int8 = x_int8[:, ::2]
+                x_float = x_float[:, ::2]
+            if use_transpose:
+                return x_int8.t(), x_float.t()
+            return x_int8, x_float
+
+        if non_contig_type != 0 and (m == 0 or k == 0):
+            return
+        a_int8, a_float = genf_int_float(m, k, use_transpose_a, non_contig_type)
+        b_int8, b_float = genf_int_float(k, n, use_transpose_b, non_contig_type)
+        c_int32 = torch._int_mm(a_int8, b_int8)
+        self.assertTrue(c_int32.dtype is torch.int32)
+        self.assertEqual(c_int32.device, torch.device(device))
+        self.assertEqual(c_int32.float(), torch.mm(a_float, b_float))
+        c_int32_result = c_int32.new_empty(c_int32.size())
+        # Checking out variant
+        torch._int_mm(a_int8, b_int8, out=c_int32_result)
+        self.assertEqual(c_int32_result.float(), torch.mm(a_float, b_float))
+
+    def test_out_dtype_inductor_decomp_trace(self, device) -> None:
+        def func(x, w):
+            return out_dtype(torch.ops.aten.mm.default, torch.int32, x, w)
+
+        w = torch.randint(-128, 127, (32, 32), dtype=torch.int8, device=device)
+        x = torch.randint(-128, 127, (32, 32), dtype=torch.int8, device=device)
+
+        # Check that make_fx with inductor decomps produces _int_mm
+        decomp_table = torch._inductor.decomposition.select_decomp_table()
+        gm = make_fx(func, decomp_table, tracing_mode="symbolic")(x, w)
+        self.assertExpectedInline(
+            gm.code.strip(),
+            """\
+def forward(self, x_1, w_1):
+    _int_mm = torch.ops.aten._int_mm.default(x_1, w_1);  x_1 = w_1 = None
+    return _int_mm""",
+        )
+
+    def test_out_dtype_int_mm_default_trace(self, device) -> None:
+        def func(x, w):
+            return out_dtype(torch.ops.aten.mm.default, torch.int32, x, w)
+
+        w = torch.randint(-128, 127, (32, 32), dtype=torch.int8, device=device)
+        x = torch.randint(-128, 127, (32, 32), dtype=torch.int8, device=device)
+
+        # By default, out_dtype is preserved in the trace
+        gm = make_fx(func, tracing_mode="symbolic")(x, w)
+        self.assertExpectedInline(
+            gm.code.strip(),
+            """\
+def forward(self, x_1, w_1):
+    out_dtype = torch.ops.higher_order.out_dtype(torch.ops.aten.mm.default, torch.int32, x_1, w_1);  x_1 = w_1 = None
+    return out_dtype""",
+        )
 
 
 instantiate_device_type_tests(TestBasicGEMM, globals(), only_for="xpu", allow_xpu=True)

@@ -70,6 +70,7 @@ ALLOW_LIST = [
     ("profiler::_call_end_callbacks_on_jit_fut*", datetime.date(9999, 1, 1)),
     ("profiler::_record_function_enter", datetime.date(9999, 1, 1)),
     ("aten::_cholesky_helper", datetime.date(9999, 1, 1)),
+    ("aten::_cslt_sparse_mm", datetime.date(9999, 1, 1)),
     ("aten::_lstsq_helper", datetime.date(9999, 1, 1)),
     ("aten::_syevd_helper", datetime.date(9999, 1, 1)),
     ("aten::_linalg_solve_out_helper_", datetime.date(9999, 1, 1)),
@@ -138,6 +139,8 @@ ALLOW_LIST = [
     # These ops are defined in torch/csrc/distributed/c10d/Ops.cpp
     # TODO: add back restriction when c10d ops can be exported
     ("c10d::.*", datetime.date(9999, 1, 1)),
+    # Previously MPS_only did not support backward
+    ("aten::_fused_rms_norm", datetime.date(2025, 12, 30)),
 ]
 
 ALLOW_LIST_COMPILED = [
@@ -347,8 +350,7 @@ def check_fc(existing_schemas):
                 "\n\t".join(str(s) for s in matching_new_schemas),
             )
             log.warning(
-                "Refer to following reasons for failure "
-                "to find FC schema:\n[\n%s\n]",
+                "Refer to following reasons for failure to find FC schema:\n[\n%s\n]",
                 "\n\t".join(str(r) for r in possible_failure_reasons),
             )
             broken_ops.append(str(existing_schema))

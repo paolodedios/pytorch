@@ -11,6 +11,9 @@ namespace vec {
 inline namespace CPU_CAPABILITY {
 
 template <>
+struct is_vec_specialized_for<float> : std::bool_constant<true> {};
+
+template <>
 class Vectorized<float> {
  private:
   union {
@@ -347,6 +350,9 @@ class Vectorized<float> {
     return {Sleef_expm1f4_u10(_vec0), Sleef_expm1f4_u10(_vec1)};
   }
   Vectorized<float> C10_ALWAYS_INLINE exp_u20() const {
+    return exp();
+  }
+  Vectorized<float> C10_ALWAYS_INLINE fexp_u20() const {
     return exp();
   }
 

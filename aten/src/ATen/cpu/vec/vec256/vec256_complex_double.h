@@ -20,6 +20,10 @@ inline namespace CPU_CAPABILITY {
 #if defined(CPU_CAPABILITY_AVX2)
 
 template <>
+struct is_vec_specialized_for<c10::complex<double>> : std::bool_constant<true> {
+};
+
+template <>
 class Vectorized<c10::complex<double>> {
  private:
   __m256d values;
@@ -30,7 +34,9 @@ class Vectorized<c10::complex<double>> {
   static constexpr size_type size() {
     return 2;
   }
-  Vectorized() {}
+  Vectorized() {
+    values = _mm256_setzero_pd();
+  }
   Vectorized(__m256d v) : values(v) {}
   Vectorized(c10::complex<double> val) {
     double real_value = val.real();
