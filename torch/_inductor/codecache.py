@@ -75,6 +75,7 @@ from torch._inductor.cpp_builder import (
     get_compiler_version_info,
     get_ld_and_objcopy,
     get_name_and_dir_from_output_file_path,
+    is_target_windows,
     normalize_path_separator,
     run_asm_build_object,
 )
@@ -140,7 +141,6 @@ if TYPE_CHECKING:
     from .utils import InputType
 
 
-_IS_WINDOWS = sys.platform == "win32"
 LOCK_TIMEOUT = 600
 
 output_code_log = torch._logging.getArtifactLogger(__name__, "output_code")
@@ -438,7 +438,7 @@ def write_atomic(
     try:
         tmp_path.rename(target=path)
     except FileExistsError:
-        if not _IS_WINDOWS:
+        if not is_target_windows():
             raise
         # On Windows file exist is expected: https://docs.python.org/3/library/pathlib.html#pathlib.Path.rename
         # Below two lines code is equal to `tmp_path.rename(path)` on non-Windows OS.
@@ -1588,7 +1588,7 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
 @functools.cache
 def split_aot_inductor_output_path(path: str) -> tuple[str, str]:
     def get_module_ext_type() -> str:
-        if _IS_WINDOWS:
+        if is_target_windows():
             return ".pyd"
         else:
             return ".so"
@@ -1850,9 +1850,12 @@ class AotCodeCompiler:
             specified_sub_dir.mkdir(exist_ok=True)
         cmake_path = str(Path(specified_sub_dir) / "CMakeLists.txt")
 
-        def _compile_consts(consts: bytes, platform: str) -> str:
+        def _compile_consts(consts: bytes, platform: str) -> tuple[str, Optional[str]]:
             # Load from aot_inductor, and update the value on demand.
-            use_asm_build: bool = config.aot_inductor.use_consts_asm_build
+            use_asm_build: bool = (
+                config.aot_inductor.use_consts_asm_build
+                and config.aot_inductor.cross_target_platform != "windows"
+            )
 
             if platform == "linux":
                 if graph.mutated_buffers & OrderedSet(graph.constants.keys()):
@@ -1954,7 +1957,7 @@ ATTRIBUTE_NO_SANITIZE_ADDRESS\t\n"""
                     Linux: Added '-pedantic' to disable zero-sized arrays in C++ compiler
                     Windows: MSVC naturally rejects zero-sized arrays by default
                 """
-                if _IS_WINDOWS:
+                if is_target_windows():
                     # Windows ml64 is max support align to 16, but it is no effect to zero size data.
                     asm_code = """
 option casemap:none
@@ -1998,7 +2001,7 @@ end
                 consts_code,
                 code_ext,
                 specified_dir=str(specified_sub_dir),
-                key=config.aot_inductor.model_name_for_generated_files,
+                key=f"{config.aot_inductor.model_name_for_generated_files}_consts",
             )
             consts_s = Path(consts_s)
             object_build_options = CppTorchDeviceOptions(
@@ -2016,7 +2019,7 @@ end
             consts_o = object_builder.get_target_file_path()
             if use_asm_build is False and is_zero_size_consts:
                 run_asm_build_object(str(consts_s), consts_o, str(consts_s.parent))
-            else:
+            elif config.aot_inductor.cross_target_platform != "windows":
                 object_builder.build()
 
             if is_large_consts and use_asm_build:
@@ -2036,10 +2039,12 @@ end
                         rc = f.write(consts[pos:])
                         pos += rc
 
-            # Remove the .S file to save space
-            os.remove(consts_s)
+            if config.aot_inductor.cross_target_platform != "windows":
+                # Remove the .S file to save space
+                os.remove(consts_s)
+                return consts_o, None
 
-            return consts_o
+            return consts_o, str(consts_s)
 
         from torch.utils._filelock import FileLock
 
@@ -2177,7 +2182,7 @@ end
             )
 
             # potentially, precompile the AOT header for this device
-            if config.aot_inductor.precompile_headers and not _IS_WINDOWS:
+            if config.aot_inductor.precompile_headers and not is_target_windows():
                 header_file = _get_cpp_wrapper_header(
                     device_type, aot_mode=graph.aot_mode
                 )
@@ -2246,7 +2251,7 @@ end
                 )
                 aot_constants = struct.pack("qq", consts_size + 8, magic_number)
 
-            consts_o = _compile_consts(aot_constants, sys.platform)
+            consts_o, consts_asm = _compile_consts(aot_constants, sys.platform)
             custom_obj_idx = 0
             # Note that custom_objs_config.json file is different from the model_constants_config.json file produced
             # in package_sigmoid(). The keys in custom_objs_config.json directly correspond to the arg name in extern
@@ -2296,8 +2301,12 @@ end
                 )
 
             cubins_o = []
-            asm_files = []
-            if not _IS_WINDOWS:
+            asm_files = [
+                value["asm"]
+                for value in CudaKernelParamCache.cache.values()
+                if "asm" in value
+            ]
+            if not is_target_windows():
                 ld, objcopy = get_ld_and_objcopy(use_relative_path)
                 kernels = getattr(V.graph.wrapper_code, "_kernel_name_to_body", {})
                 for kernel_name, value in CudaKernelParamCache.cache.items():
@@ -2306,9 +2315,6 @@ end
                         # than what the current graph uses
                         continue
 
-                    if asm_file := value["asm"]:
-                        asm_files.append(asm_file)
-
                     cubin_file = value[get_cpp_wrapper_cubin_path_name()]
                     if (
                         config.aot_inductor.emit_multi_arch_kernel
@@ -2316,7 +2322,7 @@ end
                     ):
                         current_arch = _nvcc_arch_as_compile_option()
                         cmd = (
-                            f"{_cuda_compiler()} -fatbin {asm_file} -o {cubin_file} "
+                            f"{_cuda_compiler()} -fatbin {value['asm']} -o {cubin_file} "
                             # Triton only allows generating PTX version as same as the current arch
                             f"-gencode arch=compute_{current_arch},code=compute_{current_arch} "
                             # Include SASS for the current specific arch
@@ -2336,7 +2342,10 @@ end
                             )
                             raise
 
-                    if config.aot_inductor.embed_kernel_binary:
+                    if (
+                        config.aot_inductor.embed_kernel_binary
+                        and config.aot_inductor.cross_target_platform != "windows"
+                    ):
                         # Embed cubin files into model.so using objcopy
                         cubins_o.append(
                             convert_cubin_to_obj(cubin_file, kernel_name, ld, objcopy)
@@ -2396,14 +2405,21 @@ end
                         f_weights.write(struct.pack("q", magic_number))
 
                     generated_files.append(weight_file)
+                elif config.aot_inductor.cross_target_platform == "windows":
+                    generated_files.append(consts_asm)
+                    so_builder.save_src_to_cmake(cmake_path, consts_asm)
                 else:
                     # TODO: unify to always use mmap_weights
                     generated_files.append(consts_o)
                     so_builder.save_src_to_cmake(cmake_path, consts_o)
 
-                if config.aot_inductor.emit_multi_arch_kernel:
+                if (
+                    config.aot_inductor.emit_multi_arch_kernel
+                    or config.aot_inductor.cross_target_platform == "windows"
+                ):
                     so_builder.save_kernel_asm_to_cmake(cmake_path, asm_files)
                     generated_files.extend(asm_files)
+
                 else:
                     obj_srcs = [*gpu_kernels_o, *cubins_o]
                     generated_files.extend(obj_srcs)
@@ -2424,7 +2440,7 @@ end
                     def get_page_size() -> int:
                         # Don't use resource.getpagesize() on Windows, as it is a Unix specific package
                         # as seen in https://docs.python.org/2/library/resource.html
-                        if _IS_WINDOWS:
+                        if is_target_windows():
                             from ctypes import (  # type: ignore[attr-defined]
                                 byref,
                                 Structure,
@@ -2552,7 +2568,7 @@ def _precompile_header(
     hashable_cmd_line: str,
     **compile_command: Any,
 ) -> str:
-    assert not _IS_WINDOWS, (
+    assert not is_target_windows(), (
         "CppBuilder does not currently support precompiling on Windows!"
     )
 
@@ -2737,7 +2753,7 @@ class CppCodeCache:
             lib = None
 
             # if requested, pre-compile any headers
-            if config.cpp_cache_precompile_headers and not _IS_WINDOWS:
+            if config.cpp_cache_precompile_headers and not is_target_windows():
                 if header := cls._get_uncompiled_header(device_type):
                     main_build_option.precompiled_header = _precompile_header(
                         header,
@@ -3715,11 +3731,9 @@ def _nvcc_host_compiler_options() -> list[str]:
 
 def _nvcc_arch_as_compile_option() -> str:
     arch = cuda_env.get_cuda_arch()
-    if arch == "90":
+    if arch in ("90", "100", "120"):
         # Required by cutlass compilation.
-        return "90a"
-    if arch == "100":
-        return "100a"
+        return f"{arch}a"
     return arch
 
 
