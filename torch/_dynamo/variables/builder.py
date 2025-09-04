@@ -2187,6 +2187,15 @@ class VariableBuilder:
         if maybe_get_fake_mode(fake_tensor_value) is not self.tx.fake_mode:
             raise InternalTorchDynamoError("Wrapped Tensor must be this graph's fake")
 
+        if is_static_input and isinstance(source, ChainedSource):
+            from ..source import GlobalWeakRefSource
+
+            id = re.sub(
+                r"[\[\]'.]", lambda m: "_" if m.group(0) in "[" else "", source.name()
+            )
+            global_name = self.tx.store_global_weakref_by_id(id, value)
+            source = GlobalWeakRefSource(global_name)
+
         grapharg = GraphArg(source, value, False, fake_tensor_value)
         tensor_proxy.node.meta["grapharg"] = grapharg
         return tensor_variable
