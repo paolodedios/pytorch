@@ -137,19 +137,24 @@ void CudaTritonKernelManager::launch(
       nullptr));
 }
 
-static std::unique_ptr<TritonKernelManager> _create_cuda_triton_kernel_manager(
+namespace {
+std::unique_ptr<TritonKernelManager> create_cuda_triton_kernel_manager(
     std::string kernel_name,
-    std::string kernel_bin_path) {
+    std::string kernel_bin_path,
+    // NOLINTNEXTLINE(performance-unnecessary-value-param)
+    [[maybe_unused]] std::string kernel_launcher_bin_path) {
   return std::make_unique<CudaTritonKernelManager>(
       std::move(kernel_name), std::move(kernel_bin_path));
 }
+} // namespace
+
+C10_REGISTER_TYPED_CREATOR(
+    TritonKernelManagerRegistry,
+#ifdef USE_ROCM
+    at::kHIP,
+#else
+    at::kCUDA,
+#endif // USE_ROCM
+    create_cuda_triton_kernel_manager)
 
 } // namespace torch::nativert
-
-namespace {
-static bool _initialized_cuda_triton_kernel_manager = []() {
-  torch::nativert::create_cuda_triton_kernel_manager =
-      &torch::nativert::_create_cuda_triton_kernel_manager;
-  return true;
-}();
-} // namespace
