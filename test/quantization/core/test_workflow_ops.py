@@ -1072,6 +1072,7 @@ class TestFusedObsFakeQuant(TestCase):
         scale = torch.tensor([1.0], device=device)
         zero_point = torch.tensor([0], dtype=torch.int, device=device)
         observer_on = fake_quant_on = False if use_bool else 0
+        dtype = torch.bfloat16 if device == "cuda" else torch.float32
 
         pt_op = torch.fused_moving_avg_obs_fake_quant
         # enable observer after 2 iterations and fake_quant after 4 iterations
@@ -1080,8 +1081,7 @@ class TestFusedObsFakeQuant(TestCase):
                 observer_on = True if use_bool else 1
             if i > 4:
                 fake_quant_on = True if use_bool else 1
-
-            x = torch.randn(5, 5, device=device)
+            x = torch.randn(5, 5, dtype=dtype, device=device)
             out = pt_op(
                 x,
                 torch.tensor(observer_on, device=device),
@@ -1128,7 +1128,7 @@ class TestFusedObsFakeQuant(TestCase):
             torch.testing.assert_close(out, x_in)
 
         # Test empty input works
-        x = torch.empty(0, 5, device=device)
+        x = torch.empty(0, 5, dtype=dtype, device=device)
         out = pt_op(
             x,
             torch.tensor(1, device=device),
