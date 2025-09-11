@@ -376,7 +376,7 @@ class BenchmarkRunner:
         sample_input = next(iter(test_case.op_bench.inputs.values()))
         device, device_module = None, None
         if hasattr(sample_input, "device"):
-            # The device and device module information are crutial for memory metric calculation,
+            # The device and device module information are crucial for memory metric calculation,
             # In case of ops where inputs are integers (not tensor), memory metrics need not be calculated.
             device = sample_input.device
             device_module = torch.get_device_module(device.type)
