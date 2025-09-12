@@ -2727,6 +2727,7 @@ coverage_ignore_classes = [
     # torch.fx.experimental.schema_type_annotation
     "AnnotateTypesWithSchema",
     # torch.fx.experimental.sym_node
+    "DynamicInt",
     "SymNode",
     # torch.fx.experimental.symbolic_shapes
     "Constraint",

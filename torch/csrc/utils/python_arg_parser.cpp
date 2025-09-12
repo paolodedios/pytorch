@@ -937,6 +937,9 @@ static bool is_int_or_symint(PyObject* obj) {
   if (torch::is_symint(py::handle(obj))) {
     return true;
   }
+  if (torch::is_dynint(py::handle(obj))) {
+    return true;
+  }
 
   // FakeTensor(..., size=()) is qualified for SymInt param,
   // but we can't go via __index__ (below) as we would normally
@@ -1071,7 +1074,8 @@ auto FunctionParameter::_check(
         return !var.requires_grad() && var.dim() == 0;
       }
       if (torch::is_symfloat(py::handle(obj)) ||
-          torch::is_symint(py::handle(obj))) {
+          torch::is_symint(py::handle(obj)) ||
+          torch::is_dynint(py::handle(obj))) {
         // This will induce a guard
         return true;
       }
@@ -1086,7 +1090,8 @@ auto FunctionParameter::_check(
         return at::isIntegralType(var.scalar_type(), /*includeBool=*/false) &&
             !var.requires_grad() && var.dim() == 0;
       }
-      if (torch::is_symint(py::handle(obj))) {
+      if (torch::is_symint(py::handle(obj)) ||
+          torch::is_dynint(py::handle(obj))) {
         // This will induce a guard
         return true;
       }
@@ -1128,7 +1133,8 @@ auto FunctionParameter::_check(
       // Allow symint to be passed in as device, but we'll specialize and
       // guard in this case.
       return THPUtils_checkLong(obj) || THPUtils_checkString(obj) ||
-          THPDevice_Check(obj) || torch::is_symint(py::handle(obj));
+          THPDevice_Check(obj) || torch::is_symint(py::handle(obj)) ||
+          torch::is_dynint(py::handle(obj));
     case ParameterType::STREAM:
       return THPStream_Check(obj);
     case ParameterType::STRING:
@@ -1893,7 +1899,8 @@ at::Tensor PythonArgs::tensor_slow(int i) {
     // NB: we DO NOT put symbolic ints/floats into the Scalar itself,
     // because although Scalar supports SymInt/SymFloat, the subsequent
     // conversion to Tensor does not.  Instead, do it out of band.
-  } else if (torch::is_symint(py::handle(obj))) {
+  } else if (
+      torch::is_symint(py::handle(obj)) || torch::is_dynint(py::handle(obj))) {
     save_symint = true;
     // This scalar value doesn't matter, it shouldn't ever actually
     // get read out.  Make it a big and weird looking number to help
@@ -1979,6 +1986,10 @@ at::Scalar PythonArgs::scalar_slow(PyObject* arg) {
 
   if (torch::is_symint(arg)) {
     return at::Scalar(py::cast<c10::SymInt>(arg));
+  }
+
+  if (torch::is_dynint(arg)) {
+    return at::Scalar(py::cast<int>(arg));
   }
 
   if (torch::is_symfloat(arg)) {
