@@ -204,7 +204,7 @@ class ShardingPropagator:
     ) -> Union[None, TensorMeta, Sequence[Optional[TensorMeta]]]:
         """
         Cached version of _propagate_tensor_meta_non_cached
-        Use _propagate_tensor_meta instead to make compile-safe.
+        Use _propagate_tensor_meta instead to handle dynamic shapes.
         """
         return self._propagate_tensor_meta_non_cached(op_schema)
 
@@ -214,7 +214,7 @@ class ShardingPropagator:
         """
         Propagate the tensor metadata, it could either return a TensorMeta
         or a list/tuple of TensorMetas. Uses the cached version if not
-        actively tracing. Use this method if you need caching.
+        actively tracing. Use this method instead of _propagate_tensor_meta_non_cached
         """
         if _are_we_tracing():
             return self._propagate_tensor_meta_non_cached(op_schema)
