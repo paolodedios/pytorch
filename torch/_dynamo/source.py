@@ -106,6 +106,13 @@ def is_constant_source(source: Source) -> bool:
     return False
 
 
+def _get_source_debug_name(source: Source) -> str:
+    try:
+        return source.name()
+    except NotImplementedError:
+        return "<unknown source>"
+
+
 @dataclasses.dataclass(frozen=True)
 class LocalSource(Source):
     local_name: str
@@ -690,7 +697,7 @@ class NonSerializableSetGetItemSource(ChainedSource):
 # Used to access an item from the dictionary
 @dataclasses.dataclass(frozen=True)
 class DictGetItemSource(ChainedSource):
-    # Key to access in the dictionary. It can be one of the the following types
+    # Key to access in the dictionary. It can be one of the following types
     # 1) ConstDictKeySource
     # 2) constant - like string, integer
     index: Any
@@ -727,7 +734,7 @@ class DictGetItemSource(ChainedSource):
 # torch.compile does not run the overridden __getitem__ method
 @dataclasses.dataclass(frozen=True)
 class DictSubclassGetItemSource(ChainedSource):
-    # Key to access in the dictionary. It can be one of the the following types
+    # Key to access in the dictionary. It can be one of the following types
     # 1) ConstDictKeySource
     # 2) constant - like string, integer
     index: Any
@@ -821,6 +828,19 @@ class TupleIteratorGetItemSource(GetItemSource):
 
     def name(self) -> str:
         return f"___tuple_iterator_getitem({self.base.name()}, {self.index!r})"
+
+
+@dataclasses.dataclass(frozen=True)
+class NamedTupleFieldsSource(ChainedSource):
+    def reconstruct(self, codegen: "PyCodegen") -> None:
+        codegen(self.base)
+        codegen.extend_output(codegen.create_load_attrs("_fields"))
+
+    def guard_source(self) -> GuardSource:
+        return self.base.guard_source()
+
+    def name(self) -> str:
+        return f"___namedtuple_fields({self.base.name()})"
 
 
 @dataclasses.dataclass(frozen=True)

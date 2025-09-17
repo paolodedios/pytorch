@@ -6004,6 +6004,7 @@ def sample_inputs_repeat_interleave(op_info, device, dtype, requires_grad, **kwa
     yield SampleInput(make_input((2, 3, 4)), repeats=2)
     yield SampleInput(make_input((2, 3, 4)), repeats=2, dim=1)
     yield SampleInput(make_input((2, 3, 4)), repeats=torch.arange(3, device=device), dim=1)
+    yield SampleInput(make_input((4, 1)), repeats=torch.arange(4, device=device), dim=0, output_size=6)
 
 
 def sample_inputs_stft(op_info, device, dtype, requires_grad, **kwargs):
@@ -8358,6 +8359,36 @@ def sample_inputs_grid_sampler_2d(op_info, device, dtype, requires_grad, **kwarg
             align_corners,
         )
 
+def sample_inputs_grid_sampler_3d(op_info, device, dtype, requires_grad, **kwargs):
+    _make_input = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad,
+                          low=-1, high=1)
+    # Test both out-of-range and in-range grid values
+    _make_grid = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad,
+                         low=-4, high=4)
+
+    modes = (0,)
+    padding_modes = (0, 1, 2)
+    align_cornerss = (False, True)
+    shape_pairs = [
+        # [input_shape, grid_shape]
+        [(1, 1, 2, 2, 2), (1, 1, 1, 1, 3)],
+        [(2, 3, S, L, L), (2, M + 2, M + 1, M, 3)],
+        [(L, L + 1, L + 2, L + 3, L + 4), (L, M + 2, M + 1, M, 3)],
+        [(M, M + 1, M + 2, M + 3, M + 4), (M, L + 3, L + 2, L + 1, 3)],
+        [(L, M + 1, M + 2, M + 3, M + 4), (L, L + 3, L + 2, L + 1, 3)],
+    ]
+
+    params_prod = itertools.product(modes, padding_modes, align_cornerss, shape_pairs)
+
+    for mode, padding_mode, align_corners, (input_shape, grid_shape) in params_prod:
+        yield SampleInput(
+            _make_input(input_shape),
+            _make_grid(grid_shape),
+            mode,
+            padding_mode,
+            align_corners,
+        )
+
 def sample_inputs_cosine_embedding_loss(op_info, device, dtype, requires_grad, **kwargs):
     make_input = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
 
@@ -8437,7 +8468,8 @@ def sample_inputs_nll_loss(op_info, device, dtype, requires_grad, **kwargs):
             yield make_input(s), make_target(s), dict(reduction=reduction)
             yield make_input(s), make_target(s), dict(weight=make_weight(), reduction=reduction)
             yield make_input(s), make_target(s), dict(weight=make_weight(low=0), reduction=reduction)
-            yield make_input(s), make_target(s), dict(weight=make_weight(high=0), reduction=reduction)
+            if dtype.is_floating_point or dtype.is_complex:
+                yield make_input(s), make_target(s), dict(weight=make_weight(high=0), reduction=reduction)
             t = make_target(s)
             ignore = num_classes // 2
             # If "mean", nll returns NaN, so it's not differentiable at those points
@@ -12331,6 +12363,10 @@ op_db: list[OpInfo] = [
                DecorateInfo(
                    toleranceOverride({torch.complex64: tol(atol=1e-05, rtol=1.2e-03)}),
                    'TestCommon', 'test_variant_consistency_eager', device_type='cuda'),
+               # Higher differences starting with Zen3 or Alder Lake
+               DecorateInfo(
+                   toleranceOverride({torch.complex64: tol(atol=4e-05, rtol=4e-06)}),
+                   'TestDecomp', 'test_quick', device_type='cpu'),
                DecorateInfo(
                    toleranceOverride({torch.complex64: tol(atol=1e-05, rtol=1.2e-03)}),
                    'TestMathBits', 'test_conj_view', device_type='cuda'),
@@ -16558,12 +16594,7 @@ op_db: list[OpInfo] = [
                 toleranceOverride({torch.float16: tol(atol=1e-04, rtol=0.001)}), 'TestUnaryUfuncs', device_type='cuda',), ],
         skips=[
             # still want to test that first derivative works though second derivative isn't supported
-            DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', "test_inplace_gradgrad"),
-            # produces 0 instead of nan on ROCM
-            DecorateInfo(unittest.expectedFailure,
-                         'TestUnaryUfuncs', "test_reference_numerics_extremal",
-                         device_type='cuda',
-                         active_if=(TEST_WITH_ROCM)), ]
+            DecorateInfo(unittest.expectedFailure, 'TestBwdGradients', "test_inplace_gradgrad")]
     ),
     UnaryUfuncInfo(
         'nn.functional.logsigmoid',
@@ -21033,6 +21064,22 @@ op_db: list[OpInfo] = [
         skips=(
             DecorateInfo(slowTest, 'TestDecomp', 'test_comprehensive', dtypes=(torch.float32, torch.float64),
                          active_if=IS_WINDOWS),
+        ),),
+    # TODO: Remove grid_sampler_3d tests once `nn.functional.grid_sample` has
+    # MPS support for all cases.
+    OpInfo(
+        "grid_sampler_3d",
+        dtypes=floating_types_and(torch.float16, torch.bfloat16),
+        supports_out=False,
+        sample_inputs_func=sample_inputs_grid_sampler_3d,
+        supports_gradgrad=False,
+        gradcheck_nondet_tol=1e-15,
+        skips=(
+            # NOTE: Only run on MPS
+            DecorateInfo(unittest.skip('Skipped!'), device_type='cpu'),
+            DecorateInfo(unittest.skip('Skipped!'), device_type='cuda'),
+            DecorateInfo(unittest.skip('Skipped!'), device_type='xpu'),
+            DecorateInfo(unittest.skip('Skipped!'), device_type='meta'),
         ),),
     OpInfo(
         "argwhere",

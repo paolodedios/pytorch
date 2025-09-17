@@ -116,6 +116,8 @@ num_guards_executed=0)
         const_guard = guards.LAMBDA_GUARD(
             root,
             functools.partial(equals_match, expected=5),
+            {},
+            False,
             equals_match_verbose_code_parts(5),
         )
         self.assertTrue(const_guard(5))
@@ -405,10 +407,14 @@ num_guards_executed=0)
         guard_manager.add_type_match_guard(id_type(5), ["type(x) == int"])
         guard_manager.add_lambda_guard(
             functools.partial(ge_match, expected=5),
+            {},
+            False,
             ge_match_verbose_code_parts(expected=5),
         )
         guard_manager.add_lambda_guard(
             functools.partial(less_match, expected=10),
+            {},
+            False,
             less_match_verbose_code_parts(expected=10),
         )
         self.assertEqual(len(guard_manager.get_leaf_guards()), 3)
@@ -428,10 +434,14 @@ num_guards_executed=0)
         guard_manager.add_type_match_guard(id_type(foo), ["type(x) == Foo"])
         guard_manager.getattr_manager("x", "x", 1, default_mgr_enum).add_lambda_guard(
             functools.partial(equals_match, expected=foo.x),
+            {},
+            False,
             equals_match_verbose_code_parts(foo.x),
         )
         guard_manager.getattr_manager("y", "y", 2, default_mgr_enum).add_lambda_guard(
             functools.partial(equals_match, expected=foo.y),
+            {},
+            False,
             equals_match_verbose_code_parts(foo.y),
         )
         self.assertEqual(len(guard_manager.get_leaf_guards()), 1)
@@ -474,10 +484,14 @@ num_guards_executed=0)
         guard_manager.add_type_match_guard(id_type(foo), ["type(x) == Foo"])
         guard_manager.getitem_manager(0, "", 1, default_mgr_enum).add_lambda_guard(
             functools.partial(equals_match, expected=foo[0]),
+            {},
+            False,
             equals_match_verbose_code_parts(foo[0]),
         )
         guard_manager.getitem_manager(1, "", 2, default_mgr_enum).add_lambda_guard(
             functools.partial(equals_match, expected=foo[1]),
+            {},
+            False,
             equals_match_verbose_code_parts(foo[1]),
         )
         self.assertEqual(len(guard_manager.get_leaf_guards()), 1)
@@ -585,6 +599,8 @@ num_guards_executed=0)
             lambda x: isinstance(x, Pair)
             and isinstance(x.x, torch.Tensor)
             and isinstance(x.y, int),
+            {},
+            False,
             "global guard fail",
         )
 
@@ -635,6 +651,8 @@ num_guards_executed=0)
         )
         attr_manager.add_lambda_guard(
             lambda x: x == 4,
+            {},
+            False,
             "Expected value 4",
         )
 
@@ -675,6 +693,8 @@ num_guards_executed=0)
 
         weakref_manager.add_lambda_guard(
             lambda x: isinstance(x, torch.Tensor),
+            {},
+            False,
             "global weakref fail",
         )
 
@@ -694,6 +714,8 @@ num_guards_executed=0)
         )
         foo_mgr.add_lambda_guard(
             lambda x: x == 3,
+            {},
+            False,
             "Expected value 3",
         )
         self.assertTrue(guard_manager.check(a))
@@ -779,7 +801,7 @@ num_guards_executed=0)
         # Add key-value manager (nothing : {"z" : 3})
         self.assertTrue(root.check(f_locals))
         dict_mgr.get_key_manager(1, "", nothing, default_mgr_enum).add_lambda_guard(
-            lambda x: x is nothing, ["x is nothing"]
+            lambda x: x is nothing, {}, False, ["x is nothing"]
         )
         self.assertTrue(root.check(f_locals))
         value_mgr = dict_mgr.get_value_manager(
@@ -1179,6 +1201,45 @@ class TagSafetyChecks(RecursiveDictTagTests):
                 if "Foo" in str(type(self).__mro__):
                     x = torch.sin(x)
                 return self.foo(x)
+
+        baz = Baz()
+
+        def fn(x):
+            x = x + baz(x)
+            return x
+
+        try:
+            from .utils import install_guard_manager_testing_hook
+        except ImportError:
+            from utils import install_guard_manager_testing_hook
+
+        def hook(guard_wrapper, f_locals, builder):
+            from torch._dynamo.source import LocalSource
+
+            baz_source = LocalSource("baz")
+
+            # Check tagness of baz
+            baz_mgr = builder.get_guard_manager_from_source(baz_source)
+            self.assertTrue(baz_mgr.is_tag_safe())
+            self.assertTrue(baz_mgr.is_tag_safe_root())
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with install_guard_manager_testing_hook(hook):
+            opt_fn(torch.randn(4, 4))
+
+    def test_nn_module_tag_overridden_getattr_safe(self):
+        class Baz(torch.nn.Module, metaclass=abc.ABCMeta):
+            def __init__(self):
+                super().__init__()
+                self.norm = 2
+
+            def __getattr__(self, key):
+                if key == "a":
+                    return 5
+                return super().__getattr__(key)
+
+            def forward(self, x):
+                return x + self.a + self.norm
 
         baz = Baz()
 
