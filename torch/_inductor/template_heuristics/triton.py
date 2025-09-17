@@ -1858,6 +1858,50 @@ class ScaledTMAConfigMixin(TMAWorkspaceMixin, BaseScaledMMConfigMixin):
             yield template_kwargs
 
 
+# Scaled Blackwell TMA-specific mixin for scaled MM templates with TMA
+class ScaledBlackwellTMAConfigMixin(TMAWorkspaceMixin, ScaledMMConfigMixin):
+    """
+    Scaled Blackwell TMA-specific mixin that extends ScaledMMConfigMixin with TMA functionality.
+    This is for scaled MM templates that use device TMA on Blackwell.
+    This inherits from ScaledMMConfigMixin, which inherits the scale_mm_epilogue, and adds TMA-specific options.
+    """
+
+    def _filter_configs(self, configs: list[BaseConfig]) -> list[BaseConfig]:
+        """
+        TMA specific filtering:
+        - num_warps < 4 not safe for TMA due to compilation issues
+        - num_stages < 2 not safe for TMA due to compilation issues
+        - block_k >= 32 required for TMA (requires inner-most dimension >= 32)
+        """
+        configs = [c for c in configs if c.num_warps >= 4 and c.num_stages >= 2 and c.block_k >= 32]
+        return super()._filter_configs(configs)
+
+    def _get_template_configs_impl(
+        self,
+        kernel_inputs: KernelInputs,
+        op_name: str,
+    ) -> Generator[dict[str, Any], None, None]:
+        """
+        Generate scaled TMA template configs with both scaled MM and TMA-specific options.
+        """
+        # Get base scaled MM template configs from superclass
+        for template_kwargs in super()._get_template_configs_impl(
+            kernel_inputs,
+            op_name,
+        ):
+            # Add TMA- and Blackwell-specific options for device TMA scaled MM
+            template_kwargs["TMA_SIZE"] = TMA_DESCRIPTOR_SIZE
+            template_kwargs["NUM_SMS"] = get_num_sms()
+            template_kwargs["TMA_EXPERIMENTAL_API"] = not has_triton_stable_tma_api()
+            template_kwargs["FLATTEN"] = True
+            template_kwargs["WARP_SPECIALIZE"] = True  # safe as long as num_warps >= 4 and num_stages >= 2 (filtered in _filter_configs)
+            template_kwargs["EPILOGUE_SUBTILE"] = False
+            template_kwargs["A_ROW_MAJOR"] = True
+            template_kwargs["B_ROW_MAJOR"] = False
+
+            yield template_kwargs
+
+
 # Template-specific heuristic classes using multiple inheritance
 
 
@@ -1989,6 +2033,21 @@ class CUDAScaledTMATemplateConfigHeuristic(ScaledTMAConfigMixin, CUDAConfigHeuri
     def __init__(self) -> None:
         super().__init__()
         # Override mm_configs to use scaled_persistent_mm_configs for TMA
+        self.mm_configs = self.scaled_persistent_mm_configs
+
+
+@register_template_heuristic(
+    blackwell_ws_persistent_device_tma_mm_template.uid,  # regular Blackwell MM template + scaling epilogue from ScaledMMConfigMixin
+    "cuda",
+    register=torch.version.hip is None,
+)
+class CUDAScaledBlackwellTMATemplateConfigHeuristic(ScaledBlackwellTMAConfigMixin, CUDAConfigHeuristic):
+    """Scaled Blackwell TMA template heuristic for CUDA"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Override mm_configs to use scaled_persistent_mm_configs for TMA
+        # TODO: Tune scaled_persistent_mm_configs for Blackwell
         self.mm_configs = self.scaled_persistent_mm_configs
 
 
