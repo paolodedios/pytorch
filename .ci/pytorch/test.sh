@@ -622,6 +622,12 @@ test_perf_for_dashboard() {
   shift
 
   local backend=inductor
+  # Allow surfacing eager metrics in CI by switching backend based on TEST_CONFIG
+  if [[ "${TEST_CONFIG}" == *dynamo_eager* ]]; then
+    backend=eager
+  elif [[ "${TEST_CONFIG}" == *aot_eager* ]]; then
+    backend=aot_eager
+  fi
   local modes=()
   if [[ "$DASHBOARD_TAG" == *training-true* ]]; then
     modes+=(training)
