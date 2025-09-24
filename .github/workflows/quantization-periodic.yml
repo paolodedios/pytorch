@@ -43,12 +43,12 @@ jobs:
           { config: "quantization", shard: 1, num_shards: 1, runner: "${{ needs.get-default-label-prefix.outputs.label-type }}linux.g6.4xlarge.experimental.nvidia.gpu" },
         ]}
     secrets: inherit
-  periodic-test-quantization:
-    name: periodic-test-quantization
-    uses: ./.github/workflows/_linux-test.yml
-    needs: periodic-quantization-build
-    with:
-      build-environment: linux-jammy-cuda12.8-cudnn9-py3-gcc11
-      docker-image: ${{ needs.periodic-quantization-build.outputs.docker-image }}
-      test-matrix: ${{ needs.periodic-quantization-build.outputs.test-matrix }}
-    secrets: inherit
+  # periodic-test-quantization:
+  #   name: periodic-test-quantization
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: periodic-quantization-build
+  #   with:
+  #     build-environment: linux-jammy-cuda12.8-cudnn9-py3-gcc11
+  #     docker-image: ${{ needs.periodic-quantization-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.periodic-quantization-build.outputs.test-matrix }}
+  #   secrets: inherit

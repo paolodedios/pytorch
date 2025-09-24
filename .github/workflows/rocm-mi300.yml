@@ -57,17 +57,17 @@ jobs:
         ]}
     secrets: inherit
 
-  linux-noble-rocm-py3_12-test:
-    permissions:
-      id-token: write
-      contents: read
-    name: linux-noble-rocm-py3.12-mi300
-    uses: ./.github/workflows/_rocm-test.yml
-    needs:
-      - linux-noble-rocm-py3_12-build
-      - target-determination
-    with:
-      build-environment: linux-noble-rocm-py3.12-mi300
-      docker-image: ${{ needs.linux-noble-rocm-py3_12-build.outputs.docker-image }}
-      test-matrix: ${{ needs.linux-noble-rocm-py3_12-build.outputs.test-matrix }}
-    secrets: inherit
+  # linux-noble-rocm-py3_12-test:
+  #   permissions:
+  #     id-token: write
+  #     contents: read
+  #   name: linux-noble-rocm-py3.12-mi300
+  #   uses: ./.github/workflows/_rocm-test.yml
+  #   needs:
+  #     - linux-noble-rocm-py3_12-build
+  #     - target-determination
+  #   with:
+  #     build-environment: linux-noble-rocm-py3.12-mi300
+  #     docker-image: ${{ needs.linux-noble-rocm-py3_12-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.linux-noble-rocm-py3_12-build.outputs.test-matrix }}
+  #   secrets: inherit

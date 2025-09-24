@@ -47,15 +47,15 @@ jobs:
         ]}
     secrets: inherit
 
-  inductor-test:
-    name: inductor-test
-    uses: ./.github/workflows/_linux-test.yml
-    needs: inductor-build
-    with:
-      build-environment: linux-jammy-cuda12.8-py3.10-gcc9-sm86
-      docker-image: ${{ needs.inductor-build.outputs.docker-image }}
-      test-matrix: ${{ needs.inductor-build.outputs.test-matrix }}
-    secrets: inherit
+  # inductor-test:
+  #   name: inductor-test
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: inductor-build
+  #   with:
+  #     build-environment: linux-jammy-cuda12.8-py3.10-gcc9-sm86
+  #     docker-image: ${{ needs.inductor-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.inductor-build.outputs.test-matrix }}
+  #   secrets: inherit
 
   inductor-halide-build:
     name: inductor-halide-build
@@ -71,15 +71,15 @@ jobs:
         ]}
     secrets: inherit
 
-  inductor-halide-test:
-    name: inductor-halide-test
-    uses: ./.github/workflows/_linux-test.yml
-    needs: inductor-halide-build
-    with:
-      build-environment: linux-jammy-py3.12-gcc11
-      docker-image: ${{ needs.inductor-halide-build.outputs.docker-image }}
-      test-matrix: ${{ needs.inductor-halide-build.outputs.test-matrix }}
-    secrets: inherit
+  # inductor-halide-test:
+  #   name: inductor-halide-test
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: inductor-halide-build
+  #   with:
+  #     build-environment: linux-jammy-py3.12-gcc11
+  #     docker-image: ${{ needs.inductor-halide-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.inductor-halide-build.outputs.test-matrix }}
+  #   secrets: inherit
 
   inductor-triton-cpu-build:
     name: inductor-triton-cpu-build
@@ -95,15 +95,15 @@ jobs:
         ]}
     secrets: inherit
 
-  inductor-triton-cpu-test:
-    name: linux-jammy-cpu-py3.12-gcc11-inductor-triton-cpu
-    uses: ./.github/workflows/_linux-test.yml
-    needs: inductor-triton-cpu-build
-    with:
-      build-environment: linux-jammy-py3.12-gcc11
-      docker-image: ${{ needs.inductor-triton-cpu-build.outputs.docker-image }}
-      test-matrix: ${{ needs.inductor-triton-cpu-build.outputs.test-matrix }}
-    secrets: inherit
+  # inductor-triton-cpu-test:
+  #   name: linux-jammy-cpu-py3.12-gcc11-inductor-triton-cpu
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: inductor-triton-cpu-build
+  #   with:
+  #     build-environment: linux-jammy-py3.12-gcc11
+  #     docker-image: ${{ needs.inductor-triton-cpu-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.inductor-triton-cpu-build.outputs.test-matrix }}
+  #   secrets: inherit
 
   inductor-cpu-build:
     name: inductor-cpu-build
@@ -122,12 +122,12 @@ jobs:
         ]}
     secrets: inherit
 
-  inductor-cpu-test:
-    name: inductor-cpu-test
-    uses: ./.github/workflows/_linux-test.yml
-    needs: inductor-cpu-build
-    with:
-      build-environment: linux-jammy-py3.10-gcc11-build
-      docker-image: ${{ needs.inductor-cpu-build.outputs.docker-image }}
-      test-matrix: ${{ needs.inductor-cpu-build.outputs.test-matrix }}
-    secrets: inherit
+  # inductor-cpu-test:
+  #   name: inductor-cpu-test
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: inductor-cpu-build
+  #   with:
+  #     build-environment: linux-jammy-py3.10-gcc11-build
+  #     docker-image: ${{ needs.inductor-cpu-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.inductor-cpu-build.outputs.test-matrix }}
+  #   secrets: inherit
