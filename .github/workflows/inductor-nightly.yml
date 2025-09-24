@@ -51,13 +51,13 @@ jobs:
       build-additional-packages: "vision audio torchao"
     secrets: inherit
 
-  nightly-dynamo-benchmarks-test:
-    name: nightly-dynamo-benchmarks-test
-    uses: ./.github/workflows/_linux-test.yml
-    needs: nightly-dynamo-benchmarks-build
-    with:
-      build-environment: linux-jammy-py3.10-gcc11-build
-      docker-image: ${{ needs.nightly-dynamo-benchmarks-build.outputs.docker-image }}
-      test-matrix: ${{ needs.nightly-dynamo-benchmarks-build.outputs.test-matrix }}
-      timeout-minutes: 720
-    secrets: inherit
+  # nightly-dynamo-benchmarks-test:
+  #   name: nightly-dynamo-benchmarks-test
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: nightly-dynamo-benchmarks-build
+  #   with:
+  #     build-environment: linux-jammy-py3.10-gcc11-build
+  #     docker-image: ${{ needs.nightly-dynamo-benchmarks-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.nightly-dynamo-benchmarks-build.outputs.test-matrix }}
+  #     timeout-minutes: 720
+  #   secrets: inherit

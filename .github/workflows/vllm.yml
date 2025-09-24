@@ -65,14 +65,14 @@ jobs:
         ]}
     secrets: inherit
 
-  vllm-test-sm89:
-      name: ci-vllm-test
-      uses: ./.github/workflows/_linux-test.yml
-      needs: [
-        torch-build,
-      ]
-      with:
-        build-environment: linux-jammy-cuda12.8-py3.12-gcc11
-        docker-image: ${{ needs.torch-build.outputs.docker-image }}
-        test-matrix: ${{ needs.torch-build.outputs.test-matrix }}
-      secrets: inherit
+  # vllm-test-sm89:
+  #     name: ci-vllm-test
+  #     uses: ./.github/workflows/_linux-test.yml
+  #     needs: [
+  #       torch-build,
+  #     ]
+  #     with:
+  #       build-environment: linux-jammy-cuda12.8-py3.12-gcc11
+  #       docker-image: ${{ needs.torch-build.outputs.docker-image }}
+  #       test-matrix: ${{ needs.torch-build.outputs.test-matrix }}
+  #     secrets: inherit

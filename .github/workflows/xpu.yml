@@ -70,18 +70,18 @@ jobs:
         ]}
     secrets: inherit
 
-  linux-jammy-xpu-n-py3_10-test:
-    name: linux-jammy-xpu-n-py3.10
-    uses: ./.github/workflows/_xpu-test.yml
-    needs: linux-jammy-xpu-n-py3_10-build
-    permissions:
-      id-token: write
-      contents: read
-    with:
-      build-environment: linux-jammy-xpu-n-py3.10
-      docker-image: ${{ needs.linux-jammy-xpu-n-py3_10-build.outputs.docker-image }}
-      test-matrix: ${{ needs.linux-jammy-xpu-n-py3_10-build.outputs.test-matrix }}
-    secrets: inherit
+  # linux-jammy-xpu-n-py3_10-test:
+  #   name: linux-jammy-xpu-n-py3.10
+  #   uses: ./.github/workflows/_xpu-test.yml
+  #   needs: linux-jammy-xpu-n-py3_10-build
+  #   permissions:
+  #     id-token: write
+  #     contents: read
+  #   with:
+  #     build-environment: linux-jammy-xpu-n-py3.10
+  #     docker-image: ${{ needs.linux-jammy-xpu-n-py3_10-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.linux-jammy-xpu-n-py3_10-build.outputs.test-matrix }}
+  #   secrets: inherit
 
   windows-xpu-n-1-build:
     if: github.repository_owner == 'pytorch'

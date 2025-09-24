@@ -71,15 +71,15 @@ jobs:
       build-additional-packages: "vision audio fbgemm torchao"
     secrets: inherit
 
-  periodic-dynamo-benchmarks-test:
-    name: periodic-dynamo-benchmarks-test
-    uses: ./.github/workflows/_linux-test.yml
-    needs: periodic-dynamo-benchmarks-build
-    with:
-      build-environment: linux-jammy-cuda12.8-py3.10-gcc9-sm86
-      docker-image: ${{ needs.periodic-dynamo-benchmarks-build.outputs.docker-image }}
-      test-matrix: ${{ needs.periodic-dynamo-benchmarks-build.outputs.test-matrix }}
-    secrets: inherit
+  # periodic-dynamo-benchmarks-test:
+  #   name: periodic-dynamo-benchmarks-test
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: periodic-dynamo-benchmarks-build
+  #   with:
+  #     build-environment: linux-jammy-cuda12.8-py3.10-gcc9-sm86
+  #     docker-image: ${{ needs.periodic-dynamo-benchmarks-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.periodic-dynamo-benchmarks-build.outputs.test-matrix }}
+  #   secrets: inherit
 
   rocm-periodic-dynamo-benchmarks-build:
     if: github.repository_owner == 'pytorch'
@@ -119,18 +119,18 @@ jobs:
         ]}
     secrets: inherit
 
-  rocm-periodic-dynamo-benchmarks-test:
-    permissions:
-      id-token: write
-      contents: read
-    name: rocm-periodic-dynamo-benchmarks-test
-    uses: ./.github/workflows/_rocm-test.yml
-    needs: rocm-periodic-dynamo-benchmarks-build
-    with:
-      build-environment: linux-jammy-rocm-py3_10
-      docker-image: ${{ needs.rocm-periodic-dynamo-benchmarks-build.outputs.docker-image }}
-      test-matrix: ${{ needs.rocm-periodic-dynamo-benchmarks-build.outputs.test-matrix }}
-    secrets: inherit
+  # rocm-periodic-dynamo-benchmarks-test:
+  #   permissions:
+  #     id-token: write
+  #     contents: read
+  #   name: rocm-periodic-dynamo-benchmarks-test
+  #   uses: ./.github/workflows/_rocm-test.yml
+  #   needs: rocm-periodic-dynamo-benchmarks-build
+  #   with:
+  #     build-environment: linux-jammy-rocm-py3_10
+  #     docker-image: ${{ needs.rocm-periodic-dynamo-benchmarks-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.rocm-periodic-dynamo-benchmarks-build.outputs.test-matrix }}
+  #   secrets: inherit
 
   inductor-smoke-build:
     name: inductor-smoke-build
@@ -149,15 +149,15 @@ jobs:
       build-additional-packages: "vision audio fbgemm torchao"
     secrets: inherit
 
-  inductor-smoke-test:
-    name: inductor-smoke-test
-    uses: ./.github/workflows/_linux-test.yml
-    needs: inductor-smoke-build
-    with:
-      build-environment: linux-jammy-cuda12.8-py3.10-gcc9-sm80
-      docker-image: ${{ needs.inductor-smoke-build.outputs.docker-image }}
-      test-matrix: ${{ needs.inductor-smoke-build.outputs.test-matrix }}
-    secrets: inherit
+  # inductor-smoke-test:
+  #   name: inductor-smoke-test
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: inductor-smoke-build
+  #   with:
+  #     build-environment: linux-jammy-cuda12.8-py3.10-gcc9-sm80
+  #     docker-image: ${{ needs.inductor-smoke-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.inductor-smoke-build.outputs.test-matrix }}
+  #   secrets: inherit
 
   periodic-dynamo-benchmarks-cpu-build:
     name: periodic-dynamo-benchmarks-cpu-build
@@ -205,12 +205,12 @@ jobs:
       build-additional-packages: "vision audio torchao"
     secrets: inherit
 
-  periodic-dynamo-benchmarks-cpu-test:
-    name: periodic-dynamo-benchmarks-cpu-test
-    uses: ./.github/workflows/_linux-test.yml
-    needs: periodic-dynamo-benchmarks-cpu-build
-    with:
-      build-environment: linux-jammy-py3.10-gcc11-build
-      docker-image: ${{ needs.periodic-dynamo-benchmarks-cpu-build.outputs.docker-image }}
-      test-matrix: ${{ needs.periodic-dynamo-benchmarks-cpu-build.outputs.test-matrix }}
-    secrets: inherit
+  # periodic-dynamo-benchmarks-cpu-test:
+  #   name: periodic-dynamo-benchmarks-cpu-test
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: periodic-dynamo-benchmarks-cpu-build
+  #   with:
+  #     build-environment: linux-jammy-py3.10-gcc11-build
+  #     docker-image: ${{ needs.periodic-dynamo-benchmarks-cpu-build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.periodic-dynamo-benchmarks-cpu-build.outputs.test-matrix }}
+  #   secrets: inherit

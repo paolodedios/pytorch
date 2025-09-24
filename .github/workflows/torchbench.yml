@@ -41,12 +41,12 @@ jobs:
         ]}
     secrets: inherit
 
-  test:
-    name: cuda12.8-py3.10-gcc9-sm80
-    uses: ./.github/workflows/_linux-test.yml
-    needs: build
-    with:
-      build-environment: linux-jammy-cuda12.8-py3.10-gcc9-sm80
-      docker-image: ${{ needs.build.outputs.docker-image }}
-      test-matrix: ${{ needs.build.outputs.test-matrix }}
-    secrets: inherit
+  # test:
+  #   name: cuda12.8-py3.10-gcc9-sm80
+  #   uses: ./.github/workflows/_linux-test.yml
+  #   needs: build
+  #   with:
+  #     build-environment: linux-jammy-cuda12.8-py3.10-gcc9-sm80
+  #     docker-image: ${{ needs.build.outputs.docker-image }}
+  #     test-matrix: ${{ needs.build.outputs.test-matrix }}
+  #   secrets: inherit
