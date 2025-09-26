@@ -50,7 +50,6 @@ from torch._inductor.utils import (
     output_node,
     set_tracing_context_output_strides,
 )
-from torch.autograd.profiler import record_function
 from torch.utils._ordered_set import OrderedSet
 
 from . import config
