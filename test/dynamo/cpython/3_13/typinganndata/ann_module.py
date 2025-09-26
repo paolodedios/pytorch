@@ -14,7 +14,8 @@ class C:
 
     x = 5; y: Optional['C'] = None
 
-x: int = 5; y: str = x; f: tuple[int, int]
+from typing import Tuple
+x: int = 5; y: str = x; f: Tuple[int, int]
 
 class M(type):
 
@@ -30,7 +31,7 @@ from types import new_class
 h_class = new_class('H', (C,))
 j_class = new_class('J')
 
-class F:
+class F():
     z: int = 5
     def __init__(self, x):
         pass
@@ -49,7 +50,7 @@ class S(metaclass = Meta):
 
 def foo(x: int = 10):
     def bar(y: List[str]):
-        pass
+        x: str = 'yes'
     bar()
 
 def dec(func):
