@@ -281,13 +281,13 @@ class JitTestCase(JitCommonTestCase):
         # Ideally we would like to not have to manually delete the file, but NamedTemporaryFile
         # opens the file, and it cannot be opened multiple times in Windows. To support Windows,
         # close the file after creation and try to remove it manually
-        f = tempfile.NamedTemporaryFile(delete=False)
-        try:
-            f.close()
-            imported.save(f.name)
-            result = torch.jit.load(f.name, map_location=map_location)
-        finally:
-            os.unlink(f.name)
+        with tempfile.NamedTemporaryFile(delete=False) as f:
+            try:
+                f.close()
+                imported.save(f.name)
+                result = torch.jit.load(f.name, map_location=map_location)
+            finally:
+                os.unlink(f.name)
 
         result.apply(lambda s: s._unpack() if s._c._has_method('_unpack') else None)
         return result
@@ -459,8 +459,7 @@ class JitTestCase(JitCommonTestCase):
         Checks that a given script generates the same output as the Python
         version using the given inputs.
         """
-        with torch.jit.optimized_execution(optimize):
-            with enable_profiling_mode_for_profiling_tests():
+        with torch.jit.optimized_execution(optimize) ,enable_profiling_mode_for_profiling_tests():
                 extra_profile_runs = any(isinstance(x, torch.Tensor) and x.requires_grad for x in inputs)
                 if isinstance(script, str):
                     # Compile the string to a Script function

@@ -736,7 +736,8 @@ def download_url_to_file(
     for _ in range(tempfile.TMP_MAX):
         tmp_dst = dst + "." + uuid.uuid4().hex + ".partial"
         try:
-            f = open(tmp_dst, "w+b")
+            with open(tmp_dst, "w+b") as f:
+                pass
         except FileExistsError:
             continue
         break

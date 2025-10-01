@@ -266,13 +266,13 @@ class _KinetoProfile:
         """
         assert self.profiler
         if path.endswith(".gz"):
-            fp = tempfile.NamedTemporaryFile("w+b", suffix=".json", delete=False)
-            fp.close()
-            retvalue = self.profiler.export_chrome_trace(fp.name)
-            with open(fp.name, "rb") as fin:
-                with gzip.open(path, "wb") as fout:
-                    fout.writelines(fin)
-            os.remove(fp.name)
+            with tempfile.NamedTemporaryFile("w+b", suffix=".json", delete=False) as fp:
+                fp.close()
+                retvalue = self.profiler.export_chrome_trace(fp.name)
+                with open(fp.name, "rb") as fin:
+                    with gzip.open(path, "wb") as fout:
+                        fout.writelines(fin)
+                os.remove(fp.name)
             return retvalue
         else:
             return self.profiler.export_chrome_trace(path)
@@ -441,9 +441,8 @@ class _KinetoProfile:
                 self.mem_tl.export_memory_timeline_raw(fp.name, device)
             else:
                 self.mem_tl.export_memory_timeline(fp.name, device)
-            with open(fp.name) as fin:
-                with gzip.open(path, "wt") as fout:
-                    fout.writelines(fin)
+            with open(fp.name) as fin, gzip.open(path, "wt") as fout:
+                fout.writelines(fin)
             os.remove(fp.name)
         else:
             self.mem_tl.export_memory_timeline(path, device)

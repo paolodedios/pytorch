@@ -236,18 +236,17 @@ class BaseHOPFunction(torch.autograd.Function):
         with (
             suspend_functionalization(),
             disable_functional_mode(),
-            torch.enable_grad(),
+            torch.enable_grad(),disable_proxy_modes_tracing()
         ):
-            with disable_proxy_modes_tracing():
-                from .invoke_subgraph import create_fw_bw_graph
-                from .utils import _from_fun
+            from .invoke_subgraph import create_fw_bw_graph
+            from .utils import _from_fun
 
-                fw_inputs = pytree.tree_map(_from_fun, operands)
-                (
-                    _,
-                    joint_graph,
-                    _,
-                ) = create_fw_bw_graph(subgraph, fw_inputs, grad_outputs)
+            fw_inputs = pytree.tree_map(_from_fun, operands)
+            (
+                _,
+                joint_graph,
+                _,
+            ) = create_fw_bw_graph(subgraph, fw_inputs, grad_outputs)
 
         # The joint graph returns (*grad_inputs, *fwd_outputs).
         # We only need the grad_inputs.

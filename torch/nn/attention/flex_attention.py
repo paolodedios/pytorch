@@ -1619,33 +1619,32 @@ def flex_attention(
     def _flex_attention_hop_wrapper(*args, **kwargs):
         return flex_attention_hop(*args, **kwargs)
 
-    with _set_compilation_env():
-        with torch._dynamo.utils.disable_cache_limit():
-            with _temp_remove_pre_dispatch_torch_function_mode():
-                with _temp_remove_metadata_torch_function_mode() as metadata_mode:
-                    if metadata_mode:
-                        backend: Union[str, Callable[..., Any]] = (
-                            make_eager_backend_with_torch_function_mode(metadata_mode)
-                        )
-                    else:
-                        backend = "eager"
-
-                    if _FLEX_ATTENTION_DISABLE_COMPILE_DEBUG:
-                        flex_fn = _flex_attention_hop_wrapper
-                    else:
-                        flex_fn = torch.compile(
-                            _flex_attention_hop_wrapper, backend=backend, fullgraph=True
-                        )
-
-                    out, lse, max_scores = flex_fn(
-                        query,
-                        key,
-                        value,
-                        score_mod,
-                        block_mask.as_tuple(),  # type: ignore[union-attr]
-                        scale,
-                        kernel_options,
+    with _set_compilation_env(), torch._dynamo.utils.disable_cache_limit():
+        with _temp_remove_pre_dispatch_torch_function_mode():
+            with _temp_remove_metadata_torch_function_mode() as metadata_mode:
+                if metadata_mode:
+                    backend: Union[str, Callable[..., Any]] = (
+                        make_eager_backend_with_torch_function_mode(metadata_mode)
                     )
+                else:
+                    backend = "eager"
+
+                if _FLEX_ATTENTION_DISABLE_COMPILE_DEBUG:
+                    flex_fn = _flex_attention_hop_wrapper
+                else:
+                    flex_fn = torch.compile(
+                        _flex_attention_hop_wrapper, backend=backend, fullgraph=True
+                    )
+
+                out, lse, max_scores = flex_fn(
+                    query,
+                    key,
+                    value,
+                    score_mod,
+                    block_mask.as_tuple(),  # type: ignore[union-attr]
+                    scale,
+                    kernel_options,
+                )
     return _finalize_outputs(
         out, lse, max_scores, return_aux=return_aux, return_lse=return_lse
     )
