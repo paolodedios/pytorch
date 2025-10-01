@@ -2017,23 +2017,24 @@ class SIMDScheduling(BaseScheduling):
                     # upcasting to fp32 and downcasting gives large slowdown
                     with config.patch(
                         "triton.codegen_upcast_to_fp32", not can_codegen_without_upcast
-                    ), kernel.set_subgraph_body(subgraph_name):
-                        for prologue_node in prologue_group:
-                            if (
-                                len(prologue_node.get_buffer_names()) == 1
-                                and len(prologue_group) == 1
-                            ):
-                                if prologue_preserves_zero_mask(prologue_node):
-                                    kernel.prologue_fused_inputs_preserve_zero |= (
-                                        prologue_node.get_buffer_names()
-                                    )
+                    ):
+                        with kernel.set_subgraph_body(subgraph_name):
+                            for prologue_node in prologue_group:
+                                if (
+                                    len(prologue_node.get_buffer_names()) == 1
+                                    and len(prologue_group) == 1
+                                ):
+                                    if prologue_preserves_zero_mask(prologue_node):
+                                        kernel.prologue_fused_inputs_preserve_zero |= (
+                                            prologue_node.get_buffer_names()
+                                        )
 
-                            prologue_node.codegen(
-                                kernel.split_and_set_ranges(
-                                    prologue_node.get_ranges()
+                                prologue_node.codegen(
+                                    kernel.split_and_set_ranges(
+                                        prologue_node.get_ranges()
+                                    )
                                 )
-                            )
-                        kernel.cse.invalidate(OrderedSet())
+                            kernel.cse.invalidate(OrderedSet())
 
         # Template hooks must be finalised after kernel.remove_kernel_local_buffers
         # is called (this is called when the kernel context is exited above), and when

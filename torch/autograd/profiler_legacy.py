@@ -298,7 +298,7 @@ def _parse_legacy_records(thread_records):
                     )
                 for handle in cpu_memory_allocs.keys():
                     cpu_memory_allocs[handle] += record.cpu_memory_usage()
-                for handle in cuda_memory_allocs.keys():
+                for handle in cuda_memory_allocs:
                     cuda_memory_allocs[handle] += record.cuda_memory_usage()
                 if num_open_handles_cpu == 0:
                     # output event as a top-level memory event

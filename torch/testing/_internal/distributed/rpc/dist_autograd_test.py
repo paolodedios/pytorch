@@ -1283,9 +1283,13 @@ class DistAutogradTest(CommonDistAutogradTest):
 
     @dist_init
     def test_nested_context(self):
-        with dist_autograd.context(), self.assertRaisesRegex(
+        with (
+            dist_autograd.context(),
+            self.assertRaisesRegex(
                 RuntimeError, "Already have an autograd context id for this thread"
-            ), dist_autograd.context():
+            ),
+            dist_autograd.context(),
+        ):
             pass
 
     @dist_init

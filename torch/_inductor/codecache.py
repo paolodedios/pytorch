@@ -3743,9 +3743,12 @@ def cutlass_key() -> bytes:
     Note: OSS and fbcode will have different keys.
     """
     if config.is_fbcode():
-        with importlib.resources.path(
-            "cutlass_library", "src_hash.txt"
-        ) as resource_path, open(resource_path) as resource_file:
+        with (
+            importlib.resources.path(
+                "cutlass_library", "src_hash.txt"
+            ) as resource_path,
+            open(resource_path) as resource_file,
+        ):
             return resource_file.read().encode()
 
     combined_hash = hashlib.sha256()
