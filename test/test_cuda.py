@@ -4567,8 +4567,6 @@ class TestCudaMallocAsync(TestCase):
                 "pinned_num_register_threads:1024"
             )
 
-
-
     def test_cachingAllocator_raw_alloc(self):
         # Test that raw_alloc respects the setting that
         # activates/deactivates the caching allocator
