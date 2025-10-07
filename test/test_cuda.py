@@ -4467,7 +4467,6 @@ class TestCudaMallocAsync(TestCase):
         x = torch.rand(nelems, device="cuda")
 
         # test roundup_power2_divisions single value syntax
-        # Test division >1 case.
         reg_mem = torch.cuda.memory_stats()[key_allocated]
         start_requested = torch.cuda.memory_stats()[key_requested]
         torch.cuda.memory._set_allocator_settings("roundup_power2_divisions:4")
