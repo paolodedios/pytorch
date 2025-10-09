@@ -5576,7 +5576,7 @@ class Scheduler:
         device = subkernel_nodes[0].get_device()
 
         # don't support benchmark fusion for CPU C++ backend right now.
-        if device is None or device.type == "cpu":
+        if device is None or (device.type == "cpu" and config.cpu_backend != "triton"):
             return True
 
         from triton.compiler.errors import CompilationError
