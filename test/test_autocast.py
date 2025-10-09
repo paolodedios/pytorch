@@ -403,12 +403,19 @@ class TestTorchAutocast(TestCase):
             # First forward pass in no_grad context (e.g., shape inference)
             with torch.no_grad():
                 out1 = model(inp)
-                self.assertFalse(out1.requires_grad, "Output in no_grad should not require grad")
+                self.assertFalse(
+                    out1.requires_grad, "Output in no_grad should not require grad"
+                )
 
             # Second forward pass with gradients enabled (e.g., training)
             out2 = model(inp)
-            self.assertTrue(out2.requires_grad, "Output should require gradients after exiting no_grad")
-            self.assertIsNotNone(out2.grad_fn, "Output should have grad_fn after exiting no_grad")
+            self.assertTrue(
+                out2.requires_grad,
+                "Output should require gradients after exiting no_grad",
+            )
+            self.assertIsNotNone(
+                out2.grad_fn, "Output should have grad_fn after exiting no_grad"
+            )
 
             # Backward pass should work
             loss = out2.mean()
