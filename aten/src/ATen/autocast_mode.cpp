@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <ATen/CachedTensorUtils.h>
+#include <c10/core/GradMode.h>
 #include <c10/util/flat_hash_map.h>
 
 namespace at::autocast {
@@ -121,10 +122,22 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg, DeviceType device_
   if (is_eligible(arg, device_type) && (arg.scalar_type() != to_type)) {
     // Heuristic:  Do what Apex does, and cache lower_precision_fp casts of fp32 model weights (leaves).
     // See cached_casts declaration above for detailed strategy.
+    //
+    // IMPORTANT: We must NOT cache when gradient mode is disabled (torch.no_grad()),
+    // because the cached tensor retains gradient tracking state from when it was created.
+    // If we cache a cast made in no_grad(), it will have requires_grad=False, and subsequent
+    // uses in gradient-enabled mode will incorrectly use that no-gradient version.
+    // This fixes issue #158232: autocast + no_grad incompatibility.
+    //
+    // Performance note: This disables caching during inference (torch.no_grad() contexts),
+    // which likely will slightly reduce performance. This trade-off ensures
+    // correctness. Future optimization could implement gradient-mode-aware cache keys
+    // to allow caching in both modes separately.
     bool can_try_cache = (to_type == get_lower_precision_fp_from_device_type(device_type) &&
                          arg.scalar_type() == at::kFloat && arg.requires_grad() &&
                          arg.is_leaf() && !arg.is_view() && cache_enabled &&
-                         !at::caching::is_cached_tensor(arg));
+                         !at::caching::is_cached_tensor(arg) &&
+                         at::GradMode::is_enabled());  // Only cache when gradients are enabled
 
     if (can_try_cache) {
       const std::lock_guard<std::mutex> lock(cached_casts_mutex);
