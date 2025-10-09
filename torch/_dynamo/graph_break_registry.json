@@ -2776,15 +2776,5 @@
         "This is likely to be a Dynamo bug. Please report an issue to PyTorch."
       ]
     }
-  ],
-  "GB0276": [
-    {
-      "Gb_type": "Sparse tensor operations are not supported by Inductor",
-      "Context": "",
-      "Explanation": "torch.compile with inductor backend does not support sparse tensors. Operations that produce sparse tensors will cause a graph break.",
-      "Hints": [
-        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
-      ]
-    }
   ]
 }
