@@ -384,6 +384,7 @@ class TestTorchAutocast(TestCase):
         with self.assertRaisesRegex(expected_exception=ValueError, expected_regex=msg):
             torch.autocast(device_type=dev)
 
+    @skipIfTorchDynamo()
     def test_autocast_nograd_caching_issue_158232(self):
         """
         Regression test for issue #158232: autocast + no_grad incompatibility
@@ -425,6 +426,7 @@ class TestTorchAutocast(TestCase):
         self.assertIsNotNone(model.weight.grad)
         self.assertIsNotNone(model.bias.grad)
 
+    @skipIfTorchDynamo()
     def test_autocast_inference_mode_interaction(self):
         """
         Test that autocast works correctly with torch.inference_mode()
@@ -486,6 +488,7 @@ class TestTorchAutocast(TestCase):
             out2.mean().backward(retain_graph=True)
             out3.mean().backward()
 
+    @skipIfTorchDynamo()
     def test_autocast_mixed_grad_contexts(self):
         """
         Test complex nesting of gradient contexts within autocast.
