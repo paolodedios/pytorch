@@ -37,10 +37,29 @@ namespace {
 using weakref_type = c10::weak_intrusive_ptr<TensorImpl, UndefinedTensorImpl>;
 using val_type = std::tuple<weakref_type, Tensor>;
 
-static ska::flat_hash_map<TensorImpl*, val_type>& get_cached_casts() {
-  static ska::flat_hash_map<TensorImpl*, val_type> cached_casts;
-  return cached_casts;
+// We maintain separate caches for gradient-enabled and gradient-disabled modes.
+// This ensures that tensors cached in torch.no_grad() (with requires_grad=False)
+// are not incorrectly reused in gradient-enabled contexts.
+// This fixes issue #158232 while maintaining optimal performance for both modes.
+static ska::flat_hash_map<TensorImpl*, val_type>& get_cached_casts_grad_enabled() {
+  static ska::flat_hash_map<TensorImpl*, val_type> cached_casts_grad_enabled;
+  return cached_casts_grad_enabled;
 }
+
+static ska::flat_hash_map<TensorImpl*, val_type>& get_cached_casts_grad_disabled() {
+  static ska::flat_hash_map<TensorImpl*, val_type> cached_casts_grad_disabled;
+  return cached_casts_grad_disabled;
+}
+
+// Helper function to get the appropriate cache based on current gradient mode.
+// This allows us to cache tensors separately for grad-enabled and grad-disabled contexts,
+// preventing incorrect cache hits when gradient mode changes.
+static ska::flat_hash_map<TensorImpl*, val_type>& get_cached_casts() {
+  return at::GradMode::is_enabled() ?
+    get_cached_casts_grad_enabled() :
+    get_cached_casts_grad_disabled();
+}
+
 std::mutex cached_casts_mutex;
 
 
@@ -87,7 +106,9 @@ thread_local bool cache_enabled = true;
 
 void clear_cache() {
   const std::lock_guard<std::mutex> lock(cached_casts_mutex);
-  get_cached_casts().clear();
+  // Clear both caches to ensure consistent behavior regardless of current gradient mode
+  get_cached_casts_grad_enabled().clear();
+  get_cached_casts_grad_disabled().clear();
 }
 
 int increment_nesting() {
@@ -123,21 +144,14 @@ Tensor cached_cast(at::ScalarType to_type, const Tensor& arg, DeviceType device_
     // Heuristic:  Do what Apex does, and cache lower_precision_fp casts of fp32 model weights (leaves).
     // See cached_casts declaration above for detailed strategy.
     //
-    // IMPORTANT: We must NOT cache when gradient mode is disabled (torch.no_grad()),
-    // because the cached tensor retains gradient tracking state from when it was created.
-    // If we cache a cast made in no_grad(), it will have requires_grad=False, and subsequent
-    // uses in gradient-enabled mode will incorrectly use that no-gradient version.
-    // This fixes issue #158232: autocast + no_grad incompatibility.
-    //
-    // Performance note: This disables caching during inference (torch.no_grad() contexts),
-    // which likely will slightly reduce performance. This trade-off ensures
-    // correctness. Future optimization could implement gradient-mode-aware cache keys
-    // to allow caching in both modes separately.
+    // We maintain separate caches for gradient-enabled and gradient-disabled modes
+    // (see get_cached_casts() above). This ensures correctness when mixing torch.no_grad()
+    // with torch.autocast(), while maintaining optimal performance for both training and inference.
+    // This fixes issue #158232 without any performance regression.
     bool can_try_cache = (to_type == get_lower_precision_fp_from_device_type(device_type) &&
                          arg.scalar_type() == at::kFloat && arg.requires_grad() &&
                          arg.is_leaf() && !arg.is_view() && cache_enabled &&
-                         !at::caching::is_cached_tensor(arg) &&
-                         at::GradMode::is_enabled());  // Only cache when gradients are enabled
+                         !at::caching::is_cached_tensor(arg));
 
     if (can_try_cache) {
       const std::lock_guard<std::mutex> lock(cached_casts_mutex);
