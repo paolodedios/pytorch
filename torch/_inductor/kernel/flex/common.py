@@ -3,7 +3,6 @@
 
 import math
 from collections.abc import Sequence
-from pathlib import Path
 from typing import Any, Optional, Union
 
 import sympy
@@ -335,15 +334,3 @@ def next_power_of_two(n):
     if n <= 0:
         return 1
     return 2 ** math.ceil(math.log2(n))
-
-
-_TEMPLATE_DIR = Path(__file__).parent / "templates"
-
-
-def load_template(name: str) -> str:
-    """Load a template file and return its content."""
-    with open(_TEMPLATE_DIR / f"{name}.py.jinja") as f:
-        return f.read()
-
-
-# Template strings have been moved to templates/common.py.jinja

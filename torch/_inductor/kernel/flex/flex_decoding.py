@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 """Triton Implementation of the flex_attention Kernel for short query length (FlexDecoding)"""
 
+from pathlib import Path
 from typing import Any
 
 import sympy
@@ -17,12 +18,12 @@ from ...select_algorithm import (
     SymbolicGridFn,
     TritonTemplate,
 )
+from ...utils import load_template
 from .common import (
     create_indices_fake,
     create_num_blocks_fake_generator,
     freeze_irnodes,
     get_fwd_subgraph_outputs,
-    load_template,
     maybe_realize,
     set_head_dim_values,
 )
@@ -30,6 +31,8 @@ from .common import (
 
 aten = torch.ops.aten
 prims = torch.ops.prims
+
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
 def _use_flex_decoding(query, kv_indices, value, kernel_options, enable_gqa) -> bool:
@@ -97,9 +100,9 @@ def flex_decoding_grid(batch_size, kv_heads, gqa_group_size, n_keys, d_model, me
 flex_decoding_template = TritonTemplate(
     name="flex_decoding",
     grid=flex_decoding_grid,
-    source=load_template("flex_decode")
-    + load_template("utilities")
-    + load_template("common"),
+    source=load_template("flex_decode", _TEMPLATE_DIR)
+    + load_template("utilities", _TEMPLATE_DIR)
+    + load_template("common", _TEMPLATE_DIR),
 )
 
 

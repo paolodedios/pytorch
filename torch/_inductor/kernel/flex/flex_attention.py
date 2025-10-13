@@ -7,6 +7,7 @@ import logging
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING, Union
 
 import sympy
@@ -21,6 +22,7 @@ from ...select_algorithm import (
     SymbolicGridFn,
     TritonTemplate,
 )
+from ...utils import load_template
 from .common import (
     build_subgraph_buffer,
     create_indices_fake,
@@ -29,7 +31,6 @@ from .common import (
     freeze_irnodes,
     get_fwd_subgraph_outputs,
     infer_dense_strides,
-    load_template,
     maybe_realize,
     set_head_dim_values,
     SubgraphResults,
@@ -49,6 +50,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 aten = torch.ops.aten
 Expr = sympy.Expr
+
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
 @SymbolicGridFn
@@ -79,9 +82,9 @@ def get_float32_precision():
 flex_attention_template = TritonTemplate(
     name="flex_attention",
     grid=flex_attention_grid,
-    source=load_template("flex_attention")
-    + load_template("utilities")
-    + load_template("common"),
+    source=load_template("flex_attention", _TEMPLATE_DIR)
+    + load_template("utilities", _TEMPLATE_DIR)
+    + load_template("common", _TEMPLATE_DIR),
 )
 
 
@@ -464,7 +467,8 @@ def flex_attention_backward_grid(
 flex_attention_backward_template = TritonTemplate(
     name="flex_attention_backward",
     grid=flex_attention_backward_grid,
-    source=load_template("flex_backwards") + load_template("utilities"),
+    source=load_template("flex_backwards", _TEMPLATE_DIR)
+    + load_template("utilities", _TEMPLATE_DIR),
 )
 
 

@@ -3,6 +3,7 @@
 
 import functools
 import importlib
+from pathlib import Path
 from typing import Any
 
 import sympy
@@ -12,11 +13,14 @@ from torch.fx import GraphModule
 
 from ...ir import FixedLayout, ShapeAsConstantBuffer, Subgraph, TensorBox
 from ...lowering import empty_strided
-from .common import infer_dense_strides, load_template, SubgraphResults
+from ...utils import load_template
+from .common import infer_dense_strides, SubgraphResults
 
 
 aten = torch.ops.aten
 prims = torch.ops.prims
+
+_TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 
 @functools.lru_cache(maxsize=1)
@@ -36,7 +40,8 @@ from ...codegen.cutedsl.cutedsl_template import CuteDSLTemplate
 
 
 flash_attention_cutedsl_template = CuteDSLTemplate(
-    name="flash_attention_cutedsl", source=load_template("flash_attention")
+    name="flash_attention_cutedsl",
+    source=load_template("flash_attention", _TEMPLATE_DIR),
 )
 
 
