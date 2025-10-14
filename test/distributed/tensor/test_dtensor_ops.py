@@ -188,9 +188,6 @@ dtensor_fails = {
     xfail("linalg.lstsq", "grad_oriented"),
     xfail("masked_select"),
     xfail("nn.functional.ctc_loss"),
-    # 0-dim tensor edge cases: strategies don't handle scalar tensors
-    xfail("logsumexp"),
-    xfail("masked.logsumexp"),
     xfail("transpose"),
     # conv stride+padding: TP convolution rejects stride != 1 with padding
     xfail("nn.functional.conv1d"),
