@@ -592,6 +592,7 @@ Vectorized<int8_t> inline operator>>(
       svset_neonq(svundef_u8(), vreinterpretq_u8_s8(b))));
 }
 
+#error This should fail compilation
 #else
 
 // No support for SVE, falling back to NEON implementation
