@@ -255,7 +255,6 @@ dtensor_fails = {
     xfail("masked.argmax"),
     xfail("masked.argmin"),
     xfail("masked.cumprod"),
-    xfail("masked.logsumexp"),
     xfail("masked.median"),
     xfail("matrix_exp"),
     xfail("max", "reduction_with_dim"),
