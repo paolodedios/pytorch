@@ -1683,13 +1683,12 @@ def logsumexp_strategy(op_schema: OpSchema) -> OpStrategy:
     # Handle both logsumexp.default (no dim) and logsumexp.dim_IntList (with dim)
     if len(args_schema) > 1:
         dims_arg = args_schema[1]
-        reduce_dims = _infer_reduction_dims(dims_arg, input_strategy.ndim)
+        dims = _infer_reduction_dims(dims_arg, input_strategy.ndim)
     else:
         # logsumexp.default: reduce over all dimensions
-        reduce_dims = list(range(input_strategy.ndim))
+        dims = None
 
-    if reduce_dims is None:
-        raise AssertionError("Expected reduce_dims to not be None")
+    reduce_dims = list(range(input_strategy.ndim)) if dims is None else dims
 
     keep_dim = cast(bool, op_schema.kwargs_schema.get("keepdim", False))
     return common_reduction_strategy(
