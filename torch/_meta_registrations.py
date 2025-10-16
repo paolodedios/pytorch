@@ -6451,6 +6451,13 @@ def meta_scaled_mm(
             ):
                 # (BlockWise1x128, BlockWise128x128)
                 pass  # do nothing, but do not error
+            elif (
+                scale_a.size(0) == m
+                and scale_a.size(1) == scale_b.size(0) == (_k + 128 - 1) // 128
+                and scale_b.size(1) == n
+            ):
+                # (BlockWise1x128, BlockWise1x128)
+                pass  # do nothing, but do not error
             else:
                 # does not match any valid scaling type
                 torch._check(
@@ -6461,6 +6468,8 @@ def meta_scaled_mm(
                         f"For rowwise scaling, scale_a should be ({m}, 1), scale_b should be (1, {n}). "
                         f"For (BlockWise1x128, BlockWise128x128), scale_a should be ({m}, {(_k + 128 - 1) // 128}), "
                         + f"scale_b should be ({(_k + 128 - 1) // 128}, {(n + 128 - 1) // 128}). "
+                        f"For (BlockWise1x128, BlockWise1x128), scale_a should be ({m}, {(_k + 128 - 1) // 128}), "
+                            + f"scale_b should be ({(_k + 128 - 1) // 128}, {n}). "
                         f"Got scale_a.size()=({scale_a.size(0)}, {scale_a.size(1)}) "
                         f"and scale_b.size()=({scale_b.size(0)}, {scale_b.size(1)})"
                     ),
