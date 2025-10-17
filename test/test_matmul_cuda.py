@@ -40,6 +40,7 @@ from torch.testing._internal.common_utils import (
     isRocmArchAnyOf,
     parametrize,
     run_tests,
+    serialTest,
     skipIfRocm,
     TEST_CUDA,
     TEST_WITH_ROCM,
@@ -850,6 +851,7 @@ class TestMatmulCuda(InductorTestCase):
 
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_GREEN_CONTEXT, "Green contexts are not supported")
+    @serialTest()
     def test_greencontext_carveout(self):
         a = torch.randn(4096, 4096, device='cuda', dtype=torch.bfloat16)
         ctx = torch.cuda.green_contexts.GreenContext.create(1, 0)
