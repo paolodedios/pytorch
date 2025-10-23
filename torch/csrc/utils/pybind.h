@@ -10,6 +10,7 @@
 #include <pybind11/stl.h>
 
 #include <torch/csrc/Device.h>
+#include <torch/csrc/DeviceCapability.h>
 #include <torch/csrc/Dtype.h>
 #include <torch/csrc/DynamicTypes.h>
 #include <torch/csrc/Generator.h>
@@ -250,6 +251,28 @@ struct type_caster<c10::Stream> {
       return_value_policy /* policy */,
       handle /* parent */) {
     return handle(THPStream_Wrap(src));
+  }
+};
+
+template <>
+struct type_caster<c10::DeviceCapability> {
+ public:
+  PYBIND11_TYPE_CASTER(c10::DeviceCapability, _("torch.DeviceCapability"));
+
+  bool load(handle src, bool) {
+    PyObject* obj = src.ptr();
+    if (THPDeviceCapability_Check(obj)) {
+      value = ((THPDeviceCapability*)obj)->capability;
+      return true;
+    }
+    return false;
+  }
+
+  static handle cast(
+      const c10::DeviceCapability& src,
+      return_value_policy /* policy */,
+      handle /* parent */) {
+    return handle(THPDeviceCapability_Wrap(src));
   }
 };
 

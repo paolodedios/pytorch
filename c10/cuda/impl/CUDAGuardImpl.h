@@ -83,6 +83,10 @@ struct CUDAGuardImpl final : public c10::impl::DeviceGuardImplInterface {
     return device_count();
   }
 
+  DeviceCapability getDeviceCapability() const override {
+    return get_device_capability();
+  }
+
   // Event-related functions
   void createEvent(cudaEvent_t* cuda_event, const EventFlag flag) const {
     // Maps PyTorch's Event::Flag to CUDA flag

@@ -140,6 +140,10 @@ DeviceIndex current_device() {
   return cur_device;
 }
 
+DeviceCapability get_device_capability() {
+  return DeviceCapability();
+}
+
 void set_device(DeviceIndex device, const bool force) {
   C10_CUDA_CHECK(c10::cuda::SetDevice(device, force));
 }

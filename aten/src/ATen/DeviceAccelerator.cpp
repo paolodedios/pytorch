@@ -132,4 +132,10 @@ c10::DeviceIndex maybeExchangeDevice(c10::DeviceIndex device_index) {
 }
 // NOLINTEND(bugprone-unchecked-optional-access)
 
+c10::DeviceCapability getDeviceCapability() {
+  const auto device_type = getAccelerator(true).value();
+  c10::impl::VirtualGuardImpl impl(device_type);
+  return impl.getDeviceCapability();
+}
+
 } // namespace at::accelerator

@@ -8,6 +8,7 @@
 // The naming convention used here matches the naming convention of torch.cuda
 
 #include <c10/core/Device.h>
+#include <c10/core/DeviceCapability.h>
 #include <c10/core/impl/GPUTrace.h>
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAMacros.h>
@@ -26,6 +27,8 @@ C10_CUDA_API DeviceIndex device_count() noexcept;
 C10_CUDA_API DeviceIndex device_count_ensure_non_zero();
 
 C10_CUDA_API DeviceIndex current_device();
+
+C10_CUDA_API DeviceCapability get_device_capability();
 
 C10_CUDA_API void set_device(DeviceIndex device, const bool force = false);
 

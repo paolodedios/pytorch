@@ -5,6 +5,7 @@
 #include <ATen/mps/MPSEvent.h>
 #include <ATen/mps/MPSStream.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
+#include <c10/core/DeviceCapability.h>
 #include <c10/macros/Macros.h>
 #include <c10/util/Exception.h>
 
@@ -67,6 +68,12 @@ struct TORCH_API MPSGuardImpl final
     // TODO: Currently setting only device 0
   }
 
+  c10::DeviceCapability getDeviceCapability() const override {
+    c10::DeviceCapability caps;
+    caps.has_int4 = false;
+    return caps;
+  }
+
   Stream getStream(Device d) const override {
     return Stream(Stream::DEFAULT, Device(c10::DeviceType::MPS, 0));
   }
@@ -115,6 +122,7 @@ struct TORCH_API MPSGuardImpl final
       const override;
 
   void synchronizeDevice(const DeviceIndex device_index) const override;
+
 };
 
 /// A variant of OptionalDeviceGuard that is specialized for MPS.

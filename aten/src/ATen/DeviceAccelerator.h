@@ -2,6 +2,7 @@
 
 #include <c10/core/CachingDeviceAllocator.h>
 #include <c10/core/DeviceType.h>
+#include <c10/core/DeviceCapability.h>
 #include <c10/macros/Macros.h>
 
 #include <ATen/detail/MTIAHooksInterface.h>
@@ -94,6 +95,7 @@ TORCH_API inline void resetPeakStats(c10::DeviceIndex device_index) {
   at::getDeviceAllocator(device_type)->resetPeakStats(device_index);
 }
 
+TORCH_API c10::DeviceCapability getDeviceCapability();
 } // namespace at::accelerator
 
 namespace at {

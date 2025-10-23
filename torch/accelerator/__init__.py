@@ -24,6 +24,7 @@ __all__ = [
     "current_accelerator",
     "current_device_idx",  # deprecated
     "current_device_index",
+    "current_device_capability",
     "current_stream",
     "empty_cache",
     "device_count",
@@ -148,6 +149,12 @@ current_device_idx.__doc__ = r"""
         :func:`torch.accelerator.current_device_idx` is deprecated in favor of :func:`torch.accelerator.current_device_index`
         and will be removed in a future PyTorch release.
     """
+
+
+def current_device_capability() -> torch.DeviceCapability:
+    r"""Return the capability of the currently selected device for the current :ref:`accelerator<accelerators>`.
+    """
+    return torch._C._accelerator_getDeviceCapability()
 
 
 def set_device_index(device: _device_t, /) -> None:

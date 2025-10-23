@@ -45,6 +45,7 @@
 #include <torch/csrc/DataLoader.h>
 #include <torch/csrc/Device.h>
 #include <torch/csrc/DeviceAccelerator.h>
+#include <torch/csrc/DeviceCapability.h>
 #include <torch/csrc/Dtype.h>
 #include <torch/csrc/DynamicTypes.h>
 #include <torch/csrc/Event.h>
@@ -2085,6 +2086,7 @@ PyObject* initModule() {
   THPQScheme_init(module);
   THPDevice_init(module);
   THPStream_init(module);
+  THPDeviceCapability_init(module);
   THPEvent_init(module);
   NodeBase_init(module);
   NodeIter_init(module);

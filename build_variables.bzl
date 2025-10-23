@@ -880,6 +880,7 @@ libtorch_xpu_sources = libtorch_python_xpu_sources
 libtorch_python_core_sources = [
     "torch/csrc/DataLoader.cpp",
     "torch/csrc/DeviceAccelerator.cpp",
+    "torch/csrc/DeviceCapability.cpp",
     "torch/csrc/Device.cpp",
     "torch/csrc/Dtype.cpp",
     "torch/csrc/DynamicTypes.cpp",
