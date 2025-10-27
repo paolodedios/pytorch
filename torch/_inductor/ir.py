@@ -927,7 +927,7 @@ class Operation:
         return 0
 
 
-@ir_dataclass(frozen=False)
+@ir_dataclass
 class Loops(IRNode):
     device: torch.device
     dtype: torch.dtype
@@ -1067,7 +1067,7 @@ def nop_loader_fn(idx: Union[Expr, Sequence[Expr]], *, dtype: torch.dtype) -> Op
         return ops.constant(0, dtype)
 
 
-@ir_dataclass(frozen=False)
+@ir_dataclass
 class Pointwise(Loops):
     def make_loader(self) -> Callable[[Sequence[Expr]], OpsValue]:
         # Make zero-element loops into a no-op
@@ -1108,7 +1108,7 @@ class Pointwise(Loops):
         )
 
 
-@ir_dataclass(frozen=False)
+@ir_dataclass
 class Scatter(Pointwise):
     output_indexer: Callable[[Sequence[Expr]], Expr]
     scatter_mode: StoreMode = None
@@ -1217,7 +1217,7 @@ def get_reduction_combine_fn(
         raise NotImplementedError(f"unknown reduction_type={reduction_type}")
 
 
-@ir_dataclass(frozen=False)
+@ir_dataclass
 class Reduction(Loops):
     reduction_ranges: Sequence[_IntLike]
     reduction_type: ReductionType
@@ -2316,7 +2316,7 @@ class WelfordReduction(MultiOutputReduction):
         )
 
 
-@ir_dataclass(frozen=False)
+@ir_dataclass
 class Scan(Loops):
     scan_ranges: list[Integer]
     size: list[Integer]
@@ -2519,12 +2519,12 @@ class Scan(Loops):
 
 
 # This signifies a scan op that should go through TritonSplitScanKernel codegen on CUDA.
-@ir_dataclass(frozen=False)
+@ir_dataclass
 class SplitScan(Scan):
     pass
 
 
-@ir_dataclass(frozen=False)
+@ir_dataclass
 class Sort(Loops):
     # Sorts a tuple of key, value pairs
     sort_ranges: list[Integer]

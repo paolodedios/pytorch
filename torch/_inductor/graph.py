@@ -44,6 +44,7 @@ from torch.fx.experimental.symbolic_shapes import (
     SymTypes,
 )
 from torch.fx.node import Node
+from torch.fx.passes.regional_inductor import _needs_inductor_compile
 from torch.fx.passes.reinplace import _is_view_op
 from torch.utils._mode_utils import no_dispatch
 from torch.utils._ordered_set import OrderedSet
@@ -113,7 +114,6 @@ from .utils import (
     ValueWithLineMap,
 )
 from .virtualized import NullHandler, V
-from torch.fx.passes.regional_inductor import _needs_inductor_compile
 
 
 if TYPE_CHECKING:
@@ -321,7 +321,7 @@ def mark_nodes_dislike_padding(
 def should_fallback_by_default(node: torch.fx.Node) -> bool:
     if not config.fallback_by_default:
         return False
-    
+
     return not _needs_inductor_compile(node)
 
 
@@ -1628,7 +1628,8 @@ class GraphLowering(torch.fx.Interpreter):
                     fallback_node_due_to_unsupported_type(n)
                     or CompilerBisector.disable_subsystem(
                         "inductor", "lowerings", lambda: repr(n)
-                    ) or should_fallback_by_default(n)
+                    )
+                    or should_fallback_by_default(n)
                 )
             ):
                 debug("fallback_handler")
