@@ -2417,6 +2417,7 @@ class Scheduler:
         if (
             torch._inductor.config.graph_partition
             and torch._inductor.config.triton.cudagraphs
+            and torch._inductor.config.triton.reorder_for_reducing_graph_partitions
         ):
             self.nodes = self.maybe_reorder_for_minimizing_partition(self.nodes)
             self.nodes = self.reorder_for_partition_with_simple_dependency(self.nodes)
@@ -2860,6 +2861,9 @@ class Scheduler:
         """
         Remove any nodes without users
         """
+        if not config.use_dce:
+            return
+
         # self.nodes is in topological order, so by iterating in reverse order
         # we have visited (and potentially removed) all users before visiting a
         # given node.
