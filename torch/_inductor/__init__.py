@@ -342,7 +342,8 @@ def list_mode_options(
             "triton.reorder_for_reducing_graph_partitions": False,
             "use_pre_grad_passes": False,
             "use_joint_graph_passes": False,
-            "use_post_grad_passes": False,
+            "use_post_grad_passes": True,
+            "aten_distributed_optimizations.enable_overlap_scheduling": True,
             "use_decomposition": False,
         },
         # enable cudagraphs
