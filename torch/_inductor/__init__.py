@@ -345,6 +345,7 @@ def list_mode_options(
             "use_post_grad_passes": True,
             "aten_distributed_optimizations.enable_overlap_scheduling": True,
             "use_decomposition": False,
+            "triton.cudagraphs": True,
         },
         # enable cudagraphs
         "reduce-overhead": {
