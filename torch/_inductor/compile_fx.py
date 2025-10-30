@@ -2454,9 +2454,6 @@ def compile_fx(
     # Some arguments trigger a recursive call to compile_fx.  Handle these
     # short circuits first, before anything else
 
-    if not config.use_decomposition:
-        decompositions = None
-
     if config_patches:
         with config.patch(config_patches):
             return compile_fx(
@@ -2637,6 +2634,9 @@ def _compile_fx_main(
         decompositions = (
             decompositions if decompositions is not None else select_decomp_table()
         )
+
+        if not config.use_decomposition:
+            decompositions = None
 
         def fw_compiler_base(
             gm: GraphModule,
