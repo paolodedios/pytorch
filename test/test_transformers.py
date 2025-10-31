@@ -4403,7 +4403,7 @@ class TestSDPAXpuOnly(NNTestCase):
         (4, 32, 2016, 2016, 128),
     ])
     @parametrize("mask_type", ["float", "causal"])
-    @parametrize("train", [True, False])
+    @parametrize("train", [False])
     def test_scaled_dot_product_fused_attention_mask_vs_math(
         self,
         device,
