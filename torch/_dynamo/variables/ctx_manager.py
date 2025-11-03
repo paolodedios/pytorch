@@ -84,11 +84,9 @@ class ContextWrappingVariable(VariableTracker):
     ) -> None:
         if fn is None:
 
-            def cleanup_hook() -> None:
+            def fn() -> None:
                 if hasattr(self, "_call_func"):
                     self._call_func(tx, self.initial_values)
-
-            fn = cleanup_hook
 
         self.cleanup_fn: Optional[Callable[..., Any]] = fn
         tx.output.add_cleanup_hook(self.cleanup)
@@ -208,9 +206,7 @@ class GenericContextWrappingVariable(UserDefinedObjectVariable):
 
 
 class RepararametrizeModuleContextVariable(GenericContextWrappingVariable):
-    def __init__(
-        self, ctx_manager_vt: ContextWrappingVariable, mod: Any, **kwargs: Any
-    ) -> None:
+    def __init__(self, ctx_manager_vt: ContextWrappingVariable, mod: Any) -> None:
         self.cm_vt = ctx_manager_vt
         self.mod = mod
         # We don't call super().__init__() because we're delegating most methods to cm_vt
@@ -716,13 +712,12 @@ class InferenceModeVariable(ContextWrappingVariable):
                 torch.autograd.grad_mode._exit_inference_mode(ctx)
 
         self.set_cleanup_hook(tx, cleanup_hook)
-        if not disabled_inference_mode_forcibly:
-            self.proxy = tx.output.create_node(
-                "call_function",
-                torch.autograd.grad_mode._enter_inference_mode,
-                (*self.target_values,),
-                {},
-            )
+        self.proxy = tx.output.create_node(
+            "call_function",
+            torch.autograd.grad_mode._enter_inference_mode,
+            (*self.target_values,),
+            {},
+        )
         return variables.ConstantVariable.create(None)
 
     def module_name(self) -> str:
@@ -1274,7 +1269,7 @@ class SDPAKernelVariable(ContextWrappingVariable):
 
     def __init__(
         self,
-        target_values: list[Any],
+        target_values: list[torch.nn.attention.SDPBackend],
         initial_values: Any = None,
         set_priority: bool = False,
         **kwargs: Any,
@@ -1403,7 +1398,7 @@ class DynamoConfigPatchVariable(ContextWrappingVariable):
         )
         initial_values_dict = {}
         for key, _ in target_values_tuple:
-            initial_values_dict[key] = getattr(torch._dynamo.config, key)
+            initial_values_dict[key] = torch._dynamo.config.__getattr__(key)  # type: ignore[attr-defined]
         self.initial_values = (tuple(initial_values_dict.items()),)
 
     def _call_func(self, tx: "InstructionTranslator", values: Any) -> None:
@@ -1411,7 +1406,7 @@ class DynamoConfigPatchVariable(ContextWrappingVariable):
         value = values[0]
         # manually patch dynamo config
         for key, val in value:
-            setattr(torch._dynamo.config, key, val)
+            torch._dynamo.config.__setattr__(key, val)  # type: ignore[attr-defined]
         # No need to keep track of global side effects because
         # dynamo will properly restore this context manager for
         # unsupported instructions and continuation functions.
@@ -1536,7 +1531,7 @@ class WithExitFunctionVariable(VariableTracker):
                     create_call_function(len(self.ctx.target_values), False)
                 )
             else:
-                # For GenericContextWrappingVariable
+                # For GenericContextWrappingVariable - no target_values
                 codegen.extend_output(create_call_function(0, False))
             codegen.append_output(create_setup_with(self.target))
             codegen.append_output(create_instruction("POP_TOP"))
