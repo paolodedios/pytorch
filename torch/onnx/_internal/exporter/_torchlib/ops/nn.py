@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, Sequence, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 
 from onnxscript.onnx_opset import (  # type: ignore[attr-defined]
     opset20 as op20,
@@ -21,6 +21,8 @@ from torch.onnx._internal.exporter._torchlib._torchlib_registry import onnx_impl
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from onnxscript.values import Opset
 
 aten = torch.ops.aten
