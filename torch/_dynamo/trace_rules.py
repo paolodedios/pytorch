@@ -404,7 +404,6 @@ torch_c_binding_in_graph_functions = dict.fromkeys(
         "math.fabs",
         "math.factorial",
         "math.floor",
-        "math.fma",
         "math.fmod",
         "math.frexp",
         "math.fsum",
@@ -2320,6 +2319,8 @@ if sys.version_info >= (3, 11):
     torch_c_binding_in_graph_functions["math.exp2"] = TorchInGraphFunctionVariable
     torch_c_binding_in_graph_functions["math.cbrt"] = TorchInGraphFunctionVariable
 
+if sys.version_info >= (3, 13):
+    torch_c_binding_in_graph_functions["math.fma"] = TorchInGraphFunctionVariable
 
 # In graph functions (including constant folding) that are not C bindings
 # NOTE: [Cacheability of in-graph torch functions]
