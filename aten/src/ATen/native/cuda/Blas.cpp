@@ -161,7 +161,7 @@ static bool isInputCompliesAddmmCudaLt(
   // TODO: this check is done pre col-major input preparation,
   // so, this condition can be ralexed in cases when a col-major
   // copy of result is needed.
-  if (self.dim() == 2) {
+  if (self.is_same(result) || self.dim() == 2) {
     return false;
   }
   #endif
