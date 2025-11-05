@@ -2060,6 +2060,14 @@
     {
       "Gb_type": "sort with non-constant keys",
       "Context": "str(first_non_constant_key)",
+      "Explanation": "Cannot perform sort with non-constant key. First non-constant key type: {python_type_str}. Most notably, we cannot sort with Tensor or SymInt keys, but we can sort ints.",
+      "Hints": [
+        "Use something else as the key."
+      ]
+    },
+    {
+      "Gb_type": "sort with non-constant keys",
+      "Context": "str(first_non_constant_key)",
       "Explanation": "Cannot perform sort with non-constant key. First non-constant key type: {python_type}. Most notably, we cannot sort with Tensor or SymInt keys, but we can sort ints.",
       "Hints": [
         "Use something else as the key."

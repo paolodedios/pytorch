@@ -82,7 +82,9 @@ class ItertoolsVariable(VariableTracker):
                 for item in itertools.product(*seqs, repeat=r)
             ]
             return variables.ListIteratorVariable(
-                items, mutation_type=ValueMutationNew()
+                # pyrefly: ignore[bad-argument-type]
+                items,
+                mutation_type=ValueMutationNew(),
             )
         elif (
             self.value is itertools.combinations
@@ -212,7 +214,9 @@ class ItertoolsVariable(VariableTracker):
                 )
             ]
             return variables.ListIteratorVariable(
-                items, mutation_type=ValueMutationNew()
+                # pyrefly: ignore[bad-argument-type]
+                items,
+                mutation_type=ValueMutationNew(),
             )
         else:
             return super().call_function(tx, args, kwargs)

@@ -3228,6 +3228,7 @@ class InstructionTranslatorBase(
 
     def BUILD_SLICE(self, inst: Instruction) -> None:
         items = self.popn(inst.argval)
+        # pyrefly: ignore[bad-argument-type]
         self.push(SliceVariable(items, tx=self))
 
     def BUILD_LIST(self, inst: Instruction) -> None:
@@ -3607,6 +3608,7 @@ class InstructionTranslatorBase(
         obj = self.stack[-inst.arg]
         assert isinstance(obj, ListVariable)
         assert obj.is_mutable()
+        # pyrefly: ignore[bad-argument-type]
         obj.call_method(self, "extend", [v], {})
 
     def LIST_TO_TUPLE(self, inst: Instruction) -> None:
@@ -3673,6 +3675,7 @@ class InstructionTranslatorBase(
     def MATCH_KEYS(self, inst: Instruction) -> None:
         tos = self.stack[-1]
         assert isinstance(tos, TupleVariable)
+        # pyrefly: ignore[bad-argument-type]
         keys = tos.unpack_var_sequence(self)
         tos1 = self.stack[-2]
         assert isinstance(tos1, ConstDictVariable)
