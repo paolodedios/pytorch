@@ -38,7 +38,7 @@ import threading
 import types
 import warnings
 import weakref
-from typing import TYPE_CHECKING, Optional
+from typing import Optional, TYPE_CHECKING
 from typing_extensions import is_typeddict
 
 import torch._dynamo.config
@@ -102,7 +102,6 @@ from ..utils import (
     unpatched_nn_module_getattr,
 )
 from .base import raise_type_error_exc, ValueMutationNew, VariableTracker
-from .constant import ConstantVariable
 from .dicts import ConstDictVariable, DefaultDictVariable
 from .lists import SizeVariable, SliceVariable
 
@@ -2486,6 +2485,7 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
         return isinstance(
             other, UserDefinedTupleVariable
         ) and self._tuple_vt.is_python_equal(other._tuple_vt)
+
 class NewNamedTupleVariable(UserDefinedTupleVariable):
     """Handles both namedtuples and structseq objects.
 
@@ -2493,6 +2493,7 @@ class NewNamedTupleVariable(UserDefinedTupleVariable):
     Static case: Structseq (C-level struct sequences like
         torch.return_types.*)
     """
+
     _nonvar_fields = {
         "tuple_cls",
         "dynamic_attributes",
@@ -2517,8 +2518,7 @@ class NewNamedTupleVariable(UserDefinedTupleVariable):
         """
         # Build tuple_vt from items
         tuple_vt = variables.TupleVariable(
-            items,
-            mutation_type=kwargs.get('mutation_type', ValueMutationNew())
+            items, mutation_type=kwargs.get("mutation_type", ValueMutationNew())
         )
 
         # Create a dummy value for UserDefinedTupleVariable
@@ -2529,22 +2529,29 @@ class NewNamedTupleVariable(UserDefinedTupleVariable):
             value=tuple_cls,  # Dummy value
             tuple_vt=tuple_vt,
             init_args=None,
-            **kwargs
+            **kwargs,
         )
 
         self.tuple_cls = tuple_cls
         # Store initial dynamic attributes (if any) for as_python_constant/reconstruct
         # Runtime dynamic attributes are tracked via side effects system
-        self.dynamic_attributes = (
-            dynamic_attributes if dynamic_attributes else {}
-        )
-        
-        # Debug: Verify NewNamedTupleVariable is being used
-        print(f"[NewNamedTupleVariable] Created for {tuple_cls.__name__} with {len(items)} items")
+        self.dynamic_attributes = dynamic_attributes if dynamic_attributes else {}
 
-    def unpack_var_sequence(
-        self, tx: "InstructionTranslator"
-    ) -> list[VariableTracker]:
+        # Debug: Verify NewNamedTupleVariable is being used
+        print(
+            f"[NewNamedTupleVariable] Created for {tuple_cls.__name__} with {len(items)} items"
+        )
+
+    @property
+    def items(self) -> list[VariableTracker]:
+        """Get items from the underlying tuple variable.
+
+        Returns:
+            List of VariableTracker items from the tuple.
+        """
+        return self._tuple_vt.items
+
+    def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         """Override to handle tuple_cls as placeholder value.
 
         Since we use tuple_cls (a class) as placeholder for self.value in
@@ -2568,9 +2575,9 @@ class NewNamedTupleVariable(UserDefinedTupleVariable):
         Returns:
             True if regular namedtuple, False if structseq.
         """
-        return isinstance(
-            getattr(self.tuple_cls, "_fields", None), tuple
-        ) and callable(getattr(self.tuple_cls, "_make", None))
+        return isinstance(getattr(self.tuple_cls, "_fields", None), tuple) and callable(
+            getattr(self.tuple_cls, "_make", None)
+        )
 
     def is_structseq(self) -> bool:
         """Check if structseq (NOT a regular namedtuple).
@@ -2699,9 +2706,7 @@ class NewNamedTupleVariable(UserDefinedTupleVariable):
             codegen.extend_output(create_rot_n(2))
             codegen.store_attr(name)
 
-    def var_getattr(
-        self, tx: "InstructionTranslator", name: str
-    ) -> VariableTracker:
+    def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         """Handle attribute access (field names, methods, etc.).
 
         Args:
@@ -2713,9 +2718,7 @@ class NewNamedTupleVariable(UserDefinedTupleVariable):
         """
         # Handle _fields attribute specially
         if name == "_fields":
-            source = (
-                NamedTupleFieldsSource(self.source) if self.source else None
-            )
+            source = NamedTupleFieldsSource(self.source) if self.source else None
             return VariableTracker.build(tx, self.fields(), source=source)
 
         # Check dynamic attributes (stored via side effects)
@@ -2731,6 +2734,7 @@ class NewNamedTupleVariable(UserDefinedTupleVariable):
             # Return GetAttrVariable which will call obj.call_method when invoked
             # This routes to our call_method handler instead of tracing the Python code
             from ..source import AttrSource
+
             source = AttrSource(self.source, name) if self.source else None
             return variables.GetAttrVariable(self, name, source=source)
 
@@ -2904,9 +2908,7 @@ class NewNamedTupleVariable(UserDefinedTupleVariable):
         if self.is_structseq():
             # Structseq: StructSequenceType(iterable)
             return repr(
-                self.tuple_cls(
-                    [Lit(x.debug_repr()) for x in self._tuple_vt.items]
-                )
+                self.tuple_cls([Lit(x.debug_repr()) for x in self._tuple_vt.items])
             )
         # Namedtuple: NamedTupleType(*iterable)
         return repr(
