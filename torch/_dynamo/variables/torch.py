@@ -1354,7 +1354,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             packed_input_vt = TupleVariable.build(
                 tx, (TupleVariable.build(tx, args), ConstDictVariable.build(tx, kwargs))
             )
-            out_vt = variables.UserFunctionVariable(tree_flatten).call_function(
+            out_vt = variables.UserFunctionVariable(tree_flatten).call_function(  # type: ignore[arg-type]
                 tx, [packed_input_vt], {}
             )
             assert isinstance(out_vt, TupleVariable) and len(out_vt.items) == 2
