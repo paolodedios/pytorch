@@ -637,7 +637,7 @@ def dynamo_graph_capture_for_export(
             pyt.in_shuffle_graph,
             pyt.out_shuffle_graph,
             tree_leaf_names,
-            pyt.root,
+            graph_module if isinstance(pyt.root, torch.nn.Module) else pyt.root,
         )  # type: ignore[attr-defined]
         normalize_graph_module(graph_module)
         if pyt.root is not None:
