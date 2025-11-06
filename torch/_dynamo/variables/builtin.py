@@ -2385,7 +2385,7 @@ class BuiltinVariable(VariableTracker):
                 isinstance_type.__class__.__instancecheck__(isinstance_type, arg.value)
             )
 
-        # Check if variable has custom isinstance handling (e.g., NewNamedTupleVariable)
+        # Check if variable has custom isinstance handling (e.g., NamedTupleVariable)
         if isinstance(arg, variables.UserDefinedObjectVariable):
             if hasattr(arg, "call_isinstance_check"):
                 return arg.call_isinstance_check(tx, isinstance_type)
@@ -2634,7 +2634,6 @@ class BuiltinVariable(VariableTracker):
             (
                 variables.TensorVariable,
                 variables.NamedTupleVariable,
-                variables.NewNamedTupleVariable,
                 variables.ConstantVariable,
                 variables.DistributedVariable,
                 variables.UserDefinedClassVariable,
@@ -2729,7 +2728,6 @@ class BuiltinVariable(VariableTracker):
             (
                 variables.PlacementVariable,
                 variables.NamedTupleVariable,
-                variables.NewNamedTupleVariable,
                 variables.UserDefinedObjectVariable,
                 variables.NestedUserFunctionVariable,
                 variables.ExceptionVariable,
