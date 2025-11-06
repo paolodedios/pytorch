@@ -420,12 +420,15 @@ static void initXpuMethodBindings(PyObject* module) {
       [](c10::DeviceIndex device, c10::DeviceIndex peer) {
         return at::xpu::canDeviceAccessPeer(device, peer);
       });
-  m.def("_xpu_getMemoryFraction", [](c10::DeviceIndex device) {
-    return c10::xpu::XPUCachingAllocator::getMemoryFraction(device);
-  });
-  m.def("_xpu_setMemoryFraction", [](double fraction, c10::DeviceIndex device) {
-    c10::xpu::XPUCachingAllocator::setMemoryFraction(fraction, device);
-  });
+}
+
+static void registerXpuAllocator(PyObject* module) {
+  auto m = py::handle(module).cast<py::module>();
+
+  py::class_<
+      c10::xpu::XPUCachingAllocator::XPUAllocator,
+      std::shared_ptr<c10::xpu::XPUCachingAllocator::XPUAllocator>>(
+      m, "_xpu_XPUAllocator");
 }
 
 // Callback for python part. Used for additional initialization of python
@@ -511,6 +514,7 @@ namespace torch::xpu {
 void initModule(PyObject* module) {
   registerXpuDeviceProperties(module);
   initXpuMethodBindings(module);
+  registerXpuAllocator(module);
 }
 
 } // namespace torch::xpu
