@@ -75,7 +75,7 @@ jobs:
       id-token: write
       contents: read
     name: linux-jammy-rocm-py3.10-pull-image
-    uses: ./.github/workflows/_pull_image.yml
+    uses: ./.github/workflows/_pull-image.yml
     needs:
       - linux-jammy-rocm-py3_10-build
       - target-determination
