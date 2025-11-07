@@ -735,12 +735,12 @@ class XPUCachingAllocator : public XPUAllocator {
     device_allocators[device]->resetAccumulatedStats();
   }
 
-  double getMemoryFraction(DeviceIndex device) override {
+  double getMemoryFraction(DeviceIndex device) {
     assertValidDevice(device);
     return device_allocators[device]->getMemoryFraction();
   }
 
-  void setMemoryFraction(double fraction, DeviceIndex device) override {
+  void setMemoryFraction(double fraction, DeviceIndex device) {
     assertValidDevice(device);
     TORCH_CHECK_VALUE(
         0 < fraction && fraction <= 1,
