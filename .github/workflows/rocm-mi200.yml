@@ -80,9 +80,12 @@ jobs:
       - linux-jammy-rocm-py3_10-build
       - target-determination
     with:
-      build-environment: linux-jammy-rocm-py3.10-pull-image
+      build-environment: linux-jammy-rocm-py3.10
       docker-image: ${{ needs.linux-jammy-rocm-py3_10-build.outputs.docker-image }}
-      test-matrix: ${{ needs.linux-jammy-rocm-py3_10-build.outputs.test-matrix }}
+      test-matrix: |
+        { include: [
+          { config: "default", shard: 1, num_shards: 1, runner: "linux.rocm.gpu.mi250.1" },
+        ]}
     secrets: inherit
         
   linux-jammy-rocm-py3_10-test:
@@ -93,6 +96,7 @@ jobs:
     uses: ./.github/workflows/_rocm-test.yml
     needs:
       - linux-jammy-rocm-py3_10-build
+      - linux-jammy-rocm-py3_10-pull-image
       - target-determination
     with:
       build-environment: linux-jammy-rocm-py3.10
