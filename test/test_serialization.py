@@ -313,15 +313,14 @@ class SerializationMixin:
     def test_serialization_gzip(self):
         # Test serialization with gzip file
         b = self._test_serialization_data()
-        f1 = tempfile.NamedTemporaryFile(delete=False)
-        f2 = tempfile.NamedTemporaryFile(delete=False)
-        torch.save(b, f1)
-        with open(f1.name, 'rb') as f_in, gzip.open(f2.name, 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
+        with tempfile.NamedTemporaryFile() as f1,tempfile.NamedTemporaryFile() as f2:
+            torch.save(b, f1)
+            with open(f1.name, 'rb') as f_in, gzip.open(f2.name, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
 
-        with gzip.open(f2.name, 'rb') as f:
-            c = torch.load(f)
-        self._test_serialization_assert(b, c)
+            with gzip.open(f2.name, 'rb') as f:
+                c = torch.load(f)
+            self._test_serialization_assert(b, c)
 
     @unittest.skipIf(
         not TEST_DILL or HAS_DILL_AT_LEAST_0_3_1,
@@ -382,19 +381,18 @@ class SerializationMixin:
     def test_serialization_offset_gzip(self):
         a = torch.randn(5, 5)
         i = 41
-        f1 = tempfile.NamedTemporaryFile(delete=False)
-        f2 = tempfile.NamedTemporaryFile(delete=False)
-        with open(f1.name, 'wb') as f:
-            pickle.dump(i, f)
-            torch.save(a, f)
-        with open(f1.name, 'rb') as f_in, gzip.open(f2.name, 'wb') as f_out:
-            shutil.copyfileobj(f_in, f_out)
+        with tempfile.NamedTemporaryFile() as f1,tempfile.NamedTemporaryFile() as f2:
+            with open(f1.name, 'wb') as f:
+                pickle.dump(i, f)
+                torch.save(a, f)
+            with open(f1.name, 'rb') as f_in, gzip.open(f2.name, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
 
-        with gzip.open(f2.name, 'rb') as f:
-            j = pickle.load(f)
-            b = torch.load(f)
-        self.assertTrue(torch.equal(a, b))
-        self.assertEqual(i, j)
+            with gzip.open(f2.name, 'rb') as f:
+                j = pickle.load(f)
+                b = torch.load(f)
+            self.assertTrue(torch.equal(a, b))
+            self.assertEqual(i, j)
 
     def _test_serialization_sparse(self, weights_only):
         def _test_serialization(conversion):
