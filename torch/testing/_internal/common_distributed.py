@@ -118,11 +118,11 @@ class DistTestCases:
         backend_feature["xpu"] = {"xccl"}
 
 
-def requires_ddp_rank(device):
+def requires_ddp_rank(device) -> bool:
     return device in DDP_RANK_DEVICES
 
 
-def exit_if_lt_x_cuda_devs(x):
+def exit_if_lt_x_cuda_devs(x: int):
     """Exit process unless at least the given number of CUDA devices are available"""
     if torch.cuda.device_count() < x:
         sys.exit(TEST_SKIPS[f"multi-gpu-{x}"].exit_code)
@@ -131,7 +131,7 @@ def exit_if_lt_x_cuda_devs(x):
 # allows you to check for multiple accelerator irrespective of device type
 # to add new device types to this check simply follow the same format
 # and append an elif with the conditional and appropriate device count function for your new device
-def exit_if_lt_x_accelerators(x):
+def exit_if_lt_x_accelerators(x: int):
     if torch.accelerator.device_count() < x:
         sys.exit(TEST_SKIPS[f"multi-gpu-{x}"].exit_code)
 
@@ -185,14 +185,6 @@ def skip_if_odd_worldsize(func):
     return wrapper
 
 
-def require_n_gpus_for_nccl_backend(n, backend):
-    return (
-        skip_if_lt_x_gpu(n)
-        if backend == "nccl"
-        else unittest.skipIf(False, TEST_SKIPS[f"multi-gpu-{n}"].message)
-    )
-
-
 def import_transformers_or_skip():
     try:
         from transformers import AutoModelForMaskedLM, BertConfig  # noqa: F401
@@ -202,7 +194,7 @@ def import_transformers_or_skip():
         return unittest.skip(TEST_SKIPS["importerror"].message)
 
 
-def at_least_x_gpu(x):
+def at_least_x_gpu(x: int) -> bool:
     if TEST_CUDA and torch.cuda.device_count() >= x:
         return True
     if TEST_HPU and torch.hpu.device_count() >= x:
@@ -212,7 +204,7 @@ def at_least_x_gpu(x):
     return False
 
 
-def skip_if_lt_x_gpu(x):
+def skip_if_lt_x_gpu(x: int):
     return unittest.skipUnless(at_least_x_gpu(x), TEST_SKIPS[f"multi-gpu-{x}"].message)
 
 
@@ -258,10 +250,14 @@ def get_required_world_size(obj: Any, default: int) -> int:
 
 
 # This decorator helps avoiding initializing cuda while testing other backends
-def nccl_skip_if_lt_x_gpu(backend, x):
+def require_n_gpus_for_nccl_backend(n: int, backend: str):
     return unittest.skipUnless(
-        backend != "nccl" or at_least_x_gpu(x), TEST_SKIPS[f"multi-gpu-{x}"].message
+        backend != "nccl" or at_least_x_gpu(n), TEST_SKIPS[f"multi-gpu-{n}"].message
     )
+
+
+def nccl_skip_if_lt_x_gpu(backend: str, x: int):
+    return require_n_gpus_for_nccl_backend(x, backend)
 
 
 def verify_ddp_error_logged(model_DDP, err_substr):
