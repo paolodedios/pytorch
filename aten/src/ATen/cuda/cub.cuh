@@ -56,6 +56,7 @@
 #endif
 
 #if CUB_V3_PLUS()
+#include <thrust/functional>
 #include <thrust/iterator/transform_iterator.h>
 #include <thrust/iterator/counting_iterator.h>
 #include <thrust/iterator/constant_iterator.h>
