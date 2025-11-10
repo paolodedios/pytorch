@@ -103,5 +103,14 @@ jobs:
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
 
+      - name: Tag & Push image for local registry
+        run: |
+          docker tag $IMAGE docker-registry.docker-registry.svc.cluster.local:5000/$IMAGE
+          docker push docker-registry.docker-registry.svc.cluster.local:5000/$IMAGE
+          echo "Image pushed successfully to local registry"
+        env:
+          IMAGE: ${{ inputs.docker-image }}
+        
+
       - name: Teardown ROCm
         uses: ./.github/actions/teardown-rocm
