@@ -440,6 +440,10 @@ PyObject* THPVariable_Wrap(const at::TensorBase& var) {
   return THPVariable_WrapWithType(var, std::nullopt);
 }
 
+PyObject* THPVariable_Wrap(const at::TensorBase& var, PyTypeObject* type) {
+  return THPVariable_WrapWithType(var, type);
+}
+
 static PyObject* THPVariable_pynew(
     PyTypeObject* type,
     PyObject* args,
