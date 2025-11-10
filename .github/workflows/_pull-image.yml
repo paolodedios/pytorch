@@ -87,6 +87,7 @@ jobs:
       - name: Checkout PyTorch
         uses: pytorch/pytorch/.github/actions/checkout-pytorch@main
         with:
+          fetch-depth: 1
           no-sudo: true
 
       - name: Setup ROCm
