@@ -56,8 +56,7 @@ jobs:
     name: linux-jammy-rocm-py3.10-pull-image
     uses: ./.github/workflows/_pull-image.yml
     needs:
-      - linux-jammy-rocm-py3_10-build
-      - target-determination
+      - linux-jammy-rocm-py3_10-inductor-build
     with:
       build-environment: linux-jammy-rocm-py3.10
       docker-image: ${{ needs.linux-jammy-rocm-py3_10-build.outputs.docker-image }}
@@ -73,9 +72,9 @@ jobs:
       contents: read
     name: rocm-py3.10-inductor
     uses: ./.github/workflows/_rocm-test.yml
-    needs: 
+    needs:
       - linux-jammy-rocm-py3_10-inductor-build
-      - linux-jammy-rocm-py3.10-pull-image
+      - linux-jammy-rocm-py3_10-pull-image
     with:
       build-environment: linux-jammy-rocm-py3.10
       docker-image: ${{ needs.linux-jammy-rocm-py3_10-inductor-build.outputs.docker-image }}
