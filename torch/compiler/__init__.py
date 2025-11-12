@@ -11,11 +11,6 @@ from torch._higher_order_ops.invoke_subgraph import NestedCompileRegionOptions
 from . import config
 
 
-try:
-    from typing import LiteralString
-except ImportError:
-    from typing_extensions import LiteralString
-
 if TYPE_CHECKING:
     from ._cache import CacheInfo
 
@@ -643,7 +638,7 @@ def skip_all_guards_unsafe(guard_entries):
 
 
 def nested_compile_region(
-    fn=None, backend_options: Optional[NestedCompileRegionOptions] = None
+    fn=None, options: Optional[NestedCompileRegionOptions] = None
 ):
     """
     Tells **``torch.compile``** that the marked set of operations forms a nested
@@ -671,14 +666,24 @@ def nested_compile_region(
 
     Args:
         fn: The function to wrap
-        backend: Optional backend to use for compiling the subgraph.
+        options: Optional backend to use for compiling the subgraph.
+            Warning: this is an experimental feature under development and
+            not ready for use yet.
     """
+
+    if options is not None:
+        from torch._dynamo import config as dynamo_config
+
+        if not dynamo_config.enable_invoke_subgraph_regional_compile:
+            raise RuntimeError(
+                "nested_compile_region config is an experiemntal feature for testing only."
+            )
 
     from torch._higher_order_ops.invoke_subgraph import (
         mark_compile_region as _mark_compile_region,
     )
 
-    return _mark_compile_region(fn, backend_options=backend_options)
+    return _mark_compile_region(fn, options=options)
 
 
 def load_compiled_function(
