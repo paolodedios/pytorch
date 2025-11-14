@@ -20,6 +20,7 @@ from torch.fx.passes.graph_transform_observer import (
 from torch.fx.passes.shape_prop import ShapeProp
 from torch.nn import functional as F
 from torch.nn.utils.fusion import fuse_conv_bn_eval, fuse_conv_bn_weights
+from torch.utils._ordered_set import OrderedSet
 
 from .. import config
 from ..fx_utils import matches_module_function_pattern
@@ -275,6 +276,31 @@ def _run_pre_dispatch_passes(
     shape_prop(gm)
 
 
+def _remove_profiler_ops(gm: torch.fx.GraphModule) -> None:
+    """
+    Remove profiler ops (record_function) from the graph.
+    These ops are side-effectful but don't affect computation,
+    and we don't want them to block fusion.
+    """
+    profiler_ops = OrderedSet(
+        [
+            torch.ops.profiler._record_function_enter.default,
+            torch.ops.profiler._record_function_enter_new.default,
+            torch.ops.profiler._record_function_exit._RecordFunction,
+        ]
+    )
+
+    graph = gm.graph
+    nodes_to_remove = []
+
+    for node in graph.nodes:
+        if node.op == "call_function" and node.target in profiler_ops:
+            nodes_to_remove.append(node)
+
+    for node in reversed(nodes_to_remove):
+        graph.erase_node(node)
+
+
 def pre_grad_passes(
     gm: torch.fx.GraphModule,
     example_inputs: Sequence[object] = (),
@@ -342,6 +368,9 @@ def pre_grad_passes(
         GraphTransformObserver(gm, "pre_grad_custom_pass").apply_graph_pass(
             config.pre_grad_custom_pass
         )
+
+    _remove_profiler_ops(gm)
+
     stable_topological_sort(gm.graph)
 
     from .quantization import quant_lift_up

@@ -6,6 +6,7 @@ import torch._dynamo.test_case
 import torch._dynamo.testing
 import torch._dynamo.utils
 from torch._dynamo.utils import dynamo_timed
+from torch.profiler import record_function
 from torch.testing._internal.common_utils import TemporaryFileName
 
 
@@ -217,6 +218,36 @@ class DynamoProfilerTests(torch._dynamo.test_case.TestCase):
                 "Torch-Compiled Region: 1/0",
                 "Torch-Compiled Region: 0/1",
                 "Torch-Compiled Region: 1/0",
+            ],
+        )
+
+    @torch._dynamo.config.patch("capture_profiler_record_function", True)
+    def test_dynamo_preserve_record_func(self):
+        def fn(x):
+            with record_function("my_net1"):
+                a = x.sin()
+            with record_function("my_cos"):
+                b = a.cos()
+            with record_function("my_net2"):
+                c = b + 2
+            return c
+
+        fn_c = torch.compile(fn, backend="aot_eager")
+        fn_c(
+            torch.randn(10),
+        )
+        with torch.profiler.profile() as prof:
+            fn_c(
+                torch.randn(10),
+            )
+
+        annotations = [e.name for e in prof.events() if "my_" in e.name]
+        self.assertEqual(
+            annotations,
+            [
+                "my_net1",
+                "my_cos",
+                "my_net2",
             ],
         )
 
