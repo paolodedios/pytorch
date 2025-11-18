@@ -419,8 +419,7 @@ class intrusive_ptr final {
         // destructor and a destructor always mutates the object, even for
         // const objects.
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-        const_cast<std::remove_const_t<TTarget>*>(target_)
-            ->release_resources();
+        const_cast<std::remove_const_t<TTarget>*>(target_)->release_resources();
         should_delete = detail::atomic_weakcount_decrement(
                             target_->combined_refcount_) == 0;
       }
