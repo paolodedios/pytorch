@@ -3070,6 +3070,7 @@ class TestTensorMetaProp(TestCase):
                 continue
 
             try:
+                torch.compiler.reset()
                 # Setup: x starts with requires_grad=False, one arg has requires_grad=True
                 x_eager = sample.input.clone().detach()
                 args_eager = [
@@ -3110,10 +3111,9 @@ class TestTensorMetaProp(TestCase):
                     inplace_op(x, *args, **sample.kwargs)
                     comptime(compile_time_check)
                     r = CustomAutograd.apply(x)
-                    comptime(compile_time_check)
                     return r
 
-                compiled_fn = torch.compile(fn, backend="eager", fullgraph=False)
+                compiled_fn = torch.compile(fn, backend="eager", fullgraph=True)
                 output_compiled = compiled_fn(x_compiled, *args_compiled)
 
                 # Test 1: Verify requires_grad was propagated
