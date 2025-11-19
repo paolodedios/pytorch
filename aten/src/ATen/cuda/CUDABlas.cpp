@@ -1997,6 +1997,8 @@ void scaled_gemm(
   // Note: alpha_val may change later depending on user-passed argument
   float alpha_val = 1.0;
   float beta_val = 0.0;
+  // Note: unused, but cublasLtMatmul requires a C pointer that is not result_ptr or nullptr
+  const void* dummy_C_ptr = mat1_ptr;
   CuBlasLtMatmulDescriptor computeDesc(computeType, scaleType);
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSA, _cublasOpFromChar(transa));
   computeDesc.setAttribute(CUBLASLT_MATMUL_DESC_TRANSB, _cublasOpFromChar(transb));
@@ -2180,8 +2182,9 @@ void scaled_gemm(
       mat2_ptr,
       Bdesc.descriptor(),
       beta_ptr,
-      // NOTE: always use result_ptr here, because cuBLASLt w/device beta=0 can't handle nullptr either
-      result_ptr, // unused, since beta_val is 0, but hipblaslt can't handle nullptr
+      // NOTE: always use dummy_C_ptr here, because cuBLASLt w/device beta=0 can't handle nullptr either
+      //       and using result_ptr on cuBLAS13.1+ requires CDesc == DDesc, which isn't always supported
+      dummy_C_ptr, // unused, since beta_val is 0, but hipblaslt can't handle nullptr
       Cdesc.descriptor(),
       result_ptr,
       Ddesc.descriptor(),
