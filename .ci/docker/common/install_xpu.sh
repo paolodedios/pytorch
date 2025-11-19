@@ -70,7 +70,7 @@ function install_rhel() {
     fi
     # Using testing channel for CD build
     if [[ "${ID}" == "almalinux" ]]; then
-        XPU_DRIVER_VERSION="/testing"
+        XPU_DRIVER_VERSION="/testing/2546"
     fi
 
     dnf install -y 'dnf-command(config-manager)'
