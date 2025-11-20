@@ -5,6 +5,8 @@
 name: test
 
 on:
+  schedule:
+    - cron: 0 */6 * * *
   workflow_call:
     inputs:
       build-environment:
@@ -104,11 +106,9 @@ jobs:
         with:
           docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
 
-      - name: Tag & Push image for local registry
+      - name: Save image as tar
         run: |
-          docker tag "$IMAGE" "docker-registry.docker-registry.svc.cluster.local:5000/$IMAGE"
-          docker push "docker-registry.docker-registry.svc.cluster.local:5000/$IMAGE"
-          echo "Image pushed successfully to local registry"
+          docker tag "$IMAGE" -o /home/runner/docker-data/pytorch-image.tar
         env:
           IMAGE: ${{ inputs.docker-image }}
 
