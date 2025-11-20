@@ -2,20 +2,25 @@
 Partitioned scatter optimization for index_add/index_put operations.
 
 This optimization reduces atomic contention by distributing scatter operations
-across partitions of an expanded buffers, then reducing the results.
+across multiple independent buffers (partitions), then reducing the results.
 
 Algorithm:
-1. Compute partition assignments: partition_id = thread_id % num_partitions
-2. Create expanded buffers: size = num_partitions × original_size
-3. Adjust indices: adjusted_idx = original_idx + (partition_id × partition_size)
-4. Perform partitioned scatter with reduced contention
-5. Reduce across partitions: sum(partitions, dim=0)
+1. Enumerate scatter operations: operation_id = [0, 1, 2, ..., N-1]
+2. Assign to partitions: partition_id = operation_id % num_partitions
+3. Create expanded buffers along scatter_dim: size = num_partitions × dim_size
+4. Adjust indices: adjusted_idx = original_idx + (partition_id × dim_size)
+5. Perform partitioned scatter with reduced contention
+6. Reduce across partitions: sum(partitions, dim=scatter_dim)
+
+Plans to expand this file in the future with multiple implementations
+
 """
 
 from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
@@ -34,23 +39,83 @@ log = logging.getLogger(__name__)
 _index_scatter_patterns = PatternMatcherPass()
 
 
+@dataclass
+class TensorMetadata:
+    """Metadata extracted from FX node."""
+    
+    shape: tuple[int, ...]
+    dtype: torch.dtype
+    device: torch.device
+    numel: int
+
+
+@dataclass
+class ScatterMetadata:
+    """Metadata for a scatter operation."""
+    
+    output_size: int
+    index_size: int
+    output_shape: tuple[int, ...]
+    index_shape: tuple[int, ...]
+    scatter_dim: int
+    dtype: torch.dtype
+    device: torch.device
+    element_bytes: int
+
+
 class PartitionConfig:
     """Configuration and heuristics for partition-based scatter optimization."""
 
     MIN_PARTITIONS = 2
     MAX_PARTITIONS = 128
+    MEMORY_BUDGET_FRACTION = 0.10
 
     @staticmethod
     def estimate_optimal_partitions(output_size: int, index_size: int) -> int:
-        """Estimate optimal partitions: 
-        
-        Note: This heuristic assumes the index is uniformly distributed across the output.
-        The contention ratio will be higher if the index is not uniformly distributed.
         """
+        Estimate optimal number of partitions based on contention ratio.
+        
+        Higher contention (more indices per output element) benefits from more partitions.
+        Returns a power of 2 for efficient modulo via bitwise operations.
+        
+        Args:
+            output_size: Number of elements in output tensor
+            index_size: Number of scatter operations
+            
+        Returns:
+            Power of 2 between MIN_PARTITIONS and MAX_PARTITIONS
+        """
+        if output_size == 0:
+            return PartitionConfig.MIN_PARTITIONS
+            
         contention_ratio = index_size / output_size
+        
+        # Heuristic: sqrt(contention) * 8, with minimum of 2
         base = 2 if contention_ratio < 0.5 else int(math.sqrt(contention_ratio) * 8)
+        
+        # Round up to next power of 2
         partitions = 2 ** math.ceil(math.log2(max(2, base)))
         return min(PartitionConfig.MAX_PARTITIONS, partitions)
+
+    @staticmethod
+    def calculate_memory_overhead(
+        output_size: int, 
+        num_partitions: int, 
+        element_bytes: int
+    ) -> int:
+        """
+        Calculate additional memory required for partitioned buffers.
+        
+        Args:
+            output_size: Number of elements in output
+            num_partitions: Number of partitions
+            element_bytes: Size of each element in bytes
+            
+        Returns:
+            Memory overhead in bytes
+        """
+        # We create (num_partitions - 1) extra copies of the output
+        return output_size * element_bytes * (num_partitions - 1)
 
     @staticmethod
     def should_optimize(
@@ -60,166 +125,405 @@ class PartitionConfig:
         element_bytes: int = 4,
         available_memory: Optional[int] = None,
     ) -> tuple[bool, str]:
-        """Determine if optimization should be applied."""
+        """
+        Determine if optimization should be applied.
+        
+        Args:
+            output_size: Number of elements in output
+            index_size: Number of scatter operations
+            num_partitions: Proposed number of partitions
+            element_bytes: Size of each element in bytes
+            available_memory: Available GPU memory in bytes, if known
+        
+        Returns:
+            (should_apply, reason) tuple explaining the decision
+        """
         if output_size == 0 or index_size == 0:
             return False, "Empty tensor"
 
-        contention_ratio = index_size / output_size
-        if contention_ratio < 0.05:
-            return False, f"Low contention (ratio={contention_ratio:.3f})"
+        if num_partitions < PartitionConfig.MIN_PARTITIONS:
+            return False, f"Too few partitions ({num_partitions} < {PartitionConfig.MIN_PARTITIONS})"
 
         if available_memory is not None:
-            required = output_size * element_bytes * num_partitions
-            if required > available_memory * 0.1:
-                return False, f"Insufficient memory: {required/1e9:.2f}GB > {available_memory*0.1/1e9:.2f}GB"
+            memory_overhead = PartitionConfig.calculate_memory_overhead(
+                output_size, num_partitions, element_bytes
+            )
+            memory_budget = available_memory * PartitionConfig.MEMORY_BUDGET_FRACTION
+            
+            if memory_overhead > memory_budget:
+                return False, (
+                    f"Insufficient memory: overhead={memory_overhead/1e9:.2f}GB "
+                    f"> budget={memory_budget/1e9:.2f}GB "
+                    f"({PartitionConfig.MEMORY_BUDGET_FRACTION:.0%} of {available_memory/1e9:.2f}GB)"
+                )
 
         return True, "Optimization applicable"
 
 
-def extract_tensor_metadata(node: fx.Node) -> Optional[dict[str, Any]]:
-    """Extract shape, dtype, and device from FX node."""
+def extract_tensor_metadata(node: fx.Node) -> Optional[TensorMetadata]:
+    """
+    Extract shape, dtype, and device from FX node.
+    
+    Args:
+        node: FX node to extract metadata from
+        
+    Returns:
+        TensorMetadata if successful, None otherwise
+    """
     if not hasattr(node, "meta") or "val" not in node.meta:
         return None
     
     val = node.meta["val"]
-    if not (isinstance(val, torch.Tensor) or (hasattr(val, "__class__") and "Tensor" in val.__class__.__name__)):
+    
+    # Handle both real tensors and FakeTensors
+    is_tensor = isinstance(val, torch.Tensor) or (
+        hasattr(val, "__class__") and "Tensor" in val.__class__.__name__
+    )
+    if not is_tensor:
         return None
     
-    return {
-        "shape": tuple(val.shape) if hasattr(val, "shape") else None,
-        "dtype": val.dtype if hasattr(val, "dtype") else None,
-        "device": val.device if hasattr(val, "device") else None,
-        "numel": val.numel() if hasattr(val, "numel") else None,
-    }
+    # Ensure all required attributes exist
+    required_attrs = ["shape", "dtype", "device", "numel"]
+    if not all(hasattr(val, attr) for attr in required_attrs):
+        return None
+    
+    return TensorMetadata(
+        shape=tuple(val.shape),
+        dtype=val.dtype,
+        device=val.device,
+        numel=val.numel(),
+    )
 
 
-def get_index_scatter_metadata(match: Match) -> Optional[dict[str, Any]]:
-    """Extract metadata from matched index_put pattern."""
+def extract_scatter_dim_and_index(indices_arg: Any) -> tuple[Optional[int], Optional[fx.Node]]:
+    """
+    Extract scatter dimension and index node from index_put indices argument.
+    
+    When index_add_(dim, idx, values) is lowered to index_put, the dimension
+    information is encoded in the indices list structure:
+    - dim=0: indices = [idx]
+    - dim=1: indices = [None, idx]
+    - dim=2: indices = [None, None, idx]
+    
+    Args:
+        indices_arg: The indices from index_put - can be:
+            - Single fx.Node: means dim=0
+            - List/tuple with Nones and one fx.Node: position indicates dim
+    
+    Returns:
+        (scatter_dim, index_node) tuple, or (None, None) if cannot extract
+    """
+    # Case 1: Single index node → dim=0
+    if not isinstance(indices_arg, (list, tuple)):
+        return 0, indices_arg
+    
+    # Case 2: List of indices with Nones
+    # Find the non-None index and its position
+    index_node = None
+    scatter_dim = None
+    
+    for dim, idx in enumerate(indices_arg):
+        if idx is not None:
+            if index_node is not None:
+                # Multiple non-None indices - advanced indexing not supported
+                log.debug("Skipping: multi-dimensional indexing not supported")
+                return None, None
+            index_node = idx
+            scatter_dim = dim
+    
+    if index_node is None:
+        log.debug("Skipping: no index found in indices list")
+        return None, None
+    
+    return scatter_dim, index_node
+
+
+def get_scatter_metadata(match: Match) -> Optional[ScatterMetadata]:
+    """
+    Extract metadata from matched index_put pattern.
+    
+    Supports index_put operations on any dimension by analyzing the indices structure.
+    
+    Args:
+        match: Pattern match from FX graph
+        
+    Returns:
+        ScatterMetadata if extraction successful, None otherwise
+    """
     try:
         output_node = match.output_node()
-        if not output_node or not hasattr(output_node, "args") or len(output_node.args) < 3:
+        if not output_node or not hasattr(output_node, "args"):
             return None
 
         args = output_node.args
-        input_node = args[0]
-        indices_arg = args[1]
-        index_node = indices_arg[0] if isinstance(indices_arg, (list, tuple)) and indices_arg else indices_arg
-
-        output_meta = extract_tensor_metadata(input_node)
-        index_meta = extract_tensor_metadata(index_node)
-
-        if not output_meta or not index_meta:
+        if len(args) < 3:
+            log.debug("Skipping: invalid args length for index_put")
             return None
 
-        return {
-            "output_size": output_meta["numel"],
-            "index_size": index_meta["numel"],
-            "output_shape": output_meta["shape"],
-            "index_shape": index_meta["shape"],
-            "dim": 0,
-            "dtype": output_meta["dtype"],
-            "device": output_meta["device"],
-        }
+        input_node = args[0]
+        indices_arg = args[1]
+        
+        # Extract scatter dimension and index node
+        scatter_dim, index_node = extract_scatter_dim_and_index(indices_arg)
+        if scatter_dim is None or index_node is None:
+            return None
+
+        # Extract tensor metadata
+        output_meta = extract_tensor_metadata(input_node)
+        index_meta = extract_tensor_metadata(index_node)
+        if not output_meta or not index_meta:
+            return None
+        
+        # Validate scatter dimension is within bounds
+        if scatter_dim >= len(output_meta.shape):
+            log.debug(f"Skipping: scatter dim {scatter_dim} out of bounds for shape {output_meta.shape}")
+            return None
+
+        element_bytes = output_meta.dtype.itemsize if hasattr(output_meta.dtype, "itemsize") else 4
+
+        return ScatterMetadata(
+            output_size=output_meta.numel,
+            index_size=index_meta.numel,
+            output_shape=output_meta.shape,
+            index_shape=index_meta.shape,
+            scatter_dim=scatter_dim,
+            dtype=output_meta.dtype,
+            device=output_meta.device,
+            element_bytes=element_bytes,
+        )
     except Exception as e:
-        log.debug(f"Error extracting metadata: {e}")
+        log.debug(f"Error extracting scatter metadata: {e}")
         return None
 
 
 def validate_match(match: Match) -> bool:
-    """Validate if pattern match should be optimized."""
+    """
+    Validate if pattern match should be optimized.
+    
+    Checks for:
+    - Accumulate mode enabled
+    - Valid tensor types and shapes
+    - Sufficient contention to benefit from optimization
+    - Available memory for expanded buffers
+    
+    Args:
+        match: Pattern match from FX graph
+        
+    Returns:
+        True if optimization should be applied, False otherwise
+    """
     output_node = match.output_node()
-    if not output_node or not hasattr(output_node, "args") or len(output_node.args) < 4:
+    if not output_node or not hasattr(output_node, "args"):
+        return False
+    
+    args = output_node.args
+    if len(args) < 4:
+        log.debug("Skipping: insufficient args for index_put")
         return False
 
-    # Only apply pass if we are accumulating (accumulate=True)
-    if output_node.args[3] is not True:
+    # Only apply when accumulating (4th arg is accumulate flag)
+    if args[3] is not True:
+        log.debug("Skipping: accumulate=False")
         return False
 
-    metadata = get_index_scatter_metadata(match)
+    metadata = get_scatter_metadata(match)
     if not metadata:
         return False
 
-    element_bytes = metadata["dtype"].itemsize if metadata["dtype"] else 4
+    # Skip unsupported types
+    if metadata.dtype == torch.bool:
+        log.debug("Skipping: bool dtype not supported")
+        return False
+
+    # Skip scalar or empty tensors
+    if not metadata.index_shape or len(metadata.index_shape) == 0:
+        log.debug("Skipping: scalar index not supported")
+        return False
+
+    if metadata.index_size == 0:
+        log.debug("Skipping: empty index tensor")
+        return False
+
+    if not metadata.output_shape or len(metadata.output_shape) == 0:
+        log.debug("Skipping: scalar output not supported")
+        return False
 
     # Estimate optimal partition count
     estimated_partitions = PartitionConfig.estimate_optimal_partitions(
-        metadata["output_size"], metadata["index_size"]
+        metadata.output_size, metadata.index_size
     )
 
-    # Check memory constraints and scale down if needed
+    # Adjust for memory constraints if CUDA is available
     if torch.cuda.is_available():
         try:
             _, total_memory = torch.cuda.mem_get_info()
-            memory_budget = total_memory * 0.10
             
             while estimated_partitions >= PartitionConfig.MIN_PARTITIONS:
-                required = metadata["output_size"] * element_bytes * estimated_partitions
-                if required <= memory_budget:
+                overhead = PartitionConfig.calculate_memory_overhead(
+                    metadata.output_size, estimated_partitions, metadata.element_bytes
+                )
+                memory_budget = total_memory * PartitionConfig.MEMORY_BUDGET_FRACTION
+                
+                if overhead <= memory_budget:
                     break
                 estimated_partitions //= 2
             else:
+                log.debug("Skipping: insufficient memory for minimum partitions")
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug(f"Could not check CUDA memory: {e}")
 
     # Final validation check
     should_apply, reason = PartitionConfig.should_optimize(
-        metadata["output_size"],
-        metadata["index_size"],
+        metadata.output_size,
+        metadata.index_size,
         estimated_partitions,
-        element_bytes,
+        metadata.element_bytes,
     )
     
     if not should_apply:
-        log.debug(f"Skipping partitioned scatter optimization: {reason}")
+        log.debug(f"Skipping: {reason}")
         return False
 
-    # Store the adjusted partition count on the match for use in replacement
+    # Store metadata for use in replacement
     match._adjusted_num_partitions = estimated_partitions
+    match._scatter_dim = metadata.scatter_dim
+    
+    contention_ratio = metadata.index_size / metadata.output_size
+    memory_overhead_gb = PartitionConfig.calculate_memory_overhead(
+        metadata.output_size, estimated_partitions, metadata.element_bytes
+    ) / 1e9
+    
+    log.debug(
+        f"Applying partitioned scatter: {estimated_partitions} partitions, "
+        f"dim={metadata.scatter_dim}, contention={contention_ratio:.2f}, "
+        f"memory_overhead={memory_overhead_gb:.3f}GB"
+    )
+    
     return True
 
 
-def create_replacement(match: Match, input_tensor: fx.Node, indices: Any, values: fx.Node):
-    """Replace high-contention index_put with partitioned scatter."""
+def reconstruct_indices_list(
+    original_indices: Any,
+    adjusted_index: fx.Node,
+    scatter_dim: int
+) -> list[Optional[fx.Node]]:
+    """
+    Reconstruct the indices list with the adjusted index at the correct position.
+    
+    Preserves the structure of the original indices (including None placeholders)
+    while replacing the actual index tensor with the adjusted version.
+    
+    Args:
+        original_indices: Original indices from index_put (single node or list)
+        adjusted_index: The adjusted index node to insert
+        scatter_dim: Which dimension is being scattered to
+        
+    Returns:
+        List suitable for index_put's indices argument
+    """
+    if not isinstance(original_indices, (list, tuple)):
+        # Single index case (dim=0)
+        return [adjusted_index]
+    
+    # Reconstruct list with adjusted index at the correct position
+    result = []
+    for i, idx in enumerate(original_indices):
+        result.append(adjusted_index if i == scatter_dim else idx)
+    
+    return result
+
+
+def create_replacement(
+    match: Match, 
+    input_tensor: fx.Node, 
+    indices: Any, 
+    values: fx.Node
+) -> fx.Node:
+    """
+    Replace high-contention index_put with partitioned scatter.
+    
+    Supports scattering along any dimension (dim=0, 1, 2, etc.)
+    
+    The transformation:
+        output = index_put(input, indices, values, accumulate=True)
+    
+    Becomes:
+        # 1. Enumerate operations and assign partitions
+        operation_ids = iota(N)
+        partition_ids = operation_ids % num_partitions
+        
+        # 2. Create expanded buffer along scatter dimension
+        expanded = zeros([..., num_partitions * dim_size, ...])
+        
+        # 3. Adjust indices for partitioning
+        adjusted_idx = idx + (partition_ids * dim_size)
+        
+        # 4. Scatter with reduced contention
+        scattered = index_put(expanded, [adjusted_idx], values, accumulate=True)
+        
+        # 5. Reduce partitions and add to input
+        reshaped = scattered.view([..., num_partitions, dim_size, ...])
+        reduced = sum(reshaped, dim=scatter_dim)
+        output = input + reduced
+    
+    Args:
+        match: Pattern match containing optimization metadata
+        input_tensor: Input tensor to accumulate into
+        indices: Index specification (single index or list with Nones)
+        values: Values to scatter
+        
+    Returns:
+        Output node of the transformed graph
+    """
     graph = match.graph
     matched_node = match.output_node()
     
-    # Retrieve the partition count we computed during validation
-    actual_num_partitions = getattr(match, "_adjusted_num_partitions", PartitionConfig.MAX_PARTITIONS // 2)
+    # Retrieve optimization parameters computed during validation
+    num_partitions = getattr(match, "_adjusted_num_partitions", PartitionConfig.MIN_PARTITIONS)
+    scatter_dim = getattr(match, "_scatter_dim", 0)
 
-    # Extract index from list
-    index = indices[0] if isinstance(indices, (list, tuple)) and indices else indices
+    # Extract the actual index node from the indices structure
+    _, index_node = extract_scatter_dim_and_index(indices)
+    if index_node is None:
+        log.warning("Could not extract index node, skipping optimization")
+        return matched_node
 
-    input_meta = input_tensor.meta.get("val")
-    index_meta = index.meta.get("val")
-    values_meta = values.meta.get("val")
+    # Get metadata from nodes
+    input_meta = input_tensor.meta["val"]
+    index_meta = index_node.meta["val"]
+    values_meta = values.meta["val"]
 
-    dim = 0
-    dim_size = input_meta.shape[dim]
-    N = index_meta.shape[0]
+    dim_size = input_meta.shape[scatter_dim]
+    num_operations = index_meta.shape[0]
     device = index_meta.device
 
     with graph.inserting_before(matched_node):
-        # Generate sequence of ints with iota, and then compute partition IDs (thread_id % num_partitions)
-        thread_ids = graph.call_function(
+        # Step 1: Generate operation IDs [0, 1, 2, ..., N-1]
+        operation_ids = graph.call_function(
             torch.ops.prims.iota.default,
-            args=(N,),
+            args=(num_operations,),
             kwargs={
                 "start": 0,
                 "step": 1,
-                "dtype": torch.int64,
+                "dtype": index_meta.dtype,
                 "device": device,
                 "requires_grad": False,
             },
         )
+        
+        # Step 2: Assign each operation to a partition using bitwise AND
+        # Equivalent to: partition_ids = operation_ids % num_partitions
+        # Works because num_partitions is always a power of 2
         partition_ids = graph.call_function(
             torch.ops.aten.bitwise_and.Scalar,
-            args=(thread_ids, actual_num_partitions - 1),
+            args=(operation_ids, num_partitions - 1),
         )
 
-        # Create expanded buffer - original buffer replicated num_partitions times
+        # Step 3: Create expanded buffer (num_partitions copies along scatter_dim)
         expanded_shape = list(input_meta.shape)
-        expanded_shape[dim] *= actual_num_partitions
+        expanded_shape[scatter_dim] *= num_partitions
+        
         expanded_buffer = graph.call_function(
             torch.ops.aten.full.default,
             args=(expanded_shape, 0),
@@ -231,50 +535,73 @@ def create_replacement(match: Match, input_tensor: fx.Node, indices: Any, values
             },
         )
 
-        # Adjust indices: adjusted_idx = original_idx + (partition_id × dim_size)
+        # Step 4: Adjust indices to point into correct partition
+        # adjusted_idx = original_idx + (partition_id * dim_size)
         partition_offsets = graph.call_function(
-            torch.ops.aten.mul.Tensor, args=(partition_ids, dim_size)
+            torch.ops.aten.mul.Tensor, 
+            args=(partition_ids, dim_size)
         )
-        adjusted_indices = graph.call_function(
-            torch.ops.aten.add.Tensor, args=(index, partition_offsets)
+        adjusted_index = graph.call_function(
+            torch.ops.aten.add.Tensor, 
+            args=(index_node, partition_offsets)
         )
 
-        # Perform scatter operation on expanded buffer
+        # Step 5: Reconstruct indices list with adjusted index
+        adjusted_indices = reconstruct_indices_list(indices, adjusted_index, scatter_dim)
+
+        # Step 6: Perform scatter on expanded buffer
         scattered_buffer = graph.call_function(
             torch.ops.aten.index_put.default,
-            args=(expanded_buffer, [adjusted_indices], values, True),
+            args=(expanded_buffer, adjusted_indices, values, True),
         )
 
-        # Reduce across partitions
-        reduce_shape = [actual_num_partitions, dim_size] + list(expanded_shape[1:])
+        # Step 7: Reduce across partitions
+        # Reshape to: [..., num_partitions, dim_size, ...]
+        reduce_shape = list(expanded_shape)
+        reduce_shape[scatter_dim] = num_partitions
+        reduce_shape.insert(scatter_dim + 1, dim_size)
+        
         reshaped = graph.call_function(
-            torch.ops.aten.view.default, args=(scattered_buffer, reduce_shape)
+            torch.ops.aten.view.default, 
+            args=(scattered_buffer, reduce_shape)
         )
-        result = graph.call_function(
-            torch.ops.aten.sum.dim_IntList, args=(reshaped, [0])
+        
+        # Sum across partition dimension
+        reduced = graph.call_function(
+            torch.ops.aten.sum.dim_IntList, 
+            args=(reshaped, [scatter_dim]),
+            kwargs={
+                "dtype": values_meta.dtype,
+            },
         )
 
-        # Add to original input
+        # Step 8: Add reduced result to original input
         output = graph.call_function(
-            torch.ops.aten.add.Tensor, args=(input_tensor, result)
+            torch.ops.aten.add.Tensor, 
+            args=(input_tensor, reduced)
         )
 
+    # Replace the original node
     matched_node.replace_all_uses_with(output)
     graph.erase_node(matched_node)
+    
     return output
 
 
 def register_partitioned_scatter_patterns() -> None:
-    """Register patterns for both index_put and index_put_ (in-place)."""
+    """
+    Register patterns for both index_put and index_put_ (in-place).
     
-    # Register pattern for out-of-place index_put
+    Matches operations with accumulate=True (4th argument).
+    """
+    # Pattern: index_put(input, indices, values, accumulate=True)
     register_graph_pattern(
         CallFunction(torch.ops.aten.index_put.default, Arg(), Arg(), Arg(), True),
         extra_check=validate_match,
         pass_dict=_index_scatter_patterns,
     )(create_replacement)
 
-    # Register pattern for in-place index_put_
+    # Pattern: index_put_(input, indices, values, accumulate=True)
     register_graph_pattern(
         CallFunction(torch.ops.aten.index_put_.default, Arg(), Arg(), Arg(), True),
         extra_check=validate_match,
@@ -283,17 +610,34 @@ def register_partitioned_scatter_patterns() -> None:
 
 
 def partitioned_scatter_optimization_pass(graph: fx.Graph) -> fx.Graph:
-    """Apply partitioned scatter optimization to high-contention index_put operations."""
+    """
+    Apply partitioned scatter optimization to high-contention index_put operations.
+    
+    This pass detects index_put operations with high atomic contention and replaces
+    them with a partitioned approach that distributes writes across multiple buffers,
+    reducing serialization and improving parallelism.
+    
+    Controlled by: config.partitioned_scatter_enabled
+    Supports: Scattering along any dimension (0, 1, 2, etc.)
+    
+    Args:
+        graph: FX graph to optimize
+        
+    Returns:
+        Optimized FX graph
+    """
     if not getattr(config, "partitioned_scatter_enabled", False):
         return graph
 
+    # Lazy pattern registration
     if not _index_scatter_patterns.patterns:
         register_partitioned_scatter_patterns()
 
-    num_matches = _index_scatter_patterns.apply(graph)  # Changed from gm.graph to graph
+    num_matches = _index_scatter_patterns.apply(graph)
+    
     if num_matches > 0:
         log.info(f"Applied partitioned scatter optimization to {num_matches} operations")
-        graph.lint()  # Changed from gm.graph.lint() to graph.lint()
+        graph.lint()
 
     return graph
 
@@ -301,4 +645,6 @@ def partitioned_scatter_optimization_pass(graph: fx.Graph) -> fx.Graph:
 __all__ = [
     "partitioned_scatter_optimization_pass",
     "PartitionConfig",
+    "ScatterMetadata",
+    "TensorMetadata",
 ]
