@@ -563,19 +563,18 @@ def create_replacement(
             
             # Flatten index: e.g., [8, 512] → [4096]
             flat_index = graph.call_function(
-                torch.ops.aten.flatten.using_ints,
-                args=(index_node, 0, -1),
+                torch.ops.aten.reshape.default,
+                args=(index_node, [num_operations]),
             )
             _set_fake_tensor_meta(flat_index, num_operations, index_meta.dtype, device, fake_mode)
             
             # Flatten values to match: e.g., [8, 512, 64] → [4096, 64]
             # Values should have same leading dimensions as index
-            values_flat_end_dim = len(index_meta.shape) - 1
-            flat_values = graph.call_function(
-                torch.ops.aten.flatten.using_ints,
-                args=(values, 0, values_flat_end_dim),
-            )
             flat_values_shape = [num_operations] + list(values_meta.shape[len(index_meta.shape):])
+            flat_values = graph.call_function(
+                torch.ops.aten.reshape.default,
+                args=(values, flat_values_shape),
+            )
             _set_fake_tensor_meta(flat_values, flat_values_shape, values_meta.dtype, device, fake_mode)
             
             log.debug(
