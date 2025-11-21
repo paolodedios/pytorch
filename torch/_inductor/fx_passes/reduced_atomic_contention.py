@@ -25,10 +25,13 @@ from typing import Any, Optional
 
 import torch
 import torch.fx as fx
+from torch._dynamo.utils import counters
+from torch._guards import detect_fake_mode
 from torch._inductor import config
 from torch._inductor.pattern_matcher import (
     Arg,
     CallFunction,
+    init_once_fakemode,
     Match,
     PatternMatcherPass,
     register_graph_pattern,
@@ -36,7 +39,9 @@ from torch._inductor.pattern_matcher import (
 
 log = logging.getLogger(__name__)
 
-_index_scatter_patterns = PatternMatcherPass()
+_index_scatter_patterns = PatternMatcherPass(
+    pass_name="partitioned_scatter_optimization"
+)
 
 
 @dataclass
@@ -151,10 +156,13 @@ class PartitionConfig:
             memory_budget = available_memory * PartitionConfig.MEMORY_BUDGET_FRACTION
             
             if memory_overhead > memory_budget:
+                overhead_gb = memory_overhead / 1e9
+                budget_gb = memory_budget / 1e9
+                available_gb = available_memory / 1e9
                 return False, (
-                    f"Insufficient memory: overhead={memory_overhead/1e9:.2f}GB "
-                    f"> budget={memory_budget/1e9:.2f}GB "
-                    f"({PartitionConfig.MEMORY_BUDGET_FRACTION:.0%} of {available_memory/1e9:.2f}GB)"
+                    f"Insufficient memory: overhead={overhead_gb:.2f}GB "
+                    f"> budget={budget_gb:.2f}GB "
+                    f"({PartitionConfig.MEMORY_BUDGET_FRACTION:.0%} of {available_gb:.2f}GB)"
                 )
 
         return True, "Optimization applicable"
@@ -330,6 +338,11 @@ def validate_match(match: Match) -> bool:
     if not metadata:
         return False
 
+    # Skip dynamic shapes - optimization not supported with symbolic sizes
+    if isinstance(metadata.output_size, torch.SymInt) or isinstance(metadata.index_size, torch.SymInt):
+        log.debug("Skipping: dynamic shapes not supported")
+        return False
+
     # Skip unsupported types
     if metadata.dtype == torch.bool:
         log.debug("Skipping: bool dtype not supported")
@@ -347,6 +360,15 @@ def validate_match(match: Match) -> bool:
     if not metadata.output_shape or len(metadata.output_shape) == 0:
         log.debug("Skipping: scalar output not supported")
         return False
+
+    # Skip boolean indices
+    indices_arg = args[1]
+    _, index_node = extract_scatter_dim_and_index(indices_arg)
+    if index_node is not None:
+        index_meta = extract_tensor_metadata(index_node)
+        if index_meta and index_meta.dtype == torch.bool:
+            log.debug("Skipping: boolean indices not supported")
+            return False
 
     # Estimate optimal partition count
     estimated_partitions = PartitionConfig.estimate_optimal_partitions(
@@ -401,6 +423,30 @@ def validate_match(match: Match) -> bool:
     )
     
     return True
+
+
+def _set_fake_tensor_meta(
+    node: fx.Node,
+    shape: Any,
+    dtype: torch.dtype,
+    device: torch.device,
+    fake_mode: Any,
+) -> None:
+    """
+    Helper to set node metadata with FakeTensor.
+    
+    Creates a FakeTensor with the specified properties and assigns it to node.meta["val"].
+    This ensures proper metadata propagation in the FX graph during compilation.
+    
+    Args:
+        node: FX node to set metadata on
+        shape: Shape of the tensor (can be int for 1D or list/tuple for multi-D)
+        dtype: Data type of the tensor
+        device: Device of the tensor
+        fake_mode: FakeTensorMode context for creating fake tensors
+    """
+    with fake_mode:
+        node.meta["val"] = torch.empty(shape, dtype=dtype, device=device)
 
 
 def reconstruct_indices_list(
@@ -498,6 +544,12 @@ def create_replacement(
     num_operations = index_meta.shape[0]
     device = index_meta.device
 
+    # Detect fake mode from existing nodes to create proper FakeTensors for metadata
+    fake_mode = detect_fake_mode([input_meta, index_meta, values_meta])
+    if fake_mode is None:
+        log.warning("Could not detect fake mode, skipping optimization")
+        return matched_node
+
     with graph.inserting_before(matched_node):
         # Step 1: Generate operation IDs [0, 1, 2, ..., N-1]
         operation_ids = graph.call_function(
@@ -511,14 +563,14 @@ def create_replacement(
                 "requires_grad": False,
             },
         )
+        _set_fake_tensor_meta(operation_ids, num_operations, index_meta.dtype, device, fake_mode)
         
         # Step 2: Assign each operation to a partition using bitwise AND
-        # Equivalent to: partition_ids = operation_ids % num_partitions
-        # Works because num_partitions is always a power of 2
         partition_ids = graph.call_function(
             torch.ops.aten.bitwise_and.Scalar,
             args=(operation_ids, num_partitions - 1),
         )
+        _set_fake_tensor_meta(partition_ids, num_operations, index_meta.dtype, device, fake_mode)
 
         # Step 3: Create expanded buffer (num_partitions copies along scatter_dim)
         expanded_shape = list(input_meta.shape)
@@ -534,17 +586,20 @@ def create_replacement(
                 "pin_memory": False,
             },
         )
+        _set_fake_tensor_meta(expanded_buffer, expanded_shape, values_meta.dtype, device, fake_mode)
 
         # Step 4: Adjust indices to point into correct partition
-        # adjusted_idx = original_idx + (partition_id * dim_size)
         partition_offsets = graph.call_function(
             torch.ops.aten.mul.Tensor, 
             args=(partition_ids, dim_size)
         )
+        _set_fake_tensor_meta(partition_offsets, num_operations, index_meta.dtype, device, fake_mode)
+        
         adjusted_index = graph.call_function(
             torch.ops.aten.add.Tensor, 
             args=(index_node, partition_offsets)
         )
+        _set_fake_tensor_meta(adjusted_index, num_operations, index_meta.dtype, device, fake_mode)
 
         # Step 5: Reconstruct indices list with adjusted index
         adjusted_indices = reconstruct_indices_list(indices, adjusted_index, scatter_dim)
@@ -554,6 +609,7 @@ def create_replacement(
             torch.ops.aten.index_put.default,
             args=(expanded_buffer, adjusted_indices, values, True),
         )
+        _set_fake_tensor_meta(scattered_buffer, expanded_shape, values_meta.dtype, device, fake_mode)
 
         # Step 7: Reduce across partitions
         # Reshape to: [..., num_partitions, dim_size, ...]
@@ -565,34 +621,48 @@ def create_replacement(
             torch.ops.aten.view.default, 
             args=(scattered_buffer, reduce_shape)
         )
+        _set_fake_tensor_meta(reshaped, reduce_shape, values_meta.dtype, device, fake_mode)
         
         # Sum across partition dimension
-        reduced = graph.call_function(
-            torch.ops.aten.sum.dim_IntList, 
-            args=(reshaped, [scatter_dim]),
-            kwargs={
-                "dtype": values_meta.dtype,
-            },
-        )
+        # For integer dtypes, explicitly preserve dtype to avoid promotion
+        if values_meta.dtype in [torch.int8, torch.int16, torch.int32, torch.uint8]:
+            reduced = graph.call_function(
+                torch.ops.aten.sum.dim_IntList, 
+                args=(reshaped, [scatter_dim]),
+                kwargs={"dtype": values_meta.dtype},
+            )
+        else:
+            reduced = graph.call_function(
+                torch.ops.aten.sum.dim_IntList, 
+                args=(reshaped, [scatter_dim])
+            )
+        output_shape = list(input_meta.shape)
+        _set_fake_tensor_meta(reduced, output_shape, values_meta.dtype, device, fake_mode)
 
         # Step 8: Add reduced result to original input
         output = graph.call_function(
             torch.ops.aten.add.Tensor, 
             args=(input_tensor, reduced)
         )
+        _set_fake_tensor_meta(output, output_shape, values_meta.dtype, device, fake_mode)
 
     # Replace the original node
     matched_node.replace_all_uses_with(output)
     graph.erase_node(matched_node)
     
+    # Track metric for successful optimization
+    counters["inductor"]["partitioned_scatter_applied"] += 1
+    
     return output
 
 
-def register_partitioned_scatter_patterns() -> None:
+@init_once_fakemode
+def lazy_init():
     """
-    Register patterns for both index_put and index_put_ (in-place).
+    Lazily register patterns for both index_put and index_put_ (in-place).
     
     Matches operations with accumulate=True (4th argument).
+    Uses init_once_fakemode to ensure patterns are registered once in fake mode context.
     """
     # Pattern: index_put(input, indices, values, accumulate=True)
     register_graph_pattern(
@@ -619,6 +689,7 @@ def partitioned_scatter_optimization_pass(graph: fx.Graph) -> fx.Graph:
     
     Controlled by: config.partitioned_scatter_enabled
     Supports: Scattering along any dimension (0, 1, 2, etc.)
+    Note: Dynamic shapes (SymInt) are not currently supported
     
     Args:
         graph: FX graph to optimize
@@ -629,14 +700,16 @@ def partitioned_scatter_optimization_pass(graph: fx.Graph) -> fx.Graph:
     if not getattr(config, "partitioned_scatter_enabled", False):
         return graph
 
-    # Lazy pattern registration
-    if not _index_scatter_patterns.patterns:
-        register_partitioned_scatter_patterns()
+    # Lazy pattern registration with fake mode initialization
+    lazy_init()
 
     num_matches = _index_scatter_patterns.apply(graph)
     
     if num_matches > 0:
-        log.info(f"Applied partitioned scatter optimization to {num_matches} operations")
+        log.info(
+            f"partitioned_scatter_optimization: successfully applied to "
+            f"{num_matches} operation(s)"
+        )
         graph.lint()
 
     return graph
