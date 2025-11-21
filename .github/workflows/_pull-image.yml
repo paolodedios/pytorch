@@ -108,7 +108,7 @@ jobs:
 
       - name: Save image as tar
         run: |
-          docker tag "$IMAGE" -o /home/runner/docker-data/pytorch-image.tar
+          docker save "$IMAGE" -o /home/runner/docker-data/pytorch-image.tar
         env:
           IMAGE: ${{ inputs.docker-image }}
 
