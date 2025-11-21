@@ -541,7 +541,8 @@ def create_replacement(
     values_meta = values.meta["val"]
 
     dim_size = input_meta.shape[scatter_dim]
-    num_operations = index_meta.shape[0]
+    num_operations = index_meta.numel()
+
     device = index_meta.device
 
     # Detect fake mode from existing nodes to create proper FakeTensors for metadata
@@ -551,6 +552,40 @@ def create_replacement(
         return matched_node
 
     with graph.inserting_before(matched_node):
+        # Step 0: Flatten multi-dimensional indices if needed
+        # PyTorch index_put internally flattens multi-dim indices, so we do it explicitly
+        index_is_multidim = len(index_meta.shape) > 1
+        
+        if index_is_multidim:
+            log.debug(
+                f"Flattening multi-dimensional index: {index_meta.shape} -> [{num_operations}]"
+            )
+            
+            # Flatten index: e.g., [8, 512] → [4096]
+            flat_index = graph.call_function(
+                torch.ops.aten.flatten.using_ints,
+                args=(index_node, 0, -1),
+            )
+            _set_fake_tensor_meta(flat_index, num_operations, index_meta.dtype, device, fake_mode)
+            
+            # Flatten values to match: e.g., [8, 512, 64] → [4096, 64]
+            # Values should have same leading dimensions as index
+            values_flat_end_dim = len(index_meta.shape) - 1
+            flat_values = graph.call_function(
+                torch.ops.aten.flatten.using_ints,
+                args=(values, 0, values_flat_end_dim),
+            )
+            flat_values_shape = [num_operations] + list(values_meta.shape[len(index_meta.shape):])
+            _set_fake_tensor_meta(flat_values, flat_values_shape, values_meta.dtype, device, fake_mode)
+            
+            log.debug(
+                f"Flattened values: {values_meta.shape} -> {flat_values_shape}"
+            )
+        else:
+            # Already 1D, use as-is
+            flat_index = index_node
+            flat_values = values
+
         # Step 1: Generate operation IDs [0, 1, 2, ..., N-1]
         operation_ids = graph.call_function(
             torch.ops.prims.iota.default,
@@ -566,6 +601,7 @@ def create_replacement(
         _set_fake_tensor_meta(operation_ids, num_operations, index_meta.dtype, device, fake_mode)
         
         # Step 2: Assign each operation to a partition using bitwise AND
+        # This is equivalent to modulo but faster: id % num_partitions == id & (num_partitions - 1)
         partition_ids = graph.call_function(
             torch.ops.aten.bitwise_and.Scalar,
             args=(operation_ids, num_partitions - 1),
@@ -589,6 +625,8 @@ def create_replacement(
         _set_fake_tensor_meta(expanded_buffer, expanded_shape, values_meta.dtype, device, fake_mode)
 
         # Step 4: Adjust indices to point into correct partition
+        # Each partition gets its own range: partition 0 gets [0, dim_size), 
+        # partition 1 gets [dim_size, 2*dim_size), etc.
         partition_offsets = graph.call_function(
             torch.ops.aten.mul.Tensor, 
             args=(partition_ids, dim_size)
@@ -597,22 +635,22 @@ def create_replacement(
         
         adjusted_index = graph.call_function(
             torch.ops.aten.add.Tensor, 
-            args=(index_node, partition_offsets)
+            args=(flat_index, partition_offsets)
         )
         _set_fake_tensor_meta(adjusted_index, num_operations, index_meta.dtype, device, fake_mode)
 
-        # Step 5: Reconstruct indices list with adjusted index
+        # Step 5: Reconstruct indices list with adjusted index at correct position
         adjusted_indices = reconstruct_indices_list(indices, adjusted_index, scatter_dim)
 
-        # Step 6: Perform scatter on expanded buffer
+        # Step 6: Perform scatter on expanded buffer with reduced contention
         scattered_buffer = graph.call_function(
             torch.ops.aten.index_put.default,
-            args=(expanded_buffer, adjusted_indices, values, True),
+            args=(expanded_buffer, adjusted_indices, flat_values, True),
         )
         _set_fake_tensor_meta(scattered_buffer, expanded_shape, values_meta.dtype, device, fake_mode)
 
         # Step 7: Reduce across partitions
-        # Reshape to: [..., num_partitions, dim_size, ...]
+        # Reshape to split scatter dimension: [..., num_partitions, dim_size, ...]
         reduce_shape = list(expanded_shape)
         reduce_shape[scatter_dim] = num_partitions
         reduce_shape.insert(scatter_dim + 1, dim_size)
@@ -623,7 +661,7 @@ def create_replacement(
         )
         _set_fake_tensor_meta(reshaped, reduce_shape, values_meta.dtype, device, fake_mode)
         
-        # Sum across partition dimension
+        # Sum across partition dimension to merge results
         # For integer dtypes, explicitly preserve dtype to avoid promotion
         if values_meta.dtype in [torch.int8, torch.int16, torch.int32, torch.uint8]:
             reduced = graph.call_function(
