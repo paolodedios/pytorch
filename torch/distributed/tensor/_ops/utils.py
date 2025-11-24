@@ -4,8 +4,7 @@ import functools
 import itertools
 import operator
 from collections.abc import Callable, Iterable, Sequence
-from typing import cast, TypeVar
-from typing_extensions import ParamSpec
+from typing import cast
 
 import torch
 from torch._prims_common import DimsSequenceType, DimsType
@@ -27,75 +26,6 @@ from torch.distributed.tensor.placement_types import (
 )
 
 
-<<<<<<< HEAD
-=======
-_T = TypeVar("_T")
-_P = ParamSpec("_P")
-
-
-# convenient wrapper to register sharding propagation rules
-def register_prop_rule(
-    op: Union[torch._ops.OpOverload, list[torch._ops.OpOverload]],
-    schema_info: Optional[RuntimeSchemaInfo] = None,
-) -> Callable[
-    [Callable[[OpSchema], OutputSharding]], Callable[[OpSchema], OutputSharding]
-]:
-    def wrapper(
-        impl: Callable[[OpSchema], OutputSharding],
-    ) -> Callable[[OpSchema], OutputSharding]:
-        overloads = op if isinstance(op, list) else [op]
-        for overload in overloads:
-            DTensor._op_dispatcher.sharding_propagator.register_sharding_prop_rule(
-                overload, impl, schema_info
-            )
-        return impl
-
-    return wrapper
-
-
-def register_op_strategy(
-    op, schema_info=None
-) -> Callable[[Callable[_P, _T]], Callable[_P, _T]]:
-    # pyre-fixme[2]: Parameter must be annotated.
-
-    # For every ATen op that accepts any args in this list,
-    # the arg itself can impact the strides (and potentially the sharding strategy)
-    # of the output tensor.
-    # thus, we will detect ATen schemas with any of these args and ensure
-    # that they get specialized here.
-    arg_names_that_require_specializing_cache_strategy = [
-        "memory_format",
-    ]
-
-    def wrapper(impl):
-        if isinstance(op, list):
-            overloads = op
-        else:
-            overloads = [op]
-
-        for overload in overloads:
-            curr_schema_info = None
-            if schema_info is None:
-                specialized_args = [
-                    a.name
-                    for a in overload._schema.arguments
-                    if a.name in arg_names_that_require_specializing_cache_strategy
-                ]
-                if any(specialized_args):
-                    curr_schema_info = RuntimeSchemaInfo(
-                        static_kwargkey=specialized_args
-                    )
-            else:
-                curr_schema_info = schema_info
-            DTensor._op_dispatcher.sharding_propagator.register_op_strategy(
-                overload, impl, curr_schema_info
-            )
-        return impl
-
-    return wrapper
-
-
->>>>>>> 59642e6a244 (Use Python 3.10 typing)
 def replicate_op_strategy(op_schema: OpSchema) -> StrategyType:
     """
     Fallback strategy all use Replication()
@@ -128,9 +58,9 @@ def replicate_op_strategy(op_schema: OpSchema) -> StrategyType:
 
 
 def as_list(
-    x: Union[list[object], object],
+    x: list[object] | object,
     # pyre-fixme[11]: Annotation `immutable_list` is not defined as a type.
-) -> Union[list[object], torch.fx.immutable_collections.immutable_list]:  # type: ignore[valid-type]
+) -> list[object] | torch.fx.immutable_collections.immutable_list:  # type: ignore[valid-type]
     # During tracing, `aten.sum.dim_IntList` uses `immutable_list` for its args,
     # which is an object but treated as a list by the tracer. Therefore, keep
     # `immutable_list` intact here as well.
@@ -302,9 +232,10 @@ def expand_to_full_mesh_op_strategy(
     *,
     input_index: int = 1,
     inplace_op: bool = False,
-    is_valid_strategy_cb: Optional[
-        Callable[[list[DTensorSpec], tuple[Optional[DTensorSpec], ...]], bool]
-    ] = None,
+    is_valid_strategy_cb: Callable[
+        [list[DTensorSpec], tuple[DTensorSpec | None, ...]], bool
+    ]
+    | None = None,
 ) -> OpStrategy:
     """
     Convenience function to allow writing a sharding strategy considering only a single mesh dimension,
@@ -339,7 +270,7 @@ def expand_to_full_mesh_op_strategy(
 
     all_strategies = []
     for strategy_comb in strategy_combs:
-        spec_list: list[Optional[DTensorSpec]] = []
+        spec_list: list[DTensorSpec | None] = []
         for specs in zip(*strategy_comb):
             if specs[0] is not None:
                 # TODO: we should fill in tensor_meta here.  If nothing else, it helps the filter strategy callback
@@ -368,7 +299,7 @@ def expand_to_full_mesh_op_strategy(
             # input_spec matches the first argument's runtime sharding, otherwise we skip
             continue
 
-        output_specs: tuple[Optional[DTensorSpec], ...]
+        output_specs: tuple[DTensorSpec | None, ...]
         if input_index > 1:
             output_specs = tuple(spec_list[:input_index])
         else:

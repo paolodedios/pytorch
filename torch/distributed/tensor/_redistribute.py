@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # When True, forces the graph-based algorithm using Dijkstra's shortest path.
 # When False, prefers the greedy algorithm for faster planning. Uses the graph-based algorithm
 # only when necessary to support strided-shard redistribution
-_FORCE_MIN_COST_REDISTRIBUTION_PLAN: Optional[bool] = None
+_FORCE_MIN_COST_REDISTRIBUTION_PLAN: bool | None = None
 
 
 @contextlib.contextmanager

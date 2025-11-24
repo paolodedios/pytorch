@@ -26,7 +26,7 @@ These schema definitions enable the DTensor system to:
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Any, Optional
+from typing import Any
 from typing_extensions import deprecated
 
 import torch
@@ -64,7 +64,7 @@ PlacementList = list[Placement | None]
 
 # ATen op schemas could have Tensor, Tuple[Tensor] and List[Tensor], so output type should
 # be the same set of possibilities.
-OutputSpecType = Optional[DTensorSpec | Sequence[DTensorSpec | None]]
+OutputSpecType = DTensorSpec | Sequence[DTensorSpec | None] | None
 
 
 def _rebuild_tensor_from_dtensor_meta(arg) -> object:
