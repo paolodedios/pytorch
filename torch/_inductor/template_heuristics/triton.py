@@ -662,11 +662,14 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
         # ROCm specific logic to get shared memory
         if torch.version.hip and sm_available is None:
             try:
-                sm_available = get_gpu_shared_memory()
-                if sm_available == 0:
-                    return None
+                sm_value = get_gpu_shared_memory()
+                if sm_value > 0:
+                    sm_available = int(sm_value)
             except Exception:
-                return None
+                pass
+
+        if sm_available is None:
+            return None
 
         # TODO make a BaseDeviceConfigHeuristics to handle different device configuration in its own implementation.
         def exceeds(gemm_config: BaseConfig, dtype_size: int) -> bool:
@@ -1320,6 +1323,9 @@ class ROCmConfigHeuristic(BaseConfigHeuristic):
                 #  block_m and block_n must be a multiple of matrix_instr_nonkdim
                 continue
 
+            hint_override_val = (
+                -1 if conf.hint_override is None else int(conf.hint_override)
+            )
             # Construct key for finding duplicate configs
             key: tuple[int, ...] = (
                 conf.block_m,
@@ -1330,7 +1336,7 @@ class ROCmConfigHeuristic(BaseConfigHeuristic):
                 waves_per_eu,
                 matrix_instr_nonkdim,
                 kpack,
-                conf.hint_override,
+                hint_override_val,
             )
 
             # Check if gemm specific arg exists - add to key if does
