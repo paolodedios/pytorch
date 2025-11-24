@@ -38,7 +38,7 @@ import threading
 import types
 import warnings
 import weakref
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 from typing_extensions import is_typeddict
 
 import torch._dynamo.config
@@ -115,7 +115,6 @@ if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
 
     from .constant import ConstantVariable
-    from .lists import TupleVariable
 
 
 def is_standard_setattr(val):
