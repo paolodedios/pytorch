@@ -402,6 +402,9 @@ joint_custom_pass: Callable = None  # type: ignore[assignment]
 # on to explicitly annotate. This is currently only used by inductor lite mode.
 selective_decompose: bool = False
 
+# Complex Support
+enable_complex_wrapper: bool = False
+
 
 if TYPE_CHECKING:
     from torch.utils._config_typing import *  # noqa: F401, F403
