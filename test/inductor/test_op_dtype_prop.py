@@ -208,6 +208,9 @@ class TestCase(InductorTestCase):
             # torch.sqrt lowers to tl.sqrt_rn after switching away from libdevice.sqrt
             "sqrt": "sqrt_rn",
         }
+        # ROCm uses fast_tahnf for everything input types that are not float64
+        if torch.version.hip and input_dtype != torch.float64:
+            triton_op_name_overrides["tanh"] = "fast_tanhf"
         override = triton_op_name_overrides.get(op_name)
         triton_op_name = override if override is not None else torch_op_name
 
