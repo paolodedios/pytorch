@@ -110,10 +110,9 @@ jobs:
           docker-image-name: ${{ inputs.docker-image }}
 
       - name: Pull docker image
-        run: |
-          docker pull $IMAGE
-        env:
-          IMAGE: ${{ inputs.docker-image }}
+        uses: pytorch/test-infra/.github/actions/pull-docker-image@main
+        with:
+          docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
 
       - name: Get workflow job id
         id: get-job-id
