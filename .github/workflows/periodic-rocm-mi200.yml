@@ -73,24 +73,6 @@ jobs:
         ]}
     secrets: inherit
 
-  linux-jammy-rocm-py3_10-pull-image:
-    permissions:
-      id-token: write
-      contents: read
-    name: linux-jammy-rocm-py3_10-pull-image
-    uses: ./.github/workflows/_pull-image.yml
-    needs:
-      - linux-jammy-rocm-py3_10-build
-      - target-determination
-    with:
-      build-environment: linux-jammy-rocm-py3.10
-      docker-image: ${{ needs.linux-jammy-rocm-py3_10-build.outputs.docker-image }}
-      test-matrix: |
-        { include: [
-          { config: "default", shard: 1, num_shards: 1, runner: "linux.rocm.gpu.mi250.1" },
-        ]}
-    secrets: inherit
-
   linux-jammy-rocm-py3_10-test:
     permissions:
       id-token: write
@@ -99,7 +81,6 @@ jobs:
     uses: ./.github/workflows/_rocm-test.yml
     needs:
       - linux-jammy-rocm-py3_10-build
-      - linux-jammy-rocm-py3_10-pull-image
       - target-determination
     with:
       build-environment: linux-jammy-rocm-py3.10
