@@ -12149,6 +12149,33 @@ class TestNNDeviceType(NNTestCase):
             # test softmax with large input value which causes exp() to overflow
             _test_bfloat16_ops(self, torch.nn.Softmax(dim=dim), device, inp_dims=(16, 33, 15, 16), prec=0.05, scale_factor=1000.0)
 
+    @onlyNativeDeviceTypes
+    def test_softmax_bfloat16_half_to_float(self, device):
+        # half_to_float is only supported on non-CPU devices (GPU, etc.)
+        if device == 'cpu':
+            self.skipTest("half_to_float is not supported on CPU")
+
+        # Test regular tensors with both torch.half and torch.bfloat16
+        for dtype in [torch.half, torch.bfloat16]:
+            x = torch.randn(8, 16, device=device, dtype=dtype)
+            result = torch._softmax(x, dim=1, half_to_float=True)
+            # Result should be float32 when half_to_float=True
+            self.assertEqual(result.dtype, torch.float32)
+            # Check that values are valid probabilities
+            self.assertTrue(torch.all(result >= 0))
+            self.assertTrue(torch.all(result <= 1))
+            # Check that probabilities sum to ~1 along the softmax dimension
+            sums = result.sum(dim=1)
+            self.assertTrue(torch.allclose(sums, torch.ones_like(sums), atol=1e-5))
+
+        # Test meta tensors - both dtypes work for meta regardless of target device
+        for dtype in [torch.half, torch.bfloat16]:
+            x_meta = torch.randn(8, 16, device='meta', dtype=dtype)
+            result_meta = torch._softmax(x_meta, dim=1, half_to_float=True)
+            # Meta tensor result should also be float32
+            self.assertEqual(result_meta.dtype, torch.float32)
+            self.assertEqual(result_meta.shape, (8, 16))
+
     def test_nll_loss_1d_input_1d_target_invalid_size(self, device):
         x = torch.randn(10, device=device)
         t = torch.randint(0, 10, (3,), dtype=torch.int64, device=device)
