@@ -71,7 +71,15 @@ class SparseSemiStructuredTensor(torch.Tensor):
     fuse_transpose_cusparselt: bool
     alg_id_cusparselt: int
 
-    __slots__ = ["packed", "meta", "packed_t", "meta_t", "compressed_swizzled_bitmask"]
+    __slots__ = [
+        "packed",
+        "meta",
+        "packed_t",
+        "meta_t",
+        "compressed_swizzled_bitmask",
+        "fuse_transpose_cusparselt",
+        "alg_id_cusparselt",
+    ]
 
     @staticmethod
     def __new__(  # noqa: PYI034
