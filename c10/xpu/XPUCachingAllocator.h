@@ -39,8 +39,6 @@ C10_XPU_API double getMemoryFraction(DeviceIndex device);
 
 C10_XPU_API void setMemoryFraction(double fraction, DeviceIndex device);
 
-class XPUAllocator;
-
 C10_XPU_API void createOrIncrefPool(
     c10::DeviceIndex device,
     c10::MempoolId_t mempool_id,
