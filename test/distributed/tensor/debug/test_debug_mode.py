@@ -478,6 +478,28 @@ class TestDTensorDebugMode(TestCase):
             "self.l2(self.l1(x))" in debug_mode.debug_string(show_stack_trace=True)
         )
 
+    def test_in_place_mutation(self):
+        class Foo(torch.nn.Module):
+            def forward(self, x):
+                y = x + 1
+                y.add_(1)
+                return y
+
+        mod = Foo()
+        inp = torch.tensor(1)
+        with (
+            DebugMode(record_output=True) as debug_mode,
+            DebugMode.log_tensor_hashes(hash_inputs=True),
+        ):
+            _ = mod(inp)
+
+        self.assertExpectedInline(
+            debug_mode.debug_string(),
+            """\
+    aten::add.Tensor(t: i64[], 1)  ->  t: i64[]  # {'input_hash': ((1.0, None), {}), 'hash': 2.0}
+    aten::add_.Tensor(t: i64[], 1)  ->  t: i64[]  # {'input_hash': ((2.0, None), {}), 'hash': 3.0}""",
+        )
+
     @unittest.skipIf(not HAS_GPU, "requires GPU")
     @unittest.skipIf(not has_triton_package(), "requires triton")
     def test_triton_kernel_logs(self):
