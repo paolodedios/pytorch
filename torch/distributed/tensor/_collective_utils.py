@@ -339,6 +339,9 @@ def redistribute_cost(
 
     mesh_topo = MeshTopoInfo.build_from_mesh(current_spec.mesh)
     cost = 0.0
+    comm_bytes_gb = (
+        spec_to_bytes(current_spec) / current_spec.num_shards / 1024 / 1024 / 1024
+    )
     # Transformation that considered for redistribute cost:
     # 1. allgather 2. alltoall
     # 3. allreduce 4. reduce_scatter
@@ -362,13 +365,6 @@ def redistribute_cost(
         assert current_spec.tensor_meta is not None, (
             "spec should have tensor meta defined!"
         )
-        comm_bytes_gb = (
-            current_spec.tensor_meta.dtype.itemsize
-            * math.prod(transform_info.logical_shape)
-            / 1024
-            / 1024
-            / 1024
-        )
         current = transform_info.src_dst_placements[0]
         target = transform_info.src_dst_placements[1]
         if current == target:
@@ -377,12 +373,12 @@ def redistribute_cost(
         num_devices_on_mesh_dim = mesh_topo.mesh_dim_devices[mesh_dim]
         if current.is_shard() and target.is_replicate():
             # add up allgather comm cost
+            comm_bytes_gb *= num_devices_on_mesh_dim
             cost += allgather_cost(comm_bytes_gb, mesh_topo, mesh_dim)
         elif current.is_shard() and target.is_shard():
             # should be alltoall comm, since we haven't implement it yet, add 1.0 as penalty
             # to favor allgather instead
             # TODO: add alltoall_cost
-            comm_bytes_gb /= num_devices_on_mesh_dim
             cost += allgather_cost(comm_bytes_gb, mesh_topo, mesh_dim) + 1.0
         elif current.is_partial() and target.is_replicate():
             # add up allreduce comm cost
