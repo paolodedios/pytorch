@@ -823,11 +823,7 @@ class DeviceCachingAllocator {
      */
     TORCH_INTERNAL_ASSERT(!block->expandable_segment);
     auto* pool = block->pool;
-    if (pool->owner_PrivatePool && pool->owner_PrivatePool->allocator()) {
-      pool->owner_PrivatePool->allocator()->raw_delete(block->ptr);
-    } else {
-      deletePrimitive(block->ptr, pool);
-    }
+    deletePrimitive(block->ptr, pool);
 
     if (pool->owner_PrivatePool) {
       TORCH_INTERNAL_ASSERT(pool->owner_PrivatePool->allocation_count > 0);
@@ -1448,7 +1444,7 @@ class NativeCachingAllocator : public XPUAllocator {
     return r;
   }
 
-  void* raw_alloc_with_stream(size_t size, XPUStream stream) override {
+  void* raw_alloc_with_stream(size_t size, XPUStream stream) {
     if (size == 0) {
       return nullptr;
     }

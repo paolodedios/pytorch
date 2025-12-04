@@ -464,15 +464,6 @@ static void initXpuMethodBindings(PyObject* module) {
       });
 }
 
-static void registerXpuAllocator(PyObject* module) {
-  auto m = py::handle(module).cast<py::module>();
-
-  py::class_<
-      c10::xpu::XPUCachingAllocator::XPUAllocator,
-      std::shared_ptr<c10::xpu::XPUCachingAllocator::XPUAllocator>>(
-      m, "_xpu_XPUAllocator");
-}
-
 // Callback for python part. Used for additional initialization of python
 // classes
 static PyObject* THXPModule_initExtension(PyObject* self, PyObject* noargs) {
@@ -557,7 +548,6 @@ void initModule(PyObject* module) {
   registerXpuDeviceProperties(module);
   registerXpuPluggableAllocator(module);
   initXpuMethodBindings(module);
-  registerXpuAllocator(module);
 }
 
 } // namespace torch::xpu
