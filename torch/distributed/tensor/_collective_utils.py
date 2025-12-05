@@ -227,7 +227,6 @@ def check_tensor_meta(
     return None
 
 
-# TODO: autoparallel depends on this function, we will keep it until we update autoparallel redistribute_cost
 def spec_to_bytes(spec: "dtensor_spec.DTensorSpec") -> int:
     assert spec.tensor_meta is not None, "spec should have tensor meta defined!"
     return spec.tensor_meta.dtype.itemsize * math.prod(spec.shape)
