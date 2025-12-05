@@ -4,7 +4,7 @@ import functools
 import unittest.mock
 from collections.abc import Callable
 from typing import Any, Optional, Union
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import torch
 import torch._dynamo.config as dynamo_config
@@ -14,19 +14,26 @@ import torch.nn.functional as F
 from torch._dynamo.testing import expectedFailureDynamicWrapper
 from torch._dynamo.utils import counters
 from torch._inductor import config
-from torch._inductor.autotune_process import TritonBenchmarkRequest
+from torch._inductor.autotune_process import (
+    ExternKernelBenchmarkRequest,
+    ExternKernelCPUBenchmarkRequest,
+    ExternKernelGPUBenchmarkRequest,
+    TensorMeta,
+    TritonBenchmarkRequest,
+)
 from torch._inductor.choices import InductorChoices
 from torch._inductor.codegen.common import KernelTemplate
-from torch._inductor.ir import FixedLayout
+from torch._inductor.ir import ChoiceCaller, FixedLayout
 from torch._inductor.kernel_inputs import KernelInputs
 from torch._inductor.select_algorithm import (
     autotune_select_algorithm,
+    ExternKernelCaller,
     ExternKernelChoice,
     TritonTemplate,
     TritonTemplateKernel,
 )
 from torch._inductor.test_case import run_tests, TestCase
-from torch._inductor.utils import is_big_gpu, run_and_get_kernels
+from torch._inductor.utils import fresh_cache, is_big_gpu, run_and_get_code, run_and_get_kernels
 from torch._inductor.virtualized import V
 from torch._prims_common import ELEMENTWISE_TYPE_PROMOTION_KIND
 from torch.testing._internal.common_utils import IS_LINUX, skipIfRocm
@@ -506,6 +513,123 @@ class TestSelectAlgorithm(TestCase):
         )
         caller_str = str(caller)
         self.assertEqual(caller_str, f"TritonTemplateCaller({module_path}, extra)")
+
+
+class TestExternKernelCaller(TestCase):
+
+    @requires_gpu()
+    @fresh_cache()
+    @config.patch(
+        max_autotune=True,
+        autotune_local_cache=False,
+        autotune_remote_cache=False,
+        max_autotune_gemm_backends="ATEN",
+    )
+    def test_extern_kernel_caller_hash_key_deduplication(self):
+        """
+        Test that identical matmuls share the same ExternKernelCaller hash key.
+
+        When a function has two matmuls with identical shapes/strides, the
+        ExternKernelCaller instances should have the same hash_key, allowing
+        the autotuner to reuse cached results and skip redundant benchmarking.
+        """
+        hash_keys_seen = []
+        extern_callers_by_hash = {}
+        original_benchmark_choice = select_algorithm.AlgorithmSelectorCache.benchmark_choice
+
+        @classmethod
+        def tracking_benchmark_choice(cls, choice, autotune_args):
+            if isinstance(choice, ExternKernelCaller):
+                hash_key = choice.hash_key()
+                hash_keys_seen.append(hash_key)
+                if hash_key not in extern_callers_by_hash:
+                    extern_callers_by_hash[hash_key] = []
+                extern_callers_by_hash[hash_key].append(choice)
+            return original_benchmark_choice(choice, autotune_args)
+
+        def fn(a, b, c, d):
+            # Two identical matmuls with same shapes
+            result1 = torch.mm(a, b)
+            result2 = torch.mm(c, d)
+            return result1 + result2
+
+        # Use identical shapes for all tensors
+        shape = (64, 64)
+        a = torch.randn(*shape, device=GPU_TYPE)
+        b = torch.randn(*shape, device=GPU_TYPE)
+        c = torch.randn(*shape, device=GPU_TYPE)
+        d = torch.randn(*shape, device=GPU_TYPE)
+
+        with patch.object(
+            select_algorithm.AlgorithmSelectorCache,
+            "benchmark_choice",
+            tracking_benchmark_choice,
+        ):
+            compiled_fn = torch.compile(fn, mode="max-autotune-no-cudagraphs")
+            result = compiled_fn(a, b, c, d)
+
+        # Verify correctness
+        expected = torch.mm(a, b) + torch.mm(c, d)
+        torch.testing.assert_close(result, expected, atol=1e-4, rtol=1e-4)
+
+        unique_mm_hash_keys = set(hash_keys_seen)
+        # With identical shapes, the hash keys should be the same
+        self.assertEqual(
+            len(unique_mm_hash_keys),
+            1,
+            f"Identical matmuls should have the same hash key, got {unique_mm_hash_keys}",
+        )
+
+    @requires_gpu()
+    @fresh_cache()
+    @config.patch(
+        max_autotune=True,
+    )
+    def test_extern_kernel_benchmark_produces_valid_timing(self):
+        """
+        Test that ExternKernelCaller.benchmark() produces valid timing results.
+
+        This verifies that the BenchmarkRequest infrastructure properly
+        measures execution time and returns reasonable values.
+        """
+        benchmark_results = []
+        original_benchmark_choice = select_algorithm.AlgorithmSelectorCache.benchmark_choice
+
+        @classmethod
+        def tracking_benchmark_choice(cls, choice, autotune_args):
+            result = original_benchmark_choice(choice, autotune_args)
+            if isinstance(choice, ExternKernelCaller):
+                benchmark_results.append((choice, result))
+            return result
+
+        def fn(a, b):
+            return torch.mm(a, b)
+
+        # Use larger matrices to ensure measurable timing
+        a = torch.randn(256, 256, device=GPU_TYPE)
+        b = torch.randn(256, 256, device=GPU_TYPE)
+
+        with patch.object(
+            select_algorithm.AlgorithmSelectorCache,
+            "benchmark_choice",
+            tracking_benchmark_choice,
+        ):
+            compiled_fn = torch.compile(fn, mode="max-autotune-no-cudagraphs")
+            result = compiled_fn(a, b)
+
+        # Verify correctness
+        expected = torch.mm(a, b)
+        torch.testing.assert_close(result, expected, atol=1e-4, rtol=1e-4)
+
+        # Verify benchmark produced valid timing
+        self.assertGreater(
+            len(benchmark_results), 0, "Should have benchmark results"
+        )
+        for _, timing in benchmark_results:
+            self.assertIsInstance(timing, float, "Timing should be a float")
+            self.assertGreaterEqual(
+                timing, 0.0, "Timing should be non-negative"
+            )
 
 
 @contextlib.contextmanager
