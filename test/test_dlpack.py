@@ -1,7 +1,5 @@
 # Owner(s): ["module: tests"]
 
-import numpy as np
-
 import torch
 from torch.testing import make_tensor
 from torch.testing._internal.common_device_type import (
@@ -444,6 +442,8 @@ class TestTorchDlPack(TestCase):
         )
     )
     def test_numpy_dlpack_protocol_conversion(self, device, dtype):
+        import numpy as np
+
         N = 5
         t = make_tensor((N,), dtype=dtype, device=device)
 
