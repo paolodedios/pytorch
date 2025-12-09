@@ -2481,6 +2481,7 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
             other, UserDefinedTupleVariable
         ) and self._tuple_vt.is_python_equal(other._tuple_vt)
 
+
 class MutableMappingVariable(UserDefinedObjectVariable):
     def __init__(self, value, **kwargs):
         super().__init__(value, **kwargs)
