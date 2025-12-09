@@ -2376,12 +2376,16 @@ class ExternKernelCaller(ChoiceCaller):
 
         self.input_tensor_meta: Union[list[TensorMeta], TensorMeta]
         self.output_tensor_meta: Union[list[TensorMeta], TensorMeta]
+        self.input_tensor_meta, self.output_tensor_meta = [], []
         if device.type == "cpu":
-            self.input_tensor_meta, self.output_tensor_meta = [], []
             benchmark_cls = ExternKernelCPUBenchmarkRequest
         else:
-            self.input_tensor_meta = TensorMeta.from_irnodes(self.input_nodes)
-            self.output_tensor_meta = TensorMeta.from_irnodes(self.layout)
+            try:
+                self.input_tensor_meta = TensorMeta.from_irnodes(self.input_nodes)
+                self.output_tensor_meta = TensorMeta.from_irnodes(self.layout)
+            except Exception:
+                log.warning(f"Constructing input/output tensor meta failed for choice caller {choice}")
+
             benchmark_cls = ExternKernelGPUBenchmarkRequest
 
         self.bmreq: ExternKernelBenchmarkRequest = benchmark_cls(
