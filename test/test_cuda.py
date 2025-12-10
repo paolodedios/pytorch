@@ -4171,9 +4171,7 @@ class TestCudaMallocAsync(TestCase):
                             if len(entry["forward_frames"]) > 0:
                                 found_forward_frames = True
                                 # The forward frames should be strings
-                                self.assertIsInstance(
-                                    entry["forward_frames"][0], str
-                                )
+                                self.assertIsInstance(entry["forward_frames"][0], str)
 
             # forward_frames must be present when using detect_anomaly
             self.assertTrue(
