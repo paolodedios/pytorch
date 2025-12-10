@@ -19,6 +19,9 @@ from torch.types import Device
 from ._utils import _get_device_index
 
 
+# Default generators are initialized inside _mtia_init
+default_generators: tuple[torch._C.Generator, ...] = ()  # type: ignore[assignment]
+
 _initialized = False
 _queued_calls: list[
     tuple[Callable[[], None], list[str]]
