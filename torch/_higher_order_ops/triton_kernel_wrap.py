@@ -437,7 +437,7 @@ def generate_ttir(
     specialization = _get_specialization(ordered_args.values())
     constants = {
         (i,): arg
-        for i, ((name, arg), param) in enumerate(zip(ordered_args.items(), kernel.params))
+        for i, ((_, arg), param) in enumerate(zip(ordered_args.items(), kernel.params))
         if param.is_constexpr
     }
 
