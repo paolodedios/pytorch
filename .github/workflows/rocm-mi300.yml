@@ -2,9 +2,6 @@ name: rocm-mi300
 
 on:
   push:
-    branches:
-      - main
-      - release/*
     tags:
       - ciflow/rocm-mi300/*
   workflow_dispatch:
