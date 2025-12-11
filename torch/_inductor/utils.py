@@ -59,6 +59,7 @@ import torch.utils._pytree as pytree
 from torch._inductor.analysis.device_info import datasheet_tops
 from torch._inductor.runtime.hints import DeviceProperties
 from torch.fx.passes.regional_inductor import _needs_inductor_compile
+from torch.nn.functional import ScalingType  # type: ignore[attr-defined]
 from torch.utils._dtype_abbrs import dtype_abbrs
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._pytree import tree_flatten, tree_map_only
@@ -1951,6 +1952,14 @@ def use_triton_blackwell_tma_template(
 
     # Blackwell template require the tensor descriptor API, not the experimental API.
     return has_triton_tensor_descriptor_host_tma() and is_datacenter_blackwell_arch()
+
+
+def use_triton_scaling_template(
+    scale_option_a: ScalingType,
+    scale_option_b: ScalingType,
+    scaling_types: list[ScalingType],
+) -> bool:
+    return scale_option_a in scaling_types and scale_option_b in scaling_types
 
 
 @functools.lru_cache(maxsize=1)
