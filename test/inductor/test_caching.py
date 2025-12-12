@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 from filelock import FileLock
 
+import torch
 from torch._inductor.runtime.caching import (
     config,
     context,
@@ -23,6 +24,8 @@ from torch._inductor.runtime.caching import (
     implementations as impls,
     interfaces,
     locks,
+    Memoizer,
+    PersistentMemoizer,
     utils,
 )
 from torch._inductor.test_case import run_tests, TestCase
@@ -894,7 +897,7 @@ class InterfacesTest(TestMixin, TestCase):
         is cached and can be retrieved later.
         """
         # Setup: create a memoizer and a function that tracks call count
-        memoizer = interfaces.Memoizer()
+        memoizer = Memoizer()
         call_count = 0
 
         @memoizer.record()
@@ -920,7 +923,7 @@ class InterfacesTest(TestMixin, TestCase):
         results from cache without executing the original function.
         """
         # Setup: create a memoizer, record a result, then try to replay it
-        memoizer = interfaces.Memoizer()
+        memoizer = Memoizer()
         call_count = 0
 
         @memoizer.record()
@@ -952,7 +955,7 @@ class InterfacesTest(TestMixin, TestCase):
         result, it raises a KeyError.
         """
         # Setup: create a memoizer with replay decorator
-        memoizer = interfaces.Memoizer()
+        memoizer = Memoizer()
 
         @memoizer.replay()
         def compute(x: int) -> int:
@@ -971,7 +974,7 @@ class InterfacesTest(TestMixin, TestCase):
         - Subsequent calls retrieve from cache without executing
         """
         # Setup: create a memoizer and a function that tracks call count
-        memoizer = interfaces.Memoizer()
+        memoizer = Memoizer()
         call_count = 0
 
         @memoizer.memoize()
@@ -999,7 +1002,7 @@ class InterfacesTest(TestMixin, TestCase):
         returns the original function without any caching behavior.
         """
         # Setup: create a memoizer with caching disabled
-        memoizer = interfaces.Memoizer()
+        memoizer = Memoizer()
         call_count = 0
 
         @memoizer.record()
@@ -1025,7 +1028,7 @@ class InterfacesTest(TestMixin, TestCase):
         always raises KeyError regardless of what's in the cache.
         """
         # Setup: create a memoizer with caching disabled
-        memoizer = interfaces.Memoizer()
+        memoizer = Memoizer()
 
         @memoizer.replay()
         def compute(x: int) -> int:
@@ -1044,7 +1047,7 @@ class InterfacesTest(TestMixin, TestCase):
         returns the original function without any caching behavior.
         """
         # Setup: create a memoizer with caching disabled
-        memoizer = interfaces.Memoizer()
+        memoizer = Memoizer()
         call_count = 0
 
         @memoizer.memoize()
@@ -1073,7 +1076,7 @@ class InterfacesTest(TestMixin, TestCase):
         is cached in both the in-memory cache and the on-disk cache.
         """
         # Setup: create a persistent memoizer
-        persistent = interfaces.PersistentMemoizer(sub_dir=self.sub_dir())
+        persistent = PersistentMemoizer(sub_dir=self.sub_dir())
         call_count = 0
 
         @persistent.record()
@@ -1113,7 +1116,7 @@ class InterfacesTest(TestMixin, TestCase):
         3. Populate memory cache from disk on disk hit
         """
         # Setup: create a persistent memoizer and store only to disk
-        persistent = interfaces.PersistentMemoizer(sub_dir=self.sub_dir())
+        persistent = PersistentMemoizer(sub_dir=self.sub_dir())
 
         # Store a value directly to disk cache only (as tuple format)
         cache_key = interfaces._BaseMemoizer._make_key(None, 5)
@@ -1157,7 +1160,7 @@ class InterfacesTest(TestMixin, TestCase):
         - After clearing memory, retrieves from disk
         """
         # Setup: create a persistent memoizer
-        persistent = interfaces.PersistentMemoizer(sub_dir=self.sub_dir())
+        persistent = PersistentMemoizer(sub_dir=self.sub_dir())
         call_count = 0
 
         @persistent.memoize()
@@ -1198,7 +1201,7 @@ class InterfacesTest(TestMixin, TestCase):
         returns the original function without any caching to memory or disk.
         """
         # Setup: create a persistent memoizer with caching disabled
-        persistent = interfaces.PersistentMemoizer(sub_dir=self.sub_dir())
+        persistent = PersistentMemoizer(sub_dir=self.sub_dir())
         call_count = 0
 
         @persistent.record()
@@ -1232,7 +1235,7 @@ class InterfacesTest(TestMixin, TestCase):
         always raises KeyError.
         """
         # Setup: create a persistent memoizer with caching disabled
-        persistent = interfaces.PersistentMemoizer(sub_dir=self.sub_dir())
+        persistent = PersistentMemoizer(sub_dir=self.sub_dir())
 
         @persistent.replay()
         def compute(x: int) -> int:
@@ -1252,7 +1255,7 @@ class InterfacesTest(TestMixin, TestCase):
         returns the original function without any caching behavior.
         """
         # Setup: create a persistent memoizer with caching disabled
-        persistent = interfaces.PersistentMemoizer(sub_dir=self.sub_dir())
+        persistent = PersistentMemoizer(sub_dir=self.sub_dir())
         call_count = 0
 
         @persistent.memoize()
@@ -1887,6 +1890,516 @@ class InterfacesTest(TestMixin, TestCase):
             # Cleanup
             if os.path.exists(test_filepath):
                 os.unlink(test_filepath)
+
+
+    @patch_on_disk_cache_base_dir
+    @set_caching_module_enabled(True)
+    def test_should_pad_memoizer_dump_and_load_from_disk(self) -> None:
+        """Test that _should_pad memoizer results can be dumped and loaded from disk.
+
+        Verifies end-to-end workflow:
+        1. Call _should_pad to populate the memoizer
+        2. Dump the memoizer cache to disk
+        3. Clear the in-memory cache
+        4. Load cache entries from the dump file
+        5. Call _should_pad again - should use loaded cached result without benchmarking
+        """
+        import json
+        import os
+        import tempfile
+        from torch._inductor.fx_passes.pad_mm import (
+            _should_pad,
+            _should_pad_memoizer,
+        )
+        from unittest.mock import MagicMock
+
+        # Create temp file for dump
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as tmp_file:
+            test_filepath = tmp_file.name
+
+        # Remove to start clean
+        os.unlink(test_filepath)
+
+        try:
+            # Create real tensors with unique shapes not used in other tests
+            # to avoid disk cache hits from previous test runs
+            mat1 = torch.randn(73, 147, dtype=torch.float32, device="cpu")
+            mat2 = torch.randn(147, 293, dtype=torch.float32, device="cpu")
+            match = MagicMock()
+
+            # Clear and configure memoizer for testing
+            # Use a consistent sub_key for both dump and load
+            test_sub_key = "test_dump_load"
+            _should_pad_memoizer._memoizer._cache = impls._InMemoryCacheImpl()
+            _should_pad_memoizer._disk_cache = impls._OnDiskCacheImpl(
+                sub_dir=self.sub_dir()
+            )
+            _should_pad_memoizer._memoizer._SHARED_CACHE_FILEPATH = test_filepath
+            # Set sub_key to match what we'll use for loading
+            _should_pad_memoizer._memoizer._sub_key = test_sub_key
+
+            with (
+                patch(
+                    "torch._inductor.fx_passes.pad_mm.should_exclude_padding_time"
+                ) as mock_should_exclude,
+                patch(
+                    "torch._inductor.fx_passes.pad_mm.get_alignment_size"
+                ) as mock_get_alignment_size,
+                patch("torch._inductor.fx_passes.pad_mm.has_triton") as mock_has_triton,
+                patch(
+                    "torch._inductor.fx_passes.pad_mm.is_mm_compute_bound"
+                ) as mock_is_mm_compute_bound,
+                patch(
+                    "torch._inductor.fx_passes.pad_mm.get_cached_should_pad"
+                ) as mock_get_cached_should_pad,
+                patch(
+                    "torch._inductor.fx_passes.pad_mm.get_do_bench"
+                ) as mock_get_do_bench,
+                patch(
+                    "torch._inductor.fx_passes.pad_mm.get_cached_base_mm_benchmark_time"
+                ) as mock_get_cached_base_mm,
+                patch(
+                    "torch._inductor.fx_passes.pad_mm.set_cached_base_mm_benchmark_time"
+                ),
+                patch("torch._inductor.fx_passes.pad_mm.should_pad") as mock_should_pad,
+                patch(
+                    "torch._inductor.fx_passes.pad_mm.is_padded_faster"
+                ) as mock_is_padded_faster,
+                patch("torch._inductor.config.force_shape_pad", False),
+                patch("torch._inductor.config.deterministic", False),
+                patch("torch._inductor.config.post_grad_fusion_options", {}),
+            ):
+                # Configure mocks
+                mock_should_exclude.return_value = False
+                mock_get_alignment_size.return_value = 8
+                mock_has_triton.return_value = True
+                mock_is_mm_compute_bound.return_value = True
+                mock_get_cached_should_pad.return_value = None
+                mock_get_cached_base_mm.return_value = None
+
+                mock_do_bench = MagicMock(return_value=1.0)
+                mock_get_do_bench.return_value = mock_do_bench
+
+                mock_should_pad.return_value = True
+                mock_is_padded_faster.return_value = True
+
+                # Step 1: Call _should_pad to populate memoizer
+                result1 = _should_pad(match, mat1, mat2, torch.ops.aten.mm)
+                self.assertTrue(result1)
+                first_call_benchmarks = mock_do_bench.call_count
+                self.assertGreater(first_call_benchmarks, 0)
+
+                # Step 2: Dump memoizer to disk
+                _should_pad_memoizer._memoizer._dump_cache_to_json()
+                self.assertTrue(os.path.exists(test_filepath))
+
+                # Verify dump has content
+                with open(test_filepath, "r") as f:
+                    dump_data = json.load(f)
+                self.assertGreater(dump_data["cache_size"], 0)
+
+                # Step 3: Clear in-memory cache
+                _should_pad_memoizer._memoizer._cache = impls._InMemoryCacheImpl()
+
+                # Verify cache is empty
+                self.assertEqual(
+                    len(_should_pad_memoizer._memoizer._cache._memory), 0
+                )
+
+                # Step 4: Load from dump file
+                with patch.object(
+                    config, "CACHE_DUMP_FILE_PATH", return_value=test_filepath
+                ):
+                    # Create temp memoizer with the same sub_key to load entries
+                    temp_memoizer = interfaces.PersistentMemoizer(
+                        sub_dir=test_sub_key
+                    )
+
+                    # Copy loaded entries to the actual memoizer's cache
+                    for key, value in temp_memoizer._memoizer._cache._memory.items():
+                        _should_pad_memoizer._memoizer._cache.insert(
+                            key, value
+                        )
+
+                # Verify cache was repopulated
+                self.assertGreater(
+                    len(_should_pad_memoizer._memoizer._cache._memory), 0
+                )
+
+                # Step 5: Call _should_pad again
+                mock_do_bench.reset_mock()
+                result2 = _should_pad(match, mat1, mat2, torch.ops.aten.mm)
+
+                # Assert: Same result, no benchmarking (cache hit from loaded dump)
+                self.assertTrue(result2)
+                self.assertEqual(mock_do_bench.call_count, 0)
+
+        finally:
+            # Cleanup temp file
+            if os.path.exists(test_filepath):
+                os.unlink(test_filepath)
+
+        from torch._inductor.fx_passes.pad_mm import _should_pad_params_encoder
+        from unittest.mock import MagicMock
+
+        # Create mock tensors with specific properties
+        mat1 = MagicMock()
+        mat1.shape = torch.Size([128, 256])
+        mat1.stride.return_value = (256, 1)
+        mat1.dtype = torch.float32
+
+        mat2 = MagicMock()
+        mat2.shape = torch.Size([256, 512])
+        mat2.stride.return_value = (512, 1)
+        mat2.dtype = torch.float16
+
+        # Create mock match object
+        match = MagicMock()
+
+        # Mock the should_exclude_padding_time function
+        with patch(
+            "torch._inductor.fx_passes.pad_mm.should_exclude_padding_time"
+        ) as mock_should_exclude:
+            mock_should_exclude.side_effect = lambda m, name: name == "mat1"
+
+            # Execute: call the params encoder
+            result = _should_pad_params_encoder(
+                match, mat1, mat2, torch.ops.aten.mm, input=None
+            )
+
+        # Assert: verify the encoder extracted the correct information
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result["mat1"]["shape"], (128, 256))
+        self.assertEqual(result["mat1"]["stride"], (256, 1))
+        self.assertEqual(result["mat1"]["dtype"], "torch.float32")
+        self.assertEqual(result["mat2"]["shape"], (256, 512))
+        self.assertEqual(result["mat2"]["stride"], (512, 1))
+        self.assertEqual(result["mat2"]["dtype"], "torch.float16")
+        self.assertEqual(result["op"], str(torch.ops.aten.mm))
+        self.assertIsNone(result["input"])
+        self.assertTrue(result["mat1_exclude_padding_time"])
+        self.assertFalse(result["mat2_exclude_padding_time"])
+
+    @patch_on_disk_cache_base_dir
+    @set_caching_module_enabled(True)
+    def test_should_pad_bench_params_encoder_handles_input_tensor(self) -> None:
+        """Test that the params encoder correctly handles optional input tensors.
+
+        Verifies that when an input tensor is provided (as in addmm operations),
+        the encoder extracts its information; when None, it stores None.
+        """
+        # Setup: Import the encoder and create mock objects
+        from torch._inductor.fx_passes.pad_mm import _should_pad_params_encoder
+        from unittest.mock import MagicMock
+
+        mat1 = MagicMock()
+        mat1.shape = torch.Size([128, 256])
+        mat1.stride.return_value = (256, 1)
+        mat1.dtype = torch.float32
+
+        mat2 = MagicMock()
+        mat2.shape = torch.Size([256, 512])
+        mat2.stride.return_value = (512, 1)
+        mat2.dtype = torch.float32
+
+        input_tensor = MagicMock()
+        input_tensor.shape = torch.Size([128])
+        input_tensor.stride.return_value = (1,)
+        input_tensor.dtype = torch.float32
+
+        match = MagicMock()
+
+        # Mock should_exclude_padding_time
+        with patch(
+            "torch._inductor.fx_passes.pad_mm.should_exclude_padding_time"
+        ) as mock_should_exclude:
+            mock_should_exclude.return_value = False
+
+            # Execute: call the encoder with an input tensor
+            result = _should_pad_params_encoder(
+                match, mat1, mat2, torch.ops.aten.addmm, input=input_tensor
+            )
+
+        # Assert: verify the input tensor info was extracted
+        self.assertIsNotNone(result["input"])
+        self.assertEqual(result["input"]["shape"], (128,))
+        self.assertEqual(result["input"]["stride"], (1,))
+        self.assertEqual(result["input"]["dtype"], "torch.float32")
+
+    @patch_on_disk_cache_base_dir
+    @set_caching_module_enabled(True)
+    def test_should_pad_bench_memoization_works(self) -> None:
+        """Test that _should_pad_bench memoization caches results correctly.
+
+        Verifies that when _should_pad_bench is called multiple times with the
+        same encoded parameters, it returns cached results without re-executing
+        the benchmarking logic.
+        """
+        # Setup: Import the memoized function and memoizer
+        from torch._inductor.fx_passes.pad_mm import (
+            _should_pad,
+            _should_pad_memoizer,
+        )
+        from unittest.mock import MagicMock
+
+        # Create real tensors (not FakeTensors or MagicMock) to avoid realize_tensor issues
+        mat1 = torch.randn(65, 130, dtype=torch.float32, device="cpu")
+        mat2 = torch.randn(130, 257, dtype=torch.float32, device="cpu")
+        match = MagicMock()
+
+        # Clear the memoizer caches to ensure clean state
+        _should_pad_memoizer._memoizer._cache = impls._InMemoryCacheImpl()
+        _should_pad_memoizer._disk_cache = impls._OnDiskCacheImpl(
+            sub_dir=self.sub_dir()
+        )
+
+        # Mock all the dependencies that _should_pad uses
+        with (
+            patch(
+                "torch._inductor.fx_passes.pad_mm.should_exclude_padding_time"
+            ) as mock_should_exclude,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_alignment_size"
+            ) as mock_get_alignment_size,
+            patch("torch._inductor.fx_passes.pad_mm.has_triton") as mock_has_triton,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.is_mm_compute_bound"
+            ) as mock_is_mm_compute_bound,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_cached_should_pad"
+            ) as mock_get_cached_should_pad,
+            patch("torch._inductor.fx_passes.pad_mm.get_do_bench") as mock_get_do_bench,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_cached_base_mm_benchmark_time"
+            ) as mock_get_cached_base_mm_benchmark_time,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.set_cached_base_mm_benchmark_time"
+            ),
+            patch("torch._inductor.fx_passes.pad_mm.should_pad") as mock_should_pad,
+            patch("torch._inductor.config.force_shape_pad", False),
+            patch("torch._inductor.config.deterministic", False),
+            patch("torch._inductor.config.post_grad_fusion_options", {}),
+        ):
+            # Configure mocks
+            mock_should_exclude.return_value = False
+            mock_get_alignment_size.return_value = 8
+            mock_has_triton.return_value = True
+            mock_is_mm_compute_bound.return_value = True
+            mock_get_cached_should_pad.return_value = None  # No cache hit in old cache
+            mock_get_cached_base_mm_benchmark_time.return_value = None
+
+            # Mock benchmarking to return predictable values
+            mock_do_bench = MagicMock()
+            mock_do_bench.return_value = 1.0
+            mock_get_do_bench.return_value = mock_do_bench
+
+            # Make should_pad return True and setup is_padded_faster to return True
+            mock_should_pad.return_value = True
+            
+            # Mock is_padded_faster to return True (pad is faster)
+            with patch("torch._inductor.fx_passes.pad_mm.is_padded_faster") as mock_is_padded_faster:
+                mock_is_padded_faster.return_value = True
+
+                # Execute: call _should_pad for the first time
+                result1 = _should_pad(match, mat1, mat2, torch.ops.aten.mm)
+
+                # Assert: first call executed the function
+                self.assertTrue(result1)
+                self.assertEqual(mock_do_bench.call_count, 2)  # orig + pad benchmarks
+
+                # Execute: call _should_pad again with same parameters
+                mock_do_bench.reset_mock()
+                result2 = _should_pad(match, mat1, mat2, torch.ops.aten.mm)
+
+                # Assert: second call retrieved from cache, didn't execute benchmarks
+                self.assertTrue(result2)
+                self.assertEqual(
+                    mock_do_bench.call_count, 0
+                )  # No benchmarks on cache hit
+
+    @patch_on_disk_cache_base_dir
+    @set_caching_module_enabled(True)
+    def test_should_pad_disk_cache_persistence(self) -> None:
+        """Test that _should_pad results persist to disk and can be restored.
+
+        Verifies that when memory cache is cleared (simulating a new process),
+        results can still be retrieved from disk cache.
+        """
+        # Setup: Import the memoized function and memoizer
+        from torch._inductor.fx_passes.pad_mm import (
+            _should_pad,
+            _should_pad_memoizer,
+        )
+        from unittest.mock import MagicMock
+
+        # Create real tensors (not FakeTensors or MagicMock) to avoid realize_tensor issues
+        mat1 = torch.randn(33, 65, dtype=torch.float16, device="cpu")
+        mat2 = torch.randn(65, 129, dtype=torch.float16, device="cpu")
+        match = MagicMock()
+
+        # Clear the memoizer caches
+        _should_pad_memoizer._memoizer._cache = impls._InMemoryCacheImpl()
+        _should_pad_memoizer._disk_cache = impls._OnDiskCacheImpl(
+            sub_dir=self.sub_dir()
+        )
+
+        # Mock dependencies
+        with (
+            patch(
+                "torch._inductor.fx_passes.pad_mm.should_exclude_padding_time"
+            ) as mock_should_exclude,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_alignment_size"
+            ) as mock_get_alignment_size,
+            patch("torch._inductor.fx_passes.pad_mm.has_triton") as mock_has_triton,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.is_mm_compute_bound"
+            ) as mock_is_mm_compute_bound,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_cached_should_pad"
+            ) as mock_get_cached_should_pad,
+            patch("torch._inductor.fx_passes.pad_mm.get_do_bench") as mock_get_do_bench,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_cached_base_mm_benchmark_time"
+            ) as mock_get_cached_base_mm_benchmark_time,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.set_cached_base_mm_benchmark_time"
+            ),
+            patch("torch._inductor.fx_passes.pad_mm.should_pad") as mock_should_pad,
+            patch("torch._inductor.config.force_shape_pad", False),
+            patch("torch._inductor.config.deterministic", False),
+            patch("torch._inductor.config.post_grad_fusion_options", {}),
+        ):
+            # Configure mocks
+            mock_should_exclude.return_value = False
+            mock_get_alignment_size.return_value = 8
+            mock_has_triton.return_value = True
+            mock_is_mm_compute_bound.return_value = True
+            mock_get_cached_should_pad.return_value = None
+            mock_get_cached_base_mm_benchmark_time.return_value = None
+
+            mock_do_bench = MagicMock()
+            mock_do_bench.return_value = 1.0
+            mock_get_do_bench.return_value = mock_do_bench
+
+            mock_should_pad.return_value = False
+
+            # Execute: first call - caches to both memory and disk
+            result1 = _should_pad(match, mat1, mat2, torch.ops.aten.mm)
+            self.assertFalse(result1)
+
+            # Clear memory cache to simulate a new process
+            _should_pad_memoizer._memoizer._cache = impls._InMemoryCacheImpl()
+
+            # Execute: second call - should retrieve from disk
+            mock_do_bench.reset_mock()
+            result2 = _should_pad(match, mat1, mat2, torch.ops.aten.mm)
+
+            # Assert: result retrieved from disk, no benchmarking executed
+            self.assertFalse(result2)
+            self.assertEqual(mock_do_bench.call_count, 0)
+
+    @patch_on_disk_cache_base_dir
+    @set_caching_module_enabled(True)
+    def test_should_pad_different_params_different_cache(self) -> None:
+        """Test that different parameter combinations result in different cache entries.
+
+        Verifies that the params encoder produces different cache keys for
+        different tensor shapes, dtypes, operations, etc.
+        """
+        # Setup: Import the memoized function
+        from torch._inductor.fx_passes.pad_mm import (
+            _should_pad,
+            _should_pad_memoizer,
+        )
+        from unittest.mock import MagicMock
+
+        # Clear caches
+        _should_pad_memoizer._memoizer._cache = impls._InMemoryCacheImpl()
+        _should_pad_memoizer._disk_cache = impls._OnDiskCacheImpl(
+            sub_dir=self.sub_dir()
+        )
+
+        call_count = 0
+
+        def increment_call_count(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return 1.0
+
+        # Mock dependencies
+        with (
+            patch(
+                "torch._inductor.fx_passes.pad_mm.should_exclude_padding_time"
+            ) as mock_should_exclude,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_alignment_size"
+            ) as mock_get_alignment_size,
+            patch("torch._inductor.fx_passes.pad_mm.has_triton") as mock_has_triton,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.is_mm_compute_bound"
+            ) as mock_is_mm_compute_bound,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_cached_should_pad"
+            ) as mock_get_cached_should_pad,
+            patch("torch._inductor.fx_passes.pad_mm.get_do_bench") as mock_get_do_bench,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.get_cached_base_mm_benchmark_time"
+            ) as mock_get_cached_base_mm_benchmark_time,
+            patch(
+                "torch._inductor.fx_passes.pad_mm.set_cached_base_mm_benchmark_time"
+            ),
+            patch("torch._inductor.fx_passes.pad_mm.should_pad") as mock_should_pad,
+            patch("torch._inductor.config.force_shape_pad", False),
+            patch("torch._inductor.config.deterministic", False),
+            patch("torch._inductor.config.post_grad_fusion_options", {}),
+        ):
+            # Configure mocks
+            mock_should_exclude.return_value = False
+            mock_get_alignment_size.return_value = 8
+            mock_has_triton.return_value = True
+            mock_is_mm_compute_bound.return_value = True
+            mock_get_cached_should_pad.return_value = None
+            mock_get_cached_base_mm_benchmark_time.return_value = None
+
+            mock_do_bench = MagicMock(side_effect=increment_call_count)
+            mock_get_do_bench.return_value = mock_do_bench
+
+            mock_should_pad.return_value = True
+
+            # Create different parameter combinations using real tensors
+            match = MagicMock()
+
+            # Combination 1: shape (65, 130) x (130, 257), float32 (needs padding)
+            mat1_v1 = torch.randn(65, 130, dtype=torch.float32, device="cpu")
+            mat2_v1 = torch.randn(130, 257, dtype=torch.float32, device="cpu")
+
+            # Combination 2: different shape (33, 66) x (66, 129), float32 (needs padding)
+            mat1_v2 = torch.randn(33, 66, dtype=torch.float32, device="cpu")
+            mat2_v2 = torch.randn(66, 129, dtype=torch.float32, device="cpu")
+
+            # Execute: call with first combination
+            call_count = 0
+            _should_pad(match, mat1_v1, mat2_v1, torch.ops.aten.mm)
+            first_call_count = call_count
+
+            # Execute: call with same combination again (should hit cache)
+            call_count = 0
+            _should_pad(match, mat1_v1, mat2_v1, torch.ops.aten.mm)
+            second_call_count = call_count
+
+            # Execute: call with different combination (should miss cache)
+            call_count = 0
+            _should_pad(match, mat1_v2, mat2_v2, torch.ops.aten.mm)
+            third_call_count = call_count
+
+            # Assert: first call executed benchmarks, second call used cache,
+            # third call executed benchmarks again with different params
+            self.assertGreater(first_call_count, 0)  # Executed benchmarks
+            self.assertEqual(second_call_count, 0)  # Cache hit
+            self.assertGreater(third_call_count, 0)  # Different params, cache miss
 
 
 if __name__ == "__main__":
