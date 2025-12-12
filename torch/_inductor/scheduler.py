@@ -1426,6 +1426,22 @@ def _prune_redundant_deps(
         node.set_read_writes(node.read_writes.remove_reads(deps_to_prune))
 
 
+def compile_mod_fails_or_register_spills(mod_fused, spill_threshold: int = 8):
+    wrapped_jit_function = mod_fused.triton_
+
+    try:
+        wrapped_jit_function.precompile()
+        launchers = wrapped_jit_function.launchers
+        assert len(launchers) == 1
+
+        if launchers[0].n_spills > spill_threshold:
+            return True
+    except Exception:
+        return True
+
+    return False
+
+
 class ExternKernelSchedulerNode(BaseSchedulerNode):
     def __init__(self, scheduler: Scheduler, node: ir.Operation) -> None:
         super().__init__(scheduler)
@@ -3763,6 +3779,7 @@ class Scheduler:
             and isinstance(n.get_template_node(), ir.MultiTemplateBuffer)
             for n in (node1, node2)
         )
+
         if not config.benchmark_fusion and not is_multi_template:
             return True
 
@@ -3895,11 +3912,15 @@ class Scheduler:
             # Eagerly compile and benchmark non-template nodes
             choice_timings = multi_node.choice_timings()
             _, ms1 = multi_node.get_min_choice()
-            ms2, path2 = (
-                self.benchmark_fused_nodes(node_list_2)
-                if epilogue_fusion
-                else self.benchmark_fused_nodes(node_list_1)
-            )
+
+            ms2 = float("inf")
+            bench_epilogue = config.benchmark_epilogue_fusion
+            if bench_epilogue:
+                ms2, path2 = (
+                    self.benchmark_fused_nodes(node_list_2)
+                    if epilogue_fusion
+                    else self.benchmark_fused_nodes(node_list_1)
+                )
 
             # Start compiling choices in parallel
             future_choices: list[tuple[Any, Optional[LambdaFuture], ModuleType]] = []
@@ -3922,7 +3943,7 @@ class Scheduler:
                 ):
                     continue
 
-                if unfused_time >= ms1 + ms2:
+                if bench_epilogue and unfused_time >= ms1 + ms2:
                     break
 
                 triton_choices += 1
@@ -3956,21 +3977,32 @@ class Scheduler:
                                 str(e),
                             )
                         continue
-                    # pyrefly: ignore [missing-attribute]
-                    with multi_node.swap_as_triton_caller(choice):
-                        ms_fused, path = self.benchmark_codegened_module(
-                            mod_fused,
-                            # pyrefly: ignore [bad-argument-type]
-                            device,
-                        )
-                        new_timings[choice] = ms_fused
-                        if ms_fused < min_ms_fused:
-                            min_ms_fused = ms_fused
-                            ms_fused_choice = choice
 
-                log_fusion(min_ms_fused, ms1, ms2)
+                    if bench_epilogue:
+                        # pyrefly: ignore [missing-attribute]
+                        with multi_node.swap_as_triton_caller(choice):
+                            ms_fused, path = self.benchmark_codegened_module(
+                                mod_fused,
+                                # pyrefly: ignore [bad-argument-type]
+                                device,
+                            )
+                            new_timings[choice] = ms_fused
+                            if ms_fused < min_ms_fused:
+                                min_ms_fused = ms_fused
+                                ms_fused_choice = choice
+                    else:
+                        if compile_mod_fails_or_register_spills(mod_fused):
+                            continue
 
-                if min_ms_fused < (ms1 + ms2) and ms_fused_choice is not None:
+                        ms_fused_choice = choice
+                        break
+
+                if bench_epilogue:
+                    log_fusion(min_ms_fused, ms1, ms2)
+
+                if (
+                    not bench_epilogue or min_ms_fused < (ms1 + ms2)
+                ) and ms_fused_choice is not None:
                     if config.multi_kernel_hints:
                         hint_override_best_fusion_choice[None] = ms_fused_choice
                         # pyrefly: ignore [missing-attribute]

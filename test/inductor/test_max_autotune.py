@@ -34,6 +34,7 @@ from torch._inductor.select_algorithm import (
     add_feedback_saver,
     add_preprocessing_fn,
     AlgorithmSelectorCache,
+    autotune_select_algorithm,
     clear_feedback_savers,
     clear_preprocessing_fns,
     ExternKernelCaller,
@@ -43,6 +44,7 @@ from torch._inductor.select_algorithm import (
 from torch._inductor.template_heuristics.registry import override_template_heuristics
 from torch._inductor.template_heuristics.triton import (
     CUDAMMTemplateConfigHeuristic,
+    CUDAPersistentTMATemplateConfigHeuristic,
     GemmConfig,
 )
 from torch.testing._internal.common_cuda import PLATFORM_SUPPORTS_FP8
@@ -2543,6 +2545,87 @@ class TestMaxAutotune(TestCase):
             c_f = torch.compile(f, mode="max-autotune-no-cudagraphs")
             _, code_out = run_and_get_code(c_f, *args)
             FileCheck().check(output_code_padding_check).run(code_out[0])
+
+    @unittest.skipIf(not has_triton_tma_device(), "Need TMA support in Triton")
+    @config.patch(
+        max_autotune=True,
+        autotune_fallback_to_aten=False,
+        benchmark_epilogue_fusion=False,
+    )
+    def test_template_bad_epilogue_fusion(self):
+        def f(a, b):
+            return (a @ b).to(torch.float32)
+
+        a = torch.randn(512, 1152, device=GPU_TYPE, dtype=torch.bfloat16)
+        b = torch.randn(1152, 7680, device=GPU_TYPE, dtype=torch.bfloat16)
+
+        tma_heuristic = CUDAPersistentTMATemplateConfigHeuristic()
+        mm_heuristic = CUDAMMTemplateConfigHeuristic()
+
+        # Save original configs to restore later
+        original_tma_mm_configs = tma_heuristic.mm_configs
+        original_mm_mm_configs = mm_heuristic.mm_configs
+
+        bad_tma_config = GemmConfig(256, 128, 64, 4, 8, group_m=8)
+        good_tma_config = GemmConfig(128, 64, 64, 4, 8, group_m=8)
+
+        for gemm_config in [bad_tma_config, good_tma_config]:
+            torch._dynamo.reset()
+            tma_heuristic.mm_configs = [
+                gemm_config,
+            ]
+            # Regular mm template gets no configs
+            mm_heuristic.mm_configs = []
+
+            # Different paths:
+            # benchmark_epilogue_fusion: True -> always multi_template
+            # causes benchmarking always
+            # benchmark_epilogue_fusion: False -> TritonTemplateBuffer
+            # returns speedup_from_fusion automatically as True
+            # What we want: force multi template -> no benchmarking with safety
+            def autotune_select_algorithm_wrapper(original_fn):
+                def wrapper(*args, **kwargs):
+                    kwargs["return_multi_template"] = True
+                    return original_fn(*args, **kwargs)
+
+                return wrapper
+
+            try:
+                with (
+                    config.patch(
+                        {
+                            "triton.enable_persistent_tma_matmul": "1",
+                        }
+                    ),
+                    mock.patch(
+                        "torch._inductor.kernel.mm.autotune_select_algorithm",
+                        autotune_select_algorithm_wrapper(autotune_select_algorithm),
+                    ),
+                    mock.patch.object(
+                        # Patch so that aten always loses
+                        ExternKernelCaller,
+                        "benchmark",
+                        return_value=float("inf"),
+                    ),
+                    fresh_cache(),
+                ):
+                    compiled_f = torch.compile(f, mode="max-autotune")
+                    out, code = run_and_get_code(compiled_f, a, b)
+
+                    if gemm_config == good_tma_config:
+                        # Fusion should occur
+                        FileCheck().check("triton_tem_fused__to_copy_mm").run(code[0])
+                    else:
+                        # Fusion should fail to occur, unfused kernels
+                        FileCheck().check("triton_tem_fused_mm").check(
+                            "triton_poi_fused__to_copy"
+                        ).run(code[0])
+
+                    torch.testing.assert_close(out, f(a, b), atol=1e-2, rtol=1e-2)
+            finally:
+                # Restore original configs
+                tma_heuristic.mm_configs = original_tma_mm_configs
+                mm_heuristic.mm_configs = original_mm_mm_configs
 
 
 class TestMaxAutotunePrecompile(TestCase):
