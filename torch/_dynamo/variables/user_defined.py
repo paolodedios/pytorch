@@ -1888,10 +1888,16 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             # In optree, types can be registered globally (type in registry)
             # or with a namespace ((namespace, type) in registry)
             try:
+                import optree
                 from optree.registry import _NODETYPE_REGISTRY
 
                 # Check if registered globally
-                is_registered = self.value_type in _NODETYPE_REGISTRY
+                # Namedtuples and structseqs are implicitly pytree nodes
+                is_registered = (
+                    self.value_type in _NODETYPE_REGISTRY
+                    or optree.is_namedtuple_class(self.value_type)
+                    or optree.is_structseq_class(self.value_type)
+                )
 
                 # Also check if registered with a namespace that's being used
                 if not is_registered:
@@ -1933,7 +1939,12 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             # Check pytorch's pytree registry
             import torch.utils._pytree as pytree
 
-            is_registered = self.value_type in pytree.SUPPORTED_NODES
+            # Namedtuples and structseqs are implicitly pytree nodes
+            is_registered = (
+                self.value_type in pytree.SUPPORTED_NODES
+                or pytree.is_namedtuple_class(self.value_type)
+                or pytree.is_structseq_class(self.value_type)
+            )
 
         # If not registered, it's a leaf and we should apply the map_fn directly
         if not is_registered:
