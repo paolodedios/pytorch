@@ -435,6 +435,10 @@ def generate_ttir(
             return attrs
 
     specialization = _get_specialization(ordered_args.values())
+
+    # Triton explicitly interprets ASTSource.constants entries as constexpr
+    # (triton-lang/triton#8248). Thus, only arguments marked `is_constexpr`
+    # should be treated as such, not just non-tensor-like arguments.
     constants = {
         (i,): arg
         for i, ((_, arg), param) in enumerate(zip(ordered_args.items(), kernel.params))
