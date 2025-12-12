@@ -25,42 +25,6 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 
-@functools.cache
-def _make_key(
-    custom_params_encoder: Callable[..., Any] | None,
-    *args: Any,
-    **kwargs: Any,
-) -> str:
-    """Generate a cache key from function parameters.
-
-    This function is cached using functools.lru_cache to avoid recomputing
-    hashes for identical inputs.
-
-    Args:
-        custom_params_encoder: Optional encoder to apply to function parameters.
-                              If None, params are pickled directly.
-        *args: Positional arguments to encode.
-        **kwargs: Keyword arguments to encode.
-
-    Returns:
-        A 32-character hex string suitable for use as a cache key.
-    """
-    if custom_params_encoder is None:
-        # Pickle the parameters directly
-        pickled_params: bytes = pickle.dumps((args, kwargs))
-    else:
-        # Encode the parameters using the custom encoder
-        encoded_params = custom_params_encoder(*args, **kwargs)
-        # Pickle the encoded output
-        pickled_params = pickle.dumps(encoded_params)
-
-    # Hash the pickled bytes with SHA256
-    hash_obj = sha256(pickled_params)
-
-    # Get hex digest and truncate to 32 characters
-    return hash_obj.hexdigest()[:32]
-
-
 class _BaseMemoizer:
     """Base class for memoization interfaces.
 
@@ -70,6 +34,42 @@ class _BaseMemoizer:
 
     # Shared filepath for all Memoizer and PersistentMemoizer instances
     _SHARED_CACHE_FILEPATH = "/tmp/memoizer_cache.json"
+
+    @staticmethod
+    @functools.cache
+    def _make_key(
+        custom_params_encoder: Callable[..., Any] | None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> str:
+        """Generate a cache key from function parameters.
+
+        This function is cached using functools.lru_cache to avoid recomputing
+        hashes for identical inputs.
+
+        Args:
+            custom_params_encoder: Optional encoder to apply to function parameters.
+                                  If None, params are pickled directly.
+            *args: Positional arguments to encode.
+            **kwargs: Keyword arguments to encode.
+
+        Returns:
+            A 32-character hex string suitable for use as a cache key.
+        """
+        if custom_params_encoder is None:
+            # Pickle the parameters directly
+            pickled_params: bytes = pickle.dumps((args, kwargs))
+        else:
+            # Encode the parameters using the custom encoder
+            encoded_params = custom_params_encoder(*args, **kwargs)
+            # Pickle the encoded output
+            pickled_params = pickle.dumps(encoded_params)
+
+        # Hash the pickled bytes with SHA256
+        hash_obj = sha256(pickled_params)
+
+        # Get hex digest and truncate to 32 characters
+        return hash_obj.hexdigest()[:32]
 
     def record(
         self,
@@ -177,18 +177,105 @@ class Memoizer(_BaseMemoizer):
     contribute to the same file additively.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, sub_key: str | None = None) -> None:
         """Initialize the Memoizer instance with an in-memory cache.
 
+        Args:
+            sub_key: Optional sub_key for nested cache structure in dump file.
+                    If provided, cache entries are loaded from/saved to
+                    cache_entries[sub_key] in the JSON dump file.
+
         Registers an atexit handler to dump the cache to JSON on program exit.
+        Loads pre-populated cache from dump file if configured.
         """
         self._cache: implementations._InMemoryCacheImpl = (
             implementations._InMemoryCacheImpl()
         )
-        # Optional sub_key for nested cache structure (can be set externally)
-        self._sub_key: str | None = None
+        # Optional sub_key for nested cache structure
+        self._sub_key: str | None = sub_key
         # Register atexit handler to dump cache on program exit
         atexit.register(self._dump_cache_to_json)
+        # Load cache from dump file if configured (with sub_key now set)
+        self._load_cache_from_dump()
+
+    @staticmethod
+    @functools.cache
+    def _load_dump_file(dump_file_path: str) -> dict[str, Any] | None:
+        """Load and parse a JSON dump file (cached).
+
+        This method is cached so that multiple Memoizer instances can share
+        the parsed data without redundant file I/O and JSON parsing.
+
+        Args:
+            dump_file_path: Path to the JSON dump file to load.
+
+        Returns:
+            Parsed JSON data as a dict, or None if the file doesn't exist
+            or cannot be parsed.
+        """
+        try:
+            with open(dump_file_path) as f:
+                return json.load(f)
+        except FileNotFoundError:
+            # File doesn't exist - not an error, just skip loading
+            return None
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            # Dump file is corrupt or in wrong format - log warning but don't crash
+            print(f"Warning: Failed to load cache from {dump_file_path}: {e}")
+            return None
+
+    def _load_cache_from_dump(self) -> None:
+        """Load cache entries from a dump file if configured.
+
+        Checks the CACHE_DUMP_FILE_PATH config option for a path to a JSON dump file.
+        If a valid path is provided and the file exists, loads cache entries from it
+        into the in-memory cache.
+
+        For Memoizer instances without a sub_key, loads entries from the root cache_entries.
+        For Memoizer instances with a sub_key, loads entries from cache_entries[sub_key].
+
+        This method is called during __init__ to pre-populate the cache.
+        """
+        dump_file_path = config.CACHE_DUMP_FILE_PATH()
+
+        # Skip if no dump file configured
+        if not dump_file_path:
+            return
+
+        # Load the dump file (cached operation)
+        data = self._load_dump_file(dump_file_path)
+        if data is None:
+            return
+
+        # Get the cache_entries dict
+        cache_entries = data.get("cache_entries", {})
+
+        # Load entries based on sub_key
+        if self._sub_key:
+            # Load from nested structure
+            entries_to_load = cache_entries.get(self._sub_key, {})
+        else:
+            # Load from root level (but skip any nested structures)
+            entries_to_load = {
+                k: v
+                for k, v in cache_entries.items()
+                if isinstance(v, dict) and "params" in v and "result" in v
+            }
+
+        # Populate the cache
+        # Entry format is always: {"params": <encoded_params>, "result": <encoded_result>}
+        for key, entry in entries_to_load.items():
+            self._cache.insert(key, (entry["params"], entry["result"]))
+
+        if entries_to_load:
+            if self._sub_key:
+                print(
+                    f"Loaded {len(entries_to_load)} cache entries from {dump_file_path} (sub_key={self._sub_key})"
+                )
+            else:
+                print(
+                    f"Loaded {len(entries_to_load)} cache entries from {dump_file_path}"
+                )
 
     def _dump_cache_to_json(self) -> None:
         """Dump the in-memory cache to a shared JSON file.
@@ -228,6 +315,7 @@ class Memoizer(_BaseMemoizer):
         formatted_cache: dict[str, dict[str, Any]] = {}
         for key, value in self._cache._memory.items():
             # Value is stored as (encoded_params, encoded_result) tuple
+            cast(tuple[object, object], value)
             encoded_params, encoded_result = cast(tuple[object, object | _R], value)
             formatted_cache[key] = {
                 "params": encoded_params,
@@ -317,7 +405,7 @@ class Memoizer(_BaseMemoizer):
                 result = fn(*args, **kwargs)
 
                 # Generate cache key from parameters
-                cache_key = _make_key(custom_params_encoder, *args, **kwargs)
+                cache_key = self._make_key(custom_params_encoder, *args, **kwargs)
 
                 # Encode params for human-readable dump
                 if custom_params_encoder is not None:
@@ -403,7 +491,7 @@ class Memoizer(_BaseMemoizer):
                     KeyError: If no cached result exists for the given parameters.
                 """
                 # Generate cache key from parameters
-                cache_key = _make_key(custom_params_encoder, *args, **kwargs)
+                cache_key = self._make_key(custom_params_encoder, *args, **kwargs)
 
                 # Check if result is cached
                 cached_hit = self._cache.get(cache_key)
@@ -451,8 +539,15 @@ class PersistentMemoizer(_BaseMemoizer):
                     If non-empty, cache entries will be stored under cache_entries[sub_dir].
                     If empty, cache entries are merged into root cache_entries.
         """
+        # Store sub_dir for reference
+        self._sub_dir: str = str(sub_dir) if sub_dir else ""
+
         # Use a Memoizer instance for in-memory caching
-        self._memoizer: Memoizer = Memoizer()
+        # Pass sub_key directly so it's set before _load_cache_from_dump is called
+        self._memoizer: Memoizer = Memoizer(
+            sub_key=self._sub_dir if self._sub_dir else None
+        )
+
         # Store on-disk cache as a separate attribute
         self._disk_cache: implementations._OnDiskCacheImpl = (
             implementations._OnDiskCacheImpl(sub_dir)
@@ -527,7 +622,7 @@ class PersistentMemoizer(_BaseMemoizer):
                 result = memory_record_fn(*args, **kwargs)
 
                 # Also store in disk cache
-                cache_key = _make_key(custom_params_encoder, *args, **kwargs)
+                cache_key = self._make_key(custom_params_encoder, *args, **kwargs)
 
                 # Get the encoded result from memory cache
                 # We know it must be there since memory_record_fn just cached it
@@ -620,7 +715,7 @@ class PersistentMemoizer(_BaseMemoizer):
                     pass  # Memory miss, check disk
 
                 # Memory miss - check disk cache
-                cache_key = _make_key(custom_params_encoder, *args, **kwargs)
+                cache_key = self._make_key(custom_params_encoder, *args, **kwargs)
                 disk_hit = self._disk_cache.get(cache_key)
                 if disk_hit is not None:
                     # Disk cache hit - unpickle the bytes

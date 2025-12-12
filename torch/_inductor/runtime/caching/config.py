@@ -1,14 +1,33 @@
 import os
 from collections.abc import Callable
 from functools import cache, partial
+from typing import TypeVar
 
 import torch
 from torch._environment import is_fbcode
 
 
+T = TypeVar("T")
+
+
+@cache
+def _env_var_val(env_var: str, default: T) -> str | T:
+    """Get the value of an environment variable or return the default.
+
+    Args:
+        env_var: Environment variable name to check
+        default: Default value to return if environment variable is not set
+
+    Returns:
+        The value from the environment variable as a string, or the default if not set
+    """
+    return os.environ.get(env_var, default)
+
+
 @cache
 def _env_var_config(env_var: str, default: bool) -> bool:
-    if (env_val := os.environ.get(env_var)) is not None:
+    env_val = _env_var_val(env_var, None)
+    if env_val is not None:
         return env_val == "1"
     return default
 
@@ -69,4 +88,15 @@ IS_CACHING_MODULE_ENABLED: Callable[[], bool] = partial(
     _CACHING_MODULE_VERSION,
     _CACHING_MODULE_OSS_DEFAULT,
     _CACHING_MODULE_ENV_VAR_OVERRIDE,
+)
+
+
+# Path to a cache dump file to pre-populate in-memory caches on initialization
+# Set this via environment variable: TORCHINDUCTOR_CACHE_DUMP_FILE_PATH=/path/to/dump.json
+_CACHE_DUMP_FILE_PATH_ENV_VAR: str = "TORCHINDUCTOR_CACHE_DUMP_FILE_PATH"
+_CACHE_DUMP_FILE_PATH_DEFAULT: str | None = None
+CACHE_DUMP_FILE_PATH: Callable[[], str | None] = partial(
+    _env_var_val,
+    _CACHE_DUMP_FILE_PATH_ENV_VAR,
+    _CACHE_DUMP_FILE_PATH_DEFAULT,
 )
