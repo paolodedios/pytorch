@@ -41,7 +41,9 @@ SHARED_FLAG = '/DLL' if IS_WINDOWS else '-shared'
 _HERE = os.path.abspath(__file__)
 _TORCH_PATH = os.path.dirname(os.path.dirname(_HERE))
 TORCH_LIB_PATH = os.path.join(_TORCH_PATH, 'lib')
-
+# For binary wheels, transitive deps like OpenBLAS, libgfortran, etc. live here.
+TORCH_LIBS_PATH = os.path.join(os.path.dirname(_TORCH_PATH), 'torch.libs')
+HAS_TORCH_LIBS = os.path.isdir(TORCH_LIBS_PATH)
 
 SUBPROCESS_DECODE_ARGS = ('oem',) if IS_WINDOWS else ()
 MINIMUM_GCC_VERSION = (5, 0, 0)
@@ -2406,6 +2408,8 @@ def _prepare_ldflags(extra_ldflags, with_cuda, with_sycl, verbose, is_standalone
 
     else:
         extra_ldflags.append(f'-L{TORCH_LIB_PATH}')
+        if HAS_TORCH_LIBS:
+            extra_ldflags.append(f'-L{TORCH_LIBS_PATH}')
         extra_ldflags.append('-lc10')
         if with_cuda:
             extra_ldflags.append('-lc10_hip' if IS_HIP_EXTENSION else '-lc10_cuda')
@@ -2422,6 +2426,7 @@ def _prepare_ldflags(extra_ldflags, with_cuda, with_sycl, verbose, is_standalone
 
         if is_standalone:
             extra_ldflags.append(f"-Wl,-rpath,{TORCH_LIB_PATH}")
+            extra_ldflags.append(f"-Wl,-rpath-link,{TORCH_LIBS_PATH} ")
 
     if with_cuda:
         if verbose:
