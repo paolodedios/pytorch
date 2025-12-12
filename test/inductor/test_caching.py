@@ -1089,11 +1089,14 @@ class InterfacesTest(TestMixin, TestCase):
         self.assertEqual(result, 10)
         self.assertEqual(call_count, 1)
 
-        # Verify memory cache has the result
+        # Verify memory cache has the result as tuple (encoded_params, encoded_result)
         cache_key = interfaces._make_key(None, 5)
         memory_hit = persistent._memoizer._cache.get(cache_key)
         self.assertIsNotNone(memory_hit)
-        self.assertEqual(memory_hit.value, 10)
+        # Cache now stores (encoded_params, encoded_result) tuple
+        encoded_params, encoded_result = memory_hit.value
+        self.assertEqual(encoded_result, 10)
+        self.assertEqual(encoded_params, {"args": (5,), "kwargs": {}})
 
         # Verify disk cache has the result (pickled)
         disk_hit = persistent._disk_cache.get(cache_key)
@@ -1112,11 +1115,13 @@ class InterfacesTest(TestMixin, TestCase):
         # Setup: create a persistent memoizer and store only to disk
         persistent = interfaces.PersistentMemoizer(sub_dir=self.sub_dir())
 
-        # Store a value directly to disk cache only
+        # Store a value directly to disk cache only (as tuple format)
         cache_key = interfaces._make_key(None, 5)
         import pickle
 
-        pickled_value = pickle.dumps(10)
+        # Cache now stores (encoded_params, encoded_result) tuple
+        cached_tuple = ({"args": (5,), "kwargs": {}}, 10)
+        pickled_value = pickle.dumps(cached_tuple)
         persistent._disk_cache.insert(cache_key, pickled_value)
 
         # Verify it's not in memory cache yet
@@ -1137,7 +1142,9 @@ class InterfacesTest(TestMixin, TestCase):
         # Verify memory cache was populated from disk
         memory_hit = persistent._memoizer._cache.get(cache_key)
         self.assertIsNotNone(memory_hit)
-        self.assertEqual(memory_hit.value, 10)
+        # Memory cache should now contain the tuple
+        _, encoded_result = memory_hit.value
+        self.assertEqual(encoded_result, 10)
 
     @patch_on_disk_cache_base_dir
     @set_caching_module_enabled(True)
