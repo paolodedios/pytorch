@@ -118,6 +118,8 @@ blackwell_ws_persistent_device_tma_mm_template = TritonTemplate(
     source=load_kernel_template("triton_blackwell_ws_persistent_device_tma_mm"),
 )
 
+if inductor_config.enable_tlx():
+    from torch._inductor.fb.tlx_templates.mm_templates import tlx_blackwell_gemm_clc_template, tlx_blackwell_gemm_2cta_template
 
 # prevent duplication registration of extern functions
 @functools.cache
@@ -422,6 +424,10 @@ def tuned_mm(mat1, mat2, out_dtype=None, *, layout=None):
 
             if use_triton_blackwell_tma_template(mat1, mat2, output_layout=layout):
                 templates_to_use.append(blackwell_ws_persistent_device_tma_mm_template)
+
+            if inductor_config.enable_tlx():
+                templates_to_use.append(tlx_blackwell_gemm_clc_template)
+                templates_to_use.append(tlx_blackwell_gemm_2cta_template)
 
         templates_to_use.append(mm_contiguous_subgraph_template)
 

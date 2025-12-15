@@ -190,6 +190,10 @@ def gen_common_triton_imports() -> str:
         """
         import triton
         import triton.language as tl
+        try:
+            import triton.language.extra.tlx as tlx  # type: ignore
+        except ImportError as e:
+            print("Error importing module: ", e)
         """
     )
     if attr_desc := gen_attr_descriptor_import():

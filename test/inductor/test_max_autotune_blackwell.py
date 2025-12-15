@@ -291,6 +291,71 @@ class TestMaxAutotuneBlackwell(TestCase):
 
         torch.testing.assert_close(c_actual, c_expected, atol=1e-2, rtol=1e-2)
 
+    @unittest.skipIf(
+        not has_datacenter_blackwell_tma_device(),
+        "Need Blackwell with device-side TMA support in Triton",
+    )
+    @parametrize("template", ("blackwell_gemm_clc", "blackwell_gemm_2cta"))
+    @parametrize("dynamic", (False, True))
+    # @parametrize("tma_store", (False, True))
+    # @parametrize("epilogue_subtile", (False, True))
+    def test_tlx_mm(
+        self,
+        template: str,
+        dynamic: bool,
+        tma_store: bool = False,
+        epilogue_subtile: bool = False,
+    ):
+        a_transposed: bool = False
+        b_transposed: bool = False
+        def mm(a, b):
+            # TMA requires 16-byte alignment: here we repeat the dims
+            # by the factor of 8, as float16 is 2-byte. All dims are
+            # repeated due to the possible transpositions below.
+            # a = a.repeat(8, 8)
+            # b = b.repeat(8, 8)
+            if a_transposed:
+                a = a.T
+            if b_transposed:
+                b = b.T
+
+            return torch.mm(a, b)
+
+        def next_multiple_16(a: int) -> int:
+            return ((a + 15) // 16) * 16
+
+        M, N, K = 4096, 4096, 4096
+        a_shape = (K, M) if a_transposed else (M, K)
+        a_stride = (
+            (next_multiple_16(M), 1) if a_transposed else (next_multiple_16(K), 1)
+        )
+        a = torch.empty_strided(a_shape, a_stride, dtype=torch.float16).to(GPU_TYPE)
+        a[:] = torch.randn(a_shape, dtype=torch.float16)
+        a = a.to(GPU_TYPE)
+        b_shape = (N, K) if b_transposed else (K, N)
+        b_stride = (
+            (next_multiple_16(K), 1) if a_transposed else (next_multiple_16(N), 1)
+        )
+        b = torch.empty_strided(b_shape, b_stride, dtype=torch.float16)
+        b[:] = torch.randn(b_shape, dtype=torch.float16)
+        b = b.to(GPU_TYPE)
+
+        with config.patch(
+            {
+                "max_autotune": True,
+                "test_configs.autotune_choice_name_regex": template,
+            }
+        ):
+            c_actual, code = run_and_get_code(torch.compile(mm, dynamic=dynamic), a, b)
+            c_expected = mm(a, b)
+
+        torch.testing.assert_close(c_actual, c_expected, atol=1e-2, rtol=1e-2)
+
+        FileCheck().check("triton_tem_fused_mm").check(
+            "tlx.async_descriptor_load"
+        ).run(
+            code[0]
+        )
 
 if __name__ == "__main__":
     from torch._inductor.utils import is_big_gpu

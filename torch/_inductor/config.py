@@ -16,6 +16,17 @@ inplace_padding = os.environ.get("TORCHINDUCTOR_INPLACE_PADDING", "1") == "1"
 can_inplace_pad_graph_input = False  # ease testing
 
 
+def enable_tlx() -> bool:
+    if not is_fbcode():
+        return False
+    # TODO. add os.environ.get("TORCHINDUCTOR_ENABLE_TLX_TEMPLATE")
+    try:
+        import triton.language.extra.tlx as tlx  # type: ignore
+    except ImportError as _:
+        return False
+    return True
+
+
 def fx_graph_remote_cache_default() -> Optional[bool]:
     return get_tristate_env("TORCHINDUCTOR_FX_GRAPH_REMOTE_CACHE")
 

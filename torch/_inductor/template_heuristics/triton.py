@@ -26,6 +26,7 @@ from ..kernel.mm import (
     scaled_mm_device_tma_epilogue_scaling_template,
     scaled_mm_device_tma_main_loop_scaling_template,
 )
+
 from ..kernel.mm_plus_mm import mm_plus_mm_template
 from ..kernel_inputs import KernelInputs, MMKernelInputs
 from ..utils import (
@@ -319,6 +320,15 @@ class BaseConfigHeuristic(metaclass=BaseHeuristicSingleton):
             GemmConfig(256, 128, 64, 3, 8),
             GemmConfig(128, 128, 128, 3, 8),
         ]
+
+        if torch._inductor.config.enable_tlx():
+            from torch._inductor.fb.tlx_templates.config_heuristics import tlx_blackwell_gemm_clc_config, tlx_blackwell_gemm_2cta_config
+            self.blackwell_tlx_mm_clc_configs: list[BaseConfig] = [
+                GemmConfig(*config) for config in tlx_blackwell_gemm_clc_config
+            ]
+            self.blackwell_tlx_mm_2cta_configs: list[BaseConfig] = [
+                GemmConfig(*config) for config in tlx_blackwell_gemm_2cta_config
+            ]
 
         self.blackwell_persistent_addmm_configs: list[BaseConfig] = [
             GemmConfig(256, 128, 64, 2, 4),
@@ -2137,6 +2147,58 @@ class CUDABlackwellPersistentTMATemplateConfigHeuristic(
     def __init__(self) -> None:
         super().__init__()
         self.mm_configs = self.blackwell_persistent_mm_configs
+
+
+
+if inductor_config.enable_tlx():
+    from torch._inductor.fb.tlx_templates.mm_templates import tlx_blackwell_gemm_clc_template, tlx_blackwell_gemm_2cta_template
+    class BlackwellTLXTemplateConfigMixin(TMATemplateConfigMixin):
+        def _get_template_configs_impl(
+            self,
+            kernel_inputs: KernelInputs,
+            op_name: str,
+        ) -> Generator[dict[str, Any], None, None]:
+            """
+            Generate TLX template configs with TLX-specific buffer and barrier parameters.
+            """
+            from torch._inductor.fb.tlx_templates.config_heuristics import tlx_mm_template_common_options
+            # TLX-specific options
+            tlx_opts = tlx_mm_template_common_options
+
+            # Get base template configs from MMTemplateConfigMixin
+            for template_kwargs in super()._get_template_configs_impl(
+                kernel_inputs,
+                op_name,
+            ):
+                yield {**template_kwargs, **tlx_opts}
+
+    @register_template_heuristic(
+        tlx_blackwell_gemm_clc_template.uid,
+        "cuda",
+        register=torch.version.hip is None,
+    )
+    class CUDABlackwellTLXWSMMTemplateConfigHeuristic(
+        BlackwellTLXTemplateConfigMixin, CUDAConfigHeuristic
+    ):
+        """Blackwell TLX Warp-Specialized MM template using TLX primitives"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.mm_configs = self.blackwell_tlx_mm_clc_configs
+
+    @register_template_heuristic(
+        tlx_blackwell_gemm_2cta_template.uid,
+        "cuda",
+        register=torch.version.hip is None,
+    )
+    class CUDABlackwellTLXWSMMTemplateConfigHeuristic(
+        BlackwellTLXTemplateConfigMixin, CUDAConfigHeuristic
+    ):
+        """Blackwell TLX Warp-Specialized MM template using TLX primitives"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.mm_configs = self.blackwell_tlx_mm_2cta_configs
 
 
 @register_template_heuristic(
