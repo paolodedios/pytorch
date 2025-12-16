@@ -2256,6 +2256,10 @@ class TestLinalg(TestCase):
             w_only = torch.linalg.eigvals(a)
             self.assertEqual(w_only.shape, w.shape)
 
+            # move to CPU for better performance
+            w_only = w_only.cpu()
+            w = w.cpu()
+
             #check all eigenvalues found by eig are in eigvals output
             for batch_idx in itertools.product(*[range(s) for s in w.shape[:-1]]):
                 w_b = w[batch_idx]
