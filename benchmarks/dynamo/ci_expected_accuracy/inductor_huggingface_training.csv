@@ -86,6 +86,10 @@ RobertaForCausalLM,pass,5
 
 
 
+RobertaForCausalLM,pass,5
+
+
+
 T5ForConditionalGeneration,pass,5
 
 
