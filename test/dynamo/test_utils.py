@@ -425,6 +425,7 @@ class TestDynamoTimed(TestCase):
  'create_aot_dispatcher_function': [0.0],
  'fx_codegen_and_compile': [0.0, 0.0],
  'gc': [0.0],
+ 'insert_deferred_runtime_asserts': [0.0],
  'min_cut_rematerialization_partition': [0.0]}"""
                 if _IS_WINDOWS
                 else """\
@@ -457,6 +458,7 @@ class TestDynamoTimed(TestCase):
  'create_aot_dispatcher_function': [0.0],
  'fx_codegen_and_compile': [0.0, 0.0],
  'gc': [0.0],
+ 'insert_deferred_runtime_asserts': [0.0],
  'min_cut_rematerialization_partition': [0.0]}"""
             ),  # noqa: B950
         )
