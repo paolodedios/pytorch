@@ -163,6 +163,7 @@ They require JetPack 4.2 and above, and [@dusty-nv](https://github.com/dusty-nv)
 If you are installing from source, you will need:
 - Python 3.10 or later
 - A compiler that fully supports C++17, such as clang or gcc (gcc 9.4.0 or newer is required, on Linux)
+- Visual Studio or Visual Studio Build Tool (Windows only)
 
 \* PyTorch CI uses Visual C++ BuildTools, which come with Visual Studio Enterprise,
 Professional, or Community Editions. You can also install the build tools from
@@ -178,6 +179,7 @@ $ source <CONDA_INSTALL_DIR>/bin/activate
 $ conda create -y -n <CONDA_NAME>
 $ conda activate <CONDA_NAME>
 ```
+
 * Windows:
 
 ```bash
@@ -444,7 +446,6 @@ the new module, you might need to install torch [from source](#from-source).
 See [Docstring Guidelines](https://github.com/pytorch/pytorch/wiki/Docstring-Guidelines)
 for docstring conventions.
 
-
 ```bash
 cd docs/
 pip install -r requirements.txt
@@ -456,6 +457,14 @@ Run `make` to get a list of all available output formats.
 
 If you get a katex error run `npm install katex`.  If it persists, try
 `npm install -g katex`
+
+> [!NOTE]
+> If you installed `nodejs` with a different package manager (e.g.,
+> `conda`) then `npm` will probably install a version of `katex` that is not
+> compatible with your version of `nodejs` and doc builds will fail.
+> A combination of versions that is known to work is `node@6.13.1` and
+> `katex@0.13.18`. To install the latter with `npm` you can run
+> ```npm install -g katex@0.13.18```
 
 > [!NOTE]
 > If you see a numpy incompatibility error, run:
