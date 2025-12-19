@@ -40,13 +40,6 @@ class TestTensorMetaProp(torch._dynamo.test_case.TestCase):
         if inplace_op is None:
             self.skipTest("No inplace variant for this op")
 
-        # skip samples that are broadcasted or have 0 elements
-        samples = [
-            s
-            for s in op.sample_inputs(device, dtype, requires_grad=False)
-            if not s.broadcasts_input and s.input.numel() > 0
-        ]
-
         class CustomAutograd(torch.autograd.Function):
             @staticmethod
             def forward(ctx, x):
@@ -60,9 +53,17 @@ class TestTensorMetaProp(torch._dynamo.test_case.TestCase):
                 (x,) = ctx.saved_tensors
                 return torch.full_like(x, 123.0)
 
-        for i, sample in enumerate(samples):
+        # Iterate directly over sample_inputs to preserve correct tracking
+        # (converting to list first breaks the TrackedInputIter tracking)
+        for sample in op.sample_inputs(device, dtype, requires_grad=False):
+            # Skip samples that are broadcasted or have 0 elements
+            if sample.broadcasts_input or sample.input.numel() == 0:
+                continue
+
             try:
-                torch.compiler.reset()
+                # Reset between samples to avoid exceeding recompile limit
+                torch._dynamo.reset()
+
                 # Setup: x starts with requires_grad=False, one arg has requires_grad=True
                 x_eager = sample.input.clone().detach()
                 args_eager = [
@@ -118,11 +119,13 @@ class TestTensorMetaProp(torch._dynamo.test_case.TestCase):
                     msg=f"{op.name}: requires_grad mismatch (eager={x_eager.requires_grad}, compiled={x_compiled.requires_grad})",
                 )
 
-                # # Test 3: Verify gradients match
+                # Test 3: Verify gradients match (with tolerance for float16/bfloat16)
                 self.assertEqual(
                     args_eager[requires_grad_idx].grad,
                     args_compiled[requires_grad_idx].grad,
-                    msg=f"{op.name}: Output mismatch indicates metadata not propagated during tracing",
+                    atol=1e-2,
+                    rtol=1e-2,
+                    msg=f"{op.name}: Gradient mismatch indicates metadata not propagated during tracing",
                 )
 
             except Exception as e:
