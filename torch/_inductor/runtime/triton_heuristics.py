@@ -711,6 +711,10 @@ class CachingAutotuner(KernelInterface):
             compile_meta["num_buffers_warp_spec"] = getattr(
                 cfg, "num_buffers_warp_spec", 0
             )
+        # To support CUDA-native cluster launching of 2-CTA kernels
+        ctas_per_cga = getattr(cfg, "ctas_per_cga", None)
+        if ctas_per_cga is not None:
+            compile_meta["ctas_per_cga"] = ctas_per_cga
         compile_meta["debug"] = self.inductor_meta.get(
             "assert_indirect_indexing", True
         ) and not self.inductor_meta.get("is_hip", False)
@@ -754,6 +758,9 @@ class CachingAutotuner(KernelInterface):
                     "launch_pdl": compile_meta.get("launch_pdl", False),  # True
                 }
             )
+            # Add ctas_per_cga for CTA cluster launching (TLX/Blackwell)
+            if "ctas_per_cga" in compile_meta:
+                options["ctas_per_cga"] = compile_meta["ctas_per_cga"]
         if self.device_props.type == "hip":
             if "waves_per_eu" in compile_meta:
                 options["waves_per_eu"] = compile_meta["waves_per_eu"]
@@ -3533,6 +3540,7 @@ def template(
     triton_meta,
     num_consumer_groups=0,
     num_buffers_warp_spec=0,
+    ctas_per_cga=None,
     filename=None,
     inductor_meta=None,
 ):
@@ -3553,6 +3561,11 @@ def template(
                 "num_buffers_warp_spec": num_buffers_warp_spec,
             }
         )
+
+    # Add ctas_per_cga for CTA cluster launching (TLX/Blackwell)
+    if ctas_per_cga is not None:
+        config_args["ctas_per_cga"] = ctas_per_cga
+
     return cached_autotune(
         None,
         [triton.Config({}, **config_args)],

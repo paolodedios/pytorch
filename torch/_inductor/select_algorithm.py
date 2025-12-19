@@ -690,6 +690,13 @@ class TritonTemplateKernel(TritonKernel):
             num_buffers_warp_spec={self.num_buffers_warp_spec},
         """
 
+        # Add ctas_per_cga for CTA cluster launching (TLX/Blackwell)
+        ctas_per_cga = self.meta.get("ctas_per_cga")
+        if ctas_per_cga is not None:
+            template_args += f"""
+            ctas_per_cga={ctas_per_cga},
+        """
+
         return f"""
             @triton_heuristics.template(
                 {template_args}

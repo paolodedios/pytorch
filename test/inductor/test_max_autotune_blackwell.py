@@ -295,10 +295,12 @@ class TestMaxAutotuneBlackwell(TestCase):
         not has_datacenter_blackwell_tma_device() or not config.is_fbcode(),
         "Need Blackwell with device-side TMA support in Triton",
     )
+    @parametrize("template", ("blackwell_gemm_clc", "blackwell_gemm_2cta"))
     @parametrize("dynamic", (False, True))
     @parametrize("epilogue_subtile", (False, True))
     def test_tlx_mm(
         self,
+        template: str,
         dynamic: bool,
         epilogue_subtile: bool,
     ):
@@ -307,7 +309,6 @@ class TestMaxAutotuneBlackwell(TestCase):
 
             # TODO. remove try/except once TLX is available by default
 
-            template = "blackwell_gemm_clc"
             a_transposed: bool = False
             b_transposed: bool = False
 
