@@ -180,6 +180,35 @@ class TestInvokeSubgraphCompile(TestCase):
         self.assertEqual(x.grad, x_clone.grad)
         self.assertEqual(y.grad, y_clone.grad)
 
+    def test_stack_trace(self):
+        # Last frame in the stack trace on invoke_subgraph should point to
+        # model code, not files in torch._higher_order_ops directory.
+        class Mod(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.c = 5
+
+            @nested_compile_region
+            def forward(self, x, y):
+                return torch.mul(x, y).sin() + self.c
+
+        mod = Mod()
+
+        def fn(x, y):
+            return mod(x, y) + mod(x, y)
+
+
+        x = torch.randn(8)
+        y = torch.randn(8)
+        backend = AotEagerAndRecordGraphs()
+        torch.compile(fn, backend=backend, fullgraph=True)(x, y)
+
+        graph = backend.graphs[0]
+        invoke_subgraph_nodes = graph.graph.find_nodes(op="call_function", target=torch._higher_order_ops.invoke_subgraph)
+        for node in invoke_subgraph_nodes:
+            stack_trace = node.meta["stack_trace"]
+            self.assertTrue(stack_trace.endswith("return mod(x, y) + mod(x, y)\n"))
+
     def test_gen_schema(self):
         class Mod(torch.nn.Module):
             def __init__(self):
