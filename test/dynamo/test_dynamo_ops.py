@@ -130,17 +130,17 @@ class TestTensorMetaProp(torch._dynamo.test_case.TestCase):
 
             except Exception as e:
                 # Skip known issue patterns
-                error_str = str(e).lower()
-                if any(
-                    pattern in error_str
-                    for pattern in [
-                        "out=... arguments don't support automatic differentiation",
-                        "the base given to",  # dtype issue
-                        "derivative for",  # backward not implemented
-                        "does not require grad",  # weird CI issue
-                    ]
-                ):
-                    continue
+                # error_str = str(e).lower()
+                # if any(
+                #     pattern in error_str
+                #     for pattern in [
+                #         "out=... arguments don't support automatic differentiation",
+                #         "the base given to",  # dtype issue
+                #         "derivative for",  # backward not implemented
+                #         "does not require grad",  # weird CI issue
+                #     ]
+                # ):
+                #     continue
                 raise
 
 
