@@ -14,11 +14,7 @@ from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
     ops,
 )
-from torch.testing._internal.common_methods_invocations import (
-    op_db,
-    skip,
-    skipOps,
-)
+from torch.testing._internal.common_methods_invocations import op_db, skip, skipOps
 
 
 # Ops that fail the inplace requires_grad propagation test for known reasons
