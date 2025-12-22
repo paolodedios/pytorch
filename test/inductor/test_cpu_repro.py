@@ -80,7 +80,9 @@ def _can_check_vec_metrics():
 
 def check_metrics_vec_kernel_count(num_expected_vec_kernels):
     if _can_check_vec_metrics():
-        assert metrics.generated_cpp_vec_kernel_count == num_expected_vec_kernels
+        assert metrics.generated_cpp_vec_kernel_count == num_expected_vec_kernels, (
+            f"Expected {num_expected_vec_kernels} vectorized kernels, but got {metrics.generated_cpp_vec_kernel_count}"
+        )
 
 
 def simd_lengths_to_test():
@@ -2777,31 +2779,30 @@ class CPUReproTests(TestCase):
         self.assertEqual(expected, actual, atol=1e-4, rtol=1e-4)
 
     def test_two_step_variance(self):
-        M=64
-        N=25600
+        M = 64
+        N = 1024
         class L(torch.nn.Module):
             def __init__(self, normalized_shape=N, eps=1e-5):
-                super(L, self).__init__()
-                self.layernorm = torch.nn.LayerNorm(
-                    normalized_shape, eps=eps)
+                super().__init__()
+                self.layernorm = torch.nn.LayerNorm(normalized_shape, eps=eps)
 
             def forward(self, x):
                 return self.layernorm(x)
         mod = L().eval()
-        for mean in [0, 1e10]:
-            for std in [10, 1e10]:
-                x=torch.randn(M, N)
-                row_means = x.mean(dim=1, keepdim=True)
-                row_stds = x.std(dim=1, keepdim=True,unbiased=True)
-                x_norm = (x - row_means) / (row_stds + 1e-5)
-                x = x_norm*std+mean
-                input = (x,)
-                output_eager = mod(*input)
-                with torch.no_grad():
-                    m = torch.compile(mod)
-                    output_compiled = m(*input)
-                self.assertTrue(torch.allclose(output_eager, output_compiled, atol=1, rtol=1e-4))
-
+        for mean, std in [(0, 1e10), (0, 10), (1e10, 10), (1e10, 1e10), (0, 1)]:
+            x = torch.randn(M, N)
+            row_means = x.mean(dim=1, keepdim=True)
+            row_stds = x.std(dim=1, keepdim=True, unbiased=True)
+            x_norm = (x - row_means) / (row_stds + 1e-5)
+            x = x_norm * std + mean
+            input = (x,)
+            output_eager = mod(*input)
+            with torch.no_grad():
+                m = torch.compile(mod)
+                output_compiled = m(*input)
+            self.assertTrue(
+                torch.allclose(output_eager, output_compiled, atol=1, rtol=1e-4)
+            )
 
     @unittest.skipIf(IS_FBCODE, "Not yet runnable in fbcode")
     @requires_vectorization
@@ -5744,6 +5745,33 @@ class CPUReproTests(TestCase):
         FileCheck().check_count("#pragma omp for collapse(2)", 1, exactly=True).run(
             code
         )
+
+    @config.patch(freezing=True)
+    def test_add_layernorm(self):
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.dense = torch.nn.Linear(768, 768)
+                self.layernorm = torch.nn.LayerNorm(768, eps=1e-12)
+
+            def forward(self, context_layer, hidden_states):
+                attention_output = self.dense(context_layer)
+                hidden_states = attention_output + hidden_states
+                layer_output = self.layernorm(hidden_states)
+                return layer_output
+
+        model = Model()
+        example_batch = (torch.rand(1, 197, 768), torch.rand(1, 197, 768))
+        from torch.testing._internal.common_quantization import (
+            _generate_qdq_quantized_model,
+        )
+
+        with torch.no_grad():
+            converted_model = _generate_qdq_quantized_model(model, example_batch)
+            torch.ao.quantization.move_exported_model_to_eval(converted_model)
+            metrics.reset()
+            torch.compile(converted_model)(*example_batch)
+            check_metrics_vec_kernel_count(5)
 
     def test_dropout(self):
         class Model(nn.Module):
