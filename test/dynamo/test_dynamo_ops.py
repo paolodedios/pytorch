@@ -136,8 +136,14 @@ class TestTensorMetaProp(torch._dynamo.test_case.TestCase):
             def compile_time_check(ctx: ComptimeContext) -> None:
                 x = ctx.get_local("x")
                 x_fake = x.as_fake()
+                # Check requires_grad is propagated
                 self.assertTrue(x_fake.requires_grad)
                 self.assertTrue(x._ComptimeVar__variable.requires_grad)
+                # Check that has_grad_fn is set (not for FakeTensor)
+                self.assertTrue(x._ComptimeVar__variable.has_grad_fn)
+                # Check dtype is preserved
+                self.assertEqual(x_fake.dtype, dtype)
+                self.assertEqual(x._ComptimeVar__variable.dtype, dtype)
 
             def fn(x, *args):
                 inplace_op(x, *args, **sample.kwargs)
