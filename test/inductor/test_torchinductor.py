@@ -574,7 +574,6 @@ def check_model(
             equal_nan=True,
             exact_dtype=exact_dtype,
             exact_stride=exact_stride,
-            msg=str(actual[12][2568])+"," + str(correct[12][2568]),
         )
         # In case of input mutations, check that inputs are the same
         # (This never uses a custom assert_equal fn.)
