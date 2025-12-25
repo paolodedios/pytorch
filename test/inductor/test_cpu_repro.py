@@ -2781,6 +2781,7 @@ class CPUReproTests(TestCase):
     def test_two_step_variance(self):
         M = 64
         N = 1024
+
         class L(torch.nn.Module):
             def __init__(self, normalized_shape=N, eps=1e-5):
                 super().__init__()
@@ -2788,6 +2789,7 @@ class CPUReproTests(TestCase):
 
             def forward(self, x):
                 return self.layernorm(x)
+
         mod = L().eval()
         for mean, std in [(0, 1e10), (0, 10), (1e10, 10), (1e10, 1e10), (0, 1)]:
             x = torch.randn(M, N)
