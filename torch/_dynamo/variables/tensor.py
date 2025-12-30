@@ -813,10 +813,6 @@ class TensorVariable(VariableTracker):
             *proxy_args_kwargs([self, *args], kwargs),
         )
 
-        # [Note: Inplace ops and VariableTracker metadata]
-        # For inplace operations (methods ending with _), we need to propagate
-        # tensor metadata from the arguments to self. For example:
-        #   x.add_(y) where y.requires_grad=True => x.requires_grad becomes True
         if name.endswith("_"):
             self._propagate_inplace_metadata(tx, proxy)
 
@@ -1398,6 +1394,17 @@ class TensorVariable(VariableTracker):
             tx: InstructionTranslator instance
             proxy: The proxy node representing the inplace operation
         """
+        # [Note: Inplace Operations and VariableTracker metadata]
+        # At this point, we proxied a node representing an inplace operation into the graph.
+        # When executed, this node will mutate `self`'s tensor metadata, so it's important
+        # even during tracing to propagate. For example:
+        #   value.requires_grad is True => self.requires_grad becomes True
+        #   value.requires_grad is True => self.has_grad_fn becomes True
+
+        # The fake tensor execution already computes the correct metadata.
+
+        # Not sure if __setitem__ can ever save activations, disabling just in case
+
         # Ignore fresh unbacked symbols that could arise from the internal indexing (selection),
         # that happen in code like t[idx] += 1 when idx is unbacked. Namely the selection
         # during 'setitem'.
@@ -1405,6 +1412,7 @@ class TensorVariable(VariableTracker):
         # storage offset in select_meta, but the output of the operation 'setitem' does not depend
         # on the selection.
         with (
+            torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing(),
             tx.fake_mode.shape_env.ignore_fresh_unbacked_symbols()
             if tx.fake_mode and tx.fake_mode.shape_env
             else nullcontext(),
@@ -1426,17 +1434,7 @@ class TensorVariable(VariableTracker):
         )
 
         if value.is_tensor():
-            # [Note: Tensor.__setitem__ and VariableTracker metadata]
-            # At this point, we proxied a node representing `self[key] = value` into the graph.
-            # When executed, this node will mutate `self`'s tensor metadata, so it's important
-            # even during tracing to propagate. For example:
-            #   value.requires_grad is True => self.requires_grad becomes True
-            #   value.requires_grad is True => self.has_grad_fn becomes True
-            # The fake tensor execution already computes the correct metadata.
-
-            # Not sure if __setitem__ can ever save activations, disabling just in case
-            with torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing():
-                self._propagate_inplace_metadata(tx, proxy)
+            self._propagate_inplace_metadata(tx, proxy)
 
         if config.use_graph_deduplication or config.track_nodes_for_deduplication:
             tx.output.region_tracker.add_node_mutation(proxy.node, 0)
