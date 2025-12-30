@@ -6343,7 +6343,7 @@ def var_mean_sum_(x, axis, correction, keepdim, return_mean):
     return x_var, x_mean
 
 
-def use_two_step_variance(x, axis, keepdim):
+def use_two_step_variance(x, axis, keepdim, threshold=1024):
     # Instead of unrolling welford, just unroll the simpler two-step var
     axis = _validate_reduction_axis(x, axis)
     kwargs = _make_reduction_inner(
@@ -6352,10 +6352,9 @@ def use_two_step_variance(x, axis, keepdim):
 
     ranges = kwargs["ranges"]
     reduction_numel = sympy_product(kwargs["reduction_ranges"])
-    two_step_variance_threshold = 1024
     return (
         isinstance(reduction_numel, sympy.Integer)
-        and int(reduction_numel) <= two_step_variance_threshold
+        and int(reduction_numel) <= threshold
         and sympy_product(ranges) != 1
     )
 
