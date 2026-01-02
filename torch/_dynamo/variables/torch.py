@@ -1,6 +1,3 @@
-# mypy: allow-untyped-decorators
-# mypy: allow-untyped-defs
-
 """
 This module implements variable tracking for torch functions and operations during Dynamo tracing.
 
@@ -919,7 +916,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
 
         @register(torch.jit.annotate)
         def handle_jit_annotate(
-            self, tx: "InstructionTranslator", the_type: T, the_value: V
+            self, tx: "InstructionTranslator", the_type: Any, the_value: V
         ) -> V:
             return the_value
 
