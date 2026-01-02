@@ -813,7 +813,14 @@ class TensorVariable(VariableTracker):
             *proxy_args_kwargs([self, *args], kwargs),
         )
 
-        if name.endswith("_"):
+        # [Note: Inplace ops and VariableTracker metadata]
+        # For inplace operations (methods ending with _), we need to propagate
+        # tensor metadata from the arguments to self. For example:
+        #   x.add_(y) where y.requires_grad=True => x.requires_grad becomes True
+        # We only do this when there's a tensor argument, since that's when metadata
+        # propagation is relevant. Shape-changing inplace ops (unsqueeze_, etc.) have
+        # scalar args and shouldn't trigger early fake tensor execution.
+        if name.endswith("_") and any(arg.is_tensor() for arg in args):
             self._propagate_inplace_metadata(tx, proxy)
 
         return wrap_fx_proxy(tx, proxy)
@@ -1387,7 +1394,7 @@ class TensorVariable(VariableTracker):
         proxy: torch.fx.Proxy,
     ) -> None:
         """
-        Propagate tensor metadata from source_var to self after an inplace operation.
+        Propagate tensor metadata to self after an inplace operation.
         This ensures that properties like requires_grad are correctly tracked during tracing.
 
         Args:
