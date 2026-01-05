@@ -56,19 +56,23 @@ class CacheDumpEntry(TypedDict):
 class CacheDump(TypedDict):
     """The structure of the memoizer cache dump file.
 
-    The cache_entries field contains either:
-    - Direct entries: {cache_key: CacheDumpEntry} when no sub_key is used
-    - Nested entries: {sub_key: {cache_key: CacheDumpEntry}} when sub_key is set
+    Cache entries are organized into two separate fields:
+    - singletons: Direct cache entries from Memoizers without a sub_key
+    - collections: Nested cache entries organized by sub_key
 
     Multiple Memoizer instances with different sub_keys can coexist in the same file.
 
     Attributes:
-        cache_entries: Dictionary mapping cache keys (or sub_keys) to cache entries.
-        cache_size: The total number of cache entries. When sub_keys are used,
-            this is the sum of entries across all sub_keys.
+        singletons: Dictionary mapping cache keys directly to cache entries.
+            Used by Memoizers without a sub_key.
+        collections: Dictionary mapping sub_keys to their cache entries.
+            Used by Memoizers with a sub_key.
+        cache_size: The total number of cache entries across both singletons
+            and all collections.
     """
 
-    cache_entries: dict[str, CacheDumpEntry | dict[str, CacheDumpEntry]]
+    singletons: dict[str, CacheDumpEntry]
+    collections: dict[str, dict[str, CacheDumpEntry]]
     cache_size: int
 
 
@@ -242,6 +246,8 @@ class DeferredRecording(Generic[_R, _EncodedR]):
             if self._callbacks is None:
                 # Already finalized - invoke immediately while holding lock
                 # to maintain ordering with respect to other callbacks
+                # we need to cast here, we can't assert because the encoded
+                # result may genuinely be None
                 callback(cast(_EncodedR, self._encoded_result))
             else:
                 self._callbacks.append(callback)
@@ -520,7 +526,7 @@ class Memoizer(_BaseMemoizer):
                     If provided, cache entries are stored under cache_entries[sub_key].
                     If None, cache entries are merged directly into root cache_entries.
         """
-        self._cache: implementations._InMemoryCacheImpl = (
+        self._cache: implementations._InMemoryCacheImpl[CacheEntry] = (
             implementations._InMemoryCacheImpl()
         )
         # Optional sub_key for nested cache structure
@@ -607,7 +613,7 @@ class Memoizer(_BaseMemoizer):
         try:
             with open(target_path) as f:
                 data = json.load(f)
-                return cast(CacheDump, data)
+                return data
         except FileNotFoundError:
             return None
         except json.JSONDecodeError:
@@ -663,16 +669,18 @@ class Memoizer(_BaseMemoizer):
         if existing_dump is not None:
             dump = existing_dump
         else:
-            dump: CacheDump = {"cache_entries": {}, "cache_size": 0}
+            dump: CacheDump = {"singletons": {}, "collections": {}, "cache_size": 0}
 
-        # Ensure cache_entries exists
-        if "cache_entries" not in dump:
-            dump["cache_entries"] = {}
+        # Ensure fields exist
+        if "singletons" not in dump:
+            dump["singletons"] = {}
+        if "collections" not in dump:
+            dump["collections"] = {}
 
         # Format cache entries as {"params": ..., "result": ...}
         formatted_cache: dict[str, CacheDumpEntry] = {}
         for key, value in self._cache._memory.items():
-            entry = cast(CacheEntry, value)
+            entry = value
             formatted_cache[key] = CacheDumpEntry(
                 params=entry.encoded_params,
                 result=entry.encoded_result,
@@ -680,25 +688,16 @@ class Memoizer(_BaseMemoizer):
 
         # Merge based on sub_key
         if self._sub_key:
-            # Store under sub_key
-            dump["cache_entries"][self._sub_key] = formatted_cache
+            # Store under sub_key in collections
+            dump["collections"][self._sub_key] = formatted_cache
         else:
-            # Merge directly into cache_entries
-            dump["cache_entries"].update(formatted_cache)
+            # Merge directly into singletons
+            dump["singletons"].update(formatted_cache)
 
-        # Calculate total cache size across all entries
-        total_size = 0
-        for value in dump["cache_entries"].values():
-            if isinstance(value, dict):
-                # Check if it's a CacheDumpEntry (has 'params' and 'result') or a sub_key dict
-                if "params" in value and "result" in value:
-                    # Direct entry
-                    total_size += 1
-                else:
-                    # Sub_key with nested entries
-                    total_size += len(value)
-            else:
-                total_size += 1
+        # Calculate total cache size
+        total_size = len(dump["singletons"])
+        for collection in dump["collections"].values():
+            total_size += len(collection)
         dump["cache_size"] = total_size
 
         return dump
@@ -790,19 +789,13 @@ class Memoizer(_BaseMemoizer):
         Returns:
             Dictionary of cache entries to load.
         """
-        cache_entries = dump.get("cache_entries", {})
-
         if self._sub_key:
-            # Load from nested structure
-            entries = cache_entries.get(self._sub_key, {})
-            return cast(dict[str, CacheDumpEntry], entries)
+            # Load from collections
+            collections = dump.get("collections", {})
+            return collections.get(self._sub_key, {})
         else:
-            # Load from root level (but skip any nested structures)
-            return {
-                k: cast(CacheDumpEntry, v)
-                for k, v in cache_entries.items()
-                if isinstance(v, dict) and "params" in v and "result" in v
-            }
+            # Load from singletons
+            return dump.get("singletons", {})
 
     def _populate_cache_from_entries(self, entries: dict[str, CacheDumpEntry]) -> None:
         """Populate the in-memory cache from dump entries.
@@ -994,7 +987,7 @@ class Memoizer(_BaseMemoizer):
                 cached_hit = self._cache.get(cache_key)
                 if cached_hit is not None:
                     # Extract the cached value
-                    cache_entry = cast(CacheEntry, cached_hit.value)
+                    cache_entry = cached_hit.value
 
                     # Decode and return the cached result
                     if custom_result_decoder is not None:
@@ -1009,7 +1002,6 @@ class Memoizer(_BaseMemoizer):
                 # Check for pending deferred recording with interim result
                 pending = self._pending_deferred.get(cache_key)
                 if pending is not None:
-                    pending = cast(DeferredRecording[_R, _EncodedR], pending)
                     interim = pending.get_interim_result()
                     if interim is not None:
                         return interim.value
@@ -1147,7 +1139,6 @@ class PersistentMemoizer(_BaseMemoizer):
                 # Check if this was a deferred recording
                 pending = self._memoizer._pending_deferred.get(cache_key)
                 if pending is not None:
-                    pending = cast(DeferredRecording[_R, _EncodedR], pending)
                     # Deferred recording - register our own callback for disk persistence
                     # By the time our callback runs, Memoizer's callback will have
                     # already inserted the cache entry, so we just read and persist it
@@ -1186,7 +1177,7 @@ class PersistentMemoizer(_BaseMemoizer):
         # Always read from memory cache - Memoizer's callback has already inserted it
         cached_hit = self._memoizer._cache.get(cache_key)
         assert cached_hit, "Cache entry must exist in memory cache"
-        cache_entry = cast(CacheEntry, cached_hit.value)
+        cache_entry = cached_hit.value
 
         # Store the full CacheEntry in disk cache for easier debugging
         pickled_entry: bytes = pickle.dumps(cache_entry)

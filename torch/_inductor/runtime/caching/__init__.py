@@ -1,3 +1,5 @@
+# pyre-strict
+
 from . import config, encoders, memoizers
 from .context import IsolationSchema, SelectedCompileContext, SelectedRuntimeContext
 from .exceptions import (

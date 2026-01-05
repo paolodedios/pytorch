@@ -1,3 +1,5 @@
+# pyre-strict
+
 from pathlib import Path
 
 from .interfaces import PersistentMemoizer

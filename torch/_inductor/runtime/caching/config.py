@@ -1,3 +1,5 @@
+# pyre-strict
+
 import os
 from collections.abc import Callable
 from functools import cache, partial

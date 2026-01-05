@@ -1,3 +1,5 @@
+# pyre-strict
+
 """Lock acquisition utilities for caching system with timeout support.
 
 This module provides safe and unsafe lock acquisition functions for both threading.Lock
