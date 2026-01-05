@@ -1,6 +1,6 @@
 # pyre-strict
 
-from . import config, encoders, memoizers
+from . import config, decoders, encoders, memoizers
 from .context import IsolationSchema, SelectedCompileContext, SelectedRuntimeContext
 from .exceptions import (
     CacheError,
@@ -29,6 +29,7 @@ __all__ = [
     "UserError",
     "ValueDecodingError",
     "ValueEncodingError",
+    "decoders",
     "encoders",
     "memoizers",
 ]
