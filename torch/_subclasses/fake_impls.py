@@ -209,8 +209,6 @@ def constructors(
     _, new_kwargs = _normalize_function_or_error(
         func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True
     )
-    assert res is not None
-    _, new_kwargs = res
     if "names" in kwargs:
         # REASON: "torch.compile doesn't support named tensors"
         raise UnsupportedOperatorException(func)
