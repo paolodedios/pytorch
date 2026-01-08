@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, TYPE_CHECKING
 
 import torch
-from torch.onnx._internal._lazy_import import onnx, onnxscript_apis, onnxscript_ir as ir
+from torch.onnx._internal._lazy_import import onnx, onnx_ir as ir, onnxscript_apis
 from torch.onnx._internal.exporter import _dynamic_shapes, _ir_passes
 from torch.utils import _pytree
 
@@ -451,6 +451,23 @@ ONNXProgram(
         if self._tempdir is not None:
             self._tempdir.cleanup()
             self._tempdir = None
+
+    def rename_axes(self, rename_mapping: dict[str | ir.SymbolicDim, str]) -> None:
+        """Rename axes in a model according to the specified rename mapping.
+
+        Example::
+            batch = onnx_program.model.graph.inputs[0].shape[0]
+            seq_len = onnx_program.model.graph.inputs[0].shape[2]
+            rename_mapping = {
+                batch: "batch",
+                seq_len: "seq_len",
+            }
+            onnx_program.rename_axes(rename_mapping)
+
+        Args:
+            rename_mapping: A dictionary mapping old axis names to new axis names.
+        """
+        _ir_passes.rename_axis(self.model, rename_mapping)
 
     def _rename_dynamic_axes(
         self,
