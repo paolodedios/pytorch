@@ -46,7 +46,6 @@ from torch._dynamo.variables.torch_function import TorchFunctionModeVariable
 from torch._guards import Source, TracingContext
 from torch._logging import warning_once
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass_type
-
 from .. import config, graph_break_hints, polyfills, variables
 from ..codegen import PyCodegen
 from ..create_parameter_op import (
@@ -544,7 +543,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             return _register
 
         from torch.backends.cuda import SDPAParams
-
         from . import (
             ConstantVariable,
             DeterministicAlgorithmsVariable,
@@ -2059,7 +2057,6 @@ For now, dynamo will explicitly graph break when it encounters user code with th
         )
         from torch._subclasses.fake_tensor import fake_tensor_tls
         from torch.utils._pytree import tree_flatten
-
         from .base import AsPythonConstantNotImplementedError
         from .builder import wrap_fx_proxy
 
