@@ -1102,7 +1102,7 @@ def find_symbol_binding_fx_nodes(
     return r
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Specialization:
     """
     This class is used in multi-graph compilation contexts where we generate
@@ -1117,7 +1117,7 @@ class Specialization:
 
 
 # Analogous to ConvertIntSource
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ConvertIntKey:
     def __str__(self) -> str:
         return ".cast_symbool_to_symint_guardless()"
@@ -1127,7 +1127,7 @@ class ConvertIntKey:
         return cast_symbool_to_symint_guardless(b)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallMethodKey:
     name: str
 
@@ -1139,7 +1139,7 @@ class CallMethodKey:
         return getattr(o, self.name)()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InnerTensorKey:
     inner_name: str
 
@@ -1151,7 +1151,7 @@ class InnerTensorKey:
         return getattr(o, self.inner_name)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class DivideByKey:
     divisor: IntLikeType
 
@@ -1912,12 +1912,12 @@ class DimDynamic(Enum):
 # eager code with StrictMinMaxConstraint will keep working in the future!
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Constraint:
     warn_only: bool
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StrictMinMaxConstraint(Constraint):
     """
     For clients: the size at this dimension must be within 'vr' (which
@@ -1946,7 +1946,7 @@ class StrictMinMaxConstraint(Constraint):
         return f"{self.vr.lower} <= {source.name} <= {self.vr.upper}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RelaxedUnspecConstraint(Constraint):
     """
     For clients: no explicit constraint; constraint is whatever is implicitly
@@ -1977,7 +1977,7 @@ class RelaxedUnspecConstraint(Constraint):
 DimConstraint = Union[StrictMinMaxConstraint, RelaxedUnspecConstraint, None]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class EqualityConstraint(Constraint):
     """
     Represent and decide various kinds of equality constraints between input sources.
@@ -2119,7 +2119,7 @@ def _has_uninterpretable_sympy_function(expr: sympy.Basic) -> bool:
     )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SymbolicContext:
     """
     Data structure specifying how we should create symbols in
@@ -2132,7 +2132,7 @@ class SymbolicContext:
     """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SymIntSymbolicContext(SymbolicContext):
     """
     Data structure specifying any constraints on a SymInt input
@@ -2145,7 +2145,7 @@ _P1 = ParamSpec("_P1")
 _T1 = TypeVar("_T1")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StatelessSymbolicContext(SymbolicContext, Generic[_P1, _T1]):
     """
     Create symbols in ``create_symbolic_sizes_strides_storage_offset`` via
@@ -2213,7 +2213,7 @@ class StatelessSymbolicContext(SymbolicContext, Generic[_P1, _T1]):
 # created with new fake modes should produce the same exact symbols as the original, providing the same shape_env
 # is used.
 # TODO(voz): Shape env validation
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StatefulSymbolicContext(StatelessSymbolicContext):
     """
     Create symbols in ``create_symbolic_sizes_strides_storage_offset`` via
@@ -2248,7 +2248,7 @@ class StatefulSymbolicContext(StatelessSymbolicContext):
             object.__setattr__(self, "shape_env_to_source_to_symbol_cache", {})
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SubclassSymbolicContext(StatefulSymbolicContext):
     """
     The correct symbolic context for a given inner tensor of a traceable tensor subclass
@@ -2658,7 +2658,7 @@ def _lru_cache(
     return wrapper  # type: ignore[return-value]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RuntimeAssert:
     """
     This is pretty similar to ShapeGuard but it also comes with a message,
@@ -2861,13 +2861,13 @@ class _ShapeGuardCppPrinter(_ShapeGuardPrinter, CppPrinter):
 
 
 # A dataclass for storing shape guards
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _ShapeGuardsHelper:
     exprs: list[str]
 
 
 # A dataclass for storing C++ expressions and helper variables
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _CppShapeGuardsHelper(_ShapeGuardsHelper):
     source_to_symbol: dict[Source, sympy.Symbol]
 
@@ -3639,7 +3639,7 @@ class DimConstraints:
 TLS = threading.local()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ShapeEnvSettings:
     """
     Encapsulates all shape env settings that could potentially affect
