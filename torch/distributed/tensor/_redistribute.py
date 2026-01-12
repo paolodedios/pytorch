@@ -1704,6 +1704,7 @@ def _redistribute_backward(
             tensor_meta=TensorMeta(
                 shape=grad_output.shape,
                 stride=grad_output.stride(),
+                # pyrefly: ignore [bad-argument-type]
                 dtype=backward_dtype,
             ),
         )
