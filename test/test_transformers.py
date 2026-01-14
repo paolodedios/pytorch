@@ -2685,7 +2685,9 @@ class TestSDPACudaOnly(NNTestCase):
                     attn_mask=None, dropout_p=0.0, is_causal=False)
             self.assertEqual(actual.contiguous(), math_ref.contiguous().to(dtype), atol=1e-3, rtol=1e-2)
 
-        if torch.cuda.get_device_capability() in [(9, 0)]:
+        # head_dim=256 support on SM 9.0 requires cuDNN >= 9.10.0 (91000) per sdp_utils.cpp:495
+        cudnn_version = torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else 0
+        if torch.cuda.get_device_capability() == (9, 0) and cudnn_version >= 91000:
             test()
         else:
             with self.assertRaisesRegex(RuntimeError, "No available kernel."):
@@ -3221,10 +3223,13 @@ class TestSDPACudaOnly(NNTestCase):
         if "cuda" in str(device):
             device_capability = torch.cuda.get_device_capability()
         prefer_cudnn = "TORCH_CUDNN_SDPA_PREFERRED" not in os.environ or bool(os.environ["TORCH_CUDNN_SDPA_PREFERRED"])
-        prefer_cudnn = prefer_cudnn and device_capability and (device_capability == (9, 0) or device_capability == (10, 0))
+        # cuDNN prioritization requires cuDNN >= 9.9.0 (90900) per sdp_utils.cpp:83
+        cudnn_version = torch.backends.cudnn.version() if torch.backends.cudnn.is_available() else 0
+        is_hopper_or_newer = device_capability and (device_capability == (9, 0) or device_capability == (10, 0))
+        prefer_cudnn = prefer_cudnn and is_hopper_or_newer and cudnn_version >= 90900
 
-        # TODO we are currently disabling this by default, lets assert that this returns
-        # FlashAttention, we need to change when we make remove opt-in for cudnn
+        # cuDNN is enabled by default on SM 9.0/10.0 with cuDNN >= 9.9.0 (per #162073)
+        # For older cuDNN versions or other architectures, Flash Attention is preferred
         if type != "nested" and PLATFORM_SUPPORTS_CUDNN_ATTENTION and prefer_cudnn:
             self.assertEqual(torch._fused_sdp_choice(query, key, value), SDPBackend.CUDNN_ATTENTION.value)
         elif PLATFORM_SUPPORTS_FLASH_ATTENTION:
@@ -3248,7 +3253,6 @@ class TestSDPACudaOnly(NNTestCase):
 
         assert torch._fused_sdp_choice(query, key, value) == SDPBackend.EFFICIENT_ATTENTION.value
 
-    @skipIfRocm  # Missing triton.float32 ("triton" prefix is to locate skipped UTs), and deterministic algo
     @unittest.skipIf(not PLATFORM_SUPPORTS_MEM_EFF_ATTENTION, "Platform does not support fused SDPA")
     @parametrize("warn_only", [True, False])
     def test_sdp_choice_with_determinism(self, device, warn_only):
@@ -4237,7 +4241,7 @@ class TestSDPAXpuOnly(NNTestCase):
 
     def test_default_priority_order(self, device):
         # The default priority order of xpu is overridable, math, flash, efficient, cudnn
-        # For xpu backend, we need to make sure that overridable > math > flash
+        # For xpu backend, we need to make sure that overridable > flash > math
         dtype = torch.bfloat16
         shape = SdpaShape(1, 1, 1, 1)
         make_tensor = partial(torch.rand, shape, device=device, dtype=dtype)
@@ -4249,8 +4253,8 @@ class TestSDPAXpuOnly(NNTestCase):
         flash_index = default_priority.index(SDPBackend.FLASH_ATTENTION)
         overrideable_index = default_priority.index(SDPBackend.OVERRIDEABLE)
         math_index = default_priority.index(SDPBackend.MATH)
-        self.assertTrue(overrideable_index < math_index < flash_index,
-                        f"Expected overrideable < math < flash, got {overrideable_index}, {math_index}, {flash_index}")
+        self.assertTrue(overrideable_index < flash_index < math_index,
+                        f"Expected overrideable < flash < math, got {overrideable_index}, {flash_index}, {math_index}")
 
     def test_onednn_attention_different_dk_dv(self, device):
         dtype = torch.bfloat16
@@ -4549,33 +4553,6 @@ class TestSDPAXpuOnly(NNTestCase):
                 F.scaled_dot_product_attention(q, k, v, dropout_p=0.1)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_XPU_FLASH_ATTENTION, "XPU Flash Attention is not supported")
-    def test_flash_attention_unsupport_bhsd_layout(self, device):
-        dtype = torch.bfloat16
-        make_tensor = partial(torch.rand, device=device, dtype=dtype, requires_grad=False)
-        batch, num_heads, seqlen, head_dim = 32, 16, 32, 64
-        q_shape = SdpaShape(batch, seqlen, num_heads, head_dim)
-        k_shape = SdpaShape(batch, seqlen, num_heads, head_dim)
-        v_shape = SdpaShape(batch, seqlen, num_heads, head_dim)
-        q, k, v = make_tensor(q_shape), make_tensor(k_shape), make_tensor(v_shape)
-
-        # (B, S, H, D)
-        q = q.view(batch, seqlen, num_heads, head_dim).transpose(1, 2)
-        k = k.view(batch, seqlen, num_heads, head_dim).transpose(1, 2)
-        v = v.view(batch, seqlen, num_heads, head_dim).transpose(1, 2)
-
-        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            F.scaled_dot_product_attention(q, k, v)
-
-        # (B, H, S, D)
-        q = q.contiguous()
-        k = k.contiguous()
-        v = v.contiguous()
-
-        with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
-            with self.assertRaisesRegex(RuntimeError, "No available kernel"):
-                F.scaled_dot_product_attention(q, k, v)
-
-    @unittest.skipIf(not PLATFORM_SUPPORTS_XPU_FLASH_ATTENTION, "XPU Flash Attention is not supported")
     def test_flash_attention_headdim_size(self, device):
         dtype = torch.bfloat16
         make_tensor = partial(torch.rand, device=device, dtype=dtype, requires_grad=False)
@@ -4623,7 +4600,7 @@ class TestSDPAXpuOnly(NNTestCase):
     @parametrize("head_dim", [64, 96, 128, 192])
     @parametrize("mask_type", [None, "causal"])
     @parametrize("train", [True, False])
-    @parametrize("layout", ["bshd"])
+    @parametrize("layout", ["bshd", "bhsd"])
     @parametrize("enable_gqa", [True, False])
     def test_flash_attention_vs_math(
         self,
