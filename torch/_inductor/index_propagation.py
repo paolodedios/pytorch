@@ -30,7 +30,7 @@ import sympy
 
 import torch
 from torch._prims_common import dtype_to_type, is_integer_dtype
-from torch.utils._sympy.functions import FloorDiv, ModularIndexing, Where
+from torch.utils._sympy.functions import FloorDiv, Identity, ModularIndexing, Where
 from torch.utils._sympy.value_ranges import bound_sympy, ValueRanges
 
 from .ops_handler import DefaultHandler
@@ -44,6 +44,9 @@ _ExprType = Union[sympy.Expr, float, int, bool]
 
 def _is_constant(val: _ExprType):
     if isinstance(val, sympy.Basic):
+        if isinstance(val, Identity):
+            arg = val.args[0]
+            return _is_constant(arg) and bool(arg.is_comparable)
         return val.is_number
     return isinstance(val, (int, float, bool))
 

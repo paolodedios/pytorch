@@ -1330,6 +1330,9 @@ class Identity(sympy.Function):
     Prevents expansion and other optimizations
     """
 
+    # Treat Identity as non-numeric to avoid Min/Max comparability checks.
+    is_number = False
+
     precedence = 10
 
     def __repr__(self) -> str:  # type: ignore[override]
