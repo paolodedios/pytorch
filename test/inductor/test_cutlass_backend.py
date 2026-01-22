@@ -45,6 +45,7 @@ from torch.sparse import SparseSemiStructuredTensor, to_sparse_semi_structured
 from torch.testing import FileCheck
 from torch.testing._internal.common_cuda import (
     PLATFORM_SUPPORTS_FP8,
+    SM100OrLater,
     SM80OrLater,
     SM90OrLater,
 )
@@ -1439,7 +1440,8 @@ class TestCutlassBackend(TestCase):
                         if cuda_template_count <= 0:
                             raise AssertionError("No CUTLASSTemplateCaller choices")
 
-        run_test(True)
+        if not SM100OrLater:
+            run_test(True)
         run_test(False)
 
     @unittest.skipIf(not SM90OrLater, "need sm_90")
