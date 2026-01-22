@@ -481,34 +481,34 @@ Your build may show errors you didn't have locally - here's how to find the erro
 
 If the build has any errors, you will see something like this on the PR:
 
-<img width="781" height="400" alt="Monosnap Update installation instructions for doc build by AlannaBurke · Pull Request #169534 · pytorch:pytorch 2025-12-18 18-22-53" src="https://github.com/user-attachments/assets/49a3dfe7-81c2-4246-852b-bc3f807e95af" />
+<img width="781" height="400" alt="build errors" src="https://github.com/user-attachments/assets/49a3dfe7-81c2-4246-852b-bc3f807e95af" />
 
 Any doc-related errors will occur in jobs that include "doc" somewhere in the title. It doesn't look like any of these jobs are relevant to our docs.
 
 
 Let's take a look anyway. Click on the job to see the logs:
 
-<img width="1187" height="668" alt="Monosnap Update installation instructions for doc build · pytorch:pytorch@7380336 2025-12-18 18-24-15" src="https://github.com/user-attachments/assets/117df543-8356-4323-8e1c-ef02a95554ba" />
+<img width="1187" height="668" alt="build errors" src="https://github.com/user-attachments/assets/117df543-8356-4323-8e1c-ef02a95554ba" />
 
 And we can be sure that this job does not involve docs.
 
 Looking at this build, we can see these jobs are relevant to our docs - and they didn't have any errors:
 
-<img width="777" height="395" alt="Monosnap Update installation instructions for doc build by AlannaBurke · Pull Request #169534 · pytorch:pytorch 2025-12-18 18-25-12" src="https://github.com/user-attachments/assets/5d7c196b-2d40-49ad-87e3-f57de6e14a5b" />
+<img width="777" height="395" alt="build errors" src="https://github.com/user-attachments/assets/5d7c196b-2d40-49ad-87e3-f57de6e14a5b" />
 
 You might also see a comment on the PR like this:
 
-<img width="651" height="246" alt="Monosnap Adding Glossary by AlannaBurke · Pull Request #170807 · pytorch:pytorch 2025-12-18 19-35-44" src="https://github.com/user-attachments/assets/27e0120a-ba33-4b1c-b4a5-bf3064520586" />
+<img width="651" height="246" alt="build errors" src="https://github.com/user-attachments/assets/27e0120a-ba33-4b1c-b4a5-bf3064520586" />
 
 We can see that some of these issues are relevant to our docs.
 
 Open the logs by clicking on the `gh` link:
 
-<img width="873" height="360" alt="Monosnap Adding Glossary by AlannaBurke · Pull Request #170807 · pytorch:pytorch 2025-12-18 19-24-33" src="https://github.com/user-attachments/assets/ab5b862f-8026-489c-b95e-a6cd4257e4b7" />
+<img width="873" height="360" alt="build errors" src="https://github.com/user-attachments/assets/ab5b862f-8026-489c-b95e-a6cd4257e4b7" />
 
 And here we can see there is a doc-related error:
 
-<img width="1117" height="433" alt="Monosnap Adding Glossary · pytorch:pytorch@b306631 2025-12-18 19-02-47" src="https://github.com/user-attachments/assets/0a275921-736d-43a7-ab0f-3e8854d43280" />
+<img width="1117" height="433" alt="build errors" src="https://github.com/user-attachments/assets/0a275921-736d-43a7-ab0f-3e8854d43280" />
 
 You can always find the relevant doc builds by going to the `Checks` tab on your PR, and scrolling down to `pull`.
 
@@ -520,7 +520,7 @@ You can either click through or toggle the accordion to see all of the jobs here
 
 If you click through, youi'll see the doc jobs at the bottom, like this:
 
-<img width="354" height="312" alt="Monosnap Update installation instructions for doc build · pytorch:pytorch@7380336 2025-12-18 23-39-25" src="https://github.com/user-attachments/assets/8fadb935-5314-4c4b-a1b5-133781754f03" />
+<img width="354" height="312" alt="build errors" src="https://github.com/user-attachments/assets/8fadb935-5314-4c4b-a1b5-133781754f03" />
 
 
 #### Building a PDF
