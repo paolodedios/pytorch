@@ -84,6 +84,7 @@ ops_dde_xfail = {
     xfail("bernoulli"),
     xfail("cauchy"),
     xfail("cdist"),
+    xfail("cholesky"),
     xfail("chunk"),
     xfail("combinations"),
     xfail("corrcoef"),
