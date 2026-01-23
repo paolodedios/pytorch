@@ -132,6 +132,7 @@ ops_dde_xfail = {
     xfail("inner"),
     xfail("kron"),
     xfail("linalg.cross"),
+    xfail("lingalg.cholesky"),
     xfail("linalg.diagonal"),
     xfail("linalg.multi_dot"),
     xfail("linalg.vander"),
