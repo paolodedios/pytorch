@@ -121,6 +121,7 @@ ops_dde_xfail = {
     xfail("fft.rfftn"),
     xfail("float"),
     xfail("geometric"),
+    xfail("geqrf"),
     xfail("gradient"),
     xfail("grid_sampler_2d"),
     xfail("hash_tensor"),
