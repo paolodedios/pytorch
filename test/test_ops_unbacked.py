@@ -18,7 +18,7 @@ from torch.testing._internal.common_device_type import (
 )
 from torch.testing._internal.common_methods_invocations import DecorateInfo, op_db
 from torch.testing._internal.common_utils import run_tests, suppress_warnings, TestCase
-from torch.utils._pytree import tree_flatten, tree_map
+from torch.utils._pytree import tree_flatten, tree_map_
 
 
 DEVICE_TYPE = "cpu"
@@ -33,15 +33,16 @@ def skip(op_name, variant_name="", *, device_type=None, dtypes=None):
     return (op_name, variant_name, device_type, dtypes, False)
 
 
-def skipOps(op_db, test_case_name, base_test_name, to_skip):
-    all_opinfos = op_db
+def apply_skip_decorators(all_opinfos, test_case_name, base_test_name, to_skip):
+    # Build lookup dict for O(n) performance
+    opinfo_by_name = {}
+    for o in all_opinfos:
+        key = (o.name, o.variant_test_name)
+        opinfo_by_name.setdefault(key, []).append(o)
+
     for xfail_entry in to_skip:
         op_name, variant_name, device_type, dtypes, expected_failure = xfail_entry
-        matching_opinfos = [
-            o
-            for o in all_opinfos
-            if o.name == op_name and o.variant_test_name == variant_name
-        ]
+        matching_opinfos = opinfo_by_name.get((op_name, variant_name), [])
         # Some ops may not exist in op_db, skip silently
         for opinfo in matching_opinfos:
             decorators = list(opinfo.decorators)
@@ -65,11 +66,6 @@ def skipOps(op_db, test_case_name, base_test_name, to_skip):
                 decorators.append(decorator)
             opinfo.decorators = tuple(decorators)
 
-    def wrapped(fn):
-        return fn
-
-    return wrapped
-
 
 # Ops that have data-dependent errors with unbacked dimensions.
 # These are base tensor issues (not DTensor-related).
@@ -85,6 +81,7 @@ ops_dde_xfail = {
     xfail("cauchy"),
     xfail("cdist"),
     xfail("cholesky"),
+    xfail("cholesky_inverse"),
     xfail("chunk"),
     xfail("combinations"),
     xfail("corrcoef"),
@@ -314,7 +311,11 @@ ops_skip = {
 }
 
 
-@skipOps(op_db, "TestOpsUnbacked", "test_unbacked_op_db", ops_dde_xfail | ops_skip)
+apply_skip_decorators(
+    op_db, "TestOpsUnbacked", "test_unbacked_op_db", ops_dde_xfail | ops_skip
+)
+
+
 class TestOpsUnbacked(TestCase):
     def _has_valid_unbacked_dims(self, t: torch.Tensor) -> bool:
         """Check if tensor has dimensions that can be marked as unbacked."""
@@ -338,7 +339,7 @@ class TestOpsUnbacked(TestCase):
                 self._mark_unbacked(x)
             return x
 
-        tree_map(mark_unbacked_tree, (args, kwargs))
+        tree_map_(mark_unbacked_tree, (args, kwargs))
 
         @torch.compile(backend="eager", fullgraph=True)
         def compiled_func(*a, **kw):
@@ -364,12 +365,8 @@ class TestOpsUnbacked(TestCase):
             if not any(self._has_valid_unbacked_dims(t) for t in all_tensors):
                 continue
 
-            # First verify the sample passes in eager mode (without unbacked dims)
-            # If it fails in eager, skip this sample - we only want to test DDEs
-            try:
-                op.op(*copy.deepcopy(args), **copy.deepcopy(kwargs))
-            except Exception:
-                continue
+            # # First verify the sample passes in eager mode
+            op.op(*copy.deepcopy(args), **copy.deepcopy(kwargs))
 
             any_tested = True
             args_copy, kwargs_copy = copy.deepcopy((args, kwargs))
