@@ -814,16 +814,29 @@ class TensorVariable(VariableTracker):
         )
 
         # [Note: Inplace ops and VariableTracker metadata]
-        # For inplace operations (methods ending with _), we need to propagate
-        # tensor metadata from the arguments to self. For example:
+        # For inplace operations, we need to propagate tensor metadata from the
+        # arguments to self. For example:
         #   x.add_(y) where y.requires_grad=True => x.requires_grad becomes True
-        # We only do this when there's a tensor argument, since that's when metadata
-        # propagation is relevant. Shape-changing inplace ops (unsqueeze_, etc.) have
-        # scalar args and shouldn't trigger early fake tensor execution.
-        if name.endswith("_") and any(arg.is_tensor() for arg in args):
-            self._propagate_inplace_metadata(tx, proxy)
+        # We detect inplace ops by checking if self's fake tensor version changes
+        # after wrap_fx_proxy (which runs get_fake_value internally).
+        # We only synchronize when there's a tensor argument, since that's when
+        # metadata propagation is relevant.
+        self_fake = self.proxy.node.meta.get("example_value")
+        version_before = self_fake._version if self_fake is not None else None
 
-        return wrap_fx_proxy(tx, proxy)
+        result = wrap_fx_proxy(tx, proxy)
+
+        # Check if self was mutated (version increased = inplace op)
+        version_after = self_fake._version if self_fake is not None else None
+        if (
+            version_before is not None
+            and version_after is not None
+            and version_after > version_before
+            and any(arg.is_tensor() for arg in args)
+        ):
+            self.synchronize_attributes(tx)
+
+        return result
 
     def method_size(
         self, tx: "InstructionTranslator", *args: Any, **kwargs: Any
@@ -1388,46 +1401,6 @@ class TensorVariable(VariableTracker):
             )
         return None
 
-    def _propagate_inplace_metadata(
-        self,
-        tx: "InstructionTranslator",
-        proxy: torch.fx.Proxy,
-    ) -> None:
-        """
-        Propagate tensor metadata to self after an inplace operation.
-        This ensures that properties like requires_grad are correctly tracked during tracing.
-
-        Args:
-            tx: InstructionTranslator instance
-            proxy: The proxy node representing the inplace operation
-        """
-        # [Note: Inplace Operations and VariableTracker metadata]
-        # At this point, we proxied a node representing an inplace operation into the graph.
-        # When executed, this node will mutate `self`'s tensor metadata, so it's important
-        # even during tracing to propagate. For example:
-        #   value.requires_grad is True => self.requires_grad becomes True
-        #   value.requires_grad is True => self.has_grad_fn becomes True
-
-        # The fake tensor execution already computes the correct metadata.
-
-        # Not sure if __setitem__ can ever save activations, disabling just in case
-
-        # Ignore fresh unbacked symbols that could arise from the internal indexing (selection),
-        # that happen in code like t[idx] += 1 when idx is unbacked. Namely the selection
-        # during 'setitem'.
-        # When the selection happens if idx is unbacked we allocate a new unbacked symbol for the
-        # storage offset in select_meta, but the output of the operation 'setitem' does not depend
-        # on the selection.
-        with (
-            torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing(),
-            tx.fake_mode.shape_env.ignore_fresh_unbacked_symbols()
-            if tx.fake_mode and tx.fake_mode.shape_env
-            else nullcontext(),
-        ):
-            get_fake_value(proxy.node, tx, allow_non_graph_fake=False)
-
-        self.synchronize_attributes(tx)
-
     def method___setitem__(
         self,
         tx: "InstructionTranslator",
@@ -1440,8 +1413,30 @@ class TensorVariable(VariableTracker):
             *proxy_args_kwargs([self, key, value], {}),
         )
 
-        if value.is_tensor():
-            self._propagate_inplace_metadata(tx, proxy)
+        # See Note [Inplace ops and VariableTracker metadata]
+        # __setitem__ is always an inplace operation. We need to run fake execution
+        # and propagate metadata if self was mutated.
+        # The context managers handle saved tensor hooks and unbacked symbols.
+        self_fake = self.proxy.node.meta.get("example_value")
+        version_before = self_fake._version if self_fake is not None else None
+
+        with (
+            torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing(),
+            tx.fake_mode.shape_env.ignore_fresh_unbacked_symbols()
+            if tx.fake_mode and tx.fake_mode.shape_env
+            else nullcontext(),
+        ):
+            get_fake_value(proxy.node, tx, allow_non_graph_fake=False)
+
+        # Check if self was mutated (version increased)
+        version_after = self_fake._version if self_fake is not None else None
+        if (
+            version_before is not None
+            and version_after is not None
+            and version_after > version_before
+            and value.is_tensor()
+        ):
+            self.synchronize_attributes(tx)
 
         if config.use_graph_deduplication or config.track_nodes_for_deduplication:
             tx.output.region_tracker.add_node_mutation(proxy.node, 0)
