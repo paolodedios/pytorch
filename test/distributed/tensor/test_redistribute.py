@@ -915,9 +915,7 @@ class RedistributeTest(DTensorTestBase):
         planner = get_redistribute_planner(device_mesh, tensor_meta)
         # Clear any cached state from previous tests
         planner.partial_reduce_ops_in_target.clear()
-        planner.generate_graph_based_transform_infos(
-            src_spec, dst_spec, tuple(local_tensor.size())
-        )
+        planner.generate_graph_based_transform_infos(src_spec, dst_spec)
 
         # The planner should have collected "min" as the only reduce op
         self.assertEqual(
@@ -940,9 +938,7 @@ class RedistributeTest(DTensorTestBase):
 
         planner2 = get_redistribute_planner(device_mesh, tensor_meta)
         planner2.partial_reduce_ops_in_target.clear()
-        planner2.generate_graph_based_transform_infos(
-            src_spec2, dst_spec2, tuple(local_tensor.size())
-        )
+        planner2.generate_graph_based_transform_infos(src_spec2, dst_spec2)
 
         self.assertEqual(
             planner2.partial_reduce_ops_in_target,
@@ -974,9 +970,7 @@ class RedistributeTest(DTensorTestBase):
 
         planner3 = get_redistribute_planner(mesh_2d, tensor_meta_2d)
         planner3.partial_reduce_ops_in_target.clear()
-        planner3.generate_graph_based_transform_infos(
-            src_spec3, dst_spec3, tuple(local_tensor.size())
-        )
+        planner3.generate_graph_based_transform_infos(src_spec3, dst_spec3)
 
         self.assertEqual(
             planner3.partial_reduce_ops_in_target,
