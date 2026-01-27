@@ -587,7 +587,6 @@ CUDA_TYPE_NAME_MAP = collections.OrderedDict(
     ]
 )
 
-
 CUDA_INCLUDE_MAP = collections.OrderedDict(
     [
         # since pytorch uses "\b{pattern}\b" as the actual re pattern,
