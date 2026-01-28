@@ -701,9 +701,13 @@ Tensor cumprod_backward(const Tensor& grad, const Tensor& input, int64_t dim, co
     // relu_() necessary as gather does not support negative indices
     // finally, we do grad_input[z1] = dy_j / dx_z1
     // Using at::where instead of masked_scatter_ for composite compliance
-    auto grad_at_first_zero = input_conj.masked_fill(~mask, 1.).cumprod(dim)
-                                  .mul_(grad.masked_fill(cumsum != 1, 0.))
-                                  .sum(dim, /*keepdim*/true)
+    // Use mul_ when no tensor subclasses (faster), mul when there are (composite compliant)
+    auto cumprod_result = input_conj.masked_fill(~mask, 1.).cumprod(dim);
+    auto grad_term = grad.masked_fill(cumsum != 1, 0.);
+    auto after_mul = are_inputs_tensors_sublcass
+        ? cumprod_result.mul(grad_term)
+        : cumprod_result.mul_(grad_term);
+    auto grad_at_first_zero = after_mul.sum(dim, /*keepdim*/true)
                                   .mul_(at::gather(output_conj, dim, (first_zero_index - 1).relu_())
                                         .masked_fill_(first_zero_index == 0, 1.));
     grad_input = at::where(first_zero_mask, grad_at_first_zero, grad_input);
