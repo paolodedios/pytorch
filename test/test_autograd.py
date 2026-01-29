@@ -15217,6 +15217,7 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
 
 class TestAutogradMultipleDispatch(TestCase):
+    @skipIfXpu(True, "")
     def test_autograd_multiple_dispatch_registrations(self, device):
         t = torch.randn(3, 3, device=device, requires_grad=True)
         # using _test_autograd_multiple_dispatch.fullcoverage which has
