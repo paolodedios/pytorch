@@ -4192,7 +4192,7 @@ class TestAutograd(TestCase):
         self.assertEqual(dvar.grad, torch.ones_like(dvar))
         self.assertEqual(type(dvar.grad), type(dvar))
 
-    @skipIfXpu(msg="torch.xpu' has no attribute 'FloatTensor', issue #####")
+    @skipIfXpu(msg="torch.xpu' has no attribute 'FloatTensor', issue https://github.com/intel/torch-xpu-ops/issues/2792")
     def test_type_conversions(self):
         x = torch.randn(5, 5)
         self.assertIsInstance(x.float(), torch.FloatTensor)
@@ -13552,7 +13552,7 @@ class TestAutogradStreamSynchronization(TestCase):
     # AttributeError: module 'torch.mps' has no attribute 'default_stream'
     @expectedFailureMPS
     @skipCUDANonDefaultStreamIf(True)
-    @skipIfXpu(msg="'torch.xpu' has no attribute 'default_stream', issue=####")
+    @skipIfXpu(msg="'torch.xpu' has no attribute 'default_stream', issue https://github.com/intel/torch-xpu-ops/issues/2793")
     def test_consumer_to_single_producer_case_2_correctness(self, device):
         if device == "cpu":
             self.skipTest("requires accelerator")
@@ -13664,7 +13664,7 @@ class TestAutogradStreamSynchronization(TestCase):
     @unittest.skipIf(
         torch.accelerator.device_count() < 2, "accelerator count is less than 2"
     )
-    @skipIfXpu(msg="'torch.xpu' has no attribute 'default_stream', issue #####")
+    @skipIfXpu(msg="'torch.xpu' has no attribute 'default_stream', issue https://github.com/intel/torch-xpu-ops/issues/2793")
     def test_consumer_to_single_producer_case_3_correctness_non_default_ambient_stream(
         self, device
     ):
@@ -15214,7 +15214,8 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
 
 class TestAutogradMultipleDispatch(TestCase):
-    @skipIfXpu(msg="Skip the failed test case test_autograd_multiple_dispatch_registrations due to tensor not closed")
+    @skipIfXpu(msg="Skip the failed test case test_autograd_multiple_dispatch_registrations due to tensor not closed, \
+                    issue https://github.com/intel/torch-xpu-ops/issues/2794")
     def test_autograd_multiple_dispatch_registrations(self, device):
         t = torch.randn(3, 3, device=device, requires_grad=True)
         # using _test_autograd_multiple_dispatch.fullcoverage which has
@@ -15287,9 +15288,6 @@ class TestAutogradMultipleDispatch(TestCase):
         self.assertEqual(a.grad, c * c + c)
         self.assertEqual(b.grad, d * d + d)
 
-    @skipIfXpu(
-        msg="Forward AD for an OP that does not implement it should raise a NotImplementedError, issue #####"
-    )
     def test_foward_mode_AD(self, device):
         # check that forward mode AD is only registered for the Default
         # dispatch for _test_autograd_multiple_dispatch.fullcoverage and not AutogradCUDA
@@ -15303,13 +15301,12 @@ class TestAutogradMultipleDispatch(TestCase):
             err_msg = r"Trying to use forward AD with .* that does not support it"
             hint_msg = "Running forward AD for an OP that does not implement it should raise a NotImplementedError"
 
-            if device_type in device:
+            if "cuda" in device:
                 with self.assertRaisesRegex(NotImplementedError, err_msg, msg=hint_msg):
                     torch._test_autograd_multiple_dispatch(dual_input)
             else:
                 torch._test_autograd_multiple_dispatch(dual_input)
 
-    @skipIfXpu(msg="Tensor-likes are not close, issue #####")
     def test_view_copy(self, device):
         # tests that view_copy derivative formulas are also generated per dispatch key
         # from their respective view ops in derivatives.yaml
