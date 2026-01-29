@@ -9,11 +9,11 @@ from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
     onlyCPU,
     onlyCUDA,
+    onlyGPU,
     onlyNativeDeviceTypes,
     skipCUDAIfNotRocm,
     skipMeta,
     skipXPUIf,
-    onlyGPU,
 )
 from torch.testing._internal.common_dtype import (
     all_mps_types_and,
@@ -32,6 +32,7 @@ from torch.utils.dlpack import DLDeviceType, from_dlpack, to_dlpack
 device_type = (
     acc.type if (acc := torch.accelerator.current_accelerator(True)) else "cpu"
 )
+
 
 # Wraps a tensor, exposing only DLPack methods:
 #    - __dlpack__
@@ -277,7 +278,9 @@ class TestTorchDlPack(TestCase):
                 return capsule
 
         # CUDA-based tests runs on non-default streams
-        with torch.get_device_module(device_type).stream(torch.get_device_module(device_type).default_stream()):
+        with torch.get_device_module(device_type).stream(
+            torch.get_device_module(device_type).default_stream()
+        ):
             x = DLPackTensor(make_tensor((5,), dtype=torch.float32, device=device))
             from_dlpack(x)
 
@@ -296,7 +299,9 @@ class TestTorchDlPack(TestCase):
             x = torch.zeros(1, device=device)
             if torch.cuda.is_available():
                 torch.cuda._sleep(2**20)
-            self.assertTrue(torch.get_device_module(device_type).default_stream().query())
+            self.assertTrue(
+                torch.get_device_module(device_type).default_stream().query()
+            )
             # ROCm uses stream 0 for default stream, CUDA uses stream 1
             default_stream_id = 0 if torch.version.hip else 1
             x.__dlpack__(stream=default_stream_id)
@@ -816,7 +821,9 @@ class TestTorchDlPack(TestCase):
         )
 
         # Run the comprehensive C++ test
-        module.test_dlpack_exchange_api(tensor, api_capsule, device.startswith("cuda") or device.startswith("xpu"))
+        module.test_dlpack_exchange_api(
+            tensor, api_capsule, device.startswith("cuda") or device.startswith("xpu")
+        )
 
     @skipMeta
     @onlyGPU
