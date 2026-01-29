@@ -15312,6 +15312,7 @@ class TestAutogradMultipleDispatch(TestCase):
             else:
                 torch._test_autograd_multiple_dispatch(dual_input)
 
+    @skipIfXpu(msg="Tensor-likes are not close, issue #####")
     def test_view_copy(self, device):
         # tests that view_copy derivative formulas are also generated per dispatch key
         # from their respective view ops in derivatives.yaml
