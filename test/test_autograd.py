@@ -7140,7 +7140,7 @@ Done""",
 
     @unittest.skipIf(IS_WINDOWS, "Skipping because doesn't work for windows")
     def test_thread_shutdown(self):
-        code = """import torch
+        code = f"""import torch
 from torch.autograd import Function
 class MyFunction(Function):
     @staticmethod
@@ -7151,9 +7151,9 @@ class MyFunction(Function):
     def backward(ctx, grad):
         return grad
 
-# Run on cuda if it is available to ensure that the worker thread
+# Run on GPU if it is available to ensure that the worker thread
 # is properly initialized by the time we exit.
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "{device_type}"
 
 for shape in [(1,), ()]:
     v = torch.ones(shape, requires_grad=True, device=device)
@@ -7163,7 +7163,7 @@ for shape in [(1,), ()]:
         # The autograd engine creates worker threads only when GPU devices are present.
         # So make sure that we do shutdown threads when we're testing cuda and make sure
         # that there is no thread to shutdown when we're not using cuda.
-        if TEST_CUDA or torch.backends.mps.is_available() or torch.xpu.is_available():
+        if TEST_GPU or torch.backends.mps.is_available():
             self.assertRegex(s, "PYTORCH_API_USAGE torch.autograd.thread_shutdown")
         else:
             self.assertNotRegex(s, "PYTORCH_API_USAGE torch.autograd.thread_shutdown")
