@@ -203,14 +203,16 @@ def higher_order_while_loop(
             type=ir.TensorType(ir.DataType.BOOL),
         ),
         # Loop-carried dependencies
-        *(subgraph_carried_inputs:=[
-            ir.Value(
-                name=f"{inp.name}_{body_func.name}__subgraph_in",
-                shape=inp.shape,
-                type=ir.TensorType(inp.dtype),  # type: ignore[arg-type]
-            )
-            for inp in carried_inputs
-        ]),
+        *(
+            subgraph_carried_inputs := [
+                ir.Value(
+                    name=f"{inp.name}_{body_func.name}__subgraph_in",
+                    shape=inp.shape,
+                    type=ir.TensorType(inp.dtype),  # type: ignore[arg-type]
+                )
+                for inp in carried_inputs
+            ]
+        ),
     ]
 
     # Create the combined body function that handles both condition and body logic
@@ -254,11 +256,11 @@ def higher_order_while_loop(
     ]
 
     body_graph = ir.Graph(
-            subgraph_inputs,
-            loop_body_outputs,
-            nodes=[body_node, cond_node],
-            name=f"{body_func.name}_loop_body",
-        )
+        subgraph_inputs,
+        loop_body_outputs,
+        nodes=[body_node, cond_node],
+        name=f"{body_func.name}_loop_body",
+    )
 
     # End subgraph construction
 
@@ -286,7 +288,7 @@ def higher_order_while_loop(
         # v_initial - carried inputs (loop-carried dependencies)
         *carried_inputs,
         _num_outputs=len(carried_inputs),
-        body=,
+        body=body_graph,
     )
 
     return loop_outputs
