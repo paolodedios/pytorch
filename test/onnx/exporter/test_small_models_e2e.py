@@ -159,7 +159,6 @@ class DynamoExporterTest(common_utils.TestCase, _WithExport):
         onnx_testing.assert_onnx_program(onnx_program, args=(torch.tensor([-1, -2]),))
 
     def test_onnx_export_while_loop_nested(self):
-
         class Nested(torch.nn.Module):
             def forward(self, ci, cj, a, b):
                 def cond_fn(i1, j1, x1, y1):
@@ -172,12 +171,14 @@ class DynamoExporterTest(common_utils.TestCase, _WithExport):
                     def body_fn_nested(i2, j2, x2, y2):
                         return i2.clone(), j2 - 1, x2 + 3.14, y2 - 2.71
 
-                    i1, j1, x1, y1 =  torch.ops.higher_order.while_loop(
+                    i1, j1, x1, y1 = torch.ops.higher_order.while_loop(
                         cond_fn_nested, body_fn_nested, [i1, j1, x1, y1]
                     )
                     return i1 - 1, j1.clone(), x1 * 2, y1 / 2
 
-                return  torch.ops.higher_order.while_loop(cond_fn, body_fn, (ci, cj, a, b))
+                return torch.ops.higher_order.while_loop(
+                    cond_fn, body_fn, (ci, cj, a, b)
+                )
 
         onnx_program = self.export(
             Nested(),
@@ -186,7 +187,6 @@ class DynamoExporterTest(common_utils.TestCase, _WithExport):
         onnx_testing.assert_onnx_program(onnx_program)
 
     def test_onnx_export_while_loop_simple(self):
-
         class SimpleWithLinear(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -200,7 +200,7 @@ class DynamoExporterTest(common_utils.TestCase, _WithExport):
                 def body_fn(it, x):
                     return it - 1, self.linear(x)
 
-                return  torch.ops.higher_order.while_loop(cond_fn, body_fn, (iter, x))
+                return torch.ops.higher_order.while_loop(cond_fn, body_fn, (iter, x))
 
         onnx_program = self.export(
             SimpleWithLinear(),
@@ -209,7 +209,6 @@ class DynamoExporterTest(common_utils.TestCase, _WithExport):
         onnx_testing.assert_onnx_program(onnx_program)
 
     def test_onnx_export_while_loop_int_carry(self):
-
         class IntCarry(torch.nn.Module):
             def forward(self, x):
                 def cond_fn(it, x):
