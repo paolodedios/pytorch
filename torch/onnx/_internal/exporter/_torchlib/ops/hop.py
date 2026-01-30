@@ -203,23 +203,14 @@ def higher_order_while_loop(
             type=ir.TensorType(ir.DataType.BOOL),
         ),
         # Loop-carried dependencies
-        *[
+        *(subgraph_carried_inputs:=[
             ir.Value(
                 name=f"{inp.name}_{body_func.name}__subgraph_in",
                 shape=inp.shape,
                 type=ir.TensorType(inp.dtype),  # type: ignore[arg-type]
             )
             for inp in carried_inputs
-        ],
-        # Additional inputs (constants/parameters)
-        *[
-            ir.Value(
-                name=f"{inp.name}_{body_func.name}__subgraph_in",
-                shape=inp.shape,
-                type=ir.TensorType(inp.dtype),  # type: ignore[arg-type]
-            )
-            for inp in additional_inputs
-        ],
+        ]),
     ]
 
     # Create the combined body function that handles both condition and body logic
@@ -228,7 +219,8 @@ def higher_order_while_loop(
         body_func.domain,
         body_func.name,
         [
-            *subgraph_inputs[2:],  # carried inputs + additional inputs
+            *subgraph_carried_inputs,  # carried inputs
+            *additional_inputs,
         ],
         num_outputs=len(body_func.outputs),  # carried inputs
     )
@@ -239,7 +231,7 @@ def higher_order_while_loop(
         cond_func.name,
         [
             *body_node.outputs,  # updated carried inputs from body
-            *subgraph_inputs[len(body_node.outputs) :],  # additional inputs
+            *additional_inputs,
         ],
         num_outputs=len(cond_func.outputs),
     )
@@ -260,6 +252,13 @@ def higher_order_while_loop(
         cond_node.outputs[0],  # condition output (bool)
         *body_node.outputs,  # updated carried inputs
     ]
+
+    body_graph = ir.Graph(
+            subgraph_inputs,
+            loop_body_outputs,
+            nodes=[body_node, cond_node],
+            name=f"{body_func.name}_loop_body",
+        )
 
     # End subgraph construction
 
@@ -287,12 +286,7 @@ def higher_order_while_loop(
         # v_initial - carried inputs (loop-carried dependencies)
         *carried_inputs,
         _num_outputs=len(carried_inputs),
-        body=ir.Graph(
-            subgraph_inputs,
-            loop_body_outputs,
-            nodes=[body_node, cond_node],
-            name=f"{body_func.name}_loop_body",
-        ),
+        body=,
     )
 
     return loop_outputs
