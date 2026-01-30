@@ -2,6 +2,7 @@
 
 #include <ATen/record_function.h>
 #include <c10/core/impl/PyInterpreter.h>
+#include <c10/util/Exception.h>
 #include <c10/util/overloaded.h>
 #include <torch/csrc/DynamicTypes.h>
 #include <torch/csrc/autograd/utils/wrap_outputs.h>
@@ -88,7 +89,7 @@ struct type_caster<std::shared_ptr<torch::CapturedTraceback>> {
       std::shared_ptr<torch::CapturedTraceback>,
       _("torch._C._profiler.CapturedTraceback"));
 
-  bool load(handle src, bool) {
+  bool load(handle src, bool /*unused*/) {
     if (Py_TYPE(src.ptr()) == &THPCapturedTracebackType) {
       value = reinterpret_cast<THPCapturedTraceback*>(src.ptr())->data;
       return true;
@@ -377,6 +378,7 @@ void initPythonBindings(PyObject* module) {
               bool /* profile_all_threads */,
               bool /* capture_overload_names */,
               bool /* record_python_gc_info */,
+              bool /* expose_kineto_event_metadata */,
               std::string /* custom_profiler_config*/
               >(),
           "An experimental config for Kineto features. Please note that"
@@ -397,6 +399,7 @@ void initPythonBindings(PyObject* module) {
           "    profile_all_threads (bool) : whether to profile all threads\n"
           "    capture_overload_names (bool) : whether to include ATen overload names in the profile\n"
           "    record_python_gc_info (bool) : adds python gc events to profile\n"
+          "    expose_kineto_event_metadata (bool) : whether to expose KinetoEvent metadata in the PyTorch Profiler\n"
           "    custom_profiler_config (string) : Used to pass some configurations to the custom profiler backend.\n",
           py::arg("profiler_metrics") = std::vector<std::string>(),
           py::arg("profiler_measure_per_kernel") = false,
@@ -408,6 +411,7 @@ void initPythonBindings(PyObject* module) {
           py::arg("profile_all_threads") = false,
           py::arg("capture_overload_names") = false,
           py::arg("record_python_gc_info") = false,
+          py::arg("expose_kineto_event_metadata") = false,
           py::arg("custom_profiler_config") = "")
       .def(py::pickle(
           [](const ExperimentalConfig& p) { // __getstate__
@@ -426,34 +430,31 @@ void initPythonBindings(PyObject* module) {
                 py_metrics,
                 p.profiler_measure_per_kernel,
                 p.verbose,
+                py_perf_events,
                 p.enable_cuda_sync_events,
                 p.adjust_profiler_step,
                 p.disable_external_correlation,
                 p.profile_all_threads,
                 p.capture_overload_names,
                 p.record_python_gc_info,
-                p.custom_profiler_config,
-                p.performance_events);
+                p.expose_kineto_event_metadata,
+                p.custom_profiler_config);
           },
           [](const py::tuple& t) { // __setstate__
-            if (t.size() >= 5) {
-              throw std::runtime_error("Expected at least 5 values in state");
-            }
+            TORCH_CHECK(t.size() >= 12, "Expected at least 12 values in state");
 
             py::list py_metrics = t[0].cast<py::list>();
-            std::vector<std::string> metrics{py_metrics.size()};
-
+            std::vector<std::string> metrics;
+            metrics.reserve(py_metrics.size());
             for (const auto& py_metric : py_metrics) {
               metrics.push_back(py::str(py_metric));
             }
 
+            py::list py_perf_events = t[3].cast<py::list>();
             std::vector<std::string> performance_events;
-            if (t.size() == 5) {
-              py::list py_perf_events = t[4].cast<py::list>();
-              performance_events.resize(py_perf_events.size());
-              for (const auto& py_perf_event : py_perf_events) {
-                performance_events.push_back(py::str(py_perf_event));
-              }
+            performance_events.reserve(py_perf_events.size());
+            for (const auto& py_perf_event : py_perf_events) {
+              performance_events.push_back(py::str(py_perf_event));
             }
 
             return ExperimentalConfig(
@@ -461,8 +462,14 @@ void initPythonBindings(PyObject* module) {
                 t[1].cast<bool>(),
                 t[2].cast<bool>(),
                 std::move(performance_events),
-                t[3].cast<bool>(),
-                t[4].cast<bool>());
+                t[4].cast<bool>(),
+                t[5].cast<bool>(),
+                t[6].cast<bool>(),
+                t[7].cast<bool>(),
+                t[8].cast<bool>(),
+                t[9].cast<bool>(),
+                t[10].cast<bool>(),
+                t[11].cast<std::string>());
           }));
 
   py::class_<ProfilerConfig>(m, "ProfilerConfig")

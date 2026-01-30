@@ -165,6 +165,13 @@ void CUDAPluggableAllocator::setMemoryFraction(
   }
 }
 
+std::vector<c10::cuda::CUDACachingAllocator::StreamSegmentSize>
+CUDAPluggableAllocator::getExpandableSegmentSizes(c10::DeviceIndex device) {
+  TORCH_CHECK(
+      false,
+      "CUDAMallocAsyncAllocator does not yet support getExpandableSegmentSizes.");
+}
+
 void CUDAPluggableAllocator::emptyCache(
     /*unused*/ c10::cuda::MempoolId_t mempool_id) {
   if (reset_fn_) {
@@ -273,7 +280,8 @@ void CUDAPluggableAllocator::recordHistory(
     c10::cuda::CUDACachingAllocator::CreateContextFn context_recorder,
     size_t alloc_trace_max_entries,
     c10::cuda::CUDACachingAllocator::RecordContext when,
-    bool clearHistory) {
+    bool clearHistory,
+    const std::vector<std::string>& skip_actions) {
   TORCH_CHECK(
       false,
       "CUDAPluggableAllocator does not yet support recordHistory. "

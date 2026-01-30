@@ -88,15 +88,17 @@ struct TORCH_CUDA_CPP_API CUDAPluggableAllocator
   bool initialized() override;
   double getMemoryFraction(c10::DeviceIndex device) override;
   void setMemoryFraction(double fraction, c10::DeviceIndex device) override;
+  std::vector<c10::cuda::CUDACachingAllocator::StreamSegmentSize>
+  getExpandableSegmentSizes(c10::DeviceIndex device) override;
   void emptyCache(c10::cuda::MempoolId_t mempool_id = {0, 0}) override;
-  void enable(bool) override {}
+  void enable(bool /*value*/) override {}
   bool isEnabled() const override {
     return true;
   }
   void cacheInfo(c10::DeviceIndex device, size_t* largestBlock) override;
   void* getBaseAllocation(void* ptr, size_t* size) override;
 
-  void recordStream(const c10::DataPtr&, streamType stream) override;
+  void recordStream(const c10::DataPtr& /*ptr*/, streamType stream) override;
 
   c10::CachingDeviceAllocator::DeviceStats getDeviceStats(
       c10::DeviceIndex device) override;
@@ -107,7 +109,7 @@ struct TORCH_CUDA_CPP_API CUDAPluggableAllocator
   void beginAllocateToPool(
       c10::DeviceIndex device,
       c10::cuda::MempoolId_t mempool_id,
-      std::function<bool(cudaStream_t)>) override;
+      std::function<bool(cudaStream_t)> /*filter*/) override;
   void endAllocateToPool(
       c10::DeviceIndex device,
       c10::cuda::MempoolId_t mempool_id) override;
@@ -115,13 +117,14 @@ struct TORCH_CUDA_CPP_API CUDAPluggableAllocator
       override;
   std::shared_ptr<void> getIpcDevPtr(std::string handle) override;
   c10::cuda::CUDACachingAllocator::ShareableHandle shareIpcHandle(
-      void*) override;
+      void* /*ptr*/) override;
   void recordHistory(
       bool enabled,
       c10::cuda::CUDACachingAllocator::CreateContextFn context_recorder,
       size_t alloc_trace_max_entries,
       c10::cuda::CUDACachingAllocator::RecordContext when,
-      bool clearHistory) override;
+      bool clearHistory,
+      const std::vector<std::string>& skip_actions) override;
   void attachOutOfMemoryObserver(
       c10::cuda::CUDACachingAllocator::OutOfMemoryObserver observer) override;
   void attachAllocatorTraceTracker(

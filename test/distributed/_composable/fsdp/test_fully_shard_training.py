@@ -6,7 +6,7 @@ import functools
 import itertools
 import unittest
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import Any, Optional, Union
 
 import torch
@@ -24,10 +24,18 @@ from torch.distributed.fsdp import (
     fully_shard,
     OffloadPolicy,
     register_fsdp_forward_method,
+    share_comm_ctx,
+)
+from torch.distributed.fsdp._fully_shard._fsdp_collectives import (
+    foreach_all_gather,
+    foreach_reduce,
 )
 from torch.distributed.tensor import DTensor, init_device_mesh, Shard
 from torch.distributed.tensor.debug import CommDebugMode
-from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
+from torch.testing._internal.common_distributed import (
+    skip_if_lt_x_gpu,
+    skip_if_rocm_arch_multiprocess,
+)
 from torch.testing._internal.common_fsdp import (
     check_sharded_parity,
     compiled_fsdp_test,
@@ -36,11 +44,15 @@ from torch.testing._internal.common_fsdp import (
     MLP,
     MLPStack,
     patch_all_gather,
+    patch_foreach_all_gather,
+    patch_foreach_reduce,
     patch_reduce_scatter,
 )
 from torch.testing._internal.common_utils import (
     get_cycles_per_ms,
+    MI200_ARCH,
     run_tests,
+    TEST_CUDA_GRAPH,
     TEST_HPU,
     TEST_XPU,
     wrapSwapTensorsTest,
@@ -788,6 +800,66 @@ class TestFullyShard1DTrainingCompose(FSDPTest):
                     self, ref_model, model, prefixes_to_ignore=prefixes_to_ignore
                 )
 
+    @skip_if_lt_x_gpu(2)
+    def test_double_forward_with_nested_fsdp_and_checkpoint(self):
+        """
+        Tests that calling model.forward() twice before backward() works correctly
+        when using nested FSDP with activation checkpointing.
+        This pattern is common in DPO training.
+        """
+        self.run_subtests(
+            {
+                "reshard_after_forward": [True, False],
+                "checkpoint_impl": ["composable", "utils"],
+            },
+            self._test_double_forward_with_nested_fsdp_and_checkpoint,
+        )
+
+    def _test_double_forward_with_nested_fsdp_and_checkpoint(
+        self,
+        reshard_after_forward: bool,
+        checkpoint_impl: str,
+    ):
+        torch.manual_seed(42)
+        vocab_size = 1024
+        with torch.device(device_type):
+            model_args = ModelArgs(
+                n_layers=3,
+                n_heads=4,
+                vocab_size=vocab_size,
+                max_seq_len=64,
+                dropout_p=0,
+                checkpoint_activations=(checkpoint_impl == "utils"),
+            )
+            model = Transformer(model_args)
+
+        if checkpoint_impl == "composable":
+            for module in model.modules():
+                if isinstance(module, TransformerBlock):
+                    checkpoint(module)
+
+        for layer in model.layers:
+            fully_shard(layer.attention, reshard_after_forward=reshard_after_forward)
+            fully_shard(layer.feed_forward, reshard_after_forward=reshard_after_forward)
+            fully_shard(layer, reshard_after_forward=reshard_after_forward)
+        fully_shard(model, reshard_after_forward=reshard_after_forward)
+
+        torch.manual_seed(42 + self.rank)
+        inp1 = torch.randint(0, vocab_size, (2, 32), device=device_type.type)
+        inp2 = torch.randint(0, vocab_size, (2, 32), device=device_type.type)
+
+        # DPO pattern
+        out1 = model(inp1)
+        out2 = model(inp2)
+
+        # DPO-style loss that combines both outputs
+        loss = (out1.sum() - out2.sum()).pow(2)
+        loss.backward()
+
+        for param in model.parameters():
+            if param.requires_grad:
+                self.assertIsNotNone(param.grad)
+
 
 class TestFullyShardShardPlacementFnMultiProcess(FSDPTest):
     @property
@@ -816,7 +888,7 @@ class TestFullyShardShardPlacementFnMultiProcess(FSDPTest):
 
         torch.manual_seed(42 + self.rank)
         inp = torch.randint(0, model_args.vocab_size, (2, 16), device=device_type.type)
-        for iter_idx in range(5):
+        for _ in range(5):
             ref_loss = ref_model(inp).sum()
             loss = model(inp).sum()
             self.assertEqual(ref_loss, loss)
@@ -1198,6 +1270,7 @@ class TestFullyShardNDTraining(FSDPTest):
             mesh_dim_names=("pp", "dp", "tp"),
         )
 
+    @skip_if_rocm_arch_multiprocess(MI200_ARCH)
     @skip_if_lt_x_gpu(4)
     def test_2d_mlp_with_nd_mesh(self):
         global_mesh = self.init_global_mesh()
@@ -1482,6 +1555,116 @@ class TestFullyShardCustomForwardMethod(FSDPTest):
         check_sharded_parity(self, ref_model, model)
 
 
+class TestFullyShardShareCommContext(FSDPTest):
+    @property
+    def world_size(self) -> int:
+        return min(torch.get_device_module(device_type).device_count(), 2)
+
+    @skip_if_lt_x_gpu(2)
+    def test_share_comm_context(self):
+        torch.manual_seed(42)
+        n_layers = 3
+        lin_dim = 16
+        model = nn.Sequential(
+            *[MLP(lin_dim, torch.device("cpu")) for _ in range(n_layers)]
+        )
+        ref_model = copy.deepcopy(model).to(device_type)
+        for layer in model:
+            fully_shard(layer)
+            layer._get_fsdp_state()._lazy_init()
+        share_comm_ctx(list(model))
+
+        torch.manual_seed(42 + self.rank + 1)
+        inp = torch.randn(4, 3, lin_dim, device=device_type.type)
+        ref_loss = ref_model(inp).sum()
+
+        all_gather_streams = set()
+        reduce_scatter_streams = set()
+
+        from torch.distributed.fsdp._fully_shard._fsdp_api import (
+            AllGather,
+            ReduceScatter,
+        )
+        from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
+
+        orig_foreach_all_gather = foreach_all_gather
+
+        def foreach_all_gather_with_assert(
+            fsdp_params: list[FSDPParam],
+            group: dist.ProcessGroup,
+            async_op: bool,
+            all_gather_copy_in_stream: torch.Stream,
+            all_gather_stream: torch.Stream,
+            device: torch.device,
+            all_gather_comm: AllGather,
+        ):
+            nonlocal all_gather_streams
+            all_gather_streams.add(all_gather_stream)
+            return orig_foreach_all_gather(
+                fsdp_params,
+                group,
+                async_op,
+                all_gather_copy_in_stream,
+                all_gather_stream,
+                device,
+                all_gather_comm,
+            )
+
+        orig_foreach_reduce = foreach_reduce
+
+        @torch.no_grad()
+        def foreach_reduce_with_assert(
+            fsdp_params: list[FSDPParam],
+            unsharded_grads: list[torch.Tensor],
+            reduce_scatter_group: dist.ProcessGroup,
+            reduce_scatter_stream: torch.Stream,
+            reduce_scatter_comm: ReduceScatter,
+            orig_dtype: Optional[torch.dtype],
+            reduce_dtype: Optional[torch.dtype],
+            device: torch.device,
+            gradient_divide_factor: Optional[float],
+            all_reduce_group: Optional[dist.ProcessGroup],  # not `None` iff HSDP
+            all_reduce_stream: torch.Stream,
+            all_reduce_grads: bool,
+            partial_reduce_output: Optional[torch.Tensor],  # only used for HSDP
+            all_reduce_hook: Optional[Callable[[torch.Tensor], None]],
+            force_sum_reduction_for_comms: bool = False,
+        ):
+            nonlocal reduce_scatter_streams
+            reduce_scatter_streams.add(reduce_scatter_stream)
+            return orig_foreach_reduce(
+                fsdp_params,
+                unsharded_grads,
+                reduce_scatter_group,
+                reduce_scatter_stream,
+                reduce_scatter_comm,
+                orig_dtype,
+                reduce_dtype,
+                device,
+                gradient_divide_factor,
+                all_reduce_group,
+                all_reduce_stream,
+                all_reduce_grads,
+                partial_reduce_output,
+                all_reduce_hook,
+                force_sum_reduction_for_comms,
+            )
+
+        with (
+            patch_foreach_all_gather(foreach_all_gather_with_assert),
+            patch_foreach_reduce(foreach_reduce_with_assert),
+        ):
+            loss = model(inp).sum()
+            self.assertEqual(ref_loss, loss)
+            ref_loss.backward()
+            loss.backward()
+            for param in ref_model.parameters():
+                dist.all_reduce(param.grad, op=dist.ReduceOp.AVG)
+        self.assertEqual(len(all_gather_streams), 1)
+        self.assertEqual(len(reduce_scatter_streams), 1)
+        check_sharded_parity(self, ref_model, model)
+
+
 class TestFullyShardWorldSize1(FSDPTest):
     @property
     def world_size(self) -> int:
@@ -1543,6 +1726,68 @@ class TestFullyShardWorldSize1(FSDPTest):
             optim.step()
 
             self.assertEqual(losses[0], losses[1])
+
+
+class TestFullyShardCudaGraph(FSDPTest):
+    @property
+    def world_size(self) -> int:
+        return 2
+
+    @skip_if_lt_x_gpu(2)
+    @unittest.skipIf(
+        not TEST_CUDA_GRAPH, "CUDA >= 11.0 or ROCM >= 5.3 required for graphs"
+    )
+    def test_two_layer_fully_shard_cudagraph(self):
+        if device_type.type == "cuda":
+            torch.cuda.set_device(self.rank)
+        device = torch.device(device_type.type, self.rank)
+        torch.manual_seed(42)
+        model = nn.Sequential(
+            nn.Linear(8, 8, bias=False),
+            nn.Linear(8, 8, bias=False),
+        ).to(device)
+        for param in model.parameters():
+            dist.broadcast(param, src=0)
+        fully_shard(model[0])
+        fully_shard(model[1])
+        fully_shard(model)
+
+        stream = torch.cuda.Stream()
+
+        # warmup
+        with torch.cuda.stream(stream):
+            input_tensor = torch.randn(4, 8, device=device)
+            output = model(input_tensor)
+            output.sum().backward()
+            model.zero_grad(set_to_none=True)
+            del output
+
+        # stream capture to graph
+        static_input = input_tensor.clone()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            static_output = model(static_input)
+            static_output.sum().backward()
+            static_output_grads = [
+                param.grad.detach().clone() for param in model.parameters()
+            ]
+
+        # equivalence check
+        with torch.cuda.stream(stream):
+            for _ in range(2):
+                replay_input = torch.randn(4, 8, device=device)
+                ref_output = model(replay_input)
+                ref_output.sum().backward()
+                ref_grads = [
+                    param.grad.detach().clone() for param in model.parameters()
+                ]
+
+                static_input.copy_(replay_input)
+                graph.replay()
+                self.assertTrue(torch.equal(static_output, ref_output))
+                for graph_grad, ref_grad in zip(static_output_grads, ref_grads):
+                    self.assertTrue(torch.equal(graph_grad, ref_grad))
+                model.zero_grad(set_to_none=True)
 
 
 if __name__ == "__main__":

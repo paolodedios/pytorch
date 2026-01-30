@@ -49,9 +49,9 @@ import textwrap
 import typing
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Collection, Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Generator, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable, NoReturn, Optional, Protocol, TypeVar, Union
+from typing import Any, NoReturn, Optional, Protocol, TypeVar, Union
 from typing_extensions import Self, TypeIs
 
 import torch
@@ -270,6 +270,7 @@ class Match:
                 ]
             )
 
+        # pyrefly: ignore [bad-context-manager]
         with context:
             if trace_fn is None:
                 trace_fn = functools.partial(
@@ -305,6 +306,7 @@ class Match:
 
                 # second graph
                 example_vals = torch.fx.map_arg(args, lambda arg: arg.meta["val"])
+                # pyrefly: ignore [bad-argument-type]
                 replacement = trace_fn(graph_with_eager_vals, example_vals)
 
                 # propagate metadata from first graph to second
@@ -742,7 +744,7 @@ class _TargetArgsExpr(_TargetExpr):
         assert len(node_items) == len(self_items)
 
         m = Match(ctx, self)
-        for i, pattern, child_node in zip(itertools.count(), self_items, node_items):
+        for pattern, child_node in zip(self_items, node_items):
             if isinstance(pattern, PatternExpr):
                 child_match = ctx.match(pattern, child_node)
                 if not is_match(child_match):
@@ -750,7 +752,10 @@ class _TargetArgsExpr(_TargetExpr):
                 m.extend(child_match)
             elif isinstance(child_node, torch.fx.Node) or child_node != pattern:
                 return FailedMatch(
-                    "constant_args: {} {!r}!={pattern!r}", node, child_node
+                    "constant_args: {} {!r}!={pattern!r}",
+                    node,
+                    child_node,
+                    pattern=pattern,
                 )
         m.nodes.append(node)
         m.targets[self] = node.target
@@ -991,7 +996,9 @@ class RepeatedExpr(PatternExpr):
             self.inner_pattern,
         )
         # Check all anchor nodes match the pattern
-        for anchor_node in self.inner_pattern.find_anchor_nodes(ctx, OrderedSet()):
+        for anchor_node in self.inner_pattern.find_anchor_nodes(
+            ctx, OrderedSet([node])
+        ):
             anchor_m = MatchContext([self], graph=node.graph).match(
                 self.inner_pattern, anchor_node
             )
@@ -1127,6 +1134,10 @@ class GraphPatternEntry(PatternEntry):
 
 @dataclasses.dataclass
 class ReplacementPatternEntry(PatternEntry):
+    """
+    The replacement pattern for the graph
+    """
+
     normalize_args: Callable[..., list[Any]]
 
     @staticmethod
@@ -1136,6 +1147,12 @@ class ReplacementPatternEntry(PatternEntry):
         replacement_graph: Union[torch.fx.Graph, torch.fx.GraphModule],
         args: Sequence[torch.fx.Node],
     ) -> None:
+        """
+        Inserts the replacement graph into the toplevel graph at the match
+        """
+
+        added_replacement_nodes: list[torch.fx.Node] = []
+
         class Replacer(torch.fx.Interpreter):
             call_method = None  # type: ignore[assignment]
             call_module = None  # type: ignore[assignment]
@@ -1149,6 +1166,7 @@ class ReplacementPatternEntry(PatternEntry):
                 if node.op == "call_function":
                     assert callable(target)
                     result = graph.call_function(target, args, kwargs)
+                    added_replacement_nodes.append(result)
                     _transfer_meta(
                         new_meta=result.meta,
                         old_node=node,
@@ -1186,10 +1204,16 @@ class ReplacementPatternEntry(PatternEntry):
                     if graph_name is None:
                         assert isinstance(target, str)
                         _, graph_name = unique_graph_name_with_root(
-                            graph.owning_module, target
+                            # pyrefly: ignore [unbound-name]
+                            graph.owning_module,
+                            target,
                         )
+                        # pyrefly: ignore [unbound-name]
                         graph.owning_module.register_module(graph_name, sub_gm)
-                    return graph.get_attr(graph_name)
+                    # pyrefly: ignore [unbound-name]
+                    getattr_node = graph.get_attr(graph_name)
+                    added_replacement_nodes.append(getattr_node)
+                    return getattr_node
 
                 raise NotImplementedError(f"unhandled {node}")
 
@@ -1245,13 +1269,22 @@ class ReplacementPatternEntry(PatternEntry):
                 old: Union[torch.fx.Node, None],
                 new: Union[torch.fx.Node, Sequence[torch.fx.Node], None],
             ) -> None:
+                def filter_nodes_in_newly_added_nodes(node: torch.fx.Node) -> bool:
+                    # Do not replace the use of a node if it is being used by
+                    # nodes in the replaced graph
+                    return node not in added_replacement_nodes
+
                 if old is None:
                     assert new is None
                     return
                 assert isinstance(old, torch.fx.Node)
                 if new is None:
-                    old.replace_all_uses_with(None)  # type: ignore[arg-type]
-                    graph.erase_node(old)
+                    old.replace_all_uses_with(
+                        None,  # type: ignore[arg-type]
+                        delete_user_cb=filter_nodes_in_newly_added_nodes,
+                    )
+                    if len(old.users) == 0:
+                        graph.erase_node(old)
                     return
                 if isinstance(new, torch.fx.Node):
                     if "val" not in new.meta:
@@ -1271,8 +1304,11 @@ class ReplacementPatternEntry(PatternEntry):
                                 new, tag_name, old.meta[tag_name], OrderedSet(args)
                             )
 
-                    old.replace_all_uses_with(new)
-                    graph.erase_node(old)
+                    old.replace_all_uses_with(
+                        new, delete_user_cb=filter_nodes_in_newly_added_nodes
+                    )
+                    if len(old.users) == 0:
+                        graph.erase_node(old)
                     return
 
                 # `new` is not a node: it's a list of nodes.
@@ -1306,10 +1342,11 @@ class ReplacementPatternEntry(PatternEntry):
                 for user in old_uses:
                     idx = maybe_getitem(user)
                     if idx is None:
-                        raise AssertionError(
-                            "Deleted index from getitem, did you erase the index and not properly replace it?"
-                        )
-                    replace(user, new[idx])
+                        # Output is used directly
+                        # pyrefly: ignore [bad-argument-type]
+                        old.replace_all_uses_with(new)
+                    else:
+                        replace(user, new[idx])
                 graph.erase_node(old)
 
             if len(output_nodes) == len(replacement):
@@ -1373,7 +1410,7 @@ def check_and_add_duplicate_pattern(
 
     new_graph_str = str(graph)
     for graph_str in equiv_pattern_reprs:
-        if not new_graph_str == graph_str:
+        if new_graph_str != graph_str:
             continue
         if skip_duplicates:
             return True
@@ -1411,6 +1448,13 @@ def register_replacement(
         extra_check: additional check to run on match(using real shapes)
     """
     argnames_static = [*inspect.signature(search_fn).parameters.keys()]
+
+    if inspect.ismethod(search_fn):
+        search_fn = _wrap_bound_method(search_fn, argnames_static)
+
+    if inspect.ismethod(replace_fn):
+        replace_argnames = [*inspect.signature(replace_fn).parameters.keys()]
+        replace_fn = _wrap_bound_method(replace_fn, replace_argnames)
 
     def check_fn(match: Match) -> bool:
         """
@@ -1473,6 +1517,7 @@ def register_replacement(
                         return search_fn(*args_new[len(args_new) - len(args) :])
 
                     try:
+                        # pyrefly: ignore [bad-argument-type]
                         specific_graph = trace_fn(search_fn_new, sym_args + args)
                     except RuntimeError as e:
                         log_trace_failure(search_fn, e)
@@ -1514,6 +1559,15 @@ def register_replacement(
             node = match.output_nodes()[0]
             assert node is not None
             specific_pattern_match = specific_pattern.match(node)
+
+            if os.environ.get("TORCHINDUCTOR_PATTERN_MATCH_DEBUG") == node.name:
+                log.warning(
+                    "Specific pattern match: %s%s %s %s",
+                    node,
+                    node.args,
+                    specific_pattern_match,
+                    specific_pattern,
+                )
 
             if is_match(specific_pattern_match) and extra_check(specific_pattern_match):
                 # trace the pattern using the shapes from the user program
@@ -1623,6 +1677,7 @@ def _serialize_pattern(
                 if isinstance(attr, type) and issubclass(
                     attr, (PatternExpr, _TargetExpr)
                 ):
+                    # pyrefly: ignore [bad-argument-type]
                     pattern_matcher_imports.append(name)
             except TypeError:
                 pass
@@ -1901,16 +1956,34 @@ def compute_mutation_region_ids(graph: torch.fx.Graph) -> None:
         nd.meta["mutation_region_id"] = mutation_region_id
 
 
+def _wrap_bound_method(fn: Any, argnames: list[str]) -> Any:
+    """
+    Wrap a bound method to remove 'self' from its signature for FX tracing.
+    """
+
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        return fn(*args, **kwargs)
+
+    params = [
+        inspect.Parameter(name, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for name in argnames
+    ]
+    wrapper.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
+    return wrapper
+
+
 class PatternMatcherPass:
     def __init__(
         self,
         pass_name: Optional[str] = None,
+        subsystem: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.patterns: defaultdict[
             tuple[str, torch.fx.node.Target], list[PatternEntry]
         ] = defaultdict(list)
         self.pass_name = pass_name
+        self.subsystem = subsystem
 
         # For a particular generated pattern repr, store all of the str representations
         # of the graph used to generate them. Because we ignore certain patterns
@@ -1950,7 +2023,7 @@ class PatternMatcherPass:
             nodes.append(graph.find_nodes(op="call_module", sort=False))
         pass_name = self.pass_name if self.pass_name is not None else "pattern_matcher"
         assert isinstance(gm, torch.fx.GraphModule)
-        with GraphTransformObserver(gm, pass_name):
+        with GraphTransformObserver(gm, pass_name, self.subsystem):
             for node in sorted(itertools.chain.from_iterable(nodes), reverse=True):
                 target = extract_target(node)
                 if node.op == "call_module":
@@ -2028,10 +2101,14 @@ def fx_to_pattern(
     argnum = itertools.count()
 
     class Converter(torch.fx.Interpreter):
+        # pyrefly: ignore [bad-override]
         call_method = _not_implemented
+        # pyrefly: ignore [bad-override]
         call_module = _not_implemented
+        # pyrefly: ignore [bad-override]
         get_attr = _not_implemented
 
+        # pyrefly: ignore [bad-override]
         def placeholder(
             self,
             target: str,  # type: ignore[override]
@@ -2052,6 +2129,7 @@ def fx_to_pattern(
             else:
                 return KeywordArg(name)
 
+        # pyrefly: ignore [bad-override]
         def call_function(
             self,
             target: str,  # type: ignore[override]
@@ -2060,7 +2138,7 @@ def fx_to_pattern(
         ) -> PatternExpr:
             process_arg_fn = process_arg
             # Indexing is critical for matching getitem nodes, so we can't ignore int args here
-            if target == operator.getitem:
+            if target is operator.getitem:
 
                 def process_arg_fn_impl(
                     x: T,
@@ -2086,6 +2164,7 @@ def fx_to_pattern(
                 assert isinstance(args, Collection)
                 assert len(rv) == len(args)
                 for r, arg in zip(rv, args):
+                    # pyrefly: ignore [missing-attribute]
                     r.users = len(arg.users)
             else:
                 rv.users = len(n.users)
@@ -2118,6 +2197,14 @@ def fwd_only(
 
     if run_functional_passes:
         remove_noop_ops(gm.graph)
+
+        # NOTE: applying early_patterns to user patterns cause
+        # duplicate patterns being found in vllm. Check
+        # https://github.com/pytorch/pytorch/pull/170649#issuecomment-3693427775
+        # for more details.
+        # from .fx_passes.joint_graph import early_patterns
+        # early_patterns.apply(gm.graph)
+
         gm.graph.eliminate_dead_code()
 
     gm.recompile()
@@ -2140,7 +2227,7 @@ def joint_fwd_bwd(fn: Callable[..., Any], args: Sequence[Any]) -> torch.fx.Graph
     with torch._guards.tracing(None):
         aot_function(
             fn,
-            lambda g, i: make_boxed_func(g),
+            lambda gm, example_inputs: make_boxed_func(gm),
             partition_fn=record_joint_graph,
             decompositions=select_decomp_table(),
             keep_inference_input_mutations=True,
@@ -2152,17 +2239,9 @@ def joint_fwd_bwd(fn: Callable[..., Any], args: Sequence[Any]) -> torch.fx.Graph
 
     remove_noop_ops(gm.graph)
 
-    from .fx_passes.joint_graph import pointless_view
+    from .fx_passes.joint_graph import early_patterns
 
-    matcher_pass = PatternMatcherPass()
-
-    pattern = CallFunction(
-        torch.ops.aten.view.default, KeywordArg("arg"), KeywordArg("size")
-    )
-    GraphPatternEntry(
-        pattern=pattern, handler=pointless_view, extra_check=_return_true
-    ).register(matcher_pass.patterns)
-    matcher_pass.apply(gm.graph)
+    early_patterns.apply(gm.graph)
 
     # remove in/out specs
     gm.graph._codegen = torch.fx.graph.CodeGen()
@@ -2250,6 +2329,7 @@ def clone_graph(input_graph: torch.fx.GraphModule) -> torch.fx.GraphModule:
                 new_node.node.name = self.new_graph._graph_namespace.create_name(
                     old_node.name, None
                 )
+
             return new_node
 
     return CopyGraph(input_graph).transform()

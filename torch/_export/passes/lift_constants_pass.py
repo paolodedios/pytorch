@@ -7,6 +7,7 @@ import torch
 from torch._export.verifier import SpecViolationError
 from torch._guards import detect_fake_mode
 from torch._library.fake_class_registry import FakeScriptObject
+from torch._library.opaque_object import is_opaque_reference_type
 from torch._subclasses.fake_tensor import unset_fake_temporarily
 from torch.export.exported_program import (
     ArgumentSpec,
@@ -44,7 +45,10 @@ class ConstantAttrMap(collections.abc.MutableMapping):
 
     def __getitem__(self, key: _ConstantAttributeType) -> Any:
         real_key = hash(key) if isinstance(key, torch.ScriptObject) else key
-        assert isinstance(real_key, (int, torch.Tensor, FakeScriptObject))
+        if not isinstance(real_key, (int, torch.Tensor, FakeScriptObject)):
+            raise AssertionError(
+                f"expected int, Tensor, or FakeScriptObject key, got {type(real_key)}"
+            )
         return self._constant_attrs[real_key]
 
     def __setitem__(self, key: _ConstantAttributeType, value):
@@ -142,6 +146,10 @@ def _unused_constant(node: torch.fx.Node) -> Optional[list[torch.fx.Node]]:
     if len(lift_fresh_node.users) > 1:
         return None
 
+    # Case 1: lift node is not used anywhere
+    if len(lift_fresh_node.users) == 0:
+        return [lift_fresh_node, node]
+
     detach_node = next(iter(lift_fresh_node.users.keys()))
     if not (
         detach_node.op == "call_function"
@@ -156,6 +164,7 @@ def _unused_constant(node: torch.fx.Node) -> Optional[list[torch.fx.Node]]:
     if len(detach_node.users) > 0:
         return None
     else:
+        # Case 2: Lift node's child is not used anywhere
         return [detach_node, lift_fresh_node, node]
 
 
@@ -199,7 +208,10 @@ def lift_constants_pass(
     used_target_names = set()
 
     input_nodes = [node for node in gm.graph.nodes if node.op == "placeholder"]
-    assert len(input_nodes) == len(input_specs)
+    if len(input_nodes) != len(input_specs):
+        raise AssertionError(
+            f"input nodes count {len(input_nodes)} != input specs count {len(input_specs)}"
+        )
     for i, (node, input_spec) in enumerate(zip(input_nodes, input_specs)):
         used_target_names.add(input_spec.target)
         if input_spec.kind == InputKind.USER_INPUT:
@@ -248,7 +260,9 @@ def lift_constants_pass(
             # constant (e.g. x + torch.tensor(0)), and thus did not have a
             # specific location in the eager module. In that case, just generate
             # some name and attach it to the module in which it was used.
-            if isinstance(constant_val, (torch.ScriptObject, FakeScriptObject)):
+            if isinstance(
+                constant_val, (torch.ScriptObject, FakeScriptObject)
+            ) or is_opaque_reference_type(type(constant_val)):
                 constant_kind = InputKind.CUSTOM_OBJ
                 constant_fqn = _get_first_fqn(constant_attrs, constant_val)
                 if constant_fqn is not None:

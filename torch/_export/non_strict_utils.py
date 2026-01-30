@@ -5,10 +5,11 @@ import functools
 import inspect
 import logging
 import math
+import sys
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
-from typing import Any, Callable, Optional, TYPE_CHECKING, Union
+from typing import Any, Optional, TYPE_CHECKING, Union
 
 import torch
 import torch.utils._pytree as pytree
@@ -24,6 +25,7 @@ from torch._export.passes.lift_constants_pass import ConstantAttrMap
 from torch._export.utils import _fakify_params_buffers
 from torch._guards import Source
 from torch._library.fake_class_registry import FakeScriptObject
+from torch._library.opaque_object import is_opaque_type
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.export import Constraint
 from torch.export.dynamic_shapes import (
@@ -86,7 +88,8 @@ class _KeyPathTrie:
         self.root = {}
 
     def add(self, kp: KeyPath, src: Source):
-        assert len(kp) > 0
+        if len(kp) == 0:
+            raise AssertionError("KeyPath must not be empty")
         *path, leaf = kp
         node = self.root
         for k in path:
@@ -97,10 +100,13 @@ class _KeyPathTrie:
 
     def get(self, kp: KeyPath) -> tuple[Source, KeyPath]:
         node = self.root
+        # pyrefly: ignore [bad-assignment]
         while not isinstance(node, Source):
-            assert len(kp) > 0
+            if len(kp) == 0:
+                raise AssertionError("KeyPath exhausted before reaching Source")
             k, *kp = kp  # type: ignore[assignment]
             node = node[k]
+        # pyrefly: ignore [bad-return]
         return node, kp
 
 
@@ -119,11 +125,13 @@ def make_sourced_prefixes(nn_module, args, kwargs) -> _KeyPathTrie:
             sourced_prefixes.add(struct.kp, src)
         elif isinstance(struct, tuple):
             for i, prefix in enumerate(struct):
-                assert isinstance(prefix, _KeyPath)
+                if not isinstance(prefix, _KeyPath):
+                    raise AssertionError(f"expected _KeyPath, got {type(prefix)}")
                 sourced_prefixes.add(prefix.kp, GetItemSource(src, i))
         elif isinstance(struct, dict):
             for k, prefix in struct.items():
-                assert isinstance(prefix, _KeyPath)
+                if not isinstance(prefix, _KeyPath):
+                    raise AssertionError(f"expected _KeyPath, got {type(prefix)}")
                 sourced_prefixes.add(prefix.kp, GetItemSource(src, k))
 
     return sourced_prefixes
@@ -139,6 +147,7 @@ def key_path_to_source(
         source: Source = LocalSource("args")
     else:
         source, kp = sourced_prefixes.get(kp)
+
     for k in kp:
         if isinstance(k, SequenceKey):
             source = GetItemSource(source, k.idx)
@@ -165,7 +174,11 @@ def fakify(
     sourced_prefixes: Optional[_KeyPathTrie] = None,
 ):
     source = key_path_to_source(kp, sourced_prefixes=sourced_prefixes)
-    if _is_constant_argument(t) or isinstance(t, (torch.ScriptObject, torch.nn.Module)):
+    if (
+        _is_constant_argument(t)
+        or isinstance(t, (torch.ScriptObject, torch.nn.Module))
+        or is_opaque_type(type(t))
+    ):
         return t
 
     if isinstance(t, _IntWrapper):
@@ -199,9 +212,31 @@ def fakify(
             "To register a constant input, use torch.utils._pytree.register_constant"
         )
 
+    # Create symbolic context (handles subclass recursion internally)
+    symbolic_context = _create_symbolic_context_for_tensor(
+        t, source, t_constraints, sources, mode
+    )
+
+    fake = mode.from_tensor(t, source=source, symbolic_context=symbolic_context)
+    mode.shape_env.tracked_fakes.append(TrackedFake(fake, source, symbolic_context))  # type: ignore[union-attr]
+    return fake
+
+
+def _create_symbolic_context_for_tensor(t, source, t_constraints, sources, mode):
+    """Helper function to create symbolic context for a tensor."""
+    from torch._dynamo.source import AttrSource
+    from torch.fx.experimental.symbolic_shapes import (
+        DimDynamic,
+        RelaxedUnspecConstraint,
+        SubclassSymbolicContext,
+    )
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    # Common dynamic dimension logic for both regular tensors and subclasses
     n_dims = len(t.shape)
     dynamic_sizes = []
     constraint_sizes = [None] * n_dims
+
     for i in range(n_dims):
         if i in getattr(t, "_dynamo_weak_dynamic_indices", {}):
             dynamic_sizes.append(DimDynamic.DYNAMIC)
@@ -213,14 +248,41 @@ def fakify(
             constraint_sizes[i] = RelaxedUnspecConstraint(warn_only=False)  # type: ignore[call-overload]
         else:
             dynamic_sizes.append(DimDynamic.STATIC)
-    symbolic_context: StatelessSymbolicContext = (  # make mypy happy
-        StatelessSymbolicContext(
+
+    # Handle nested subclasses
+    if is_traceable_wrapper_subclass(t):
+        # Get inner contexts recursively
+        inner_contexts = {}
+        attrs, _ = type(t).__tensor_flatten__(t)
+
+        # Propagate outer tensor constraints to inner tensors if not already present
+        for attr in attrs:
+            inner_tensor = getattr(t, attr)
+            inner_source = AttrSource(source, attr)
+            inner_contexts[attr] = _create_symbolic_context_for_tensor(
+                inner_tensor, inner_source, t_constraints, sources, mode
+            )
+
+        symbolic_context = SubclassSymbolicContext(
             dynamic_sizes=dynamic_sizes,
             constraint_sizes=constraint_sizes,  # type: ignore[arg-type]
+            view_base_context=None,
+            tensor_source=source,
+            shape_env_to_source_to_symbol_cache={},
+            inner_contexts=inner_contexts,
         )
-    )
+    else:
+        symbolic_context: StatelessSymbolicContext = (  # type: ignore[no-redef]
+            StatelessSymbolicContext(
+                dynamic_sizes=dynamic_sizes,
+                constraint_sizes=constraint_sizes,  # type: ignore[arg-type]
+            )
+        )
+
+    # Apply constraints (common logic)
     t_id = id(t)
-    assert mode.shape_env is not None
+    if mode.shape_env is None:
+        raise AssertionError("mode.shape_env must not be None")
     if t_id in t_constraints:
         for i, constraint in t_constraints[t_id].items():
             src = TensorPropertySource(base=source, prop=TensorProperty.SIZE, idx=i)
@@ -228,10 +290,9 @@ def fakify(
             if isinstance(constraint, _RelaxedConstraint):
                 continue
             symbolic_context.constraint_sizes[i] = constraint.constraint_range
-            mode.shape_env.source_name_to_debug_name[src.name()] = constraint.name  # type: ignore[assignment]
-    fake = mode.from_tensor(t, source=source, symbolic_context=symbolic_context)
-    mode.shape_env.tracked_fakes.append(TrackedFake(fake, source, symbolic_context))  # type: ignore[union-attr]
-    return fake
+            mode.shape_env.source_name_to_debug_name[src.name] = constraint.name  # type: ignore[assignment]
+
+    return symbolic_context
 
 
 def _is_unbacked_symint(symbol):
@@ -307,10 +368,12 @@ def _override_builtin_ops():
     original_min = builtins.min
     original_pow = math.pow
 
+    # pyrefly: ignore [bad-assignment]
     builtins.max = functools.partial(
         _tensor_min_max, real_callable=original_max, tensor_callable=torch.maximum
     )
 
+    # pyrefly: ignore [bad-assignment]
     builtins.min = functools.partial(
         _tensor_min_max, real_callable=original_min, tensor_callable=torch.minimum
     )
@@ -365,11 +428,20 @@ def make_fake_inputs(
         # a toplevel TracingContext with a fake mode, so we do not want to
         # create another fake mode.
         fake_mode = context.fake_mode
-        assert fake_mode is not None
+        if fake_mode is None:
+            raise AssertionError("context.fake_mode must not be None")
     else:
         if isinstance(nn_module.forward, functools.partial):
             # functools handles nesting by itself, no need to recurse
             code = nn_module.forward.func.__code__
+        elif (
+            sys.version_info >= (3, 14)
+            and (fwd := getattr(nn_module.forward, "__func__", None))
+            and isinstance(fwd, functools.partial)
+        ):
+            # functools.partial is now a method descriptor:
+            # https://docs.python.org/3/whatsnew/3.14.html#changes-in-the-python-api
+            code = fwd.func.__code__
         else:
             code = nn_module.forward.__code__
         co_fields = {
@@ -489,8 +561,10 @@ def produce_guards_and_solve_constraints(
         original_signature: the signature of the forward method
     """
     shape_env = fake_mode.shape_env
-    assert shape_env is not None
-    assert shape_env.tracked_fakes is not None
+    if shape_env is None:
+        raise AssertionError("fake_mode.shape_env must not be None")
+    if shape_env.tracked_fakes is None:
+        raise AssertionError("shape_env.tracked_fakes must not be None")
 
     placeholders = [tf.fake for tf in shape_env.tracked_fakes]
     sources = [tf.source for tf in shape_env.tracked_fakes]
@@ -513,7 +587,10 @@ def produce_guards_and_solve_constraints(
         # Expected when shape_env.produce_guards throws an early constraint violation error.
         # There is nothing to solve for in this case.
         # TODO(avik): Maybe record the constraint violation error instead and replay later?
-        assert constraint_violation_error
+        if not constraint_violation_error:
+            raise AssertionError(
+                "expected constraint_violation_error when dim_constraints is None"
+            )
         raise constraint_violation_error
     dim_constraints.solve()
     forced_specializations = dim_constraints.forced_specializations()
@@ -526,7 +603,12 @@ def produce_guards_and_solve_constraints(
     )
 
     if constraint_violation_error:
-        constraint_violation_error.args = (constraint_violation_error.args[0] + msg,)
+        if constraint_violation_error.args:
+            constraint_violation_error.args = (
+                constraint_violation_error.args[0] + msg,
+            )
+        else:
+            constraint_violation_error.args = (msg,)
     elif forced_specializations:
         constraint_violation_error = ConstraintViolationError(msg)
     if constraint_violation_error:
@@ -627,7 +709,8 @@ def make_constraints(
     """
 
     shape_env = fake_mode.shape_env
-    assert shape_env is not None
+    if shape_env is None:
+        raise AssertionError("fake_mode.shape_env must not be None")
     inline_constraints = gm.meta.get("inline_constraints", [])
     range_constraints = defaultdict(lambda: ValueRanges(0, int_oo)) | inline_constraints
     if not dynamic_shapes:
@@ -641,13 +724,19 @@ def make_constraints(
 
     # get individual dynamic shapes spec for each input
     if not isinstance(dynamic_shapes, dict):
-        assert isinstance(dynamic_shapes, (tuple, list))
+        if not isinstance(dynamic_shapes, (tuple, list)):
+            raise AssertionError(
+                f"expected dict, tuple, or list for dynamic_shapes, got {type(dynamic_shapes)}"
+            )
         combined_args = type(dynamic_shapes)(combined_args.values())  # type: ignore[assignment, misc]
     flat_dynamic_shapes = _flatten_dynamic_shapes(combined_args, dynamic_shapes)
 
     # check number of shapes vs. number of inputs
     num_placeholders = [node.op == "placeholder" for node in gm.graph.nodes].count(True)
-    assert len(flat_dynamic_shapes) == num_placeholders - num_lifted_inputs
+    if len(flat_dynamic_shapes) != num_placeholders - num_lifted_inputs:
+        raise AssertionError(
+            f"expected {num_placeholders - num_lifted_inputs} shapes, got {len(flat_dynamic_shapes)}"
+        )
 
     free_symbols = set()
     range_violations = []
@@ -868,12 +957,10 @@ def _fakify_script_objects(
     #   fake_to_real: a mapping between FakeScriptObject and the original script object in order to un-do the patching.
 
     constant_attrs: ConstantAttrMap = _gather_constant_attrs(mod)
-    assert not any(
-        isinstance(obj, FakeScriptObject) for obj in constant_attrs.values()
-    ), "Mod shouldn't contain any FakeScriptObject."
-    assert not pytree.tree_any(
-        lambda obj: isinstance(obj, FakeScriptObject), (args, kwargs)
-    ), "args and kwargs shouldn't contain any FakeScriptObject."
+    if any(isinstance(obj, FakeScriptObject) for obj in constant_attrs.values()):
+        raise AssertionError("Mod shouldn't contain any FakeScriptObject.")
+    if pytree.tree_any(lambda obj: isinstance(obj, FakeScriptObject), (args, kwargs)):
+        raise AssertionError("args and kwargs shouldn't contain any FakeScriptObject.")
 
     patched_attr = {}
     fake_constant_attrs = ConstantAttrMap()
@@ -895,11 +982,16 @@ def _fakify_script_objects(
 
     try:
         for obj, fqns in constant_attrs.items():
-            if torch._library.fake_class_registry._is_script_object(obj):
+            if torch._library.fake_class_registry._is_script_object(
+                obj
+            ) or is_opaque_type(obj):
                 fake_script_obj = _maybe_fakify_obj(obj)
                 for fqn in fqns:
                     cur_mod, attr = _leaf_mod_and_attr(mod, fqn)
-                    assert obj is getattr(cur_mod, attr)
+                    if obj is not getattr(cur_mod, attr):
+                        raise AssertionError(
+                            f"obj mismatch at {fqn}: expected {obj}, got {getattr(cur_mod, attr)}"
+                        )
                     setattr(cur_mod, attr, fake_script_obj)
                     fake_constant_attrs.add(fake_script_obj, fqn)
                     patched_attr[fqn] = obj
@@ -1036,6 +1128,7 @@ class _NonStrictTorchFunctionHandler(torch.overrides.TorchFunctionMode):
 
                 def run():
                     # Run sequence.
+                    # pyrefly: ignore [bad-index, index-error]
                     t = args[0]
                     for _method, _args in sequence:
                         t = _method(t, *_args)
