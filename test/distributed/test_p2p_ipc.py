@@ -4,7 +4,6 @@
 # python test/distributed/test_p2p_ipc.py
 
 import os
-import unittest
 
 import torch
 from torch.multiprocessing.reductions import reduce_tensor
@@ -84,7 +83,6 @@ class P2PIpcTest(MultiProcContinuousTest):
         """Test P2P IPC with regular cudaMalloc allocations."""
         self._test_p2p_ipc_impl()
 
-    @unittest.skip("Requires fix for expandable segments IPC handle type propagation")
     @skipIfRocm(msg="expandable_segments mode is not supported on ROCm")
     def test_p2p_ipc_expandable_segments(self) -> None:
         """
