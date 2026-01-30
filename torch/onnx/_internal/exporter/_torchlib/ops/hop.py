@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 def call_op(
     op_type: str,
-    *args: ir.Value,
+    *args: ir.Value | None,
     _num_outputs: int = 1,
     _domain: str = "",
     **kwargs: int | float | str | bool | ir.Graph | ir.TensorProtocol | Sequence[int],
@@ -187,14 +187,16 @@ def higher_order_while_loop(
 
     # Create subgraph inputs for the Loop body
     # ONNX Loop body signature: (iter_num, cond_in, loop_carried_deps..., additional_inputs...)
+
+    # Start subgraph construction
     subgraph_inputs = [
-        # Iteration number (int scalar)
+        # Iteration number (int scalar, unused)
         ir.Value(
             name=f"iter_num_{body_func.name}",
             shape=ir.Shape([]),
             type=ir.TensorType(ir.DataType.INT64),
         ),
-        # Condition input (bool scalar)
+        # Condition input (bool scalar, unused)
         ir.Value(
             name=f"cond_in_{body_func.name}",
             shape=ir.Shape([]),
@@ -221,67 +223,74 @@ def higher_order_while_loop(
     ]
 
     # Create the combined body function that handles both condition and body logic
-    # First, call the condition function with carried inputs + additional inputs
-    cond_node = ir.Node(
-        cond_func.domain,
-        cond_func.name,
-        [
-            *subgraph_inputs[2:2+len(carried_inputs)],  # carried inputs
-            *subgraph_inputs[2+len(carried_inputs):],   # additional inputs
-        ],
-        num_outputs=len(cond_func.outputs),
-    )
-
-    # Then call the body function with the same inputs
+    # First, call the body function with the same inputs
     body_node = ir.Node(
         body_func.domain,
         body_func.name,
         [
-            *subgraph_inputs[2:2+len(carried_inputs)],  # carried inputs
-            *subgraph_inputs[2+len(carried_inputs):],   # additional inputs
+            *subgraph_inputs[2:],  # carried inputs + additional inputs
         ],
-        num_outputs=len(body_func.outputs),
+        num_outputs=len(body_func.outputs),  # carried inputs
+    )
+
+    # Then call the condition function with carried inputs + additional inputs
+    cond_node = ir.Node(
+        cond_func.domain,
+        cond_func.name,
+        [
+            *body_node.outputs,  # updated carried inputs from body
+            *subgraph_inputs[len(body_node.outputs) :],  # additional inputs
+        ],
+        num_outputs=len(cond_func.outputs),
+    )
+
+    assert len(cond_func.outputs) == 1, (
+        "Condition function must return a single boolean value."
     )
 
     # ONNX Runtime complains about duplicate output names if we don't rename them
-    for func_out, out in zip(cond_func.outputs, cond_node.outputs):
-        out.name = f"{func_out.name}_{cond_func.name}"
     for func_out, out in zip(body_func.outputs, body_node.outputs):
         out.name = f"{func_out.name}_{body_func.name}"
+    for func_out, out in zip(cond_func.outputs, cond_node.outputs):
+        out.name = f"{func_out.name}_{cond_func.name}"
 
     # The Loop body must return: (cond_out, loop_carried_deps...)
     # We use the condition output and the body outputs
     loop_body_outputs = [
         cond_node.outputs[0],  # condition output (bool)
-        *body_node.outputs,    # updated carried inputs
+        *body_node.outputs,  # updated carried inputs
     ]
 
+    # End subgraph construction
+
     # Get initial condition by calling cond_func with initial inputs
-    initial_cond_node = ir.Node(
-        cond_func.domain,
+    initial_outputs = call_op(
         cond_func.name,
-        [*carried_inputs, *additional_inputs],
+        *carried_inputs,
+        *additional_inputs,
         num_outputs=len(cond_func.outputs),
+        _domain=cond_func.domain,
     )
 
-    # Rename initial condition output to avoid conflicts
-    for func_out, out in zip(cond_func.outputs, initial_cond_node.outputs):
-        out.name = f"{func_out.name}_initial_{cond_func.name}"
+    assert len(initial_outputs) == 1, (
+        "Condition function must return a single boolean value."
+    )
 
     # Create the Loop operator call
     # Loop(M, cond, v_initial) where M is empty (no trip count limit)
     loop_outputs = call_op(
         "Loop",
         # M (trip count) - empty string means no limit
+        None,
         # cond - initial condition
-        initial_cond_node.outputs[0],
+        initial_outputs[0],
         # v_initial - carried inputs (loop-carried dependencies)
         *carried_inputs,
         _num_outputs=len(carried_inputs),
         body=ir.Graph(
             subgraph_inputs,
             loop_body_outputs,
-            nodes=[cond_node, body_node],
+            nodes=[body_node, cond_node],
             name=f"{body_func.name}_loop_body",
         ),
     )
