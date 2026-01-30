@@ -15224,7 +15224,7 @@ class TestAutogradMultipleDispatch(TestCase):
         grad = torch.randn(3, 3, device=device)
         out.backward(grad)
 
-        if device_type not in device:
+        if "cuda" not in device:
             # bogus default gradient registered for Autograd is grad + 1
             self.assertEqual(t.grad, grad + 1)
         else:
