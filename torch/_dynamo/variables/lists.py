@@ -44,7 +44,7 @@ from ..utils import (
     range_iterator,
     set_example_value,
 )
-from .base import ValueMutationNew, VariableTracker
+from .base import AsPythonConstantNotImplementedError, ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
 from .functions import UserFunctionVariable
 from .iter import IteratorVariable
@@ -102,37 +102,6 @@ class BaseListVariable(VariableTracker):
 
     def as_python_constant(self) -> Any:
         return self.python_type()([x.as_python_constant() for x in self.items])
-
-    def is_python_constant(self) -> bool:
-        """Check if this container is a python constant without realizing lazy constants.
-
-        Uses try_peek_constant() to check each item without realizing lazy constants.
-        Returns False if any item is an unrealized lazy constant - this forces
-        the codegen path to use reconstruct() instead of loading as a constant,
-        which avoids installing guards on the lazy constants.
-        """
-        can_peek, is_unrealized, _value = self.try_peek_constant()
-        # Return False if any item is unrealized to avoid as_python_constant()
-        # being called, which would realize lazy constants and install guards
-        return can_peek and not is_unrealized
-
-    def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        """Peek at the constant value without triggering realization.
-
-        For container types, we recursively peek at all items. If any item
-        cannot be peeked, we return (False, False, None). If any item is
-        unrealized (lazy), we return (True, True, value).
-        """
-        values = []
-        any_unrealized = False
-        for item in self.items:
-            can_peek, is_unrealized, value = item.try_peek_constant()
-            if not can_peek:
-                return (False, False, None)
-            if is_unrealized:
-                any_unrealized = True
-            values.append(value)
-        return (True, any_unrealized, self.python_type()(values))
 
     def as_proxy(self) -> Any:
         assert self.python_type() is not SizeVariable
@@ -269,11 +238,25 @@ class BaseListVariable(VariableTracker):
                     f"{len(args)} args and {len(kwargs)} kwargs",
                 )
 
-            return tx.inline_user_function_return(
-                VariableTracker.build(tx, polyfills.index),
-                [self] + list(args),
-                kwargs,
-            )
+            try:
+                # Speedup trace times for constant data structures
+                items = [item.as_python_constant() for item in self.items]
+                const_args = [arg.as_python_constant() for arg in args]
+                const_kwargs = {k: v.as_python_constant() for k, v in kwargs.items()}
+                try:
+                    return ConstantVariable.create(
+                        items.index(*const_args, **const_kwargs)
+                    )
+                except ValueError:
+                    raise_observed_exception(
+                        ValueError, tx, args=[ConstantVariable.create("tuple.index()")]
+                    )
+            except AsPythonConstantNotImplementedError:
+                return tx.inline_user_function_return(
+                    VariableTracker.build(tx, polyfills.index),
+                    [self] + list(args),
+                    kwargs,
+                )
         elif name == "count":
             if len(args) != 1:
                 raise_args_mismatch(
@@ -520,19 +503,6 @@ class RangeVariable(BaseListVariable):
 
     def as_python_constant(self) -> range:
         return range(*[x.as_python_constant() for x in self.items])
-
-    def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        """Override to use range(*values) instead of range(values)."""
-        values = []
-        any_unrealized = False
-        for item in self.items:
-            can_peek, is_unrealized, value = item.try_peek_constant()
-            if not can_peek:
-                return (False, False, None)
-            if is_unrealized:
-                any_unrealized = True
-            values.append(value)
-        return (True, any_unrealized, range(*values))
 
     def getitem_const(
         self, tx: "InstructionTranslator", arg: VariableTracker
@@ -906,6 +876,8 @@ class ListVariable(CommonListMethodsVariable):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
+        from .tensor import SymNodeVariable
+
         if name == "__setitem__" and self.is_mutable():
             if kwargs or len(args) != 2:
                 raise_args_mismatch(
@@ -941,9 +913,10 @@ class ListVariable(CommonListMethodsVariable):
                         args=list(map(ConstantVariable.create, exc.args)),
                     )
             else:
-                # Use guard_if_dyn to handle SymNodeVariable and LazyVariableTracker
-                # that may realize to SymNodeVariable
-                key = guard_if_dyn(key)
+                if isinstance(key, SymNodeVariable):
+                    key = key.evaluate_expr()
+                else:
+                    key = key.as_python_constant()
 
                 try:
                     # pyrefly: ignore[unsupported-operation]
@@ -1079,27 +1052,6 @@ class DequeVariable(CommonListMethodsVariable):
             [x.as_python_constant() for x in self.items],
             maxlen=self.maxlen.as_python_constant(),
         )
-
-    def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        """Override to include maxlen parameter."""
-        values = []
-        any_unrealized = False
-        for item in self.items:
-            can_peek, is_unrealized, value = item.try_peek_constant()
-            if not can_peek:
-                return (False, False, None)
-            if is_unrealized:
-                any_unrealized = True
-            values.append(value)
-        # Also check maxlen
-        can_peek_maxlen, is_unrealized_maxlen, maxlen_value = (
-            self.maxlen.try_peek_constant()
-        )
-        if not can_peek_maxlen:
-            return (False, False, None)
-        if is_unrealized_maxlen:
-            any_unrealized = True
-        return (True, any_unrealized, self.python_type()(values, maxlen=maxlen_value))
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen.add_push_null(
@@ -1516,23 +1468,6 @@ class NamedTupleVariable(UserDefinedTupleVariable):
 
         return result
 
-    def try_peek_constant(self) -> tuple[bool, bool, Any]:
-        """Override to handle namedtuple vs structseq constructor differences."""
-        values = []
-        any_unrealized = False
-        for item in self.items:
-            can_peek, is_unrealized, value = item.try_peek_constant()
-            if not can_peek:
-                return (False, False, None)
-            if is_unrealized:
-                any_unrealized = True
-            values.append(value)
-        if self.is_structseq():
-            # StructSequenceType(iterable)
-            return (True, any_unrealized, self.python_type()(values))
-        # NamedTupleType(*iterable)
-        return (True, any_unrealized, self.python_type()(*values))
-
     def as_proxy(self) -> Any:
         if self.is_structseq():
             return self.python_type()([x.as_proxy() for x in self._tuple_vt.items])
@@ -1574,13 +1509,6 @@ class NamedTupleVariable(UserDefinedTupleVariable):
             return False
         return True
 
-    def is_python_equal(self, other: Any) -> bool:
-        if isinstance(other, UserDefinedTupleVariable):
-            return super().is_python_equal(other)
-        elif isinstance(other, TupleVariable):
-            return all(a.is_python_equal(b) for (a, b) in zip(self.items, other.items))
-        return False
-
     def call_method(
         self,
         tx: "InstructionTranslator",
@@ -1591,14 +1519,6 @@ class NamedTupleVariable(UserDefinedTupleVariable):
         if self._is_method_overridden(name):
             # Fall back to UserDefinedTupleVariable
             return super().call_method(tx, name, args, kwargs)
-        elif name == "__eq__":
-            if len(args) != 1 or kwargs:
-                raise ValueError("Improper arguments for method.")
-            return ConstantVariable(self.is_python_equal(args[0]))
-        elif name == "__ne__":
-            if len(args) != 1 or kwargs:
-                raise ValueError("Improper arguments for method.")
-            return ConstantVariable(not self.is_python_equal(args[0]))
         elif name == "__setattr__":
             if kwargs or len(args) != 2:
                 raise_args_mismatch(
