@@ -222,7 +222,7 @@ class DynamoExporterTest(common_utils.TestCase, _WithExport):
                     x_clone.select(0, it).copy_(x_clone.select(0, it) + it)
                     return it + 1, x_clone
 
-                # We invoke the hop directly to avoid triggering dyanmo tracing
+                # We invoke the hop directly to avoid triggering dynamo tracing
                 out_it, out_x = torch.ops.higher_order.while_loop(
                     cond_fn, body_fn, (0, x), tuple()
                 )

@@ -170,7 +170,7 @@ def higher_order_while_loop(
     Loop(M, cond, v_initial) -> (v_final_and_scan_outputs)
 
     For while_loop, we use:
-    - M: empty string (no trip count limit)
+    - M: None (no trip count limit)
     - cond: initial condition value
     - v_initial: carried_inputs (loop-carried dependencies)
 
