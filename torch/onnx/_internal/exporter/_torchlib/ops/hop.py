@@ -269,7 +269,7 @@ def higher_order_while_loop(
         cond_func.name,
         *carried_inputs,
         *additional_inputs,
-        num_outputs=len(cond_func.outputs),
+        _num_outputs=len(cond_func.outputs),
         _domain=cond_func.domain,
     )
 
