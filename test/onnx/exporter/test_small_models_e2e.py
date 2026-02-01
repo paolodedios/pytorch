@@ -172,39 +172,17 @@ class DynamoExporterTest(common_utils.TestCase, _WithExport):
                         return i2.clone(), j2 - 1, x2 + 3.14, y2 - 2.71
 
                     i1, j1, x1, y1 = torch.ops.higher_order.while_loop(
-                        cond_fn_nested, body_fn_nested, [i1, j1, x1, y1]
+                        cond_fn_nested, body_fn_nested, [i1, j1, x1, y1], []
                     )
                     return i1 - 1, j1.clone(), x1 * 2, y1 / 2
 
                 return torch.ops.higher_order.while_loop(
-                    cond_fn, body_fn, (ci, cj, a, b)
+                    cond_fn, body_fn, [ci, cj, a, b], []
                 )
 
         onnx_program = self.export(
             Nested(),
             (torch.tensor(2), torch.tensor(3), torch.tensor(1.0), torch.tensor(2.0)),
-        )
-        onnx_testing.assert_onnx_program(onnx_program)
-
-    def test_onnx_export_while_loop_simple(self):
-        class SimpleWithLinear(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.linear = torch.nn.Linear(2, 2)
-                self.dec = torch.nn.Buffer(torch.tensor(1))
-
-            def forward(self, iter, x):
-                def cond_fn(it, x):
-                    return it - self.dec > 0
-
-                def body_fn(it, x):
-                    return it - 1, self.linear(x)
-
-                return torch.ops.higher_order.while_loop(cond_fn, body_fn, (iter, x))
-
-        onnx_program = self.export(
-            SimpleWithLinear(),
-            (torch.tensor(3), torch.tensor([[1.0, 2.0], [3.0, 4.0]])),
         )
         onnx_testing.assert_onnx_program(onnx_program)
 

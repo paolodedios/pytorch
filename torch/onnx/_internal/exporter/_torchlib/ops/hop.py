@@ -161,7 +161,7 @@ def higher_order_scan(
 def higher_order_while_loop(
     cond_func: ir.Function,
     body_func: ir.Function,
-    carried_inputs: Sequence[ir.Value],
+    carried_inputs: Sequence[ir.Value | int | float],
     additional_inputs: Sequence[ir.Value],
 ) -> Sequence[ir.Value]:
     """Implementation of while_loop using ONNX Loop operator.
@@ -189,6 +189,39 @@ def higher_order_while_loop(
     # ONNX Loop body signature: (iter_num, cond_in, loop_carried_deps..., additional_inputs...)
 
     # Start subgraph construction
+    subgraph_carried_inputs = []
+
+    for i, inp in enumerate(carried_inputs):
+        if isinstance(inp, ir.Value):
+            subgraph_carried_inputs.append(
+                ir.Value(
+                    name=f"{inp.name}_{body_func.name}__subgraph_in",
+                    shape=inp.shape,
+                    type=ir.TensorType(inp.dtype),  # type: ignore[arg-type]
+                )
+            )
+        elif isinstance(inp, int):
+            subgraph_carried_inputs.append(
+                ir.Value(
+                    name=f"carried_input_{i}_{body_func.name}__subgraph_in",
+                    shape=ir.Shape([]),
+                    type=ir.TensorType(ir.DataType.INT64),
+                )
+            )
+        elif isinstance(inp, float):
+            subgraph_carried_inputs.append(
+                ir.Value(
+                    name=f"carried_input_{i}_{body_func.name}__subgraph_in",
+                    shape=ir.Shape([]),
+                    type=ir.TensorType(ir.DataType.FLOAT),
+                )
+            )
+        else:
+            raise NotImplementedError(
+                f"Unsupported type for carried input: {type(inp)} ({inp}). "
+                "Expected ir.Value, int, or float."
+            )
+
     subgraph_inputs = [
         # Iteration number (int scalar, unused)
         ir.Value(
@@ -203,16 +236,7 @@ def higher_order_while_loop(
             type=ir.TensorType(ir.DataType.BOOL),
         ),
         # Loop-carried dependencies
-        *(
-            subgraph_carried_inputs := [
-                ir.Value(
-                    name=f"{inp.name}_{body_func.name}__subgraph_in",
-                    shape=inp.shape,
-                    type=ir.TensorType(inp.dtype),  # type: ignore[arg-type]
-                )
-                for inp in carried_inputs
-            ]
-        ),
+        *subgraph_carried_inputs,
     ]
 
     # Create the combined body function that handles both condition and body logic
@@ -264,10 +288,26 @@ def higher_order_while_loop(
 
     # End subgraph construction
 
+    carried_inputs_values: Sequence[ir.Value] = []
+    for inp in carried_inputs:
+        if isinstance(inp, ir.Value):
+            carried_inputs_values.append(inp)
+        elif isinstance(inp, int):
+            const = call_op("Constant", value=ir.tensor(inp))[0]
+            carried_inputs_values.append(const)
+        elif isinstance(inp, float):
+            const = call_op("Constant", value=ir.tensor(inp))[0]
+            carried_inputs_values.append(const)
+        else:
+            raise NotImplementedError(
+                f"Unsupported type for carried input: {type(inp)} ({inp}). "
+                "Expected ir.Value, int, or float."
+            )
+
     # Get initial condition by calling cond_func with initial inputs
     initial_outputs = call_op(
         cond_func.name,
-        *carried_inputs,
+        *carried_inputs_values,
         *additional_inputs,
         _num_outputs=len(cond_func.outputs),
         _domain=cond_func.domain,
@@ -286,8 +326,8 @@ def higher_order_while_loop(
         # cond - initial condition
         initial_outputs[0],
         # v_initial - carried inputs (loop-carried dependencies)
-        *carried_inputs,
-        _num_outputs=len(carried_inputs),
+        *carried_inputs_values,
+        _num_outputs=len(carried_inputs_values),
         body=body_graph,
     )
 
