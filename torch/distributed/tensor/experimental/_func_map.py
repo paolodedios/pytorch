@@ -33,6 +33,8 @@ def local_map(
     device_mesh: DeviceMesh | None = None,
     *,
     redistribute_inputs: bool = False,
+    allow_uneven_sharding: bool = False,
+    out_shapes: Sequence[torch.Size] | None = None,
 ):
     """
     :meth:`local_map` is an experimental API that allows users to pass :class:`DTensor` s
@@ -88,6 +90,19 @@ def local_map(
             their placements are different from the required input placements. If this
             value is ``False`` and some :class:`DTensor` input has a different placement,
             an exception will be raised. Default: False.
+        allow_uneven_sharding (bool, optional):
+            whether to compute global shapes via all-gather. When ``False`` (default), :meth:`local_map`
+            assumes even sharding and computes global shapes locally without communication. This is
+            fast but will produce incorrect results if outputs are unevenly sharded. When ``True``,
+            :meth:`local_map` computes global shapes via all-gather of local shard sizes, correctly
+            handling both even and uneven sharding at the cost of additional communication overhead.
+            For zero-overhead handling of uneven sharding, use ``out_shapes`` instead. Default: False.
+        out_shapes (Sequence[torch.Size], optional):
+            the global shapes of output :class:`DTensor` s. If provided, these shapes will be used
+            directly without any communication, enabling zero-overhead handling of uneven sharding.
+            This should be a sequence matching the flattened outputs, with ``None`` for non-Tensor
+            outputs. When ``out_shapes`` is provided, it takes precedence over ``allow_uneven_sharding``.
+            Default: None.
 
     Returns:
         A ``Callable`` that applies ``func`` to each local shard of the input :class:`DTensor`
@@ -145,6 +160,8 @@ def local_map(
                 in_grad_placements=in_grad_placements,
                 device_mesh=device_mesh,
                 redistribute_inputs=redistribute_inputs,
+                allow_uneven_sharding=allow_uneven_sharding,
+                out_shapes=out_shapes,
             )
 
         return decorated
@@ -157,7 +174,49 @@ def local_map(
         in_grad_placements,
         device_mesh,
         redistribute_inputs,
+        allow_uneven_sharding,
+        out_shapes,
     )
+
+
+def _compute_global_shape_from_local(
+    local_tensor: torch.Tensor,
+    device_mesh: DeviceMesh,
+    placements: Sequence[Placement],
+) -> tuple[torch.Size, tuple[int, ...]]:
+    """
+    Compute global shape assuming even sharding (fast path with no communication).
+    This assumes the tensor is evenly sharded and computes the global size by
+    multiplying the local size by the mesh size.
+
+    Args:
+        local_tensor: The local tensor on this rank
+        device_mesh: The device mesh
+        placements: The placements describing how the tensor is distributed
+
+    Returns:
+        A tuple of (global_shape, global_stride)
+    """
+    local_shape = list(local_tensor.shape)
+    global_shape = list(local_shape)
+
+    for mesh_dim, placement in enumerate(placements):
+        if not isinstance(placement, Shard):
+            continue
+
+        shard_dim = placement.dim
+        local_size = local_shape[shard_dim]
+        mesh_size = device_mesh.size(mesh_dim)
+
+        # assume even sharding and compute global size
+        global_shape[shard_dim] = local_size * mesh_size
+
+    global_shape = torch.Size(global_shape)
+    global_stride = [1]
+    for i in range(len(global_shape) - 1, 0, -1):
+        global_stride.insert(0, global_stride[0] * global_shape[i])
+
+    return global_shape, tuple(global_stride)
 
 
 def _compute_global_shape_and_stride(
@@ -244,6 +303,8 @@ def _local_map_wrapped(
     in_grad_placements: InputPlacements,
     device_mesh: DeviceMesh | None,
     redistribute_inputs: bool,
+    allow_uneven_sharding: bool,
+    out_shapes: Sequence[torch.Size] | None,
     *args,
     **kwargs,
 ):
@@ -335,16 +396,48 @@ def _local_map_wrapped(
             f" received {len(out_placements_tuple)} out_placements but"
             f" {len(flat_out)} is expected!"
         )
-        for out, spec in zip(flat_out, out_placements_tuple):
+        # pyrefly: ignore [bad-argument-type]
+        for out_idx, (out, spec) in enumerate(zip(flat_out, out_placements_tuple)):
             if isinstance(out, torch.Tensor):
                 assert not isinstance(out, DTensor), (
                     f"torch.Tensor output expected but received {type(out)}: {out}"
                 )
 
                 if spec is not None and any(isinstance(p, Shard) for p in spec):
-                    global_shape, global_stride = _compute_global_shape_and_stride(
-                        out, device_mesh, spec
-                    )
+                    if out_shapes is not None and out_idx < len(out_shapes):
+                        # user provided shape - use it directly (zero overhead)
+                        provided_shape = out_shapes[out_idx]
+                        if provided_shape is not None:
+                            global_stride = [1]
+                            for i in range(len(provided_shape) - 1, 0, -1):
+                                global_stride.insert(
+                                    0, global_stride[0] * provided_shape[i]
+                                )
+                            global_shape, global_stride = (
+                                provided_shape,
+                                tuple(global_stride),
+                            )
+                        else:
+                            raise RuntimeError(
+                                f"out_shapes[{out_idx}] is None for a tensor output. "
+                                "Please provide a valid shape."
+                            )
+                    elif allow_uneven_sharding:
+                        # all-gather to compute global shape (handles both even and uneven)
+                        global_shape, global_stride = _compute_global_shape_and_stride(
+                            out,
+                            device_mesh,  # pyrefly: ignore [bad-argument-type]
+                            spec,
+                        )
+                    else:
+                        # Default: assume even sharding, compute without communication
+                        # Note: This will produce incorrect results for unevenly sharded tensors
+                        global_shape, global_stride = _compute_global_shape_from_local(
+                            out,
+                            device_mesh,  # pyrefly: ignore [bad-argument-type]
+                            spec,
+                        )
+
                     flat_dist_out.append(
                         # pyrefly: ignore [bad-argument-type]
                         DTensor.from_local(
