@@ -288,7 +288,7 @@ def higher_order_while_loop(
 
     # End subgraph construction
 
-    carried_inputs_values: Sequence[ir.Value] = []
+    carried_inputs_values: list[ir.Value] = []
     for inp in carried_inputs:
         if isinstance(inp, ir.Value):
             carried_inputs_values.append(inp)
