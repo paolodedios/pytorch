@@ -230,6 +230,31 @@ class TensorVariable(VariableTracker):
         for k, v in specialized_props.items():
             setattr(self, k, v)
 
+    def _get_fake_version(self) -> int | None:
+        """Get the current version of self's fake tensor, or None if unavailable."""
+        self_fake = self.proxy.node.meta.get("example_value")
+        return self_fake._version if self_fake is not None else None
+
+    def _sync_if_inplace_mutation(
+        self,
+        tx: "InstructionTranslator",
+        version_before: int | None,
+        has_tensor_arg: bool,
+    ) -> None:
+        """
+        Sync attributes if self was mutated by an inplace operation.
+
+        See Note [Inplace ops and VariableTracker metadata]
+        """
+        version_after = self._get_fake_version()
+        if (
+            version_before is not None
+            and version_after is not None
+            and version_after > version_before
+            and has_tensor_arg
+        ):
+            self.synchronize_attributes(tx)
+
     def debug_repr(self) -> str:
         # TODO: strip off fake tensor from repr here
         return repr(self.proxy.node.meta["example_value"])
@@ -821,20 +846,9 @@ class TensorVariable(VariableTracker):
         # after wrap_fx_proxy (which runs get_fake_value internally).
         # We only synchronize when there's a tensor argument, since that's when
         # metadata propagation is relevant.
-        self_fake = self.proxy.node.meta.get("example_value")
-        version_before = self_fake._version if self_fake is not None else None
-
+        version_before = self._get_fake_version()
         result = wrap_fx_proxy(tx, proxy)
-
-        # Check if self was mutated (version increased = inplace op)
-        version_after = self_fake._version if self_fake is not None else None
-        if (
-            version_before is not None
-            and version_after is not None
-            and version_after > version_before
-            and any(arg.is_tensor() for arg in args)
-        ):
-            self.synchronize_attributes(tx)
+        self._sync_if_inplace_mutation(tx, version_before, any(arg.is_tensor() for arg in args))
 
         return result
 
@@ -1417,8 +1431,7 @@ class TensorVariable(VariableTracker):
         # __setitem__ is always an inplace operation. We need to run fake execution
         # and propagate metadata if self was mutated.
         # The context managers handle saved tensor hooks and unbacked symbols.
-        self_fake = self.proxy.node.meta.get("example_value")
-        version_before = self_fake._version if self_fake is not None else None
+        version_before = self._get_fake_version()
 
         with (
             torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing(),
@@ -1428,15 +1441,7 @@ class TensorVariable(VariableTracker):
         ):
             get_fake_value(proxy.node, tx, allow_non_graph_fake=False)
 
-        # Check if self was mutated (version increased)
-        version_after = self_fake._version if self_fake is not None else None
-        if (
-            version_before is not None
-            and version_after is not None
-            and version_after > version_before
-            and value.is_tensor()
-        ):
-            self.synchronize_attributes(tx)
+        self._sync_if_inplace_mutation(tx, version_before, value.is_tensor())
 
         if config.use_graph_deduplication or config.track_nodes_for_deduplication:
             tx.output.region_tracker.add_node_mutation(proxy.node, 0)
