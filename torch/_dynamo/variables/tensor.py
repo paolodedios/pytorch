@@ -848,7 +848,9 @@ class TensorVariable(VariableTracker):
         # metadata propagation is relevant.
         version_before = self._get_fake_version()
         result = wrap_fx_proxy(tx, proxy)
-        self._sync_if_inplace_mutation(tx, version_before, any(arg.is_tensor() for arg in args))
+        self._sync_if_inplace_mutation(
+            tx, version_before, any(arg.is_tensor() for arg in args)
+        )
 
         return result
 
