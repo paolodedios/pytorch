@@ -345,13 +345,22 @@ op_db: list[OpInfo] = [
             ),
         ),
         dtypes=all_types_and(torch.bool, *_unsigned_int_types),
+        dtypesIfMPS=all_types_and(torch.bool, torch.float16, torch.bfloat16),
+        skips=(
+            # Exception: Tensor-likes are not close!
+            # Greatest absolute difference: inf at index (10,) (up to 1e-05 allowed)
+            # Greatest relative difference: nan at index (10,) (up to 0.001 allowed)
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestConsistency",
+                "test_output_grad_match",
+                device_type="mps",
+                dtypes=(torch.float16,),
+            ),
+        ),
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         sample_inputs_func=sample_inputs_erfcx,
-        skips=(
-            # The operator 'aten::special_erfcx.out' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, "TestCommon", device_type="mps"),
-        ),
     ),
     UnaryUfuncInfo(
         "special.airy_ai",
@@ -433,6 +442,12 @@ op_db: list[OpInfo] = [
                 ),
                 "TestConsistency",
                 "test_output_match",
+                device_type="mps",
+            ),
+            DecorateInfo(
+                toleranceOverride({torch.float16: tol(atol=0.0004, rtol=0.009)}),
+                "TestConsistency",
+                "test_output_grad_match",
                 device_type="mps",
             ),
         ),
@@ -521,13 +536,6 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip("Skipped!"), "TestNNCOpInfo"),
             # Greatest absolute difference: nan
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
-            # AssertionError: Scalars are not close!
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_non_standard_bool_values",
-                device_type="mps",
-            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -556,13 +564,6 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip("Skipped!"), "TestNNCOpInfo"),
             # Greatest absolute difference: nan
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
-            # AssertionError: Scalars are not close!
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_non_standard_bool_values",
-                device_type="mps",
-            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -642,12 +643,6 @@ op_db: list[OpInfo] = [
                 device_type="mps",
             ),
             DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_non_standard_bool_values",
-                device_type="mps",
-            ),
-            DecorateInfo(
                 unittest.expectedFailure, "TestCommon", "test_dtypes", device_type="mps"
             ),
         ),
@@ -690,12 +685,6 @@ op_db: list[OpInfo] = [
                 unittest.expectedFailure,
                 "TestCommon",
                 "test_noncontiguous_samples",
-                device_type="mps",
-            ),
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_non_standard_bool_values",
                 device_type="mps",
             ),
             DecorateInfo(
@@ -819,13 +808,6 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip("Skipped!"), "TestNNCOpInfo"),
             # Greatest absolute difference: nan
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
-            # AssertionError: Scalars are not close!
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_non_standard_bool_values",
-                device_type="mps",
-            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -840,13 +822,6 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip("Skipped!"), "TestNNCOpInfo"),
             # Greatest absolute difference: nan
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
-            # AssertionError: Scalars are not close!
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_non_standard_bool_values",
-                device_type="mps",
-            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -861,13 +836,6 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.skip("Skipped!"), "TestNNCOpInfo"),
             # Greatest absolute difference: nan
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_compare_cpu"),
-            # AssertionError: Scalars are not close!
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_non_standard_bool_values",
-                device_type="mps",
-            ),
         ),
         supports_one_python_scalar=True,
         supports_autograd=False,
@@ -991,8 +959,20 @@ python_ref_db: list[OpInfo] = [
             ),
         ),
         skips=(
-            # The operator 'aten::special_erfcx.out' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, "TestCommon", device_type="mps"),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_python_ref",
+                device_type="mps",
+                dtypes=(torch.float16,),
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_python_ref_torch_fallback",
+                device_type="mps",
+                dtypes=(torch.float16,),
+            ),
         ),
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -1050,7 +1030,18 @@ python_ref_db: list[OpInfo] = [
         op_db=op_db,
         skips=(
             # The operator 'aten::special_log_ndtr.out' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, "TestCommon", device_type="mps"),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_python_ref",
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
+                "test_python_ref_torch_fallback",
+                device_type="mps",
+            ),
         ),
     ),
     ElementwiseUnaryPythonRefInfo(
@@ -1104,6 +1095,22 @@ python_ref_db: list[OpInfo] = [
                 "TestUnaryUfuncs",
                 "test_reference_numerics_normal",
                 dtypes=(torch.bool,),
+            ),
+            # Seems to fail on M2 but not M4:
+            # Exception: Cannot convert a MPS Tensor to float64 dtype as the MPS framework doesn't support float64
+            DecorateInfo(
+                unittest.skip("Platform-specific error"),
+                "TestCommon",
+                "test_python_ref",
+                device_type="mps",
+                dtypes=(torch.float16,),
+            ),
+            DecorateInfo(
+                unittest.skip("Platform-specific error"),
+                "TestCommon",
+                "test_python_ref_torch_fallback",
+                device_type="mps",
+                dtypes=(torch.float16,),
             ),
         ),
     ),

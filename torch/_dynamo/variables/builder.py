@@ -200,6 +200,8 @@ from .dicts import (
 )
 from .distributed import (
     DeviceMeshVariable,
+    PlacementClassVariable,
+    PlacementVariable,
     ProcessGroupVariable,
     WorldMetaClassVariable,
 )
@@ -295,6 +297,7 @@ from .user_defined import (
     SourcelessGraphModuleVariable,
     UserDefinedClassVariable,
     UserDefinedDictVariable,
+    UserDefinedEnumClassVariable,
     UserDefinedExceptionClassVariable,
     UserDefinedListVariable,
     UserDefinedObjectVariable,
@@ -644,7 +647,9 @@ class VariableBuilder:
                 ],
             )
 
-        def build_key_value(k: Any, v: Any) -> tuple[VariableTracker, VariableTracker]:
+        def build_key_value(
+            k: Any, v: Any
+        ) -> tuple[VariableTracker, LazyVariableTracker]:
             key = ConstantVariable.create(k)
             source_key = k
 
@@ -817,7 +822,7 @@ class VariableBuilder:
             # _HashableTracker class in dicts.py
             def build_key_value(
                 i: Any, k: Any, v: Any
-            ) -> tuple[VariableTracker, VariableTracker]:
+            ) -> tuple[LazyVariableTracker, LazyVariableTracker]:
                 base = self.get_source()
                 if all_const:
                     key = ConstantVariable.create(k)
@@ -1200,6 +1205,17 @@ class VariableBuilder:
             # TODO: see if we need to add custom guard instead of a simple ID_MATCH
             self.install_guards(GuardBuilder.EQUALS_MATCH)
             return DeviceMeshVariable(value, source=self.source)
+        elif PlacementClassVariable.is_placement_type(value):
+            # TODO: see if we need to add custom guard instead of a simple ID_MATCH
+            self.install_guards(GuardBuilder.ID_MATCH)
+            return PlacementClassVariable(value, source=self.source)
+        elif PlacementVariable.is_placement(value):
+            # TODO: see if we need to add custom guard instead of a simple ID_MATCH
+            self.install_guards(GuardBuilder.EQUALS_MATCH)
+            return PlacementVariable(
+                value,
+                source=self.source,
+            )
         elif value is OrderedSet:
             self.install_guards(GuardBuilder.ID_MATCH)
             return OrderedSetClassVariable()
@@ -1502,6 +1518,12 @@ class VariableBuilder:
                     source=self.source,
                 )
 
+            if isinstance(value, type) and issubclass(value, enum.Enum):
+                return UserDefinedEnumClassVariable(
+                    value,
+                    source=self.source,
+                )
+
             return UserDefinedClassVariable(
                 value,
                 source=self.source,
@@ -1613,7 +1635,7 @@ class VariableBuilder:
             # _HashableTracker class in dicts.py
             def build_key_value(
                 i: Any, k: Any, v: Any
-            ) -> tuple[VariableTracker, VariableTracker]:
+            ) -> tuple[LazyVariableTracker, LazyVariableTracker]:
                 base = self.get_source()
                 source_key = ConstDictKeySource(base, i)
                 key = LazyVariableTracker.create(k, source_key)
@@ -4047,8 +4069,38 @@ class SourcelessBuilder:
     def __init__(self) -> None:
         raise AssertionError("Use SourcelessBuilder.create()")
 
+    @overload
     @staticmethod
-    def create(tx: "InstructionTranslator", value: Any) -> VariableTracker:
+    def create(
+        tx: "InstructionTranslatorBase",
+        value: type[set[Any]]
+        | type[dict[Any, Any]]
+        | type[tuple[Any, ...]]
+        | type[list[Any]],
+    ) -> BuiltinVariable: ...
+
+    @overload
+    @staticmethod
+    def create(tx: "InstructionTranslatorBase", value: list[Any]) -> ListVariable: ...
+
+    @overload
+    @staticmethod
+    def create(
+        tx: "InstructionTranslatorBase", value: tuple[Any, ...]
+    ) -> TupleVariable: ...
+
+    @overload
+    @staticmethod
+    def create(
+        tx: "InstructionTranslatorBase", value: bool | int | float | str
+    ) -> ConstantVariable: ...
+
+    @overload
+    @staticmethod
+    def create(tx: "InstructionTranslatorBase", value: Any) -> VariableTracker: ...
+
+    @staticmethod
+    def create(tx: "InstructionTranslatorBase", value: Any) -> VariableTracker:
         value_type = type(value)
         # type: ignore[attr-defined]
         fast_handler = SourcelessBuilder._type_handlers.get(value_type)
@@ -4092,6 +4144,8 @@ class SourcelessBuilder:
         ):
             return EnumVariable(value)
         elif isinstance(value, (type, abc.ABCMeta)):
+            if isinstance(value, type) and issubclass(value, enum.Enum):
+                return UserDefinedEnumClassVariable(value)
             return UserDefinedClassVariable(value)
         elif isinstance(value, types.MethodWrapperType):
             return MethodWrapperVariable(value)
@@ -4105,6 +4159,7 @@ class SourcelessBuilder:
             assert getattr(value.__self__, value.__func__.__name__) == value
             cls_obj_vt = SourcelessBuilder.create(tx, value.__self__)
             try:
+                # pyrefly: ignore[bad-argument-type]
                 return cls_obj_vt.var_getattr(tx, value.__func__.__name__)
             except NotImplementedError:
                 pass  # failthrough to unimplemented branch
@@ -4112,6 +4167,8 @@ class SourcelessBuilder:
             return SourcelessGraphModuleVariable(value)
         elif isinstance(value, torch.utils._pytree.TreeSpec):
             return UserDefinedObjectVariable(value)
+        elif PlacementVariable.is_placement(value):
+            return PlacementVariable(value)
         elif DeviceMeshVariable.is_device_mesh(value):
             return DeviceMeshVariable(value)
         elif value is functools.wraps:
@@ -4185,6 +4242,21 @@ class SourcelessBuilder:
         handlers[collections.OrderedDict] = handlers[dict]
         handlers[immutable_dict] = handlers[dict]
         handlers[immutable_list] = handlers[list]
+        # Sourceless MappingProxyType object can be encountered while tracing
+        # type.__dict__["__dict__"].__get__
+        handlers[types.MappingProxyType] = lambda tx, value: MappingProxyVariable(
+            ConstDictVariable(
+                {create(tx, k): create(tx, v) for k, v in value.items()},
+                dict,
+                mutation_type=ValueMutationNew(),
+            ),
+        )
+        handlers[types.GetSetDescriptorType] = (
+            lambda tx, value: GetSetDescriptorVariable(value)
+        )
+        handlers[inspect.Parameter] = lambda tx, value: UserDefinedObjectVariable(
+            value, mutation_type=ValueMutationNew()
+        )
         handlers[random.Random] = lambda tx, value: RandomClassVariable()
         handlers[types.ModuleType] = lambda tx, value: PythonModuleVariable(value)
 
