@@ -491,7 +491,12 @@ def convolution(
 
     def channels_last_conv():
         if V.graph.layout_opt and ndim == 2:
-            return True
+            # Skip channels_last optimization on CPU when MKLDNN is not available
+            # because the optimization relies on MKLDNN performance benefits.
+            # On ROCm builds, MKLDNN is not available, so preserve original format.
+            if not (device_type == "cpu" and not torch.backends.mkldnn.is_available()):
+                return True
+            # Fall through to check actual layout when MKLDNN unavailable on CPU
 
         layout = conv_layout(x, weight, None, **kwargs)
         req_stride_order = ir.get_stride_order(
@@ -527,7 +532,14 @@ def convolution(
     # ndim can be 1 for convolution in models such as demucs
     # TODO: check if it's beneficial to convert Conv1d to Conv2d and then
     # apply channels last.
-    if V.graph.layout_opt and ndim == 2:
+    # Check if we should apply channels_last optimization.
+    # Skip on CPU when MKLDNN is not available (e.g., ROCm builds) because
+    # the channels_last optimization relies on MKLDNN performance benefits.
+    should_use_layout_opt = V.graph.layout_opt and ndim == 2
+    if should_use_layout_opt and device_type == "cpu":
+        should_use_layout_opt = torch.backends.mkldnn.is_available()
+
+    if should_use_layout_opt:
         V.graph.num_channels_last_conv += 1
         x = ir.ExternKernel.require_channels_last(x)  # type: ignore[assignment]
         # TODO maybe we can convert weights to channels last just once before
