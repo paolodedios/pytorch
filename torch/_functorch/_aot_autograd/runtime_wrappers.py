@@ -398,7 +398,8 @@ class _AnalyzeCustomOpInputOutputMode(TorchDispatchMode):
         )
 
         # Defer this to subclass torchdispatch modes (probably shouldn't have fake tensor here tho)
-        if not all(type(x) in HANDLED_TYPES for x in flat_tensor_args):
+        # Use isinstance instead of type() to handle Parameter subclasses
+        if not all(isinstance(x, HANDLED_TYPES) for x in flat_tensor_args):
             return NotImplemented
 
         res = func(*args, **kwargs)
