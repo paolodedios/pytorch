@@ -4616,22 +4616,11 @@ class InstructionTranslatorBase(
         )
 
     def _handle_comprehension_graph_break(self, inst: Instruction) -> None:
-        """Handle graph break for a comprehension by skipping the comprehension bytecode.
-
-        Steps:
-        1. Compile the graph up to the comprehension
-        2. Load captured variables from frame_list to local slots
-        3. Add the comprehension bytecode (runs eagerly at runtime)
-        4. Generate code to pass comprehension-created variables to the resume function
-        5. Create the resume function for code after the comprehension
-        """
+        """Handle graph break for a comprehension by wrapping it in a synthetic
+        function and calling it via codegen_call_resume."""
         assert sys.version_info >= (3, 12)
 
-        from .bytecode_transformation import create_instruction
-        from .codegen import PyCodegen
-        from .source import LocalSource
         from .variables.misc import UnknownVariable
-        from .variables.tensor import SymNodeVariable, TensorVariable
 
         analysis = self._analyze_comprehension()
 
@@ -4653,8 +4642,7 @@ class InstructionTranslatorBase(
         reason = GraphCompileReason("comprehension_graph_break", [self.frame_summary()])
         log.debug("comprehension triggered compile")
 
-        # --- Step 1: Compile the graph up to the comprehension ---
-
+        # Compile the graph up to the comprehension
         all_stack_locals_metadata = self.output.compile_subgraph(
             self,
             reason=reason,
@@ -4670,280 +4658,7 @@ class InstructionTranslatorBase(
         ]
 
         self.popn(stack_pops)
-        meta = all_stack_locals_metadata[0]
 
-        if self.parent is not None:
-            self._handle_comprehension_graph_break_nested(
-                analysis,
-                start_ip,
-                stack_pops,
-                all_stack_locals_metadata,
-                stack_pops_null_mask,
-            )
-            return
-
-        # --- Step 2: Load captured variables from frame_list to local slots ---
-        # The comprehension bytecode uses LOAD_FAST to load captured variables.
-        # compile_subgraph put them in frame_list[0], so we load from there
-        # and STORE_FAST to ensure they're in the correct local slots.
-
-        captured_vars_to_store: list[str] = []
-        for var_name in analysis.captured_vars:
-            if var_name not in self.symbolic_locals:
-                continue
-            if var_name not in meta.locals_names:
-                continue
-
-            var = self.symbolic_locals[var_name]
-            in_correct_slot = (
-                isinstance(var.source, LocalSource)
-                and var.source.local_name == var_name
-            )
-            # Tensors/symnodes must already be in their correct slot
-            if isinstance(var, (TensorVariable, SymNodeVariable)):
-                if not in_correct_slot:
-                    unimplemented(
-                        gb_type="Comprehension with captured tensor not in local slot",
-                        context="",
-                        explanation="Cannot use comprehension optimization when a "
-                        "captured tensor variable is not stored in its expected "
-                        "local slot.",
-                        hints=[],
-                    )
-                continue
-
-            if not in_correct_slot:
-                captured_vars_to_store.append(var_name)
-
-        if captured_vars_to_store:
-            # Stack layout: [cells], [frame_list], *(all stack values including stack_pops)
-            # At this point, popn(stack_pops) reduced symbolic stack but runtime stack
-            # still has all values. We need to add stack_pops back.
-            frame_list_pos = (
-                len(self.stack) + stack_pops - len(meta.stack_null_idxes) + 1
-            )
-            cg = PyCodegen(self)
-            for var_name in captured_vars_to_store:
-                var_idx = meta.locals_names[var_name]
-                cg.extend_output(
-                    [
-                        create_instruction("COPY", arg=frame_list_pos),
-                        cg.create_load_const(0),
-                        cg.create_binary_subscr(),
-                        cg.create_load_const(var_idx),
-                        cg.create_binary_subscr(),
-                        create_instruction("STORE_FAST", argval=var_name),
-                    ]
-                )
-            self.output.add_output_instructions(cg.get_instructions())
-
-        # --- Step 3: Add the comprehension bytecode ---
-
-        copied_insts = self._copy_comprehension_bytecode(start_ip, analysis.end_ip)
-        self.output.add_output_instructions(copied_insts)
-
-        if analysis.result_on_stack:
-            self.push(UnknownVariable())
-
-        # --- Step 4: Generate code to pass variables to resume function ---
-
-        # Variables the comprehension creates that need to be passed to resume:
-        # - result_var: variable the comprehension result is assigned to
-        # - walrus_vars: variables created by walrus operator (:=)
-        vars_to_pass = (
-            [analysis.result_var] if analysis.result_var else []
-        ) + analysis.walrus_vars
-
-        for var_name in vars_to_pass:
-            meta.locals_names[var_name] = len(meta.locals_names)
-            self.symbolic_locals[var_name] = UnknownVariable()
-
-        if vars_to_pass:
-            # Stack layout: [cells], [frame_list], *(extra values), (result if on stack)
-            frame_list_pos = len(self.stack) - len(meta.stack_null_idxes) + 1
-            resume_cg = PyCodegen(self)
-            self._emit_extend_frame_values(resume_cg, frame_list_pos, vars_to_pass)
-            self.output.add_output_instructions(resume_cg.get_instructions())
-
-        # --- Step 5: Create the resume function ---
-
-        resume_inst = self.instructions[analysis.end_ip]
-        self.output.add_output_instructions(
-            self.create_call_resume_at(resume_inst, all_stack_locals_metadata)
-        )
-
-        self.instruction_pointer = None
-
-    def _emit_extend_frame_values(
-        self,
-        cg: PyCodegen,
-        frame_values_depth: int,
-        var_names: list[str],
-    ) -> None:
-        """Emit bytecode to append local vars to frame_values[0].
-
-        frame_values_depth is how deep frame_values sits below TOS
-        (i.e., the arg to COPY to reach it).
-        """
-        cg.extend_output(
-            [
-                create_instruction("COPY", arg=frame_values_depth),
-                cg.create_load_const(0),
-                cg.create_binary_subscr(),
-            ]
-        )
-        for var_name in var_names:
-            cg.extend_output(
-                [
-                    create_instruction("LOAD_FAST", argval=var_name),
-                    create_instruction("LIST_APPEND", arg=1),
-                ]
-            )
-        cg.extend_output([create_instruction("POP_TOP")])
-
-    def _build_comprehension_fn(
-        self,
-        analysis: ComprehensionAnalysis,
-        start_ip: int,
-        stack_pops: int,
-        stack_pops_null_mask: list[bool],
-        nonnull_count: int,
-        meta: StackLocalsMetadata,
-    ) -> tuple[types.CodeType, str]:
-        """Build a synthetic function wrapping comprehension bytecode.
-
-        Uses the same calling convention as resume functions created by
-        create_resume / ContinueExecutionCache.generate: the first two args
-        are __nested_resume_fns and __nested_frame_values (ignored here),
-        followed by stack items and live locals.
-
-        Returns (code, name) where name is the global name for the function.
-        """
-        from .bytecode_transformation import transform_code_object
-        from .eval_frame import skip_code
-        from .resume_execution import CO_VARARGS, CO_VARKEYWORDS
-
-        # Args follow frame_values layout: locals first, then stack_pops items
-        # (appended to end of frame_values[0] by the caller).
-        # codegen_call_resume unpacks frame_values[0] as positional args.
-        argnames = tuple(
-            k for k in meta.locals_names if k not in self.cell_and_freevars()
-        )
-        args = (
-            ["__nested_resume_fns", "__nested_frame_values"]
-            + list(argnames)
-            + [f"___stack{i}" for i in range(nonnull_count)]
-        )
-
-        freevars = tuple(
-            sorted(
-                list(self.f_code.co_cellvars or [])
-                + list(self.f_code.co_freevars or [])
-            )
-        )
-
-        lineno = self.lineno if self.lineno is not None else self.f_code.co_firstlineno
-        fn_name = unique_id(f"__comprehension_{self.f_code.co_name}_at_{lineno}")
-
-        comprehension_body_vars = (
-            analysis.iterator_vars
-            + analysis.walrus_vars
-            + ([analysis.result_var] if analysis.result_var else [])
-            + analysis.captured_vars
-        )
-
-        def update(
-            instructions: list[Instruction], code_options: dict[str, Any]
-        ) -> None:
-            code_options["co_name"] = fn_name
-            if sys.version_info >= (3, 11):
-                code_options["co_qualname"] = fn_name
-            code_options["co_firstlineno"] = lineno
-            code_options["co_cellvars"] = ()
-            code_options["co_freevars"] = freevars
-            code_options["co_argcount"] = len(args)
-            code_options["co_posonlyargcount"] = 0
-            code_options["co_kwonlyargcount"] = 0
-            code_options["co_varnames"] = tuple(
-                args + [v for v in comprehension_body_vars if v not in args]
-            )
-            code_options["co_flags"] = code_options["co_flags"] & ~(
-                CO_VARARGS | CO_VARKEYWORDS
-            )
-
-            prefix: list[Instruction] = []
-            if freevars:
-                prefix.append(create_instruction("COPY_FREE_VARS", arg=len(freevars)))
-            prefix.append(create_instruction("RESUME", arg=0))
-
-            # Push stack_pops items onto operand stack so the comprehension
-            # bytecode finds them where it expects (iterator + saved vars).
-            # NULL positions get PUSH_NULL, non-null get LOAD_FAST.
-            nonnull_i = 0
-            for i in range(stack_pops):
-                if stack_pops_null_mask[i]:
-                    prefix.append(create_instruction("PUSH_NULL"))
-                else:
-                    prefix.append(
-                        create_instruction("LOAD_FAST", argval=f"___stack{nonnull_i}")
-                    )
-                    nonnull_i += 1
-
-            comp_insts = self._copy_comprehension_bytecode(start_ip, analysis.end_ip)
-
-            # Epilogue: ensure result is on stack, pack walrus vars, return.
-            epilogue: list[Instruction] = []
-            if not analysis.result_on_stack:
-                if analysis.result_var:
-                    epilogue.append(
-                        create_instruction("LOAD_FAST", argval=analysis.result_var)
-                    )
-                else:
-                    epilogue.append(create_instruction("LOAD_CONST", argval=None))
-            if analysis.walrus_vars:
-                for var_name in analysis.walrus_vars:
-                    epilogue.append(create_instruction("LOAD_FAST", argval=var_name))
-                epilogue.append(
-                    create_instruction(
-                        "BUILD_TUPLE",
-                        arg=1 + len(analysis.walrus_vars),
-                    )
-                )
-            epilogue.append(create_instruction("RETURN_VALUE"))
-
-            instructions[:] = prefix + comp_insts + epilogue
-
-        new_code, _ = transform_code_object(self.f_code, update)
-        skip_code(new_code)
-
-        # Install as global
-        if new_code.co_freevars:
-            self.output.install_global_unsafe(fn_name, new_code)
-        else:
-            self.output.install_global_unsafe(
-                fn_name,
-                types.FunctionType(new_code, self.f_globals, fn_name),
-            )
-
-        return new_code, fn_name
-
-    def _handle_comprehension_graph_break_nested(
-        self,
-        analysis: ComprehensionAnalysis,
-        start_ip: int,
-        stack_pops: int,
-        all_stack_locals_metadata: list[StackLocalsMetadata],
-        stack_pops_null_mask: list[bool],
-    ) -> None:
-        """Handle comprehension graph break in a nested (inlined) context.
-
-        Builds a synthetic function wrapping the comprehension bytecode,
-        calls it via codegen_call_resume, then chains into the resume
-        function for the post-comprehension code.
-        """
-        from .variables.misc import UnknownVariable
-
-        assert config.nested_graph_breaks
         meta = all_stack_locals_metadata[0]
         cg = PyCodegen(self.output.root_tx)
 
@@ -5103,6 +4818,159 @@ class InstructionTranslatorBase(
         )
 
         self.instruction_pointer = None
+
+    def _emit_extend_frame_values(
+        self,
+        cg: PyCodegen,
+        frame_values_depth: int,
+        var_names: list[str],
+    ) -> None:
+        """Emit bytecode to append local vars to frame_values[0].
+
+        frame_values_depth is how deep frame_values sits below TOS
+        (i.e., the arg to COPY to reach it).
+        """
+        cg.extend_output(
+            [
+                create_instruction("COPY", arg=frame_values_depth),
+                cg.create_load_const(0),
+                cg.create_binary_subscr(),
+            ]
+        )
+        for var_name in var_names:
+            cg.extend_output(
+                [
+                    create_instruction("LOAD_FAST", argval=var_name),
+                    create_instruction("LIST_APPEND", arg=1),
+                ]
+            )
+        cg.extend_output([create_instruction("POP_TOP")])
+
+    def _build_comprehension_fn(
+        self,
+        analysis: ComprehensionAnalysis,
+        start_ip: int,
+        stack_pops: int,
+        stack_pops_null_mask: list[bool],
+        nonnull_count: int,
+        meta: StackLocalsMetadata,
+    ) -> tuple[types.CodeType, str]:
+        """Build a synthetic function wrapping comprehension bytecode.
+
+        Uses the same calling convention as resume functions created by
+        create_resume / ContinueExecutionCache.generate: the first two args
+        are __nested_resume_fns and __nested_frame_values (ignored here),
+        followed by stack items and live locals.
+
+        Returns (code, name) where name is the global name for the function.
+        """
+        from .bytecode_transformation import transform_code_object
+        from .eval_frame import skip_code
+        from .resume_execution import CO_VARARGS, CO_VARKEYWORDS
+
+        # Args follow frame_values layout: locals first, then stack_pops items
+        # (appended to end of frame_values[0] by the caller).
+        # codegen_call_resume unpacks frame_values[0] as positional args.
+        argnames = tuple(
+            k for k in meta.locals_names if k not in self.cell_and_freevars()
+        )
+        args = (
+            ["__nested_resume_fns", "__nested_frame_values"]
+            + list(argnames)
+            + [f"___stack{i}" for i in range(nonnull_count)]
+        )
+
+        freevars = tuple(
+            sorted(
+                list(self.f_code.co_cellvars or [])
+                + list(self.f_code.co_freevars or [])
+            )
+        )
+
+        lineno = self.lineno if self.lineno is not None else self.f_code.co_firstlineno
+        fn_name = unique_id(f"__comprehension_{self.f_code.co_name}_at_{lineno}")
+
+        comprehension_body_vars = (
+            analysis.iterator_vars
+            + analysis.walrus_vars
+            + ([analysis.result_var] if analysis.result_var else [])
+            + analysis.captured_vars
+        )
+
+        def update(
+            instructions: list[Instruction], code_options: dict[str, Any]
+        ) -> None:
+            code_options["co_name"] = fn_name
+            if sys.version_info >= (3, 11):
+                code_options["co_qualname"] = fn_name
+            code_options["co_firstlineno"] = lineno
+            code_options["co_cellvars"] = ()
+            code_options["co_freevars"] = freevars
+            code_options["co_argcount"] = len(args)
+            code_options["co_posonlyargcount"] = 0
+            code_options["co_kwonlyargcount"] = 0
+            code_options["co_varnames"] = tuple(
+                args + [v for v in comprehension_body_vars if v not in args]
+            )
+            code_options["co_flags"] = code_options["co_flags"] & ~(
+                CO_VARARGS | CO_VARKEYWORDS
+            )
+
+            prefix: list[Instruction] = []
+            if freevars:
+                prefix.append(create_instruction("COPY_FREE_VARS", arg=len(freevars)))
+            prefix.append(create_instruction("RESUME", arg=0))
+
+            # Push stack_pops items onto operand stack so the comprehension
+            # bytecode finds them where it expects (iterator + saved vars).
+            # NULL positions get PUSH_NULL, non-null get LOAD_FAST.
+            nonnull_i = 0
+            for i in range(stack_pops):
+                if stack_pops_null_mask[i]:
+                    prefix.append(create_instruction("PUSH_NULL"))
+                else:
+                    prefix.append(
+                        create_instruction("LOAD_FAST", argval=f"___stack{nonnull_i}")
+                    )
+                    nonnull_i += 1
+
+            comp_insts = self._copy_comprehension_bytecode(start_ip, analysis.end_ip)
+
+            # Epilogue: ensure result is on stack, pack walrus vars, return.
+            epilogue: list[Instruction] = []
+            if not analysis.result_on_stack:
+                if analysis.result_var:
+                    epilogue.append(
+                        create_instruction("LOAD_FAST", argval=analysis.result_var)
+                    )
+                else:
+                    epilogue.append(create_instruction("LOAD_CONST", argval=None))
+            if analysis.walrus_vars:
+                for var_name in analysis.walrus_vars:
+                    epilogue.append(create_instruction("LOAD_FAST", argval=var_name))
+                epilogue.append(
+                    create_instruction(
+                        "BUILD_TUPLE",
+                        arg=1 + len(analysis.walrus_vars),
+                    )
+                )
+            epilogue.append(create_instruction("RETURN_VALUE"))
+
+            instructions[:] = prefix + comp_insts + epilogue
+
+        new_code, _ = transform_code_object(self.f_code, update)
+        skip_code(new_code)
+
+        # Install as global
+        if new_code.co_freevars:
+            self.output.install_global_unsafe(fn_name, new_code)
+        else:
+            self.output.install_global_unsafe(
+                fn_name,
+                types.FunctionType(new_code, self.f_globals, fn_name),
+            )
+
+        return new_code, fn_name
 
     def _copy_comprehension_bytecode(
         self, start_ip: int, end_ip: int
