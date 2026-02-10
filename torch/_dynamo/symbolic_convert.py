@@ -4672,16 +4672,21 @@ class InstructionTranslatorBase(
 
         nonnull_count = sum(1 for m in stack_pops_null_mask if not m)
 
+        # Variables the comprehension creates that need to be passed to the
+        # resume function (result assignment + walrus operator variables).
+        vars_to_pass = (
+            [analysis.result_var] if analysis.result_var else []
+        ) + analysis.walrus_vars
+
         # Add temp names and result/walrus vars to root frame's co_varnames.
         # Also add a dummy var for safely popping NULLs (POP_TOP on NULL segfaults
         # because Py_DECREF(NULL); STORE_FAST uses Py_XDECREF which is NULL-safe).
         null_sink_var = "___null_sink"
-        root_vars_needed = [null_sink_var] + [
-            f"___comp_stack_{i}" for i in range(nonnull_count)
-        ]
-        if analysis.result_var:
-            root_vars_needed.append(analysis.result_var)
-        root_vars_needed.extend(analysis.walrus_vars)
+        root_vars_needed = (
+            [null_sink_var]
+            + [f"___comp_stack_{i}" for i in range(nonnull_count)]
+            + vars_to_pass
+        )
         for var_name in root_vars_needed:
             if var_name not in self.output.code_options["co_varnames"]:
                 self.output.code_options["co_varnames"] += (var_name,)
@@ -4780,26 +4785,14 @@ class InstructionTranslatorBase(
         else:
             cg.extend_output([create_instruction("POP_TOP")])
 
-        if analysis.walrus_vars:
-            if analysis.result_on_stack:
-                for var_name in analysis.walrus_vars:
-                    cg.extend_output(
-                        [
-                            *create_swap(2),
-                            create_instruction("STORE_FAST", argval=var_name),
-                        ]
-                    )
-            else:
-                for var_name in analysis.walrus_vars:
-                    cg.extend_output(
-                        [create_instruction("STORE_FAST", argval=var_name)]
-                    )
+        for var_name in analysis.walrus_vars:
+            insts: list[Instruction] = (
+                [*create_swap(2)] if analysis.result_on_stack else []
+            )
+            insts.append(create_instruction("STORE_FAST", argval=var_name))
+            cg.extend_output(insts)
 
         # --- Step 8: Pass new vars to frame_values for resume function ---
-        vars_to_pass = (
-            [analysis.result_var] if analysis.result_var else []
-        ) + analysis.walrus_vars
-
         for var_name in vars_to_pass:
             meta.locals_names[var_name] = len(meta.locals_names)
             self.symbolic_locals[var_name] = UnknownVariable()
