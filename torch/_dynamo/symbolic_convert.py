@@ -4662,8 +4662,6 @@ class InstructionTranslatorBase(
         )
         # Record which stack_pops items are NULL before popn loses the info.
         # NULLs on the CPython stack can't be passed as function arguments.
-        from .variables.misc import NullVariable
-
         stack_pops_null_mask = [
             isinstance(self.stack[len(self.stack) - stack_pops + i], NullVariable)
             for i in range(stack_pops)
@@ -4727,7 +4725,7 @@ class InstructionTranslatorBase(
                 var_idx = meta.locals_names[var_name]
                 cg.extend_output(
                     [
-                        create_instruction("COPY", arg=frame_list_pos),
+                        *create_copy(frame_list_pos),
                         cg.create_load_const(0),
                         cg.create_binary_subscr(),
                         cg.create_load_const(var_idx),
@@ -4787,7 +4785,7 @@ class InstructionTranslatorBase(
         """
         cg.extend_output(
             [
-                create_instruction("COPY", arg=frame_values_depth),
+                *create_copy(frame_values_depth),
                 cg.create_load_const(0),
                 cg.create_binary_subscr(),
             ]
@@ -4958,12 +4956,7 @@ class InstructionTranslatorBase(
         nonnull_count = sum(1 for m in stack_pops_null_mask if not m)
 
         # Add temp names and result/walrus vars to root frame's co_varnames.
-        # Also add a dummy var for safely popping NULLs (POP_TOP on NULL segfaults
-        # because Py_DECREF(NULL); STORE_FAST uses Py_XDECREF which is NULL-safe).
-        null_sink_var = "___null_sink"
-        root_vars_needed = [null_sink_var] + [
-            f"___comp_stack_{i}" for i in range(nonnull_count)
-        ]
+        root_vars_needed = [f"___comp_stack_{i}" for i in range(nonnull_count)]
         if analysis.result_var:
             root_vars_needed.append(analysis.result_var)
         root_vars_needed.extend(analysis.walrus_vars)
@@ -4976,9 +4969,7 @@ class InstructionTranslatorBase(
         temp_names: list[str] = []
         for i in reversed(range(stack_pops)):
             if stack_pops_null_mask[i]:
-                cg.extend_output(
-                    [create_instruction("STORE_FAST", argval=null_sink_var)]
-                )
+                cg.extend_output(cg.pop_null())
             else:
                 temp_name = f"___comp_stack_{len(temp_names)}"
                 temp_names.append(temp_name)
@@ -5030,7 +5021,7 @@ class InstructionTranslatorBase(
             frame_values_pos = live_stack_depth + 1 + 1  # +1 result, +1 frame_values
             cg.extend_output(
                 [
-                    create_instruction("COPY", arg=frame_values_pos),
+                    *create_copy(frame_values_pos),
                     cg.create_load_const(0),
                     cg.create_binary_subscr(),
                     # frame_values[0] on TOS
