@@ -4054,6 +4054,18 @@ class FlexibleLayout(Layout):
 
     allow_indexing = False
 
+    def get_stride_without_freezing(self) -> list[Expr]:
+        """
+        Compute what the strides would be if this layout were frozen,
+        without actually modifying the layout. This is used for speculative
+        stride computation during Triton template code generation.
+        """
+        if self.should_pad_strides():
+            # Compute padded strides without modifying self.stride
+            padded_strides = self._pad_strides(list(self.stride), self.size, self.dtype)
+            return list(padded_strides)
+        return list(self.stride)
+
     # WARNING!  This doesn't handle zero size tensors correctly
     @staticmethod
     def contiguous_strides(sizes: Sequence[int]) -> list[Expr]:
@@ -5288,6 +5300,10 @@ class ChoiceCaller:
         # Use this to shuttle information between ChoieCaller generation
         # and the end of benchmarking
         self.annotations: dict[Any, Any] = {}
+
+        # Stores layout constraints for the anticipated layouts
+        # used for TritonTemplates
+        self.layout_constraints = {}
 
     def benchmark(self, *args: Any, out: torch.Tensor) -> float:
         algo = self.to_callable()
