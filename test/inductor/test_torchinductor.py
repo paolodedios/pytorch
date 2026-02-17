@@ -8139,6 +8139,9 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         self.common(fn, (inp, False))
         self.common(fn, (inp, True))
 
+    @skipIfRocmArch(
+        NAVI_ARCH
+    )  # Temporary skip due to regression in triton 3.7 - slow test only on NAVI
     def test_sort_bool(self):
         def fn(a, descending):
             return torch.sort(a.to(torch.int8), stable=True, descending=descending)
@@ -10891,6 +10894,9 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             )
 
     @skipIfXpu(msg="Incorrect XPU reference")
+    @skipIfRocmArch(
+        NAVI_ARCH
+    )  # Temporary skip due to regression in triton 3.7 - slow test only on NAVI
     def test_argmax_argmin3(self):
         def fn(x):
             return (
@@ -12245,6 +12251,9 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         opt_fn = torch.compile(fn, backend="inductor")
         same(fn(x), opt_fn(x))
 
+    @skipIfRocmArch(
+        NAVI_ARCH
+    )  # Temporary skip due to regression in triton 3.7 - slow test only on NAVI
     def test_pad_view(self):
         def fn(a):
             y = torch.nn.functional.pad(a, (0, 0, 0, 1))
