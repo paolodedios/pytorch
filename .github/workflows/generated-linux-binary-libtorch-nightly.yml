@@ -418,7 +418,7 @@ jobs:
       - libtorch-rocm7_1-shared-with-deps-release-build
       - get-label-type
     runs-on: linux.rocm.gpu.mi250.1
-    timeout-minutes: 240
+    timeout-minutes: 360
     env:
       PYTORCH_ROOT: /pytorch
       PACKAGE_TYPE: libtorch
@@ -537,7 +537,7 @@ jobs:
       - libtorch-rocm7_2-shared-with-deps-release-build
       - get-label-type
     runs-on: linux.rocm.gpu.mi250.1
-    timeout-minutes: 240
+    timeout-minutes: 360
     env:
       PYTORCH_ROOT: /pytorch
       PACKAGE_TYPE: libtorch
