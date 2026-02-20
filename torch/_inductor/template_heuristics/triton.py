@@ -1564,7 +1564,7 @@ class ROCmConfigHeuristic(BaseConfigHeuristic):
 
         self.flex_attn_fwd_autotune_configs: list[FlexConfig] = [
             ROCmFlexConfig(BLOCK1, BLOCK2, 1, w)
-            for BLOCK1 in [16, 64, 128]
+            for BLOCK1 in [16, 64, 128, 256]
             for BLOCK2 in [16, 32, 64, 128]
             for w in [4, 8]
         ]
@@ -1590,7 +1590,7 @@ class ROCmConfigHeuristic(BaseConfigHeuristic):
 
         self.exhaustive_flex_attn_fwd_configs: list[FlexConfig] = [
             ROCmFlexConfig(BLOCK_M, BLOCK_N, num_stages, num_warps, mfma, wpeu)
-            for BLOCK_M in [16, 32, 64, 128]
+            for BLOCK_M in [16, 32, 64, 128, 256]
             for BLOCK_N in [32, 64, 128]
             for num_stages in [1, 2]
             for num_warps in [2, 4, 8]
