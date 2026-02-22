@@ -607,7 +607,7 @@ class TestVarlenAttention(NNTestCase):
         ],
     )
     def test_batch_invariance(
-        self, device, dtype, window_size, num_perms, sdpa_backend=None
+        self, device, dtype, num_splits, window_size, sdpa_backend=None
     ):
         if TEST_WITH_ROCM:
             torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
