@@ -3917,7 +3917,25 @@ class CheckFunctionManager:
         # python -s test/dynamo/test_export.py -k test_export_with_symbool_inputs
         latency = 0.0
 
-        if not output_graph.skip_guards_check and not output_graph.export:
+        # Skip guard sanity check if user-facing torch function modes are active,
+        # as they can have mutable state that changes during compilation, causing
+        # false failures. We filter out internal PyTorch modes (torch.* modules).
+        has_user_torch_function_modes = False
+        if torch._C._is_torch_function_mode_enabled():
+            from torch._dynamo.utils import get_torch_function_mode_stack
+
+            stack = get_torch_function_mode_stack()
+            # Only consider modes from user code (not from torch.* or torch._* modules)
+            has_user_torch_function_modes = any(
+                not type(mode).__module__.startswith(("torch.", "torch_"))
+                for mode in stack
+            )
+
+        if (
+            not output_graph.skip_guards_check
+            and not output_graph.export
+            and not has_user_torch_function_modes
+        ):
             if not self.guard_manager.check(output_graph.local_scope):
                 reasons = get_guard_fail_reason_helper(
                     self.guard_manager,
