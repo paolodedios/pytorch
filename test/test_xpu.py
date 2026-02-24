@@ -47,6 +47,7 @@ from torch.testing._internal.common_utils import (
     TEST_XPU,
     TestCase,
 )
+from torch.testing._utils import freeze_rng_state
 from torch.utils.checkpoint import checkpoint_sequential
 
 
@@ -2959,6 +2960,16 @@ class TestMemPool(TestCase):
 
         self.assertTrue(after_pool_release < peak_reserved)
         self.assertTrue(after_pool_release > 0)
+
+
+@unittest.skipIf(not TEST_XPU, "XPU not available, skipping tests")
+class TestFreezeRNG(TestCase):
+    def test_freeze_rng(self):
+        with freeze_rng_state():
+            x1 = torch.rand(10, device="xpu")
+        
+        x2 = torch.rand(10, device="xpu")
+        self.assertEqual(x1, x2)
 
 
 instantiate_parametrized_tests(TestXpu)
