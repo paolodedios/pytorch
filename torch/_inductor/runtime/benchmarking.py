@@ -27,6 +27,40 @@ P = ParamSpec("P")
 T = TypeVar("T")
 
 
+# Device-type → benchmarking function registry.
+# Keys must match torch.device.type (e.g., "cpu", "cuda", "mps", "xpu", ...).
+# Values are callables with signature:
+#   fn(self: Benchmarker, _callable: Callable[..., Any], *, warmup: int, rep: int, **kwargs) -> Any
+_BENCHMARK_DISPATCH: dict[str, Callable[..., Any]] = {}
+
+
+def register_benchmarker(
+    device_type: str,
+    fn: Callable[..., Any],
+    *,
+    override: bool = False,
+) -> None:
+    """
+    Register a device-type specific benchmarker.
+
+    Args:
+        device_type: torch.device.type string (e.g., "cuda", "cpu", "mps", "xpu").
+        fn: callable(self, _callable, *, warmup, rep, **kwargs) -> Any
+        override: allow overriding an existing registration.
+    """
+    if not isinstance(device_type, str) or not device_type:
+        raise ValueError(
+            "device_type must be a non-empty string matching torch.device.type"
+        )
+    if not callable(fn):
+        raise TypeError("fn must be callable")
+    if not override and device_type in _BENCHMARK_DISPATCH:
+        raise ValueError(
+            f"Benchmarker for device_type '{device_type}' already registered"
+        )
+    _BENCHMARK_DISPATCH[device_type] = fn
+
+
 def may_distort_benchmarking_result(fn: Callable[..., Any]) -> Callable[..., Any]:
     from torch._inductor import config
 
@@ -198,11 +232,16 @@ class Benchmarker:
 
         # Surfacing all kernels during autotuning is super noisy; filtering these out.
         with DebugMode._benchmarking_inductor():
+            # First, try a registered device-specific benchmarker
+            fn = _BENCHMARK_DISPATCH.get(inferred_device.type)
+            if fn is not None:
+                return fn(self, _callable, warmup=warmup, rep=rep, **kwargs)
+
+            # Backward-compatible default:
+            # - CPU  -> CPU benchmark path
+            # - else -> GPU benchmark path (legacy behavior retained for non-CPU)
             if inferred_device == torch.device("cpu"):
                 return self.benchmark_cpu(_callable, warmup=warmup, rep=rep, **kwargs)
-            # TODO(nmacchioni): For non-CPU functions we default to using the GPU-specific benchmarking
-            # implementation which was written specifically with CUDA devices in mind, we may want to
-            # explore alternate implementations for other device types.
             return self.benchmark_gpu(_callable, warmup=warmup, rep=rep, **kwargs)
 
     @time_and_count
@@ -267,6 +306,23 @@ class Benchmarker:
         torch.cuda.synchronize()
 
         return self.benchmark_gpu(cuda_graph.replay, **kwargs)
+
+
+# Make built-in defaults explicit via the registry
+register_benchmarker(
+    "cpu",
+    lambda self, f, *, warmup, rep, **kw: self.benchmark_cpu(
+        f, warmup=warmup, rep=rep, **kw
+    ),
+    override=True,
+)
+register_benchmarker(
+    "cuda",
+    lambda self, f, *, warmup, rep, **kw: self.benchmark_gpu(
+        f, warmup=warmup, rep=rep, **kw
+    ),
+    override=True,
+)
 
 
 class TritonBenchmarker(Benchmarker):
