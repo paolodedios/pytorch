@@ -2593,6 +2593,41 @@ class TestMaxAutotune(TestCase):
         self.assertTrue(flexible_layout_called)
 
 
+    @config.patch(
+        {
+            "max_autotune": True,
+        }
+    )
+    def test_deffered_layout_constraint_reintepret(self):
+        batch, m, k, n = 4608, 40, 112, 1119
+
+        # Shape: batch x m x k (contiguous)
+        a = torch.randn(batch, m, k, dtype=torch.bfloat16, device=GPU_TYPE)
+
+        padded_batch_stride = k * n + 48
+        b = torch.empty_strided(
+            size=(batch, k, n),
+            stride=(padded_batch_stride, 1, k),
+            dtype=torch.bfloat16,
+            device=GPU_TYPE,
+        )
+        b.copy_(torch.randn_like(b))
+        c = torch.randn(batch, k, m, dtype=torch.bfloat16, device=GPU_TYPE)
+
+        def fn(a, b, c):
+            # Apply a pointwise op to b to make it FlexibleLayout in Inductor
+            # This ensures Inductor doesn't treat it as a fixed/external layout
+            # Ends up double padding
+            b_flex = b + 0
+            return torch.bmm(a, b_flex).to(torch.float32), b + 1.0, torch.bmm(b_flex.permute(0, 2, 1), c).to(torch.float32)
+        
+        compiled_fn = torch.compile(fn)
+
+        # Previously would CUDA IMA
+        _, code = run_and_get_code(compiled_fn, a, b, c)
+        FileCheck().check("triton_tem_fused__to_copy_bmm_permute").run(code[0])
+
+
 @instantiate_parametrized_tests
 class TestTemplateConfigPruning(TestCase):
     """Test class for pruning logic in GEMM autotuning."""
