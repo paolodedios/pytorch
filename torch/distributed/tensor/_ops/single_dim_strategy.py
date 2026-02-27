@@ -223,6 +223,10 @@ def _build_output_specs(
 class _PreparedSingleDimStrategy:
     """A single-dim strategy materialized for a specific op.
 
+    # TODO: support foreach ops (TupleStrategy) by decomposing into
+    # per-element prepared strategies, so they can use try_propagate()
+    # instead of falling back to the full expansion path.
+
     Expands a strategy function's placeholder-based rules into concrete
     placement rules by filling in the actual shard/partial placements from
     the op_schema. The result is a lookup table (strategy_lookup) that maps

@@ -29,6 +29,7 @@ from torch.distributed.tensor._op_schema import (
 )
 from torch.distributed.tensor._ops.single_dim_strategy import (
     _expand_single_dim_strategy_to_mesh,
+    _PreparedSingleDimStrategy,
     _SingleDimStrategyInfo,
 )
 from torch.distributed.tensor._utils import (
@@ -36,7 +37,7 @@ from torch.distributed.tensor._utils import (
     compute_local_stride,
     try_find_mesh_from_args,
 )
-from torch.distributed.tensor.placement_types import _StridedShard, Shard
+from torch.distributed.tensor.placement_types import _StridedShard, Placement, Shard
 from torch.utils._pytree import tree_map
 
 
@@ -301,6 +302,20 @@ def _select_min_cost_strategy(
 
 
 class ShardingPropagator:
+    """Determines output sharding for DTensor operations.
+
+    Two cached sharding paths are provided, serving different purposes:
+
+    - ``propagate_op_sharding``: full strategy selection used by the DTensor
+      runtime dispatch. Returns ``OutputSharding`` which includes redistribute
+      suggestions when input placements don't match any strategy.
+    - ``passthrough_op_sharding``: lightweight pass-through query used by
+      ``query_output_sharding``. Returns the output spec only when input
+      placements already match a valid strategy (no redistribution), or None
+      otherwise. Tries a cheap per-mesh-dim lookup first and falls back to the
+      full propagation on miss.
+    """
+
     # Lock to protect FakeTensorMode context during tensor meta propagation.
     # By default this is a no-op (nullcontext) for performance. Multi-threaded
     # tests should set this to threading.Lock() to prevent race conditions
@@ -325,6 +340,9 @@ class ShardingPropagator:
         ] = {}
         self.propagate_op_sharding = LocalLRUCache(
             self.propagate_op_sharding_non_cached
+        )
+        self.passthrough_op_sharding = LocalLRUCache(
+            self.passthrough_op_sharding_non_cached
         )
         self.decomp_strategy = DecompShardingStrategy(self)
         # op map to save indices of shape (and stride) args which may need to be
@@ -427,6 +445,147 @@ class ShardingPropagator:
         self.op_strategy_funcs[op_overload] = strategy_func
         if schema_info is not None:
             self.op_to_schema_info[op_overload] = schema_info
+
+    def query_output_sharding(
+        self,
+        mesh: DeviceMesh,
+        op: OpOverload,
+        op_args: tuple[object, ...],
+        in_placements: Sequence[tuple[Placement, ...]],
+        op_kwargs: dict[str, object] | None = None,
+    ) -> OutputSpecType:
+        """
+        Given a mesh, ATen op, input tensor metadata, and input placements,
+        determine the output sharding (placements + tensor meta) for all output
+        tensors without constructing DTensors.
+
+        Args:
+            mesh: The device mesh for the operation.
+            op: The ATen operator overload (e.g., ``aten.mm.default``).
+            op_args: Positional args matching the op schema. Use ``TensorMeta``
+                for tensor arguments and actual values for non-tensor arguments
+                (e.g., ``dim`` for ``aten.sum.dim_IntList``).
+            in_placements: One tuple of placements per ``TensorMeta`` in
+                ``op_args``, in order of appearance. Lists of ``TensorMeta``
+                (e.g. for cat) each consume one entry per element.
+            op_kwargs: Optional keyword arguments for the op.
+
+        Returns:
+            ``DTensorSpec`` for single-tensor output, a tuple of
+            ``DTensorSpec | None`` for multi-tensor output, or ``None`` if the
+            given input placements don't match any valid strategy
+            (redistribution would be needed).
+        """
+        # Build args_schema: replace TensorMeta with DTensorSpec, pass through others.
+        placement_iter = iter(in_placements)
+        args_schema: list[object] = []
+        needs_pytree = False
+        for arg in op_args:
+            if isinstance(arg, TensorMeta):
+                placements = next(placement_iter)
+                args_schema.append(
+                    DTensorSpec(mesh, tuple(placements), tensor_meta=arg)
+                )
+            elif isinstance(arg, list) and arg and isinstance(arg[0], TensorMeta):
+                needs_pytree = True
+                args_schema.append(
+                    [
+                        DTensorSpec(mesh, tuple(next(placement_iter)), tensor_meta=m)
+                        for m in arg
+                    ]
+                )
+            else:
+                args_schema.append(arg)
+
+        kwargs_schema: dict[str, object] = {}
+        if op_kwargs:
+            for k, v in op_kwargs.items():
+                if isinstance(v, TensorMeta):
+                    placements = next(placement_iter)
+                    kwargs_schema[k] = DTensorSpec(
+                        mesh, tuple(placements), tensor_meta=v
+                    )
+                else:
+                    kwargs_schema[k] = v
+
+        # Determine schema_info for this op.
+        schema_info = self.op_to_schema_info.get(op)
+        if schema_info is None:
+            schema_info = self.op_to_schema_info_for_single_dim_strategy.get(op)
+        if needs_pytree and (schema_info is None or not schema_info.needs_pytree):
+            schema_info = RuntimeSchemaInfo(
+                static_argnum=schema_info.static_argnum if schema_info else 100,
+                static_kwargkey=schema_info.static_kwargkey if schema_info else None,
+                needs_pytree=True,
+            )
+
+        op_schema = OpSchema(
+            op=op,
+            args_schema=tuple(args_schema),
+            kwargs_schema=kwargs_schema,
+            schema_info=schema_info,
+        )
+
+        return cast(OutputSpecType, self.passthrough_op_sharding(op_schema))
+
+    def passthrough_op_sharding_non_cached(self, op_schema: OpSchema) -> OutputSpecType:
+        """Return the output spec when input placements pass through without
+        redistribution, or None otherwise.
+        Cached via passthrough_op_sharding (LocalLRUCache).
+
+        Unlike propagate_op_sharding_non_cached — which runs full strategy
+        selection and returns OutputSharding with redistribute suggestions —
+        this is a pass-through-only query: it returns the output spec when the
+        inputs already match a valid strategy, and None when they don't.
+        """
+        # Fast path: per-mesh-dim strategy lookup, avoiding combinatorial
+        # expansion and cost computation. Falls through to the slow path on
+        # miss (e.g. foreach ops that need TupleStrategy).
+        strategy_info = self.op_single_dim_strategy_funcs.get(op_schema.op)
+        if strategy_info is not None:
+            mesh = try_find_mesh_from_args(op_schema.op, op_schema.args_schema)
+            if not isinstance(mesh, DeviceMesh):
+                raise ValueError(f"No DeviceMesh found in args for {op_schema.op}")
+            in_placements = [spec.placements for spec in op_schema.args_spec]
+            result = self._try_single_dim_fast_path(
+                op_schema, mesh, strategy_info, in_placements
+            )
+            if result is not None:
+                return result
+
+        output_sharding = self.propagate_op_sharding_non_cached(op_schema)
+        if output_sharding.needs_redistribute:
+            return None
+        return output_sharding.output_spec
+
+    def _try_single_dim_fast_path(
+        self,
+        op_schema: OpSchema,
+        mesh: DeviceMesh,
+        strategy_info: "_SingleDimStrategyInfo",
+        in_placements: Sequence[tuple[Placement, ...]],
+    ) -> OutputSpecType | None:
+        """
+        Try to resolve output sharding by checking per-mesh-dim strategy match.
+
+        Returns the output spec if all mesh dims match, or None if no exact
+        match is found (caller should fall through to the slow path).
+        """
+        out_tensor_meta = self._propagate_tensor_meta(op_schema)
+        wrapped_schema = self._wrap_with_op_strategy(op_schema)
+        prepared = _PreparedSingleDimStrategy(
+            strategy_info,
+            wrapped_schema,
+            out_tensor_meta,
+            num_inputs=len(in_placements),
+        )
+
+        strategy = prepared.try_propagate(
+            mesh, tuple(in_placements), list(op_schema.args_spec)
+        )
+        if strategy is None:
+            return None
+        return strategy.strategies[0].output_specs
 
     def _propagate_tensor_meta_non_cached(
         self, op_schema: OpSchema
