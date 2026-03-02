@@ -4213,7 +4213,6 @@ class GraphModule(torch.nn.Module):
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         self.assertEqual(fn(x), opt_fn(x))
 
-    @unittest.expectedFailure  # FIX BEFORE MERGING
     def test_functools_lru_cache_hits(self):
         cache_misses = {"count": 0}
 
@@ -4231,7 +4230,6 @@ class GraphModule(torch.nn.Module):
         fn(x)
         self.assertEqual(cache_misses["count"], 1)
 
-    @unittest.expectedFailure  # FIX BEFORE MERGING
     def test_functools_lru_cache_default_and_kwarg_calls(self):
         cache_misses = {"count": 0}
 

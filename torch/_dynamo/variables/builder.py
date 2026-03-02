@@ -1385,7 +1385,11 @@ class VariableBuilder:
             self.install_guards(GuardBuilder.TYPE_MATCH)
             # Reconstruct the _lru_cache_wrapper object inside dynamo using the
             # original function and the cache parameters.
-            wrapped = UserFunctionVariable(value.__wrapped__, source=self.source)
+            # Use AttrSource to properly point to __wrapped__ so closure tracing works
+            wrapped_source = (
+                AttrSource(self.source, "__wrapped__") if self.source else None
+            )
+            wrapped = UserFunctionVariable(value.__wrapped__, source=wrapped_source)
             kwds = {
                 k: SourcelessBuilder.create(self.tx, v)
                 for k, v in value.cache_parameters().items()
