@@ -2148,7 +2148,7 @@ def forward(self, L_x_ : torch.Tensor, G_Color_GREEN : {_illegal_char_regex.sub(
         def fn(x):
             return torch.ops._cache_meta.call(x)
 
-        x = WrappedTensor(torch.randn(4, device="cuda", requires_grad=True))
+        x = WrappedTensor(torch.randn(4, requires_grad=True))
 
         torch.compile(fn, fullgraph=True)(x)
         self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 1)
