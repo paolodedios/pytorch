@@ -22,7 +22,7 @@ from typing import Any, Literal, NamedTuple, Optional, TYPE_CHECKING
 
 import torch
 import torch.utils._pytree as pytree
-from torch._C import _fx_map_arg as map_arg, _NodeIter
+from torch._C import _fx_map_arg as map_arg, _NamespaceBase, _NodeIter
 from torch._library.opaque_object import get_opaque_obj_repr, is_opaque_value_type
 from torch.utils._dtype_abbrs import dtype_abbrs
 
@@ -146,82 +146,22 @@ def _is_from_torch(obj: Any) -> bool:
     return False
 
 
-class _Namespace:
+class _Namespace(_NamespaceBase):
     """A context for associating names uniquely with objects.
 
     The following invariants are enforced:
     - Each object gets a single name.
     - Each name is unique within a given namespace.
     - Names generated do not shadow builtins, unless the object is indeed that builtin.
+
+    This class is now implemented in C++ (_NamespaceBase) for performance.
+    See torch/csrc/fx/graph.cpp for the implementation.
     """
 
-    def __init__(self):
-        self._obj_to_name: dict[Any, str] = {}
-        self._used_names: set[str] = set()
-        self._base_count: dict[str, int] = {}
-
-    def create_name(self, candidate: str, obj: Optional[Any]) -> str:
-        """Create a unique name.
-
-        Arguments:
-            candidate: used as the basis for the unique name, relevant to the user.
-            obj: If not None, an object that will be associated with the unique name.
-        """
-        if obj is not None and obj in self._obj_to_name:
-            return self._obj_to_name[obj]
-
-        # optimistically check if candidate is already a valid name
-        match = _name_regex.match(candidate)
-        if match is None:
-            # delete all characters that are illegal in a Python identifier
-            candidate = _illegal_char_regex.sub("_", candidate)
-
-            if not candidate:
-                candidate = "_unnamed"
-
-            if candidate[0].isdigit():
-                candidate = f"_{candidate}"
-
-            match = _name_regex.match(candidate)
-            if match is None:
-                raise AssertionError(
-                    f"Name regex failed to match candidate: {candidate}"
-                )
-
-        base, num = match.group(1, 2)
-        if num is None or candidate in self._used_names:
-            num = self._base_count.get(candidate, 0)
-            if _illegal_names.get(candidate, obj) is not obj:
-                num += 1
-                candidate = f"{base}_{num}"
-                # assume illegal names don't end in _\d so no need to check again
-        else:
-            num = int(num)
-
-        while candidate in self._used_names:
-            num += 1
-            candidate = f"{base}_{num}"
-
-        self._used_names.add(candidate)
-        self._base_count[base] = num
-        if obj is not None:
-            self._obj_to_name[obj] = candidate
-        return candidate
-
-    def associate_name_with_obj(self, name: str, obj: Any):
-        """Associate a unique name with an object.
-
-        Neither `name` nor `obj` should be associated already.
-        """
-        maybe_existing = self._obj_to_name.setdefault(obj, name)
-        if maybe_existing is not name:
-            raise AssertionError("obj is already associated")
-
-    def _rename_object(self, obj: Any, name: str):
-        if obj not in self._obj_to_name:
-            raise AssertionError(f"Object {obj} is not in _obj_to_name")
-        self._obj_to_name[obj] = name
-        self._used_names.add(name)
+    # Type annotations for the members (implemented in C++)
+    _obj_to_name: dict[Any, str]
+    _used_names: set[str]
+    _base_count: dict[str, int]
 
 
 @compatibility(is_backward_compatible=True)
@@ -461,6 +401,7 @@ class CodeGen:
         # Render each argument on its own line
         expanded_def: bool = False,
         record_func: bool = False,
+        additional_meta: Optional[list[str]] = None,
     ) -> PythonCode:
         free_vars: list[str] = []
         body: list[str] = []
@@ -650,6 +591,15 @@ class CodeGen:
             nonlocal prev_summary_str
 
             if node.op not in {"placeholder", "output"}:
+                additional_meta_str = ""
+                if additional_meta:
+                    parts = []
+                    for key in additional_meta:
+                        if key in node.meta:
+                            parts.append(f"{key}: {node.meta[key]}")
+                    if parts:
+                        additional_meta_str = f"# {', '.join(parts)} "
+
                 annotation_str = ""
                 annotation = node.meta.get("custom", {})
                 annotation_trunc = {}
@@ -684,7 +634,7 @@ class CodeGen:
                     elif ac_graph_id is not None:
                         maybe_recompute_info = f" ac_graph_id: {str(ac_graph_id)}"
 
-                summary_str = f"\n{dim(f'#{annotation_str}{maybe_recompute_info} {stack_trace_str}')}\n"
+                summary_str = f"\n{dim(f'{additional_meta_str}#{annotation_str}{maybe_recompute_info} {stack_trace_str}')}\n"
 
                 if summary_str != prev_summary_str:
                     prev_summary_str = summary_str
@@ -1889,6 +1839,7 @@ class Graph:
         colored: bool = False,
         expanded_def: bool = False,
         record_func: bool = False,
+        additional_meta: Optional[list[str]] = None,
     ) -> PythonCode:
         """
         Turn this ``Graph`` into valid Python code.
@@ -1957,6 +1908,7 @@ class Graph:
                 colored=colored,
                 expanded_def=expanded_def,
                 record_func=record_func,
+                additional_meta=additional_meta,
             )
 
     def _python_code(
@@ -1970,6 +1922,7 @@ class Graph:
         colored: bool = False,
         expanded_def: bool = False,
         record_func: bool = False,
+        additional_meta: Optional[list[str]] = None,
     ) -> PythonCode:
         return self._codegen._gen_python_code(
             self.nodes,
@@ -1981,6 +1934,7 @@ class Graph:
             colored=colored,
             expanded_def=expanded_def,
             record_func=record_func,
+            additional_meta=additional_meta,
         )
 
     def __str__(self) -> str:
