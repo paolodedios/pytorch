@@ -2,13 +2,13 @@
 #include <metal_stdlib>
 using namespace metal;
 
-inline ulong row_start(ulong i, ulong n) {
+inline uint row_start(uint i, uint n) {
   return n * i - i * (i + 1) / 2;
 }
 
-inline ulong2 pair_from_condensed_index(ulong k, ulong n) {
+inline uint2 pair_from_condensed_index(uint k, uint n) {
   float n2 = static_cast<float>(n) - 0.5f;
-  ulong i = static_cast<ulong>(
+  uint i = static_cast<uint>(
       n2 - sqrt(n2 * n2 - 2.0f * static_cast<float>(k) - 1.0f));
   if (i >= n) {
     i = n - 1;
@@ -21,8 +21,8 @@ inline ulong2 pair_from_condensed_index(ulong k, ulong n) {
     i++;
   }
 
-  ulong j = k - row_start(i, n) + i + 1;
-  return ulong2(i, j);
+  uint j = k - row_start(i, n) + i + 1;
+  return uint2(i, j);
 }
 
 inline float signf(float v) {
@@ -94,21 +94,20 @@ template <typename T>
 kernel void pdist_forward_kernel(
     device T* result [[buffer(0)]],
     constant T* self [[buffer(1)]],
-    constant long& n [[buffer(2)]],
-    constant long& m [[buffer(3)]],
-    constant float& p [[buffer(4)]],
-    constant int32_t& mode [[buffer(5)]],
+    constant PdistForwardParams& params [[buffer(2)]],
     uint gid [[thread_position_in_grid]]) {
-  const PdistMode mode_enum = static_cast<PdistMode>(mode);
-  ulong2 pair =
-      pair_from_condensed_index(static_cast<ulong>(gid), static_cast<ulong>(n));
-  ulong i = pair.x;
-  ulong j = pair.y;
+  const uint n = static_cast<uint>(params.n);
+  const uint m = static_cast<uint>(params.m);
+  const float p = params.p;
+  const PdistMode mode_enum = static_cast<PdistMode>(params.mode);
+  uint2 pair = pair_from_condensed_index(gid, n);
+  uint i = pair.x;
+  uint j = pair.y;
 
   float agg = 0.0f;
-  for (ulong x = 0; x < static_cast<ulong>(m); ++x) {
-    float a = static_cast<float>(self[i * static_cast<ulong>(m) + x]);
-    float b = static_cast<float>(self[j * static_cast<ulong>(m) + x]);
+  for (uint x = 0; x < m; ++x) {
+    float a = static_cast<float>(self[i * m + x]);
+    float b = static_cast<float>(self[j * m + x]);
     agg = forward_distance_update(agg, fabs(a - b), p, mode_enum);
   }
 
@@ -121,32 +120,31 @@ kernel void pdist_backward_kernel(
     constant T* grad [[buffer(1)]],
     constant T* self [[buffer(2)]],
     constant T* dist [[buffer(3)]],
-    constant long& grad_stride [[buffer(4)]],
-    constant long& n [[buffer(5)]],
-    constant long& m [[buffer(6)]],
-    constant long& combs [[buffer(7)]],
-    constant float& p [[buffer(8)]],
-    constant int32_t& mode [[buffer(9)]],
+    constant PdistBackwardParams& params [[buffer(4)]],
     uint gid [[thread_position_in_grid]]) {
-  const PdistMode mode_enum = static_cast<PdistMode>(mode);
-  ulong k = static_cast<ulong>(gid) / static_cast<ulong>(m);
-  ulong x = static_cast<ulong>(gid) % static_cast<ulong>(m);
+  const uint grad_stride = static_cast<uint>(params.grad_stride);
+  const uint n = static_cast<uint>(params.n);
+  const uint m = static_cast<uint>(params.m);
+  const float p = params.p;
+  const PdistMode mode_enum = static_cast<PdistMode>(params.mode);
+  uint k = gid / m;
+  uint x = gid % m;
 
-  ulong2 pair = pair_from_condensed_index(k, static_cast<ulong>(n));
-  ulong i = pair.x;
-  ulong j = pair.y;
-  ulong ib = j - i - 1;
-  ulong jb = static_cast<ulong>(n - 2) - i;
+  uint2 pair = pair_from_condensed_index(k, n);
+  uint i = pair.x;
+  uint j = pair.y;
+  uint ib = j - i - 1;
+  uint jb = static_cast<uint>(n - 2) - i;
 
-  float grad_k = static_cast<float>(grad[k * static_cast<ulong>(grad_stride)]);
+  float grad_k = static_cast<float>(grad[k * grad_stride]);
   float dist_k = static_cast<float>(dist[k]);
-  float a = static_cast<float>(self[i * static_cast<ulong>(m) + x]);
-  float b = static_cast<float>(self[j * static_cast<ulong>(m) + x]);
+  float a = static_cast<float>(self[i * m + x]);
+  float b = static_cast<float>(self[j * m + x]);
 
   float res = backward_value(a - b, grad_k, dist_k, p, mode_enum);
 
-  ulong lhs = ((ib * static_cast<ulong>(n) + i) * static_cast<ulong>(m)) + x;
-  ulong rhs = ((jb * static_cast<ulong>(n) + j) * static_cast<ulong>(m)) + x;
+  uint lhs = ((ib * n + i) * m) + x;
+  uint rhs = ((jb * n + j) * m) + x;
   buffer[lhs] = static_cast<T>(res);
   buffer[rhs] = static_cast<T>(-res);
 }
@@ -156,10 +154,7 @@ kernel void pdist_backward_kernel(
   pdist_forward_kernel<DTYPE>(                                \
       device DTYPE * result [[buffer(0)]],                    \
       constant DTYPE * self [[buffer(1)]],                    \
-      constant long& n [[buffer(2)]],                         \
-      constant long& m [[buffer(3)]],                         \
-      constant float& p [[buffer(4)]],                        \
-      constant int32_t& mode [[buffer(5)]],                   \
+      constant PdistForwardParams& params [[buffer(2)]],      \
       uint gid [[thread_position_in_grid]]);
 
 #define REGISTER_PDIST_BACKWARD_OP(DTYPE)                      \
@@ -169,12 +164,7 @@ kernel void pdist_backward_kernel(
       constant DTYPE * grad [[buffer(1)]],                     \
       constant DTYPE * self [[buffer(2)]],                     \
       constant DTYPE * dist [[buffer(3)]],                     \
-      constant long& grad_stride [[buffer(4)]],                \
-      constant long& n [[buffer(5)]],                          \
-      constant long& m [[buffer(6)]],                          \
-      constant long& combs [[buffer(7)]],                      \
-      constant float& p [[buffer(8)]],                         \
-      constant int32_t& mode [[buffer(9)]],                    \
+      constant PdistBackwardParams& params [[buffer(4)]],      \
       uint gid [[thread_position_in_grid]]);
 
 REGISTER_PDIST_FORWARD_OP(float);

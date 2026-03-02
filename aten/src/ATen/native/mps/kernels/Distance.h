@@ -2,13 +2,28 @@
 
 #include <c10/metal/common.h>
 
-enum class PdistMode : int32_t {
+enum class PdistMode : uint32_t {
   MODE_ZERO = 0,
   MODE_ONE = 1,
   MODE_TWO = 2,
   MODE_INF = 3,
   MODE_GENERAL = 4,
   MODE_LT_TWO = 5,
+};
+
+struct PdistForwardParams {
+  uint32_t n;
+  uint32_t m;
+  float p;
+  uint32_t mode;
+};
+
+struct PdistBackwardParams {
+  uint32_t grad_stride;
+  uint32_t n;
+  uint32_t m;
+  float p;
+  uint32_t mode;
 };
 
 #ifndef __METAL__
