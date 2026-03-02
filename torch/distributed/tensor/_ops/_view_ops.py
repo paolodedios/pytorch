@@ -8,13 +8,17 @@ from typing import cast
 import torch
 from torch import Tensor
 from torch._prims_common import DimsType
-from torch.distributed.tensor._dtensor_spec import DTensorSpec
+from torch.distributed.tensor._dtensor_spec import DTensorSpec, TensorMeta
 from torch.distributed.tensor._op_schema import (
     OpSchema,
     OpSpec,
     OpStrategy,
     RuntimeSchemaInfo,
     StrategyType,
+)
+from torch.distributed.tensor._ops.single_dim_strategy import (
+    _ShardingPlaceholder,
+    register_single_dim_strategy,
 )
 from torch.distributed.tensor._ops.utils import (
     generate_redistribute_costs,
@@ -25,6 +29,7 @@ from torch.distributed.tensor._ops.utils import (
 )
 from torch.distributed.tensor.placement_types import (
     _StridedShard,
+    Partial,
     Placement,
     Replicate,
     Shard,
@@ -503,7 +508,7 @@ dim_maps: dict[Callable[..., torch.Tensor], Callable[..., DimMap]] = {
 
 
 def _is_last_shard_on_tensor_dim(mesh_dim, placements):
-    """Check if mesh_dim is the last mesh dimension that shards on the same (or higher) tensor dim."""
+    """Check if mesh_dim is the last mesh dim that shards on the same or higher tensor dim."""
     tensor_dim = placements[mesh_dim].dim
     return not any(
         isinstance(p, (Shard, _StridedShard)) and p.dim >= tensor_dim
@@ -512,7 +517,7 @@ def _is_last_shard_on_tensor_dim(mesh_dim, placements):
 
 
 def propagate_shape_and_sharding(
-    input_src_spec,
+    input_src_spec: DTensorSpec,
     global_input_shape: Shape,
     rule: DimMap,
     mesh_sizes: Shape,
@@ -628,12 +633,18 @@ def propagate_shape_and_sharding(
                                 raise RuntimeError(
                                     f"Cannot flatten unevenly sharded tensor: "
                                     f"dimension {dim.input_dim} (size {tensor_dim_size}) "
-                                    f"is not evenly divisible by mesh dimension {shard_mesh_dim} (size {mesh_dim_size}). "
+                                    f"is not evenly divisible by mesh dimension "
+                                    f"{shard_mesh_dim} (size {mesh_dim_size}). "
                                     f"Please redistribute the tensor before this operation."
                                 )
-                        for x in range(dim.input_dim + 1):
-                            shardable_dims[x] = [True] * mesh_ndim
+                        shardable_dims[dim.input_dim] = [True] * mesh_ndim
                         sharded_dims.append(dim)
+                    elif input_sharded:
+                        # Non-strict (reshape): non-first flatten dims with sharding
+                        # require redistribution since _rewrite_shard_dim doesn't
+                        # handle them in the non-strict path.
+                        can_shard_dim = False
+                        shardable_dims[dim.input_dim] = [can_shard_dim] * mesh_ndim
                 elif input_sharded:
                     assert shard_placement is not None
                     tensor_dim_size = global_input_shape[shard_placement.dim]
@@ -645,7 +656,8 @@ def propagate_shape_and_sharding(
                             raise RuntimeError(
                                 f"Cannot flatten unevenly sharded tensor: "
                                 f"dimension {dim.input_dim} (size {tensor_dim_size}) "
-                                f"is not evenly divisible by mesh dimension {shard_mesh_dim} (size {mesh_dim_size}). "
+                                f"is not evenly divisible by mesh dimension "
+                                f"{shard_mesh_dim} (size {mesh_dim_size}). "
                                 f"Please redistribute the tensor before this operation."
                             )
                 shardable_dims[dim.input_dim] = [can_shard_dim] * mesh_ndim
@@ -711,7 +723,8 @@ def propagate_shape_and_sharding(
                         raise RuntimeError(
                             f"Cannot unflatten unevenly sharded tensor: "
                             f"output dimension {cmd.split_id} (size {out_size}) "
-                            f"is not evenly divisible by mesh dimension {shard_mesh_dim} (size {mesh_sizes[shard_mesh_dim]}). "
+                            f"is not evenly divisible by mesh dimension "
+                            f"{shard_mesh_dim} (size {mesh_sizes[shard_mesh_dim]}). "
                             f"Please redistribute the tensor before this operation."
                         )
 
@@ -735,7 +748,11 @@ def propagate_shape_and_sharding(
         if isinstance(in_dims, list) and len(in_dims) > 0:
             for in_dim in in_dims:
                 if in_dim is not None:
-                    assert in_dim.input_dim not in input_dim_to_output_dims
+                    if in_dim.input_dim in input_dim_to_output_dims:
+                        raise AssertionError(
+                            f"Input dim {in_dim.input_dim} already mapped to output dims "
+                            f"{input_dim_to_output_dims[in_dim.input_dim]}"
+                        )
                     input_dim_to_output_dims[in_dim.input_dim] = [output_dim]
         else:
             if in_dims is not None and isinstance(in_dims, InputDim):
@@ -891,7 +908,8 @@ def propagate_shape_and_sharding(
                 raise RuntimeError(
                     f"Cannot shard unevenly distributed tensor: "
                     f"dimension {p.dim} (size {local_tensor_shapes[p.dim]}) "
-                    f"is not evenly divisible by mesh dimension {mesh_dim} (size {mesh.size(mesh_dim)}). "
+                    f"is not evenly divisible by mesh dimension "
+                    f"{mesh_dim} (size {mesh.size(mesh_dim)}). "
                     f"Please redistribute the tensor before this operation."
                 )
             else:
@@ -901,12 +919,19 @@ def propagate_shape_and_sharding(
             return output_placement
 
     local_tensor_shapes = list(input_src_spec.shape)
-    output_placements = [
-        _rewrite_shard_dim(p, local_tensor_shapes, rule, mesh_dim, input_tgt_placements)
-        if isinstance(p, Shard | _StridedShard)
-        else p
-        for mesh_dim, p in enumerate(input_tgt_placements)
-    ]
+    output_placements: list[Placement] = []
+    for mesh_dim, p in enumerate(input_tgt_placements):
+        if isinstance(p, Shard | _StridedShard):
+            # _rewrite_shard_dim mutates local_tensor_shapes and
+            # input_dim_to_output_dims (via .pop()) to track which output
+            # dims have been claimed by earlier mesh dims.
+            output_placements.append(
+                _rewrite_shard_dim(
+                    p, local_tensor_shapes, rule, mesh_dim, input_tgt_placements
+                )
+            )
+        else:
+            output_placements.append(p)
 
     return input_tgt_placements, output_placements
 
@@ -983,10 +1008,21 @@ register_op_strategy_map(
     aten.squeeze.dim, torch.squeeze, schema_info=RuntimeSchemaInfo(1)
 )
 register_op_strategy_map(
+    aten.squeeze.dims, torch.squeeze, schema_info=RuntimeSchemaInfo(1)
+)
+register_op_strategy_map(
+    aten.squeeze_.dims, torch.squeeze, schema_info=RuntimeSchemaInfo(1)
+)
+register_op_strategy_map(
     aten.view.default,
     Tensor.view,
     schema_info=RuntimeSchemaInfo(1),
     strict_view=True,
+)
+register_op_strategy_map(
+    aten.view_copy.default,
+    Tensor.view,
+    schema_info=RuntimeSchemaInfo(1),
 )
 register_op_strategy_map(
     aten.reshape.default, torch.reshape, schema_info=RuntimeSchemaInfo(1)
@@ -1004,6 +1040,9 @@ register_op_strategy_map(
     aten.expand.default, Tensor.expand, schema_info=RuntimeSchemaInfo(1)
 )
 register_op_strategy_map(
+    aten.expand_copy.default, Tensor.expand, schema_info=RuntimeSchemaInfo(1)
+)
+register_op_strategy_map(
     aten.permute.default, torch.permute, schema_info=RuntimeSchemaInfo(1)
 )
 register_op_strategy_map(
@@ -1012,5 +1051,22 @@ register_op_strategy_map(
 register_op_strategy_map(
     aten.transpose.int, torch.transpose, schema_info=RuntimeSchemaInfo(1)
 )
-register_op_strategy_map(aten.view_as_complex.default, torch.view_as_complex)
+
+
+@register_single_dim_strategy(aten.view_as_complex.default)
+def view_as_complex_single_dim_strategy(op, args_schema, kwargs_schema):
+    # view_as_complex: float [..., 2] -> complex [...]
+    # Dims 0..ndim-2 map 1:1; last dim (real/imag pair) is consumed.
+    # P(max)/P(min) invalid: complex numbers have no total ordering.
+    input_meta = args_schema[0]
+    assert isinstance(input_meta, TensorMeta)
+    ndim = len(input_meta.shape)
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for d in range(ndim - 1):
+        strategies.append([_ShardingPlaceholder(d), _ShardingPlaceholder(d)])
+    strategies.append([Partial("sum"), Partial("sum")])
+    strategies.append([Partial("avg"), Partial("avg")])
+    return strategies
+
+
 register_op_strategy_map(aten.view_as_real.default, torch.view_as_real)
