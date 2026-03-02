@@ -200,11 +200,6 @@ size_t parseChosenWorkspaceSize() {
   }
 }
 
-size_t getChosenWorkspaceSize() {
-  size_t pool_size = parseChosenWorkspaceSize();
-  return pool_size;
-}
-
 #define TORCH_CUBLASLT_UNIFIED_WORKSPACE "TORCH_CUBLASLT_UNIFIED_WORKSPACE"
 #ifndef USE_ROCM
 inline bool unified_cublas_and_lt_workspaces() {
@@ -227,12 +222,9 @@ size_t parseCUDABlasLtWorkspaceSize() {
   }
   size_t workspace_size = 76*1024; /* Use 76 MB for hipBLASLt */
 #else
-if (unified_cublas_and_lt_workspaces()) {
-   /* use CUDABlas default workspace size if unified */
-  size_t workspace_size = getChosenWorkspaceSize() / 1024;
-} else {
-  size_t workspace_size = 1024; /* default size in KiB according to #73328 */
-}
+  /* use CUDABlas default workspace size if unified */
+  /* otherwise, use default size in KiB according to #73328 */
+  size_t workspace_size = unified_cublas_and_lt_workspaces() ? parseChosenWorkspaceSize() / 1024 : 1024;
 #endif
 
   if (val.has_value()) {
@@ -259,7 +251,7 @@ size_t getCUDABlasLtWorkspaceSize() {
   size_t pool_size = parseCUDABlasLtWorkspaceSize();
 #ifndef USE_ROCM
   if (unified_cublas_and_lt_workspaces()) {
-    auto cublasWorkspaceSize = getChosenWorkspaceSize();
+    auto cublasWorkspaceSize = parseChosenWorkspaceSize();
     if (cublasWorkspaceSize < pool_size) {
       TORCH_WARN_ONCE("Requested unified CUBLASLT workspace size of ", pool_size,
                       " bytes exceeds CUBLAS workspace size of ", cublasWorkspaceSize,
@@ -275,7 +267,7 @@ size_t getCUDABlasLtWorkspaceSize() {
 }
 
 at::DataPtr getNewWorkspace() {
-  return c10::cuda::CUDACachingAllocator::get()->allocate(getChosenWorkspaceSize());
+  return c10::cuda::CUDACachingAllocator::get()->allocate(parseChosenWorkspaceSize());
 }
 
 at::DataPtr getNewCUDABlasLtWorkspace() {
@@ -288,7 +280,7 @@ void setWorkspaceForHandle(cublasHandle_t handle, c10::cuda::CUDAStream stream) 
 
   auto& workspace = cublas_handle_stream_to_workspace();
 
-  size_t workspace_size = getChosenWorkspaceSize();
+  size_t workspace_size = parseChosenWorkspaceSize();
 
   // Fast path: check if workspace already exists
   {
