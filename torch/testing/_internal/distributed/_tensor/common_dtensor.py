@@ -368,12 +368,12 @@ class DTensorContinuousTestBase(MultiProcContinuousTest):
     def is_local_tensor_enabled(self) -> bool:
         return False
 
-    @classmethod
-    def device_type(cls) -> str:
+    @property
+    def device_type(self) -> str:
         # if enough GPU/XPU/HPU we can use those devices, otherwise we fallback to CPU
         if (
             not (TEST_CUDA or TEST_XPU or TEST_HPU or TEST_PRIVATEUSE1)
-            or DEVICE_COUNT < cls.world_size
+            or DEVICE_COUNT < self.world_size
         ):
             return "cpu"
         else:
@@ -399,7 +399,7 @@ class DTensorContinuousTestBase(MultiProcContinuousTest):
         super()._init_pg(rank, world_size, rdvz_file)
 
     def build_device_mesh(self) -> DeviceMesh:
-        return init_device_mesh(self.device_type(), (self.world_size,))
+        return init_device_mesh(self.device_type, (self.world_size,))
 
     def init_manual_seed_for_rank(self) -> None:
         torch.manual_seed(self.rank)
