@@ -273,9 +273,12 @@ class Tensor(torch._C.TensorBase):
 
     def to(self, *args, **kwargs):
         if has_torch_function_unary(self):
-            return handle_torch_function(Tensor.to, (self,), self, *args, **kwargs)
-        result = super().to(*args, **kwargs)
-        if result is not self and self.__dict__:
+            result = handle_torch_function(
+                Tensor.to, (self,), self, *args, **kwargs
+            )
+        else:
+            result = super().to(*args, **kwargs)
+        if result is not self and isinstance(result, Tensor) and self.__dict__:
             torch._dynamo.utils.copy_dynamo_tensor_attributes(self, result)
         return result
 

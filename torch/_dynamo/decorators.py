@@ -1081,6 +1081,9 @@ def mark_unbacked(
             All unbacked dimensions with the same shape_id will share the same unbacked symbol. This is useful when multiple tensors
             are known to have the same batch size at runtime. A runtime assertion is added
             to ensure this property at runtime.
+
+    Note: unbacked marking is propagated through ``Tensor.to()`` calls (e.g. dtype or device
+    conversions). Other tensor-returning operations do not propagate unbacked marks.
     """
     if torch.distributed.is_available() and isinstance(
         t, torch.distributed.tensor.DTensor
@@ -1185,6 +1188,9 @@ def mark_dynamic(
     This approach results in one Dynamo trace and two backend compilations. When the input dimension equals 8 or 16
     at runtime, execution will be directed to the specialized compiled region. Performance measurements indicate
     2-8x speedups depending on the specific specialization and model architecture.
+
+    Note: dynamic marking is propagated through ``Tensor.to()`` calls (e.g. dtype or device
+    conversions). Other tensor-returning operations do not propagate dynamic marks.
 
     """
     if is_traceable_wrapper_subclass(t):
