@@ -692,6 +692,7 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
     # Fall back for TupleStrategy (e.g. index tensors in index_put) since the PQ
     # search doesn't model variable-length tuple inputs.
     input_specs: list[DTensorSpec] = []
+    kwargs_specs: list[DTensorSpec] = []
     for arg in op_schema.args_schema:
         if isinstance(arg, OpStrategy):
             if len(arg.strategies) != 1:
@@ -699,11 +700,11 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
             input_specs.append(arg.strategies[0].output_spec)
         elif isinstance(arg, TupleStrategy):
             return None
-
-    # Fall back if any kwargs are tensor inputs — the PQ search only tracks
-    # positional tensor args and would miss redistribute costs for kwargs.
     for kwarg in op_schema.kwargs_schema.values():
-        if isinstance(kwarg, (OpStrategy, TupleStrategy)):
+        if isinstance(kwarg, OpStrategy):
+            assert len(kwarg.strategies) == 1
+            kwargs_specs.append(kwarg.strategies[0].output_spec)
+        elif isinstance(kwarg, TupleStrategy):
             return None
 
     if len(input_specs) == 0:
@@ -730,6 +731,19 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
     # Fast path: if initial placements already match a strategy, skip search
     fast_result = prepared_strategy.try_propagate(mesh, initial_placements, input_specs)
     if fast_result is not None:
+        if kwargs_specs:
+            spec = fast_result.strategies[0]
+            assert spec.input_specs is not None
+            fast_result = OpStrategy(
+                [
+                    OpSpec(
+                        output_specs=spec.output_specs,
+                        input_specs=list(spec.input_specs) + kwargs_specs,
+                        redistribute_cost=list(spec.redistribute_cost or [])
+                        + [[0.0] for _ in kwargs_specs],
+                    )
+                ]
+            )
         fast_result._pq_transitions = []  # type: ignore[attr-defined]
         if _collect_all_matches is not None:
             _collect_all_matches.add(initial_placements)
@@ -833,13 +847,18 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
         if match_result is not None:
             # Use pre-computed per-input costs from the PQ search instead of
             # recomputing via generate_redistribute_costs -> _gen_transform_infos.
+            # kwargs tensor inputs keep their current placements (zero cost).
             match_spec = match_result.strategies[0]
             if match_spec.input_specs is None:
                 raise AssertionError
+            all_input_specs = list(match_spec.input_specs) + kwargs_specs
+            all_costs = [[cost] for cost in candidate.per_input_costs] + [
+                [0.0] for _ in kwargs_specs
+            ]
             op_spec = OpSpec(
                 output_specs=match_spec.output_specs,
-                input_specs=list(match_spec.input_specs),
-                redistribute_cost=[[cost] for cost in candidate.per_input_costs],
+                input_specs=all_input_specs,
+                redistribute_cost=all_costs,
             )
 
             exhaustive = len(prepared_strategy.expanded_strategies) ** mesh.ndim
