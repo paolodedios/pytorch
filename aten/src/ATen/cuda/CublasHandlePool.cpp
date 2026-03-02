@@ -130,6 +130,32 @@ void clearCublasWorkspaces() {
   }
 }
 
+void clearCublasWorkspacesForStream(cudaStream_t stream) {
+  void* stream_ptr = static_cast<void*>(stream);
+  {
+    auto& workspace = cublas_handle_stream_to_workspace();
+    std::unique_lock<std::shared_mutex> lock(workspace.mutex);
+    for (auto it = workspace.map.begin(); it != workspace.map.end(); ) {
+      if (std::get<1>(it->first) == stream_ptr) {
+        it = workspace.map.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+  {
+    auto& workspace = cublaslt_handle_stream_to_workspace();
+    std::unique_lock<std::shared_mutex> lock(workspace.mutex);
+    for (auto it = workspace.map.begin(); it != workspace.map.end(); ) {
+      if (std::get<1>(it->first) == stream_ptr) {
+        it = workspace.map.erase(it);
+      } else {
+        ++it;
+      }
+    }
+  }
+}
+
 size_t parseChosenWorkspaceSize() {
   auto val = c10::utils::get_env("CUBLAS_WORKSPACE_CONFIG");
 #ifdef USE_ROCM
@@ -212,17 +238,22 @@ size_t getChosenWorkspaceSize() {
 }
 
 #define TORCH_CUBLASLT_UNIFIED_WORKSPACE "TORCH_CUBLASLT_UNIFIED_WORKSPACE"
-
-size_t getCUDABlasLtWorkspaceSize() {
-  size_t pool_size = parseCUDABlasLtWorkspaceSize();
 #ifndef USE_ROCM
+inline bool unified_cublas_and_lt_workspaces() {
   static auto unified_env_var = c10::utils::check_env(TORCH_CUBLASLT_UNIFIED_WORKSPACE);
 #if !defined(FBCODE)
   static bool unified = (unified_env_var == std::nullopt) || (unified_env_var == true);
 #else
   static bool unified = unified_env_var == true;
 #endif
-  if (unified) {
+  return unified;
+}
+#endif
+
+size_t getCUDABlasLtWorkspaceSize() {
+  size_t pool_size = parseCUDABlasLtWorkspaceSize();
+#ifndef USE_ROCM
+  if (unified_cublas_and_lt_workspaces()) {
     auto cublasWorkspaceSize = getChosenWorkspaceSize();
     if (cublasWorkspaceSize < pool_size) {
       TORCH_WARN_ONCE("Requested unified CUBLASLT workspace size of ", pool_size,
@@ -280,8 +311,7 @@ void setWorkspaceForHandle(cublasHandle_t handle, c10::cuda::CUDAStream stream) 
 
 void* getCUDABlasLtWorkspace() {
 #ifndef USE_ROCM
-  static bool unified = c10::utils::check_env(TORCH_CUBLASLT_UNIFIED_WORKSPACE) == true;
-  if (unified) {
+  if (unified_cublas_and_lt_workspaces()) {
     cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
     auto stream = c10::cuda::getCurrentCUDAStream();
     cudaStream_t _stream = stream;
