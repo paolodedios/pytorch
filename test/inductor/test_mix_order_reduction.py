@@ -168,7 +168,7 @@ class MixOrderReductionTest(TestBase):
         # Regression: mix-order reduction can appear valid pre-fusion, but a pointwise
         # fused into one side can change access patterns and break the contiguity
         # invariant. This test builds a reduction + pointwise path plus a second
-        # reduction, matching the shape/ordering pattern seen in the XPU failure.
+        # reduction, matching the shape/ordering pattern seen in the E2E failure.
 
         def f(x):
             # First reduction (contiguous on its own).
