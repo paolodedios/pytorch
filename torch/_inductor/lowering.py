@@ -2992,7 +2992,7 @@ make_fallback(aten.exponential.default, warn=False)  # (fails accuracy on test_t
 make_fallback(aten._pdist_forward, require_contiguous)  # Has decomp. Needs benchmarks
 make_fallback(aten.soft_margin_loss_backward, warn=False)  # py_impl?
 make_fallback(aten._fused_rms_norm, warn=False)  # (MPS-only and faster than decomp)
-if torch.xpu.is_available():
+if torch.xpu._is_compiled():
     make_fallback(
         aten.embedding_dense_backward, warn=False
     )  # (XPU-only and faster than decomp)
@@ -3114,6 +3114,7 @@ make_fallback(aten._thnn_fused_lstm_cell, require_dense)
 make_fallback(torch._prims.rng_prims.run_and_save_rng_state)
 make_fallback(torch._prims.rng_prims.run_with_rng_state)
 make_fallback(torch._prims.rng_prims.graphsafe_run_with_rng_state)
+make_fallback(torch._prims.rng_prims.run_dtensor_rng_op)
 
 
 # Implemented / Half implemented
@@ -7000,13 +7001,7 @@ def addcmul(self, tensor1, tensor2, *, value=1):
     to force rounding of the product before the FMA. This prevents Triton's
     compiler from fusing the multiplication with the FMA, matching eager's
     rounding behavior.
-
-    When emulate_precision_casts is False, we return NotImplemented to use the
-    decomposition instead.
     """
-    if not config.emulate_precision_casts:
-        return NotImplemented
-
     dtype = get_promoted_dtype(
         self,
         tensor1,
@@ -7143,13 +7138,7 @@ def _foreach_addcmul_scalar(self, tensor1, tensor2, value=1):
     """
     Foreach version of addcmul with scalar value parameter.
     Uses foreach_group_loop for consistent grouping behavior.
-
-    When emulate_precision_casts is False, we return NotImplemented to use the
-    decomposition instead.
     """
-    if not config.emulate_precision_casts:
-        return NotImplemented
-
     realize_outputs = (
         len(V.graph.current_node.users) == 0
         or V.graph.current_node.target in inplace_foreach_ops
