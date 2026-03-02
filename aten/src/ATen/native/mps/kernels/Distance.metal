@@ -107,10 +107,6 @@ kernel void pdist_forward_kernel(
     constant float& p [[buffer(4)]],
     constant long& mode [[buffer(5)]],
     uint gid [[thread_position_in_grid]]) {
-  if (gid >= static_cast<uint>(n * (n - 1) / 2)) {
-    return;
-  }
-
   ulong2 pair =
       pair_from_condensed_index(static_cast<ulong>(gid), static_cast<ulong>(n));
   ulong i = pair.x;
@@ -139,11 +135,6 @@ kernel void pdist_backward_kernel(
     constant float& p [[buffer(8)]],
     constant long& mode [[buffer(9)]],
     uint gid [[thread_position_in_grid]]) {
-  ulong total = static_cast<ulong>(combs * m);
-  if (gid >= total) {
-    return;
-  }
-
   ulong k = static_cast<ulong>(gid) / static_cast<ulong>(m);
   ulong x = static_cast<ulong>(gid) % static_cast<ulong>(m);
 
