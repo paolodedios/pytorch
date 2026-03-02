@@ -77,8 +77,6 @@ These APIs are experimental and subject to change without notice.
     InnerTensorKey
     Specialization
 
-    hint_int
-    size_hint
     is_concrete_int
     is_concrete_bool
     is_concrete_float
@@ -116,7 +114,6 @@ These APIs are experimental and subject to change without notice.
     guard_float
     guard_int
     guard_scalar
-    has_hint
     has_symbolic_sizes_strides
     is_nested_int
     is_symbol_binding_fx_node
