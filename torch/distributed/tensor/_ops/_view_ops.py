@@ -637,14 +637,12 @@ def propagate_shape_and_sharding(
                                     f"{shard_mesh_dim} (size {mesh_dim_size}). "
                                     f"Please redistribute the tensor before this operation."
                                 )
-                        shardable_dims[dim.input_dim] = [True] * mesh_ndim
                         sharded_dims.append(dim)
                     elif input_sharded:
                         # Non-strict (reshape): non-first flatten dims with sharding
                         # require redistribution since _rewrite_shard_dim doesn't
                         # handle them in the non-strict path.
                         can_shard_dim = False
-                        shardable_dims[dim.input_dim] = [can_shard_dim] * mesh_ndim
                 elif input_sharded:
                     assert shard_placement is not None
                     tensor_dim_size = global_input_shape[shard_placement.dim]
@@ -881,10 +879,7 @@ def propagate_shape_and_sharding(
                 if tgt_shard_dim is None:
                     tgt_shard_dim = tgt_shard_dims[0]
             cmd = rule[tgt_shard_dim]
-            if isinstance(cmd, Split):
-                assert tgt_shard_dim == p.dim
-                output_placement = Shard(tgt_shard_dim)
-            elif isinstance(cmd, InputDim):
+            if isinstance(cmd, (Split, InputDim)):
                 output_placement = Shard(tgt_shard_dim)
             else:
                 # flatten from S to S/SS
@@ -902,9 +897,14 @@ def propagate_shape_and_sharding(
                         tgt_shard_dim, split_factor=split_factor
                     )
 
-            if local_tensor_shapes[p.dim] % mesh.size(
-                mesh_dim
-            ) != 0 and not _is_last_shard_on_tensor_dim(mesh_dim, placements):
+            # For Flatten, uneven sharding on non-last dims breaks stride
+            # computation. For InputDim/Split the shape passes through or
+            # is already validated by get_in_dim_to_shard.
+            if (
+                isinstance(cmd, Flatten)
+                and local_tensor_shapes[p.dim] % mesh.size(mesh_dim) != 0
+                and not _is_last_shard_on_tensor_dim(mesh_dim, placements)
+            ):
                 raise RuntimeError(
                     f"Cannot shard unevenly distributed tensor: "
                     f"dimension {p.dim} (size {local_tensor_shapes[p.dim]}) "
@@ -912,9 +912,13 @@ def propagate_shape_and_sharding(
                     f"{mesh_dim} (size {mesh.size(mesh_dim)}). "
                     f"Please redistribute the tensor before this operation."
                 )
-            else:
+            if local_tensor_shapes[p.dim] % mesh.size(mesh_dim) == 0:
                 local_tensor_shapes[p.dim] = local_tensor_shapes[p.dim] // mesh.size(
                     mesh_dim
+                )
+            else:
+                local_tensor_shapes[p.dim] = math.ceil(
+                    local_tensor_shapes[p.dim] / mesh.size(mesh_dim)
                 )
             return output_placement
 
