@@ -154,9 +154,28 @@ namespace torch::autograd {
 // from C++'s Node::apply to a Python method "apply".
 // NOLINTNEXTLINE(*-rvalue-reference*)
 auto PyNode::apply(variable_list&& inputs) -> variable_list {
+  // see Note [Thread Safety on Autograd Node]
+  std::lock_guard<std::mutex> lock(mutex_);
   pybind11::gil_scoped_acquire gil;
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
+
+  // Update needs_input_grad to reflect which gradients are actually needed
+  // by the current graph task (e.g. when inputs= is specified in backward()).
+  auto& is_variable_input = py_fn->is_variable_input;
+  size_t edge_idx = 0;
+  for (const auto i : c10::irange(is_variable_input.size())) {
+    if (is_variable_input[i]) {
+      PyObject* new_val =
+          task_should_compute_output(edge_idx++) ? Py_True : Py_False;
+      PyObject* cur = PyTuple_GET_ITEM(py_fn->needs_input_grad, i);
+      if (cur != new_val) {
+        Py_INCREF(new_val);
+        Py_DECREF(cur);
+        PyTuple_SET_ITEM(py_fn->needs_input_grad, i, new_val);
+      }
+    }
+  }
 
   // Massage a C++ variable_list into a Python arguments tuple
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));
@@ -205,14 +224,32 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
 auto PyNode::apply_with_saved_impl(
     const variable_list& inputs,
     const SwapSavedVariables& saved) -> variable_list {
+  // see Note [Thread Safety on Autograd Node]
+  std::lock_guard<std::mutex> lock(mutex_);
   pybind11::gil_scoped_acquire gil;
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
 
+  // Update needs_input_grad to reflect which gradients are actually needed
+  // by the current graph task (e.g. when inputs= is specified in backward()).
+  const auto& is_variable_input = py_fn->is_variable_input;
+  size_t edge_idx = 0;
+  for (const auto i : c10::irange(is_variable_input.size())) {
+    if (is_variable_input[i]) {
+      PyObject* new_val =
+          task_should_compute_output(edge_idx++) ? Py_True : Py_False;
+      PyObject* cur = PyTuple_GET_ITEM(py_fn->needs_input_grad, i);
+      if (cur != new_val) {
+        Py_INCREF(new_val);
+        Py_DECREF(cur);
+        PyTuple_SET_ITEM(py_fn->needs_input_grad, i, new_val);
+      }
+    }
+  }
+
   // Massage a C++ variable_list into a Python arguments tuple
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));
 
-  const auto& is_variable_input = py_fn->is_variable_input;
   const auto& input_infos = py_fn->input_info;
   // input_info only contains info from variable inputs and should be a subset
   TORCH_INTERNAL_ASSERT(is_variable_input.size() >= input_infos.size());
@@ -313,6 +350,16 @@ auto PyNode::release_variables() -> void {
   // that the python interpreter is already dead here. In that case
   // we just leak the saved objects.
   if (Py_IsInitialized()) {
+    // Release GIL before acquiring mutex to maintain lock ordering
+    // (mutex then GIL) and avoid deadlock with apply() which acquires
+    // mutex then GIL. This function may be called with GIL held (e.g.,
+    // from Python destructor or THPFunction_maybe_clear_saved_tensors).
+    std::optional<pybind11::gil_scoped_release> no_gil;
+    if (PyGILState_Check()) {
+      no_gil.emplace();
+    }
+    // see Note [Thread Safety on Autograd Node]
+    std::lock_guard<std::mutex> lock(mutex_);
     pybind11::gil_scoped_acquire gil;
     auto f = (THPFunction*)obj;
     f->saved_variables.clear();
@@ -1767,55 +1814,6 @@ PyObject* getRequiresGrad(PyObject* obj, void* _unused) {
   Py_RETURN_TRUE;
 }
 
-// During backward, needs_input_grad should reflect which gradients are actually
-// needed by the current graph task (e.g., when inputs= is specified in
-// backward()). We compute this dynamically via task_should_compute_output
-// rather than mutating the stored tuple, which would be unsafe under concurrent
-// backward passes on a shared graph (the GIL does not provide sufficient
-// atomicity since it can be released during torch operations within the user's
-// backward function).
-PyObject* getNeedsInputGrad(PyObject* obj, void* _unused) {
-  auto self = (THPFunction*)obj;
-  auto cdata = self->cdata.lock();
-  check_legacy_fn_attr_access(cdata, "needs_input_grad");
-
-  // If overridden (e.g. by supports_tensorlist), return the stored value.
-  if (self->needs_input_grad_is_overridden) {
-    return getObject<&THPFunction::needs_input_grad>(obj, _unused);
-  }
-
-  const auto exec_info = get_current_graph_task_exec_info();
-  if (!exec_info || exec_info->empty()) {
-    return getObject<&THPFunction::needs_input_grad>(obj, _unused);
-  }
-
-  auto& is_variable_input = self->is_variable_input;
-  Py_ssize_t size = static_cast<Py_ssize_t>(is_variable_input.size());
-  PyObject* result = PyTuple_New(size);
-  if (!result)
-    return nullptr;
-
-  size_t edge_idx = 0;
-  for (const auto i : c10::irange(is_variable_input.size())) {
-    PyObject* value;
-    if (is_variable_input[i]) {
-      value =
-          cdata->task_should_compute_output(edge_idx++) ? Py_True : Py_False;
-    } else {
-      value = Py_False;
-    }
-    Py_INCREF(value);
-    PyTuple_SET_ITEM(result, i, value);
-  }
-  return result;
-}
-
-int setNeedsInputGrad(PyObject* obj, PyObject* value, void* _unused) {
-  auto self = (THPFunction*)obj;
-  self->needs_input_grad_is_overridden = true;
-  return setObject<&THPFunction::needs_input_grad>(obj, value, _unused);
-}
-
 } // namespace
 
 // NOLINTNEXTLINE(modernize-avoid-c-arrays,cppcoreguidelines-avoid-c-arrays,cppcoreguidelines-avoid-non-const-global-variables)
@@ -1861,8 +1859,8 @@ static struct PyGetSetDef THPFunction_properties[] = {
      nullptr,
      nullptr},
     {"needs_input_grad",
-     getNeedsInputGrad,
-     setNeedsInputGrad,
+     &getObject<&THPFunction::needs_input_grad>,
+     &setObject<&THPFunction::needs_input_grad>,
      nullptr,
      nullptr},
     {"requires_grad", getRequiresGrad, nullptr, nullptr, nullptr},
