@@ -1,6 +1,6 @@
 #include <torch/csrc/distributed/c10d/symm_mem/intra_node_comm.hpp>
 
-#include <torch/csrc/distributed/c10d/symm_mem/CUDASymmetricMemory-inl.h>
+#include <torch/csrc/distributed/c10d/symm_mem/CUDASymmetricMemory-inl.cuh>
 
 namespace c10d {
 namespace intra_node_comm {
@@ -36,7 +36,7 @@ at::Tensor IntraNodeComm::oneShotAllReduce(
   checkInput(input, deviceIdx_);
 
   auto op = c10::Dispatcher::singleton()
-                .findSchemaOrThrow("symm_mem::one_shot_all_reduce_out", "")
+                .findSchemaOrThrow("symm_mem::one_shot_all_reduce", "out")
                 .typed<at::Tensor(
                     const at::Tensor&, std::string, std::string, at::Tensor)>();
 
