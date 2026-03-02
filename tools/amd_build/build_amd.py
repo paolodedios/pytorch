@@ -225,8 +225,8 @@ mslk_dir = REPO_ROOT / "third_party/mslk/include/mslk/utils/"
 
 if not buck_build:
     mslk_original = mslk_dir / "tuning_cache.cuh"
-    if mslk_original.exists():
-        extra_files.append(mslk_original.as_posix())
+
+    extra_files.append(mslk_original.as_posix())
 
 # TODO Remove once the following submodules are updated to use hipify v2
 hipify_v1_to_v2_files = [
@@ -300,10 +300,6 @@ if not buck_build:
     # only update the file if it changes or doesn't exist
     do_write = True
     src_lines = None
-
-    if not mslk_move_src.exists():
-        _error = f"Error: Source file {mslk_move_src} does not exist"
-        sys.exit(_error)
     with open(mslk_move_src) as src:
         src_lines = src.readlines()
     if os.path.exists(mslk_move_dst):

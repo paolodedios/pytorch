@@ -89,11 +89,10 @@ class TestFullyShardFrozen(FSDPTest):
                 if "bias" not in param_name:
                     param.requires_grad_(False)
         for mlp in model:
-            if not isinstance(mlp, MLP):
-                raise AssertionError(
-                    "The reduce-scatter numel check assumes the model consists of "
-                    f"only the same MLP class but got {type(mlp)}"
-                )
+            assert isinstance(mlp, MLP), (
+                "The reduce-scatter numel check assumes the model consists of "
+                f"only the same MLP class but got {type(mlp)}"
+            )
         expected_numel = sum(
             p._local_tensor.numel()
             for n, p in model[0].named_parameters()

@@ -5,7 +5,7 @@ import traceback
 import types
 from collections import namedtuple
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any, Optional, TYPE_CHECKING, TypeVar
+from typing import Any, Optional, TYPE_CHECKING, TypeVar, Union
 
 import sympy
 
@@ -234,8 +234,7 @@ class DynamoGraphTransformer(torch.fx.Transformer):
         flat_args_dynamic_dims: list[set[int]],
         graph_input_order: dict[int, int],
         graph_output_map: dict[int, tuple[str, Any]],
-        fake_mode: Any | None = None,
-        graph_inputs: dict[int, Any] | None = None,
+        fake_mode: Optional[Any] = None,
     ) -> None:
         super().__init__(module)
 
@@ -246,7 +245,6 @@ class DynamoGraphTransformer(torch.fx.Transformer):
         self.graph_input_order = graph_input_order
         self.graph_output_map = graph_output_map
         self.fake_mode = fake_mode
-        self.graph_inputs = graph_inputs or {}
 
         # Get original placeholders and output
         self.placeholders = [n for n in module.graph.nodes if n.op == "placeholder"]
@@ -331,25 +329,7 @@ class DynamoGraphTransformer(torch.fx.Transformer):
 
             return new_arg
         else:
-            # Convert captured objects (e.g., opaque objects from closures) to
-            # get_attr nodes
-            placeholder_idx = self.placeholders.index(self.current_node)
-            if placeholder_idx in self.graph_inputs:
-                source = self.graph_inputs[placeholder_idx]
-                if not isinstance(source, torch._dynamo.source.GetItemSource):
-                    example_val = self.current_node.meta.get(
-                        "val"
-                    ) or self.current_node.meta.get("example_value")
-                    if example_val is not None:
-                        attr_name = f"_captured_{placeholder_idx}"
-                        if isinstance(example_val, torch.Tensor):
-                            self.module.register_buffer(attr_name, example_val)
-                        else:
-                            setattr(self.module, attr_name, example_val)
-                        result = self.tracer.create_proxy("get_attr", attr_name, (), {})
-                        result.node.meta = self.current_node.meta.copy()
-                        result.node.meta["val"] = example_val
-                        return result
+            # Shouldn't happen if mapping is correct, but fallback
             return super().placeholder(target, args, kwargs)
 
     def output(
@@ -421,7 +401,7 @@ def _suggest_or_raise_constraint_violation(
     graph_capture_output: CaptureOutput,
     args: Any,
     kwargs: Any,
-    dynamic_shapes: dict[str, Any] | tuple[Any] | list[Any] | None,
+    dynamic_shapes: Optional[Union[dict[str, Any], tuple[Any], list[Any]]],
 ) -> None:
     constraint_violation_error = None
     try:
@@ -768,7 +748,7 @@ class _DynamoBytecodeCodeGen(torch.fx.graph.CodeGen):
 
 def dynamo_graph_capture_for_export(
     fn: Callable[..., Any],
-    constraints: list[Constraint] | None = None,
+    constraints: Optional[list[Constraint]] = None,
 ) -> Callable[..., Any]:
     if isinstance(fn, torch._ops.OpOverload):
 
@@ -816,8 +796,8 @@ def op_overload_wrapper({", ".join(arg_list)}):
 def _dynamo_graph_capture_for_export(
     mod: Callable[..., Any],
     *,
-    constraints: list[Constraint] | None = None,
-    dynamic_shapes: dict[str, Any] | tuple[Any] | list[Any] | None = None,
+    constraints: Optional[list[Constraint]] = None,
+    dynamic_shapes: Optional[Union[dict[str, Any], tuple[Any], list[Any]]] = None,
 ) -> Callable[..., torch.fx.GraphModule]:
     """
     Improved dynamo graph capture using transformer approach with proper fake tensor handling.
@@ -851,8 +831,8 @@ def _dynamo_graph_capture_for_export(
             module_to_trace = ModuleToTrace(mod, in_spec)
             orig_callable = mod.forward if isinstance(mod, torch.nn.Module) else mod
 
-            constraints: list[Constraint] | None = _constraints
-            dynamic_shapes: dict[str, Any] | tuple[Any] | list[Any] | None = (
+            constraints: Optional[list[Constraint]] = _constraints
+            dynamic_shapes: Optional[Union[dict[str, Any], tuple[Any], list[Any]]] = (
                 _dynamic_shapes
             )
 
@@ -934,14 +914,11 @@ def _dynamo_graph_capture_for_export(
             ]
 
             # Create input order mapping from dynamo's internal order to user order
-            # Only process inputs that come from function arguments (GetItemSource).
-            # Skip inputs that come from other sources like closures (e.g., captured
-            # opaque objects like DeviceMesh).
             graph_input_order: dict[int, int] = {}
             for inp in graph_inputs:
                 source = graph_inputs[inp]
-                if isinstance(source, torch._dynamo.source.GetItemSource):
-                    graph_input_order[source.index] = len(graph_input_order)
+                assert isinstance(source, torch._dynamo.source.GetItemSource), source
+                graph_input_order[source.index] = len(graph_input_order)
 
             for real_idx, graph_idx in graph_input_order.items():
                 flat_inputs[real_idx] = example_inputs[graph_idx]
@@ -954,7 +931,6 @@ def _dynamo_graph_capture_for_export(
                 graph_input_order,
                 graph_output_map,
                 fake_mode,
-                graph_inputs,
             ).transform()
 
             # Set up PyTree codegen for proper input/output handling

@@ -49,7 +49,9 @@ from pathlib import Path
 from statistics import mean
 from typing import (
     Any,
+    Optional,
     TypeVar,
+    Union,
 )
 from collections.abc import Callable
 from collections.abc import Iterable, Iterator
@@ -114,7 +116,7 @@ class ProfilingMode(Enum):
 
 # Set by parse_cmd_line_args() if called
 DISABLED_TESTS_FILE = ""
-GRAPH_EXECUTOR : ProfilingMode | None = None
+GRAPH_EXECUTOR : Optional[ProfilingMode] = None
 LOG_SUFFIX = ""
 PYTEST_SINGLE_TEST = ""
 REPEAT_COUNT = 0
@@ -302,7 +304,7 @@ PRINT_REPRO_ON_FAILURE: bool = TestEnvironment.def_flag(
 )
 
 # possibly restrict OpInfo tests to a single sample input
-OPINFO_SAMPLE_INPUT_INDEX: int | None = TestEnvironment.def_setting(
+OPINFO_SAMPLE_INPUT_INDEX: Optional[int] = TestEnvironment.def_setting(
     "OPINFO_SAMPLE_INPUT_INDEX",
     env_var="PYTORCH_OPINFO_SAMPLE_INPUT_INDEX",
     default=None,
@@ -353,7 +355,7 @@ def gcIfJetson(fn):
 
 # Tries to extract the current test function by crawling the stack.
 # If unsuccessful, return None.
-def extract_test_fn() -> Callable | None:
+def extract_test_fn() -> Optional[Callable]:
     try:
         stack = inspect.stack()
         for frame_info in stack:
@@ -380,7 +382,7 @@ class TrackedInput:
 
 # Attempt to pull out tracked input information from the test function.
 # A TrackedInputIter is used to insert this information.
-def get_tracked_input() -> TrackedInput | None:
+def get_tracked_input() -> Optional[TrackedInput]:
     test_fn = extract_test_fn()
     if test_fn is None:
         return None
@@ -1900,7 +1902,7 @@ def skipIfLegacyJitExecutor(msg="test doesn't currently work with legacy JIT exe
 
 
 def make_dynamo_test(
-    fn: Callable[..., Any] | None = None
+    fn: Optional[Callable[..., Any]] = None
 ) -> Callable[..., Any]:
     """
     Decorator function to create a dynamo test case. A function annotate with
@@ -3088,8 +3090,8 @@ class UnittestPair(Pair):
 
     Define the :attr:`UnittestPair.CLS` in a subclass to indicate which class(es) of the inputs the pair should support.
     """
-    CLS: type | tuple[type, ...]
-    TYPE_NAME: str | None = None
+    CLS: Union[type, tuple[type, ...]]
+    TYPE_NAME: Optional[str] = None
 
     def __init__(self, actual, expected, **other_parameters):
         self._check_inputs_isinstance(actual, expected, cls=self.CLS)
@@ -4280,10 +4282,10 @@ class TestCase(expecttest.TestCase):
             self,
             x,
             y,
-            msg: str | Callable[[str], str] | None = None,
+            msg: Optional[Union[str, Callable[[str], str]]] = None,
             *,
-            atol: float | None = None,
-            rtol: float | None = None,
+            atol: Optional[float] = None,
+            rtol: Optional[float] = None,
             equal_nan=True,
             exact_dtype=True,
             # TODO: default this to True
@@ -4367,8 +4369,8 @@ class TestCase(expecttest.TestCase):
                 (lambda generated_msg: f"{generated_msg}\n{msg}") if isinstance(msg, str) and self.longMessage else msg
             )
 
-    def assertNotEqual(self, x, y, msg: str | None = None, *,                                       # type: ignore[override]
-                       atol: float | None = None, rtol: float | None = None, **kwargs) -> None:
+    def assertNotEqual(self, x, y, msg: Optional[str] = None, *,                                       # type: ignore[override]
+                       atol: Optional[float] = None, rtol: Optional[float] = None, **kwargs) -> None:
         with self.assertRaises(AssertionError, msg=msg):
             self.assertEqual(x, y, msg, atol=atol, rtol=rtol, **kwargs)
 
@@ -4388,7 +4390,7 @@ class TestCase(expecttest.TestCase):
     # _ignore_not_implemented_error is True
     def assertRaises(self, expected_exception, *args, **kwargs):
         if self._ignore_not_implemented_error:
-            context: AssertRaisesContextIgnoreNotImplementedError | None = \
+            context: Optional[AssertRaisesContextIgnoreNotImplementedError] = \
                 AssertRaisesContextIgnoreNotImplementedError(expected_exception, self)  # type: ignore[call-arg]
             try:
                 return context.handle('assertRaises', args, kwargs)  # type: ignore[union-attr, arg-type]
@@ -4702,7 +4704,7 @@ class TestCase(expecttest.TestCase):
         self,
         file: pathlib.Path,
         import_string: str,
-        expected_failure_message: str | None = None
+        expected_failure_message: Optional[str] = None
     ) -> None:
         """
         Attempts weights_only `torch.load` in a subprocess. This is used to test that

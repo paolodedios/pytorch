@@ -18,7 +18,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import timedelta
 from functools import reduce
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Union
 
 import numpy as np
 
@@ -257,7 +257,7 @@ ddp_suggest_debug_mode_str = (
 class DDPUnevenTestInput(NamedTuple):
     name: str
     model: nn.Module
-    inp: torch.Tensor | tuple
+    inp: Union[torch.tensor, tuple]
     sync_interval: int
     throw_on_early_termination: bool = False
     hook: Callable = None

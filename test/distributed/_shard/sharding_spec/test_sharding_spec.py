@@ -571,23 +571,17 @@ class GridShardingSpec(ShardingSpec):
         tensor_properties: TensorProperties,
     ) -> ShardedTensorMetadata:
         tensor_num_dim = len(tensor_sizes)
-        if tensor_num_dim != 2:
-            raise AssertionError("only support 2-dim tensor for grid sharding")
+        assert tensor_num_dim == 2, "only support 2-dim tensor for grid sharding"
         shards_metadata = []
 
         def chunk_num(dim_size, grid_size):
-            if dim_size % grid_size != 0:
-                raise AssertionError("only support dim_size mod grid_size == 0")
+            assert dim_size % grid_size == 0, "only support dim_size mod grid_size == 0"
             return dim_size // grid_size
 
         row_chunks = chunk_num(tensor_sizes[0], self.grid_size)
         col_chunks = chunk_num(tensor_sizes[1], self.grid_size)
 
-        if row_chunks * col_chunks != len(self.placements):
-            raise AssertionError(
-                f"Expected row_chunks * col_chunks == len(self.placements), "
-                f"got {row_chunks * col_chunks} vs {len(self.placements)}"
-            )
+        assert row_chunks * col_chunks == len(self.placements)
         for row_idx in range(row_chunks):
             for col_idx in range(col_chunks):
                 shards_metadata.append(

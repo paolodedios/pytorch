@@ -1218,9 +1218,7 @@ def _resolve_group_name(group: RANK_TYPES, tag: str = "") -> c10d.GroupName:
             dim = group[1]
             return dmesh._dim_group_names[dim]
         else:
-            raise ValueError(
-                f"Invalid tuple for group must be (DeviceMesh, int). Instead got {(type(group[0]), type(group[1]))}"
-            )
+            raise ValueError("Invalid tuple for group must be (DeviceMesh, int)")
     elif isinstance(group, list):
         if not is_torchdynamo_compiling():
             warnings.warn(
@@ -1720,38 +1718,27 @@ from torch.distributed.distributed_c10d import (
 # fn.__name__ as a module attribute — a def's __name__ matches its variable name
 # automatically, whereas a closure's would not.
 def _remapped_allgather(*args, **kwargs):
-    if not _are_we_tracing():
-        raise AssertionError("_remapped_allgather should only be called during tracing")
+    assert _are_we_tracing()
     all_gather_tensor_inplace(*args, **kwargs)
 
 
 def _remapped_reducescatter(*args, **kwargs):
-    if not _are_we_tracing():
-        raise AssertionError(
-            "_remapped_reducescatter should only be called during tracing"
-        )
+    assert _are_we_tracing()
     reduce_scatter_tensor_inplace(*args, **kwargs)
 
 
 def _remapped_allreduce(*args, **kwargs):
-    if not _are_we_tracing():
-        raise AssertionError("_remapped_allreduce should only be called during tracing")
+    assert _are_we_tracing()
     all_reduce_inplace(*args, **kwargs)
 
 
 def _remapped_all_to_all_single(*args, **kwargs):
-    if not _are_we_tracing():
-        raise AssertionError(
-            "_remapped_all_to_all_single should only be called during tracing"
-        )
+    assert _are_we_tracing()
     all_to_all_inplace(*args, **kwargs)
 
 
 def _remapped_all_gather(*args, **kwargs):
-    if not _are_we_tracing():
-        raise AssertionError(
-            "_remapped_all_gather should only be called during tracing"
-        )
+    assert _are_we_tracing()
     all_gather_inplace(*args, **kwargs)
 
 

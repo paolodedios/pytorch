@@ -200,10 +200,7 @@ class TestFullyShard2DTraining(FSDPTestContinuous):
                 for placement in param.placements:
                     if isinstance(placement, Shard):
                         shard_dim = param.ndim - 1 - placement.dim
-                        if not (shard_dim >= 0):
-                            raise AssertionError(
-                                f"Expected shard_dim >= 0, got {shard_dim} for {param.shape}"
-                            )
+                        assert shard_dim >= 0, f"{param.shape}"
                         return Shard(shard_dim)
             return Shard(0)
 

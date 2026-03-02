@@ -104,8 +104,6 @@ class SymNode:
         self.shape_env = shape_env
         self.pytype = pytype
         self._optimized_summation = optimized_summation
-        self._expr_ver = -1
-        self._expr_cache = None
 
         # What's the difference between hint and constant?
         #
@@ -198,17 +196,7 @@ class SymNode:
 
     @property
     def expr(self):
-        if isinstance(self._expr, int) or self._expr.is_number:
-            return self._expr
-        ver = self.shape_env._replacements_version_counter
-        if ver == 0:
-            return self._expr
-        if self._expr_cache is not None and ver == self._expr_ver:
-            return self._expr_cache
-        result = self.shape_env.replace(self._expr)
-        self._expr_ver = ver
-        self._expr_cache = result
-        return result
+        return self.shape_env.replace(self._expr)
 
     @property
     def hint(self):

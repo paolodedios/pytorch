@@ -129,8 +129,7 @@ def _init_with_torchdistX(module: nn.Module):
     torchdistX-based deferred module initialization function example
     using ``materialize_module``.
     """
-    if not _TORCHDISTX_AVAIL:
-        raise AssertionError("Expected _TORCHDISTX_AVAIL to be True")
+    assert _TORCHDISTX_AVAIL
 
     def check_fn(k):
         return not isinstance(k, FSDP)
