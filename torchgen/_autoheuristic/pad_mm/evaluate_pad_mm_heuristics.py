@@ -188,6 +188,9 @@ def main():
     skipped_shapes = 0
     autotune_shapes = 0
 
+    tp_speedups = []     # Speed-up percentages for true positives
+    fp_slowdowns = []    # Speed-down percentages for false positives
+
     for i, (m, k, n, dtype) in enumerate(shapes, 1):
         try:
             print(f"Shape {i}/{len(shapes)}: M={m}, K={k}, N={n}, dtype={dtype}")
@@ -218,12 +221,20 @@ def main():
                     print(f"  ✓ CORRECT")
                     if heuristic_choice == "pad":
                         true_positives += 1  # Correctly chose pad
+                        # Calculate speed-up: (orig_time - pad_time) / orig_time * 100
+                        speedup = (orig_time - pad_time) / orig_time * 100
+                        tp_speedups.append(speedup)
+                        print(f"    Speed-up: {speedup:.1f}%")
                     else:
                         true_negatives += 1  # Correctly chose orig
                 else:
                     print(f"  ✗ WRONG")
                     if heuristic_choice == "pad" and ground_truth == "orig":
                         false_positives += 1
+                        # Calculate speed-down: (pad_time - orig_time) / orig_time * 100
+                        slowdown = (pad_time - orig_time) / orig_time * 100
+                        fp_slowdowns.append(slowdown)
+                        print(f"    Speed-down: {slowdown:.1f}%")
                     elif heuristic_choice == "orig" and ground_truth == "pad":
                         false_negatives += 1
 
@@ -233,7 +244,12 @@ def main():
                 tn_rate = true_negatives / total_decisions * 100
                 fp_rate = false_positives / total_decisions * 100
                 fn_rate = false_negatives / total_decisions * 100
-                print(f"  Progress: {correct_decisions}/{total_decisions} ({accuracy:.1f}%) | TP: {tp_rate:.1f}% | TN: {tn_rate:.1f}% | FP: {fp_rate:.1f}% | FN: {fn_rate:.1f}%")
+
+                # Compute average speedup/slowdown
+                avg_tp_speedup = sum(tp_speedups) / len(tp_speedups) if tp_speedups else 0
+                avg_fp_slowdown = sum(fp_slowdowns) / len(fp_slowdowns) if fp_slowdowns else 0
+
+                print(f"  Progress: {correct_decisions}/{total_decisions} ({accuracy:.1f}%) | TP: {tp_rate:.1f}% (avg speedup: {avg_tp_speedup:.1f}%) | TN: {tn_rate:.1f}% | FP: {fp_rate:.1f}% (avg slowdown: {avg_fp_slowdown:.1f}%) | FN: {fn_rate:.1f}%")
 
         except Exception as e:
             print(f"  Error: {e}")
@@ -253,10 +269,23 @@ def main():
         fp_rate = false_positives / total_decisions * 100
         fn_rate = false_negatives / total_decisions * 100
 
+        avg_tp_speedup = sum(tp_speedups) / len(tp_speedups) if tp_speedups else 0
+        avg_fp_slowdown = sum(fp_slowdowns) / len(fp_slowdowns) if fp_slowdowns else 0
+
         print(f"\nConfident decision accuracy: {accuracy:.1f}% ({correct_decisions}/{total_decisions})")
-        print(f"True Positives (chose pad, should pad): {tp_rate:.1f}% ({true_positives})")
+
+        if tp_speedups:
+            print(f"True Positives (chose pad, should pad): {tp_rate:.1f}% ({true_positives}) | Avg speed-up: {avg_tp_speedup:.1f}%")
+        else:
+            print(f"True Positives (chose pad, should pad): {tp_rate:.1f}% ({true_positives})")
+
         print(f"True Negatives (chose orig, should orig): {tn_rate:.1f}% ({true_negatives})")
-        print(f"False Positives (chose pad, should orig): {fp_rate:.1f}% ({false_positives})")
+
+        if fp_slowdowns:
+            print(f"False Positives (chose pad, should orig): {fp_rate:.1f}% ({false_positives}) | Avg speed-down: {avg_fp_slowdown:.1f}%")
+        else:
+            print(f"False Positives (chose pad, should orig): {fp_rate:.1f}% ({false_positives})")
+
         print(f"False Negatives (chose orig, should pad): {fn_rate:.1f}% ({false_negatives})")
     else:
         print("No confident decisions made!")
