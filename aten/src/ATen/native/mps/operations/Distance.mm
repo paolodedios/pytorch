@@ -55,7 +55,6 @@ Tensor _pdist_forward_mps(const Tensor& self, const double p) {
   const int64_t n = self.size(0);
   Tensor result = at::empty({0}, self.options(), MemoryFormat::Contiguous);
   if (n <= 1) {
-    result.resize_({0});
     return result;
   }
 
