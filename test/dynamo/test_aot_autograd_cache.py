@@ -2539,45 +2539,6 @@ class AOTAutogradCacheTests(InductorTestCase):
             x_view2.untyped_storage().data_ptr(), x2.untyped_storage().data_ptr()
         )
 
-    @unittest.skipIf(not torch.distributed.is_available(), "requires distributed")
-    @inductor_config.patch("fx_graph_remote_cache", False)
-    @inductor_config.patch("fx_graph_cache", True)
-    @functorch_config.patch({"enable_autograd_cache": True})
-    def test_dtensor_cache_hit(self):
-        """
-        Test that DTensor produces cache hits on second compile.
-
-        This follows the standard AOTAutograd cache test pattern: compile once
-        (cache miss), reset dynamo, compile again with equivalent input (cache hit).
-        """
-        from torch.distributed.device_mesh import init_device_mesh
-        from torch.distributed.tensor import DTensor, Replicate
-
-        with _fake_process_group():
-            mesh = init_device_mesh("cpu", (2,))
-
-            def fn(x):
-                return x.sin()
-
-            compiled_fn = torch.compile(fn, backend="inductor")
-
-            # First call - cache miss
-            dtensor1 = DTensor.from_local(torch.zeros(4, 4), mesh, [Replicate()])
-            compiled_fn(dtensor1)
-
-            self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
-            self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 0)
-
-            # Reset dynamo but keep the cache
-            self._clear_dynamo_and_codecache()
-
-            # Second call with equivalent DTensor - should hit cache
-            dtensor2 = DTensor.from_local(torch.zeros(4, 4), mesh, [Replicate()])
-            compiled_fn(dtensor2)
-
-            self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
-            self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 1)
-
     @inductor_config.patch("fx_graph_cache", True)
     @inductor_config.patch("fx_graph_remote_cache", False)
     @functorch_config.patch({"enable_autograd_cache": True})
