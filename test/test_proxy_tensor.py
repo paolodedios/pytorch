@@ -420,6 +420,39 @@ def forward(self, x_1):
         for f in [f_grad, f_backward]:
             self._test(f, [torch.randn(3, requires_grad=True)])
 
+    def test_make_fx_second_order_grad(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/175477
+        # Autograd's save-for-backward internally detaches saved tensors.
+        # make_fx must decompose these detach ops to alias so they don't
+        # block gradient flow when the traced graph is replayed with
+        # create_graph=True for higher-order differentiation.
+        def fn(x, weight):
+            x = x.detach().requires_grad_(True)
+            h = x @ weight.T
+            energy = (h / torch.sqrt((h ** 2).mean(-1, keepdim=True) + 1e-5)).pow(2).sum()
+            force = -torch.autograd.grad(energy, x, create_graph=True)[0]
+            return energy, force
+
+        x = torch.randn(4, 3)
+        weight = torch.randn(8, 3, requires_grad=True)
+
+        # Eager reference
+        weight.grad = None
+        e_eager, f_eager = fn(x, weight)
+        (e_eager + f_eager.sum()).backward()
+        grad_eager = weight.grad.clone()
+
+        # Traced
+        weight.grad = None
+        traced = make_fx(fn, tracing_mode=self.tracing_mode, _allow_non_fake_inputs=True)(
+            x.clone(), weight.clone().requires_grad_(True)
+        )
+        e_traced, f_traced = traced(x, weight)
+        (e_traced + f_traced.sum()).backward()
+        grad_traced = weight.grad.clone()
+
+        self.assertEqual(grad_eager, grad_traced)
+
     def test_pickle_issue89626(self):
         import pickle
         x = torch.randn(2)

@@ -2428,6 +2428,14 @@ class _MakefxTracer:
         self.decomposition_table.setdefault(
             torch.ops.aten.sym_numel.default, torch._decomp.decompositions.sym_numel
         )
+        # Decompose detach -> alias so that autograd's internal detach
+        # operations (e.g. from save-for-backward) don't block gradient
+        # flow when the traced graph is re-executed with higher-order
+        # differentiation (create_graph=True).
+        self.decomposition_table.setdefault(
+            torch.ops.aten.detach.default,
+            torch._decomp.decompositions.nop_decomposition,
+        )
         self.tracing_mode: str = tracing_mode
         self._allow_non_fake_inputs: bool = _allow_non_fake_inputs
         self.pre_dispatch: bool = pre_dispatch
