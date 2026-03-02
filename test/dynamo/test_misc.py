@@ -8822,6 +8822,28 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             )
             opt(*inputs)
 
+    def test_sym_max_creates_graph_node(self):
+        # Test that sym_max creates a graph node and works correctly
+        from torch._dynamo.testing import EagerAndRecordGraphs
+
+        def fn(x):
+            max_dim = torch.sym_max(x.size(0), x.size(1))
+            return x.sum() + max_dim
+
+        backend = EagerAndRecordGraphs()
+        compiled_fn = torch.compile(fn, backend=backend, fullgraph=True, dynamic=False)
+
+        x = torch.randn(4, 8)
+        result = compiled_fn(x)
+        expected = x.sum() + 8
+        self.assertEqual(result, expected)
+
+        # Verify sym_max appears in graph
+        self.assertGreater(len(backend.graphs), 0)
+        graph = backend.graphs[0]
+        sym_max_nodes = [n for n in graph.graph.nodes if n.target is torch.sym_max]
+        self.assertEqual(len(sym_max_nodes), 1, "sym_max should be in the graph")
+
     @torch._dynamo.config.patch(capture_scalar_outputs=True)
     @torch._dynamo.config.patch(assume_static_by_default=True)
     def test_symint_copy_into_unbacked_slice(self):
@@ -8868,6 +8890,31 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         torch._dynamo.mark_dynamic(y, 0, min=2, max=5)
         with self.assertRaises(ConstraintViolationError):
             torch.compile(my_dyn_fn, backend="eager")(y)
+
+    def test_mark_dynamic_negative_index(self):
+        counter = CompileCounter()
+
+        def my_dyn_fn(x):
+            return x.cos()
+
+        # mark_dynamic with negative index should work the same as positive
+        y = torch.randn([3, 4])
+        torch._dynamo.mark_dynamic(y, -1)
+        torch.compile(my_dyn_fn, backend=counter)(y)
+
+        z = torch.randn([3, 5])
+        torch._dynamo.mark_dynamic(z, -1)
+        torch.compile(my_dyn_fn, backend=counter)(z)
+
+        # The last dim is dynamic, so changing it shouldn't cause recompilation
+        self.assertEqual(counter.frame_count, 1)
+
+    def test_mark_dynamic_out_of_bounds(self):
+        y = torch.randn([3, 4])
+        with self.assertRaises(IndexError):
+            torch._dynamo.mark_dynamic(y, 2)
+        with self.assertRaises(IndexError):
+            torch._dynamo.mark_dynamic(y, -3)
 
     def test_mark_static(self):
         counter = CompileCounter()
@@ -14004,6 +14051,23 @@ fn
                     "tensor(s) (e.g. return x.clone()) or refactor the custom operator "
                     "to not return y. This is deprecated and will become an error in PyTorch 2.12.",
                 )
+
+    def test_make_contiguous_strides_for_under_compile(self):
+        # is_nested_int and sym_max must be traceable under Dynamo.
+        from torch._prims_common import make_contiguous_strides_for
+
+        def fn(x):
+            strides = make_contiguous_strides_for(x.shape)
+            return x.as_strided(x.shape, strides)
+
+        compiled_fn = torch.compile(fn, backend="eager", fullgraph=True, dynamic=True)
+        x = torch.randn(4, 8)
+        result = compiled_fn(x)
+        self.assertEqual(result, x)
+
+        x2 = torch.randn(7, 8)
+        result2 = compiled_fn(x2)
+        self.assertEqual(result2, x2)
 
 
 class MiscTestsPyTree(torch._inductor.test_case.TestCase):
