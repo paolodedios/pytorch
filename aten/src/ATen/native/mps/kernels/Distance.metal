@@ -1,14 +1,6 @@
+#include <ATen/native/mps/kernels/Distance.h>
 #include <metal_stdlib>
 using namespace metal;
-
-enum PdistMode : long {
-  MODE_ZERO = 0,
-  MODE_ONE = 1,
-  MODE_TWO = 2,
-  MODE_INF = 3,
-  MODE_GENERAL = 4,
-  MODE_LT_TWO = 5,
-};
 
 inline ulong row_start(ulong i, ulong n) {
   return n * i - i * (i + 1) / 2;
@@ -41,27 +33,27 @@ inline float forward_distance_update(
     float agg,
     float diff_abs,
     float p,
-    long mode) {
-  if (mode == MODE_ZERO) {
+    PdistMode mode) {
+  if (mode == PdistMode::MODE_ZERO) {
     return agg + min(ceil(diff_abs), 1.0f);
   }
-  if (mode == MODE_ONE) {
+  if (mode == PdistMode::MODE_ONE) {
     return agg + diff_abs;
   }
-  if (mode == MODE_TWO) {
+  if (mode == PdistMode::MODE_TWO) {
     return agg + diff_abs * diff_abs;
   }
-  if (mode == MODE_INF) {
+  if (mode == PdistMode::MODE_INF) {
     return max(agg, diff_abs);
   }
   return agg + pow(diff_abs, p);
 }
 
-inline float forward_distance_finish(float agg, float p, long mode) {
-  if (mode == MODE_TWO) {
+inline float forward_distance_finish(float agg, float p, PdistMode mode) {
+  if (mode == PdistMode::MODE_TWO) {
     return sqrt(agg);
   }
-  if (mode == MODE_GENERAL) {
+  if (mode == PdistMode::MODE_GENERAL) {
     return pow(agg, 1.0f / p);
   }
   return agg;
@@ -72,7 +64,7 @@ inline float backward_value(
     float grad,
     float dist,
     float p,
-    long mode) {
+    PdistMode mode) {
   if (dist == 0.0f) {
     return 0.0f;
   }
@@ -80,19 +72,19 @@ inline float backward_value(
   float diff_abs = fabs(diff);
   float diff_sign = signf(diff);
 
-  if (mode == MODE_ONE) {
+  if (mode == PdistMode::MODE_ONE) {
     return grad * diff_sign;
   }
-  if (mode == MODE_LT_TWO) {
+  if (mode == PdistMode::MODE_LT_TWO) {
     if (diff == 0.0f && p < 1.0f) {
       return 0.0f;
     }
     return diff_sign * pow(diff_abs, p - 1.0f) * grad / pow(dist, p - 1.0f);
   }
-  if (mode == MODE_TWO) {
+  if (mode == PdistMode::MODE_TWO) {
     return grad * diff / dist;
   }
-  if (mode == MODE_INF) {
+  if (mode == PdistMode::MODE_INF) {
     return grad * diff_sign * (1.0f - min(1.0f, ceil(fabs(diff_abs - dist))));
   }
   return diff * pow(diff_abs, p - 2.0f) * grad / pow(dist, p - 1.0f);
@@ -105,21 +97,22 @@ kernel void pdist_forward_kernel(
     constant long& n [[buffer(2)]],
     constant long& m [[buffer(3)]],
     constant float& p [[buffer(4)]],
-    constant long& mode [[buffer(5)]],
+    constant int32_t& mode [[buffer(5)]],
     uint gid [[thread_position_in_grid]]) {
+  const PdistMode mode_enum = static_cast<PdistMode>(mode);
   ulong2 pair =
       pair_from_condensed_index(static_cast<ulong>(gid), static_cast<ulong>(n));
   ulong i = pair.x;
   ulong j = pair.y;
 
-  float agg = (mode == MODE_INF) ? 0.0f : 0.0f;
+  float agg = 0.0f;
   for (ulong x = 0; x < static_cast<ulong>(m); ++x) {
     float a = static_cast<float>(self[i * static_cast<ulong>(m) + x]);
     float b = static_cast<float>(self[j * static_cast<ulong>(m) + x]);
-    agg = forward_distance_update(agg, fabs(a - b), p, mode);
+    agg = forward_distance_update(agg, fabs(a - b), p, mode_enum);
   }
 
-  result[gid] = static_cast<T>(forward_distance_finish(agg, p, mode));
+  result[gid] = static_cast<T>(forward_distance_finish(agg, p, mode_enum));
 }
 
 template <typename T>
@@ -133,8 +126,9 @@ kernel void pdist_backward_kernel(
     constant long& m [[buffer(6)]],
     constant long& combs [[buffer(7)]],
     constant float& p [[buffer(8)]],
-    constant long& mode [[buffer(9)]],
+    constant int32_t& mode [[buffer(9)]],
     uint gid [[thread_position_in_grid]]) {
+  const PdistMode mode_enum = static_cast<PdistMode>(mode);
   ulong k = static_cast<ulong>(gid) / static_cast<ulong>(m);
   ulong x = static_cast<ulong>(gid) % static_cast<ulong>(m);
 
@@ -149,7 +143,7 @@ kernel void pdist_backward_kernel(
   float a = static_cast<float>(self[i * static_cast<ulong>(m) + x]);
   float b = static_cast<float>(self[j * static_cast<ulong>(m) + x]);
 
-  float res = backward_value(a - b, grad_k, dist_k, p, mode);
+  float res = backward_value(a - b, grad_k, dist_k, p, mode_enum);
 
   ulong lhs = ((ib * static_cast<ulong>(n) + i) * static_cast<ulong>(m)) + x;
   ulong rhs = ((jb * static_cast<ulong>(n) + j) * static_cast<ulong>(m)) + x;
@@ -165,7 +159,7 @@ kernel void pdist_backward_kernel(
       constant long& n [[buffer(2)]],                         \
       constant long& m [[buffer(3)]],                         \
       constant float& p [[buffer(4)]],                        \
-      constant long& mode [[buffer(5)]],                      \
+      constant int32_t& mode [[buffer(5)]],                   \
       uint gid [[thread_position_in_grid]]);
 
 #define REGISTER_PDIST_BACKWARD_OP(DTYPE)                      \
@@ -180,7 +174,7 @@ kernel void pdist_backward_kernel(
       constant long& m [[buffer(6)]],                          \
       constant long& combs [[buffer(7)]],                      \
       constant float& p [[buffer(8)]],                         \
-      constant long& mode [[buffer(9)]],                       \
+      constant int32_t& mode [[buffer(9)]],                    \
       uint gid [[thread_position_in_grid]]);
 
 REGISTER_PDIST_FORWARD_OP(float);

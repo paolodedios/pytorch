@@ -3,6 +3,7 @@
 #include <ATen/core/Tensor.h>
 #include <ATen/mps/MPSProfiler.h>
 #include <ATen/native/Distance.h>
+#include <ATen/native/mps/kernels/Distance.h>
 #include <ATen/native/mps/OperationUtils.h>
 #include <cmath>
 
@@ -24,29 +25,13 @@ static auto& lib = MetalShaderLibrary::getBundledLibrary();
 #include <ATen/native/mps/Distance_metallib.h>
 #endif
 
-inline int64_t pdist_mode(double p, bool backward) {
-  if (p == 1.0)
-    return 1;
-  if (p == 2.0)
-    return 2;
-  if (std::isinf(p))
-    return 3;
-
-  if (!backward && p == 0.0)
-    return 0;
-  if (backward && p < 2.0)
-    return 5;
-
-  return 4;
-}
-
 } // namespace
 
 static void pdist_forward_kernel_impl(Tensor& result, const Tensor& self, const double p) {
   const int64_t m = self.size(1);
   const int64_t n = (self.dim() == 2) ? self.size(0) : self.numel() / m;
   const float p_val = static_cast<float>(p);
-  const int64_t mode = pdist_mode(p, /*backward=*/false);
+  const int32_t mode = static_cast<int32_t>(pdist_mode(p, /*backward=*/false));
   const std::string kernel = fmt::format("pdist_forward_{}", scalarToMetalTypeString(self));
 
   MPSStream* mps_stream = getCurrentMPSStream();
@@ -75,7 +60,7 @@ static void pdist_backward_kernel_impl(Tensor& result, const Tensor& grad, const
   const int64_t combs = pdist.numel();
   const int64_t grad_stride = grad.stride(0);
   const float p_val = static_cast<float>(p);
-  const int64_t mode = pdist_mode(p, /*backward=*/true);
+  const int32_t mode = static_cast<int32_t>(pdist_mode(p, /*backward=*/true));
   const std::string kernel = fmt::format("pdist_backward_{}", scalarToMetalTypeString(self));
 
   Tensor buffer = at::empty({n - 1, n, m}, result.options(), MemoryFormat::Contiguous);
