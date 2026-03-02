@@ -2951,7 +2951,9 @@ class CommonTemplate:
         def fn(x):
             return x == 3.14
 
-        x = torch.randn([3, 1, 64, 128], dtype=torch.bfloat16, device=self.device)
+        x = torch.tensor(
+            [3.14, 1.0, 3.140625, 0.0], dtype=torch.bfloat16, device=self.device
+        )
         expected = fn(x)
         actual = torch.compile(fn)(x)
         self.assertEqual(actual, expected)
