@@ -938,14 +938,9 @@ def propagate_shape_and_sharding(
                     f"{mesh_dim} (size {mesh.size(mesh_dim)}). "
                     f"Please redistribute the tensor before this operation."
                 )
-            if local_tensor_shapes[p.dim] % mesh.size(mesh_dim) == 0:
-                local_tensor_shapes[p.dim] = local_tensor_shapes[p.dim] // mesh.size(
-                    mesh_dim
-                )
-            else:
-                local_tensor_shapes[p.dim] = math.ceil(
-                    local_tensor_shapes[p.dim] / mesh.size(mesh_dim)
-                )
+            local_tensor_shapes[p.dim] = local_tensor_shapes[p.dim] // mesh.size(
+                mesh_dim
+            )
             return output_placement
 
     local_tensor_shapes = list(input_src_spec.shape)
