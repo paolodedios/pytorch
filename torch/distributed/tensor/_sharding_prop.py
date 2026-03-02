@@ -43,6 +43,10 @@ from torch.utils._pytree import tree_map
 
 aten = torch.ops.aten
 
+# Disables the Dijkstra-based mincost search optimization for single-dim
+# strategy propagation, falling back to full O(S^N) strategy expansion.
+FORCE_FULLY_EXPAND_SINGLE_DIM: bool = False
+
 log = logging.getLogger(__name__)
 
 
@@ -689,9 +693,14 @@ class ShardingPropagator:
                 # after the PQ search, and we could plumb this information through the OutputSharding
                 # so the subsequent redistribute() call can skip doing another graph-based transforminfo search,
                 # but this is not implemented now.
-                op_strategy = _dijkstra_expand_single_dim_strategy_to_mesh(
-                    mesh, strategy_schema, single_dim_strategy_info, out_tensor_meta
-                )
+                op_strategy = None
+                if not FORCE_FULLY_EXPAND_SINGLE_DIM:
+                    op_strategy = _dijkstra_expand_single_dim_strategy_to_mesh(
+                        mesh,
+                        strategy_schema,
+                        single_dim_strategy_info,
+                        out_tensor_meta,
+                    )
                 if op_strategy is None:
                     # Fall back to full O(S^N) expansion
                     # to generate the full set of strategy combinations, each one
