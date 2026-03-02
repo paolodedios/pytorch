@@ -137,24 +137,7 @@ def _lower_multi_output(
     Creates a packed CustomOpMultiOutputNode that emits the .out() call,
     with AllocatingMultiOutput children (should_allocate=True) as output buffers.
     """
-    device: Optional[torch.device] = None
-    for i, tensor_out in enumerate(example_output):
-        if not isinstance(tensor_out, torch.Tensor):
-            log.debug("Skipping %s: non-tensor in multi-output at index %d", kernel, i)
-            return None
-        if device is None:
-            device = tensor_out.device
-        elif tensor_out.device != device:
-            log.debug(
-                "Skipping %s: mixed devices at index 0=%s vs index %d=%s",
-                kernel,
-                device,
-                i,
-                tensor_out.device,
-            )
-            return None
-
-    assert device is not None, "empty multi-output should have been caught earlier"
+    device = example_output[0].device
     packed = CustomOpMultiOutputNode(
         layout=ir.MultiOutputLayout(device=device),
         inputs=list(tensor_args),
@@ -189,8 +172,9 @@ def _lower_multi_output(
         len(outputs),
         out_arg_names,
     )
-    container = tuple if isinstance(example_output, tuple) else list
-    return container(outputs)
+    if isinstance(example_output, tuple):
+        return tuple(outputs)
+    return list(outputs)
 
 
 def _make_python_kernel_name(out_op: OpOverload) -> str:
@@ -205,7 +189,7 @@ def _codegen_input_args(node: ir.ExternKernel) -> list[str]:
     """Codegen positional + constant args.
 
     Separate from ExternKernel.codegen_args() which would include out args
-    as regular arguments based on the .out variant schema.
+    as regular arguments due to the .out variant schema.
     Example: this function produces (x, a, b) instead of (x, a, b, out0, out1).
     Out args are appended separately in CustomOpMultiOutputNode.codegen().
     """
