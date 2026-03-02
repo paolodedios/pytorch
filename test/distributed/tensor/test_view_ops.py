@@ -803,7 +803,7 @@ class TestViewOps(DTensorTestBase):
             expected_placements = (Shard(flatten_start),)
         else:
             split_factor = math.prod(tensor_dims[flatten_start:shard_dim])
-            assert split_factor > 1
+            self.assertGreater(split_factor, 1)
             expected_placements = (
                 _StridedShard(dim=flatten_start, split_factor=split_factor),
             )
@@ -849,7 +849,7 @@ class TestViewOps(DTensorTestBase):
 
     @with_comms
     def test_dtensor_flatten_2d(self):
-        assert self.world_size == 6
+        self.assertEqual(self.world_size, 6)
         mesh_ndim = 2
         mesh: DeviceMesh = init_device_mesh(self.device_type, (3, self.world_size // 3))
 
@@ -1003,7 +1003,7 @@ class TestViewOps(DTensorTestBase):
             expected_placement = Shard(flatten_start)
         else:
             split_factor = math.prod(tensor_dims[flatten_start:shard_dim])
-            assert split_factor > 1
+            self.assertGreater(split_factor, 1)
             expected_placement = _StridedShard(
                 dim=flatten_start, split_factor=split_factor
             )
@@ -1033,20 +1033,20 @@ class TestViewOps(DTensorTestBase):
         local_tensor_dims = list(tensor_dims)
         expected_placements = []
         for idx, placement in enumerate(placements):
-            assert isinstance(placement, Shard)
+            self.assertIsInstance(placement, Shard)
             shard_dim = placement.dim
             if shard_dim == flatten_start:
                 # S(flatten_start), S(flatten_start) qualifies
                 expected_placement = placement
             else:
                 split_factor = math.prod(local_tensor_dims[flatten_start:shard_dim])
-                assert split_factor > 1
+                self.assertGreater(split_factor, 1)
                 expected_placement = _StridedShard(
                     dim=flatten_start, split_factor=split_factor
                 )
             if local_tensor_dims[shard_dim] % mesh.size(idx) != 0:
                 # uneven shard on last flattened dim is supported
-                assert _is_last_shard_on_tensor_dim(idx, placements)
+                self.assertTrue(_is_last_shard_on_tensor_dim(idx, placements))
                 local_tensor_dims[shard_dim] = math.ceil(
                     local_tensor_dims[shard_dim] * 1.0 / mesh.size(idx)
                 )
@@ -1445,7 +1445,7 @@ class TestViewOps(DTensorTestBase):
         shard_dim = expected_placements[0].dim
         split_factor = math.prod(local_tensor_dims_unflatten[flatten_start:shard_dim])
         if split_factor == 1:
-            assert shard_dim == flatten_start
+            self.assertEqual(shard_dim, flatten_start)
             placements = (Shard(flatten_start),)
         else:
             placements = (_StridedShard(flatten_start, split_factor=split_factor),)
@@ -1466,9 +1466,8 @@ class TestViewOps(DTensorTestBase):
         self, tensor_dims, unflatten_dim, placements, mesh
     ):
         shard_dim = placements[0].dim
-        assert isinstance(placements[0], Shard) and not isinstance(
-            placements[0], _StridedShard
-        )
+        self.assertIsInstance(placements[0], Shard)
+        self.assertNotIsInstance(placements[0], _StridedShard)
 
         tensor_dims = list(tensor_dims)  # Make a mutable copy
 
@@ -1623,7 +1622,7 @@ class TestViewOps(DTensorTestBase):
           "is not evenly divisible by mesh dimension"
         - Uneven sharding on last dimension is allowed (becomes _StridedShard)
         """
-        assert self.world_size == 6
+        self.assertEqual(self.world_size, 6)
         mesh: DeviceMesh = init_device_mesh(self.device_type, (3, self.world_size // 3))
 
         # Test (_StridedShard, _StridedShard) pattern - both mesh dims shard the same
@@ -1761,7 +1760,7 @@ class TestViewOps(DTensorTestBase):
             shard_idx: Index within factors for mesh dim 1's shard (must be > 0)
             mesh: 2D DeviceMesh
         """
-        assert shard_idx > 0, "shard_idx must be > 0 for split_factor > 1"
+        self.assertGreater(shard_idx, 0, "shard_idx must be > 0 for split_factor > 1")
 
         # Build tensor: factors only (no dim outside flatten range needed for RS)
         tensor_dims_unflatten = list(factors)
@@ -1774,7 +1773,9 @@ class TestViewOps(DTensorTestBase):
 
         # Compute split_factor: product of dims before shard_dim
         split_factor = math.prod(factors[:shard_idx])
-        assert split_factor > 1, f"Expected split_factor > 1, got {split_factor}"
+        self.assertGreater(
+            split_factor, 1, f"Expected split_factor > 1, got {split_factor}"
+        )
 
         input_placement = _StridedShard(flatten_start, split_factor=split_factor)
         placements = (Replicate(), input_placement)
@@ -1811,7 +1812,9 @@ class TestViewOps(DTensorTestBase):
             shard_idx1: Index within factors for mesh dim 1's shard (must be > shard_idx0)
             mesh: 2D DeviceMesh
         """
-        assert shard_idx1 > shard_idx0, "shard_idx1 must be greater than shard_idx0"
+        self.assertGreater(
+            shard_idx1, shard_idx0, "shard_idx1 must be greater than shard_idx0"
+        )
 
         # Build tensor: factors for flatten range + one dim outside
         # The flatten range is [0, len(factors)), and we add one dim at the end
@@ -1864,7 +1867,7 @@ class TestViewOps(DTensorTestBase):
         the sharding propagation correctly handles different mesh dim sizes in
         different positions.
         """
-        assert self.world_size == 6
+        self.assertEqual(self.world_size, 6)
         mesh = init_device_mesh(self.device_type, (2, self.world_size // 2))
         dim_size = mesh.size(0) * mesh.size(1) * 2  # divisible by both mesh dims
 
@@ -2105,7 +2108,7 @@ class TestViewOps3D(DTensorTestBase):
           "is not evenly divisible by mesh dimension"
         - Uneven sharding on last dimension is allowed
         """
-        assert self.world_size == 8
+        self.assertEqual(self.world_size, 8)
         mesh: DeviceMesh = init_device_mesh(self.device_type, (2, 2, 2))
 
         # Test (_StridedShard, _StridedShard, _StridedShard) pattern - all three mesh dims
@@ -2304,8 +2307,12 @@ class TestViewOps3D(DTensorTestBase):
             shard_idx2: Index within factors for mesh dim 2's shard (must be > shard_idx1)
             mesh: 3D DeviceMesh
         """
-        assert shard_idx1 > shard_idx0, "shard_idx1 must be greater than shard_idx0"
-        assert shard_idx2 > shard_idx1, "shard_idx2 must be greater than shard_idx1"
+        self.assertGreater(
+            shard_idx1, shard_idx0, "shard_idx1 must be greater than shard_idx0"
+        )
+        self.assertGreater(
+            shard_idx2, shard_idx1, "shard_idx2 must be greater than shard_idx1"
+        )
 
         # Build tensor: factors for flatten range + one dim outside
         tensor_dims_unflatten = list(factors) + [3]  # Add dim outside flatten range
@@ -2368,8 +2375,10 @@ class TestViewOps3D(DTensorTestBase):
             shard_idx1: Index within factors for mesh dim 2's shard (must be > shard_idx0)
             mesh: 3D DeviceMesh
         """
-        assert shard_idx0 > 0, "shard_idx0 must be > 0 for split_factor > 1"
-        assert shard_idx1 > shard_idx0, "shard_idx1 must be greater than shard_idx0"
+        self.assertGreater(shard_idx0, 0, "shard_idx0 must be > 0 for split_factor > 1")
+        self.assertGreater(
+            shard_idx1, shard_idx0, "shard_idx1 must be greater than shard_idx0"
+        )
 
         # Build tensor: factors for flatten range + one dim outside
         tensor_dims_unflatten = list(factors) + [3]
@@ -2384,7 +2393,9 @@ class TestViewOps3D(DTensorTestBase):
         # Compute split_factors
         # For mesh dim 1: product of dims before shard_idx0
         split_factor0 = math.prod(factors[:shard_idx0])
-        assert split_factor0 > 1, f"Expected split_factor0 > 1, got {split_factor0}"
+        self.assertGreater(
+            split_factor0, 1, f"Expected split_factor0 > 1, got {split_factor0}"
+        )
 
         # For mesh dim 2: product of all dims before shard_idx1, then divide by mesh.size(1)
         split_factor1 = math.prod(factors[:shard_idx1]) // mesh.size(1)
@@ -2428,7 +2439,7 @@ class TestViewOps3D(DTensorTestBase):
             shard_idx: Index within factors for mesh dim 2's shard (must be > 0)
             mesh: 3D DeviceMesh
         """
-        assert shard_idx > 0, "shard_idx must be > 0 for split_factor > 1"
+        self.assertGreater(shard_idx, 0, "shard_idx must be > 0 for split_factor > 1")
 
         # Build tensor: factors only
         tensor_dims_unflatten = list(factors)
@@ -2441,7 +2452,9 @@ class TestViewOps3D(DTensorTestBase):
 
         # Compute split_factor: product of dims before shard_dim
         split_factor = math.prod(factors[:shard_idx])
-        assert split_factor > 1, f"Expected split_factor > 1, got {split_factor}"
+        self.assertGreater(
+            split_factor, 1, f"Expected split_factor > 1, got {split_factor}"
+        )
 
         input_placement = _StridedShard(flatten_start, split_factor=split_factor)
         placements = (Replicate(), Replicate(), input_placement)
