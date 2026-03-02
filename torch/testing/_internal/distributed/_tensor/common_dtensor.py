@@ -8,6 +8,7 @@ import functools
 import itertools
 import sys
 import types
+import unittest
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from functools import partial, wraps
@@ -64,6 +65,7 @@ from torch.testing._internal.common_utils import (
     TEST_PRIVATEUSE1,
     TEST_XPU,
 )
+from torch.testing._internal.distributed.fake_pg import FakeStore
 from torch.utils._pytree import tree_flatten, tree_unflatten, TreeSpec
 
 
@@ -626,6 +628,10 @@ def skip_unless_torch_gpu(method: T) -> T:
 
 
 class DTensorContinuousTestBase(MultiProcContinuousTest):
+    @property
+    def is_local_tensor_enabled(self) -> bool:
+        return False
+
     @classmethod
     def device_type(cls) -> str:
         # if enough GPU/XPU/HPU we can use those devices, otherwise we fallback to CPU
@@ -650,6 +656,113 @@ class DTensorContinuousTestBase(MultiProcContinuousTest):
             torch.accelerator.set_device_index(rank)
         # Call parent's _init_pg to do the actual process group initialization
         super()._init_pg(rank, world_size, rdvz_file)
+
+    def build_device_mesh(self) -> DeviceMesh:
+        return init_device_mesh(self.device_type(), (self.world_size,))
+
+    def init_manual_seed_for_rank(self) -> None:
+        torch.manual_seed(self.rank)
+
+    def _test_op_on_dtensor(self, op_call, *args, **kwargs) -> None:
+        args_flattened, args_spec = tree_flatten(args)
+        full_tensor_args_flattened = tuple(
+            arg.full_tensor().detach().clone() if isinstance(arg, DTensor) else arg
+            for arg in args_flattened
+        )
+        full_tensor_args = tree_unflatten(full_tensor_args_flattened, args_spec)
+        full_tensor_kwargs = {
+            k: v.full_tensor() if isinstance(v, DTensor) else v
+            for k, v in kwargs.items()
+        }
+
+        out_flattened, _ = tree_flatten(
+            op_call(*full_tensor_args, **full_tensor_kwargs)
+        )
+        d_out_flattened, _ = tree_flatten(op_call(*args, **kwargs))
+        d_out_full_tensor_flattened = [dt.full_tensor() for dt in d_out_flattened]
+        self.assertEqual(out_flattened, d_out_full_tensor_flattened)
+
+    # pyre-ignore[2]:
+    def _test_op(self, mesh: DeviceMesh, op_call, *args, **kwargs) -> None:
+        out = op_call(*args, **kwargs)
+        dtc = DTensorConverter(mesh, args, kwargs)
+        for d_args, d_kwargs in dtc:
+            # pyre can't find assertTrue anymore?
+            self.assertEqual(dtc.successful(), True)
+            d_out = op_call(*d_args, **d_kwargs)
+            self.assertEqual(d_out.full_tensor(), out)
+
+    def run_subtests(self, *args, **kwargs):
+        return run_subtests(self, *args, **kwargs)
+
+
+class LocalDTensorContinuousTestBase(DTensorContinuousTestBase):
+    @property
+    def is_local_tensor_enabled(self) -> bool:
+        return True
+
+    def _handle_test_skip(self, msg: str) -> None:
+        self.skipTest(msg)
+
+    def _get_local_tensor_mode(self):
+        return LocalTensorMode(frozenset(range(self.world_size)))
+
+    @classmethod
+    def _ensure_processes_spawned(cls):
+        if cls._processes_spawned:
+            return
+        if cls.world_size == -2:
+            cls.world_size = NUM_DEVICES
+        store = FakeStore()
+        dist.init_process_group(
+            backend="fake",
+            world_size=cls.world_size,
+            rank=0,
+            store=store,
+        )
+        cls.processes = []
+        cls.task_queues = []
+        cls.completion_queues = []
+        cls._processes_spawned = True
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._processes_spawned:
+            dist.destroy_process_group()
+            cls._processes_spawned = False
+        unittest.TestCase.tearDownClass()
+
+    def setUp(self):
+        unittest.TestCase.setUp(self)
+        self.__class__._ensure_processes_spawned()
+        torch.autograd._enable_record_function(False)
+
+    def tearDown(self):
+        from torch.distributed.tensor import _random as random
+
+        random._rng_tracker = None
+        unittest.TestCase.tearDown(self)
+        torch.autograd._enable_record_function(True)
+
+    def __init__(self, method_name="runTest", methodName="runTest"):
+        if methodName != "runTest":
+            method_name = methodName
+        unittest.TestCase.__init__(self, method_name)
+
+    @property
+    def rank(self):
+        return torch.SymInt(LocalIntNode({r: r for r in range(self.world_size)}))
+
+    @rank.setter
+    def rank(self, rank):
+        pass
+
+    def build_device_mesh(self) -> DeviceMesh:
+        with maybe_disable_local_tensor_mode():
+            return super().build_device_mesh()
+
+    def init_manual_seed_for_rank(self) -> None:
+        torch.manual_seed(0)
 
 
 class DTensorTestBase(MultiProcessTestCase):
