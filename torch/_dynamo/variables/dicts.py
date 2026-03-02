@@ -876,14 +876,6 @@ class ConstDictVariable(VariableTracker):
                     variables.DefaultDictVariable,
                 ),
             ):
-                assert isinstance(
-                    other,
-                    (
-                        ConstDictVariable,
-                        variables.UserDefinedDictVariable,
-                        variables.DefaultDictVariable,
-                    ),
-                )
                 # Always return the specialized dictionary, and in the case
                 # both are specialized, take the first to be the type of the
                 # new dictionary
