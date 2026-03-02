@@ -610,7 +610,7 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
             self.assertEqual(output_dt.full_tensor(), global_output)
 
     @skipIfRocmArch(MI200_ARCH)
-    @serialTest()
+    @serialTest()  # heavy combinatorial _test_op calls, serialize to avoid OOM
     def test_index(self):
         meshes = [
             self.build_device_mesh(),  # 1D mesh

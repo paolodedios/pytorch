@@ -1927,6 +1927,9 @@ class MultiProcContinuousTest(TestCase):
         # making this compatible as a drop-in replacement for MultiProcessTestCase)
         device_type_attr = cls.__dict__.get("device_type", cls.device_type)
         if isinstance(device_type_attr, property):
+            # Note: fget expects an instance but we pass cls since no instance
+            # exists yet. This works because DTensorTestMixin.device_type only
+            # accesses class-level attributes (world_size, module constants).
             device_type = device_type_attr.fget(cls)
         elif callable(device_type_attr):
             device_type = device_type_attr()
