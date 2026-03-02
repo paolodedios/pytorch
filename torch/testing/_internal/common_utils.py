@@ -1406,7 +1406,7 @@ def cpu_supports_feature(feature):
         return False
     with open("/proc/cpuinfo") as f:
         flags = {t for k, v in (line.split(":", 1) for line in f if ":" in line)
-                if k.strip().lower() in ("flags", "features") for t in v.split()}
+                 if k.strip().lower() in ("flags", "features") for t in v.split()}
     return feature.lower() in flags
 
 IS_LINUX = sys.platform == "linux"
