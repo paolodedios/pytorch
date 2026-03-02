@@ -2567,17 +2567,13 @@ def inductor_random(
         def _vec_from_dtype(dt: torch.dtype) -> int:
             if dt in (torch.float16, torch.bfloat16):
                 return 8
-            if dt is torch.float64:
-                return 2
             return 4
 
         vec = _vec_from_dtype(align_dtype)
 
         def inner_fn(index):
-            packed = seed_loader([])  # scalar
-            mask_low = 1 << 32
-            rng_seed = packed // mask_low
-            base_offset = packed % mask_low
+            rng_seed = seed_loader([0])
+            base_offset = seed_loader([1])
             return ops.rand_eager(
                 rng_seed,
                 base_offset,

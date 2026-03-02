@@ -135,11 +135,11 @@ def _reserve_rng_state(device: torch.device, used_offset):
 def _rand_eager_offset_impl(offset, device: torch.device) -> Tensor:
     """
     Reserve `offset` 32-bit Philox samples and return a 1-element int64 tensor
-    with packed (seed, base) in the lower 64 bits:
-        should not enter this, this is just placeholder
-        packed = (seed << 32) | (base & 0xFFFFFFFF).
+    Place-holder: will be replaced by rand_eager_offsets
+    In fx_passes/replace_random.py
+        fuse_offset_creation_pass()
     """
-    return torch.empty(1, dtype=torch.int64, device=device)
+    return torch.empty(2, dtype=torch.int64, device=device)
 
 
 def _rand_eager_offsets_impl(offsets, device: torch.device) -> Tensor:
@@ -159,15 +159,12 @@ def _rand_eager_offsets_impl(offsets, device: torch.device) -> Tensor:
 
     seeds_tensor = torch.stack([_to_i64(x) for x in seeds]).view(-1)
     bases_tensor = torch.stack([_to_i64(x) for x in bases]).view(-1)
-    i64 = torch.int64
-    packed = (seeds_tensor.to(dtype=i64) << 32) | (
-        bases_tensor.to(dtype=i64) & 0xFFFFFFFF
-    )
+    packed = torch.stack([seeds_tensor, bases_tensor], dim=1)
     return packed
 
 
 def _rand_eager_offsets_meta(offsets, device: torch.device):
-    return torch.empty((len(offsets),), dtype=torch.int64, device=device)
+    return torch.empty((len(offsets), 2), dtype=torch.int64, device=device)
 
 
 rand_eager_offset = make_prim(
@@ -188,7 +185,7 @@ rand_eager_offsets = _prims._make_prim(
     impl_aten=_rand_eager_offsets_impl,
     doc=(
         "Batched version of inductor_rand_eager_offset. For each entry in "
-        "`offsets`, reserves that many 32-bit Philox samples and returns "
+        "`offsets`, reserves that many 64-bit Philox samples and returns "
         "packed (seed, base) values."
     ),
     tags=(torch.Tag.nondeterministic_seeded,),

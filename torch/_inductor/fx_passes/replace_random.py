@@ -79,8 +79,8 @@ def fuse_offset_creation_pass(graph: torch.fx.Graph):
         b = inductor_prims.rand_eager_offset(offset, dev)
     Becomes:
         offsets = inductor_prims.rand_eager_offsets([offset1, offset2...], dev)
-        a = inductor_lookup_seed(offsets, 0)
-        b = inductor_lookup_seed(offsets, 1)
+        a = torch.ops.aten.select.int(offsets, 0, 0)
+        b = torch.ops.aten.select.int(offsets, 0, 1)
     We do this because seed creation is entirely launch overhead bound.
     """
     device_offsets = collections.defaultdict(list)
@@ -99,7 +99,7 @@ def fuse_offset_creation_pass(graph: torch.fx.Graph):
             )
             with V.fake_mode:
                 combined.meta["val"] = torch.empty(
-                    [len(offsets)], device=device, dtype=torch.int64
+                    [len(offsets), 2], device=device, dtype=torch.int64
                 )
                 combined.meta["tensor_meta"] = _extract_tensor_metadata(
                     combined.meta["val"]
@@ -107,11 +107,11 @@ def fuse_offset_creation_pass(graph: torch.fx.Graph):
 
         for idx, offset in enumerate(offsets):
             with graph.inserting_before(offset):
-                new_offset = graph.call_function(
-                    inductor_prims.lookup_seed, (combined, idx)
+                new_state = graph.call_function(
+                    torch.ops.aten.select.int, (combined, 0, idx)
                 )
-            offset.replace_all_uses_with(new_offset)
-            new_offset.meta.update(offset.meta)
+            offset.replace_all_uses_with(new_state)
+            new_state.meta.update(offset.meta)
             graph.erase_node(offset)
 
     return len(device_offsets)
@@ -218,8 +218,6 @@ def replace_random(
             align_dtype = dtype
             if isinstance(align_dtype, (tuple, list)):
                 align_dtype = align_dtype[0] if len(align_dtype) else None
-            if align_dtype is None:
-                align_dtype = torch.float32
 
             result = inductor_prims.random(
                 size,
