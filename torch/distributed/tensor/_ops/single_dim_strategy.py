@@ -183,14 +183,14 @@ def _get_unique_placements(op_schema: OpSchema) -> set[Placement]:
 
 
 def _get_num_tensor_inputs(op_schema: OpSchema) -> int:
+    """Count positional tensor inputs only.
+
+    Single-dim strategy functions produce placements for positional args, not
+    kwargs tensors.  kwargs tensor inputs (e.g., ``out=``) are handled
+    separately by expand_to_full_mesh_op_strategy.
+    """
     num_inputs = 0
     for obj in op_schema.args_schema:
-        if isinstance(obj, OpStrategy):
-            num_inputs += 1
-        elif isinstance(obj, TupleStrategy):
-            num_inputs += len(obj.children)
-    # Also count tensor kwargs (e.g., "out" for out-variant ops)
-    for obj in op_schema.kwargs_schema.values():
         if isinstance(obj, OpStrategy):
             num_inputs += 1
         elif isinstance(obj, TupleStrategy):

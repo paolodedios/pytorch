@@ -469,10 +469,16 @@ def expand_to_full_mesh_op_strategy(
         ]
 
         if len(input_specs) != len(input_args_strategy):
-            raise AssertionError(
-                f"input_specs({len(input_specs)}) != strategies({len(input_args_strategy)}: "
-                f"{len(args_strategy)} args + {len(kwargs_strategy)} kwargs)"
-            )
+            # Single-dim strategy functions produce placements only for
+            # positional args.  When kwargs tensor inputs exist (e.g. out=),
+            # fall back to args_strategy only for cost/shardability checks.
+            if len(input_specs) == len(args_strategy) and len(kwargs_strategy) > 0:
+                input_args_strategy = args_strategy
+            else:
+                raise AssertionError(
+                    f"input_specs({len(input_specs)}) != strategies({len(input_args_strategy)}: "
+                    f"{len(args_strategy)} args + {len(kwargs_strategy)} kwargs)"
+                )
         self_spec = input_args_strategy[0].strategies[0].output_spec
 
         if inplace_op and self_spec.placements != input_specs[0].placements:

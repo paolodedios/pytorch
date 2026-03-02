@@ -1819,6 +1819,42 @@ class TestSingleDimStrategyRegistration(TestCase):
         # Verify the result is None (no tensor output)
         self.assertIsNone(result, "No-output op should return None")
 
+    @patch(
+        "torch.distributed.tensor._api.DTensor._op_dispatcher.sharding_propagator.op_single_dim_strategy_funcs",
+        {},
+    )
+    def test_single_dim_strategy_with_kwargs_tensor(self):
+        """Test that single-dim strategy works when kwargs contain tensor inputs.
+
+        Single-dim strategy functions produce placements only for positional
+        args.  kwargs tensor inputs (like out=) must not inflate num_inputs,
+        which would shift the output/input boundary and corrupt the strategy.
+        """
+        mesh = DeviceMesh("cpu", torch.arange(self.world_size))
+        x = torch.randn(8, 16)
+        x_dt = distribute_tensor(x, mesh, [Shard(0)])
+        out = torch.empty_like(x)
+        out_dt = distribute_tensor(out, mesh, [Shard(0)])
+
+        @register_single_dim_strategy(torch.ops.mylib.dummy_out.default)
+        def dummy_out_single_dim_strategy(op, args_schema, kwargs_schema):
+            return [[_ShardingPlaceholder(0), _ShardingPlaceholder(0)]]
+
+        result = torch.ops.mylib.dummy_out(x_dt, out=out_dt)
+        self.assertIsInstance(result, DTensor)
+        self.assertEqual(result.placements, (Shard(0),))
+
+
+@torch.library.custom_op("mylib::dummy_out", mutates_args=("out",))
+def dummy_out(x: torch.Tensor, *, out: torch.Tensor) -> torch.Tensor:
+    out.copy_(x)
+    return out
+
+
+@dummy_out.register_fake
+def _dummy_out_fake(x: torch.Tensor, *, out: torch.Tensor) -> torch.Tensor:
+    return out
+
 
 if __name__ == "__main__":
     run_tests()
