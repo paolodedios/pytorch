@@ -55,6 +55,7 @@ prims = torch.ops.prims
 # ]
 
 # Linear pointwise ops, split by linearity type.
+unary_linear_ops = [aten.to.dtype]
 
 
 _UNARY_LINEAR_RULES: list[list[Placement]] = [
@@ -110,6 +111,8 @@ scalar_linear_ops = [
     aten.mul.Scalar,
     aten.mul_.Scalar,
 ]
+
+neg_ops = [aten.neg.default, aten.neg_.default]
 
 # Non-decreasing unary ops: f(max(a,b)) = max(f(a),f(b)).
 # Only ops that are non-decreasing on their ENTIRE domain belong here.
@@ -626,6 +629,17 @@ pointwise_ops = [
         if op not in partial_preserving_ops
     ],
 ]
+
+
+# Reconstruct the original linear_pointwise_ops dict for the existing registration path.
+linear_pointwise_ops: dict[OpOverload, int] = {
+    **dict.fromkeys(unary_linear_ops, 0),
+    **dict.fromkeys(binary_additive_ops, 1),
+    **dict.fromkeys(binary_mul_ops, 2),
+    **dict.fromkeys(binary_div_ops, 2),
+    **dict.fromkeys(scalar_linear_ops, 0),
+    **dict.fromkeys(neg_ops, 0),
+}
 
 
 def pointwise_strategy(
