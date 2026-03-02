@@ -6,6 +6,7 @@ import math
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from itertools import count
 from typing import Any, cast, Optional, TypeAlias, TypeVar, Union
 from typing_extensions import TypeIs
 
@@ -92,7 +93,8 @@ def _insert_single_dim_replication_strategy(
     Inserts the [Replicate(), Replicate(), ...] strategy after asserting that such strategy does not yet exist.
     """
     for strategy in single_dim_strategies_with_placeholders:
-        assert not all(isinstance(p, Replicate) for p in strategy)
+        if all(isinstance(p, Replicate) for p in strategy):
+            raise AssertionError
     single_dim_strategies_with_placeholders.insert(
         0, [Replicate()] * (num_outputs + num_input_tensors)
     )
@@ -145,11 +147,13 @@ def _fill_single_dim_strategy_placeholders(
                         # with other metadata (e.g. split_factor) from the sharding class
                         expanded_strategy.append(shard_builder(maybe_placeholder.dim))
                     else:
-                        assert isinstance(maybe_placeholder, Placement)
+                        if not isinstance(maybe_placeholder, Placement):
+                            raise AssertionError
                         expanded_strategy.append(maybe_placeholder)
                 expanded_strategies_over_one_mesh_dim.append(expanded_strategy)
         else:
-            assert all(isinstance(p, Placement) for p in s)
+            if not all(isinstance(p, Placement) for p in s):
+                raise AssertionError
             expanded_strategies_over_one_mesh_dim.append(cast(list[Placement], (s)))
 
     return expanded_strategies_over_one_mesh_dim
@@ -162,7 +166,8 @@ def _get_unique_placements(op_schema: OpSchema) -> set[Placement]:
         if isinstance(obj, DTensorSpec):
             unique_placements.update(obj.placements)
         elif isinstance(obj, OpStrategy):
-            assert len(obj.strategies) == 1
+            if len(obj.strategies) != 1:
+                raise AssertionError
             unique_placements.update(obj.strategies[0].output_spec.placements)
         elif isinstance(obj, TupleStrategy):
             for child in obj.children:
@@ -204,8 +209,12 @@ def _build_output_specs(
     per_mesh_dim_placements is indexed [mesh_dim][output_idx]. output_metas must
     have exactly num_outputs elements.
     """
-    assert num_outputs > 0
-    assert len(output_metas) == num_outputs
+    if num_outputs <= 0:
+        raise AssertionError(f"Expected num_outputs > 0, got {num_outputs}")
+    if len(output_metas) != num_outputs:
+        raise AssertionError(
+            f"Expected {num_outputs} output_metas, got {len(output_metas)}"
+        )
 
     def _placements_for_output(out_idx: int) -> tuple[Placement, ...]:
         return tuple(out[out_idx] for out in per_mesh_dim_placements)
@@ -586,9 +595,6 @@ def register_single_dim_strategy(
     return wrapper
 
 
-_pq_counter: int = 0
-
-
 @dataclass(order=True)
 class _PQEntry:
     """Priority queue entry for the Dijkstra search in _dijkstra_expand_single_dim_strategy_to_mesh.
@@ -599,7 +605,7 @@ class _PQEntry:
     """
 
     cost: float
-    counter: int = field(init=False)
+    counter: int
     # Per-input placement tuples representing the current search state.
     placements: tuple[tuple[Placement, ...], ...] = field(compare=False)
     # History of (input_idx, mesh_dim, old_placement, new_placement) transitions
@@ -609,11 +615,6 @@ class _PQEntry:
     per_input_costs: tuple[float, ...] = field(compare=False)
     # Current communication bytes (in GB) per input, updated as placements change.
     per_input_comm_bytes_gb: tuple[float, ...] = field(compare=False)
-
-    def __post_init__(self) -> None:
-        global _pq_counter
-        self.counter = _pq_counter
-        _pq_counter += 1
 
 
 def _get_neighbor_placements(
@@ -693,7 +694,8 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
     input_specs: list[DTensorSpec] = []
     for arg in op_schema.args_schema:
         if isinstance(arg, OpStrategy):
-            assert len(arg.strategies) == 1
+            if len(arg.strategies) != 1:
+                raise AssertionError
             input_specs.append(arg.strategies[0].output_spec)
         elif isinstance(arg, TupleStrategy):
             return None
@@ -704,7 +706,8 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
         if isinstance(kwarg, (OpStrategy, TupleStrategy)):
             return None
 
-    assert len(input_specs) > 0, "broken input"
+    if len(input_specs) == 0:
+        raise AssertionError("broken input")
     num_inputs = len(input_specs)
 
     # Fall back to full expansion if any input has _StridedShard or symbolic shapes
@@ -740,7 +743,8 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
     mesh_topo = MeshTopoInfo.build_from_mesh(mesh)
     initial_comm_bytes_gb: list[float] = []
     for spec in input_specs:
-        assert spec.tensor_meta is not None
+        if spec.tensor_meta is None:
+            raise AssertionError
         total_bytes = spec.tensor_meta.dtype.itemsize * math.prod(
             spec.tensor_meta.shape
         )
@@ -752,6 +756,7 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
 
     pq: list[_PQEntry] = []
     visited: set[tuple[tuple[Placement, ...], ...]] = set()
+    next_counter = count()
 
     initial_per_input_costs = (0.0,) * num_inputs
     initial_per_input_comm_bytes = tuple(initial_comm_bytes_gb)
@@ -759,6 +764,7 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
         pq,
         _PQEntry(
             0.0,
+            next(next_counter),
             initial_placements,
             [],
             initial_per_input_costs,
@@ -806,6 +812,7 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
             pq,
             _PQEntry(
                 new_cost,
+                next(next_counter),
                 candidate_placements,
                 new_transitions,
                 new_per_input_costs,
@@ -827,7 +834,8 @@ def _dijkstra_expand_single_dim_strategy_to_mesh(
             # Use pre-computed per-input costs from the PQ search instead of
             # recomputing via generate_redistribute_costs -> _gen_transform_infos.
             match_spec = match_result.strategies[0]
-            assert match_spec.input_specs is not None
+            if match_spec.input_specs is None:
+                raise AssertionError
             op_spec = OpSpec(
                 output_specs=match_spec.output_specs,
                 input_specs=list(match_spec.input_specs),
