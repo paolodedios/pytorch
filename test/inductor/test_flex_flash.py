@@ -1222,7 +1222,6 @@ class TestFlexFlash(InductorTestCase):
         ):
             loss.backward()
 
-
     @decorateIf(
         unittest.expectedFailure,
         lambda params: IS_SM90,
