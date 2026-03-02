@@ -1882,10 +1882,7 @@ class TestIndexing(TestCase):
                             if include_self
                             else torch.zeros_like(expected)
                         )
-                        if is_mps_noncontig_broken:
-                            counts = counts.index_add(0, idx, torch.ones_like(src))
-                        else:
-                            counts.index_add_(0, idx, torch.ones_like(src))
+                        counts.index_add_(0, idx, torch.ones_like(src))
                         counts.masked_fill_(counts == 0, 1)
                         if dtype.is_floating_point:
                             expected.div_(counts)
