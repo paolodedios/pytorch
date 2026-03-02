@@ -85,8 +85,7 @@ class TestSACILP(TestCase):
                 optimizer.zero_grad()
                 if iter_idx == 0:
                     mt.reset_mod_stats()
-        if last_snapshot is None:
-            raise AssertionError("Expected last_snapshot to not be None")
+        assert last_snapshot is not None
         for mod_stats in mem_tracker.memory_tracking.values():
             # postprocessing due to the fact that for ModTracker, the post backward hook
             # is not being called for modules whose inputs don't require gradients

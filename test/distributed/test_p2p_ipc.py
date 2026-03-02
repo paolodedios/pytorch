@@ -76,8 +76,7 @@ class P2PIpcTest(MultiProcContinuousTest):
         device_module.synchronize()
         torch.distributed.barrier()
 
-        if not tensor.allclose(tensor, 1):
-            raise AssertionError("Expected tensor to be close to 1")
+        assert tensor.allclose(tensor, 1)
 
         torch.distributed.barrier()
 

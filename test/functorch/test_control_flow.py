@@ -137,8 +137,7 @@ def from_fun(t):
     if not isinstance(t, FunctionalTensor):
         # quick sanity assert
         if isinstance(t, torch.Tensor):
-            if torch._is_functional_tensor(t):
-                raise AssertionError("Expected tensor to not be a functional tensor")
+            assert not torch._is_functional_tensor(t)
         return t
     torch._sync(t)
     return torch._from_functional_tensor(t.elem)
@@ -155,8 +154,7 @@ def to_fun_old(t):
 def from_fun_old(t):
     # quick sanity assert
     if isinstance(t, torch.Tensor):
-        if not torch._is_functional_tensor(t):
-            raise AssertionError("Expected tensor to be a functional tensor")
+        assert torch._is_functional_tensor(t)
         torch._sync(t)
         return torch._from_functional_tensor(t)
     return t
@@ -3795,10 +3793,9 @@ class AssociativeScanTests(TestCase):
         result_exp_flatten = [r for r in result_exp_flatten if r.requires_grad]
 
         # Check the result and parameter lists
-        if len(result_flatten) != len(result_exp_flatten):
-            raise AssertionError(
-                "The number of elements requiring gradients is different for the results and the expected results"
-            )
+        assert len(result_flatten) == len(result_exp_flatten), (
+            "The number of elements requiring gradients is different for the results and the expected results"
+        )
 
         grad_exp_init = [torch.ones_like(el) for el in result_exp_flatten]
         expected_grads = torch.autograd.grad(
@@ -4083,8 +4080,7 @@ class AssociativeScanTests(TestCase):
             .view(10, 3)
             .t()
         )
-        if x.is_contiguous():
-            raise AssertionError("Expected x to not be contiguous")
+        assert not x.is_contiguous()
 
         kwargs = {
             "dim": 0,
@@ -5734,10 +5730,7 @@ def forward(self, L_it_ : torch.Tensor, L_pytree_input_0_0_ : torch.Tensor, L_py
         elif func_type == "functorch":
             fn = torch.func.functionalize(fn)
         else:
-            if func_type != "no":
-                raise AssertionError(
-                    f"Expected func_type to be 'no', got {func_type!r}"
-                )
+            assert func_type == "no"
         return fn, mode
 
     @parametrize("func_type", ["no", "cpp", "python", "functorch"])
@@ -7453,8 +7446,7 @@ def forward(self, x_1):
         )
 
     def _check_closure_correctly_lifted(self, f, *, args, exp_res, exp_arg_num):
-        if not isinstance(args, (tuple, list)):
-            raise AssertionError(f"Expected args to be tuple or list, got {type(args)}")
+        assert isinstance(args, (tuple, list))
         self.assertEqual(f(*args), exp_res)
         gm = make_fx(f)(*args)
         self.assertEqual(gm(*args), exp_res)

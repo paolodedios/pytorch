@@ -404,10 +404,7 @@ def _subprocess_disable_guard_check():
                 raise AssertionError("Guard check should have failed")
             compiled_fn.disable_guard_check()
             actual = compiled_fn(*inputs)
-            if not torch.allclose(actual, expected):
-                raise AssertionError(
-                    f"Expected tensors to be close, got {actual} vs {expected}"
-                )
+            assert torch.allclose(actual, expected)
         finally:
             torch.set_grad_enabled(prev_grad)
 
@@ -438,10 +435,7 @@ def _subprocess_grad_mode_after_prior_compile():
         with torch.no_grad():
             actual = compiled_fn(*inputs)
             expected = target_fn(*inputs)
-            if not torch.allclose(actual, expected):
-                raise AssertionError(
-                    f"Expected tensors to be close, got {actual} vs {expected}"
-                )
+            assert torch.allclose(actual, expected)
 
 
 def _subprocess_aot_compile_module():
@@ -479,10 +473,7 @@ def _subprocess_aot_compile_module():
                 args=(torch.randn(3, 3),), kwargs={}, contexts=[train_mode(model)]
             ),
         ]
-        if not isinstance(model, torch._dynamo.eval_frame.OptimizedModule):
-            raise AssertionError(
-                f"Expected OptimizedModule, got {type(model).__name__}"
-            )
+        assert isinstance(model, torch._dynamo.eval_frame.OptimizedModule)
         model._aot_compile(inputs)
 
         with torch.compiler.set_stance("fail_on_recompile"):
@@ -490,10 +481,7 @@ def _subprocess_aot_compile_module():
             eager_inputs = (torch.randn(3, 3),)
             expected = mod(*eager_inputs)
             actual = model(*eager_inputs)
-            if not torch.allclose(expected, actual):
-                raise AssertionError(
-                    f"Expected tensors to be close, got {actual} vs {expected}"
-                )
+            assert torch.allclose(expected, actual)
             model.train()
             expected.sum().backward()
 
@@ -509,10 +497,7 @@ def _subprocess_aot_compile_module():
                     "guard_filter_fn": torch.compiler.skip_guard_on_globals_unsafe,
                 },
             )
-            if not isinstance(model, torch._dynamo.eval_frame.OptimizedModule):
-                raise AssertionError(
-                    f"Expected OptimizedModule, got {type(model).__name__}"
-                )
+            assert isinstance(model, torch._dynamo.eval_frame.OptimizedModule)
             with open(path, "rb") as f:
                 data = f.read()
                 model._load_aot_compiled_module(data)
@@ -522,10 +507,7 @@ def _subprocess_aot_compile_module():
                 eager_inputs = (torch.randn(3, 3),)
                 expected = mod(*eager_inputs)
                 actual = model(*eager_inputs)
-                if not torch.allclose(expected, actual):
-                    raise AssertionError(
-                        f"Expected tensors to be close, got {actual} vs {expected}"
-                    )
+                assert torch.allclose(expected, actual)
 
 
 class RedistributeModel(torch.nn.Module):
@@ -661,7 +643,7 @@ class TestAOTCompile(torch._inductor.test_case.TestCase):
         def check_inputs(fn):
             def _fn(*args, **kwargs):
                 for arg in args:
-                    assert arg.shape[0] > 1  # noqa: S101
+                    assert arg.shape[0] > 1
 
                 return fn(*args, **kwargs)
 
@@ -713,7 +695,7 @@ class TestAOTCompile(torch._inductor.test_case.TestCase):
             @functools.wraps(fn)
             def _fn(*args, **kwargs):
                 for arg in args:
-                    assert arg.shape[0] > 1  # noqa: S101
+                    assert arg.shape[0] > 1
 
                 return fn(*args, **kwargs)
 
@@ -830,7 +812,7 @@ from user code:
         def check_inputs(fn):
             def _fn(*args, **kwargs):
                 for arg in args:
-                    assert arg.shape[0] > 1  # noqa: S101
+                    assert arg.shape[0] > 1
 
                 return fn(*args, **kwargs)
 
@@ -899,8 +881,7 @@ from user code:
                 torch._dynamo.aot_compile.BundledAOTAutogradSerializableCallable,
             )
         )
-        if not hasattr(backend_result.compiled_fn, "serialize"):
-            raise AssertionError("Expected compiled_fn to have 'serialize' attribute")
+        assert hasattr(backend_result.compiled_fn, "serialize")
         self.assertIsNotNone(backend_result.compiled_fn.serialize)
 
     def test_aot_compile_portable_guards_unsafe(self):
@@ -938,8 +919,7 @@ from user code:
                 torch._dynamo.aot_compile.BundledAOTAutogradSerializableCallable,
             )
         )
-        if not hasattr(backend_result.compiled_fn, "serialize"):
-            raise AssertionError("Expected compiled_fn to have 'serialize' attribute")
+        assert hasattr(backend_result.compiled_fn, "serialize")
         self.assertIsNotNone(backend_result.compiled_fn.serialize)
 
     def test_fullgraph_capture_with_pytree_module(self):

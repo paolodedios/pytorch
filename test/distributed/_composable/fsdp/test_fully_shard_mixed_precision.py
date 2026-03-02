@@ -62,10 +62,7 @@ class TestFullyShardMixedPrecisionTraining(FSDPTest):
                 if dim_size > largest_dim_size:
                     largest_dim = dim
                     largest_dim_size = dim_size
-            if not (largest_dim >= 0):
-                raise AssertionError(
-                    f"Expected largest_dim >= 0, got {largest_dim} for {param.shape}"
-                )
+            assert largest_dim >= 0, f"{param.shape}"
             return Shard(largest_dim)
 
         mp_policy = MixedPrecisionPolicy(

@@ -1,3 +1,4 @@
+import hashlib
 import itertools
 import math
 from collections import defaultdict
@@ -165,10 +166,9 @@ class DTensorSpec:
             if isinstance(placements[mesh_dim], Shard | _StridedShard):
                 placement = placements[mesh_dim]
                 shard_dim = placement.dim  # pyrefly: ignore [missing-attribute]
-                if shard_dim < 0:
-                    raise AssertionError(
-                        f"Shard dim {shard_dim} in placements {placements} must be normalized"
-                    )
+                assert shard_dim >= 0, (
+                    f"Shard dim {shard_dim} in placements {placements} must be normalized"
+                )
                 tensor_dim_to_mesh_dims[shard_dim].append(mesh_dim)
 
         # Convert dict into ShardOrderEntry tuples
@@ -367,27 +367,23 @@ class DTensorSpec:
         for entry in shard_order:
             tensor_dim = entry.tensor_dim
             mesh_dims = entry.mesh_dims
-            if len(mesh_dims) <= 0:
-                raise AssertionError(f"shard_order {shard_order} has empty mesh dim")
-            if tensor_dim < 0:
-                raise AssertionError(
-                    f"shard_order {shard_order} has invalid tensor dim {tensor_dim}"
-                )
-            if tensor_dim <= prev_tensor_dim:
-                raise AssertionError("tensor dim should be sorted in shard_order")
+            assert len(mesh_dims) > 0, f"shard_order {shard_order} has empty mesh dim"
+            assert tensor_dim >= 0, (
+                f"shard_order {shard_order} has invalid tensor dim {tensor_dim}"
+            )
+            assert tensor_dim > prev_tensor_dim, (
+                "tensor dim should be sorted in shard_order"
+            )
             prev_tensor_dim = tensor_dim
             total_shard += len(mesh_dims)
             for mesh_dim in mesh_dims:
-                if not (0 <= mesh_dim < len(self.placements)):
-                    raise AssertionError(
-                        f"shard_order {shard_order} has invalid mesh dim {mesh_dims}"
-                    )
-                if self.placements[mesh_dim] != Shard(tensor_dim):
-                    raise AssertionError(
-                        f"placement[{mesh_dim}] doesn't have a matching shard in shard_order"
-                    )
-        if total_shard != sum(1 for p in self.placements if isinstance(p, Shard)):
-            raise AssertionError
+                assert 0 <= mesh_dim < len(self.placements), (
+                    f"shard_order {shard_order} has invalid mesh dim {mesh_dims}"
+                )
+                assert self.placements[mesh_dim] == Shard(tensor_dim), (
+                    f"placement[{mesh_dim}] doesn't have a matching shard in shard_order"
+                )
+        assert total_shard == sum(1 for p in self.placements if isinstance(p, Shard))
 
     def __setattr__(self, attr: str, value: Any) -> None:
         if attr == "shard_order" and value is not None:
@@ -412,8 +408,20 @@ class DTensorSpec:
             # TODO: the TensorMetadata arises from
             # test/distributed/tensor/experimental/test_tp_transform.py::TensorParallelTest::test_tp_transform_e2e
             # but I actually can't reproduce it, maybe it is also a bug!
-            if not isinstance(value, TensorMeta | TensorMetadata):
-                raise AssertionError(repr(value))
+            assert isinstance(value, TensorMeta | TensorMetadata), value
+
+    def _hash_key(self) -> tuple[Any, ...]:
+        """Return the tuple used for hashing. Used by both __hash__ and _stable_hash."""
+        if self.tensor_meta is not None:
+            return (
+                self.mesh,
+                self.placements,
+                self.shard_order,
+                self.tensor_meta.shape,
+                self.tensor_meta.stride,
+                self.tensor_meta.dtype,
+            )
+        return (self.mesh, self.placements, self.shard_order)
 
     def _hash_impl(self) -> int:
         # hashing and equality check for DTensorSpec are used to cache the sharding
@@ -421,18 +429,7 @@ class DTensorSpec:
         # dtype and stride.
         # Caveat: we need to keep this in mind and sync hash and eq if we add more
         # fields to them.
-        if self.tensor_meta is not None:
-            return hash(
-                (
-                    self.mesh,
-                    self.placements,
-                    self.shard_order,
-                    self.tensor_meta.shape,
-                    self.tensor_meta.stride,
-                    self.tensor_meta.dtype,
-                )
-            )
-        return hash((self.mesh, self.placements, self.shard_order))
+        return hash(self._hash_key())
 
     def __hash__(self) -> int:
         # We lazily cache the spec to avoid recomputing the hash upon each
@@ -442,6 +439,17 @@ class DTensorSpec:
         if self._hash is None:
             self._hash = self._hash_impl()
         return self._hash
+
+    def _stable_hash(self) -> str:
+        """
+        Return a stable hash for AOT autograd caching.
+        [See note: Tensor subclass stable hashing for AOT autograd cache]
+        """
+        # Get hash key, but replace mesh with its stable hash
+        key = self._hash_key()
+        # First element is mesh, replace with its stable hash
+        stable_key = (self.mesh._stable_hash(),) + key[1:]
+        return hashlib.blake2b(repr(stable_key).encode(), digest_size=16).hexdigest()
 
     def _check_equals(self, other: object, skip_shapes: bool = False) -> bool:
         if not (
@@ -551,8 +559,7 @@ class DTensorSpec:
                         mesh_dims = entry.mesh_dims
 
                         if placement.dim == tensor_dim:
-                            if mesh_dim not in mesh_dims:
-                                raise AssertionError
+                            assert mesh_dim in mesh_dims
                             if len(mesh_dims) > 1:
                                 out_str += f"{placement}[{mesh_dims.index(mesh_dim)}]"
                             else:
@@ -734,8 +741,7 @@ class DTensorSpec:
         """
         Shallow copy the DTensorSpec with a new tensor_meta.
         """
-        if tensor_meta is None:
-            raise AssertionError("shallow copy with no tensor_meta!")
+        assert tensor_meta is not None, "shallow copy with no tensor_meta!"
         return DTensorSpec(
             self.mesh,
             self.placements,

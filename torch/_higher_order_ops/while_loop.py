@@ -2,6 +2,7 @@
 import contextlib
 import functools
 from collections.abc import Callable
+from typing import Union
 
 import torch
 import torch.utils._pytree as pytree
@@ -34,8 +35,8 @@ class WhileLoopOp(HigherOrderOperator):
         self,
         cond_fn: Callable,
         body_fn: Callable,
-        carried_inputs: tuple[torch.Tensor | int | float | bool],
-        additional_inputs: tuple[torch.Tensor | torch.SymInt | int, ...],
+        carried_inputs: tuple[Union[torch.Tensor, int, float, bool]],
+        additional_inputs: tuple[Union[torch.Tensor, torch.SymInt, int], ...],
         /,
     ):
         if not isinstance(carried_inputs, (tuple, list)):
@@ -626,8 +627,8 @@ class WhileLoopStackOutputOp(HigherOrderOperator):
         self,
         cond_fn: Callable,
         body_fn: Callable,
-        carried_inputs: tuple[torch.Tensor | int | float | bool],
-        additional_inputs: tuple[torch.Tensor | torch.SymInt | int, ...],
+        carried_inputs: tuple[Union[torch.Tensor, int, float, bool]],
+        additional_inputs: tuple[Union[torch.Tensor, torch.SymInt, int], ...],
         /,
     ):
         if not isinstance(carried_inputs, (tuple, list)):

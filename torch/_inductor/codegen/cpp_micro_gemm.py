@@ -4,6 +4,7 @@ import operator
 import sys
 from collections.abc import Callable
 from enum import Enum
+from typing import Optional
 
 import torch
 
@@ -232,7 +233,7 @@ class CppMicroGemmConfig:
     compute_dtype: torch.dtype
     vec_isa_cls: type[VecISA]
     register_blocking: GemmBlocking
-    extra_check: Callable[..., bool] | None = None
+    extra_check: Optional[Callable[..., bool]] = None
 
 
 micro_gemm_configs: dict[type[CppMicroGemm], list[CppMicroGemmConfig]] = {}
@@ -2105,7 +2106,7 @@ def create_micro_gemm(
     num_threads=-1,
     use_ref=True,
     q_group_size=None,
-) -> CppMicroGemm | None:
+) -> Optional[CppMicroGemm]:
     """
     Based on the provided info, try to find the config of the micro-kernel that would
     deliver the best performance in terms of lower latency for this case.

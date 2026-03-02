@@ -240,7 +240,7 @@ def fn_prepped_for_autograd(
             # Also, only tensor outputs should participate in the backward
             # (in particular, Symint outputs in the forward graph shouldn't get tangents)
             and issubclass(meta.output_info[i].raw_type, Tensor)
-            and meta.output_info[i].requires_grad_for_backward
+            and meta.output_info[i].requires_grad
             for (i, x) in enumerate(outs)
         ]
 
