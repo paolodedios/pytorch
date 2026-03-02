@@ -99,7 +99,9 @@ def _fa3_register_kernels() -> Library:
         "_flash_attention_forward", _fa3_flash_attention_forward_impl_default, "CUDA"
     )
     lib.impl(
-        "_flash_attention_forward.out", _fa3_flash_attention_forward_out_impl, "CUDA"
+        "_flash_attention_forward_out_variant",
+        _fa3_flash_attention_forward_out_impl,
+        "CUDA",
     )
     lib.impl(
         "_scaled_dot_product_flash_attention",
@@ -448,6 +450,7 @@ def _fa3_flash_attention_forward_impl(
 
 
 def _fa3_flash_attention_forward_out_impl(
+    out: torch.Tensor,
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
@@ -458,7 +461,6 @@ def _fa3_flash_attention_forward_out_impl(
     dropout_p: float,
     is_causal: bool,
     return_debug_mask: bool,
-    out: torch.Tensor,
     *,
     scale: float | None = None,
     window_size_left: int = -1,

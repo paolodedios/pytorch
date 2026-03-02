@@ -306,7 +306,8 @@ def _varlen_attn_out(
         raise RuntimeError("cuDNN backend does not support out variant.")
 
     log.info("Using Flash Attention backend for varlen_attn_out")
-    softmax_lse, _, _, _ = torch.ops.aten._flash_attention_forward.out(
+    softmax_lse, _, _, _ = torch.ops.aten._flash_attention_forward_out_variant(
+        out,
         query,
         key,
         value,
@@ -317,7 +318,6 @@ def _varlen_attn_out(
         0.0,  # dropout_p hardcoded to 0.0
         is_causal,
         False,  # return_debug_mask
-        out,
         scale=scale,
         window_size_left=window_size[0],
         window_size_right=window_size[1],

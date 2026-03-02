@@ -6361,8 +6361,9 @@ def meta__flash_attention_forward(
     )
 
 
-@register_meta([aten._flash_attention_forward.out])
-def meta__flash_attention_forward_out(
+@register_meta([aten._flash_attention_forward_out_variant.default])
+def meta__flash_attention_forward_out_variant(
+    out: Tensor,
     query: Tensor,
     key: Tensor,
     value: Tensor,
@@ -6373,7 +6374,6 @@ def meta__flash_attention_forward_out(
     dropout_p: float,
     is_causal: bool,
     return_debug_mask: bool,
-    out: Tensor = None,  # type: ignore[assignment]
     scale: float | None = None,
     window_size_left: int | None = None,
     window_size_right: int | None = None,
