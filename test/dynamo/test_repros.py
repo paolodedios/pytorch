@@ -187,7 +187,8 @@ def global_fn(x):
 
 def cat(tensors, dim=0):
     # from detectron2 wrappers.py
-    assert isinstance(tensors, (list, tuple))
+    if not isinstance(tensors, (list, tuple)):
+        raise AssertionError(f"Expected list or tuple, got {type(tensors)}")
     if len(tensors) == 1:
         return tensors[0]
     return torch.cat(tensors, dim)
@@ -198,9 +199,8 @@ def shapes_to_tensor(x, device=None):
     if torch.jit.is_scripting():
         return torch.as_tensor(x, device=device)
     if torch.jit.is_tracing():
-        assert all(isinstance(t, torch.Tensor) for t in x), (
-            "Shape should be tensor during tracing!"
-        )
+        if not all(isinstance(t, torch.Tensor) for t in x):
+            raise AssertionError("Shape should be tensor during tracing!")
         # as_tensor should not be used in tracing because it records a constant
         ret = torch.stack(x)
         if ret.device != device:  # avoid recording a hard-coded device if not necessary
@@ -250,7 +250,10 @@ class Boxes:
             # Use reshape, so we don't end up creating a new tensor that does not depend on
             # the inputs (and consequently confuses jit)
             tensor = tensor.reshape((-1, 4)).to(dtype=torch.float32, device=device)
-        assert tensor.dim() == 2 and tensor.size(-1) == 4, tensor.size()
+        if not (tensor.dim() == 2 and tensor.size(-1) == 4):
+            raise AssertionError(
+                f"Expected 2D tensor with last dim 4, got {tensor.size()}"
+            )
         self.tensor = tensor
 
     def __len__(self) -> int:
@@ -499,9 +502,10 @@ class PartialT5(torch.nn.Module):
         real_seq_length = seq_length
 
         if past_key_value is not None:
-            assert len(past_key_value) == 2, (
-                f"past_key_value should have 2 past states: keys and values. Got {len(past_key_value)} past states"
-            )
+            if len(past_key_value) != 2:
+                raise AssertionError(
+                    f"past_key_value should have 2 past states: keys and values. Got {len(past_key_value)} past states"
+                )
             real_seq_length += (
                 past_key_value[0].shape[2] if query_length is None else query_length
             )
@@ -579,9 +583,11 @@ class ChunkReformerFeedForward(torch.nn.Module):
 
 def apply_chunking_to_forward(forward_fn, *input_tensors):
     # simplified from HF model_utils.py
-    assert len(input_tensors) > 0
+    if len(input_tensors) == 0:
+        raise AssertionError("Expected at least one input tensor")
     tensor_shape = input_tensors[0].shape[1]
-    assert all(input_tensor.shape[1] == tensor_shape for input_tensor in input_tensors)
+    if not all(input_tensor.shape[1] == tensor_shape for input_tensor in input_tensors):
+        raise AssertionError("All input tensors must have the same shape[1]")
     num_args_in_forward_chunk_fn = len(inspect.signature(forward_fn).parameters)
     if num_args_in_forward_chunk_fn != len(input_tensors):
         raise ValueError
@@ -1166,6 +1172,18 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(eager_out, compiled_out)
         self.assertEqual(eager_out.stride(), compiled_out.stride())
 
+    # https://github.com/pytorch/pytorch/issues/174963
+    def test_roll_as_strided_channels_last(self):
+        def fn(x):
+            x = torch.roll(x, shifts=-1, dims=0)
+            return torch.as_strided(x, (5, 10), (4, 1), 0)
+
+        x = torch.arange(100).reshape(2, 5, 2, 5).to(memory_format=torch.channels_last)
+        eager_out = fn(x)
+        compiled_fn = torch.compile(fn, backend="aot_eager_decomp_partition")
+        compiled_out = compiled_fn(x)
+        self.assertEqual(eager_out, compiled_out)
+
     # https://github.com/pytorch/pytorch/issues/109053
     def test_view_dtype_overload(self):
         def f(x):
@@ -1636,7 +1654,9 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         )
 
         def fn(model, x):
-            return x + torch.randn(10, dtype=get_parameter_dtype(model))
+            return x + torch.randn(
+                10, dtype=get_parameter_dtype(model), device=x.device
+            )
 
         cnt = torch._dynamo.testing.CompileCounter()
         opt_fn = torch._dynamo.optimize_assert(cnt)(fn)
@@ -1661,7 +1681,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
             a = torch.randn(4)
             x = torch.Size([1, 2, 3])
             # Checks that SizeVariable return torch.Size object
-            assert isinstance(x, torch.Size)
+            assert isinstance(x, torch.Size)  # noqa: S101
             # Causes graph breaks and checks reconstruction of SizeVariable
             # object
             self.assertIsInstance(x, torch.Size)
@@ -1699,7 +1719,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         def test_fn():
             def run_test(tensor, *idx):
                 npt = tensor.numpy()
-                assert npt[idx].shape == tensor[idx].shape
+                assert npt[idx].shape == tensor[idx].shape  # noqa: S101
 
             x = torch.arange(0, 10)
             cases = [
@@ -2010,7 +2030,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
                     # NumPy aggressively promotes to double, hence cast to output to correct dtype
                     expected = get_expected(condition, x, y)
                     result = torch.where(condition, x, y)
-                    assert torch.allclose(expected, result)
+                    assert torch.allclose(expected, result)  # noqa: S101
 
                 check_equal(condition, x, y)
                 check_equal(condition, y, x)
@@ -2251,7 +2271,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         def fn(x):
             f = bytearray([0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x10, 0x40])
             bools = torch.BoolStorage.from_buffer(f, "big")
-            assert isinstance(bools, torch.BoolStorage)
+            assert isinstance(bools, torch.BoolStorage)  # noqa: S101
             return x
 
         fn(torch.randn(3))
@@ -3224,7 +3244,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
     def test_rewrite_assert_with_msg(self):
         def f(x):
             b = x.sin()
-            assert x[0] == 3, "First dim need to be 3"
+            assert x[0] == 3, "First dim need to be 3"  # noqa: S101
             return x.cos() + b
 
         args = (torch.Tensor([3, 4, 5]),)
@@ -3270,7 +3290,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
     def test_rewrite_assert_dont_change_bytecode(self):
         def fn(x):
             with torch.no_grad():
-                assert x.max() < 5, f"invalid max {x.max()}"
+                assert x.max() < 5, f"invalid max {x.max()}"  # noqa: S101
                 x = torch.sin(x)
             return x
 
@@ -3281,7 +3301,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
     def test_rewrite_assert_without_msg(self):
         def f(x):
             b = x.sin()
-            assert x[0] == 3
+            assert x[0] == 3  # noqa: S101
             return x.cos() + b
 
         args = (torch.Tensor([3, 4, 5]),)
@@ -3294,7 +3314,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
     def test_rewrite_assert_with_non_string_msg(self):
         def f(x):
             b = x.sin()
-            assert x[0] == 2, x
+            assert x[0] == 2, x  # noqa: S101
             return x.cos() + b
 
         torch._dynamo.utils.counters.clear()
@@ -3313,8 +3333,8 @@ class ReproTests(torch._dynamo.test_case.TestCase):
     def test_rewrite_assert_noop(self):
         def f(x):
             b = x.sin()
-            assert True
-            assert x.dtype == torch.float32
+            assert True  # noqa: S101
+            assert x.dtype == torch.float32  # noqa: S101
             return x.cos() + b
 
         args = (torch.Tensor([3, 4, 5]),)
@@ -4948,10 +4968,10 @@ class ReproTests(torch._dynamo.test_case.TestCase):
 
         @torch.compile(dynamic=True, backend=record_graph)
         def f(x):
-            assert x.shape[0] > 3
-            assert x[0].sum() > 0
-            assert 1 % (x.shape[0] // 2) != 0
-            assert 32 * (x.shape[0] // 2) ** 2 - 16 * (x.shape[0] // 2) != 0
+            assert x.shape[0] > 3  # noqa: S101
+            assert x[0].sum() > 0  # noqa: S101
+            assert 1 % (x.shape[0] // 2) != 0  # noqa: S101
+            assert 32 * (x.shape[0] // 2) ** 2 - 16 * (x.shape[0] // 2) != 0  # noqa: S101
             return x.cos()
 
         f(torch.ones(6, 4))
@@ -4986,7 +5006,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         @torch.compile(dynamic=True, backend=record_graph)
         def f_fail(x):
-            assert x.shape[0] < 3
+            assert x.shape[0] < 3  # noqa: S101
 
         # We graph-break here, so the failure should be eager
         with self.assertRaisesRegex(AssertionError, ""):
@@ -5027,7 +5047,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
                 with warnings.catch_warnings(record=True):
                     data_len = len(value)
                 if len(self._fields):
-                    assert len(self) == data_len, (
+                    assert len(self) == data_len, (  # noqa: S101
                         f"Adding a field of length {data_len} to a Instances of length {len(self)}"
                     )
                 self._fields[name] = value
@@ -5037,8 +5057,8 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
             @staticmethod
             def cat(instance_lists: list["Instances"]) -> "Instances":
-                assert all(isinstance(i, Instances) for i in instance_lists)
-                assert len(instance_lists) > 0
+                assert all(isinstance(i, Instances) for i in instance_lists)  # noqa: S101
+                assert len(instance_lists) > 0  # noqa: S101
                 if len(instance_lists) == 1:
                     return instance_lists[0]
 
@@ -5047,7 +5067,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
                     image_size, torch.Tensor
                 ):  # could be a tensor in tracing
                     for i in instance_lists[1:]:
-                        assert i.image_size == image_size
+                        assert i.image_size == image_size  # noqa: S101
                 ret = Instances(image_size)
                 for k in instance_lists[0]._fields:
                     values = [i.get(k) for i in instance_lists]
@@ -5638,7 +5658,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
     def test_list_reverse(self):
         def ladder(x):
             trail = x.size(-1)
-            assert trail > 2
+            assert trail > 2  # noqa: S101
             weights = []
             for s in [trail, trail - 1, trail - 2]:
                 weights.append(torch.ones(s, s - 1))
@@ -6094,6 +6114,37 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         self.assertEqual(result, result_test)
         self.assertEqual(x, x_test)
+
+    # https://github.com/pytorch/pytorch/issues/167009
+    def test_inbuilt_nn_module_forward_after_hook_graph_break(self):
+        # When a hook causes a graph break on an inbuilt nn.Module, the module's
+        # forward should still be traced after the graph break.
+
+        @torch._dynamo.disable
+        def my_hook(module, inp):
+            return inp
+
+        class Wrapper(nn.Module):
+            def __init__(self, lin):
+                super().__init__()
+                self.lin = lin
+
+            def forward(self, x):
+                return self.lin(x)
+
+        lin = nn.Linear(10, 5)
+        lin.register_forward_pre_hook(my_hook)
+        model = Wrapper(lin)
+
+        backend = EagerAndRecordGraphs()
+        torch._dynamo.reset()
+        compiled = torch.compile(model, backend=backend)
+        output = compiled(torch.randn(3, 10))
+
+        self.assertEqual(output.shape, torch.Size([3, 5]))
+        self.assertEqual(len(backend.graphs), 1)
+        graph_code = backend.graphs[0].print_readable(print_output=False)
+        self.assertIn("torch._C._nn.linear", graph_code)
 
     def test_aot_autograd_runtime_wrapper_prologue_profiled(self):
         # Names for prologue profiling event
@@ -7018,7 +7069,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
                     self.b_out,
                     use_reentrant=False,
                 )
-                assert isinstance(result, torch.Tensor)
+                assert isinstance(result, torch.Tensor)  # noqa: S101
                 return result
 
         x = torch.randn(100, SEQ_LEN, DIM)
@@ -7106,9 +7157,14 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
             ]
             return image_latent[torch.arange(B).unsqueeze(-1), indices][:, :num_ref]
 
+        # Generate input once to ensure consistency across runs
         torch.manual_seed(54321)
         torch.cuda.manual_seed_all(54321)
-        expected = f(torch.randn((2, 12, 16, 32, 32))).sum()
+        image_latent = torch.randn((2, 12, 16, 32, 32))
+
+        torch.manual_seed(54321)
+        torch.cuda.manual_seed_all(54321)
+        expected = f(image_latent).sum()
 
         # https://github.com/pytorch/pytorch/issues/147171
         with torch._inductor.config.patch(fallback_random=True):
@@ -7116,7 +7172,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
                 torch.manual_seed(54321)
                 torch.cuda.manual_seed_all(54321)
                 actual = torch.compile(backend=backend, fullgraph=True)(f)(
-                    torch.randn((2, 12, 16, 32, 32))
+                    image_latent
                 ).sum()
                 self.assertEqual(actual, expected)
 
@@ -7553,9 +7609,10 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
             return x + 10
 
         torch._dynamo.reset()
-        assert not torch._C._dynamo.eval_frame._debug_get_cache_entry_list(
+        if torch._C._dynamo.eval_frame._debug_get_cache_entry_list(
             fn._torchdynamo_orig_callable.__code__
-        )
+        ):
+            raise AssertionError("Expected no cache entries after reset")
 
         # Step 1: Compile a static shapes graph
         x = torch.randn(10, 10)
@@ -7594,9 +7651,10 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         def run():
             torch._dynamo.reset()
-            assert not torch._C._dynamo.eval_frame._debug_get_cache_entry_list(
+            if torch._C._dynamo.eval_frame._debug_get_cache_entry_list(
                 fn._torchdynamo_orig_callable.__code__
-            )
+            ):
+                raise AssertionError("Expected no cache entries after reset")
 
             # Step 1: Compile a static shapes graph
             x = torch.randn(10, 10)
@@ -8547,7 +8605,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         def fn(x, y):
             # Call _get_node_type which is used internally by pytree operations
             node_type = _get_node_type([x, y])
-            assert node_type is list
+            assert node_type is list  # noqa: S101
             # Do some work with pytree structures
             data = {"a": x, "b": y}
             flat, spec = pytree.tree_flatten(data)
@@ -8580,7 +8638,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
             point = Point(a, b)
             # Call _get_node_type with a namedtuple instance
             node_type = _get_node_type(point)
-            assert node_type is namedtuple
+            assert node_type is namedtuple  # noqa: S101
             # Use pytree operations with namedtuples
             flat, spec = pytree.tree_flatten(point)
             result = flat[0] + flat[1]
@@ -8607,15 +8665,15 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
             # Test with various types
             # Tensors are leaves
             is_leaf_tensor = tree_is_leaf(x)
-            assert is_leaf_tensor is True
+            assert is_leaf_tensor is True  # noqa: S101
 
             # Lists are not leaves (they're in SUPPORTED_NODES)
             is_leaf_list = tree_is_leaf([x, y])
-            assert is_leaf_list is False
+            assert is_leaf_list is False  # noqa: S101
 
             # Dicts are not leaves
             is_leaf_dict = tree_is_leaf({"a": x, "b": y})
-            assert is_leaf_dict is False
+            assert is_leaf_dict is False  # noqa: S101
 
             return x + y
 
@@ -8669,6 +8727,40 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
                 ),
             )
 
+    def test_mro_source_cache_includes_attr_name(self):
+        # Base -> Mid -> A hierarchy: two class attributes with the same
+        # interned integer value share the same id().  The mro_source_cache
+        # must include the attribute name in its key; otherwise the second
+        # lookup returns the first attribute's source, installing a guard
+        # on the wrong key and missing mutations to the second attribute.
+        class Base:
+            x = 1
+            y = 1
+
+        class Mid(Base):
+            pass
+
+        class A(Mid):
+            pass
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt)
+        def fn(obj, t):
+            return t * obj.x + t * obj.y
+
+        obj = A()
+        t = torch.tensor([1.0])
+        result = fn(obj, t)
+        self.assertEqual(result, torch.tensor([2.0]))
+        self.assertEqual(cnt.frame_count, 1)
+
+        # Changing y on Base must trigger recompilation.
+        Base.y = 42
+        result = fn(obj, t)
+        self.assertEqual(result, torch.tensor([43.0]))
+        self.assertEqual(cnt.frame_count, 2)
+
     def test_pytree_tree_is_leaf_with_namedtuple(self):
         # Test that torch.utils._pytree.tree_is_leaf handles namedtuples correctly
         from collections import namedtuple
@@ -8684,11 +8776,11 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
             # Namedtuples are not leaves (they're in SUPPORTED_NODES)
             point = Point(a, b)
             is_leaf_namedtuple = tree_is_leaf(point)
-            assert is_leaf_namedtuple is False
+            assert is_leaf_namedtuple is False  # noqa: S101
 
             # But individual tensors are leaves
             is_leaf_tensor = tree_is_leaf(a)
-            assert is_leaf_tensor is True
+            assert is_leaf_tensor is True  # noqa: S101
 
             return a + b
 
@@ -8736,6 +8828,46 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         res1 = fn(b)
         res2 = cfunc(b_)
         self.assertEqual(res1, res2)
+
+    def test_getset_descriptor_objclass_identity(self):
+        # GetSetDescriptor.__objclass__ should preserve identity with the class
+        # under torch.compile. This is needed for inspect.getattr_static (and
+        # therefore inspect.signature) to work on callable class instances.
+        class Foo:
+            pass
+
+        desc = Foo.__dict__["__dict__"]
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def f(x):
+            if desc.__objclass__ is Foo:
+                return x + 1.0
+            return x + 2.0
+
+        result = f(torch.tensor(0.0))
+        self.assertEqual(result.item(), 1.0)
+
+    def test_inspect_signature_callable_class(self):
+        # inspect.signature should work on callable class instances under
+        # torch.compile, needed by flex_attention's _get_mod_type.
+        class MyCallable:
+            def __call__(self, b, h, q_idx, kv_idx):
+                return q_idx >= kv_idx
+
+        obj = MyCallable()
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def f(x):
+            sig = inspect.signature(obj)
+            num_params = sum(
+                1
+                for p in sig.parameters.values()
+                if p.default is inspect.Parameter.empty
+            )
+            return x + num_params
+
+        result = f(torch.tensor(0.0))
+        self.assertEqual(result.item(), 4.0)
 
 
 instantiate_parametrized_tests(ReproTests)
