@@ -7202,6 +7202,24 @@ def _foreach_addcmul_scalar(self, tensor1, tensor2, value=1):
 _register_foreach_lowering(aten._foreach_addcmul.Scalar, _foreach_addcmul_scalar)
 
 
+def _foreach_addcdiv_scalar(self, tensor1, tensor2, value=1):
+    realize_outputs = (
+        len(V.graph.current_node.users) == 0
+        or V.graph.current_node.target in inplace_foreach_ops
+        or cur_node_has_non_foreach_users()
+    )
+
+    groups = group_foreach_args(zip(self, tensor1, tensor2))
+
+    def apply_fn(args):
+        return addcdiv(*args, value=value)
+
+    return foreach_group_loop(groups, len(self), apply_fn, realize_outputs)
+
+
+_register_foreach_lowering(aten._foreach_addcdiv.Scalar, _foreach_addcdiv_scalar)
+
+
 register_pointwise_numeric_ldf64(aten.cos)
 register_pointwise_numeric_ldf64(aten.sin)
 abs = register_pointwise(aten.abs)
@@ -7401,6 +7419,16 @@ register_foreach_inplace(
 )
 register_foreach_inplace(
     aten._foreach_copy_.default, aten._foreach_copy.default, foreach_copy
+)
+register_foreach_inplace(
+    aten._foreach_addcmul_.Scalar,
+    aten._foreach_addcmul.Scalar,
+    _foreach_addcmul_scalar,
+)
+register_foreach_inplace(
+    aten._foreach_addcdiv_.Scalar,
+    aten._foreach_addcdiv.Scalar,
+    _foreach_addcdiv_scalar,
 )
 
 
