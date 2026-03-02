@@ -661,6 +661,7 @@ def make_pointwise(
     override_device=None,
     override_fn_when_input_bool=None,
     allow_alpha=False,
+    use_fma_for_alpha=False,
     triton_fallback=None,
 ):
     """Wraps a pointwise fn and returns a function representing the pointwise in
@@ -678,7 +679,7 @@ def make_pointwise(
             if alpha is not None and alpha != 1:
                 # Use FMA for add-with-alpha on CUDA floating-point.
                 # Eager CUDA computes a + alpha * b as fma(b, alpha, a).
-                if isinstance(inputs[0], IRNode):
+                if use_fma_for_alpha and isinstance(inputs[0], IRNode):
                     inp_device = inputs[0].get_device()
                     if (
                         inputs[0].get_dtype().is_floating_point
@@ -952,6 +953,7 @@ def register_pointwise(
     override_return_dtype=None,
     override_fn_when_input_bool=None,
     allow_alpha=False,
+    use_fma_for_alpha=False,
     triton_fallback=None,
 ):
     """A pointwise function that maps ops.{name} to inputs"""
@@ -970,6 +972,7 @@ def register_pointwise(
         override_return_dtype=override_return_dtype,
         override_fn_when_input_bool=override_fn_when_input_bool,
         allow_alpha=allow_alpha,
+        use_fma_for_alpha=use_fma_for_alpha,
         triton_fallback=triton_fallback,
     )
     fn = register_lowering(
@@ -6943,7 +6946,10 @@ reduce_argmin = register_lowering(aten.argmin)(
 )
 
 add = register_pointwise(
-    aten.add, allow_alpha=True, override_fn_when_input_bool="logical_or"
+    aten.add,
+    allow_alpha=True,
+    use_fma_for_alpha=True,
+    override_fn_when_input_bool="logical_or",
 )
 
 sort_fallback = fallback_handler(aten.sort.stable, add_to_fallback_set=False)
