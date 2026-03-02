@@ -563,8 +563,8 @@ class MpsInterface(DeviceInterface):
 
 
 class TpuInterface(DeviceInterface):
-    Event = torch.tpu.Event  # type: ignore[assignment]
-    Stream = torch.tpu.Stream  # type: ignore[assignment]
+    Event = torch._tpu.Event  # type: ignore[assignment]
+    Stream = torch._tpu.Stream  # type: ignore[assignment]
 
     @staticmethod
     def is_bf16_supported(including_emulation: bool = False) -> bool:
@@ -586,11 +586,11 @@ class TpuInterface(DeviceInterface):
     def is_available() -> bool:
         return has_torch_tpu()
 
-    current_device = staticmethod(torch.tpu.current_device)
-    device_count = staticmethod(torch.tpu.device_count)
-    stream = staticmethod(torch.tpu.stream)  # type: ignore[assignment]
-    current_stream = staticmethod(torch.tpu.current_stream)  # type: ignore[assignment]
-    set_stream = staticmethod(torch.tpu.set_stream)  # type: ignore[assignment]
+    current_device = staticmethod(torch._tpu.current_device)
+    device_count = staticmethod(torch._tpu.device_count)
+    stream = staticmethod(torch._tpu.stream)  # type: ignore[assignment]
+    current_stream = staticmethod(torch._tpu.current_stream)  # type: ignore[assignment]
+    set_stream = staticmethod(torch._tpu.set_stream)  # type: ignore[assignment]
 
     @staticmethod
     def get_compute_capability(device: torch.types.Device = None) -> str:
@@ -606,7 +606,7 @@ class TpuInterface(DeviceInterface):
         def current_device() -> int:
             if "tpu" in caching_worker_current_devices:
                 return caching_worker_current_devices["tpu"]
-            return torch.tpu.current_device()
+            return torch._tpu.current_device()
 
         @staticmethod
         def get_device_properties(device: torch.types.Device = None) -> Any:
@@ -660,7 +660,7 @@ def init_device_reg() -> None:
     register_interface_for_device("cpu", CpuInterface)
     register_interface_for_device("mps", MpsInterface)
     register_interface_for_device("tpu", TpuInterface)
-    for i in range(torch.tpu.device_count()):
+    for i in range(torch._tpu.device_count()):
         register_interface_for_device(f"tpu:{i}", TpuInterface)
 
     _device_initialized = True

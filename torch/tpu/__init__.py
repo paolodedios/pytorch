@@ -24,7 +24,7 @@ except (ImportError, AttributeError):
 def current_device() -> int:
     r"""Return the index of a currently selected device."""
     if _device_mod is None:
-        return 0
+        raise RuntimeError("torch_tpu is not available")
     return _device_mod.current_device()
 
 
@@ -33,13 +33,6 @@ def device_count() -> int:
     if _device_mod is None:
         return 0
     return _device_mod.device_count()
-
-
-def is_available() -> bool:
-    r"""Return whether TPU is available."""
-    if _device_mod is None:
-        return False
-    return _device_mod.is_available()
 
 
 def stream(stream: Stream) -> Any:  # type: ignore[arg-type]
@@ -60,7 +53,7 @@ def current_stream(device: int | None = None) -> Stream:  # type: ignore[return-
     Args:
         device (int, optional): selected device. Returns the currently selected
             :class:`Stream` for the current device, given by
-            :func:`~torch.tpu.current_device`, if :attr:`device` is ``None``
+            :func:`~torch._tpu.current_device`, if :attr:`device` is ``None``
             (default).
     """
     if _device_mod is None:
