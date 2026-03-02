@@ -22,6 +22,7 @@ from torch.utils._pytree import tree_flatten
 from ._fsdp_api import MixedPrecisionPolicy
 from ._fsdp_common import (
     _cast_fp_tensor,
+    _dynamo_disable,
     compiled_autograd_enabled,
     detect_compiled_autograd,
     TrainingState,
@@ -55,18 +56,6 @@ class FSDPStateContext(Generic[_StateType]):
         # Optional user-provided event recorded after optimizer for the
         # all-gather streams to wait on in the root pre-forward
         self.post_optim_event: torch.Event | None = None
-
-
-def _dynamo_disable(func):
-    """Disable dynamo tracing for FSDP hooks."""
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        return torch._dynamo.disable(
-            func, recursive=True, reason="skipping FSDP hooks"
-        )(*args, **kwargs)
-
-    return wrapper
 
 
 class FSDPState(_State):
