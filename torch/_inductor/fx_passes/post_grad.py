@@ -1796,6 +1796,41 @@ class ConstructorMoverPass:
 
         return cpu_indeg
 
+    @staticmethod
+    def _batch_device_copy(
+        graph: fx.Graph,
+        scalars: list[fx.Node],
+        target_device: torch.device,
+        insert_after: fx.Node,
+    ) -> tuple[list[fx.Node], OrderedSet[fx.Node]]:
+        """
+        Batch-copy a list of scalar tensors to target_device using a single
+        device_put: unsqueeze → cat → device_put → unbind → getitem.
+        Returns (per-scalar result nodes, set of all created nodes).
+        """
+        with graph.inserting_before(insert_after._next):
+            unsqueezed = [
+                graph.call_function(torch.ops.aten.unsqueeze.default, (s, 0))
+                for s in scalars
+            ]
+            concatenated = graph.call_function(
+                torch.ops.aten.cat.default, (unsqueezed,)
+            )
+            copied = graph.call_function(
+                torch.ops.prims.device_put.default,
+                (concatenated, target_device, True),
+            )
+            split = graph.call_function(torch.ops.aten.unbind.int, (copied,))
+            results = [
+                graph.call_function(operator.getitem, (split, idx))
+                for idx in range(len(scalars))
+            ]
+
+        all_nodes: OrderedSet[fx.Node] = OrderedSet(
+            unsqueezed + [concatenated, copied, split] + results
+        )
+        return results, all_nodes
+
     def __call__(self, graph: fx.Graph) -> None:
         target_devices = OrderedSet[torch.device]()
         constructors = []
@@ -1838,52 +1873,28 @@ class ConstructorMoverPass:
         target_device = next(iter(target_devices))
         movable_cpu_placeholders = movable_constructors & cpu_placeholders
         if movable_cpu_placeholders:
-            node = next(iter(reversed(movable_cpu_placeholders)))
-            last_node = node
-            unsqueezed_nodes = []
-            for elem in movable_cpu_placeholders:
-                with graph.inserting_after(last_node):
-                    unsqueezed_nodes.append(
-                        graph.call_function(torch.ops.aten.unsqueeze.default, (elem, 0))
-                    )
-                    last_node = unsqueezed_nodes[-1]
-            with graph.inserting_after(last_node):
-                cpu_concat = graph.call_function(
-                    torch.ops.aten.cat.default, (unsqueezed_nodes,)
+            # Batch CPU→CUDA copy of all movable CPU scalar placeholders.
+            insert_pt = next(iter(reversed(movable_cpu_placeholders)))
+            gpu_results, batch_copy_nodes = self._batch_device_copy(
+                graph,
+                list(movable_cpu_placeholders),
+                target_device,
+                insert_after=insert_pt,
+            )
+
+            # Track which gpu_node replaces each CPU placeholder, so we can
+            # insert copy-back nodes for any that end up in the output.
+            placeholder_to_gpu: dict[fx.Node, fx.Node] = {}
+            for node, gpu_node in zip(movable_cpu_placeholders, gpu_results):
+                placeholder_to_gpu[node] = gpu_node
+                node.replace_all_uses_with(
+                    gpu_node,
+                    lambda x: x not in batch_copy_nodes
+                    and x.target != torch.ops.aten.copy_.default,
                 )
-                last_node = cpu_concat
-            with graph.inserting_after(last_node):
-                gpu_concat = graph.call_function(
-                    torch.ops.prims.device_put.default,
-                    (cpu_concat, target_device, True),
-                )
-                last_node = gpu_concat
-            with graph.inserting_after(last_node):
-                gpu_split = graph.call_function(
-                    torch.ops.aten.unbind.int, (gpu_concat,)
-                )
-                last_node = gpu_split
-            for idx, node in enumerate(movable_cpu_placeholders):
-                with graph.inserting_after(last_node):
-                    gpu_node = graph.call_function(operator.getitem, (gpu_split, idx))
-                    # Exclude the output node: a CPU placeholder that
-                    # appears as a graph output (e.g. a saved tensor for
-                    # backward) must stay on CPU.  Replacing it with the
-                    # GPU version would make the backward receive a CUDA
-                    # tensor, causing SIGSEGV in CPU C++ kernels.
-                    node.replace_all_uses_with(
-                        gpu_node,
-                        lambda x: x
-                        not in [cpu_concat, gpu_concat, gpu_split, gpu_node]
-                        + unsqueezed_nodes
-                        and x.target != torch.ops.aten.copy_.default
-                        and x.op != "output",
-                    )
-                    last_node = gpu_node
 
                 # noop elimination if there are other device_put for gpu_node to
-                # target device. Alternatively, we could just move the other device_put
-                # earlier in the graph, but that is not supported in fx graph yet.
+                # target device.
                 noop_device_puts = [
                     user
                     for user in gpu_node.users
@@ -1893,6 +1904,49 @@ class ConstructorMoverPass:
                 for noop in noop_device_puts:
                     noop.replace_all_uses_with(gpu_node)
                     graph.erase_node(noop)
+
+            # After moving CPU scalar placeholders to CUDA, some
+            # device_put(cuda_src, cpu) nodes become redundant: the
+            # downstream ops that consume the CPU result already run on
+            # CUDA (because their other inputs were moved to CUDA).
+            # Replace these with their CUDA source to avoid unnecessary
+            # CUDA→CPU→CUDA round-trips and CPU inputs to CUDA partitions.
+            for node in list(graph.nodes):
+                if (
+                    node.target is not torch.ops.prims.device_put.default
+                    or not self.is_cpu_scalar_tensor(node)
+                ):
+                    continue
+                src = node.args[0]
+                if not self.is_on_target_device(src):
+                    continue
+                node.replace_all_uses_with(src, lambda u: u.op != "output")
+                if not node.users:
+                    graph.erase_node(node)
+
+            # For any GPU node that now appears in the output (e.g. a CPU
+            # placeholder saved for backward), batch a single D2H copy
+            # so the graph output stays on CPU while the cudagraph
+            # partition only sees CUDA tensors.
+            output_node = next(n for n in graph.nodes if n.op == "output")
+            gpu_nodes_in_output = [
+                gpu_node
+                for gpu_node in placeholder_to_gpu.values()
+                if gpu_node in output_node.args[0]
+            ]
+            if gpu_nodes_in_output:
+                cpu_results, _ = self._batch_device_copy(
+                    graph,
+                    gpu_nodes_in_output,
+                    torch.device("cpu"),
+                    insert_after=output_node._prev,
+                )
+                gpu_to_cpu = dict(zip(gpu_nodes_in_output, cpu_results))
+                new_output_args = [
+                    gpu_to_cpu.get(arg, arg) if isinstance(arg, fx.Node) else arg
+                    for arg in output_node.args[0]
+                ]
+                output_node.args = (new_output_args,)
 
         movable_constructors -= movable_cpu_placeholders
         for node in movable_constructors:

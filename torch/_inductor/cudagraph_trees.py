@@ -1301,7 +1301,6 @@ class CUDAGraphNode:
                 StorageWeakRefWrapper(elem)
                 for i, elem in enumerate(inputs)
                 if isinstance(elem, torch.Tensor)
-                and elem.is_cuda
                 and i not in self.wrapped_function.static_input_idxs
                 and elem.untyped_storage().data_ptr() != 0
             ]
@@ -1361,13 +1360,13 @@ class CUDAGraphNode:
                 self.output_storage_alias.append(UnaliasedStorage)
                 continue
 
-            if not o.is_cuda and o.untyped_storage().data_ptr() != 0:
-                # Non-CUDA output (e.g. CPU graph input passed through
-                # with graph_partition).  Not managed by the CUDA pool;
-                # treat like a persistent static input alias.
-                self.output_storage_alias.append(None)
-                self.static_output_tensors[i] = o
-                continue
+            torch._check(
+                o.is_cuda or o.untyped_storage().data_ptr() == 0,
+                lambda: (
+                    "Expected all cuda outputs in cuda graph recording. Non cuda output "
+                    f"from {self.stack_traces[i] if self.stack_traces else '(unknown)'}"
+                ),
+            )
 
             ref = static_input_persistent_storage_ptrs.get(
                 o.untyped_storage().data_ptr()
