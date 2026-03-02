@@ -2,6 +2,7 @@
 
 #include <ATen/core/Tensor.h>
 #include <ATen/mps/MPSProfiler.h>
+#include <ATen/native/Distance.h>
 #include <ATen/native/mps/OperationUtils.h>
 #include <cmath>
 
@@ -9,10 +10,6 @@
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
 #else
-#include <ATen/ops/_pdist_backward_native.h>
-#include <ATen/ops/_pdist_forward_native.h>
-#include <ATen/ops/empty.h>
-#include <ATen/ops/empty_like.h>
 #include <ATen/ops/sum.h>
 #endif
 
@@ -45,32 +42,9 @@ inline int64_t pdist_mode(double p, bool backward) {
 
 } // namespace
 
-Tensor _pdist_forward_mps(const Tensor& self, const double p) {
-  TORCH_CHECK(self.numel() > 0, "Input tensor is empty");
-  TORCH_CHECK(self.is_contiguous(), "_pdist_forward requires contiguous input");
-  TORCH_CHECK(self.is_mps(), "_pdist_forward only supports MPS tensors");
-  TORCH_CHECK(at::isFloatingType(self.scalar_type()), "_pdist_forward only supports floating-point dtypes");
-  TORCH_CHECK(p >= 0, "_pdist_forward only supports non-negative p values");
-
-  const int64_t n = self.size(0);
-  Tensor result = at::empty({0}, self.options(), MemoryFormat::Contiguous);
-  if (n <= 1) {
-    return result;
-  }
-
+static void pdist_forward_kernel_impl(Tensor& result, const Tensor& self, const double p) {
   const int64_t m = self.size(1);
-  const int64_t combs = n * (n - 1) / 2;
-  result.resize_({combs});
-
-  if (m == 0) {
-    result.fill_(0);
-    return result;
-  }
-
-  // Match CPU legacy private-op behavior for dim > 2:
-  // use flattened-row indexing width m, but only compute the first combs outputs.
-  const int64_t n_for_pairs = (self.dim() == 2) ? n : self.numel() / m;
-
+  const int64_t n = (self.dim() == 2) ? self.size(0) : self.numel() / m;
   const float p_val = static_cast<float>(p);
   const int64_t mode = pdist_mode(p, /*backward=*/false);
   const std::string kernel = fmt::format("pdist_forward_{}", scalarToMetalTypeString(self));
@@ -83,26 +57,17 @@ Tensor _pdist_forward_mps(const Tensor& self, const double p) {
 
       getMPSProfiler().beginProfileKernel(pdist_pso, "pdist_forward", {self});
       [compute_encoder setComputePipelineState:pdist_pso];
-      mtl_setArgs(compute_encoder, result, self, n_for_pairs, m, p_val, mode);
+      mtl_setArgs(compute_encoder, result, self, n, m, p_val, mode);
       mtl_dispatch1DJob(compute_encoder, pdist_pso, result.numel());
       getMPSProfiler().endProfileKernel(pdist_pso);
     }
   });
-
-  return result;
 }
 
-Tensor _pdist_backward_mps(const Tensor& grad, const Tensor& self, const double p, const Tensor& pdist) {
-  TORCH_CHECK(self.is_contiguous(), "_pdist_backward requires self to be contiguous");
-  TORCH_CHECK(pdist.is_contiguous(), "_pdist_backward requires pdist to be contiguous");
-  TORCH_CHECK(self.is_mps() && grad.is_mps() && pdist.is_mps(), "_pdist_backward only supports MPS tensors");
-  TORCH_CHECK(at::isFloatingType(self.scalar_type()), "_pdist_backward only supports floating-point dtypes");
-  TORCH_CHECK(p >= 0, "_pdist_backward only supports non-negative p values");
-
-  Tensor result = at::empty_like(self, MemoryFormat::Contiguous);
+static void pdist_backward_kernel_impl(Tensor& result, const Tensor& grad, const Tensor& self, const double p, const Tensor& pdist) {
+  result.fill_(0);
   if (p == 0.0 || grad.numel() == 0 || self.numel() == 0) {
-    result.fill_(0);
-    return result;
+    return;
   }
 
   const int64_t n = self.size(0);
@@ -136,7 +101,9 @@ Tensor _pdist_backward_mps(const Tensor& grad, const Tensor& self, const double 
     result.fill_(0);
     result.view({-1}).narrow(0, 0, n * m).copy_(result_for_kernel.view({-1}));
   }
-  return result;
 }
+
+REGISTER_DISPATCH(pdist_forward_stub, &pdist_forward_kernel_impl)
+REGISTER_DISPATCH(pdist_backward_stub, &pdist_backward_kernel_impl)
 
 } // namespace at::native

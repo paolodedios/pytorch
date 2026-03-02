@@ -1175,11 +1175,7 @@ class TestMPS(TestCaseMPS):
     def test_pdist_empty_and_degenerate(self, device="mps"):
         def helper(shape):
             x = torch.randn(shape, device=device)
-            if x.numel() == 0:
-                with self.assertRaisesRegex(RuntimeError, "Input tensor is empty"):
-                    torch.pdist(x)
-            else:
-                self.assertEqual(torch.pdist(x.cpu()), torch.pdist(x))
+            self.assertEqual(torch.pdist(x.cpu()), torch.pdist(x))
 
         helper((0, 4))
         helper((1, 4))
