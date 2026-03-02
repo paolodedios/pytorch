@@ -2130,18 +2130,25 @@ class GraphModule(torch.nn.Module):
         with torch._dynamo.config.patch(capture_profiler_record_function=True):
             self._validate(fn, backend, x, y)
 
-    def test_compile_save_basic(self):
-        from torch.utils.checkpoint import save as checkpoint_save
+    def test_compile_checkpoint_name_basic(self):
+        from torch.utils.checkpoint import checkpoint_name
+
+        def _name_policy():
+            def _policy(ctx, func, *args, **kwargs):
+                if ctx.tensor_name == "sin_out":
+                    return CheckpointPolicy.MUST_SAVE
+                return CheckpointPolicy.PREFER_RECOMPUTE
+            return _policy
 
         def gn(x):
             y = torch.sin(x)
-            checkpoint_save(y)
+            checkpoint_name(y, "sin_out")
             return torch.cos(y)
 
         def fn(x):
             context_fn = functools.partial(
                 create_selective_checkpoint_contexts,
-                _get_custom_policy(),
+                _name_policy(),
             )
             return checkpoint(gn, x, use_reentrant=False, context_fn=context_fn)
 
@@ -2152,18 +2159,25 @@ class GraphModule(torch.nn.Module):
         result = opt_fn(x.clone().detach().requires_grad_(True))
         self.assertEqual(result, expected)
 
-    def test_compile_save_with_policy(self):
-        from torch.utils.checkpoint import save as checkpoint_save
+    def test_compile_checkpoint_name_with_policy(self):
+        from torch.utils.checkpoint import checkpoint_name
+
+        def _name_policy():
+            def _policy(ctx, func, *args, **kwargs):
+                if ctx.tensor_name == "matmul_out":
+                    return CheckpointPolicy.MUST_SAVE
+                return CheckpointPolicy.PREFER_RECOMPUTE
+            return _policy
 
         def gn(x, y):
             h = torch.matmul(x, y)
-            checkpoint_save(h)
+            checkpoint_name(h, "matmul_out")
             return torch.sigmoid(h + torch.sin(x))
 
         def fn(x, y):
             context_fn = functools.partial(
                 create_selective_checkpoint_contexts,
-                _get_custom_policy(),
+                _name_policy(),
             )
             return checkpoint(gn, x, y, use_reentrant=False, context_fn=context_fn)
 
@@ -2178,18 +2192,25 @@ class GraphModule(torch.nn.Module):
         )
         self.assertEqual(result, expected)
 
-    def test_compile_save_gradient_correctness(self):
-        from torch.utils.checkpoint import save as checkpoint_save
+    def test_compile_checkpoint_name_gradient_correctness(self):
+        from torch.utils.checkpoint import checkpoint_name
+
+        def _name_policy():
+            def _policy(ctx, func, *args, **kwargs):
+                if ctx.tensor_name == "matmul_out":
+                    return CheckpointPolicy.MUST_SAVE
+                return CheckpointPolicy.PREFER_RECOMPUTE
+            return _policy
 
         def gn(x, y):
             h = torch.matmul(x, y)
-            checkpoint_save(h)
+            checkpoint_name(h, "matmul_out")
             return torch.relu(h)
 
         def fn(x, y):
             context_fn = functools.partial(
                 create_selective_checkpoint_contexts,
-                _get_custom_policy(),
+                _name_policy(),
             )
             return checkpoint(gn, x, y, use_reentrant=False, context_fn=context_fn)
 
@@ -2210,18 +2231,25 @@ class GraphModule(torch.nn.Module):
         self.assertEqual(x_ref.grad, x_comp.grad)
         self.assertEqual(y_ref.grad, y_comp.grad)
 
-    def test_compile_save_sets_recompute_metadata(self):
-        from torch.utils.checkpoint import save as checkpoint_save
+    def test_compile_checkpoint_name_sets_recompute_metadata(self):
+        from torch.utils.checkpoint import checkpoint_name
+
+        def _name_policy():
+            def _policy(ctx, func, *args, **kwargs):
+                if ctx.tensor_name == "sin_out":
+                    return CheckpointPolicy.MUST_SAVE
+                return CheckpointPolicy.PREFER_RECOMPUTE
+            return _policy
 
         def gn(x):
             y = torch.sin(x)
-            checkpoint_save(y)
+            checkpoint_name(y, "sin_out")
             return torch.cos(y)
 
         def fn(x):
             context_fn = functools.partial(
                 create_selective_checkpoint_contexts,
-                _get_custom_policy(),
+                _name_policy(),
             )
             return checkpoint(gn, x, use_reentrant=False, context_fn=context_fn)
 
@@ -2244,7 +2272,7 @@ class GraphModule(torch.nn.Module):
         opt_fn = torch.compile(fn, backend=backend, fullgraph=True)
         opt_fn(x).sum().backward()
 
-        # Find the sin node and verify it has recompute=MUST_SAVE from save()
+        # Find the sin node and verify it has recompute=MUST_SAVE
         sin_nodes = [
             n for n in joint_graph.graph.nodes
             if n.target == torch.ops.aten.sin.default

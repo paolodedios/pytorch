@@ -4,7 +4,7 @@ import platform
 import uuid
 import warnings
 import weakref
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from typing import *  # noqa: F403
 import enum
 from weakref import ReferenceType
@@ -16,6 +16,7 @@ from torch.testing._internal.logging_tensor import capture_logs, LoggingTensorMo
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils.weak import WeakTensorKeyDictionary
 from torch._C._autograd import _make_saved_tensor, SavedTensor
+from torch.utils.hooks import RemovableHandle
 from typing import NoReturn
 
 __all__ = [
@@ -35,7 +36,7 @@ __all__ = [
     "SelectiveCheckpointContext",
     "create_selective_checkpoint_contexts",
     "SAC_IGNORED_OPS",
-    "save",
+    "checkpoint_name",
     "GraphExecGroup",
 ]
 
@@ -1277,8 +1278,9 @@ class SelectiveCheckpointContext:
         >>>     context_fn=context_fn,
         >>> )
     """
-    def __init__(self, *, is_recompute) -> None:
+    def __init__(self, *, is_recompute, tensor_name=None) -> None:
         self.is_recompute = is_recompute
+        self.tensor_name = tensor_name
 
 
 class CheckpointPolicy(enum.Enum):
@@ -1329,6 +1331,53 @@ SAC_IGNORED_OPS = {
 } | set(torch._subclasses.functional_tensor.FunctionalTensor.metadata_fns)  # type: ignore[has-type]
 
 
+_tensor_naming_hooks: Dict[int, Callable] = OrderedDict()
+
+
+def _register_tensor_naming_hook(hook: Callable) -> RemovableHandle:
+    handle = RemovableHandle(_tensor_naming_hooks)
+    _tensor_naming_hooks[handle.id] = hook
+    return handle
+
+
+def checkpoint_name(tensor: torch.Tensor, name: Any) -> None:
+    """Name a tensor for selective activation checkpointing.
+
+    Call this inside a checkpointed function to associate a name with a
+    tensor.  The policy function receives the name via
+    ``ctx.tensor_name`` and can decide whether to save or recompute:
+
+    Example::
+
+        >>> import functools
+        >>> from torch.utils.checkpoint import (
+        ...     checkpoint, checkpoint_name, CheckpointPolicy,
+        ...     create_selective_checkpoint_contexts,
+        ... )
+        >>> def policy_fn(ctx, op, *args, **kwargs):
+        ...     if ctx.tensor_name == "hidden":
+        ...         return CheckpointPolicy.MUST_SAVE
+        ...     return CheckpointPolicy.PREFER_RECOMPUTE
+        >>> def fn(x, w):
+        ...     h = x @ w
+        ...     checkpoint_name(h, "hidden")
+        ...     return torch.relu(h)
+        >>> context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
+        >>> out = checkpoint(fn, x, w, use_reentrant=False, context_fn=context_fn)
+
+    Outside of a selective activation checkpoint context, this is a no-op.
+
+    Args:
+        tensor: The tensor to name.
+        name: An arbitrary name (typically a string).
+    """
+    # During recompute (backward), checkpoint_name() is a no-op
+    if torch._C._current_graph_task_id() != -1:
+        return
+    for hook in _tensor_naming_hooks.values():
+        hook(tensor, name)
+
+
 def _get_current_caching_mode():
     from torch.utils._python_dispatch import _get_current_dispatch_mode_stack
     for mode in reversed(_get_current_dispatch_mode_stack()):
@@ -1348,6 +1397,50 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         self.storage = storage
         self.func_counter: Dict[Any, int] = defaultdict(int)
         self.tensor_tracker: WeakTensorKeyDictionary = WeakTensorKeyDictionary()
+        self._naming_hook_handle: Optional[RemovableHandle] = None
+        # Names arriving before the tensor is tracked (mode ordering issue:
+        # an inner mode like AutoNamingMode names the tensor before we've
+        # returned from our own func(*args, **kwargs) call).
+        self._pending_names: Dict[int, str] = {}
+
+    def __enter__(self):
+        self._naming_hook_handle = _register_tensor_naming_hook(self._on_tensor_named)
+        return super().__enter__()
+
+    def __exit__(self, *args):
+        if self._naming_hook_handle is not None:
+            self._naming_hook_handle.remove()
+            self._naming_hook_handle = None
+        return super().__exit__(*args)
+
+    def _on_tensor_named(self, tensor, name):
+        info = self.tensor_tracker.get(tensor)
+        if info is None:
+            self._pending_names[id(tensor)] = name
+            return
+        self._process_named_tensor(tensor, name, info)
+
+    def _process_named_tensor(self, tensor, name, info):
+        func, idx, any_ret_has_alias_info = info
+
+        policy = self.policy_fn(
+            SelectiveCheckpointContext(is_recompute=False, tensor_name=name),
+            func,
+        )
+        if isinstance(policy, bool):
+            policy = _policy_from_bool(policy)
+
+        is_compiling = _is_compiling(func, (), None)
+
+        if is_compiling:
+            _set_save_policy_for_partitioner(tensor, policy)
+            return
+
+        if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE):
+            self.storage[func][idx] = tree_map(
+                lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)),
+                tensor,
+            )
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
         if func in SAC_IGNORED_OPS:
@@ -1378,11 +1471,20 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         idx = self.func_counter[func]
         self.func_counter[func] += 1
 
-        # Track all output tensors so save() can retroactively cache them
+        # Track all output tensors so checkpoint_name() can retroactively find them
         tree_map(
             lambda x: self.tensor_tracker.__setitem__(x, (func, idx, any_ret_has_alias_info)) if isinstance(x, torch.Tensor) else None,
             out,
         )
+
+        # Process names that arrived while we were inside func() (from an
+        # inner mode that named the tensor before we had a chance to track it).
+        def _check_pending(x):
+            if isinstance(x, torch.Tensor):
+                name = self._pending_names.pop(id(x), None)
+                if name is not None:
+                    self._process_named_tensor(x, name, (func, idx, any_ret_has_alias_info))
+        tree_map(_check_pending, out)
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
             self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
@@ -1513,66 +1615,6 @@ def create_selective_checkpoint_contexts(policy_fn_or_list, allow_cache_entry_mu
     return (
         _CachingTorchDispatchMode(policy_fn, storage),
         _CachedTorchDispatchMode(policy_fn, storage, allow_cache_entry_mutation),
-    )
-
-
-def save(tensor: torch.Tensor) -> None:
-    """Explicitly save a tensor during selective activation checkpointing.
-
-    Call this inside a checkpointed function to pin a specific intermediate
-    tensor, preventing it from being recomputed during backward. Must be used
-    within a ``create_selective_checkpoint_contexts`` context (i.e., via
-    ``context_fn``).
-
-    Example::
-
-        >>> from torch.utils.checkpoint import checkpoint, save, create_selective_checkpoint_contexts
-        >>> import functools
-        >>> def fn(x, w1, w2):
-        ...     h = x @ w1
-        ...     save(h)  # keep h in memory; don't recompute
-        ...     return torch.relu(h) @ w2
-        >>> context_fn = functools.partial(create_selective_checkpoint_contexts,
-        ...     lambda ctx, op, *a, **kw: CheckpointPolicy.PREFER_RECOMPUTE)
-        >>> out = checkpoint(fn, x, w1, w2, use_reentrant=False, context_fn=context_fn)
-
-    Args:
-        tensor: The tensor to save.
-    """
-    # During recompute (backward), save() is a no-op
-    if torch._C._current_graph_task_id() != -1:
-        return
-
-    caching_mode = _get_current_caching_mode()
-    if caching_mode is None:
-        # Under torch.compile, dynamo calls save() with FakeTensors during
-        # graph construction. The actual work happens during AOTAutograd tracing.
-        if isinstance(tensor, torch._subclasses.FakeTensor):
-            return
-        raise RuntimeError(
-            "save() must be called inside a function that is wrapped with "
-            "checkpoint() using a selective activation checkpoint context_fn."
-        )
-
-    info = caching_mode.tensor_tracker.get(tensor)
-    if info is None:
-        raise RuntimeError(
-            "save() could not find the given tensor in the current "
-            "selective activation checkpoint context. Make sure the tensor "
-            "is an output of an operator within the checkpointed region."
-        )
-
-    func, idx, any_ret_has_alias_info = info
-
-    # Under torch.compile, the caching mode already unconditionally saves
-    # all outputs. Just annotate the FX node for the partitioner.
-    if _is_compiling(func, (), None):
-        _set_save_policy_for_partitioner(tensor, CheckpointPolicy.MUST_SAVE)
-        return
-
-    caching_mode.storage[func][idx] = tree_map(
-        lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)),
-        tensor,
     )
 
 
