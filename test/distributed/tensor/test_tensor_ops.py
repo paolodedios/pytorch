@@ -771,12 +771,12 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
 
     def test_index_put_requires_replicated_index(self):
         """Test that index_put correctly replicates sharded indices."""
-        device_mesh = init_device_mesh(self.device_type, (self.world_size,))
-        global_input = torch.randn(4, 8, device=self.device_type)
-        global_value = torch.zeros([8], device=self.device_type)
+        device_mesh = init_device_mesh(self.device_type(), (self.world_size,))
+        global_input = torch.randn(4, 8, device=self.device_type())
+        global_value = torch.zeros([8], device=self.device_type())
 
         # Create sharded index - should be redistributed to replicated
-        idx_tensor = torch.tensor([0, 1], device=self.device_type)
+        idx_tensor = torch.tensor([0, 1], device=self.device_type())
         idx_dt = distribute_tensor(idx_tensor, device_mesh, [Shard(0)])
 
         input_dt = distribute_tensor(global_input, device_mesh, [Replicate()])
@@ -789,10 +789,10 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
 
     def test_index_put_no_shard_on_indexed_dim(self):
         """Test that index_put output is not sharded on indexed dims."""
-        device_mesh = init_device_mesh(self.device_type, (self.world_size,))
-        global_input = torch.randn(4, 8, device=self.device_type)
-        global_value = torch.zeros([8], device=self.device_type)
-        global_index = [torch.tensor(0, device=self.device_type)]
+        device_mesh = init_device_mesh(self.device_type(), (self.world_size,))
+        global_input = torch.randn(4, 8, device=self.device_type())
+        global_value = torch.zeros([8], device=self.device_type())
+        global_index = [torch.tensor(0, device=self.device_type())]
 
         # Shard input on indexed dim 0
         input_dt = distribute_tensor(global_input, device_mesh, [Shard(0)])
@@ -811,10 +811,10 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
 
     def test_index_put_partial_numerics(self):
         """Test index_put with Partial placements produces correct numerics."""
-        device_mesh = init_device_mesh(self.device_type, (self.world_size,))
-        global_input = torch.randn(4, 8, device=self.device_type)
-        global_index = [torch.tensor(1, device=self.device_type)]
-        global_value = torch.randn(8, device=self.device_type)
+        device_mesh = init_device_mesh(self.device_type(), (self.world_size,))
+        global_input = torch.randn(4, 8, device=self.device_type())
+        global_index = [torch.tensor(1, device=self.device_type())]
+        global_value = torch.randn(8, device=self.device_type())
 
         # Create Partial tensors - each rank has partial sum
         local_input = global_input / self.world_size
@@ -835,12 +835,12 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
 
     def test_index_put_duplicated_indices(self):
         """Test index_put with duplicated indices for both accumulate modes."""
-        device_mesh = init_device_mesh(self.device_type, (self.world_size,))
-        global_input = torch.zeros(4, 8, device=self.device_type)
+        device_mesh = init_device_mesh(self.device_type(), (self.world_size,))
+        global_input = torch.zeros(4, 8, device=self.device_type())
         # Duplicated indices - index 1 appears twice
-        idx_tensor = torch.tensor([1, 1, 2], device=self.device_type)
+        idx_tensor = torch.tensor([1, 1, 2], device=self.device_type())
         global_index = [idx_tensor]
-        global_value = torch.ones(3, 8, device=self.device_type)
+        global_value = torch.ones(3, 8, device=self.device_type())
 
         # Shard on non-indexed dim, index must be replicated
         input_dt = distribute_tensor(global_input, device_mesh, [Shard(1)])
@@ -866,13 +866,13 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
 
     def test_index_put_broadcast_values(self):
         """Test index_put where values has size-1 broadcast dims."""
-        device_mesh = init_device_mesh(self.device_type, (self.world_size,))
+        device_mesh = init_device_mesh(self.device_type(), (self.world_size,))
         # self shape (4, 8), index on dim 0 -> non-indexed dim is 1
-        global_input = torch.randn(4, 8, device=self.device_type)
-        idx = torch.tensor([0, 1], device=self.device_type)
+        global_input = torch.randn(4, 8, device=self.device_type())
+        idx = torch.tensor([0, 1], device=self.device_type())
         global_index = [idx]
         # values shape (2, 1) — broadcast on the non-indexed dim
-        global_value = torch.randn(2, 1, device=self.device_type)
+        global_value = torch.randn(2, 1, device=self.device_type())
 
         # Shard self on non-indexed dim 1, values should be replicated (size 1)
         input_dt = distribute_tensor(global_input, device_mesh, [Shard(1)])
@@ -1226,7 +1226,6 @@ class DistArgMaxArgMinTest(DTensorContinuousTestBase):
                 local_result = op(local_tensor, dim=1)
                 self.assertEqual(full_dresult, local_result)
 
-    @with_comms
     def test_argmax_argmin_sharded_reduction_dim(self):
         """Unlike max/min which use reduction_linear=True and produce
         Partial("max")/Partial("min") outputs, argmax/argmin return indices
@@ -1234,8 +1233,8 @@ class DistArgMaxArgMinTest(DTensorContinuousTestBase):
         The strategy sets reduction_linear=False, which forces the input to
         be redistributed to Replicate on the sharded reduction dim before
         the op runs. No Partial placement appears in the output."""
-        mesh = init_device_mesh(self.device_type, (self.world_size,))
-        tensor = torch.tensor(self.sample, device=self.device_type, dtype=torch.float)
+        mesh = init_device_mesh(self.device_type(), (self.world_size,))
+        tensor = torch.tensor(self.sample, device=self.device_type(), dtype=torch.float)
         dtensor = distribute_tensor(tensor, mesh, [Shard(0)])
 
         for op in self._ops:
@@ -1248,6 +1247,7 @@ class DistArgMaxArgMinTest(DTensorContinuousTestBase):
 
 DistArgMaxArgMinTestWithLocalTensor = create_local_tensor_test_class(
     DistArgMaxArgMinTest,
+    base_class=LocalDTensorContinuousTestBase,
 )
 
 DistTensorOpsTestWithLocalTensor = create_local_tensor_test_class(

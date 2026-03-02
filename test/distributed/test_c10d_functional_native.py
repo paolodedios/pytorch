@@ -837,23 +837,23 @@ def find_buffer_assignments(code):
 
 
 class CompileTestCPU(TestCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.rank = 0
-        cls.world_size = 2
-        store = FakeStore()
-        dist.init_process_group(
-            backend="fake",
-            world_size=cls.world_size,
-            rank=cls.rank,
-            store=store,
-        )
+    def setUp(self):
+        super().setUp()
 
-    @classmethod
-    def tearDownClass(cls):
+        if not dist.is_initialized():
+            self.rank = 0
+            self.world_size = 2
+
+            store = FakeStore()
+            dist.init_process_group(
+                backend="fake",
+                world_size=self.world_size,
+                rank=self.rank,
+                store=store,
+            )
+
+    def tearDown(self):
         dist.destroy_process_group()
-        super().tearDownClass()
 
     @fresh_cache()
     def _test_inductor_all_reduce_cpu(self, cpp_wrapper=False):
@@ -892,25 +892,26 @@ class CompileTestCPU(TestCase):
 
 
 class CompileTest(TestCase):
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.rank = 0
-        cls.world_size = 2
-        torch.accelerator.set_device_index(0)
-        cls.device = torch.accelerator.current_accelerator()
-        store = FakeStore()
-        dist.init_process_group(
-            backend="fake",
-            world_size=cls.world_size,
-            rank=cls.rank,
-            store=store,
-        )
+    def setUp(self):
+        super().setUp()
 
-    @classmethod
-    def tearDownClass(cls):
-        dist.destroy_process_group()
-        super().tearDownClass()
+        self.rank = 0
+        self.world_size = 2
+        torch.accelerator.set_device_index(0)
+        self.device = torch.accelerator.current_accelerator()
+
+        if not dist.is_initialized():
+            store = FakeStore()
+            dist.init_process_group(
+                backend="fake",
+                world_size=self.world_size,
+                rank=self.rank,
+                store=store,
+            )
+
+    def tearDown(self):
+        if dist.is_initialized():
+            dist.destroy_process_group()
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     @fresh_cache()
