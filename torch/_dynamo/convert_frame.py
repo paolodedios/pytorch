@@ -121,6 +121,7 @@ from .exc import (
     UncapturedHigherOrderOpError,
     unimplemented,
     Unsupported,
+    UserError,
 )
 from .graph_bytecode_inputs import reset_user_object_tracking
 from .guards import (
@@ -1300,7 +1301,7 @@ def _fullgraph_capture_frame(
             restart_reasons=set(),
         )
         # https://github.com/pytorch/pytorch/blob/main/torch/_dynamo/eval_frame.py#L831
-    except (Unsupported, UncapturedHigherOrderOpError) as e:
+    except (Unsupported, UncapturedHigherOrderOpError, UserError) as e:
         augment_exc_message(e)
         if config.verbose:
             raise
@@ -1598,6 +1599,13 @@ def _compile(
         assert tracer_output.output_graph is not None
         output = tracer_output.output_graph
 
+        from .bytecode_debugger import BREAKPOINT_MARKER
+
+        if BREAKPOINT_MARKER in out_code.co_consts:
+            from torch._C._dynamo.eval_frame import register_breakpoint_code
+
+            register_breakpoint_code(out_code)
+
         # Tests for new code objects.
         # The rationale for these tests can be found in torch/csrc/dynamo/eval_frame.c
         # Only test once the code object is created.
@@ -1888,6 +1896,7 @@ def _compile(
                 e,
                 (
                     Unsupported,
+                    UserError,
                     TorchRuntimeError,
                     BackendCompilerFailed,
                     AssertionError,
@@ -2104,7 +2113,7 @@ class ConvertFrame:
             if isinstance(e, UncapturedHigherOrderOpError):
                 raise
 
-            soft_fail = isinstance(e, Unsupported)
+            soft_fail = isinstance(e, (Unsupported, UserError))
             code = frame.f_code
             # Log soft failure that was not already logged by symbolic_convert.
             # This happens e.g. for graph breaks that are raised in convert_frame.py
@@ -2250,7 +2259,7 @@ class CatchErrorsWrapper:
         assert frame_state is not None
         input_codes.add(frame.f_code)
 
-        is_skipfile = trace_rules.check(frame.f_code)
+        is_skipfile = trace_rules.check(frame.f_code, frame=frame)
         if sys.version_info >= (3, 13):
             has_started_execution = frame.f_lasti > first_real_inst_idx(frame.f_code)
         else:
@@ -2280,7 +2289,7 @@ class CatchErrorsWrapper:
             if log.isEnabledFor(logging.DEBUG):
                 if has_started_execution:
                     skip_reason = "traced frame already"
-                elif trace_rules.check(frame.f_code):
+                elif trace_rules.check(frame.f_code, frame=frame):
                     skip_reason = "in skipfiles"
                 elif should_skip_for_dispatch_mode:
                     skip_reason = "non-infra torch dispatch mode present, this is not supported today in torch.compile"
