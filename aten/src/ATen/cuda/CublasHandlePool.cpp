@@ -205,6 +205,19 @@ size_t getChosenWorkspaceSize() {
   return pool_size;
 }
 
+#define TORCH_CUBLASLT_UNIFIED_WORKSPACE "TORCH_CUBLASLT_UNIFIED_WORKSPACE"
+#ifndef USE_ROCM
+inline bool unified_cublas_and_lt_workspaces() {
+  static auto unified_env_var = c10::utils::check_env(TORCH_CUBLASLT_UNIFIED_WORKSPACE);
+#if !defined(FBCODE)
+  static bool unified = (unified_env_var == std::nullopt) || (unified_env_var == true);
+#else
+  static bool unified = unified_env_var == true;
+#endif
+  return unified;
+}
+#endif
+
 size_t parseCUDABlasLtWorkspaceSize() {
   auto val = c10::utils::get_env("CUBLASLT_WORKSPACE_SIZE");
 #ifdef USE_ROCM
@@ -214,12 +227,12 @@ size_t parseCUDABlasLtWorkspaceSize() {
   }
   size_t workspace_size = 76*1024; /* Use 76 MB for hipBLASLt */
 #else
-#if defined(FBCODE)
-  size_t workspace_size = 1024; /* default size in KiB according to #73328 */
-#else
+if (unified_cublas_and_lt_workspaces()) {
    /* use CUDABlas default workspace size if unified */
   size_t workspace_size = getChosenWorkspaceSize() / 1024;
-#endif
+} else {
+  size_t workspace_size = 1024; /* default size in KiB according to #73328 */
+}
 #endif
 
   if (val.has_value()) {
@@ -241,19 +254,6 @@ size_t parseCUDABlasLtWorkspaceSize() {
   }
   return workspace_size * 1024;
 }
-
-#define TORCH_CUBLASLT_UNIFIED_WORKSPACE "TORCH_CUBLASLT_UNIFIED_WORKSPACE"
-#ifndef USE_ROCM
-inline bool unified_cublas_and_lt_workspaces() {
-  static auto unified_env_var = c10::utils::check_env(TORCH_CUBLASLT_UNIFIED_WORKSPACE);
-#if !defined(FBCODE)
-  static bool unified = (unified_env_var == std::nullopt) || (unified_env_var == true);
-#else
-  static bool unified = unified_env_var == true;
-#endif
-  return unified;
-}
-#endif
 
 size_t getCUDABlasLtWorkspaceSize() {
   size_t pool_size = parseCUDABlasLtWorkspaceSize();
