@@ -7,7 +7,7 @@ import functools
 import logging
 import sys
 import types
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 
 if TYPE_CHECKING:
@@ -76,7 +76,7 @@ def _get_comprehension_result_patterns() -> dict[str, dict[str, Any]]:
     def fn_consumed() -> int:
         return sum([i for i in range(1)])  # noqa: C416
 
-    def extract_pattern(fn: Callable[..., Any]) -> tuple[list[str], Optional[str]]:
+    def extract_pattern(fn: Callable[..., Any]) -> tuple[list[str], str | None]:
         """Extract (pre_store_ops, post_store_op) from comprehension bytecode."""
         target_line = list(dis.findlinestarts(fn.__code__))[1][1]
         insts: list[str] = []
@@ -129,7 +129,7 @@ class ComprehensionAnalysis:
     """
 
     end_ip: int
-    result_var: Optional[str]
+    result_var: str | None
     result_on_stack: bool
     iterator_vars: list[str]
     walrus_vars: list[str]
@@ -267,7 +267,7 @@ def _analyze_comprehension(tx: InstructionTranslatorBase) -> ComprehensionAnalys
             post_store_op == pat["post_store_op"] or not pat["post_store_op"]
         )
 
-    result_var: Optional[str] = None
+    result_var: str | None = None
     if matches("stored"):
         result_var = tx.instructions[store_fast_ip].argval
         result_on_stack = False
