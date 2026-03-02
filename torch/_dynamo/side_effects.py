@@ -264,6 +264,9 @@ class SideEffects:
         if isinstance(item, AutogradFunctionContextVariable):
             return True
         if self.should_allow_externally_visible_side_effects_in_subtracer():
+            output_graph = self.output_graph_weakref()
+            if output_graph:
+                output_graph.current_tx.output.current_tracer.has_side_effect = True
             return True
         if self.should_allow_side_effects_in_hop():
             output_graph = self.output_graph_weakref()
