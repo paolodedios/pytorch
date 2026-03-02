@@ -612,7 +612,7 @@ pointwise_ops = [
     *non_decreasing_unary_ops,
     *non_increasing_unary_ops,
     *linear_nondecreasing_unary_ops,
-    *all_partial_preserving_unary_ops,
+    *[op for op in all_partial_preserving_unary_ops if op != aten.to.dtype],
     *monotonic_binary_ops,
     *[
         op
