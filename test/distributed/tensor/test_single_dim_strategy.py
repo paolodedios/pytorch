@@ -842,11 +842,15 @@ class TestExpandPlaceholder(TestCase):
             [Replicate(), Replicate(), Replicate()],  # All replicated
         ]
 
+        # input_index=0 matches the real dispatch path: _get_num_tensor_inputs
+        # counts the out kwarg, so num_outputs=0. The infra locally adjusts
+        # input_index to 1 and auto-appends the out kwarg placement.
         result = expand_to_full_mesh_op_strategy(
             mesh,
             op_schema,
             single_mesh_dim_strategies,
             output_tensor_meta=meta,
+            input_index=0,
         )
 
         # All strategies in result should have output placement matching out kwarg (Replicate)
@@ -887,11 +891,13 @@ class TestExpandPlaceholder(TestCase):
             [Replicate(), Replicate(), Replicate()],
         ]
 
+        # input_index=0 matches the real dispatch path.
         result = expand_to_full_mesh_op_strategy(
             mesh,
             op_schema,
             single_mesh_dim_strategies,
             output_tensor_meta=meta,
+            input_index=0,
         )
 
         self.assertIsInstance(result, OpStrategy)
