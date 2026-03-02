@@ -22,6 +22,15 @@
 namespace at::native {
 namespace {
 
+// Temporary: allow disabling NEON upsample path for A/B benchmarking.
+// Set PYTORCH_DISABLE_NEON_UPSAMPLE=1 to force the generic path.
+#if defined(__aarch64__)
+static bool neon_upsample_enabled() {
+  static bool enabled = !c10::utils::check_env("PYTORCH_DISABLE_NEON_UPSAMPLE").value_or(false);
+  return enabled;
+}
+#endif
+
 using scale_t = std::vector<std::optional<double>>;
 
 // TODO: this file could benefit from a global renaming of its functions /
@@ -1814,17 +1823,6 @@ void upsample_bilinear2d_kernel_impl(
           output, input, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
       }
-    #elif defined(__aarch64__)
-      if (input.size(1) == 3 && input.is_contiguous(at::MemoryFormat::ChannelsLast)
-          && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
-        upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(input,
-          output, align_corners, {scales_h, scales_w},
-          /*antialias=*/false);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/false);
-      }
     #else  // CPU_CAPABILITY_AVX2
       separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
         output, input, align_corners, {scales_h, scales_w},
@@ -1853,7 +1851,8 @@ void upsample_bilinear2d_aa_kernel_impl(
         /*antialias=*/true);
   }
 #elif defined(__aarch64__)
-  if (input.dtype() == at::kByte && input.size(1) == 3
+  if (input.dtype() == at::kByte && neon_upsample_enabled()
+      && input.size(1) == 3
       && input.is_contiguous(at::MemoryFormat::ChannelsLast)
       && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
     upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
@@ -1906,17 +1905,6 @@ void upsample_bicubic2d_kernel_impl(
           output, input, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
       }
-    #elif defined(__aarch64__)
-      if (input.size(1) == 3 && input.is_contiguous(at::MemoryFormat::ChannelsLast)
-          && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
-        upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(input,
-          output, align_corners, {scales_h, scales_w},
-          /*antialias=*/false);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/false);
-      }
     #else  // CPU_CAPABILITY_AVX2
       separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
         output, input, align_corners, {scales_h, scales_w},
@@ -1939,18 +1927,6 @@ void upsample_bicubic2d_aa_kernel_impl(
 #ifdef CPU_CAPABILITY_AVX2
   if (input.dtype() == at::kByte && input.size(1) <= 4) {
     upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
-      input, output, align_corners, {scales_h, scales_w},
-      /*antialias=*/true);
-  } else {
-    separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-        output, input, align_corners, {scales_h, scales_w},
-        /*antialias=*/true);
-  }
-#elif defined(__aarch64__)
-  if (input.dtype() == at::kByte && input.size(1) == 3
-      && input.is_contiguous(at::MemoryFormat::ChannelsLast)
-      && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
-    upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
       input, output, align_corners, {scales_h, scales_w},
       /*antialias=*/true);
   } else {

@@ -1,3 +1,8 @@
+// NEON-optimized uint8 bilinear resize with antialiasing for aarch64.
+//
+// This is the NEON counterpart of UpSampleKernelAVXAntialias.h.
+// It only supports num_channels == 3 with channels-last input.
+
 #pragma once
 #if defined(__aarch64__)
 
@@ -13,63 +18,70 @@
 
 namespace {
 
-// Emulate SSE _mm_madd_epi16: multiply int16 pairs and add adjacent results
+// Emulate SSE _mm_madd_epi16: multiply 8 int16 pairs element-wise, then add
+// adjacent 32-bit products pairwise, producing 4 int32 results.
+// [a0*b0+a1*b1, a2*b2+a3*b3, a4*b4+a5*b5, a6*b6+a7*b7]
 inline int32x4_t neon_madd_s16(int16x8_t a, int16x8_t b) {
   int32x4_t prod_low = vmull_s16(vget_low_s16(a), vget_low_s16(b));
   int32x4_t prod_high = vmull_s16(vget_high_s16(a), vget_high_s16(b));
   return vpaddq_s32(prod_low, prod_high);
 }
 
-// Forward declarations
-void NeonResampleHorizontalConvolution8u4x(
-    uint8_t* C10_RESTRICT lineOut0,
-    uint8_t* C10_RESTRICT lineOut1,
-    uint8_t* C10_RESTRICT lineOut2,
-    uint8_t* C10_RESTRICT lineOut3,
-    int64_t out_xsize,
-    const uint8_t* C10_RESTRICT lineIn0,
-    const uint8_t* C10_RESTRICT lineIn1,
-    const uint8_t* C10_RESTRICT lineIn2,
-    const uint8_t* C10_RESTRICT lineIn3,
-    int64_t in_xsize,
-    const int64_t* idx_ptr_xmin,
-    const int64_t* idx_ptr_size,
-    const int16_t* kk,
-    int kmax,
-    unsigned int coefs_precision,
-    int64_t num_channels);
+void NeonResampleHorizontalConvolution8u4x(uint8_t* C10_RESTRICT lineOut0,
+                                           uint8_t* C10_RESTRICT lineOut1,
+                                           uint8_t* C10_RESTRICT lineOut2,
+                                           uint8_t* C10_RESTRICT lineOut3,
+                                           int64_t out_xsize,
+                                           const uint8_t* C10_RESTRICT lineIn0,
+                                           const uint8_t* C10_RESTRICT lineIn1,
+                                           const uint8_t* C10_RESTRICT lineIn2,
+                                           const uint8_t* C10_RESTRICT lineIn3,
+                                           int64_t in_xsize,
+                                           const int64_t* idx_ptr_xmin,
+                                           const int64_t* idx_ptr_size,
+                                           const int16_t* kk,
+                                           int kmax,
+                                           unsigned int coefs_precision,
+                                           int64_t num_channels);
 
-void NeonResampleHorizontalConvolution8u(
-    uint8_t* C10_RESTRICT lineOut,
-    int64_t out_xsize,
-    const uint8_t* C10_RESTRICT lineIn,
-    int64_t in_xsize,
-    const int64_t* idx_ptr_xmin,
-    const int64_t* idx_ptr_size,
-    const int16_t* kk,
-    int kmax,
-    unsigned int coefs_precision,
-    int64_t num_channels);
+void NeonResampleHorizontalConvolution8u(uint8_t* C10_RESTRICT lineOut,
+                                         int64_t out_xsize,
+                                         const uint8_t* C10_RESTRICT lineIn,
+                                         int64_t in_xsize,
+                                         const int64_t* idx_ptr_xmin,
+                                         const int64_t* idx_ptr_size,
+                                         const int16_t* kk,
+                                         int kmax,
+                                         unsigned int coefs_precision,
+                                         int64_t num_channels);
 
-void NeonResampleVerticalConvolution8u(
-    uint8_t* C10_RESTRICT lineOut,
-    const uint8_t* C10_RESTRICT lineIn,
-    int64_t xsize,
-    int64_t ids_min,
-    int64_t ids_size,
-    const int16_t* k,
-    unsigned int coefs_precision,
-    int64_t num_channels);
+void NeonResampleVerticalConvolution8u(uint8_t* C10_RESTRICT lineOut,
+                                       const uint8_t* C10_RESTRICT lineIn,
+                                       int64_t xsize,
+                                       int64_t ids_min,
+                                       int64_t ids_size,
+                                       const int16_t* k,
+                                       unsigned int coefs_precision,
+                                       int64_t num_channels);
 
-void NeonResampleHorizontal(
-    const at::Tensor& unpacked_output,
-    const at::Tensor& unpacked_input,
-    int ksize,
-    const std::vector<at::Tensor>& horiz_indices_weights,
-    unsigned int horiz_weights_precision) {
-
-  const auto* kk =
-      (const int16_t*)(horiz_indices_weights[3].const_data_ptr<double>());
+// Interpolation horizontal pass: compute x-axis interpolation outputs.
+//
+// Input data is interleaved RGB:
+//   input = [r0, g0, b0, r1, g1, b1, r2, g2, b2, ...]
+// Weights are float values rescaled to int16:
+//   weights[i] = [w[i, 0], w[i, 1], ..., w[i, K-1]]
+// For each output pixel i, we compute:
+//   oR[i] = r[xmin[i]] * w[i,0] + ... + r[xmin[i]+K-1] * w[i,K-1]
+//   oG[i] = g[xmin[i]] * w[i,0] + ... + g[xmin[i]+K-1] * w[i,K-1]
+//   oB[i] = b[xmin[i]] * w[i,0] + ... + b[xmin[i]+K-1] * w[i,K-1]
+//
+// Processes 4 rows at a time (4x variant) with a 1-row tail loop.
+void NeonResampleHorizontal(const at::Tensor& unpacked_output,
+                            const at::Tensor& unpacked_input,
+                            int ksize,
+                            const std::vector<at::Tensor>& horiz_indices_weights,
+                            unsigned int horiz_weights_precision) {
+  const auto* kk = (const int16_t*)(horiz_indices_weights[3].const_data_ptr<double>());
 
   auto xout = unpacked_output.size(2);
   auto yin = unpacked_output.size(1);
@@ -77,10 +89,8 @@ void NeonResampleHorizontal(
   const auto num_channels = unpacked_input.size(0);
   TORCH_INTERNAL_ASSERT(num_channels == 3);
 
-  const int64_t* idx_ptr_xmin =
-      horiz_indices_weights[0].const_data_ptr<int64_t>();
-  const int64_t* idx_ptr_size =
-      horiz_indices_weights[1].const_data_ptr<int64_t>();
+  const int64_t* idx_ptr_xmin = horiz_indices_weights[0].const_data_ptr<int64_t>();
+  const int64_t* idx_ptr_size = horiz_indices_weights[1].const_data_ptr<int64_t>();
 
   uint8_t* output_p = unpacked_output.data_ptr<uint8_t>();
   const uint8_t* input_p = unpacked_input.const_data_ptr<uint8_t>();
@@ -90,53 +100,53 @@ void NeonResampleHorizontal(
 
   int64_t yy = 0;
   for (; yy < yin - 3; yy += 4) {
-    NeonResampleHorizontalConvolution8u4x(
-        output_p + yy * xout_stride,
-        output_p + (yy + 1) * xout_stride,
-        output_p + (yy + 2) * xout_stride,
-        output_p + (yy + 3) * xout_stride,
-        xout,
-        input_p + yy * xin_stride,
-        input_p + (yy + 1) * xin_stride,
-        input_p + (yy + 2) * xin_stride,
-        input_p + (yy + 3) * xin_stride,
-        xin,
-        idx_ptr_xmin,
-        idx_ptr_size,
-        kk,
-        ksize,
-        horiz_weights_precision,
-        num_channels);
+    NeonResampleHorizontalConvolution8u4x(output_p + yy * xout_stride,
+                                          output_p + (yy + 1) * xout_stride,
+                                          output_p + (yy + 2) * xout_stride,
+                                          output_p + (yy + 3) * xout_stride,
+                                          xout,
+                                          input_p + yy * xin_stride,
+                                          input_p + (yy + 1) * xin_stride,
+                                          input_p + (yy + 2) * xin_stride,
+                                          input_p + (yy + 3) * xin_stride,
+                                          xin,
+                                          idx_ptr_xmin,
+                                          idx_ptr_size,
+                                          kk,
+                                          ksize,
+                                          horiz_weights_precision,
+                                          num_channels);
   }
   for (; yy < yin; yy++) {
-    NeonResampleHorizontalConvolution8u(
-        output_p + yy * xout_stride,
-        xout,
-        input_p + yy * xin_stride,
-        xin,
-        idx_ptr_xmin,
-        idx_ptr_size,
-        kk,
-        ksize,
-        horiz_weights_precision,
-        num_channels);
+    NeonResampleHorizontalConvolution8u(output_p + yy * xout_stride,
+                                        xout,
+                                        input_p + yy * xin_stride,
+                                        xin,
+                                        idx_ptr_xmin,
+                                        idx_ptr_size,
+                                        kk,
+                                        ksize,
+                                        horiz_weights_precision,
+                                        num_channels);
   }
 }
 
-void NeonResampleVertical(
-    const at::Tensor& unpacked_output,
-    const at::Tensor& unpacked_input,
-    int ksize,
-    const std::vector<at::Tensor>& vert_indices_weights,
-    unsigned int vert_weights_precision) {
+// Interpolation vertical pass: compute y-axis interpolation outputs.
+//
+// Input data is interleaved RGB:
+//   input = [r0, g0, b0, r1, g1, b1, ...]
+// For each output row yy, we compute a weighted sum of ids_size input rows:
+//   oC[x] = C[ymin[yy] * xstride + x] * w[yy,0] + ... + C[(ymin[yy]+K-1) * xstride + x] * w[yy,K-1]
+// for each channel C in {R, G, B} and each horizontal position x.
+void NeonResampleVertical(const at::Tensor& unpacked_output,
+                          const at::Tensor& unpacked_input,
+                          int ksize,
+                          const std::vector<at::Tensor>& vert_indices_weights,
+                          unsigned int vert_weights_precision) {
+  const auto* kk = (const int16_t*)(vert_indices_weights[3].const_data_ptr<double>());
 
-  const auto* kk =
-      (const int16_t*)(vert_indices_weights[3].const_data_ptr<double>());
-
-  const int64_t* idx_ptr_xmin =
-      vert_indices_weights[0].const_data_ptr<int64_t>();
-  const int64_t* idx_ptr_size =
-      vert_indices_weights[1].const_data_ptr<int64_t>();
+  const int64_t* idx_ptr_xmin = vert_indices_weights[0].const_data_ptr<int64_t>();
+  const int64_t* idx_ptr_size = vert_indices_weights[1].const_data_ptr<int64_t>();
 
   uint8_t* output_p = unpacked_output.data_ptr<uint8_t>();
   const uint8_t* input_p = unpacked_input.const_data_ptr<uint8_t>();
@@ -152,29 +162,29 @@ void NeonResampleVertical(
     auto ids_min = idx_ptr_xmin[yy];
     auto ids_size = idx_ptr_size[yy];
     NeonResampleVerticalConvolution8u(
-        output_p + yy * xout_stride,
-        input_p,
-        xout,
-        ids_min,
-        ids_size,
-        k,
-        vert_weights_precision,
-        num_channels);
+        output_p + yy * xout_stride, input_p, xout, ids_min, ids_size, k, vert_weights_precision, num_channels);
   }
 }
 
-// Main entry point. Supports bilinear or bicubic mode for uint8 dtype with
-// num_channels == 3 and channels-last memory format, with or without antialias.
+// Main entry point for NEON-accelerated uint8 bilinear resize.
+//
+// Only supports num_channels == 3 with channels-last memory format.
 // Mirrors upsample_avx_bilinear_bicubic_uint8 but uses NEON intrinsics and
-// works directly on interleaved RGB data (no unpack/pack needed).
+// works directly on interleaved RGB data (no unpack/pack step needed).
+//
+// The resize is separable: we first resize horizontally (if needed), store
+// the result in an intermediate buffer, then resize vertically (if needed).
+// When only one dimension changes, the intermediate buffer is skipped.
+//
+// Weights are computed as int16 values by compute_index_ranges_int16_weights
+// with align_i32=false (no int32 alignment padding needed, unlike AVX2 which
+// processes pixels as 4-byte RGBA units).
 template <typename scale_type, class F>
-void upsample_neon_bilinear_bicubic_uint8(
-    const at::Tensor& input_,
-    const at::Tensor& output,
-    bool align_corners,
-    const scale_type& scales,
-    bool antialias) {
-
+void upsample_neon_bilinear_bicubic_uint8(const at::Tensor& input_,
+                                          const at::Tensor& output,
+                                          bool align_corners,
+                                          const scale_type& scales,
+                                          bool antialias) {
   auto batch_size = input_.size(0);
   auto num_channels = input_.size(1);
   auto xin = input_.size(3);
@@ -201,32 +211,30 @@ void upsample_neon_bilinear_bicubic_uint8(
 
   if (need_horizontal) {
     int interp_dim = 3;
-    std::tie(horiz_indices_weights, ksize_horiz, horiz_weights_precision) =
-        F::compute_index_ranges_int16_weights(
-            /*input_size=*/xin,
-            /*output_size=*/xout,
-            /*stride=*/num_channels,
-            /*ndims=*/4,
-            /*reshape_dim=*/interp_dim,
-            /*align_corners=*/align_corners,
-            /*opt_scale=*/scales[interp_dim - 2],
-            /*antialias=*/antialias,
-            /*align_i32=*/false);
+    std::tie(horiz_indices_weights, ksize_horiz, horiz_weights_precision) = F::compute_index_ranges_int16_weights(
+        /*input_size=*/xin,
+        /*output_size=*/xout,
+        /*stride=*/num_channels,
+        /*ndims=*/4,
+        /*reshape_dim=*/interp_dim,
+        /*align_corners=*/align_corners,
+        /*opt_scale=*/scales[interp_dim - 2],
+        /*antialias=*/antialias,
+        /*align_i32=*/false);
   }
 
   if (need_vertical) {
     int interp_dim = 2;
-    std::tie(vert_indices_weights, ksize_vert, vert_weights_precision) =
-        F::compute_index_ranges_int16_weights(
-            /*input_size=*/yin,
-            /*output_size=*/yout,
-            /*stride=*/num_channels * xout,
-            /*ndims=*/4,
-            /*reshape_dim=*/interp_dim,
-            /*align_corners=*/align_corners,
-            /*opt_scale=*/scales[interp_dim - 2],
-            /*antialias=*/antialias,
-            /*align_i32=*/false);
+    std::tie(vert_indices_weights, ksize_vert, vert_weights_precision) = F::compute_index_ranges_int16_weights(
+        /*input_size=*/yin,
+        /*output_size=*/yout,
+        /*stride=*/num_channels * xout,
+        /*ndims=*/4,
+        /*reshape_dim=*/interp_dim,
+        /*align_corners=*/align_corners,
+        /*opt_scale=*/scales[interp_dim - 2],
+        /*antialias=*/antialias,
+        /*align_i32=*/false);
   }
 
   at::Tensor buffer_horiz;
@@ -239,39 +247,39 @@ void upsample_neon_bilinear_bicubic_uint8(
 
     if (need_horizontal) {
       at::Tensor horiz_output = need_vertical ? buffer_horiz : output[i];
-      NeonResampleHorizontal(
-          horiz_output,
-          input_slice,
-          ksize_horiz,
-          horiz_indices_weights,
-          horiz_weights_precision);
+      NeonResampleHorizontal(horiz_output, input_slice, ksize_horiz, horiz_indices_weights, horiz_weights_precision);
       if (need_vertical) {
         input_slice = horiz_output;
       }
     }
     if (need_vertical) {
-      NeonResampleVertical(
-          output[i],
-          input_slice,
-          ksize_vert,
-          vert_indices_weights,
-          vert_weights_precision);
+      NeonResampleVertical(output[i], input_slice, ksize_vert, vert_indices_weights, vert_weights_precision);
     }
   }
 }
 
 // ---- Convolution implementations ----
 
-void NeonResampleVerticalConvolution8u(
-    uint8_t* C10_RESTRICT lineOut,
-    const uint8_t* C10_RESTRICT lineIn,
-    int64_t xsize,
-    int64_t ids_min,
-    int64_t ids_size,
-    const int16_t* k,
-    unsigned int coefs_precision,
-    int64_t num_channels) {
-
+// Vertical convolution for one output row.
+// Computes a weighted sum of ids_size input rows for all x positions.
+//
+// The data is treated as a flat byte array of size xsize * num_channels.
+// We process 16 bytes at a time in the NEON path, then fall back to scalar
+// for the remainder. The vertical pass doesn't need channel deinterleaving
+// because the same weight applies to all channels at a given (x, y) position.
+//
+// To process 2 weights at a time, we interleave pixels from two input rows
+// using vzipq_u8, then use neon_madd_s16 (which pairs adjacent int16 values,
+// multiplies, and adds) so that each pair [pixel_row_i, pixel_row_i+1] is
+// multiplied by [w_i, w_i+1] and summed in one operation.
+void NeonResampleVerticalConvolution8u(uint8_t* C10_RESTRICT lineOut,
+                                       const uint8_t* C10_RESTRICT lineIn,
+                                       int64_t xsize,
+                                       int64_t ids_min,
+                                       int64_t ids_size,
+                                       const int16_t* k,
+                                       unsigned int coefs_precision,
+                                       int64_t num_channels) {
   const int64_t stride = num_channels;
   const int64_t data_size = xsize * stride;
   const int32_t initial_val = 1 << (coefs_precision - 1);
@@ -279,7 +287,8 @@ void NeonResampleVerticalConvolution8u(
 
   int64_t j = 0;
 
-  // Process 16 bytes at a time
+  // Process 16 bytes at a time using 4 accumulators (sss0..sss3),
+  // each holding 4 int32 partial sums.
   for (; j + 16 <= data_size; j += 16) {
     int32x4_t sss0 = initial;
     int32x4_t sss1 = initial;
@@ -288,7 +297,11 @@ void NeonResampleVerticalConvolution8u(
 
     const uint8_t* lineIn_min = lineIn + j + ids_min;
 
-    // Process 2 weights at a time
+    // Process 2 weights at a time by interleaving rows.
+    // For weights w0, w1 and pixel bytes from row_i and row_{i+1}:
+    //   mmk = [w0, w1, w0, w1, w0, w1, w0, w1]
+    //   vzipq interleaves: [r0_0, r1_0, r0_1, r1_1, ...] (from 2 rows)
+    //   neon_madd_s16 computes: r0_0*w0 + r1_0*w1, r0_1*w0 + r1_1*w1, ...
     int64_t i = 0;
     for (; i + 1 < ids_size; i += 2) {
       int16_t w0 = k[i];
@@ -300,14 +313,10 @@ void NeonResampleVerticalConvolution8u(
 
       uint8x16x2_t interleaved = vzipq_u8(src1, src2);
 
-      int16x8_t pix0 = vreinterpretq_s16_u16(
-          vmovl_u8(vget_low_u8(interleaved.val[0])));
-      int16x8_t pix1 = vreinterpretq_s16_u16(
-          vmovl_u8(vget_high_u8(interleaved.val[0])));
-      int16x8_t pix2 = vreinterpretq_s16_u16(
-          vmovl_u8(vget_low_u8(interleaved.val[1])));
-      int16x8_t pix3 = vreinterpretq_s16_u16(
-          vmovl_u8(vget_high_u8(interleaved.val[1])));
+      int16x8_t pix0 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(interleaved.val[0])));
+      int16x8_t pix1 = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(interleaved.val[0])));
+      int16x8_t pix2 = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(interleaved.val[1])));
+      int16x8_t pix3 = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(interleaved.val[1])));
 
       sss0 = vaddq_s32(sss0, neon_madd_s16(pix0, mmk));
       sss1 = vaddq_s32(sss1, neon_madd_s16(pix1, mmk));
@@ -315,7 +324,7 @@ void NeonResampleVerticalConvolution8u(
       sss3 = vaddq_s32(sss3, neon_madd_s16(pix3, mmk));
     }
 
-    // Handle remaining single weight
+    // Handle remaining single weight (when ids_size is odd)
     for (; i < ids_size; i++) {
       int16x8_t mmk = vdupq_n_s16(k[i]);
 
@@ -324,25 +333,25 @@ void NeonResampleVerticalConvolution8u(
       int16x8_t pix_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(src)));
       int16x8_t pix_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(src)));
 
-      sss0 = vaddq_s32(
-          sss0, vmull_s16(vget_low_s16(pix_lo), vget_low_s16(mmk)));
-      sss1 = vaddq_s32(
-          sss1, vmull_s16(vget_high_s16(pix_lo), vget_high_s16(mmk)));
-      sss2 = vaddq_s32(
-          sss2, vmull_s16(vget_low_s16(pix_hi), vget_low_s16(mmk)));
-      sss3 = vaddq_s32(
-          sss3, vmull_s16(vget_high_s16(pix_hi), vget_high_s16(mmk)));
+      sss0 = vaddq_s32(sss0, vmull_s16(vget_low_s16(pix_lo), vget_low_s16(mmk)));
+      sss1 = vaddq_s32(sss1, vmull_s16(vget_high_s16(pix_lo), vget_high_s16(mmk)));
+      sss2 = vaddq_s32(sss2, vmull_s16(vget_low_s16(pix_hi), vget_low_s16(mmk)));
+      sss3 = vaddq_s32(sss3, vmull_s16(vget_high_s16(pix_hi), vget_high_s16(mmk)));
     }
 
+    // Right-shift accumulators by coefs_precision to convert fixed-point -> int
     int32x4_t shift = vdupq_n_s32(-static_cast<int32_t>(coefs_precision));
     sss0 = vshlq_s32(sss0, shift);
     sss1 = vshlq_s32(sss1, shift);
     sss2 = vshlq_s32(sss2, shift);
     sss3 = vshlq_s32(sss3, shift);
 
+    // Narrow int32 -> int16 (with saturation), then int16 -> uint8 (with
+    // saturation), clamping to [0, 255]
     int16x8_t narrow_lo = vcombine_s16(vqmovn_s32(sss0), vqmovn_s32(sss1));
     int16x8_t narrow_hi = vcombine_s16(vqmovn_s32(sss2), vqmovn_s32(sss3));
 
+    // Store 16 output bytes
     vst1_u8(lineOut + j, vqmovun_s16(narrow_lo));
     vst1_u8(lineOut + j + 8, vqmovun_s16(narrow_hi));
   }
@@ -357,29 +366,41 @@ void NeonResampleVerticalConvolution8u(
     }
 
     sss >>= coefs_precision;
-    lineOut[j] =
-        static_cast<uint8_t>(std::clamp(sss, 0, 255));
+    lineOut[j] = static_cast<uint8_t>(std::clamp(sss, 0, 255));
   }
 }
 
-void NeonResampleHorizontalConvolution8u4x(
-    uint8_t* C10_RESTRICT lineOut0,
-    uint8_t* C10_RESTRICT lineOut1,
-    uint8_t* C10_RESTRICT lineOut2,
-    uint8_t* C10_RESTRICT lineOut3,
-    int64_t out_xsize,
-    const uint8_t* C10_RESTRICT lineIn0,
-    const uint8_t* C10_RESTRICT lineIn1,
-    const uint8_t* C10_RESTRICT lineIn2,
-    const uint8_t* C10_RESTRICT lineIn3,
-    int64_t in_xsize,
-    const int64_t* idx_ptr_xmin,
-    const int64_t* idx_ptr_size,
-    const int16_t* kk,
-    int kmax,
-    unsigned int coefs_precision,
-    int64_t num_channels) {
-
+// Horizontal convolution processing 4 rows simultaneously.
+//
+// For each output pixel out_x, computes the weighted sum of ids_size input
+// pixels using the weight vector k[]. Uses vld3_u8 to load 8 interleaved RGB
+// pixels and deinterleave them into separate R, G, B vectors. This avoids
+// the shuffle masks needed by the AVX2 path.
+//
+// The weight vector is split as: ids_size = num_blocks_8 * 8 + num_blocks_4 * 4 + remainder.
+// We process 8 weights, then 4 weights in vectorized loops, then handle
+// remaining weights in a scalar cleanup loop. Accumulators are kept per-channel
+// per-row (acc{row}_{r,g,b}) in int32 to avoid overflow.
+//
+// After the NEON loops, the 4 int32 lanes of each accumulator are reduced to
+// a single int32 via vaddvq_s32, then scalar cleanup handles any leftover
+// weights. The final result is right-shifted and clamped to [0, 255].
+void NeonResampleHorizontalConvolution8u4x(uint8_t* C10_RESTRICT lineOut0,
+                                           uint8_t* C10_RESTRICT lineOut1,
+                                           uint8_t* C10_RESTRICT lineOut2,
+                                           uint8_t* C10_RESTRICT lineOut3,
+                                           int64_t out_xsize,
+                                           const uint8_t* C10_RESTRICT lineIn0,
+                                           const uint8_t* C10_RESTRICT lineIn1,
+                                           const uint8_t* C10_RESTRICT lineIn2,
+                                           const uint8_t* C10_RESTRICT lineIn3,
+                                           int64_t in_xsize,
+                                           const int64_t* idx_ptr_xmin,
+                                           const int64_t* idx_ptr_size,
+                                           const int16_t* kk,
+                                           int kmax,
+                                           unsigned int coefs_precision,
+                                           int64_t num_channels) {
   const int64_t stride = num_channels;
   const int32_t initial_val = 1 << (coefs_precision - 1);
 
@@ -393,18 +414,19 @@ void NeonResampleHorizontalConvolution8u4x(
     const uint8_t* lineIn2_min = lineIn2 + ids_min;
     const uint8_t* lineIn3_min = lineIn3 + ids_min;
 
-    int32x4_t acc0_r = vdupq_n_s32(0), acc0_g = vdupq_n_s32(0),
-              acc0_b = vdupq_n_s32(0);
-    int32x4_t acc1_r = vdupq_n_s32(0), acc1_g = vdupq_n_s32(0),
-              acc1_b = vdupq_n_s32(0);
-    int32x4_t acc2_r = vdupq_n_s32(0), acc2_g = vdupq_n_s32(0),
-              acc2_b = vdupq_n_s32(0);
-    int32x4_t acc3_r = vdupq_n_s32(0), acc3_g = vdupq_n_s32(0),
-              acc3_b = vdupq_n_s32(0);
+    int32x4_t acc0_r = vdupq_n_s32(0), acc0_g = vdupq_n_s32(0), acc0_b = vdupq_n_s32(0);
+    int32x4_t acc1_r = vdupq_n_s32(0), acc1_g = vdupq_n_s32(0), acc1_b = vdupq_n_s32(0);
+    int32x4_t acc2_r = vdupq_n_s32(0), acc2_g = vdupq_n_s32(0), acc2_b = vdupq_n_s32(0);
+    int32x4_t acc3_r = vdupq_n_s32(0), acc3_g = vdupq_n_s32(0), acc3_b = vdupq_n_s32(0);
 
     int64_t i = 0;
 
-    // Process 8 pixels at a time: load weights once, apply to 4 rows
+    // Block 8: process 8 input pixels at a time.
+    // vld3_u8 loads 24 bytes (8 RGB pixels) and deinterleaves into 3 uint8x8
+    // vectors (one per channel). Each channel vector is widened to int16x8,
+    // then multiplied with the 8 int16 weights using vmlal_s16 (multiply-
+    // accumulate long: int16 * int16 -> int32, accumulated into int32x4).
+    // The low and high halves of each channel are processed separately.
     for (; i + 8 <= ids_size; i += 8) {
       int16x8_t weights = vld1q_s16(&k[i]);
       int16x4_t w_lo = vget_low_s16(weights);
@@ -459,7 +481,8 @@ void NeonResampleHorizontalConvolution8u4x(
       acc3_b = vmlal_s16(acc3_b, vget_high_s16(b3), w_hi);
     }
 
-    // Process 4 pixels at a time
+    // Block 4: same as block 8 but only 4 pixels, using int16x4 weights.
+    // vld3_u8 still loads 8 pixels but we only use the low 4 channels.
     for (; i + 4 <= ids_size; i += 4) {
       int16x4_t w4 = vld1_s16(&k[i]);
 
@@ -484,6 +507,8 @@ void NeonResampleHorizontalConvolution8u4x(
       acc3_b = vmlal_s16(acc3_b, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb3.val[2]))), w4);
     }
 
+    // Horizontal reduction: sum all 4 lanes of each accumulator into a scalar,
+    // then add the rounding bias (initial_val = 1 << (precision - 1))
     int32_t s0_r = vaddvq_s32(acc0_r) + initial_val;
     int32_t s0_g = vaddvq_s32(acc0_g) + initial_val;
     int32_t s0_b = vaddvq_s32(acc0_b) + initial_val;
@@ -497,17 +522,25 @@ void NeonResampleHorizontalConvolution8u4x(
     int32_t s3_g = vaddvq_s32(acc3_g) + initial_val;
     int32_t s3_b = vaddvq_s32(acc3_b) + initial_val;
 
-    // Scalar cleanup for remaining pixels
+    // Scalar cleanup for remaining pixels (when ids_size is not a multiple of 4)
     for (; i < ids_size; i++) {
       int16_t w = k[i];
       const uint8_t* p0 = lineIn0_min + stride * i;
       const uint8_t* p1 = lineIn1_min + stride * i;
       const uint8_t* p2 = lineIn2_min + stride * i;
       const uint8_t* p3 = lineIn3_min + stride * i;
-      s0_r += w * p0[0]; s0_g += w * p0[1]; s0_b += w * p0[2];
-      s1_r += w * p1[0]; s1_g += w * p1[1]; s1_b += w * p1[2];
-      s2_r += w * p2[0]; s2_g += w * p2[1]; s2_b += w * p2[2];
-      s3_r += w * p3[0]; s3_g += w * p3[1]; s3_b += w * p3[2];
+      s0_r += w * p0[0];
+      s0_g += w * p0[1];
+      s0_b += w * p0[2];
+      s1_r += w * p1[0];
+      s1_g += w * p1[1];
+      s1_b += w * p1[2];
+      s2_r += w * p2[0];
+      s2_g += w * p2[1];
+      s2_b += w * p2[2];
+      s3_r += w * p3[0];
+      s3_g += w * p3[1];
+      s3_b += w * p3[2];
     }
 
     auto clamp_and_shift = [coefs_precision](int32_t v) -> uint8_t {
@@ -533,18 +566,19 @@ void NeonResampleHorizontalConvolution8u4x(
   }
 }
 
-void NeonResampleHorizontalConvolution8u(
-    uint8_t* C10_RESTRICT lineOut,
-    int64_t out_xsize,
-    const uint8_t* C10_RESTRICT lineIn,
-    int64_t in_xsize,
-    const int64_t* idx_ptr_xmin,
-    const int64_t* idx_ptr_size,
-    const int16_t* kk,
-    int kmax,
-    unsigned int coefs_precision,
-    int64_t num_channels) {
-
+// Horizontal convolution processing a single row.
+// Same algorithm as the 4x variant above but for one row only. Used for the
+// remaining rows when the image height is not a multiple of 4.
+void NeonResampleHorizontalConvolution8u(uint8_t* C10_RESTRICT lineOut,
+                                         int64_t out_xsize,
+                                         const uint8_t* C10_RESTRICT lineIn,
+                                         int64_t in_xsize,
+                                         const int64_t* idx_ptr_xmin,
+                                         const int64_t* idx_ptr_size,
+                                         const int16_t* kk,
+                                         int kmax,
+                                         unsigned int coefs_precision,
+                                         int64_t num_channels) {
   const int64_t stride = num_channels;
   const int32_t initial_val = 1 << (coefs_precision - 1);
 
@@ -560,7 +594,8 @@ void NeonResampleHorizontalConvolution8u(
 
     int64_t i = 0;
 
-    // Process 8 pixels at a time using vld3 to deinterleave RGB
+    // Block 8: load 8 RGB pixels with vld3, deinterleave, widen to int16,
+    // multiply-accumulate with 8 weights per channel
     for (; i + 8 <= ids_size; i += 8) {
       uint8x8x3_t rgb = vld3_u8(lineIn_min + stride * i);
       int16x8_t weights = vld1q_s16(&k[i]);
@@ -577,19 +612,17 @@ void NeonResampleHorizontalConvolution8u(
       acc_b = vmlal_s16(acc_b, vget_high_s16(b16), vget_high_s16(weights));
     }
 
-    // Process 4 pixels at a time
+    // Block 4: same but with 4 pixels and int16x4 weights
     for (; i + 4 <= ids_size; i += 4) {
       uint8x8x3_t rgb = vld3_u8(lineIn_min + stride * i);
       int16x4_t w4 = vld1_s16(&k[i]);
 
-      acc_r = vmlal_s16(
-          acc_r, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[0]))), w4);
-      acc_g = vmlal_s16(
-          acc_g, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[1]))), w4);
-      acc_b = vmlal_s16(
-          acc_b, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[2]))), w4);
+      acc_r = vmlal_s16(acc_r, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[0]))), w4);
+      acc_g = vmlal_s16(acc_g, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[1]))), w4);
+      acc_b = vmlal_s16(acc_b, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[2]))), w4);
     }
 
+    // Horizontal reduction + rounding bias
     int32_t sum_r = vaddvq_s32(acc_r) + initial_val;
     int32_t sum_g = vaddvq_s32(acc_g) + initial_val;
     int32_t sum_b = vaddvq_s32(acc_b) + initial_val;
@@ -603,6 +636,7 @@ void NeonResampleHorizontalConvolution8u(
       sum_b += w * p[2];
     }
 
+    // Right-shift and clamp to [0, 255]
     uint8_t* out = lineOut + stride * out_x;
     out[0] = static_cast<uint8_t>(std::clamp(sum_r >> coefs_precision, 0, 255));
     out[1] = static_cast<uint8_t>(std::clamp(sum_g >> coefs_precision, 0, 255));
