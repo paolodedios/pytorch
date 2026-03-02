@@ -6,10 +6,12 @@ from unittest.mock import patch
 import torch
 import torch._inductor.config as inductor_config
 import torch.nn.functional as F
+from torch import nn
 from torch._dynamo.utils import same
 from torch._inductor import metrics, utils
 from torch._inductor.scheduler import MixOrderReduction
 from torch._inductor.test_case import run_tests, TestCase
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 from torch.testing import FileCheck
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
@@ -725,6 +727,144 @@ class MixOrderReductionTest(TestBase):
 
         compile_metrics = torch._dynamo.utils._compilation_metrics
         self.assertEqual(len(compile_metrics), 1, "Don't recompile")
+
+    def test_out_of_shared_memory(self):
+        """
+        Fix https://github.com/pytorch/pytorch/issues/175250
+        """
+        if not inductor_config.triton.mix_order_reduction:
+            self.skipTest("Mix order reduction not enabled")
+
+        NUM_HEADS = 32
+        NUM_KV_HEADS = 8
+        HEAD_DIM = 128
+        HIDDEN_SIZE = NUM_HEADS * HEAD_DIM * 2
+        SEQ_LEN = 8192 * 2
+
+        def rotate_half(x):
+            x1 = x[..., : x.shape[-1] // 2]
+            x2 = x[..., x.shape[-1] // 2 :]
+            return torch.cat((-x2, x1), dim=-1)
+
+        def apply_rotary_pos_emb(q, k, cos, sin):
+            cos = cos[:, None, :, :]
+            sin = sin[:, None, :, :]
+            return (q * cos) + (rotate_half(q) * sin), (k * cos) + (
+                rotate_half(k) * sin
+            )
+
+        @torch.compile
+        def forward(
+            x,
+            q_proj,
+            k_proj,
+            v_proj,
+            o_proj,
+            embed_norm,
+            hidden_norm,
+            block_mask,
+            cos,
+            sin,
+        ):
+            """
+            split -> dual RMSNorm -> cat -> Q/K/V -> RoPE -> flex_attention -> residual add.
+
+            This reproduces the exact pattern that causes Triton to fuse too many backward
+            ops (add, div, expand, mul, pow, slice, split, sum, view) into one kernel.
+            """
+            batch, seq_len, _ = x.shape
+
+            # Eagle3 first layer: split concatenated [embeds, hidden] input
+            mid = x.shape[2] // 2
+            embeds, hidden = x.split(mid, dim=-1)
+
+            # Dual RMSNorm (pow, sum, div, mul in backward)
+            embeds = embed_norm(embeds)
+            hidden = hidden_norm(hidden)
+            residual = hidden
+
+            # Recombine for attention input (2 * HIDDEN_SIZE)
+            x = torch.cat([embeds, hidden], dim=-1)
+
+            # Adding a graph break here "fixes" the issue
+            # by breaking up the fused op
+            # torch._dynamo.graph_break()
+
+            # Q/K/V projections from 2*hidden_size input
+            q = q_proj(x).view(batch, seq_len, NUM_HEADS, HEAD_DIM).transpose(1, 2)
+            k = k_proj(x).view(batch, seq_len, NUM_KV_HEADS, HEAD_DIM).transpose(1, 2)
+            v = v_proj(x).view(batch, seq_len, NUM_KV_HEADS, HEAD_DIM).transpose(1, 2)
+
+            q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+            out = flex_attention(
+                q.contiguous(),
+                k.contiguous(),
+                v.contiguous(),
+                block_mask=block_mask,
+                enable_gqa=True,
+                scale=HEAD_DIM**-0.5,
+            )
+
+            out = out.transpose(1, 2).contiguous().reshape(batch, seq_len, -1)
+            return o_proj(out) + residual
+
+        # Layers
+        embed_norm = nn.RMSNorm(HIDDEN_SIZE).to(GPU_TYPE)
+        hidden_norm = nn.RMSNorm(HIDDEN_SIZE).to(GPU_TYPE)
+        # Q/K/V project from 2*HIDDEN_SIZE (concatenated embeds + hidden)
+        q_proj = nn.Linear(2 * HIDDEN_SIZE, NUM_HEADS * HEAD_DIM, bias=False).to(
+            GPU_TYPE
+        )
+        k_proj = nn.Linear(2 * HIDDEN_SIZE, NUM_KV_HEADS * HEAD_DIM, bias=False).to(
+            GPU_TYPE
+        )
+        v_proj = nn.Linear(2 * HIDDEN_SIZE, NUM_KV_HEADS * HEAD_DIM, bias=False).to(
+            GPU_TYPE
+        )
+        o_proj = nn.Linear(NUM_HEADS * HEAD_DIM, HIDDEN_SIZE, bias=False).to(GPU_TYPE)
+
+        # Block mask - simple causal only
+        def causal_mask(_b, _h, q, kv):
+            return q >= kv
+
+        block_mask = create_block_mask(
+            causal_mask, B=None, H=None, Q_LEN=SEQ_LEN, KV_LEN=SEQ_LEN, device=GPU_TYPE
+        )
+
+        # Rotary embeddings (precomputed, no grad needed)
+        inv_freq = 1.0 / (
+            500000.0
+            ** (
+                torch.arange(0, HEAD_DIM, 2, dtype=torch.float32, device=GPU_TYPE)
+                / HEAD_DIM
+            )
+        )
+        pos = torch.arange(1, SEQ_LEN + 1, dtype=torch.float32, device=GPU_TYPE)
+        freqs = torch.outer(pos, inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1).unsqueeze(0)
+        cos, sin = emb.cos(), emb.sin()
+
+        # Input: 2*HIDDEN_SIZE to match split [embeds, hidden]
+        x = torch.randn(
+            1, SEQ_LEN, 2 * HIDDEN_SIZE, device=GPU_TYPE, requires_grad=True
+        )
+
+        out = forward(
+            x,
+            q_proj,
+            k_proj,
+            v_proj,
+            o_proj,
+            embed_norm,
+            hidden_norm,
+            block_mask,
+            cos,
+            sin,
+        )
+        loss = out.sum()
+        loss.backward()
+        self.assertTrue(metrics.codegen_mix_order_reduction > 1)
 
 
 @inductor_config.patch(
