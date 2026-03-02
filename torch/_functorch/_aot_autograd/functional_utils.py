@@ -49,7 +49,9 @@ def sync_functional_tensor(t: torch.Tensor) -> None:
     if is_traceable_wrapper_subclass(t):
         attrs, _ctx = t.__tensor_flatten__()  # type: ignore[attr-defined]
         for attr in attrs:
-            sync_functional_tensor(getattr(t, attr))
+            inner = getattr(t, attr)
+            if isinstance(inner, torch.Tensor):
+                sync_functional_tensor(inner)
     else:
         torch._sync(t)
 
@@ -83,7 +85,7 @@ def is_fun(t: object) -> TypeGuard[FunctionalTensor | Tensor]:
         # goes at the bottom.
         # recurse here, so we can support nested wrapper subclasses
         t_attrs, _ = t.__tensor_flatten__()  # type: ignore[attr-defined]
-        t_inners = [getattr(t, attr) for attr in t_attrs]
+        t_inners = [v for attr in t_attrs if isinstance(v := getattr(t, attr), Tensor)]
         any_fun = any(is_fun(x) for x in t_inners)
         all_fun = all(is_fun(x) for x in t_inners)
         if any_fun != all_fun:
@@ -103,7 +105,11 @@ def has_data_mutation(t: object) -> bool:
     if is_traceable_wrapper_subclass(t):
         attrs, _ = t.__tensor_flatten__()
         # A tensor subclass was updated if any of its inner elements were updated
-        return any(has_data_mutation(getattr(t, attr)) for attr in attrs)
+        return any(
+            has_data_mutation(v)
+            for attr in attrs
+            if isinstance(v := getattr(t, attr), torch.Tensor)
+        )
     else:
         if isinstance(t, torch.Tensor):
             if not isinstance(t, FunctionalTensor):
@@ -117,7 +123,9 @@ def are_all_mutations_hidden_from_autograd(t: object) -> bool:
         attrs, _ = t.__tensor_flatten__()
         # If all inner elements are mutations hidden from autograd, then it is a mutation hidden from autograd.
         return all(
-            are_all_mutations_hidden_from_autograd(getattr(t, attr)) for attr in attrs
+            are_all_mutations_hidden_from_autograd(v)
+            for attr in attrs
+            if isinstance(v := getattr(t, attr), torch.Tensor)
         )
     elif isinstance(t, torch.Tensor):
         if not isinstance(t, FunctionalTensor):
@@ -131,8 +139,9 @@ def are_all_mutations_under_no_grad_or_inference_mode(t: torch.Tensor) -> bool:
     if is_traceable_wrapper_subclass(t):
         attrs, _ = t.__tensor_flatten__()
         return all(
-            are_all_mutations_under_no_grad_or_inference_mode(getattr(t, attr))
+            are_all_mutations_under_no_grad_or_inference_mode(v)
             for attr in attrs
+            if isinstance(v := getattr(t, attr), torch.Tensor)
         )
     else:
         if not isinstance(t, FunctionalTensor):
@@ -145,7 +154,11 @@ def are_all_mutations_under_no_grad_or_inference_mode(t: torch.Tensor) -> bool:
 def was_inductor_storage_resized(t: object) -> bool:
     if is_traceable_wrapper_subclass(t):
         attrs, _ = t.__tensor_flatten__()
-        if any(was_inductor_storage_resized(getattr(t, attr)) for attr in attrs):
+        if any(
+            was_inductor_storage_resized(v)
+            for attr in attrs
+            if isinstance(v := getattr(t, attr), torch.Tensor)
+        ):
             raise RuntimeError(
                 f"storage resizing is not supported on tensor subclass: {type(t)}"
             )
@@ -172,8 +185,11 @@ def has_metadata_mutation(
     if is_traceable_wrapper_subclass(f_arg):
         attrs, _ = f_arg.__tensor_flatten__()
         # A tensor subclass was updated if any of its inner elements were updated
-        f_inner_ts = [getattr(f_arg, attr) for attr in attrs]
-        inner_ts = [getattr(arg, attr) for attr in attrs]
+        tensor_attrs = [
+            attr for attr in attrs if isinstance(getattr(f_arg, attr), torch.Tensor)
+        ]
+        f_inner_ts = [getattr(f_arg, attr) for attr in tensor_attrs]
+        inner_ts = [getattr(arg, attr) for attr in tensor_attrs]
         return any(
             has_metadata_mutation(
                 f_inner_t,
@@ -441,8 +457,9 @@ def was_tensor_updated(arg: torch.Tensor, new_arg: torch.Tensor) -> bool:
             raise AssertionError(f"attrs mismatch: {attrs} != {new_attrs}")
         # A tensor subclass was updated if any of its inner elements were updated
         return any(
-            was_tensor_updated(getattr(arg, attr), getattr(new_arg, attr))
+            was_tensor_updated(v, getattr(new_arg, attr))
             for attr in attrs
+            if isinstance(v := getattr(arg, attr), torch.Tensor)
         )
     else:
         return arg is not new_arg
@@ -467,8 +484,9 @@ def was_tensor_metadata_updated(arg: Any, new_arg: Any) -> bool:
             raise AssertionError(f"attrs mismatch: {attrs} != {new_attrs}")
         # A tensor subclass was updated if any of its inner elements were updated
         return any(
-            was_tensor_metadata_updated(getattr(arg, attr), getattr(new_arg, attr))
+            was_tensor_metadata_updated(v, getattr(new_arg, attr))
             for attr in attrs
+            if isinstance(v := getattr(arg, attr), torch.Tensor)
         )
     else:
         return arg is not new_arg and StorageWeakRef(

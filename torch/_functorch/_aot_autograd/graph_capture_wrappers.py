@@ -84,6 +84,7 @@ from .schemas import (
     ViewAndMutationMeta,
 )
 from .subclass_utils import (
+    build_opaque_input_map,
     create_subclass_meta,
     remap_unwrapped_subclass_arg_indices,
     requires_subclass_dispatch,
@@ -671,7 +672,9 @@ def sc_visit(
             return
 
         for a in e.__tensor_flatten__()[0]:
-            visit(getattr(e, a))
+            inner = getattr(e, a)
+            if isinstance(inner, torch.Tensor):
+                visit(inner)
 
     visit(t)
     return accum
@@ -1333,7 +1336,17 @@ def aot_dispatch_subclass(
                 )
             # Don't need fw outs since we already have subclass metadata on them
             grad_inputs = wrapped_outs[1]
-            subclass_meta.grad_input_metas = create_subclass_meta(grad_inputs)
+            # Build opaque_input_map from primals so grad_input_metas can
+            # remap opaques at runtime (same as forward output path).
+            # all_args is (wrapped_primals, wrapped_tangents) for the joint.
+            primals_for_map = all_args[0] if isinstance(all_args, tuple) else all_args
+            grad_opaque_input_map = build_opaque_input_map(primals_for_map)
+            subclass_meta.grad_input_metas = create_subclass_meta(
+                grad_inputs,
+                opaque_input_map=grad_opaque_input_map
+                if grad_opaque_input_map
+                else None,
+            )
 
             # Add extra symints as outputs to the forward/backward graphs
             # ignore nested ints here

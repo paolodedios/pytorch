@@ -1032,7 +1032,7 @@ def _apply_func_to_inner_tensors_of_same_dim(
     assert isinstance(t, torch.Tensor)
     for attr in attrs:
         inner = getattr(t, attr)
-        if inner.dim() == t.dim():
+        if isinstance(inner, torch.Tensor) and inner.dim() == t.dim():
             func(inner, *args, **kwargs)
 
 

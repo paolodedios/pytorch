@@ -261,6 +261,19 @@ class SubclassCreationMeta:
     # Used at runtime to determine the subclass type, so we don't need to save the original subclass
     original_subclass_type: type | None = None
     memory_format: MemoryFormatMeta | None = None
+    # Non-tensor values from __tensor_flatten__, passed through to __tensor_unflatten__
+    opaque_attrs: dict[str, Any] | None = None
+    # Maps opaque attr name to its location in the original (pre-unwrap) args.
+    # For top-level opaque args: int (index into args).
+    # For opaques nested inside input subclasses: tuple[int, tuple[str, ...]]
+    #   where the int is the arg index and the tuple of strings is the attr
+    #   path to traverse (e.g. (0, ("_inner", "_counter"))).
+    # When set, the runtime value is used instead of the baked-in value in
+    # opaque_attrs, so that reuse of a cached compilation picks up the new
+    # runtime opaque (e.g. a different DeviceMesh).
+    opaque_attr_input_indices: dict[str, int | tuple[int, tuple[str, ...]]] | None = (
+        None
+    )
 
     def compute_outer_size_and_stride(
         self,
@@ -299,6 +312,7 @@ class SubclassCreationMeta:
         all_args: Sequence[torch.Tensor | IntLikeType],
         *,
         is_runtime: bool,
+        original_args: dict[int, Any] | None = None,
     ) -> torch.Tensor:
         inner_tensors = {}
 
@@ -311,9 +325,34 @@ class SubclassCreationMeta:
                 subclass = creation_meta.creation_fn(
                     all_args,
                     is_runtime=is_runtime,
+                    original_args=original_args,
                 )
                 curr_start_idx += creation_meta.arg_count
             inner_tensors[attr] = subclass
+
+        if self.opaque_attrs:
+            if (
+                is_runtime
+                and self.opaque_attr_input_indices
+                and original_args is not None
+            ):
+                for attr, value in self.opaque_attrs.items():
+                    loc = self.opaque_attr_input_indices.get(attr)
+                    if loc is not None:
+                        if isinstance(loc, tuple):
+                            # Opaque nested inside an input subclass;
+                            # traverse the attr path to reach it.
+                            arg_idx, attr_path = loc
+                            obj = original_args[arg_idx]
+                            for step in attr_path:
+                                obj = getattr(obj, step)
+                            inner_tensors[attr] = obj
+                        else:
+                            inner_tensors[attr] = original_args[loc]
+                    else:
+                        inner_tensors[attr] = value
+            else:
+                inner_tensors.update(self.opaque_attrs)
 
         if is_runtime:
             if self.original_subclass_type is None:
@@ -850,6 +889,11 @@ class SubclassMeta:
     #
     # Optional field because we don't compute for inference graphs
     grad_input_metas: list[PlainTensorMeta | SubclassCreationMeta] | None = None
+
+    # Stashed by AOTDispatchSubclassWrapper so CompiledFunction.forward can
+    # save them on ctx for backward opaque remapping.  Transient: set before
+    # compiled_fn() and consumed immediately in CompiledFunction.forward().
+    _pending_original_args: dict[int, Any] | None = None
 
     def __init__(self) -> None:
         # The fields in this class get set after its construction.

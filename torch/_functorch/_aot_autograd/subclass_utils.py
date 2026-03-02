@@ -91,16 +91,63 @@ def get_subclass_typing_container(
         tracker[type(tensor_subclass)].append(tensor_subclass)
         inner_keys, _ = tensor_subclass.__tensor_flatten__()
         for key in inner_keys:
-            inner_tensor = getattr(tensor_subclass, key)
-            _get_types_for_subclass(inner_tensor)
+            inner_value = getattr(tensor_subclass, key)
+            if isinstance(inner_value, torch.Tensor):
+                _get_types_for_subclass(inner_value)
 
     tracker: dict[Any, list[Any]] = collections.defaultdict(list)
     _get_types_for_subclass(tensor_subclass)
     return tracker
 
 
+def build_opaque_input_map(
+    args: Sequence[Any],
+) -> dict[int, int | tuple[int, tuple[str, ...]]]:
+    """Build a mapping from id(opaque_obj) -> location for opaque objects in args.
+
+    Uses id() as the key, which is safe because the caller
+    (run_functionalized_fw_and_collect_metadata) keeps args alive for the
+    entire duration that this map is consulted by create_subclass_metadata.
+
+    For top-level opaque args, the location is the arg index (int).
+    For opaques nested inside input subclasses, the location is
+    (arg_index, attr_path) where attr_path is a tuple of attribute names.
+    """
+    from torch._library.fake_class_registry import FakeScriptObject
+    from torch._library.opaque_object import is_opaque_type as _is_opaque_type
+
+    opaque_input_map: dict[int, int | tuple[int, tuple[str, ...]]] = {}
+
+    def _collect_subclass_opaques(
+        obj: Any, arg_idx: int, path: tuple[str, ...] = ()
+    ) -> None:
+        if not is_traceable_wrapper_subclass(obj):
+            return
+        attrs, _ = obj.__tensor_flatten__()
+        for attr in attrs:
+            inner = getattr(obj, attr)
+            attr_path = (*path, attr)
+            if not isinstance(inner, torch.Tensor):
+                opaque_input_map[id(inner)] = (arg_idx, attr_path)
+            else:
+                _collect_subclass_opaques(inner, arg_idx, attr_path)
+
+    for i, arg in enumerate(args):
+        if isinstance(arg, FakeScriptObject):
+            opaque_input_map[id(arg)] = i
+        elif not isinstance(arg, torch.Tensor) and _is_opaque_type(type(arg)):
+            opaque_input_map[id(arg)] = i
+        _collect_subclass_opaques(arg, i)
+
+    return opaque_input_map
+
+
 def create_subclass_metadata(
-    a: Any, start_idx: int, count_symints: bool, with_memory_format: bool = False
+    a: Any,
+    start_idx: int,
+    count_symints: bool,
+    with_memory_format: bool = False,
+    opaque_input_map: dict[int, int | tuple[int, tuple[str, ...]]] | None = None,
 ) -> tuple[Any, int]:
     if not is_traceable_wrapper_subclass(a):
         idx = start_idx + 1
@@ -115,13 +162,28 @@ def create_subclass_metadata(
     inner_keys, metadata = a.__tensor_flatten__()
     new_start_idx = start_idx
     attrs = {}
+    opaque_attrs: dict[Any, Any] = {}
+    opaque_attr_input_indices: dict[Any, int | tuple[int, tuple[str, ...]]] = {}
 
     for key in inner_keys:
+        inner_value = getattr(a, key)
+        if not isinstance(inner_value, Tensor):
+            from torch._library.fake_class_registry import (
+                maybe_unwrap_fake_script_object,
+            )
+
+            # Check if this opaque came from an input arg
+            if opaque_input_map is not None and id(inner_value) in opaque_input_map:
+                opaque_attr_input_indices[key] = opaque_input_map[id(inner_value)]
+
+            opaque_attrs[key] = maybe_unwrap_fake_script_object(inner_value)
+            continue
         new_subclass_meta, new_start_idx = create_subclass_metadata(
-            getattr(a, key),
+            inner_value,
             new_start_idx,
             count_symints=count_symints,
             with_memory_format=with_memory_format,
+            opaque_input_map=opaque_input_map,
         )
         attrs[key] = new_subclass_meta
 
@@ -146,6 +208,10 @@ def create_subclass_metadata(
             outer_stride=a.stride(),  # type: ignore[arg-type]
             original_subclass=a,
             memory_format=maybe_suggest_memory_format(a, with_memory_format),
+            opaque_attrs=opaque_attrs if opaque_attrs else None,
+            opaque_attr_input_indices=(
+                opaque_attr_input_indices if opaque_attr_input_indices else None
+            ),
         ),
         new_start_idx,
     )
@@ -159,6 +225,7 @@ def create_subclass_meta(
     *,
     count_symints: bool = True,
     with_memory_format: bool = False,
+    opaque_input_map: dict[int, int | tuple[int, tuple[str, ...]]] | None = None,
 ) -> list[PlainTensorMeta | SubclassCreationMeta]:
     idx = 0
     infos: list[PlainTensorMeta | SubclassCreationMeta] = []
@@ -174,6 +241,7 @@ def create_subclass_meta(
                 start_idx,
                 count_symints=count_symints,
                 with_memory_format=with_memory_format,
+                opaque_input_map=opaque_input_map,
             )
             infos.append(subclass_meta)
             cnt = subclass_meta.arg_count
@@ -243,14 +311,16 @@ def unwrap_tensor_subclasses(
         attrs, _ = t.__tensor_flatten__()
 
         for attr in attrs:
-            inner_tensor = getattr(t, attr)
+            inner_value = getattr(t, attr)
+            if not isinstance(inner_value, Tensor):
+                continue
             n_desc: Any = (
                 SubclassGetAttrAOTInput(desc, attr)
                 if isinstance(desc, AOTInput)
                 # pyrefly: ignore [bad-argument-type]
                 else SubclassGetAttrAOTOutput(desc, attr)
             )
-            flatten_subclass(inner_tensor, n_desc, out=out)
+            flatten_subclass(inner_value, n_desc, out=out)
 
         if append_symints:
             sizes = enumerate_filter_symints(t.size())
@@ -295,10 +365,12 @@ def runtime_unwrap_tensor_subclasses(
         attrs, _ = x.__tensor_flatten__()
 
         for attr in attrs:
-            inner_tensor = getattr(x, attr)
+            inner_value = getattr(x, attr)
+            if not isinstance(inner_value, Tensor):
+                continue
             # pyrefly: ignore [missing-attribute]
             inner_meta = meta.attrs.get(attr)
-            flatten_subclass(inner_tensor, inner_meta, out=out)
+            flatten_subclass(inner_value, inner_meta, out=out)
 
         if append_symints:
             if not isinstance(meta, SubclassCreationMeta):
@@ -400,6 +472,7 @@ def wrap_tensor_subclasses(
     included_subclass_symints: bool = False,
     is_runtime: bool = False,
     make_subclass_override: Callable[..., Any] | None = None,
+    original_args: dict[int, Any] | None = None,
 ) -> tuple[Any, ...]:
     # pyrefly: ignore [implicit-any]
     wrapped_args = []
@@ -424,7 +497,11 @@ def wrap_tensor_subclasses(
                 )
             else:
                 wrapped_args.append(
-                    subclass_meta.creation_fn(unwrapped_args, is_runtime=is_runtime)
+                    subclass_meta.creation_fn(
+                        unwrapped_args,
+                        is_runtime=is_runtime,
+                        original_args=original_args,
+                    )
                 )
             num_args_tallied += subclass_meta.arg_count
 

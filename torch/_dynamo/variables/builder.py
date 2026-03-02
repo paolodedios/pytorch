@@ -3687,10 +3687,12 @@ def _automatic_dynamic(
         inner_contexts = {}  # mapping from attr -> symbolic context
         attrs, _ = type(e).__tensor_flatten__(e)
         for attr in attrs:
-            inner_tensor = getattr(e, attr)
+            inner_value = getattr(e, attr)
+            if not isinstance(inner_value, torch.Tensor):
+                continue
             inner_source = AttrSource(source, attr)
             inner_contexts[attr] = _automatic_dynamic(
-                inner_tensor, tx, inner_source, static_shapes
+                inner_value, tx, inner_source, static_shapes
             )
 
         return SubclassSymbolicContext(

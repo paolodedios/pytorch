@@ -952,6 +952,60 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
                 _log_input_metadata(runtime_metadata)
                 _log_args_list(args, "Incoming args")
 
+            # Note: [Opaque attr runtime remapping]
+            #
+            # When a subclass output (forward) or grad_input (backward)
+            # contains opaque (non-tensor) attrs that originated from a graph
+            # input, we need the *runtime* value — not the one baked in at
+            # compile time — so that cache reuse picks up the caller's
+            # current opaque objects (e.g. a different DeviceMesh).
+            #
+            # The chain works as follows:
+            #
+            # 1. Here (AOTDispatchSubclassWrapper): collect the subset of
+            #    original args referenced by opaque_attr_input_indices in any
+            #    SubclassCreationMeta.  Store them in `original_args`.
+            #
+            # 2. For forward outputs: pass original_args directly to
+            #    wrap_tensor_subclasses → SubclassCreationMeta.creation_fn,
+            #    which looks up the runtime value via opaque_attr_input_indices.
+            #
+            # 3. For backward grad_inputs: stash original_args on
+            #    SubclassMeta._pending_original_args, which
+            #    CompiledFunction.forward picks up into
+            #    ctx._original_subclass_args.  CompiledFunction.backward then
+            #    passes it to _backward_epilogue_functional →
+            #    wrap_tensor_subclasses → SubclassCreationMeta.creation_fn.
+            original_args: dict[int, Any] | None = None
+            opaque_indices: set[int] = set()
+
+            def _collect_opaque_indices(m: Any) -> None:
+                if not isinstance(m, SubclassCreationMeta):
+                    return
+                if m.opaque_attr_input_indices:
+                    for v in m.opaque_attr_input_indices.values():
+                        if isinstance(v, tuple):
+                            opaque_indices.add(v[0])
+                        else:
+                            opaque_indices.add(v)
+                for inner_m in m.attrs.values():
+                    _collect_opaque_indices(inner_m)
+
+            for m in subclass_metas:
+                _collect_opaque_indices(m)
+            # Also collect from grad_input_metas so backward can remap
+            # opaques in gradient subclasses.
+            grad_input_metas = (
+                self.maybe_subclass_meta.grad_input_metas
+                if self.maybe_subclass_meta is not None
+                else None
+            )
+            if grad_input_metas:
+                for m in grad_input_metas:
+                    _collect_opaque_indices(m)
+            if opaque_indices:
+                original_args = {i: args[i] for i in opaque_indices}
+
             unwrapped_args = runtime_unwrap_tensor_subclasses(
                 args,
                 subclass_metas=runtime_metadata.subclass_inp_meta,
@@ -962,6 +1016,10 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
                 _log_args_list(unwrapped_args, "After unwrapping, unwrapped_args")
 
             args.clear()
+            # Stash original_args on SubclassMeta so CompiledFunction.forward
+            # can save them on ctx for backward opaque remapping.
+            if self.maybe_subclass_meta is not None and original_args is not None:
+                self.maybe_subclass_meta._pending_original_args = original_args
             # expectation: runtime_fn is a boxed fn
             unwrapped_outs = compiled_fn(unwrapped_args)
 
@@ -976,6 +1034,7 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
                 num_fw_outs_saved_for_bw=self.num_fw_outs_saved_for_bw,
                 is_runtime=True,
                 included_subclass_symints=True,
+                original_args=original_args,
             )
 
             if aot_graphs_log.isEnabledFor(logging.DEBUG):
@@ -2193,6 +2252,7 @@ def _backward_epilogue_functional(
     out: Any,
     *,
     make_subclass_override: Callable[..., Any] | None = None,
+    original_args: dict[int, Any] | None = None,
 ) -> tuple[Any, ...]:
     # Toss out the backward output tokens
     num_bw_tokens = metadata.num_backward_tokens
@@ -2215,6 +2275,7 @@ def _backward_epilogue_functional(
             included_subclass_symints=True,
             is_runtime=True,
             make_subclass_override=make_subclass_override,
+            original_args=original_args,
         )
         return outs_wrapped
     return out
@@ -2477,10 +2538,11 @@ Your tensor subclass must implement __coerce_same_metadata_as_tangent__."""
         if orig_x is not x:
             runtime_subclass_keys = x.__tensor_flatten__()[0]
 
-        if len(meta.attrs) != len(runtime_subclass_keys):
+        num_opaque = len(meta.opaque_attrs) if meta.opaque_attrs else 0
+        if len(meta.attrs) + num_opaque != len(runtime_subclass_keys):
             raise AssertionError(
-                f"expected len(meta.attrs) == len(runtime_subclass_keys), "
-                f"got {len(meta.attrs)} != {len(runtime_subclass_keys)}"
+                f"expected len(meta.attrs) + opaque == len(runtime_subclass_keys), "
+                f"got {len(meta.attrs)} + {num_opaque} != {len(runtime_subclass_keys)}"
             )
         leaves = []
         for attr, attr_meta in meta.attrs.items():
@@ -2691,6 +2753,20 @@ Your tensor subclass must implement __coerce_same_metadata_as_tangent__."""
                     )
                 ctx.opaque_objects = opaque_object_outs
 
+                # Pick up original subclass args stashed by
+                # AOTDispatchSubclassWrapper for backward opaque remapping.
+                if (
+                    CompiledFunction.maybe_subclass_metadata is not None
+                    and CompiledFunction.maybe_subclass_metadata._pending_original_args
+                    is not None
+                ):
+                    ctx._original_subclass_args = (
+                        CompiledFunction.maybe_subclass_metadata._pending_original_args
+                    )
+                    CompiledFunction.maybe_subclass_metadata._pending_original_args = (
+                        None
+                    )
+
                 raw_returns = fw_outs[0:num_forward_returns]
 
                 # Wrap all autograd.Function.forward() outputs that are aliases
@@ -2837,6 +2913,7 @@ Your tensor subclass must implement __coerce_same_metadata_as_tangent__."""
                         CompiledFunction.metadata,
                         CompiledFunction.maybe_subclass_metadata,
                         out,
+                        original_args=getattr(ctx, "_original_subclass_args", None),
                     )
 
                 needs_grad = torch.is_grad_enabled() and any(

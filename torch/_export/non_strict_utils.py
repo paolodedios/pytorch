@@ -257,10 +257,12 @@ def _create_symbolic_context_for_tensor(t, source, t_constraints, sources, mode)
 
         # Propagate outer tensor constraints to inner tensors if not already present
         for attr in attrs:
-            inner_tensor = getattr(t, attr)
+            inner_value = getattr(t, attr)
+            if not isinstance(inner_value, torch.Tensor):
+                continue
             inner_source = AttrSource(source, attr)
             inner_contexts[attr] = _create_symbolic_context_for_tensor(
-                inner_tensor, inner_source, t_constraints, sources, mode
+                inner_value, inner_source, t_constraints, sources, mode
             )
 
         symbolic_context = SubclassSymbolicContext(

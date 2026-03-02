@@ -58,7 +58,7 @@ from .schemas import (
     OutputType,
     ViewAndMutationMeta,
 )
-from .subclass_utils import create_subclass_meta
+from .subclass_utils import build_opaque_input_map, create_subclass_meta
 from .utils import _get_autocast_states, KNOWN_TYPES, simple_wraps, strict_zip
 
 
@@ -870,6 +870,8 @@ from a multi-output view call"
                 grad_enabled_mutation,
             )
 
+        opaque_input_map = build_opaque_input_map(flat_args)
+
         metadata = ViewAndMutationMeta(
             input_info=input_info,
             output_info=output_info,
@@ -878,7 +880,10 @@ from a multi-output view call"
             traced_tangents=traced_tangents,
             traced_tangents_descs=traced_tangents_descs,
             subclass_inp_meta=create_subclass_meta(flat_args),
-            subclass_fw_graph_out_meta=create_subclass_meta(fw_graph_outs),
+            subclass_fw_graph_out_meta=create_subclass_meta(
+                fw_graph_outs,
+                opaque_input_map=opaque_input_map if opaque_input_map else None,
+            ),
             subclass_tangent_meta=create_subclass_meta(
                 traced_tangents, count_symints=False, with_memory_format=True
             ),
