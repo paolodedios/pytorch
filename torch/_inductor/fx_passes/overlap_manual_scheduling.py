@@ -72,7 +72,7 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
                 coll_nodes,
                 wait_insertion_point=first_wait,
                 insert_before=next_node,
-                mode="default",
+                mode="custom_ops",
             )
         elif is_reduce_scatter(first):
             new_nodes, replacements = merge_reduce_scatter_bucket(
@@ -80,7 +80,7 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
                 coll_nodes,
                 wait_insertion_point=first_wait,
                 insert_before=next_node,
-                mode="default",
+                mode="custom_ops",
             )
         else:
             raise ValueError(

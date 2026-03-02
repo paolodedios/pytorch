@@ -289,12 +289,6 @@ def _log_compute_estimations(
                 ret += f" {dtype_abbrs[t.dtype]}{tuple(t.shape)}"
         return ret
 
-    def _safe_count_flops(node: fx.Node) -> int:
-        try:
-            return count_flops_fx(node)
-        except Exception:
-            return -1
-
     headers = [
         "Node",
         "Benchmarked Est(us)",
@@ -311,7 +305,7 @@ def _log_compute_estimations(
             f"{est_a * 1e3:.4f}",
             f"{(est_a / est_b) if est_b > 0 else 0:.4f}",
             f"{(est_a - est_b) * 1e3:.4f}",
-            str(_safe_count_flops(node)),
+            str(count_flops_fx(node)),
         ]
         for node, est_b, est_a in zip(
             compute_nodes, benchmarked_estimations, analytical_estimations

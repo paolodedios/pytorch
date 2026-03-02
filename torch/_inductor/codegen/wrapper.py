@@ -417,7 +417,6 @@ class MemoryPlanningState:
             CommBufferReuseKey, list[FreeIfNotReusedLine]
         ] = collections.defaultdict(list)
         self.total_allocated_buffer_size: int = 0
-        self.total_pg_alloc_bytes: int = 0
 
     def __contains__(self, key: ReuseKey) -> bool:
         return bool(self.reuse_pool.get(key, None))
@@ -783,28 +782,6 @@ class AllocateLine(MemoryPlanningLine):
                 return ReuseLine(
                     self.wrapper, free_line.node, self.node, comm_buffer=True
                 )
-            # New pg_alloc allocation — check budget
-            layout = self.node.get_output_spec()
-            if (
-                isinstance(layout, ir.CommBufferLayout)
-                and layout.comm_buffer_type == ir.CommBufferType.PG_ALLOC
-            ):
-                alloc_bytes = self._pg_alloc_size_bytes()
-                budget_gb = config.pg_alloc_memory_budget_increase_gb
-                if budget_gb is not None:
-                    budget_bytes = int(budget_gb * (1024**3))
-                    if state.total_pg_alloc_bytes + alloc_bytes > budget_bytes:
-                        log.warning(
-                            "pg_alloc budget exceeded (%.2f MB + %.2f MB > %.2f MB), "
-                            "falling back to regular alloc for %s",
-                            state.total_pg_alloc_bytes / (1024 * 1024),
-                            alloc_bytes / (1024 * 1024),
-                            budget_bytes / (1024 * 1024),
-                            self.node.get_name(),
-                        )
-                        self._downgrade_to_regular_alloc()
-                        return self
-                state.total_pg_alloc_bytes += alloc_bytes
             return self
 
         # Regular buffer reuse
@@ -830,25 +807,6 @@ class AllocateLine(MemoryPlanningLine):
                 )
 
         return self
-
-    def _pg_alloc_size_bytes(self) -> int:
-        storage_size = V.graph.sizevars.size_hint(
-            V.graph.get_allocation_storage_size(self.node)
-        )
-        return storage_size * get_dtype_size(self.node.get_dtype())
-
-    def _downgrade_to_regular_alloc(self) -> None:
-        """Convert CommBufferLayout back to FixedLayout — falls back to torch.empty()."""
-        layout = self.node.get_output_spec()
-        assert isinstance(layout, ir.CommBufferLayout)
-        self.node.layout = ir.FixedLayout(
-            device=layout.device,
-            dtype=layout.dtype,
-            size=layout.size,
-            stride=layout.stride,
-            offset=layout.offset,
-        )
-        self.comm_buffer = False
 
     def codegen(self, code: IndentedBuffer) -> None:
         assert self.node.get_name() not in V.graph.removed_buffers
@@ -2054,15 +2012,6 @@ class PythonWrapperCodegen(CodeGen):
         _total_allocated_buffer_size = sum(
             s.total_allocated_buffer_size for s in past_planning_states
         )
-        total_pg_alloc = sum(
-            s.total_pg_alloc_bytes for s in past_planning_states
-        )
-        if total_pg_alloc > 0:
-            log.warning(
-                "pg_alloc memory planned: %.2f MB",
-                total_pg_alloc / (1024 * 1024),
-            )
-
     def run_wrapper_ir_passes(self, is_inference: bool):
         # We disable planning during training because it presently increases peak memory consumption.
         if is_inference and config.memory_planning:

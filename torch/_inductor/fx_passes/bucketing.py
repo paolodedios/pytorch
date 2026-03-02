@@ -7,11 +7,11 @@ from collections.abc import Callable
 from typing import Any, Literal, TypeAlias
 
 import torch
+import torch._inductor.config
 import torch.distributed as dist
 import torch.utils._pytree as pytree
 from torch._dispatch.python import enable_python_dispatcher
 from torch._dynamo.utils import detect_fake_mode
-import torch._inductor.config
 from torch._inductor.comm_analysis import (
     get_collective_type_from_kernel_name,
     NCCL_COLL,
@@ -566,7 +566,7 @@ def _pre_bucket_reduce_scatter(
     rs_ins_flattened = [x.view(group_size, -1) for x in rs_ins]
     x = rs_ins[0]
     size = sum(t.numel() for t in rs_ins)
-    if torch._inductor.config.bucket_ops_use_pg_alloc:
+    if torch._inductor.config.comms_use_pg_alloc:
         pg = _resolve_process_group(group_name)  # type: ignore[arg-type]
         backend = pg._get_backend(x.device)
         out = backend.allocate_tensor(size, dtype=x.dtype, device=x.device)
@@ -603,7 +603,7 @@ def reduce_scatter_merge_fn_to_trace_custom_ops(
         rs_ins, group_size, group_name
     )
 
-    if torch._inductor.config.bucket_ops_use_pg_alloc:
+    if torch._inductor.config.comms_use_pg_alloc:
         pg = _resolve_process_group(group_name)  # type: ignore[arg-type]
         backend = pg._get_backend(new_rs_in.device)
         size = list(new_rs_in.shape)
@@ -723,7 +723,7 @@ def _pre_bucket_all_gather(
     device = ag_ins[0].device
     total_size_bytes = sum(ins_split_sizes_bytes) * group_size
 
-    if torch._inductor.config.bucket_ops_use_pg_alloc:
+    if torch._inductor.config.comms_use_pg_alloc:
         pg = _resolve_process_group(group_name)  # type: ignore[arg-type]
         backend = pg._get_backend(device)
         size = ag_input_numel * group_size
@@ -1105,6 +1105,19 @@ def process_collective_bucket(
     return new_nodes, replacements
 
 
+def _annotate_pg_alloc(
+    new_nodes: list[torch.fx.Node],
+    group_name: str,
+) -> None:
+    """Tag collective nodes with pg_alloc_group_name for PG-based allocation."""
+    if torch._inductor.config.comms_use_pg_alloc:
+        for node in new_nodes:
+            if is_wait_tensor(node):
+                coll_node = node.args[0]
+                assert isinstance(coll_node, torch.fx.Node)
+                coll_node.meta["pg_alloc_group_name"] = group_name
+
+
 def merge_reduce_scatter_bucket(
     g: torch.fx.Graph,
     rs_nodes: list[torch.fx.Node],
@@ -1154,20 +1167,7 @@ def merge_reduce_scatter_bucket(
         wait_insertion_point=wait_insertion_point,
     )
 
-    # Annotate for pg_alloc: tag the reduce_scatter_tensor_out node so
-    # inductor's lowering can realize its buffers from pg.allocate_tensor.
-    # Also propagate if overlap scheduler annotated any source node.
-    should_pg_alloc = torch._inductor.config.bucket_ops_use_pg_alloc or any(
-        n.meta.get("pg_alloc_group_name") for n in rs_nodes
-    )
-    if should_pg_alloc:
-        for node in new_nodes:
-            if (
-                node.op == "call_function"
-                and node.target
-                is torch.ops._c10d_functional.reduce_scatter_tensor_out.default
-            ):
-                node.meta["pg_alloc_group_name"] = group_name
+    _annotate_pg_alloc(new_nodes, group_name)
 
     return new_nodes, replacements
 
@@ -1214,18 +1214,7 @@ def merge_all_reduce_bucket(
         wait_insertion_point=wait_insertion_point,
     )
 
-    # Annotate for pg_alloc: tag the all_reduce node so inductor's lowering
-    # can realize its input buffer from pg.allocate_tensor.
-    should_pg_alloc = torch._inductor.config.bucket_ops_use_pg_alloc or any(
-        n.meta.get("pg_alloc_group_name") for n in ar_nodes
-    )
-    if should_pg_alloc:
-        for node in new_nodes:
-            if (
-                node.op == "call_function"
-                and node.target is torch.ops._c10d_functional.all_reduce.default
-            ):
-                node.meta["pg_alloc_group_name"] = group_name
+    _annotate_pg_alloc(new_nodes, group_name)
 
     return new_nodes, replacements
 
@@ -1277,19 +1266,7 @@ def merge_all_gather_bucket(
         wait_insertion_point=wait_insertion_point,
     )
 
-    # Annotate for pg_alloc: tag the all_gather_into_tensor_out node so
-    # inductor's lowering can realize its output buffer from pg.allocate_tensor.
-    should_pg_alloc = torch._inductor.config.bucket_ops_use_pg_alloc or any(
-        n.meta.get("pg_alloc_group_name") for n in ag_nodes
-    )
-    if should_pg_alloc:
-        for node in new_nodes:
-            if (
-                node.op == "call_function"
-                and node.target
-                is torch.ops._c10d_functional.all_gather_into_tensor_out.default
-            ):
-                node.meta["pg_alloc_group_name"] = group_name
+    _annotate_pg_alloc(new_nodes, group_name)
 
     return new_nodes, replacements
 
