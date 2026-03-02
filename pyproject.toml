@@ -4,7 +4,7 @@
 requires = [
     # 70.1.0: min version for integrated bdist_wheel command from wheel package
     # 77.0.0: min version for SPDX expression support for project.license
-    "setuptools>=70.1.0",
+    "setuptools>=70.1.0,<82",
     "cmake>=3.27",
     "ninja",
     "numpy",
@@ -126,6 +126,9 @@ standard_library = ["typing_extensions"]
 [tool.ruff]
 line-length = 88
 src = ["caffe2", "torch", "torchgen", "functorch", "test"]
+
+[tool.ruff.per-file-target-version]
+"**/py312_intrinsics.py" = "py312"
 
 [tool.ruff.format]
 docstring-code-format = true
@@ -282,7 +285,7 @@ keep-runtime-typing = true
     "F401",
 ]
 "test/export/**" = [
-    "PGH004"
+    "PGH004",
 ]
 "test/typing/**" = [
     "PGH004"
@@ -342,28 +345,10 @@ keep-runtime-typing = true
 "tools/linter/**" = [
     "LOG015" # please fix
 ]
-# Remaining files that still need S101 migration
-# Test files with S101 still need migration - doing incrementally
-"test/**" = ["S101"]
-# Exceptions - files already migrated:
-"test/ao/sparsity/test_sparsifier.py" = []
-"test/ao/sparsity/test_activation_sparsifier.py" = []
-"test/ao/sparsity/test_structured_sparsifier.py" = []
-"test/ao/sparsity/test_data_sparsifier.py" = []
-"test/ao/sparsity/test_parametrization.py" = []
-"test/ao/sparsity/test_data_scheduler.py" = []
-"test/ao/sparsity/test_scheduler.py" = []
-"test/ao/sparsity/test_kernels.py" = []
-"test/jit/test_hooks_modules.py" = []
-"test/distributions/test_transforms.py" = []
-"test/profiler/test_profiler.py" = []
-"test/test_public_bindings.py" = []
-"test/profiler/test_execution_trace.py" = []
-"test/test_dataloader.py" = []
-"test/torch_np/test_basic.py" = []
+
+# torch/ folders still needing S101 migration
 "torch/_dynamo/**" = ["S101"]
 "torch/_inductor/**" = ["S101"]
-"torch/distributed/**" = ["S101"]
 
 [tool.codespell]
 ignore-words = "tools/linter/dictionary.txt"
