@@ -58,7 +58,6 @@ void NeonResampleHorizontal(const at::Tensor& unpacked_output,
   uint8_t* output_p = unpacked_output.data_ptr<uint8_t>();
   const uint8_t* input_p = unpacked_input.const_data_ptr<uint8_t>();
 
-  const auto stride = num_channels;
   auto xout_stride = xout * num_channels;
   auto xin_stride = xin * num_channels;
 
@@ -74,11 +73,12 @@ void NeonResampleHorizontal(const at::Tensor& unpacked_output,
     // pixels and deinterleave them into separate R, G, B vectors. This avoids
     // the shuffle masks needed by the AVX2 path.
     //
-    // The weight vector is split as: ids_size = num_blocks_8 * 8 + num_blocks_4 * 4 + remainder.
-    // We process 8 weights, then 4 weights in vectorized loops, then handle
-    // remaining weights in a scalar cleanup loop. Accumulators are kept per-channel
-    // in int32 to avoid overflow.
+    // The weight vector is split as: ids_size = num_blocks_8 * 8 + remainder.
+    // We process 8 weights in a vectorized loop, then handle remaining weights
+    // in a scalar cleanup loop. Accumulators are kept per-channel in int32 to
+    // avoid overflow.
     for (int64_t out_x = 0; out_x < xout; out_x++) {
+      // ids_min is a byte offset (pre-multiplied by num_channels)
       const int64_t ids_min = idx_ptr_xmin[out_x];
       const int64_t ids_size = idx_ptr_size[out_x];
       const int16_t* k = &kk[out_x * ksize];
@@ -91,9 +91,12 @@ void NeonResampleHorizontal(const at::Tensor& unpacked_output,
       int64_t i = 0;
 
       // Block 8: load 8 RGB pixels with vld3, deinterleave, widen to int16,
-      // multiply-accumulate with 8 weights per channel
+      // multiply-accumulate with 8 weights per channel.
+      // Each vmlal_s16 accumulates 4 products; calling it on the low and high
+      // halves puts all 8 products into 4 int32 lanes, reduced later by
+      // vaddvq_s32.
       for (; i + 8 <= ids_size; i += 8) {
-        uint8x8x3_t rgb = vld3_u8(lineIn_min + stride * i);
+        uint8x8x3_t rgb = vld3_u8(lineIn_min + num_channels * i);
         int16x8_t weights = vld1q_s16(&k[i]);
 
         int16x8_t r16 = vreinterpretq_s16_u16(vmovl_u8(rgb.val[0]));
@@ -108,16 +111,6 @@ void NeonResampleHorizontal(const at::Tensor& unpacked_output,
         acc_b = vmlal_s16(acc_b, vget_high_s16(b16), vget_high_s16(weights));
       }
 
-      // Block 4: same but with 4 pixels and int16x4 weights
-      for (; i + 4 <= ids_size; i += 4) {
-        uint8x8x3_t rgb = vld3_u8(lineIn_min + stride * i);
-        int16x4_t w4 = vld1_s16(&k[i]);
-
-        acc_r = vmlal_s16(acc_r, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[0]))), w4);
-        acc_g = vmlal_s16(acc_g, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[1]))), w4);
-        acc_b = vmlal_s16(acc_b, vget_low_s16(vreinterpretq_s16_u16(vmovl_u8(rgb.val[2]))), w4);
-      }
-
       // Horizontal reduction + rounding bias
       int32_t sum_r = vaddvq_s32(acc_r) + initial_val;
       int32_t sum_g = vaddvq_s32(acc_g) + initial_val;
@@ -126,14 +119,14 @@ void NeonResampleHorizontal(const at::Tensor& unpacked_output,
       // Scalar cleanup for remaining pixels
       for (; i < ids_size; i++) {
         int16_t w = k[i];
-        const uint8_t* p = lineIn_min + stride * i;
+        const uint8_t* p = lineIn_min + num_channels * i;
         sum_r += w * p[0];
         sum_g += w * p[1];
         sum_b += w * p[2];
       }
 
       // Right-shift and clamp to [0, 255]
-      uint8_t* out = lineOut + stride * out_x;
+      uint8_t* out = lineOut + num_channels * out_x;
       out[0] = static_cast<uint8_t>(std::clamp(sum_r >> horiz_weights_precision, 0, 255));
       out[1] = static_cast<uint8_t>(std::clamp(sum_g >> horiz_weights_precision, 0, 255));
       out[2] = static_cast<uint8_t>(std::clamp(sum_b >> horiz_weights_precision, 0, 255));
@@ -166,17 +159,14 @@ void NeonResampleVertical(const at::Tensor& unpacked_output,
   const auto num_channels = unpacked_input.size(0);
   TORCH_INTERNAL_ASSERT(num_channels == unpacked_output.size(0));
 
-  const int64_t stride = num_channels;
-  const int64_t data_size = xout * stride;
+  const int64_t data_size = xout * num_channels;
 
-  auto xout_stride = xout * num_channels;
   for (const auto yy : c10::irange(yout)) {
     const auto* k = &kk[yy * ksize];
     auto ids_min = idx_ptr_xmin[yy];
     auto ids_size = idx_ptr_size[yy];
 
-    uint8_t* C10_RESTRICT lineOut = output_p + yy * xout_stride;
-    const uint8_t* C10_RESTRICT lineIn = input_p;
+    uint8_t* C10_RESTRICT lineOut = output_p + yy * data_size;
     const int32_t initial_val = 1 << (vert_weights_precision - 1);
     const int32x4_t initial = vdupq_n_s32(initial_val);
 
@@ -202,7 +192,7 @@ void NeonResampleVertical(const at::Tensor& unpacked_output,
       int32x4_t sss2 = initial;
       int32x4_t sss3 = initial;
 
-      const uint8_t* lineIn_min = lineIn + j + ids_min;
+      const uint8_t* lineIn_min = input_p + j + ids_min;
 
       // Process 2 weights at a time by interleaving rows.
       // For weights w0, w1 and pixel bytes from row_i and row_{i+1}:
@@ -266,7 +256,7 @@ void NeonResampleVertical(const at::Tensor& unpacked_output,
     // Scalar fallback for remaining bytes
     for (; j < data_size; j++) {
       int32_t sss = initial_val;
-      const uint8_t* lineIn_min = lineIn + j + ids_min;
+      const uint8_t* lineIn_min = input_p + j + ids_min;
 
       for (int64_t i = 0; i < ids_size; i++) {
         sss += k[i] * static_cast<int32_t>(lineIn_min[i * data_size]);
