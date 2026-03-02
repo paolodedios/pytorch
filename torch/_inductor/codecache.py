@@ -1169,6 +1169,9 @@ class GuardedCache(Generic[T]):
         info = {"cache_status_detailed": result_status}
         if sample_guards_expr is not None:
             info["cache_status_guard_expr"] = sample_guards_expr
+            debug_info = getattr(candidate, "guards_expr_debug_info", None)
+            if debug_info is not None:
+                info["cache_status_guard_expr_debug_info"] = debug_info
 
         # Record hits/misses for compilation event logging. The tricky part is that a
         # remote hit would imply a local miss (if local caching is enabled).
@@ -1507,6 +1510,33 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
         guards = shape_env.get_pruned_guards(symints)
         compiled_graph.guards_expr = shape_env.produce_guards_expression(
             placeholders=symints, guards=guards
+        )
+        import sympy
+
+        guards_expr_debug_info = {
+            f"t{i}": {
+                "symbol": str(s.node.expr),
+                "sources": [
+                    src.name for src in shape_env.var_to_sources.get(s.node.expr, [])
+                ],
+            }
+            for i, s in enumerate(symints)
+            if isinstance(s.node.expr, sympy.Symbol)
+        }
+        compiled_graph.guards_expr_debug_info = guards_expr_debug_info
+        trace_structured(
+            "artifact",
+            metadata_fn=lambda: {
+                "name": "fx_graph_cache_guards_expr",
+                "encoding": "json",
+            },
+            payload_fn=lambda: json.dumps(
+                {
+                    "key": key,
+                    "guards_expr": compiled_graph.guards_expr,
+                    "symint_provenance": guards_expr_debug_info,
+                }
+            ),
         )
         disk_compiled_graph = copy(compiled_graph)
         disk_compiled_graph.prepare_for_serialization()
