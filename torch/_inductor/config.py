@@ -48,7 +48,7 @@ def bundle_triton_into_fx_graph_cache_default() -> bool | None:
     )
 
 
-def autotune_at_compile_time_default() -> Optional[bool]:
+def autotune_at_compile_time_default() -> bool | None:
     return get_tristate_env("TORCHINDUCTOR_AUTOTUNE_AT_COMPILE_TIME")
 
 
