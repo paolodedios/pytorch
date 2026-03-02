@@ -1883,20 +1883,14 @@ class GuardBuilder(GuardBuilderBase):
         new_guard.create(self)
 
     # Note: the order of the guards in this file matters since we sort guards on the same object by lineno
-    def HASATTR(self, guard: Guard) -> None:
+    def HASATTR(self, guard: Guard, attr: str | None = None) -> None:
+        assert attr is not None
         source = guard.originating_source
         if isinstance(source, NNModuleSource):
             source = source.base
-        if isinstance(source, CodeSource):
-            # No need to guard that a function has a __code__ attribute
-            return
-        assert isinstance(source, AttrSource), f"invalid source {guard.name}"
-        base_source = source.base
-        base = base_source.name
-        attr = source.member
 
-        ref = self.arg_ref(base)
-        val = hasattr(self.get(base_source), attr)
+        ref = self.arg_ref(guard)
+        val = hasattr(self.get(guard), attr)
         code = None
         if val:
             code = f"hasattr({ref}, {attr!r})"
@@ -1907,27 +1901,28 @@ class GuardBuilder(GuardBuilderBase):
             return
 
         self._set_guard_export_info(
-            guard, [code], provided_guarded_object=self.get(base_source)
+            guard, [code], provided_guarded_object=self.get(guard)
         )
 
-        base_manager = self.get_guard_manager_from_source(base_source)
+        base_manager = self.get_guard_manager_from_source(source)
         if val:
             # Just install a getattr manager. GetAttrGuardAccessor itself
             # acts as hasattr guard.
-            example_value = self.get(source)
-            base_example_value = self.get(base_source)
-            guard_manager_enum = self.get_guard_manager_type(source, example_value)
+            attr_source = AttrSource(source, attr)
+            example_value = self.get(attr_source)
+            base_example_value = self.get(guard)
+            guard_manager_enum = self.get_guard_manager_type(attr_source, example_value)
 
             # if the base value is nn.Module, check if we can speedup the
             # guard by going through __dict__ attrs.
             if should_optimize_getattr_on_nn_module(base_example_value):
                 self.getattr_on_nn_module(
-                    source,
+                    attr_source,
                     base_manager,
                     base_example_value,
                     example_value,
-                    base,
                     source.name,
+                    attr_source.name,
                     guard_manager_enum,
                 )
             else:
@@ -2011,27 +2006,41 @@ class GuardBuilder(GuardBuilderBase):
             val, get_verbose_code_parts(code, guard), guard.user_stack
         )
 
-    def DICT_CONTAINS(self, guard: Guard, key: str, invert: bool) -> None:
+    def DICT_CONTAINS(self, guard: Guard, key: str) -> None:
         dict_ref = self.arg_ref(guard)
 
-        maybe_not = "not " if invert else ""
-        code = f"{maybe_not}___dict_contains({key!r}, {dict_ref})"
+        code = f"___dict_contains({key!r}, {dict_ref})"
         if code in self.already_added_code_parts:
             return
         self._set_guard_export_info(guard, [code])
 
         self.get_guard_manager(guard).add_dict_contains_guard(
-            not invert,
+            True,
             key,
             get_verbose_code_parts(code, guard),
             guard.user_stack,
         )
         self.already_added_code_parts.add(code)
 
-    def SET_CONTAINS(self, guard: Guard, key: Any, invert: bool) -> None:
+    def DICT_NOT_CONTAINS(self, guard: Guard, key: str) -> None:
+        dict_ref = self.arg_ref(guard)
+
+        code = f"not ___dict_contains({key!r}, {dict_ref})"
+        if code in self.already_added_code_parts:
+            return
+        self._set_guard_export_info(guard, [code])
+
+        self.get_guard_manager(guard).add_dict_contains_guard(
+            False,
+            key,
+            get_verbose_code_parts(code, guard),
+            guard.user_stack,
+        )
+        self.already_added_code_parts.add(code)
+
+    def SET_CONTAINS(self, guard: Guard, key: Any) -> None:
         set_ref = self.arg_ref(guard)
         item = key
-        contains = not invert  # install_dict_contains_guard inverts "contains"
 
         code = f"set.__contains__({set_ref}, {item!r})"
         if code in self.already_added_code_parts:
@@ -2040,7 +2049,25 @@ class GuardBuilder(GuardBuilderBase):
         self._set_guard_export_info(guard, [code])
 
         self.get_guard_manager(guard).add_set_contains_guard(
-            contains,
+            True,
+            item,
+            get_verbose_code_parts(code, guard),
+            guard.user_stack,
+        )
+        self.already_added_code_parts.add(code)
+
+    def SET_NOT_CONTAINS(self, guard: Guard, key: Any) -> None:
+        set_ref = self.arg_ref(guard)
+        item = key
+
+        code = f"not set.__contains__({set_ref}, {item!r})"
+        if code in self.already_added_code_parts:
+            return
+
+        self._set_guard_export_info(guard, [code])
+
+        self.get_guard_manager(guard).add_set_contains_guard(
+            False,
             item,
             get_verbose_code_parts(code, guard),
             guard.user_stack,
@@ -2440,7 +2467,8 @@ class GuardBuilder(GuardBuilderBase):
         val = self.get(guard)
         # Strictly only want user-defined functions
         if type(val) is types.FunctionType and hasattr(val, "__code__"):
-            self._guard_on_attribute(guard, "__code__", GuardBuilder.HASATTR)  # type: ignore[arg-type]
+            # No explicit HASATTR guard needed for __code__ — the getattr
+            # accessor installed by CONSTANT_MATCH implicitly guards hasattr.
             self._guard_on_attribute(guard, "__code__", GuardBuilder.CONSTANT_MATCH)  # type: ignore[arg-type]
         else:
             self.FUNCTION_MATCH(guard)
