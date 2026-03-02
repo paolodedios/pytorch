@@ -592,7 +592,7 @@ TORCH_IMPL_FUNC(index_add_mps_out)
     Placeholder selfPlaceholder = Placeholder(cachedGraph->inputTensor_, self);
     Placeholder indexPlaceholder = Placeholder(cachedGraph->indexTensor_, index);
     Placeholder sourcePlaceholder = Placeholder(cachedGraph->sourceTensor_, source);
-    Placeholder outputPlaceholder = Placeholder(cachedGraph->outputTensor_, needs_gather ? output: result);
+    Placeholder outputPlaceholder = Placeholder(cachedGraph->outputTensor_, needs_gather ? output : result);
     MPSScalar alpha_scalar = getMPSScalar(alpha, casted_type);
 
     NSDictionary<MPSGraphTensor*, MPSGraphTensorData*>* feeds = @{
