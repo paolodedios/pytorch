@@ -2129,9 +2129,9 @@ class TestFP8Matmul(TestCase):
         # No swizzle passed - must fail on swizzle_a
         with self.assertRaisesRegex(
             ValueError,
-            f"swizzle_a must have 1 values, got 0",
+            "swizzle_a must have 1 values, got 0",
         ):
-            y = torch.nn.functional.scaled_mm(
+            _ = torch.nn.functional.scaled_mm(
                 x,
                 w.t(),
                 x_scale,
@@ -2143,9 +2143,9 @@ class TestFP8Matmul(TestCase):
         # swizzle_a passed, not b, must fail on swizzle_b
         with self.assertRaisesRegex(
             ValueError,
-            f"swizzle_b must have 1 values, got 0",
+            "swizzle_b must have 1 values, got 0",
         ):
-            y = torch.nn.functional.scaled_mm(
+            _ = torch.nn.functional.scaled_mm(
                 x,
                 w.t(),
                 x_scale,
@@ -2167,9 +2167,9 @@ class TestFP8Matmul(TestCase):
         # No swizzles passed - must fail on swizzle_a
         with self.assertRaisesRegex(
             ValueError,
-            f"swizzle_a must have 2 values, got 0",
+            "swizzle_a must have 2 values, got 0",
         ):
-            y = torch.nn.functional.scaled_mm(
+            _ = torch.nn.functional.scaled_mm(
                 x,
                 w.t(),
                 [x_scale, global_scale],
@@ -2181,9 +2181,9 @@ class TestFP8Matmul(TestCase):
         # Not enough swizzles passed - must fail on swizzle_a
         with self.assertRaisesRegex(
             ValueError,
-            f"swizzle_a must have 2 values, got 1",
+            "swizzle_a must have 2 values, got 1",
         ):
-            y = torch.nn.functional.scaled_mm(
+            _ = torch.nn.functional.scaled_mm(
                 x,
                 w.t(),
                 [x_scale, global_scale],
@@ -2196,9 +2196,9 @@ class TestFP8Matmul(TestCase):
         # Not enough swizzles passed to b - must fail on swizzle_b
         with self.assertRaisesRegex(
             ValueError,
-            f"swizzle_b must have 2 values, got 1",
+            "swizzle_b must have 2 values, got 1",
         ):
-            y = torch.nn.functional.scaled_mm(
+            _ = torch.nn.functional.scaled_mm(
                 x,
                 w.t(),
                 [x_scale, global_scale],
