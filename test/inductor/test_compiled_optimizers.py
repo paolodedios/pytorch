@@ -1086,6 +1086,8 @@ for optim_cls, name, kwargs, scheduler_cls in COMPILED_OPT_KWARG_DB:
 
 
 def _make_bitwise_test(optim_cls, **optim_kwargs):
+    @skipIfRocm(msg="ROCm may have different numerical behavior")
+    @requires_cuda_and_triton
     @config.patch(
         {
             "eager_numerics.division_rounding": True,
