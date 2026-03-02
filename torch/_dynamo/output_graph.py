@@ -2700,7 +2700,9 @@ class OutputGraph(OutputGraphCommon):
             else "<unknown compiler_fn>"
         )
         if config.inline_invoke_subgraph:
-            from torch._dynamo.inline_invoke_subgraph import inline_invoke_subgraph
+            from torch._higher_order_ops.passes.inline_invoke_subgraph import (
+                inline_invoke_subgraph,
+            )
 
             gm = inline_invoke_subgraph(gm)
 
