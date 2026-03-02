@@ -471,6 +471,211 @@ class TestGuardExclusion(TestCase):
 
         self.assertEqual(tracker.frame_count, 2, "No additional recompilations")
 
+    @torch._dynamo.config.patch(
+        automatic_dynamic_shapes=True, assume_static_by_default=True
+    )
+    def test_integer_input_exclusion_basic(self):
+        """
+        Integer inputs that become dynamic should also get exclusion guards.
+        1. foo(x, 3) -> Graph 0: static n=3
+        2. foo(x, 5) -> Graph 1: dynamic n, excluded should reject n==3
+        3. foo(x, 3) -> should use Graph 0 (static), not Graph 1
+        """
+
+        def foo(x, n):
+            return x * n
+
+        tracker = GraphTracker()
+        opt = torch.compile(foo, backend=tracker)
+
+        x = torch.randn(4)
+
+        opt(x, 3)
+        self.assertEqual(tracker.frame_count, 1)
+        self.assertEqual(tracker.call_log[-1], 0)
+
+        opt(x, 5)
+        self.assertEqual(tracker.frame_count, 2)
+        self.assertEqual(tracker.call_log[-1], 1)
+
+        opt(x, 3)
+        self.assertEqual(
+            tracker.call_log[-1],
+            0,
+            "Input n=3 should use Graph 0 (static), not Graph 1 (dynamic n).",
+        )
+
+    @torch._dynamo.config.patch(
+        automatic_dynamic_shapes=True, assume_static_by_default=True
+    )
+    def test_integer_input_exclusion_accumulation(self):
+        """
+        Same accumulation scenario as the tensor test but with integer inputs.
+        1. foo(x, 3, 4)  -> Graph 0: static (3, 4)
+        2. foo(x, 5, 4)  -> Graph 1: dynamic (s0, 4), exclusion rejects n0==3
+        3. foo(x, 3, 19) -> Graph 2: dynamic (s0, s1), exclusion should reject
+                            n1==4 independently, not require n0==3 AND n1==4
+        4. foo(x, 5, 4)  -> should use Graph 1, not Graph 2
+        """
+
+        def foo(x, n, m):
+            return x * n + m
+
+        tracker = GraphTracker()
+        opt = torch.compile(foo, backend=tracker)
+
+        x = torch.randn(4)
+
+        opt(x, 3, 4)
+        self.assertEqual(tracker.frame_count, 1)
+        self.assertEqual(tracker.call_log[-1], 0)
+
+        opt(x, 5, 4)
+        self.assertEqual(tracker.frame_count, 2)
+        self.assertEqual(tracker.call_log[-1], 1)
+
+        opt(x, 3, 19)
+        self.assertEqual(tracker.frame_count, 3)
+        self.assertEqual(tracker.call_log[-1], 2)
+
+        opt(x, 5, 4)
+        self.assertEqual(
+            tracker.call_log[-1],
+            1,
+            "Input (5, 4) should use Graph 1 (s0, 4), not Graph 2 (s0, s1).",
+        )
+
+        opt(x, 3, 4)
+        self.assertEqual(
+            tracker.call_log[-1],
+            0,
+            "Input (3, 4) should use Graph 0 (static)",
+        )
+
+    @torch._dynamo.config.patch(
+        automatic_dynamic_shapes=True, assume_static_by_default=True
+    )
+    def test_two_tensor_inputs_exclusion(self):
+        """
+        Multi-tensor exclusion must be a single combined Or guard, not
+        per-tensor AND-ed guards.
+
+        1. foo(x=[3,4], y=[5,6])   -> Graph 0: all static
+        2. foo(x=[3,10], y=[5,11]) -> Graph 1: x.dim1, y.dim1 dynamic
+                                      exclusion: Or(x.dim1!=4, y.dim1!=6)
+        3. foo(x=[3,10], y=[5,6])  -> Graph 1 (only y.dim1 matches excluded,
+                                      not both -> Or guard passes)
+        4. foo(x=[3,4], y=[5,21])  -> Graph 1 (only x.dim1 matches excluded)
+        5. foo(x=[3,4], y=[5,6])   -> Graph 0 (both match -> Or guard fails,
+                                      falls through to static graph)
+        6. foo(x=[3,10], y=[5,11]) -> Graph 1
+        """
+
+        def foo(x, y):
+            return x.sum() + y.sum()
+
+        tracker = GraphTracker()
+        opt = torch.compile(foo, backend=tracker)
+
+        opt(torch.randn(3, 4), torch.randn(5, 6))
+        self.assertEqual(tracker.frame_count, 1)
+        self.assertEqual(tracker.call_log[-1], 0)
+
+        opt(torch.randn(3, 10), torch.randn(5, 11))
+        self.assertEqual(tracker.frame_count, 2)
+        self.assertEqual(tracker.call_log[-1], 1)
+
+        # Only y.dim1 matches excluded value; combined Or guard passes.
+        opt(torch.randn(3, 10), torch.randn(5, 6))
+        self.assertEqual(tracker.frame_count, 2, "Should not recompile")
+        self.assertEqual(tracker.call_log[-1], 1)
+
+        # Only x.dim1 matches excluded value; combined Or guard passes.
+        opt(torch.randn(3, 4), torch.randn(5, 21))
+        self.assertEqual(tracker.frame_count, 2, "Should not recompile")
+        self.assertEqual(tracker.call_log[-1], 1)
+
+        # Both match excluded values; Or guard fails -> falls to Graph 0.
+        opt(torch.randn(3, 4), torch.randn(5, 6))
+        self.assertEqual(tracker.call_log[-1], 0)
+
+        # Neither matches; Or guard passes -> Graph 1.
+        opt(torch.randn(3, 10), torch.randn(5, 11))
+        self.assertEqual(tracker.call_log[-1], 1)
+
+
+    @torch._dynamo.config.patch(
+        automatic_dynamic_shapes=True, assume_static_by_default=True
+    )
+    def test_multi_tensor_and_scalar_accumulation(self):
+        """
+        3-dim tensors + 3 scalar inputs with cascading accumulation.
+        Each step transitions one input while the rest stay the same,
+        verifying that only the current transition's exclusion is emitted.
+
+        Graph 0: all static
+        Graph 1: x.dim2, y.dim2 dynamic    excl: Or(Ne(x.dim2,4), Ne(y.dim2,7))
+        Graph 2: + n dynamic                excl: Ne(n, 2)
+        Graph 3: + m dynamic                excl: Ne(m, 3)
+        Graph 4: + k dynamic                excl: Ne(k, 4)
+        """
+
+        def foo(x, y, n, m, k):
+            return x.sum() * n + y.sum() * m + k
+
+        tracker = GraphTracker()
+        opt = torch.compile(foo, backend=tracker)
+
+        # -- Compilation steps --
+
+        # Graph 0: all static
+        opt(torch.randn(2, 3, 4), torch.randn(5, 6, 7), 2, 3, 4)
+        self.assertEqual(tracker.frame_count, 1)
+        self.assertEqual(tracker.call_log[-1], 0)
+
+        # Graph 1: tensor dim2 changes
+        opt(torch.randn(2, 3, 10), torch.randn(5, 6, 11), 2, 3, 4)
+        self.assertEqual(tracker.frame_count, 2)
+        self.assertEqual(tracker.call_log[-1], 1)
+
+        # Graph 2: scalar n changes (tensor exclusions cleared)
+        opt(torch.randn(2, 3, 10), torch.randn(5, 6, 11), 8, 3, 4)
+        self.assertEqual(tracker.frame_count, 3)
+        self.assertEqual(tracker.call_log[-1], 2)
+
+        # Graph 3: scalar m changes (n exclusion cleared)
+        opt(torch.randn(2, 3, 10), torch.randn(5, 6, 11), 8, 9, 4)
+        self.assertEqual(tracker.frame_count, 4)
+        self.assertEqual(tracker.call_log[-1], 3)
+
+        # Graph 4: scalar k changes (m exclusion cleared)
+        opt(torch.randn(2, 3, 10), torch.randn(5, 6, 11), 8, 9, 15)
+        self.assertEqual(tracker.frame_count, 5)
+        self.assertEqual(tracker.call_log[-1], 4)
+
+        # -- Verification: each input routes to the correct graph --
+
+        # k=4 triggers Graph 4 exclusion -> Graph 3
+        opt(torch.randn(2, 3, 10), torch.randn(5, 6, 11), 8, 9, 4)
+        self.assertEqual(tracker.call_log[-1], 3, "k=4 should fall to Graph 3")
+
+        # m=3 also triggers Graph 3 exclusion -> Graph 2
+        opt(torch.randn(2, 3, 10), torch.randn(5, 6, 11), 8, 3, 4)
+        self.assertEqual(tracker.call_log[-1], 2, "m=3 should fall to Graph 2")
+
+        # n=2 also triggers Graph 2 exclusion -> Graph 1
+        opt(torch.randn(2, 3, 10), torch.randn(5, 6, 11), 2, 3, 4)
+        self.assertEqual(tracker.call_log[-1], 1, "n=2 should fall to Graph 1")
+
+        # tensor dims match original -> Graph 1 exclusion triggers -> Graph 0
+        opt(torch.randn(2, 3, 4), torch.randn(5, 6, 7), 2, 3, 4)
+        self.assertEqual(tracker.call_log[-1], 0, "Original sizes should use Graph 0")
+
+        # mixed: new tensor dims + new scalars -> Graph 4
+        opt(torch.randn(2, 3, 20), torch.randn(5, 6, 21), 50, 60, 70)
+        self.assertEqual(tracker.frame_count, 5, "Should not recompile")
+        self.assertEqual(tracker.call_log[-1], 4, "All-new values should use Graph 4")
+
 
 if __name__ == "__main__":
     run_tests()
