@@ -415,6 +415,22 @@ def gen_single_dim_einsum_strategies(
             _maybe_add_bias([output_placement, Replicate(), Partial(reduce_op)])
         )
 
+    # Batch-dimension linearity: when the einsum has no contracting dims and
+    # no free dims (all dims are batch dims), the operation is element-wise
+    # and linear in all inputs simultaneously. Add all-Partial strategies.
+    if (
+        not edims.contracting_dims
+        and not edims.lhs_out_only_dims
+        and not edims.rhs_out_only_dims
+    ):
+        for reduce_op in Partial.LINEAR_REDUCE_OPS:
+            linearity_placements: list[Placement | _ShardingPlaceholder] = [
+                Partial(reduce_op)
+            ]
+            for _ in input_dims:
+                linearity_placements.append(Partial(reduce_op))
+            strategies_over_one_mesh_dim.append(_maybe_add_bias(linearity_placements))
+
     return strategies_over_one_mesh_dim
 
 
