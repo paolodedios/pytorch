@@ -923,7 +923,7 @@ namespace {
       }
     }
   }
-  
+
   inline Tensor& _cholesky_inverse_helper_cuda_cusolver_dispatcher(
       Tensor& result,
       Tensor& infos,
@@ -935,7 +935,7 @@ namespace {
       /*use_dedicated_kernel_unconditionally=*/false
     >(result, infos, upper);
   }
-  
+
 } // namespace (anonymous)
 
 Tensor& cholesky_inverse_kernel_impl(Tensor &result, Tensor& infos, bool upper) {
