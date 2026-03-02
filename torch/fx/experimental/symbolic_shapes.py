@@ -6911,6 +6911,7 @@ class ShapeEnv:
         that try to maximize consistency with the shape environment.
 
         Special cases:
+
         - Complex numbers (containing sympy.I): raises an error since tensor
           dimensions cannot be complex.
         - Infinity (int_oo, sympy.oo): returns sys.maxsize.
