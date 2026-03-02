@@ -3904,6 +3904,10 @@ class ShapeEnv:
         self.unbacked_renamings: dict[sympy.Symbol, sympy.Symbol] = {}
         # Set holds a % b expressions that evaluate to 0.
         self.divisible: set[sympy.Expr] = set()
+        # Per-entry exclusion constraints from automatic_dynamic transitions.
+        # Each entry is a list of (symbol, excluded_value) pairs representing
+        # one multi-dim exclusion: the guard rejects only when ALL pairs match.
+        self.exclusion_constraints: list[list[tuple[sympy.Symbol, int]]] = []
         # Set that holds "size-like" symbols.  When we perform
         # "size-oblivious" tests, these can be assumed to be >= 2.
         self.size_like: set[sympy.Symbol] = set()
@@ -4785,6 +4789,18 @@ class ShapeEnv:
         size: list[sympy.Expr] = self._produce_dyn_sizes_from_int_tuple(
             ex_size, source, symbolic_context, hint_overrides=hint_overrides
         )
+        if (
+            isinstance(symbolic_context, StatefulSymbolicContext)
+            and symbolic_context.excluded_sizes
+            and any(v is not None for v in symbolic_context.excluded_sizes)
+        ):
+            excl_pairs: list[tuple[sympy.Symbol, int]] = []
+            for i in range(dim):
+                ev = symbolic_context.excluded_sizes[i]
+                if ev is not None and isinstance(size[i], sympy.Symbol):
+                    excl_pairs.append((size[i], ev))
+            if excl_pairs:
+                self.exclusion_constraints.append(excl_pairs)
         stride = self._compute_symbolic_stride(
             source,
             size,
@@ -4988,6 +5004,13 @@ class ShapeEnv:
                     )
             out = SymFloat(SymNode(sym, self, float, hint, fx_node=fx_node))
         return out
+
+    @record_shapeenv_event()
+    def record_exclusion_constraint(
+        self, pairs: list[tuple[sympy.Symbol, int]]
+    ) -> None:
+        if pairs:
+            self.exclusion_constraints.append(pairs)
 
     @record_shapeenv_event()
     def create_unspecified_symint_and_symbol(
@@ -6251,6 +6274,65 @@ class ShapeEnv:
                         exprs.append(f"~std::isnan({printer.print_source(sources[0])})")
                     else:
                         raise NotImplementedError(f"Unimplemented for lang: {lang}")
+
+        # Exclusion guard for stable graph selection with automatic dynamic.
+        #
+        # When automatic_dynamic promotes a static dim to dynamic, the new
+        # (more general) graph is inserted *before* the old (specialized) graph
+        # in the guard cache.  Without an exclusion guard, inputs that exactly
+        # match the old graph's static sizes would be captured by the new
+        # dynamic graph instead, violating the invariant "once an input is
+        # served by graph X it is always served by graph X".
+        #
+        # Soundness argument (cache-flip / LIFO order):
+        #   Graph_new sits before Graph_old in the cache.  Graph_old accepts
+        #   only inputs whose sizes match its static constraints exactly.
+        #   Graph_new must therefore reject exactly that set of inputs so they
+        #   fall through to Graph_old.  The excluded values are the static
+        #   sizes from Graph_old, so the guard
+        #       Or(Ne(s0, v0), Ne(s1, v1), ...)
+        #   passes iff at least one dim differs from the old sizes — i.e. the
+        #   input does NOT fully match Graph_old.  Conversely, when every dim
+        #   matches the old sizes the guard fails and the input falls through
+        #   to Graph_old, which is guaranteed to accept it.
+        #
+        # All exclusion pairs across all tensors and scalars are flattened
+        # into a single list — each pair is just (symbol, excluded_int),
+        # and the multi-tensor case is the same logic as multi-dim within
+        # one tensor.  The combined Or rejects only when ALL pairs match
+        # simultaneously, which is the exact condition for Graph_old to
+        # accept.  If the current concrete values already match every
+        # excluded value the guard is skipped (it would fail on creation).
+        import torch._dynamo.config as dynamo_config
+
+        if (
+            dynamo_config.stable_graph_selection_for_automatic_dynamic
+            and not dynamo_config.enable_compiler_collectives
+            and self.exclusion_constraints
+        ):
+            all_pairs: list[tuple[sympy.Symbol, int]] = []
+            for pairs in self.exclusion_constraints:
+                for sym, val in pairs:
+                    if symbol_to_source.get(sym):
+                        all_pairs.append((sym, val))
+            if all_pairs and not all(
+                self.backed_var_to_val.get(sym) == val for sym, val in all_pairs
+            ):
+                if len(all_pairs) == 1:
+                    excl_expr = sympy.Ne(
+                        all_pairs[0][0], all_pairs[0][1], evaluate=False
+                    )
+                else:
+                    excl_expr = sympy.Or(
+                        *[sympy.Ne(sym, val, evaluate=False) for sym, val in all_pairs]
+                    )
+                for exprs, printer, lang in zip(all_exprs, printers, langs):
+                    guard_expr = printer.doprint(excl_expr)
+                    if lang == "verbose_python":
+                        guard_expr = (
+                            f"{guard_expr}  # exclusion guard for automatic dynamic"
+                        )
+                    exprs.append(guard_expr)
 
         if constraint_violations:
             warn_msgs: list[str] = []

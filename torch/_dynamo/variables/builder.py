@@ -2690,13 +2690,10 @@ class VariableBuilder:
             frame_state_entry is not None
             and frame_state_entry.excluded_scalar is not None
         ):
-            install_guard(
-                self.get_source().make_guard(
-                    functools.partial(
-                        GuardBuilder.SCALAR_EXCLUSION,
-                        excluded_value=frame_state_entry.excluded_scalar,
-                    )
-                )
+            sym_expr = wrapped_value.node.expr
+            assert isinstance(sym_expr, sympy.Symbol)
+            shape_env.record_exclusion_constraint(
+                [(sym_expr, frame_state_entry.excluded_scalar)]
             )
 
         options = {"source": self.get_source()}
@@ -4059,7 +4056,6 @@ def _wrap_to_fake_tensor_and_record_impl(
             tx.output.input_source_to_sizes_strides[source] = {
                 "size": fake_e.size(),
                 "stride": fake_e.stride(),
-                "excluded_sizes": getattr(symbolic_context, "excluded_sizes", None),
             }
 
         if (

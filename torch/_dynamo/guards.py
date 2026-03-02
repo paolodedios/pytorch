@@ -3045,28 +3045,6 @@ class GuardBuilder(GuardBuilderBase):
                 )
                 user_stack = guard.user_stack
 
-                # Exclusion guard: reject inputs matching a more specialized
-                # cache entry's static sizes. Already-dynamic dims have None
-                # in excluded_sizes and are skipped by the C++ guard.
-                excluded_sizes = metadata.get("excluded_sizes")
-                excluded_sizes_for_guard = None
-                if (
-                    excluded_sizes
-                    and any(v is not None for v in excluded_sizes)
-                    and config.stable_graph_selection_for_automatic_dynamic
-                    and not config.enable_compiler_collectives
-                ):
-                    # Only check dynamic dims (size=None) with concrete exclusions
-                    dynamic_excluded = [
-                        (d, v)
-                        for d, (s, v) in enumerate(zip(size, excluded_sizes))
-                        if s is None and v is not None
-                    ]
-                    if dynamic_excluded and not all(
-                        value.size(d) == v for d, v in dynamic_excluded
-                    ):
-                        excluded_sizes_for_guard = list(excluded_sizes)
-
                 guard_manager.add_tensor_match_guard(
                     value,
                     size,  # type: ignore[arg-type]
@@ -3076,7 +3054,6 @@ class GuardBuilder(GuardBuilderBase):
                     user_stack,
                     pytype,
                     dispatch_keys,
-                    excluded_sizes_for_guard,
                 )
 
                 # We consider TENSOR_MATCH guard to be important enough to be
@@ -3159,25 +3136,6 @@ class GuardBuilder(GuardBuilderBase):
 
             if len(code) > 0:
                 self._set_guard_export_info(guard, code)
-
-    def SCALAR_EXCLUSION(self, guard: Guard, excluded_value: int | None = None) -> None:
-        if (
-            excluded_value is not None
-            and config.stable_graph_selection_for_automatic_dynamic
-            and not config.enable_compiler_collectives
-        ):
-            value = self.get(guard)
-            if value != excluded_value:
-                guard_manager = self.get_guard_manager(guard)
-
-                def check_exclusion(x, ev=excluded_value):
-                    return x != ev
-
-                guard_manager.add_lambda_guard(
-                    check_exclusion,
-                    get_verbose_code_parts(f"excluded_scalar({excluded_value})", guard),
-                    guard.user_stack,
-                )
 
     # A util that in the case of export, adds data onto guards
     def _set_guard_export_info(
