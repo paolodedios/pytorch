@@ -1866,12 +1866,18 @@ class ConstructorMoverPass:
             for idx, node in enumerate(movable_cpu_placeholders):
                 with graph.inserting_after(last_node):
                     gpu_node = graph.call_function(operator.getitem, (gpu_split, idx))
+                    # Exclude the output node: a CPU placeholder that
+                    # appears as a graph output (e.g. a saved tensor for
+                    # backward) must stay on CPU.  Replacing it with the
+                    # GPU version would make the backward receive a CUDA
+                    # tensor, causing SIGSEGV in CPU C++ kernels.
                     node.replace_all_uses_with(
                         gpu_node,
                         lambda x: x
                         not in [cpu_concat, gpu_concat, gpu_split, gpu_node]
                         + unsqueezed_nodes
-                        and x.target != torch.ops.aten.copy_.default,
+                        and x.target != torch.ops.aten.copy_.default
+                        and x.op != "output",
                     )
                     last_node = gpu_node
 
