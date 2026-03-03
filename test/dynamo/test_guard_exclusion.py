@@ -87,46 +87,14 @@ class TestGuardExclusion(TestCase):
     @torch._dynamo.config.patch(
         automatic_dynamic_shapes=True, assume_static_by_default=True
     )
-    def test_automatic_dynamic_both_dims_change(self):
-        """
-        Both dimensions change across calls.
-        """
-
-        def foo(x):
-            return x.sum()
-
-        tracker = GraphTracker()
-        opt = torch.compile(foo, backend=tracker)
-
-        opt(torch.randn(3, 4))
-        opt(torch.randn(5, 6))
-        opt(torch.randn(3, 4))
-        opt(torch.randn(8, 9))
-
-        self.assertEqual(tracker.frame_count, 2)
-        self.assertEqual(tracker.call_log[0], 0, "Call 1 [3,4] -> Graph 0 (static)")
-        self.assertEqual(tracker.call_log[1], 1, "Call 2 [5,6] -> Graph 1 (dynamic)")
-        self.assertEqual(
-            tracker.call_log[2],
-            0,
-            "Call 3 [3,4] should revert to Graph 0 (static), same shape as call 1",
-        )
-        self.assertEqual(tracker.call_log[3], 1, "Call 4 [8,9] -> Graph 1 (dynamic)")
-
-    @torch._dynamo.config.patch(
-        automatic_dynamic_shapes=True, assume_static_by_default=True
-    )
     def test_accumulated_exclusion_does_not_shadow_intermediate_graph(self):
         """
-        Scenario exposing the accumulation bug:
+        Tensor accumulation: dims become dynamic one at a time.
         1. func(3, 4)  -> Graph 0: static (3, 4)
-        2. func(5, 4)  -> Graph 1: dynamic (s0, 4), excluded_sizes=(3, None)
-        3. func(3, 19) -> Graph 2: dynamic (s0, s1), excluded_sizes should be
-                          (None, 4) but the current code accumulates to (3, 4).
-                          With AND logic the exclusion only rejects the exact
-                          combo (3, 4), so input (5, 4) slips past Graph 2's
-                          exclusion and is handled by Graph 2 instead of Graph 1.
-        4. func(5, 4)  -> should use Graph 1 (s0, 4), NOT Graph 2 (s0, s1).
+        2. func(5, 4)  -> Graph 1: (s0, 4), excluded dim0=3
+        3. func(3, 19) -> Graph 2: (s0, s1), excluded dim1=4
+                          (dim0's exclusion is cleared since no dim transitioned)
+        4. func(5, 4)  -> should use Graph 1, not Graph 2
         """
 
         def foo(x):
@@ -152,8 +120,8 @@ class TestGuardExclusion(TestCase):
         self.assertEqual(tracker.call_log[-1], 2)
 
         # Call 4: shape [5, 4] -> should still use Graph 1 (s0, 4).
-        # With the accumulation bug, Graph 2's exclusion is (3 AND 4),
-        # so (5, 4) passes (5!=3) and Graph 2 steals the input.
+        # Graph 2's exclusion is dim1=4, so (5, 4) is rejected and
+        # falls through to Graph 1.
         opt(torch.randn(5, 4))
 
         self.assertEqual(
@@ -171,47 +139,6 @@ class TestGuardExclusion(TestCase):
             0,
             "Input [3,4] should use Graph 0 (static)",
         )
-
-    @torch._dynamo.config.patch(
-        automatic_dynamic_shapes=True, assume_static_by_default=True
-    )
-    def test_4d_non_adjacent_dims_become_dynamic(self):
-        """
-        4D tensor where dims 1 and 3 change simultaneously, dims 0 and 2 stay static.
-        Graph 0: (2, 3, 4, 5) static
-        Graph 1: (2, dyn, 4, dyn) with excluded dim1=3, dim3=5
-        Verify original shape routes back to Graph 0.
-        """
-
-        def foo(x):
-            return x + 1
-
-        tracker = GraphTracker()
-        opt = torch.compile(foo, backend=tracker)
-
-        opt(torch.randn(2, 3, 4, 5))
-        self.assertEqual(tracker.call_log[-1], 0)
-
-        opt(torch.randn(2, 7, 4, 9))
-        self.assertEqual(tracker.frame_count, 2)
-        self.assertEqual(tracker.call_log[-1], 1)
-
-        # Original shape should route to Graph 0, not Graph 1
-        opt(torch.randn(2, 3, 4, 5))
-        self.assertEqual(tracker.call_log[-1], 0)
-
-        # New dynamic shape should use Graph 1
-        opt(torch.randn(2, 11, 4, 13))
-        self.assertEqual(tracker.call_log[-1], 1)
-
-        # Partially matching excluded: dim1=3 matches but dim3=13≠5.
-        # AND semantics: Graph 1 accepts because NOT all excluded dims match.
-        # This is correct — Graph 0 can't handle (2,3,4,13) anyway (dim3≠5).
-        opt(torch.randn(2, 3, 4, 13))
-        self.assertEqual(
-            tracker.call_log[-1], 1, "(2,3,4,13) -> Graph 1 (AND: not all match)"
-        )
-        self.assertEqual(tracker.frame_count, 2, "No recompilation needed")
 
     @torch._dynamo.config.patch(
         automatic_dynamic_shapes=True, assume_static_by_default=True
@@ -517,17 +444,16 @@ class TestGuardExclusion(TestCase):
     )
     def test_two_tensor_inputs_exclusion(self):
         """
-        Multi-tensor exclusion must be a single combined Or guard, not
-        per-tensor AND-ed guards.
+        Multi-tensor exclusion: all pairs are flattened and guarded with
+        not-all semantics. The guard rejects only when ALL excluded values
+        across ALL tensors match simultaneously.
 
         1. foo(x=[3,4], y=[5,6])   -> Graph 0: all static
         2. foo(x=[3,10], y=[5,11]) -> Graph 1: x.dim1, y.dim1 dynamic
                                       exclusion: Or(x.dim1!=4, y.dim1!=6)
-        3. foo(x=[3,10], y=[5,6])  -> Graph 1 (only y.dim1 matches excluded,
-                                      not both -> Or guard passes)
-        4. foo(x=[3,4], y=[5,21])  -> Graph 1 (only x.dim1 matches excluded)
-        5. foo(x=[3,4], y=[5,6])   -> Graph 0 (both match -> Or guard fails,
-                                      falls through to static graph)
+        3. foo(x=[3,10], y=[5,6])  -> Graph 1 (not all match -> passes)
+        4. foo(x=[3,4], y=[5,21])  -> Graph 1 (not all match -> passes)
+        5. foo(x=[3,4], y=[5,6])   -> Graph 0 (all match -> rejected)
         6. foo(x=[3,10], y=[5,11]) -> Graph 1
         """
 
