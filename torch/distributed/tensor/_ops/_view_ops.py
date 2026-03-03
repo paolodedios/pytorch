@@ -554,9 +554,9 @@ def propagate_shape_and_sharding(
     mesh_ndim = len(mesh_sizes)
     shardable_dims: dict[int, list[bool]] = {}
 
-    # Track which mesh dims have been matched to an output dimension in Split operations
+    # Track which mesh dims have been processed in Split operations
     # For _StridedShard placements, we need to match each mesh dim to exactly one output dim
-    matched_mesh_dims: set[int] = set()
+    seen_mesh_dims: set[int] = set()
 
     # in case an input dimension disappears (e.g. collapsing, reduction)
     # we cannot shard in that dimension (we need a replication fall-back rule)
@@ -592,15 +592,15 @@ def propagate_shape_and_sharding(
         """Find the mesh dim and placement for an input dim in Split ops.
 
         Handles multi-mesh sharding (e.g. [Shard(0), Shard(0)]) by matching
-        _StridedShard split_factors and skipping already-matched mesh dims.
+        _StridedShard split_factors and skipping already-seen mesh dims.
         """
         for mesh_dim, placement in enumerate(placements):
             if not isinstance(placement, Shard | _StridedShard):
                 continue
             if placement.dim != current_dim:
                 continue
-            if mesh_dim in matched_mesh_dims:
-                # This mesh dim already matched a previous output dimension
+            if mesh_dim in seen_mesh_dims:
+                # This mesh dim was already assigned to a previous output dimension
                 continue
 
             if isinstance(placement, _StridedShard):
@@ -712,7 +712,7 @@ def propagate_shape_and_sharding(
                             f"(size {mesh_sizes[shard_mesh_dim]}). "
                             f"Please redistribute the tensor before this operation."
                         )
-                    matched_mesh_dims.add(shard_mesh_dim)
+                    seen_mesh_dims.add(shard_mesh_dim)
                     if in_dim.input_dim in shardable_dims:
                         is_shardable = (
                             out_size % mesh_sizes[shard_mesh_dim] == 0
