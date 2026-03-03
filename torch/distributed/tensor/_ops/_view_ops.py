@@ -531,7 +531,7 @@ def _get_root_input_dim(dim_spec: DimSpec) -> InputDim | None:
 
 
 def propagate_shape_and_sharding(
-    input_src_spec: DTensorSpec,
+    input_src_placements: Sequence[Placement],
     global_input_shape: Shape,
     rule: DimMap,
     mesh_sizes: Shape,
@@ -548,11 +548,9 @@ def propagate_shape_and_sharding(
     - An output dimension that is a split of the input dimension can only be sharded
       if the leftmost split size is divisible by the mesh dimension
     """
-    input_src_placements: Sequence[Placement] = input_src_spec.placements
     if not len(input_src_placements) == len(mesh_sizes):
         raise AssertionError(f"{input_src_placements} != {mesh_sizes}")
     # for each input dim, for each mesh dim, provides a list of possible shardable dimensions
-    mesh = input_src_spec.mesh
     mesh_ndim = len(mesh_sizes)
     shardable_dims: dict[int, list[bool]] = {}
 
@@ -822,7 +820,7 @@ def propagate_shape_and_sharding(
                             isinstance(other_p, (_StridedShard, Shard))
                             and other_p.dim == p.dim
                         ):
-                            expected_sf //= mesh.size(m)
+                            expected_sf //= mesh_sizes[m]
                     if expected_sf == p.split_factor:
                         prefix_match_idx = idx
                         break
@@ -831,8 +829,8 @@ def propagate_shape_and_sharding(
                 # SS resolves into contiguous sharding -> Shard.
                 tgt_shard_dim = tgt_shard_dims[prefix_match_idx]
                 claimed_output_dims.add((p.dim, tgt_shard_dim))
-                local_tensor_shapes[p.dim] = local_tensor_shapes[p.dim] // mesh.size(
-                    mesh_dim
+                local_tensor_shapes[p.dim] = (
+                    local_tensor_shapes[p.dim] // mesh_sizes[mesh_dim]
                 )
                 return Shard(tgt_shard_dim)
 
@@ -883,8 +881,8 @@ def propagate_shape_and_sharding(
             else:
                 # All output dims claimed by earlier mesh dims; fall back to full list
                 tgt_shard_dim = input_dim_to_output_dims[p.dim][0]
-            local_tensor_shapes[p.dim] = local_tensor_shapes[p.dim] // mesh.size(
-                mesh_dim
+            local_tensor_shapes[p.dim] = (
+                local_tensor_shapes[p.dim] // mesh_sizes[mesh_dim]
             )
             return _StridedShard(tgt_shard_dim, split_factor=p.split_factor)
         else:
@@ -929,22 +927,22 @@ def propagate_shape_and_sharding(
             # is already validated by get_in_dim_to_shard.
             if (
                 isinstance(cmd, Flatten)
-                and local_tensor_shapes[p.dim] % mesh.size(mesh_dim) != 0
+                and local_tensor_shapes[p.dim] % mesh_sizes[mesh_dim] != 0
                 and not _is_last_shard_on_tensor_dim(mesh_dim, placements)
             ):
                 raise RuntimeError(
                     f"Cannot shard unevenly distributed tensor: "
                     f"dimension {p.dim} (size {local_tensor_shapes[p.dim]}) "
                     f"is not evenly divisible by mesh dimension "
-                    f"{mesh_dim} (size {mesh.size(mesh_dim)}). "
+                    f"{mesh_dim} (size {mesh_sizes[mesh_dim]}). "
                     f"Please redistribute the tensor before this operation."
                 )
-            local_tensor_shapes[p.dim] = local_tensor_shapes[p.dim] // mesh.size(
-                mesh_dim
+            local_tensor_shapes[p.dim] = (
+                local_tensor_shapes[p.dim] // mesh_sizes[mesh_dim]
             )
             return output_placement
 
-    local_tensor_shapes = list(input_src_spec.shape)
+    local_tensor_shapes = list(global_input_shape)
     output_placements: list[Placement] = []
     for mesh_dim, p in enumerate(input_tgt_placements):
         if isinstance(p, Shard | _StridedShard):
@@ -993,7 +991,7 @@ def register_op_strategy_map(
             input_src_spec = input_placement_strategy.output_spec
 
             input_tgt_placements, output_placements = propagate_shape_and_sharding(
-                input_src_spec,
+                input_src_spec.placements,
                 tuple(global_in_shape),
                 rules,
                 mesh.shape,
