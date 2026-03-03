@@ -529,9 +529,6 @@ def propagate_shape_and_sharding(
     - An output dimension that is a split of the input dimension can only be sharded
       if the leftmost split size is divisible by the mesh dimension
     """
-    if not len(input_src_placements) == len(mesh_sizes):
-        raise AssertionError(f"{input_src_placements} != {mesh_sizes}")
-
     propagator = _ViewShardingPropagator(
         input_src_placements, global_input_shape, rule, mesh_sizes, strict_view
     )
@@ -543,29 +540,24 @@ def propagate_shape_and_sharding(
 
 
 class _ViewShardingPropagator:
-    """Bundles read-only config for view-op sharding propagation.
+    """Two-phase sharding propagator for view ops.
 
-    Two phases, run in order:
+    Phase 1 — ``analyze()``:
+      Walks the DimMap rule and returns:
+      - ``input_tgt_placements``: input placements with unshardable dims
+        demoted to Replicate.
+      - ``input_to_output_tensor_dims``: maps each input tensor dim to its
+        output dim(s).  Cardinality encodes the op type: 1→1 for InputDim,
+        N→1 for Flatten, 1→N for Split/unflatten.
 
-    1. **Analysis** (``analyze``): walks the DimMap rule and produces:
-
-       - ``input_tgt_placements`` — input placements with unshardable dims
-         demoted to ``Replicate()``.  Tells the rewrite phase which sharded
-         dims survived and need dim-mapping.
-       - ``input_to_output_tensor_dims`` — ``dict[int, list[int]]`` mapping
-         each input tensor dim to its output tensor dim(s).  Cardinality
-         encodes the op type: 1→1 for identity (``InputDim``), N→1 for
-         ``Flatten``, 1→N for ``Split``/unflatten.
-
-    2. **Rewrite** (``rewrite_output_placements``): consumes both outputs
-       from the analysis phase.  Iterates mesh dims in order 0..n-1,
-       maintaining ``rewritten_input_to_output_dims`` (which
-       ``(input_dim, output_dim)`` pairs have already been rewritten by
-       earlier mesh dims) and ``local_tensor_shapes`` (global shape
-       progressively divided by each mesh dim).  For each surviving
-       ``Shard``/``_StridedShard`` it looks up
-       ``input_to_output_tensor_dims[p.dim]``, filters by
-       ``rewritten_input_to_output_dims``, and produces the final output placement.
+    Phase 2 — ``rewrite_output_placements()``:
+      Consumes both Phase 1 outputs.  Iterates mesh dims 0..n-1, maintaining:
+      - ``rewritten_input_to_output_dims``: (input_dim, output_dim) pairs
+        already rewritten by earlier mesh dims.
+      - ``local_tensor_shapes``: global shape progressively divided by each
+        mesh dim's shard size.
+      For each surviving Shard/_StridedShard, looks up the output dim(s) and
+      produces the final output placement.
     """
 
     def __init__(
@@ -590,22 +582,7 @@ class _ViewShardingPropagator:
     def analyze(
         self,
     ) -> tuple[Sequence[Placement], dict[int, list[int]]]:
-        """Run the analysis phase.
-
-        Returns:
-            input_tgt_placements: input placements after demoting unshardable
-                dims to Replicate.  For each (mesh_dim, placement), if
-                shard_allowed[p.dim][mesh_dim] is False the placement becomes
-                Replicate(); otherwise it passes through unchanged.
-            input_to_output_tensor_dims: mapping from input tensor dim index
-                to output tensor dim index(es).  Consumed by
-                rewrite_output_placements() to translate Shard(input_dim) →
-                Shard(output_dim).  The list length encodes the op type:
-                  - InputDim (identity): [single output dim]
-                  - Flatten: [single flattened output dim] per sharded input dim
-                  - Split/unflatten: [output_dim_0, ..., output_dim_k] for each
-                    piece of the split
-        """
+        """Phase 1: walk the DimMap rule, return (input_tgt_placements, input_to_output_tensor_dims)."""
         seen_input_dims = self._collect_used_inputs(self.rule)
 
         # shard_allowed[input_dim][mesh_dim]: whether input_dim can stay
@@ -656,23 +633,7 @@ class _ViewShardingPropagator:
         input_tgt_placements: Sequence[Placement],
         input_to_output_tensor_dims: dict[int, list[int]],
     ) -> list[Placement]:
-        """Run the rewrite phase: map input placements to output placements.
-
-        Consumes both outputs of analyze().  Processes mesh dims in order
-        0..n-1 so that earlier mesh dims' decisions are visible to later ones
-        via two pieces of mutable state:
-
-        - rewritten_input_to_output_dims: set of (input_dim, output_dim)
-          pairs already rewritten by earlier mesh dims.  Prevents two mesh
-          dims from independently targeting the same Split output dim in
-          the _StridedShard (unflatten) path.  Plain Shard intentionally
-          does NOT update this set because multi-mesh [Shard(0), Shard(0)]
-          legitimately targets the same output dim.
-        - local_tensor_shapes: starts as global_input_shape, divided by
-          each mesh dim's shard size in turn.  Later mesh dims see already-
-          divided sizes, which is needed for correct split_factor computation
-          in _StridedShard rewrites.
-        """
+        """Phase 2: consume analyze() outputs, return final output placements."""
         # (input_dim, output_dim) pairs already rewritten by earlier mesh dims.
         rewritten_input_to_output_dims: set[tuple[int, int]] = set()
         # Starts as global_input_shape; each mesh dim divides its sharded dim.
