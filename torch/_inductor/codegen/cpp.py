@@ -1115,6 +1115,9 @@ class CppOverrides(OpOverrides):
         tid: sympy.Expr,
         vec: sympy.Expr,
     ):
+        # NOTE: This is a codegen fallback used by the C++ backend for eager random.
+        # It is not intended to provide CPU parity; parity target is CUDA eager vs compiled.
+        # Keep this hook to satisfy codegen paths and CI.
         return f"normalized_rand_cpu({seed}, {base_offset})"
 
     @staticmethod

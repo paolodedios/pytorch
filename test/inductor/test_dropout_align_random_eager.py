@@ -104,6 +104,28 @@ def _cuda_rng_u64_seed_off():
     return seed, off
 
 
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+
+
+def dropout_parity(shape, p=0.3, dtype=torch.float32, seed=1234):
+    """Returns (masks_equal, eager_out, compiled_out)."""
+    DEVICE = torch.device("cuda")
+    torch._dynamo.reset()
+    x = torch.ones(shape, device=DEVICE, dtype=dtype)
+    drop_e = torch.nn.Dropout(p).to(DEVICE).train()
+    drop_c = torch.compile(torch.nn.Dropout(p).to(DEVICE).train())
+
+    set_seed(seed)
+    out_e = drop_e(x)
+    set_seed(seed)
+    out_c = drop_c(x)
+
+    masks_eq = torch.equal(out_e != 0, out_c != 0)
+    return masks_eq, out_e, out_c
+
+
 # ───────────────────────────────────────────────────────────────
 # Test class (Inductor idioms)
 # ───────────────────────────────────────────────────────────────
@@ -172,7 +194,8 @@ class TestDropoutAlignRandomEager(InductorTestCase):
         )
         # grads
         for p_ref, p_new in zip(eager.parameters(), compiled.parameters()):
-            assert p_ref.grad is not None and p_new.grad is not None
+            self.assertIsNotNone(p_ref.grad)
+            self.assertIsNotNone(p_new.grad)
             torch.testing.assert_close(p_ref.grad, p_new.grad, rtol=1e-3, atol=1e-5)
 
     @requires_gpu()
@@ -205,12 +228,16 @@ class TestDropoutAlignRandomEager(InductorTestCase):
             seed1_c, off1_c = _cuda_rng_u64_seed_off()
             delta_c = off1_c - off0_c
 
-            assert torch.equal(mask_e, mask_c), (
-                "Dropout masks differ between eager and compiled"
+            self.assertTrue(
+                torch.equal(mask_e, mask_c),
+                msg="Dropout masks differ between eager and compiled",
             )
-            assert seed0_e == seed0_c == BASE_SEED
-            assert delta_e == delta_c, (
-                f"RNG offset delta mismatch: eager={delta_e}, compiled={delta_c}"
+            self.assertEqual(seed0_e, BASE_SEED)
+            self.assertEqual(seed0_c, BASE_SEED)
+            self.assertEqual(
+                delta_e,
+                delta_c,
+                msg=f"RNG offset delta mismatch: eager={delta_e}, compiled={delta_c}",
             )
 
     # ───────────────────────────────────────────────────────────
@@ -313,7 +340,7 @@ class TestDropoutAlignRandomEager(InductorTestCase):
             return compiled(inp)
 
         _, codes = run_and_get_code(fn, x)
-        assert codes, "Expected inductor to generate at least one kernel"
+        self.assertTrue(codes, msg="Expected inductor to generate at least one kernel")
 
         # Minimal sanity check that generated code mentions dropout.
         FileCheck().check("dropout").run(codes[0])
@@ -338,8 +365,9 @@ class TestDropoutAlignRandomEager(InductorTestCase):
 
         t_eager, _ = _timed_run(eager, x, backward=False)
         t_comp, _ = _timed_run(compiled, x, backward=False)
-
-        assert t_comp > 0 and t_eager > 0
+    
+        self.assertGreater(t_comp, 0)
+        self.assertGreater(t_eager, 0)
 
     # ───────────────────────────────────────────────────────────
     # Helper for primitive random parity (rand / randn / randint)
@@ -432,6 +460,29 @@ class TestDropoutAlignRandomEager(InductorTestCase):
         out_comp = drop_compiled(x)
 
         torch.testing.assert_close(out_eager, out_comp, rtol=0.0, atol=0.0)
+
+    # ───────────────────────────────────────────────────────────
+    # Large seed (>32-bit) packing truncation
+    # Seed and base are packed into int64 as (seed << 32) | base.
+    # Seeds > 2^32 overflow.
+    # ───────────────────────────────────────────────────────────
+    @requires_gpu()
+    def test_large_seed(self):
+        for seed in [2**33 + 1, 2**40 + 12345]:
+            with self.subTest(seed=seed):
+                masks_eq, _, _ = dropout_parity((1024,), seed=seed)
+                self.assertTrue(masks_eq, f"seed={seed}: mask mismatch")
+
+    # ───────────────────────────────────────────────────────────
+    # float64 dtype vec mismatch
+    # _vec_from_dtype returns vec=2 for float64, but the eager CUDA
+    # kernel always uses UNROLL=4 with curand_uniform4. The VEC
+    # mismatch causes different Philox consumption patterns.
+    # ───────────────────────────────────────────────────────────
+    @requires_gpu()
+    def test_float64(self):
+        masks_eq, _, _ = dropout_parity((8, 256, 128), dtype=torch.float64)
+        self.assertTrue(masks_eq, "float64: mask mismatch")
 
 
 if __name__ == "__main__":

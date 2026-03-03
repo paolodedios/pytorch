@@ -71,7 +71,7 @@ def replace_random_passes(gm: torch.fx.GraphModule):
     return count
 
 
-def fuse_offset_creation_pass(graph: torch.fx.Graph):
+def fuse_offset_creation_pass(graph: torch.fx.Graph) -> int:
     """
     Here offset node means seed << 32 + offset, will unpacked in lowering.py:inductor_random()
     Horizontally fuse all the seed generation on each device
