@@ -297,7 +297,11 @@ def gen_single_dim_einsum_strategies(
        independently, one input can remain Partial while others are Replicate,
        producing a Partial output.
 
-    4. Bias input (optional): If bias_shape is provided, a bias placement
+    4. Batch-dimension linearity (all-Partial): When all dims are batch dims
+       (no contracting or free dims), the operation is element-wise and linear
+       in all inputs simultaneously, so all inputs can be Partial.
+
+    5. Bias input (optional): If bias_shape is provided, a bias placement
        is inserted after the output placement. The bias placement is derived from
        the output placement, accounting for broadcast semantics (based on ndim
        difference between output and bias). This is used for addmm-like ops
@@ -416,6 +420,20 @@ def gen_single_dim_einsum_strategies(
             _maybe_add_bias([output_placement, Replicate(), Partial(reduce_op)])
         )
 
+    # Batch-dimension linearity: when the einsum has no contracting dims and
+    # no free dims (all dims are batch dims), the operation is element-wise
+    # and linear in all inputs simultaneously. Add all-Partial strategies.
+    if (
+        not edims.contracting_dims
+        and not edims.lhs_out_only_dims
+        and not edims.rhs_out_only_dims
+    ):
+        for reduce_op in Partial.LINEAR_REDUCE_OPS:
+            linearity_placements: list[Placement | _ShardingPlaceholder] = [
+                Partial(reduce_op)
+            ] + [Partial(reduce_op) for _ in input_dims]
+            strategies_over_one_mesh_dim.append(_maybe_add_bias(linearity_placements))
+
     return strategies_over_one_mesh_dim
 
 
@@ -437,7 +455,8 @@ def addmm_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
     bias_meta = args_schema[0]
-    assert isinstance(bias_meta, TensorMeta)
+    if not isinstance(bias_meta, TensorMeta):
+        raise AssertionError
     return gen_single_dim_einsum_strategies("mk,kn->mn", bias_shape=bias_meta.shape)
 
 
@@ -465,7 +484,8 @@ def baddbmm_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
     bias_meta = args_schema[0]
-    assert isinstance(bias_meta, TensorMeta)
+    if not isinstance(bias_meta, TensorMeta):
+        raise AssertionError
     return gen_single_dim_einsum_strategies("bmk,bkn->bmn", bias_shape=bias_meta.shape)
 
 
@@ -656,17 +676,21 @@ def scaled_dot_product_flash_attention_backward_strategy(
     )
 
 
-@register_single_dim_strategy(aten.constant_pad_nd.default)
+@register_single_dim_strategy(
+    aten.constant_pad_nd.default, schema_info=RuntimeSchemaInfo(1)
+)
 def constant_pad_nd_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
     # Allow sharding on non-padded dimensions; ban sharding on dims
     # that have non-zero padding (where the pad value must be inserted).
     input_meta = args_schema[0]
-    assert isinstance(input_meta, TensorMeta)
-    pad = args_schema[1]
-    assert isinstance(pad, (list, tuple))
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
     ndim = len(input_meta.shape)
+    pad = args_schema[1]
+    if not isinstance(pad, (list, tuple)):
+        raise AssertionError(f"Expected list or tuple, got {type(pad)}")
 
     # pad is [dim_{n-1}_left, dim_{n-1}_right, dim_{n-2}_left, ...] from
     # the last dim backwards. Determine which dims have non-zero padding.
