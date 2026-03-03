@@ -6013,6 +6013,7 @@ class CPUReproTests(TestCase):
 
         torch.compile(fn)(torch.randn(2, 2))
 
+    @xfailIf(IS_ARM64)  # https://github.com/pytorch/pytorch/issues/176285
     @skipIfRocmArch(MI200_ARCH)
     @unittest.skipIf(not torch.backends.mkldnn.is_available(), "MKLDNN is not enabled")
     @requires_vectorization
