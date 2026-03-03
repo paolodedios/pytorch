@@ -859,6 +859,7 @@ class TestMaxAutotune(TestCase):
             actual = torch.compile(fn)(*args)
             torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
 
+    @skipIfRocm(msg="Flaky with Triton 3.7")
     @config.patch(
         benchmark_kernel=True,
         fallback_random=True,
@@ -4670,6 +4671,7 @@ class TestMaxAutotuneAsyncPipelined(TestMaxAutotune, TestEpilogueFusionStaticAna
         self.assertIsNone(pool_instance._timer)
         self.assertTrue(AutotuneProcessPool._shutdown_for_inactivity)
 
+    @skipIfRocm(msg="Flaky with Triton 3.7")
     @patch(
         "torch._inductor.autotune_process.AUTOTUNE_POOL_INACTIVITY_TIMEOUT",
         2,
