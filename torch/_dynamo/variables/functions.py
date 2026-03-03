@@ -2268,12 +2268,7 @@ class SkipFunctionVariable(VariableTracker):
                 )
                 # pyrefly: ignore [implicit-any]
                 hints = []
-            if self.reason:
-                reason = self.reason
-            else:
-                from ..trace_rules import get_skip_reason
-
-                reason = get_skip_reason(self.value)
+            reason = self.reason if self.reason else "<missing reason>"
             unimplemented(
                 gb_type="Attempted to call function marked as skipped",
                 context=f"module: {module_name}, qualname: {qualname}, skip reason: {reason}",
