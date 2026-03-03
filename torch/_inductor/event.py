@@ -18,25 +18,13 @@ import dataclasses
 import functools
 import itertools
 
-from torch._inductor import config
 from torch._inductor.codegen.wrapper import IndentedBuffer, WrapperLine
-from torch.utils._ordered_set import OrderedSet
-
-
-DEFAULT_STREAM: str = "default_stream"
-DEFAULT_STREAM_IDX: int = 0
-ENTRANCE_EVENT: str = "event0"
-EVENT_NAME_TEMPLATE: str = "event{event_idx:d}"
-STREAM_NAME_TEMPLATE: str = "stream{stream_idx:d}"
-
-
-@functools.lru_cache
-def get_stream_name(stream_idx: int) -> str:
-    """Generate CUDA Stream name from stream index number."""
-    if stream_idx == 0:
-        return DEFAULT_STREAM
-    else:
-        return STREAM_NAME_TEMPLATE.format(stream_idx=stream_idx)
+from torch._inductor.stream_utils import (
+    DEFAULT_STREAM_IDX,
+    ENTRANCE_EVENT,
+    EVENT_NAME_TEMPLATE,
+    get_stream_name,
+)
 
 
 @functools.total_ordering
@@ -141,14 +129,11 @@ class CudaEventSym:
 class _CudaEventRecordLine(WrapperLine):
     event: CudaEventSym
     stream: str
-    _reuse_cuda_event: bool = dataclasses.field(
-        default_factory=lambda: config.reuse_cuda_event
-    )
 
     def codegen(self, code: IndentedBuffer) -> None:
         assert 0 <= self.event.ref_count
         assert self.event.materialized_event is None
-        if self.event.ref_count or not self._reuse_cuda_event:
+        if self.event.ref_count:
             self.event.materialized_event = self.event.factory.get_materialized_event(
                 code
             )
@@ -166,27 +151,22 @@ class _CudaEventWaitLine(WrapperLine):
         code_line = f"{self.event.materialized_event}.wait({self.stream})"
         self.event.ref_count -= 1
         if self.event.ref_count == 0:
-            self.event.factory.deposit_materialized_event(self.event.materialized_event)
             self.event.materialized_event = None
             code_line += f"  # End lifecycle of {self.event}"
         code.writeline(code_line)
 
 
 class CudaEventFactory:
-    """A factory that managements CUDA event creations and materializations.
+    """A factory that manages CUDA event creations and materializations.
 
     This factory maintains internal states to ensure that created cuda events get monotonically
-    increasing indices as compilation goes along. It also maintains a pool of materialized cuda
-    events that symbolic events can reuse.
+    increasing indices as compilation goes along.
     """
 
     def __init__(self) -> None:
-        """Initialize a event factory."""
         self.symbolic_event_idx: itertools.count = itertools.count(start=1)
         self.materialized_event_idx: itertools.count = itertools.count(start=1)
-        self.available_materialized_events: OrderedSet[str] = OrderedSet()
         self._entrance_event: CudaEventSym | None = None
-        self._reuse_cuda_event: bool = config.reuse_cuda_event
 
     def get_entrance_event(self) -> CudaEventSym:
         """Return the cuda event that corresponding to compute graph entering."""
@@ -210,17 +190,9 @@ class CudaEventFactory:
         )
 
     def get_materialized_event(self, code: IndentedBuffer) -> str:
-        """Allocate or reuse a materialized cuda event."""
-        if self._reuse_cuda_event and self.available_materialized_events:
-            return self.available_materialized_events.pop()
-        else:
-            event = EVENT_NAME_TEMPLATE.format(
-                event_idx=next(self.materialized_event_idx)
-            )
-            code.writeline(f"{event} = torch.cuda.Event()")
-            return event
-
-    def deposit_materialized_event(self, event: str) -> None:
-        """Give back a materialized cuda event when the corresponding sym event ends lifecycle."""
-        assert event not in self.available_materialized_events
-        self.available_materialized_events.add(event)
+        """Allocate a materialized cuda event."""
+        event = EVENT_NAME_TEMPLATE.format(
+            event_idx=next(self.materialized_event_idx)
+        )
+        code.writeline(f"{event} = torch.cuda.Event()")
+        return event
