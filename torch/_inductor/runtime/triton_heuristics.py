@@ -933,7 +933,7 @@ class CachingAutotuner(KernelInterface):
         return TritonCompileResult(binary, cfg, compile_meta, self.inductor_meta)
 
     def bench(self, launcher, *args, with_profiler=False, **kwargs):
-        """Measure the performance of a given launcher"""
+        """Measure the performance of a given launcher."""
         # we don't skip configs with spilled registers when auto-tuning custom
         # (user-written) Triton kernels, as (i) we don't have any knowledge or
         # control over the kernel code; (ii) there is empirical evidence that
@@ -978,7 +978,11 @@ class CachingAutotuner(KernelInterface):
                             stream=stream,
                         )
                     except Exception:
-                        log.error("Failed during launch %s: ", kernel_name)
+                        log.error(
+                            "Failed during launch %s with config %s: ",
+                            kernel_name,
+                            launcher.config,
+                        )
                         raise
 
             else:
@@ -989,7 +993,11 @@ class CachingAutotuner(KernelInterface):
                         stream=stream,
                     )
                 except Exception:
-                    log.error("Failed during launch %s: ", kernel_name)
+                    log.error(
+                        "Failed during launch %s with config %s: ",
+                        kernel_name,
+                        launcher.config,
+                    )
                     raise
             self.restore_args_from_cpu(cpu_copies)
 
