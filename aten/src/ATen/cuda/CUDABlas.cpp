@@ -544,6 +544,9 @@ static inline bool bgemm_internal_cublaslt(CUDABLAS_BGEMM_ARGTYPES_AND_C_DTYPE(D
         &returnedResult);
 #ifdef USE_ROCM
     if (heuristic_status != CUBLAS_STATUS_SUCCESS) {
+      // TODO: Remove the below workaround when we rootcause the issue or move ROCm
+      // into new version.
+      // This workaround is needed for ROCm7.1 Pytorch nightly whl.
       // HipblasLt heuristic lookup may transiently fail for some GEMM descriptors.
       // An immediate retry often succeeds, retry once before surfacing the error.
       TORCH_WARN("ROCm: bgemm retrying heuristic");
