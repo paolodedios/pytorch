@@ -554,10 +554,6 @@ def propagate_shape_and_sharding(
     mesh_ndim = len(mesh_sizes)
     shardable_dims: dict[int, list[bool]] = {}
 
-    # Track which mesh dims have been processed in Split operations
-    # For _StridedShard placements, we need to match each mesh dim to exactly one output dim
-    seen_mesh_dims: set[int] = set()
-
     # in case an input dimension disappears (e.g. collapsing, reduction)
     # we cannot shard in that dimension (we need a replication fall-back rule)
     seen_input_dims: set[int] = set()
@@ -572,6 +568,10 @@ def propagate_shape_and_sharding(
         collect_used_inputs(cmd)
     for dim in range(len(global_input_shape)):
         shardable_dims[dim] = [dim in seen_input_dims] * mesh_ndim
+
+    # Track which mesh dims have been processed in Split operations
+    # For _StridedShard placements, we need to match each mesh dim to exactly one output dim
+    seen_mesh_dims: set[int] = set()
 
     def maybe_get_shard_mesh_dim_and_placement_flatten(
         input_dim: InputDim,
