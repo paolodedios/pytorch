@@ -2196,7 +2196,7 @@ namespace {
       ASSERT_TRUE(vec_pinf.has_inf_nan()) << "Test failed for positive Infinity\n";
       ASSERT_TRUE(vec_ninf.has_inf_nan()) << "Test failed for negative Infinity\n";
     }
-#if !defined(CPU_CAPABILITY_SVE256)
+#if !defined(CPU_CAPABILITY_SVE256) && !defined(CPU_CAPABILITY_SVE128)
     template <typename vec, typename dst_t>
     void test_convert_to(const char* dst_t_name) {
       using src_t = ValueType<vec>;
