@@ -10,12 +10,16 @@ from torch.testing._internal.common_utils import run_tests, TestCase
 
 def _subprocess_lastline(script, env=None):
     """Run script in a fresh interpreter and return the last line of stdout."""
-    result = subprocess.check_output(
-        [sys.executable, "-c", script],
-        cwd=os.path.dirname(os.path.realpath(__file__)),
-        env=env,
-        stderr=subprocess.DEVNULL,
-    ).decode("ascii").strip()
+    result = (
+        subprocess.check_output(
+            [sys.executable, "-c", script],
+            cwd=os.path.dirname(os.path.realpath(__file__)),
+            env=env,
+            stderr=subprocess.DEVNULL,
+        )
+        .decode("ascii")
+        .strip()
+    )
     return result.rsplit("\n", 1)[-1]
 
 
@@ -24,16 +28,12 @@ class TestNativeDSLOps(TestCase):
 
     def test_consistent_helper_interface(self):
         """triton_utils and cutedsl_utils expose the same public API."""
-        from torch._native import triton_utils, cutedsl_utils
+        from torch._native import cutedsl_utils, triton_utils
 
         REQUIRED_METHODS = {"runtime_available", "runtime_version", "register_op"}
 
         for mod in (triton_utils, cutedsl_utils):
-            public = {
-                name
-                for name in dir(mod)
-                if not name.startswith("_")
-            }
+            public = {name for name in dir(mod) if not name.startswith("_")}
             self.assertTrue(
                 REQUIRED_METHODS <= public,
                 f"{mod.__name__} missing: {REQUIRED_METHODS - public}",
@@ -128,7 +128,9 @@ class TestNativeDSLOps(TestCase):
         )
 
         sentinel = []
-        fn = lambda: sentinel.append(True)
+
+        def fn():
+            sentinel.append(True)
 
         original_len = len(_RegisteredFns)
         register_op_registerer(fn)
@@ -142,8 +144,8 @@ class TestNativeDSLOps(TestCase):
 
     def test_register_op_skips_when_runtime_unavailable(self):
         """register_op does not enqueue fn when runtime is unavailable."""
+        from torch._native import cutedsl_utils, triton_utils
         from torch._native.registry import _RegisteredFns
-        from torch._native import triton_utils, cutedsl_utils
 
         for mod, flag_name in [
             (triton_utils, "_TRITON_AVAILABLE"),
@@ -181,8 +183,8 @@ class TestNativeDSLOps(TestCase):
 
     def test_register_op_skips_when_version_not_blessed(self):
         """register_op does not enqueue fn when version is not in _BLESSED_VERSIONS."""
+        from torch._native import cutedsl_utils, triton_utils
         from torch._native.registry import _RegisteredFns
-        from torch._native import triton_utils, cutedsl_utils
 
         for mod, avail_flag, ver_flag in [
             (triton_utils, "_TRITON_AVAILABLE", "_TRITON_VERSION"),
@@ -206,8 +208,8 @@ class TestNativeDSLOps(TestCase):
 
     def test_register_op_skips_when_version_is_none(self):
         """register_op does not enqueue fn when version is None."""
+        from torch._native import cutedsl_utils, triton_utils
         from torch._native.registry import _RegisteredFns
-        from torch._native import triton_utils, cutedsl_utils
 
         for mod, avail_flag, ver_flag in [
             (triton_utils, "_TRITON_AVAILABLE", "_TRITON_VERSION"),
@@ -277,6 +279,7 @@ class TestNativeDSLOps(TestCase):
     def test_available_version_prerelease(self):
         """_available_version handles pre-release suffixes correctly."""
         from unittest.mock import patch
+
         from torch._native.common_utils import _available_version
 
         cases = [
@@ -294,7 +297,7 @@ class TestNativeDSLOps(TestCase):
                     f"_available_version({version_str!r}) = {result}, expected {expected}",
                 )
 
-        # Completely unparseable -> None
+        # Completely unparsable -> None
         with patch("importlib.metadata.version", return_value="abc"):
             result = _available_version("fake_package")
             self.assertIsNone(result)

@@ -162,7 +162,7 @@ def register_kernel_override():
             # Call the fallback
             return fallback_kernel(dispatch_keys,
                                    arg1, arg2, *args, **kwargs)
-    
+
     # Same as before
     lib = torch.library.Library("aten", "IMPL", "CUDA")
     # Pass the enablement function, note needed with_keyset=True argument to
@@ -176,7 +176,7 @@ TODO
 
 # Adding a new DSL
 
-Adding a new DSL is as simple as adding a single helper utils file, then writing your op. 
+Adding a new DSL is as simple as adding a single helper utils file, then writing your op.
 
 ## DSL utils file spec
 
