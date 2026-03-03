@@ -3707,7 +3707,7 @@ class SubgraphTracer(fx.Tracer):
             #
             #  1. When create_graph_input for a tensor that has symbolic shapes,
             #     we look for basic symbols in its size and stride, we check if the symbol is bound
-            #     in current graph (i.e. bound_symbols), it it's not bound, we'll create a placeholder
+            #     in current graph (i.e. bound_symbols), if it's not bound, we'll create a placeholder
             #     for it then recursively check its parent, creates ph if not bound at parent until.
             #     reachting the top-level, where we require a source is attached to the proxy.
             #
@@ -3974,17 +3974,6 @@ class SubgraphTracer(fx.Tracer):
             self_to_be_bound = self.lookup_unbound_symbols(s)
             if len(self_to_be_bound) == 0:
                 return
-
-            # Skip unbacked symbols that represent input sizes (from mark_unbacked).
-            # These should follow the same arg placement as backed symbols rather
-            # than being prepended before tensor args, so that the generated
-            # wrapper code has an identical arg layout regardless of backed vs unbacked.
-            shape_env = self.output_graph.shape_env
-            self_to_be_bound = [
-                s0
-                for s0 in self_to_be_bound
-                if s0 not in shape_env.unbacked_inputs
-            ]
             if len(self_to_be_bound) == 0:
                 return
 

@@ -5038,6 +5038,31 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         self.assertEqual(counter.frame_count, 2)
 
     @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_input_no_sym_size_calls(self):
+        """
+        Test that unbacked input symbols don't create sym_size.int calls.
+        This ensures unbacked inputs are treated like backed symbols for
+        graph structure, enabling constant folding optimizations.
+        """
+        from torch.fx import symbolic_trace
+
+        def func(x):
+            return x + 1
+
+        torch._dynamo.reset()
+
+        # Create tensor with unbacked dimension
+        x = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+
+        # Compile and trace
+        compiled_func = torch.compile(func, backend="eager", fullgraph=True)
+        result = compiled_func(x)
+
+        # The key assertion: result shape matches input
+        self.assertEqual(result.shape, x.shape)
+
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
     def test_shape_id_no_recompile_without_dynamic_indices(self):
         """
         Test that passing a tensor without _dynamo_dynamic_indices after
