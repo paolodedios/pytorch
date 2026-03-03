@@ -2045,7 +2045,6 @@ class outer_fn(torch.nn.Module):
     def test_blockmask_tensor_closure_nested_compile_aot_export(self):
         """2-tier AOT export with BlockMask whose mask_mod captures tensors.
 
-        Matches sixlib architecture:
         - Outer: aot_export_joint_with_descriptors (non-strict FX trace)
         - Inner: torch.compile via regional_inductor annotation
         - create_block_mask with tensor closure in its own compiled region,
