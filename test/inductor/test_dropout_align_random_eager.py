@@ -365,7 +365,7 @@ class TestDropoutAlignRandomEager(InductorTestCase):
 
         t_eager, _ = _timed_run(eager, x, backward=False)
         t_comp, _ = _timed_run(compiled, x, backward=False)
-    
+
         self.assertGreater(t_comp, 0)
         self.assertGreater(t_eager, 0)
 
