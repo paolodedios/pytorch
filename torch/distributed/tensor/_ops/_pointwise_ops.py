@@ -210,6 +210,9 @@ non_decreasing_unary_ops = [
     aten.ceil.default,
     aten.ceil_.default,
     aten.ceil.out,
+    aten.deg2rad.default,
+    aten.deg2rad_.default,
+    aten.deg2rad.out,
     aten.erf.default,
     aten.erf_.default,
     aten.erf.out,
@@ -225,6 +228,9 @@ non_decreasing_unary_ops = [
     aten.floor.default,
     aten.floor_.default,
     aten.floor.out,
+    aten.rad2deg.default,
+    aten.rad2deg_.default,
+    aten.rad2deg.out,
     aten.relu.default,
     aten.relu_.default,
     aten.round.decimals,
@@ -292,23 +298,6 @@ _NEG_RULES: list[list[Placement]] = _UNARY_LINEAR_RULES + _NON_INCREASING_RULES
 for op in neg_ops:
     _register(op, _NEG_RULES)
 
-# Linear nondecreasing unary ops: both linear (P(sum/avg) preserved) and
-# nondecreasing (P(max/min) preserved).  Multiplication by a positive constant.
-linear_nondecreasing_unary_ops = [
-    aten.deg2rad.default,
-    aten.deg2rad_.default,
-    aten.deg2rad.out,
-    aten.rad2deg.default,
-    aten.rad2deg_.default,
-    aten.rad2deg.out,
-]
-
-_LINEAR_NONDECREASING_RULES: list[list[Placement]] = (
-    _UNARY_LINEAR_RULES + _NON_DECREASING_RULES
-)
-
-for op in linear_nondecreasing_unary_ops:
-    _register(op, _LINEAR_NONDECREASING_RULES)
 
 # All-partial-preserving unary ops: P(x)->P(x) for all x.
 # TODO: positive should be removed once CIA (Copy Is All) optimizes it away.
