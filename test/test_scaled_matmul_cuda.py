@@ -1919,7 +1919,7 @@ class TestFP8Matmul(TestCase):
             raise unittest.SkipTest("nvfp4 not supported on ROCm, skipping")
         if (recipe == "nvfp4" or recipe == "mxfp4") and fast_accum:
             raise unittest.SkipTest("fast_accum not supported in nvfp4/mxfp4 cublas gemm, skipping")
-        if (recipe == "mxfp4" and SM120OrLater) or not PLATFORM_SUPPORTS_MXFP4_GEMM:
+        if (recipe == "mxfp4") and SM120OrLater or (not PLATFORM_SUPPORTS_MXFP4_GEMM):
             raise unittest.SkipTest("MXFP4 on CUDA only supported on B200/B300")
 
         device = "cuda"
