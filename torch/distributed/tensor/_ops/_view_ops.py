@@ -1,5 +1,6 @@
 # mypy: allow-untyped-defs
 # Copyright (c) Meta Platforms, Inc. and affiliates
+import logging
 import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -7,6 +8,7 @@ from typing import cast
 
 import torch
 from torch import Tensor
+from torch._logging import warning_once
 from torch._prims_common import DimsType
 from torch.distributed.tensor._dtensor_spec import DTensorSpec, TensorMeta
 from torch.distributed.tensor._op_schema import (
@@ -35,6 +37,8 @@ from torch.distributed.tensor.placement_types import (
     Shard,
 )
 
+
+logger = logging.getLogger(__name__)
 
 aten = torch.ops.aten
 
@@ -507,14 +511,25 @@ dim_maps: dict[Callable[..., torch.Tensor], Callable[..., DimMap]] = {
 }
 
 
-def _is_last_shard_in_flatten_range(mesh_dim, placements, flatten_start, flatten_end):
+def _is_last_shard_in_flatten_range(
+    mesh_dim: int,
+    placements: Sequence[Placement],
+    flatten_start: int,
+    flatten_end: int,
+) -> bool:
     """Check if no later mesh dim shards a dim within the flatten range at or above this one.
 
     Uneven sharding on dim d breaks stride computation for all earlier dims
     that flatten together with d. Only dims within [flatten_start, flatten_end)
     matter; shards on dims outside the flatten range are independent.
+
+    Requires: placements[mesh_dim] must be Shard or _StridedShard.
     """
-    tensor_dim = placements[mesh_dim].dim
+    p = placements[mesh_dim]
+    assert isinstance(p, (Shard, _StridedShard)), (
+        f"Expected Shard or _StridedShard at mesh_dim {mesh_dim}, got {type(p)}"
+    )
+    tensor_dim = p.dim
     return not any(
         isinstance(p, (Shard, _StridedShard))
         and flatten_start <= p.dim < flatten_end
@@ -612,13 +627,19 @@ class _ShardingPropagationContext:
 
             if isinstance(placement, _StridedShard):
                 expected_split_factor = math.prod(cmd.group_shape[: cmd.split_id])
+                match_failed = False
                 for m in range(mesh_dim):
                     p = placements[m]
                     if isinstance(p, Shard | _StridedShard) and p.dim == current_dim:
+                        if expected_split_factor % self.mesh_sizes[m] != 0:
+                            # Earlier mesh dim's size doesn't divide evenly;
+                            # this split_id can't match this mesh_dim.
+                            match_failed = True
+                            break
                         expected_split_factor = (
                             expected_split_factor // self.mesh_sizes[m]
                         )
-                if placement.split_factor == expected_split_factor:
+                if not match_failed and placement.split_factor == expected_split_factor:
                     return mesh_dim, placement
             else:
                 return mesh_dim, placement
@@ -675,6 +696,8 @@ class _ShardingPropagationContext:
             return sharded_dims
         # No sharded dims found — return the first input dim so that
         # input_dim_to_output_dims is populated for identity rewrites.
+        # This is safe because each InputDim appears in at most one Flatten
+        # in a valid DimMap (a dimension can only be flattened once).
         if not isinstance(cmd.input_dims[0], InputDim):
             raise AssertionError(f"Expected InputDim, got {type(cmd.input_dims[0])}")
         return [cmd.input_dims[0]]
@@ -717,6 +740,9 @@ class _ShardingPropagationContext:
                     )
                     self.shardable_dims[in_dim.input_dim][shard_mesh_dim] = is_shardable
         if cmd.split_id == 0 and in_dim is not None:
+            # split_id == 0 sets the base shardable_dims for this input dim.
+            # Later split_ids (processed in subsequent rule iterations) refine
+            # individual mesh_dim entries via the _StridedShard branch above.
             # split_id == 0 with group_shape >= 2 means is_last_split_dim is always
             # False, so uneven sharding is not allowed on this dimension.
             self.shardable_dims[in_dim.input_dim] = [
@@ -836,14 +862,20 @@ class _ShardingPropagationContext:
             if isinstance(cmd, Split):
                 found_split_cmd = True
                 expected_sf = math.prod(cmd.group_shape[: cmd.split_id])
+                sf_valid = True
                 for m in range(mesh_dim):
                     other_p = placements[m]
                     if (
                         isinstance(other_p, (_StridedShard, Shard))
                         and other_p.dim == p.dim
                     ):
+                        if expected_sf % self.mesh_sizes[m] != 0:
+                            # Earlier mesh dim's size doesn't divide evenly;
+                            # this candidate can't match.
+                            sf_valid = False
+                            break
                         expected_sf //= self.mesh_sizes[m]
-                if expected_sf == p.split_factor:
+                if sf_valid and expected_sf == p.split_factor:
                     prefix_match_idx = idx
                     break
 
@@ -858,34 +890,32 @@ class _ShardingPropagationContext:
         # Phase 2: shared-output-dim matching — multiple mesh dims target the
         # same output dim (SS+S on same dim). The SS stays as SS.
         total_shard = self.mesh_sizes[mesh_dim] * p.split_factor
-        if self.global_input_shape[p.dim] % total_shard != 0:
-            block_size = 0  # not evenly divisible — won't match any candidate
-        else:
-            block_size = self.global_input_shape[p.dim] // total_shard
         shared_dim_match_idx = None
-        for idx, candidate_dim in enumerate(tgt_shard_dims):
-            cmd = self.rule[candidate_dim]
-            if isinstance(cmd, Split):
-                inner_size = math.prod(cmd.group_shape[cmd.split_id + 1 :])
-                effective_block_size = block_size
-                if isinstance(cmd.input_dim, Flatten):
-                    trailing_size = 1
-                    found_p_dim = False
-                    for flat_dim in cmd.input_dim.input_dims:
-                        if isinstance(flat_dim, InputDim):
-                            if flat_dim.input_dim == p.dim:
-                                found_p_dim = True
-                            elif found_p_dim:
-                                trailing_size *= self.global_input_shape[
-                                    flat_dim.input_dim
-                                ]
-                    effective_block_size = block_size * trailing_size
-                if (
-                    effective_block_size >= inner_size
-                    and effective_block_size % inner_size == 0
-                ):
-                    shared_dim_match_idx = idx
-                    break
+        if self.global_input_shape[p.dim] % total_shard == 0:
+            block_size = self.global_input_shape[p.dim] // total_shard
+            for idx, candidate_dim in enumerate(tgt_shard_dims):
+                cmd = self.rule[candidate_dim]
+                if isinstance(cmd, Split):
+                    inner_size = math.prod(cmd.group_shape[cmd.split_id + 1 :])
+                    effective_block_size = block_size
+                    if isinstance(cmd.input_dim, Flatten):
+                        trailing_size = 1
+                        found_p_dim = False
+                        for flat_dim in cmd.input_dim.input_dims:
+                            if isinstance(flat_dim, InputDim):
+                                if flat_dim.input_dim == p.dim:
+                                    found_p_dim = True
+                                elif found_p_dim:
+                                    trailing_size *= self.global_input_shape[
+                                        flat_dim.input_dim
+                                    ]
+                        effective_block_size = block_size * trailing_size
+                    if (
+                        effective_block_size >= inner_size
+                        and effective_block_size % inner_size == 0
+                    ):
+                        shared_dim_match_idx = idx
+                        break
 
         if shared_dim_match_idx is not None:
             # Don't add to seen_output_dims: multiple mesh dims can share
@@ -900,6 +930,17 @@ class _ShardingPropagationContext:
                 f"Please redistribute the tensor before this operation."
             )
         elif len(tgt_shard_dims) > 0:
+            warning_once(
+                logger,
+                "_rewrite_strided_shard: neither Phase 1 (distinct-output-dim) nor "
+                "Phase 2 (shared-output-dim) matched for _StridedShard(dim=%d, "
+                "split_factor=%d) on mesh dim %d. Falling back to first available "
+                "output dim %d. This may indicate a split_factor mismatch.",
+                p.dim,
+                p.split_factor,
+                mesh_dim,
+                tgt_shard_dims[0],
+            )
             tgt_shard_dim = tgt_shard_dims[0]
         else:
             raise AssertionError(
