@@ -4802,7 +4802,7 @@ class ShapeEnv:
             for i in range(dim):
                 ev = excluded_sizes[i]
                 if ev is not None and isinstance(size[i], sympy.Symbol):
-                    self.record_exclusion_constraint(size[i], ev)
+                    self._record_exclusion_constraint(size[i], ev)
         stride = self._compute_symbolic_stride(
             source,
             size,
@@ -5008,7 +5008,7 @@ class ShapeEnv:
         return out
 
     @record_shapeenv_event()
-    def record_exclusion_constraint(self, sym: sympy.Symbol, val: int) -> None:
+    def _record_exclusion_constraint(self, sym: sympy.Symbol, val: int) -> None:
         self.exclusion_constraints.append((sym, val))
 
     @record_shapeenv_event()
@@ -5026,7 +5026,7 @@ class ShapeEnv:
             dynamic_dim=dynamic_dim,
         )
         if excluded_value is not None:
-            self.record_exclusion_constraint(sym, excluded_value)
+            self._record_exclusion_constraint(sym, excluded_value)
         return self.create_symintnode(
             sym,
             hint=value,

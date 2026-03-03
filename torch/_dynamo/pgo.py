@@ -236,8 +236,10 @@ class FrameStateSizeEntry:
     stride: AutoDynamic | AutoUnset | tuple[int | AutoDynamic | InferStride, ...] = (
         dataclasses.field(default=auto_unset)
     )
-    excluded_sizes: tuple[int | None, ...] | None = None
-    excluded_scalar: int | None = None
+    excluded_sizes: tuple[int | None, ...] | None = dataclasses.field(
+        default=None, compare=False
+    )
+    excluded_scalar: int | None = dataclasses.field(default=None, compare=False)
 
     def render(self) -> str:
         # Special cases
@@ -375,7 +377,7 @@ class FrameStateSizeEntry:
                 self.excluded_sizes = tuple(
                     s if type(s) is int else None for s in self.size
                 )
-            else:
+            elif self.excluded_sizes is not None:
                 self.excluded_sizes = None
         # Same idea for scalars: record the static value about to become dynamic.
         # Re-derive like excluded_sizes: only set when transitioning from a
@@ -386,7 +388,7 @@ class FrameStateSizeEntry:
             and self.scalar != other.scalar
         ):
             self.excluded_scalar = self.scalar
-        elif self.scalar is auto_dynamic:
+        elif self.scalar is auto_dynamic and self.excluded_scalar is not None:
             self.excluded_scalar = None
         self.scalar = self._merge_atom(self.scalar, other.scalar)
         self.size = self._merge_atom_tup(self.size, other.size)
