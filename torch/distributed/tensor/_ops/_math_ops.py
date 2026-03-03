@@ -383,7 +383,9 @@ def max_min_dim_single_dim_strategy(
     kwargs_schema: dict[str, Any],
 ) -> list[list[Placement | _ShardingPlaceholder]]:
     input_meta = args_schema[0]
-    assert isinstance(input_meta, TensorMeta)
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+
     ndim = len(input_meta.shape)
     dim = normalize_dim(cast(int, args_schema[1]), ndim)
     keep_dim = len(args_schema) > 2 and bool(args_schema[2])
@@ -493,7 +495,8 @@ def _get_norm_reduction_op(norm_type: int | float | str) -> ReductionOpType:
     elif norm_type in (float("-inf"), "-inf"):
         return "min"
     else:
-        assert isinstance(norm_type, (int, float))
+        if not isinstance(norm_type, (int, float)):
+            raise AssertionError
         return NormReduction(norm_type)
 
 
@@ -1134,7 +1137,8 @@ def _common_norm_forward_strategy(
         # out: same shape as input, contiguous strides
         # mean/rstd: shape = input_shape[:axis], contiguous strides
         input_tm = input_src_spec.tensor_meta
-        assert input_tm is not None
+        if input_tm is None:
+            raise AssertionError("input_src_spec.tensor_meta is None")
         input_shape = input_tm.shape
         out_placements = input_target_spec.placements
 

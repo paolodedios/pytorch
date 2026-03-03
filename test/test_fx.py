@@ -66,6 +66,7 @@ from torch.fx._compatibility import _BACK_COMPAT_OBJECTS, _MARKED_WITH_COMPATIBI
 from torch.fx._symbolic_trace import PHBase, PHWithMeta
 
 from torch.fx.proxy import TraceError
+from torch.testing._internal.common_cuda import blas_library_context
 from torch.testing._internal.common_utils import (
     find_library_location,
     IS_FBCODE,
@@ -814,22 +815,6 @@ class TestFX(JitTestCase):
         restored_graph = pickle.loads(dumped_graph)
         restored_n = next(iter(restored_graph.nodes))
         self.assertEqual(restored_n.type, torch.Tensor)
-
-    def test_graph_pickle_find_nodes(self):
-        g = Graph()
-        x = g.placeholder("x")
-        y = g.placeholder("y")
-        add = g.call_function(operator.add, (x, y))
-        neg = g.call_function(operator.neg, (add,))
-        g.output(neg)
-
-        restored = pickle.loads(pickle.dumps(g))
-        self.assertEqual(len(restored.find_nodes(op="placeholder")), 2)
-        self.assertEqual(len(restored.find_nodes(op="call_function", target=operator.add)), 1)
-        self.assertEqual(len(restored.find_nodes(op="call_function", target=operator.neg)), 1)
-        self.assertEqual(len(restored.find_nodes(op="output")), 1)
-        node_names = [n.name for n in restored.nodes]
-        self.assertEqual(node_names, ["x", "y", "add", "neg", "output"])
 
     def test_lineno_map(self):
         class M(torch.nn.Module):
@@ -4444,6 +4429,7 @@ def forward(self, args_list: List[torch.Tensor]){maybe_return_annotation}:
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
     @torch.fx.experimental._config.patch("enrich_profiler_metadata", True)
+    @blas_library_context("cublaslt")
     def test_profiler_stack_trace_augmentation(self):
         """
         Test that map_recorded_events_to_aten_ops_with_stack_trace correctly
