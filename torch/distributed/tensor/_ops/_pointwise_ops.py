@@ -113,7 +113,7 @@ def _common_pointwise_single_dim_strategy(
     return strategy
 
 
-def _register(
+def _register_single_dim_pointwise(
     op: OpOverload,
     partial_extra_rules: list[list[Placement]] | None = None,
     static_argnum: int = 0,
@@ -157,7 +157,7 @@ _BINARY_ADDITIVE_RULES: list[list[Placement]] = [
 ]
 
 for op in binary_additive_ops:
-    _register(op, _BINARY_ADDITIVE_RULES)
+    _register_single_dim_pointwise(op, _BINARY_ADDITIVE_RULES)
 
 # mul: partials propagate through either arg. div: only through numerator.
 binary_mul_ops = [aten.mul.Tensor, aten.mul_.Tensor, aten.mul.out]
@@ -179,10 +179,10 @@ _DIV_RULES: list[list[Placement]] = [
 ]
 
 for op in binary_mul_ops:
-    _register(op, _UNARY_LINEAR_RULES + _MUL_RULES)
+    _register_single_dim_pointwise(op, _UNARY_LINEAR_RULES + _MUL_RULES)
 
 for op in binary_div_ops:
-    _register(op, _UNARY_LINEAR_RULES + _DIV_RULES)
+    _register_single_dim_pointwise(op, _UNARY_LINEAR_RULES + _DIV_RULES)
 
 scalar_linear_ops = [
     aten.div.Scalar,
@@ -192,7 +192,7 @@ scalar_linear_ops = [
 ]
 
 for op in scalar_linear_ops:
-    _register(op, _UNARY_LINEAR_RULES, static_argnum=1)
+    _register_single_dim_pointwise(op, _UNARY_LINEAR_RULES, static_argnum=1)
 
 neg_ops = [aten.neg.default, aten.neg_.default]
 
@@ -270,7 +270,7 @@ _NON_DECREASING_RULES: list[list[Placement]] = [
 ]
 
 for op in non_decreasing_unary_ops:
-    _register(op, _NON_DECREASING_RULES)
+    _register_single_dim_pointwise(op, _NON_DECREASING_RULES)
 
 # Non-increasing unary ops: f(max(a,b)) = min(f(a),f(b)).
 # Note: acos excluded due to domain constraints [-1,1] causing validation failures
@@ -288,7 +288,7 @@ _NON_INCREASING_RULES: list[list[Placement]] = [
 ]
 
 for op in non_increasing_unary_ops:
-    _register(op, _NON_INCREASING_RULES)
+    _register_single_dim_pointwise(op, _NON_INCREASING_RULES)
 
 # neg is linear: -(A1 + A2) = -A1 + -A2
 neg_ops = [aten.neg.default, aten.neg_.default, aten.neg.out]
@@ -296,7 +296,7 @@ neg_ops = [aten.neg.default, aten.neg_.default, aten.neg.out]
 _NEG_RULES: list[list[Placement]] = _UNARY_LINEAR_RULES + _NON_INCREASING_RULES
 
 for op in neg_ops:
-    _register(op, _NEG_RULES)
+    _register_single_dim_pointwise(op, _NEG_RULES)
 
 
 # All-partial-preserving unary ops: P(x)->P(x) for all x.
@@ -311,7 +311,7 @@ _ALL_PARTIAL_PRESERVING_RULES: list[list[Placement]] = [
 ]
 
 for op in all_partial_preserving_unary_ops:
-    _register(op, _ALL_PARTIAL_PRESERVING_RULES)
+    _register_single_dim_pointwise(op, _ALL_PARTIAL_PRESERVING_RULES)
 
 all_partial_preserving_binary_ops = [
     aten.copy_.default,
@@ -323,7 +323,7 @@ _ALL_PARTIAL_BINARY_PRESERVING_RULES: list[list[Placement]] = [
 ]
 
 for op in all_partial_preserving_binary_ops:
-    _register(op, _ALL_PARTIAL_BINARY_PRESERVING_RULES)
+    _register_single_dim_pointwise(op, _ALL_PARTIAL_BINARY_PRESERVING_RULES)
 
 # Monotonic increasing in both args but don't preserve any specific partial type.
 monotonic_binary_ops = [
@@ -341,7 +341,7 @@ _MONOTONE_BINARY_BASE_RULES: list[list[Placement]] = [
 ]
 
 for op in monotonic_binary_ops:
-    _register(op, _MONOTONE_BINARY_BASE_RULES)
+    _register_single_dim_pointwise(op, _MONOTONE_BINARY_BASE_RULES)
 
 # Binary ops monotonically increasing in both arguments.
 # max-preserving: P(max)+P(max)->P(max) because max(max(a),max(b)) = max(a,b)
@@ -360,7 +360,7 @@ _MONOTONE_MAX_PRESERVING_BINARY_BASE_RULES: list[list[Placement]] = [
 ]
 
 for op in monotonic_max_preserving_binary_ops:
-    _register(op, _MONOTONE_MAX_PRESERVING_BINARY_BASE_RULES)
+    _register_single_dim_pointwise(op, _MONOTONE_MAX_PRESERVING_BINARY_BASE_RULES)
 
 # min-preserving: P(min)+P(min)->P(min) because min(min(a),min(b)) = min(a,b)
 monotonic_min_preserving_binary_ops = [
@@ -378,7 +378,7 @@ _MONOTONE_MIN_PRESERVING_BINARY_BASE_RULES: list[list[Placement]] = [
 ]
 
 for op in monotonic_min_preserving_binary_ops:
-    _register(op, _MONOTONE_MIN_PRESERVING_BINARY_BASE_RULES)
+    _register_single_dim_pointwise(op, _MONOTONE_MIN_PRESERVING_BINARY_BASE_RULES)
 
 
 # The linear pointwise ops map, key is op, value is the type of linearity.
@@ -1053,7 +1053,7 @@ norm_partial_avoidable_redistribute_ops = {
 }
 
 for op in pointwise_ops:
-    _register(op)
+    _register_single_dim_pointwise(op)
 
 # TODO: add all for_each ops
 for_each_ops = [
