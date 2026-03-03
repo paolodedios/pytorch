@@ -140,6 +140,7 @@ FlattenFunc = FlattenFn  # deprecated
 UnflattenFunc = UnflattenFn  # deprecated
 FlattenWithKeysFunc = FlattenWithKeysFn  # deprecated
 
+
 # A NodeDef holds two callables:
 # - flatten_fn should take the collection and return a flat list of values.
 #   It can also return some context that is used in reconstructing the
