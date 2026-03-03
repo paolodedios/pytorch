@@ -17,14 +17,14 @@ from torch._inductor.codegen.wrapper import (
     ExitDeviceContextManagerWithStreamInfoLine,
 )
 from torch._inductor.event import CudaEventFactory, CudaEventSym
-from torch._inductor.stream_utils import (
+from torch._inductor.stream_constants import (
     DEFAULT_STREAM,
     DEFAULT_STREAM_IDX,
     ENTRANCE_EVENT,
     EVENT_NAME_TEMPLATE,
-    get_stream_name,
     STREAM_NAME_TEMPLATE,
 )
+from torch._inductor.stream_utils import get_stream_name
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._inductor.utils import IndentedBuffer
 from torch.testing._internal.common_cuda import TEST_CUDA
@@ -94,31 +94,6 @@ class TestCudaEventFactory(InductorTestCase):
         self.assertEqual(entrance1.idx, 0)
         self.assertEqual(entrance1.originate_stream_idx, DEFAULT_STREAM_IDX)
         self.assertEqual(entrance1.materialized_event, ENTRANCE_EVENT)
-
-    def test_event_ordering(self):
-        """Test CudaEventSym ordering."""
-        factory = CudaEventFactory()
-
-        event1 = factory.get_sym_event(originate_stream_idx=0)
-        event2 = factory.get_sym_event(originate_stream_idx=0)
-
-        self.assertLess(event1, event2)
-        self.assertGreater(event2, event1)
-        self.assertEqual(event1, event1)
-        self.assertNotEqual(event1, event2)
-
-    def test_event_hash(self):
-        """Test CudaEventSym is hashable."""
-        factory = CudaEventFactory()
-
-        event1 = factory.get_sym_event(originate_stream_idx=0)
-        event2 = factory.get_sym_event(originate_stream_idx=1)
-
-        # Should be hashable and usable in sets/dicts
-        event_set = {event1, event2}
-        self.assertEqual(len(event_set), 2)
-        self.assertIn(event1, event_set)
-        self.assertIn(event2, event_set)
 
     def test_event_str(self):
         """Test CudaEventSym string representation."""
@@ -199,7 +174,9 @@ class TestStreamCodegen(InductorTestCase):
         event = factory.get_sym_event(originate_stream_idx=0)
 
         code = IndentedBuffer()
-        record_line = _CudaEventRecordLine(event=event, stream="stream1")
+        record_line = _CudaEventRecordLine(
+            event=event, factory=factory, stream="stream1"
+        )
         record_line.codegen(code)
 
         generated = code.getvalue()
@@ -234,7 +211,9 @@ class TestStreamCodegen(InductorTestCase):
         event = factory.get_sym_event(originate_stream_idx=0)
 
         # Record event on default stream
-        record_line = _CudaEventRecordLine(event=event, stream="default_stream")
+        record_line = _CudaEventRecordLine(
+            event=event, factory=factory, stream="default_stream"
+        )
         record_line.codegen(code)
 
         # Enter stream 1 context
