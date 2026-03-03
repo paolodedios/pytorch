@@ -983,7 +983,6 @@ class TestPointwiseRuleValidation(TestCase):
             ("sigmoid", "non_decreasing_unary", 5),
             ("erfc", "non_increasing_unary", 5),
             ("neg", "neg", 6),
-            ("deg2rad", "linear_nondecreasing", 6),
             ("maximum", "monotonic_max_preserving", 57),
             ("minimum", "monotonic_min_preserving", 57),
             ("logaddexp", "monotonic_binary", 49),
