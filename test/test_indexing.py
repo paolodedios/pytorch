@@ -34,6 +34,7 @@ from torch.testing._internal.common_dtype import (
 )
 from torch.testing._internal.common_utils import (
     DeterministicGuard,
+    MACOS_VERSION,
     parametrize,
     run_tests,
     serialTest,
@@ -913,6 +914,11 @@ class TestIndexing(TestCase):
 
         with self.assertRaisesRegex(IndexError, "too many indices"):
             windowed_data = t[indices[:31]]
+
+    def test_index_tensor_empty_indices(self, device):
+        t = torch.tensor([1.0], device=device)
+        with self.assertRaisesRegex(IndexError, "at least one index must be provided"):
+            torch.ops.aten.index.Tensor(t, [])
 
     def test_bool_indices_accumulate(self, device):
         mask = torch.zeros(size=(10,), dtype=torch.bool, device=device)
@@ -1811,17 +1817,22 @@ class TestIndexing(TestCase):
 
     @parametrize("reduce", ["prod", "amin", "amax", "mean"])
     @dtypes(*all_types_and(torch.half, torch.bfloat16))
-    @expectedFailureMPS  # Unimplemented for MPS device
+    @dtypesIfMPS(torch.int32, torch.float32)
     def test_index_reduce(self, device, dtype, reduce):
         size = (3, 4, 5)
         index_dtypes = [torch.int, torch.long]
         include_selfs = [True, False]
+        # See https://github.com/pytorch/pytorch/issues/176159
+        is_mps_noncontig_broken = (
+            device == "mps:0" and reduce == "mean" and MACOS_VERSION < 15.0
+        )
+        noncontig_opts = [True, False] if not is_mps_noncontig_broken else [False]
         amin_init = float("inf") if dtype.is_floating_point else torch.iinfo(dtype).max
         amax_init = -float("inf") if dtype.is_floating_point else torch.iinfo(dtype).min
         reduction_init = {"prod": 1, "mean": 0, "amin": amin_init, "amax": amax_init}
 
         for dest_noncontig, src_noncontig, index_noncontig in product(
-            [True, False], repeat=3
+            noncontig_opts, repeat=3
         ):
             for idx_dtype, include_self in product(index_dtypes, include_selfs):
                 for dim in range(len(size)):
@@ -1871,7 +1882,10 @@ class TestIndexing(TestCase):
                             if include_self
                             else torch.zeros_like(expected)
                         )
-                        counts.index_add_(0, idx, torch.ones_like(src))
+                        if is_mps_noncontig_broken:
+                            counts = counts.index_add(0, idx, torch.ones_like(src))
+                        else:
+                            counts.index_add_(0, idx, torch.ones_like(src))
                         counts.masked_fill_(counts == 0, 1)
                         if dtype.is_floating_point:
                             expected.div_(counts)
@@ -1969,7 +1983,8 @@ class TestIndexing(TestCase):
     def _prepare_data_for_index_copy_and_add_deterministic(
         self, dim: int, device: torch.device
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        assert dim >= 0 and dim < 3
+        if not (dim >= 0 and dim < 3):
+            raise AssertionError(f"dim must be in [0, 3), got {dim}")
         a = [5, 4, 3]
         a[dim] = 2000
         x = torch.zeros(a, device=device)
