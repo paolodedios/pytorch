@@ -149,20 +149,10 @@ PyObject* to_py_size(const std::vector<c10::SymInt>& size) {
 
 namespace torch::autograd {
 
-// NOTE: this function is written in a way that assumes it's only called for
-// backward; it's used by engine.cpp.  This is responsible for forwarding a call
-// from C++'s Node::apply to a Python method "apply".
-// NOLINTNEXTLINE(*-rvalue-reference*)
-auto PyNode::apply(variable_list&& inputs) -> variable_list {
-  // see Note [Thread Safety on Autograd Node]
-  std::lock_guard<std::mutex> lock(mutex_);
-  pybind11::gil_scoped_acquire gil;
-  at::OptionalDeviceGuard _device_guard;
-  THPFunction* py_fn = (THPFunction*)obj;
-
-  // Update needs_input_grad to reflect which gradients are actually needed
-  // by the current graph task (e.g. when inputs= is specified in backward()).
-  auto& is_variable_input = py_fn->is_variable_input;
+// Update needs_input_grad to reflect which gradients are actually needed
+// by the current graph task (e.g. when inputs= is specified in backward()).
+void PyNode::update_needs_input_grad(THPFunction* py_fn) {
+  const auto& is_variable_input = py_fn->is_variable_input;
   size_t edge_idx = 0;
   for (const auto i : c10::irange(is_variable_input.size())) {
     if (is_variable_input[i]) {
@@ -176,6 +166,20 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
       }
     }
   }
+}
+
+// NOTE: this function is written in a way that assumes it's only called for
+// backward; it's used by engine.cpp.  This is responsible for forwarding a call
+// from C++'s Node::apply to a Python method "apply".
+// NOLINTNEXTLINE(*-rvalue-reference*)
+auto PyNode::apply(variable_list&& inputs) -> variable_list {
+  // see Note [Thread Safety on Autograd Node]
+  std::lock_guard<std::mutex> lock(mutex_);
+  pybind11::gil_scoped_acquire gil;
+  at::OptionalDeviceGuard _device_guard;
+  THPFunction* py_fn = (THPFunction*)obj;
+
+  update_needs_input_grad(py_fn);
 
   // Massage a C++ variable_list into a Python arguments tuple
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));
@@ -188,6 +192,7 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
     throw_python_error();
   ensure_tuple(r);
 
+  const auto& is_variable_input = py_fn->is_variable_input;
   auto num_outputs = PyTuple_GET_SIZE(r.get());
   auto num_forward_inputs = static_cast<Py_ssize_t>(is_variable_input.size());
   // Returning too many results is ok, but only as long as they're all None.
@@ -229,26 +234,12 @@ auto PyNode::apply_with_saved_impl(
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
 
-  // Update needs_input_grad to reflect which gradients are actually needed
-  // by the current graph task (e.g. when inputs= is specified in backward()).
-  const auto& is_variable_input = py_fn->is_variable_input;
-  size_t edge_idx = 0;
-  for (const auto i : c10::irange(is_variable_input.size())) {
-    if (is_variable_input[i]) {
-      PyObject* new_val =
-          task_should_compute_output(edge_idx++) ? Py_True : Py_False;
-      PyObject* cur = PyTuple_GET_ITEM(py_fn->needs_input_grad, i);
-      if (cur != new_val) {
-        Py_INCREF(new_val);
-        Py_DECREF(cur);
-        PyTuple_SET_ITEM(py_fn->needs_input_grad, i, new_val);
-      }
-    }
-  }
+  update_needs_input_grad(py_fn);
 
   // Massage a C++ variable_list into a Python arguments tuple
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));
 
+  const auto& is_variable_input = py_fn->is_variable_input;
   const auto& input_infos = py_fn->input_info;
   // input_info only contains info from variable inputs and should be a subset
   TORCH_INTERNAL_ASSERT(is_variable_input.size() >= input_infos.size());
