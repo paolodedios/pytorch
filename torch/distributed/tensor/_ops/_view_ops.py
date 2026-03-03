@@ -787,15 +787,15 @@ def propagate_shape_and_sharding(
         else:
             input_tgt_placements.append(p)
 
-    # Track which (input_dim, output_dim) pairs have been claimed by earlier mesh dims
+    # Track which (input_dim, output_dim) pairs have been seen by earlier mesh dims
     # in _rewrite_shard_dim, so that later mesh dims pick different output dims.
-    claimed_output_dims: set[tuple[int, int]] = set()
+    seen_output_dims: set[tuple[int, int]] = set()
 
-    def _unclaimed_tgt_dims(input_dim_idx: int) -> list[int]:
+    def _unseen_tgt_dims(input_dim_idx: int) -> list[int]:
         return [
             d
             for d in input_dim_to_output_dims[input_dim_idx]
-            if (input_dim_idx, d) not in claimed_output_dims
+            if (input_dim_idx, d) not in seen_output_dims
         ]
 
     def _rewrite_strided_shard_dim(
@@ -806,10 +806,14 @@ def propagate_shape_and_sharding(
         The split_factor may resolve to contiguous sharding (producing Shard)
         or stay as _StridedShard depending on the match phase.
         """
-        tgt_shard_dims = _unclaimed_tgt_dims(p.dim)
+        tgt_shard_dims = _unseen_tgt_dims(p.dim)
         found_split_cmd = False
-        # Phase 1: prefix-product matching — the split_factor encodes
-        # position within the unflatten (pure SS+SS case).
+        # Phase 1 runs before Phase 2 because it produces a plain Shard (resolves
+        # the strided-ness), while Phase 2 keeps _StridedShard. We prefer the
+        # simpler Shard placement when both phases could match.
+        #
+        # Phase 1: distinct-output-dim matching — each mesh dim gets its own
+        # output dim after unflatten (pure SS+SS case). SS resolves to Shard.
         prefix_match_idx = None
         for idx, candidate_dim in enumerate(tgt_shard_dims):
             cmd = rule[candidate_dim]
@@ -830,25 +834,25 @@ def propagate_shape_and_sharding(
         if prefix_match_idx is not None:
             # SS resolves into contiguous sharding -> Shard.
             tgt_shard_dim = tgt_shard_dims[prefix_match_idx]
-            claimed_output_dims.add((p.dim, tgt_shard_dim))
+            seen_output_dims.add((p.dim, tgt_shard_dim))
             local_tensor_shapes[p.dim] = (
                 local_tensor_shapes[p.dim] // mesh_sizes[mesh_dim]
             )
             return Shard(tgt_shard_dim)
 
-        # Phase 2: chunk-based matching — the split_factor encodes
-        # mesh structure (SS+S on same dim). The SS stays as SS.
-        # Integer division: if not evenly divisible, chunk is truncated
+        # Phase 2: shared-output-dim matching — multiple mesh dims target the
+        # same output dim (SS+S on same dim). The SS stays as SS.
+        # Integer division: if not evenly divisible, block_size is truncated
         # and the match conditions below will fail, falling through.
-        chunk = global_input_shape[p.dim] // (mesh_sizes[mesh_dim] * p.split_factor)
-        chunk_match_idx = None
+        block_size = global_input_shape[p.dim] // (mesh_sizes[mesh_dim] * p.split_factor)
+        shared_dim_match_idx = None
         for idx, candidate_dim in enumerate(tgt_shard_dims):
             cmd = rule[candidate_dim]
             if isinstance(cmd, Split):
                 inner_size = math.prod(cmd.group_shape[cmd.split_id + 1 :])
-                # When Split operates on a Flatten, scale chunk by
+                # When Split operates on a Flatten, scale block_size by
                 # trailing input dims so it's in flattened space.
-                effective_chunk = chunk
+                effective_block_size = block_size
                 if isinstance(cmd.input_dim, Flatten):
                     trailing_size = 1
                     found_p_dim = False
@@ -858,13 +862,13 @@ def propagate_shape_and_sharding(
                                 found_p_dim = True
                             elif found_p_dim:
                                 trailing_size *= global_input_shape[flat_dim.input_dim]
-                    effective_chunk = chunk * trailing_size
-                if effective_chunk >= inner_size and effective_chunk % inner_size == 0:
-                    chunk_match_idx = idx
+                    effective_block_size = block_size * trailing_size
+                if effective_block_size >= inner_size and effective_block_size % inner_size == 0:
+                    shared_dim_match_idx = idx
                     break
 
-        if chunk_match_idx is not None:
-            tgt_shard_dim = tgt_shard_dims[chunk_match_idx]
+        if shared_dim_match_idx is not None:
+            tgt_shard_dim = tgt_shard_dims[shared_dim_match_idx]
         elif found_split_cmd and strict_view:
             raise RuntimeError(
                 f"Cannot unflatten tensor with _StridedShard placement: "
@@ -888,7 +892,7 @@ def propagate_shape_and_sharding(
 
         For flatten, non-first dims produce _StridedShard.
         """
-        tgt_shard_dims = _unclaimed_tgt_dims(p.dim)
+        tgt_shard_dims = _unseen_tgt_dims(p.dim)
         if len(tgt_shard_dims) == 1:
             tgt_shard_dim = tgt_shard_dims[0]
         elif len(tgt_shard_dims) == 0:
@@ -956,7 +960,7 @@ def propagate_shape_and_sharding(
     output_placements: list[Placement] = []
     for mesh_dim, p in enumerate(input_tgt_placements):
         if isinstance(p, Shard | _StridedShard):
-            # _rewrite_shard_dim mutates local_tensor_shapes and claimed_output_dims
+            # _rewrite_shard_dim mutates local_tensor_shapes and seen_output_dims
             # to track which output dims have been claimed by earlier mesh dims.
             output_placements.append(
                 _rewrite_shard_dim(
