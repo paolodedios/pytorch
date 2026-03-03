@@ -6,7 +6,17 @@ torchtitan_unit_tests:
   title: torchtitan CPU Unit Tests
   id: torchtitan_unit_tests
   steps:
-    - pytest tests/unit_tests --ignore=tests/unit_tests/test_tokenizer.py --cov=. --durations=20 -vv
+    # Excluded tests:
+    # - test_tokenizer.py, test_download_hf_assets.py: require network access to HuggingFace Hub
+    # - test_dataset_flux.py: requires transformers package (not installed)
+    # - test_flux_config_via_cli: transitively imports transformers via flux config registry
+    - >-
+      pytest tests/unit_tests
+      --ignore=tests/unit_tests/test_tokenizer.py
+      --ignore=tests/unit_tests/test_download_hf_assets.py
+      --ignore=tests/unit_tests/test_dataset_flux.py
+      -k "not test_flux_config_via_cli"
+      --cov=. --durations=20 -vv
 
 torchtitan_features_integration:
   title: torchtitan Feature Integration Tests (8 GPU)
