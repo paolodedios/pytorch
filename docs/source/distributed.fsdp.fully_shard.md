@@ -55,6 +55,54 @@ The user contract for ``fully_shard(model)`` is as follows
   registers hooks to the original module.
 
 
+### Communication Grouping and Scheduling
+
+Each call to ``fully_shard`` creates one **communication group** containing all
+parameters in the module that are not already assigned to a group from an
+earlier call on a submodule. Each group's parameters are all-gathered together
+in one collective before forward, and their gradients are reduce-scattered
+together in one collective after backward. Unlike DDP, FSDP2 has no
+``bucket_cap_mb`` parameter — the communication boundaries are determined
+entirely by which modules you apply ``fully_shard`` to.
+
+Consider a model with four submodules where ``a``, ``b``, ``c``, and ``d``
+denote the number of parameters in each:
+
+```
+model[ m1[a] -> m2[b] -> m3[c] -> m4[d] ]
+```
+
+**If you only call** ``fully_shard(model)`` **(root only)**, all parameters are
+in a single group. This means the entire forward and backward look like:
+
+```
+all-gather(a+b+c+d) -> forward(m1,m2,m3,m4) -> backward(m4,m3,m2,m1) -> reduce-scatter(a+b+c+d)
+```
+
+All communication happens as two large blocking operations with no overlap
+with compute. This is almost never what you want.
+
+**If you apply** ``fully_shard`` **per submodule** — for example, calling
+``fully_shard(m2)``, ``fully_shard(m3)``, and then ``fully_shard(model)`` —
+the remaining parameters (``a`` and ``d``) form the root group, while ``m2``
+and ``m3`` each get their own group:
+
+```
+all-gather(a,d) -> fwd(m1) -> all-gather(b) -> fwd(m2) -> all-gather(c) -> fwd(m3,m4)
+-> bwd(m4,m3) -> reduce-scatter(c) -> bwd(m2) -> reduce-scatter(b) -> bwd(m1) -> reduce-scatter(a,d)
+```
+
+Now communication can overlap with compute: while one group's parameters are
+being all-gathered, another group's forward or backward is executing. This is
+why the recommended pattern is to apply ``fully_shard`` bottom-up to each
+layer before applying it to the root.
+
+To control the size of each communication group, choose which modules to wrap:
+wrapping more fine-grained modules produces smaller, more overlappable groups
+(similar to smaller DDP buckets), while wrapping fewer modules produces larger
+groups. There is no automatic bucketing — the grouping is explicit and
+determined by the module structure.
+
 Compared to PyTorch FSDP1 (`FullyShardedDataParallel`):
 
 - FSDP2 uses `DTensor`-based dim-0 per-parameter sharding for a simpler
