@@ -617,7 +617,7 @@ class TpuInterface(DeviceInterface):
         return torch.tpu.stream(stream)
 
     @staticmethod
-    def current_stream() -> torch.Stream:
+    def current_stream() -> Any:
         import torch.tpu
 
         return torch.tpu.current_stream()
