@@ -31,13 +31,11 @@ struct TORCH_CUDA_CPP_API MemPool {
   ~MemPool();
 
   MempoolId_t id();
-  c10::cuda::CUDACachingAllocator::CUDAAllocator* allocator();
   int use_count();
   c10::DeviceIndex device();
   static MempoolId_t graph_pool_handle(bool is_user_created = true);
 
  private:
-  c10::cuda::CUDACachingAllocator::CUDAAllocator* allocator_;
   MempoolId_t id_;
   c10::DeviceIndex device_;
 };
