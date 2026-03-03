@@ -33,16 +33,13 @@ from torch.distributed.tensor.debug import CommDebugMode
 from torch.distributed.tensor.placement_types import _StridedShard, Placement
 from torch.testing._internal.common_utils import run_tests
 from torch.testing._internal.distributed._tensor.common_dtensor import (
-    DTensorTestBase,
-    with_comms,
+    DTensorContinuousTestBase,
 )
 from torch.utils import _pytree as pytree
 
 
-class TestViewOps(DTensorTestBase):
-    @property
-    def world_size(self) -> int:
-        return 6
+class TestViewOps(DTensorContinuousTestBase):
+    world_size = 6
 
     def test_view_groups(self):
         self.assertEqual(
@@ -220,7 +217,6 @@ class TestViewOps(DTensorTestBase):
         self.assertEqual(rules, expected_rule_output)
         self.call_dt_test(op, args, {}, self.device_mesh)
 
-    @with_comms
     def test_illegal_views(self):
         device_mesh = self.build_device_mesh()
         # 1D mesh [6] (see above)
@@ -250,7 +246,6 @@ class TestViewOps(DTensorTestBase):
         with self.assertRaisesRegex(RuntimeError, "Sharding propagation failed"):
             shard.view(8, 2, -1)
 
-    @with_comms
     def test_view_ops(self):
         mesh_shape = (dist.get_world_size() // 2, 2)
         self.device_mesh = init_device_mesh(
@@ -547,7 +542,7 @@ class TestViewOps(DTensorTestBase):
     #         Split(InputDim(1), (13, 2), 1),
     #     ),
     # )
-    @with_comms
+
     def test_complex_view_ops(self):
         self.device_mesh = DeviceMesh(
             self.device_type, torch.arange(dist.get_world_size()).view(-1, 2)
@@ -592,7 +587,6 @@ class TestViewOps(DTensorTestBase):
             )
             self.assertEqual(out, out_dt.full_tensor())
 
-    @with_comms
     def test_view_as_complex_no_pmax_pmin(self):
         """
         view_as_complex converts real tensors to complex. Complex numbers don't
@@ -619,7 +613,6 @@ class TestViewOps(DTensorTestBase):
         # P(max) should NOT propagate - output should be Replicate
         self.assertIsInstance(result_pmax.placements[0], Replicate)
 
-    @with_comms
     def test_dtensor_view_op_uneven(self):
         """
         When the sharded dimension is unchanged, the view op should not trigger any communication.
@@ -681,7 +674,6 @@ class TestViewOps(DTensorTestBase):
             view_shapes.extend(trailing_dims)
         return tuple(view_shapes)
 
-    @with_comms
     def test_dtensor_flatten_1d(self):
         """
         Test view ops that flatten multiple dimensions on a 1D mesh.
@@ -825,7 +817,6 @@ class TestViewOps(DTensorTestBase):
         self.assertEqual(inps_viewed._local_tensor, expected_local_tensor)
         self.assertEqual(comm_mode.get_total_counts(), 0)
 
-    @with_comms
     def test_dtensor_flatten_2d(self):
         self.assertEqual(self.world_size, 6)
         mesh_ndim = 2
@@ -1089,7 +1080,6 @@ class TestViewOps(DTensorTestBase):
         self.assertEqual(inps_viewed._local_tensor, expected_local_tensor)
         self.assertEqual(comm_mode.get_total_counts(), 0)
 
-    @with_comms
     def test_dtensor_flatten_shard_outside_range(self):
         """Test that Shard on a dim outside the flatten range passes through correctly.
 
@@ -1201,7 +1191,6 @@ class TestViewOps(DTensorTestBase):
                     self.assertEqual(dt_flat._local_tensor, expected_local)
                     self.assertEqual(comm_mode.get_total_counts(), 0)
 
-    @with_comms
     def test_dtensor_flatten_unflatten_roundtrip(self):
         """Flatten then unflatten should recover the original placements and data.
 
@@ -1297,7 +1286,6 @@ class TestViewOps(DTensorTestBase):
                 self.assertEqual(dt_roundtrip.placements, placements)
                 self.assertEqual(dt_roundtrip._local_tensor, dt._local_tensor)
 
-    @with_comms
     def test_view_redistribution(self):
         """
         This test is added to demonstrate "incorrect" view ops behavior if redistribution happens.
@@ -1310,7 +1298,6 @@ class TestViewOps(DTensorTestBase):
         with self.assertRaisesRegex(RuntimeError, "Sharding propagation failed"):
             dtensor_x.view(-1, 8)
 
-    @with_comms
     def test_squeeze_(self):
         mesh_2d = init_device_mesh(self.device_type, (3, 2), mesh_dim_names=("a", "b"))
         self.init_manual_seed_for_rank()
@@ -1329,7 +1316,6 @@ class TestViewOps(DTensorTestBase):
         )
         self.assertEqual(dist_x.placements, [Partial(), Shard(0)])
 
-    @with_comms
     def test_storage_offset_slice(self):
         """
         Test that storage_offset is properly tracked on DTensor when slicing
@@ -1360,7 +1346,6 @@ class TestViewOps(DTensorTestBase):
         expected = tensor[1:]
         self.assertEqual(sliced_dtensor.full_tensor(), expected)
 
-    @with_comms
     def test_storage_offset_shard_dim0_slice_dim1(self):
         """
         Test that storage_offset is properly tracked when tensor is sharded on dim 0
@@ -1392,7 +1377,6 @@ class TestViewOps(DTensorTestBase):
         expected = tensor[:, 2:]
         self.assertEqual(sliced_dtensor.full_tensor(), expected)
 
-    @with_comms
     def test_storage_offset_shard_dim1_slice_dim0(self):
         """
         Test that storage_offset is properly tracked when tensor is sharded on dim 1
