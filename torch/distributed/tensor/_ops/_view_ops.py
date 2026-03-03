@@ -549,14 +549,61 @@ def _get_root_input_dim(dim_spec: DimSpec) -> InputDim | None:
     return dim_spec if isinstance(dim_spec, InputDim) else None
 
 
+def propagate_shape_and_sharding(
+    input_src_placements: Sequence[Placement],
+    global_input_shape: Shape,
+    rule: DimMap,
+    mesh_sizes: Shape,
+    strict_view: bool = False,
+) -> tuple[Sequence[Placement], Sequence[Placement]]:
+    """
+    Determine input target sharding and output sharding based on
+    given global tensor shape and input source sharding.
+
+    Sharding propagation follows mapped dimensions:
+    - An output dimension that maps directly to an input dimension is sharded equally
+    - An output dimension that is a flattened set of input dimensions can be sharded:
+      the first sharded dim stays as Shard, non-first sharded dims become _StridedShard
+    - An output dimension that is a split of the input dimension can only be sharded
+      if the leftmost split size is divisible by the mesh dimension
+    """
+    if not len(input_src_placements) == len(mesh_sizes):
+        raise AssertionError(f"{input_src_placements} != {mesh_sizes}")
+
+    ctx = _ShardingPropagationContext(
+        input_src_placements, global_input_shape, rule, mesh_sizes, strict_view
+    )
+    input_tgt_placements, input_to_output_tensor_dims = ctx.analyze()
+    output_placements = ctx.rewrite_output_placements(
+        input_tgt_placements, input_to_output_tensor_dims
+    )
+    return input_tgt_placements, output_placements
+
+
 class _ShardingPropagationContext:
     """Bundles read-only config for view-op sharding propagation.
 
     Two phases, run in order:
-    1. Analysis (analyze): walks the DimMap rule, returns
-       input_to_output_tensor_dims and input_tgt_placements.
-    2. Rewrite (rewrite_output_placements): consumes analysis results
-       to produce the final output placements.
+
+    1. **Analysis** (``analyze``): walks the DimMap rule and produces:
+
+       - ``input_tgt_placements`` — input placements with unshardable dims
+         demoted to ``Replicate()``.  Tells the rewrite phase which sharded
+         dims survived and need dim-mapping.
+       - ``input_to_output_tensor_dims`` — ``dict[int, list[int]]`` mapping
+         each input tensor dim to its output tensor dim(s).  Cardinality
+         encodes the op type: 1→1 for identity (``InputDim``), N→1 for
+         ``Flatten``, 1→N for ``Split``/unflatten.
+
+    2. **Rewrite** (``rewrite_output_placements``): consumes both outputs
+       from the analysis phase.  Iterates mesh dims in order 0..n-1,
+       maintaining ``rewritten_input_to_output_dims`` (which
+       ``(input_dim, output_dim)`` pairs have already been rewritten by
+       earlier mesh dims) and ``local_tensor_shapes`` (global shape
+       progressively divided by each mesh dim).  For each surviving
+       ``Shard``/``_StridedShard`` it looks up
+       ``input_to_output_tensor_dims[p.dim]``, filters by
+       ``rewritten_input_to_output_dims``, and produces the final output placement.
     """
 
     def __init__(
@@ -573,6 +620,139 @@ class _ShardingPropagationContext:
         self.mesh_sizes = mesh_sizes
         self.strict_view = strict_view
         self.mesh_ndim = len(mesh_sizes)
+
+    # ------------------------------------------------------------------
+    # Public API: analyze → rewrite_output_placements
+    # ------------------------------------------------------------------
+
+    def analyze(
+        self,
+    ) -> tuple[Sequence[Placement], dict[int, list[int]]]:
+        """Run the analysis phase.
+
+        Returns:
+            input_tgt_placements: input placements after demoting unshardable
+                dims to Replicate.  For each (mesh_dim, placement), if
+                shard_allowed[p.dim][mesh_dim] is False the placement becomes
+                Replicate(); otherwise it passes through unchanged.
+            input_to_output_tensor_dims: mapping from input tensor dim index
+                to output tensor dim index(es).  Consumed by
+                rewrite_output_placements() to translate Shard(input_dim) →
+                Shard(output_dim).  The list length encodes the op type:
+                  - InputDim (identity): [single output dim]
+                  - Flatten: [single flattened output dim] per sharded input dim
+                  - Split/unflatten: [output_dim_0, ..., output_dim_k] for each
+                    piece of the split
+        """
+        seen_input_dims: set[int] = set()
+
+        def collect_used_inputs(cmd: DimSpec) -> None:
+            if isinstance(cmd, InputDim):
+                seen_input_dims.add(cmd.input_dim)
+            for inp in cmd.inputs():
+                collect_used_inputs(inp)
+
+        for cmd in self.rule:
+            collect_used_inputs(cmd)
+
+        # shard_allowed[input_dim][mesh_dim]: whether input_dim can stay
+        # sharded on mesh_dim (input_dim × mesh_dim).
+        shard_allowed: dict[int, list[bool]] = {}
+        for dim in range(len(self.global_input_shape)):
+            shard_allowed[dim] = [dim in seen_input_dims] * self.mesh_ndim
+
+        # Mesh dims already assigned to a Split output dim (_StridedShard only).
+        seen_mesh_dims: set[int] = set()
+
+        # Walk the rule to fill shard_allowed and build input_to_output_tensor_dims.
+        input_to_output_tensor_dims: dict[int, list[int]] = {}
+        for output_dim, cmd in enumerate(self.rule):
+            in_dims = self._analyze_dim(cmd, shard_allowed, seen_mesh_dims)
+            if isinstance(cmd, Flatten):
+                for in_dim in in_dims:
+                    if in_dim.input_dim in input_to_output_tensor_dims:
+                        raise AssertionError(
+                            f"Input dim {in_dim.input_dim} already mapped to output dims "
+                            f"{input_to_output_tensor_dims[in_dim.input_dim]}"
+                        )
+                    input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
+            elif len(in_dims) > 0:
+                in_dim = in_dims[0]
+                if in_dim.input_dim not in input_to_output_tensor_dims:
+                    input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
+                else:
+                    input_to_output_tensor_dims[in_dim.input_dim].append(output_dim)
+            elif isinstance(cmd, Split):
+                root = _get_root_input_dim(cmd.input_dim)
+                if root is not None and root.input_dim in input_to_output_tensor_dims:
+                    input_to_output_tensor_dims[root.input_dim].append(output_dim)
+
+        input_tgt_placements: list[Placement] = []
+        for mesh_dim, p in enumerate(self.input_src_placements):
+            if (
+                isinstance(p, Shard | _StridedShard)
+                and not shard_allowed[p.dim][mesh_dim]
+            ):
+                input_tgt_placements.append(Replicate())
+            else:
+                input_tgt_placements.append(p)
+        return input_tgt_placements, input_to_output_tensor_dims
+
+    def rewrite_output_placements(
+        self,
+        input_tgt_placements: Sequence[Placement],
+        input_to_output_tensor_dims: dict[int, list[int]],
+    ) -> list[Placement]:
+        """Run the rewrite phase: map input placements to output placements.
+
+        Consumes both outputs of analyze().  Processes mesh dims in order
+        0..n-1 so that earlier mesh dims' decisions are visible to later ones
+        via two pieces of mutable state:
+
+        - rewritten_input_to_output_dims: set of (input_dim, output_dim)
+          pairs already rewritten by earlier mesh dims.  Prevents two mesh
+          dims from independently targeting the same Split output dim in
+          the _StridedShard (unflatten) path.  Plain Shard intentionally
+          does NOT update this set because multi-mesh [Shard(0), Shard(0)]
+          legitimately targets the same output dim.
+        - local_tensor_shapes: starts as global_input_shape, divided by
+          each mesh dim's shard size in turn.  Later mesh dims see already-
+          divided sizes, which is needed for correct split_factor computation
+          in _StridedShard rewrites.
+        """
+        # (input_dim, output_dim) pairs already rewritten by earlier mesh dims.
+        rewritten_input_to_output_dims: set[tuple[int, int]] = set()
+        # Starts as global_input_shape; each mesh dim divides its sharded dim.
+        local_tensor_shapes: list[int] = list(self.global_input_shape)
+
+        output_placements: list[Placement] = []
+        for mesh_dim, p in enumerate(input_tgt_placements):
+            if isinstance(p, Shard | _StridedShard):
+                if isinstance(p, _StridedShard):
+                    output_placements.append(
+                        self._rewrite_strided_shard(
+                            p,
+                            mesh_dim,
+                            input_tgt_placements,
+                            rewritten_input_to_output_dims,
+                            local_tensor_shapes,
+                            input_to_output_tensor_dims,
+                        )
+                    )
+                else:
+                    output_placements.append(
+                        self._rewrite_plain_shard(
+                            p,
+                            mesh_dim,
+                            input_tgt_placements,
+                            rewritten_input_to_output_dims,
+                            local_tensor_shapes,
+                            input_to_output_tensor_dims,
+                        )
+                    )
+            else:
+                output_placements.append(p)
+        return output_placements
 
     # ------------------------------------------------------------------
     # Analysis phase helpers
@@ -778,85 +958,20 @@ class _ShardingPropagationContext:
         else:
             return []
 
-    def analyze(
-        self,
-    ) -> tuple[Sequence[Placement], dict[int, list[int]]]:
-        """Run the analysis phase.
-
-        Returns (input_tgt_placements, input_to_output_tensor_dims).
-        input_tgt_placements: input placements after falling back unshardable
-        dims to Replicate.
-        input_to_output_tensor_dims: mapping from each input dim to its output
-        dim(s), consumed by rewrite_output_placements().
-        """
-        seen_input_dims: set[int] = set()
-
-        def collect_used_inputs(cmd: DimSpec) -> None:
-            if isinstance(cmd, InputDim):
-                seen_input_dims.add(cmd.input_dim)
-            for inp in cmd.inputs():
-                collect_used_inputs(inp)
-
-        for cmd in self.rule:
-            collect_used_inputs(cmd)
-
-        # shard_allowed[input_dim][mesh_dim]: whether input_dim can stay
-        # sharded on mesh_dim (input_dim × mesh_dim).
-        shard_allowed: dict[int, list[bool]] = {}
-        for dim in range(len(self.global_input_shape)):
-            shard_allowed[dim] = [dim in seen_input_dims] * self.mesh_ndim
-
-        # Mesh dims already assigned to a Split output dim (_StridedShard only).
-        seen_mesh_dims: set[int] = set()
-
-        # Walk the rule to fill shard_allowed and build input_to_output_tensor_dims.
-        input_to_output_tensor_dims: dict[int, list[int]] = {}
-        for output_dim, cmd in enumerate(self.rule):
-            in_dims = self._analyze_dim(cmd, shard_allowed, seen_mesh_dims)
-            if isinstance(cmd, Flatten):
-                for in_dim in in_dims:
-                    if in_dim.input_dim in input_to_output_tensor_dims:
-                        raise AssertionError(
-                            f"Input dim {in_dim.input_dim} already mapped to output dims "
-                            f"{input_to_output_tensor_dims[in_dim.input_dim]}"
-                        )
-                    input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
-            elif len(in_dims) > 0:
-                in_dim = in_dims[0]
-                if in_dim.input_dim not in input_to_output_tensor_dims:
-                    input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
-                else:
-                    input_to_output_tensor_dims[in_dim.input_dim].append(output_dim)
-            elif isinstance(cmd, Split):
-                root = _get_root_input_dim(cmd.input_dim)
-                if root is not None and root.input_dim in input_to_output_tensor_dims:
-                    input_to_output_tensor_dims[root.input_dim].append(output_dim)
-
-        input_tgt_placements: list[Placement] = []
-        for mesh_dim, p in enumerate(self.input_src_placements):
-            if (
-                isinstance(p, Shard | _StridedShard)
-                and not shard_allowed[p.dim][mesh_dim]
-            ):
-                input_tgt_placements.append(Replicate())
-            else:
-                input_tgt_placements.append(p)
-        return input_tgt_placements, input_to_output_tensor_dims
-
     # ------------------------------------------------------------------
     # Rewrite phase helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _unseen_tgt_dims(
+    def _unrewritten_output_dims(
         input_dim_idx: int,
-        seen_output_dims: set[tuple[int, int]],
+        rewritten_input_to_output_dims: set[tuple[int, int]],
         input_to_output_tensor_dims: dict[int, list[int]],
     ) -> list[int]:
         return [
             d
             for d in input_to_output_tensor_dims[input_dim_idx]
-            if (input_dim_idx, d) not in seen_output_dims
+            if (input_dim_idx, d) not in rewritten_input_to_output_dims
         ]
 
     def _rewrite_strided_shard(
@@ -864,7 +979,7 @@ class _ShardingPropagationContext:
         p: _StridedShard,
         mesh_dim: int,
         placements: Sequence[Placement],
-        seen_output_dims: set[tuple[int, int]],
+        rewritten_input_to_output_dims: set[tuple[int, int]],
         local_tensor_shapes: list[int],
         input_to_output_tensor_dims: dict[int, list[int]],
     ) -> Placement:
@@ -873,8 +988,8 @@ class _ShardingPropagationContext:
         The split_factor may resolve to contiguous sharding (producing Shard)
         or stay as _StridedShard depending on the match phase.
         """
-        tgt_shard_dims = self._unseen_tgt_dims(
-            p.dim, seen_output_dims, input_to_output_tensor_dims
+        tgt_shard_dims = self._unrewritten_output_dims(
+            p.dim, rewritten_input_to_output_dims, input_to_output_tensor_dims
         )
         found_split_cmd = False
         # Phase 1 runs before Phase 2 because it produces a plain Shard (resolves
@@ -908,7 +1023,7 @@ class _ShardingPropagationContext:
 
         if prefix_match_idx is not None:
             tgt_shard_dim = tgt_shard_dims[prefix_match_idx]
-            seen_output_dims.add((p.dim, tgt_shard_dim))
+            rewritten_input_to_output_dims.add((p.dim, tgt_shard_dim))
             local_tensor_shapes[p.dim] = (
                 local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
             )
@@ -945,7 +1060,7 @@ class _ShardingPropagationContext:
                         break
 
         if shared_dim_match_idx is not None:
-            # Don't add to seen_output_dims: multiple mesh dims can share
+            # Don't add to rewritten_input_to_output_dims: multiple mesh dims can share
             # this output dim (e.g. SS+S on the same dim).
             tgt_shard_dim = tgt_shard_dims[shared_dim_match_idx]
         elif found_split_cmd and self.strict_view:
@@ -985,7 +1100,7 @@ class _ShardingPropagationContext:
         p: Shard,
         mesh_dim: int,
         placements: Sequence[Placement],
-        seen_output_dims: set[tuple[int, int]],
+        rewritten_input_to_output_dims: set[tuple[int, int]],
         local_tensor_shapes: list[int],
         input_to_output_tensor_dims: dict[int, list[int]],
     ) -> Placement:
@@ -994,13 +1109,13 @@ class _ShardingPropagationContext:
         For flatten, non-first dims produce _StridedShard.
 
         Unlike _rewrite_strided_shard, this does NOT update
-        seen_output_dims.  When multiple mesh dims have plain Shard on the
+        rewritten_input_to_output_dims.  When multiple mesh dims have plain Shard on the
         same input dim (e.g. [Shard(0), Shard(0)]), they legitimately
         target the same output dim; coordination is handled by
         the analysis phase's shard_allowed check which validates divisibility.
         """
-        tgt_shard_dims = self._unseen_tgt_dims(
-            p.dim, seen_output_dims, input_to_output_tensor_dims
+        tgt_shard_dims = self._unrewritten_output_dims(
+            p.dim, rewritten_input_to_output_dims, input_to_output_tensor_dims
         )
         if len(tgt_shard_dims) == 1:
             tgt_shard_dim = tgt_shard_dims[0]
@@ -1069,82 +1184,6 @@ class _ShardingPropagationContext:
             local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
         )
         return output_placement
-
-    def rewrite_output_placements(
-        self,
-        input_tgt_placements: Sequence[Placement],
-        input_to_output_tensor_dims: dict[int, list[int]],
-    ) -> list[Placement]:
-        """Run the rewrite phase: map input placements to output placements.
-
-        Processes mesh dims in order 0..n-1; each step mutates
-        local_tensor_shapes and seen_output_dims so later mesh dims see
-        shapes already divided by earlier ones.
-        """
-        # (input_dim, output_dim) pairs claimed by earlier mesh dims.
-        seen_output_dims: set[tuple[int, int]] = set()
-        # Starts as global_input_shape; each mesh dim divides its sharded dim.
-        local_tensor_shapes: list[int] = list(self.global_input_shape)
-
-        output_placements: list[Placement] = []
-        for mesh_dim, p in enumerate(input_tgt_placements):
-            if isinstance(p, Shard | _StridedShard):
-                if isinstance(p, _StridedShard):
-                    output_placements.append(
-                        self._rewrite_strided_shard(
-                            p,
-                            mesh_dim,
-                            input_tgt_placements,
-                            seen_output_dims,
-                            local_tensor_shapes,
-                            input_to_output_tensor_dims,
-                        )
-                    )
-                else:
-                    output_placements.append(
-                        self._rewrite_plain_shard(
-                            p,
-                            mesh_dim,
-                            input_tgt_placements,
-                            seen_output_dims,
-                            local_tensor_shapes,
-                            input_to_output_tensor_dims,
-                        )
-                    )
-            else:
-                output_placements.append(p)
-        return output_placements
-
-
-def propagate_shape_and_sharding(
-    input_src_placements: Sequence[Placement],
-    global_input_shape: Shape,
-    rule: DimMap,
-    mesh_sizes: Shape,
-    strict_view: bool = False,
-) -> tuple[Sequence[Placement], Sequence[Placement]]:
-    """
-    Determine input target sharding and output sharding based on
-    given global tensor shape and input source sharding.
-
-    Sharding propagation follows mapped dimensions:
-    - An output dimension that maps directly to an input dimension is sharded equally
-    - An output dimension that is a flattened set of input dimensions can be sharded:
-      the first sharded dim stays as Shard, non-first sharded dims become _StridedShard
-    - An output dimension that is a split of the input dimension can only be sharded
-      if the leftmost split size is divisible by the mesh dimension
-    """
-    if not len(input_src_placements) == len(mesh_sizes):
-        raise AssertionError(f"{input_src_placements} != {mesh_sizes}")
-
-    ctx = _ShardingPropagationContext(
-        input_src_placements, global_input_shape, rule, mesh_sizes, strict_view
-    )
-    input_tgt_placements, input_to_output_tensor_dims = ctx.analyze()
-    output_placements = ctx.rewrite_output_placements(
-        input_tgt_placements, input_to_output_tensor_dims
-    )
-    return input_tgt_placements, output_placements
 
 
 def register_op_strategy_map(
