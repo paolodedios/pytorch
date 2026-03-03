@@ -891,7 +891,7 @@ combo_kernel_max_num_args = 250
 # When True, each combo sub-kernel gets its own block sizes (XBLOCK_0, YBLOCK_0, etc.)
 # allowing different sub-kernels to use different tile sizes based on their heuristics.
 # When False, all sub-kernels share block sizes (XBLOCK, YBLOCK, etc.)
-combo_kernel_per_subkernel_blocks = False
+combo_kernel_per_subkernel_blocks = True
 # When True, only pointwise kernels are eligible for combo kernel fusion.
 combo_kernels_pointwise_only = False
 
