@@ -1266,6 +1266,7 @@ subgraph_record_event, mul);  add = mul = subgraph_record_event = None
         # At minimum, the transformation should not crash
         self.assertGreaterEqual(len(control_deps_nodes), 0)
 
+    @requires_cuda
     def test_control_deps_prevents_invalid_reordering(self) -> None:
         """
         Test that control_deps creates proper data dependencies that prevent invalid reordering.
