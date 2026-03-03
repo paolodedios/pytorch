@@ -18,7 +18,6 @@ from torch._inductor.codegen.wrapper import (
 )
 from torch._inductor.event import CudaEventFactory, CudaEventSym
 from torch._inductor.stream_utils import (
-    CUDAStreamPool,
     DEFAULT_STREAM,
     DEFAULT_STREAM_IDX,
     ENTRANCE_EVENT,
@@ -59,46 +58,6 @@ class TestStreamUtils(InductorTestCase):
         name1 = get_stream_name(5)
         name2 = get_stream_name(5)
         self.assertIs(name1, name2)
-
-    @unittest.skipIf(not TEST_CUDA, "requires CUDA")
-    def test_cuda_stream_pool_creation(self):
-        """Test CUDAStreamPool can be created."""
-        pool = CUDAStreamPool(pool_size=4)
-        self.assertEqual(pool.pool_size, 4)
-
-    @unittest.skipIf(not TEST_CUDA, "requires CUDA")
-    def test_cuda_stream_pool_acquire_release(self):
-        """Test CUDAStreamPool acquire and release."""
-        pool = CUDAStreamPool(pool_size=2)
-
-        # Acquire streams
-        stream1 = pool.acquire()
-        stream2 = pool.acquire()
-
-        self.assertIsInstance(stream1, torch.cuda.Stream)
-        self.assertIsInstance(stream2, torch.cuda.Stream)
-        self.assertIsNot(stream1, stream2)
-
-        # Release streams back
-        pool.release(stream1)
-        pool.release(stream2)
-
-        # Should be able to acquire again
-        stream3 = pool.acquire()
-        self.assertIsInstance(stream3, torch.cuda.Stream)
-
-    @unittest.skipIf(not TEST_CUDA, "requires CUDA")
-    def test_cuda_stream_pool_context_manager(self):
-        """Test CUDAStreamPool as context manager."""
-        pool = CUDAStreamPool(pool_size=2)
-
-        with pool as stream:
-            self.assertIsInstance(stream, torch.cuda.Stream)
-            # Stream should be the current stream inside context
-            self.assertEqual(torch.cuda.current_stream(), stream)
-
-        # After context, default stream should be current
-        self.assertNotEqual(torch.cuda.current_stream(), stream)
 
 
 class TestCudaEventFactory(InductorTestCase):

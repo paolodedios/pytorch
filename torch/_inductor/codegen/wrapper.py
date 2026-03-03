@@ -733,24 +733,16 @@ class EnterDeviceContextManagerWithStreamInfoLine(EnterDeviceContextManagerLine)
             code.writeline(f"{ENTRANCE_EVENT} = {DEFAULT_STREAM}.record_event()")
 
             if self.num_streams > 1:
-                code.writeline(
-                    "from torch._inductor.stream_utils import get_cuda_stream_pool"
-                )
-                code.writeline(
-                    f"cuda_stream_pool = get_cuda_stream_pool(device={self.device_idx}, "
-                    f"pool_size={self.num_streams})",
-                )
-
                 for i in range(1, self.num_streams):
                     code.writeline(
                         f"{STREAM_NAME_TEMPLATE.format(stream_idx=i)} "
-                        f"= cuda_stream_pool.acquire()",
+                        f"= torch.cuda.Stream(device={self.device_idx})",
                     )
 
 
 @dataclasses.dataclass
 class ExitDeviceContextManagerWithStreamInfoLine(ExitDeviceContextManagerLine):
-    """Exit a CUDA device context and release allocated streams.
+    """Exit a CUDA device context.
 
     Attributes:
         num_streams: Number of streams that were allocated (must match Enter).
@@ -759,12 +751,7 @@ class ExitDeviceContextManagerWithStreamInfoLine(ExitDeviceContextManagerLine):
     num_streams: int = 1
 
     def codegen(self, code: IndentedBuffer) -> None:
-        """Generate context switching and stream release code."""
-        if self.num_streams > 1:
-            for i in range(1, self.num_streams):
-                code.writeline(
-                    f"cuda_stream_pool.release({STREAM_NAME_TEMPLATE.format(stream_idx=i)})",
-                )
+        """Generate context exit code."""
         if not V.graph.cpp_wrapper:
             code.do_unindent()
 
