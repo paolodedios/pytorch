@@ -3147,18 +3147,10 @@ class GuardBuilder(GuardBuilderBase):
                 # Guard on shape_ids when tensor has unbacked indices.
                 # shape_id is only set via mark_unbacked, which sets _dynamo_unbacked_indices.
                 # Empty dict is treated the same as not having the attribute.
-                if shape_ids := getattr(value, "_dynamo_shape_ids", None):
-                    code_part = f"((getattr({tensor_name}, '_dynamo_shape_ids', None) == {shape_ids!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
-                    code.append(code_part)
-                    self.get_guard_manager(guard).add_lambda_guard(
-                        lambda x, expected=shape_ids: (
-                            getattr(x, "_dynamo_shape_ids", None) == expected
-                            if hasattr(x, "_dynamo_unbacked_indices")
-                            else True
-                        ),
-                        get_verbose_code_parts(code_part, guard),
-                        guard.user_stack,
-                    )
+                # NOTE: We skip guarding on _dynamo_shape_ids because the shape_id
+                # is already enforced via runtime equality checks in ShapeEnv
+                # (see create_unbacked_symint with shape_id), and the lambda guard
+                # here adds per-call overhead for every marked tensor.
                     # TODO we dont have guards on _dynamo_unbacked_indices like those of _dynamo_dynamic_indices this seems wrong!!
 
             if len(code) > 0:
