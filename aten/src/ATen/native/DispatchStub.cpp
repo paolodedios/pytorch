@@ -147,6 +147,7 @@ DispatchResult DispatchStubImpl::try_get_call_ptr(
   , void *ZVECTOR
 #endif
 #ifdef HAVE_SVE_CPU_DEFINITION
+  , void *SVE128
   , void *SVE256
 #endif
 ) {
@@ -243,6 +244,7 @@ void* DispatchStubImpl::get_call_ptr(
   , void *ZVECTOR
 #endif
 #ifdef HAVE_SVE_CPU_DEFINITION
+  , void *SVE128
   , void *SVE256
 #endif
 ) {
