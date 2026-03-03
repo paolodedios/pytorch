@@ -5038,64 +5038,12 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         self.assertEqual(counter.frame_count, 2)
 
     @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_unbacked_input_no_sym_size_calls(self):
+    def test_shape_id_no_recompile_without_unbacked_indices(self):
         """
-        Test that unbacked input symbols don't create sym_size.int calls.
-        This ensures unbacked inputs are treated like backed symbols for
-        graph structure, enabling constant folding optimizations.
-        """
-        from torch.fx import symbolic_trace
-
-        def func(x):
-            return x + 1
-
-        torch._dynamo.reset()
-
-        # Create tensor with unbacked dimension
-        x = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-
-        # Compile and trace
-        compiled_func = torch.compile(func, backend="eager", fullgraph=True)
-        result = compiled_func(x)
-
-        # The key assertion: result shape matches input
-        self.assertEqual(result.shape, x.shape)
-
-    @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_mark_unbacked_min_max_bounds(self):
-        """
-        Test that min/max bounds on mark_unbacked create runtime checks.
-        """
-        torch._dynamo.reset()
-
-        def func(x):
-            return x.sum()
-
-        # Test with min bound
-        x = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x, 0, min=1)
-
-        compiled_func = torch.compile(func, backend="eager", fullgraph=True)
-        result = compiled_func(x)
-        self.assertEqual(result.shape, ())
-
-        # Test with max bound
-        torch._dynamo.reset()
-        x2 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x2, 0, max=10)
-
-        compiled_func2 = torch.compile(func, backend="eager", fullgraph=True)
-        result2 = compiled_func2(x2)
-        self.assertEqual(result2.shape, ())
-
-    @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_shape_id_no_recompile_without_dynamic_indices(self):
-        """
-        Test that passing a tensor without _dynamo_dynamic_indices after
+        Test that passing a tensor without _dynamo_unbacked_indices after
         compiling with shape_ids does NOT trigger recompilation.
         The guard on shape_ids only applies when the runtime tensor
-        also has _dynamo_dynamic_indices.
+        also has _dynamo_unbacked_indices.
         """
         counter = CompileCounter()
 
@@ -5104,14 +5052,14 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
 
         compiled_func = torch.compile(func, backend=counter)
 
-        # First call with shape_id (has _dynamo_dynamic_indices)
+        # First call with shape_id (has _dynamo_unbacked_indices)
         x1 = torch.rand(4, 3)
         torch._dynamo.decorators.mark_unbacked(x1, 0, shape_id="batch")
         compiled_func(x1)
         self.assertEqual(counter.frame_count, 1)
 
-        # Second call with regular tensor (no _dynamo_dynamic_indices)
-        # Should NOT recompile - guard passes when no _dynamo_dynamic_indices
+        # Second call with regular tensor (no _dynamo_unbacked_indices)
+        # Should NOT recompile - guard passes when no _dynamo_unbacked_indices
         x2 = torch.rand(4, 3)
         compiled_func(x2)
         self.assertEqual(counter.frame_count, 1)
@@ -5140,6 +5088,69 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         torch._dynamo.decorators.mark_unbacked(x2, 0, shape_id="other")
         compiled_func(x2)
         self.assertEqual(counter.frame_count, 2)
+
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_bounds_recompilation(self):
+        """
+        Test that changing _dynamo_unbacked_bounds triggers recompilation.
+        """
+        counter = CompileCounter()
+
+        def func(x):
+            return x + 1
+
+        compiled_func = torch.compile(func, backend=counter)
+
+        # First call with min/max bounds
+        x1 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x1, 0, min=1, max=100)
+        compiled_func(x1)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Second call with same bounds - no recompilation
+        x2 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x2, 0, min=1, max=100)
+        compiled_func(x2)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Third call without bounds - should recompile
+        x3 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x3, 0)
+        compiled_func(x3)
+        self.assertEqual(counter.frame_count, 2)
+
+        # Fourth call with different bounds - should recompile
+        x4 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x4, 0, min=1, max=200)
+        compiled_func(x4)
+        self.assertEqual(counter.frame_count, 3)
+
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_bounds_no_recompile_without_unbacked_indices(self):
+        """
+        Test that passing a tensor without _dynamo_unbacked_indices after
+        compiling with bounds does NOT trigger recompilation.
+        The guard on bounds only applies when the runtime tensor
+        also has _dynamo_unbacked_indices.
+        """
+        counter = CompileCounter()
+
+        def func(x):
+            return x + 1
+
+        compiled_func = torch.compile(func, backend=counter)
+
+        # First call with bounds (has _dynamo_unbacked_indices)
+        x1 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x1, 0, min=1, max=100)
+        compiled_func(x1)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Second call with regular tensor (no _dynamo_unbacked_indices)
+        # Should NOT recompile - guard passes when no _dynamo_unbacked_indices
+        x2 = torch.rand(4, 3)
+        compiled_func(x2)
+        self.assertEqual(counter.frame_count, 1)
 
     @skipIfTorchDynamo("mark_unbacked is not traceable")
     def test_unbacked_exec_fft_reshape_no_dde(self):

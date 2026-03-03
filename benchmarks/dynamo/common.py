@@ -967,7 +967,7 @@ def latency_experiment_summary(suite_name, args, model, timings, **kwargs):
     headers = first_headers + ["speedup", "abs_latency"]
     row = first_fields + [float(speedup), median[1] * 1000]
     msg = f"{speedup:.3f}x"
-    if getattr(args, '_print_latency_ms', False):
+    if getattr(args, "_print_latency_ms", False):
         msg = f"{median[0] * 1000:.4f} ms, {median[1] * 1000:.4f} ms, {msg}"
     if args.baseline:
         headers.extend(
@@ -1155,7 +1155,7 @@ def speedup_experiment(args, model_iter_fn, model, example_inputs, **kwargs):
     headers = first_headers + ["speedup", "abs_latency"]
     row = first_fields + [float(speedup), median[1] * 1000]
     msg = f"{speedup:.3f}x"
-    if getattr(args, '_print_latency_ms', False):
+    if getattr(args, "_print_latency_ms", False):
         msg = f"{median[0] * 1000:.4f} ms, {median[1] * 1000:.4f} ms, {msg}"
     if args.baseline:
         headers.extend(
@@ -3838,23 +3838,38 @@ def _run_compare_backed_unbacked(runner, args):
         print("COMPARISON", flush=True)
         print(f"{'=' * 80}", flush=True)
         print(
-            f"  {'model':<40s} {'backed_ms':>10s} {'unbacked_ms':>11s} {'diff':>8s}", flush=True
+            f"  {'model':<40s} {'backed_ms':>10s} {'unbacked_ms':>11s} {'diff':>8s}",
+            flush=True,
         )
         print(f"  {'-' * 40} {'-' * 10} {'-' * 11} {'-' * 8}", flush=True)
         for name, modes in all_results.items():
-            b_ms = modes.get('backed_ms')
-            u_ms = modes.get('unbacked_ms')
+            b_ms = modes.get("backed_ms")
+            u_ms = modes.get("unbacked_ms")
             if b_ms is not None and u_ms is not None:
                 ms_diff_pct = (u_ms - b_ms) / b_ms * 100
-                print(f"  {name:<40s} {b_ms:>10.3f} {u_ms:>11.3f} {ms_diff_pct:>+7.1f}%", flush=True)
+                print(
+                    f"  {name:<40s} {b_ms:>10.3f} {u_ms:>11.3f} {ms_diff_pct:>+7.1f}%",
+                    flush=True,
+                )
             elif b_ms is not None:
-                print(f"  {name:<40s} {b_ms:>10.3f} {'N/A':>11s} {'N/A':>8s}", flush=True)
+                print(
+                    f"  {name:<40s} {b_ms:>10.3f} {'N/A':>11s} {'N/A':>8s}", flush=True
+                )
             elif u_ms is not None:
-                print(f"  {name:<40s} {'N/A':>10s} {u_ms:>11.3f} {'N/A':>8s}", flush=True)
+                print(
+                    f"  {name:<40s} {'N/A':>10s} {u_ms:>11.3f} {'N/A':>8s}", flush=True
+                )
             else:
-                backed = "FAILED" if "backed" not in modes else f"{modes['backed']:.3f}x"
-                unbacked = "FAILED" if "unbacked" not in modes else f"{modes['unbacked']:.3f}x"
-                print(f"  {name:<40s} {backed:>10s} {unbacked:>11s} {'N/A':>8s}", flush=True)
+                backed = (
+                    "FAILED" if "backed" not in modes else f"{modes['backed']:.3f}x"
+                )
+                unbacked = (
+                    "FAILED" if "unbacked" not in modes else f"{modes['unbacked']:.3f}x"
+                )
+                print(
+                    f"  {name:<40s} {backed:>10s} {unbacked:>11s} {'N/A':>8s}",
+                    flush=True,
+                )
         print(f"{'=' * 80}", flush=True)
 
     # Build base command, stripping --compare-backed-unbacked and --only + value
@@ -3939,7 +3954,10 @@ def _run_compare_backed_unbacked(runner, args):
             b_ms = all_results[model]["backed_ms"]
             u_ms = all_results[model]["unbacked_ms"]
             ms_diff_pct = (u_ms - b_ms) / b_ms * 100
-            print(f"  => diff: {ms_diff_pct:+.1f}% ({b_ms:.3f} ms vs {u_ms:.3f} ms)", flush=True)
+            print(
+                f"  => diff: {ms_diff_pct:+.1f}% ({b_ms:.3f} ms vs {u_ms:.3f} ms)",
+                flush=True,
+            )
         elif (
             model in all_results
             and "backed" in all_results[model]
