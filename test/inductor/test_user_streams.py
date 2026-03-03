@@ -238,15 +238,12 @@ class TestStreamCodegen(InductorTestCase):
 
         factory = CudaEventFactory()
         event = factory.get_sym_event(originate_stream_idx=0)
-        # Simulate the event being waited on (ref_count > 0)
-        event.ref_count = 1
 
         code = IndentedBuffer()
         record_line = _CudaEventRecordLine(event=event, stream="stream1")
         record_line.codegen(code)
 
         generated = code.getvalue()
-        # Should create and record the event
         self.assertIn("torch.cuda.Event()", generated)
         self.assertIn(".record(stream1)", generated)
 
@@ -256,8 +253,6 @@ class TestStreamCodegen(InductorTestCase):
 
         factory = CudaEventFactory()
         event = factory.get_sym_event(originate_stream_idx=0)
-        # Set up event state
-        event.ref_count = 1
         event.materialized_event = "event1"
 
         code = IndentedBuffer()
@@ -265,7 +260,6 @@ class TestStreamCodegen(InductorTestCase):
         wait_line.codegen(code)
 
         generated = code.getvalue()
-        # Should wait on the event
         self.assertIn("event1.wait(stream2)", generated)
 
     def test_stream_context_with_event_sync(self):
@@ -277,12 +271,10 @@ class TestStreamCodegen(InductorTestCase):
         code.do_indent()
         code.do_indent()  # Inside device guard
 
-        # Create an event factory and event
         factory = CudaEventFactory()
         event = factory.get_sym_event(originate_stream_idx=0)
 
-        # Record event on stream 0 (simulating kernel completion)
-        event.ref_count = 1  # Will be waited on
+        # Record event on default stream
         record_line = _CudaEventRecordLine(event=event, stream="default_stream")
         record_line.codegen(code)
 
@@ -303,7 +295,6 @@ class TestStreamCodegen(InductorTestCase):
 
         generated = code.getvalue()
 
-        # Verify the synchronization flow
         self.assertIn("torch.cuda.Event()", generated)
         self.assertIn(".record(default_stream)", generated)
         self.assertIn("with torch.cuda.stream(stream1):", generated)
