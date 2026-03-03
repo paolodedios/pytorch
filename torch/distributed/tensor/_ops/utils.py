@@ -401,19 +401,21 @@ def expand_to_full_mesh_op_strategy(
     args_strategy = op_schema.args_strategy
     kwargs_strategy = op_schema.kwargs_strategy
     if op_schema.is_out_variant_op() and input_index == 0:
-        assert "out" in op_schema.kwargs_schema, (
-            f"out variant op {op_schema.op} missing 'out' in kwargs_schema"
-        )
+        if "out" not in op_schema.kwargs_schema:
+            raise AssertionError(
+                f"out variant op {op_schema.op} missing 'out' in kwargs_schema"
+            )
         n_kwargs_tensors = len(kwargs_strategy)
         input_index = 1
         expected_len = input_index + len(args_strategy)
         if n_kwargs_tensors == 1:
             expanded_strategies = []
             for strategy in single_mesh_dim_strategies:
-                assert len(strategy) == expected_len, (
-                    f"Strategy length {len(strategy)} != expected {expected_len} "
-                    f"(output=1 + args={len(args_strategy)}) for {op_schema.op}"
-                )
+                if len(strategy) != expected_len:
+                    raise AssertionError(
+                        f"Strategy length {len(strategy)} != expected {expected_len} "
+                        f"(output=1 + args={len(args_strategy)}) for {op_schema.op}"
+                    )
                 expanded_strategies.append(list(strategy) + [strategy[0]])
             single_mesh_dim_strategies = expanded_strategies
         elif n_kwargs_tensors > 1:
@@ -421,11 +423,12 @@ def expand_to_full_mesh_op_strategy(
             # Strategy author must spell out placements for all tensor kwargs.
             expected_len_with_kwargs = expected_len + n_kwargs_tensors
             for strategy in single_mesh_dim_strategies:
-                assert len(strategy) == expected_len_with_kwargs, (
-                    f"Strategy length {len(strategy)} != expected "
-                    f"{expected_len_with_kwargs} for op with {n_kwargs_tensors} "
-                    f"tensor kwargs: {op_schema.op}"
-                )
+                if len(strategy) != expected_len_with_kwargs:
+                    raise AssertionError(
+                        f"Strategy length {len(strategy)} != expected "
+                        f"{expected_len_with_kwargs} for op with {n_kwargs_tensors} "
+                        f"tensor kwargs: {op_schema.op}"
+                    )
 
     # Expand the single_mesh_dim_strategies to full mesh dim strategies.
     all_mesh_dim_strategies = [single_mesh_dim_strategies] * mesh.ndim
