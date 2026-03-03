@@ -726,8 +726,7 @@ def propagate_shape_and_sharding(
                 # split_id == 0 with group_shape >= 2 means is_last_split_dim is always
                 # False, so uneven sharding is not allowed on this dimension.
                 shardable_dims[in_dim.input_dim] = [
-                    out_size % mesh_dim_size == 0
-                    for (mesh_dim, mesh_dim_size) in enumerate(mesh_sizes)
+                    out_size % mesh_dim_size == 0 for mesh_dim_size in mesh_sizes
                 ]
 
                 shard_mesh_dim, _ = maybe_get_shard_mesh_dim_and_placement(in_dim)
