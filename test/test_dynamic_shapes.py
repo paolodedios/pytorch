@@ -5196,6 +5196,15 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         compiled_func(x5)
         self.assertEqual(counter.frame_count, 3)
 
+        # Sixth call with explicit empty list [] - should recompile
+        # (explicit empty set != {0, 1, 2}, different from plain tensor)
+        x6 = torch.rand(4, 3, 5)
+        torch._dynamo.decorators.mark_unbacked(x6, [])
+        self.assertTrue(hasattr(x6, "_dynamo_unbacked_indices"))
+        self.assertEqual(x6._dynamo_unbacked_indices, set())
+        compiled_func(x6)
+        self.assertEqual(counter.frame_count, 4)
+
     @skipIfTorchDynamo("mark_unbacked is not traceable")
     def test_unbacked_indices_no_recompile_to_unbacked(self):
         """
@@ -5335,6 +5344,65 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         self.assertFalse(hasattr(x4, "_dynamo_dynamic_indices"))
         compiled_func(x4)
         self.assertEqual(counter.frame_count, 2)
+
+        # Fifth call with explicit empty list [] - should recompile
+        # (explicit empty set != {0}, different from plain tensor)
+        x5 = torch.rand(4, 3)
+        torch._dynamo.mark_dynamic(x5, [])
+        self.assertTrue(hasattr(x5, "_dynamo_dynamic_indices"))
+        self.assertEqual(x5._dynamo_dynamic_indices, set())
+        compiled_func(x5)
+        self.assertEqual(counter.frame_count, 3)
+
+    @skipIfTorchDynamo("maybe_mark_dynamic is not traceable")
+    def test_weak_dynamic_indices_exact_match_recompilation(self):
+        """
+        Test that weak dynamic indices (from maybe_mark_dynamic) use exact match semantics.
+        - Compile with maybe_mark_dynamic(x, [0, 1]) then call with maybe_mark_dynamic(x, [0]) → recompile
+        - Plain tensor (no attribute) = unspecified = don't care → no recompile
+        """
+        counter = CompileCounter()
+
+        def func(x):
+            return x + 1
+
+        compiled_func = torch.compile(func, backend=counter)
+
+        # First call with maybe_mark_dynamic on dims 0 and 1
+        x1 = torch.rand(4, 3)
+        torch._dynamo.maybe_mark_dynamic(x1, 0)
+        torch._dynamo.maybe_mark_dynamic(x1, 1)
+        compiled_func(x1)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Second call with same weak dynamic indices - should NOT recompile (exact match)
+        x2 = torch.rand(4, 3)
+        torch._dynamo.maybe_mark_dynamic(x2, 0)
+        torch._dynamo.maybe_mark_dynamic(x2, 1)
+        compiled_func(x2)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Third call with only dim 0 weak dynamic - should recompile (exact match, not issubset)
+        x3 = torch.rand(4, 3)
+        torch._dynamo.maybe_mark_dynamic(x3, 0)
+        compiled_func(x3)
+        self.assertEqual(counter.frame_count, 2)
+
+        # Fourth call with plain tensor (no attribute) - should NOT recompile
+        # (unspecified = don't care, reuse existing frame)
+        x4 = torch.rand(4, 3)
+        self.assertFalse(hasattr(x4, "_dynamo_weak_dynamic_indices"))
+        compiled_func(x4)
+        self.assertEqual(counter.frame_count, 2)
+
+        # Fifth call with explicit empty list [] - should recompile
+        # (explicit empty set != {0}, different from plain tensor)
+        x5 = torch.rand(4, 3)
+        torch._dynamo.maybe_mark_dynamic(x5, [])
+        self.assertTrue(hasattr(x5, "_dynamo_weak_dynamic_indices"))
+        self.assertEqual(x5._dynamo_weak_dynamic_indices, set())
+        compiled_func(x5)
+        self.assertEqual(counter.frame_count, 3)
 
     @skipIfTorchDynamo("mark_static is not traceable")
     def test_static_indices_exact_match_recompilation(self):

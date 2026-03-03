@@ -1081,7 +1081,10 @@ def mark_unbacked(
 
     Args:
         t (Any): The tensor to mark as having an unbacked dimension.
-        index (int or list/tuple of int): The dimension(s) to mark as unbacked. Can be a single integer or a list/tuple of integers.
+        index (int or list/tuple of int): The dimension(s) to mark as unbacked. Can be a single
+            integer or a list/tuple of integers. Pass an empty list [] to explicitly mark the
+            tensor as having NO unbacked dims (different from not calling this function at all,
+            which would not cause recompilation).
         hint_override (Optional[int], default=None): An optional integer to override the size hint for this dimension.
             This is only used by the inductor backend for size hint queries, such as during autotuning.
             NOTE: changing hint_override values will cause FxGraphCache misses, since hint overrides
@@ -1099,6 +1102,8 @@ def mark_unbacked(
             If provided, a runtime check will be added to ensure the dimension is >= min.
         max (Optional[int], default=None): Maximum value constraint for this dimension.
             If provided, a runtime check will be added to ensure the dimension is <= max.
+            For details on guard semantics and recompilation behavior, see
+            [Note: Dimension Marking Guards] in torch/_dynamo/guards.py.
     """
     if torch.distributed.is_available() and isinstance(
         t, torch.distributed.tensor.DTensor
@@ -1181,7 +1186,9 @@ def mark_dynamic(
 
     The ``index`` argument follows standard Python indexing conventions: negative values
     are supported (e.g., -1 for the last dimension) and out-of-range values raise
-    ``IndexError``.
+    ``IndexError``. Pass an empty list [] to explicitly mark the tensor as having NO
+    dynamic dims (different from not calling this function at all, which would not
+    cause recompilation).
 
     [Note - on the state of mark_dynamic]
 
@@ -1222,6 +1229,8 @@ def mark_dynamic(
     at runtime, execution will be directed to the specialized compiled region. Performance measurements indicate
     2-8x speedups depending on the specific specialization and model architecture.
 
+    For details on guard semantics and recompilation behavior, see
+    [Note: Dimension Marking Guards] in torch/_dynamo/guards.py.
     """
     if is_traceable_wrapper_subclass(t):
         # default behavior: mirror mark_dynamic() on all inner tensors with same dim as t
@@ -1278,6 +1287,11 @@ def maybe_mark_dynamic(t: Any, index: int | list[Any] | tuple[Any]) -> None:
     """
     Mark a tensor as having a dynamic dim, but don't enforce it (i.e., if this
     dimension ends up getting specialized, don't error).
+
+    Pass an empty list [] to explicitly mark the tensor as having NO weak dynamic dims
+    (different from not calling this function at all, which would not cause recompilation).
+    For details on guard semantics and recompilation behavior, see
+    [Note: Dimension Marking Guards] in torch/_dynamo/guards.py.
     """
     if is_traceable_wrapper_subclass(t):
         # default behavior: mirror maybe_mark_dynamic() on all inner tensors with same dim as t
@@ -1293,8 +1307,14 @@ def maybe_mark_dynamic(t: Any, index: int | list[Any] | tuple[Any]) -> None:
         return
 
     assert isinstance(index, (list, tuple))
-    for i in index:
-        maybe_mark_dynamic(t, i)
+    if len(index) == 0:
+        # Empty list explicitly means "no weak dynamic dims"
+        # This is different from not calling maybe_mark_dynamic at all (unspecified)
+        if not hasattr(t, "_dynamo_weak_dynamic_indices"):
+            t._dynamo_weak_dynamic_indices = set()
+    else:
+        for i in index:
+            maybe_mark_dynamic(t, i)
 
 
 def mark_static(t: Any, index: int | list[Any] | tuple[Any] | None = None) -> None:
@@ -1310,6 +1330,11 @@ def mark_static(t: Any, index: int | list[Any] | tuple[Any] | None = None) -> No
 
     Unlike mark_dynamic, this can be done inside a graph, in which case it
     induces specialization on the tensor.
+
+    Pass an empty list [] to explicitly mark the tensor as having NO static dims
+    (different from not calling this function at all, which would not cause recompilation).
+    For details on guard semantics and recompilation behavior, see
+    [Note: Dimension Marking Guards] in torch/_dynamo/guards.py.
 
     For nn.Module classes
     =====================

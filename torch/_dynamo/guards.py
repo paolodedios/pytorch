@@ -3153,6 +3153,7 @@ class GuardBuilder(GuardBuilderBase):
                     )
 
             add_dim_indices_guard("_dynamo_dynamic_indices", use_exact_match=True)
+            add_dim_indices_guard("_dynamo_weak_dynamic_indices", use_exact_match=True)
             add_dim_indices_guard("_dynamo_unbacked_indices", use_exact_match=True)
             add_dim_indices_guard("_dynamo_static_indices", use_exact_match=True)
 
