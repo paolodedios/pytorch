@@ -1538,6 +1538,7 @@ class CudaReproTests(TestCase):
 
         self.assertEqual(expected, actual)
 
+    @skipIfXpu(msg="AssertionError, torch-xpu-ops: #2554")
     @torch._inductor.config.patch(emulate_precision_casts=True)
     def test_emulate_precision_casts_min_pow_chain(self):
         torch.manual_seed(0)
