@@ -12,6 +12,13 @@ def is_available() -> bool:
     return cutedsl_utils.runtime_available()
 
 
+def version() -> tuple[int, int, int] | None:
+    r"""Return the installed CuTeDSL runtime version, or None if unavailable."""
+    from torch._native import cutedsl_utils
+
+    return cutedsl_utils.runtime_version()
+
+
 def _set_enabled(_enabled: bool) -> None:
     global enabled
     enabled = _enabled

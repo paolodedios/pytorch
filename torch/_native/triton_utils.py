@@ -7,6 +7,7 @@ import os
 from .registry import register_op_registerer, _RegisterFn
 from .common_utils import (
     check_native_jit_disabled,
+    check_native_version_skip,
     _available_version,
     _unavailable_reason,
 )
@@ -15,6 +16,10 @@ log = logging.getLogger(__name__)
 
 _TRITON_AVAILABLE = None
 _TRITON_VERSION = None
+
+_BLESSED_VERSIONS: set[tuple[int, int, int]] = {
+    (3, 6, 0),
+}
 
 @functools.cache
 def _check_runtime_available() -> bool:
@@ -51,8 +56,25 @@ def runtime_available() -> bool:
 def runtime_version() -> None | tuple[int, int, int]:
     return _TRITON_VERSION
 
+def _version_is_blessed() -> bool:
+    if check_native_version_skip():
+        return True
+    if _TRITON_VERSION is None:
+        return False
+    return _TRITON_VERSION in _BLESSED_VERSIONS
+
+
 def register_op(fn: _RegisterFn) -> None:
     if (not _TRITON_AVAILABLE) or check_native_jit_disabled():
+        return
+
+    if not _version_is_blessed():
+        log.warning(
+            "triton version %s is not blessed (blessed: %s); "
+            "set TORCH_NATIVE_SKIP_VERSION_CHECK=1 to override",
+            _TRITON_VERSION,
+            _BLESSED_VERSIONS,
+        )
         return
 
     register_op_registerer(fn)

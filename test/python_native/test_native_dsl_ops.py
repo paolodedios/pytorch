@@ -179,6 +179,126 @@ class TestNativeDSLOps(TestCase):
         result = _subprocess_lastline(script, env=env)
         self.assertEqual(result, "True")
 
+    def test_register_op_skips_when_version_not_blessed(self):
+        """register_op does not enqueue fn when version is not in _BLESSED_VERSIONS."""
+        from torch._native.registry import _RegisteredFns
+        from torch._native import triton_utils, cutedsl_utils
+
+        for mod, avail_flag, ver_flag in [
+            (triton_utils, "_TRITON_AVAILABLE", "_TRITON_VERSION"),
+            (cutedsl_utils, "_CUTEDSL_AVAILABLE", "_CUTEDSL_VERSION"),
+        ]:
+            original_len = len(_RegisteredFns)
+            saved_avail = getattr(mod, avail_flag)
+            saved_ver = getattr(mod, ver_flag)
+            try:
+                setattr(mod, avail_flag, True)
+                setattr(mod, ver_flag, (99, 99, 99))
+                mod.register_op(lambda: None)
+                self.assertEqual(
+                    len(_RegisteredFns),
+                    original_len,
+                    f"{mod.__name__}.register_op should not enqueue with non-blessed version",
+                )
+            finally:
+                setattr(mod, avail_flag, saved_avail)
+                setattr(mod, ver_flag, saved_ver)
+
+    def test_register_op_skips_when_version_is_none(self):
+        """register_op does not enqueue fn when version is None."""
+        from torch._native.registry import _RegisteredFns
+        from torch._native import triton_utils, cutedsl_utils
+
+        for mod, avail_flag, ver_flag in [
+            (triton_utils, "_TRITON_AVAILABLE", "_TRITON_VERSION"),
+            (cutedsl_utils, "_CUTEDSL_AVAILABLE", "_CUTEDSL_VERSION"),
+        ]:
+            original_len = len(_RegisteredFns)
+            saved_avail = getattr(mod, avail_flag)
+            saved_ver = getattr(mod, ver_flag)
+            try:
+                setattr(mod, avail_flag, True)
+                setattr(mod, ver_flag, None)
+                mod.register_op(lambda: None)
+                self.assertEqual(
+                    len(_RegisteredFns),
+                    original_len,
+                    f"{mod.__name__}.register_op should not enqueue when version is None",
+                )
+            finally:
+                setattr(mod, avail_flag, saved_avail)
+                setattr(mod, ver_flag, saved_ver)
+
+    def test_version_skip_env_var_overrides(self):
+        """TORCH_NATIVE_SKIP_VERSION_CHECK=1 allows non-blessed versions."""
+        script = textwrap.dedent("""\
+            from torch._native import triton_utils, cutedsl_utils
+            from torch._native.registry import _RegisteredFns
+
+            # Force runtime "available" with a non-blessed version
+            triton_utils._TRITON_AVAILABLE = True
+            triton_utils._TRITON_VERSION = (99, 99, 99)
+            cutedsl_utils._CUTEDSL_AVAILABLE = True
+            cutedsl_utils._CUTEDSL_VERSION = (99, 99, 99)
+
+            before = len(_RegisteredFns)
+            triton_utils.register_op(lambda: None)
+            cutedsl_utils.register_op(lambda: None)
+            after = len(_RegisteredFns)
+            print(after - before)
+        """)
+        env = os.environ.copy()
+        env["TORCH_NATIVE_SKIP_VERSION_CHECK"] = "1"
+        result = _subprocess_lastline(script, env=env)
+        self.assertEqual(result, "2")
+
+    def test_check_native_version_skip_default(self):
+        """TORCH_NATIVE_SKIP_VERSION_CHECK unset -> returns False."""
+        script = textwrap.dedent("""\
+            import os
+            os.environ.pop("TORCH_NATIVE_SKIP_VERSION_CHECK", None)
+            from torch._native.common_utils import check_native_version_skip
+            print(check_native_version_skip())
+        """)
+        result = _subprocess_lastline(script)
+        self.assertEqual(result, "False")
+
+    def test_check_native_version_skip_set(self):
+        """TORCH_NATIVE_SKIP_VERSION_CHECK=1 -> returns True."""
+        script = textwrap.dedent("""\
+            from torch._native.common_utils import check_native_version_skip
+            print(check_native_version_skip())
+        """)
+        env = os.environ.copy()
+        env["TORCH_NATIVE_SKIP_VERSION_CHECK"] = "1"
+        result = _subprocess_lastline(script, env=env)
+        self.assertEqual(result, "True")
+
+    def test_available_version_prerelease(self):
+        """_available_version handles pre-release suffixes correctly."""
+        from unittest.mock import patch
+        from torch._native.common_utils import _available_version
+
+        cases = [
+            ("0.7.0rc1", (0, 7, 0)),
+            ("3.1.0.post1", (3, 1, 0)),
+            ("2.4.0a1", (2, 4, 0)),
+            ("1.2.3", (1, 2, 3)),
+        ]
+        for version_str, expected in cases:
+            with patch("importlib.metadata.version", return_value=version_str):
+                result = _available_version("fake_package")
+                self.assertEqual(
+                    result,
+                    expected,
+                    f"_available_version({version_str!r}) = {result}, expected {expected}",
+                )
+
+        # Completely unparseable -> None
+        with patch("importlib.metadata.version", return_value="abc"):
+            result = _available_version("fake_package")
+            self.assertIsNone(result)
+
 
 if __name__ == "__main__":
     run_tests()

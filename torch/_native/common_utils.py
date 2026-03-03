@@ -1,6 +1,7 @@
 import importlib
 import importlib.metadata
 import os
+import re
 
 from functools import cache
 
@@ -31,16 +32,37 @@ def _unavailable_reason(deps: list[tuple[str, str]]) -> None | str:
             )
     return None
 
-def _available_version(package: str) -> tuple[int, int, int]:
+def _available_version(package: str) -> tuple[int, int, int] | None:
     """
-    Get version of the installed "nvidia-cutlass-dsl" package
+    Get the installed version of a package as (major, minor, patch).
 
-    Assumes the package exists, i.e. will fail if it doesn't
+    Handles pre-release suffixes like "0.7.0rc1" or "3.1.0.post1" by
+    stripping non-numeric tails from each component. Returns None on
+    parse failure.
     """
     version = importlib.metadata.version(package)
+    parts = version.split(".")[:3]
+    if len(parts) != 3:
+        return None
+    try:
+        nums = []
+        for part in parts:
+            m = re.match(r"(\d+)", part)
+            if m is None:
+                return None
+            nums.append(int(m.group(1)))
+        return (nums[0], nums[1], nums[2])
+    except (ValueError, IndexError):
+        return None
 
-    major, minor, update = (int(vi) for vi in version.split("."))
 
-    return (major, minor, update)
+@cache
+def check_native_version_skip() -> bool:
+    """
+    Single point to check if native DSL version gating should be skipped,
+    checked via:
+    TORCH_NATIVE_SKIP_VERSION_CHECK=1
+    """
+    return int(os.getenv("TORCH_NATIVE_SKIP_VERSION_CHECK", 0)) == 1
 
 
