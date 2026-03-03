@@ -2,9 +2,9 @@
 import functools
 import math
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import auto, Enum
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 
 import torch
 import torch.distributed as dist
@@ -12,6 +12,10 @@ import torch.nn as nn
 from torch.distributed._composable.contract import _get_registry
 from torch.distributed.tensor import DeviceMesh, DTensor, Shard
 from torch.distributed.tensor._dtensor_spec import DTensorSpec
+
+
+if TYPE_CHECKING:
+    from ._fsdp_api import DataParallelMeshDimNames
 
 
 def _dynamo_disable(func):
@@ -31,12 +35,15 @@ class DataParallelMeshInfo:
     mesh: DeviceMesh
     shard_mesh_dim: int | None = None
     replicate_mesh_dim: int | None = None
+    dp_mesh_dim_names: "DataParallelMeshDimNames | None" = None
+    is_spmd_mesh: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):
         if self.shard_mesh_dim is None and self.replicate_mesh_dim is None:
             raise AssertionError(
                 "At least one of shard_mesh_dim and replicate_mesh_dim must not be None"
             )
+        self.is_spmd_mesh = self.dp_mesh_dim_names is not None
 
 
 @dataclass
