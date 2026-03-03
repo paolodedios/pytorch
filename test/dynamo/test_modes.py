@@ -2159,6 +2159,44 @@ class outer_fn(torch.nn.Module):
                     print(submod.graph)
 
 
+    @requires_gpu
+    def test_torch_compile_create_block_mask_flex_attention(self):
+        from torch.nn.attention.flex_attention import (
+            create_block_mask,
+            flex_attention,
+        )
+
+        d_model = 64
+        n_heads = 4
+
+        def causal_mask(b, h, q_idx, kv_idx):
+            return q_idx >= kv_idx
+
+        def fn(q, k, v):
+            bs = q.shape[0]
+            sl = q.shape[2]
+            bm = create_block_mask(
+                causal_mask,
+                B=bs,
+                H=q.shape[1],
+                Q_LEN=sl,
+                KV_LEN=sl,
+                device=q.device,
+            )
+            return flex_attention(q, k, v, block_mask=bm)
+
+        q = torch.randn(
+            2, n_heads, 128, d_model // n_heads, device=GPU_TYPE, dtype=torch.float32
+        )
+        k = torch.randn_like(q)
+        v = torch.randn_like(q)
+
+        ref = fn(q, k, v)
+        compiled_fn = torch.compile(fn)
+        out = compiled_fn(q, k, v)
+        self.assertEqual(out, ref, atol=1e-3, rtol=1e-3)
+
+
 class TorchFunctionModeLifecycleTests(torch._dynamo.test_case.TestCase):
     def test_default_device_restored_after_mode_tests(self):
         case = TorchFunctionModeTests("test_stack_state_mutation_default_device")

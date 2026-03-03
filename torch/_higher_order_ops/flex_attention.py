@@ -1539,6 +1539,13 @@ class CreateBlockMaskHOP(HigherOrderOperator):
         BLOCK_SIZE: tuple[int, int] = (128, 128),
         mask_mod_other_buffers: tuple = (),
     ) -> tuple:
+        # Extract closure tensors so they flow through the dispatch stack as
+        # explicit positional args (functionalize/fake/proxy properly unwrap them).
+        # Under Dynamo, speculate_subgraph handles lifting instead.
+        if not mask_mod_other_buffers:
+            mask_mod, mask_mod_other_buffers = _extract_tensor_closure_vars(
+                mask_mod
+            )
         validate_subgraph_args_types(mask_mod_other_buffers)
         return super().__call__(
             mask_mod,
@@ -1570,21 +1577,32 @@ def _create_block_mask_tensors(
     from torch.nn.attention.flex_attention import (
         _convert_mask_to_block_mask,
         _create_sparse_block_from_block_mask,
-        _vmap_for_bhqkv,
         BlockMask,
     )
 
-    # Compute mask tensor directly (avoid create_mask's _get_mod_type check
-    # which fails on functionalized callables).
-    b = torch.arange(0, B, device=device)
-    h = torch.arange(0, H, device=device)
-    m = torch.arange(0, Q_LEN, device=device)
-    n = torch.arange(0, KV_LEN, device=device)
+    if mask_mod_other_buffers:
+        _mask_mod = mask_mod
+        _bufs = mask_mod_other_buffers
 
-    mask_mod_in_dim_buffers = (None,) * len(mask_mod_other_buffers)
-    vmapped = _vmap_for_bhqkv(mask_mod, prefix=(), suffix=mask_mod_in_dim_buffers)
+        def effective_mask_mod(b, h, q_idx, kv_idx):
+            return _mask_mod(b, h, q_idx, kv_idx, *_bufs)
+    else:
+        effective_mask_mod = mask_mod
+
+    # Broadcast index tensors to [B, H, Q_LEN, KV_LEN] via stride-0 expand
+    # (no memory overhead). This avoids vmap which creates BatchedTensors
+    # incompatible with FakeTensorMode during AOTAutograd proxy tracing.
+    b_idx = torch.arange(B, device=device).view(B, 1, 1, 1).expand(B, H, Q_LEN, KV_LEN)
+    h_idx = torch.arange(H, device=device).view(1, H, 1, 1).expand(B, H, Q_LEN, KV_LEN)
+    q_idx = torch.arange(Q_LEN, device=device).view(1, 1, Q_LEN, 1).expand(B, H, Q_LEN, KV_LEN)
+    kv_idx = (
+        torch.arange(KV_LEN, device=device)
+        .view(1, 1, 1, KV_LEN)
+        .expand(B, H, Q_LEN, KV_LEN)
+    )
+
     with TransformGetItemToIndex():
-        mask_tensor = vmapped(b, h, m, n, *mask_mod_other_buffers)
+        mask_tensor = effective_mask_mod(b_idx, h_idx, q_idx, kv_idx)
 
     Q_BLOCK_SIZE, KV_BLOCK_SIZE = BLOCK_SIZE
     partial_block_mask, full_block_mask = _convert_mask_to_block_mask(
@@ -1593,18 +1611,6 @@ def _create_block_mask_tensors(
         KV_BLOCK_SIZE=KV_BLOCK_SIZE,
         separate_full_blocks=True,
     )
-
-    # Build a 4-arg mask_mod for _create_sparse_block_from_block_mask
-    if mask_mod_other_buffers:
-        original_mask_mod = mask_mod
-
-        def bound_mask_mod(b, h, q_idx, kv_idx):
-            return original_mask_mod(b, h, q_idx, kv_idx, *mask_mod_other_buffers)
-
-        effective_mask_mod = bound_mask_mod
-    else:
-        effective_mask_mod = mask_mod
-
     bm = _create_sparse_block_from_block_mask(
         (partial_block_mask, full_block_mask),
         effective_mask_mod,
@@ -1663,7 +1669,8 @@ def trace_create_block_mask(
     from torch._dynamo._trace_wrapped_higher_order_op import TransformGetItemToIndex
 
     example_out = create_block_mask_hop(
-        mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE, mask_mod_other_buffers
+        mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE,
+        mask_mod_other_buffers,
     )
 
     # Trace mask_mod with scalar example values (b, h, q_idx, kv_idx)
