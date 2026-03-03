@@ -3044,7 +3044,6 @@ class GuardBuilder(GuardBuilderBase):
                     guard,
                 )
                 user_stack = guard.user_stack
-
                 guard_manager.add_tensor_match_guard(
                     value,
                     size,  # type: ignore[arg-type]

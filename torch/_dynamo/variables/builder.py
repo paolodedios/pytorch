@@ -2668,10 +2668,17 @@ class VariableBuilder:
                 self.install_guards(GuardBuilder.CONSTANT_MATCH)
                 return ConstantVariable.create(value=value)
 
+            excluded_scalar = (
+                frame_state_entry.excluded_scalar
+                if frame_state_entry is not None
+                and config.stable_graph_selection_for_automatic_dynamic
+                else None
+            )
             wrapped_value = shape_env.create_unspecified_symint_and_symbol(
                 value,
                 source=self.source,
                 dynamic_dim=dynamic_dim,
+                excluded_value=excluded_scalar,
             )
 
             self.tx.output.tracked_fakes.append(
@@ -2685,16 +2692,6 @@ class VariableBuilder:
 
         assert not isinstance(self.get_source(), RandomValueSource)
         install_guard(self.get_source().make_guard(GuardBuilder.TYPE_MATCH))
-
-        if (
-            frame_state_entry is not None
-            and frame_state_entry.excluded_scalar is not None
-        ):
-            sym_expr = wrapped_value.node.expr
-            assert isinstance(sym_expr, sympy.Symbol)
-            shape_env.record_exclusion_constraint(
-                [(sym_expr, frame_state_entry.excluded_scalar)]
-            )
 
         options = {"source": self.get_source()}
 

@@ -47,12 +47,10 @@ class TestGuardExclusion(TestCase):
     )
     def test_automatic_dynamic_exclusive_guard_basic(self):
         """
-        Scenario with 2D tensors:
-        1. Call with shape [3, 4] -> compiles Graph 0 (static)
-        2. Call with shape [5, 4] -> dim 0 differs, triggers automatic_dynamic,
-           compiles Graph 1 (dynamic dim 0)
-        3. Call with shape [3, 4] -> same shape as first call.
-           Which graph handles this: Graph 0 (static) or Graph 1 (dynamic)?
+        1. [3, 4] -> Graph 0 (static)
+        2. [5, 4] -> Graph 1 (dim 0 dynamic), exclusion rejects dim0==3
+        3. [7, 4] -> Graph 1 (reuse dynamic graph)
+        4. [3, 4] -> Graph 0 (exclusion triggers, reverts to static)
         """
 
         def foo(x):
@@ -61,68 +59,30 @@ class TestGuardExclusion(TestCase):
         tracker = GraphTracker()
         opt = torch.compile(foo, backend=tracker)
 
-        # Call 1: shape [3, 4] -> compiles Graph 0 (static)
         x1 = torch.randn(3, 4)
         result1 = opt(x1)
         self.assertEqual(tracker.frame_count, 1)
-        self.assertEqual(tracker.call_log, [0], "Call 1 should use Graph 0")
+        self.assertEqual(tracker.call_log[-1], 0)
 
-        # Call 2: shape [5, 4] -> Graph 0 guard fails, compiles Graph 1 (dynamic)
         x2 = torch.randn(5, 4)
         result2 = opt(x2)
         self.assertEqual(tracker.frame_count, 2)
-        self.assertEqual(tracker.call_log, [0, 1], "Call 2 should use Graph 1")
+        self.assertEqual(tracker.call_log[-1], 1)
 
-        # Call 3: shape [3, 4] -> same as first call.
-        # Graph 0's static guard (size(0)==3) matches first, so it should
-        # revert to Graph 0, not use Graph 1 (dynamic).
+        # dynamic graph reuse
+        opt(torch.randn(7, 4))
+        self.assertEqual(tracker.frame_count, 2)
+        self.assertEqual(tracker.call_log[-1], 1)
+
+        # original shape reverts to Graph 0
         x3 = torch.randn(3, 4)
         result3 = opt(x3)
-        self.assertEqual(tracker.frame_count, 2, "No recompilation expected")
-        self.assertEqual(
-            tracker.call_log[2],
-            0,
-            "Call 3 [3,4] should use Graph 0 (static), same as call 1",
-        )
+        self.assertEqual(tracker.frame_count, 2)
+        self.assertEqual(tracker.call_log[-1], 0)
 
-        # Verify correctness
         self.assertEqual(result1, x1 * 2)
         self.assertEqual(result2, x2 * 2)
         self.assertEqual(result3, x3 * 2)
-
-    @torch._dynamo.config.patch(
-        automatic_dynamic_shapes=True, assume_static_by_default=True
-    )
-    def test_automatic_dynamic_only_one_dim_changes(self):
-        """
-        Only dim 0 changes; dim 1 stays the same.
-        Track which graph handles each call.
-        """
-
-        def foo(x):
-            return x + 1
-
-        tracker = GraphTracker()
-        opt = torch.compile(foo, backend=tracker)
-
-        # Call 1: shape [3, 4] -> Graph 0 (static)
-        opt(torch.randn(3, 4))
-        # Call 2: shape [5, 4] -> Graph 1 (dynamic dim 0)
-        opt(torch.randn(5, 4))
-        # Call 3: shape [7, 4] -> should reuse dynamic graph
-        opt(torch.randn(7, 4))
-        # Call 4: shape [3, 4] -> same as first
-        opt(torch.randn(3, 4))
-
-        self.assertEqual(tracker.frame_count, 2)
-        self.assertEqual(tracker.call_log[0], 0, "Call 1 [3,4] -> Graph 0 (static)")
-        self.assertEqual(tracker.call_log[1], 1, "Call 2 [5,4] -> Graph 1 (dynamic)")
-        self.assertEqual(tracker.call_log[2], 1, "Call 3 [7,4] -> Graph 1 (dynamic)")
-        self.assertEqual(
-            tracker.call_log[3],
-            0,
-            "Call 4 [3,4] should revert to Graph 0 (static), same shape as call 1",
-        )
 
     @torch._dynamo.config.patch(
         automatic_dynamic_shapes=True, assume_static_by_default=True
@@ -602,7 +562,6 @@ class TestGuardExclusion(TestCase):
         # Neither matches; Or guard passes -> Graph 1.
         opt(torch.randn(3, 10), torch.randn(5, 11))
         self.assertEqual(tracker.call_log[-1], 1)
-
 
     @torch._dynamo.config.patch(
         automatic_dynamic_shapes=True, assume_static_by_default=True

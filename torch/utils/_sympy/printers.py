@@ -375,9 +375,6 @@ class CppPrinter(ExprPrinter):
     def _print_Or(self, expr: sympy.Expr) -> str:
         return self.stringify(expr.args, " || ", precedence(expr))
 
-    def _print_And(self, expr: sympy.Expr) -> str:
-        return self.stringify(expr.args, " && ", precedence(expr))
-
     def _print_Piecewise(self, expr: sympy.Expr) -> str:
         # Convert Piecewise(expr_cond_pairs) to nested ternary operators
         # Piecewise((e1, c1), (e2, c2), ..., (eN, cN))

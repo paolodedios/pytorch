@@ -2286,7 +2286,7 @@ class StatefulSymbolicContext(StatelessSymbolicContext):
     shape_env_to_source_to_symbol_cache: dict[int, dict[str, sympy.Expr]] = field(
         default_factory=dict
     )
-    excluded_sizes: Optional[tuple[Optional[int], ...]] = None
+    excluded_sizes: tuple[int | None, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3904,10 +3904,11 @@ class ShapeEnv:
         self.unbacked_renamings: dict[sympy.Symbol, sympy.Symbol] = {}
         # Set holds a % b expressions that evaluate to 0.
         self.divisible: set[sympy.Expr] = set()
-        # Per-entry exclusion constraints from automatic_dynamic transitions.
-        # Each entry is a list of (symbol, excluded_value) pairs representing
-        # one multi-dim exclusion: the guard rejects only when ALL pairs match.
-        self.exclusion_constraints: list[list[tuple[sympy.Symbol, int]]] = []
+        # Exclusion constraints from automatic_dynamic transitions.
+        # Each (symbol, excluded_value) pair represents one dim/scalar that
+        # transitioned static → dynamic. All pairs are combined into a single
+        # Or(Ne(...), ...) guard in produce_guards_verbose.
+        self.exclusion_constraints: list[tuple[sympy.Symbol, int]] = []
         # Set that holds "size-like" symbols.  When we perform
         # "size-oblivious" tests, these can be assumed to be >= 2.
         self.size_like: set[sympy.Symbol] = set()
@@ -4789,18 +4790,19 @@ class ShapeEnv:
         size: list[sympy.Expr] = self._produce_dyn_sizes_from_int_tuple(
             ex_size, source, symbolic_context, hint_overrides=hint_overrides
         )
+        # Record tensor exclusion constraints for stable graph selection.
+        # The ndim check guards against stale excluded_sizes from graph
+        # breaks where the resumed tensor may have different dimensionality.
+        excluded_sizes = getattr(symbolic_context, "excluded_sizes", None)
         if (
-            isinstance(symbolic_context, StatefulSymbolicContext)
-            and symbolic_context.excluded_sizes
-            and any(v is not None for v in symbolic_context.excluded_sizes)
+            excluded_sizes
+            and len(excluded_sizes) == dim
+            and any(v is not None for v in excluded_sizes)
         ):
-            excl_pairs: list[tuple[sympy.Symbol, int]] = []
             for i in range(dim):
-                ev = symbolic_context.excluded_sizes[i]
+                ev = excluded_sizes[i]
                 if ev is not None and isinstance(size[i], sympy.Symbol):
-                    excl_pairs.append((size[i], ev))
-            if excl_pairs:
-                self.exclusion_constraints.append(excl_pairs)
+                    self.record_exclusion_constraint(size[i], ev)
         stride = self._compute_symbolic_stride(
             source,
             size,
@@ -5006,23 +5008,27 @@ class ShapeEnv:
         return out
 
     @record_shapeenv_event()
-    def record_exclusion_constraint(
-        self, pairs: list[tuple[sympy.Symbol, int]]
-    ) -> None:
-        if pairs:
-            self.exclusion_constraints.append(pairs)
+    def record_exclusion_constraint(self, sym: sympy.Symbol, val: int) -> None:
+        self.exclusion_constraints.append((sym, val))
 
     @record_shapeenv_event()
     def create_unspecified_symint_and_symbol(
-        self, value: int, source: Source, dynamic_dim: DimDynamic
+        self,
+        value: int,
+        source: Source,
+        dynamic_dim: DimDynamic,
+        excluded_value: int | None = None,
     ) -> IntLikeType:
         """Create a SymInt wrapping a new unspecified symbol"""
+        sym = self.create_unspecified_symbol(
+            value,
+            source=source,
+            dynamic_dim=dynamic_dim,
+        )
+        if excluded_value is not None:
+            self.record_exclusion_constraint(sym, excluded_value)
         return self.create_symintnode(
-            self.create_unspecified_symbol(
-                value,
-                source=source,
-                dynamic_dim=dynamic_dim,
-            ),
+            sym,
             hint=value,
             source=source,
         )
@@ -6310,11 +6316,11 @@ class ShapeEnv:
             and not dynamo_config.enable_compiler_collectives
             and self.exclusion_constraints
         ):
-            all_pairs: list[tuple[sympy.Symbol, int]] = []
-            for pairs in self.exclusion_constraints:
-                for sym, val in pairs:
-                    if symbol_to_source.get(sym):
-                        all_pairs.append((sym, val))
+            all_pairs = [
+                (sym, val)
+                for sym, val in self.exclusion_constraints
+                if symbol_to_source.get(sym)
+            ]
             if all_pairs and not all(
                 self.backed_var_to_val.get(sym) == val for sym, val in all_pairs
             ):

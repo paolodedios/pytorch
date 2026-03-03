@@ -277,12 +277,10 @@ std::string TensorCheck::check_verbose(
   const auto& sizes = v.sym_sizes();
   for (auto i : c10::irange(ndim)) {
     auto known_size = sizes_[i];
-    if (known_size.has_value()) {
-      if (known_size.value() != sizes[i]) {
-        fail_reason << "size mismatch at index " << i << ". expected "
-                    << known_size.value() << ", actual " << sizes[i];
-        return fail_reason.str();
-      }
+    if (known_size.has_value() && (known_size.value() != sizes[i])) {
+      fail_reason << "size mismatch at index " << i << ". expected "
+                  << known_size.value() << ", actual " << sizes[i];
+      return fail_reason.str();
     }
   }
   const bool supports_stride =
@@ -4573,7 +4571,6 @@ class TENSOR_MATCH : public LeafGuard {
     tensor_dims_stride = tensor_dims_stride.empty()
         ? wrapIntegersInOptional(tensor.sym_strides())
         : tensor_dims_stride;
-
     LocalState state;
     _tensor_check = std::make_unique<TensorCheck>(
         state,
@@ -7025,10 +7022,10 @@ PyObject* torch_c_dynamo_guards_init() {
            py::object,
            py::object,
            py::object,
+           py::str,
+           py::list,
            py::object,
-           py::object,
-           py::object,
-           py::object,
+           py::type,
            py::object>())
       .def("__call__", &TENSOR_MATCH::check);
   // NOLINTNEXTLINE(bugprone-unused-raii)
@@ -7545,15 +7542,7 @@ PyObject* torch_c_dynamo_guards_init() {
                 std::move(user_stack),
                 std::move(pytype),
                 std::move(dispatch_keys)));
-          },
-          py::arg("value"),
-          py::arg("sizes"),
-          py::arg("strides"),
-          py::arg("tensor_name"),
-          py::arg("verbose_code_parts"),
-          py::arg("user_stack"),
-          py::arg("pytype"),
-          py::arg("dispatch_keys"))
+          })
 
       // return by reference because GuardManager has the ownership of accessors
       // and guard managers
