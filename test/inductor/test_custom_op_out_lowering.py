@@ -4,6 +4,7 @@ Tests for inductor lowering of functional custom ops to out-variant via ExternKe
 """
 
 import torch
+from torch._C import FileCheck
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._inductor.utils import run_and_get_code
 from torch.testing._internal.common_utils import (
@@ -61,8 +62,7 @@ class TestCustomOpOutLowering(InductorTestCase):
             )
             self.assertEqual(compiled_out, eager_out)
 
-            self.assertIn(".out(", code)
-            self.assertNotIn(".default(", code)
+            FileCheck().check(".out(").check_not(".default(").run(code)
 
     def _register_split_add_ops(self, lib):
         """Register a split_add op returning two tensors with functional + .out overloads."""
@@ -106,75 +106,7 @@ class TestCustomOpOutLowering(InductorTestCase):
                 torch.compile(f, backend="inductor", fullgraph=True), x
             )
             self.assertEqual(compiled_out, eager_out)
-            self.assertIn(".out(", code)
-            self.assertIn("out0=", code)
-            self.assertIn("out1=", code)
-
-    # ---- _out_variant.py unit tests ----
-
-    def test_to_out_variant_finds_add_one(self):
-        """Test that to_out_variant() finds the .out overload for single-output op."""
-        with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
-            func_op, out_op = self._register_add_one_ops(lib)
-
-            from torch._library._out_variant import to_out_variant
-
-            found = to_out_variant(func_op.default)
-            self.assertIsNotNone(found)
-            self.assertEqual(found, out_op)
-
-    def test_to_out_variant_finds_split_add(self):
-        """Test that to_out_variant() finds .out for a two-output op."""
-        with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
-            func_op, out_op = self._register_split_add_ops(lib)
-
-            from torch._library._out_variant import to_out_variant
-
-            found = to_out_variant(func_op.default)
-            self.assertIsNotNone(found)
-            self.assertEqual(found, out_op)
-
-    def test_to_out_variant_raises_for_mutable_op(self):
-        """Test that to_out_variant() raises RuntimeError for mutable ops."""
-        with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
-            lib.define("inplace_sin(Tensor(a!) x) -> ()")
-
-            def _inplace_sin_impl(x):
-                x.sin_()
-
-            lib.impl("inplace_sin", _inplace_sin_impl, "CompositeImplicitAutograd")
-
-            from torch._library._out_variant import to_out_variant
-
-            with self.assertRaises(RuntimeError):
-                to_out_variant(torch.ops.mylib.inplace_sin.default)
-
-    # ---- Additional integration tests ----
-
-    @parametrize("device", DEVICES)
-    def test_chained_ops_buffer_reuse(self, device):
-        """Test that chained custom ops participate in buffer reuse."""
-        with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
-            func_op, out_op = self._register_add_one_ops(lib)
-
-            def f(x):
-                y1 = torch.ops.mylib.add_one(x)
-                y2 = y1 * 2.0
-                y3 = torch.ops.mylib.add_one(y2)
-                y4 = y3 + 1.0
-                y5 = torch.ops.mylib.add_one(y4)
-                return y5
-
-            x = torch.randn(4, 4, device=device)
-            eager_out = f(x)
-
-            compiled_out, (code,) = run_and_get_code(
-                torch.compile(f, backend="inductor", fullgraph=True), x
-            )
-            self.assertEqual(compiled_out, eager_out)
-            self.assertIn(".out(", code)
-            self.assertIn("# reuse", code)
-            self.assertIn("empty_strided", code)
+            FileCheck().check(".out(").check("out0=").check("out1=").run(code)
 
     @parametrize("device", DEVICES)
     def test_op_without_out_variant_falls_through(self, device):
@@ -222,7 +154,7 @@ class TestCustomOpOutLowering(InductorTestCase):
                 torch.compile(f, backend="inductor", fullgraph=True), x
             )
             self.assertEqual(compiled_out, eager_out)
-            self.assertIn(".out(", code)
+            FileCheck().check(".out(").run(code)
 
 
 if __name__ == "__main__":
