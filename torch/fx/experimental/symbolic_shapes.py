@@ -153,6 +153,12 @@ def guarding_hint_or_throw(
 def optimization_hint(
     a: Union[torch.SymInt, int], fallback: Optional[int] = None
 ) -> int:
+    """
+    Return a concrete hint for a symbolic integer, for use in optimization decisions.
+
+    Unlike guarding_hint_or_throw, this function does not add guards and is intended
+    for optimization purposes only (e.g., memory estimation).
+    """
     if isinstance(a, torch.SymInt):
         if a.node._hint is not None:
             return a.node._hint
@@ -417,6 +423,12 @@ Scalar: TypeAlias = Union[torch.SymInt, torch.SymFloat, torch.SymBool, int, floa
 
 
 def has_guarding_hint(a: Scalar) -> bool:
+    """
+    Check if a symbolic value has a hint available for guarding.
+
+    Returns True if the value is concrete or if the symbolic node has a hint,
+    False otherwise.
+    """
     if isinstance(a, SymTypes):
         return a.node.has_hint()
     return True
