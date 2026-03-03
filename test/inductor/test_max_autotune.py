@@ -94,7 +94,7 @@ from torch._inductor.utils import (
 from torch._inductor.virtualized import V
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.testing import FileCheck
-from torch.testing._internal.common_utils import MI300_ARCH, runOnRocmArch, skipIfXpu
+from torch.testing._internal.common_utils import skipIfXpu
 from torch.testing._internal.inductor_utils import (
     get_func_call,
     get_kernel_launch,
