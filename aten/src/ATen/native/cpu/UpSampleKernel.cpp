@@ -22,14 +22,6 @@
 namespace at::native {
 namespace {
 
-// Temporary: allow disabling NEON upsample path for A/B benchmarking.
-// Set PYTORCH_FORCE_INTERPOLATE_GENERIC_PATH=1 to force the generic path.
-#if defined(__aarch64__)
-static bool force_generic_path() {
-  return c10::utils::check_env("PYTORCH_FORCE_INTERPOLATE_GENERIC_PATH").value_or(false);
-}
-#endif
-
 using scale_t = std::vector<std::optional<double>>;
 
 // TODO: this file could benefit from a global renaming of its functions /
@@ -1823,8 +1815,7 @@ void upsample_bilinear2d_kernel_impl(
           /*antialias=*/false);
       }
     #elif defined(__aarch64__)
-      if (!force_generic_path()
-          && input.size(1) == 3
+      if (input.size(1) == 3
           && input.is_contiguous(at::MemoryFormat::ChannelsLast)
           && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
         upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
@@ -1863,7 +1854,7 @@ void upsample_bilinear2d_aa_kernel_impl(
         /*antialias=*/true);
   }
 #elif defined(__aarch64__)
-  if (input.dtype() == at::kByte && !force_generic_path()
+  if (input.dtype() == at::kByte
       && input.size(1) == 3
       && input.is_contiguous(at::MemoryFormat::ChannelsLast)
       && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
@@ -1918,8 +1909,7 @@ void upsample_bicubic2d_kernel_impl(
           /*antialias=*/false);
       }
     #elif defined(__aarch64__)
-      if (!force_generic_path()
-          && input.size(1) == 3
+      if (input.size(1) == 3
           && input.is_contiguous(at::MemoryFormat::ChannelsLast)
           && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
         upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
@@ -1961,7 +1951,7 @@ void upsample_bicubic2d_aa_kernel_impl(
   }
 #else // CPU_CAPABILITY_AVX2
 #if defined(__aarch64__)
-  if (input.dtype() == at::kByte && !force_generic_path()
+  if (input.dtype() == at::kByte
       && input.size(1) == 3
       && input.is_contiguous(at::MemoryFormat::ChannelsLast)
       && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
