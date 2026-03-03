@@ -1437,8 +1437,12 @@ def compare_operator(
 
     aten_op = _discover_aten_op(opinfos, device, dtype)
     if aten_op is None or not _has_dtensor_support(aten_op):
+        if verbose:
+            print(f"  ATEN_OP_MAP: {op_name} -> {aten_op} [no_support]")
         stats.no_dtensor_support = True
         return stats
+    if verbose:
+        print(f"  ATEN_OP_MAP: {op_name} -> {aten_op} [supported]")
 
     total_samples = 0
     total_combinations = 0
@@ -1446,7 +1450,7 @@ def compare_operator(
 
     for opinfo in opinfos:
         variant = opinfo.variant_test_name
-        if variant:
+        if variant and verbose:
             print(f"\n  OpInfo variant: {variant}")
 
         op = opinfo.op
@@ -1454,7 +1458,8 @@ def compare_operator(
         try:
             samples = list(opinfo.sample_inputs(device, dtype))
         except Exception as e:
-            print(f"    Error generating samples: {e}")
+            if verbose:
+                print(f"    Error generating samples: {e}")
             continue
 
         if max_samples:
@@ -1527,6 +1532,17 @@ def compare_operator(
             aten_op, captured_args, captured_kwargs = get_aten_op_for_sample(
                 op, sample, opinfo.name
             )
+            if verbose and sample_idx == 0:
+                propagator = DTensor._op_dispatcher.sharding_propagator
+                if aten_op and aten_op in propagator.op_single_dim_strategy_funcs:
+                    path = "single_dim"
+                elif aten_op and aten_op in propagator.op_strategy_funcs:
+                    path = "op_strategy"
+                elif aten_op and DecompShardingStrategy.has_decomp(aten_op):
+                    path = "decomp"
+                else:
+                    path = "none"
+                print(f"  SAMPLE_OP_MAP: {opinfo.name} -> {aten_op} [{path}]")
 
             dtensor_rules = _query_dtensor_rules(
                 aten_op,
@@ -1771,6 +1787,7 @@ if __name__ == "__main__":
                     dtype,
                     args.world_size,
                     args.max_samples,
+                    verbose=True,
                     incorrect_only=args.incorrect_only,
                 )
                 elapsed = time.time() - op_start
