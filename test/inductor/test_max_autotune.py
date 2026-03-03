@@ -3000,7 +3000,6 @@ class TestMaxAutotunePrecompile(TestCase):
         self.assertEqual(counters["inductor"]["select_algorithm_precompile"], 0)
 
     @config.patch(autotune_local_cache=False, autotune_remote_cache=False)
-    @runOnRocmArch(MI300_ARCH)
     @unittest.skipIf(config.triton.native_matmul, "native matmul has counter 0")
     def test_precompilations(self):
         def fn(a, b, c):
