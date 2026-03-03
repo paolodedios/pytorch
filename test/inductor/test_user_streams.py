@@ -10,7 +10,6 @@ from __future__ import annotations
 import unittest
 
 import torch
-from torch._inductor import config
 from torch._inductor.codegen.wrapper import (
     EnterCudaStreamContextLine,
     EnterDeviceContextManagerWithStreamInfoLine,
@@ -109,7 +108,6 @@ class TestCudaEventFactory(InductorTestCase):
         """Test CudaEventFactory can be created."""
         factory = CudaEventFactory()
         self.assertIsNotNone(factory)
-        self.assertEqual(factory._reuse_cuda_event, config.reuse_cuda_event)
 
     def test_get_sym_event(self):
         """Test creating symbolic events."""
@@ -201,24 +199,6 @@ class TestWrapperCodegenStreams(InductorTestCase):
         line = ExitCudaStreamContextLine()
         # Just verify it can be created
         self.assertIsNotNone(line)
-
-
-class TestConfig(InductorTestCase):
-    """Tests for stream-related config options."""
-
-    def test_reuse_cuda_event_config(self):
-        """Test reuse_cuda_event config option exists and has correct default."""
-        self.assertTrue(hasattr(config, "reuse_cuda_event"))
-        self.assertIsInstance(config.reuse_cuda_event, bool)
-        # Default should be True
-        self.assertTrue(config.reuse_cuda_event)
-
-    def test_reuse_cuda_event_config_patch(self):
-        """Test reuse_cuda_event can be patched."""
-        with config.patch(reuse_cuda_event=False):
-            self.assertFalse(config.reuse_cuda_event)
-        # Should be restored after context
-        self.assertTrue(config.reuse_cuda_event)
 
 
 class TestStreamCodegen(InductorTestCase):
@@ -1279,7 +1259,6 @@ class TestGenericStreamCompile(InductorTestCase):
 instantiate_parametrized_tests(TestStreamUtils)
 instantiate_parametrized_tests(TestCudaEventFactory)
 instantiate_parametrized_tests(TestWrapperCodegenStreams)
-instantiate_parametrized_tests(TestConfig)
 instantiate_parametrized_tests(TestStreamCodegen)
 instantiate_parametrized_tests(TestUserStreamCompile)
 instantiate_parametrized_tests(TestGenericStreamCompile)
