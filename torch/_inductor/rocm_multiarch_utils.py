@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import subprocess
-from typing import Optional
 
 import torch
 from torch.utils.cpp_extension import _join_rocm_home, ROCM_HOME
@@ -81,11 +80,12 @@ def get_rocm_target_archs() -> list[str]:
         if archs:
             # Ensure current device arch is included
             if torch.cuda.is_available():
-                current_arch = torch.cuda.get_device_properties(0).gcnArchName.split(
-                    ":"
-                )[0]
-                if current_arch not in archs:
-                    archs.append(current_arch)
+                for dev_idx in range(torch.cuda.device_count()):
+                    current_arch = torch.cuda.get_device_properties(
+                        dev_idx
+                    ).gcnArchName.split(":")[0]
+                    if current_arch not in archs:
+                        archs.append(current_arch)
             return archs
 
     try:
@@ -259,7 +259,7 @@ def create_multiarch_bundle(code_objects: dict, output_bundle_path: str) -> bool
 
 
 def compile_multiarch_bundle_from_llvm_ir(
-    llvm_ir_path: str, output_bundle_path: str, target_archs: Optional[list[str]] = None
+    llvm_ir_path: str, output_bundle_path: str, target_archs: list[str] | None = None
 ) -> bool:
     """
     Complete workflow: LLVM IR → multiple code objects → bundle.
