@@ -2538,6 +2538,63 @@ class AOTAutogradCacheTests(InductorTestCase):
             x_view2.untyped_storage().data_ptr(), x2.untyped_storage().data_ptr()
         )
 
+    @inductor_config.patch("fx_graph_cache", True)
+    @functorch_config.patch("enable_autograd_cache", True)
+    def test_pre_grad_passes_called_on_cache_miss_only(self):
+        """
+        Verify that pre_grad_passes are called on cache miss but not on cache hit.
+        """
+        pre_grad_pass_count = 0
+
+        from torch._inductor.compile_fx import run_pre_grad_passes
+
+        def tracking_pre_grad_passes(model, example_inputs):
+            nonlocal pre_grad_pass_count
+            pre_grad_pass_count += 1
+            return run_pre_grad_passes(model, example_inputs)
+
+        def fn(x, y):
+            return x + y
+
+        x = torch.randn(10)
+        y = torch.randn(10)
+
+        with unittest.mock.patch(
+            "torch._inductor.compile_fx.run_pre_grad_passes",
+            tracking_pre_grad_passes,
+        ):
+            self._clear_all_caches()
+
+            # First compilation - cache miss, pre_grad_passes should be called
+            compiled_fn = torch.compile(fn)
+            result1 = compiled_fn(x, y)
+
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 0)
+            self.assertGreaterEqual(
+                pre_grad_pass_count, 1, "pre_grad_passes should be called on cache miss"
+            )
+
+            count_after_first_compile = pre_grad_pass_count
+
+            # Reset dynamo but keep the cache
+            torch._dynamo.reset()
+
+            # Second compilation - cache hit, pre_grad_passes should NOT be called
+            compiled_fn2 = torch.compile(fn)
+            result2 = compiled_fn2(x, y)
+
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 1)
+            self.assertEqual(
+                pre_grad_pass_count,
+                count_after_first_compile,
+                "pre_grad_passes should NOT be called on cache hit",
+            )
+
+            # Results should match
+            self.assertEqual(result1, result2)
+
 
 @functorch_config.patch({"bundled_autograd_cache": True})
 class AOTAutogradCacheBundledTests(AOTAutogradCacheTests):

@@ -2742,13 +2742,8 @@ def _compile_fx_main(
         ),
         torch._inductor.debug.reset_provenance_globals(),
     ):
-        # Pre-grad passes cannot be run if we weren't given a GraphModule.
-        # Dynamo will always produce a GraphModule, but this handles cases
-        # where a user directly passes a plain Module with the intention of
-        # having AOTAutograd trace it.
-        # TODO: Get rid of this?
-        if isinstance(model_, GraphModule):
-            model_ = run_pre_grad_passes(model_, example_inputs_)
+        # Note: Pre-grad passes are now run inside aot_module_simplified (via the
+        # pre_grad_passes callback) after the cache lookup.
 
         assert not config._raise_error_for_testing
 
@@ -2912,6 +2907,7 @@ def _compile_fx_main(
                     cudagraphs=compiler_config_extra.cudagraphs,
                     boxed_forward_device_index=compiler_config_extra.forward_device,
                     ignore_shape_env=ignore_shape_env,
+                    pre_grad_passes=run_pre_grad_passes,
                 )(model_, example_inputs_)
             except ShortenTraceback as e:
                 # We will also shorten the traceback inside dynamo.
