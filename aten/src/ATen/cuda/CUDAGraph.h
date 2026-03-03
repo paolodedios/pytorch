@@ -121,7 +121,7 @@ struct TORCH_CUDA_CPP_API CUDAGraphImpl : public at::GraphImplInterface {
   cudaStreamCaptureMode capture_mode_{};
 
   // Raw pointer to the CUDAGraph wrapper that owns this impl, if any.
-  // Set by CUDAGraph::capture_begin and used by CUDAGraph::get_currently_capturing_graph.
+  // Set in CUDAGraph's constructor and used by CUDAGraph::get_currently_capturing_graph.
   CUDAGraph* owner_{nullptr};
 
 #if !defined(USE_ROCM) && (defined(CUDA_VERSION) && CUDA_VERSION >= 12040)
@@ -138,6 +138,7 @@ struct TORCH_CUDA_CPP_API CUDAGraph {
     GraphImplArgs args;
     args.keep_graph = keep_graph;
     impl_ = std::make_unique<CUDAGraphImpl>(args);
+    impl_->set_owner(this);
   }
   ~CUDAGraph() = default;
 
@@ -172,7 +173,6 @@ struct TORCH_CUDA_CPP_API CUDAGraph {
   void capture_begin(
       MempoolId_t pool = {0, 0},
       cudaStreamCaptureMode capture_mode = cudaStreamCaptureModeGlobal) {
-    impl_->set_owner(this);
     impl_->capture_begin(pool, capture_mode);
   }
 
