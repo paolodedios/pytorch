@@ -727,6 +727,32 @@ class MixOrderReductionTest(TestBase):
         compile_metrics = torch._dynamo.utils._compilation_metrics
         self.assertEqual(len(compile_metrics), 1, "Don't recompile")
 
+    def test_additive_num_splits(self):
+        """
+        When the `num_splits` is an additive expression, a pair of
+        parenthesis is required.
+        """
+        torch.set_float32_matmul_precision("high")
+        linear1 = nn.Linear(1000, 1000).to(GPU_TYPE)
+        norm = nn.LayerNorm(1000).to(GPU_TYPE)
+
+        def model(x):
+            return norm(linear1(x[:, :-1].reshape(-1, 1000)))
+
+        compiled_model = torch.compile(model)
+        x = torch.randn(32, 200, 1000, device=GPU_TYPE)
+        torch._dynamo.mark_dynamic(x, 1)
+        compiled_model(x).sum().backward()
+
+        act = linear1.weight.grad, linear1.bias.grad
+
+        linear1.zero_grad()
+        norm.zero_grad()
+        model(x).sum().backward()
+        ref = linear1.weight.grad, linear1.bias.grad
+
+        torch.testing.assert_close(ref, act, atol=1e-3, rtol=1e-3)
+
     def test_out_of_shared_memory(self):
         """
         Fix https://github.com/pytorch/pytorch/issues/175250
