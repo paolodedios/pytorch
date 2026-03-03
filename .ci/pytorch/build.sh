@@ -35,16 +35,6 @@ if [[ "$BUILD_ENVIRONMENT" == *cuda13* ]]; then
   export USE_FBGEMM=0
 fi
 
-if [[ "$BUILD_ENVIRONMENT" == *cuda11* ]]; then
-  if [[ "$BUILD_ENVIRONMENT" != *clang* ]]; then
-    # TODO: there is a linking issue when building with UCC using clang,
-    # disable it for now and to be fix later.
-    # TODO: disable UCC temporarily to enable CUDA 12.1 in CI
-    export USE_UCC=1
-    export USE_SYSTEM_UCC=1
-  fi
-fi
-
 if [[ ${BUILD_ENVIRONMENT} == *"parallelnative"* ]]; then
   export ATEN_THREADING=NATIVE
 fi
@@ -110,30 +100,6 @@ if [[ "$BUILD_ENVIRONMENT" == *riscv64* ]]; then
   export SLEEF_TARGET_EXEC_USE_QEMU=ON
   sudo chown -R jenkins /var/lib/jenkins/workspace /opt
 
-fi
-
-if [[ "$BUILD_ENVIRONMENT" == *libtorch* ]]; then
-  POSSIBLE_JAVA_HOMES=()
-  POSSIBLE_JAVA_HOMES+=(/usr/local)
-  POSSIBLE_JAVA_HOMES+=(/usr/lib/jvm/java-8-openjdk-amd64)
-  POSSIBLE_JAVA_HOMES+=(/Library/Java/JavaVirtualMachines/*.jdk/Contents/Home)
-  # Add the Windows-specific JNI
-  POSSIBLE_JAVA_HOMES+=("$PWD/.circleci/windows-jni/")
-  for JH in "${POSSIBLE_JAVA_HOMES[@]}" ; do
-    if [[ -e "$JH/include/jni.h" ]] ; then
-      # Skip if we're not on Windows but haven't found a JAVA_HOME
-      if [[ "$JH" == "$PWD/.circleci/windows-jni/" && "$OSTYPE" != "msys" ]] ; then
-        break
-      fi
-      echo "Found jni.h under $JH"
-      export JAVA_HOME="$JH"
-      export BUILD_JNI=ON
-      break
-    fi
-  done
-  if [ -z "$JAVA_HOME" ]; then
-    echo "Did not find jni.h"
-  fi
 fi
 
 # Use special scripts for Android builds
@@ -229,10 +195,6 @@ fi
 
 if [[ "${BUILD_ENVIRONMENT}" == *no-ops* ]]; then
   export USE_PER_OPERATOR_HEADERS=0
-fi
-
-if [[ "${BUILD_ENVIRONMENT}" == *-pch* ]]; then
-    export USE_PRECOMPILED_HEADERS=1
 fi
 
 if [[ "${BUILD_ENVIRONMENT}" != *cuda* ]]; then
