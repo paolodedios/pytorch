@@ -1537,16 +1537,16 @@ class CreateBlockMaskHOP(HigherOrderOperator):
         KV_LEN: int,
         device: str = "cpu",
         BLOCK_SIZE: tuple[int, int] = (128, 128),
-        mask_mod_other_buffers: tuple = (),
+        mask_mod_closure_tensors: tuple = (),
     ) -> tuple:
         # Extract closure tensors so they flow through the dispatch stack as
         # explicit positional args (functionalize/fake/proxy properly unwrap them).
         # Under Dynamo, speculate_subgraph handles lifting instead.
-        if not mask_mod_other_buffers:
-            mask_mod, mask_mod_other_buffers = _extract_tensor_closure_vars(
+        if not mask_mod_closure_tensors:
+            mask_mod, mask_mod_closure_tensors = _extract_tensor_closure_vars(
                 mask_mod
             )
-        validate_subgraph_args_types(mask_mod_other_buffers)
+        validate_subgraph_args_types(mask_mod_closure_tensors)
         return super().__call__(
             mask_mod,
             B,
@@ -1555,7 +1555,7 @@ class CreateBlockMaskHOP(HigherOrderOperator):
             KV_LEN,
             device,
             BLOCK_SIZE,
-            mask_mod_other_buffers,
+            mask_mod_closure_tensors,
         )
 
 
@@ -1570,7 +1570,7 @@ def _create_block_mask_tensors(
     KV_LEN: int,
     device: str = "cpu",
     BLOCK_SIZE: tuple[int, int] = (128, 128),
-    mask_mod_other_buffers: tuple = (),
+    mask_mod_closure_tensors: tuple = (),
 ) -> tuple:
     """Compute create_block_mask and return the 8 BlockMask tensor attrs as a tuple."""
     from torch._dynamo._trace_wrapped_higher_order_op import TransformGetItemToIndex
@@ -1580,14 +1580,15 @@ def _create_block_mask_tensors(
         BlockMask,
     )
 
-    if mask_mod_other_buffers:
-        _mask_mod = mask_mod
-        _bufs = mask_mod_other_buffers
+    # Rebind lifted closure tensors to produce the standard 4-arg mask_mod.
+    if mask_mod_closure_tensors:
+        _fn = mask_mod
+        _ct = mask_mod_closure_tensors
 
-        def effective_mask_mod(b, h, q_idx, kv_idx):
-            return _mask_mod(b, h, q_idx, kv_idx, *_bufs)
+        def mod(b, h, q_idx, kv_idx):
+            return _fn(b, h, q_idx, kv_idx, *_ct)
     else:
-        effective_mask_mod = mask_mod
+        mod = mask_mod
 
     # Broadcast index tensors to [B, H, Q_LEN, KV_LEN] via stride-0 expand
     # (no memory overhead). This avoids vmap which creates BatchedTensors
@@ -1602,7 +1603,7 @@ def _create_block_mask_tensors(
     )
 
     with TransformGetItemToIndex():
-        mask_tensor = effective_mask_mod(b_idx, h_idx, q_idx, kv_idx)
+        mask_tensor = mod(b_idx, h_idx, q_idx, kv_idx)
 
     Q_BLOCK_SIZE, KV_BLOCK_SIZE = BLOCK_SIZE
     partial_block_mask, full_block_mask = _convert_mask_to_block_mask(
@@ -1613,7 +1614,7 @@ def _create_block_mask_tensors(
     )
     bm = _create_sparse_block_from_block_mask(
         (partial_block_mask, full_block_mask),
-        effective_mask_mod,
+        mod,
         (Q_LEN, KV_LEN),
         Q_BLOCK_SIZE,
         KV_BLOCK_SIZE,
@@ -1630,10 +1631,10 @@ def create_block_mask_dense(
     KV_LEN: int,
     device: str = "cpu",
     BLOCK_SIZE: tuple[int, int] = (128, 128),
-    mask_mod_other_buffers: tuple = (),
+    mask_mod_closure_tensors: tuple = (),
 ) -> tuple:
     return _create_block_mask_tensors(
-        mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE, mask_mod_other_buffers
+        mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE, mask_mod_closure_tensors
     )
 
 
@@ -1647,11 +1648,11 @@ def create_block_mask_proxy_torch_dispatch_mode(
     KV_LEN: int,
     device: str = "cpu",
     BLOCK_SIZE: tuple[int, int] = (128, 128),
-    mask_mod_other_buffers: tuple = (),
+    mask_mod_closure_tensors: tuple = (),
 ):
     return trace_create_block_mask(
         mode, mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE,
-        mask_mod_other_buffers,
+        mask_mod_closure_tensors,
     )
 
 
@@ -1664,18 +1665,18 @@ def trace_create_block_mask(
     KV_LEN: int,
     device: str = "cpu",
     BLOCK_SIZE: tuple[int, int] = (128, 128),
-    mask_mod_other_buffers: tuple = (),
+    mask_mod_closure_tensors: tuple = (),
 ):
     from torch._dynamo._trace_wrapped_higher_order_op import TransformGetItemToIndex
 
     example_out = create_block_mask_hop(
         mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE,
-        mask_mod_other_buffers,
+        mask_mod_closure_tensors,
     )
 
     # Trace mask_mod with scalar example values (b, h, q_idx, kv_idx)
     any_tensor = None
-    for buf in mask_mod_other_buffers:
+    for buf in mask_mod_closure_tensors:
         if isinstance(buf, torch.Tensor):
             any_tensor = buf
             break
@@ -1691,7 +1692,7 @@ def trace_create_block_mask(
 
     with TransformGetItemToIndex():
         mask_graph = reenter_make_fx(mask_mod)(
-            *example_vals, *mask_mod_other_buffers
+            *example_vals, *mask_mod_closure_tensors
         )
 
     if not isinstance(proxy_mode.tracer, torch.fx.Tracer):
@@ -1700,14 +1701,14 @@ def trace_create_block_mask(
             f"got {type(proxy_mode.tracer)}"
         )
 
-    qualname = proxy_mode.tracer.get_fresh_qualname("create_block_mask_mask")
+    qualname = proxy_mode.tracer.get_fresh_qualname("flex_create_block_mask")
     proxy_mode.tracer.root.register_module(qualname, mask_graph)
 
     node_args = (
         mask_graph,
         B, H, Q_LEN, KV_LEN,
         device, BLOCK_SIZE,
-        mask_mod_other_buffers,
+        mask_mod_closure_tensors,
     )
     proxy_args = pytree.tree_map(proxy_mode.tracer.unwrap_proxy, node_args)
     with torch.fx.experimental.proxy_tensor.set_original_aten_op(
@@ -1730,7 +1731,7 @@ def create_block_mask_fake_impl(
     KV_LEN: int,
     device: str = "cpu",
     BLOCK_SIZE: tuple[int, int] = (128, 128),
-    mask_mod_other_buffers: tuple = (),
+    mask_mod_closure_tensors: tuple = (),
 ) -> tuple:
     from torch.nn.attention.flex_attention import _round_up_to_multiple
 
@@ -1781,13 +1782,13 @@ def create_block_mask_functionalize(
     KV_LEN: int,
     device: str = "cpu",
     BLOCK_SIZE: tuple[int, int] = (128, 128),
-    mask_mod_other_buffers: tuple = (),
+    mask_mod_closure_tensors: tuple = (),
 ):
-    mask_mod_other_buffers_unwrapped = ctx.unwrap_tensors(mask_mod_other_buffers)
-    if not isinstance(mask_mod_other_buffers_unwrapped, tuple):
+    unwrapped = ctx.unwrap_tensors(mask_mod_closure_tensors)
+    if not isinstance(unwrapped, tuple):
         raise AssertionError(
-            f"expected mask_mod_other_buffers_unwrapped to be tuple, "
-            f"got {type(mask_mod_other_buffers_unwrapped)}"
+            f"expected unwrapped mask_mod_closure_tensors to be tuple, "
+            f"got {type(unwrapped)}"
         )
     with ctx.redispatch_to_next():
         functional_mask_mod = ctx.functionalize(mask_mod)
@@ -1795,7 +1796,7 @@ def create_block_mask_functionalize(
             functional_mask_mod,
             B, H, Q_LEN, KV_LEN,
             device, BLOCK_SIZE,
-            mask_mod_other_buffers_unwrapped,
+            unwrapped,
         )
     return ctx.wrap_tensors(out)
 

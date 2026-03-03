@@ -4132,9 +4132,18 @@ class FlexAttentionHigherOrderVariable(TorchHigherOrderOperatorVariable):
             fn_name,
             torch.fx.GraphModule(tx.output.nn_modules, body_graph),
         )
+
         body_node = make_attr(tx, body_name)
+
+        # It is possible that the score-mod function captures some free variables that are not
+        # passed in as arguments. In this case, we need to lift them, which is handled by speculate_subgraph.
+        # We then need to create proxies for this + the inputs.
+
         lifted_args = tuple(arg for arg in body_lifted_freevars)
-        return body_node, lifted_args
+
+        proxy_args = (body_node, lifted_args)
+
+        return proxy_args
 
     def _call_function(
         self,
@@ -4254,7 +4263,7 @@ class CreateBlockMaskHigherOrderVariable(TorchHigherOrderOperatorVariable):
             )
 
         body_name = tx.output.install_subgraph(
-            "create_block_mask_mask",
+            "flex_create_block_mask",
             torch.fx.GraphModule(tx.output.nn_modules, body_graph),
         )
         body_node = make_attr(tx, body_name)
@@ -4270,7 +4279,7 @@ class CreateBlockMaskHigherOrderVariable(TorchHigherOrderOperatorVariable):
         from .builder import wrap_fx_proxy
 
         # Signature: mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE,
-        #            mask_mod_other_buffers
+        #            mask_mod_closure_tensors
         mask_mod = args[0]
         B = args[1]
         H = args[2]
