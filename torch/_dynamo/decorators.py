@@ -1084,7 +1084,9 @@ def mark_unbacked(
         index (int or list/tuple of int): The dimension(s) to mark as unbacked. Can be a single
             integer or a list/tuple of integers. Pass an empty list [] to explicitly mark the
             tensor as having NO unbacked dims (different from not calling this function at all,
-            which would not cause recompilation).
+            which would not cause recompilation). For details on guard semantics and recompilation
+            behavior, see [Note: Dimension Marking Guards] in torch/_dynamo/guards.py.
+        hint_override (Optional[int], default=None):
         hint_override (Optional[int], default=None): An optional integer to override the size hint for this dimension.
             This is only used by the inductor backend for size hint queries, such as during autotuning.
             NOTE: changing hint_override values will cause FxGraphCache misses, since hint overrides
@@ -1102,8 +1104,6 @@ def mark_unbacked(
             If provided, a runtime check will be added to ensure the dimension is >= min.
         max (Optional[int], default=None): Maximum value constraint for this dimension.
             If provided, a runtime check will be added to ensure the dimension is <= max.
-            For details on guard semantics and recompilation behavior, see
-            [Note: Dimension Marking Guards] in torch/_dynamo/guards.py.
     """
     if torch.distributed.is_available() and isinstance(
         t, torch.distributed.tensor.DTensor

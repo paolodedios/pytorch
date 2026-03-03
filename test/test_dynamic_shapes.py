@@ -5439,68 +5439,21 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         compiled_func(x3)
         self.assertEqual(counter.frame_count, 2)
 
-        # Fourth call with dims 0, 1, 2 static - should recompile (superset)
-        x4 = torch.rand(4, 3, 2)
-        torch._dynamo.mark_static(x4, 0)
-        torch._dynamo.mark_static(x4, 1)
-        torch._dynamo.mark_static(x4, 2)
+        # Fourth call with plain tensor (no attribute) - should NOT recompile
+        # (unspecified = don't care, reuse existing frame)
+        x4 = torch.rand(4, 3)
+        self.assertFalse(hasattr(x4, "_dynamo_static_indices"))
         compiled_func(x4)
-        self.assertEqual(counter.frame_count, 3)
-
-    @skipIfTorchDynamo("mark_static is not traceable")
-    def test_static_indices_no_attr_reuses_frame(self):
-        """
-        Test that a tensor with no _dynamo_static_indices attribute
-        (plain tensor without mark_static) does not trigger recompilation.
-        "No attribute" means unspecified = don't care = reuse existing frame.
-        """
-        counter = CompileCounter()
-
-        def func(x):
-            return x + 1
-
-        compiled_func = torch.compile(func, backend=counter)
-
-        # First call with mark_static on dim 0
-        x1 = torch.rand(4, 3)
-        torch._dynamo.mark_static(x1, 0)
-        compiled_func(x1)
-        self.assertEqual(counter.frame_count, 1)
-
-        # Second call with plain tensor (no _dynamo_static_indices attribute at all)
-        # Should NOT recompile - "no attribute" means unspecified = don't care
-        x2 = torch.rand(4, 3)
-        self.assertFalse(hasattr(x2, "_dynamo_static_indices"))
-        compiled_func(x2)
-        self.assertEqual(counter.frame_count, 1)
-
-    @skipIfTorchDynamo("mark_static is not traceable")
-    def test_static_indices_empty_list_recompiles(self):
-        """
-        Test that mark_static(t, []) explicitly means "no static dims".
-        This is different from not calling mark_static at all (unspecified).
-        """
-        counter = CompileCounter()
-
-        def func(x):
-            return x + 1
-
-        compiled_func = torch.compile(func, backend=counter)
-
-        # First call with mark_static on dim 0
-        x1 = torch.rand(4, 3)
-        torch._dynamo.mark_static(x1, 0)
-        compiled_func(x1)
-        self.assertEqual(counter.frame_count, 1)
-
-        # Second call with mark_static([]) - explicitly no static dims
-        # Should recompile - empty set != {0}
-        x2 = torch.rand(4, 3)
-        torch._dynamo.mark_static(x2, [])
-        self.assertTrue(hasattr(x2, "_dynamo_static_indices"))
-        self.assertEqual(x2._dynamo_static_indices, set())
-        compiled_func(x2)
         self.assertEqual(counter.frame_count, 2)
+
+        # Fifth call with explicit empty list [] - should recompile
+        # (explicit empty set != {0}, different from plain tensor)
+        x5 = torch.rand(4, 3)
+        torch._dynamo.mark_static(x5, [])
+        self.assertTrue(hasattr(x5, "_dynamo_static_indices"))
+        self.assertEqual(x5._dynamo_static_indices, set())
+        compiled_func(x5)
+        self.assertEqual(counter.frame_count, 3)
 
     @skipIfTorchDynamo("mark_unbacked is not traceable")
     def test_unbacked_exec_fft_reshape_no_dde(self):

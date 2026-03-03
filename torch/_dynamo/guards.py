@@ -3112,37 +3112,22 @@ class GuardBuilder(GuardBuilderBase):
             #   4. Compile with plain tensor, call with mark_dynamic(x, 0) → recompile (new marking added)
             #   5. Compile with mark_dynamic(x, 0), call with mark_dynamic(x, []) → recompile (explicit empty != {0})
             #
-            def add_dim_indices_guard(
-                attr_name: str, use_exact_match: bool = False
-            ) -> None:
+            def add_dim_indices_guard(attr_name: str) -> None:
                 if hasattr(value, attr_name):
                     indices = getattr(value, attr_name)
-                    if use_exact_match:
-                        # Only check exact match if runtime tensor has the attribute.
-                        # If runtime tensor has no attribute, it means "unspecified = don't care".
-                        code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {indices!r}) if hasattr({tensor_name}, '{attr_name}') else True)"  # noqa: B950
-                        code.append(code_part)
-                        self.get_guard_manager(guard).add_lambda_guard(
-                            lambda x, attr=attr_name, expected=indices: (
-                                getattr(x, attr, None) == expected
-                                if hasattr(x, attr)
-                                else True
-                            ),
-                            get_verbose_code_parts(code_part, guard),
-                            guard.user_stack,
-                        )
-                    else:
-                        code_part = f"(({tensor_name}.{attr_name}.issubset({indices})) if hasattr({tensor_name}, '{attr_name}') else True)"  # noqa: B950
-                        code.append(code_part)
-                        self.get_guard_manager(guard).add_lambda_guard(
-                            lambda x, attr=attr_name, expected=indices: (
-                                getattr(x, attr).issubset(expected)
-                                if hasattr(x, attr)
-                                else True
-                            ),
-                            get_verbose_code_parts(code_part, guard),
-                            guard.user_stack,
-                        )
+                    # Only check exact match if runtime tensor has the attribute.
+                    # If runtime tensor has no attribute, it means "unspecified = don't care".
+                    code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {indices!r}) if hasattr({tensor_name}, '{attr_name}') else True)"  # noqa: B950
+                    code.append(code_part)
+                    self.get_guard_manager(guard).add_lambda_guard(
+                        lambda x, attr=attr_name, expected=indices: (
+                            getattr(x, attr, None) == expected
+                            if hasattr(x, attr)
+                            else True
+                        ),
+                        get_verbose_code_parts(code_part, guard),
+                        guard.user_stack,
+                    )
                 else:
                     code_part = f"hasattr({tensor_name}, '{attr_name}') == False"
                     code.append(code_part)
@@ -3152,42 +3137,29 @@ class GuardBuilder(GuardBuilderBase):
                         guard.user_stack,
                     )
 
-            add_dim_indices_guard("_dynamo_dynamic_indices", use_exact_match=True)
-            add_dim_indices_guard("_dynamo_weak_dynamic_indices", use_exact_match=True)
-            add_dim_indices_guard("_dynamo_unbacked_indices", use_exact_match=True)
-            add_dim_indices_guard("_dynamo_static_indices", use_exact_match=True)
+            add_dim_indices_guard("_dynamo_dynamic_indices")
+            add_dim_indices_guard("_dynamo_weak_dynamic_indices")
+            add_dim_indices_guard("_dynamo_unbacked_indices")
+            add_dim_indices_guard("_dynamo_static_indices")
 
-            # Guard on shape_ids for tensors marked with mark_unbacked().
-            # - If the runtime tensor has _dynamo_unbacked_indices → check shape_ids match
-            # - If the runtime tensor doesn't have _dynamo_unbacked_indices → pass
-            if shape_ids := getattr(value, "_dynamo_shape_ids", None):
-                code_part = f"((getattr({tensor_name}, '_dynamo_shape_ids', None) == {shape_ids!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
-                code.append(code_part)
-                self.get_guard_manager(guard).add_lambda_guard(
-                    lambda x, expected=shape_ids: (
-                        getattr(x, "_dynamo_shape_ids", None) == expected
-                        if hasattr(x, "_dynamo_unbacked_indices")
-                        else True
-                    ),
-                    get_verbose_code_parts(code_part, guard),
-                    guard.user_stack,
-                )
+            # Guard on unbacked-dependent attributes (shape_ids, bounds).
+            # These are only checked if the runtime tensor has _dynamo_unbacked_indices.
+            def add_unbacked_dependent_guard(attr_name: str) -> None:
+                if attr_value := getattr(value, attr_name, None):
+                    code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {attr_value!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
+                    code.append(code_part)
+                    self.get_guard_manager(guard).add_lambda_guard(
+                        lambda x, attr=attr_name, expected=attr_value: (
+                            getattr(x, attr, None) == expected
+                            if hasattr(x, "_dynamo_unbacked_indices")
+                            else True
+                        ),
+                        get_verbose_code_parts(code_part, guard),
+                        guard.user_stack,
+                    )
 
-            # Guard on unbacked_bounds for tensors marked with mark_unbacked().
-            # - If the runtime tensor has _dynamo_unbacked_indices → check bounds match
-            # - If the runtime tensor doesn't have _dynamo_unbacked_indices → pass
-            if unbacked_bounds := getattr(value, "_dynamo_unbacked_bounds", None):
-                code_part = f"((getattr({tensor_name}, '_dynamo_unbacked_bounds', None) == {unbacked_bounds!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
-                code.append(code_part)
-                self.get_guard_manager(guard).add_lambda_guard(
-                    lambda x, expected=unbacked_bounds: (
-                        getattr(x, "_dynamo_unbacked_bounds", None) == expected
-                        if hasattr(x, "_dynamo_unbacked_indices")
-                        else True
-                    ),
-                    get_verbose_code_parts(code_part, guard),
-                    guard.user_stack,
-                )
+            add_unbacked_dependent_guard("_dynamo_shape_ids")
+            add_unbacked_dependent_guard("_dynamo_unbacked_bounds")
 
             if len(code) > 0:
                 self._set_guard_export_info(guard, code)
