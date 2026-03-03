@@ -40,6 +40,7 @@ from .utils import strict_zip
 
 if TYPE_CHECKING:
     from torch._library.opaque_object import OpaqueType
+    from torch._opaque_base import OpaqueBase
 
 
 zip = strict_zip
@@ -162,8 +163,8 @@ def create_subclass_metadata(
     inner_keys, metadata = a.__tensor_flatten__()
     new_start_idx = start_idx
     attrs = {}
-    opaque_attrs: dict[Any, Any] = {}
-    opaque_attr_input_indices: dict[Any, int | tuple[int, tuple[str, ...]]] = {}
+    opaque_attrs: dict[str, OpaqueBase] = {}
+    opaque_attr_input_indices: dict[str, int | tuple[int, tuple[str, ...]]] = {}
 
     for key in inner_keys:
         inner_value = getattr(a, key)

@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
     from torch._C._functorch import CInterpreter
     from torch._guards import Source
+    from torch._opaque_base import OpaqueBase
     from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 
     # Import here to avoid cycle
@@ -680,7 +681,7 @@ class MetaTensorDesc(Generic[_TensorT]):
     bdim: int | None = None  # is_functorch_wrapped
     base: MetaTensorDesc[Any] | None = None  # is_view
     attrs: dict[str, MetaTensorDesc[Any]] | None = None  # is_traceable_wrapper_subclass
-    opaque_attrs: dict[str, Any] | None = (
+    opaque_attrs: dict[str, OpaqueBase] | None = (
         None  # non-tensor attrs from __tensor_flatten__
     )
     creation_meta: CreationMeta | None = None
@@ -1087,7 +1088,7 @@ class MetaConverter(Generic[_TensorT]):
                         symbolic_context,
                     )
 
-                inner_tensors = {}
+                inner_tensors: dict[str, torch.Tensor | OpaqueBase] = {}
                 for attr, meta_tensor_desc in t.attrs.items():
                     current_context = None
                     if symbolic_context is not None:

@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from torch._guards import Source
     from torch._inductor.output_code import OutputCode
     from torch._inductor.utils import InputType
+    from torch._opaque_base import OpaqueBase
     from torch._ops import OpOverload
     from torch.types import IntLikeType
 
@@ -262,7 +263,7 @@ class SubclassCreationMeta:
     original_subclass_type: type | None = None
     memory_format: MemoryFormatMeta | None = None
     # Non-tensor values from __tensor_flatten__, passed through to __tensor_unflatten__
-    opaque_attrs: dict[str, Any] | None = None
+    opaque_attrs: dict[str, OpaqueBase] | None = None
     # Maps opaque attr name to its location in the original (pre-unwrap) args.
     # For top-level opaque args: int (index into args).
     # For opaques nested inside input subclasses: tuple[int, tuple[str, ...]]
@@ -314,12 +315,14 @@ class SubclassCreationMeta:
         is_runtime: bool,
         original_args: dict[int, Any] | None = None,
     ) -> torch.Tensor:
-        inner_tensors = {}
+        inner_tensors: dict[str, Tensor | OpaqueBase] = {}
 
         curr_start_idx = self.flat_tensor_start_idx
         for attr, creation_meta in self.attrs.items():
             if isinstance(creation_meta, PlainTensorMeta):
                 subclass = all_args[curr_start_idx]
+                if not isinstance(subclass, Tensor):
+                    raise AssertionError("Tensor expected")
                 curr_start_idx += 1
             else:
                 subclass = creation_meta.creation_fn(

@@ -1,10 +1,17 @@
+from __future__ import annotations
+
 import dataclasses
 import itertools
-from collections.abc import Iterable
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import torch
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from torch._opaque_base import OpaqueBase
 
 
 # This is technically very similar to SubclassCreatingMeta
@@ -15,11 +22,11 @@ class SubclassCreationMeta:
     start_idx: int
     num_tensors: int
     class_type: Any
-    attrs: dict[str, "SubclassCreationMeta"]
+    attrs: dict[str, SubclassCreationMeta]
     metadata: Any
     outer_size: Iterable[None | int | torch.SymInt]
     outer_stride: Iterable[None | int | torch.SymInt]
-    opaque_attrs: dict[str, Any] = dataclasses.field(default_factory=dict)
+    opaque_attrs: dict[str, OpaqueBase] = dataclasses.field(default_factory=dict)
 
 
 class UnwrapTensorSubclass(torch.nn.Module):
