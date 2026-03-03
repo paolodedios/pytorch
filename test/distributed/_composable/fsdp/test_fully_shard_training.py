@@ -1033,7 +1033,7 @@ class TestFullyShardSharedParams(FSDPTest):
     def test_train_shared_params_uneven_shard(self):
         """
         Test that FSDP2 correctly handles tied weights with uneven sharding
-        when tied modules are in separate FSDP groups.
+        when tied modules are placed in the same FSDP group.
         """
         self.run_subtests(
             {"reshard_after_forward": [True, False]},
@@ -1060,12 +1060,12 @@ class TestFullyShardSharedParams(FSDPTest):
 
         torch.manual_seed(42)
         model = TiedModel()
-        fully_shard(model.tok_embeddings, reshard_after_forward=reshard_after_forward)
-        fully_shard(model.output, reshard_after_forward=reshard_after_forward)
+        # Shared params must be in the same FSDP group
+        fully_shard(
+            [model.tok_embeddings, model.output],
+            reshard_after_forward=reshard_after_forward,
+        )
         fully_shard(model, reshard_after_forward=reshard_after_forward)
-
-        # Re-establish weight tying (broken by separate fully_shard calls)
-        model.output.weight = model.tok_embeddings.weight
 
         model.tok_embeddings.unshard()
         initial_weight = model.tok_embeddings.weight.detach().clone()
@@ -1086,15 +1086,38 @@ class TestFullyShardSharedParams(FSDPTest):
 
         model.tok_embeddings.unshard()
         final_weight = model.tok_embeddings.weight
-        # Every row should be updated after training. With the bug, the last
-        # rank's shard (the rows that require padding) would remain at its
-        # initial values because the all-gather reads from a stale buffer.
+        # Every row should be updated after training, including on the last
+        # rank whose shard requires padding for uneven sharding.
         for row in range(vocab_size):
             self.assertFalse(
                 torch.equal(initial_weight[row], final_weight[row]),
                 f"Row {row} was not updated after training",
             )
         model.tok_embeddings.reshard()
+
+    @skip_if_lt_x_gpu(2, allow_cpu=True)
+    def test_shared_params_separate_fsdp_groups_error(self):
+        """
+        Test that applying fully_shard to modules with shared parameters
+        in separate calls raises an error.
+        """
+        hidden_size = 16
+        vocab_size = 17
+
+        class TiedModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.tok_embeddings = nn.Embedding(vocab_size, hidden_size)
+                self.output = nn.Linear(hidden_size, vocab_size, bias=False)
+                self.output.weight = self.tok_embeddings.weight
+
+            def forward(self, ids):
+                return self.output(self.tok_embeddings(ids))
+
+        model = TiedModel()
+        fully_shard(model.tok_embeddings)
+        with self.assertRaisesRegex(ValueError, "already managed by another"):
+            fully_shard(model.output)
 
 
 class TestFullyShardGradientAccumulation(FSDPTest):

@@ -287,6 +287,16 @@ class FSDPParam:
         # TODO: Simplify the following sharded parameter padding logic after
         # https://github.com/pytorch/pytorch/issues/113045
         self.is_dtensor = isinstance(param, DTensor)
+        if not self.is_dtensor and getattr(param, "_fsdp_managed", False):
+            raise ValueError(
+                f"Parameter '{self._module_info.param_name}' is shared with a "
+                f"parameter already managed by another FSDP group. "
+                f"For shared/tied parameters, use "
+                f"fully_shard([module_a, module_b]) to place them in the same "
+                f"FSDP group."
+            )
+        if not self.is_dtensor:
+            param._fsdp_managed = True
         if self.is_dtensor:
             self._tp_spec = cast(DTensor, param)._spec
             dp_mesh, tp_mesh = (self.mesh_info.mesh, self._tp_spec.mesh)
