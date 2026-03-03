@@ -177,7 +177,7 @@ def evaluate_platform_supports_mxfp8_grouped_gemm():
 def evaluate_platform_supports_mxfp4_gemm():
     if torch.cuda.is_available():
         built_with_mslk = "USE_MSLK" in torch.__config__.show()
-        return torch.version.hip or built_with_mslk
+        return bool(torch.version.hip) or built_with_mslk
 
     return False
 
