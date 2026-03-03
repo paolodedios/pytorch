@@ -562,9 +562,21 @@ class MpsInterface(DeviceInterface):
             return 0
 
 
+class _lazy_tpu_attr:
+    """Descriptor that lazily resolves Event/Stream from torch.tpu."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __get__(self, obj: object, objtype: type | None = None) -> Any:
+        import torch.tpu
+
+        return getattr(torch.tpu, self.name)
+
+
 class TpuInterface(DeviceInterface):
-    Event = torch._tpu.Event  # type: ignore[assignment]
-    Stream = torch._tpu.Stream  # type: ignore[assignment]
+    Event = _lazy_tpu_attr("Event")  # type: ignore[assignment]
+    Stream = _lazy_tpu_attr("Stream")  # type: ignore[assignment]
 
     @staticmethod
     def is_bf16_supported(including_emulation: bool = False) -> bool:
@@ -586,11 +598,35 @@ class TpuInterface(DeviceInterface):
     def is_available() -> bool:
         return has_torch_tpu()
 
-    current_device = staticmethod(torch._tpu.current_device)
-    device_count = staticmethod(torch._tpu.device_count)
-    stream = staticmethod(torch._tpu.stream)  # type: ignore[assignment]
-    current_stream = staticmethod(torch._tpu.current_stream)  # type: ignore[assignment]
-    set_stream = staticmethod(torch._tpu.set_stream)  # type: ignore[assignment]
+    @staticmethod
+    def current_device() -> int:
+        import torch.tpu
+
+        return torch.tpu.current_device()
+
+    @staticmethod
+    def device_count() -> int:
+        import torch.tpu
+
+        return torch.tpu.device_count()
+
+    @staticmethod
+    def stream(stream: torch.Stream) -> Any:
+        import torch.tpu
+
+        return torch.tpu.stream(stream)
+
+    @staticmethod
+    def current_stream() -> torch.Stream:
+        import torch.tpu
+
+        return torch.tpu.current_stream()
+
+    @staticmethod
+    def set_stream(stream: torch.Stream) -> None:
+        import torch.tpu
+
+        torch.tpu.set_stream(stream)
 
     @staticmethod
     def get_compute_capability(device: torch.types.Device = None) -> str:
@@ -606,7 +642,9 @@ class TpuInterface(DeviceInterface):
         def current_device() -> int:
             if "tpu" in caching_worker_current_devices:
                 return caching_worker_current_devices["tpu"]
-            return torch._tpu.current_device()
+            import torch.tpu
+
+            return torch.tpu.current_device()
 
         @staticmethod
         def get_device_properties(device: torch.types.Device = None) -> Any:
@@ -645,6 +683,9 @@ def get_registered_device_interfaces() -> Iterable[tuple[str, type[DeviceInterfa
 
 def init_device_reg() -> None:
     global _device_initialized
+
+    import torch.tpu
+
     register_interface_for_device("cuda", CudaInterface)
     for i in range(torch.cuda.device_count()):
         register_interface_for_device(f"cuda:{i}", CudaInterface)
@@ -660,7 +701,7 @@ def init_device_reg() -> None:
     register_interface_for_device("cpu", CpuInterface)
     register_interface_for_device("mps", MpsInterface)
     register_interface_for_device("tpu", TpuInterface)
-    for i in range(torch._tpu.device_count()):
+    for i in range(torch.tpu.device_count()):
         register_interface_for_device(f"tpu:{i}", TpuInterface)
 
     _device_initialized = True

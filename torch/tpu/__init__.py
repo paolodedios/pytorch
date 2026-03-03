@@ -53,7 +53,7 @@ def current_stream(device: int | None = None) -> Stream:  # type: ignore[return-
     Args:
         device (int, optional): selected device. Returns the currently selected
             :class:`Stream` for the current device, given by
-            :func:`~torch._tpu.current_device`, if :attr:`device` is ``None``
+            :func:`~torch.tpu.current_device`, if :attr:`device` is ``None``
             (default).
     """
     if _device_mod is None:
