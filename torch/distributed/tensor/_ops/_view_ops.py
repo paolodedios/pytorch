@@ -510,8 +510,9 @@ dim_maps: dict[Callable[..., torch.Tensor], Callable[..., DimMap]] = {
 def _is_last_shard_on_tensor_dim(mesh_dim, placements):
     """Check if mesh_dim is the last mesh dim that shards on tensor_dim or any higher dim.
 
-    Uses >= rather than == because uneven sharding on dim d breaks stride
-    computation for all earlier dims that flatten together with d.
+    Uses >= rather than == because flatten operations involve contiguous dim
+    ranges, and uneven sharding on dim d breaks stride computation for all
+    earlier dims that flatten together with d.
     """
     tensor_dim = placements[mesh_dim].dim
     return not any(
@@ -605,7 +606,7 @@ def propagate_shape_and_sharding(
 
             if isinstance(placement, _StridedShard):
                 # Compute expected split_factor for this mesh dim at this split_id
-                expected_split_factor = math.prod(cmd.group_shape[0 : cmd.split_id])
+                expected_split_factor = math.prod(cmd.group_shape[: cmd.split_id])
                 # Divide by mesh sizes of earlier mesh dims that shard the same input dim
                 for m in range(mesh_dim):
                     p = placements[m]
@@ -819,7 +820,7 @@ def propagate_shape_and_sharding(
             cmd = rule[candidate_dim]
             if isinstance(cmd, Split):
                 found_split_cmd = True
-                expected_sf = math.prod(cmd.group_shape[0 : cmd.split_id])
+                expected_sf = math.prod(cmd.group_shape[: cmd.split_id])
                 for m in range(mesh_dim):
                     other_p = placements[m]
                     if (
@@ -844,7 +845,9 @@ def propagate_shape_and_sharding(
         # same output dim (SS+S on same dim). The SS stays as SS.
         # Integer division: if not evenly divisible, block_size is truncated
         # and the match conditions below will fail, falling through.
-        block_size = global_input_shape[p.dim] // (mesh_sizes[mesh_dim] * p.split_factor)
+        block_size = global_input_shape[p.dim] // (
+            mesh_sizes[mesh_dim] * p.split_factor
+        )
         shared_dim_match_idx = None
         for idx, candidate_dim in enumerate(tgt_shard_dims):
             cmd = rule[candidate_dim]
@@ -863,11 +866,16 @@ def propagate_shape_and_sharding(
                             elif found_p_dim:
                                 trailing_size *= global_input_shape[flat_dim.input_dim]
                     effective_block_size = block_size * trailing_size
-                if effective_block_size >= inner_size and effective_block_size % inner_size == 0:
+                if (
+                    effective_block_size >= inner_size
+                    and effective_block_size % inner_size == 0
+                ):
                     shared_dim_match_idx = idx
                     break
 
         if shared_dim_match_idx is not None:
+            # Don't add to seen_output_dims: multiple mesh dims can share
+            # this output dim (e.g. SS+S on the same dim).
             tgt_shard_dim = tgt_shard_dims[shared_dim_match_idx]
         elif found_split_cmd and strict_view:
             raise RuntimeError(
@@ -958,10 +966,11 @@ def propagate_shape_and_sharding(
 
     local_tensor_shapes = list(global_input_shape)
     output_placements: list[Placement] = []
+    # Process mesh dims in order 0..n-1. _rewrite_shard_dim mutates
+    # local_tensor_shapes and seen_output_dims so later mesh dims see
+    # shapes already divided by earlier ones.
     for mesh_dim, p in enumerate(input_tgt_placements):
         if isinstance(p, Shard | _StridedShard):
-            # _rewrite_shard_dim mutates local_tensor_shapes and seen_output_dims
-            # to track which output dims have been claimed by earlier mesh dims.
             output_placements.append(
                 _rewrite_shard_dim(
                     p, local_tensor_shapes, rule, mesh_dim, input_tgt_placements
