@@ -188,7 +188,9 @@ class TestCuTeDSLGroupedGemm(InductorTestCase):
                 "autotune_fallback_to_aten": False,
             },
         ):
-            grouped_gemm_compiled = torch.compile(grouped_gemm_fn, backend="inductor", dynamic=False)
+            grouped_gemm_compiled = torch.compile(
+                grouped_gemm_fn, backend="inductor", dynamic=False
+            )
             c_compiled = grouped_gemm_compiled(A, B, offsets)
 
         self.assertEqual(c_eager.dtype, dtype)
