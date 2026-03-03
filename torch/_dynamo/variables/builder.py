@@ -210,7 +210,6 @@ from .functions import (
     CreateTMADescriptorExperimentalVariable,
     CreateTMADescriptorStableVariable,
     FunctoolsPartialVariable,
-    FunctoolsWrapsVariable,
     SysFunctionVariable,
     TritonKernelVariable,
     TritonSetAllocatorSkipVariable,
@@ -1391,9 +1390,6 @@ class VariableBuilder:
             return WrapperUserFunctionVariable(
                 value, "_torchdynamo_inline", source=self.source
             )
-        elif value is functools.wraps:
-            self.install_guards(GuardBuilder.ID_MATCH)
-            return FunctoolsWrapsVariable(value, source=self.source)
         elif value is collections.namedtuple:
             self.install_guards(GuardBuilder.ID_MATCH)
             return CollectionsNamedTupleFunction(value, source=self.source)
@@ -3372,6 +3368,8 @@ def handle_traced_output(
         proxy.node.target
         in [
             torch.sym_int,
+            torch.sym_max,
+            torch.sym_min,
             getattr,
             operator.getitem,
             torch._utils._element_size,
@@ -4175,8 +4173,6 @@ class SourcelessBuilder:
             return SourcelessGraphModuleVariable(value)
         elif isinstance(value, torch.utils._pytree.TreeSpec):
             return UserDefinedObjectVariable(value)
-        elif value is functools.wraps:
-            return FunctoolsWrapsVariable(value)
         elif isinstance(value, re.Pattern):
             return ConstantLikeVariable(value)
         elif isinstance(value, torch._dynamo.variables.lazy.LazySymNodeFormatString):
