@@ -3013,3 +3013,6 @@ def _as_tensor_fullprec(t):
 # an autoloaded backend are defined
 if _is_device_backend_autoload_enabled():
     _import_device_backends()
+
+# Register all registered custom / override ops in torch/_native
+import torch._native
