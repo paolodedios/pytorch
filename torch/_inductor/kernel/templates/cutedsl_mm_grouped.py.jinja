@@ -295,6 +295,14 @@ def launch_build_group_ptrs_from_bases(
     )
     gemm_executor = gemm_cache.get(gemm_cache_key)
 
+    # GroupedGemmKernel uses initial tensors only for dtype/majorness detection
+    # and TMA descriptor creation.
+    # They should represent a single group's shape, not the full concatenated tensor.
+    first_m = int(input_a_offs[0])
+    initial_a = from_dlpack(input_a[:first_m].unsqueeze(-1), assumed_align=16)
+    initial_b = from_dlpack(input_b[0].unsqueeze(-1), assumed_align=16)
+    initial_c = from_dlpack({{get_output()}}[:first_m], assumed_align=16)
+
     if gemm_executor is None:
         grouped_gemm = GroupedGemmKernel(
             acc_dtype=ACC_DTYPE,
@@ -306,9 +314,9 @@ def launch_build_group_ptrs_from_bases(
 
         gemm_executor = cute.compile(
             grouped_gemm,
-            from_dlpack(input_a.unsqueeze(-1), assumed_align=16),
-            from_dlpack(input_b[0].unsqueeze(-1), assumed_align=16),
-            from_dlpack({{get_output()}}.unsqueeze(-1), assumed_align=16),
+            initial_a,
+            initial_b,
+            initial_c,
             G,
             probs,
             strides,
@@ -322,9 +330,9 @@ def launch_build_group_ptrs_from_bases(
         gemm_cache[gemm_cache_key] = gemm_executor
 
     gemm_executor(
-        from_dlpack(input_a.unsqueeze(-1), assumed_align=16),
-        from_dlpack(input_b[0].unsqueeze(-1), assumed_align=16),
-        from_dlpack({{get_output()}}.unsqueeze(-1), assumed_align=16),
+        initial_a,
+        initial_b,
+        initial_c,
         probs,
         strides,
         ptrs,

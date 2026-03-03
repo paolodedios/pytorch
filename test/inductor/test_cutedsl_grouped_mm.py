@@ -153,6 +153,48 @@ class TestCuTeDSLGroupedGemm(InductorTestCase):
         self.assertEqual(c_compiled.dtype, dtype)
         torch.testing.assert_close(c_eager, c_compiled)
 
+    @parametrize(
+        "G,K,N",
+        [
+            (256, 3072, 1024),
+            (256, 2048, 7168),
+            (256, 3072, 1536),
+            (256, 1536, 3072),
+            (256, 2048, 512),
+            (128, 2880, 2880),
+        ],
+        name_fn=lambda G, K, N: f"G{G}_K{K}_N{N}",
+    )
+    def test_grouped_gemm_moe_shapes(self, G: int, K: int, N: int):
+        """Regression test for init/update shape mismatch."""
+        device = "cuda"
+        dtype = torch.bfloat16
+        M_per_group = 16
+
+        A, B, offsets = self._get_inputs(
+            G, M_per_group, K, N, device, dtype, alignment=16
+        )
+
+        def grouped_gemm_fn(A_packed, B_batched, offs):
+            return F.grouped_mm(A_packed, B_batched, offs=offs)
+
+        c_eager = grouped_gemm_fn(A, B, offsets)
+
+        with config.patch(
+            {
+                "max_autotune": True,
+                "max_autotune_gemm_backends": "CUTEDSL",
+                "test_configs.autotune_choice_name_regex": "cutedsl",
+                "autotune_fallback_to_aten": False,
+            },
+        ):
+            grouped_gemm_compiled = torch.compile(grouped_gemm_fn, backend="inductor", dynamic=False)
+            c_compiled = grouped_gemm_compiled(A, B, offsets)
+
+        self.assertEqual(c_eager.dtype, dtype)
+        self.assertEqual(c_compiled.dtype, dtype)
+        torch.testing.assert_close(c_eager, c_compiled)
+
 
 if __name__ == "__main__":
     run_tests()
