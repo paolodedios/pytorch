@@ -405,12 +405,15 @@ struct gcd_functor {
   }
 };
 
-#define REGISTER_INTEGER_BINARY_OP(NAME)  \
-  REGISTER_BINARY_OP(NAME, long, long);   \
-  REGISTER_BINARY_OP(NAME, int, int);     \
-  REGISTER_BINARY_OP(NAME, short, short); \
-  REGISTER_BINARY_OP(NAME, uchar, uchar); \
-  REGISTER_BINARY_OP(NAME, char, char);   \
+#define REGISTER_INTEGER_BINARY_OP(NAME)    \
+  REGISTER_BINARY_OP(NAME, long, long);     \
+  REGISTER_BINARY_OP(NAME, int, int);       \
+  REGISTER_BINARY_OP(NAME, short, short);   \
+  REGISTER_BINARY_OP(NAME, uchar, uchar);   \
+  REGISTER_BINARY_OP(NAME, ushort, ushort); \
+  REGISTER_BINARY_OP(NAME, uint, uint);     \
+  REGISTER_BINARY_OP(NAME, ulong, ulong);   \
+  REGISTER_BINARY_OP(NAME, char, char);     \
   REGISTER_BINARY_OP(NAME, bool, bool)
 
 #define REGISTER_INT2FLOAT_BINARY_OP(NAME) \
@@ -418,6 +421,9 @@ struct gcd_functor {
   REGISTER_BINARY_OP(NAME, int, float);    \
   REGISTER_BINARY_OP(NAME, short, float);  \
   REGISTER_BINARY_OP(NAME, uchar, float);  \
+  REGISTER_BINARY_OP(NAME, ushort, float); \
+  REGISTER_BINARY_OP(NAME, uint, float);   \
+  REGISTER_BINARY_OP(NAME, ulong, float);  \
   REGISTER_BINARY_OP(NAME, char, float);   \
   REGISTER_BINARY_OP(NAME, bool, float)
 
@@ -496,6 +502,9 @@ REGISTER_BINARY_ALPHA_OP(add_alpha, float, float, float);
 REGISTER_BINARY_ALPHA_OP(add_alpha, half, half, half);
 REGISTER_BINARY_ALPHA_OP(add_alpha, short, short, short);
 REGISTER_BINARY_ALPHA_OP(add_alpha, uchar, uchar, uchar);
+REGISTER_BINARY_ALPHA_OP(add_alpha, ushort, ushort, ushort);
+REGISTER_BINARY_ALPHA_OP(add_alpha, uint, uint, uint);
+REGISTER_BINARY_ALPHA_OP(add_alpha, ulong, ulong, ulong);
 REGISTER_BINARY_ALPHA_OP(add_alpha, char, char, char);
 REGISTER_BINARY_ALPHA_OP(add_alpha, bool, bool, bool);
 REGISTER_BINARY_ALPHA_OP(sub_alpha, long, long, long);
@@ -504,6 +513,9 @@ REGISTER_BINARY_ALPHA_OP(sub_alpha, float, float, float);
 REGISTER_BINARY_ALPHA_OP(sub_alpha, half, half, half);
 REGISTER_BINARY_ALPHA_OP(sub_alpha, short, short, short);
 REGISTER_BINARY_ALPHA_OP(sub_alpha, uchar, uchar, uchar);
+REGISTER_BINARY_ALPHA_OP(sub_alpha, ushort, ushort, ushort);
+REGISTER_BINARY_ALPHA_OP(sub_alpha, uint, uint, uint);
+REGISTER_BINARY_ALPHA_OP(sub_alpha, ulong, ulong, ulong);
 REGISTER_BINARY_ALPHA_OP(sub_alpha, char, char, char);
 REGISTER_BINARY_ALPHA_OP(sub_alpha, bool, bool, bool);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, long, long, long);
@@ -512,6 +524,9 @@ REGISTER_BINARY_ALPHA_OP(lerp_alpha, float, float, float);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, half, half, half);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, short, short, short);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, uchar, uchar, uchar);
+REGISTER_BINARY_ALPHA_OP(lerp_alpha, ushort, ushort, ushort);
+REGISTER_BINARY_ALPHA_OP(lerp_alpha, uint, uint, uint);
+REGISTER_BINARY_ALPHA_OP(lerp_alpha, ulong, ulong, ulong);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, char, char, char);
 REGISTER_BINARY_ALPHA_OP(lerp_alpha, bool, bool, bool);
 

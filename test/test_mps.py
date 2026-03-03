@@ -8490,6 +8490,62 @@ class TestMPS(TestCaseMPS):
         y = x / 64
         self.assertEqual(y, torch.tensor([0., 1023.9844], device="mps"))
 
+    def test_mps_binary_ops_dtype_coverage(self):
+        """Test binary ops work for every dtype MPS can allocate.
+
+        Catches missing Metal kernel registrations that cause garbage values
+        (e.g. uint16/uint32/uint64 division returned garbage before the fix).
+        Dynamically probes all torch dtypes so new types are covered automatically.
+        """
+        device = "mps"
+        all_dtypes = {getattr(torch, name) for name in dir(torch)
+                      if isinstance(getattr(torch, name), torch.dtype)}
+        failures = []
+        for dtype in all_dtypes:
+            # Skip types MPS can't allocate
+            # Values chosen to fit int4 (-8..7) and work with bool
+            try:
+                a = torch.tensor([1, 2], dtype=dtype, device=device)
+                b = torch.tensor([1, 2], dtype=dtype, device=device)
+            except (TypeError, RuntimeError):
+                continue
+
+            al, bl = a.tolist(), b.tolist()
+
+            # Division works for all types including bool (True/True == 1.0)
+            try:
+                actual = (a / b).tolist()
+                expected = [x / y for x, y in zip(al, bl)]
+                if actual != expected:
+                    failures.append(f"{dtype}: {al} / {bl} = {actual}, expected {expected}")
+            except RuntimeError:
+                pass
+
+            # Integer add/sub/mul (bool has different semantics: no sub, add returns bool)
+            if not dtype.is_floating_point and not dtype.is_complex and dtype != torch.bool:
+                try:
+                    actual = (a + b).tolist()
+                    expected = [x + y for x, y in zip(al, bl)]
+                    if actual != expected:
+                        failures.append(f"{dtype}: {al} + {bl} = {actual}, expected {expected}")
+
+                    actual = (a - b).tolist()
+                    expected = [x - y for x, y in zip(al, bl)]
+                    if actual != expected:
+                        failures.append(f"{dtype}: {al} - {bl} = {actual}, expected {expected}")
+
+                    actual = (a * b).tolist()
+                    expected = [x * y for x, y in zip(al, bl)]
+                    if actual != expected:
+                        failures.append(f"{dtype}: {al} * {bl} = {actual}, expected {expected}")
+                except RuntimeError:
+                    pass
+
+        self.assertFalse(
+            failures,
+            "Binary ops produced wrong results for these dtypes:\n" + "\n".join(failures),
+        )
+
 
 class TestLargeTensors(TestCaseMPS):
     @serialTest()
