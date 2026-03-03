@@ -135,6 +135,10 @@ def propagate_where(where_node: Node) -> bool:
     [
         aten.mul.Tensor,
         prims.convert_element_type.default,
+        aten.exp.default,
+        aten.log.default,
+        aten.tanh.default,
+        aten.neg.default,
         aten.sum.dim_IntList,
         aten.sum.default,  # sum to scalar
         aten.mm.default,
