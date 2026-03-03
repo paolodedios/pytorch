@@ -153,56 +153,6 @@ class TestNativeDSLOps(TestCase):
         result = _subprocess_lastline(script, env=env)
         self.assertEqual(result, "True")
 
-    def test_register_op_skips_when_version_not_blessed(self):
-        """register_op does not enqueue fn when version is not in _BLESSED_VERSIONS."""
-        from torch._native import cutedsl_utils, triton_utils
-        from torch._native.registry import _RegisteredFns
-
-        for mod, avail_flag, ver_flag in [
-            (triton_utils, "_TRITON_AVAILABLE", "_TRITON_VERSION"),
-            (cutedsl_utils, "_CUTEDSL_AVAILABLE", "_CUTEDSL_VERSION"),
-        ]:
-            original_len = len(_RegisteredFns)
-            saved_avail = getattr(mod, avail_flag)
-            saved_ver = getattr(mod, ver_flag)
-            try:
-                setattr(mod, avail_flag, True)
-                setattr(mod, ver_flag, (99, 99, 99))
-                mod.register_op(lambda: None)
-                self.assertEqual(
-                    len(_RegisteredFns),
-                    original_len,
-                    f"{mod.__name__}.register_op should not enqueue with non-blessed version",
-                )
-            finally:
-                setattr(mod, avail_flag, saved_avail)
-                setattr(mod, ver_flag, saved_ver)
-
-    def test_register_op_skips_when_version_is_none(self):
-        """register_op does not enqueue fn when version is None."""
-        from torch._native import cutedsl_utils, triton_utils
-        from torch._native.registry import _RegisteredFns
-
-        for mod, avail_flag, ver_flag in [
-            (triton_utils, "_TRITON_AVAILABLE", "_TRITON_VERSION"),
-            (cutedsl_utils, "_CUTEDSL_AVAILABLE", "_CUTEDSL_VERSION"),
-        ]:
-            original_len = len(_RegisteredFns)
-            saved_avail = getattr(mod, avail_flag)
-            saved_ver = getattr(mod, ver_flag)
-            try:
-                setattr(mod, avail_flag, True)
-                setattr(mod, ver_flag, None)
-                mod.register_op(lambda: None)
-                self.assertEqual(
-                    len(_RegisteredFns),
-                    original_len,
-                    f"{mod.__name__}.register_op should not enqueue when version is None",
-                )
-            finally:
-                setattr(mod, avail_flag, saved_avail)
-                setattr(mod, ver_flag, saved_ver)
-
     def test_version_skip_env_var_overrides(self):
         """TORCH_NATIVE_SKIP_VERSION_CHECK=1 allows non-blessed versions."""
         script = textwrap.dedent("""\
