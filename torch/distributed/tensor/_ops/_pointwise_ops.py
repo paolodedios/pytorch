@@ -87,6 +87,8 @@ non_decreasing_unary_ops = [
     aten.atan_.default,
     aten.ceil.default,
     aten.ceil_.default,
+    aten.deg2rad.default,
+    aten.deg2rad_.default,
     aten.erf.default,
     aten.erf_.default,
     aten.exp.default,
@@ -97,6 +99,8 @@ non_decreasing_unary_ops = [
     aten.expm1_.default,
     aten.floor.default,
     aten.floor_.default,
+    aten.rad2deg.default,
+    aten.rad2deg_.default,
     aten.relu.default,
     aten.relu_.default,
     aten.round.decimals,
@@ -129,14 +133,6 @@ non_increasing_unary_ops: list[OpOverload] = [
     aten.special_erfcx.default,
 ]
 
-# Linear nondecreasing unary ops: both linear (P(sum/avg) preserved) and
-# nondecreasing (P(max/min) preserved).  Multiplication by a positive constant.
-linear_nondecreasing_unary_ops = [
-    aten.deg2rad.default,
-    aten.deg2rad_.default,
-    aten.rad2deg.default,
-    aten.rad2deg_.default,
-]
 
 # All-partial-preserving unary ops: P(x)->P(x) for all x.
 # TODO: positive should be removed once CIA (Copy Is All) optimizes it away.
@@ -511,7 +507,6 @@ pointwise_ops = (
     ]
     + non_decreasing_unary_ops
     + non_increasing_unary_ops
-    + linear_nondecreasing_unary_ops
     + all_partial_preserving_unary_ops
     + monotonic_binary_ops
     + [
