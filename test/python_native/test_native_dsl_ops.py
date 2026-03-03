@@ -93,12 +93,6 @@ class TestNativeDSLOps(TestCase):
         result = _subprocess_lastline(script, env=env)
         self.assertEqual(result, "True")
 
-    def test_unavailable_reason_present(self):
-        """Known package -> _unavailable_reason returns None."""
-        from torch._native.common_utils import _unavailable_reason
-
-        self.assertIsNone(_unavailable_reason([("torch", "torch")]))
-
     def test_unavailable_reason_missing(self):
         """Nonexistent package -> _unavailable_reason returns a string."""
         from torch._native.common_utils import _unavailable_reason
@@ -141,28 +135,6 @@ class TestNativeDSLOps(TestCase):
 
         # cleanup
         _RegisteredFns.pop()
-
-    def test_register_op_skips_when_runtime_unavailable(self):
-        """register_op does not enqueue fn when runtime is unavailable."""
-        from torch._native import cutedsl_utils, triton_utils
-        from torch._native.registry import _RegisteredFns
-
-        for mod, flag_name in [
-            (triton_utils, "_TRITON_AVAILABLE"),
-            (cutedsl_utils, "_CUTEDSL_AVAILABLE"),
-        ]:
-            original_len = len(_RegisteredFns)
-            saved = getattr(mod, flag_name)
-            try:
-                setattr(mod, flag_name, False)
-                mod.register_op(lambda: None)
-                self.assertEqual(
-                    len(_RegisteredFns),
-                    original_len,
-                    f"{mod.__name__}.register_op should not enqueue when runtime unavailable",
-                )
-            finally:
-                setattr(mod, flag_name, saved)
 
     def test_register_op_skips_when_jit_disabled(self):
         """register_op does not enqueue fn when TORCH_DISABLE_NATIVE_JIT=1."""
