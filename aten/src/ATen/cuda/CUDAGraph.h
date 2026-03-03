@@ -33,25 +33,7 @@ struct TORCH_CUDA_CPP_API CUDAGraphImpl : public at::GraphImplInterface {
   CUDAGraphImpl(const GraphImplArgs& args = {});
   ~CUDAGraphImpl() override;
 
-  // Copy and move constructors and assignments are disabled. These
-  // were disabled because pybind11 believed that CUDAGraph was copy
-  // constructable because
-  // pybind11::is_copy_constructible<CUDAGraph>::value originally
-  // evaluated to true. However, it cannot generate a copy constructor
-  // because CUDAGeneratorState, one of CUDAGraph's members, is an
-  // incomplete type unless CUDAGeneratorImpl.h is included. However,
-  // that would create a circular dependency between
-  // CUDAGeneratorImpl.h and CUDAGraph.h. Disabling the copy and move
-  // constructors is the most straightforward way to prevent pybind11
-  // from trying to generate default implementations of them.
-  //
-  // We needed pybind11 to return a reference to a CUDAGraph as part
-  // of wrapping CUDAGraph::get_currently_capturing_graph, which
-  // unearthed the above problem.
-  CUDAGraphImpl(const CUDAGraphImpl&) = delete;
-  CUDAGraphImpl& operator=(const CUDAGraphImpl&) = delete;
-  CUDAGraphImpl(CUDAGraphImpl&& other) = delete;
-  CUDAGraphImpl& operator=(CUDAGraphImpl&& other) = delete;
+  C10_DISABLE_COPY_AND_ASSIGN(CUDAGraphImpl);
 
   // See Note [Explicit Registration of Generators to the CUDA Graph]
   void register_generator_state(c10::intrusive_ptr<at::CUDAGeneratorState> state);
@@ -155,6 +137,25 @@ struct TORCH_CUDA_CPP_API CUDAGraph {
     impl_ = std::make_unique<CUDAGraphImpl>(args);
   }
   ~CUDAGraph() = default;
+
+  // Copy and move constructors and assignments are disabled. These
+  // were disabled because pybind11 believed that CUDAGraph was copy
+  // constructable because
+  // pybind11::is_copy_constructible<CUDAGraph>::value originally
+  // evaluated to true. However, it cannot generate a copy constructor
+  // because CUDAGeneratorState, one of CUDAGraph's members, is an
+  // incomplete type unless CUDAGeneratorImpl.h is included. However,
+  // that would create a circular dependency between
+  // CUDAGeneratorImpl.h and CUDAGraph.h. Disabling the copy and move
+  // constructors is the most straightforward way to prevent pybind11
+  // from trying to generate default implementations of them.
+  //
+  // We needed pybind11 to return a reference to a CUDAGraph as part
+  // of wrapping CUDAGraph::get_currently_capturing_graph, which
+  // unearthed the above problem.
+  C10_DISABLE_COPY_AND_ASSIGN(CUDAGraph);
+  CUDAGraph(CUDAGraph&& other) = delete;
+  CUDAGraph& operator=(CUDAGraph&& other) = delete;
 
   // See Note [Explicit Registration of Generators to the CUDA Graph]
   void register_generator_state(c10::intrusive_ptr<at::CUDAGeneratorState> state) {
