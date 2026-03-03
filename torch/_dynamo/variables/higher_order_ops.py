@@ -4132,18 +4132,9 @@ class FlexAttentionHigherOrderVariable(TorchHigherOrderOperatorVariable):
             fn_name,
             torch.fx.GraphModule(tx.output.nn_modules, body_graph),
         )
-
         body_node = make_attr(tx, body_name)
-
-        # It is possible that the score-mod function captures some free variables that are not
-        # passed in as arguments. In this case, we need to lift them, which is handled by speculate_subgraph.
-        # We then need to create proxies for this + the inputs.
-
         lifted_args = tuple(arg for arg in body_lifted_freevars)
-
-        proxy_args = (body_node, lifted_args)
-
-        return proxy_args
+        return body_node, lifted_args
 
     def _call_function(
         self,
@@ -4211,6 +4202,100 @@ class FlexAttentionHigherOrderVariable(TorchHigherOrderOperatorVariable):
                         inp_arg_kernel_options,
                         score_mod_lifted_args,
                         mask_fn_lifted_args,
+                    ),
+                    kwargs={},
+                ),
+                example_value=None,
+            )
+        return proxy
+
+
+class CreateBlockMaskHigherOrderVariable(TorchHigherOrderOperatorVariable):
+    _HOP_NAME = "torch.ops.higher_order.create_block_mask"
+
+    def create_wrapped_node(
+        self,
+        tx: "InstructionTranslator",
+        fn: VariableTracker,
+        device_var: VariableTracker,
+    ) -> tuple[Proxy, tuple[Proxy, ...]]:
+        from .._trace_wrapped_higher_order_op import TransformGetItemToIndex
+        from .torch import TorchInGraphFunctionVariable
+
+        zeros_var = TorchInGraphFunctionVariable(torch.zeros)
+
+        def create_scalar() -> VariableTracker:
+            return zeros_var.call_function(
+                tx,
+                [VariableTracker.build(tx, [])],
+                {
+                    "dtype": VariableTracker.build(tx, torch.int32),
+                    "device": VariableTracker.build(tx, "cpu"),
+                },
+            )
+
+        with discard_graph_changes(tx):
+            bhmn = [create_scalar() for _ in range(4)]
+            new_args = [*bhmn]
+
+        with TransformGetItemToIndex():
+            (
+                (_body_output, _body_spec),
+                body_graph,
+                body_lifted_freevars,
+            ) = speculate_subgraph(
+                tx,
+                fn,
+                new_args,
+                {},
+                description=f"{self._HOP_NAME}: mask_mod",
+                source_target=self.value,
+                set_subgraph_inputs="flatten_manual",
+            )
+
+        body_name = tx.output.install_subgraph(
+            "create_block_mask_mask",
+            torch.fx.GraphModule(tx.output.nn_modules, body_graph),
+        )
+        body_node = make_attr(tx, body_name)
+        lifted_args = tuple(arg for arg in body_lifted_freevars)
+        return body_node, lifted_args
+
+    def _call_function(
+        self,
+        tx: "InstructionTranslator",
+        args: Sequence[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        from .builder import wrap_fx_proxy
+
+        # Signature: mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE,
+        #            mask_mod_other_buffers
+        mask_mod = args[0]
+        B = args[1]
+        H = args[2]
+        Q_LEN = args[3]
+        KV_LEN = args[4]
+        device = args[5] if len(args) > 5 else VariableTracker.build(tx, "cpu")
+        BLOCK_SIZE = args[6] if len(args) > 6 else VariableTracker.build(tx, (128, 128))
+
+        mask_mod_node, mask_mod_lifted_args = self.create_wrapped_node(
+            tx, mask_mod, device,
+        )
+
+        proxied_args = [B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE]
+        inp_args, _ = proxy_args_kwargs(proxied_args, {})
+
+        with torch.fx.experimental.proxy_tensor.set_original_aten_op(self.value):
+            proxy = wrap_fx_proxy(
+                tx=tx,
+                proxy=tx.output.create_proxy(
+                    "call_function",
+                    self.value,
+                    args=(
+                        mask_mod_node,
+                        *inp_args,
+                        mask_mod_lifted_args,
                     ),
                     kwargs={},
                 ),
@@ -5525,6 +5610,7 @@ _hop_name_to_variable_class = {
     "hints_wrapper": HintsWrapperHigherOrderVariable,
     "flex_attention": FlexAttentionHigherOrderVariable,
     "flex_attention_backward": FlexAttentionBackwardHighOrderVariable,
+    "create_block_mask": CreateBlockMaskHigherOrderVariable,
     "wrap_activation_checkpoint": CheckpointHigherOrderVariable,
     "tag_activation_checkpoint": CheckpointHigherOrderVariable,
     "_export_tracepoint": ExportTracepointHigherOrderVariable,

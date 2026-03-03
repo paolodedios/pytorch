@@ -1274,6 +1274,35 @@ def create_block_mask(
             mask_mod, B, H, Q_LEN, KV_LEN, device, BLOCK_SIZE
         )
 
+    # Under make_fx tracing, use the HOP so create_block_mask appears as a
+    # single node in the outer graph with mask_mod traced as a subgraph.
+    if not torch.compiler.is_dynamo_compiling():
+        from torch._higher_order_ops.flex_attention import (
+            _extract_tensor_closure_vars,
+            create_block_mask_hop,
+        )
+
+        modified_mask_mod, mask_mod_other_buffers = _extract_tensor_closure_vars(
+            mask_mod
+        )
+        tensors = create_block_mask_hop(
+            modified_mask_mod,
+            B,
+            H,
+            Q_LEN,
+            KV_LEN,
+            str(device),
+            (Q_BLOCK_SIZE, KV_BLOCK_SIZE),
+            mask_mod_other_buffers,
+        )
+        kwargs = dict(zip(BlockMask._TENSOR_ATTRS, tensors))
+        return BlockMask(
+            seq_lengths=(Q_LEN, KV_LEN),
+            BLOCK_SIZE=(Q_BLOCK_SIZE, KV_BLOCK_SIZE),
+            mask_mod=mask_mod,
+            **kwargs,
+        )
+
     mask_tensor = create_mask(mask_mod, B, H, Q_LEN, KV_LEN, device)
     partial_block_mask, full_block_mask = _convert_mask_to_block_mask(
         mask_tensor,
