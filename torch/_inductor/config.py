@@ -875,9 +875,9 @@ compute_all_bounds = False
 
 # enable the combo kernel that combines data-independent kernels (additional
 # to foreach kernels) into a single one (Experimental)
-combo_kernels = False
+combo_kernels = True
 # benchmark combo kernels and only allow ones with perf gains
-benchmark_combo_kernel = False
+benchmark_combo_kernel = True
 # combo_kernel autotuning options: 0 - disable, 1 - enable except for foreach,
 # 2 - enable for all
 combo_kernels_autotune = 1
