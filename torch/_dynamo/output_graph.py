@@ -3853,11 +3853,15 @@ class SubgraphTracer(fx.Tracer):
         def need_bind(s: Any) -> bool:
             from torch.fx.experimental.symbolic_shapes import is_symbolic
 
-            return (
-                is_symbolic(s)
-                and isinstance(s.node.expr, sympy.Symbol)
-                and s.node.expr not in self.bound_symbols
-            )
+            if not is_symbolic(s) or not isinstance(s.node.expr, sympy.Symbol):
+                return False
+            if s.node.expr in self.bound_symbols:
+                return False
+            # Skip unbacked input symbols - they should be treated like backed symbols
+            shape_env = self.output_graph.shape_env
+            if s.node.expr in shape_env.unbacked_inputs:
+                return False
+            return True
 
         def _proxy_with_example_value(
             example_value: Any, *args: Any, **kwargs: Any
@@ -3974,17 +3978,6 @@ class SubgraphTracer(fx.Tracer):
             self_to_be_bound = self.lookup_unbound_symbols(s)
             if len(self_to_be_bound) == 0:
                 return
-
-            # Skip unbacked symbols that represent input sizes (from mark_unbacked).
-            # These should follow the same arg placement as backed symbols rather
-            # than being prepended before tensor args, so that the generated
-            # wrapper code has an identical arg layout regardless of backed vs unbacked.
-            shape_env = self.output_graph.shape_env
-            self_to_be_bound = [
-                s0
-                for s0 in self_to_be_bound
-                if s0 not in shape_env.unbacked_inputs
-            ]
             if len(self_to_be_bound) == 0:
                 return
 
