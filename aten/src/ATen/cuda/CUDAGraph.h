@@ -61,6 +61,9 @@ struct TORCH_CUDA_CPP_API CUDAGraphImpl : public at::GraphImplInterface {
       cudaGraphConditionalHandle handle,
       const Tensor& scalar_cuda_pred_tensor);
 
+  void set_owner(CUDAGraph* owner) { owner_ = owner; }
+  CUDAGraph* owner() const { return owner_; }
+
  private:
   std::function<bool(cudaStream_t)> create_allocate_filter();
   std::function<bool(cudaStream_t)> create_child_allocate_filter();
@@ -169,7 +172,7 @@ struct TORCH_CUDA_CPP_API CUDAGraph {
   void capture_begin(
       MempoolId_t pool = {0, 0},
       cudaStreamCaptureMode capture_mode = cudaStreamCaptureModeGlobal) {
-    impl_->owner_ = this;
+    impl_->set_owner(this);
     impl_->capture_begin(pool, capture_mode);
   }
 
@@ -213,7 +216,7 @@ struct TORCH_CUDA_CPP_API CUDAGraph {
     CUDAGraphImpl* impl = CUDAGraphImpl::get_currently_capturing_graph();
     TORCH_CHECK(impl != nullptr && impl->owner_ != nullptr,
                 "get_currently_capturing_graph() called outside of a CUDAGraph capture.");
-    return impl->owner_;
+    return impl->owner();
   }
 
   void begin_capture_to_if_node(const Tensor& scalar_cuda_pred_tensor) {
