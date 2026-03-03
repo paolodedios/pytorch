@@ -161,7 +161,7 @@ class MixOrderReductionTest(TestBase):
         self.assertEqual(metrics.codegen_mix_order_reduction, 0)
 
     @inductor_config.patch(split_reductions=False)
-    def test_mix_order_reduction_invalid_fuse(self):
+    def test_fuse_non_contiguous_pointwise(self):
         if not inductor_config.triton.mix_order_reduction:
             self.skipTest("Mix order reduction not enabled")
 
