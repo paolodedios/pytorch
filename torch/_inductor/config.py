@@ -871,7 +871,7 @@ always_keep_tensor_constants = False
 assert_indirect_indexing = True
 
 # skip emitting runtime assertions for unbacked symbols in generated code
-do_not_emit_runtime_assertions = True
+do_not_emit_runtime_assertions = False
 
 # compute CSE bounds on variables that do not appear in the FX graph
 compute_all_bounds = False
@@ -1309,7 +1309,7 @@ assume_aligned_inputs: bool = False
 # use 32-bit indices regardless of tensor sizes. If assume_32bit_indexing contradicts
 # with example inputs we throw. This is useful when all dynamic shapes are unbacked and
 # you know you only operate with 32-bit sizes.
-assume_32bit_indexing: bool = True
+assume_32bit_indexing: bool = False
 
 # For the user-written Triton kernels compiled with the model, ignore the unsupported
 # arguments passed to the @triton.autotune in the user's code; this is unsafe, as

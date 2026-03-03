@@ -3974,8 +3974,6 @@ class SubgraphTracer(fx.Tracer):
             self_to_be_bound = self.lookup_unbound_symbols(s)
             if len(self_to_be_bound) == 0:
                 return
-            if len(self_to_be_bound) == 0:
-                return
 
             # For subgraph
             if self.parent is not None:
