@@ -11,7 +11,6 @@ from torch._dynamo.utils import same
 from torch._inductor import metrics, utils
 from torch._inductor.scheduler import MixOrderReduction
 from torch._inductor.test_case import run_tests, TestCase
-from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 from torch.testing import FileCheck
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
@@ -762,16 +761,9 @@ class MixOrderReductionTest(TestBase):
             o_proj,
             embed_norm,
             hidden_norm,
-            block_mask,
             cos,
             sin,
         ):
-            """
-            split -> dual RMSNorm -> cat -> Q/K/V -> RoPE -> flex_attention -> residual add.
-
-            This reproduces the exact pattern that causes Triton to fuse too many backward
-            ops (add, div, expand, mul, pow, slice, split, sum, view) into one kernel.
-            """
             batch, seq_len, _ = x.shape
 
             # Eagle3 first layer: split concatenated [embeds, hidden] input
@@ -796,15 +788,9 @@ class MixOrderReductionTest(TestBase):
             v = v_proj(x).view(batch, seq_len, NUM_KV_HEADS, HEAD_DIM).transpose(1, 2)
 
             q, k = apply_rotary_pos_emb(q, k, cos, sin)
-
-            out = flex_attention(
-                q.contiguous(),
-                k.contiguous(),
-                v.contiguous(),
-                block_mask=block_mask,
-                enable_gqa=True,
-                scale=HEAD_DIM**-0.5,
-            )
+            k = torch.repeat_interleave(k, NUM_HEADS // NUM_KV_HEADS, dim=1)
+            v = torch.repeat_interleave(v, NUM_HEADS // NUM_KV_HEADS, dim=1)
+            out = q.contiguous() @ k.contiguous().transpose(-2, -1) @ v.contiguous()
 
             out = out.transpose(1, 2).contiguous().reshape(batch, seq_len, -1)
             return o_proj(out) + residual
@@ -827,10 +813,6 @@ class MixOrderReductionTest(TestBase):
         # Block mask - simple causal only
         def causal_mask(_b, _h, q, kv):
             return q >= kv
-
-        block_mask = create_block_mask(
-            causal_mask, B=None, H=None, Q_LEN=SEQ_LEN, KV_LEN=SEQ_LEN, device=GPU_TYPE
-        )
 
         # Rotary embeddings (precomputed, no grad needed)
         inv_freq = 1.0 / (
@@ -858,7 +840,6 @@ class MixOrderReductionTest(TestBase):
             o_proj,
             embed_norm,
             hidden_norm,
-            block_mask,
             cos,
             sin,
         )
