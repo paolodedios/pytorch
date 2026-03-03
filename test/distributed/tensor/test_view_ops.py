@@ -727,7 +727,14 @@ class TestViewOps(DTensorTestBase):
                                     RuntimeError,
                                     "is not evenly divisible by mesh dimension",
                                 )
-                            with ctx:
+                            with (
+                                self.subTest(
+                                    dims=tensor_dims,
+                                    shard=shard_dim,
+                                    flat=(flatten_start, flatten_end),
+                                ),
+                                ctx,
+                            ):
                                 self._test_dtensor_flatten_1d_shard(
                                     tensor_dims,
                                     flatten_start,
@@ -746,13 +753,16 @@ class TestViewOps(DTensorTestBase):
                         itertools.product(tensor_dim_values, repeat=tensor_ndim)
                     ):
                         placements = (Replicate(),)
-                        self._test_dtensor_flatten_replicate(
-                            tensor_dims,
-                            flatten_start,
-                            flatten_end,
-                            mesh,
-                            placements,
-                        )
+                        with self.subTest(
+                            dims=tensor_dims, flat=(flatten_start, flatten_end)
+                        ):
+                            self._test_dtensor_flatten_replicate(
+                                tensor_dims,
+                                flatten_start,
+                                flatten_end,
+                                mesh,
+                                placements,
+                            )
 
     def _test_dtensor_flatten_1d_shard(
         self, tensor_dims, flatten_start, flatten_end, mesh, placements
@@ -850,7 +860,14 @@ class TestViewOps(DTensorTestBase):
                                         RuntimeError,
                                         "is not evenly divisible by mesh dimension",
                                     )
-                                with ctx:
+                                with (
+                                    self.subTest(
+                                        dims=tensor_dims,
+                                        shard=shard_dim,
+                                        mesh_dim=shard_placement_idx,
+                                    ),
+                                    ctx,
+                                ):
                                     self._test_dtensor_flatten_2d_sr_rs(
                                         tensor_dims,
                                         flatten_start,
@@ -919,7 +936,14 @@ class TestViewOps(DTensorTestBase):
                                         * 1.0
                                         / mesh.size(1)
                                     )
-                                    with ctx:
+                                    with (
+                                        self.subTest(
+                                            dims=tensor_dims,
+                                            shard0=shard_dim0,
+                                            shard1=shard_dim1,
+                                        ),
+                                        ctx,
+                                    ):
                                         self._test_dtensor_flatten_2d_ss(
                                             tensor_dims,
                                             flatten_start,
@@ -939,13 +963,16 @@ class TestViewOps(DTensorTestBase):
                         tensor_dim_values, repeat=tensor_ndim
                     ):
                         placements = (Replicate(), Replicate())
-                        self._test_dtensor_flatten_replicate(
-                            tensor_dims,
-                            flatten_start,
-                            flatten_end,
-                            mesh,
-                            placements,
-                        )
+                        with self.subTest(
+                            dims=tensor_dims, flat=(flatten_start, flatten_end)
+                        ):
+                            self._test_dtensor_flatten_replicate(
+                                tensor_dims,
+                                flatten_start,
+                                flatten_end,
+                                mesh,
+                                placements,
+                            )
 
     def _test_dtensor_flatten_2d_sr_rs(
         self,
@@ -1095,28 +1122,33 @@ class TestViewOps(DTensorTestBase):
             shard_dim,
             expected_shard_dim,
         ) in test_cases:
-            placements = (Shard(shard_dim),)
-            nelem = math.prod(tensor_dims)
-            global_inps = torch.arange(nelem).view(tensor_dims)
-            dt = distribute_tensor(global_inps, mesh, placements, src_data_rank=None)
+            with self.subTest(
+                dims=tensor_dims, shard=shard_dim, flat=(flatten_start, flatten_end)
+            ):
+                placements = (Shard(shard_dim),)
+                nelem = math.prod(tensor_dims)
+                global_inps = torch.arange(nelem).view(tensor_dims)
+                dt = distribute_tensor(
+                    global_inps, mesh, placements, src_data_rank=None
+                )
 
-            flat_dims = self._get_viewed_tensor_dims(
-                tensor_dims, flatten_start, flatten_end
-            )
-            comm_mode = CommDebugMode()
-            with comm_mode:
-                dt_flat = dt.view(flat_dims)
+                flat_dims = self._get_viewed_tensor_dims(
+                    tensor_dims, flatten_start, flatten_end
+                )
+                comm_mode = CommDebugMode()
+                with comm_mode:
+                    dt_flat = dt.view(flat_dims)
 
-            expected_placements = (Shard(expected_shard_dim),)
-            self.assertEqual(dt_flat.placements, expected_placements)
-            expected_local = distribute_tensor(
-                global_inps.view(flat_dims),
-                mesh,
-                expected_placements,
-                src_data_rank=None,
-            )._local_tensor
-            self.assertEqual(dt_flat._local_tensor, expected_local)
-            self.assertEqual(comm_mode.get_total_counts(), 0)
+                expected_placements = (Shard(expected_shard_dim),)
+                self.assertEqual(dt_flat.placements, expected_placements)
+                expected_local = distribute_tensor(
+                    global_inps.view(flat_dims),
+                    mesh,
+                    expected_placements,
+                    src_data_rank=None,
+                )._local_tensor
+                self.assertEqual(dt_flat._local_tensor, expected_local)
+                self.assertEqual(comm_mode.get_total_counts(), 0)
 
         # 2D mesh: test shard outside range with (Shard, Replicate) and (Replicate, Shard)
         mesh_2d = init_device_mesh(self.device_type, (3, self.world_size // 3))
@@ -1135,36 +1167,39 @@ class TestViewOps(DTensorTestBase):
                 shard_dim if shard_dim < flatten_start else shard_dim - num_merged
             )
             for mesh_dim_idx in range(2):
-                placements = tuple(
-                    Shard(shard_dim) if i == mesh_dim_idx else Replicate()
-                    for i in range(2)
-                )
-                nelem = math.prod(tensor_dims)
-                global_inps = torch.arange(nelem).view(tensor_dims)
-                dt = distribute_tensor(
-                    global_inps, mesh_2d, placements, src_data_rank=None
-                )
+                with self.subTest(
+                    dims=tensor_dims, shard=shard_dim, mesh_dim=mesh_dim_idx
+                ):
+                    placements = tuple(
+                        Shard(shard_dim) if i == mesh_dim_idx else Replicate()
+                        for i in range(2)
+                    )
+                    nelem = math.prod(tensor_dims)
+                    global_inps = torch.arange(nelem).view(tensor_dims)
+                    dt = distribute_tensor(
+                        global_inps, mesh_2d, placements, src_data_rank=None
+                    )
 
-                flat_dims = self._get_viewed_tensor_dims(
-                    tensor_dims, flatten_start, flatten_end
-                )
-                comm_mode = CommDebugMode()
-                with comm_mode:
-                    dt_flat = dt.view(flat_dims)
+                    flat_dims = self._get_viewed_tensor_dims(
+                        tensor_dims, flatten_start, flatten_end
+                    )
+                    comm_mode = CommDebugMode()
+                    with comm_mode:
+                        dt_flat = dt.view(flat_dims)
 
-                expected_placements = tuple(
-                    Shard(expected_shard_dim) if i == mesh_dim_idx else Replicate()
-                    for i in range(2)
-                )
-                self.assertEqual(dt_flat.placements, expected_placements)
-                expected_local = distribute_tensor(
-                    global_inps.view(flat_dims),
-                    mesh_2d,
-                    expected_placements,
-                    src_data_rank=None,
-                )._local_tensor
-                self.assertEqual(dt_flat._local_tensor, expected_local)
-                self.assertEqual(comm_mode.get_total_counts(), 0)
+                    expected_placements = tuple(
+                        Shard(expected_shard_dim) if i == mesh_dim_idx else Replicate()
+                        for i in range(2)
+                    )
+                    self.assertEqual(dt_flat.placements, expected_placements)
+                    expected_local = distribute_tensor(
+                        global_inps.view(flat_dims),
+                        mesh_2d,
+                        expected_placements,
+                        src_data_rank=None,
+                    )._local_tensor
+                    self.assertEqual(dt_flat._local_tensor, expected_local)
+                    self.assertEqual(comm_mode.get_total_counts(), 0)
 
     @with_comms
     def test_dtensor_flatten_unflatten_roundtrip(self):
@@ -1209,52 +1244,58 @@ class TestViewOps(DTensorTestBase):
         ]
 
         for tensor_dims, flatten_start, flatten_end, shard_dim in test_cases:
-            placements = (Shard(shard_dim),)
-            nelem = math.prod(tensor_dims)
-            global_inps = torch.arange(nelem).view(tensor_dims)
-            dt = distribute_tensor(global_inps, mesh, placements, src_data_rank=None)
+            with self.subTest(dims=tensor_dims, shard=shard_dim, direction="flatten"):
+                placements = (Shard(shard_dim),)
+                nelem = math.prod(tensor_dims)
+                global_inps = torch.arange(nelem).view(tensor_dims)
+                dt = distribute_tensor(
+                    global_inps, mesh, placements, src_data_rank=None
+                )
 
-            # Flatten
-            flat_dims = self._get_viewed_tensor_dims(
-                tensor_dims, flatten_start, flatten_end
-            )
-            dt_flat = dt.view(flat_dims)
+                # Flatten
+                flat_dims = self._get_viewed_tensor_dims(
+                    tensor_dims, flatten_start, flatten_end
+                )
+                dt_flat = dt.view(flat_dims)
 
-            # Unflatten back
-            dt_roundtrip = dt_flat.view(tensor_dims)
+                # Unflatten back
+                dt_roundtrip = dt_flat.view(tensor_dims)
 
-            self.assertEqual(dt_roundtrip.placements, placements)
-            self.assertEqual(dt_roundtrip._local_tensor, dt._local_tensor)
+                self.assertEqual(dt_roundtrip.placements, placements)
+                self.assertEqual(dt_roundtrip._local_tensor, dt._local_tensor)
 
         # unflatten -> flatten round-trip
         # Start with a flattened tensor, unflatten it, then flatten back
         for tensor_dims, flatten_start, flatten_end, shard_dim in test_cases:
-            flat_dims = self._get_viewed_tensor_dims(
-                tensor_dims, flatten_start, flatten_end
-            )
-            # Compute the shard dim in the flattened view
-            if shard_dim < flatten_start:
-                flat_shard_dim = shard_dim
-            elif shard_dim < flatten_end:
-                flat_shard_dim = (
-                    flatten_start  # all flattened dims merge to flatten_start
+            with self.subTest(dims=tensor_dims, shard=shard_dim, direction="unflatten"):
+                flat_dims = self._get_viewed_tensor_dims(
+                    tensor_dims, flatten_start, flatten_end
                 )
-            else:
-                flat_shard_dim = shard_dim - (flatten_end - flatten_start - 1)
+                # Compute the shard dim in the flattened view
+                if shard_dim < flatten_start:
+                    flat_shard_dim = shard_dim
+                elif shard_dim < flatten_end:
+                    flat_shard_dim = (
+                        flatten_start  # all flattened dims merge to flatten_start
+                    )
+                else:
+                    flat_shard_dim = shard_dim - (flatten_end - flatten_start - 1)
 
-            placements = (Shard(flat_shard_dim),)
-            nelem = math.prod(flat_dims)
-            global_inps = torch.arange(nelem).view(flat_dims)
-            dt = distribute_tensor(global_inps, mesh, placements, src_data_rank=None)
+                placements = (Shard(flat_shard_dim),)
+                nelem = math.prod(flat_dims)
+                global_inps = torch.arange(nelem).view(flat_dims)
+                dt = distribute_tensor(
+                    global_inps, mesh, placements, src_data_rank=None
+                )
 
-            # Unflatten
-            dt_unflat = dt.view(tensor_dims)
+                # Unflatten
+                dt_unflat = dt.view(tensor_dims)
 
-            # Flatten back
-            dt_roundtrip = dt_unflat.view(flat_dims)
+                # Flatten back
+                dt_roundtrip = dt_unflat.view(flat_dims)
 
-            self.assertEqual(dt_roundtrip.placements, placements)
-            self.assertEqual(dt_roundtrip._local_tensor, dt._local_tensor)
+                self.assertEqual(dt_roundtrip.placements, placements)
+                self.assertEqual(dt_roundtrip._local_tensor, dt._local_tensor)
 
     @with_comms
     def test_view_redistribution(self):

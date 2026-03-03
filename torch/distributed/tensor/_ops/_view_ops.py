@@ -839,6 +839,8 @@ def propagate_shape_and_sharding(
 
             # Phase 2: chunk-based matching — the split_factor encodes
             # mesh structure (SS+S on same dim). The SS stays as SS.
+            # Integer division: if not evenly divisible, chunk is truncated
+            # and the match conditions below will fail, falling through.
             chunk = global_input_shape[p.dim] // (mesh_sizes[mesh_dim] * p.split_factor)
             chunk_match_idx = None
             for idx, candidate_dim in enumerate(tgt_shard_dims):
