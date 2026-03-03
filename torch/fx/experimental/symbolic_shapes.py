@@ -4793,6 +4793,10 @@ class ShapeEnv:
         # Record tensor exclusion constraints for stable graph selection.
         # The ndim check guards against stale excluded_sizes from graph
         # breaks where the resumed tensor may have different dimensionality.
+        # Skip dims with hint overrides: the overridden hint in
+        # backed_var_to_val would mismatch the excluded value, causing the
+        # not-all check in produce_guards_verbose to emit a guard that
+        # immediately fails.
         excluded_sizes = getattr(symbolic_context, "excluded_sizes", None)
         if (
             excluded_sizes
@@ -4801,7 +4805,11 @@ class ShapeEnv:
         ):
             for i in range(dim):
                 ev = excluded_sizes[i]
-                if ev is not None and isinstance(size[i], sympy.Symbol):
+                if (
+                    ev is not None
+                    and isinstance(size[i], sympy.Symbol)
+                    and i not in (hint_overrides or {})
+                ):
                     self._record_exclusion_constraint(size[i], ev)
         stride = self._compute_symbolic_stride(
             source,
