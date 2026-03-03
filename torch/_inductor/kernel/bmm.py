@@ -60,7 +60,7 @@ bmm_template = TritonTemplate(
 aten_bmm = ExternKernelChoice(torch.bmm, "at::bmm_out", op_overload=aten.bmm.out)
 aten_bmm_dtype = ExternKernelChoice(
     torch.bmm,
-    "at::_bmm_out_dtype_xpu" if torch.xpu.is_available() else "at::_bmm_out_dtype_cuda",
+    "at::_bmm_out_dtype_xpu" if torch.xpu._is_compiled() else "at::_bmm_out_dtype_cuda",
     name="bmm_dtype",
     op_overload=aten.bmm.dtype_out,
 )
@@ -202,7 +202,7 @@ def tuned_bmm(mat1, mat2, out_dtype=None, *, layout=None):
         and use_cutlass_template(layout, m, n, k)
         and _use_cutlass_for_op(name)
     ):
-        from ..codegen.cuda.gemm_template import CUTLASS3xGemmTemplate
+        from ..codegen.cutlass.gemm_template import CUTLASS3xGemmTemplate
 
         CUTLASS3xGemmTemplate.add_cutlass_gemm_choices(
             choices, layout, kernel_inputs.nodes()
