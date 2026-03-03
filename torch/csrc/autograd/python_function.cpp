@@ -151,13 +151,13 @@ namespace torch::autograd {
 
 // Update needs_input_grad to reflect which gradients are actually needed
 // by the current graph task (e.g. when inputs= is specified in backward()).
-void PyNode::update_needs_input_grad(THPFunction* py_fn) {
+static void update_needs_input_grad(Node* node, THPFunction* py_fn) {
   const auto& is_variable_input = py_fn->is_variable_input;
   size_t edge_idx = 0;
   for (const auto i : c10::irange(is_variable_input.size())) {
     if (is_variable_input[i]) {
       PyObject* new_val =
-          task_should_compute_output(edge_idx++) ? Py_True : Py_False;
+          node->task_should_compute_output(edge_idx++) ? Py_True : Py_False;
       PyObject* cur = PyTuple_GET_ITEM(py_fn->needs_input_grad, i);
       if (cur != new_val) {
         Py_INCREF(new_val);
@@ -180,7 +180,7 @@ auto PyNode::apply(variable_list&& inputs) -> variable_list {
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
 
-  update_needs_input_grad(py_fn);
+  update_needs_input_grad(this, py_fn);
 
   // Massage a C++ variable_list into a Python arguments tuple
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));
@@ -236,7 +236,7 @@ auto PyNode::apply_with_saved_impl(
   at::OptionalDeviceGuard _device_guard;
   THPFunction* py_fn = (THPFunction*)obj;
 
-  update_needs_input_grad(py_fn);
+  update_needs_input_grad(this, py_fn);
 
   // Massage a C++ variable_list into a Python arguments tuple
   THPObjectPtr pyInputs(to_py_args(inputs, &_device_guard));

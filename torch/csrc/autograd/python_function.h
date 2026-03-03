@@ -39,7 +39,6 @@ struct PyNode : public Node {
   variable_list apply_with_saved_impl(
       const variable_list& inputs,
       const SwapSavedVariables& saved);
-  void update_needs_input_grad(THPFunction* py_fn);
 
   void release_variables() override;
   std::string name() const override;
