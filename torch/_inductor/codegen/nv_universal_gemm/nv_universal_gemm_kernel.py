@@ -237,7 +237,7 @@ class NVUniversalGemmKernel(Kernel):
         {gemm_epilogue_arg}
     )"""
             # Include "epilogue" in cache key to differentiate from non-epilogue compilations
-            cache_key_code_with_epilogue = cache_key_code[:-1] + ', "epilogue")'
+            cache_key_code_with_epilogue = f"({cache_key_code}, \"epilogue\")"
         else:
             create_args_with_epilogue = create_args_code
             cache_key_code_with_epilogue = cache_key_code
@@ -264,12 +264,9 @@ class NVUniversalGemmKernel(Kernel):
 
         # Generate main body
         if self.epilogue_fn_code:
-            # Epilogue case: create epilogue args first, then GEMM args with epilogue
-            # Kernel caching is handled by get_efc_kernel_with_epilogue
             efc_kernel_cache_init = ""
             global_decl = f"global {cache_var}"
             main_body = f"""
-    import time as _time
     {epilogue_args_construction}
 
     {create_args_with_epilogue}
@@ -279,18 +276,10 @@ class NVUniversalGemmKernel(Kernel):
     cache_key = {cache_key_code_with_epilogue}
     artifact = {cache_var}.get(cache_key)
     if artifact is None:
-        _tc0 = _time.perf_counter()
         artifact = kernel.compile(args)
-        _tc1 = _time.perf_counter()
-        print(f"      [Kernel] compile: {{(_tc1-_tc0)*1000:.2f}} ms")
         {cache_var}[cache_key] = artifact
-    else:
-        print(f"      [Kernel] compile: cached")
 
-    _tr0 = _time.perf_counter()
-    kernel.run(args, artifact, stream=stream, workspace={workspace_arg}, assume_supported_args=True)
-    _tr1 = _time.perf_counter()
-    print(f"      [Kernel] run: {{(_tr1-_tr0)*1000:.2f}} ms")"""
+    kernel.run(args, artifact, stream=stream, workspace={workspace_arg}, assume_supported_args=True)"""
         else:
             # Non-epilogue case: standard order
             efc_kernel_cache_init = ""
