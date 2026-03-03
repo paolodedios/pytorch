@@ -573,7 +573,7 @@ def propagate_shape_and_sharding(
     for dim in range(len(global_input_shape)):
         shardable_dims[dim] = [dim in seen_input_dims] * mesh_ndim
 
-    def maybe_get_shard_mesh_dim_and_placement(
+    def maybe_get_shard_mesh_dim_and_placement_flatten(
         input_dim: InputDim,
     ) -> tuple[int | None, Shard | _StridedShard | None]:
         # Only matches Shard, not _StridedShard. _StridedShard inputs only appear
@@ -634,7 +634,7 @@ def propagate_shape_and_sharding(
                     raise AssertionError(f"Expected InputDim, got {type(dim)}")
                 can_shard_dim = True
                 shard_mesh_dim, shard_placement = (
-                    maybe_get_shard_mesh_dim_and_placement(dim)
+                    maybe_get_shard_mesh_dim_and_placement_flatten(dim)
                 )
                 input_sharded = shard_mesh_dim is not None
                 is_last_input_dim = i == num_input_dims - 1
@@ -727,7 +727,7 @@ def propagate_shape_and_sharding(
                     out_size % mesh_dim_size == 0 for mesh_dim_size in mesh_sizes
                 ]
 
-                shard_mesh_dim, _ = maybe_get_shard_mesh_dim_and_placement(in_dim)
+                shard_mesh_dim, _ = maybe_get_shard_mesh_dim_and_placement_flatten(in_dim)
                 if strict_view and shard_mesh_dim is not None:
                     if not shardable_dims[in_dim.input_dim][shard_mesh_dim]:
                         raise RuntimeError(
