@@ -1,5 +1,4 @@
 import functools
-import importlib
 from collections.abc import Sequence
 from typing import Any, cast, NamedTuple, Optional, Protocol
 
@@ -9,13 +8,13 @@ from torch._C import (
     _ScalingType as ScalingType,  # pyrefly: ignore [missing-module-attribute]
     _SwizzleType as SwizzleType,  # pyrefly: ignore [missing-module-attribute]
 )
+from torch.library import Library
+
+from ... import cutedsl_utils as cu
 from ._compile_with_safe_names import _compile_with_safe_names
 from .scaled_grouped_mm_prepare_metadata import (
     _compile_scaled_grouped_mm_prepare_metadata,
 )
-from torch.library import Library
-
-from ... import cutedsl_utils as cu
 
 
 class _KernelConfig(NamedTuple):
@@ -423,9 +422,7 @@ def _compile_scaled_grouped_mm_mxfp8(
     import cutlass.cute as cute
     from cutlass.cute.runtime import make_fake_stream, make_fake_tensor
 
-    from .scaled_grouped_mm_mxfp8_kernel import (
-        Sm100GroupedBlockScaledGemmKernel,
-    )
+    from .scaled_grouped_mm_mxfp8_kernel import Sm100GroupedBlockScaledGemmKernel
 
     m = cute.sym_int()
     n = cute.sym_int(divisibility=16)
@@ -580,9 +577,7 @@ def _get_aux_tensors(
 
 @functools.cache
 def _alloc_tensormap(device_index: int, sm_count: int) -> Tensor:
-    from .scaled_grouped_mm_mxfp8_kernel import (
-        Sm100GroupedBlockScaledGemmKernel,
-    )
+    from .scaled_grouped_mm_mxfp8_kernel import Sm100GroupedBlockScaledGemmKernel
 
     device = torch.device("cuda", device_index)
     shape = (
@@ -918,7 +913,7 @@ def _scaled_grouped_mm_v2_conditional_cuda_impl(dispatch_keys, *args, **kwargs):
         use_fast_accum,
     ) = args
 
-    print('calling cutedsl conditional')
+    print("calling cutedsl conditional")
     if _should_use_cutedsl_scaled_grouped_mm_mxfp8(
         mat_a,
         mat_b,

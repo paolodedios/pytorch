@@ -2,8 +2,8 @@ import importlib
 import importlib.metadata
 import os
 import re
-
 from functools import cache
+
 
 @cache
 def check_native_jit_disabled() -> bool:
@@ -31,6 +31,7 @@ def _unavailable_reason(deps: list[tuple[str, str]]) -> None | str:
                 f"(importlib.util.find_spec({package_name}) failed)"
             )
     return None
+
 
 def _available_version(package: str) -> tuple[int, int, int] | None:
     """
@@ -64,5 +65,3 @@ def check_native_version_skip() -> bool:
     TORCH_NATIVE_SKIP_VERSION_CHECK=1
     """
     return int(os.getenv("TORCH_NATIVE_SKIP_VERSION_CHECK", 0)) == 1
-
-

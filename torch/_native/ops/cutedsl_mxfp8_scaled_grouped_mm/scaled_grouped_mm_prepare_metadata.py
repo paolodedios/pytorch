@@ -324,4 +324,3 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
         )
     )
     return compiled
-
