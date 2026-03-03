@@ -811,7 +811,7 @@ class TestFP8Matmul(TestCase):
 
         if (format == "mxfp4") and SM120OrLater:
             raise unittest.SkipTest("MXFP4 on CUDA only supported on B200/B300")
-        if (format == "mxfp4") and not PLATFORM_SUPPORTS_MXFP4_GEMM:
+        if (format == "mxfp4") and (not PLATFORM_SUPPORTS_MXFP4_GEMM):
             raise unittest.SkipTest("MXFP4 not supported on this platform - build with MSLK support")
 
         # Simulate 2d-3d grouped gemm `out = input @ weight.t()`
