@@ -928,6 +928,60 @@ class TestExpandPlaceholder(TestCase):
             output_placement = strategy.output_spec.placements
             self.assertEqual(out_kwarg_placement, output_placement)
 
+    def test_out_variant_partial_propagation(self):
+        """Test that partial rules work correctly for .out variant ops.
+
+        For mul.out with rule [P(sum), P(sum), R] (output=P(sum), arg1=P(sum), arg2=R),
+        the out kwarg should get P(sum) (matching the output), not R.
+        """
+        mesh = DeviceMesh("cpu", mesh=torch.arange(4))
+        meta = TensorMeta(torch.Size([8, 8]), (8, 1), torch.float32)
+
+        # arg1 is Partial("sum"), arg2 is Replicate, out is Partial("sum")
+        partial_spec = DTensorSpec(mesh, (Partial("sum"),), meta)
+        replicate_spec = DTensorSpec(mesh, (Replicate(),), meta)
+
+        op_schema = OpSchema(
+            op=torch.ops.aten.mul.out,
+            args_schema=(
+                OpStrategy([OpSpec(partial_spec)]),
+                OpStrategy([OpSpec(replicate_spec)]),
+            ),
+            kwargs_schema={"out": OpStrategy([OpSpec(partial_spec)])},
+        )
+
+        # [output, arg1, arg2] — partial rule from _MUL_RULES
+        single_mesh_dim_strategies = [
+            [Partial("sum"), Partial("sum"), Replicate()],
+            [Replicate(), Replicate(), Replicate()],
+        ]
+
+        result = expand_to_full_mesh_op_strategy(
+            mesh,
+            op_schema,
+            single_mesh_dim_strategies,
+            output_tensor_meta=meta,
+            input_index=0,
+        )
+
+        self.assertIsInstance(result, OpStrategy)
+        # Should have strategies where output=P(sum) and out_kwarg=P(sum)
+        found_partial_strategy = False
+        for strategy in result.strategies:
+            if strategy.output_spec.placements == (Partial("sum"),):
+                found_partial_strategy = True
+                # The out kwarg (last input) must match the output
+                out_kwarg_placement = strategy.input_specs[2].placements
+                self.assertEqual(
+                    out_kwarg_placement,
+                    (Partial("sum"),),
+                    "out kwarg should be P(sum) matching the output, not R",
+                )
+        self.assertTrue(
+            found_partial_strategy,
+            "Expected a strategy with Partial('sum') output for mul.out",
+        )
+
     def test_expand_multi_output_strategy(self):
         """Test expanding single-dim strategies for multi-output ops.
 

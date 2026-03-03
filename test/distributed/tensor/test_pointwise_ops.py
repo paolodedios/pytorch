@@ -319,6 +319,31 @@ class DistElementwiseOpsTest(DTensorOpTestBase):
         self.assertEqual(expected, dt.to_local())
 
     @with_comms
+    def test_mul_out_partial(self):
+        device_mesh = self.build_device_mesh()
+        input_size = (8, 4)
+        # P(sum) * R -> P(sum), with out= kwarg
+        partial_tensor = DTensor.from_local(
+            torch.ones(*input_size, device=self.device_type),
+            device_mesh,
+            [Partial("sum")],
+        )
+        replicate_tensor = DTensor.from_local(
+            torch.full(input_size, 2.0, device=self.device_type),
+            device_mesh,
+            [Replicate()],
+            run_check=False,
+        )
+        output_tensor = DTensor.from_local(
+            torch.empty(*input_size, device=self.device_type),
+            device_mesh,
+            [Partial("sum")],
+        )
+        dt = torch.mul(partial_tensor, replicate_tensor, out=output_tensor)
+        self.assertEqual(dt.placements, (Partial("sum"),))
+        self.assertEqual(output_tensor.placements, (Partial("sum"),))
+
+    @with_comms
     def test_mul_partial(self):
         # we only test the partial behavior for mul op as other placement
         # behaviors should be well tested in test_dtensor_ops.py
