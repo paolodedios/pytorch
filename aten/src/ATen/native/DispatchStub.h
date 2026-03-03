@@ -442,10 +442,6 @@ struct RegisterPRIVATEUSE1Dispatch {
 #define REGISTER_SVE256_DISPATCH(name, fn)
 #endif
 
-#define REGISTER_SVE_DISPATCH(name, fn)                                        \
-  REGISTER_SVE128_DISPATCH(name, fn)                                           \
-  REGISTER_SVE256_DISPATCH(name, fn)
-
 // Macro to register the same kernel for all CPU arch types. This is useful
 // if a kernel does not benefit from being recompiled across different arch types.
 #define REGISTER_ALL_CPU_DISPATCH(name, fn)                                    \
