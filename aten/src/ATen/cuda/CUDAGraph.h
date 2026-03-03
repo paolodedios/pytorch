@@ -213,9 +213,9 @@ struct TORCH_CUDA_CPP_API CUDAGraph {
   }
 
   static CUDAGraph* get_currently_capturing_graph() {
-    CUDAGraphImpl* impl = CUDAGraphImpl::get_currently_capturing_graph();
-    TORCH_CHECK(impl != nullptr && impl->owner_ != nullptr,
-                "get_currently_capturing_graph() called outside of a CUDAGraph capture.");
+    auto* impl = CUDAGraphImpl::get_currently_capturing_graph();
+    TORCH_CHECK(impl && impl->owner(),
+        "get_currently_capturing_graph() called outside of a CUDAGraph capture.");
     return impl->owner();
   }
 
