@@ -114,10 +114,13 @@ These APIs are experimental and subject to change without notice.
     guard_float
     guard_int
     guard_scalar
+    guarding_hint_or_throw
+    has_guarding_hint
     has_symbolic_sizes_strides
     is_nested_int
     is_symbol_binding_fx_node
     is_symbolic
+    optimization_hint
     expect_true
     log_lru_cache_stats
 ```
