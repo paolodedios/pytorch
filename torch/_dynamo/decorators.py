@@ -1156,8 +1156,14 @@ def mark_unbacked(
         return
 
     assert isinstance(index, (list, tuple))
-    for i in index:
-        mark_unbacked(t, i, shape_id=shape_id, min=min, max=max)
+    if len(index) == 0:
+        # Empty list explicitly means "no unbacked dims"
+        # This is different from not calling mark_unbacked at all (unspecified)
+        if not hasattr(t, "_dynamo_unbacked_indices"):
+            t._dynamo_unbacked_indices = set()
+    else:
+        for i in index:
+            mark_unbacked(t, i, shape_id=shape_id, min=min, max=max)
 
 
 @forbid_in_graph
@@ -1254,9 +1260,17 @@ def mark_dynamic(
         return
 
     assert isinstance(index, (list, tuple))
-    for i in index:
-        mark_dynamic(t, i, min=min, max=max)
-        mark_dynamic(t, i, min=min, max=max, specialize_on=specialize_on)
+    if len(index) == 0:
+        # Empty list explicitly means "no dynamic dims"
+        # This is different from not calling mark_dynamic at all (unspecified)
+        if not hasattr(t, "_dynamo_dynamic_indices"):
+            t._dynamo_dynamic_indices = set()
+            t._dynamo_dynamic_range = set()
+            t._dynamo_hint_overrides = {}  # type: ignore[assignment]
+    else:
+        for i in index:
+            mark_dynamic(t, i, min=min, max=max)
+            mark_dynamic(t, i, min=min, max=max, specialize_on=specialize_on)
 
 
 @forbid_in_graph
@@ -1344,8 +1358,14 @@ def mark_static(t: Any, index: int | list[Any] | tuple[Any] | None = None) -> No
             mark_static(t, i)
     else:
         assert isinstance(index, (list, tuple))
-        for i in index:
-            mark_static(t, i)
+        if len(index) == 0:
+            # Empty list explicitly means "no static dims"
+            # This is different from not calling mark_static at all (unspecified)
+            if not hasattr(t, "_dynamo_static_indices"):
+                t._dynamo_static_indices = set()  # type: ignore[attr-defined]
+        else:
+            for i in index:
+                mark_static(t, i)
 
 
 @forbid_in_graph
