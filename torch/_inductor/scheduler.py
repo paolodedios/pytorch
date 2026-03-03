@@ -42,7 +42,8 @@ from torch._inductor.autotune_process import use_pipelined_autotuning
 from torch._inductor.codecache import LambdaFuture, PyCodeCache
 from torch._inductor.ir import TritonTemplateCallerBase
 from torch._inductor.metrics import get_metric_table, is_metric_table_enabled
-from torch._inductor.stream_utils import DEFAULT_STREAM_IDX, get_stream_name
+from torch._inductor.stream_constants import DEFAULT_STREAM_IDX
+from torch._inductor.stream_utils import get_stream_name
 from torch.fx.experimental.symbolic_shapes import free_symbols
 from torch.utils._sympy.symbol import free_symbol_is_type, symbol_is_type, SymT
 from torch.utils._triton import has_triton
@@ -3194,7 +3195,7 @@ class Scheduler:
         stream each scheduler node should run on. This metadata is set by
         dynamo when tracing torch.cuda.stream() context managers.
         """
-        from .stream_utils import DEFAULT_STREAM_IDX
+        from .stream_constants import DEFAULT_STREAM_IDX
 
         # Map user_object_index to stream index (1-indexed for side streams)
         user_obj_to_stream_idx: dict[int, int] = {}
@@ -7275,7 +7276,7 @@ class Scheduler:
 
     def get_last_event(self, events: OrderedSet[CudaEventSym]) -> CudaEventSym:
         """Identify the latest generated CUDA event among all given events."""
-        return sorted(events, reverse=True)[0]  # CudaEventSym is total-ordering.
+        return max(events, key=lambda e: e.idx)
 
     def get_final_events_to_sync(self) -> OrderedSet[CudaEventSym]:
         """Return the CUDA Events that need to be synced at the end of the program.
@@ -7358,7 +7359,9 @@ class Scheduler:
                 # pyrefly: ignore[unbound-name]
                 self.unjoined_events[node_stream].add(downstream_event)
             # pyrefly: ignore[unbound-name]
-            V.graph.wrapper_code.writeline(downstream_event.record(node_stream))
+            V.graph.wrapper_code.writeline(
+                downstream_event.record(self.event_factory, node_stream)
+            )
         # pyrefly: ignore[unbound-name]
         return downstream_event
 

@@ -47,12 +47,8 @@ from ..codecache import output_code_log
 from ..ir import IRNode, ReinterpretView
 from ..runtime import triton_heuristics
 from ..runtime.hints import DeviceProperties
-from ..stream_utils import (
-    DEFAULT_STREAM,
-    ENTRANCE_EVENT,
-    get_stream_name,
-    STREAM_NAME_TEMPLATE,
-)
+from ..stream_constants import DEFAULT_STREAM, ENTRANCE_EVENT, STREAM_NAME_TEMPLATE
+from ..stream_utils import get_stream_name
 from ..utils import (
     cache_on_self,
     DelayReplaceLine,
