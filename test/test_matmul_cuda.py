@@ -47,6 +47,7 @@ from torch.testing._internal.common_utils import (
     runOnRocmArch,
     serialTest,
     skipIfRocm,
+    skipIfRocmArch,
     TEST_CUDA,
     TEST_WITH_ROCM,
     TestCase,

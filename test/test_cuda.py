@@ -71,7 +71,6 @@ from torch.testing._internal.common_utils import (
     load_tests,
     MI200_ARCH,
     MI300_ARCH,
-    MI350_ARCH,
     parametrize,
     recover_orig_fp32_precision,
     run_tests,
