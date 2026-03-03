@@ -28,7 +28,7 @@ def try_lower_to_out_variant(
     tensor_args: Sequence[ir.IRNode],
     non_tensor_args: Sequence[Any],
     kwargs: dict[str, Any],
-) -> Optional[Union[ir.IRNode, list[ir.IRNode]]]:
+) -> Optional[Union[ir.IRNode, Sequence[ir.IRNode]]]:
     """Try lowering a functional custom op to ExternKernelOut.
 
     On success, returns IR node(s) that replace the FallbackKernel path.
