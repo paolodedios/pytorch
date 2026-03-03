@@ -2091,7 +2091,7 @@ def use_cutlass_template(layout: Layout, m: int, n: int, k: int) -> bool:
     if V.graph.cpp_wrapper and not V.graph.aot_mode:
         log.warning(
             "CUTLASS backend is not supported with non-AOT cpp_wrapper mode. "
-            "Skipping CUTLASS backend. See https://github.com/pytorch/pytorch/issues/176080"
+            "Skipping CUTLASS backend."
         )
         return False
 
