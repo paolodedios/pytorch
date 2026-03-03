@@ -526,9 +526,10 @@ def _is_last_shard_in_flatten_range(
     Requires: placements[mesh_dim] must be Shard or _StridedShard.
     """
     p = placements[mesh_dim]
-    assert isinstance(p, (Shard, _StridedShard)), (
-        f"Expected Shard or _StridedShard at mesh_dim {mesh_dim}, got {type(p)}"
-    )
+    if not isinstance(p, (Shard, _StridedShard)):
+        raise AssertionError(
+            f"Expected Shard or _StridedShard at mesh_dim {mesh_dim}, got {type(p)}"
+        )
     tensor_dim = p.dim
     return not any(
         isinstance(p, (Shard, _StridedShard))
@@ -658,7 +659,8 @@ class _ShardingPropagationContext:
             is_last_input_dim = i == num_input_dims - 1
             if i > 0:
                 if self.strict_view and input_sharded:
-                    assert shard_placement is not None
+                    if shard_placement is None:
+                        raise AssertionError("Expected shard_placement to be not None")
                     if not is_last_input_dim:
                         tensor_dim_size = self.global_input_shape[shard_placement.dim]
                         mesh_dim_size = self.mesh_sizes[shard_mesh_dim]
@@ -676,7 +678,8 @@ class _ShardingPropagationContext:
                     # require redistribution since rewrite doesn't handle them.
                     can_shard_dim = False
             elif input_sharded:
-                assert shard_placement is not None
+                if shard_placement is None:
+                    raise AssertionError("Expected shard_placement to be not None")
                 tensor_dim_size = self.global_input_shape[shard_placement.dim]
                 mesh_dim_size = self.mesh_sizes[shard_mesh_dim]
                 sharded_dims.append(dim)
@@ -990,9 +993,11 @@ class _ShardingPropagationContext:
         if isinstance(cmd, (Split, InputDim)):
             output_placement: Placement = Shard(tgt_shard_dim)
         else:
-            assert isinstance(cmd, Flatten)
+            if not isinstance(cmd, Flatten):
+                raise AssertionError(f"Expected Flatten, got {type(cmd)}")
             first_dim = cmd.input_dims[0]
-            assert isinstance(first_dim, InputDim)
+            if not isinstance(first_dim, InputDim):
+                raise AssertionError(f"Expected InputDim, got {type(first_dim)}")
             input_start_idx = first_dim.input_dim
             if p.dim == input_start_idx:
                 output_placement = Shard(tgt_shard_dim)
@@ -1012,8 +1017,10 @@ class _ShardingPropagationContext:
         if isinstance(cmd, Flatten):
             first_flat_dim = cmd.input_dims[0]
             last_flat_dim = cmd.input_dims[-1]
-            assert isinstance(first_flat_dim, InputDim)
-            assert isinstance(last_flat_dim, InputDim)
+            if not isinstance(first_flat_dim, InputDim):
+                raise AssertionError(f"Expected InputDim, got {type(first_flat_dim)}")
+            if not isinstance(last_flat_dim, InputDim):
+                raise AssertionError(f"Expected InputDim, got {type(last_flat_dim)}")
             flatten_start = first_flat_dim.input_dim
             flatten_end = last_flat_dim.input_dim + 1
             if self.local_tensor_shapes[p.dim] % self.mesh_sizes[
