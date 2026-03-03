@@ -3975,19 +3975,6 @@ class SubgraphTracer(fx.Tracer):
             if len(self_to_be_bound) == 0:
                 return
 
-            # Skip unbacked symbols that represent input sizes (from mark_unbacked).
-            # These should follow the same arg placement as backed symbols rather
-            # than being prepended before tensor args, so that the generated
-            # wrapper code has an identical arg layout regardless of backed vs unbacked.
-            shape_env = self.output_graph.shape_env
-            self_to_be_bound = [
-                s0
-                for s0 in self_to_be_bound
-                if s0 not in shape_env.unbacked_inputs
-            ]
-            if len(self_to_be_bound) == 0:
-                return
-
             # For subgraph
             if self.parent is not None:
                 # Recursively lift symbols in symint until top-level.
