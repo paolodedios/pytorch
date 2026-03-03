@@ -266,7 +266,7 @@ class TestExpandPlaceholder(TestCase):
                 op_schema.args_meta,
                 op_schema.kwargs_meta,
             )
-            assert isinstance(strategy, TupleStrategy)
+            self.assertIsInstance(strategy, TupleStrategy)
             return strategy
 
         # Sizes are multiples of mesh dims so every shard option is valid.
@@ -305,7 +305,7 @@ class TestExpandPlaceholder(TestCase):
         )
         self.assertEqual(len(tuple_strategy.children), 2)
         for child_i, child in enumerate(tuple_strategy.children):
-            assert isinstance(child, OpStrategy)
+            self.assertIsInstance(child, OpStrategy)
             self.assertEqual(len(child.strategies), expected_num_strategies[child_i])
 
             def sum_cost(x):
@@ -367,7 +367,7 @@ class TestExpandPlaceholder(TestCase):
             strategy = expanded_strategy_fn(
                 torch.ops.aten.cat.default, op_schema.args_meta, op_schema.kwargs_meta
             )
-            assert isinstance(strategy, OpStrategy)
+            self.assertIsInstance(strategy, OpStrategy)
             return strategy
 
         # Note: using sizes that are multiples of mesh sizes so every sharding option is valid,
@@ -481,7 +481,7 @@ class TestExpandPlaceholder(TestCase):
         strategy = expanded_strategy_fn(
             torch.ops.aten.matmul.default, op_schema.args_meta, op_schema.kwargs_meta
         )
-        assert isinstance(strategy, OpStrategy)
+        self.assertIsInstance(strategy, OpStrategy)
 
         # For a 3D mesh with 8 single-dim strategies per mesh dim
         # (3 sharding + 4 per-input linearity + 1 implicit replicate),
@@ -493,7 +493,7 @@ class TestExpandPlaceholder(TestCase):
         for op_spec in strategy.strategies:
             output_spec = op_spec.output_spec
             input_specs = op_spec.input_specs
-            assert input_specs is not None
+            self.assertIsNotNone(input_specs)
 
             # Verify tensor_meta is populated for output spec
             self.assertIsNotNone(
