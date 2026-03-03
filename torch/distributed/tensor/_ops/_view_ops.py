@@ -511,44 +511,6 @@ dim_maps: dict[Callable[..., torch.Tensor], Callable[..., DimMap]] = {
 }
 
 
-def _is_last_shard_in_flatten_range(
-    mesh_dim: int,
-    placements: Sequence[Placement],
-    flatten_start: int,
-    flatten_end: int,
-) -> bool:
-    """Check if no later mesh dim shards a dim within the flatten range at or above this one.
-
-    Uneven sharding on dim d breaks stride computation for all earlier dims
-    that flatten together with d. Only dims within [flatten_start, flatten_end)
-    matter; shards on dims outside the flatten range are independent.
-
-    Requires: placements[mesh_dim] must be Shard or _StridedShard.
-    """
-    p = placements[mesh_dim]
-    if not isinstance(p, (Shard, _StridedShard)):
-        raise AssertionError(
-            f"Expected Shard or _StridedShard at mesh_dim {mesh_dim}, got {type(p)}"
-        )
-    tensor_dim = p.dim
-    return not any(
-        isinstance(p, (Shard, _StridedShard))
-        and flatten_start <= p.dim < flatten_end
-        and p.dim >= tensor_dim
-        for p in placements[mesh_dim + 1 :]
-    )
-
-
-def _get_root_input_dim(dim_spec: DimSpec) -> InputDim | None:
-    """Unwrap nested Flatten/Split to find the root InputDim (first dim for Flatten)."""
-    while isinstance(dim_spec, (Flatten, Split)):
-        if isinstance(dim_spec, Flatten):
-            dim_spec = dim_spec.input_dims[0]
-        else:
-            dim_spec = dim_spec.input_dim
-    return dim_spec if isinstance(dim_spec, InputDim) else None
-
-
 def propagate_shape_and_sharding(
     input_src_placements: Sequence[Placement],
     global_input_shape: Shape,
@@ -570,17 +532,17 @@ def propagate_shape_and_sharding(
     if not len(input_src_placements) == len(mesh_sizes):
         raise AssertionError(f"{input_src_placements} != {mesh_sizes}")
 
-    ctx = _ShardingPropagationContext(
+    propagator = _ViewShardingPropagator(
         input_src_placements, global_input_shape, rule, mesh_sizes, strict_view
     )
-    input_tgt_placements, input_to_output_tensor_dims = ctx.analyze()
-    output_placements = ctx.rewrite_output_placements(
+    input_tgt_placements, input_to_output_tensor_dims = propagator.analyze()
+    output_placements = propagator.rewrite_output_placements(
         input_tgt_placements, input_to_output_tensor_dims
     )
     return input_tgt_placements, output_placements
 
 
-class _ShardingPropagationContext:
+class _ViewShardingPropagator:
     """Bundles read-only config for view-op sharding propagation.
 
     Two phases, run in order:
@@ -644,16 +606,7 @@ class _ShardingPropagationContext:
                   - Split/unflatten: [output_dim_0, ..., output_dim_k] for each
                     piece of the split
         """
-        seen_input_dims: set[int] = set()
-
-        def collect_used_inputs(cmd: DimSpec) -> None:
-            if isinstance(cmd, InputDim):
-                seen_input_dims.add(cmd.input_dim)
-            for inp in cmd.inputs():
-                collect_used_inputs(inp)
-
-        for cmd in self.rule:
-            collect_used_inputs(cmd)
+        seen_input_dims = self._collect_used_inputs(self.rule)
 
         # shard_allowed[input_dim][mesh_dim]: whether input_dim can stay
         # sharded on mesh_dim (input_dim × mesh_dim).
@@ -683,7 +636,7 @@ class _ShardingPropagationContext:
                 else:
                     input_to_output_tensor_dims[in_dim.input_dim].append(output_dim)
             elif isinstance(cmd, Split):
-                root = _get_root_input_dim(cmd.input_dim)
+                root = self._get_root_input_dim(cmd.input_dim)
                 if root is not None and root.input_dim in input_to_output_tensor_dims:
                     input_to_output_tensor_dims[root.input_dim].append(output_dim)
 
@@ -757,6 +710,31 @@ class _ShardingPropagationContext:
     # ------------------------------------------------------------------
     # Analysis phase helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_used_inputs(rule: DimMap) -> set[int]:
+        """Walk the DimMap rule tree and return all referenced input dim indices."""
+        seen: set[int] = set()
+
+        def _walk(cmd: DimSpec) -> None:
+            if isinstance(cmd, InputDim):
+                seen.add(cmd.input_dim)
+            for inp in cmd.inputs():
+                _walk(inp)
+
+        for cmd in rule:
+            _walk(cmd)
+        return seen
+
+    @staticmethod
+    def _get_root_input_dim(dim_spec: DimSpec) -> InputDim | None:
+        """Unwrap nested Flatten/Split to find the root InputDim (first dim for Flatten)."""
+        while isinstance(dim_spec, (Flatten, Split)):
+            if isinstance(dim_spec, Flatten):
+                dim_spec = dim_spec.input_dims[0]
+            else:
+                dim_spec = dim_spec.input_dim
+        return dim_spec if isinstance(dim_spec, InputDim) else None
 
     def _find_shard_for_flatten(
         self, input_dim: InputDim
@@ -961,6 +939,34 @@ class _ShardingPropagationContext:
     # ------------------------------------------------------------------
     # Rewrite phase helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_last_shard_in_flatten_range(
+        mesh_dim: int,
+        placements: Sequence[Placement],
+        flatten_start: int,
+        flatten_end: int,
+    ) -> bool:
+        """Check if no later mesh dim shards a dim within the flatten range at or above this one.
+
+        Uneven sharding on dim d breaks stride computation for all earlier dims
+        that flatten together with d. Only dims within [flatten_start, flatten_end)
+        matter; shards on dims outside the flatten range are independent.
+
+        Requires: placements[mesh_dim] must be Shard or _StridedShard.
+        """
+        p = placements[mesh_dim]
+        if not isinstance(p, (Shard, _StridedShard)):
+            raise AssertionError(
+                f"Expected Shard or _StridedShard at mesh_dim {mesh_dim}, got {type(p)}"
+            )
+        tensor_dim = p.dim
+        return not any(
+            isinstance(p, (Shard, _StridedShard))
+            and flatten_start <= p.dim < flatten_end
+            and p.dim >= tensor_dim
+            for p in placements[mesh_dim + 1 :]
+        )
 
     @staticmethod
     def _unrewritten_output_dims(
@@ -1170,7 +1176,7 @@ class _ShardingPropagationContext:
             flatten_end = last_flat_dim.input_dim + 1
             if local_tensor_shapes[p.dim] % self.mesh_sizes[
                 mesh_dim
-            ] != 0 and not _is_last_shard_in_flatten_range(
+            ] != 0 and not self._is_last_shard_in_flatten_range(
                 mesh_dim, placements, flatten_start, flatten_end
             ):
                 raise RuntimeError(
