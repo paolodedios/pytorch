@@ -19,7 +19,7 @@ from torch.distributed.tensor import (
     Shard,
 )
 from torch.distributed.tensor._ops._view_ops import (
-    _is_last_shard_on_tensor_dim,
+    _is_last_shard_in_flatten_range,
     Broadcast,
     dim_maps,
     Flatten,
@@ -1032,7 +1032,7 @@ class TestViewOps(DTensorContinuousTestBase):
                 )
             if local_tensor_dims[shard_dim] % mesh.size(idx) != 0:
                 # uneven shard on last flattened dim is supported
-                self.assertTrue(_is_last_shard_on_tensor_dim(idx, placements))
+                self.assertTrue(_is_last_shard_in_flatten_range(idx, placements))
                 local_tensor_dims[shard_dim] = math.ceil(
                     local_tensor_dims[shard_dim] * 1.0 / mesh.size(idx)
                 )

@@ -507,12 +507,12 @@ dim_maps: dict[Callable[..., torch.Tensor], Callable[..., DimMap]] = {
 }
 
 
-def _is_last_shard_on_tensor_dim(mesh_dim, placements):
-    """Check if mesh_dim is the last mesh dim that shards on tensor_dim or any higher dim.
+def _is_last_shard_in_flatten_range(mesh_dim, placements):
+    """Check if no later mesh dim shards on this tensor dim or any higher dim.
 
-    Uses >= rather than == because flatten operations involve contiguous dim
-    ranges, and uneven sharding on dim d breaks stride computation for all
-    earlier dims that flatten together with d.
+    Flatten operations involve contiguous dim ranges, and uneven sharding on
+    dim d breaks stride computation for all earlier dims that flatten together
+    with d. Hence >= rather than ==.
     """
     tensor_dim = placements[mesh_dim].dim
     return not any(
@@ -694,6 +694,11 @@ def propagate_shape_and_sharding(
                     input_src_placements,
                 )
             )
+            # Only _StridedShard inputs need seen_mesh_dims tracking: each
+            # _StridedShard encodes a specific split_id via its split_factor,
+            # so we must prevent the same mesh dim from matching multiple
+            # split_ids.  Plain Shard inputs only match split_id==0 (enforced
+            # by the return [] for split_id>0 below), so no tracking needed.
             if shard_mesh_dim is not None and isinstance(
                 input_src_placement, _StridedShard
             ):
@@ -888,8 +893,11 @@ def propagate_shape_and_sharding(
         elif len(tgt_shard_dims) > 0:
             tgt_shard_dim = tgt_shard_dims[0]
         else:
-            # All output dims claimed by earlier mesh dims; fall back to full list
-            tgt_shard_dim = input_dim_to_output_dims[p.dim][0]
+            raise AssertionError(
+                f"No output dim available for _StridedShard(dim={p.dim}, "
+                f"split_factor={p.split_factor}) on mesh dim {mesh_dim}. "
+                f"All output dims already claimed by earlier mesh dims."
+            )
         local_tensor_shapes[p.dim] = local_tensor_shapes[p.dim] // mesh_sizes[mesh_dim]
         return _StridedShard(tgt_shard_dim, split_factor=p.split_factor)
 
@@ -899,13 +907,21 @@ def propagate_shape_and_sharding(
         """Rewrite Shard dim for flatten/identity/unflatten.
 
         For flatten, non-first dims produce _StridedShard.
+
+        Unlike _rewrite_strided_shard_dim, this does NOT update
+        seen_output_dims.  When multiple mesh dims have plain Shard on the
+        same input dim (e.g. [Shard(0), Shard(0)]), they legitimately
+        target the same output dim; coordination is handled by
+        shardable_dims which validates divisibility.
         """
         tgt_shard_dims = _unseen_tgt_dims(p.dim)
         if len(tgt_shard_dims) == 1:
             tgt_shard_dim = tgt_shard_dims[0]
         elif len(tgt_shard_dims) == 0:
-            # All output dims claimed; fall back to full list
-            tgt_shard_dim = input_dim_to_output_dims[p.dim][0]
+            raise AssertionError(
+                f"No output dim available for Shard(dim={p.dim}) on mesh dim "
+                f"{mesh_dim}. All output dims already claimed by earlier mesh dims."
+            )
         else:
             # Unflatten: find the output dim with split_id=0.
             tgt_shard_dim = None
@@ -915,7 +931,10 @@ def propagate_shape_and_sharding(
                     tgt_shard_dim = candidate_dim
                     break
             if tgt_shard_dim is None:
-                tgt_shard_dim = tgt_shard_dims[0]
+                raise AssertionError(
+                    f"No Split(split_id=0) found among unclaimed output dims "
+                    f"{tgt_shard_dims} for Shard(dim={p.dim}) on mesh dim {mesh_dim}."
+                )
         cmd = rule[tgt_shard_dim]
         if isinstance(cmd, (Split, InputDim)):
             output_placement = Shard(tgt_shard_dim)
@@ -939,7 +958,7 @@ def propagate_shape_and_sharding(
         if (
             isinstance(cmd, Flatten)
             and local_tensor_shapes[p.dim] % mesh_sizes[mesh_dim] != 0
-            and not _is_last_shard_on_tensor_dim(mesh_dim, placements)
+            and not _is_last_shard_in_flatten_range(mesh_dim, placements)
         ):
             raise RuntimeError(
                 f"Cannot shard unevenly distributed tensor: "
