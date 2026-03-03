@@ -1334,6 +1334,34 @@ class DistTensorCppPyTree(DTensorTestBase):
             )
 
     @with_comms
+    def test_foreach_mixed_dtensor_and_tensor(self):
+        from torch.distributed.tensor.debug import (
+            _clear_fast_path_sharding_prop_cache,
+            _get_fast_path_sharding_prop_cache_stats,
+        )
+        from torch.distributed.tensor.experimental import implicit_replication
+
+        mesh = self.build_device_mesh()
+        with implicit_replication():
+            _clear_fast_path_sharding_prop_cache()
+            dt = distribute_tensor(
+                torch.zeros(4, 4, device=self.device_type), mesh, [Shard(0)]
+            )
+            regular = torch.zeros(4, 4, device=self.device_type)
+
+            torch._foreach_add_([dt, regular], 1)
+            hits, misses = _get_fast_path_sharding_prop_cache_stats()
+            self.assertEqual(misses, 1)
+            self.assertEqual(
+                dt.full_tensor(), torch.ones(4, 4, device=self.device_type)
+            )
+            self.assertEqual(regular, torch.ones(4, 4, device=self.device_type))
+
+            torch._foreach_add_([dt, regular], 1)
+            hits, misses = _get_fast_path_sharding_prop_cache_stats()
+            self.assertEqual(hits, 1)
+
+    @with_comms
     def test_two_list_op_cache_collision(self):
         from test_op_strategy import op_strategy_context
 
