@@ -3853,15 +3853,11 @@ class SubgraphTracer(fx.Tracer):
         def need_bind(s: Any) -> bool:
             from torch.fx.experimental.symbolic_shapes import is_symbolic
 
-            if not is_symbolic(s) or not isinstance(s.node.expr, sympy.Symbol):
-                return False
-            if s.node.expr in self.bound_symbols:
-                return False
-            # Skip unbacked input symbols - they should be treated like backed symbols
-            shape_env = self.output_graph.shape_env
-            if s.node.expr in shape_env.unbacked_inputs:
-                return False
-            return True
+            return (
+                is_symbolic(s)
+                and isinstance(s.node.expr, sympy.Symbol)
+                and s.node.expr not in self.bound_symbols
+            )
 
         def _proxy_with_example_value(
             example_value: Any, *args: Any, **kwargs: Any
