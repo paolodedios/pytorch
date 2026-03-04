@@ -612,6 +612,34 @@ class ExternKernelOutLine(WrapperLine):
 
 
 @dataclasses.dataclass
+class ExternKernelMultiOutLine(WrapperLine):
+    """Codegen line for multi-output .out() variant calls.
+
+    Generates a kernel call with pre-allocated output buffers passed as
+    keyword arguments (e.g. ``kernel(x, out0=buf0, out1=buf1)``).
+    """
+
+    wrapper: PythonWrapperCodegen
+    node: ir.FallbackKernel
+
+    def codegen(self, code: IndentedBuffer) -> None:
+        node = self.node
+        kernel_name = node.get_kernel_name()
+
+        args = [*node.codegen_args(), *node.codegen_kwargs()]
+        for out_name, out_node in zip(
+            node.out_arg_names, node.out_variant_output_nodes
+        ):
+            args.append(f"{out_name}={out_node.get_name()}")
+
+        code.writeline(f"{node.get_name()} = {kernel_name}({', '.join(args)})")
+
+        for out_node in node.out_variant_output_nodes:
+            if isinstance(out_node.layout, ir.Layout):
+                out_node.codegen_size_asserts(self.wrapper)
+
+
+@dataclasses.dataclass
 class FreeLine(WrapperLine):
     wrapper: PythonWrapperCodegen
     node: BufferLike | ir.TorchBindObject
@@ -1617,11 +1645,11 @@ class PythonWrapperCodegen(CodeGen):
 
     def generate_fallback_kernel(self, node: ir.FallbackKernel) -> None:
         if getattr(node, "out_variant_op", None) is not None:
-            from torch._inductor.custom_op_out_lowering import (
-                codegen_multi_output_out_variant,
-            )
-
-            codegen_multi_output_out_variant(node, self)
+            node.codegen_comment(self)
+            # Allocate output buffers before the .out() call
+            for out_node in node.out_variant_output_nodes:
+                self.codegen_allocation(out_node)
+            self.writeline(ExternKernelMultiOutLine(self, node))
             return
         # Check if this op has a custom codegen implementation
         op_name = node.python_kernel_name
