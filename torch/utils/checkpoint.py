@@ -1328,14 +1328,6 @@ SAC_IGNORED_OPS = {
 } | set(torch._subclasses.functional_tensor.FunctionalTensor.metadata_fns)  # type: ignore[has-type]
 
 
-def _get_current_caching_mode():
-    from torch.utils._python_dispatch import _get_current_dispatch_mode_stack
-    for mode in reversed(_get_current_dispatch_mode_stack()):
-        if isinstance(mode, _CachingTorchDispatchMode):
-            return mode
-    return None
-
-
 class _CachingTorchDispatchMode(TorchDispatchMode):
     @classmethod
     def ignore_compile_internals(cls):
@@ -1394,13 +1386,12 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
             self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
         return out
 
-
 class _CachedTorchDispatchMode(TorchDispatchMode):
     @classmethod
     def ignore_compile_internals(cls):
         return True
 
-    # Used together with _CachingTorchDispatchMode to implement SAC.
+    # Used together with _CachedTorchDispatchMode to implement SAC.
     def __init__(self, policy_fn, storage, allow_cache_entry_mutation) -> None:
         self.policy_fn = policy_fn
         self.storage = storage
@@ -1521,7 +1512,6 @@ def create_selective_checkpoint_contexts(policy_fn_or_list, allow_cache_entry_mu
         _CachingTorchDispatchMode(policy_fn, storage),
         _CachedTorchDispatchMode(policy_fn, storage, allow_cache_entry_mutation),
     )
-
 
 # NB: this helper wraps fn before calling checkpoint_impl. kwargs and
 #     saving/restoring of global state is handled here.
