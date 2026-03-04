@@ -4,7 +4,7 @@ import platform
 import uuid
 import warnings
 import weakref
-from collections import defaultdict, OrderedDict
+from collections import defaultdict
 from typing import *  # noqa: F403
 import enum
 from weakref import ReferenceType
@@ -16,7 +16,6 @@ from torch.testing._internal.logging_tensor import capture_logs, LoggingTensorMo
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils.weak import WeakTensorKeyDictionary
 from torch._C._autograd import _make_saved_tensor, SavedTensor
-from torch.utils.hooks import RemovableHandle
 from typing import NoReturn
 
 __all__ = [
@@ -36,7 +35,6 @@ __all__ = [
     "SelectiveCheckpointContext",
     "create_selective_checkpoint_contexts",
     "SAC_IGNORED_OPS",
-    "checkpoint_name",
     "GraphExecGroup",
 ]
 
@@ -1278,9 +1276,8 @@ class SelectiveCheckpointContext:
         >>>     context_fn=context_fn,
         >>> )
     """
-    def __init__(self, *, is_recompute, tensor_name=None, op_output=None) -> None:
+    def __init__(self, *, is_recompute, op_output=None) -> None:
         self.is_recompute = is_recompute
-        self.tensor_name = tensor_name
         self.op_output = op_output
 
 
@@ -1332,53 +1329,6 @@ SAC_IGNORED_OPS = {
 } | set(torch._subclasses.functional_tensor.FunctionalTensor.metadata_fns)  # type: ignore[has-type]
 
 
-_tensor_naming_hooks: Dict[int, Callable] = OrderedDict()
-
-
-def _register_tensor_naming_hook(hook: Callable) -> RemovableHandle:
-    handle = RemovableHandle(_tensor_naming_hooks)
-    _tensor_naming_hooks[handle.id] = hook
-    return handle
-
-
-def checkpoint_name(tensor: torch.Tensor, name: Any) -> None:
-    """Name a tensor for selective activation checkpointing.
-
-    Call this inside a checkpointed function to associate a name with a
-    tensor.  The policy function receives the name via
-    ``ctx.tensor_name`` and can decide whether to save or recompute:
-
-    Example::
-
-        >>> import functools
-        >>> from torch.utils.checkpoint import (
-        ...     checkpoint, checkpoint_name, CheckpointPolicy,
-        ...     create_selective_checkpoint_contexts,
-        ... )
-        >>> def policy_fn(ctx, op, *args, **kwargs):
-        ...     if ctx.tensor_name == "hidden":
-        ...         return CheckpointPolicy.MUST_SAVE
-        ...     return CheckpointPolicy.PREFER_RECOMPUTE
-        >>> def fn(x, w):
-        ...     h = x @ w
-        ...     checkpoint_name(h, "hidden")
-        ...     return torch.relu(h)
-        >>> context_fn = functools.partial(create_selective_checkpoint_contexts, policy_fn)
-        >>> out = checkpoint(fn, x, w, use_reentrant=False, context_fn=context_fn)
-
-    Outside of a selective activation checkpoint context, this is a no-op.
-
-    Args:
-        tensor: The tensor to name.
-        name: An arbitrary name (typically a string).
-    """
-    # During recompute (backward), checkpoint_name() is a no-op
-    if torch._C._current_graph_task_id() != -1:
-        return
-    for hook in _tensor_naming_hooks.values():
-        hook(tensor, name)
-
-
 class AutoNamingMode(TorchDispatchMode):
     """TorchDispatchMode that automatically names output tensors.
 
@@ -1386,6 +1336,10 @@ class AutoNamingMode(TorchDispatchMode):
     ``("layers.0.linear", "mm", 0, 0)``.  The count is tracked per
     (module fqn, op) pair so that each module's invocations are numbered
     independently.
+
+    Names are stored in ``self.names``, a ``WeakTensorKeyDictionary``
+    mapping output tensors to their names.  A SAC policy can look up
+    ``ctx.op_output`` in this dict to decide what to save.
 
     If no ``ModuleTracker`` is supplied, one is created and managed
     automatically.
@@ -1395,6 +1349,7 @@ class AutoNamingMode(TorchDispatchMode):
         self._external_tracker = module_tracker
         self._tracker = module_tracker
         self._func_counter: Dict[Tuple[str, Any], int] = defaultdict(int)
+        self.names: WeakTensorKeyDictionary = WeakTensorKeyDictionary()
 
     def __enter__(self):
         if self._external_tracker is None:
@@ -1415,7 +1370,6 @@ class AutoNamingMode(TorchDispatchMode):
         parents = self._tracker.parents - {"Global"}
         if not parents:
             return "Global"
-        # Most specific (deepest nested) module
         return max(parents, key=len)
 
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
@@ -1430,11 +1384,11 @@ class AutoNamingMode(TorchDispatchMode):
         self._func_counter[key] += 1
 
         if isinstance(out, torch.Tensor):
-            checkpoint_name(out, (fqn, op_name, count, 0))
+            self.names[out] = (fqn, op_name, count, 0)
         elif isinstance(out, (tuple, list)):
             for i, o in enumerate(out):
                 if isinstance(o, torch.Tensor):
-                    checkpoint_name(o, (fqn, op_name, count, i))
+                    self.names[o] = (fqn, op_name, count, i)
 
         return out
 
@@ -1457,51 +1411,6 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         self.policy_fn = policy_fn
         self.storage = storage
         self.func_counter: Dict[Any, int] = defaultdict(int)
-        self.tensor_tracker: WeakTensorKeyDictionary = WeakTensorKeyDictionary()
-        self._naming_hook_handle: Optional[RemovableHandle] = None
-        # Names arriving before the tensor is tracked (mode ordering issue:
-        # an inner mode like AutoNamingMode names the tensor before we've
-        # returned from our own func(*args, **kwargs) call).
-        self._pending_names: Dict[int, str] = {}
-
-    def __enter__(self):
-        self._naming_hook_handle = _register_tensor_naming_hook(self._on_tensor_named)
-        return super().__enter__()
-
-    def __exit__(self, *args):
-        if self._naming_hook_handle is not None:
-            self._naming_hook_handle.remove()
-            self._naming_hook_handle = None
-        return super().__exit__(*args)
-
-    def _on_tensor_named(self, tensor, name):
-        info = self.tensor_tracker.get(tensor)
-        if info is None:
-            self._pending_names[id(tensor)] = name
-            return
-        self._process_named_tensor(tensor, name, info)
-
-    def _process_named_tensor(self, tensor, name, info):
-        func, idx, any_ret_has_alias_info = info
-
-        policy = self.policy_fn(
-            SelectiveCheckpointContext(is_recompute=False, tensor_name=name),
-            func,
-        )
-        if isinstance(policy, bool):
-            policy = _policy_from_bool(policy)
-
-        is_compiling = _is_compiling(func, (), None)
-
-        if is_compiling:
-            _set_save_policy_for_partitioner(tensor, policy)
-            return
-
-        if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE):
-            self.storage[func][idx] = tree_map(
-                lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)),
-                tensor,
-            )
 
     @staticmethod
     def _set_policy_on_graph_nodes(graph_len_before, policy):
@@ -1545,21 +1454,6 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
 
         idx = self.func_counter[func]
         self.func_counter[func] += 1
-
-        # Track all output tensors so checkpoint_name() can retroactively find them
-        tree_map(
-            lambda x: self.tensor_tracker.__setitem__(x, (func, idx, any_ret_has_alias_info)) if isinstance(x, torch.Tensor) else None,
-            out,
-        )
-
-        # Process names that arrived while we were inside func() (from an
-        # inner mode that named the tensor before we had a chance to track it).
-        def _check_pending(x):
-            if isinstance(x, torch.Tensor):
-                name = self._pending_names.pop(id(x), None)
-                if name is not None:
-                    self._process_named_tensor(x, name, (func, idx, any_ret_has_alias_info))
-        tree_map(_check_pending, out)
 
         # Call policy after the op. The output already exists, so inner modes
         # (e.g. AutoNamingMode) have had a chance to name the output.
@@ -1705,42 +1599,6 @@ def create_selective_checkpoint_contexts(policy_fn_or_list, allow_cache_entry_mu
     return (
         _CachingTorchDispatchMode(policy_fn, storage),
         _CachedTorchDispatchMode(policy_fn, storage, allow_cache_entry_mutation),
-    )
-
-
-def _set_save_policy_for_partitioner(tensor, policy):
-    from torch.fx.experimental.proxy_tensor import get_proxy_mode
-
-    mode = get_proxy_mode()
-    if mode is None:
-        return
-
-    # ProxyTorchDispatchMode sees tensors after FunctionalTensor is unwrapped
-    from torch._subclasses.functional_tensor import mb_unwrap_functional_tensor
-    unwrapped = mb_unwrap_functional_tensor(tensor)
-
-    proxy_tensor = mode.tracer.tensor_tracker.get(unwrapped)
-    if proxy_tensor is None:
-        return
-    node = proxy_tensor.proxy.node
-
-    if _is_getitem_of_multi_output(node):
-        parent = node.args[0]
-        parent.meta["recompute"] = policy
-        parent.meta["ac_graph_id"] = 0
-
-    node.meta["recompute"] = policy
-    node.meta["ac_graph_id"] = 0
-
-
-def _is_getitem_of_multi_output(node):
-    import operator
-    if node.target != operator.getitem:
-        return False
-    parent = node.args[0]
-    # Same check as is_multi_output in partitioners.py
-    return len(parent.users) > 0 and all(
-        u.target == operator.getitem for u in parent.users
     )
 
 
