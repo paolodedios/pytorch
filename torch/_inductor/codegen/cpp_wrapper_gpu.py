@@ -81,6 +81,7 @@ def signature_is_tma_desc(sig: str | None) -> bool:
 LAZY_COMPILE_HELPER = """
 #include <torch/csrc/autograd/python_variable.h>
 #include <torch/csrc/inductor/aoti_torch/utils.h>
+#include <torch/csrc/utils/python_numbers.h>
 
 struct LazyKernelCompileResult {
     std::string cubin_path;
@@ -125,13 +126,13 @@ static inline std::string getStringAttr(PyObject* obj, const char* attr) {
 static inline int getIntAttr(PyObject* obj, const char* attr) {
     RAIIPyObject val = PyObject_GetAttrString(obj, attr);
     AOTI_TORCH_CHECK(val, "Failed to get attribute");
-    return PyLong_AsLong(val);
+    return THPUtils_unpackLong(val);
 }
 
 static inline int getOptionalIntAttr(PyObject* obj, const char* attr, int sentinel = -1) {
     RAIIPyObject val = PyObject_GetAttrString(obj, attr);
     AOTI_TORCH_CHECK(val, "Failed to get attribute");
-    return (val.get() != Py_None) ? PyLong_AsLong(val) : sentinel;
+    return (val.get() != Py_None) ? THPUtils_unpackLong(val) : sentinel;
 }
 
 static inline LazyKernelCompileResult extractCompileResult(PyObject* result) {
