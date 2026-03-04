@@ -954,6 +954,13 @@ if(USE_ROCM)
     target_compile_definitions(torch_hip PRIVATE USE_NCCL)
   endif()
 
+  if(USE_DISTRIBUTED)
+    find_library(AMD_SMI_LIBRARY amd_smi PATHS ${ROCM_PATH}/lib NO_DEFAULT_PATH)
+    if(AMD_SMI_LIBRARY)
+      target_link_libraries(torch_hip PRIVATE ${AMD_SMI_LIBRARY})
+    endif()
+  endif()
+
   if(USE_PRECOMPILED_HEADERS)
     target_precompile_headers(torch_hip PRIVATE
         "$<$<COMPILE_LANGUAGE:CXX>:ATen/core/ATen_pch.h>")
