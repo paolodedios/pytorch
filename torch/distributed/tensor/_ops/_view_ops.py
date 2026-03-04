@@ -575,6 +575,13 @@ class _ViewShardingPropagator:
         self.strict_view = strict_view
         self.mesh_ndim = len(mesh_sizes)
 
+        # shard_allowed[input_dim][mesh_dim]: whether input_dim can stay
+        # sharded on mesh_dim.  Populated by _analyze_dim and its helpers.
+        self.shard_allowed: dict[int, list[bool]] = {}
+        # Mesh dims whose _StridedShard has already been matched to an output dim.
+        # Populated by _analyze_split.
+        self.matched_strided_mesh_dims: set[int] = set()
+
     # ------------------------------------------------------------------
     # Public API: analyze → rewrite_output_placements
     # ------------------------------------------------------------------
@@ -585,15 +592,8 @@ class _ViewShardingPropagator:
         """Phase 1: walk the DimMap rule, return (input_tgt_placements, input_to_output_tensor_dims)."""
         seen_input_dims = self._collect_used_inputs(self.rule)
 
-        # shard_allowed[input_dim][mesh_dim]: whether input_dim can stay
-        # sharded on mesh_dim.  Populated by _analyze_dim and its helpers.
-        self.shard_allowed: dict[int, list[bool]] = {}
         for dim in range(len(self.global_input_shape)):
             self.shard_allowed[dim] = [dim in seen_input_dims] * self.mesh_ndim
-
-        # Mesh dims whose _StridedShard has already been matched to an output dim.
-        # Populated by _analyze_split.
-        self.matched_strided_mesh_dims: set[int] = set()
 
         # Walk the rule to fill shard_allowed and build input_to_output_tensor_dims.
         input_to_output_tensor_dims: dict[int, list[int]] = {}
