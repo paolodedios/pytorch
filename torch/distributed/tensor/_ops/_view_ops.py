@@ -590,10 +590,10 @@ class _ViewShardingPropagator:
         self,
     ) -> tuple[Sequence[Placement], dict[int, list[int]]]:
         """Phase 1: walk the DimMap rule, return (input_tgt_placements, input_to_output_tensor_dims)."""
-        seen_input_dims = self._collect_used_inputs(self.rule)
+        input_dims_in_rule = self._input_dims_in_rule(self.rule)
 
         for dim in range(len(self.global_input_shape)):
-            self.shard_allowed[dim] = [dim in seen_input_dims] * self.mesh_ndim
+            self.shard_allowed[dim] = [dim in input_dims_in_rule] * self.mesh_ndim
 
         # Walk the rule to fill shard_allowed and build input_to_output_tensor_dims.
         input_to_output_tensor_dims: dict[int, list[int]] = {}
@@ -679,8 +679,8 @@ class _ViewShardingPropagator:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _collect_used_inputs(rule: DimMap) -> set[int]:
-        """Walk the DimMap rule tree and return all referenced input dim indices."""
+    def _input_dims_in_rule(rule: DimMap) -> set[int]:
+        """Walk the DimMap rule tree and return all input dim indices that appear in it."""
         seen: set[int] = set()
 
         def _walk(cmd: DimSpec) -> None:
