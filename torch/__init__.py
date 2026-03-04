@@ -2469,13 +2469,10 @@ class _TorchCompileInductorWrapper:
                     )
             self.config[attr_name] = val
 
-    def __call__(self, model_, inputs_, *, config_patches=None):
+    def __call__(self, model_, inputs_):
         from torch._inductor.compile_fx import compile_fx
 
-        merged = self.config
-        if config_patches:
-            merged = {**self.config, **config_patches}
-        return compile_fx(model_, inputs_, config_patches=merged)
+        return compile_fx(model_, inputs_, config_patches=self.config)
 
     def get_compiler_config(self):
         from torch._inductor.compile_fx import get_patched_config_dict
