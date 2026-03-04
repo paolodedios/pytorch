@@ -952,9 +952,15 @@ def all_gather_merge_fn_coalesced(
     Per-tensor dtype conversion is applied when needed (multi-dtype buckets).
     """
     ins_sizes = [ag_in.shape for ag_in in ag_ins]
-    # Convert each tensor to its target dtype and flatten
+    # Convert each tensor to its target dtype and flatten.
+    # Use prims.convert_element_type (not .to()) so that the traced graph
+    # contains an op inductor can lower directly, avoiding the
+    # "both a fallback and a decomp" assertion on aten._to_copy.
     ag_ins_flat = [
-        ag_in.to(out_dtype).reshape(-1) for ag_in, out_dtype in zip(ag_ins, out_dtypes)
+        torch.ops.prims.convert_element_type.default(ag_in, out_dtype).reshape(-1)
+        if ag_in.dtype != out_dtype
+        else ag_in.reshape(-1)
+        for ag_in, out_dtype in zip(ag_ins, out_dtypes)
     ]
     ag_outs = torch.ops._c10d_functional.all_gather_into_tensor_coalesced(
         ag_ins_flat, group_size, group_name
