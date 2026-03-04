@@ -1085,7 +1085,7 @@ def aot_module_simplified(
     boxed_forward_device_index: BoxedDeviceIndex | None = None,
     ignore_shape_env: bool = False,
     disable_functionalization: bool = False,
-    # Optional callback to run passes on the module before AOT autograd.
+    # Optional callback to run passes on the module at the start of AOT autograd.
     pre_grad_passes: Callable[
         [torch.fx.GraphModule, Sequence[InputType]], torch.fx.GraphModule
     ]
