@@ -611,14 +611,6 @@ class _ViewShardingPropagator:
         #   output_dim=1 (split_id=1): hits the isinstance(cmd, Split) branch
         #     because _analyze_split returns [] for split_id>0.  Chases root
         #     InputDim(0) and appends output dim 1.  Result: {0: [0, 1]}
-        #
-        # Flatten+Split example: view([2, 3], [3, 2])
-        #   rule = (Split(Flatten(InputDim(0), InputDim(1)), (3,2), 0),
-        #           Split(Flatten(InputDim(0), InputDim(1)), (3,2), 1))
-        #   output_dim=0 (split_id=0): same as Split example.  Result: {0: [0]}
-        #   output_dim=1 (split_id=1): same as Split example, but
-        #     the root-input-dim chase unwraps the inner Flatten to find InputDim(0).
-        #     Result: {0: [0, 1]}
         input_to_output_tensor_dims: dict[int, list[int]] = {}
         for output_dim, cmd in enumerate(self.rule):
             in_dims = self._analyze_dim(cmd)
@@ -640,6 +632,15 @@ class _ViewShardingPropagator:
             elif isinstance(cmd, Split):
                 # Split(split_id>0): _analyze_split returned [], so chase the
                 # root input dim and append this output dim to its existing entry.
+                #
+                # Flatten+Split example: view([2, 3], [3, 2])
+                #   rule = (Split(Flatten(InputDim(0), InputDim(1)), (3,2), 0),
+                #           Split(Flatten(InputDim(0), InputDim(1)), (3,2), 1))
+                #   output_dim=0 (split_id=0): same as Split example above.
+                #     Result: {0: [0]}
+                #   output_dim=1 (split_id=1): same as Split example, but
+                #     the chase unwraps the inner Flatten to find InputDim(0).
+                #     Result: {0: [0, 1]}
                 root_spec = cmd.input_dim
                 while isinstance(root_spec, (Flatten, Split)):
                     if isinstance(root_spec, Flatten):
@@ -720,14 +721,14 @@ class _ViewShardingPropagator:
             _walk(cmd)
         return seen
 
-    def _find_shard_for_flatten(
+    def _find_plain_shard(
         self, input_dim: InputDim
     ) -> tuple[int | None, Shard | _StridedShard | None]:
         """Find the mesh dim with a plain Shard on ``input_dim``.
 
-        Only matches Shard, not _StridedShard. _StridedShard inputs only appear
-        from a prior flatten, and nested flatten(flatten(...)) doesn't occur.
-        Split ops use _find_shard_for_split instead.
+        Only matches Shard, not _StridedShard.  Used by both _analyze_flatten
+        and _analyze_split.  _find_shard_for_split is the counterpart that
+        also matches _StridedShard with split_factor validation.
         """
         for mesh_dim, placement in enumerate(self.input_src_placements):
             if isinstance(placement, Shard) and placement.dim == input_dim.input_dim:
@@ -742,8 +743,12 @@ class _ViewShardingPropagator:
     ) -> tuple[int | None, Shard | _StridedShard | None]:
         """Find the mesh dim and placement for an input dim in Split ops.
 
-        Handles multi-mesh sharding (e.g. [Shard(0), Shard(0)]) by matching
-        _StridedShard split_factors and skipping already-matched mesh dims.
+        Matches both Shard and _StridedShard:
+        - Shard: plain unflatten, e.g. [6] Shard(0) → [2, 3].
+        - _StridedShard: unflatten after a prior flatten that produced
+          _StridedShard, e.g. [2,3,4] Shard(1) → flatten → [6,4]
+          _StridedShard(0,sf=2) → unflatten → [2,3,4].  Validates that
+          the split_factor matches the expected value for this split_id.
         """
         for mesh_dim, placement in enumerate(placements):
             if not isinstance(placement, Shard | _StridedShard):
@@ -770,54 +775,42 @@ class _ViewShardingPropagator:
         for i, dim in enumerate(cmd.input_dims):
             if not isinstance(dim, InputDim):
                 raise AssertionError(f"Expected InputDim, got {type(dim)}")
+            shard_mesh_dim, shard_placement = self._find_plain_shard(dim)
+            if shard_mesh_dim is None or shard_placement is None:
+                self.shard_allowed[dim.input_dim] = [True] * self.mesh_ndim
+                continue
+            tensor_dim_size = self.global_input_shape[shard_placement.dim]
+            mesh_dim_size = self.mesh_sizes[shard_mesh_dim]
             can_shard_dim = True
-            shard_mesh_dim, shard_placement = self._find_shard_for_flatten(dim)
-            input_sharded = shard_mesh_dim is not None
-            is_last_input_dim = i == num_input_dims - 1
-            if i > 0:
-                if self.strict_view and input_sharded:
-                    if shard_placement is None:
-                        raise AssertionError("Expected shard_placement to be not None")
-                    if not is_last_input_dim:
-                        tensor_dim_size = self.global_input_shape[shard_placement.dim]
-                        mesh_dim_size = self.mesh_sizes[shard_mesh_dim]
-                        if tensor_dim_size % mesh_dim_size != 0:
-                            raise RuntimeError(
-                                f"Cannot flatten unevenly sharded tensor: "
-                                f"dimension {dim.input_dim} (size {tensor_dim_size}) "
-                                f"is not evenly divisible by mesh dimension "
-                                f"{shard_mesh_dim} (size {mesh_dim_size}). "
-                                f"Please redistribute the tensor before this operation."
-                            )
-                    sharded_dims.append(dim)
-                elif input_sharded:
-                    # Non-strict (reshape): non-first flatten dims with sharding
-                    # require redistribution since rewrite doesn't handle them.
-                    can_shard_dim = False
-            elif input_sharded:
-                if shard_placement is None:
-                    raise AssertionError("Expected shard_placement to be not None")
-                tensor_dim_size = self.global_input_shape[shard_placement.dim]
-                mesh_dim_size = self.mesh_sizes[shard_mesh_dim]
+            if self.strict_view:
+                is_last_input_dim = i == num_input_dims - 1
+                if not is_last_input_dim and tensor_dim_size % mesh_dim_size != 0:
+                    raise RuntimeError(
+                        f"Cannot flatten unevenly sharded tensor: "
+                        f"dimension {dim.input_dim} (size {tensor_dim_size}) "
+                        f"is not evenly divisible by mesh dimension "
+                        f"{shard_mesh_dim} (size {mesh_dim_size}). "
+                        f"Please redistribute the tensor before this operation."
+                    )
                 sharded_dims.append(dim)
-                if tensor_dim_size % mesh_dim_size != 0:
+            else:
+                # TODO: non-strict (reshape) should allow can_shard_dim = True
+                # for non-first flatten dims, since strict_view already does.
+                # Currently forces redistribution because the rewrite phase
+                # wasn't originally implemented for this case.
+                if i == 0:
+                    sharded_dims.append(dim)
+                    if tensor_dim_size % mesh_dim_size != 0:
+                        can_shard_dim = False
+                else:
                     can_shard_dim = False
-                    if self.strict_view:
-                        raise RuntimeError(
-                            f"Cannot flatten unevenly sharded tensor: "
-                            f"dimension {dim.input_dim} (size {tensor_dim_size}) "
-                            f"is not evenly divisible by mesh dimension "
-                            f"{shard_mesh_dim} (size {mesh_dim_size}). "
-                            f"Please redistribute the tensor before this operation."
-                        )
             self.shard_allowed[dim.input_dim] = [can_shard_dim] * self.mesh_ndim
 
         if len(sharded_dims) > 0:
             return sharded_dims
-        # No sharded dims found — return the first input dim so that
+        # No sharded dims: e.g. Flatten([InputDim(0), InputDim(1)]) where
+        # neither dim is sharded.  Return the first input dim so that
         # input_to_output_tensor_dims is populated for identity rewrites.
-        # This is safe because each InputDim appears in at most one Flatten
-        # in a valid DimMap (a dimension can only be flattened once).
         if not isinstance(cmd.input_dims[0], InputDim):
             raise AssertionError(f"Expected InputDim, got {type(cmd.input_dims[0])}")
         return [cmd.input_dims[0]]
@@ -825,62 +818,68 @@ class _ViewShardingPropagator:
     def _analyze_split(self, cmd: Split) -> list[InputDim]:
         """Fill self.shard_allowed for Split; return shardable input dims."""
         in_dims = self._analyze_dim(cmd.input_dim)
-        in_dim = in_dims[0] if len(in_dims) > 0 else None
+        if len(in_dims) == 0:
+            return []
+        in_dim = in_dims[0]
         out_size = cmd.group_shape[cmd.split_id]
-        if in_dim is not None:
-            shard_mesh_dim, input_src_placement = self._find_shard_for_split(
-                in_dim.input_dim, cmd, self.input_src_placements
-            )
-            # Only _StridedShard inputs need matched_strided_mesh_dims tracking:
-            # each _StridedShard encodes a specific split_id via its
-            # split_factor, so we must prevent the same mesh dim from matching
-            # multiple split_ids.  Plain Shard inputs only match split_id==0
-            # (enforced by the return [] for split_id>0 below), so no tracking
-            # needed.
-            if shard_mesh_dim is not None and isinstance(
-                input_src_placement, _StridedShard
-            ):
-                is_last_split_dim = cmd.split_id == len(cmd.group_shape) - 1
-                if (
-                    self.strict_view
-                    and not is_last_split_dim
-                    and out_size % self.mesh_sizes[shard_mesh_dim] != 0
-                ):
-                    raise RuntimeError(
-                        f"Cannot unflatten unevenly sharded tensor: "
-                        f"output dimension {cmd.split_id} (size {out_size}) "
-                        f"is not evenly divisible by mesh dimension {shard_mesh_dim} "
-                        f"(size {self.mesh_sizes[shard_mesh_dim]}). "
-                        f"Please redistribute the tensor before this operation."
-                    )
-                self.matched_strided_mesh_dims.add(shard_mesh_dim)
-                if in_dim.input_dim in self.shard_allowed:
-                    is_shardable = (
-                        out_size % self.mesh_sizes[shard_mesh_dim] == 0
-                        or is_last_split_dim
-                    )
-                    self.shard_allowed[in_dim.input_dim][shard_mesh_dim] = is_shardable
-        if cmd.split_id == 0 and in_dim is not None:
-            # split_id == 0 sets the base shard_allowed for this input dim.
-            # Later split_ids (processed in subsequent rule iterations) refine
-            # individual mesh_dim entries via the _StridedShard branch above.
-            # split_id == 0 with group_shape >= 2 means is_last_split_dim is
-            # always False, so uneven sharding is not allowed on this dimension.
+        shard_mesh_dim, input_src_placement = self._find_shard_for_split(
+            in_dim.input_dim, cmd, self.input_src_placements
+        )
+        # split_id == 0 sets the base shard_allowed for this input dim.
+        # Later split_ids (processed in subsequent rule iterations) refine
+        # individual mesh_dim entries via the _StridedShard branch below.
+        if cmd.split_id == 0:
             self.shard_allowed[in_dim.input_dim] = [
                 out_size % mesh_dim_size == 0 for mesh_dim_size in self.mesh_sizes
             ]
-            shard_mesh_dim, _ = self._find_shard_for_flatten(in_dim)
-            if self.strict_view and shard_mesh_dim is not None:
-                if not self.shard_allowed[in_dim.input_dim][shard_mesh_dim]:
+            plain_mesh_dim, _ = self._find_plain_shard(in_dim)
+            # Non-strict silently redistributes via shard_allowed=False above;
+            # strict raises so the user knows to redistribute before view().
+            if self.strict_view and plain_mesh_dim is not None:
+                if not self.shard_allowed[in_dim.input_dim][plain_mesh_dim]:
                     raise RuntimeError(
                         f"Cannot unflatten unevenly sharded tensor: "
                         f"output dimension {cmd.split_id} (size {out_size}) "
                         f"is not evenly divisible by mesh dimension "
-                        f"{shard_mesh_dim} (size {self.mesh_sizes[shard_mesh_dim]}). "
+                        f"{plain_mesh_dim} (size {self.mesh_sizes[plain_mesh_dim]}). "
                         f"Please redistribute the tensor before this operation."
                     )
+        if shard_mesh_dim is not None and isinstance(
+            input_src_placement, _StridedShard
+        ):
+            # The last split dim doesn't require even divisibility because
+            # its local size is inferred: local_last = local_flat / product
+            # of earlier dims, and DTensor handles uneven local sizes.
+            # Non-last dims must be evenly divisible because they appear as
+            # fixed sizes in the local reshape — uneven division would make
+            # the stride pattern inconsistent across devices.
+            # E.g. [12] → [3, 4], _StridedShard targeting dim 1 (last),
+            # mesh=3: 4%3≠0, but local shapes [3,2],[3,1],[3,1] are valid.
+            is_last_split_dim = cmd.split_id == len(cmd.group_shape) - 1
+            if (
+                self.strict_view
+                and not is_last_split_dim
+                and out_size % self.mesh_sizes[shard_mesh_dim] != 0
+            ):
+                raise RuntimeError(
+                    f"Cannot unflatten unevenly sharded tensor: "
+                    f"output dimension {cmd.split_id} (size {out_size}) "
+                    f"is not evenly divisible by mesh dimension {shard_mesh_dim} "
+                    f"(size {self.mesh_sizes[shard_mesh_dim]}). "
+                    f"Please redistribute the tensor before this operation."
+                )
+            # Prevents _find_shard_for_split from matching this mesh dim
+            # again for a later split_id of the same Split group.
+            self.matched_strided_mesh_dims.add(shard_mesh_dim)
+            if in_dim.input_dim in self.shard_allowed:
+                self.shard_allowed[in_dim.input_dim][shard_mesh_dim] = (
+                    out_size % self.mesh_sizes[shard_mesh_dim] == 0 or is_last_split_dim
+                )
 
-        return [in_dim] if cmd.split_id == 0 and in_dim is not None else []
+        # Only split_id==0 returns the input dim for input_to_output_tensor_dims.
+        # Later split_ids refine shard_allowed above but return [] — their
+        # output dims are linked via the root-input-dim chase in analyze().
+        return [in_dim] if cmd.split_id == 0 else []
 
     def _analyze_dim(self, cmd: DimSpec) -> list[InputDim]:
         """Dispatch one DimSpec: update self.shard_allowed, return input dim(s) to shard on."""
