@@ -360,6 +360,7 @@ def expand_to_full_mesh_op_strategy(
     input_index: int = 1,
     inplace_op: bool = False,
     allow_unbacked_sharding: bool | None = None,
+    allow_uneven_sharding: bool = False,
     is_valid_strategy_cb: Callable[
         [list[DTensorSpec], DTensorSpec | tuple[DTensorSpec | None, ...]], bool
     ]
@@ -392,49 +393,13 @@ def expand_to_full_mesh_op_strategy(
             [Replicate(), Replicate(), Replicate()]
         ]
     """
-    # Auto-append output placement for out= kwarg in .out variant ops.
-    # Strategy functions author [output, *inputs] without the out kwarg.
-    # _get_num_tensor_inputs counts the out kwarg, so the framework computes
-    # num_outputs=0 and input_index=0. We fix this locally: position 0 IS
-    # the output, so we set input_index=1 and append the out kwarg placement
-    # (which must match the output).
-    args_strategy = op_schema.args_strategy
-    kwargs_strategy = op_schema.kwargs_strategy
-    if op_schema.is_out_variant_op() and input_index == 0:
-        if "out" not in op_schema.kwargs_schema:
-            raise AssertionError(
-                f"out variant op {op_schema.op} missing 'out' in kwargs_schema"
-            )
-        n_kwargs_tensors = len(kwargs_strategy)
-        input_index = 1
-        expected_len = input_index + len(args_strategy)
-        if n_kwargs_tensors == 1:
-            expanded_strategies = []
-            for strategy in single_mesh_dim_strategies:
-                if len(strategy) != expected_len:
-                    raise AssertionError(
-                        f"Strategy length {len(strategy)} != expected {expected_len} "
-                        f"(output=1 + args={len(args_strategy)}) for {op_schema.op}"
-                    )
-                expanded_strategies.append(list(strategy) + [strategy[0]])
-            single_mesh_dim_strategies = expanded_strategies
-        elif n_kwargs_tensors > 1:
-            # TODO: support ops with tensor kwargs beyond out=.
-            # Strategy author must spell out placements for all tensor kwargs.
-            expected_len_with_kwargs = expected_len + n_kwargs_tensors
-            for strategy in single_mesh_dim_strategies:
-                if len(strategy) != expected_len_with_kwargs:
-                    raise AssertionError(
-                        f"Strategy length {len(strategy)} != expected "
-                        f"{expected_len_with_kwargs} for op with {n_kwargs_tensors} "
-                        f"tensor kwargs: {op_schema.op}"
-                    )
-
     # Expand the single_mesh_dim_strategies to full mesh dim strategies.
     all_mesh_dim_strategies = [single_mesh_dim_strategies] * mesh.ndim
 
     strategy_combs = itertools.product(*all_mesh_dim_strategies)
 
+    args_strategy = op_schema.args_strategy
+    kwargs_strategy = op_schema.kwargs_strategy
     input_args_strategy = args_strategy + kwargs_strategy
     all_strategies = []
     # Track input placements if we skip strategies due to inplace placement mismatch
@@ -547,15 +512,15 @@ def expand_to_full_mesh_op_strategy(
             else:
                 raise RuntimeError("output spec is None")
 
-        # check all inputs are shardable. The placement equality fallback
-        # is required: is_tensor_shardable rejects shapes smaller than the mesh
-        # (e.g. dim=2 on 4 ranks), but if the input is already at that placement
-        # no redistribution occurs, so the check is irrelevant.
+        # check all inputs are shardable
         if not all(
             is_tensor_shardable(
                 inp.shape, s, allow_unbacked_sharding=allow_unbacked_sharding
             )
-            or inp.strategies[0].output_spec.placements == s.placements
+            or (
+                allow_uneven_sharding
+                and inp.strategies[0].output_spec.placements == s.placements
+            )
             for inp, s in zip(input_args_strategy, input_specs)
         ):
             continue

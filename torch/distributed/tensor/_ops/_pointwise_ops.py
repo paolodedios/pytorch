@@ -118,14 +118,32 @@ def _register_single_dim_pointwise(
     partial_extra_rules: list[list[Placement]] | None = None,
     static_argnum: int = 0,
 ) -> None:
+    strategy_fn = _common_pointwise_single_dim_strategy(
+        partial_extra_rules=partial_extra_rules  # pyrefly: ignore[bad-argument-type]
+    )
+    # For .out ops, append output placement as the out kwarg placement.
+    # Strategy functions author [output, *args] without kwargs. The out tensor
+    # must match the output placement, so we duplicate strategy[0] (output).
+    # This makes strategies [output, *args, out_kwarg] so _get_num_tensor_inputs
+    # (which counts the out kwarg) computes num_outputs correctly.
+    if "out" in op._schema.overload_name:
+        inner_fn = strategy_fn
+
+        def _out_wrapper(
+            op: OpOverload,
+            args: ArgsType,
+            kwargs: KwargsType,
+            _fn: Callable = inner_fn,
+        ) -> list[list[Placement | _ShardingPlaceholder]]:
+            strategies = _fn(op, args, kwargs)
+            return [s + [s[0]] for s in strategies]
+
+        strategy_fn = _out_wrapper
     register_single_dim_strategy(
         op,
         schema_info=RuntimeSchemaInfo(static_argnum, static_kwargkey=["out"]),
-    )(
-        _common_pointwise_single_dim_strategy(
-            partial_extra_rules=partial_extra_rules  # pyrefly: ignore[bad-argument-type]
-        )
-    )
+        allow_uneven_sharding=True,
+    )(strategy_fn)
 
 
 _UNARY_LINEAR_RULES: list[list[Placement]] = [
