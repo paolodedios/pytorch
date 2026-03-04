@@ -161,6 +161,7 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
         # compile subprocess back into the parent process.
         if path_to_ext_heuristics not in sys.path:
             sys.path.append(path_to_ext_heuristics)
+            self.addCleanup(sys.path.remove, path_to_ext_heuristics)
 
         class ExtensionTritonKernel(codegen.triton.TritonKernel):
             @classmethod
@@ -171,8 +172,6 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
                 custom_imports.splice(default_imports)
 
                 custom_imports.splice(f"""
-                    import sys
-                    sys.path.append("{path_to_ext_heuristics}")
                     import extension_triton_heuristics as triton_heuristics
                 """)
                 return custom_imports
