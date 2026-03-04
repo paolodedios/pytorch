@@ -657,59 +657,104 @@ class TestInductorConfigOverrideIntegration(TestCase):
 
     def test_config_override_backward_propagation(self, device):
         """
-        Verify that inductor config overrides propagate to backward compilation.
-
-        The config_patches must be passed to compile_fx (not just ambient
-        patching) so that compile_fx can wrap inner_compile and ensure the
-        patches are active during lazy backward compilation.
+        Verify that inductor config overrides are active at inductor compile
+        time for both forward and backward, across multiple graph breaks.
         """
-        from torch._dynamo.graph_id_filter import (
-            _create_backend_router,
-            _create_config_router,
+        import torch._functorch.config
+        from torch._dynamo.graph_id_filter import _create_config_router
+        from torch._inductor import (
+            compile_fx as compile_fx_mod,
+            config as inductor_config,
         )
-        from torch._inductor import compile_fx as compile_fx_mod
 
         torch._dynamo.reset()
-        _create_backend_router.cache_clear()
         _create_config_router.cache_clear()
 
-        config_patches_received: list[dict] = []
+        TRACKED_CONFIGS = [
+            "triton.cudagraphs",
+            "triton.dense_indexing",
+            "triton.cudagraph_skip_dynamic_graphs",
+        ]
+
+        def _read_config(key):
+            obj = inductor_config
+            for part in key.split("."):
+                obj = getattr(obj, part)
+            return obj
+
+        baseline = {k: _read_config(k) for k in TRACKED_CONFIGS}
+        configs_at_compile: dict[tuple[int, bool], dict] = {}
+
         original_compile_fx = compile_fx_mod.compile_fx
+        original_inner_compile = compile_fx_mod.compile_fx_inner
+
+        def tracking_inner_compile(gm, example_inputs, **kwargs):
+            compile_id = torch._guards.CompileContext.current_compile_id()
+            is_backward = kwargs.get("is_backward", False)
+            snapshot = {k: _read_config(k) for k in TRACKED_CONFIGS}
+            configs_at_compile[(compile_id.frame_id, is_backward)] = snapshot
+            return original_inner_compile(gm, example_inputs, **kwargs)
 
         def tracking_compile_fx(model_, example_inputs_, *args, **kwargs):
-            cp = kwargs.get("config_patches")
-            if cp is not None:
-                config_patches_received.append(dict(cp))
+            # Inject tracking inner_compile so compile_fx's config.patch
+            # wrapping covers it for both forward and backward.
+            if "inner_compile" not in kwargs:
+                kwargs["inner_compile"] = tracking_inner_compile
             return original_compile_fx(model_, example_inputs_, *args, **kwargs)
 
         def fn(x):
-            return (x * 2 + 1).sum()
+            y = x * 2 + 1
+            torch._dynamo.graph_break()
+            z = y.sin()
+            torch._dynamo.graph_break()
+            return z.exp().sum()
+
+        # Overlapping rules (all three configs default to False):
+        config_override = (
+            ">=1:triton.cudagraphs=True;"
+            "0-1:triton.dense_indexing=True;"
+            "1:triton.cudagraph_skip_dynamic_graphs=True"
+        )
+        expected_overrides = {
+            0: {"triton.dense_indexing": True},
+            1: {
+                "triton.cudagraphs": True,
+                "triton.dense_indexing": True,
+                "triton.cudagraph_skip_dynamic_graphs": True,
+            },
+            2: {
+                "triton.cudagraphs": True,
+            },
+        }
 
         with (
             patch.object(
                 torch._dynamo.config,
-                "debug_backend_override",
-                ">=0:inductor",
-            ),
-            patch.object(
-                torch._dynamo.config,
                 "debug_inductor_config_override",
-                "0:triton.cudagraph_skip_dynamic_graphs=False",
+                config_override,
             ),
             patch.object(compile_fx_mod, "compile_fx", tracking_compile_fx),
+            patch.object(torch._functorch.config, "enable_autograd_cache", False),
         ):
-            compiled_fn = torch.compile(fn, backend="eager")
+            compiled_fn = torch.compile(fn)
             x = torch.randn(10, device=device, requires_grad=True)
             result = compiled_fn(x)
             result.backward()
 
-        # config_patches should be passed directly to compile_fx (not ambient
-        # patching), which then wraps inner_compile to cover backward.
-        self.assertTrue(len(config_patches_received) > 0)
-        self.assertIn(
-            {"triton.cudagraph_skip_dynamic_graphs": False},
-            config_patches_received,
-        )
+        # Verify each graph has fwd+bwd, correct overrides, no cross-graph
+        # leak, and identical configs for forward and backward.
+        for gid in range(3):
+            self.assertIn((gid, False), configs_at_compile, f"graph {gid} fwd missing")
+            self.assertIn((gid, True), configs_at_compile, f"graph {gid} bwd missing")
+            expected = {**baseline, **expected_overrides[gid]}
+            for is_bw in [False, True]:
+                phase = "backward" if is_bw else "forward"
+                self.assertEqual(
+                    configs_at_compile[(gid, is_bw)],
+                    expected,
+                    f"graph {gid} {phase}: config mismatch",
+                )
+
         self.assertIsNotNone(x.grad)
 
 
