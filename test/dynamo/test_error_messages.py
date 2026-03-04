@@ -308,8 +308,8 @@ from user code:
 
         def post_munge(s):
             return re.sub(
-                r"file is under skip directory \(.*?\)",
-                "file is under skip directory (<path>)",
+                r"file matches MOD_SKIPLIST \(.*?\)",
+                "file matches MOD_SKIPLIST (<path>)",
                 s,
             )
 
@@ -321,7 +321,7 @@ Attempted to call function marked as skipped
   Explanation: Dynamo developers have intentionally marked that the function `disable` in file `_dynamo/decorators.py` should not be traced.
   Hint: Avoid calling the function `disable`.
 
-  Developer debug context: module: torch._dynamo.decorators, qualname: disable, skip reason: file is under skip directory (<path>)
+  Developer debug context: module: torch._dynamo.decorators, qualname: disable, skip reason: file matches MOD_SKIPLIST (<path>)
 
  For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0007.html
 
