@@ -5238,6 +5238,30 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         self.assertEqual(counter.frame_count, 4)
 
     @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_indices_no_recompile_to_unbacked(self):
+        """
+        Test that compiling without _dynamo_unbacked_indices and then passing
+        a tensor with _dynamo_unbacked_indices DOES trigger recompilation.
+        """
+        counter = CompileCounter()
+
+        def func(x):
+            return x + 1
+
+        compiled_func = torch.compile(func, backend=counter)
+
+        # First call without unbacked indices
+        x1 = torch.rand(4, 3)
+        compiled_func(x1)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Second call with unbacked indices - should recompile
+        x2 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x2, 0)
+        compiled_func(x2)
+        self.assertEqual(counter.frame_count, 2)
+
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
     def test_unbacked_no_shape_id_then_shape_id(self):
         """
         Test that compiling without shape_id then calling with shape_id
@@ -5267,30 +5291,6 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         x3 = torch.rand(4, 3)
         torch._dynamo.decorators.mark_unbacked(x3, 0, shape_id="batch")
         compiled_func(x3)
-        self.assertEqual(counter.frame_count, 2)
-
-    @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_unbacked_indices_no_recompile_to_unbacked(self):
-        """
-        Test that compiling without _dynamo_unbacked_indices and then passing
-        a tensor with _dynamo_unbacked_indices DOES trigger recompilation.
-        """
-        counter = CompileCounter()
-
-        def func(x):
-            return x + 1
-
-        compiled_func = torch.compile(func, backend=counter)
-
-        # First call without unbacked indices
-        x1 = torch.rand(4, 3)
-        compiled_func(x1)
-        self.assertEqual(counter.frame_count, 1)
-
-        # Second call with unbacked indices - should recompile
-        x2 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x2, 0)
-        compiled_func(x2)
         self.assertEqual(counter.frame_count, 2)
 
     @skipIfTorchDynamo("mark_unbacked is not traceable")
