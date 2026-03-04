@@ -352,16 +352,6 @@ auto PyNode::release_variables() -> void {
   // that the python interpreter is already dead here. In that case
   // we just leak the saved objects.
   if (Py_IsInitialized()) {
-    // Release GIL before acquiring mutex to maintain lock ordering
-    // (mutex then GIL) and avoid deadlock with apply() which acquires
-    // mutex then GIL. This function may be called with GIL held (e.g.,
-    // from Python destructor or THPFunction_maybe_clear_saved_tensors).
-    std::optional<pybind11::gil_scoped_release> no_gil;
-    if (PyGILState_Check()) {
-      no_gil.emplace();
-    }
-    // see Note [Thread Safety on Autograd Node]
-    std::lock_guard<std::mutex> lock(mutex_);
     pybind11::gil_scoped_acquire gil;
     auto f = (THPFunction*)obj;
     f->saved_variables.clear();
