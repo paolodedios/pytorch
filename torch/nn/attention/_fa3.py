@@ -99,8 +99,8 @@ def _fa3_register_kernels() -> Library:
         "_flash_attention_forward", _fa3_flash_attention_forward_impl_default, "CUDA"
     )
     lib.impl(
-        "_flash_attention_forward_out_variant",
-        _fa3_flash_attention_forward_out_impl,
+        "_flash_attention_forward_no_dropout_inplace",
+        _fa3_flash_attention_forward_no_dropout_inplace_impl,
         "CUDA",
     )
     lib.impl(
@@ -449,7 +449,7 @@ def _fa3_flash_attention_forward_impl(
     return out, lse, rng_state, philox_offset, debug_mask
 
 
-def _fa3_flash_attention_forward_out_impl(
+def _fa3_flash_attention_forward_no_dropout_inplace_impl(
     out: torch.Tensor,
     query: torch.Tensor,
     key: torch.Tensor,
@@ -469,7 +469,7 @@ def _fa3_flash_attention_forward_out_impl(
     alibi_slopes: torch.Tensor | None = None,
     block_table: torch.Tensor | None = None,
 ):
-    _, lse, rng_state, philox_offset, debug_mask = _fa3_flash_attention_forward_impl(
+    _, lse, _, _, _ = _fa3_flash_attention_forward_impl(
         query,
         key,
         value,
@@ -491,7 +491,7 @@ def _fa3_flash_attention_forward_out_impl(
         out=out,
         block_table=block_table,
     )
-    return lse, rng_state, philox_offset, debug_mask
+    return lse
 
 
 def _fa3_flash_attention_forward_impl_default(

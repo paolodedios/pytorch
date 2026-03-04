@@ -1315,8 +1315,8 @@ _flash_attention_forward(
       /*out=*/std::nullopt);
 }
 
-std::tuple<Tensor, Tensor, Tensor, Tensor>
-_flash_attention_forward_out(
+Tensor
+_flash_attention_forward_no_dropout_inplace(
     Tensor& out,
     const Tensor& query,
     const Tensor& key,
@@ -1344,11 +1344,7 @@ _flash_attention_forward_out(
           scale, window_size_left, window_size_right,
           _seqused_k, _alibi_slopes, _block_table,
           /*out=*/std::make_optional(out));
-  return std::make_tuple(
-      std::move(logsumexp),
-      std::move(philox_seed),
-      std::move(philox_offset),
-      std::move(debug_attn_mask));
+  return logsumexp;
 }
 
 std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor>

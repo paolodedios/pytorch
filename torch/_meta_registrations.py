@@ -6361,8 +6361,8 @@ def meta__flash_attention_forward(
     )
 
 
-@register_meta([aten._flash_attention_forward_out_variant.default])
-def meta__flash_attention_forward_out_variant(
+@register_meta([aten._flash_attention_forward_no_dropout_inplace.default])
+def meta__flash_attention_forward_no_dropout_inplace(
     out: Tensor,
     query: Tensor,
     key: Tensor,
@@ -6381,7 +6381,7 @@ def meta__flash_attention_forward_out_variant(
     alibi_slopes: Tensor | None = None,
     block_table: Tensor | None = None,
 ):
-    _, logsumexp, seed, offset, debug_mask = meta__flash_attention_forward(
+    _, logsumexp, _, _, _ = meta__flash_attention_forward(
         query,
         key,
         value,
@@ -6399,7 +6399,7 @@ def meta__flash_attention_forward_out_variant(
         alibi_slopes,
         block_table,
     )
-    return logsumexp, seed, offset, debug_mask
+    return logsumexp
 
 
 @register_meta([aten._flash_attention_forward.quantized])
