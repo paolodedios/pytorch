@@ -1,18 +1,14 @@
 # Owner(s): ["module: dynamo"]
 
-from torch.fx import GraphModule
-from torch import Graph
 import copy
-import operator
-from typing import Sequence
-
-from torch._inductor.utils import InputType
 import dataclasses
 import functools
+import operator
 import os
 import pickle
 import shutil
 import unittest
+from collections.abc import Sequence
 from unittest.mock import patch
 
 import torch
@@ -35,9 +31,10 @@ from torch._inductor.custom_graph_pass import CustomRuntimeEstimator
 from torch._inductor.runtime.runtime_utils import cache_dir
 from torch._inductor.runtime.triton_compat import tl, triton
 from torch._inductor.test_case import TestCase as InductorTestCase
-from torch._inductor.utils import fresh_cache
+from torch._inductor.utils import fresh_cache, InputType
 from torch._subclasses import FakeTensorMode
 from torch.compiler._cache import CacheArtifactManager
+from torch.fx import GraphModule
 from torch.fx.experimental.symbolic_shapes import ShapeEnv
 from torch.testing._internal.common_cuda import SM80OrLater, TEST_MULTIGPU
 from torch.testing._internal.common_device_type import largeTensorTest
@@ -2643,7 +2640,8 @@ class AOTAutogradCacheTests(InductorTestCase):
             # Reset dynamo but keep the cache
             torch._dynamo.reset()
 
-            # Third compilation with custom pre-grad pass - cache miss, pre-grad passes should be called, expect one graph node removed
+            # Third compilation with custom pre-grad pass - cache miss, pre-grad passes should be called,
+            # expect one graph node removed
             with inductor_config.patch(
                 "pre_grad_custom_pass", custom_pre_grad_pass_remove_ident_muls
             ):
