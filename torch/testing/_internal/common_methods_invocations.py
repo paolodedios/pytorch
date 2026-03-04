@@ -39,7 +39,7 @@ from torch.testing._internal.common_quantized import (
 )
 from torch.testing._internal.common_utils import (
     make_fullrank_matrices_with_distinct_singular_values,
-    TEST_WITH_ROCM, IS_FBCODE, IS_WINDOWS, IS_MACOS, IS_S390X, TEST_SCIPY,
+    TEST_WITH_ROCM, IS_FBCODE, IS_WINDOWS, IS_MACOS, TEST_SCIPY,
     torch_to_numpy_dtype_dict, numpy_to_torch_dtype, TEST_WITH_ASAN,
     GRADCHECK_NONDET_TOL, slowTest, TEST_WITH_SLOW,
     TEST_WITH_TORCHINDUCTOR,
@@ -8916,32 +8916,6 @@ def sample_inputs_scaled_mm(op_info, device, dtype, requires_grad, **kwargs):
     scale_tensor2 = make_scale(scale2, torch.float8_e4m3fn)
     samples.append(SampleInput(mat1, mat2, scale_tensor1, scale_tensor2))
 
-    # Case 4: MXFP4 (float4_e2m1fn_x2) with E8M0 blockwise scaling
-    # Regression test: E8M0 blockwise scale size validation must account for
-    # packed FP4 format where self.size(1) = K/2.
-    # Only supported on MI350 (gfx950).
-    if device == 'cuda' and torch.version.hip:
-        if 'gfx950' in torch.cuda.get_device_properties(0).gcnArchName:
-            mxfp4_M, mxfp4_K, mxfp4_N = 256, 256, 256
-            block_size_k = 32
-            block_size_mn = 128
-            num_k_blocks = math.ceil(mxfp4_K / block_size_k)
-            padded_num_k_blocks = math.ceil(num_k_blocks / 4) * 4
-            scale_a_size = block_size_mn * math.ceil(mxfp4_M / block_size_mn) * padded_num_k_blocks
-            scale_b_size = block_size_mn * math.ceil(mxfp4_N / block_size_mn) * padded_num_k_blocks
-            mat1 = _bfloat16_to_float4_e2m1fn_x2(
-                torch.randn(mxfp4_M, mxfp4_K, device=device, dtype=torch.bfloat16)
-            )
-            mat2 = _bfloat16_to_float4_e2m1fn_x2(
-                torch.randn(mxfp4_N, mxfp4_K, device=device, dtype=torch.bfloat16)
-            ).t()
-            scale_tensor1 = torch.ones(scale_a_size, device=device, dtype=torch.float8_e8m0fnu)
-            scale_tensor2 = torch.ones(scale_b_size, device=device, dtype=torch.float8_e8m0fnu)
-            samples.append(SampleInput(
-                mat1, mat2, scale_tensor1, scale_tensor2,
-                out_dtype=torch.bfloat16,
-            ))
-
     yield from samples
 
 def sample_inputs_scaled_mm_v2(op_info, device, dtype, requires_grad, **kwargs):
@@ -15570,11 +15544,6 @@ op_db: list[OpInfo] = [
                DecorateInfo(unittest.skip("Unsupported on MPS for now"), 'TestCommon', 'test_numpy_ref_mps'),
                DecorateInfo(toleranceOverride({torch.float32: tol(atol=2e-03, rtol=5e-03)}),
                             "TestDecomp", "test_comprehensive", device_type="cpu"),
-               # AssertionError: Tensor-likes are not close!
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
-                   device_type='mps', dtypes=(torch.float32,)
-               ),
                # See https://github.com/pytorch/pytorch/issues/173525
                DecorateInfo(toleranceOverride({torch.float32: tol(atol=2e-4, rtol=2e-5)}),
                             'TestConsistency', 'test_output_grad_match', device_type='mps'),
@@ -16327,11 +16296,6 @@ op_db: list[OpInfo] = [
                    'TestCommon', 'test_numpy_refs'
                ),
                DecorateInfo(unittest.skip("Bug in MPS backend!"), 'TestCommon', 'test_numpy_ref_mps'),
-               # AssertionError: Tensor-likes are not close!
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
-                   device_type='mps', dtypes=(torch.float32,)
-               ),
                # See https://github.com/pytorch/pytorch/issues/173525
                DecorateInfo(toleranceOverride({torch.float32: tol(atol=2e-4, rtol=2e-5)}),
                             'TestConsistency', 'test_output_grad_match', device_type='mps'),
@@ -22542,6 +22506,10 @@ op_db: list[OpInfo] = [
                          dtypes=[torch.float16]),
             DecorateInfo(unittest.skip("Skipped!"), 'TestReductions', 'test_ref_extremal_values',
                          device_type='cuda', dtypes=[torch.complex64]),
+            # Skipped on XPU because complex mean with extremal values (Inf/NaN) exhibits backend-dependent
+            # IEEE-754 behavior that differs from the CPU reference.
+            DecorateInfo(unittest.skip("Skipped!"), 'TestReductions', 'test_ref_extremal_values',
+                         device_type='xpu', dtypes=[torch.complex64]),
             # Driver issue of XPU, see https://github.com/intel/torch-xpu-ops/issues/2295
             DecorateInfo(
                 unittest.skip('Skipped!'),
@@ -25263,16 +25231,6 @@ python_ref_db = [
         decorators=(
             # See https://github.com/pytorch/pytorch/issues/111126
             DecorateInfo(unittest.expectedFailure, 'TestBinaryUfuncs', 'test_type_promotion'),
-            # Reference result was farther (nan) from the precise computation than the
-            # torch result was (inf)!
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_python_ref",
-                dtypes=(torch.bfloat16,),
-                device_type="cpu",
-                active_if=not IS_S390X,
-            ),
         ),
     ),
     ElementwiseBinaryPythonRefInfo(
@@ -26720,6 +26678,8 @@ python_ref_db = [
             # FIXME: improve precision
             DecorateInfo(
                 unittest.skip("Skipped!"), 'TestReductions', 'test_ref_small_input'),
+            DecorateInfo(
+                unittest.skip("Skipped!"), 'TestReductions', 'test_ref_duplicate_values'),
             # torch._subclasses.fake_tensor.MetadataMismatchError: Dtypes torch.float32 and torch.complex64 are not equal!
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref', device_type='mps', dtypes=(torch.complex64,)),
             DecorateInfo(

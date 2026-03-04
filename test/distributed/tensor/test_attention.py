@@ -1206,45 +1206,68 @@ class TestContextParallelStyleSDPA(DTensorTestBase):
 
 
 class TestContextParallelWithTP(DTensorTestBase):
-    """Test that _ContextParallel sdpa_input_fn / sdpa_output_fn handle TP DTensors correctly.
+    """Test _ContextParallel composition with tensor parallelism via tensor_mesh.
 
-    When CP and TP are composed, the inputs to the inner attention module are TP
-    DTensors (sharded on the TP mesh with Shard(1) for the head dimension). The
-    CP hooks must strip the TP DTensor wrapper before creating the CP DTensor,
-    and re-wrap the output as a TP DTensor after CP processing.
+    Case 1 (native multi-dim): tensor_mesh contains the CP dimension. Inputs
+    are already multi-dim DTensors; the hooks verify the CP placement and pass
+    through.
+
+    Case 2 (legacy TP): tensor_mesh is a separate 1D TP mesh. Inputs are TP
+    DTensors; the hooks strip TP, create 2D DTensors on a combined [cp, tp]
+    mesh, and restore the original TP placement on output.
     """
 
     @property
     def world_size(self) -> int:
         return 4
 
-    @skip_if_lt_x_gpu(4)
-    @with_comms
-    def test_sdpa_input_fn_with_tp_dtensor(self):
-        """sdpa_input_fn should convert TP DTensors (Shard(1)) to CP DTensors (Shard(seq_dim))."""
-        from torch.distributed.tensor.placement_types import Shard
+    def _setup_case1(self, attention_type, seq_dim=2):
+        """Create meshes and _ContextParallel for Case 1 (multi-dim DTensor)."""
+        mesh_2d = init_device_mesh(
+            self.device_type, (2, 2), mesh_dim_names=("cp", "tp")
+        )
+        cp_mesh = mesh_2d["cp"]
+        cp_style = _ContextParallel(
+            seq_dim=seq_dim,
+            attention_type=attention_type,
+            tensor_mesh=mesh_2d,
+        )
+        cp_style._apply(torch.nn.Identity(), cp_mesh)
+        return mesh_2d, cp_mesh, cp_style
 
-        # Create a 2-D mesh: [cp=2, tp=2] over 4 GPUs
+    def _setup_case2(self, attention_type, seq_dim=2):
+        """Create meshes and _ContextParallel for Case 2 (legacy TP)."""
         mesh_2d = init_device_mesh(
             self.device_type, (2, 2), mesh_dim_names=("cp", "tp")
         )
         cp_mesh = mesh_2d["cp"]
         tp_mesh = mesh_2d["tp"]
-
-        seq_dim = 2
         cp_style = _ContextParallel(
             seq_dim=seq_dim,
-            attention_type=_ContextParallel.AttentionType.SDPA,
-            tp_mesh=tp_mesh,
+            attention_type=attention_type,
+            tensor_mesh=tp_mesh,
         )
+        cp_style._apply(torch.nn.Identity(), cp_mesh)
+        return mesh_2d, cp_mesh, tp_mesh, cp_style
 
-        # Simulate TP-sharded Q/K/V: full shape [B, H, S, D] = [2, 8, 128, 64]
-        # TP shards on dim 1 (heads), so each rank holds [2, 4, 128, 64]
+    # --- Case 2 (legacy TP) SDPA tests ---
+
+    @skip_if_lt_x_gpu(4)
+    @with_comms
+    def test_sdpa_input_fn_with_tp_dtensor(self):
+        """Case 2: sdpa_input_fn creates 2D DTensors on combined [cp, tp] mesh."""
+        from torch.distributed.tensor.placement_types import Shard
+
+        mesh_2d, cp_mesh, tp_mesh, cp_style = self._setup_case2(
+            _ContextParallel.AttentionType.SDPA
+        )
+        seq_dim = 2
+        combined_mesh = mesh_2d["cp", "tp"]
+
         local_q = torch.randn(2, 4, 128, 64, device=self.device_type)
         local_k = torch.randn(2, 4, 128, 64, device=self.device_type)
         local_v = torch.randn(2, 4, 128, 64, device=self.device_type)
 
-        # Wrap as TP DTensors with Shard(1) on the TP mesh
         tp_q = DTensor.from_local(local_q, tp_mesh, [Shard(1)], run_check=False)
         tp_k = DTensor.from_local(local_k, tp_mesh, [Shard(1)], run_check=False)
         tp_v = DTensor.from_local(local_v, tp_mesh, [Shard(1)], run_check=False)
@@ -1253,46 +1276,35 @@ class TestContextParallelWithTP(DTensorTestBase):
         kwargs = {}
         out_args, out_kwargs = cp_style.sdpa_input_fn(None, args, kwargs, cp_mesh)
 
-        # All outputs should be CP DTensors on the CP mesh with Shard(seq_dim)
         self.assertEqual(len(out_args), 3)
         self.assertEqual(len(out_kwargs), 0)
         for i, out in enumerate(out_args):
             self.assertIsInstance(out, DTensor, f"out_args[{i}] should be DTensor")
-            self.assertEqual(out.device_mesh, cp_mesh)
-            self.assertEqual(out.placements, (Shard(seq_dim),))
+            self.assertEqual(out.device_mesh, combined_mesh)
+            self.assertEqual(out.placements, (Shard(seq_dim), Shard(1)))
 
-        # The local data should match the original local tensors
         for out, orig_local in zip(out_args, [local_q, local_k, local_v]):
             torch.testing.assert_close(out.to_local(), orig_local)
 
     @skip_if_lt_x_gpu(4)
     @with_comms
     def test_sdpa_output_fn_restores_tp_dtensor(self):
-        """sdpa_output_fn should convert CP DTensor output back to TP DTensor (Shard(1))."""
+        """Case 2: sdpa_output_fn converts combined-mesh DTensor back to TP DTensor."""
         from torch.distributed.tensor.placement_types import Shard
 
-        mesh_2d = init_device_mesh(
-            self.device_type, (2, 2), mesh_dim_names=("cp", "tp")
+        mesh_2d, cp_mesh, tp_mesh, cp_style = self._setup_case2(
+            _ContextParallel.AttentionType.SDPA
         )
-        cp_mesh = mesh_2d["cp"]
-        tp_mesh = mesh_2d["tp"]
-
         seq_dim = 2
-        cp_style = _ContextParallel(
-            seq_dim=seq_dim,
-            attention_type=_ContextParallel.AttentionType.SDPA,
-            tp_mesh=tp_mesh,
-        )
+        combined_mesh = mesh_2d["cp", "tp"]
 
-        # Simulate CP output: a DTensor on the CP mesh with Shard(seq_dim)
         local_out = torch.randn(2, 4, 64, 64, device=self.device_type)
-        cp_output = DTensor.from_local(
-            local_out, cp_mesh, [Shard(seq_dim)], run_check=False
+        combined_output = DTensor.from_local(
+            local_out, combined_mesh, [Shard(seq_dim), Shard(1)], run_check=False
         )
 
-        result = cp_style.sdpa_output_fn(None, None, cp_output, cp_mesh)
+        result = cp_style.sdpa_output_fn(None, None, combined_output, cp_mesh)
 
-        # Result should be a TP DTensor on the TP mesh with Shard(1)
         self.assertIsInstance(result, DTensor)
         self.assertEqual(result.device_mesh, tp_mesh)
         self.assertEqual(result.placements, (Shard(1),))
@@ -1300,8 +1312,8 @@ class TestContextParallelWithTP(DTensorTestBase):
 
     @skip_if_lt_x_gpu(4)
     @with_comms
-    def test_sdpa_output_fn_no_tp_mesh(self):
-        """Without tp_mesh, sdpa_output_fn should return plain local tensors (original behavior)."""
+    def test_sdpa_output_fn_no_tensor_mesh(self):
+        """Without tensor_mesh, sdpa_output_fn returns plain local tensors."""
         from torch.distributed.tensor.placement_types import Shard
 
         mesh_2d = init_device_mesh(
@@ -1313,8 +1325,9 @@ class TestContextParallelWithTP(DTensorTestBase):
         cp_style = _ContextParallel(
             seq_dim=seq_dim,
             attention_type=_ContextParallel.AttentionType.SDPA,
-            tp_mesh=None,  # no TP
+            tensor_mesh=None,
         )
+        cp_style._apply(torch.nn.Identity(), cp_mesh)
 
         local_out = torch.randn(2, 4, 64, 64, device=self.device_type)
         cp_output = DTensor.from_local(
@@ -1323,10 +1336,238 @@ class TestContextParallelWithTP(DTensorTestBase):
 
         result = cp_style.sdpa_output_fn(None, None, cp_output, cp_mesh)
 
-        # Should be a plain tensor, not a DTensor
         self.assertNotIsInstance(result, DTensor)
         self.assertIsInstance(result, torch.Tensor)
         torch.testing.assert_close(result, local_out)
+
+    # --- Case 2 (legacy TP) flex tests ---
+
+    @skip_if_lt_x_gpu(4)
+    @with_comms
+    def test_flex_input_fn_strips_tp_dtensor(self):
+        """Case 2: flex_input_fn strips DTensor wrappers before allgather."""
+        from unittest.mock import patch
+
+        from torch.distributed.tensor.placement_types import Shard
+
+        mesh_2d, cp_mesh, tp_mesh, cp_style = self._setup_case2(
+            _ContextParallel.AttentionType.FLEX
+        )
+
+        local_q = torch.randn(2, 4, 128, 64, device=self.device_type)
+        local_k = torch.randn(2, 4, 128, 64, device=self.device_type)
+        local_v = torch.randn(2, 4, 128, 64, device=self.device_type)
+
+        tp_q = DTensor.from_local(local_q, tp_mesh, [Shard(1)], run_check=False)
+        tp_k = DTensor.from_local(local_k, tp_mesh, [Shard(1)], run_check=False)
+        tp_v = DTensor.from_local(local_v, tp_mesh, [Shard(1)], run_check=False)
+
+        captured_args = {}
+
+        def mock_allgather(key, value, seq_dim, pg_name):
+            captured_args["key"] = key
+            captured_args["value"] = value
+            return key, value
+
+        with patch(
+            "torch.distributed.tensor.experimental._context_parallel._attention.flex_cp_allgather",
+            side_effect=mock_allgather,
+        ):
+            args = (tp_q, tp_k, tp_v)
+            kwargs = {}
+            cp_style.flex_input_fn(None, args, kwargs, cp_mesh)
+
+        self.assertNotIsInstance(captured_args["key"], DTensor)
+        self.assertIsInstance(captured_args["key"], torch.Tensor)
+        self.assertNotIsInstance(captured_args["value"], DTensor)
+        self.assertIsInstance(captured_args["value"], torch.Tensor)
+
+        torch.testing.assert_close(captured_args["key"], local_k)
+        torch.testing.assert_close(captured_args["value"], local_v)
+
+    @skip_if_lt_x_gpu(4)
+    @with_comms
+    def test_flex_output_fn_restores_tp_dtensor(self):
+        """Case 2: flex_output_fn re-wraps output using stored placements."""
+        from unittest.mock import patch
+
+        from torch.distributed.tensor.placement_types import Shard
+
+        mesh_2d, cp_mesh, tp_mesh, cp_style = self._setup_case2(
+            _ContextParallel.AttentionType.FLEX
+        )
+
+        local_q = torch.randn(2, 4, 128, 64, device=self.device_type)
+        local_k = torch.randn(2, 4, 128, 64, device=self.device_type)
+        local_v = torch.randn(2, 4, 128, 64, device=self.device_type)
+
+        tp_q = DTensor.from_local(local_q, tp_mesh, [Shard(1)], run_check=False)
+        tp_k = DTensor.from_local(local_k, tp_mesh, [Shard(1)], run_check=False)
+        tp_v = DTensor.from_local(local_v, tp_mesh, [Shard(1)], run_check=False)
+
+        def mock_allgather(key, value, seq_dim, pg_name):
+            return key, value
+
+        with patch(
+            "torch.distributed.tensor.experimental._context_parallel._attention.flex_cp_allgather",
+            side_effect=mock_allgather,
+        ):
+            cp_style.flex_input_fn(None, (tp_q, tp_k, tp_v), {}, cp_mesh)
+
+        local_out = torch.randn(2, 4, 64, 64, device=self.device_type)
+        result = cp_style.flex_output_fn(None, None, local_out, cp_mesh)
+
+        self.assertIsInstance(result, DTensor)
+        self.assertEqual(result.device_mesh, tp_mesh)
+        self.assertEqual(result.placements, (Shard(1),))
+        torch.testing.assert_close(result.to_local(), local_out)
+
+    # --- Error handling ---
+
+    @skip_if_lt_x_gpu(4)
+    @with_comms
+    def test_sdpa_input_fn_rejects_unknown_dtensor(self):
+        """Case 2: sdpa_input_fn raises when given a DTensor on an unexpected mesh."""
+        from torch.distributed.tensor.placement_types import Shard
+
+        mesh_2d, cp_mesh, tp_mesh, cp_style = self._setup_case2(
+            _ContextParallel.AttentionType.SDPA
+        )
+
+        local_q = torch.randn(2, 4, 128, 64, device=self.device_type)
+        cp_q = DTensor.from_local(local_q, cp_mesh, [Shard(2)], run_check=False)
+
+        with self.assertRaises(AssertionError):
+            cp_style.sdpa_input_fn(None, (cp_q,), {}, cp_mesh)
+
+    # --- Case 1 (multi-dim DTensor) SDPA tests ---
+
+    @skip_if_lt_x_gpu(4)
+    @with_comms
+    def test_sdpa_input_fn_case1_multidim_passthrough(self):
+        """Case 1: tensor_mesh contains CP dim — input DTensors pass through."""
+        from torch.distributed.tensor.placement_types import Shard
+
+        mesh_2d, cp_mesh, cp_style = self._setup_case1(
+            _ContextParallel.AttentionType.SDPA
+        )
+        seq_dim = 2
+
+        local_q = torch.randn(2, 4, 64, 64, device=self.device_type)
+        q_2d = DTensor.from_local(
+            local_q, mesh_2d, [Shard(seq_dim), Shard(1)], run_check=False
+        )
+
+        out_args, _ = cp_style.sdpa_input_fn(None, (q_2d,), {}, cp_mesh)
+
+        out = out_args[0]
+        self.assertIsInstance(out, DTensor)
+        self.assertEqual(out.device_mesh, mesh_2d)
+        self.assertEqual(out.placements, (Shard(seq_dim), Shard(1)))
+        torch.testing.assert_close(out.to_local(), local_q)
+
+    @skip_if_lt_x_gpu(4)
+    @with_comms
+    def test_sdpa_output_fn_case1_multidim_passthrough(self):
+        """Case 1: tensor_mesh contains CP dim — output DTensors pass through."""
+        from torch.distributed.tensor.placement_types import Shard
+
+        mesh_2d, cp_mesh, cp_style = self._setup_case1(
+            _ContextParallel.AttentionType.SDPA
+        )
+        seq_dim = 2
+
+        local_out = torch.randn(2, 4, 64, 64, device=self.device_type)
+        output_2d = DTensor.from_local(
+            local_out, mesh_2d, [Shard(seq_dim), Shard(1)], run_check=False
+        )
+
+        result = cp_style.sdpa_output_fn(None, None, output_2d, cp_mesh)
+
+        self.assertIsInstance(result, DTensor)
+        self.assertEqual(result.device_mesh, mesh_2d)
+        self.assertEqual(result.placements, (Shard(seq_dim), Shard(1)))
+
+    @skip_if_lt_x_gpu(4)
+    @with_comms
+    @torch._dynamo.config.patch(skip_nnmodule_hook_guards=False)
+    def test_cp_hooks_compile_no_graph_break(self):
+        """Verify that CP hooks compile without graph breaks.
+
+        Tests that sdpa_input_fn/sdpa_output_fn hooks compile cleanly with
+        activation checkpointing and torch.compile. Uses MATH backend so
+        SDPA decomposes into traceable ops (the flash/efficient/cudnn
+        backends go through _sdpa_handler which involves mesh operations
+        not yet compatible with fake tensor compilation tracing).
+        """
+
+        mesh_2d = init_device_mesh(
+            self.device_type, (2, 2), mesh_dim_names=("cp", "tp")
+        )
+        cp_mesh = mesh_2d["cp"]
+
+        seq_dim = 2
+        cp_style = _ContextParallel(
+            seq_dim=seq_dim,
+            attention_type=_ContextParallel.AttentionType.SDPA,
+        )
+
+        from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
+            checkpoint_wrapper,
+        )
+
+        D, H, D_HEAD = 64, 4, 16  # D = H * D_HEAD
+        device_type = self.device_type
+
+        class Attention(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.wq = torch.nn.Linear(D, D, bias=False, device=device_type)
+                self.wk = torch.nn.Linear(D, D, bias=False, device=device_type)
+                self.wv = torch.nn.Linear(D, D, bias=False, device=device_type)
+                self.wo = torch.nn.Linear(D, D, bias=False, device=device_type)
+                self.inner_attention = SDPAWrapper(
+                    compiled=False, backend=SDPBackend.MATH
+                )
+
+            def forward(self, x):
+                B, S, _ = x.shape
+                q = self.wq(x).view(B, S, H, D_HEAD).transpose(1, 2)
+                k = self.wk(x).view(B, S, H, D_HEAD).transpose(1, 2)
+                v = self.wv(x).view(B, S, H, D_HEAD).transpose(1, 2)
+                out = self.inner_attention(q, k, v)
+                out = out.transpose(1, 2).contiguous().view(B, S, D)
+                return self.wo(out)
+
+        class TransformerBlock(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.attention = Attention()
+
+            def forward(self, x):
+                return self.attention(x)
+
+        block = TransformerBlock()
+        parallelize_module(
+            block,
+            cp_mesh,
+            {
+                "attention.inner_attention": cp_style,
+            },
+        )
+        block = checkpoint_wrapper(block)
+
+        x = torch.randn(2, 128, D, device=self.device_type)
+
+        eager_out = block(x)
+
+        torch._dynamo.reset()
+        cnt = torch._dynamo.testing.CompileCounterWithBackend("aot_eager")
+        compiled_block = torch.compile(block, backend=cnt, fullgraph=True)
+        compiled_out = compiled_block(x)
+
+        self.assertEqual(cnt.frame_count, 1)
+        self.assertEqual(compiled_out, eager_out)
 
 
 RingAttentionTestWithLocalTensor = create_local_tensor_test_class(
