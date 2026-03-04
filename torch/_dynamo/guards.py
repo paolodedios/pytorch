@@ -3144,8 +3144,11 @@ class GuardBuilder(GuardBuilderBase):
 
             # Guard on unbacked-dependent attributes (shape_ids, bounds).
             # These are only checked if the runtime tensor has _dynamo_unbacked_indices.
+            # We must install guards even when attr_value is None to detect runtime
+            # tensors that have the attribute when compile-time didn't.
             def add_unbacked_dependent_guard(attr_name: str) -> None:
-                if attr_value := getattr(value, attr_name, None):
+                if hasattr(value, "_dynamo_unbacked_indices"):
+                    attr_value = getattr(value, attr_name, None)
                     code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {attr_value!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
                     code.append(code_part)
                     self.get_guard_manager(guard).add_lambda_guard(
