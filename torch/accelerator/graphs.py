@@ -70,7 +70,7 @@ class Graph(_acceleratorGraph):
         >>> with stream, g0:
         ...     x += 1
 
-        >>> g1 = torch.accelerator.Graph(g0.pool())
+        >>> g1 = torch.accelerator.Graph(pool=g0.pool())
         >>> # Capture operations into g1, sharing g0's memory pool
         >>> with stream, g1:
         ...     x *= 2
