@@ -462,6 +462,8 @@ def wrap_all_sync_nodes_with_control_deps(gm: torch.fx.GraphModule) -> None:
     visited: set[Node] = set()
     found_sync = False
 
+    # Walk the node linked-list manually so we can mutate the graph
+    # (wrapping sync nodes inserts/erases nodes) without losing our place.
     node = next(iter(graph.nodes))
     while node.op != "root":
         next_node = node.next
