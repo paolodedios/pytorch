@@ -11,6 +11,7 @@ from torch._dynamo.utils import same
 from torch._inductor import metrics, utils
 from torch._inductor.scheduler import MixOrderReduction
 from torch._inductor.test_case import run_tests, TestCase
+from torch._inductor.utils import run_and_get_code
 from torch.testing import FileCheck
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
@@ -637,6 +638,30 @@ class MixOrderReductionTest(TestBase):
         # one is the mix-order reduction kernel
         # the other is the piontwise kernel
         self.assertTrue(2, metrics.generated_kernel_count)
+
+    @inductor_config.patch("nan_asserts", True)
+    def test_nan_check(self):
+        if not inductor_config.triton.mix_order_reduction:
+            self.skipTest("Mix order reduction not enabled")
+
+        def f(x):
+            a = x.sum(dim=-1)
+            b = x.sum(dim=0)
+            return a, b
+
+        dtype = torch.float
+        x = torch.randn(1024 * 32, 1024, device=GPU_TYPE, dtype=dtype)
+        ref = f(x)
+        opt_f = torch.compile(f)
+        act, (code,) = run_and_get_code(opt_f, x)
+        torch.testing.assert_close(ref, act, atol=1e-2, rtol=1e-2)
+        FileCheck().check("assert not arg0_1.isnan().any().item()").check(
+            "assert not arg0_1.isinf().any().item()"
+        ).check("assert not buf0.isnan().any().item()").check(
+            "assert not buf0.isinf().any().item()"
+        ).check("assert not buf2.isnan().any().item()").check(
+            "assert not buf2.isinf().any().item()"
+        ).run(code)
 
     @patch("torch._inductor.scheduler.MixOrderReduction.get_numel_rnumel")
     @patch("torch._inductor.scheduler.MixOrderReduction.get_common_read")

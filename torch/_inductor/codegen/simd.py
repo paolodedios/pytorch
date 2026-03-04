@@ -1057,6 +1057,9 @@ class SIMDKernel(Kernel[CSEVariableType], Generic[CSEVariableType]):
     def codegen_nan_check(self) -> None:
         raise NotImplementedError("NYI: codegen_nan_check")
 
+    def codegen_nan_check_for_buffer(self, buf_name: str) -> None:
+        raise NotImplementedError("NYI: codegen_nan_check_for_buffer")
+
     def deallocate_workspaces(self):
         wrapper = V.graph.wrapper_code
         for ws in reversed(self.args.workspace_args):
@@ -1756,6 +1759,8 @@ class SIMDScheduling(BaseScheduling):
         self.codegen_comment(node_schedule, None)
         # workspace args is still needed after the call
         kernel.call_kernel(kernel.kernel_name, deallocate_ws=False)
+        if config.nan_asserts:
+            kernel.codegen_nan_check()
         V.graph.removed_buffers |= kernel.removed_buffers
         V.graph.inplaced_to_remove |= kernel.inplaced_to_remove
 
@@ -1787,6 +1792,9 @@ class SIMDScheduling(BaseScheduling):
             # mark the buffer as allocated, so we don't try to allocate
             # it again when it's later used
             V.graph.wrapper_code.allocated.add(buffer_name)
+
+            if config.nan_asserts:
+                kernel.codegen_nan_check_for_buffer(buffer_name)
 
         kernel.deallocate_workspaces()
 
