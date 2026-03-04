@@ -8,7 +8,6 @@ from typing import cast
 
 import torch
 from torch import Tensor
-from torch._logging import warning_once
 from torch._prims_common import DimsType
 from torch.distributed.tensor._dtensor_spec import DTensorSpec, TensorMeta
 from torch.distributed.tensor._op_schema import (
@@ -592,15 +591,38 @@ class _ViewShardingPropagator:
         """Phase 1: walk the DimMap rule, return (input_tgt_placements, input_to_output_tensor_dims)."""
         input_dims_in_rule = self._input_dims_in_rule(self.rule)
 
+        # Default: shardable if the dim appears in the rule. Refined by _analyze_*.
         for dim in range(len(self.global_input_shape)):
             self.shard_allowed[dim] = [dim in input_dims_in_rule] * self.mesh_ndim
 
         # Walk the rule to fill shard_allowed and build input_to_output_tensor_dims.
+        #
+        # Flatten example: view([2, 3, 4], [6, 4])
+        #   rule = (Flatten(InputDim(0), InputDim(1)), InputDim(2))
+        #   output_dim=0 (Flatten): hits the isinstance(cmd, Flatten) branch.
+        #     Maps input dims 0 and 1 to output dim 0.  Result: {0: [0], 1: [0]}
+        #   output_dim=1 (InputDim(2)): hits the len(in_dims) > 0 branch.
+        #     Maps input dim 2 to output dim 1.  Result: {0: [0], 1: [0], 2: [1]}
+        #
+        # Split example: view([6], [2, 3])
+        #   rule = (Split(InputDim(0), (2,3), 0), Split(InputDim(0), (2,3), 1))
+        #   output_dim=0 (split_id=0): hits the len(in_dims) > 0 branch.
+        #     Maps input dim 0 to output dim 0.  Result: {0: [0]}
+        #   output_dim=1 (split_id=1): hits the isinstance(cmd, Split) branch
+        #     because _analyze_split returns [] for split_id>0.  Chases root
+        #     InputDim(0) and appends output dim 1.  Result: {0: [0, 1]}
+        #
+        # Flatten+Split example: view([2, 3], [3, 2])
+        #   rule = (Split(Flatten(InputDim(0), InputDim(1)), (3,2), 0),
+        #           Split(Flatten(InputDim(0), InputDim(1)), (3,2), 1))
+        #   output_dim=0 (split_id=0): same as Split example.  Result: {0: [0]}
+        #   output_dim=1 (split_id=1): same as Split example, but
+        #     _get_root_input_dim unwraps the inner Flatten to find InputDim(0).
+        #     Result: {0: [0, 1]}
         input_to_output_tensor_dims: dict[int, list[int]] = {}
         for output_dim, cmd in enumerate(self.rule):
             in_dims = self._analyze_dim(cmd)
             if isinstance(cmd, Flatten):
-                # Flatten: each sharded input dim maps to one flattened output dim.
                 for in_dim in in_dims:
                     if in_dim.input_dim in input_to_output_tensor_dims:
                         raise AssertionError(
@@ -609,8 +631,7 @@ class _ViewShardingPropagator:
                         )
                     input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
             elif len(in_dims) > 0:
-                # InputDim (identity) or Split(split_id=0): create or append
-                # the output dim entry for this input dim.
+                # InputDim (identity) or Split(split_id=0).
                 in_dim = in_dims[0]
                 if in_dim.input_dim not in input_to_output_tensor_dims:
                     input_to_output_tensor_dims[in_dim.input_dim] = [output_dim]
@@ -958,7 +979,6 @@ class _ViewShardingPropagator:
         tgt_shard_dims = self._unrewritten_output_dims(
             p.dim, rewritten_input_to_output_dims, input_to_output_tensor_dims
         )
-        found_split_cmd = False
         # Phase 1 runs before Phase 2 because it produces a plain Shard (resolves
         # the strided-ness), while Phase 2 keeps _StridedShard. We prefer the
         # simpler Shard placement when both phases could match.
@@ -966,6 +986,7 @@ class _ViewShardingPropagator:
         # Phase 1: distinct-output-dim matching — each mesh dim gets its own
         # output dim after unflatten (pure SS+SS case). SS resolves to Shard.
         prefix_match_idx = None
+        found_split_cmd = False
         for idx, candidate_dim in enumerate(tgt_shard_dims):
             cmd = self.rule[candidate_dim]
             if isinstance(cmd, Split):
@@ -1039,24 +1060,13 @@ class _ViewShardingPropagator:
                 f"Please redistribute the tensor before this operation."
             )
         elif len(tgt_shard_dims) > 0:
-            warning_once(
-                logger,
-                "_rewrite_strided_shard: neither Phase 1 (distinct-output-dim) nor "
-                "Phase 2 (shared-output-dim) matched for _StridedShard(dim=%d, "
-                "split_factor=%d) on mesh dim %d. Falling back to first available "
-                "output dim %d. This may indicate a split_factor mismatch.",
-                p.dim,
-                p.split_factor,
-                mesh_dim,
-                tgt_shard_dims[0],
-            )
+            # Neither phase matched but output dims are available (e.g.
+            # _StridedShard propagating through Flatten).  Keep the
+            # _StridedShard on the first available output dim.
             tgt_shard_dim = tgt_shard_dims[0]
         else:
-            raise AssertionError(
-                f"No output dim available for _StridedShard(dim={p.dim}, "
-                f"split_factor={p.split_factor}) on mesh dim {mesh_dim}. "
-                f"All output dims already claimed by earlier mesh dims."
-            )
+            # No output dims available at all — demote to Replicate.
+            return Replicate()
         local_tensor_shapes[p.dim] = (
             local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
         )
