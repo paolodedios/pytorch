@@ -842,7 +842,7 @@ class AllocateLine(MemoryPlanningLine):
     ) -> tuple[bool, int]:
         # Check if pg_alloc allocation would exceed budget.
 
-        alloc_bytes = V.graph.sizevars.size_hint(
+        alloc_bytes = V.graph.sizevars.optimization_hint(
             V.graph.get_allocation_storage_size(self.node)
         ) * get_dtype_size(self.node.get_dtype())
         max_gb = config.comms_pg_alloc_max_gb
@@ -885,7 +885,7 @@ class AllocateLine(MemoryPlanningLine):
                 f"alloc_id={random.randint(0, 2**64 - 1)})"
             )
         elif comm_buffer_type == ir.CommBufferType.PG_ALLOC:
-            storage_size = V.graph.sizevars.size_hint(
+            storage_size = V.graph.sizevars.optimization_hint(
                 V.graph.get_allocation_storage_size(self.node)
             )
             line = (
