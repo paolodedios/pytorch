@@ -9,8 +9,6 @@ os.environ["ENV_FALSE"] = "0"
 os.environ["ENV_STR"] = "1234"
 os.environ["ENV_STR_EMPTY"] = ""
 
-from typing import Optional
-
 from torch.testing._internal import (
     fake_config_module as config,
     fake_config_module2 as config2,
@@ -44,8 +42,8 @@ class TestConfigModule(TestCase):
             config.does_not_exist
 
     def test_type_loading(self):
-        self.assertEqual(config.get_type("e_optional"), Optional[bool])
-        self.assertEqual(config.get_type("e_none"), Optional[bool])
+        self.assertEqual(config.get_type("e_optional"), bool | None)
+        self.assertEqual(config.get_type("e_none"), bool | None)
 
     def test_overrides(self):
         config.e_bool = False
