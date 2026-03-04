@@ -611,9 +611,7 @@ class TestLocalTensorWorld3(LocalTensorWorldTest):
 
         with LocalTensorMode(self.world_size) as mode:
             # Each rank has [0..6] + rank*10, split into uneven chunks [3, 2, 2]
-            x = mode.rank_map(
-                lambda r: torch.arange(7, dtype=torch.float) + r * 10
-            )
+            x = mode.rank_map(lambda r: torch.arange(7, dtype=torch.float) + r * 10)
             input_list = list(torch.split(x, [3, 2, 2], dim=0))
             output = mode.rank_map(
                 lambda r: torch.empty([3, 2, 2][r], dtype=torch.float)
