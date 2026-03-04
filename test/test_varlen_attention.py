@@ -744,9 +744,8 @@ class TestVarlenAttention(NNTestCase):
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Flash Attention not supported"
     )
-    @unittest.skipIf("FA3" not in list_flash_attention_impls(), "FA3 not available")
     @parametrize("dtype", [torch.bfloat16, torch.float16])
-    @parametrize("page_size", [32, 64, 128])
+    @parametrize("page_size", [32, 64, 128, 256])
     @parametrize("compile", [False, True])
     @parametrize(
         "actual_kv_lens",
@@ -758,7 +757,7 @@ class TestVarlenAttention(NNTestCase):
             [127, 63, 33, 17],
         ],
     )
-    def test_page_table_kv_cache(
+    def test_block_table_kv_cache(
         self, device, dtype, page_size, compile, actual_kv_lens
     ):
         torch.manual_seed(42)
@@ -793,45 +792,34 @@ class TestVarlenAttention(NNTestCase):
             total_pages, page_size, num_heads, head_dim, device=device, dtype=dtype
         )
 
-        page_table = torch.zeros(
-            batch_size, max_pages_per_seq, device=device, dtype=torch.int32
+        block_table = torch.arange(total_pages, device=device, dtype=torch.int32).view(
+            batch_size, max_pages_per_seq
         )
-        for i in range(batch_size):
-            for p in range(max_pages_per_seq):
-                phys = i * max_pages_per_seq + p
-                page_table[i, p] = phys
 
-                token_start = p * page_size
-                token_end = min(token_start + page_size, actual_kv_lens[i])
-                if token_start < actual_kv_lens[i]:
-                    fill_len = token_end - token_start
-                    k_pages[phys, :fill_len] = k_seqs[i][token_start:token_end]
-                    v_pages[phys, :fill_len] = v_seqs[i][token_start:token_end]
+        k_cache = k_pages.view(batch_size, cache_size, num_heads, head_dim)
+        v_cache = v_pages.view(batch_size, cache_size, num_heads, head_dim)
+        for i in range(batch_size):
+            k_cache[i, : actual_kv_lens[i]] = k_seqs[i]
+            v_cache[i, : actual_kv_lens[i]] = v_seqs[i]
 
         seqused_k = torch.tensor(actual_kv_lens, device=device, dtype=torch.int32)
+        cu_seq_k = torch.arange(
+            0,
+            (batch_size + 1) * cache_size,
+            cache_size,
+            device=device,
+            dtype=torch.int32,
+        )
 
         attn_fn = varlen_attn
         if compile:
             attn_fn = torch.compile(varlen_attn, fullgraph=True)
 
-        with use_fa3(), torch.no_grad():
-            output_paged = attn_fn(
-                q_packed,
-                k_pages,
-                v_pages,
-                cu_seq_q,
-                None,
-                max_q,
-                cache_size,
-                seqused_k=seqused_k,
-                page_table=page_table,
-            )
-
-        # run w/ packed sequences (non-paged)
+        # Reference: non-paged packed sequences
         k_real_packed, cu_seq_k_real, max_k_real = pack_sequences(k_seqs, device)
         v_real_packed = torch.cat(v_seqs, dim=0)
 
-        with use_fa3(), torch.no_grad():
+        with torch.no_grad():
             output_reference = varlen_attn(
                 q_packed,
                 k_real_packed,
@@ -842,7 +830,39 @@ class TestVarlenAttention(NNTestCase):
                 max_k_real,
             )
 
-        self.assertEqual(output_paged, output_reference)
+        # FA2 path: paged KV with block_table (page_size % 256 == 0)
+        if page_size % 256 == 0:
+            with torch.no_grad():
+                output_fa2 = attn_fn(
+                    q_packed,
+                    k_pages,
+                    v_pages,
+                    cu_seq_q,
+                    cu_seq_k,
+                    max_q,
+                    cache_size,
+                    seqused_k=seqused_k,
+                    block_table=block_table,
+                )
+
+            self.assertEqual(output_fa2, output_reference)
+
+        # FA3 path: paged KV with block_table
+        if "FA3" in list_flash_attention_impls():
+            with use_fa3(), torch.no_grad():
+                output_fa3 = attn_fn(
+                    q_packed,
+                    k_pages,
+                    v_pages,
+                    cu_seq_q,
+                    None,
+                    max_q,
+                    cache_size,
+                    seqused_k=seqused_k,
+                    block_table=block_table,
+                )
+
+            self.assertEqual(output_fa3, output_reference)
 
 
 device_types = ("cuda",)
