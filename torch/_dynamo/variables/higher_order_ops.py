@@ -5254,10 +5254,15 @@ def is_reuse_eligible(
     It is possible that a subgraph is morally reusable but does not fall
     into the limited support that Dynamo has today. Current limitations:
       - The subgraph must not have side effects.
-      - No variable accessed by the subgraph may have been mutated.
+      - No sourceful variable accessed by the subgraph may have been
+        mutated, because guards are snapshotted on source values at trace
+        time — if the underlying object changed since then, the cached
+        guards would silently evaluate against stale values.
       - Output must be a single tensor, or a tuple/list of plain tensors.
       - All flattened inputs must be one of: tensor, symnode, constant,
-        unspecialized NN module.
+        unspecialized NN module — for sourceless or other input types we
+        rely on the treespec and tags for structural matching, so only
+        types with well-defined comparison semantics are supported.
     """
     if tracing_info.side_effect_stack is not None:
         stack_msg = "\n" + "".join(
@@ -5409,11 +5414,14 @@ def is_reusable(
 ) -> bool:
     """Check if a cached subgraph can be reused for the current call.
 
-    Two-phase check:
+    Three-phase check:
     (1) Verify that intermediates (tensor metadata, symnode types, constant
         values) match the cached input_checks — these are lightweight
         structural comparisons that don't require source resolution.
-    (2) Build a source replacement mapping (old sources → new sources) and
+    (2) Check for mutations on the remapped traced_sources — if any source
+        the subgraph read has been mutated since the original trace, the
+        cached guards would evaluate against stale values.
+    (3) Build a source replacement mapping (old sources → new sources) and
         re-evaluate the snapshotted guards under the new sources.
     """
     # Structural check: treespec must match first.
@@ -5567,6 +5575,13 @@ def save_reuse_entry(
     example_value: Any,
     condition: "InvokeSubgraphReuseCondition",
 ) -> None:
+    """Save a traced subgraph into the reuse cache for future cache hits.
+
+    Builds an InvokeSubgraphReuseEntry with the freevar mapping (how each
+    lifted arg maps back to user inputs or captured variables), output
+    metadata, and arg sources. On a future cache hit, stamp_out_subgraph
+    uses this entry to emit a new invoke_subgraph call without re-tracing.
+    """
     from torch._guards import InvokeSubgraphCache, InvokeSubgraphReuseEntry
 
     invoke_subgraph_cache = tx.output.tracing_context.hop_dispatch_set_cache.get_cache(
