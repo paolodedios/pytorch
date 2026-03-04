@@ -131,7 +131,6 @@ class TestWrapperCodegenStreams(InductorTestCase):
     def test_exit_cuda_stream_context(self):
         """Test ExitCudaStreamContextLine creation."""
         line = ExitCudaStreamContextLine()
-        # Just verify it can be created
         self.assertIsNotNone(line)
 
 
@@ -155,10 +154,7 @@ class TestStreamCodegen(InductorTestCase):
     def test_exit_cuda_stream_context_codegen(self):
         """Test code generation for exiting a CUDA stream context."""
         code = IndentedBuffer()
-        code.writeline("def call(args):")
         code.do_indent()
-        code.do_indent()
-        code.do_indent()  # Simulate being inside stream context (3 levels)
 
         line = ExitCudaStreamContextLine()
         line.codegen(code)

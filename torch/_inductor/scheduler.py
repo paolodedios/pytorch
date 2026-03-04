@@ -7024,8 +7024,10 @@ class Scheduler:
                         num_streams = 1
                         if self._has_multi_stream_nodes():
                             # Count unique streams (excluding default stream 0)
-                            unique_streams = set(self.node_to_stream.values())
-                            num_streams = max(unique_streams) + 1 if unique_streams else 1
+                            unique_streams = OrderedSet(self.node_to_stream.values())
+                            num_streams = (
+                                max(unique_streams) + 1 if unique_streams else 1
+                            )
                         V.graph.wrapper_code.codegen_device_guard_enter(
                             device.index, num_streams
                         )
