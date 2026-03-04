@@ -5153,6 +5153,38 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         self.assertEqual(counter.frame_count, 1)
 
     @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_no_bounds_then_bounds(self):
+        """
+        Test that compiling without bounds then calling with bounds
+        triggers recompilation.
+        """
+        counter = CompileCounter()
+
+        def func(x):
+            return x + 1
+
+        compiled_func = torch.compile(func, backend=counter)
+
+        # First call with mark_unbacked but no bounds
+        x1 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x1, 0)
+        compiled_func(x1)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Second call with same (no bounds) - no recompilation
+        x2 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x2, 0)
+        compiled_func(x2)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Third call with min=1, max=100 - should recompile
+        # (compiled without bounds, now calling with bounds)
+        x3 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x3, 0, min=1, max=100)
+        compiled_func(x3)
+        self.assertEqual(counter.frame_count, 2)
+
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
     def test_unbacked_indices_recompilation(self):
         """
         Test that changing _dynamo_unbacked_indices triggers recompilation.
