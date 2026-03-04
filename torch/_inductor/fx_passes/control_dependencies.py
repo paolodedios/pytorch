@@ -72,10 +72,10 @@ def control_deps_eager(additional_deps, subgraph, *args, **kwargs):
     return subgraph(*args, **kwargs)
 
 
-# Register autograd implementation
+# Autograd impl needed because additional_deps tensors may have autograd state,
+# causing dispatch through AutogradCUDA even in post-autograd graphs.
 @control_deps.py_impl(DispatchKey.Autograd)
 def control_deps_autograd(additional_deps, subgraph, *args, **kwargs):
-    """Autograd implementation - just execute the subgraph (no custom backward)."""
     return subgraph(*args, **kwargs)
 
 
@@ -241,7 +241,7 @@ def _create_subgraph_for_node(
         return item
 
     additional_deps_placeholders = []
-    for idx, dep in enumerate(additional_deps or []):
+    for idx, dep in enumerate(additional_deps or ()):
         placeholder = subgraph.placeholder(f"dep_{idx}")
         if "val" in dep.meta:
             placeholder.meta.update(dep.meta)
@@ -264,12 +264,7 @@ def _create_subgraph_for_node(
     if additional_deps_placeholders:
         outputs = tuple([result] + additional_deps_placeholders)
         out = subgraph.output(outputs)
-        vals = []
-        for output in outputs:
-            if "val" in output.meta:
-                vals.append(output.meta["val"])
-
-        out.meta["val"] = tuple(vals)
+        out.meta["val"] = tuple(output.meta.get("val") for output in outputs)
     else:
         out = subgraph.output(result)
         if "val" in result.meta:
