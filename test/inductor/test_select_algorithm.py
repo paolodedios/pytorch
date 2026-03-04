@@ -293,7 +293,7 @@ class TestSelectAlgorithm(TestCase):
             self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
 
     @pytest.mark.xfail(
-        condition=not torch.version.hip,
+        condition=(GPU_TYPE != "xpu") and not torch.version.hip,
         reason="C++ wrapper dynamic shapes fails on CUDA, fixed on ROCm",
     )
     @patches

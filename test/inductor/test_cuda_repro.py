@@ -2829,7 +2829,7 @@ def triton_poi_fused_add_reflection_pad2d_0(in_ptr0, in_ptr1, out_ptr0, xnumel, 
         def fn(x):
             return torch.reciprocal(x)
 
-        x = torch.randn(1000, device="cuda", dtype=torch.float32) + 0.1
+        x = torch.randn(1000, device=GPU_TYPE, dtype=torch.float32) + 0.1
         self.common(fn, [x])
 
 
