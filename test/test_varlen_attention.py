@@ -736,13 +736,18 @@ class TestVarlenAttention(NNTestCase):
         k_cache_slots = []
         v_cache_slots = []
         for i in range(batch_size):
-            k_slot = torch.randn(
-                cache_size, num_heads, head_dim, device=device, dtype=dtype
+            k_slot = torch.full(
+                (cache_size, num_heads, head_dim),
+                float("nan"),
+                device=device,
+                dtype=dtype,
             )
-            v_slot = torch.randn(
-                cache_size, num_heads, head_dim, device=device, dtype=dtype
+            v_slot = torch.full(
+                (cache_size, num_heads, head_dim),
+                float("nan"),
+                device=device,
+                dtype=dtype,
             )
-            # overriding garbage values with real ones up to how much cache is filled
             k_slot[: actual_kv_lens[i]] = k_seqs[i]
             v_slot[: actual_kv_lens[i]] = v_seqs[i]
             k_cache_slots.append(k_slot)
@@ -785,6 +790,7 @@ class TestVarlenAttention(NNTestCase):
                 max_k_real,
             )
 
+        self.assertFalse(output_cached.isnan().any())
         self.assertEqual(output_cached, output_reference)
 
         # varlen_attn_out with seqused_k should match
