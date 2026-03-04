@@ -376,6 +376,9 @@ c10::Device TensorImpl::device_custom() const {
     return pyobj_slot_.load_pyobj_interpreter()->device(this);
   }
   if (extra_meta_ && extra_meta_->fake_device_.has_value()) {
+    if (c10::impl::tls_is_dispatch_key_excluded(DispatchKey::Fake)) {
+      return device_default();
+    }
     return *extra_meta_->fake_device_;
   }
   return device_default();

@@ -30,6 +30,23 @@ static std::optional<c10::Device> get_common_device(
   return std::nullopt;
 }
 
+static std::shared_ptr<c10::FakeTensorMode> get_fake_tensor_mode(
+    torch::jit::Stack* stack,
+    size_t num_arguments) {
+  auto arguments = torch::jit::last(*stack, num_arguments);
+  for (size_t idx = 0; idx < num_arguments; ++idx) {
+    const auto& ivalue = arguments[idx];
+    if (ivalue.isTensor()) {
+      const auto& t = ivalue.toTensor();
+      if (t.defined() && t.is_fake()) {
+        auto mode = t.unsafeGetTensorImpl()->fake_tensor_mode();
+        if (mode) return mode;
+      }
+    }
+  }
+  return nullptr;
+}
+
 // For factory ops: find Device args in the stack, rewrite to meta, return original.
 static std::optional<c10::Device> rewrite_device_args_to_meta(
     torch::jit::Stack* stack,
@@ -51,29 +68,36 @@ static std::optional<c10::Device> rewrite_device_args_to_meta(
   return original_device;
 }
 
-static void transmute_to_fake(const at::Tensor& t, c10::Device fake_device) {
+static void transmute_to_fake(
+    const at::Tensor& t,
+    c10::Device fake_device,
+    const std::shared_ptr<c10::FakeTensorMode>& mode) {
   t.unsafeGetTensorImpl()->set_fake_device(fake_device);
+  if (mode) {
+    t.unsafeGetTensorImpl()->set_fake_tensor_mode(mode);
+  }
 }
 
 static void wrap_outputs(
     torch::jit::Stack* stack,
     size_t returns_begin,
     size_t num_returns,
-    c10::Device fake_device) {
+    c10::Device fake_device,
+    const std::shared_ptr<c10::FakeTensorMode>& mode) {
   auto returns = torch::jit::last(*stack, num_returns);
   for (size_t idx = 0; idx < num_returns; ++idx) {
     const auto& ivalue = returns[idx];
     if (ivalue.isTensor()) {
       const auto& t = ivalue.toTensor();
       if (t.defined() && !t.is_fake()) {
-        transmute_to_fake(t, fake_device);
+        transmute_to_fake(t, fake_device, mode);
       }
     } else if (ivalue.isTensorList()) {
       auto tensors = ivalue.toTensorList();
       for (const auto i : c10::irange(tensors.size())) {
         at::Tensor t = tensors[i];
         if (t.defined() && !t.is_fake()) {
-          transmute_to_fake(t, fake_device);
+          transmute_to_fake(t, fake_device, mode);
         }
       }
     } else if (ivalue.isOptionalTensorList()) {
@@ -81,7 +105,7 @@ static void wrap_outputs(
       for (const auto i : c10::irange(opt_tensors.size())) {
         std::optional<at::Tensor> ot = opt_tensors[i];
         if (ot.has_value() && ot->defined() && !ot->is_fake()) {
-          transmute_to_fake(*ot, fake_device);
+          transmute_to_fake(*ot, fake_device, mode);
         }
       }
     }
@@ -96,8 +120,9 @@ void fakeFallback(
   const auto num_arguments = schema.arguments().size();
   const auto arguments_begin = stack->size() - num_arguments;
 
-  // 1. Determine fake device from inputs
+  // 1. Determine fake device and mode from inputs
   auto fake_device = get_common_device(stack, num_arguments);
+  auto mode = get_fake_tensor_mode(stack, num_arguments);
 
   // 2. For factory ops (no fake tensor inputs), rewrite device args to meta
   if (!fake_device.has_value()) {
@@ -117,7 +142,7 @@ void fakeFallback(
   // 4. Wrap outputs as fake tensors
   const auto num_returns = schema.returns().size();
   const auto returns_begin = stack->size() - num_returns;
-  wrap_outputs(stack, returns_begin, num_returns, *fake_device);
+  wrap_outputs(stack, returns_begin, num_returns, *fake_device, mode);
 }
 
 TORCH_LIBRARY_IMPL(_, Fake, m) {
