@@ -3149,19 +3149,25 @@ class GuardBuilder(GuardBuilderBase):
             def add_attribute_dependent_guard(
                 attr_name: str, dependent_on: str
             ) -> None:
-                attr_value = getattr(value, attr_name, None)
-                code_part = (
-                    f"((getattr({tensor_name}, '{attr_name}', None) == {attr_value!r}) "
-                    f"if hasattr({tensor_name}, '{dependent_on}') else True)"
-                )
-                code.append(code_part)
-                self.get_guard_manager(guard).add_lambda_guard(
-                    lambda x, attr=attr_name, expected=attr_value, dep=dependent_on: (
-                        getattr(x, attr, None) == expected if hasattr(x, dep) else True
-                    ),
-                    get_verbose_code_parts(code_part, guard),
-                    guard.user_stack,
-                )
+                if hasattr(value, dependent_on):
+                    attr_value = getattr(value, attr_name, None)
+                    code_part = (
+                        f"((getattr({tensor_name}, '{attr_name}', None) == {attr_value!r}) "
+                        f"if hasattr({tensor_name}, '{dependent_on}') else True)"
+                    )
+                    code.append(code_part)
+                    self.get_guard_manager(guard).add_lambda_guard(
+                        lambda x,
+                        attr=attr_name,
+                        expected=attr_value,
+                        dep=dependent_on: (
+                            getattr(x, attr, None) == expected
+                            if hasattr(x, dep)
+                            else True
+                        ),
+                        get_verbose_code_parts(code_part, guard),
+                        guard.user_stack,
+                    )
 
             # hint_overrides is independent - used by both mark_dynamic and mark_unbacked
             add_attribute_dependent_guard(
