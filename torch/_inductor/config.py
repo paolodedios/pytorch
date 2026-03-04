@@ -435,6 +435,23 @@ bucket_all_reduces_fx: Literal["none", "all"] = "none"
 # By default torch._inductor.fx_passes.bucketing.bucket_size_determinator is used
 bucket_all_reduces_fx_bucket_size_determinator: Callable[[int], int] | None = None
 
+# Use process group allocator for bucketed collective operations.
+# When enabled, allocates memory from the process group's registered allocator
+# (e.g., NCCL's multicast-compatible allocator) which can improve communication
+# performance. Set via config or USE_PG_ALLOC env var.
+comms_use_pg_alloc: bool = os.environ.get("USE_PG_ALLOC", "0") == "1"
+
+# Max pg_alloc memory (GB). Allocations exceeding this fall back to torch.empty().
+# None means no limit.
+comms_pg_alloc_max_gb: float | None = (
+    float(v) if (v := os.environ.get("USE_PG_ALLOC_MAX_GB")) else None
+)
+
+# Strategy for pg_alloc. None = inductor decides where to apply pg_alloc (all buffers for now).
+# Tokens: "only_all_gather", "only_reduce", "only_inputs", "only_outputs"
+# Combine with comma: "only_all_gather,only_outputs"
+comms_use_pg_alloc_strategy: str | None = os.environ.get("USE_PG_ALLOC_STRATEGY", None)
+
 # runtime estimation function for ops
 # for built-in estimation function, pass in "default"; for user-defined estimation function, pass in the function handle
 estimate_op_runtime = "default"
@@ -753,6 +770,16 @@ realize_opcount_threshold = 30
 realize_acc_reads_threshold = 8
 realize_acc_reads_size_threshold: int | None = (
     None  # TODO(xuanzh): harden this to make it non optional
+)
+
+# Defer early realization of cheap output nodes (0 buffer reads, small opcount)
+# to prevent cascade materialization in fullgraph compilation.
+# Shared constants/indices saved for backward get eagerly materialized because
+# they are graph outputs with multiple users, which inflates downstream read
+# counts and can trigger suboptimal Triton block size heuristics.
+delay_realize_cheap_outputs: bool = Config(
+    env_name_force="TORCHINDUCTOR_DELAY_REALIZE_CHEAP_OUTPUTS",
+    default=False,
 )
 
 # fallback to eager for random/dropout, this is slow but useful for debugging

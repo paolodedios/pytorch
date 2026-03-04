@@ -417,6 +417,7 @@ class MemoryPlanningState:
             CommBufferReuseKey, list[FreeIfNotReusedLine]
         ] = collections.defaultdict(list)
         self.total_allocated_buffer_size: int = 0
+        self.total_pg_alloc_bytes: int = 0
 
     def __contains__(self, key: ReuseKey) -> bool:
         return bool(self.reuse_pool.get(key, None))
@@ -782,7 +783,35 @@ class AllocateLine(MemoryPlanningLine):
                 return ReuseLine(
                     self.wrapper, free_line.node, self.node, comm_buffer=True
                 )
-            return self
+
+            # Only PG_ALLOC buffers have a budget limit
+            layout = self.node.get_output_spec()
+            if not isinstance(layout, ir.CommBufferLayout):
+                return self
+            if layout.comm_buffer_type != ir.CommBufferType.PG_ALLOC:
+                return self
+
+            exceeds, alloc_bytes = self._pg_alloc_exceeds_budget(state, layout)
+            if not exceeds:
+                state.total_pg_alloc_bytes += alloc_bytes
+                log.debug(
+                    "pg_alloc new buffer: %s, size=%.2f MB, total_pg_alloc=%.2f MB",
+                    self.node.get_name(),
+                    alloc_bytes / (1024 * 1024),
+                    state.total_pg_alloc_bytes / (1024 * 1024),
+                )
+                return self
+
+            # Budget exceeded — fallback to regular alloc and fall through
+            log.debug(
+                "pg_alloc budget exceeded, fallback: %s, size=%.2f MB, "
+                "total_pg_alloc=%.2f MB, max=%.2f GB",
+                self.node.get_name(),
+                alloc_bytes / (1024 * 1024),
+                state.total_pg_alloc_bytes / (1024 * 1024),
+                config.comms_pg_alloc_max_gb,
+            )
+            self.comm_buffer = False
 
         # Regular buffer reuse
         key = buffer_reuse_key(self.node)
@@ -807,6 +836,20 @@ class AllocateLine(MemoryPlanningLine):
                 )
 
         return self
+
+    def _pg_alloc_exceeds_budget(
+        self, state: MemoryPlanningState, layout: ir.CommBufferLayout
+    ) -> tuple[bool, int]:
+        # Check if pg_alloc allocation would exceed budget.
+
+        alloc_bytes = V.graph.sizevars.optimization_hint(
+            V.graph.get_allocation_storage_size(self.node)
+        ) * get_dtype_size(self.node.get_dtype())
+        max_gb = config.comms_pg_alloc_max_gb
+        exceeds = max_gb is not None and (
+            state.total_pg_alloc_bytes + alloc_bytes > int(max_gb * (1024**3))
+        )
+        return exceeds, alloc_bytes
 
     def codegen(self, code: IndentedBuffer) -> None:
         assert self.node.get_name() not in V.graph.removed_buffers
@@ -841,6 +884,20 @@ class AllocateLine(MemoryPlanningLine):
                 f'group_name="{group_name}", '
                 f"alloc_id={random.randint(0, 2**64 - 1)})"
             )
+        elif comm_buffer_type == ir.CommBufferType.PG_ALLOC:
+            storage_size = V.graph.sizevars.optimization_hint(
+                V.graph.get_allocation_storage_size(self.node)
+            )
+            line = (
+                f"{name} = _pg_alloc_tensor("
+                f"{storage_size}, "
+                f"{dtype}, "
+                f'torch.device("cuda:{device.index}"), '
+                f'"{group_name}")'
+            )
+            # _pg_alloc_tensor returns a 1D flat tensor; reshape if needed
+            if len(shape) > 1:
+                line += f".view({self.wrapper.codegen_shape_tuple(shape)})"
         else:
             raise NotImplementedError(
                 f"Unsupported comm buffer type: {comm_buffer_type}"
@@ -874,8 +931,8 @@ class FreeIfNotReusedLine(MemoryPlanningLine):
         if self.node.get_name() in V.graph.removed_buffers:
             return NullLine(self.wrapper)
         if config.allow_buffer_reuse:
-            if self.comm_buffer:
-                # Comm buffers use separate pool (comm-comm reuse only)
+            layout = self.node.get_output_spec()
+            if isinstance(layout, ir.CommBufferLayout):
                 key = comm_buffer_reuse_key(self.node)
                 state.comm_buffer_push(key, self)
             else:
@@ -887,15 +944,14 @@ class FreeIfNotReusedLine(MemoryPlanningLine):
         assert self.node.get_name() not in V.graph.removed_buffers
         if not self.is_reused:
             line = self.wrapper.make_buffer_free(self.node)
-            if self.comm_buffer:
-                layout = self.node.get_output_spec()
-                assert isinstance(layout, ir.CommBufferLayout)
+            layout = self.node.get_output_spec()
+            if isinstance(layout, ir.CommBufferLayout):
                 code.writeline(f"{line} # {layout.comm_buffer_type.value} buffer free")
             else:
                 code.writeline(line)
 
     def codegen_fx(self, converter: FxConverter) -> FxConversionFunc:
-        if self.comm_buffer:
+        if isinstance(self.node.get_output_spec(), ir.CommBufferLayout):
             return converter._generate_comm_buffer_free
         return converter._generate_free_if_not_reused
 
@@ -1259,6 +1315,26 @@ class PythonWrapperCodegen(CodeGen):
             self.header.splice(
                 """
                 empty_strided_p2p = torch._C._distributed_c10d._SymmetricMemory.empty_strided_p2p
+                """,
+                strip=True,
+            )
+        except (AttributeError, ImportError):
+            pass
+        try:
+            # Add _pg_alloc_tensor() for process group-based buffer allocation
+            from torch.distributed.distributed_c10d import (  # noqa: F401
+                _resolve_process_group,
+            )
+
+            self.header.splice(
+                """
+                def _pg_alloc_tensor(numel, dtype, device, group_name):
+                    from torch.distributed.distributed_c10d import _resolve_process_group
+                    _pg = _resolve_process_group(group_name)
+                    _backend = _pg._get_backend(device)
+                    if _backend.supports_tensor_alloc(device) and _backend.is_initialized():
+                        return _backend.allocate_tensor(numel, dtype=dtype, device=device)
+                    return torch.empty(numel, dtype=dtype, device=device)
                 """,
                 strip=True,
             )
