@@ -1112,9 +1112,6 @@ def sample_inputs_linalg_qr_geqrf(
     ns = [5, 2, 0]
 
     for batch, (m, n) in product(batches, product(ns, ns)):
-        # MPS implementation requires m >= n (tall or square matrices only)
-        if torch.device(device).type == "mps" and m < n:
-            continue
         shape = batch + (m, n)
         yield SampleInput(make_arg(*shape))
 
