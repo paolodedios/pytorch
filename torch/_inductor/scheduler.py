@@ -11,7 +11,6 @@ import math
 import operator
 import os
 import pprint
-import re
 import textwrap
 import traceback
 import typing
@@ -3154,7 +3153,6 @@ class Scheduler:
         self.unjoined_events: dict[int, OrderedSet[CudaEventSym]] = (
             collections.defaultdict(OrderedSet)
         )
-        self.buffers_requiring_device_check: OrderedSet[str] = OrderedSet()
         # The only source of which stream context are we currently in at the scheduling phase.
         self._current_stream_ctx: Optional[EnterCudaStreamContextLine] = None
 
@@ -7323,17 +7321,6 @@ class Scheduler:
             if dep not in node.unmet_dependencies and not isinstance(dep, WeakDep):
                 # Materialized dependencies should be recorded on this stream.
                 buffers_from_other_streams.add(buff_real)
-                # The scalar tensor argument `dropout_p` of SDPA backward kernels might be on CUDA
-                # or CPU devices depending on execution scenario. To ensure program correctness we
-                # add a runtime check for it.
-                #
-                # TODO (@davidli): Remove this ad-hoc checking once PyTorch fix SDPA and
-                # MultiOutputLayout issues.
-                if node.is_extern() and re.match(
-                    r"aten._scaled_dot_product_.*_attention_backward",
-                    str(node.node.op_overload),  # pyrefly: ignore[missing-attribute]
-                ):
-                    self.buffers_requiring_device_check.add(buff_real)
                 continue
             elif isinstance(dep, WeakDep):
                 # Skip unmaterialized dependencies.
@@ -7352,12 +7339,6 @@ class Scheduler:
                     buff_real = node.node.codegen_list_tuple_access(
                         basename=buff_real,
                         indices=node.node.indices,
-                    )
-                    self.buffers_requiring_device_check |= OrderedSet(
-                        [
-                            buff_real,
-                            node.node.get_name(),
-                        ]
                     )
                 buffers_from_other_streams.add(buff_real)
 
@@ -7382,7 +7363,6 @@ class Scheduler:
             stream_idx=node_stream,
             upstream_events=upstream_events,
             buffers_from_other_streams=buffers_from_other_streams,
-            buffers_requiring_device_check=self.buffers_requiring_device_check,
         )
 
     def generate_stream_ctx_exit(self) -> None:
@@ -7410,7 +7390,6 @@ class Scheduler:
         V.graph.wrapper_code.codegen_buffers_record_stream(
             buffers=buffers_from_other_streams,
             stream_idx=self.current_stream_idx,
-            buffers_requiring_device_check=self.buffers_requiring_device_check,
         )
         V.graph.wrapper_code.codegen_events_wait_stream(
             events=upstream_events,
