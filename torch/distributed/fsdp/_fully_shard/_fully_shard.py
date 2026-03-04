@@ -14,7 +14,7 @@ from torch.distributed._composable import contract
 
 from ._fsdp_api import (
     AllGather,
-    DataParallelMeshDimNames,
+    DataParallelMeshDims,
     MixedPrecisionPolicy,
     OffloadPolicy,
     ReduceScatter,
@@ -70,7 +70,7 @@ def fully_shard(
     mp_policy: MixedPrecisionPolicy = ...,
     offload_policy: OffloadPolicy = ...,
     ignored_params: set[nn.Parameter] | None = ...,
-    dp_mesh_dim_names: DataParallelMeshDimNames | None = ...,
+    dp_mesh_dim_names: DataParallelMeshDims | None = ...,
 ) -> FSDPModule: ...
 
 
@@ -85,7 +85,7 @@ def fully_shard(
     mp_policy: MixedPrecisionPolicy = ...,
     offload_policy: OffloadPolicy = ...,
     ignored_params: set[nn.Parameter] | None = ...,
-    dp_mesh_dim_names: DataParallelMeshDimNames | None = ...,
+    dp_mesh_dim_names: DataParallelMeshDims | None = ...,
 ) -> list[FSDPModule]: ...
 
 
@@ -104,7 +104,7 @@ def fully_shard(
     mp_policy: MixedPrecisionPolicy = MixedPrecisionPolicy(),
     offload_policy: OffloadPolicy = OffloadPolicy(),
     ignored_params: set[nn.Parameter] | None = None,
-    dp_mesh_dim_names: DataParallelMeshDimNames | None = None,
+    dp_mesh_dim_names: DataParallelMeshDims | None = None,
 ):
     """
     Apply fully sharded data parallelism (FSDP) to ``module``, where FSDP
@@ -203,7 +203,7 @@ def fully_shard(
         ignored_params: Optional(Set[nn.Parameter]): The set of parameters to be
             ignored by FSDP. They will not be sharded, nor moved to the device
             during init, nor have their gradients reduced in backward.
-        dp_mesh_dim_names (Optional[DataParallelMeshDimNames]): When provided,
+        dp_mesh_dim_names (Optional[DataParallelMeshDims]): When provided,
             ``mesh`` is treated as the full SPMD mesh, and parameters should be
             DTensors on this mesh with ``Replicate()`` on all DP dimensions.
             The ``shard`` field names which dim(s) FSDP shards on (multiple

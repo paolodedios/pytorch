@@ -127,7 +127,7 @@ class ReduceScatter(Comm):
 
 
 @dataclass
-class DataParallelMeshDimNames:
+class DataParallelMeshDims:
     """
     Specifies which dimensions of a full SPMD :class:`DeviceMesh` correspond to
     data parallelism when using :func:`fully_shard` whose parameters are already

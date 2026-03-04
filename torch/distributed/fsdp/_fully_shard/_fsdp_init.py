@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import Any
 
-    from ._fsdp_api import DataParallelMeshDimNames, MixedPrecisionPolicy, OffloadPolicy
+    from ._fsdp_api import DataParallelMeshDims, MixedPrecisionPolicy, OffloadPolicy
     from ._fsdp_common import ShardPlacementFnResult
     from ._fsdp_state import FSDPState
 
@@ -49,7 +49,7 @@ def _validate_module(module: nn.Module, func_name: str) -> None:
 
 def _validate_mesh(
     mesh: "DeviceMesh",
-    dp_mesh_dim_names: "DataParallelMeshDimNames | None" = None,
+    dp_mesh_dim_names: "DataParallelMeshDims | None" = None,
 ) -> None:
     """
     Validate that the mesh can be used with fully_shard.
@@ -86,7 +86,7 @@ def _validate_mesh(
 
 def _get_mesh_info(
     mesh: "DeviceMesh",
-    dp_mesh_dim_names: "DataParallelMeshDimNames | None" = None,
+    dp_mesh_dim_names: "DataParallelMeshDims | None" = None,
 ) -> "DataParallelMeshInfo":
     """
     Get the appropriate mesh info for the given mesh.
@@ -107,22 +107,22 @@ def _get_mesh_info(
 
 def _get_mesh_info_from_named_dims(
     mesh: "DeviceMesh",
-    dp_mesh_dim_names: "DataParallelMeshDimNames",
+    dp_mesh_dim_names: "DataParallelMeshDims",
 ) -> "DataParallelMeshInfo":
     shard_names = dp_mesh_dim_names.shard_names
     replicate_names = dp_mesh_dim_names.replicate_names
 
-    def _get_replicate_mesh() -> "DeviceMesh":
-        if len(replicate_names) == 1:
-            return mesh[replicate_names[0]]
-        return mesh[replicate_names]._flatten("_".join(replicate_names))
+    def _get_submesh(names: tuple[str, ...]) -> "DeviceMesh":
+        if len(names) == 1:
+            return mesh[names[0]]
+        return mesh[names]._flatten("_".join(names))
 
     mesh_info: DataParallelMeshInfo
     if len(shard_names) == 0:
         # Replicate-only (DDP)
         if len(replicate_names) == 0:
             raise AssertionError("replicate must not be None for replicate-only (DDP)")
-        dp_mesh = _get_replicate_mesh()
+        dp_mesh = _get_submesh(replicate_names)
         mesh_info = DDPMeshInfo(
             dp_mesh,
             replicate_mesh_dim=0,
@@ -131,10 +131,7 @@ def _get_mesh_info_from_named_dims(
         )
     elif len(replicate_names) == 0:
         # FSDP (no replication): flatten shard dims if multiple
-        if len(shard_names) == 1:
-            dp_mesh = mesh[shard_names[0]]
-        else:
-            dp_mesh = mesh[shard_names]._flatten("_".join(shard_names))
+        dp_mesh = _get_submesh(shard_names)
         mesh_info = FSDPMeshInfo(
             dp_mesh,
             shard_mesh_dim=0,
@@ -143,11 +140,8 @@ def _get_mesh_info_from_named_dims(
         )
     else:
         # HSDP: replicate + shard
-        if len(shard_names) == 1:
-            shard_mesh = mesh[shard_names[0]]
-        else:
-            shard_mesh = mesh[shard_names]._flatten("_".join(shard_names))
-        replicate_mesh = _get_replicate_mesh()
+        shard_mesh = _get_submesh(shard_names)
+        replicate_mesh = _get_submesh(replicate_names)
         dp_mesh = DeviceMesh._concatenate([replicate_mesh, shard_mesh])
         mesh_info = HSDPMeshInfo(
             dp_mesh,
