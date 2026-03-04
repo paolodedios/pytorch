@@ -8002,6 +8002,11 @@ class FallbackKernel(ExternKernelAlloc):
         self.use_runtime_dispatch = False
         self.unbacked_bindings = unbacked_bindings or {}
 
+        # Set by custom_op_out_lowering when this kernel should use .out() codegen
+        self.out_variant_op: torch._ops.OpOverload | None = None
+        self.out_arg_names: list[str] = []
+        self.out_variant_output_nodes: list[Any] = []
+
         assert isinstance(
             kernel, (torch._ops.OpOverload, torch._ops.HigherOrderOperator)
         ), f"Fails to create FallbackKernel for {kernel}: {type(kernel)} not supported"
@@ -8456,9 +8461,9 @@ class FallbackKernel(ExternKernelAlloc):
                 unbacked_bindings,
             ) = cls.process_kernel(kernel, *args, **kwargs)
 
-        # Try to lower functional custom ops to their out-variant via
+        # Try to lower functional ops to their out-variant via
         # ExternKernelOut for buffer reuse. Only affects ops with the
-        # torch.Tag.out_variant tag (custom ops / symm_mem), not aten ops.
+        # torch.Tag.out_variant tag, works for any op (custom ops, aten, etc.).
         if isinstance(kernel, torch._ops.OpOverload):
             from .custom_op_out_lowering import try_lower_to_out_variant
 
@@ -8541,6 +8546,20 @@ class FallbackKernel(ExternKernelAlloc):
                     f"FallbackKernel output type {type(output)} is not supported"
                 )
                 return None
+
+        # Try multi-output .out() lowering for ops with out_variant tag.
+        if isinstance(kernel, torch._ops.OpOverload):
+            from .custom_op_out_lowering import try_lower_multi_output_to_out_variant
+
+            out_outputs = try_lower_multi_output_to_out_variant(
+                kernel,
+                example_output,
+                packed,
+                has_unaligned_input=has_unaligned_input,
+            )
+            if out_outputs is not None:
+                packed.outputs = out_outputs  # type: ignore[assignment]
+                return out_outputs  # type: ignore[return-value]
 
         outputs = generate_output(example_output, [])
         if isinstance(outputs, (list, tuple)):

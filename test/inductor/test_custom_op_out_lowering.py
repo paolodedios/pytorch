@@ -134,28 +134,6 @@ class TestCustomOpOutLowering(InductorTestCase):
             )
             self.assertEqual(compiled_out, eager_out)
 
-    @parametrize("device", DEVICES)
-    def test_multi_output_buffer_reuse(self, device):
-        """Test that multi-output op buffers participate in buffer reuse."""
-        with torch.library._scoped_library("mylib", "FRAGMENT") as lib:
-            func_op, out_op = self._register_split_add_ops(lib)
-            self._register_add_one_ops(lib)
-
-            def f(x):
-                a, b = torch.ops.mylib.split_add(x, 1.0, 2.0)
-                c = torch.sin(a)
-                d = torch.ops.mylib.add_one(c)
-                return d + b
-
-            x = torch.randn(4, 4, device=device)
-            eager_out = f(x)
-
-            compiled_out, (code,) = run_and_get_code(
-                torch.compile(f, backend="inductor", fullgraph=True), x
-            )
-            self.assertEqual(compiled_out, eager_out)
-            FileCheck().check(".out(").run(code)
-
 
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests

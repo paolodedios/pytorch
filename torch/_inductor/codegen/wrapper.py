@@ -1616,6 +1616,13 @@ class PythonWrapperCodegen(CodeGen):
         return
 
     def generate_fallback_kernel(self, node: ir.FallbackKernel) -> None:
+        if getattr(node, "out_variant_op", None) is not None:
+            from torch._inductor.custom_op_out_lowering import (
+                codegen_multi_output_out_variant,
+            )
+
+            codegen_multi_output_out_variant(node, self)
+            return
         # Check if this op has a custom codegen implementation
         op_name = node.python_kernel_name
         if op_name is not None and op_name in CUSTOM_EXTERN_KERNEL_CODEGEN:
