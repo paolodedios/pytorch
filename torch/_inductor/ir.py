@@ -8461,9 +8461,9 @@ class FallbackKernel(ExternKernelAlloc):
                 unbacked_bindings,
             ) = cls.process_kernel(kernel, *args, **kwargs)
 
-        # Try to lower functional ops to their out-variant via
+        # Try to lower functional custom ops to their out-variant via
         # ExternKernelOut for buffer reuse. Only affects ops with the
-        # torch.Tag.out_variant tag, works for any op (custom ops, aten, etc.).
+        # torch.Tag.out_variant tag (custom ops / symm_mem), not aten ops.
         if isinstance(kernel, torch._ops.OpOverload):
             from .custom_op_out_lowering import try_lower_to_out_variant
 
