@@ -31,7 +31,27 @@ void XPUGraphImpl::register_generator_state(const at::Generator& generator) {
   xpu_gen->register_graph(this);
 }
 
-void XPUGraphImpl::capture_begin(MempoolId_t pool) {
+void XPUGraphImpl::capture_begin(
+    MempoolId_t pool /*={0,0}*/,
+    GraphCaptureMode capture_mode) {
+  switch (capture_mode) {
+    case GraphCaptureMode::Default:
+      break;
+
+    case GraphCaptureMode::Global:
+    case GraphCaptureMode::ThreadLocal:
+    case GraphCaptureMode::Relaxed:
+      TORCH_WARN(
+          "XPUGraph currently only support default GraphCaptureMode. "
+          "Falling back to default capture behavior.");
+      break;
+
+    default:
+      TORCH_CHECK(
+          false,
+          "Invalid GraphCaptureMode value: ",
+          static_cast<int>(capture_mode));
+  }
   TORCH_CHECK(
       !has_graph_exec_,
       "This XPUGraph instance already owns a captured graph. "
@@ -87,30 +107,6 @@ void XPUGraphImpl::capture_begin(MempoolId_t pool) {
 
   TORCH_INTERNAL_ASSERT(
       capture_stream_.queue().ext_oneapi_get_state() == queue_state::recording);
-}
-
-void XPUGraphImpl::capture_begin(
-    MempoolId_t pool /*={0,0}*/,
-    GraphCaptureMode capture_mode) {
-  switch (capture_mode) {
-    case GraphCaptureMode::Default:
-      break;
-
-    case GraphCaptureMode::Global:
-    case GraphCaptureMode::ThreadLocal:
-    case GraphCaptureMode::Relaxed:
-      TORCH_WARN(
-          "XPUGraph currently only support default GraphCaptureMode. "
-          "Falling back to default capture behavior.");
-      break;
-
-    default:
-      TORCH_CHECK(
-          false,
-          "Invalid GraphCaptureMode value: ",
-          static_cast<int>(capture_mode));
-  }
-  capture_begin(pool);
 }
 
 void XPUGraphImpl::capture_end() {

@@ -27,7 +27,6 @@ struct TORCH_XPU_API XPUGraphImpl : public at::GraphImplInterface {
   void register_generator_state(
       c10::intrusive_ptr<at::XPUGeneratorState> state);
   void register_generator_state(const at::Generator& generator);
-  void capture_begin(MempoolId_t pool = {0, 0});
 
   void capture_begin(
       MempoolId_t pool = {0, 0},
