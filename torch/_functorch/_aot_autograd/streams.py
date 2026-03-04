@@ -443,50 +443,6 @@ def _wrap_sync_node(
     return control_deps_node
 
 
-def wrap_sync_control_deps(
-    gm: torch.fx.GraphModule,
-    sync_node: Node,
-) -> None:
-    """
-    Wrap a sync node (record_event/wait_event) in control_deps to prevent reordering.
-
-    This function:
-    1. Finds all nodes before the sync node on the same stream
-    2. Wraps the sync node in a control_deps HOP with those nodes as dependencies
-    3. Passes through the dependency values so downstream nodes use them
-    4. This prevents the sync from being reordered around other ops on the same stream
-    """
-    graph = gm.graph
-
-    if sync_node.target not in _SYNC_OPS:
-        raise ValueError(
-            f"wrap_sync_control_deps only supports sync nodes "
-            f"(record_event, wait_event), got {sync_node.target}"
-        )
-
-    sync_stream: int | None = sync_node.args[1]  # type: ignore[assignment]
-
-    # Single pass: collect deps on the same stream and build visited set.
-    deps_before_sync: list[Node] = []
-    visited: set[Node] = set()
-    for node in graph.nodes:
-        visited.add(node)
-        if node is sync_node:
-            break
-        if node.op != "call_function" or node.target in _SYNC_OPS:
-            continue
-        if "val" not in node.meta:
-            continue
-        if get_stream(node) == sync_stream:
-            deps_before_sync.append(node)
-
-    if not deps_before_sync:
-        return
-
-    _wrap_sync_node(gm, sync_node, deps_before_sync, visited)
-    gm.recompile()
-
-
 def wrap_all_sync_nodes_with_control_deps(gm: torch.fx.GraphModule) -> None:
     """
     Single-pass wrap of all sync nodes in control_deps.
@@ -497,7 +453,12 @@ def wrap_all_sync_nodes_with_control_deps(gm: torch.fx.GraphModule) -> None:
     (maintaining the ordering chain for subsequent syncs on the same stream).
     """
     graph = gm.graph
+    if len(graph.nodes) == 0:
+        raise RuntimeError("Expected a non-empty graph")
     stream_to_nodes: dict[int | None, list[Node]] = {}
+    # Maps event_index -> control_deps node that wrapped its record_event,
+    # so the corresponding wait_event can depend on the record.
+    event_to_ctrl: dict[int, Node] = {}
     visited: set[Node] = set()
     found_sync = False
 
@@ -508,12 +469,33 @@ def wrap_all_sync_nodes_with_control_deps(gm: torch.fx.GraphModule) -> None:
 
         if node.op == "call_function":
             if node.target in _SYNC_OPS:
+                event_index: int = node.args[0]  # type: ignore[assignment]
                 sync_stream: int | None = node.args[1]  # type: ignore[assignment]
                 deps_before_sync = stream_to_nodes.get(sync_stream, [])
 
+                # For wait_events, add a cross-event dependency on the
+                # matching record_event's control_deps node so the wait
+                # cannot be reordered before the record.
+                if (
+                    node.target is torch.ops.streams.wait_event.default
+                    and event_index in event_to_ctrl
+                ):
+                    deps_before_sync = [
+                        event_to_ctrl[event_index],
+                        *deps_before_sync,
+                    ]
+
                 if deps_before_sync:
                     found_sync = True
-                    _wrap_sync_node(gm, node, deps_before_sync, visited)
+                    ctrl_node = _wrap_sync_node(gm, node, deps_before_sync, visited)
+                else:
+                    ctrl_node = None
+
+                if (
+                    node.target is torch.ops.streams.record_event.default
+                    and ctrl_node is not None
+                ):
+                    event_to_ctrl[event_index] = ctrl_node
 
                 # Reset: ops between this sync and the next will accumulate
                 # fresh. Ordering with prior ops is already enforced because
