@@ -174,8 +174,6 @@ static void update_needs_input_grad(Node* node, THPFunction* py_fn) {
 // NOLINTNEXTLINE(*-rvalue-reference*)
 auto PyNode::apply(variable_list&& inputs) -> variable_list {
   // see Note [Thread Safety on Autograd Node]
-  // Release GIL before acquiring mutex to maintain lock ordering
-  // (mutex then GIL). Compiled autograd may call this with GIL held.
   std::optional<pybind11::gil_scoped_release> no_gil;
   if (PyGILState_Check()) {
     no_gil.emplace();
@@ -235,8 +233,6 @@ auto PyNode::apply_with_saved_impl(
     const variable_list& inputs,
     const SwapSavedVariables& saved) -> variable_list {
   // see Note [Thread Safety on Autograd Node]
-  // Release GIL before acquiring mutex to maintain lock ordering
-  // (mutex then GIL). Compiled autograd may call this with GIL held.
   std::optional<pybind11::gil_scoped_release> no_gil;
   if (PyGILState_Check()) {
     no_gil.emplace();
