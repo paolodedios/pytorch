@@ -438,6 +438,36 @@ class TestInductorConfigOverrideIntegration(TestCase):
         self.assertEqual(config["str_opt"], "hello")
         self.assertIsNone(config["none_opt"])
 
+    def test_config_router_aggregation(self, device):
+        from torch._dynamo.graph_id_filter import GraphConfigRouter
+
+        router = GraphConfigRouter("0:a=1;>=0:b=2")
+        # Graph 0 matches both rules, configs are merged
+        self.assertEqual(router.get_value_for_graph(0), {"a": 1, "b": 2})
+        # Graph 1 matches only the second rule
+        self.assertEqual(router.get_value_for_graph(1), {"b": 2})
+
+    def test_config_router_conflict_raises(self, device):
+        from torch._dynamo.graph_id_filter import GraphConfigRouter
+
+        with self.assertRaisesRegex(ValueError, "Conflicting config override"):
+            GraphConfigRouter("0:a=1;>=0:a=2")
+
+    def test_config_router_same_value_no_conflict(self, device):
+        from torch._dynamo.graph_id_filter import GraphConfigRouter
+
+        router = GraphConfigRouter("0:a=1;>=0:a=1")
+        self.assertEqual(router.get_value_for_graph(0), {"a": 1})
+        self.assertEqual(router.get_value_for_graph(1), {"a": 1})
+
+    def test_config_router_aggregation_multiple_rules(self, device):
+        from torch._dynamo.graph_id_filter import GraphConfigRouter
+
+        router = GraphConfigRouter("0:a=1;1:b=2;>=0:c=3")
+        self.assertEqual(router.get_value_for_graph(0), {"a": 1, "c": 3})
+        self.assertEqual(router.get_value_for_graph(1), {"b": 2, "c": 3})
+        self.assertEqual(router.get_value_for_graph(2), {"c": 3})
+
     def test_get_inductor_config_override_empty(self, device):
         from torch._dynamo.graph_id_filter import (
             get_inductor_config_override_for_compile_id,
@@ -520,13 +550,15 @@ class TestInductorConfigOverrideIntegration(TestCase):
         self.assertEqual(len(backends_used), 3)
         self.assertEqual(backends_used, ["inductor", "inductor", "inductor"])
 
-        # Graph 0 and 2 get cudagraphs=True, graph 1 gets
-        # cudagraph_skip_dynamic_graphs=False (first matching rule wins for
-        # config router)
+        # All matching rules are aggregated. Graph 1 matches both rules.
         self.assertEqual(len(configs_applied), 3)
         self.assertEqual(configs_applied[0], {"triton.cudagraphs": True})
         self.assertEqual(
-            configs_applied[1], {"triton.cudagraph_skip_dynamic_graphs": False}
+            configs_applied[1],
+            {
+                "triton.cudagraph_skip_dynamic_graphs": False,
+                "triton.cudagraphs": True,
+            },
         )
         self.assertEqual(configs_applied[2], {"triton.cudagraphs": True})
 
