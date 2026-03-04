@@ -763,8 +763,6 @@ class EnterCudaStreamContextLine(WrapperLine):
             the stream switching.
         buffers_from_other_streams: Name of buffers produced by other CUDA Streams. Those buffers
             should be recorded to the current stream to avoid accidental memory free.
-        buffers_requiring_device_check: Name of buffers that might not be on CUDA devices and
-            require runtime device checking before recording stream to them.
     """
 
     stream_idx: int
@@ -1699,7 +1697,6 @@ class PythonWrapperCodegen(CodeGen):
         stream_idx: int,
         upstream_events: OrderedSet[CudaEventSym],
         buffers_from_other_streams: OrderedSet[str],
-        buffers_requiring_device_check: OrderedSet[str] | None = None,
     ) -> EnterCudaStreamContextLine:
         """Generate data structure for entering a CUDA Stream context.
 
@@ -1710,8 +1707,6 @@ class PythonWrapperCodegen(CodeGen):
                 previous stream context.
             buffers_from_other_streams: Name of buffers produced by other CUDA Streams. Those
                 buffers should be recorded to the current stream to avoid accidental memory free.
-            buffers_requiring_device_check: Name of buffers that might not be on CUDA devices and
-                require runtime device checking before recording stream to them.
 
         Note:
             - Refer to :class:`EnterCudaStreamContextLine` for argument specifications;
@@ -1732,7 +1727,6 @@ class PythonWrapperCodegen(CodeGen):
         self.codegen_buffers_record_stream(
             buffers=buffers_from_other_streams,
             stream_idx=stream_idx,
-            buffers_requiring_device_check=buffers_requiring_device_check,
         )
         ctx_entrance.buffers_recorded_on_this_stream |= buffers_from_other_streams
         self.codegen_events_wait_stream(
@@ -1761,27 +1755,15 @@ class PythonWrapperCodegen(CodeGen):
         self,
         buffers: OrderedSet[str],
         stream_idx: int,
-        buffers_requiring_device_check: OrderedSet[str] | None = None,
     ) -> None:
-        """Generate data structure for recording steam on return tensors before program exit.
+        """Generate code for recording stream on buffers to prevent premature memory free.
 
         Args:
             buffers: Names of buffers that need to be recorded on the given stream.
             stream_idx: Index of the CUDA stream to record the buffers to.
-            buffers_requiring_device_check: Name of buffers that might not be on CUDA devices and
-                require runtime device checking before recording stream to them. If not provided,
-                buffers will be recorded to the given stream without runtime device checking.
         """
         for buff in buffers:
-            prefix = (
-                f"if {buff}.is_cuda: "
-                if buffers_requiring_device_check
-                and buff in buffers_requiring_device_check
-                else ""
-            )
-            self.writeline(
-                f"{prefix}{buff}.record_stream({get_stream_name(stream_idx)})"
-            )
+            self.writeline(f"{buff}.record_stream({get_stream_name(stream_idx)})")
 
     def generate_return(self, output_refs: list[str]) -> None:
         if output_refs:
