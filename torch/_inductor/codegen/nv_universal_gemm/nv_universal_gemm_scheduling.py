@@ -66,7 +66,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
             try:
                 min_choice, _ = ir_node.get_min_choice()
                 return isinstance(min_choice, NVUniversalGemmCaller)
-            except Exception:
+            except (RuntimeError, ValueError):
                 return False
         return False
 
@@ -108,11 +108,27 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 selected_choice = best_efc_choice
             else:
                 min_choice, _ = ir_node.get_min_choice()
-                assert isinstance(min_choice, NVUniversalGemmCaller)
-                selected_choice = min_choice
-            # Get the NVUniversalGemmBuffer from the caller's output_node()
+                if isinstance(min_choice, NVUniversalGemmCaller):
+                    selected_choice = min_choice
+                else:
+                    # During swap_as_nvgemm_caller, the autotuning winner may not
+                    # be NVGEMM. Find the best NVGEMM choice from all choices.
+                    choice_timings = ir_node.choice_timings()
+                    best_nvgemm = None
+                    best_time = float("inf")
+                    for choice, timing in choice_timings.items():
+                        if isinstance(choice, NVUniversalGemmCaller) and timing < best_time:
+                            best_time = timing
+                            best_nvgemm = choice
+                    if best_nvgemm is None:
+                        raise RuntimeError("No NVUniversalGemmCaller found in choices")
+                    selected_choice = best_nvgemm
             tensor_box = selected_choice.output_node()
             return cast(NVUniversalGemmBuffer, tensor_box.data.data)
+
+        raise TypeError(
+            f"Expected NVUniversalGemmBuffer or MultiTemplateBuffer, got {type(ir_node).__name__}"
+        )
 
     def is_nv_universal_gemm_fused_template(self, node: BaseSchedulerNode) -> bool:
         """Check if a node is a fused NVIDIA Universal GEMM template."""
@@ -167,7 +183,9 @@ class NVUniversalGemmScheduling(BaseScheduling):
         Supports fusion with Pointwise operations wrapped in ComputedBuffer nodes.
         Only EFC (Epilogue Fusion Compatible) kernels support epilogue fusion.
         """
-        # Get the IR buffer (could be NVUniversalGemmBuffer or MultiTemplateBuffer)
+        if not config.epilogue_fusion:
+            return False
+
         ir_node = gemm_template_node.node
 
         # Check if the kernel supports epilogue fusion
@@ -196,7 +214,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
                         "NVGEMM epilogue fusion: no EFC kernel available in choices"
                     )
                     return False
-            except Exception as e:
+            except (RuntimeError, ValueError) as e:
                 log.debug("NVGEMM epilogue fusion: error checking choices: %s", e)
                 return False
 
@@ -237,6 +255,22 @@ class NVUniversalGemmScheduling(BaseScheduling):
             return False
         elif node_to_fuse.is_reduction():
             log.debug("NVGEMM epilogue fusion: reductions not supported")
+            return False
+
+        # Trial EVT codegen to verify the epilogue ops are translatable
+        all_epilogue_nodes = list(existing_epilogue_nodes) + list(
+            node_to_fuse.get_nodes()
+        )
+        try:
+            CutlassEVTCodegen.ir_to_evt_python_code(
+                ir_node.get_name(),
+                all_epilogue_nodes,
+                OrderedSet([ir_node.get_name()]),
+            )
+        except NotImplementedError as e:
+            log.debug(
+                "NVGEMM epilogue fusion: unsupported EVT operation: %s", e
+            )
             return False
 
         return True
@@ -311,7 +345,15 @@ class NVUniversalGemmScheduling(BaseScheduling):
             [n.get_name() for n in epilogue_nodes] if epilogue_nodes else [],
             [n.get_name() for n in prologue_nodes] if prologue_nodes else [],
         )
-        assert self.is_nv_universal_gemm_template(template_node), (
+        # During epilogue fusion benchmarking, a MultiTemplateBuffer may have its
+        # make_kernel_render temporarily swapped to NVGEMM (via swap_as_nvgemm_caller),
+        # even though get_min_choice() still returns the autotuning winner.
+        is_nvgemm = self.is_nv_universal_gemm_template(template_node)
+        if not is_nvgemm and isinstance(template_node, SchedulerNode):
+            ir_node = template_node.node
+            if isinstance(ir_node, MultiTemplateBuffer):
+                is_nvgemm = getattr(ir_node.make_kernel_render, "_is_nvgemm", False)
+        assert is_nvgemm, (
             "Template node passed to NVUniversalGemmScheduling.codegen_template must be a "
             "SchedulerNode that wraps a NVUniversalGemmBuffer or MultiTemplateBuffer with NVGEMM choice"
         )
@@ -374,13 +416,10 @@ class NVUniversalGemmScheduling(BaseScheduling):
                     epilogue_writes,
                 )
             except (NotImplementedError, AssertionError) as e:
-                # Fallback: epilogue will run as separate kernel(s)
-                log.debug("NVGEMM epilogue fusion failed, falling back: %s", e)
-                epilogue_fn_code = None
-                epilogue_reads = []
-                epilogue_writes = []
-                epilogue_var_renames = {}
-                # Don't mark epilogue nodes as run - scheduler handles them separately
+                # EVT codegen was pre-validated at can_fuse time, so failure here
+                # indicates a bug. Re-raise rather than silently dropping epilogue.
+                log.warning("NVGEMM epilogue codegen failed unexpectedly: %s", e)
+                raise
 
         assert ctb.make_kernel_render is not None
         kernel, render = ctb.make_kernel_render(
@@ -411,6 +450,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
         self.codegen_comment(node_schedule, kernel_name)
         kernel.call_kernel(kernel_name, ctb)
         V.graph.removed_buffers |= kernel.removed_buffers
+        V.graph.inplaced_to_remove |= kernel.inplaced_to_remove
         self.free_buffers_in_scheduler()
         return None
 
@@ -482,8 +522,8 @@ class NVUniversalGemmScheduling(BaseScheduling):
                     removed_buffers_with_gemm,
                 )
                 epilogue_reads = reads
-            except (NotImplementedError, AssertionError):
-                pass
+            except (NotImplementedError, AssertionError) as e:
+                log.warning("NVGEMM benchmark epilogue codegen failed: %s", e)
 
         # Build get_args code
         args_code = IndentedBuffer()

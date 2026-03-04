@@ -3914,7 +3914,8 @@ class Scheduler:
             or node1.is_foreach()
             or node2.is_foreach()
         ):
-            # TODO support benchmarking epilogue fusion
+            # Non-Triton templates (CuteDSL, standalone NVUniversalGemmBuffer) auto-fuse.
+            # NVGEMM fusion benchmarking goes through the MultiTemplateBuffer path below.
             return FusionResult.fuse(True)
 
         node_list_1 = node1.get_nodes()
@@ -4047,15 +4048,18 @@ class Scheduler:
                 assert isinstance(ms_fused_choice, TritonTemplateCallerBase)
                 hint_override_best_fusion_choice[hint_override] = ms_fused_choice
 
+            from torch._inductor.codegen.nv_universal_gemm import NVUniversalGemmCaller
+
             bench_epilogue = config.benchmark_epilogue_fusion
-            num_triton_callers = sum(
-                isinstance(c, TritonTemplateCallerBase) for c in multi_node.choices
+            num_fusible_callers = sum(
+                isinstance(c, (TritonTemplateCallerBase, NVUniversalGemmCaller))
+                for c in multi_node.choices
             )
             # Track if the choice timings can be retrieved async after compilation
             get_choice_timings_async = (
                 config.pipeline_max_autotune_gemm
                 and not bench_epilogue
-                and num_triton_callers <= config.max_epilogue_benchmarked_choices
+                and num_fusible_callers <= config.max_epilogue_benchmarked_choices
             )
 
             ms1, ms2 = float("inf"), float("inf")
@@ -4085,9 +4089,6 @@ class Scheduler:
 
                 ms2 = node2._get_estimated_runtime()
                 ms2_fused = _estimate_fused_epilogue_runtime(node1, node2, ms2)
-
-            # Start compiling choices in parallel
-            from torch._inductor.codegen.nv_universal_gemm import NVUniversalGemmCaller
 
             future_choices: list[tuple[Any, Optional[LambdaFuture], ModuleType]] = []
             template_choices = 0
@@ -4227,12 +4228,14 @@ class Scheduler:
                 ) and ms_fused_choice is not None:
                     if config.multi_kernel_hints:
                         hint_override_best_fusion_choice[None] = ms_fused_choice
-                        # pyrefly: ignore [missing-attribute]
-                        multi_node.finalize_as_triton_callers(
-                            hint_override_best_fusion_choice
-                        )
+                        if isinstance(ms_fused_choice, NVUniversalGemmCaller):
+                            multi_node.finalize_as_nvgemm_caller(ms_fused_choice)
+                        else:
+                            # pyrefly: ignore [missing-attribute]
+                            multi_node.finalize_as_triton_callers(
+                                hint_override_best_fusion_choice
+                            )
                     else:
-                        # Finalize with the winning choice using appropriate method
                         if isinstance(ms_fused_choice, NVUniversalGemmCaller):
                             multi_node.finalize_as_nvgemm_caller(ms_fused_choice)
                         else:

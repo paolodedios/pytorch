@@ -61,6 +61,8 @@ class CUDACombinedScheduling(BaseScheduling):
             return self._cutedsl_scheduling
         if self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(node):
             return self._nv_universal_gemm_scheduling
+        if self._nv_universal_gemm_scheduling.is_nv_universal_gemm_fused_template(node):
+            return self._nv_universal_gemm_scheduling
         return self._triton_scheduling
 
     def can_fuse_vertical(
@@ -197,9 +199,7 @@ class CUDACombinedScheduling(BaseScheduling):
             # Warmup call to trigger compilation
             try:
                 call(args)
-            except Exception as e:
-                from torch._inductor.codegen.triton import log
-
+            except (RuntimeError, ValueError) as e:
                 log.debug(
                     "Exception (%s) in compiling NVGEMM fused kernel",
                     e,
@@ -215,24 +215,32 @@ class CUDACombinedScheduling(BaseScheduling):
 
             return ms, module.__file__ or ""
 
+    def _is_nvgemm_node(self, node) -> bool:
+        """Check if a template node is currently configured for NVGEMM codegen."""
+        from torch._inductor.ir import MultiTemplateBuffer, NVUniversalGemmBuffer
+
+        template_node = node.get_template_node()
+        if isinstance(template_node, NVUniversalGemmBuffer):
+            return True
+        if isinstance(template_node, MultiTemplateBuffer):
+            render_fn = template_node.make_kernel_render
+            return getattr(render_fn, "_is_nvgemm", False)
+        return False
+
     def generate_kernel_code_from_nodes(
         self,
         nodes: Sequence[Any],
         benchmark_kernel: bool = False,
         hint_override: Optional[int] = None,
     ) -> str:
-        # Check if any node is an NVGEMM template
         for node in nodes:
-            if hasattr(node, "is_template") and node.is_template():
-                if self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(
-                    node
-                ):
-                    return self._nv_universal_gemm_scheduling.generate_kernel_code_from_nodes(
-                        nodes, benchmark_kernel
-                    )
-                # A fused node group has at most one template (the GEMM); other nodes
-                # are epilogues. If the first template isn't NVGEMM, fall through to Triton.
-                break
+            if not (hasattr(node, "is_template") and node.is_template()):
+                continue
+            if self._is_nvgemm_node(node):
+                return self._nv_universal_gemm_scheduling.generate_kernel_code_from_nodes(
+                    nodes, benchmark_kernel
+                )
+            break
         return self._triton_scheduling.generate_kernel_code_from_nodes(
             nodes, benchmark_kernel, hint_override=hint_override
         )

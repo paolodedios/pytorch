@@ -208,7 +208,11 @@ class NVUniversalGemmKernel(Kernel):
                         accumulator_type={acc_dtype_str},
                     )"""
 
-        # Build epilogue code if present
+        if self.epilogue_fn_code and (is_grouped or is_scaled):
+            raise NotImplementedError(
+                "Epilogue fusion is not yet supported for grouped or scaled GEMM variants"
+            )
+
         if self.epilogue_fn_code:
             epilogue_kwargs = self._render_epilogue_kwargs()
             epilogue_import = "from cutlass_api.arguments import EpilogueArguments"
@@ -262,9 +266,7 @@ class NVUniversalGemmKernel(Kernel):
     if kernel is None:
         raise RuntimeError(f"Could not find kernel: {{{kernel_name_var}}}")"""
 
-        # Generate main body
         if self.epilogue_fn_code:
-            efc_kernel_cache_init = ""
             global_decl = f"global {cache_var}"
             main_body = f"""
     {epilogue_args_construction}
@@ -281,8 +283,6 @@ class NVUniversalGemmKernel(Kernel):
 
     kernel.run(args, artifact, stream=stream, workspace={workspace_arg}, assume_supported_args=True)"""
         else:
-            # Non-epilogue case: standard order
-            efc_kernel_cache_init = ""
             global_decl = f"global {cache_var}"
             main_body = f"""
     {kernel_lookup_code}
@@ -311,7 +311,6 @@ import cutlass_api
 {kernel_name_var} = "{kernel_name_str}"
 # Maps (shape, dtype, shape, dtype, ...) -> compiled kernel artifact
 {cache_var} = {{}}
-{efc_kernel_cache_init}
 
 def {self.kernel_name}_main({params_str}):
     {global_decl}
@@ -339,11 +338,7 @@ def {self.kernel_name}_main({params_str}):
             elif var_name == "accum":
                 # Skip accum, it's implicit (the GEMM result)
                 continue
-            elif buffer_name in self.epilogue_reads:
-                # This is an epilogue input tensor - use buffer_name as the parameter
-                kwargs_parts.append(f"{var_name}={buffer_name}")
             else:
-                # Could be a scalar or intermediate value
                 kwargs_parts.append(f"{var_name}={buffer_name}")
 
         return ", ".join(kwargs_parts)

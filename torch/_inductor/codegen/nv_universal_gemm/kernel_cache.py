@@ -11,11 +11,14 @@ dict for O(1) lookup (~0.1 μs).
 """
 
 import logging
+import threading
 from collections.abc import Callable
 from typing import Any, Optional
 
 
 log = logging.getLogger(__name__)
+
+_cache_lock = threading.Lock()
 
 # Global cache: kernel_name -> kernel object
 _kernel_by_name_cache: Optional[dict[str, Any]] = None
@@ -41,7 +44,9 @@ def get_compatible_kernels(
     global _kernel_by_name_cache
 
     if _kernel_by_name_cache is None:
-        _kernel_by_name_cache = _build_kernel_cache()
+        with _cache_lock:
+            if _kernel_by_name_cache is None:
+                _kernel_by_name_cache = _build_kernel_cache()
 
     compatible = []
     for kernel in _kernel_by_name_cache.values():
@@ -69,7 +74,9 @@ def get_kernel_by_name(kernel_name: str) -> Any:
     global _kernel_by_name_cache
 
     if _kernel_by_name_cache is None:
-        _kernel_by_name_cache = _build_kernel_cache()
+        with _cache_lock:
+            if _kernel_by_name_cache is None:
+                _kernel_by_name_cache = _build_kernel_cache()
 
     return _kernel_by_name_cache.get(kernel_name)
 
@@ -79,13 +86,17 @@ def ensure_cache_initialized() -> None:
     global _kernel_by_name_cache
 
     if _kernel_by_name_cache is None:
-        _kernel_by_name_cache = _build_kernel_cache()
+        with _cache_lock:
+            if _kernel_by_name_cache is None:
+                _kernel_by_name_cache = _build_kernel_cache()
 
 
 def clear_cache() -> None:
-    """Clear the kernel cache."""
-    global _kernel_by_name_cache
-    _kernel_by_name_cache = None
+    """Clear all kernel caches."""
+    global _kernel_by_name_cache, _efc_epilogue_cache
+    with _cache_lock:
+        _kernel_by_name_cache = None
+        _efc_epilogue_cache = {}
 
 
 # Cache for EFC kernels with specific epilogue configurations
@@ -121,9 +132,10 @@ def get_efc_kernel_with_epilogue(efc_kernel_name: str, epilogue_args: Any) -> An
         epilogue_fn_code = str(epilogue_args.epilogue_fn)
 
     cache_key = (efc_kernel_name, epilogue_fn_code)
-    if cache_key in _efc_epilogue_cache:
-        log.debug("EFC kernel with epilogue found in cache: %s", efc_kernel_name)
-        return _efc_epilogue_cache[cache_key]
+    with _cache_lock:
+        if cache_key in _efc_epilogue_cache:
+            log.debug("EFC kernel with epilogue found in cache: %s", efc_kernel_name)
+            return _efc_epilogue_cache[cache_key]
 
     base_kernel = get_kernel_by_name(efc_kernel_name)
     if base_kernel is None:
@@ -147,7 +159,8 @@ def get_efc_kernel_with_epilogue(efc_kernel_name: str, epilogue_args: Any) -> An
     kernel_class = base_metadata.kernel_class
     new_kernel = kernel_class(new_metadata)
 
-    _efc_epilogue_cache[cache_key] = new_kernel
+    with _cache_lock:
+        _efc_epilogue_cache[cache_key] = new_kernel
     log.debug("Created and cached EFC kernel with epilogue: %s", efc_kernel_name)
 
     return new_kernel

@@ -311,7 +311,6 @@ class NVUniversalGemmCaller(ChoiceCaller):
         swizzle_type_a = self.swizzle_type_a
         swizzle_type_b = self.swizzle_type_b
         input_nodes = self.input_nodes
-        supports_epilogue = self.supports_epilogue_fusion
 
         def make_kernel_render(
             out_node,
@@ -357,6 +356,7 @@ class NVUniversalGemmCaller(ChoiceCaller):
 
             return render_kernel, render
 
+        make_kernel_render._is_nvgemm = True  # type: ignore[attr-defined]
         return make_kernel_render
 
 
@@ -370,7 +370,7 @@ def _create_dummy_tensor_from_layout(layout: Layout) -> Optional[torch.Tensor]:
     """
     try:
         return layout.get_example()
-    except Exception:
+    except (RuntimeError, ValueError):
         return None
 
 
@@ -483,20 +483,17 @@ def _add_nv_gemm_choices_impl(
         return
     cc_int = int(cc)
 
-    # Get non-EFC kernels for autotuning
     non_efc_kernels = get_compatible_kernels(
         args, cc_int, metadata_filter=_exclude_efc_kernels
     )
-    if not non_efc_kernels:
-        log.debug("No compatible %s kernels found", variant.op_name)
-        return
-
-    # Get EFC kernels separately for epilogue fusion capability
     efc_kernels = get_compatible_kernels(
         args, cc_int, metadata_filter=_include_efc_kernels_only
     )
+    if not non_efc_kernels and not efc_kernels:
+        log.debug("No compatible %s kernels found", variant.op_name)
+        return
 
-    max_configs = config.nvgemm_max_profiling_configs or len(non_efc_kernels)
+    max_configs = config.nvgemm_max_profiling_configs or max(len(non_efc_kernels), len(efc_kernels))
     if variant == GemmVariant.GEMM and mm_inputs is not None:
         heuristics = get_nvgemm_heuristics()
         non_efc_kernels = heuristics.filter_kernels(
@@ -538,7 +535,7 @@ def _add_nv_gemm_choices_impl(
             )
             choices.append(caller)
             num_added += 1
-        except Exception:
+        except (RuntimeError, ValueError):
             log.debug("Failed to create %s choice", variant.op_name, exc_info=True)
 
     log.debug("Added %d %s choices", num_added, variant.op_name)
