@@ -18,7 +18,7 @@ using xpuGraph_t = sycl::ext::oneapi::experimental::command_graph<
 using xpuGraphExec_t = sycl::ext::oneapi::experimental::command_graph<
     sycl::ext::oneapi::experimental::graph_state::executable>;
 
-struct XPUGraphImpl : public at::GraphImplInterface {
+struct TORCH_XPU_API XPUGraphImpl : public at::GraphImplInterface {
   XPUGraphImpl(const GraphImplArgs& args = {});
   ~XPUGraphImpl() override;
 
