@@ -7692,11 +7692,15 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
         for c in (V, V.unsqueeze(0), M):
             self._test_addmm_addmv(func, c, m1, m2, beta=1, activation=activation)
 
-        # Test 0-strided
-        M = torch.randn(10, 1, device=device).to(dtype).expand(10, 25)
-        m1 = torch.randn(10, 1, device=device).to(dtype).expand(10, 50)
-        m2 = torch.randn(50, 25, device=device).to(dtype)
-        self._test_addmm_addmv(func, M, m1, m2, activation=activation)
+        # Test 0-strided bias and m1
+        for b in (
+            b1 := torch.randn(25, device=device, dtype=dtype), b1.unsqueeze(0),
+            torch.randn(10, 1, device=device, dtype=dtype),
+            torch.randn(1, 1, device=device, dtype=dtype).expand(10, 25),
+        ):
+            m1 = torch.randn(10, 1, device=device).to(dtype).expand(10, 50)
+            m2 = torch.randn(50, 25, device=device).to(dtype)
+            self._test_addmm_addmv(func, b, m1, m2, activation=activation)
 
         # Test beta=0, M=nan
         M = torch.full((10, 25), math.nan, device=device).to(dtype)

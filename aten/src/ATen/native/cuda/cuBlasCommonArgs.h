@@ -199,24 +199,47 @@ struct cublasCommonArgs {
       must_copy_bias = true;
       return;
     }
-    const bool can_use_1D_bias_no_copy = (
-        transpose_result // required so that bias properly broadcasts
+
+    // Whether bias broadcasts over rows/cols as per `bias + m1 @ m2` in PyTorch.
+    // NOTE: cuBLASLt assumes "transposed" broadcasting when `bias` is a vector.
+    // row broadcast: bias is viewed as a 1D memory.
+    const bool bias_row_broadcasts = (
+        transpose_result
         && self->is_contiguous()
-        // == m -> should match the rows, hence transpose_result is essential
-        && (self->dim() >= 1 && self->sizes().back() == m && self->numel() == m) // shapes [1, ..., 1, m] are fine
+        // shapes [1, ..., 1, m] are fine.
+        && (
+          self->dim() >= 1
+          && self->sizes().end()[-1] == m
+          && self->numel() == m
+        )
+    );
+    // col broadcast: bias is viewed as a 2D memory with the leading dimension 0.
+    const bool bias_col_broadcasts = (
+        transpose_result
+        && self->is_contiguous()
+        // shapes [1, ..., 1, n, 1] are fine
+        && (
+          self->dim() >= 2
+          && self->sizes().end()[-1] == 1
+          && self->sizes().end()[-2] == n
+          && self->numel() == n
+        )
     );
     const bool can_use_bias_in_epilogue = (
-        can_use_1D_bias_no_copy
+        bias_row_broadcasts // required for epilogue fusion
         && is_beta_one() // no scaling for bias in epilogue
         && !result->is_complex() // no Epilogue support for complex types
     );
     if (can_use_bias_in_epilogue) { // Case for bias in epilogue
       bias = c10::MaybeOwned<Tensor>::borrowed(*self);
     } else { // Case for, potentially, an out-of-place GEMM
-      if (can_use_1D_bias_no_copy) { // 1D bias
-        // Bias expanded to a matrix with the leading dimension 0
+      if (bias_row_broadcasts) {
+        // Bias can be viewed as 2D with the leading dimension 0.
         bias = c10::MaybeOwned<Tensor>::borrowed(*self);
         bias_ld = static_cast<int64_t>(0);
+      }
+      else if (bias_col_broadcasts) {
+        must_copy_bias = true;
       } else if (self->dim() == 2) { // 2D bias
         // Bias should match the result's layout
         bias = maybe_prepare_matrix_with_layout(*self, /*make_row_major_like=*/transpose_result, result->sizes());
