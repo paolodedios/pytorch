@@ -1318,13 +1318,13 @@ class Reduction(Loops):
         reduction_numel: Expr,
         input_node: IRNode | None = None,
     ) -> tuple[ReductionHint, _IntLike]:
-        # Use optimization_hint when all unbacked symbols have explicit hints,
-        # otherwise fall back conservatively.
-        exprs = [reduction_numel, sympy_product(ranges)]
-        if not V.graph.sizevars.all_unbacked_explicitly_hinted(exprs):
-            return ReductionHint.DEFAULT, 1
-        reduction_numel_hint = V.graph.sizevars.optimization_hint(reduction_numel)
-        numel_hint = V.graph.sizevars.optimization_hint(sympy_product(ranges))
+        # TODO Laith support unbacked!
+        reduction_numel_hint = V.graph.sizevars.replace_backed_symbols_with_hints(
+            reduction_numel
+        )
+        numel_hint = V.graph.sizevars.replace_backed_symbols_with_hints(
+            sympy_product(ranges)
+        )
 
         should_split = reduction_type == "scan" or (
             not V.graph.has_feature(device, BackendFeature.REDUCE_TO_SINGLE_ELEMENT)
@@ -1335,6 +1335,10 @@ class Reduction(Loops):
             )
             and config.split_reductions
         )
+
+        if not (_is_static(reduction_numel_hint) and _is_static(numel_hint)):
+            # We don't support unbacked symints
+            return ReductionHint.DEFAULT, 1
 
         if reduction_type == "dot":
             # Don't split when doing native matmul
@@ -8452,6 +8456,22 @@ class FallbackKernel(ExternKernelAlloc):
                 unbacked_bindings,
             ) = cls.process_kernel(kernel, *args, **kwargs)
 
+        # Try to lower functional custom ops to their out-variant via
+        # ExternKernelOut for buffer reuse. Only affects ops with the
+        # torch.Tag.out_variant tag (custom ops / symm_mem), not aten ops.
+        if isinstance(kernel, torch._ops.OpOverload):
+            from .custom_op_out_lowering import try_lower_to_out_variant
+
+            result = try_lower_to_out_variant(
+                kernel,
+                example_output,
+                tensor_args,
+                non_tensor_args,
+                kwargs,
+            )
+            if result is not None:
+                return result  # type: ignore[return-value]
+
         # We need this extra check for input alignment since the example
         # inputs we created are always aligned.
         has_unaligned_input = any(is_unaligned(arg) for arg in tensor_args)
@@ -9717,7 +9737,7 @@ class TorchBindObject(NonTensorObj):
         # Returns the sum of all tensors in the flattened object
         real_script_obj = self.get_real_obj()
 
-        if is_opaque_type(real_script_obj):
+        if is_opaque_type(type(real_script_obj)):
             return 0
 
         assert hasattr(real_script_obj, "__obj_flatten__")

@@ -116,6 +116,7 @@ from torch.utils.weak import TensorWeakRef
 
 from . import config, convert_frame, exc
 from .eval_frame import set_guard_error_hook
+from .exc import UserError, UserErrorType
 from .source import (
     AttrProxySource,
     AttrSource,
@@ -187,6 +188,7 @@ from .utils import (
     key_to_id,
     normalize_range_iter,
     orig_code_map,
+    tensor_always_has_static_shape,
     tuple_iterator_getitem,
     tuple_iterator_len,
     unpatched_nn_module_getattr,
@@ -3089,6 +3091,34 @@ class GuardBuilder(GuardBuilderBase):
 
             assert guard.source is not None
 
+            static, reason = tensor_always_has_static_shape(
+                value, is_tensor=True, tensor_source=guard.originating_source
+            )
+
+            if static:
+                # Error if user tries to mark_dynamic or mark_unbacked on tensors
+                # that are forced to have static shapes (e.g. nn.Parameters, nn module
+                # properties). These tensors are always specialized — marking them
+                # dynamic would silently be ignored, so we error out instead.
+                dynamic_indices = getattr(value, "_dynamo_dynamic_indices", None)
+                unbacked_indices = getattr(value, "_dynamo_unbacked_indices", None)
+                if dynamic_indices:
+                    raise UserError(
+                        UserErrorType.DYNAMIC_DIM,
+                        f"mark_dynamic was called on a tensor that is forced to have static shapes "
+                        f"(reason: {reason}). This is not supported. "
+                        f"Tensor source: {guard.originating_source.name}, "
+                        f"dynamic indices: {dynamic_indices}",
+                    )
+                if unbacked_indices:
+                    raise UserError(
+                        UserErrorType.DYNAMIC_DIM,
+                        f"mark_unbacked was called on a tensor that is forced to have static shapes "
+                        f"(reason: {reason}). This is not supported. "
+                        f"Tensor source: {guard.originating_source.name}, "
+                        f"unbacked indices: {unbacked_indices}",
+                    )
+
             # [Note: Dimension Marking Guards]
             # Guards for user explicit dynamism (mark_dynamic, mark_unbacked, mark_static).
             #
@@ -3137,32 +3167,34 @@ class GuardBuilder(GuardBuilderBase):
                         guard.user_stack,
                     )
 
-            add_dim_indices_guard("_dynamo_dynamic_indices")
             add_dim_indices_guard("_dynamo_weak_dynamic_indices")
-            add_dim_indices_guard("_dynamo_unbacked_indices")
             add_dim_indices_guard("_dynamo_static_indices")
 
-            # Guard on unbacked-dependent attributes (shape_ids, bounds).
-            # These are only checked if the runtime tensor has _dynamo_unbacked_indices.
-            # We must install guards even when attr_value is None to detect runtime
-            # tensors that have the attribute when compile-time didn't.
-            def add_unbacked_dependent_guard(attr_name: str) -> None:
-                if hasattr(value, "_dynamo_unbacked_indices"):
-                    attr_value = getattr(value, attr_name, None)
-                    code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {attr_value!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
-                    code.append(code_part)
-                    self.get_guard_manager(guard).add_lambda_guard(
-                        lambda x, attr=attr_name, expected=attr_value: (
-                            getattr(x, attr, None) == expected
-                            if hasattr(x, "_dynamo_unbacked_indices")
-                            else True
-                        ),
-                        get_verbose_code_parts(code_part, guard),
-                        guard.user_stack,
-                    )
+            if not static:
+                add_dim_indices_guard("_dynamo_dynamic_indices")
+                add_dim_indices_guard("_dynamo_unbacked_indices")
 
-            add_unbacked_dependent_guard("_dynamo_shape_ids")
-            add_unbacked_dependent_guard("_dynamo_unbacked_bounds")
+                # Guard on unbacked-dependent attributes (shape_ids, bounds).
+                # These are only checked if the runtime tensor has _dynamo_unbacked_indices.
+                # We must install guards even when attr_value is None to detect runtime
+                # tensors that have the attribute when compile-time didn't.
+                def add_unbacked_dependent_guard(attr_name: str) -> None:
+                    if hasattr(value, "_dynamo_unbacked_indices"):
+                        attr_value = getattr(value, attr_name, None)
+                        code_part = f"((getattr({tensor_name}, '{attr_name}', None) == {attr_value!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
+                        code.append(code_part)
+                        self.get_guard_manager(guard).add_lambda_guard(
+                            lambda x, attr=attr_name, expected=attr_value: (
+                                getattr(x, attr, None) == expected
+                                if hasattr(x, "_dynamo_unbacked_indices")
+                                else True
+                            ),
+                            get_verbose_code_parts(code_part, guard),
+                            guard.user_stack,
+                        )
+
+                add_unbacked_dependent_guard("_dynamo_shape_ids")
+                add_unbacked_dependent_guard("_dynamo_unbacked_bounds")
 
             if len(code) > 0:
                 self._set_guard_export_info(guard, code)

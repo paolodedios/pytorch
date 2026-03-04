@@ -1049,18 +1049,6 @@ class _DimRange:
     max: int
 
 
-def _normalize_dim_index(t: torch.Tensor, index: int) -> int:
-    # Mimic c10::maybe_wrap_dim which allows dim=0 for 0-dim (scalar) tensors.
-    ndim = max(t.ndim, 1)
-    if not (-ndim <= index < ndim):
-        raise IndexError(
-            f"Dimension out of range (expected in [{-ndim}, {ndim - 1}], but got {index})"
-        )
-    if index < 0:
-        index += ndim
-    return index
-
-
 @forbid_in_graph
 def mark_unbacked(
     t: Any,
@@ -1116,8 +1104,6 @@ def mark_unbacked(
         assert not is_traceable_wrapper_subclass(t), "not implemented yet"
 
     if isinstance(index, int):
-        index = _normalize_dim_index(t, index)
-
         if strict:
             if not hasattr(t, "_dynamo_strict_unbacked_indices"):
                 t._dynamo_strict_unbacked_indices = set()
@@ -1252,10 +1238,9 @@ def mark_dynamic(
             # pyrefly: ignore [implicit-any]
             t._specialize_on = {}
 
-        index = _normalize_dim_index(t, index)
-
         if hint_override:
             t._dynamo_hint_overrides[index] = hint_override
+        # TODO(voz): Should we bounds check?
 
         t._dynamo_dynamic_indices.add(index)
         t._dynamo_dynamic_range.add(_DimRange(index, min, max))  # type: ignore[arg-type]
@@ -1301,8 +1286,8 @@ def maybe_mark_dynamic(t: Any, index: int | list[Any] | tuple[Any]) -> None:
     if isinstance(index, int):
         if not hasattr(t, "_dynamo_weak_dynamic_indices"):
             t._dynamo_weak_dynamic_indices = set()
+        # TODO(voz): Should we bounds check?
 
-        index = _normalize_dim_index(t, index)
         t._dynamo_weak_dynamic_indices.add(index)
         return
 
@@ -1376,7 +1361,7 @@ def mark_static(t: Any, index: int | list[Any] | tuple[Any] | None = None) -> No
     if isinstance(index, int):
         if not hasattr(t, "_dynamo_static_indices"):
             t._dynamo_static_indices = set()  # type: ignore[attr-defined]
-        index = _normalize_dim_index(t, index)
+        # TODO(voz): Should we bounds check?
         t._dynamo_static_indices.add(index)  # type: ignore[attr-defined]
     elif index is None:
         for i in range(t.dim()):
