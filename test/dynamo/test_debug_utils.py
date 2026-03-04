@@ -631,14 +631,11 @@ class TestInductorConfigOverrideIntegration(TestCase):
         patching) so that compile_fx can wrap inner_compile and ensure the
         patches are active during lazy backward compilation.
         """
-        from torch._dynamo.graph_id_filter import (
-            _create_backend_router,
-            _create_config_router,
-        )
+        import torch._functorch.config
+        from torch._dynamo.graph_id_filter import _create_config_router
         from torch._inductor import compile_fx as compile_fx_mod
 
         torch._dynamo.reset()
-        _create_backend_router.cache_clear()
         _create_config_router.cache_clear()
 
         config_patches_received: list[dict] = []
@@ -656,17 +653,12 @@ class TestInductorConfigOverrideIntegration(TestCase):
         with (
             patch.object(
                 torch._dynamo.config,
-                "debug_backend_override",
-                ">=0:inductor",
-            ),
-            patch.object(
-                torch._dynamo.config,
                 "debug_inductor_config_override",
                 "0:triton.cudagraph_skip_dynamic_graphs=False",
             ),
             patch.object(compile_fx_mod, "compile_fx", tracking_compile_fx),
         ):
-            compiled_fn = torch.compile(fn, backend="eager")
+            compiled_fn = torch.compile(fn)
             x = torch.randn(10, device=device, requires_grad=True)
             result = compiled_fn(x)
             result.backward()
