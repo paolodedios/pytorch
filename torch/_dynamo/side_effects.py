@@ -45,7 +45,7 @@ from .bytecode_transformation import (
 )
 from .codegen import PyCodegen
 from .exc import collapse_resume_frames, get_stack_above_dynamo, unimplemented
-from .source import GlobalSource, LocalCellSource, Source, TempLocalSource
+from .source import AttrSource, GlobalSource, LocalCellSource, Source, TempLocalSource
 from .utils import is_frozen_dataclass, nn_module_new, object_new
 from .variables.base import (
     AttributeMutation,
@@ -57,6 +57,7 @@ from .variables.base import (
     VariableTracker,
 )
 from .variables.user_defined import FrozenDataClassVariable
+from torch.utils._ordered_set import OrderedSet
 
 
 if TYPE_CHECKING:
@@ -159,6 +160,10 @@ class SideEffects:
         # Used for temporary mutations in contexts like torch.func.functional_call,
         # where module parameters/buffers are modified but later restored.
         self.ignore_mutation_on_these_variables: set[VariableTracker] = set()
+        # Attribute-granularity mutation tracking: records the exact
+        # AttrSource for every store_attr call so that invoke_subgraph
+        # reuse can do a precise set intersection with traced_sources.
+        self.mutated_sources: OrderedSet[Source] = OrderedSet()
 
     def ignore_mutations_on(self, var: VariableTracker) -> None:
         """Mutations to this variable will be executed but not not tracked,
@@ -321,6 +326,9 @@ class SideEffects:
         self.store_attr_mutations[item][name] = value
         # Capture user stack for this mutation
         self._capture_user_stack(item)
+        item_source = getattr(item, "source", None)
+        if item_source is not None:
+            self.mutated_sources.add(AttrSource(item_source, name))
 
     def load_attr(
         self,
@@ -355,14 +363,15 @@ class SideEffects:
 
     def load_cell(self, cellvar: VariableTracker) -> VariableTracker:
         assert isinstance(cellvar, variables.CellVariable)
-        # Track cell source during subgraph tracing so that mutations to the
-        # cell (e.g. nonlocal counter = 3) are detected by the reuse mechanism.
+        # Track the cell_contents source during subgraph tracing so that
+        # mutations (e.g. nonlocal counter = 3) are detected by the reuse
+        # mechanism via set intersection with mutated_sources.
         output_graph = self.output_graph_weakref()
         if output_graph:
             cell_source = getattr(cellvar, "source", None)
             if cell_source is not None:
                 output_graph.current_tx.output.current_tracer.traced_sources.add(
-                    cell_source
+                    AttrSource(cell_source, "cell_contents")
                 )
         if self.has_pending_mutation_of_attr(cellvar, "cell_contents"):
             return self.load_attr(cellvar, "cell_contents", check=False)
@@ -728,6 +737,8 @@ class SideEffects:
 
         if isinstance(var.mutation_type, ValueMutationExisting):
             var.mutation_type.is_modified = True
+        if var.source is not None:
+            self.mutated_sources.add(var.source)
         if (
             var.source
             and isinstance(var, variables.ConstDictVariable)
