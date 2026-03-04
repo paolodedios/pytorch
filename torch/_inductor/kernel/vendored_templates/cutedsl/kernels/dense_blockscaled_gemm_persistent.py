@@ -52,8 +52,6 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         mma_tiler_mn: Tuple[int, int],
         cluster_shape_mn: Tuple[int, int],
     ):
-        """ """
-
         self.acc_dtype = cutlass.Float32
         self.sf_vec_size = sf_vec_size
         self.use_2cta_instrs = mma_tiler_mn[0] == 256
@@ -258,32 +256,6 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         stream: cuda.CUstream,
         epilogue_op: cutlass.Constexpr = lambda x: x,
     ):
-        """Execute the GEMM operation in steps:
-        - Setup static attributes before smem/grid/tma computation
-        - Setup TMA load/store atoms and tensors
-        - Compute grid size with regard to hardware constraints
-        - Define shared storage for kernel
-        - Launch the kernel synchronously
-
-        :param a_tensor: Input tensor A
-        :type a_tensor: cute.Tensor
-        :param b_tensor: Input tensor B
-        :type b_tensor: cute.Tensor
-        :param sfa_tensor: Scale factor tensor A
-        :type sfa_tensor: cute.Tensor
-        :param sfb_tensor: Scale factor tensor B
-        :type sfb_tensor: cute.Tensor
-        :param c_tensor: Output tensor C
-        :type c_tensor: cute.Tensor
-        :param max_active_clusters: Maximum number of active clusters
-        :type max_active_clusters: cutlass.Constexpr
-        :param stream: CUDA stream for asynchronous execution
-        :type stream: cuda.CUstream
-        :param epilogue_op: Optional elementwise lambda function to apply to the output tensor
-        :type epilogue_op: cutlass.Constexpr
-        :raises TypeError: If input data types are incompatible with the MMA instruction.
-        """
-
         # Convert from torch convention to CuTe convention.
         # CUTLASS API passes tensors as A:(L,M,K) B:(L,K,N) C:(L,M,N)
         # but CuTe DSL kernels expect A:(M,K,L) B:(N,K,L) C:(M,N,L).
