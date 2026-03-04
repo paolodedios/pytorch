@@ -8483,6 +8483,7 @@ for shape in [(1,), ()]:
         self.assertEqual(bwd_needs_input_grad_values[-1], (False, True))
         torch.autograd.backward(out6.sum(), inputs=[a6, b6])
         self.assertEqual(bwd_needs_input_grad_values[-1], (True, True))
+
     def test_autograd_node_isinstance(self):
         # Node is a "virtual" base class of codegen'd nodes. This means that
         # isinstance and issubclass are overridden, but mro is unchanged
