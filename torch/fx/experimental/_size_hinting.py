@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
 
-def _sympy_subs(expr: sympy.Expr, replacements: dict[sympy.Expr, Any]) -> sympy.Expr:
+def _sympy_subs(expr: sympy.Basic, replacements: dict[sympy.Expr, Any]) -> sympy.Basic:
     """
     When the passed replacement symbol v is a string, it is converted to a symbol with name v that
     have the same replaced expression integer and nonnegative properties.
@@ -56,7 +56,7 @@ def _sympy_subs(expr: sympy.Expr, replacements: dict[sympy.Expr, Any]) -> sympy.
 
 
 def _maybe_realize_expr(
-    expr: sympy.Expr, nan_fallback: Optional[int]
+    expr: sympy.Basic, nan_fallback: Optional[int]
 ) -> Optional[Union[int, bool]]:
     """
     Handle special sympy values in hinting APIs.
@@ -144,11 +144,12 @@ def _guarding_hint_or_throw_base(
         raise RuntimeError("isinstance(expr, sympy.Basic)", expr, type(expr))
 
     if any(symbol_is_type(s, SymT.PRECOMPUTED_SIZE) for s in expr.free_symbols):  # type: ignore[attr-defined]
-        expr = _sympy_subs(expr, precomputed_replacements)  # type: ignore[arg-type]
+        expr = _sympy_subs(expr, precomputed_replacements)
 
     # TODO do we need sympy_subs, or just xreplace
     expr = _sympy_subs(expr, shape_env.backed_var_to_val)
-    expr = expr.expand(identity=True)
+    if isinstance(expr, sympy.Expr):
+        expr = expr.expand(identity=True)
 
     if has_free_unbacked_symbols(expr):
         # Note: we could do better here and call
@@ -358,10 +359,11 @@ def _optimization_hint_base(
         raise RuntimeError("isinstance(expr, sympy.Expr)", expr)
 
     if any(symbol_is_type(s, SymT.PRECOMPUTED_SIZE) for s in expr.free_symbols):  # type: ignore[attr-defined]
-        expr = _sympy_subs(expr, precomputed_replacements)  # type: ignore[arg-type]
+        expr = _sympy_subs(expr, precomputed_replacements)
 
     expr = _sympy_subs(expr, shape_env.backed_var_to_val)
-    expr = expr.expand(identity=True)
+    if isinstance(expr, sympy.Expr):
+        expr = expr.expand(identity=True)
 
     result = _maybe_realize_expr(expr, fallback)
     if result is not None:
