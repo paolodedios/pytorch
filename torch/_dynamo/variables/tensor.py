@@ -73,7 +73,7 @@ from ..utils import (
 )
 from .base import AttributeMutationNew, ValueMutationNew, VariableTracker
 from .constant import CONSTANT_VARIABLE_NONE, CONSTANT_VARIABLE_TRUE, ConstantVariable
-from .lists import ListIteratorVariable, SizeVariable
+from .lists import ListIteratorVariable, ListVariable, SizeVariable, TupleVariable
 from .script_object import TorchScriptObjectVariable
 from .user_defined import UserDefinedClassVariable
 
@@ -144,6 +144,12 @@ def is_bound_tensor_method(value: object) -> bool:
 # are common keys.
 all_tensor_attrs = torch._C.TensorBase.__dict__ | torch.Tensor.__dict__
 
+def _contains_unspec_tensor_data(x):
+    if x.is_tensor() or isinstance(x, SymNodeVariable):
+        return True
+    if isinstance(x, (ListVariable, TupleVariable)):
+        return any(_contains_unspec_tensor_data(y) for y in x.items)
+    return False
 
 class TensorVariable(VariableTracker):
     """A torch.Tensor input or an intermediate value in the FX graph"""
@@ -1793,6 +1799,28 @@ class TensorVariable(VariableTracker):
         ):
             return self.call_method(tx, "new_empty", args, kwargs)
         return None
+
+    def method_new_tensor(self, *args, **kwargs):
+        if len(args) != 1 or not _contains_unspec_tensor_data(args[0]):
+            return None
+
+        layout = kwargs.get("layout")
+        if layout is not None:
+            if not layout.is_python_constant():
+                return None
+            if layout.as_python_constant() != torch.strided:
+                return None
+
+        from ..symbolic_convert import InstructionTranslator
+
+        tx = InstructionTranslator.current_tx()
+        new_kwargs = dict(kwargs)
+        new_kwargs.pop("layout", None)
+        new_kwargs.setdefault("dtype", self.var_getattr(tx, "dtype"))
+        new_kwargs.setdefault("device", self.var_getattr(tx, "device"))
+        return variables.TorchInGraphFunctionVariable(torch._refs.tensor).call_function(
+            tx, [args[0]], new_kwargs
+        )
 
     def method_untyped_storage(
         self, tx: "InstructionTranslator"
