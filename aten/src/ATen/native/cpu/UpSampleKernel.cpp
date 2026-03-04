@@ -1804,32 +1804,26 @@ void upsample_bilinear2d_kernel_impl(
     std::optional<double> scales_w) {
 
   if (input.dtype() == at::kByte) {
-    bool used_simd_path = false;
     #ifdef CPU_CAPABILITY_AVX2
       if (input.size(1) <= 4) {
-        upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(input,
+        return upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(input,
           output, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
-        used_simd_path = true;
       }
     #elif defined(__aarch64__)
       if (input.size(1) == 3
           && input.is_contiguous(at::MemoryFormat::ChannelsLast)
           && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
-        upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
+        return upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
-        used_simd_path = true;
       }
     #endif  // CPU_CAPABILITY_AVX2
-    if (!used_simd_path) {
-      separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
-        output, input, align_corners, {scales_h, scales_w},
-        /*antialias=*/false);
-    }
-  } else {
-    upsample_bilinear2d_kernel_impl_float(output, input, align_corners, scales_h, scales_w);
+    return separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
+      output, input, align_corners, {scales_h, scales_w},
+      /*antialias=*/false);
   }
+  return upsample_bilinear2d_kernel_impl_float(output, input, align_corners, scales_h, scales_w);
 }
 
 
@@ -1839,31 +1833,26 @@ void upsample_bilinear2d_aa_kernel_impl(
     bool align_corners,
     std::optional<double> scales_h,
     std::optional<double> scales_w) {
-  bool used_simd_path = false;
   if (input.dtype() == at::kByte) {
     #ifdef CPU_CAPABILITY_AVX2
       if (input.size(1) <= 4) {
-        upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
+        return upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/true);
-        used_simd_path = true;
       }
     #elif defined(__aarch64__)
       if (input.size(1) == 3
           && input.is_contiguous(at::MemoryFormat::ChannelsLast)
           && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
-        upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
+        return upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/true);
-        used_simd_path = true;
       }
     #endif  // CPU_CAPABILITY_AVX2
   }
-  if (!used_simd_path) {
-    separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
-      output, input, align_corners, {scales_h, scales_w},
-      /*antialias=*/true);
-  }
+  return separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
+    output, input, align_corners, {scales_h, scales_w},
+    /*antialias=*/true);
 }
 
 void upsample_trilinear3d_kernel_impl(
@@ -1891,33 +1880,27 @@ void upsample_bicubic2d_kernel_impl(
     std::optional<double> scales_w) {
 
   if (input.dtype() == at::kByte) {
-    bool used_simd_path = false;
     #ifdef CPU_CAPABILITY_AVX2
       if (input.size(1) <= 4) {
-        upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(input,
+        return upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(input,
           output, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
-        used_simd_path = true;
       }
     #elif defined(__aarch64__)
       if (input.size(1) == 3
           && input.is_contiguous(at::MemoryFormat::ChannelsLast)
           && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
-        upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
+        return upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
-        used_simd_path = true;
       }
     #endif  // CPU_CAPABILITY_AVX2
-    if (!used_simd_path) {
-      separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-        output, input, align_corners, {scales_h, scales_w},
-        /*antialias=*/false);
-    }
-  } else {
-    upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-      output, input, align_corners, {scales_h, scales_w});
+    return separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
+      output, input, align_corners, {scales_h, scales_w},
+      /*antialias=*/false);
   }
+  return upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
+    output, input, align_corners, {scales_h, scales_w});
 }
 
 void upsample_bicubic2d_aa_kernel_impl(
@@ -1927,31 +1910,26 @@ void upsample_bicubic2d_aa_kernel_impl(
     std::optional<double> scales_h,
     std::optional<double> scales_w) {
 
-  bool used_simd_path = false;
   if (input.dtype() == at::kByte) {
     #ifdef CPU_CAPABILITY_AVX2
       if (input.size(1) <= 4) {
-        upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
+        return upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/true);
-        used_simd_path = true;
       }
     #elif defined(__aarch64__)
       if (input.size(1) == 3
           && input.is_contiguous(at::MemoryFormat::ChannelsLast)
           && output.is_contiguous(at::MemoryFormat::ChannelsLast)) {
-        upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
+        return upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/true);
-        used_simd_path = true;
       }
     #endif  // CPU_CAPABILITY_AVX2
   }
-  if (!used_simd_path) {
-    separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-      output, input, align_corners, {scales_h, scales_w},
-      /*antialias=*/true);
-  }
+  return separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
+    output, input, align_corners, {scales_h, scales_w},
+    /*antialias=*/true);
 }
 
 template <
