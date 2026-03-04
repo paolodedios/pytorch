@@ -1303,7 +1303,7 @@ _flash_attention_forward(
     std::optional<int64_t> window_size_right,
     const std::optional<Tensor>& _seqused_k,
     const std::optional<Tensor>& _alibi_slopes,
-    const std::optional<Tensor>& _page_table
+    const std::optional<Tensor>& _block_table
     ) {
   return _flash_attention_forward_impl(
       query, key, value,
@@ -1311,7 +1311,7 @@ _flash_attention_forward(
       max_seqlen_batch_q, max_seqlen_batch_k,
       dropout_p, is_causal, return_debug_mask,
       scale, window_size_left, window_size_right,
-      _seqused_k, _alibi_slopes, _page_table,
+      _seqused_k, _alibi_slopes, _block_table,
       /*out=*/std::nullopt);
 }
 
@@ -1333,7 +1333,7 @@ _flash_attention_forward_out(
     std::optional<int64_t> window_size_right,
     const std::optional<Tensor>& _seqused_k,
     const std::optional<Tensor>& _alibi_slopes,
-    const std::optional<Tensor>& _page_table
+    const std::optional<Tensor>& _block_table
     ) {
   auto [output, logsumexp, philox_seed, philox_offset, debug_attn_mask] =
       _flash_attention_forward_impl(
@@ -1342,7 +1342,7 @@ _flash_attention_forward_out(
           max_seqlen_batch_q, max_seqlen_batch_k,
           dropout_p, is_causal, return_debug_mask,
           scale, window_size_left, window_size_right,
-          _seqused_k, _alibi_slopes, _page_table,
+          _seqused_k, _alibi_slopes, _block_table,
           /*out=*/std::make_optional(out));
   return std::make_tuple(
       std::move(logsumexp),

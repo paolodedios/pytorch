@@ -467,7 +467,7 @@ def _fa3_flash_attention_forward_out_impl(
     window_size_right: int = -1,
     seqused_k: torch.Tensor | None = None,
     alibi_slopes: torch.Tensor | None = None,
-    page_table: torch.Tensor | None = None,
+    block_table: torch.Tensor | None = None,
 ):
     _, lse, rng_state, philox_offset, debug_mask = _fa3_flash_attention_forward_impl(
         query,
@@ -489,7 +489,7 @@ def _fa3_flash_attention_forward_out_impl(
         seqused_k=seqused_k,
         alibi_slopes=alibi_slopes,
         out=out,
-        page_table=page_table,
+        block_table=block_table,
     )
     return lse, rng_state, philox_offset, debug_mask
 

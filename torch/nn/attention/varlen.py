@@ -191,8 +191,10 @@ def varlen_attn(
 
     Args:
         query (Tensor): Query tensor; shape :math:`(T_q, H, D)`
-        key (Tensor): Key tensor; shape :math:`(T_k, H, D)`
-        value (Tensor): Value tensor; shape :math:`(T_k, H, D)`
+        key (Tensor): Key tensor; shape :math:`(T_k, H, D)`, or
+            :math:`(\text{total\_pages}, \text{page\_size}, H, D)` when ``block_table`` is provided.
+        value (Tensor): Value tensor; shape :math:`(T_k, H, D)`, or
+            :math:`(\text{total\_pages}, \text{page\_size}, H, D)` when ``block_table`` is provided.
         cu_seq_q (Tensor): Cumulative sequence positions for queries; shape :math:`(N+1,)`
         cu_seq_k (Tensor): Cumulative sequence positions for keys/values; shape :math:`(N+1,)`
         max_q (int): Maximum query sequence length in the batch.
@@ -206,9 +208,17 @@ def varlen_attn(
             When set, only the first ``seqused_k[i]`` tokens in the key/value sequence for batch
             element *i* participate in attention. Useful for KV-cache decoding where the cache slot
             is larger than the actual sequence. Inference-only (not supported in backward).
-        block_table (Tensor, optional): Block table mapping logical to physical pages for paged
-            KV cache; shape :math:`(N, \text{max\_pages\_per\_seq})`, dtype ``int32``.
+        block_table (Tensor, optional): Block table for paged KV cache; shape
+            :math:`(N, \text{max\_pages\_per\_seq})`, dtype ``int32``.
             Requires ``seqused_k``. Inference-only (not supported in backward).
+
+            When ``block_table`` is provided, ``key`` and ``value`` are a "pool" of
+            pages of tokens of KV data and the pages belong to any sequence/order.
+            The ``block_table`` is what maps each sequence's logical chunks
+            back to physical pages in this pool.
+
+            ``seqused_k[i]`` tells the kernel how many tokens in sequence *i* are
+            actually valid, since the last page is typically only partially filled.
 
     Returns:
         output (Tensor): Output tensor from attention computation; shape :math:`(T_q, H, D)`.
@@ -290,7 +300,7 @@ def _varlen_attn_out(
     scale: float | None = None,
     window_size: list[int] | None = None,
     seqused_k: torch.Tensor | None = None,
-    page_table: torch.Tensor | None = None,
+    block_table: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Private custom op for variable-length attention with pre-allocated output.
@@ -321,7 +331,7 @@ def _varlen_attn_out(
         window_size_left=window_size[0],
         window_size_right=window_size[1],
         seqused_k=seqused_k,
-        page_table=page_table,
+        block_table=block_table,
     )
 
     rng_state_ = torch.zeros(
@@ -344,7 +354,7 @@ def _varlen_attn_out_fake(
     scale: float | None = None,
     window_size: list[int] | None = None,
     seqused_k: torch.Tensor | None = None,
-    page_table: torch.Tensor | None = None,
+    block_table: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Fake implementation for meta tensor computation and tracing.
@@ -380,7 +390,7 @@ def varlen_attn_out(
     scale: float | None = None,
     window_size: tuple[int, int] = (-1, -1),
     seqused_k: torch.Tensor | None = None,
-    page_table: torch.Tensor | None = None,
+    block_table: torch.Tensor | None = None,
 ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     r"""Compute variable-length attention using Flash Attention with a pre-allocated output tensor.
 
@@ -402,7 +412,7 @@ def varlen_attn_out(
         scale,
         list(window_size),
         seqused_k,
-        page_table,
+        block_table,
     )
     if return_aux is not None and return_aux.lse:
         return out, lse

@@ -6379,7 +6379,7 @@ def meta__flash_attention_forward_out_variant(
     window_size_right: int | None = None,
     seqused_k: Tensor | None = None,
     alibi_slopes: Tensor | None = None,
-    page_table: Tensor | None = None,
+    block_table: Tensor | None = None,
 ):
     _, logsumexp, seed, offset, debug_mask = meta__flash_attention_forward(
         query,
@@ -6397,7 +6397,7 @@ def meta__flash_attention_forward_out_variant(
         window_size_right,
         seqused_k,
         alibi_slopes,
-        page_table,
+        block_table,
     )
     return logsumexp, seed, offset, debug_mask
 
