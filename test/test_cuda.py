@@ -6219,7 +6219,9 @@ class TestMemPool(TestCase):
         try:
             # Create many pools with use_on_oom=True, allocate memory, then delete the pools
             for _ in range(10):
-                pool_use_on_oom = torch.cuda.MemPool(allocator.allocator(), use_on_oom=True)
+                pool_use_on_oom = torch.cuda.MemPool(
+                    allocator.allocator(), use_on_oom=True
+                )
                 with torch.cuda.use_mem_pool(pool_use_on_oom):
                     a = torch.randn(40 * nelem_1mb, device="cuda")
                 del a
@@ -6227,7 +6229,9 @@ class TestMemPool(TestCase):
 
             # create new pool that we want to use_on_oom, all other pools should be deleted
             # all available 40mb in use by mempool
-            new_pool_use_on_oom = torch.cuda.MemPool(allocator.allocator(), use_on_oom=True)
+            new_pool_use_on_oom = torch.cuda.MemPool(
+                allocator.allocator(), use_on_oom=True
+            )
             with torch.cuda.use_mem_pool(new_pool_use_on_oom):
                 a = torch.randn(40 * nelem_1mb, device="cuda")
             del a
