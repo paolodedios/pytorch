@@ -842,7 +842,7 @@ class AllocateLine(MemoryPlanningLine):
                 f"alloc_id={random.randint(0, 2**64 - 1)})"
             )
         elif comm_buffer_type == ir.CommBufferType.PG_ALLOC:
-            storage_size = V.graph.sizevars.size_hint(
+            storage_size = V.graph.sizevars.optimization_hint(
                 V.graph.get_allocation_storage_size(self.node)
             )
             line = (
