@@ -8408,6 +8408,7 @@ for shape in [(1,), ()]:
         # Without the mutex, time.sleep releases the GIL, allowing other
         # threads to enter backward concurrently (max_concurrent > 1).
         self.assertEqual(max_concurrent, 1)
+
     def test_autograd_node_isinstance(self):
         # Node is a "virtual" base class of codegen'd nodes. This means that
         # isinstance and issubclass are overridden, but mro is unchanged
