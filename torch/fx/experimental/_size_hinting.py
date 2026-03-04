@@ -131,7 +131,11 @@ def _guarding_hint_or_throw_base(
         SymT,
     )
 
-    expr = sympy.expand(expr).xreplace(shape_env.replacements)
+    # sympy.expand() doesn't work with boolean expressions like Or/And
+    if isinstance(expr, sympy.Expr):
+        expr = sympy.expand(expr).xreplace(shape_env.replacements)
+    else:
+        expr = sympy.sympify(expr).xreplace(shape_env.replacements)
 
     if isinstance(expr, sympy.Expr):
         expr = expr.expand(identity=True)
@@ -341,7 +345,11 @@ def _optimization_hint_base(
         fallback = unbacked_symint_fallback
 
     original = expr
-    expr = sympy.expand(expr).xreplace(shape_env.replacements)
+    # sympy.expand() doesn't work with boolean expressions like Or/And
+    if isinstance(expr, sympy.Expr):
+        expr = sympy.expand(expr).xreplace(shape_env.replacements)
+    else:
+        expr = sympy.sympify(expr).xreplace(shape_env.replacements)
 
     result = _maybe_realize_expr(expr, fallback)
     if result is not None:
