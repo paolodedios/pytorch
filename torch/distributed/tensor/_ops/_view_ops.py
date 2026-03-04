@@ -1152,9 +1152,15 @@ class _ViewShardingPropagator:
                     f"with the unflatten shape. Please redistribute the tensor "
                     f"before this operation."
                 )
-            # tgt_shard_dims is never empty: split_id=0 always has
-            # expected_sf=1, which never matches _StridedShard (sf > 1),
-            # so at least one output dim is always unclaimed.
+            if len(tgt_shard_dims) == 0:
+                raise AssertionError(
+                    f"No unclaimed output dims for _StridedShard(dim={p.dim}) "
+                    f"on mesh dim {mesh_dim}."
+                )
+            # Fallback for identity/flatten: tgt_shard_dims has exactly one
+            # element, so [0] is correct.  For Split rules this is unreachable
+            # in practice — the analysis phase rejects mismatched split_factors
+            # via shard_allowed, forcing redistribution before we get here.
             tgt_shard_dim = tgt_shard_dims[0]
         # Truncating division: may not be exact when uneven sharding is
         # allowed (last shard in flatten range).  This is safe because
