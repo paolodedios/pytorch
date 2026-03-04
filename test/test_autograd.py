@@ -8353,6 +8353,52 @@ for shape in [(1,), ()]:
         with self.assertRaisesRegex(RuntimeError, "can only be accessed once"):
             y.sum().backward()
 
+    def test_custom_function_concurrent_backward(self):
+        import threading
+        import time
+
+        class SlowMul(Function):
+            @staticmethod
+            def forward(ctx, a, b):
+                ctx.save_for_backward(a, b)
+                return a * b
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                a, b = ctx.saved_tensors
+                time.sleep(0.1)
+                return grad_output * b, grad_output * a
+
+        a = torch.randn(100, requires_grad=True)
+        b = torch.randn(100, requires_grad=True)
+        out = SlowMul.apply(a, b)
+        loss = out.sum()
+
+        results = [None] * 10
+        errors = [None] * 10
+
+        def run_backward(idx):
+            try:
+                loss.backward(retain_graph=True)
+                results[idx] = a.grad.clone()
+                a.grad = None
+            except Exception as e:
+                errors[idx] = e
+
+        threads = [threading.Thread(target=run_backward, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for i, e in enumerate(errors):
+            self.assertIsNone(e, f"Thread {i} raised: {e}")
+
+        expected = b.detach()
+        for i, r in enumerate(results):
+            self.assertIsNotNone(r, f"Thread {i} got no result")
+            self.assertEqual(r, expected)
+
     def test_custom_function_needs_input_grad_partial_backward(self):
         # Test that ctx.needs_input_grad reflects which gradients are actually
         # needed during a partial backward pass (when inputs= is specified).
@@ -8427,7 +8473,6 @@ for shape in [(1,), ()]:
         self.assertEqual(bwd_needs_input_grad_values[-1], (False, True))
         torch.autograd.backward(out6.sum(), inputs=[a6, b6])
         self.assertEqual(bwd_needs_input_grad_values[-1], (True, True))
-
     def test_autograd_node_isinstance(self):
         # Node is a "virtual" base class of codegen'd nodes. This means that
         # isinstance and issubclass are overridden, but mro is unchanged
