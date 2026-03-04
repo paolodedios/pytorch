@@ -20,7 +20,7 @@ import unittest
 import uuid
 import warnings
 import weakref
-from collections import OrderedDict
+from collections import defaultdict, OrderedDict
 from copy import deepcopy
 from functools import partial, reduce
 from itertools import product
@@ -86,8 +86,8 @@ from torch.testing._internal.common_utils import (
 )
 from torch.utils._mode_utils import no_dispatch
 from torch.utils._python_dispatch import TorchDispatchMode
+from torch.utils.weak import WeakTensorKeyDictionary
 from torch.utils.checkpoint import (
-    AutoNamingMode,
     checkpoint,
     checkpoint_sequential,
     CheckpointPolicy,
@@ -14957,6 +14957,36 @@ def _make_counter_op(name):
     return op, counts
 
 
+class _AutoNamingMode(TorchDispatchMode):
+    """Test helper: names output tensors as (fqn, op_name, count, output_idx)."""
+    def __init__(self):
+        from torch.utils.module_tracker import ModuleTracker
+        self._tracker = ModuleTracker()
+        self._func_counter: dict = defaultdict(int)
+        self.names = WeakTensorKeyDictionary()
+    def __enter__(self):
+        self._tracker.__enter__()
+        return super().__enter__()
+    def __exit__(self, *args):
+        self._tracker.__exit__(*args)
+        return super().__exit__(*args)
+    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        out = func(*args, **(kwargs or {}))
+        parents = self._tracker.parents - {"Global"}
+        fqn = max(parents, key=len) if parents else "Global"
+        op_name = func.__name__.split(".")[0] if hasattr(func, "__name__") else str(func)
+        key = (fqn, func)
+        count = self._func_counter[key]
+        self._func_counter[key] += 1
+        if isinstance(out, torch.Tensor):
+            self.names[out] = (fqn, op_name, count, 0)
+        elif isinstance(out, (tuple, list)):
+            for i, o in enumerate(out):
+                if isinstance(o, torch.Tensor):
+                    self.names[o] = (fqn, op_name, count, i)
+        return out
+
+
 class TestSelectiveActivationCheckpoint(TestCase):
     @unittest.skipIf(not TEST_CUDA, "requires CUDA")
     def test_flops_and_mem(self):
@@ -15375,8 +15405,6 @@ class TestSelectiveActivationCheckpoint(TestCase):
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_auto_naming_mode_names(self):
-        # AutoNamingMode populates names WeakTensorKeyDictionary with
-        # (fqn, op, count, output_idx) tuples
         class SubMod(torch.nn.Module):
             def forward(self, x):
                 return torch.mm(x, x)
@@ -15392,7 +15420,7 @@ class TestSelectiveActivationCheckpoint(TestCase):
         mod = TopMod()
         x = torch.randn(4, 4)
 
-        naming = AutoNamingMode()
+        naming = _AutoNamingMode()
         with naming:
             out = mod(x)
 
@@ -15426,7 +15454,7 @@ class TestSelectiveActivationCheckpoint(TestCase):
                 return x
 
         mod = Model()
-        naming = AutoNamingMode()
+        naming = _AutoNamingMode()
 
         def policy_fn(ctx, op, *args, **kwargs):
             if ctx.is_recompute:
@@ -15477,7 +15505,7 @@ class TestSelectiveActivationCheckpoint(TestCase):
         mod = TopMod()
         x = torch.randn(4, 4)
 
-        naming = AutoNamingMode()
+        naming = _AutoNamingMode()
         with naming:
             mod(x)
 

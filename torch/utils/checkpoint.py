@@ -14,7 +14,6 @@ import torch.fx.traceback as fx_traceback
 from torch.utils._pytree import tree_map
 from torch.testing._internal.logging_tensor import capture_logs, LoggingTensorMode
 from torch.utils._python_dispatch import TorchDispatchMode
-from torch.utils.weak import WeakTensorKeyDictionary
 from torch._C._autograd import _make_saved_tensor, SavedTensor
 from typing import NoReturn
 
@@ -1329,70 +1328,6 @@ SAC_IGNORED_OPS = {
 } | set(torch._subclasses.functional_tensor.FunctionalTensor.metadata_fns)  # type: ignore[has-type]
 
 
-class AutoNamingMode(TorchDispatchMode):
-    """TorchDispatchMode that automatically names output tensors.
-
-    Names are tuples of ``(fqn, op_name, count, output_idx)``, e.g.
-    ``("layers.0.linear", "mm", 0, 0)``.  The count is tracked per
-    (module fqn, op) pair so that each module's invocations are numbered
-    independently.
-
-    Names are stored in ``self.names``, a ``WeakTensorKeyDictionary``
-    mapping output tensors to their names.  A SAC policy can look up
-    ``ctx.op_output`` in this dict to decide what to save.
-
-    If no ``ModuleTracker`` is supplied, one is created and managed
-    automatically.
-    """
-
-    def __init__(self, module_tracker=None) -> None:
-        self._external_tracker = module_tracker
-        self._tracker = module_tracker
-        self._func_counter: Dict[Tuple[str, Any], int] = defaultdict(int)
-        self.names: WeakTensorKeyDictionary = WeakTensorKeyDictionary()
-
-    def __enter__(self):
-        if self._external_tracker is None:
-            from torch.utils.module_tracker import ModuleTracker
-            self._tracker = ModuleTracker()
-            self._tracker.__enter__()
-        return super().__enter__()
-
-    def __exit__(self, *args):
-        if self._external_tracker is None and self._tracker is not None:
-            self._tracker.__exit__(*args)
-            self._tracker = None
-        return super().__exit__(*args)
-
-    def _get_current_fqn(self):
-        if self._tracker is None:
-            return "Global"
-        parents = self._tracker.parents - {"Global"}
-        if not parents:
-            return "Global"
-        return max(parents, key=len)
-
-    def __torch_dispatch__(self, func, types, args=(), kwargs=None):
-        kwargs = kwargs or {}
-        out = func(*args, **kwargs)
-
-        fqn = self._get_current_fqn()
-        op_name = func.__name__.split(".")[0] if hasattr(func, "__name__") else str(func)
-
-        key = (fqn, func)
-        count = self._func_counter[key]
-        self._func_counter[key] += 1
-
-        if isinstance(out, torch.Tensor):
-            self.names[out] = (fqn, op_name, count, 0)
-        elif isinstance(out, (tuple, list)):
-            for i, o in enumerate(out):
-                if isinstance(o, torch.Tensor):
-                    self.names[o] = (fqn, op_name, count, i)
-
-        return out
-
-
 def _get_current_caching_mode():
     from torch.utils._python_dispatch import _get_current_dispatch_mode_stack
     for mode in reversed(_get_current_dispatch_mode_stack()):
@@ -1412,36 +1347,23 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         self.storage = storage
         self.func_counter: Dict[Any, int] = defaultdict(int)
 
-    @staticmethod
-    def _set_policy_on_graph_nodes(graph_len_before, policy):
-        """Set recompute policy on all FX nodes added by the op, post-hoc."""
-        from torch.fx.experimental.proxy_tensor import get_proxy_mode
-
-        mode = get_proxy_mode()
-        if mode is None or graph_len_before is None:
-            return
-
-        new_nodes = list(mode.tracer.graph.nodes)[graph_len_before:]
-        for node in new_nodes:
-            node.meta["recompute"] = policy
-
-    @staticmethod
-    def _get_graph_len():
-        """Return the current FX graph node count if compiling, else None."""
-        from torch.fx.experimental.proxy_tensor import get_proxy_mode
-
-        mode = get_proxy_mode()
-        if mode is None:
-            return None
-        return len(list(mode.tracer.graph.nodes))
-
     def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+        kwargs = {} if kwargs is None else kwargs
+        is_compiling = _is_compiling(func, args, kwargs)
+
+        # SAC_IGNORED_OPS are not user-visible ops (e.g. detach), always
+        # recomputable. During compile, mark them explicitly so the remat
+        # chain isn't broken.
         if func in SAC_IGNORED_OPS:
+            if is_compiling:
+                fx_traceback.current_meta["recompute"] = CheckpointPolicy.PREFER_RECOMPUTE
             return func(*args, **kwargs)
 
-        kwargs = {} if kwargs is None else kwargs
+        # Snapshot graph length before the op so we can tag new nodes after.
+        from torch.fx.experimental.proxy_tensor import get_proxy_mode
+        proxy_mode = get_proxy_mode()
+        graph_len_before = len(list(proxy_mode.tracer.graph.nodes)) if proxy_mode is not None else None
 
-        graph_len_before = self._get_graph_len()
         out = func(*args, **kwargs)
 
         # HOPs don't support func._schema
@@ -1455,19 +1377,18 @@ class _CachingTorchDispatchMode(TorchDispatchMode):
         idx = self.func_counter[func]
         self.func_counter[func] += 1
 
-        # Call policy after the op. The output already exists, so inner modes
-        # (e.g. AutoNamingMode) have had a chance to name the output.
+        # Call policy after the op so inner modes (e.g. a naming mode) have
+        # had a chance to annotate outputs before the policy inspects them.
         policy = self.policy_fn(SelectiveCheckpointContext(is_recompute=False, op_output=out),
                                 func, *args, **kwargs)
         if isinstance(policy, bool):
             policy = _policy_from_bool(policy)
 
-        is_compiling = _is_compiling(func, args, kwargs)
         if is_compiling:
-            self._set_policy_on_graph_nodes(graph_len_before, policy)
-            # Update current_meta so SAC_IGNORED_OPS (e.g. detach) that follow
-            # this op inherit the recompute policy via fx_traceback.
-            fx_traceback.current_meta["recompute"] = policy
+            # Tag all FX nodes added by this op with the policy.
+            if proxy_mode is not None and graph_len_before is not None:
+                for node in list(proxy_mode.tracer.graph.nodes)[graph_len_before:]:
+                    node.meta["recompute"] = policy
 
         if policy in (CheckpointPolicy.MUST_SAVE, CheckpointPolicy.PREFER_SAVE) or is_compiling:
             self.storage[func][idx] = tree_map(lambda x: _VersionWrapper(_maybe_detach(x, any_ret_has_alias_info)), out)
