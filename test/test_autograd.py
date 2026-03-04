@@ -8354,8 +8354,15 @@ for shape in [(1,), ()]:
             y.sum().backward()
 
     def test_custom_function_concurrent_backward(self):
+        # Test that the mutex on PyNode::apply serializes concurrent backward
+        # calls. time.sleep releases the GIL, so without the mutex another
+        # thread could enter backward on the same node concurrently.
         import threading
         import time
+
+        concurrent = 0
+        max_concurrent = 0
+        count_lock = threading.Lock()
 
         class SlowMul(Function):
             @staticmethod
@@ -8365,8 +8372,14 @@ for shape in [(1,), ()]:
 
             @staticmethod
             def backward(ctx, grad_output):
+                nonlocal concurrent, max_concurrent
                 a, b = ctx.saved_tensors
-                time.sleep(0.1)
+                with count_lock:
+                    concurrent += 1
+                    max_concurrent = max(max_concurrent, concurrent)
+                time.sleep(0.2)
+                with count_lock:
+                    concurrent -= 1
                 return grad_output * b, grad_output * a
 
         a = torch.randn(100, requires_grad=True)
@@ -8374,30 +8387,27 @@ for shape in [(1,), ()]:
         out = SlowMul.apply(a, b)
         loss = out.sum()
 
-        results = [None] * 10
-        errors = [None] * 10
+        barrier = threading.Barrier(4)
+        errors = []
 
-        def run_backward(idx):
+        def run_backward():
             try:
+                barrier.wait()
                 loss.backward(retain_graph=True)
-                results[idx] = a.grad.clone()
-                a.grad = None
             except Exception as e:
-                errors[idx] = e
+                errors.append(e)
 
-        threads = [threading.Thread(target=run_backward, args=(i,)) for i in range(10)]
+        threads = [threading.Thread(target=run_backward) for _ in range(4)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
-        for i, e in enumerate(errors):
-            self.assertIsNone(e, f"Thread {i} raised: {e}")
-
-        expected = b.detach()
-        for i, r in enumerate(results):
-            self.assertIsNotNone(r, f"Thread {i} got no result")
-            self.assertEqual(r, expected)
+        self.assertEqual(errors, [])
+        # The mutex serializes calls: at most one thread in backward at a time.
+        # Without the mutex, time.sleep releases the GIL, allowing other
+        # threads to enter backward concurrently (max_concurrent > 1).
+        self.assertEqual(max_concurrent, 1)
     def test_autograd_node_isinstance(self):
         # Node is a "virtual" base class of codegen'd nodes. This means that
         # isinstance and issubclass are overridden, but mro is unchanged
