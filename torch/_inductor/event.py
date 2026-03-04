@@ -15,6 +15,7 @@ Attributes:
 from __future__ import annotations
 
 import dataclasses
+import functools
 import itertools
 
 from torch._inductor.codegen.wrapper import IndentedBuffer, WrapperLine
