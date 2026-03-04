@@ -53,7 +53,7 @@ class TestFullyShardDTensor(FSDPTest):
             self.assertEqual(ref_loss, loss)
 
         for (n1, p1), (n2, p2) in zip(
-            ref_model.named_parameters(), model.named_parameters()
+            ref_model.named_parameters(), model.named_parameters(), strict=True
         ):
             p2_full = p2.full_tensor() if isinstance(p2, DTensor) else p2
             self.assertEqual(p1, p2_full, msg=f"Param mismatch: {n1} vs {n2}")
@@ -212,6 +212,89 @@ class TestFullyShardDTensor(FSDPTest):
                 self.assertEqual(param.placements[0].dim, 0)
                 self.assertIsInstance(param.placements[1], Replicate)
 
+    @skip_if_lt_x_gpu(4)
+    def test_fsdp_tp_dtensor_train_parity(self):
+        """Train parity for FSDP+TP with DTensors on 2D SPMD mesh."""
+        dp_size = 2
+        tp_size = self.world_size // dp_size
+        mesh = init_device_mesh(
+            device_type.type,
+            (dp_size, tp_size),
+            mesh_dim_names=("fsdp", "tp"),
+        )
+
+        mlp_dim = 16
+        torch.manual_seed(42)
+        model = MLP(mlp_dim, device=device_type)
+        ref_model = copy.deepcopy(model)
+
+        def partition_fn(name, module, device_mesh):
+            if not isinstance(module, nn.Linear):
+                return
+            for param_name, param in list(module.named_parameters(recurse=False)):
+                if param_name == "weight":
+                    if "in_proj" in name:
+                        placements = [Replicate(), Shard(0)]
+                    else:
+                        placements = [Replicate(), Shard(1)]
+                else:
+                    placements = [Replicate(), Replicate()]
+                dist_param = nn.Parameter(
+                    distribute_tensor(param, device_mesh, placements),
+                    requires_grad=param.requires_grad,
+                )
+                module.register_parameter(param_name, dist_param)
+
+        distribute_module(model, mesh, partition_fn)
+
+        def shard_fn(param):
+            if any(isinstance(p, Shard) and p.dim == 0 for p in param.placements):
+                return Shard(1)
+            return Shard(0)
+
+        fully_shard(
+            model,
+            mesh=mesh,
+            shard_placement_fn=shard_fn,
+            dp_mesh_dim_names=DataParallelMeshDimNames(shard="fsdp"),
+        )
+
+        dp_pg = mesh["fsdp"].get_group()
+        replicate(
+            ref_model,
+            device_ids=[self.rank] if device_type.type != "cpu" else None,
+            process_group=dp_pg,
+        )
+
+        self._run_train_parity(model, ref_model, dp_pg, mesh=mesh, mlp_dim=mlp_dim)
+
+    @skip_if_lt_x_gpu(2)
+    def test_ddp_dtensor_train_parity(self):
+        """DDP-only (replicate, no shard) with DTensors on 1D mesh."""
+        mesh = init_device_mesh(
+            device_type.type, (self.world_size,), mesh_dim_names=("ddp",)
+        )
+        dp_pg = mesh.get_group()
+
+        torch.manual_seed(42)
+        model = MLP(16, device=device_type)
+        ref_model = copy.deepcopy(model)
+
+        distribute_module(model, mesh)
+        fully_shard(
+            model,
+            mesh=mesh,
+            dp_mesh_dim_names=DataParallelMeshDimNames(replicate="ddp"),
+        )
+
+        replicate(
+            ref_model,
+            device_ids=[self.rank] if device_type.type != "cpu" else None,
+            process_group=dp_pg,
+        )
+
+        self._run_train_parity(model, ref_model, dp_pg, mesh=mesh)
+
     @skip_if_lt_x_gpu(2)
     def test_sharded_param_correctness_1d(self):
         """Verify sharded param mesh and placements for FSDP on 1D mesh."""
@@ -269,6 +352,32 @@ class TestFullyShardDTensor(FSDPTest):
                 model,
                 mesh=mesh,
                 dp_mesh_dim_names=DataParallelMeshDimNames(shard="nonexistent"),
+            )
+
+    @skip_if_lt_x_gpu(2)
+    def test_validation_mesh_mismatch(self):
+        """Error when param DTensor mesh differs from the mesh passed to fully_shard."""
+        mesh1 = init_device_mesh(
+            device_type.type, (self.world_size,), mesh_dim_names=("fsdp",)
+        )
+        mesh2 = init_device_mesh(
+            device_type.type, (self.world_size,), mesh_dim_names=("fsdp",)
+        )
+        model = nn.Linear(16, 32, device=device_type)
+        # Distribute params on mesh1 but pass mesh2 to fully_shard
+        model.weight = nn.Parameter(
+            distribute_tensor(model.weight.data, mesh1, [Replicate()]),
+            requires_grad=True,
+        )
+        model.bias = nn.Parameter(
+            distribute_tensor(model.bias.data, mesh1, [Replicate()]),
+            requires_grad=True,
+        )
+        with self.assertRaisesRegex(ValueError, "same mesh"):
+            fully_shard(
+                model,
+                mesh=mesh2,
+                dp_mesh_dim_names=DataParallelMeshDimNames(shard="fsdp"),
             )
 
     @skip_if_lt_x_gpu(2)

@@ -36,6 +36,9 @@ class DataParallelMeshInfo:
     shard_mesh_dim: int | None = None
     replicate_mesh_dim: int | None = None
     dp_mesh_dim_names: "DataParallelMeshDimNames | None" = None
+    # The original full SPMD mesh passed to fully_shard (before extracting
+    # the DP submesh). Used to validate that param DTensor meshes match.
+    spmd_source_mesh: "DeviceMesh | None" = field(default=None, repr=False)
     is_spmd_mesh: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):

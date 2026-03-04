@@ -208,7 +208,7 @@ def fully_shard(
             DTensors on this mesh with ``Replicate()`` on all DP dimensions.
             The ``shard`` field names which dim(s) FSDP shards on (multiple
             dims are flattened). The ``replicate`` field names the HSDP
-            replication dim.
+            replication dim(s) (multiple dims are flattened).
 
     Returns:
         FSDPModule: The module with FSDP applied (in-place).
@@ -222,10 +222,14 @@ def fully_shard(
     auto_reshard_after_forward = reshard_after_forward is None
     # If the user does not provide ``reshard_after_forward``, we set it to True.
     # During lazy_init, we identify which module is the root and override its value to False
-    post_forward_mesh_info = _get_post_forward_mesh_info(
-        reshard_after_forward if not auto_reshard_after_forward else True,  # type: ignore[arg-type]
-        mesh_info,
-    )
+    if isinstance(mesh_info, FSDPMeshInfo):
+        post_forward_mesh_info = _get_post_forward_mesh_info(
+            reshard_after_forward if not auto_reshard_after_forward else True,  # type: ignore[arg-type]
+            mesh_info,
+        )
+    else:
+        # DDPMeshInfo: no sharding, so no post-forward resharding needed
+        post_forward_mesh_info = None
     arg_module, modules, managed_modules, params, buffers = _get_modules_and_states(
         module, device, ignored_params
     )

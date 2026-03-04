@@ -68,8 +68,7 @@ def _validate_mesh(
                 "mesh must have mesh_dim_names when dp_mesh_dim_names is provided"
             )
         names_to_check: list[str] = list(dp_mesh_dim_names.shard_names)
-        if dp_mesh_dim_names.replicate is not None:
-            names_to_check.append(dp_mesh_dim_names.replicate)
+        names_to_check.extend(dp_mesh_dim_names.replicate_names)
         for name in names_to_check:
             if name not in mesh.mesh_dim_names:
                 raise ValueError(
@@ -111,52 +110,51 @@ def _get_mesh_info_from_named_dims(
     dp_mesh_dim_names: "DataParallelMeshDimNames",
 ) -> "DataParallelMeshInfo":
     shard_names = dp_mesh_dim_names.shard_names
-    replicate = dp_mesh_dim_names.replicate
+    replicate_names = dp_mesh_dim_names.replicate_names
+
+    def _get_replicate_mesh() -> "DeviceMesh":
+        if len(replicate_names) == 1:
+            return mesh[replicate_names[0]]
+        return mesh[replicate_names]._flatten("_".join(replicate_names))
 
     mesh_info: DataParallelMeshInfo
     if len(shard_names) == 0:
         # Replicate-only (DDP)
-        if replicate is None:
+        if len(replicate_names) == 0:
             raise AssertionError("replicate must not be None for replicate-only (DDP)")
-        dp_mesh = mesh[replicate]
+        dp_mesh = _get_replicate_mesh()
         mesh_info = DDPMeshInfo(
-            dp_mesh, replicate_mesh_dim=0, dp_mesh_dim_names=dp_mesh_dim_names
-        )
-    elif len(shard_names) == 1 and replicate is None:
-        # 1D FSDP
-        dp_mesh = mesh[shard_names[0]]
-        mesh_info = FSDPMeshInfo(
-            dp_mesh, shard_mesh_dim=0, dp_mesh_dim_names=dp_mesh_dim_names
-        )
-    elif len(shard_names) == 1 and replicate is not None:
-        # HSDP: 2D submesh with replicate dim first, shard dim second
-        dp_mesh = mesh[replicate, shard_names[0]]
-        mesh_info = HSDPMeshInfo(
             dp_mesh,
-            shard_mesh_dim=1,
             replicate_mesh_dim=0,
             dp_mesh_dim_names=dp_mesh_dim_names,
+            spmd_source_mesh=mesh,
         )
-    elif len(shard_names) > 1 and replicate is None:
-        # Multi-shard FSDP: flatten multiple shard dims into one
-        dp_mesh = mesh[shard_names]._flatten("_".join(shard_names))
+    elif len(replicate_names) == 0:
+        # FSDP (no replication): flatten shard dims if multiple
+        if len(shard_names) == 1:
+            dp_mesh = mesh[shard_names[0]]
+        else:
+            dp_mesh = mesh[shard_names]._flatten("_".join(shard_names))
         mesh_info = FSDPMeshInfo(
-            dp_mesh, shard_mesh_dim=0, dp_mesh_dim_names=dp_mesh_dim_names
+            dp_mesh,
+            shard_mesh_dim=0,
+            dp_mesh_dim_names=dp_mesh_dim_names,
+            spmd_source_mesh=mesh,
         )
     else:
-        # Multi-shard HSDP: replicate + flattened shard dims
-        if len(shard_names) <= 1 or replicate is None:
-            raise AssertionError(
-                "Expected len(shard_names) > 1 and replicate is not None for multi-shard HSDP"
-            )
-        shard_mesh = mesh[shard_names]._flatten("_".join(shard_names))
-        replicate_mesh = mesh[replicate]
+        # HSDP: replicate + shard
+        if len(shard_names) == 1:
+            shard_mesh = mesh[shard_names[0]]
+        else:
+            shard_mesh = mesh[shard_names]._flatten("_".join(shard_names))
+        replicate_mesh = _get_replicate_mesh()
         dp_mesh = DeviceMesh._concatenate([replicate_mesh, shard_mesh])
         mesh_info = HSDPMeshInfo(
             dp_mesh,
             shard_mesh_dim=1,
             replicate_mesh_dim=0,
             dp_mesh_dim_names=dp_mesh_dim_names,
+            spmd_source_mesh=mesh,
         )
     return mesh_info
 

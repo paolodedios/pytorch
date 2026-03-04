@@ -2,13 +2,12 @@
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Union
 
 import torch
 import torch.distributed as dist
 
 
-_ReduceOp = Union[dist.ReduceOp, dist.ReduceOp.RedOpType]
+_ReduceOp = dist.ReduceOp | dist.ReduceOp.RedOpType
 
 
 @dataclass(frozen=True)
@@ -139,11 +138,13 @@ class DataParallelMeshDimNames:
             that FSDP shards parameters on. If a tuple of names, those dims
             are flattened into a single shard dimension. At least one of
             ``shard`` and ``replicate`` must be set.
-        replicate (Optional[str]): Mesh dimension name for HSDP or DDP replication.
+        replicate (Optional[Union[str, tuple[str, ...]]]): Mesh dimension
+            name(s) for HSDP or DDP replication. If a tuple of names, those
+            dims are flattened into a single replicate dimension.
     """
 
     shard: str | tuple[str, ...] | None = None
-    replicate: str | None = None
+    replicate: str | tuple[str, ...] | None = None
 
     @property
     def shard_names(self) -> tuple[str, ...]:
@@ -152,6 +153,14 @@ class DataParallelMeshDimNames:
         if isinstance(self.shard, str):
             return (self.shard,)
         return tuple(self.shard)
+
+    @property
+    def replicate_names(self) -> tuple[str, ...]:
+        if self.replicate is None:
+            return ()
+        if isinstance(self.replicate, str):
+            return (self.replicate,)
+        return tuple(self.replicate)
 
 
 @dataclass

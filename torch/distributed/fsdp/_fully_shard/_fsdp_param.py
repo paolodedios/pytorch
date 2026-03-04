@@ -258,6 +258,14 @@ class FSDPParam:
                 raise AssertionError("dp_dim_names must not be None for SPMD mesh")
             if spmd_mesh.mesh_dim_names is None:
                 raise AssertionError("spmd_mesh.mesh_dim_names must not be None")
+            if (
+                self.mesh_info.spmd_source_mesh is not None
+                and spmd_mesh is not self.mesh_info.spmd_source_mesh
+            ):
+                raise ValueError(
+                    "Expected param's DTensor mesh to be the same mesh passed "
+                    "to fully_shard, but got different mesh objects"
+                )
 
             dp_shard_indices = [
                 spmd_mesh.mesh_dim_names.index(n) for n in dp_dim_names.shard_names
@@ -271,8 +279,8 @@ class FSDPParam:
                         f"'{spmd_mesh.mesh_dim_names[idx]}' (index {idx}) "
                         f"but got {orig_placements[idx]}"
                     )
-            if dp_dim_names.replicate is not None:
-                rep_idx = spmd_mesh.mesh_dim_names.index(dp_dim_names.replicate)
+            for rep_name in dp_dim_names.replicate_names:
+                rep_idx = spmd_mesh.mesh_dim_names.index(rep_name)
                 if not isinstance(orig_placements[rep_idx], Replicate):
                     raise ValueError(
                         f"Expected Replicate() on DP replicate dim "
