@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ATen/ATen.h>
+#include <ATen/core/ivalue.h>
 #include <torch/csrc/distributed/c10d/Store.hpp>
 
 namespace c10d::symmetric_memory {
@@ -35,7 +36,7 @@ namespace c10d::symmetric_memory {
 // correctness of the barriers since signals issued from barrier on stream A
 // can be received by the barrier on stream B. By specifying different channels
 // for these two barriers, they can operate correctly in parallel.
-class TORCH_API SymmetricMemory : public c10::intrusive_ptr_target {
+class TORCH_API SymmetricMemory : public torch::CustomClassHolder {
  public:
   ~SymmetricMemory() override = default;
 
@@ -52,14 +53,7 @@ class TORCH_API SymmetricMemory : public c10::intrusive_ptr_target {
 
   virtual size_t get_offset() = 0;
 
-  virtual bool has_multicast_support() final {
-    TORCH_CHECK(
-        false,
-        "The `has_multicast_support` API is deprecated for SymmetricMemory handles. "
-        "You can check if `get_multicast_ptr` returns a non-null pointer, or use the "
-        "`c10d::symmetric_memory::has_multicast_support` API instead.");
-  }
-
+  virtual bool has_multicast_support() = 0;
   virtual void* get_multicast_ptr() = 0;
 
   at::Tensor get_buffer(
