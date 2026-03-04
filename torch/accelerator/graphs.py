@@ -206,7 +206,7 @@ class Graph(_acceleratorGraph):
 
 def is_graph_available() -> bool:
     r"""
-    This function checks if the current :ref:`accelerator<accelerators>` supports graph capture and replay.
+    Return whether the current :ref:`accelerator<accelerators>` supports graph capture and replay.
 
     Returns:
         bool: ``True`` if the current :ref:`accelerator<accelerators>` supports graph capture and replay,

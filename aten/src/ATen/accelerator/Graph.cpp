@@ -14,8 +14,8 @@ Graph::Graph(bool keep_graph) {
 }
 
 bool isGraphAvailable() {
-  c10::DeviceType device_type = at::accelerator::getAccelerator(true).value();
-  return has_graph_impl(device_type);
+  auto device_type = at::accelerator::getAccelerator(false);
+  return device_type.has_value() && has_graph_impl(device_type.value());
 }
 
 } // namespace at::accelerator
