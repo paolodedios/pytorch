@@ -3366,6 +3366,42 @@ class TestInvokeSubgraphReuse(TestCase):
         # Mutating mod.d should not prevent reuse of the subgraph that only reads mod.c.
         self.assertEqual(call_count, 1)
 
+    def test_subgraph_reuse_same_class_attr_mutated(self):
+        """Reuse must be skipped when a captured attr changes between calls.
+
+        submod1 and submod2 are instances of the same class with the same
+        initial value for .c.  The first call traces submod1; the second call
+        to submod2 could reuse the cache entry via source replacement.  But
+        submod2.c is mutated between the two calls, so reuse must be skipped.
+        """
+
+        class Block(torch.nn.Module):
+            def __init__(self, c):
+                super().__init__()
+                self.c = c
+
+            @nested_compile_region()
+            def forward(self, x):
+                return x * self.c
+
+        submod1 = Block(5)
+        submod2 = Block(5)  # same initial .c as submod1
+
+        def fn(x):
+            a = submod1(x)     # traces with c=5
+            submod2.c = 10     # mutate submod2.c
+            b = submod2(x)     # must NOT reuse the c=5 subgraph
+            return a + b
+
+        x = torch.randn(8)
+        ref = fn(x)
+        # a = x*5, b = x*10 → x*15
+        self.assertEqual(ref, x * 15)
+
+        submod2.c = 5  # reset for compiled run
+        res = torch.compile(fn, backend="aot_eager", fullgraph=True)(x)
+        self.assertEqual(ref, res)
+
     def test_subgraph_reuse_pre_existing_attr_guard(self):
         """Reuse must account for guards installed before the subgraph trace.
 

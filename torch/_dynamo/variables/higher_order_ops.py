@@ -5222,7 +5222,7 @@ def get_fn_id(fn_var: Any) -> int | None:
     return None
 
 
-def _has_mutated_vars(
+def has_mutated_vars(
     tx: "InstructionTranslator",
     traced_sources: set[Any],
 ) -> bool:
@@ -5269,7 +5269,7 @@ def is_reuse_eligible(
         )
         return False
 
-    if traced_sources and _has_mutated_vars(tx, traced_sources):
+    if traced_sources and has_mutated_vars(tx, traced_sources):
         return False
 
     if isinstance(body_r, TensorVariable):
@@ -5475,13 +5475,23 @@ def is_reusable(
         if old != new
     }
 
+    def replacement_fn(s: Any) -> Any:
+        return source_replacement.get(s, s)
+
+    # Check for mutations on remapped traced_sources.
+    if source_replacement:
+        remapped = OrderedSet(
+            s.clone(replacement_fn) for s in condition.traced_sources
+        )
+    else:
+        remapped = condition.traced_sources
+    if has_mutated_vars(tx, remapped):
+        return False
+
     # If no sources changed, all guards were already checked during the
     # original trace and will trivially pass again.
     if not source_replacement:
         return True
-
-    def replacement_fn(s: Any) -> Any:
-        return source_replacement.get(s, s)
 
     # Shared resolution context so source.get_value memoizes intermediate
     # results (e.g. common base sources) across all guards in this check.
@@ -5540,8 +5550,6 @@ def find_reuse_match(
     def evaluator(
         cond: "InvokeSubgraphReuseCondition", entry: Any
     ) -> bool:
-        if _has_mutated_vars(tx, cond.traced_sources):
-            return False
         return is_reusable(tx, cond, flat_vts, new_arg_sources, entry, treespec)
 
     return invoke_subgraph_cache.find_reuse_entry(fn_id, evaluator)
