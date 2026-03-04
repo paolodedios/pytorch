@@ -1089,6 +1089,7 @@ class <lambda>(torch.nn.Module):
         ):
             extract_graph(fn, *inp)
 
+    @requires_cuda
     def test_control_deps_wrapping_record_event(self) -> None:
         """Test wrapping record_event with control_deps."""
 
@@ -1212,6 +1213,7 @@ subgraph_record_event, mul);  add = mul = subgraph_record_event = None
             f"add_1 should use getitem output but has args: {add_1_node.args}",
         )
 
+    @requires_cuda
     def test_control_deps_wrapping_wait_event(self) -> None:
         """Test wrapping wait_event with control_deps."""
 
