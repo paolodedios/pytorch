@@ -20,7 +20,13 @@ def get_untyped_storages(t: torch.Tensor) -> set[torch.UntypedStorage]:
         obj = unflattened_tensors.pop()
         if is_traceable_wrapper_subclass(obj):
             attrs, _ = obj.__tensor_flatten__()  # type: ignore[attr-defined]
-            unflattened_tensors.extend([getattr(obj, attr) for attr in attrs])
+            unflattened_tensors.extend(
+                [
+                    v
+                    for attr in attrs
+                    if isinstance(v := getattr(obj, attr), torch.Tensor)
+                ]
+            )
         else:
             if not hasattr(obj, "untyped_storage"):
                 warnings.warn(

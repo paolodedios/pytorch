@@ -31,6 +31,7 @@ from .schemas import (
     FakifiedFlatArgs,
     FxValue,
     MutationType,
+    OpaqueMeta,
     PlainTensorMeta,
     SubclassCreationMeta,
     ViewAndMutationMeta,
@@ -91,8 +92,9 @@ def get_subclass_typing_container(
         tracker[type(tensor_subclass)].append(tensor_subclass)
         inner_keys, _ = tensor_subclass.__tensor_flatten__()
         for key in inner_keys:
-            inner_tensor = getattr(tensor_subclass, key)
-            _get_types_for_subclass(inner_tensor)
+            inner_value = getattr(tensor_subclass, key)
+            if isinstance(inner_value, torch.Tensor):
+                _get_types_for_subclass(inner_value)
 
     tracker: dict[Any, list[Any]] = collections.defaultdict(list)
     _get_types_for_subclass(tensor_subclass)
@@ -100,7 +102,10 @@ def get_subclass_typing_container(
 
 
 def create_subclass_metadata(
-    a: Any, start_idx: int, count_symints: bool, with_memory_format: bool = False
+    a: Any,
+    start_idx: int,
+    count_symints: bool,
+    with_memory_format: bool = False,
 ) -> tuple[Any, int]:
     if not is_traceable_wrapper_subclass(a):
         idx = start_idx + 1
@@ -114,11 +119,16 @@ def create_subclass_metadata(
 
     inner_keys, metadata = a.__tensor_flatten__()
     new_start_idx = start_idx
-    attrs = {}
+    attrs: dict[str, SubclassCreationMeta | PlainTensorMeta | OpaqueMeta] = {}
 
     for key in inner_keys:
+        inner_value = getattr(a, key)
+        if not isinstance(inner_value, Tensor):
+            attrs[key] = OpaqueMeta()
+            new_start_idx += 1
+            continue
         new_subclass_meta, new_start_idx = create_subclass_metadata(
-            getattr(a, key),
+            inner_value,
             new_start_idx,
             count_symints=count_symints,
             with_memory_format=with_memory_format,
@@ -227,6 +237,19 @@ def unwrap_tensor_subclasses(
     *,
     append_symints: bool,
 ) -> tuple[list[FxValue], list[AOTDescriptor]]:
+    def _maybe_fakeify_opaque(v: Any) -> Any:
+        # Registered opaque types need to be wrapped as FakeScriptObject for
+        # compile-time FX tracing (proxy slot tracking, hashability, etc.).
+        if not isinstance(v, Tensor):
+            from torch._guards import detect_fake_mode
+            from torch._library.fake_class_registry import maybe_to_fake_obj
+            from torch._library.opaque_object import is_opaque_type
+
+            fake_mode = detect_fake_mode()
+            if fake_mode is not None and is_opaque_type(type(v)):
+                return maybe_to_fake_obj(fake_mode, v)
+        return v
+
     def flatten_subclass(
         t: FxValue,
         desc: AOTDescriptor,
@@ -236,21 +259,21 @@ def unwrap_tensor_subclasses(
         # unwrap a subclass into plain tensors and their size/stride if "append_symint"
         # is True
         if not is_traceable_wrapper_subclass(t):
-            out[0].append(t)
+            out[0].append(_maybe_fakeify_opaque(t))
             out[1].append(desc)
             return
 
         attrs, _ = t.__tensor_flatten__()
 
         for attr in attrs:
-            inner_tensor = getattr(t, attr)
+            inner_value = getattr(t, attr)
             n_desc: Any = (
                 SubclassGetAttrAOTInput(desc, attr)
                 if isinstance(desc, AOTInput)
                 # pyrefly: ignore [bad-argument-type]
                 else SubclassGetAttrAOTOutput(desc, attr)
             )
-            flatten_subclass(inner_tensor, n_desc, out=out)
+            flatten_subclass(inner_value, n_desc, out=out)
 
         if append_symints:
             sizes = enumerate_filter_symints(t.size())
@@ -295,10 +318,13 @@ def runtime_unwrap_tensor_subclasses(
         attrs, _ = x.__tensor_flatten__()
 
         for attr in attrs:
-            inner_tensor = getattr(x, attr)
+            inner_value = getattr(x, attr)
+            if not isinstance(inner_value, Tensor):
+                out.append(inner_value)
+                continue
             # pyrefly: ignore [missing-attribute]
             inner_meta = meta.attrs.get(attr)
-            flatten_subclass(inner_tensor, inner_meta, out=out)
+            flatten_subclass(inner_value, inner_meta, out=out)
 
         if append_symints:
             if not isinstance(meta, SubclassCreationMeta):
@@ -424,7 +450,10 @@ def wrap_tensor_subclasses(
                 )
             else:
                 wrapped_args.append(
-                    subclass_meta.creation_fn(unwrapped_args, is_runtime=is_runtime)
+                    subclass_meta.creation_fn(
+                        unwrapped_args,
+                        is_runtime=is_runtime,
+                    )
                 )
             num_args_tallied += subclass_meta.arg_count
 

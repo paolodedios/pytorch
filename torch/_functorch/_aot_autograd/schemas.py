@@ -218,6 +218,11 @@ class PlainTensorMeta:
 
 
 @dataclass
+class OpaqueMeta:
+    pass
+
+
+@dataclass
 class SubclassCreationMeta:
     """
     Used for AOTDispatch.
@@ -247,7 +252,7 @@ class SubclassCreationMeta:
     # meta and attrs are produced by the subclass's __tensor_flatten__.
     # We need to keep them around along with outer_size / outer_stride to plumb them
     # into __tensor_unflatten__
-    attrs: dict[str, SubclassCreationMeta | PlainTensorMeta]
+    attrs: dict[str, SubclassCreationMeta | PlainTensorMeta | OpaqueMeta]
     outer_size: Iterable[IntLikeType | None]
     outer_stride: Iterable[IntLikeType | None]
     meta: Any
@@ -296,16 +301,22 @@ class SubclassCreationMeta:
 
     def creation_fn(
         self,
-        all_args: Sequence[torch.Tensor | IntLikeType],
+        all_args: Sequence[Any],
         *,
         is_runtime: bool,
     ) -> torch.Tensor:
-        inner_tensors = {}
+        inner_tensors: dict[str, Any] = {}
 
         curr_start_idx = self.flat_tensor_start_idx
         for attr, creation_meta in self.attrs.items():
+            if isinstance(creation_meta, OpaqueMeta):
+                inner_tensors[attr] = all_args[curr_start_idx]
+                curr_start_idx += 1
+                continue
             if isinstance(creation_meta, PlainTensorMeta):
                 subclass = all_args[curr_start_idx]
+                if not isinstance(subclass, Tensor):
+                    raise AssertionError("Tensor expected")
                 curr_start_idx += 1
             else:
                 subclass = creation_meta.creation_fn(

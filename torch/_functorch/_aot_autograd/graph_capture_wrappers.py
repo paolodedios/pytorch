@@ -671,7 +671,9 @@ def sc_visit(
             return
 
         for a in e.__tensor_flatten__()[0]:
-            visit(getattr(e, a))
+            inner = getattr(e, a)
+            if isinstance(inner, torch.Tensor):
+                visit(inner)
 
     visit(t)
     return accum
@@ -1383,7 +1385,7 @@ def aot_dispatch_subclass(
             append_symints=True,
         )
         # We pass append_symints=False here because the partitioner will
-        # capture and add any extra argument
+        # capture and add any extra argument.
         tangents_unwrapped_pair = unwrap_tensor_subclasses(
             args[1],  # type: ignore[arg-type]
             args_descs[1],  # type: ignore[arg-type]

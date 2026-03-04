@@ -66,11 +66,13 @@ def process_inputs(
                 return x
             if is_traceable_wrapper_subclass(x):
                 attrs, _ = x.__tensor_flatten__()
-                if all(isinstance(getattr(x, attr), FakeTensor) for attr in attrs):
-                    if all(getattr(x, attr).fake_mode is fake_mode for attr in attrs):
-                        return x
-                    # FakeTensor subclass from a different mode.
-                    # Fall through to refakify.
+                # See if all inner tensors are FakeTensors from this mode
+                if all(
+                    isinstance(v, FakeTensor) and v.fake_mode is fake_mode
+                    for a in attrs
+                    if isinstance(v := getattr(x, a), torch.Tensor)
+                ):
+                    return x
 
             # see note [Tensor Fakification and Symbol Caching]
             symbolic_context = None

@@ -33,9 +33,11 @@ from torch._inductor.custom_graph_pass import (
     CustomRuntimeEstimator,
 )
 from torch._library.fake_class_registry import FakeScriptObject
+from torch._library.opaque_object import is_opaque_value
 from torch._library.utils import is_builtin
 from torch._logging import LazyString, trace_structured
 from torch._logging._internal import trace_log
+from torch._opaque_base import OpaqueBase
 from torch._subclasses.fake_tensor import extract_tensor_metadata
 from torch.fx.experimental._backward_state import BackwardState
 from torch.fx.experimental.proxy_tensor import is_sym_node, py_sym_types
@@ -1084,7 +1086,8 @@ def _extract_fwd_bwd_modules(
     saved_opaque_objects = []
     for node in saved_values:
         # Check if this is an opaque object
-        if isinstance(node.meta.get("val"), FakeScriptObject):
+        val = node.meta.get("val")
+        if isinstance(val, (FakeScriptObject, OpaqueBase)) or is_opaque_value(val):
             saved_opaque_objects.append(node)
         elif node.meta.get("saved_tensor_with_no_vc_check", False):
             saved_values_no_vc_check.append(node)
@@ -2255,9 +2258,13 @@ def solve_min_cut(
             weight = float(sym_node_size(node))
             cannot_save_reason = None
         elif is_non_tensor_node:
-            # FakeScriptObjects (opaque objects) should have weight 0.0 so they can be
-            # properly partitioned between forward and backward, like BackwardState.
-            if isinstance(node.meta.get("val"), (BackwardState, FakeScriptObject)):
+            # FakeScriptObjects and opaque objects should have weight 0.0 so
+            # they can be properly partitioned between forward and backward,
+            # like BackwardState.
+            node_val = node.meta.get("val")
+            if isinstance(
+                node_val, (BackwardState, FakeScriptObject, OpaqueBase)
+            ) or is_opaque_value(node_val):
                 weight = 0.0
                 cannot_save_reason = None
             else:

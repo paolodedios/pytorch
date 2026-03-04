@@ -205,7 +205,9 @@ def is_fake(x: object) -> TypeGuard[Tensor]:
         return True
     if is_traceable_wrapper_subclass(x):
         attrs, _ = type(x).__tensor_flatten__(x)
-        flattened_tensors = [getattr(x, attr) for attr in attrs]
+        flattened_tensors = [
+            v for attr in attrs if isinstance(v := getattr(x, attr), Tensor)
+        ]
         all_fake = all(is_fake(x) for x in flattened_tensors)
         any_fake = any(is_fake(x) for x in flattened_tensors)
         if all_fake != any_fake:
@@ -231,9 +233,11 @@ def maybe_get_fake_mode(t: object) -> FakeTensorMode | None:
     if is_traceable_wrapper_subclass(t):
         inner_tensor_names, _ = t.__tensor_flatten__()
         modes = [
-            maybe_get_fake_mode(getattr(t, t_name)) for t_name in inner_tensor_names
+            maybe_get_fake_mode(v)
+            for t_name in inner_tensor_names
+            if isinstance(v := getattr(t, t_name), Tensor)
         ]
-        m = modes[0]
+        m = modes[0] if modes else None
         if not all(m is x for x in modes):
             raise AssertionError("All fake tensor modes must be the same")
         return m

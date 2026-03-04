@@ -205,11 +205,9 @@ class ParametrizationList(ModuleList):
         else:
             for i, originali in enumerate(new):
                 if not isinstance(originali, Tensor):
-                    raise ValueError(
-                        "'right_inverse' must return a Tensor or a Sequence of tensors "
-                        "(list, tuple...). "
-                        f"Got element {i} of the sequence with type {type(originali).__name__}."
-                    )
+                    # Non-tensor (opaque) values: store as plain attributes
+                    setattr(self, f"original{i}", originali)
+                    continue
 
                 # If the original tensor was a Parameter that required grad, we expect the user to
                 # add the new parameters to the optimizer after registering the parametrization
@@ -293,10 +291,9 @@ class ParametrizationList(ModuleList):
                 for i, tensor in enumerate(value):
                     original_i = getattr(self, f"original{i}")
                     if not isinstance(tensor, Tensor):
-                        raise ValueError(
-                            f"`right_inverse` must return a sequence of tensors. "
-                            f"Got element {i} of type {type(tensor).__name__}"
-                        )
+                        # Non-tensor (opaque) values: store as plain attributes
+                        setattr(self, f"original{i}", tensor)
+                        continue
                     if original_i.dtype != tensor.dtype:
                         raise ValueError(
                             f"Tensor {i} returned by `right_inverse` has dtype {tensor.dtype} "

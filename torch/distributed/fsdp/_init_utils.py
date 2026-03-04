@@ -1114,7 +1114,11 @@ def _sync_module_params_and_buffers(
                 # NOTE: Here we assume no nested subclasses, at most one level of subclass
                 # in both model's buffers and params
                 attrs, _ = detached_buffer.__tensor_flatten__()  # type: ignore[attr-defined]
-                inner_buffers = [getattr(detached_buffer, attr) for attr in attrs]
+                inner_buffers = [
+                    v
+                    for attr in attrs
+                    if isinstance(v := getattr(detached_buffer, attr), torch.Tensor)
+                ]
                 module_states.extend(inner_buffers)
             else:
                 module_states.append(detached_buffer)
@@ -1123,7 +1127,11 @@ def _sync_module_params_and_buffers(
         detached_param = param.detach()
         if is_traceable_wrapper_subclass(detached_param):
             attrs, _ = detached_param.__tensor_flatten__()  # type: ignore[attr-defined]
-            inner_params = [getattr(detached_param, attr) for attr in attrs]
+            inner_params = [
+                v
+                for attr in attrs
+                if isinstance(v := getattr(detached_param, attr), torch.Tensor)
+            ]
             module_states.extend(inner_params)
         else:
             module_states.append(detached_param)
