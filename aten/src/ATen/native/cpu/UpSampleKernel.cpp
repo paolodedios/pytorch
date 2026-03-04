@@ -1804,15 +1804,13 @@ void upsample_bilinear2d_kernel_impl(
     std::optional<double> scales_w) {
 
   if (input.dtype() == at::kByte) {
+    bool used_simd_path = false;
     #ifdef CPU_CAPABILITY_AVX2
       if (input.size(1) <= 4) {
         upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(input,
           output, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/false);
+        used_simd_path = true;
       }
     #elif defined(__aarch64__)
       if (input.size(1) == 3
@@ -1821,16 +1819,14 @@ void upsample_bilinear2d_kernel_impl(
         upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/false);
+        used_simd_path = true;
       }
-    #else  // CPU_CAPABILITY_AVX2
+    #endif  // CPU_CAPABILITY_AVX2
+    if (!used_simd_path) {
       separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
         output, input, align_corners, {scales_h, scales_w},
         /*antialias=*/false);
-    #endif  // CPU_CAPABILITY_AVX2
+    }
   } else {
     upsample_bilinear2d_kernel_impl_float(output, input, align_corners, scales_h, scales_w);
   }
@@ -1843,16 +1839,14 @@ void upsample_bilinear2d_aa_kernel_impl(
     bool align_corners,
     std::optional<double> scales_h,
     std::optional<double> scales_w) {
+  bool used_simd_path = false;
   if (input.dtype() == at::kByte) {
     #ifdef CPU_CAPABILITY_AVX2
       if (input.size(1) <= 4) {
         upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/true);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/true);
+        used_simd_path = true;
       }
     #elif defined(__aarch64__)
       if (input.size(1) == 3
@@ -1861,17 +1855,11 @@ void upsample_bilinear2d_aa_kernel_impl(
         upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpLinear>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/true);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/true);
+        used_simd_path = true;
       }
-    #else  // CPU_CAPABILITY_AVX2
-      separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
-        output, input, align_corners, {scales_h, scales_w},
-        /*antialias=*/true);
     #endif  // CPU_CAPABILITY_AVX2
-  } else {
+  }
+  if (!used_simd_path) {
     separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpLinear>(
       output, input, align_corners, {scales_h, scales_w},
       /*antialias=*/true);
@@ -1903,15 +1891,13 @@ void upsample_bicubic2d_kernel_impl(
     std::optional<double> scales_w) {
 
   if (input.dtype() == at::kByte) {
+    bool used_simd_path = false;
     #ifdef CPU_CAPABILITY_AVX2
       if (input.size(1) <= 4) {
         upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(input,
           output, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/false);
+        used_simd_path = true;
       }
     #elif defined(__aarch64__)
       if (input.size(1) == 3
@@ -1920,16 +1906,14 @@ void upsample_bicubic2d_kernel_impl(
         upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/false);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/false);
+        used_simd_path = true;
       }
-    #else  // CPU_CAPABILITY_AVX2
+    #endif  // CPU_CAPABILITY_AVX2
+    if (!used_simd_path) {
       separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
         output, input, align_corners, {scales_h, scales_w},
         /*antialias=*/false);
-    #endif  // CPU_CAPABILITY_AVX2
+    }
   } else {
     upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
       output, input, align_corners, {scales_h, scales_w});
@@ -1943,16 +1927,14 @@ void upsample_bicubic2d_aa_kernel_impl(
     std::optional<double> scales_h,
     std::optional<double> scales_w) {
 
+  bool used_simd_path = false;
   if (input.dtype() == at::kByte) {
     #ifdef CPU_CAPABILITY_AVX2
       if (input.size(1) <= 4) {
         upsample_avx_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/true);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/true);
+        used_simd_path = true;
       }
     #elif defined(__aarch64__)
       if (input.size(1) == 3
@@ -1961,17 +1943,11 @@ void upsample_bicubic2d_aa_kernel_impl(
         upsample_neon_bilinear_bicubic_uint8<scale_t, HelperInterpCubic>(
           input, output, align_corners, {scales_h, scales_w},
           /*antialias=*/true);
-      } else {
-        separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-          output, input, align_corners, {scales_h, scales_w},
-          /*antialias=*/true);
+        used_simd_path = true;
       }
-    #else  // CPU_CAPABILITY_AVX2
-      separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
-        output, input, align_corners, {scales_h, scales_w},
-        /*antialias=*/true);
     #endif  // CPU_CAPABILITY_AVX2
-  } else {
+  }
+  if (!used_simd_path) {
     separable_upsample_generic_Nd_kernel_impl<2, scale_t, HelperInterpCubic>(
       output, input, align_corners, {scales_h, scales_w},
       /*antialias=*/true);
