@@ -718,10 +718,11 @@ class _ViewShardingPropagator:
     def _get_root_input_dim(dim_spec: DimSpec) -> InputDim | None:
         """Unwrap nested Flatten/Split to find the underlying InputDim.
 
-        A Split's input_dim can be a nested Flatten in round-trip cases
-        (e.g. view(6,4) → view(2,3,4) produces Split(Flatten(InputDim(0),
-        InputDim(1)), ...)).  This returns the first InputDim so we can
-        look up the existing input_to_output_tensor_dims entry.
+        A Split's input_dim can be a nested Flatten when a view reshapes
+        multiple input dims into different output dims (e.g. view(6,4) →
+        view(2,3,4) produces Split(Flatten(InputDim(0), InputDim(1)), ...)).
+        This returns the first InputDim so we can look up the existing
+        input_to_output_tensor_dims entry.
         """
         while isinstance(dim_spec, (Flatten, Split)):
             if isinstance(dim_spec, Flatten):
@@ -962,6 +963,26 @@ class _ViewShardingPropagator:
             if (input_dim_idx, d) not in rewritten_input_to_output_dims
         ]
 
+    def _flatten_trailing_dim_size(self, cmd: Split, sharded_dim: int) -> int:
+        """Product of global sizes of Flatten input dims that follow ``sharded_dim``.
+
+        When a Split wraps a Flatten (e.g. view([2,3] -> [3,2]) produces
+        Split(Flatten(InputDim(0), InputDim(1)), ...)), the per-shard chunk
+        covers not just the sharded dim but also the trailing dims that were
+        flattened together.  Returns 1 when the Split input is not a Flatten.
+        """
+        if not isinstance(cmd.input_dim, Flatten):
+            return 1
+        trailing_size = 1
+        found = False
+        for flat_dim in cmd.input_dim.input_dims:
+            if isinstance(flat_dim, InputDim):
+                if flat_dim.input_dim == sharded_dim:
+                    found = True
+                elif found:
+                    trailing_size *= self.global_input_shape[flat_dim.input_dim]
+        return trailing_size
+
     def _rewrite_strided_shard(
         self,
         p: _StridedShard,
@@ -1012,6 +1033,8 @@ class _ViewShardingPropagator:
         if prefix_match_idx is not None:
             tgt_shard_dim = tgt_shard_dims[prefix_match_idx]
             rewritten_input_to_output_dims.add((p.dim, tgt_shard_dim))
+            # Integer division is exact here: Phase 1 only matches when the
+            # split_factor aligns with mesh sizes, guaranteeing divisibility.
             local_tensor_shapes[p.dim] = (
                 local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
             )
@@ -1022,27 +1045,17 @@ class _ViewShardingPropagator:
         total_shard = self.mesh_sizes[mesh_dim] * p.split_factor
         shared_dim_match_idx = None
         if self.global_input_shape[p.dim] % total_shard == 0:
-            block_size = self.global_input_shape[p.dim] // total_shard
+            shard_size = self.global_input_shape[p.dim] // total_shard
             for idx, candidate_dim in enumerate(tgt_shard_dims):
                 cmd = self.rule[candidate_dim]
                 if isinstance(cmd, Split):
                     inner_size = math.prod(cmd.group_shape[cmd.split_id + 1 :])
-                    effective_block_size = block_size
-                    if isinstance(cmd.input_dim, Flatten):
-                        trailing_size = 1
-                        found_p_dim = False
-                        for flat_dim in cmd.input_dim.input_dims:
-                            if isinstance(flat_dim, InputDim):
-                                if flat_dim.input_dim == p.dim:
-                                    found_p_dim = True
-                                elif found_p_dim:
-                                    trailing_size *= self.global_input_shape[
-                                        flat_dim.input_dim
-                                    ]
-                        effective_block_size = block_size * trailing_size
+                    flattened_shard_size = shard_size * self._flatten_trailing_dim_size(
+                        cmd, p.dim
+                    )
                     if (
-                        effective_block_size >= inner_size
-                        and effective_block_size % inner_size == 0
+                        flattened_shard_size >= inner_size
+                        and flattened_shard_size % inner_size == 0
                     ):
                         shared_dim_match_idx = idx
                         break
@@ -1067,6 +1080,10 @@ class _ViewShardingPropagator:
         else:
             # No output dims available at all — demote to Replicate.
             return Replicate()
+        # Truncating division: may not be exact when uneven sharding is
+        # allowed (last shard in flatten range).  This is safe because
+        # _is_last_shard_in_flatten_range guarantees no later mesh dim
+        # reads this value for the same flatten range.
         local_tensor_shapes[p.dim] = (
             local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
         )
@@ -1157,6 +1174,10 @@ class _ViewShardingPropagator:
                     f"{mesh_dim} (size {self.mesh_sizes[mesh_dim]}). "
                     f"Please redistribute the tensor before this operation."
                 )
+        # Truncating division: may not be exact when uneven sharding is
+        # allowed (last shard in flatten range).  This is safe because
+        # _is_last_shard_in_flatten_range guarantees no later mesh dim
+        # reads this value for the same flatten range.
         local_tensor_shapes[p.dim] = (
             local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
         )
