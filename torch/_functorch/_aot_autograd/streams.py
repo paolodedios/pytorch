@@ -420,18 +420,14 @@ def wrap_sync_control_deps(
     # Determine which dependencies have uses after the sync node.
     # We only need to pass through and create getitem for those.
     deps_with_uses_after_sync_set: OrderedSet[Node] = OrderedSet()
-    after_sync = False
-    for node in graph.nodes:
-        if node is sync_node:
-            after_sync = True
-            continue
-        if not after_sync:
-            continue
+    node = sync_node.next
+    while node.op != "root":
         for dep in deps_before_sync:
             if dep in deps_with_uses_after_sync_set:
                 continue
             if dep in node.args or dep in node.kwargs.values():
                 deps_with_uses_after_sync_set.add(dep)
+        node = node.next
     deps_with_uses_after_sync = list(deps_with_uses_after_sync_set)
 
     # Create subgraph that executes sync and passes through only used dependencies
