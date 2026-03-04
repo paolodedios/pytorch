@@ -301,9 +301,7 @@ class DistConvolutionOpsTest(DTensorTestBase):
         """Batch-dim sharding with stride != 1 should not hit _is_supported."""
         device_mesh = self.build_device_mesh()
 
-        model = nn.Conv2d(3, 8, kernel_size=7, stride=2, padding=3).to(
-            self.device_type
-        )
+        model = nn.Conv2d(3, 8, kernel_size=7, stride=2, padding=3).to(self.device_type)
         model_ref = copy.deepcopy(model).to(self.device_type)
         model = distribute_module(model, device_mesh, _conv_fn)
 
