@@ -171,7 +171,7 @@ class TritonExtensionBackendTests(BaseExtensionBackendTests):
                 custom_imports = IndentedBuffer()
                 custom_imports.splice(default_imports)
 
-                custom_imports.splice(f"""
+                custom_imports.splice("""
                     import extension_triton_heuristics as triton_heuristics
                 """)
                 return custom_imports
