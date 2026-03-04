@@ -768,6 +768,7 @@ class TestVarlenAttention(NNTestCase):
         max_kv = max(actual_kv_lens)
         max_pages_per_seq = (max_kv + page_size - 1) // page_size
         cache_size = max_pages_per_seq * page_size
+        total_pages = batch_size * max_pages_per_seq
 
         q_seqs = [
             torch.randn(1, num_heads, head_dim, device=device, dtype=dtype)
@@ -775,49 +776,35 @@ class TestVarlenAttention(NNTestCase):
         ]
         q_packed, cu_seq_q, max_q = pack_sequences(q_seqs, device)
 
-        k_seqs = [
-            torch.randn(kv_len, num_heads, head_dim, device=device, dtype=dtype)
-            for kv_len in actual_kv_lens
-        ]
-        v_seqs = [
-            torch.randn(kv_len, num_heads, head_dim, device=device, dtype=dtype)
-            for kv_len in actual_kv_lens
-        ]
-
-        total_pages = batch_size * max_pages_per_seq
         k_pages = torch.randn(
             total_pages, page_size, num_heads, head_dim, device=device, dtype=dtype
         )
         v_pages = torch.randn(
             total_pages, page_size, num_heads, head_dim, device=device, dtype=dtype
         )
-
-        block_table = torch.arange(total_pages, device=device, dtype=torch.int32).view(
-            batch_size, max_pages_per_seq
-        )
-
-        k_cache = k_pages.view(batch_size, cache_size, num_heads, head_dim)
-        v_cache = v_pages.view(batch_size, cache_size, num_heads, head_dim)
-        for i in range(batch_size):
-            k_cache[i, : actual_kv_lens[i]] = k_seqs[i]
-            v_cache[i, : actual_kv_lens[i]] = v_seqs[i]
-
+        block_table = torch.randperm(
+            total_pages, device=device, dtype=torch.int32
+        ).view(batch_size, max_pages_per_seq)
         seqused_k = torch.tensor(actual_kv_lens, device=device, dtype=torch.int32)
-        cu_seq_k = torch.arange(
-            0,
-            (batch_size + 1) * cache_size,
-            cache_size,
-            device=device,
-            dtype=torch.int32,
+
+        idx = (
+            block_table.long()
+            .view(-1, 1, 1, 1)
+            .expand(-1, page_size, num_heads, head_dim)
         )
+        k_gathered = k_pages.gather(0, idx).view(
+            batch_size, cache_size, num_heads, head_dim
+        )
+        v_gathered = v_pages.gather(0, idx).view(
+            batch_size, cache_size, num_heads, head_dim
+        )
+        k_seqs = [k_gathered[i, : actual_kv_lens[i]] for i in range(batch_size)]
+        v_seqs = [v_gathered[i, : actual_kv_lens[i]] for i in range(batch_size)]
 
-        attn_fn = varlen_attn
-        if compile:
-            attn_fn = torch.compile(varlen_attn, fullgraph=True)
-
-        # Reference: non-paged packed sequences
         k_real_packed, cu_seq_k_real, max_k_real = pack_sequences(k_seqs, device)
         v_real_packed = torch.cat(v_seqs, dim=0)
+
+        attn_fn = torch.compile(varlen_attn, fullgraph=True) if compile else varlen_attn
 
         with torch.no_grad():
             output_reference = varlen_attn(
@@ -829,6 +816,14 @@ class TestVarlenAttention(NNTestCase):
                 max_q,
                 max_k_real,
             )
+
+        cu_seq_k = torch.arange(
+            0,
+            (batch_size + 1) * cache_size,
+            cache_size,
+            device=device,
+            dtype=torch.int32,
+        )
 
         # FA2 path: paged KV with block_table (page_size % 256 == 0)
         if page_size % 256 == 0:
