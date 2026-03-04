@@ -776,31 +776,12 @@ class EnterCudaStreamContextLine(WrapperLine):
         code.writeline(f"with torch.cuda.stream({get_stream_name(self.stream_idx)}):")
         code.do_indent()
 
-        # [NOTE] The 3-indent-level assertion
-        #
-        #     Indent level 1: Inductor wrapper call indent
-        #         Indent level 2: Device guard context indent
-        #             Indent level 3: CUDA Stream context indent
-        #
-        # Over or under indenting usually means that :meth:`MultiCudaStreamScheduler.codegen`
-        # introduced bugs on stream context switching. This check also applies to stream context
-        # exiting, as in :meth:`ExitCudaStreamContextLine.codegen`.
-        assert code._indent == 3
-
 
 @dataclasses.dataclass
 class ExitCudaStreamContextLine(WrapperLine):
-    """Generate code to exit the current stream context.
-
-    Note:
-        Most attributes and checking logics of this class have been moved to
-        :meth:`MultiStreamWrapperCodeGen.codegen_cuda_stream_exit`. We preserve this data structure
-        because the checking and unindent should be generated in the latter phase of code-gen.
-    """
+    """Generate code to exit the current stream context."""
 
     def codegen(self, code: IndentedBuffer) -> None:
-        """Check indentation level and exit the current stream context."""
-        assert code._indent == 3  # See :note:`The 3-indent-level assertion` above.
         code.do_unindent()
 
 
