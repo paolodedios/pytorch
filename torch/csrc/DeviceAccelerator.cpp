@@ -234,7 +234,16 @@ void initModule(PyObject* module) {
           torch::wrap_pybind_function_no_gil(&at::accelerator::Graph::reset))
       .def(
           "pool",
-          torch::wrap_pybind_function_no_gil(&at::accelerator::Graph::pool));
+          torch::wrap_pybind_function_no_gil(&at::accelerator::Graph::pool))
+      .def(
+          "enable_debug_mode",
+          torch::wrap_pybind_function_no_gil(
+              &::at::accelerator::Graph::enable_debug_mode))
+      .def(
+          "debug_dump",
+          torch::wrap_pybind_function_no_gil(
+              &::at::accelerator::Graph::debug_dump),
+          py::arg("path"));
 
   m.def("_accelerator_isGraphAvailable", []() {
     return at::accelerator::isGraphAvailable();
