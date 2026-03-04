@@ -5238,38 +5238,6 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         self.assertEqual(counter.frame_count, 4)
 
     @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_unbacked_no_hint_then_hint_recompilation(self):
-        """
-        Test that compiling without hint_override then calling with hint_override
-        triggers recompilation.
-        """
-        counter = CompileCounter()
-
-        def func(x):
-            return x + 1
-
-        compiled_func = torch.compile(func, backend=counter)
-
-        # First call with mark_unbacked but no hint_override
-        x1 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x1, 0)
-        compiled_func(x1)
-        self.assertEqual(counter.frame_count, 1)
-
-        # Second call with same (no hint_override) - no recompilation
-        x2 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x2, 0)
-        compiled_func(x2)
-        self.assertEqual(counter.frame_count, 1)
-
-        # Third call with hint_override=10 - should recompile
-        # (compiled without hint, now calling with hint)
-        x3 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x3, 0, hint_override=10)
-        compiled_func(x3)
-        self.assertEqual(counter.frame_count, 2)
-
-    @skipIfTorchDynamo("mark_unbacked is not traceable")
     def test_unbacked_no_shape_id_then_shape_id(self):
         """
         Test that compiling without shape_id then calling with shape_id
@@ -5735,6 +5703,81 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "i64[u1][1]
         result = fn(y)
         self.assertEqual(result.shape, (1, 1))
 
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_hint_override_recompilation(self):
+        """
+        Test that changing hint_override value triggers recompilation.
+        """
+        counter = CompileCounter()
+
+        def func(x):
+            return x + 1
+
+        compiled_func = torch.compile(func, backend=counter)
+
+        # First call with hint_override=10
+        x1 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x1, 0, hint_override=10)
+        compiled_func(x1)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Second call with same hint_override=10 - no recompilation
+        x2 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x2, 0, hint_override=10)
+        compiled_func(x2)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Third call with different hint_override=20 - should recompile
+        x3 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x3, 0, hint_override=20)
+        compiled_func(x3)
+        self.assertEqual(counter.frame_count, 2)
+
+        # Fourth call with mark_unbacked but no hint_override - should recompile
+        # (no hint_override is different from hint_override=20)
+        x4 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x4, 0)
+        compiled_func(x4)
+        self.assertEqual(counter.frame_count, 3)
+
+        # Fifth call with no mark_unbacked (plain tensor) - no recompilation
+        # (unspecified = don't care, reuse existing frame)
+        x5 = torch.rand(4, 3)
+        compiled_func(x5)
+        self.assertEqual(counter.frame_count, 3)
+
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_no_hint_then_hint_recompilation(self):
+        """
+        Test that compiling without hint_override then calling with hint_override
+        triggers recompilation.
+        """
+        counter = CompileCounter()
+
+        def func(x):
+            return x + 1
+
+        compiled_func = torch.compile(func, backend=counter)
+
+        # First call with mark_unbacked but no hint_override
+        x1 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x1, 0)
+        compiled_func(x1)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Second call with same (no hint_override) - no recompilation
+        x2 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x2, 0)
+        compiled_func(x2)
+        self.assertEqual(counter.frame_count, 1)
+
+        # Third call with hint_override=10 - should recompile
+        # (compiled without hint, now calling with hint)
+        x3 = torch.rand(4, 3)
+        torch._dynamo.decorators.mark_unbacked(x3, 0, hint_override=10)
+        compiled_func(x3)
+        self.assertEqual(counter.frame_count, 2)
+
 
 instantiate_parametrized_tests(TestUnbacked)
 
@@ -5834,49 +5877,6 @@ class TestMaybeFastEvalComparison(TestCase):
         expr = sympy.GreaterThan(u0.node.expr, 0)
         result = shape_env._maybe_fast_eval_comparison(expr)
         self.assertIsNone(result)
-
-    @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_unbacked_hint_override_recompilation(self):
-        """
-        Test that changing hint_override value triggers recompilation.
-        """
-        counter = CompileCounter()
-
-        def func(x):
-            return x + 1
-
-        compiled_func = torch.compile(func, backend=counter)
-
-        # First call with hint_override=10
-        x1 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x1, 0, hint_override=10)
-        compiled_func(x1)
-        self.assertEqual(counter.frame_count, 1)
-
-        # Second call with same hint_override=10 - no recompilation
-        x2 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x2, 0, hint_override=10)
-        compiled_func(x2)
-        self.assertEqual(counter.frame_count, 1)
-
-        # Third call with different hint_override=20 - should recompile
-        x3 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x3, 0, hint_override=20)
-        compiled_func(x3)
-        self.assertEqual(counter.frame_count, 2)
-
-        # Fourth call with mark_unbacked but no hint_override - should recompile
-        # (no hint_override is different from hint_override=20)
-        x4 = torch.rand(4, 3)
-        torch._dynamo.decorators.mark_unbacked(x4, 0)
-        compiled_func(x4)
-        self.assertEqual(counter.frame_count, 3)
-
-        # Fifth call with no mark_unbacked (plain tensor) - no recompilation
-        # (unspecified = don't care, reuse existing frame)
-        x5 = torch.rand(4, 3)
-        compiled_func(x5)
-        self.assertEqual(counter.frame_count, 3)
 
 
 if __name__ == "__main__":
