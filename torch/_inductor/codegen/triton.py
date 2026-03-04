@@ -5794,10 +5794,12 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         if deallocate_ws:
             self.deallocate_workspaces()
 
-    def codegen_nan_check(self) -> None:
+    def codegen_nan_check(self, only_input=False) -> None:
         _, call_args, arg_signatures, _ = self.args.python_argdefs()
         for arg, arg_signature in zip(call_args, arg_signatures):
             if isinstance(arg_signature, TensorArg):
+                if only_input and ("in_ptr" not in arg_signature.name) and ("in_out_ptr" not in arg_signature.name):
+                    continue
                 self.codegen_nan_check_for_buffer(arg)
 
     def codegen_nan_check_for_buffer(self, arg: str) -> None:
