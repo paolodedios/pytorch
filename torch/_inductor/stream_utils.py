@@ -12,6 +12,7 @@ from torch._inductor.stream_constants import (
     STREAM_NAME_TEMPLATE,
 )
 
+
 __all__ = [
     "DEFAULT_STREAM",
     "DEFAULT_STREAM_IDX",
