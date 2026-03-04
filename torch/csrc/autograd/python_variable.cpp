@@ -2156,6 +2156,19 @@ static py::object try_find_mesh_from_args(
       return py::reinterpret_borrow<py::object>(
           py_tensor.attr(dtensor_interned_strings.device_mesh));
     }
+    if (argument_it->isList()) {
+      const auto list = argument_it->toList();
+      // need to expand list and use first DTensor
+      for (const auto& item : list) {
+        const auto [item_flavor, item_py_tensor] =
+            check_for_dtensor_or_tensor(item);
+        if (item_flavor == TensorFlavor::EXACTLY_DTENSOR ||
+            item_flavor == TensorFlavor::DTENSOR_SUBCLASS) {
+          return py::reinterpret_borrow<py::object>(
+              item_py_tensor.attr(dtensor_interned_strings.device_mesh));
+        }
+      }
+    }
   }
   TORCH_CHECK_VALUE(
       false, "Cannot find device mesh from args for op : ", op.operator_name());
