@@ -15404,35 +15404,6 @@ class TestSelectiveActivationCheckpoint(TestCase):
             out.sum().backward(retain_graph=True)
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
-    def test_auto_naming_mode_names(self):
-        class SubMod(torch.nn.Module):
-            def forward(self, x):
-                return torch.mm(x, x)
-
-        class TopMod(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.linear = SubMod()
-
-            def forward(self, x):
-                return self.linear(x)
-
-        mod = TopMod()
-        x = torch.randn(4, 4)
-
-        naming = _AutoNamingMode()
-        with naming:
-            out = mod(x)
-
-        name = naming.names.get(out)
-        self.assertIsNotNone(name)
-        fqn, op, count, output_idx = name
-        self.assertIn("linear", fqn)
-        self.assertEqual(op, "mm")
-        self.assertEqual(count, 0)
-        self.assertEqual(output_idx, 0)
-
-    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_auto_naming_mode_with_sac(self):
         # AutoNamingMode + SAC: policy checks ctx.op_output in naming.names
         expensive_op, expensive_count = _make_counter_op("expensive")
@@ -15478,6 +15449,35 @@ class TestSelectiveActivationCheckpoint(TestCase):
         self.assertEqual(expensive_count[0], 3)
         # cheap_op: neither layer matched, both recomputed: 2 + 2 = 4
         self.assertEqual(cheap_count[0], 4)
+
+    @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
+    def test_auto_naming_mode_names(self):
+        class SubMod(torch.nn.Module):
+            def forward(self, x):
+                return torch.mm(x, x)
+
+        class TopMod(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.linear = SubMod()
+
+            def forward(self, x):
+                return self.linear(x)
+
+        mod = TopMod()
+        x = torch.randn(4, 4)
+
+        naming = _AutoNamingMode()
+        with naming:
+            out = mod(x)
+
+        name = naming.names.get(out)
+        self.assertIsNotNone(name)
+        fqn, op, count, output_idx = name
+        self.assertIn("linear", fqn)
+        self.assertEqual(op, "mm")
+        self.assertEqual(count, 0)
+        self.assertEqual(output_idx, 0)
 
     @skipIfTorchDynamo("compile tested in test/dynamo/test_activation_checkpointing.py")
     def test_auto_naming_mode_per_module_counter(self):
