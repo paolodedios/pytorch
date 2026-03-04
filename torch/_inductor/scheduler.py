@@ -3154,7 +3154,7 @@ class Scheduler:
             collections.defaultdict(OrderedSet)
         )
         # The only source of which stream context are we currently in at the scheduling phase.
-        self._current_stream_ctx: Optional[EnterCudaStreamContextLine] = None
+        self._current_stream_ctx: EnterCudaStreamContextLine | None = None
 
         get_metric_table("graph_stats").add_row(
             lambda: {
