@@ -3147,7 +3147,10 @@ class GuardBuilder(GuardBuilderBase):
                 # Guard on shape_ids for tensors marked with mark_unbacked().
                 # - If the runtime tensor has _dynamo_unbacked_indices → check shape_ids match
                 # - If the runtime tensor doesn't have _dynamo_unbacked_indices → pass
-                if shape_ids := getattr(value, "_dynamo_shape_ids", None):
+                # We must install guards even when shape_ids is None to detect runtime
+                # tensors that have the attribute when compile-time didn't.
+                if hasattr(value, "_dynamo_unbacked_indices"):
+                    shape_ids = getattr(value, "_dynamo_shape_ids", None)
                     code_part = f"((getattr({tensor_name}, '_dynamo_shape_ids', None) == {shape_ids!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
                     code.append(code_part)
                     self.get_guard_manager(guard).add_lambda_guard(
@@ -3163,7 +3166,10 @@ class GuardBuilder(GuardBuilderBase):
                 # Guard on unbacked_bounds for tensors marked with mark_unbacked().
                 # - If the runtime tensor has _dynamo_unbacked_indices → check bounds match
                 # - If the runtime tensor doesn't have _dynamo_unbacked_indices → pass
-                if unbacked_bounds := getattr(value, "_dynamo_unbacked_bounds", None):
+                # We must install guards even when unbacked_bounds is None to detect runtime
+                # tensors that have the attribute when compile-time didn't.
+                if hasattr(value, "_dynamo_unbacked_indices"):
+                    unbacked_bounds = getattr(value, "_dynamo_unbacked_bounds", None)
                     code_part = f"((getattr({tensor_name}, '_dynamo_unbacked_bounds', None) == {unbacked_bounds!r}) if hasattr({tensor_name}, '_dynamo_unbacked_indices') else True)"  # noqa: B950
                     code.append(code_part)
                     self.get_guard_manager(guard).add_lambda_guard(
