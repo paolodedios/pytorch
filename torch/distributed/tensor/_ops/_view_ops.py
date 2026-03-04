@@ -551,8 +551,8 @@ class _ViewShardingPropagator:
 
     Phase 2 — ``rewrite_output_placements()``:
       Consumes both Phase 1 outputs.  Iterates mesh dims 0..n-1, maintaining:
-      - ``rewritten_input_to_output_dims``: (input_dim, output_dim) pairs
-        already rewritten by earlier mesh dims.
+      - ``claimed_output_dims``: output dims already assigned to a
+        mesh dim by _StridedShard rewriting.
       - ``local_tensor_shapes``: global shape progressively divided by each
         mesh dim's shard size.
       For each surviving Shard/_StridedShard, looks up the output dim(s) and
@@ -617,7 +617,7 @@ class _ViewShardingPropagator:
         #           Split(Flatten(InputDim(0), InputDim(1)), (3,2), 1))
         #   output_dim=0 (split_id=0): same as Split example.  Result: {0: [0]}
         #   output_dim=1 (split_id=1): same as Split example, but
-        #     _get_root_input_dim unwraps the inner Flatten to find InputDim(0).
+        #     the root-input-dim chase unwraps the inner Flatten to find InputDim(0).
         #     Result: {0: [0, 1]}
         input_to_output_tensor_dims: dict[int, list[int]] = {}
         for output_dim, cmd in enumerate(self.rule):
@@ -640,7 +640,13 @@ class _ViewShardingPropagator:
             elif isinstance(cmd, Split):
                 # Split(split_id>0): _analyze_split returned [], so chase the
                 # root input dim and append this output dim to its existing entry.
-                root = self._get_root_input_dim(cmd.input_dim)
+                root_spec = cmd.input_dim
+                while isinstance(root_spec, (Flatten, Split)):
+                    if isinstance(root_spec, Flatten):
+                        root_spec = root_spec.input_dims[0]
+                    else:
+                        root_spec = root_spec.input_dim
+                root = root_spec if isinstance(root_spec, InputDim) else None
                 if root is not None and root.input_dim in input_to_output_tensor_dims:
                     input_to_output_tensor_dims[root.input_dim].append(output_dim)
 
@@ -661,8 +667,8 @@ class _ViewShardingPropagator:
         input_to_output_tensor_dims: dict[int, list[int]],
     ) -> list[Placement]:
         """Phase 2: consume analyze() outputs, return final output placements."""
-        # (input_dim, output_dim) pairs already rewritten by earlier mesh dims.
-        rewritten_input_to_output_dims: set[tuple[int, int]] = set()
+        # Output dims already assigned to a mesh dim by _StridedShard rewriting.
+        claimed_output_dims: set[tuple[int, int]] = set()
         # Starts as global_input_shape; each mesh dim divides its sharded dim.
         local_tensor_shapes: list[int] = list(self.global_input_shape)
 
@@ -675,7 +681,7 @@ class _ViewShardingPropagator:
                             p,
                             mesh_dim,
                             input_tgt_placements,
-                            rewritten_input_to_output_dims,
+                            claimed_output_dims,
                             local_tensor_shapes,
                             input_to_output_tensor_dims,
                         )
@@ -686,7 +692,7 @@ class _ViewShardingPropagator:
                             p,
                             mesh_dim,
                             input_tgt_placements,
-                            rewritten_input_to_output_dims,
+                            claimed_output_dims,
                             local_tensor_shapes,
                             input_to_output_tensor_dims,
                         )
@@ -713,23 +719,6 @@ class _ViewShardingPropagator:
         for cmd in rule:
             _walk(cmd)
         return seen
-
-    @staticmethod
-    def _get_root_input_dim(dim_spec: DimSpec) -> InputDim | None:
-        """Unwrap nested Flatten/Split to find the underlying InputDim.
-
-        A Split's input_dim can be a nested Flatten when a view reshapes
-        multiple input dims into different output dims (e.g. view(6,4) →
-        view(2,3,4) produces Split(Flatten(InputDim(0), InputDim(1)), ...)).
-        This returns the first InputDim so we can look up the existing
-        input_to_output_tensor_dims entry.
-        """
-        while isinstance(dim_spec, (Flatten, Split)):
-            if isinstance(dim_spec, Flatten):
-                dim_spec = dim_spec.input_dims[0]
-            else:
-                dim_spec = dim_spec.input_dim
-        return dim_spec if isinstance(dim_spec, InputDim) else None
 
     def _find_shard_for_flatten(
         self, input_dim: InputDim
@@ -765,20 +754,10 @@ class _ViewShardingPropagator:
                 continue
 
             if isinstance(placement, _StridedShard):
-                expected_split_factor = math.prod(cmd.group_shape[: cmd.split_id])
-                match_failed = False
-                for m in range(mesh_dim):
-                    p = placements[m]
-                    if isinstance(p, Shard | _StridedShard) and p.dim == current_dim:
-                        if expected_split_factor % self.mesh_sizes[m] != 0:
-                            # Earlier mesh dim's size doesn't divide evenly;
-                            # this split_id can't match this mesh_dim.
-                            match_failed = True
-                            break
-                        expected_split_factor = (
-                            expected_split_factor // self.mesh_sizes[m]
-                        )
-                if not match_failed and placement.split_factor == expected_split_factor:
+                expected_sf = self._expected_split_factor(
+                    cmd, current_dim, mesh_dim, placements
+                )
+                if expected_sf == placement.split_factor:
                     return mesh_dim, placement
             else:
                 return mesh_dim, placement
@@ -951,38 +930,6 @@ class _ViewShardingPropagator:
             for p in placements[mesh_dim + 1 :]
         )
 
-    @staticmethod
-    def _unrewritten_output_dims(
-        input_dim_idx: int,
-        rewritten_input_to_output_dims: set[tuple[int, int]],
-        input_to_output_tensor_dims: dict[int, list[int]],
-    ) -> list[int]:
-        return [
-            d
-            for d in input_to_output_tensor_dims[input_dim_idx]
-            if (input_dim_idx, d) not in rewritten_input_to_output_dims
-        ]
-
-    def _flatten_trailing_dim_size(self, cmd: Split, sharded_dim: int) -> int:
-        """Product of global sizes of Flatten input dims that follow ``sharded_dim``.
-
-        When a Split wraps a Flatten (e.g. view([2,3] -> [3,2]) produces
-        Split(Flatten(InputDim(0), InputDim(1)), ...)), the per-shard chunk
-        covers not just the sharded dim but also the trailing dims that were
-        flattened together.  Returns 1 when the Split input is not a Flatten.
-        """
-        if not isinstance(cmd.input_dim, Flatten):
-            return 1
-        trailing_size = 1
-        found = False
-        for flat_dim in cmd.input_dim.input_dims:
-            if isinstance(flat_dim, InputDim):
-                if flat_dim.input_dim == sharded_dim:
-                    found = True
-                elif found:
-                    trailing_size *= self.global_input_shape[flat_dim.input_dim]
-        return trailing_size
-
     def _expected_split_factor(
         self,
         cmd: Split,
@@ -1027,9 +974,20 @@ class _ViewShardingPropagator:
             cmd = self.rule[candidate_dim]
             if isinstance(cmd, Split):
                 inner_size = math.prod(cmd.group_shape[cmd.split_id + 1 :])
-                flattened_shard_size = shard_size * self._flatten_trailing_dim_size(
-                    cmd, p.dim
-                )
+                # When a Split wraps a Flatten, the per-shard chunk covers
+                # the sharded dim plus trailing dims flattened together.
+                trailing_size = 1
+                if isinstance(cmd.input_dim, Flatten):
+                    found = False
+                    for flat_dim in cmd.input_dim.input_dims:
+                        if isinstance(flat_dim, InputDim):
+                            if flat_dim.input_dim == p.dim:
+                                found = True
+                            elif found:
+                                trailing_size *= self.global_input_shape[
+                                    flat_dim.input_dim
+                                ]
+                flattened_shard_size = shard_size * trailing_size
                 if (
                     flattened_shard_size >= inner_size
                     and flattened_shard_size % inner_size == 0
@@ -1037,94 +995,34 @@ class _ViewShardingPropagator:
                     return candidate_dim
         return None
 
-    def _rewrite_strided_shard(
-        self,
-        p: _StridedShard,
-        mesh_dim: int,
-        placements: Sequence[Placement],
-        rewritten_input_to_output_dims: set[tuple[int, int]],
-        local_tensor_shapes: list[int],
-        input_to_output_tensor_dims: dict[int, list[int]],
-    ) -> Placement:
-        """Rewrite _StridedShard dim for unflatten.
-
-        The split_factor may resolve to contiguous sharding (producing Shard)
-        or stay as _StridedShard depending on the match phase.
-        """
-        tgt_shard_dims = self._unrewritten_output_dims(
-            p.dim, rewritten_input_to_output_dims, input_to_output_tensor_dims
-        )
-        # Phase 1: resolve SS → Shard.  If an output dim's Split has a
-        # group_shape prefix matching the split_factor, the strided pattern
-        # is fully captured by the Split, so SS simplifies to Shard.
-        for candidate_dim in tgt_shard_dims:
-            cmd = self.rule[candidate_dim]
-            if isinstance(cmd, Split):
-                expected_sf = self._expected_split_factor(
-                    cmd, p.dim, mesh_dim, placements
-                )
-                if expected_sf != p.split_factor:
-                    continue
-                rewritten_input_to_output_dims.add((p.dim, candidate_dim))
-                # Integer division is exact here: Phase 1 only matches when
-                # the split_factor aligns with mesh sizes, guaranteeing
-                # divisibility.
-                local_tensor_shapes[p.dim] = (
-                    local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
-                )
-                return Shard(candidate_dim)
-
-        # Phase 2: keep SS as SS.  Phase 1 is tried first because we prefer
-        # resolving to the simpler Shard when possible.
-        tgt_shard_dim = self._find_keep_ss_dim(tgt_shard_dims, p, mesh_dim)
-
-        if tgt_shard_dim is None:
-            if self.strict_view and any(
-                isinstance(self.rule[d], Split) for d in tgt_shard_dims
-            ):
-                raise RuntimeError(
-                    f"Cannot unflatten tensor with _StridedShard placement: "
-                    f"split_factor={p.split_factor} does not match any output "
-                    f"dimension. This typically means the _StridedShard placement "
-                    f"was constructed with a split_factor that is incompatible "
-                    f"with the unflatten shape. Please redistribute the tensor "
-                    f"before this operation."
-                )
-            # tgt_shard_dims is never empty: split_id=0 always has
-            # expected_sf=1, which never matches _StridedShard (sf > 1),
-            # so at least one output dim is always unclaimed.
-            tgt_shard_dim = tgt_shard_dims[0]
-        # Truncating division: may not be exact when uneven sharding is
-        # allowed (last shard in flatten range).  This is safe because
-        # _is_last_shard_in_flatten_range guarantees no later mesh dim
-        # reads this value for the same flatten range.
-        local_tensor_shapes[p.dim] = (
-            local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
-        )
-        return _StridedShard(tgt_shard_dim, split_factor=p.split_factor)
-
     def _rewrite_plain_shard(
         self,
         p: Shard,
         mesh_dim: int,
         placements: Sequence[Placement],
-        rewritten_input_to_output_dims: set[tuple[int, int]],
+        claimed_output_dims: set[tuple[int, int]],
         local_tensor_shapes: list[int],
         input_to_output_tensor_dims: dict[int, list[int]],
     ) -> Placement:
-        """Rewrite Shard dim for flatten/identity/unflatten.
+        """General-purpose rewriter for plain Shard inputs across all view ops.
 
-        For flatten, non-first dims produce _StridedShard.
+        Handles identity (InputDim), unflatten (Split), and flatten (Flatten).
+        For identity and unflatten, produces Shard on the output dim.  For
+        flatten, Shard on the first flattened dim stays Shard, while Shard on
+        a non-first dim produces _StridedShard — this is where _StridedShard
+        placements originate (consumed later by _rewrite_strided_shard).
 
         Unlike _rewrite_strided_shard, this does NOT update
-        rewritten_input_to_output_dims.  When multiple mesh dims have plain Shard on the
+        claimed_output_dims.  When multiple mesh dims have plain Shard on the
         same input dim (e.g. [Shard(0), Shard(0)]), they legitimately
         target the same output dim; coordination is handled by
         the analysis phase's shard_allowed check which validates divisibility.
         """
-        tgt_shard_dims = self._unrewritten_output_dims(
-            p.dim, rewritten_input_to_output_dims, input_to_output_tensor_dims
-        )
+        tgt_shard_dims = [
+            d
+            for d in input_to_output_tensor_dims[p.dim]
+            if (p.dim, d) not in claimed_output_dims
+        ]
         if len(tgt_shard_dims) == 1:
             tgt_shard_dim = tgt_shard_dims[0]
         elif len(tgt_shard_dims) == 0:
@@ -1196,6 +1094,78 @@ class _ViewShardingPropagator:
             local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
         )
         return output_placement
+
+    def _rewrite_strided_shard(
+        self,
+        p: _StridedShard,
+        mesh_dim: int,
+        placements: Sequence[Placement],
+        claimed_output_dims: set[tuple[int, int]],
+        local_tensor_shapes: list[int],
+        input_to_output_tensor_dims: dict[int, list[int]],
+    ) -> Placement:
+        """Rewrite _StridedShard placement to target the correct output dim.
+
+        _StridedShard inputs arise from a prior flatten on a non-first dim
+        (produced by _rewrite_plain_shard above).  The interesting case is
+        unflatten (Split rule): the split_factor may resolve to contiguous
+        sharding (producing Shard) or stay as _StridedShard.  For
+        identity/flatten rules, falls through to the fallback and keeps the
+        placement as-is.
+        """
+        tgt_shard_dims = [
+            d
+            for d in input_to_output_tensor_dims[p.dim]
+            if (p.dim, d) not in claimed_output_dims
+        ]
+        # Phase 1: resolve SS → Shard.  If an output dim's Split has a
+        # group_shape prefix matching the split_factor, the strided pattern
+        # is fully captured by the Split, so SS simplifies to Shard.
+        for candidate_dim in tgt_shard_dims:
+            cmd = self.rule[candidate_dim]
+            if isinstance(cmd, Split):
+                expected_sf = self._expected_split_factor(
+                    cmd, p.dim, mesh_dim, placements
+                )
+                if expected_sf != p.split_factor:
+                    continue
+                claimed_output_dims.add((p.dim, candidate_dim))
+                # Integer division is exact here: Phase 1 only matches when
+                # the split_factor aligns with mesh sizes, guaranteeing
+                # divisibility.
+                local_tensor_shapes[p.dim] = (
+                    local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
+                )
+                return Shard(candidate_dim)
+
+        # Phase 2: keep SS as SS.  Phase 1 is tried first because we prefer
+        # resolving to the simpler Shard when possible.
+        tgt_shard_dim = self._find_keep_ss_dim(tgt_shard_dims, p, mesh_dim)
+
+        if tgt_shard_dim is None:
+            if self.strict_view and any(
+                isinstance(self.rule[d], Split) for d in tgt_shard_dims
+            ):
+                raise RuntimeError(
+                    f"Cannot unflatten tensor with _StridedShard placement: "
+                    f"split_factor={p.split_factor} does not match any output "
+                    f"dimension. This typically means the _StridedShard placement "
+                    f"was constructed with a split_factor that is incompatible "
+                    f"with the unflatten shape. Please redistribute the tensor "
+                    f"before this operation."
+                )
+            # tgt_shard_dims is never empty: split_id=0 always has
+            # expected_sf=1, which never matches _StridedShard (sf > 1),
+            # so at least one output dim is always unclaimed.
+            tgt_shard_dim = tgt_shard_dims[0]
+        # Truncating division: may not be exact when uneven sharding is
+        # allowed (last shard in flatten range).  This is safe because
+        # _is_last_shard_in_flatten_range guarantees no later mesh dim
+        # reads this value for the same flatten range.
+        local_tensor_shapes[p.dim] = (
+            local_tensor_shapes[p.dim] // self.mesh_sizes[mesh_dim]
+        )
+        return _StridedShard(tgt_shard_dim, split_factor=p.split_factor)
 
 
 def register_op_strategy_map(
