@@ -184,6 +184,36 @@ class TestDecomp(NNTestCase):
             self.assertEqual(expected, out)
 
     @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
+    def test_bmm_outer_product_k_is_one_with_unbacked_k(self, device):
+        if device == "cpu":
+            self.skipTest("test exercises non-CPU bmm decomposition")
+
+        shape_env = ShapeEnv()
+        with FakeTensorMode(shape_env=shape_env):
+            b, m, n = [shape_env.create_unbacked_symint() for _ in range(3)]
+            lhs_k_unbacked, rhs_k_unbacked = [
+                shape_env.create_unbacked_symint() for _ in range(2)
+            ]
+
+            lhs_static_k = torch.empty((b, m, 1), device=device)
+            rhs_static_k = torch.empty((b, 1, n), device=device)
+            lhs_unbacked_k = torch.empty((b, m, lhs_k_unbacked), device=device)
+            rhs_unbacked_k = torch.empty((b, rhs_k_unbacked, n), device=device)
+
+            self.assertIsNot(
+                decomp_bmm(lhs_static_k, rhs_unbacked_k),
+                NotImplemented,
+            )
+            self.assertIsNot(
+                decomp_bmm(lhs_unbacked_k, rhs_static_k),
+                NotImplemented,
+            )
+            self.assertIs(
+                decomp_bmm(lhs_unbacked_k, rhs_unbacked_k),
+                NotImplemented,
+            )
+
+    @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
     @parametrize("dtype", [torch.float, torch.bfloat16, torch.int])
     def test_some(self, device, dtype):
         # this Pytorch data type is not fully supported on cuda today
