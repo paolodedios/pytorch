@@ -339,6 +339,33 @@ def noop_mask(
     return batch.new_ones(size=(), dtype=torch.bool, device=batch.device)
 
 
+def _sliced_mask_mod_error(
+    batch: Tensor,
+    head: Tensor,
+    token_q: Tensor,
+    token_kv: Tensor,
+) -> Tensor:
+    """
+    Raises helpful error when using mask_mod from a sliced BlockMask.
+
+    After slicing a BlockMask, the mask_mod is reset and cannot be used directly.
+    Users must reassign mask_mod from the original (unsliced) BlockMask.
+    """
+    raise RuntimeError(
+        "Cannot use mask_mod from a sliced BlockMask. "
+        "When you slice a BlockMask using [], the mask_mod attribute is reset. "
+        "You must set it from the original BlockMask's mask_mod."
+        "\n\nIncorrect usage:"
+        "\n  base_mask = create_block_mask(my_mask_fn, ...)"
+        "\n  sliced_mask = base_mask[:, :, block_idx]"
+        "\n  sliced_mask.mask_mod = apply_offset(sliced_mask.mask_mod, offset)  # WRONG!"
+        "\n\nCorrect usage:"
+        "\n  base_mask = create_block_mask(my_mask_fn, ...)"
+        "\n  sliced_mask = base_mask[:, :, block_idx]"
+        "\n  sliced_mask.mask_mod = apply_offset(base_mask.mask_mod, offset)  # Use base_mask!"
+    )
+
+
 _DEFAULT_SPARSE_BLOCK_SIZE = 128
 _UNSET = object()  # sentinel for "not provided" vs explicit None
 _LARGE_SPARSE_BLOCK_SIZE = 1 << 30
@@ -577,7 +604,7 @@ class BlockMask:
         """Backward-compat property: reconstruct callable from graph + captured tensors."""
         gm = self.mask_mod_gm
         if gm is None:
-            raise RuntimeError("mask_mod unavailable on sliced BlockMask")
+            return _sliced_mask_mod_error
         buffers = self.mask_mod_captured_tensors
         if not buffers:
             return gm  # type: ignore[return-value]
@@ -1671,7 +1698,7 @@ def flex_attention(
     if block_mask is None:
         block_mask = _create_empty_block_mask(query, key)
 
-    # If BlockMask was sliced, mask_mod_gm is None.
+    # If BlockMask was sliced, its mask_mod is intentionally replaced with an error-raising stub.
     if block_mask.mask_mod_gm is None:
         raise RuntimeError("Cannot use mask_mod from a sliced BlockMask")
 
