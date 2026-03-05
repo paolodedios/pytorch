@@ -479,7 +479,9 @@ def requires_accelerator_dist_backend(backends=None):
     )
 
 
-def requires_multicast_support():
+# Valid backends: "CUDA", "NCCL", "NVSHMEM"
+def requires_multicast_support(backend: str = "CUDA"):
+    _SymmetricMemory.set_backend(backend)
     has_multicast_support = (
         torch.cuda.is_available()
         and _SymmetricMemory.has_multicast_support(DeviceType.CUDA, 0)

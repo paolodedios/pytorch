@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import functools
 from contextlib import contextmanager
-from typing import Any, cast, NoReturn, overload, TYPE_CHECKING
+from typing import Any, cast, Literal, NoReturn, overload, TYPE_CHECKING
 from typing_extensions import deprecated
 
 import torch
@@ -596,6 +596,26 @@ class FSDPModule:
         state = self._get_fsdp_state()
         if (fsdp_param_group := state._fsdp_param_group) is not None:
             fsdp_param_group.set_allocate_memory_from_process_group(enable)
+
+    def set_symm_mem_for_comm(self, backend: Literal["NCCL"] = "NCCL") -> None:
+        """
+        Sets the symmetric memory (``symm_mem``) backend for allocating the
+        staging buffers used in all-gather collectives. This allows NCCL to use
+        optimized all-gather implementations via symmetric memory. Such
+        optimization may depend on the topology of the system.  For single node,
+        Copy Engine All-Gather may be used. For multi-node, Symmetric Kernel
+        All-Gather may be used.
+
+        This cannot be used together with :meth:`set_custom_all_gather` or
+        :meth:`set_custom_reduce_scatter`.
+
+        Args:
+            backend (str): The symmetric memory backend to use. Defaults to
+                ``"NCCL"``. Currently, only ``"NCCL"`` is supported.
+        """
+        state = self._get_fsdp_state()
+        if (fsdp_param_group := state._fsdp_param_group) is not None:
+            fsdp_param_group.set_symm_mem(backend)
 
     def _set_unshard_async_op(self, async_op: bool):
         """

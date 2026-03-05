@@ -2,7 +2,7 @@
 import contextlib
 import logging
 from collections.abc import Callable
-from typing import Any, cast, NamedTuple
+from typing import Any, cast, Literal, NamedTuple
 
 import torch
 import torch.distributed as dist
@@ -26,6 +26,7 @@ from ._fsdp_collectives import (
     ProcessGroupAllocAllGather,
     ProcessGroupAllocReduceScatter,
     ReduceScatter,
+    SymmMemAllGather,
 )
 from ._fsdp_common import (
     compiled_autograd_enabled,
@@ -266,6 +267,16 @@ class FSDPParamGroup:
         # the parameter dtypes after construction time but before forward
         self._init_mp_dtypes()
         self._register_state_dict_hooks()
+
+    def set_symm_mem(self, backend: Literal["NCCL"] = "NCCL") -> None:
+        if not isinstance(self._all_gather_comm, (DefaultAllGather | SymmMemAllGather)):
+            raise AssertionError(
+                "cannot call set_symm_mem() "
+                f"when all gather comm is custom: {self._all_gather_comm.__class__.__name__}"
+            )
+        self._all_gather_comm = SymmMemAllGather(
+            self._all_gather_process_group, backend
+        )
 
     def set_allocate_memory_from_process_group(self, enable: bool) -> None:
         """
