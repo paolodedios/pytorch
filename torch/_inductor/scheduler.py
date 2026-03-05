@@ -3999,7 +3999,7 @@ class Scheduler:
             assert isinstance(multi_node, ir.MultiTemplateBuffer)
 
             hint_override_best_fusion_choice: dict[
-                Optional[int], TritonTemplateCallerBase
+                Optional[int], ir.ChoiceCaller
             ] = {}
             future_choices: list[tuple[Any, Optional[LambdaFuture], ModuleType]] = []
             for hint_override in config.multi_kernel_hints:

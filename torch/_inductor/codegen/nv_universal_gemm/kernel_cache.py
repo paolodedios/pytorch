@@ -91,6 +91,11 @@ def ensure_cache_initialized() -> None:
                 _kernel_by_name_cache = _build_kernel_cache()
 
 
+# Cache for EFC kernels with specific epilogue configurations
+# Key: (efc_kernel_name, epilogue_fn_code) -> kernel object
+_efc_epilogue_cache: dict[tuple[str, str], Any] = {}
+
+
 def clear_cache() -> None:
     """Clear all kernel caches."""
     global _kernel_by_name_cache, _efc_epilogue_cache
@@ -109,11 +114,6 @@ class _NVGEMMCacheWrapper:
 from torch._inductor.utils import clear_on_fresh_cache
 
 clear_on_fresh_cache(_NVGEMMCacheWrapper())
-
-
-# Cache for EFC kernels with specific epilogue configurations
-# Key: (efc_kernel_name, epilogue_fn_code) -> kernel object
-_efc_epilogue_cache: dict[tuple[str, str], Any] = {}
 
 
 def get_efc_kernel_with_epilogue(efc_kernel_name: str, epilogue_args: Any) -> Any:

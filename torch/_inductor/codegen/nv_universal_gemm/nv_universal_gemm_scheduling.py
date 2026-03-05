@@ -183,10 +183,21 @@ class NVUniversalGemmScheduling(BaseScheduling):
         Supports fusion with Pointwise operations wrapped in ComputedBuffer nodes.
         Only EFC (Epilogue Fusion Compatible) kernels support epilogue fusion.
         """
+        from .nv_universal_gemm import GemmVariant
+
         if not config.epilogue_fusion:
             return False
 
         ir_node = gemm_template_node.node
+
+        # Epilogue fusion only supported for plain GEMM, not grouped/scaled
+        if isinstance(ir_node, NVUniversalGemmBuffer):
+            if ir_node.variant != GemmVariant.GEMM:
+                log.debug(
+                    "NVGEMM epilogue fusion: not supported for %s variant",
+                    ir_node.variant.op_name,
+                )
+                return False
 
         # Check if the kernel supports epilogue fusion
         if isinstance(ir_node, NVUniversalGemmBuffer):
@@ -206,7 +217,7 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 choice_timings = ir_node.choice_timings()
                 has_efc_choice = any(
                     isinstance(choice, NVUniversalGemmCaller)
-                    and getattr(choice, "supports_epilogue_fusion", False)
+                    and choice.supports_epilogue_fusion
                     for choice in choice_timings.keys()
                 )
                 if not has_efc_choice:
@@ -258,11 +269,9 @@ class NVUniversalGemmScheduling(BaseScheduling):
                         rd.name, read_size, gemm_size,
                     )
                     return False
-                # Check for zero strides (broadcast dimension)
                 if hasattr(read_buf, "get_stride"):
-                    from sympy import Integer
                     for s in read_buf.get_stride():
-                        if s == 0 or s == Integer(0):
+                        if s == 0:
                             log.debug(
                                 "NVGEMM epilogue fusion: read buffer %s has zero stride (broadcast not supported)",
                                 rd.name,
