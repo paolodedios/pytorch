@@ -7,6 +7,7 @@ import inspect
 import itertools
 import math
 import operator
+import types
 import typing
 import warnings
 from collections.abc import Callable
@@ -20,7 +21,7 @@ from torch._higher_order_ops.flex_attention import flex_attention as flex_attent
 from torch._higher_order_ops.utils import setup_compilation_env
 from torch._prims_common import DeviceLikeType
 from torch.nn.attention._utils import _validate_sdpa_input
-from torch.utils._pytree import GetAttrKey, tree_map_only
+from torch.utils._pytree import GetAttrKey
 
 
 # Private debug flag to disable internal compilation wrapping for debugging purposes.
@@ -336,7 +337,6 @@ def noop_mask(
 ) -> Tensor:
     """Returns a noop mask_mod"""
     return batch.new_ones(size=(), dtype=torch.bool, device=batch.device)
-
 
 
 _DEFAULT_SPARSE_BLOCK_SIZE = 128
@@ -972,15 +972,29 @@ class BlockMask:
             seq_lengths=self.seq_lengths,
             kv_num_blocks=to_dev(self.kv_num_blocks),
             kv_indices=to_dev(self.kv_indices),
-            full_kv_num_blocks=to_dev(self.full_kv_num_blocks) if self.full_kv_num_blocks is not None else None,
-            full_kv_indices=to_dev(self.full_kv_indices) if self.full_kv_indices is not None else None,
-            q_num_blocks=to_dev(self.q_num_blocks) if self.q_num_blocks is not None else None,
+            full_kv_num_blocks=to_dev(self.full_kv_num_blocks)
+            if self.full_kv_num_blocks is not None
+            else None,
+            full_kv_indices=to_dev(self.full_kv_indices)
+            if self.full_kv_indices is not None
+            else None,
+            q_num_blocks=to_dev(self.q_num_blocks)
+            if self.q_num_blocks is not None
+            else None,
             q_indices=to_dev(self.q_indices) if self.q_indices is not None else None,
-            full_q_num_blocks=to_dev(self.full_q_num_blocks) if self.full_q_num_blocks is not None else None,
-            full_q_indices=to_dev(self.full_q_indices) if self.full_q_indices is not None else None,
+            full_q_num_blocks=to_dev(self.full_q_num_blocks)
+            if self.full_q_num_blocks is not None
+            else None,
+            full_q_indices=to_dev(self.full_q_indices)
+            if self.full_q_indices is not None
+            else None,
             BLOCK_SIZE=self.BLOCK_SIZE,
-            mask_mod_gm=self.mask_mod_gm.to(device) if self.mask_mod_gm is not None else None,
-            mask_mod_captured_tensors=tuple(to_dev(t) for t in self.mask_mod_captured_tensors),
+            mask_mod_gm=self.mask_mod_gm.to(device)
+            if self.mask_mod_gm is not None
+            else None,
+            mask_mod_captured_tensors=tuple(
+                to_dev(t) for t in self.mask_mod_captured_tensors
+            ),
         )
 
     @staticmethod
@@ -1263,6 +1277,15 @@ def _trace_mask_mod(
     Captured tensors are stored as GraphModule attributes (get_attr nodes).
     Returns (gm, ()) — captured tensors stay inside the GraphModule.
     """
+    # Both dynamo.export and symbolic_trace require FunctionType or nn.Module.
+    # Wrap callable classes (e.g. ComposedMaskMod) in a plain function.
+    fn: Any = mask_mod
+    if not isinstance(fn, (types.FunctionType, torch.nn.Module)):
+        _orig = fn
+
+        def fn(b, h, q_idx, kv_idx):  # noqa: F811
+            return _orig(b, h, q_idx, kv_idx)
+
     can_dynamo_export = (
         not torch.compiler.is_dynamo_compiling()
         and not torch._guards.detect_fake_mode()
@@ -1271,13 +1294,13 @@ def _trace_mask_mod(
         example_inputs = tuple(
             torch.zeros((), dtype=torch.int, device=device) for _ in range(4)
         )
-        gm, _guards = torch._dynamo.export(
-            mask_mod, aten_graph=False, same_signature=True
-        )(*example_inputs)
+        gm, _guards = torch._dynamo.export(fn, aten_graph=False, same_signature=True)(
+            *example_inputs
+        )
         return gm, ()
 
     # Fallback: symbolic_trace (works under FakeTensorMode + FunctionalTensorMode)
-    gm = torch.fx.symbolic_trace(mask_mod)
+    gm = torch.fx.symbolic_trace(fn)
     return gm, ()
 
 

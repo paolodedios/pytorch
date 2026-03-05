@@ -1194,9 +1194,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
             tx = InstructionTranslator.current_tx()
             if tx is not None and tx.export:
-                gm_vt = tx.output.side_effects.load_attr(
-                    self, "gm", deleted_ok=True
-                )
+                gm_vt = tx.output.side_effects.load_attr(self, "gm", deleted_ok=True)
                 if gm_vt is not None:
                     gm = gm_vt.as_python_constant()
                     return _MaskModGraphWrapper(gm)
