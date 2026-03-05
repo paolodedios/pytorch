@@ -694,9 +694,8 @@ class BlockMask:
             block_size = (self.BLOCK_SIZE,)  # type: ignore[assignment]
             seq_lengths = (self.seq_lengths,)  # type: ignore[assignment]
 
-        # Last element is mask_mod (backward-compat callable via property)
         # pyrefly: ignore [not-iterable]
-        return (
+        tensors = (
             *seq_lengths,
             self.kv_num_blocks,
             self.kv_indices,
@@ -707,8 +706,12 @@ class BlockMask:
             self.full_q_num_blocks,
             self.full_q_indices,
             *block_size,
-            self.mask_mod,
         )
+        if flatten:
+            # HOP convention: last element is mask_mod callable
+            return (*tensors, self.mask_mod)
+        # __init__ order: mask_mod_gm + mask_mod_captured_tensors
+        return (*tensors, self.mask_mod_gm, self.mask_mod_captured_tensors)
 
     @property
     def shape(self):
@@ -974,20 +977,7 @@ class BlockMask:
         mapped = tree_map_only(
             (torch.Tensor, torch.nn.Module),
             lambda x: x.to(device),
-            (
-                self.seq_lengths,
-                self.kv_num_blocks,
-                self.kv_indices,
-                self.full_kv_num_blocks,
-                self.full_kv_indices,
-                self.q_num_blocks,
-                self.q_indices,
-                self.full_q_num_blocks,
-                self.full_q_indices,
-                self.BLOCK_SIZE,
-                self.mask_mod_gm,
-                self.mask_mod_captured_tensors,
-            ),
+            self.as_tuple(flatten=False),
         )
         return BlockMask(*mapped)
 
