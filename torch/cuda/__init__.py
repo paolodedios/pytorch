@@ -193,10 +193,7 @@ def is_bf16_supported(including_emulation: bool = True):
 
     device = torch.cuda.current_device()
 
-    # Check for CUDA version and device compute capability.
-    # This is a fast way to check for it.
-    cuda_version = torch.version.cuda
-    if cuda_version is not None and torch.cuda.get_device_properties(device).major >= 8:
+    if torch.cuda.get_device_properties(device).major >= 8:
         return True
 
     if not including_emulation:
@@ -311,6 +308,7 @@ DEVICE_REQUIREMENT: dict[int, Union[_CompatSet, _CompatInterval]] = {
     103: _CompatInterval(start=103),
     110: _CompatInterval(start=110),
     120: _CompatInterval(start=120),
+    121: _CompatInterval(start=121),
 }
 
 
@@ -363,7 +361,11 @@ def _check_capability():
     if torch.version.cuda is None:  # on ROCm we don't want this check
         return
 
-    code_ccs = [_extract_arch_version(cc) for cc in get_arch_list()]
+    arch_list = get_arch_list()
+    if len(arch_list) == 0:
+        return
+
+    code_ccs = [_extract_arch_version(cc) for cc in arch_list]
     for d in range(device_count()):
         major, minor = get_device_capability(d)
         device_cc = 10 * major + minor
@@ -1110,9 +1112,15 @@ def device_count() -> int:
         return 0
     if _cached_device_count is not None:
         return _cached_device_count
-    # bypass _device_count_nvml() if rocm (not supported)
-    nvml_count = _device_count_amdsmi() if torch.version.hip else _device_count_nvml()
-    r = torch._C._cuda_getDeviceCount() if nvml_count < 0 else nvml_count
+    if _initialized or hasattr(_tls, "is_initializing"):
+        r = torch._C._cuda_getDeviceCount()
+    else:
+        # bypass _device_count_nvml() if rocm (not supported)
+        if torch.version.hip:
+            nvml_count = _device_count_amdsmi()
+        else:
+            nvml_count = _device_count_nvml()
+        r = torch._C._cuda_getDeviceCount() if nvml_count < 0 else nvml_count
     # NB: Do not cache the device count prior to CUDA initialization, because
     # the number of devices can change due to changes to CUDA_VISIBLE_DEVICES
     # setting prior to CUDA initialization.
@@ -1307,7 +1315,7 @@ def _get_amdsmi_handler(device: Device = None):
         amdsmi.amdsmi_init()
     except amdsmi.AmdSmiException as e:
         raise RuntimeError(
-            "amdsmi driver can't be loaded, requires >=ROCm5.6 installation"
+            "amdsmi driver can't be loaded, requires >=ROCm6.0 installation"
         ) from e
     device = _get_amdsmi_device_index(device)
     handle = amdsmi.amdsmi_get_processor_handles()[device]
@@ -1887,26 +1895,36 @@ _POOL_HANDLE = NewType("_POOL_HANDLE", tuple[int, int])
 __all__ = [
     # Typed storage and tensors
     "BFloat16Storage",
+    # pyrefly: ignore [bad-dunder-all]
     "BFloat16Tensor",
     "BoolStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "BoolTensor",
     "ByteStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "ByteTensor",
     "CharStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "CharTensor",
     "ComplexDoubleStorage",
     "ComplexFloatStorage",
     "DoubleStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "DoubleTensor",
     "FloatStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "FloatTensor",
     "HalfStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "HalfTensor",
     "IntStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "IntTensor",
     "LongStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "LongTensor",
     "ShortStorage",
+    # pyrefly: ignore [bad-dunder-all]
     "ShortTensor",
     "CUDAGraph",
     "CudaError",
