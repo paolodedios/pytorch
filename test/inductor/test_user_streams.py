@@ -112,6 +112,7 @@ class TestStreamCodegen(InductorTestCase):
         # The exit just unindents, verify no error
         self.assertIsNotNone(code.getvalue())
 
+
 @unittest.skipIf(not TEST_CUDA, "requires CUDA")
 class TestUserStreamCompile(InductorTestCase):
     """End-to-end tests for torch.compile with user stream contexts."""

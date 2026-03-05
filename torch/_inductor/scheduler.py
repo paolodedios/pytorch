@@ -42,7 +42,6 @@ from torch._inductor.autotune_process import use_pipelined_autotuning
 from torch._inductor.codecache import LambdaFuture, PyCodeCache
 from torch._inductor.ir import TritonTemplateCallerBase
 from torch._inductor.metrics import get_metric_table, is_metric_table_enabled
-from torch._inductor.stream_constants import DEFAULT_STREAM_IDX
 from torch._inductor.stream_utils import get_stream_name
 from torch.fx.experimental.symbolic_shapes import free_symbols
 from torch.utils._sympy.symbol import free_symbol_is_type, symbol_is_type, SymT
