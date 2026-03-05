@@ -175,6 +175,7 @@ from ..utils import (
     wrap_fake_exception,
 )
 from .base import (
+    AttributeMutationExisting,
     AttributeMutationNew,
     typestr,
     ValueMutationExisting,
@@ -202,7 +203,7 @@ from .dicts import (
     OrderedSetVariable,
     SetVariable,
 )
-from .distributed import WorldMetaClassVariable
+from .distributed import DeviceMeshVariable, WorldMetaClassVariable
 from .functions import (
     BuiltinMethodVariable,
     CollectionsNamedTupleFunction,
@@ -1216,12 +1217,20 @@ class VariableBuilder:
         elif isinstance(value, torch.optim.Optimizer):
             self.install_guards(GuardBuilder.ID_MATCH)
             self.source = OptimizerSource(self.source)
-            return OptimizerVariable(value, source=self.source)
+            return OptimizerVariable(
+                value,
+                source=self.source,
+                mutation_type=AttributeMutationExisting(),
+            )
         elif isinstance(value, torch.DispatchKeySet):
             self.install_guards(GuardBuilder.DISPATCH_KEY_SET_MATCH)
             return DispatchKeySetVariable(value)
         elif WorldMetaClassVariable.is_group_member_type(value):
             return WorldMetaClassVariable(value, source=self.source)
+        elif DeviceMeshVariable.is_device_mesh(value):
+            # TODO: see if we need to add custom guard instead of a simple ID_MATCH
+            self.install_guards(GuardBuilder.EQUALS_MATCH)
+            return DeviceMeshVariable(value, source=self.source)
         elif value is OrderedSet:
             self.install_guards(GuardBuilder.ID_MATCH)
             return OrderedSetClassVariable()
@@ -4173,6 +4182,8 @@ class SourcelessBuilder:
             return SourcelessGraphModuleVariable(value)
         elif isinstance(value, torch.utils._pytree.TreeSpec):
             return UserDefinedObjectVariable(value)
+        elif DeviceMeshVariable.is_device_mesh(value):
+            return DeviceMeshVariable(value)
         elif isinstance(value, re.Pattern):
             return ConstantLikeVariable(value)
         elif isinstance(value, torch._dynamo.variables.lazy.LazySymNodeFormatString):
