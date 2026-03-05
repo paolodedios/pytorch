@@ -65,7 +65,7 @@ struct TORCH_XPU_API XPUGraph {
   XPUGraph(bool keep_graph = false) {
     GraphImplArgs args;
     args.keep_graph = keep_graph;
-    impl_ = std::make_unique<CUDAGraphImpl>(args);
+    impl_ = std::make_unique<XPUGraphImpl>(args);
   }
   ~XPUGraph() = default;
 
