@@ -395,12 +395,12 @@ def max_min_dim_single_dim_strategy(
         if d == dim:
             continue
         out_d = d if keep_dim or d < dim else d - 1
-        # [values, indices, input]: shard on non-reduction dim
+        # [input, values, indices]: shard on non-reduction dim
         strategies.append(
             [
-                _ShardingPlaceholder(out_d),
-                _ShardingPlaceholder(out_d),
                 _ShardingPlaceholder(d),
+                _ShardingPlaceholder(out_d),
+                _ShardingPlaceholder(out_d),
             ]
         )
     return strategies
@@ -1494,7 +1494,7 @@ def histc_strategy(op_schema: OpSchema) -> OpStrategy:
     # an incorrect final result
     if len(op_schema.args_schema) == 4:
         for dim in range(input_strategy.ndim):
-            dim_shardings: PlacementList = [Partial(), Shard(dim)]
+            dim_shardings: PlacementList = [Shard(dim), Partial()]
             single_mesh_dim_strategies.append(dim_shardings)
 
     return expand_to_full_mesh_op_strategy(
