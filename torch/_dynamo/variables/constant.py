@@ -10,7 +10,7 @@ import enum
 import operator
 from collections.abc import Sequence
 from typing import Any, Literal, Optional, overload, TYPE_CHECKING
-from typing_extensions import Never, override
+from typing_extensions import override
 
 import torch
 from torch._dynamo.source import AttrSource, GetItemSource
@@ -45,15 +45,7 @@ class ConstantVariable(VariableTracker):
 
     @overload
     @staticmethod
-    def create(value: None) -> Never: ...
-
-    @overload
-    @staticmethod
-    def create(value: Literal[True]) -> Never: ...
-
-    @overload
-    @staticmethod
-    def create(value: Literal[False]) -> Never: ...
+    def create(value: None) -> "ConstantVariable": ...
 
     @overload
     @staticmethod
@@ -150,7 +142,7 @@ its type to `common_constant_types`.
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker:
         return ConstantVariable.create(
-            self.value[arg.as_python_constant()],
+            self.value[arg.as_python_constant()],  # type: ignore[index]
         )
 
     @staticmethod
@@ -179,7 +171,8 @@ its type to `common_constant_types`.
 
     def const_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         if not hasattr(self.value, name):
-            raise_observed_exception(AttributeError, tx, args=[name])
+            name_variable = variables.ConstantVariable.create(name)
+            raise_observed_exception(AttributeError, tx, args=[name_variable])
         member = getattr(self.value, name)
         if callable(member):
             raise NotImplementedError
@@ -283,13 +276,13 @@ its type to `common_constant_types`.
 
         if name == "__len__" and not (args or kwargs):
             try:
-                return ConstantVariable.create(len(self.value))
+                return ConstantVariable.create(len(self.value))  # type: ignore[bad-argument-type]
             except TypeError as e:
                 raise_observed_exception(type(e), tx, args=list(e.args))
         elif name == "__round__" and len(args) == 1 and args[0].is_python_constant():
             try:
                 return ConstantVariable.create(
-                    round(self.value, args[0].as_python_constant())
+                    round(self.value, args[0].as_python_constant())  # type: ignore[no-matching-overload]
                 )
             except Exception as e:
                 raise_observed_exception(
@@ -299,7 +292,7 @@ its type to `common_constant_types`.
             assert not kwargs
             search = args[0].as_python_constant()
             try:
-                result = search in self.value
+                result = search in self.value  # type: ignore[not-iterable]
                 return ConstantVariable.create(result)
             except TypeError as e:
                 raise_observed_exception(
