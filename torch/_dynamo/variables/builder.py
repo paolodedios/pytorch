@@ -3440,7 +3440,8 @@ def handle_traced_output(
         # This is for handling opaque objects in custom ops
         if is_opaque_value_type(type(example_value)):
             return TorchScriptObjectVariable.create(
-                example_value, example_value
+                example_value,
+                example_value,  # pyrefly: ignore[bad-argument-type]
             )
         fake_script_obj = torch._library.fake_class_registry.maybe_to_fake_obj(
             tx.output.fake_mode, example_value
