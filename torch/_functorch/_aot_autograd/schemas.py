@@ -16,6 +16,7 @@ import torch
 import torch.utils._pytree as pytree
 from torch import SymInt, Tensor
 from torch._library.opaque_object import OpaqueType
+from torch._opaque_base import OpaqueBase
 from torch._subclasses import FakeTensor, FakeTensorMode
 from torch._subclasses.fake_tensor import is_fake
 from torch.fx.experimental._backward_state import BackwardState
@@ -301,16 +302,19 @@ class SubclassCreationMeta:
 
     def creation_fn(
         self,
-        all_args: Sequence[Any],
+        all_args: Sequence[torch.Tensor | IntLikeType | OpaqueType],
         *,
         is_runtime: bool,
     ) -> torch.Tensor:
-        inner_tensors: dict[str, Any] = {}
+        inner_tensors: dict[str, torch.Tensor | OpaqueType] = {}
 
         curr_start_idx = self.flat_tensor_start_idx
         for attr, creation_meta in self.attrs.items():
             if isinstance(creation_meta, OpaqueMeta):
-                inner_tensors[attr] = all_args[curr_start_idx]
+                opaque = all_args[curr_start_idx]
+                if not isinstance(opaque, OpaqueBase):
+                    raise AssertionError(f"OpaqueBase expected, got {type(opaque)}")
+                inner_tensors[attr] = opaque
                 curr_start_idx += 1
                 continue
             if isinstance(creation_meta, PlainTensorMeta):
