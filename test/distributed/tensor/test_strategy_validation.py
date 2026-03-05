@@ -28,7 +28,6 @@ from torch.distributed.tensor._ops.strategy_validation import (
     normalize_placement,
     normalize_placement_str,
     parse_placement,
-    PlacementCombination,
     query_single_dim_strategy,
     resolve_op_names,
     validate_combination,
@@ -346,9 +345,7 @@ class TestValidateCombination(TestCase):
         ground_truth = torch.igamma(a, x)
         self.assertTrue(ground_truth.isnan().all(), "Expected all NaN ground truth")
 
-        combo = PlacementCombination(
-            input_placements=(Shard(0), Replicate()), output_placement=Shard(0)
-        )
+        combo = ((Shard(0), Replicate()), (Shard(0),))
 
         with LocalTensorMode(frozenset(range(self.world_size))):
             mesh = init_device_mesh("cpu", (self.world_size,))
@@ -396,7 +393,7 @@ class TestValidateCombination(TestCase):
             """Parse 'S(0),S(0)->S(0)' into ((Shard(0), Shard(0)), Shard(0))."""
             inputs_str, output_str = rule_str.split("->")
             inputs = tuple(parse_placement(s.strip()) for s in inputs_str.split(","))
-            return (inputs, parse_placement(output_str.strip()))
+            return (inputs, (parse_placement(output_str.strip()),))
 
         # Valid rules for 2D binary ops with shape (8, 4)
         # Format: "input1,input2->output"
@@ -512,7 +509,7 @@ class TestValidateCombination(TestCase):
 
                         for p_out in ALL_PLACEMENTS:
                             input_plcs = (p1, p2)
-                            combo = PlacementCombination(input_plcs, p_out)
+                            combo = (input_plcs, (p_out,))
 
                             is_valid, msg = validate_combination(
                                 op,
@@ -525,7 +522,7 @@ class TestValidateCombination(TestCase):
                             )
 
                             # Check if this combo matches any valid rule
-                            should_be_valid = (input_plcs, p_out) in valid_rules
+                            should_be_valid = (input_plcs, (p_out,)) in valid_rules
 
                             if should_be_valid:
                                 self.assertTrue(
@@ -559,10 +556,7 @@ class TestValidateCombination(TestCase):
 
             # R + alpha*P(max) where alpha=-1 should produce P(min)
             # because -max(x) = min(-x)
-            combo_valid = PlacementCombination(
-                input_placements=(Replicate(), Partial("max")),
-                output_placement=Partial("min"),
-            )
+            combo_valid = ((Replicate(), Partial("max")), (Partial("min"),))
             is_valid, msg = validate_combination(
                 torch.add,
                 sample,
@@ -577,10 +571,7 @@ class TestValidateCombination(TestCase):
             )
 
             # R + alpha*P(max) where alpha=-1 should NOT produce P(max)
-            combo_invalid = PlacementCombination(
-                input_placements=(Replicate(), Partial("max")),
-                output_placement=Partial("max"),
-            )
+            combo_invalid = ((Replicate(), Partial("max")), (Partial("max"),))
             is_valid, msg = validate_combination(
                 torch.add,
                 sample,
@@ -594,10 +585,7 @@ class TestValidateCombination(TestCase):
 
             # Similarly, P(max) + alpha*R where alpha=-1 should produce P(max)
             # because we're subtracting a replicated value from P(max)
-            combo_pmax_minus_r = PlacementCombination(
-                input_placements=(Partial("max"), Replicate()),
-                output_placement=Partial("max"),
-            )
+            combo_pmax_minus_r = ((Partial("max"), Replicate()), (Partial("max"),))
             is_valid, msg = validate_combination(
                 torch.add,
                 sample,
@@ -814,10 +802,7 @@ class TestPartialCombinationValidity(TestCase):
         tensors = extract_tensors_from_sample(sample)
         ground_truth = torch.abs(t)
 
-        combo = PlacementCombination(
-            input_placements=(Partial("sum"),),
-            output_placement=Partial("sum"),
-        )
+        combo = ((Partial("sum"),), (Partial("sum"),))
 
         with LocalTensorMode(frozenset(range(self.world_size))):
             mesh = init_device_mesh("cpu", (self.world_size,))
@@ -837,10 +822,7 @@ class TestPartialCombinationValidity(TestCase):
         tensors = extract_tensors_from_sample(sample)
         ground_truth = torch.abs(t)
 
-        combo = PlacementCombination(
-            input_placements=(Partial("avg"),),
-            output_placement=Partial("avg"),
-        )
+        combo = ((Partial("avg"),), (Partial("avg"),))
 
         with LocalTensorMode(frozenset(range(self.world_size))):
             mesh = init_device_mesh("cpu", (self.world_size,))
@@ -873,10 +855,7 @@ class TestPartialCombinationValidity(TestCase):
 
         # P(sum)->P(sum) is NOT valid for zeros_like, but with all-zero
         # output it trivially passes: sum(0,0)=0=ground_truth.
-        combo = PlacementCombination(
-            input_placements=(Partial("sum"),),
-            output_placement=Partial("sum"),
-        )
+        combo = ((Partial("sum"),), (Partial("sum"),))
 
         with LocalTensorMode(frozenset(range(self.world_size))):
             mesh = init_device_mesh("cpu", (self.world_size,))
@@ -921,10 +900,7 @@ class TestPartialCombinationValidity(TestCase):
         ground_truth = torch.argmin(t, dim=0, keepdim=True)
 
         for reduce_op in ("min", "max"):
-            combo = PlacementCombination(
-                input_placements=(Partial(reduce_op),),
-                output_placement=Replicate(),
-            )
+            combo = ((Partial(reduce_op),), (Replicate(),))
             with LocalTensorMode(frozenset(range(self.world_size))):
                 mesh = init_device_mesh("cpu", (self.world_size,))
                 is_valid, msg = validate_combination(
@@ -941,49 +917,6 @@ class TestPartialCombinationValidity(TestCase):
                 f"argmin P({reduce_op})->R should be invalid "
                 f"(index op, ranks disagree): {msg}",
             )
-        """
-        All-zero ground truth makes every placement trivially validate.
-
-        Zeros are a fixed point of all reduce operations (sum, max, min),
-        so validate_combination cannot distinguish valid from invalid rules.
-        This is a known limitation: compare_operator skips all-zero samples
-        to avoid hundreds of false positive rules.
-
-        We use zeros_like as the test op because it always produces zeros
-        regardless of input values, unlike mul(zeros, x) which the offset
-        fix in _create_partial_input now correctly handles.
-        """
-        t = torch.randn(8, 4)
-        sample = SampleInput(t)
-        tensors = extract_tensors_from_sample(sample)
-        ground_truth = torch.zeros_like(t)
-
-        # P(sum)->P(sum) is NOT valid for zeros_like, but with all-zero
-        # output it trivially passes: sum(0,0)=0=ground_truth.
-        combo = PlacementCombination(
-            input_placements=(Partial("sum"),),
-            output_placement=Partial("sum"),
-        )
-
-        with LocalTensorMode(frozenset(range(self.world_size))):
-            mesh = init_device_mesh("cpu", (self.world_size,))
-            is_valid, msg = validate_combination(
-                torch.zeros_like,
-                sample,
-                tensors,
-                combo,
-                ground_truth,
-                self.world_size,
-                mesh,
-            )
-
-        # This demonstrates the false positive: validate_combination says
-        # valid, even though the rule is invalid for non-zero inputs.
-        self.assertTrue(
-            is_valid,
-            "Expected True (false positive) for all-zero output, showing "
-            "why compare_operator must skip such samples",
-        )
 
 
 class TestDecompStrategyPath(TestCase):
@@ -1039,14 +972,14 @@ class TestDecompStrategyPath(TestCase):
         self.assertIsNotNone(output_strategy)
 
         input_shapes = (t.shape,)
-        output_shape = tuple(torch.nn.functional.softplus(t).shape)
+        output_shapes = (tuple(torch.nn.functional.softplus(t).shape),)
         rules = _extract_rules_from_op_strategy(
-            output_strategy, input_shapes, output_shape
+            output_strategy, input_shapes, output_shapes
         )
 
         # Should discover elementwise sharding rules for a 2D tensor
-        self.assertIn((("S(0)",), "S(0)"), rules)
-        self.assertIn((("S(1)",), "S(1)"), rules)
+        self.assertIn((("S(0)",), ("S(0)",)), rules)
+        self.assertIn((("S(1)",), ("S(1)",)), rules)
 
     def test_compare_operator_uses_decomp_path(self):
         """
@@ -1156,12 +1089,10 @@ class TestQuerySingleDimStrategyKwargs(TestCase):
         original = propagator.op_single_dim_strategy_funcs.get(aten_add)
         propagator.op_single_dim_strategy_funcs[aten_add] = alpha_aware_add_strategy
         try:
-            tensors = [("a", torch.randn(4, 3)), ("b", torch.randn(4, 3))]
+            a, b = torch.randn(4, 3), torch.randn(4, 3)
 
             # Query with alpha=-1 kwargs
-            result = query_single_dim_strategy(
-                aten_add, tensors, None, kwargs={"alpha": -1}
-            )
+            result = query_single_dim_strategy(aten_add, (a, b), {"alpha": -1})
             self.assertIsNotNone(result)
 
             # The third rule's output should be P(min) for alpha=-1
@@ -1359,6 +1290,31 @@ class TestCompareOperatorEndToEnd(TestCase):
             self.assertEqual(len(stats.false_positives), 0)
 
         self._with_even_sizes(run)
+
+    def test_compare_operator_runtime_schema_ops(self):
+        """Ops with RuntimeSchemaInfo (non-tensor positional args) should find DTensor rules."""
+        from torch.distributed.tensor._ops.strategy_validation import compare_operator
+
+        runtime_schema_ops = ["flip", "roll"]
+        for op_name in runtime_schema_ops:
+            with self.subTest(op=op_name):
+
+                def run(name=op_name):
+                    stats = compare_operator(
+                        name,
+                        device="cpu",
+                        dtype=torch.float32,
+                        world_size=self.world_size,
+                        incorrect_only=True,
+                    )
+                    self.assertGreater(
+                        stats.true_positives,
+                        0,
+                        f"{name} should have DTensor rules (true_positives > 0), "
+                        f"got skip_reasons={stats.skip_reasons}",
+                    )
+
+                self._with_even_sizes(run)
 
 
 class TestMainModule(TestCase):
