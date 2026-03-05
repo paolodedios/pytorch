@@ -288,16 +288,16 @@ class DistMatrixOpsTest(DTensorTestBase):
         # Convert to repr tuples for comparison since _ShardingPlaceholder lacks __eq__
         actual = [tuple(repr(p) for p in s) for s in strategies]
         expected = [
-            # batch dims: shard output and both inputs on same dim
+            # batch dims: shard both inputs and output on same dim
             (repr(S(0)), repr(S(0)), repr(S(0))),
             (repr(S(1)), repr(S(1)), repr(S(1))),
             (repr(S(2)), repr(S(2)), repr(S(2))),
             (repr(S(3)), repr(S(3)), repr(S(3))),
             # per-input linearity: one input Partial, other Replicate
-            ("Partial(sum)", "Partial(sum)", "Replicate()"),
             ("Partial(sum)", "Replicate()", "Partial(sum)"),
-            ("Partial(avg)", "Partial(avg)", "Replicate()"),
+            ("Replicate()", "Partial(sum)", "Partial(sum)"),
             ("Partial(avg)", "Replicate()", "Partial(avg)"),
+            ("Replicate()", "Partial(avg)", "Partial(avg)"),
             # batch-dimension linearity: all inputs Partial
             ("Partial(sum)", "Partial(sum)", "Partial(sum)"),
             ("Partial(avg)", "Partial(avg)", "Partial(avg)"),

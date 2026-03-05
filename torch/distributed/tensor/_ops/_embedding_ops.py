@@ -42,23 +42,23 @@ def embedding_strategy(op_schema: OpSchema) -> StrategyType:
 
     single_mesh_dim_strategies = []
 
-    # placement list stores placements of [output, weight, input_indices]
+    # placement list stores placements of [weight, input_indices, output]
     # first we always have replicate all for inputs and output
     all_replicate: PlacementList = [Replicate()] * 3
     single_mesh_dim_strategies.append(all_replicate)
 
-    # colwise sharding, output shard on last dim, weight shard on dim 1, input replicate
-    colwise_sharding: PlacementList = [Shard(output_emd_dim), Shard(1), Replicate()]
+    # colwise sharding, weight shard on dim 1, input replicate, output shard on last dim
+    colwise_sharding: PlacementList = [Shard(1), Replicate(), Shard(output_emd_dim)]
     single_mesh_dim_strategies.append(colwise_sharding)
 
-    # rowwise sharding, output is embedding partial, weight shard on dim 0, input accepts embedding partial
+    # rowwise sharding, weight shard on dim 0, input accepts embedding partial, output is embedding partial
     embedding_partial_placement = _MaskPartial(offset_shape=weight_shape, offset_dim=0)
 
     # NOTE we want to reuse the same mask partial placement so that we can reuse the same mask that generates
     # from the input indices and use it for output reduction
     rowwise_sharding: PlacementList = [
-        embedding_partial_placement,
         Shard(0),
+        embedding_partial_placement,
         embedding_partial_placement,
     ]
     single_mesh_dim_strategies.append(rowwise_sharding)
@@ -66,8 +66,8 @@ def embedding_strategy(op_schema: OpSchema) -> StrategyType:
     # batch dim sharding, weight replicated, input can shard on any dim, output follows input
     for input_dim in range(len(indices_shape)):
         batch_sharding: PlacementList = [
-            Shard(input_dim),
             Replicate(),
+            Shard(input_dim),
             Shard(input_dim),
         ]
         single_mesh_dim_strategies.append(batch_sharding)
@@ -94,24 +94,24 @@ def embedding_dense_backward_strategy(op_schema: OpSchema) -> StrategyType:
 
     single_mesh_dim_strategies = []
 
-    # placement list stores placements of [output, weight, input_indices]
+    # placement list stores placements of [grad_out, input_indices, output]
     # first we always have replicate all for inputs and output
     all_replicate: PlacementList = [Replicate()] * 3
     single_mesh_dim_strategies.append(all_replicate)
 
     # colwise sharding backward, grad_out shard on last dim, input replicate,
     # weight grad shard colwise
-    colwise_sharding: PlacementList = [Shard(1), Shard(grad_out_ndim - 1), Replicate()]
+    colwise_sharding: PlacementList = [Shard(grad_out_ndim - 1), Replicate(), Shard(1)]
     single_mesh_dim_strategies.append(colwise_sharding)
 
-    # batch dim sharding, weight replicated, grad_out/input have same sharding
+    # batch dim sharding, grad_out/input have same sharding
     # that can shard on any dim, weight grad partial
     for input_dim in range(len(indices_shape)):
-        batch_sharding: PlacementList = [Partial(), Shard(input_dim), Shard(input_dim)]
+        batch_sharding: PlacementList = [Shard(input_dim), Shard(input_dim), Partial()]
         single_mesh_dim_strategies.append(batch_sharding)
 
     # grad_out partial, input replicate, weight grad keep partial
-    partial_sharding: PlacementList = [Partial(), Partial(), Replicate()]
+    partial_sharding: PlacementList = [Partial(), Replicate(), Partial()]
     single_mesh_dim_strategies.append(partial_sharding)
 
     return expand_to_full_mesh_op_strategy(mesh, op_schema, single_mesh_dim_strategies)

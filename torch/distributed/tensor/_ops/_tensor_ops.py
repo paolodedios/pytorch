@@ -603,7 +603,7 @@ def scatter_strategy(op_schema: OpSchema) -> StrategyType:
     mesh = op_schema.get_mesh_from_args()
     single_mesh_dim_strategies = []
 
-    # placement list stores placements of [output, input, index, src]
+    # placement list stores placements of [input, index, src, output]
     # first we always have replicate all for inputs and output
     if len(op_schema.args_strategy) < 3:
         # scatter_.src/scatter.src with src be float number instead of tensor
@@ -958,15 +958,15 @@ def index_select_single_dim_strategy(
         if d == dim:
             continue
         strategies.append(
-            [_ShardingPlaceholder(d), _ShardingPlaceholder(d), Replicate()]
+            [_ShardingPlaceholder(d), Replicate(), _ShardingPlaceholder(d)]
         )
 
     # Shard index → output sharded on the indexed dim
-    strategies.append([_ShardingPlaceholder(dim), Replicate(), _ShardingPlaceholder(0)])
+    strategies.append([Replicate(), _ShardingPlaceholder(0), _ShardingPlaceholder(dim)])
 
     # Partial passthrough from values
     for reduce_op in Partial.ALL_REDUCE_OPS:
-        strategies.append([Partial(reduce_op), Partial(reduce_op), Replicate()])
+        strategies.append([Partial(reduce_op), Replicate(), Partial(reduce_op)])
 
     return strategies
 

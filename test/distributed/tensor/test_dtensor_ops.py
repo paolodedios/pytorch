@@ -1234,8 +1234,8 @@ class TestSingleDimStrategies(DTensorOpTestBase):
         )
         n_inputs = len(all_tensor_meta)
         for strategy in strategies:
-            input_placements = strategy[-n_inputs:]
-            output_placements = strategy[:-n_inputs]
+            input_placements = strategy[:n_inputs]
+            output_placements = strategy[n_inputs:]
 
             # skip strategies with invalid shards
             def is_invalid_shard(meta, p):

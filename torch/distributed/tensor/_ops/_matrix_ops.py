@@ -432,8 +432,8 @@ def gen_single_dim_einsum_strategies(
     ):
         for reduce_op in Partial.LINEAR_REDUCE_OPS:
             linearity_placements: list[Placement | _ShardingPlaceholder] = [
-                Partial(reduce_op)
-            ] + [Partial(reduce_op) for _ in input_dims]
+                Partial(reduce_op) for _ in input_dims
+            ] + [Partial(reduce_op)]
             strategies_over_one_mesh_dim.append(_maybe_add_bias(linearity_placements))
 
     return strategies_over_one_mesh_dim

@@ -1217,7 +1217,7 @@ class TestCommonPointwiseSingleDimStrategy(TestCase):
         )
         self.assertEqual(
             rules,
-            [(Shard(0), Shard(0), Replicate()), (Shard(1), Shard(1), Shard(0))],
+            [(Shard(0), Replicate(), Shard(0)), (Shard(1), Shard(0), Shard(1))],
         )
 
     def test_partial_extra_rules_filtered_by_arity(self):
@@ -1251,10 +1251,10 @@ class TestCommonPointwiseSingleDimStrategy(TestCase):
             (Shard(1), Shard(1), Shard(1)),
             (Partial("sum"), Partial("sum"), Partial("sum")),
             (Partial("avg"), Partial("avg"), Partial("avg")),
-            (Partial("avg"), Partial("avg"), Replicate()),
-            (Partial("max"), Partial("max"), Replicate()),
-            (Partial("min"), Partial("min"), Replicate()),
             (Partial("avg"), Replicate(), Partial("avg")),
+            (Partial("max"), Replicate(), Partial("max")),
+            (Partial("min"), Replicate(), Partial("min")),
+            (Replicate(), Partial("avg"), Partial("avg")),
         ]
         self.assertEqual(rules, expected)
 

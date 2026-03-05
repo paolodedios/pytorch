@@ -78,12 +78,12 @@ _BINARY_ADDITIVE_RULES: list[list[Placement]] = [
     # P(x), R -> P(x): adding/subtracting a replicated value preserves partial types
     # avg, max, min. sum would result in R being added n times, n = num_ranks
     # (the replicated value is constant across ranks, so reduce order is unaffected)
-    [Partial("avg"), Partial("avg"), Replicate()],
-    [Partial("max"), Partial("max"), Replicate()],
-    [Partial("min"), Partial("min"), Replicate()],
+    [Partial("avg"), Replicate(), Partial("avg")],
+    [Partial("max"), Replicate(), Partial("max")],
+    [Partial("min"), Replicate(), Partial("min")],
     # R, P(avg) -> P(avg): avg is linear so this holds for any alpha
     # (R, P(max/min) excluded: negative alpha would flip the ordering)
-    [Partial("avg"), Replicate(), Partial("avg")],
+    [Replicate(), Partial("avg"), Partial("avg")],
 ]
 
 # mul: partials propagate through either arg. div: only through numerator.
@@ -94,15 +94,15 @@ binary_div_ops = [aten.div.Tensor, aten.div_.Tensor, aten.div.out]
 # promote scalars to 0-dim tensors, so aten.mul.Scalar dispatches as aten.mul.Tensor
 # with n_tensors=1, matching the length-2 unary rules.
 _MUL_RULES: list[list[Placement]] = [
-    [Partial("sum"), Partial("sum"), Replicate()],
-    [Partial("avg"), Partial("avg"), Replicate()],
     [Partial("sum"), Replicate(), Partial("sum")],
     [Partial("avg"), Replicate(), Partial("avg")],
+    [Replicate(), Partial("sum"), Partial("sum")],
+    [Replicate(), Partial("avg"), Partial("avg")],
 ]
 
 _DIV_RULES: list[list[Placement]] = [
-    [Partial("sum"), Partial("sum"), Replicate()],
-    [Partial("avg"), Partial("avg"), Replicate()],
+    [Partial("sum"), Replicate(), Partial("sum")],
+    [Partial("avg"), Replicate(), Partial("avg")],
 ]
 
 scalar_linear_ops = [
@@ -805,9 +805,7 @@ def _common_pointwise_single_dim_strategy(
         )
         placements: list[list[Placement | _ShardingPlaceholder]] = []
         for i in range(len(common_shape)):
-            shard_placements: list[Placement | _ShardingPlaceholder] = [
-                _ShardingPlaceholder(i)
-            ]
+            shard_placements: list[Placement | _ShardingPlaceholder] = []
             for arg in tensor_arg_metas:
                 common_dim_to_arg_dim = infer_broadcast_dims_map(
                     common_shape, arg.shape
@@ -820,10 +818,11 @@ def _common_pointwise_single_dim_strategy(
                     )
                 else:
                     shard_placements.append(Replicate())
+            shard_placements.append(_ShardingPlaceholder(i))
             placements.append(shard_placements)
         if partial_extra_rules:
             n_tensors = len(tensor_arg_metas)
-            expected_len = 1 + n_tensors
+            expected_len = n_tensors + 1
             for rule in partial_extra_rules:
                 # Filter rather than assert: some ops (e.g. mul.Tensor) mix
                 # unary rules (len 2, for scalar promotion) and binary rules
