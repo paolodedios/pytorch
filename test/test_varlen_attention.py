@@ -984,6 +984,30 @@ class TestVarlenAttention(NNTestCase):
             self.assertEqual(output_out.data_ptr(), out_buf.data_ptr())
             self.assertEqual(out_buf, output_fa3)
 
+        # compile the lower level aten op, will cause graph break
+        if compile and "FA3" in list_flash_attention_impls():
+            compiled_aten_op = torch.compile(
+                torch.ops.aten._flash_attention_forward_no_dropout_inplace
+            )
+            with use_fa3(), torch.no_grad():
+                out_buf = torch.empty_like(q_packed)
+                compiled_aten_op(
+                    out_buf,
+                    q_packed,
+                    k_pages,
+                    v_pages,
+                    cu_seq_q,
+                    None,
+                    max_q,
+                    cache_size,
+                    0.0,
+                    False,
+                    False,
+                    seqused_k=seqused_k,
+                    block_table=block_table,
+                )
+            self.assertEqual(out_buf, output_reference)
+
 
 device_types = ("cuda",)
 

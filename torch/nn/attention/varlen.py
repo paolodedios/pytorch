@@ -580,3 +580,7 @@ def _backward(
 
 
 _varlen_attn.register_autograd(_backward, setup_context=_setup_context)
+
+torch._dynamo.disallow_in_graph(
+    torch.ops.aten._flash_attention_forward_no_dropout_inplace
+)
