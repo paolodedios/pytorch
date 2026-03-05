@@ -2826,6 +2826,12 @@ def _compile_fx_main(
 
             is_valid_aoti_model_name()
 
+            # Pre-grad passes for the aot_autograd path are run inside
+            # aot_module_simplified after the cache lookup.  The
+            # aot_export_module path doesn't use that cache so run them here.
+            if isinstance(model_, GraphModule):
+                model_ = run_pre_grad_passes(model_, example_inputs_)
+
             with functorch_config.patch(
                 unlift_effect_tokens=True,
                 selective_decompose=config.selective_decompose,
