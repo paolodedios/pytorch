@@ -240,6 +240,35 @@ class NVUniversalGemmScheduling(BaseScheduling):
                 )
                 return False
 
+        # All epilogue read inputs must match the GEMM output size and have
+        # non-zero strides (no broadcasting). EFC kernels don't support broadcast.
+        gemm_size = ir_node.get_size()
+        name_to_buf = V.graph.name_to_buffer | V.graph.graph_inputs
+        for s_node in scheduler_nodes_to_fuse:
+            for rd in s_node.read_writes.reads:
+                if rd.name == ir_node.get_name():
+                    continue
+                read_buf = name_to_buf.get(rd.name)
+                if read_buf is None:
+                    continue
+                read_size = read_buf.get_size()
+                if read_size != gemm_size:
+                    log.debug(
+                        "NVGEMM epilogue fusion: read buffer %s size %s != GEMM size %s (broadcast not supported)",
+                        rd.name, read_size, gemm_size,
+                    )
+                    return False
+                # Check for zero strides (broadcast dimension)
+                if hasattr(read_buf, "get_stride"):
+                    from sympy import Integer
+                    for s in read_buf.get_stride():
+                        if s == 0 or s == Integer(0):
+                            log.debug(
+                                "NVGEMM epilogue fusion: read buffer %s has zero stride (broadcast not supported)",
+                                rd.name,
+                            )
+                            return False
+
         # First epilogue node must read from the GEMM template buffer
         if not existing_epilogue_nodes:
             reads = OrderedSet(rd.name for rd in node_to_fuse.read_writes.reads)

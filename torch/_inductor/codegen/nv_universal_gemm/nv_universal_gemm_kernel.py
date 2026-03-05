@@ -107,18 +107,11 @@ class NVUniversalGemmKernel(Kernel):
         Render the NVIDIA Universal GEMM kernel code as a Python source string.
 
         Generates Python code that:
-        1. Looks up the cutlass_api kernel by name from the manifest (cached in
-           _nv_universal_gemm_kernel_cache to avoid repeated manifest searches)
+        1. Looks up the cutlass_api kernel by name from the kernel cache
         2. Creates GemmArguments with the input/output tensors and accumulator type
         3. Optionally creates EpilogueArguments if epilogue fusion is enabled
-        4. Compiles the kernel for the specific tensor shapes/dtypes (cached in
-           _nv_universal_gemm_artifact_cache keyed by (shape, dtype) tuple)
+        4. Compiles the kernel for the specific tensor shapes/dtypes (cached per module)
         5. Runs the kernel with the compiled artifact and CUDA stream
-
-        The caching strategy ensures:
-        - Kernel lookup happens once per unique kernel name
-        - Compilation happens once per unique (shape, dtype) combination
-        - Runtime execution is just the kernel.run() call with cached artifact
 
         Returns:
             Python source code string to be written to a .py file and loaded

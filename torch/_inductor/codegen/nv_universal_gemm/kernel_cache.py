@@ -99,6 +99,18 @@ def clear_cache() -> None:
         _efc_epilogue_cache = {}
 
 
+class _NVGEMMCacheWrapper:
+    """Wrapper to integrate with torch._inductor.utils.clear_caches()."""
+
+    def cache_clear(self) -> None:
+        clear_cache()
+
+
+from torch._inductor.utils import clear_on_fresh_cache
+
+clear_on_fresh_cache(_NVGEMMCacheWrapper())
+
+
 # Cache for EFC kernels with specific epilogue configurations
 # Key: (efc_kernel_name, epilogue_fn_code) -> kernel object
 _efc_epilogue_cache: dict[tuple[str, str], Any] = {}
@@ -127,7 +139,13 @@ def get_efc_kernel_with_epilogue(efc_kernel_name: str, epilogue_args: Any) -> An
         try:
             epilogue_fn_code = inspect.getsource(epilogue_args.epilogue_fn)
         except (OSError, TypeError):
-            epilogue_fn_code = repr(epilogue_args.epilogue_fn)
+            # Fallback: use bytecode hash for stable cache key (repr includes
+            # memory address which changes across invocations)
+            code_obj = getattr(epilogue_args.epilogue_fn, "__code__", None)
+            if code_obj is not None:
+                epilogue_fn_code = str(code_obj.co_code)
+            else:
+                epilogue_fn_code = repr(epilogue_args.epilogue_fn)
     else:
         epilogue_fn_code = str(epilogue_args.epilogue_fn)
 
@@ -160,6 +178,8 @@ def get_efc_kernel_with_epilogue(efc_kernel_name: str, epilogue_args: Any) -> An
     new_kernel = kernel_class(new_metadata)
 
     with _cache_lock:
+        if cache_key in _efc_epilogue_cache:
+            return _efc_epilogue_cache[cache_key]
         _efc_epilogue_cache[cache_key] = new_kernel
     log.debug("Created and cached EFC kernel with epilogue: %s", efc_kernel_name)
 

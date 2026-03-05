@@ -3906,8 +3906,6 @@ class Scheduler:
         if not config.benchmark_fusion and not is_multi_template:
             return FusionResult.fuse(True)
 
-        template_node = node1.get_template_node() if node1.is_template() else None
-
         if (
             node1.is_template()
             and not isinstance(node1.get_template_node(), ir.TritonTemplateBuffer)

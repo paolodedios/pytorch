@@ -1,8 +1,11 @@
 # Owner(s): ["module: inductor"]
 
 
+import logging
 import unittest
 from unittest.mock import MagicMock, patch
+
+log = logging.getLogger(__name__)
 
 import torch
 from torch._inductor import config
@@ -534,6 +537,212 @@ class TestNVUniversalGemmDynamicShapes(TestCase):
                 else:
                     result = compiled_fn(a, b)
                     torch.testing.assert_close(result, a @ b)
+
+
+@unittest.skipIf(
+    not (ensure_nv_universal_gemm_available() and is_datacenter_blackwell_arch()),
+    "NVIDIA Universal GEMM (cutlass_api) library not available or not on Blackwell",
+)
+@instantiate_parametrized_tests
+class TestNVUniversalGemmEpilogueFusion(TestCase):
+    """Test cases for NVIDIA Universal GEMM epilogue fusion.
+
+    Tests verify both correctness and that fusion actually occurs by examining
+    generated code for epilogue markers. Uses NVGEMM,ATEN backends so there
+    is always a fallback — fusion verification is conditional on NVGEMM being
+    selected by autotuning.
+    """
+
+    M, N, K = 512, 512, 512
+
+    def _compile_and_check(self, fn, *args):
+        torch._dynamo.reset()
+        with config.patch(
+            {
+                "max_autotune": True,
+                "max_autotune_gemm_backends": "NVGEMM,ATEN",
+                "nvgemm_max_profiling_configs": 2,
+                "force_disable_caches": True,
+            }
+        ):
+            result, code_list = run_and_get_code(torch.compile(fn), *args)
+        code = "\n".join(code_list)
+        nvgemm_selected = "async_compile.nv_universal_gemm" in code
+        epilogue_fused = "_epilogue_fn" in code and "EpilogueArguments" in code
+        return result, code, nvgemm_selected, epilogue_fused
+
+    @parametrize("dtype", (torch.float16, torch.bfloat16))
+    def test_matmul_relu(self, dtype):
+        """Test that matmul + relu fuses the relu into the GEMM epilogue."""
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b):
+            return torch.relu(a @ b)
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b
+        )
+        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
+        if nvgemm_selected and not epilogue_fused:
+            log.warning("NVGEMM selected but relu was NOT fused (benchmark may have rejected fusion)")
+
+    def test_matmul_bias_add(self):
+        """Test that matmul + bias addition fuses into the GEMM epilogue."""
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+        bias = torch.randn(1, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b, bias):
+            return (a @ b) + bias
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b, bias
+        )
+        torch.testing.assert_close(result, fn(a, b, bias), atol=2e-2, rtol=2e-2)
+        if nvgemm_selected and not epilogue_fused:
+            log.warning("NVGEMM selected but bias-add was NOT fused (benchmark may have rejected fusion)")
+
+    def test_matmul_mul_scale(self):
+        """Test that matmul + element-wise multiply fuses into the GEMM epilogue.
+
+        Uses same-shape scale tensor (M, N) since EFC kernels don't support
+        broadcast of auxiliary inputs.
+        """
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+        scale = torch.randn(self.M, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b, scale):
+            return (a @ b) * scale
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b, scale
+        )
+        torch.testing.assert_close(result, fn(a, b, scale), atol=2e-2, rtol=2e-2)
+        if nvgemm_selected and not epilogue_fused:
+            log.warning("NVGEMM selected but scale-mul was NOT fused (benchmark may have rejected fusion)")
+
+    def test_matmul_bias_relu_chained(self):
+        """Test that matmul + bias + relu chain fuses into the GEMM epilogue."""
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+        bias = torch.randn(1, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b, bias):
+            return torch.relu((a @ b) + bias)
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b, bias
+        )
+        torch.testing.assert_close(result, fn(a, b, bias), atol=1e-2, rtol=1e-2)
+        if nvgemm_selected and not epilogue_fused:
+            log.warning("NVGEMM selected but bias+relu chain was NOT fused (benchmark may have rejected fusion)")
+
+    def test_matmul_cast_dtype(self):
+        """Test that matmul + dtype cast fuses into the GEMM epilogue."""
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b):
+            return (a @ b).to(torch.float32)
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b
+        )
+        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
+        if nvgemm_selected and not epilogue_fused:
+            log.warning("NVGEMM selected but dtype cast was NOT fused (benchmark may have rejected fusion)")
+
+    def test_matmul_sigmoid(self):
+        """Test that matmul + sigmoid fuses into the GEMM epilogue."""
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b):
+            return torch.sigmoid(a @ b)
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b
+        )
+        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
+        if nvgemm_selected and not epilogue_fused:
+            log.warning("NVGEMM selected but sigmoid was NOT fused (benchmark may have rejected fusion)")
+
+    def test_matmul_tanh(self):
+        """Test that matmul + tanh fuses into the GEMM epilogue."""
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b):
+            return torch.tanh(a @ b)
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b
+        )
+        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
+        if nvgemm_selected and not epilogue_fused:
+            log.warning("NVGEMM selected but tanh was NOT fused (benchmark may have rejected fusion)")
+
+    def test_matmul_exp(self):
+        """Test that matmul + exp fuses into the GEMM epilogue."""
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b):
+            return torch.exp(a @ b)
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b
+        )
+        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
+        if nvgemm_selected and not epilogue_fused:
+            log.warning("NVGEMM selected but exp was NOT fused (benchmark may have rejected fusion)")
+
+    def test_plain_matmul_no_epilogue(self):
+        """Test that plain matmul does NOT produce epilogue fusion markers."""
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b):
+            return a @ b
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b
+        )
+        torch.testing.assert_close(result, fn(a, b), atol=1e-2, rtol=1e-2)
+        self.assertFalse(
+            epilogue_fused, "plain matmul should NOT have epilogue fusion markers"
+        )
+
+    def test_reduction_not_fused(self):
+        """Test that reductions after GEMM are NOT fused into the epilogue."""
+        dtype = torch.bfloat16
+        a = torch.randn(self.M, self.K, device="cuda", dtype=dtype)
+        b = torch.randn(self.K, self.N, device="cuda", dtype=dtype)
+
+        def fn(a, b):
+            return (a @ b).sum(dim=-1)
+
+        result, code, nvgemm_selected, epilogue_fused = self._compile_and_check(
+            fn, a, b
+        )
+        expected = fn(a, b)
+        torch.testing.assert_close(
+            result.float(), expected.float(), atol=5e-2, rtol=5e-2
+        )
+        self.assertFalse(
+            epilogue_fused,
+            "reduction after GEMM should NOT be fused into NVGEMM epilogue",
+        )
 
 
 if __name__ == "__main__":

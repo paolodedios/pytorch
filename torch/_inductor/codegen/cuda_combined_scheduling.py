@@ -84,6 +84,10 @@ class CUDACombinedScheduling(BaseScheduling):
             node1
         ) or self._nv_universal_gemm_scheduling.is_nv_universal_gemm_template(node2):
             return self._nv_universal_gemm_scheduling.can_fuse_vertical(node1, node2)
+        elif self._nv_universal_gemm_scheduling.is_nv_universal_gemm_fused_template(
+            node1
+        ):
+            return self._nv_universal_gemm_scheduling.can_fuse_vertical(node1, node2)
         return self._triton_scheduling.can_fuse_vertical(node1, node2)
 
     def can_fuse_horizontal(
