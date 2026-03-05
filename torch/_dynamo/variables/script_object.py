@@ -380,8 +380,7 @@ class TorchScriptObjectVariable(UserDefinedObjectVariable):
         constant_val = method(*args_const, **kwargs_const)
 
         if any(
-            is_opaque_reference_type(type(r))
-            for r in pytree.tree_leaves(constant_val)
+            is_opaque_reference_type(type(r)) for r in pytree.tree_leaves(constant_val)
         ):
             unimplemented(
                 gb_type="Opaque object member with method-type USE_REAL returned a reference-type opaque object.",
@@ -411,7 +410,7 @@ class TorchScriptObjectVariable(UserDefinedObjectVariable):
         self,
         tx: "InstructionTranslator",
         name: str,
-        args: Iterable[Any],
+        args: list[Any],
         kwargs: dict[str, Any],
     ) -> VariableTracker:
         from .builder import wrap_fx_proxy
