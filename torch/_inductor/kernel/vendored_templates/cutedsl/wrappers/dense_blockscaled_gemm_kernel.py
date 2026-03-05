@@ -386,9 +386,8 @@ class VendoredDenseBlockScaledGemmKernel(CuteDslKernel):
         for (
             operands
         ) in VendoredDenseBlockScaledGemmKernel._metadata_operand_combinations():
-            for values in itertools.product(
-                *param_values
-            ):  # pyrefly: ignore[no-matching-overload]
+            # pyrefly: ignore[no-matching-overload]
+            for values in itertools.product(*param_values):
                 design = Sm100DesignMetadata(**dict(zip(param_names, values)))
 
                 kernel_name = (
