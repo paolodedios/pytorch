@@ -87,7 +87,8 @@ def check_codegen(
         code = run_and_get_triton_code(run, *example_inputs, **kwargs)
         self.assertTrue("def triton" in code, f"Failed to find triton kernel\n{code}")
 
-    assert called, "Ran graph without calling compile_fx"
+    if not called:
+        raise AssertionError("Ran graph without calling compile_fx")
 
     torch._dynamo.reset()
 
@@ -115,6 +116,7 @@ test_failures = {
     #
     # Failed to find dynamic for loop variable:
     #
+    "test_complex_conv2d_conj_dynamic_shapes": TestFailure(("cpu",), is_skip=True),
     "test_conv1d_with_permute_dynamic_shapes": TestFailure(("cpu",), is_skip=True),
     "test_triton_argmin_argmax_transpose_logical_index_dynamic_shapes": TestFailure(
         ("cpu",), is_skip=True
@@ -195,6 +197,9 @@ test_failures = {
     "test_unsafe_chunk_empty_tensor_dynamic_shapes": TestFailure(
         ("cpu", "cuda", "xpu"), is_skip=True
     ),
+    "test_max_unpool_empty_output_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu"), is_skip=True
+    ),
     "test_bucketize_nd_tiling_False_dynamic_shapes": TestFailure(("cpu",)),
     "test_bucketize_nd_tiling_True_dynamic_shapes": TestFailure(("cpu",)),
     "test_bucketize_default_kwargs_dynamic_shapes": TestFailure(("cpu",)),
@@ -211,6 +216,12 @@ test_failures = {
     "test_linspace4_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_logcumsumexp_dynamic_shapes": TestFailure(("cpu",)),
     "test_logcumsumexp_zero_dim_dynamic_shapes": TestFailure(("cpu",)),
+    "test_max_pool2d_with_indices_backward5_dynamic_shapes": TestFailure(
+        ("cpu", "cuda")
+    ),
+    "test_max_pool2d_with_indices_backward6_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu")
+    ),
     "test_misaligned_address_issue1_dynamic_shapes": TestFailure(("cpu",)),
     "test_mm_views_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_new_empty_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
@@ -282,6 +293,7 @@ test_failures = {
     "test_split_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_topk_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_unbind_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
+    "test_uniform_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_views5_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_view_detach_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
     "test_view_on_aliased_dynamic_shapes": TestFailure(("cpu", "cuda", "xpu")),
@@ -410,6 +422,12 @@ test_failures = {
     # Refinement means we don't actually generate dynamic shapes (but only on
     # cpu apparently?!)
     "test_nonzero_unbacked_refinement_dynamic_shapes": TestFailure(("cpu",)),
+    "test_bucketize_scalar_various_values_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu"), is_skip=True
+    ),
+    "test_bucketize_scalar_with_options_dynamic_shapes": TestFailure(
+        ("cpu", "cuda", "xpu"), is_skip=True
+    ),
 }
 
 add_test_failures(test_failures, dynamic_shapes_test_failures)
