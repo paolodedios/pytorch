@@ -1891,7 +1891,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             tx.output.add_cleanup_hook(lambda: torch.cuda.set_device(prev))
             return VariableTracker.build(tx, prev)
 
-        @register(torch._C._cuda_exchangeDevice)
+        @register(torch.cuda._exchange_device)
         def handle_exchange_device(
             self,
             tx: "InstructionTranslator",
@@ -1900,7 +1900,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
         ) -> VariableTracker:
             return exchange_device_helper(tx, args, kwargs, torch.cuda._exchange_device)
 
-        @register(torch._C._cuda_maybeExchangeDevice)
+        @register(torch.cuda._maybe_exchange_device)
         def handle_maybe_exchange_device(
             self,
             tx: "InstructionTranslator",
