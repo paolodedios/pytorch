@@ -185,7 +185,9 @@ class _ConvNd(Module):
             # Check if the weight tensor is in channels_last_3d format to ensure numerical consistency
             if not self.weight.is_contiguous():
                 # Use an empty contiguous buffer to optimize memory and ensure consistent initialization
-                temp_weight = torch.empty_like(self.weight, memory_format=torch.contiguous_format)
+                temp_weight = torch.empty_like(
+                    self.weight, memory_format=torch.contiguous_format
+                )
                 init.kaiming_uniform_(temp_weight, a=math.sqrt(5))
                 # Copy the initialized values back to the original tensor
                 self.weight.copy_(temp_weight)
