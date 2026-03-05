@@ -16,12 +16,9 @@ from torch._inductor.codegen.wrapper import (
     ExitCudaStreamContextLine,
     ExitDeviceContextManagerWithStreamInfoLine,
 )
-from torch._inductor.event import CudaEventFactory, CudaEventSym
 from torch._inductor.stream_constants import (
     DEFAULT_STREAM,
     DEFAULT_STREAM_IDX,
-    ENTRANCE_EVENT,
-    EVENT_NAME_TEMPLATE,
     STREAM_NAME_TEMPLATE,
 )
 from torch._inductor.stream_utils import get_stream_name
@@ -38,8 +35,6 @@ class TestStreamUtils(InductorTestCase):
         """Test stream utility constants are defined correctly."""
         self.assertEqual(DEFAULT_STREAM, "default_stream")
         self.assertEqual(DEFAULT_STREAM_IDX, 0)
-        self.assertEqual(ENTRANCE_EVENT, "event0")
-        self.assertEqual(EVENT_NAME_TEMPLATE, "event{event_idx:d}")
         self.assertEqual(STREAM_NAME_TEMPLATE, "stream{stream_idx:d}")
 
     def test_get_stream_name_default(self):
@@ -58,51 +53,6 @@ class TestStreamUtils(InductorTestCase):
         name1 = get_stream_name(5)
         name2 = get_stream_name(5)
         self.assertIs(name1, name2)
-
-
-class TestCudaEventFactory(InductorTestCase):
-    """Tests for CudaEventFactory and CudaEventSym."""
-
-    def test_factory_creation(self):
-        """Test CudaEventFactory can be created."""
-        factory = CudaEventFactory()
-        self.assertIsNotNone(factory)
-
-    def test_get_sym_event(self):
-        """Test creating symbolic events."""
-        factory = CudaEventFactory()
-
-        event1 = factory.get_sym_event(originate_stream_idx=0)
-        event2 = factory.get_sym_event(originate_stream_idx=1)
-
-        self.assertIsInstance(event1, CudaEventSym)
-        self.assertIsInstance(event2, CudaEventSym)
-        self.assertEqual(event1.originate_stream_idx, 0)
-        self.assertEqual(event2.originate_stream_idx, 1)
-        # Events should have different indices
-        self.assertNotEqual(event1.idx, event2.idx)
-
-    def test_get_entrance_event(self):
-        """Test getting the entrance event."""
-        factory = CudaEventFactory()
-
-        entrance1 = factory.get_entrance_event()
-        entrance2 = factory.get_entrance_event()
-
-        # Should return the same event
-        self.assertIs(entrance1, entrance2)
-        self.assertEqual(entrance1.idx, 0)
-        self.assertEqual(entrance1.originate_stream_idx, DEFAULT_STREAM_IDX)
-        self.assertEqual(entrance1.materialized_event, ENTRANCE_EVENT)
-
-    def test_event_str(self):
-        """Test CudaEventSym string representation."""
-        factory = CudaEventFactory()
-        event = factory.get_sym_event(originate_stream_idx=1)
-
-        str_repr = str(event)
-        self.assertIn("CudaEventSym", str_repr)
-        self.assertIn("originate_stream_idx=1", str_repr)
 
 
 class TestWrapperCodegenStreams(InductorTestCase):
@@ -161,80 +111,6 @@ class TestStreamCodegen(InductorTestCase):
 
         # The exit just unindents, verify no error
         self.assertIsNotNone(code.getvalue())
-
-    def test_event_record_codegen(self):
-        """Test code generation for CUDA event recording."""
-        from torch._inductor.event import _CudaEventRecordLine
-
-        factory = CudaEventFactory()
-        event = factory.get_sym_event(originate_stream_idx=0)
-
-        code = IndentedBuffer()
-        record_line = _CudaEventRecordLine(
-            event=event, factory=factory, stream="stream1"
-        )
-        record_line.codegen(code)
-
-        generated = code.getvalue()
-        self.assertIn("torch.cuda.Event()", generated)
-        self.assertIn(".record(stream1)", generated)
-
-    def test_event_wait_codegen(self):
-        """Test code generation for CUDA event waiting."""
-        from torch._inductor.event import _CudaEventWaitLine
-
-        factory = CudaEventFactory()
-        event = factory.get_sym_event(originate_stream_idx=0)
-        event.materialized_event = "event1"
-
-        code = IndentedBuffer()
-        wait_line = _CudaEventWaitLine(event=event, stream="stream2")
-        wait_line.codegen(code)
-
-        generated = code.getvalue()
-        self.assertIn("event1.wait(stream2)", generated)
-
-    def test_stream_context_with_event_sync(self):
-        """Test stream context with event synchronization flow."""
-        from torch._inductor.event import _CudaEventRecordLine, _CudaEventWaitLine
-
-        code = IndentedBuffer()
-        code.writeline("def call(args):")
-        code.do_indent()
-        code.do_indent()  # Inside device guard
-
-        factory = CudaEventFactory()
-        event = factory.get_sym_event(originate_stream_idx=0)
-
-        # Record event on default stream
-        record_line = _CudaEventRecordLine(
-            event=event, factory=factory, stream="default_stream"
-        )
-        record_line.codegen(code)
-
-        # Enter stream 1 context
-        enter_stream = EnterCudaStreamContextLine(stream_idx=1)
-        enter_stream.codegen(code)
-
-        # Wait for event from stream 0
-        wait_line = _CudaEventWaitLine(event=event, stream="stream1")
-        wait_line.codegen(code)
-
-        # Simulate kernel on stream 1
-        code.writeline("# kernel on stream1")
-
-        # Exit stream context
-        exit_stream = ExitCudaStreamContextLine()
-        exit_stream.codegen(code)
-
-        generated = code.getvalue()
-
-        self.assertIn("torch.cuda.Event()", generated)
-        self.assertIn(".record(default_stream)", generated)
-        self.assertIn("with torch.cuda.stream(stream1):", generated)
-        self.assertIn(".wait(stream1)", generated)
-        self.assertIn("# kernel on stream1", generated)
-
 
 @unittest.skipIf(not TEST_CUDA, "requires CUDA")
 class TestUserStreamCompile(InductorTestCase):
@@ -1182,7 +1058,6 @@ class TestGenericStreamCompile(InductorTestCase):
 
 
 instantiate_parametrized_tests(TestStreamUtils)
-instantiate_parametrized_tests(TestCudaEventFactory)
 instantiate_parametrized_tests(TestWrapperCodegenStreams)
 instantiate_parametrized_tests(TestStreamCodegen)
 instantiate_parametrized_tests(TestUserStreamCompile)
