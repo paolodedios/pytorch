@@ -15,7 +15,6 @@ from typing_extensions import ParamSpec
 import torch
 import torch.utils._pytree as pytree
 from torch import SymInt, Tensor
-from torch._library.opaque_object import OpaqueType
 from torch._opaque_base import OpaqueBase
 from torch._subclasses import FakeTensor, FakeTensorMode
 from torch._subclasses.fake_tensor import is_fake
@@ -270,7 +269,7 @@ class SubclassCreationMeta:
 
     def compute_outer_size_and_stride(
         self,
-        all_args: Sequence[torch.Tensor | IntLikeType],
+        all_args: Sequence[torch.Tensor | IntLikeType | OpaqueBase],
         *,
         curr_start_idx: int,
     ) -> tuple[
@@ -302,11 +301,11 @@ class SubclassCreationMeta:
 
     def creation_fn(
         self,
-        all_args: Sequence[torch.Tensor | IntLikeType | OpaqueType],
+        all_args: Sequence[torch.Tensor | IntLikeType | OpaqueBase],
         *,
         is_runtime: bool,
     ) -> torch.Tensor:
-        inner_tensors: dict[str, torch.Tensor | OpaqueType] = {}
+        inner_tensors: dict[str, torch.Tensor | OpaqueBase] = {}
 
         curr_start_idx = self.flat_tensor_start_idx
         for attr, creation_meta in self.attrs.items():
@@ -1209,7 +1208,7 @@ class AOTState:
     fake_mode: FakeTensorMode
 
 
-FxValue = Tensor | int | SymInt | BackwardState | OpaqueType
+FxValue = Tensor | int | SymInt | BackwardState | OpaqueBase
 
 
 class CompilerWrapper:

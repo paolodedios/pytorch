@@ -5,6 +5,7 @@ import itertools
 from typing import Any, TYPE_CHECKING
 
 import torch
+from torch._library.opaque_object import is_opaque_reference_type
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 from .schemas import OpaqueMeta
@@ -12,6 +13,8 @@ from .schemas import OpaqueMeta
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from torch._opaque_base import OpaqueBase
 
 
 # This is technically very similar to SubclassCreatingMeta
@@ -22,6 +25,7 @@ class SubclassCreationMeta:
     start_idx: int
     num_tensors: int
     class_type: Any
+    # None means the attr is a plain tensor (base case of recursion)
     attrs: dict[str, SubclassCreationMeta | OpaqueMeta | None]
     metadata: Any
     outer_size: Iterable[None | int | torch.SymInt]
@@ -30,7 +34,7 @@ class SubclassCreationMeta:
 
 class UnwrapTensorSubclass(torch.nn.Module):
     def forward(self, *tensors) -> torch.Tensor:  # type: ignore[no-untyped-def]
-        todo: list[Any] = list(tensors)
+        todo: list[torch.Tensor | OpaqueBase] = list(tensors)
 
         def _unwrap_tensor_subclasses(subclass_meta, tensors, offset):  # type: ignore[no-untyped-def]
             if subclass_meta is None:
@@ -55,10 +59,10 @@ class UnwrapTensorSubclass(torch.nn.Module):
 
         return _unwrap_tensor_subclasses(self.subclass_meta, todo, 0)[0]
 
-    def right_inverse(self, tensor: torch.Tensor) -> list[Any]:
+    def right_inverse(self, tensor: torch.Tensor) -> list[torch.Tensor | OpaqueBase]:
         if type(tensor) is torch.Tensor:
             raise AssertionError("tensor must be a subclass, not torch.Tensor")
-        plain_tensors: list[Any] = []
+        plain_tensors: list[torch.Tensor | OpaqueBase] = []
 
         def _create_subclass_meta(tensor, idx, plain_tensor_container):  # type: ignore[no-untyped-def]
             if type(tensor) is torch.Tensor:
@@ -70,6 +74,13 @@ class UnwrapTensorSubclass(torch.nn.Module):
             for attr in inner_tensors_attrnames:
                 val = getattr(tensor, attr)
                 if not isinstance(val, torch.Tensor):
+                    if not is_opaque_reference_type(type(val)):
+                        raise ValueError(
+                            f"{type(val).__name__!r} found in tensor attrs of "
+                            f"{type(tensor).__name__}.__tensor_flatten__(). "
+                            "Only tensors and reference-type opaques are allowed "
+                            "in tensor attrs."
+                        )
                     attr_to_meta[attr] = OpaqueMeta()
                     plain_tensor_container.append(val)
                     new_idx += 1

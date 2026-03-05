@@ -33,11 +33,9 @@ from torch._inductor.custom_graph_pass import (
     CustomRuntimeEstimator,
 )
 from torch._library.fake_class_registry import FakeScriptObject
-from torch._library.opaque_object import is_opaque_value
 from torch._library.utils import is_builtin
 from torch._logging import LazyString, trace_structured
 from torch._logging._internal import trace_log
-from torch._opaque_base import OpaqueBase
 from torch._subclasses.fake_tensor import extract_tensor_metadata
 from torch.fx.experimental._backward_state import BackwardState
 from torch.fx.experimental.proxy_tensor import is_sym_node, py_sym_types
@@ -46,7 +44,7 @@ from torch.fx.experimental.symbolic_shapes import (
     find_symbol_binding_fx_nodes,
     free_symbols,
     is_symbol_binding_fx_node,
-    optimization_hint,
+    size_hint,
     statically_known_false,
     statically_known_true,
 )
@@ -1086,8 +1084,7 @@ def _extract_fwd_bwd_modules(
     saved_opaque_objects = []
     for node in saved_values:
         # Check if this is an opaque object
-        val = node.meta.get("val")
-        if isinstance(val, (FakeScriptObject, OpaqueBase)) or is_opaque_value(val):
+        if isinstance(node.meta.get("val"), FakeScriptObject):
             saved_opaque_objects.append(node)
         elif node.meta.get("saved_tensor_with_no_vc_check", False):
             saved_values_no_vc_check.append(node)
@@ -1373,7 +1370,7 @@ def _size_of(node: fx.Node) -> int:
     def object_nbytes(x: object) -> int:
         if not isinstance(x, torch.Tensor):
             return 0
-        return _tensor_nbytes(optimization_hint(x.numel(), fallback=4096), x.dtype)
+        return _tensor_nbytes(size_hint(x.numel(), fallback=4096), x.dtype)
 
     if "val" in node.meta:
         val = node.meta["val"]
@@ -2258,13 +2255,9 @@ def solve_min_cut(
             weight = float(sym_node_size(node))
             cannot_save_reason = None
         elif is_non_tensor_node:
-            # FakeScriptObjects and opaque objects should have weight 0.0 so
-            # they can be properly partitioned between forward and backward,
-            # like BackwardState.
-            node_val = node.meta.get("val")
-            if isinstance(
-                node_val, (BackwardState, FakeScriptObject, OpaqueBase)
-            ) or is_opaque_value(node_val):
+            # FakeScriptObjects (opaque objects) should have weight 0.0 so they can be
+            # properly partitioned between forward and backward, like BackwardState.
+            if isinstance(node.meta.get("val"), (BackwardState, FakeScriptObject)):
                 weight = 0.0
                 cannot_save_reason = None
             else:
@@ -2920,7 +2913,7 @@ def _remove_symbols_without_guarding(x: torch.Tensor, fallback: int) -> torch.Te
     shape = list(x.shape)
 
     def realize_symbol(d: torch.SymInt | int) -> int:
-        return optimization_hint(d, fallback=fallback)
+        return size_hint(d, fallback=fallback)
 
     shape = [realize_symbol(s) for s in shape]
     stride = [realize_symbol(s) for s in x.stride()]
@@ -2934,7 +2927,7 @@ def estimate_runtime(node: fx.Node) -> float:
         if isinstance(x, fx.Node) and isinstance(x.meta["val"], torch.Tensor):
             return _remove_symbols_without_guarding(x.meta["val"], fallback=4096)
         elif isinstance(x, fx.Node) and isinstance(x.meta["val"], torch.SymInt):
-            return optimization_hint(x.meta["val"], fallback=4096)
+            return size_hint(x.meta["val"], fallback=4096)
         elif isinstance(x, fx.Node) and isinstance(x.meta["val"], torch.SymFloat):
             return 1.0
         elif isinstance(x, fx.Node) and isinstance(x.meta["val"], torch.SymBool):

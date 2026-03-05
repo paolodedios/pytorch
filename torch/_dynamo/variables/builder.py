@@ -487,6 +487,7 @@ class VariableBuilder:
             )
 
     def _call_impl(self, value: object) -> VariableTracker:
+        self.tx.output.current_tracer.traced_sources.add(self.source)
         if value in self.tx.output.side_effects:
             side_effect_result = self.tx.output.side_effects[value]
             dup_guard = make_dupe_guard(self.source, side_effect_result.source)
@@ -2493,12 +2494,14 @@ class VariableBuilder:
             attrs, _ = value.__tensor_flatten__()
             for attr in attrs:
                 inner_value = getattr(value, attr)
-                if is_opaque_value_type(type(inner_value)):
+                if not isinstance(
+                    inner_value, torch.Tensor
+                ) and not is_opaque_reference_type(type(inner_value)):
                     raise RuntimeError(
-                        f"value-type opaque {type(inner_value).__name__!r} found in "
-                        f"tensor attrs of {type(value).__name__}.__tensor_flatten__(). "
-                        "Value-type opaques must be placed in ctx (the second "
-                        "return value), not in tensor attrs (the first return value)."
+                        f"{type(inner_value).__name__!r} found in tensor attrs of "
+                        f"{type(value).__name__}.__tensor_flatten__(). "
+                        "Only tensors and reference-type opaques are allowed "
+                        "in tensor attrs."
                     )
                 inner_source = AttrSource(self.source, attr)
                 LazyVariableTracker.realize_all(

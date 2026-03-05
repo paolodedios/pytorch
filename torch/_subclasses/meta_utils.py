@@ -681,6 +681,8 @@ class MetaTensorDesc(Generic[_TensorT]):
     bdim: int | None = None  # is_functorch_wrapped
     base: MetaTensorDesc[Any] | None = None  # is_view
     attrs: dict[str, MetaTensorDesc[Any]] | None = None  # is_traceable_wrapper_subclass
+    # A Tensor subclass containing opaque references is almost certainly NOT
+    # serializable.
     opaque_attrs: dict[str, OpaqueBase] | None = (
         None  # non-tensor attrs from __tensor_flatten__
     )

@@ -12,6 +12,7 @@ from typing import Any, TYPE_CHECKING, TypeGuard, TypeVar
 import torch
 import torch.utils._pytree as pytree
 from torch import SymInt, Tensor
+from torch._library.opaque_object import is_opaque_reference_type
 from torch._subclasses.fake_tensor import get_plain_tensors
 from torch.types import IntLikeType
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
@@ -46,6 +47,15 @@ if TYPE_CHECKING:
 zip = strict_zip
 
 T = TypeVar("T", bound=torch.Tensor)
+
+
+def _unwrap_fake_type(value: object) -> type:
+    """Get the real type of an opaque, unwrapping FakeScriptObject if needed."""
+    from torch._library.fake_class_registry import FakeScriptObject
+
+    if isinstance(value, FakeScriptObject):
+        return type(value.real_obj)
+    return type(value)
 
 
 def requires_subclass_dispatch(
@@ -124,6 +134,16 @@ def create_subclass_metadata(
     for key in inner_keys:
         inner_value = getattr(a, key)
         if not isinstance(inner_value, Tensor):
+            # During tracing, opaques are wrapped in FakeScriptObject;
+            # unwrap to check the real type.
+            real_type = _unwrap_fake_type(inner_value)
+            if not is_opaque_reference_type(real_type):
+                raise RuntimeError(
+                    f"{real_type.__name__!r} found in tensor attrs of "
+                    f"{type(a).__name__}.__tensor_flatten__(). "
+                    "Only tensors and reference-type opaques are allowed "
+                    "in tensor attrs."
+                )
             attrs[key] = OpaqueMeta()
             new_start_idx += 1
             continue

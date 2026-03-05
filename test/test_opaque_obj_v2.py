@@ -20,7 +20,6 @@ from torch._dynamo.testing import (
 )
 from torch._dynamo.utils import counters, counters as dynamo_counters
 from torch._functorch import config as functorch_config
-from torch._functorch._aot_autograd.autograd_cache import AOTAutogradCache
 from torch._functorch.aot_autograd import (
     aot_compile_joint_with_descriptors,
     aot_export_joint_with_descriptors,
@@ -28,6 +27,7 @@ from torch._functorch.aot_autograd import (
 )
 from torch._inductor import config as inductor_config
 from torch._inductor.compile_fx import compile_fx
+from torch._inductor.utils import fresh_inductor_cache
 from torch._library.effects import EffectType
 from torch._library.fake_class_registry import FakeScriptObject, maybe_to_fake_obj
 from torch._library.opaque_object import (
@@ -2410,7 +2410,7 @@ class GraphModule(torch.nn.Module):
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "value-type.*tensor attrs",
+            "SizeStore.*tensor attrs.*Only tensors and reference-type opaques",
         ):
             opt_fn(x)
 
@@ -2698,36 +2698,35 @@ def forward(self, L_x_ : torch.Tensor, G_Color_GREEN : {_illegal_char_regex.sub(
     )
     def test_hoist_cache_hits(self):
         torch._dynamo.reset()
-        AOTAutogradCache.clear()
-        torch._inductor.codecache.FxGraphCache.clear()
         counters.clear()
 
-        # Because HoistedString should not be in the graph, the following
-        # two functions should share AOTAutogradCache and FXGraphCache entries
+        with fresh_inductor_cache():
+            # Because HoistedString should not be in the graph, the following
+            # two functions should share AOTAutogradCache and FXGraphCache entries
 
-        @torch.compile(fullgraph=True)
-        def f(x):
-            return op_with_string(x, HoistedString("double"))
+            @torch.compile(fullgraph=True)
+            def f(x):
+                return op_with_string(x, HoistedString("double"))
 
-        @torch.compile(fullgraph=True)
-        def g(x):
-            return op_with_string(x, HoistedString("square"))
+            @torch.compile(fullgraph=True)
+            def g(x):
+                return op_with_string(x, HoistedString("square"))
 
-        x = torch.tensor(3.0)
+            x = torch.tensor(3.0)
 
-        f(x)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 0)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_saved"], 1)
-        self.assertEqual(counters["inductor"]["fxgraph_cache_hit"], 0)
-        self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 1)
+            f(x)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 0)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_saved"], 1)
+            self.assertEqual(counters["inductor"]["fxgraph_cache_hit"], 0)
+            self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 1)
 
-        g(x)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 1)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_saved"], 1)
-        self.assertEqual(counters["inductor"]["fxgraph_cache_hit"], 1)
-        self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 1)
+            g(x)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 1)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_saved"], 1)
+            self.assertEqual(counters["inductor"]["fxgraph_cache_hit"], 1)
+            self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 1)
 
     def test_opaque_class_literal_attribute_inlined(self):
         """Test that literal attributes on opaque classes are inlined without source tracking.
@@ -3076,46 +3075,46 @@ def forward(self, p_linear_weight, p_linear_bias, obj_lifted_custom_0, x):
     def test_subclass_opaque_attrs_cache_hit(self):
         """opaque_attrs in SubclassCreationMeta should survive AOTAutograd cache round-trip."""
         torch._dynamo.reset()
-        AOTAutogradCache.clear()
-        torch._inductor.codecache.FxGraphCache.clear()
         counters.clear()
 
-        @torch.compile(fullgraph=True)
-        def fn(x):
-            return x * 2
+        with fresh_inductor_cache():
 
-        a = torch.randn(4, 4)
-        b = torch.randn(4, 4)
-        counter = Counter(start=3, end=10)
-        size = SizeStore(4)
-        x = TensorWithCounter(a, b, counter, size)
+            @torch.compile(fullgraph=True)
+            def fn(x):
+                return x * 2
 
-        out = fn(x)
-        self.assertIsInstance(out, TensorWithCounter)
-        self.assertIs(out._counter, counter)
-        self.assertIs(out._size_store, size)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 0)
+            a = torch.randn(4, 4)
+            b = torch.randn(4, 4)
+            counter = Counter(start=3, end=10)
+            size = SizeStore(4)
+            x = TensorWithCounter(a, b, counter, size)
 
-        # Reset dynamo to force a fresh compilation that should hit the cache
-        torch._dynamo.reset()
+            out = fn(x)
+            self.assertIsInstance(out, TensorWithCounter)
+            self.assertIs(out._counter, counter)
+            self.assertIs(out._size_store, size)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_miss"], 1)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 0)
 
-        @torch.compile(fullgraph=True)
-        def fn2(x):
-            return x * 2
+            # Reset dynamo to force a fresh compilation that should hit the cache
+            torch._dynamo.reset()
 
-        a2 = torch.randn(4, 4)
-        b2 = torch.randn(4, 4)
-        counter2 = Counter(start=3, end=10)
-        size2 = SizeStore(4)
-        x2 = TensorWithCounter(a2, b2, counter2, size2)
+            @torch.compile(fullgraph=True)
+            def fn2(x):
+                return x * 2
 
-        out2 = fn2(x2)
-        self.assertIsInstance(out2, TensorWithCounter)
-        # Runtime opaque values should be used, not the serialized ones
-        self.assertIs(out2._counter, counter2)
-        self.assertEqual(out2._size_store, size2)
-        self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 1)
+            a2 = torch.randn(4, 4)
+            b2 = torch.randn(4, 4)
+            counter2 = Counter(start=3, end=10)
+            size2 = SizeStore(4)
+            x2 = TensorWithCounter(a2, b2, counter2, size2)
+
+            out2 = fn2(x2)
+            self.assertIsInstance(out2, TensorWithCounter)
+            # Runtime opaque values should be used, not the serialized ones
+            self.assertIs(out2._counter, counter2)
+            self.assertEqual(out2._size_store, size2)
+            self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 1)
 
 
 instantiate_parametrized_tests(TestOpaqueObject)
