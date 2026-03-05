@@ -616,6 +616,168 @@ conv3d_template = TritonTemplate(
 """,
 )
 
+# =============================================================================
+# ConvTranspose3d (transposed == True, ndim == 3)
+# Uses implicit GEMM: tiles over (N*OUT_D*OUT_H*OUT_W, GROUP_OUT_C) with BLOCK_M x BLOCK_N.
+# Inner reduction over KERNEL_D * KERNEL_H * KERNEL_W * GROUP_IN_C with BLOCK_K chunks.
+# Weight layout: [in_channels, out_channels/groups, kernel_d, kernel_h, kernel_w]
+#   dim 0 = in_channels (reduction), dim 1 = out_channels/groups (output).
+# =============================================================================
+
+
+@SymbolicGridFn
+def conv_transpose3d_grid(n, c, d, h, w, meta, *, cdiv):
+    return (
+        cdiv(n * d * h * w, meta["BLOCK_M"]),
+        cdiv(c, meta["BLOCK_N"]),
+        meta["GROUPS"],
+    )
+
+
+LOOP_BODY_TRANSPOSE_3D = """
+        tmp_d = idx_y_d + PADDING_D - d
+        tmp_h = idx_y_h + PADDING_H - i
+        tmp_w = idx_y_w + PADDING_W - j
+        idx_x_d = tmp_d // STRIDE_D
+        idx_x_h = tmp_h // STRIDE_H
+        idx_x_w = tmp_w // STRIDE_W
+        idx_x_c = tl.arange(0, BLOCK_K) + k
+
+        x_ptrs = x_base + (
+            (idx_x_d * stride_xd)[:, None]
+            + (idx_x_h * stride_xh)[:, None]
+            + (idx_x_w * stride_xw)[:, None]
+            + (idx_x_c * stride_xc)[None, :]
+        )
+        mask_x = (
+            (idx_n < BATCH)[:, None]
+            & (tmp_d >= 0)[:, None]
+            & (tmp_d % STRIDE_D == 0)[:, None]
+            & (idx_x_d >= 0)[:, None]
+            & (idx_x_d < IN_D)[:, None]
+            & (tmp_h >= 0)[:, None]
+            & (tmp_h % STRIDE_H == 0)[:, None]
+            & (idx_x_h >= 0)[:, None]
+            & (idx_x_h < IN_H)[:, None]
+            & (tmp_w >= 0)[:, None]
+            & (tmp_w % STRIDE_W == 0)[:, None]
+            & (idx_x_w >= 0)[:, None]
+            & (idx_x_w < IN_W)[:, None]
+            & (idx_x_c < GROUP_IN_C)[None, :]
+        )
+        matrix_x = tl.load(x_ptrs, mask=mask_x, other=0.0)
+
+        # Weight layout: [in_channels, out_channels/groups, kernel_d, kernel_h, kernel_w]
+        w_ptrs = w_base + (
+            (idx_x_c * stride_wc_in)[:, None] +
+            (d * stride_wd) + (i * stride_wh) + (j * stride_ww)
+        )
+        mask_w = (idx_x_c[:, None] < GROUP_IN_C) & (idx_y_c[None, :] < GROUP_OUT_C)
+        matrix_w = tl.load(w_ptrs, mask=mask_w, other=0.0)
+        acc += tl.dot(matrix_x, matrix_w, allow_tf32=ALLOW_TF32)
+"""
+
+conv_transpose3d_template = TritonTemplate(
+    name="conv_transpose3d",
+    grid=conv_transpose3d_grid,
+    source=r"""
+{{def_kernel("X", "W")}}
+    # Tensor dimensions
+    BATCH = {{size("X", 0)}}
+    IN_C = {{size("X", 1)}}
+    IN_D = {{size("X", 2)}}
+    IN_H = {{size("X", 3)}}
+    IN_W = {{size("X", 4)}}
+    OUT_C = {{size(None, 1)}}
+    OUT_D = {{size(None, 2)}}
+    OUT_H = {{size(None, 3)}}
+    OUT_W = {{size(None, 4)}}
+
+    # Strides:
+    stride_xn = {{stride("X", 0)}}
+    stride_xc = {{stride("X", 1)}}
+    stride_xd = {{stride("X", 2)}}
+    stride_xh = {{stride("X", 3)}}
+    stride_xw = {{stride("X", 4)}}
+    # Weight: [in_channels, out_channels/groups, kernel_d, kernel_h, kernel_w]
+    stride_wc_in = {{stride("W", 0)}}
+    stride_wc_out = {{stride("W", 1)}}
+    stride_wd = {{stride("W", 2)}}
+    stride_wh = {{stride("W", 3)}}
+    stride_ww = {{stride("W", 4)}}
+
+    ndhw = tl.program_id(0).to(INDEX_DTYPE) * BLOCK_M + tl.arange(0, BLOCK_M)
+    idx_y_w = ndhw % OUT_W
+    ndh = ndhw // OUT_W
+    idx_y_h = ndh % OUT_H
+    nd = ndh // OUT_H
+    idx_y_d = nd % OUT_D
+    idx_n = nd // OUT_D
+    idx_y_c = tl.program_id(1).to(INDEX_DTYPE) * BLOCK_N + tl.arange(0, BLOCK_N)
+
+{% if GROUPS == 1 %}
+    group = 0
+    GROUP_IN_C = IN_C
+    GROUP_OUT_C = OUT_C
+{% else %}
+    group = tl.program_id(2).to(INDEX_DTYPE)
+    GROUP_IN_C = IN_C // GROUPS
+    GROUP_OUT_C = OUT_C // GROUPS
+{% endif %}
+
+    x_base = X + (group * stride_xc * GROUP_IN_C + idx_n * stride_xn)[:, None]
+    w_base = (
+        W + (group * stride_wc_in * GROUP_IN_C + idx_y_c * stride_wc_out)[None, :]
+    )
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+{% if UNROLL %}
+{% for d in range(KERNEL_D) %}
+{% for i in range(KERNEL_H) %}
+{% for j in range(KERNEL_W) %}
+    d = {{d}}
+    i = {{i}}
+    j = {{j}}
+    for k in range(0, GROUP_IN_C, BLOCK_K):
+        """
+    + LOOP_BODY_TRANSPOSE_3D
+    + """
+{% endfor %}
+{% endfor %}
+{% endfor %}
+{% else %}
+    BLOCK_K_COUNT = (GROUP_IN_C + BLOCK_K - 1) // BLOCK_K
+    for dijk in range(KERNEL_D * KERNEL_H * KERNEL_W * BLOCK_K_COUNT):
+        k = (dijk % BLOCK_K_COUNT) * BLOCK_K
+        dij = dijk // BLOCK_K_COUNT
+        j = dij % KERNEL_W
+        di = dij // KERNEL_W
+        i = di % KERNEL_H
+        d = di // KERNEL_H
+        """
+    + LOOP_BODY_TRANSPOSE_3D
+    + """
+{% endif %}
+
+    mask = (
+        (idx_n < BATCH)[:, None]
+        & (idx_y_d < OUT_D)[:, None]
+        & (idx_y_h < OUT_H)[:, None]
+        & (idx_y_w < OUT_W)[:, None]
+        & (idx_y_c < GROUP_OUT_C)[None, :]
+    )
+    idx_n = idx_n[:, None]
+    idx_c = idx_y_c[None, :] + group * GROUP_OUT_C
+    idx_d = idx_y_d[:, None]
+    idx_h = idx_y_h[:, None]
+    idx_w = idx_y_w[:, None]
+
+    # inductor generates a suffix
+    {{store_output(("idx_n", "idx_c", "idx_d", "idx_h", "idx_w"), "acc", "mask", val_shape=("BLOCK_M", "BLOCK_N"))}}
+""",
+)
+
 aten_convolution = ExternKernelChoice(
     torch.convolution,
     "at::convolution",
@@ -1008,6 +1170,27 @@ def convolution(
                     STRIDE_W=stride[1],
                     PADDING_H=padding[0],
                     PADDING_W=padding[1],
+                    GROUPS=groups,
+                    UNROLL=is_ones(kernel_shape),
+                    ALLOW_TF32=torch.backends.cudnn.fp32_precision == "tf32",
+                    num_stages=cfg.num_stages,
+                    num_warps=cfg.num_warps,
+                    **cfg.kwargs,
+                )
+            elif ndim == 3:
+                conv_transpose3d_template.maybe_append_choice(
+                    choices,
+                    input_nodes=(x, weight),
+                    layout=layout,
+                    KERNEL_D=kernel_shape[0],
+                    KERNEL_H=kernel_shape[1],
+                    KERNEL_W=kernel_shape[2],
+                    STRIDE_D=stride[0],
+                    STRIDE_H=stride[1],
+                    STRIDE_W=stride[2],
+                    PADDING_D=padding[0],
+                    PADDING_H=padding[1],
+                    PADDING_W=padding[2],
                     GROUPS=groups,
                     UNROLL=is_ones(kernel_shape),
                     ALLOW_TF32=torch.backends.cudnn.fp32_precision == "tf32",
