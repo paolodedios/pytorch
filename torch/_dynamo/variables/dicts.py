@@ -879,23 +879,40 @@ class ConstDictVariable(VariableTracker):
                 # Always return the specialized dictionary, and in the case
                 # both are specialized, take the first to be the type of the
                 # new dictionary
-                if self.user_cls is not dict:
-                    user_cls = self.user_cls
+                reverse = self.user_cls is dict and other.user_cls is not dict
+                if reverse:
+                    # In this case, we have to clone the other dict, but enter the keys and values
+                    # from self first to be consistent with the semantics of __or__. For example,
+                    # {"a": 1, "b": 2} | {"b": 3, "c": 4} should give {"a": 1, "b": 3, "c": 4}, and
+                    # moreover, list(result.keys()) should give ["a", "b", "c"] (insertion order of
+                    # the first dict). The most obvious way to do this would be to clone self but
+                    # set the user_cls of other. However, this causes a test failure in
+                    # test/dynamo/test_dicts.py::DictSubclassMethodsTests.test_binop_or, for which
+                    # self.clone() cannot deal with extra attributes that are present in other but
+                    # not in self. Instead, we clone other, set the items to be empty, and then
+                    # update the items with self's items followed by other's items.
+                    to_cpy = other
                 else:
-                    user_cls = other.user_cls
-
-                self.install_dict_keys_match_guard()
-                new_dict_vt = self.clone(
-                    items=self.items.copy(),
-                    mutation_type=ValueMutationNew(),
-                    source=None,
-                    user_cls=user_cls,
-                )
+                    to_cpy = self
 
                 # NB - Guard on all the keys of the other dict to ensure
                 # correctness.
-                args[0].install_dict_keys_match_guard()  # type: ignore[attr-defined]
-                new_dict_vt.items.update(other.items)  # type: ignore[attr-defined]
+                self.install_dict_keys_match_guard()
+                other.install_dict_keys_match_guard()
+
+                new_dict_vt = to_cpy.clone(
+                    items={} if reverse else to_cpy.items.copy(),
+                    mutation_type=ValueMutationNew(),
+                    source=None,
+                    user_cls=to_cpy.user_cls,
+                )
+
+                if reverse:
+                    new_dict_vt.items.update(self.items)  # type: ignore[attr-defined]
+                    new_dict_vt.items.update(other.items)  # type: ignore[attr-defined]
+                else:
+                    new_dict_vt.items.update(other.items)  # type: ignore[attr-defined]
+
                 return new_dict_vt
             else:
                 err_msg = (
