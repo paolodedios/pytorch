@@ -85,6 +85,7 @@ from torch._inductor.utils import (
     count_tangents,
     fresh_cache,
     get_all_devices,
+    get_static_bw_input_idxs,
     InputType,
     is_gpu,
     should_assume_input_aligned,
@@ -2262,6 +2263,7 @@ class CompilerConfigExtra:
     cudagraphs: BoxedBool
     graph_id: int
     forward_device: BoxedDeviceIndex
+    forward_is_partitioned: BoxedBool
 
 
 def create_compiler_config_extra(config: types.ModuleType) -> CompilerConfigExtra:
@@ -2280,10 +2282,16 @@ def create_compiler_config_extra(config: types.ModuleType) -> CompilerConfigExtr
     # See [Backward Generation Handling]
     forward_device = BoxedDeviceIndex(None)
 
+    # Set by the forward compilation when it is partitioned for CUDA graphs.
+    # The backward reads this to decide whether saved tensors can be assumed
+    # to have fixed addresses.
+    forward_is_partitioned = BoxedBool(False)
+
     return CompilerConfigExtra(
         cudagraphs=cudagraphs,
         graph_id=graph_id,
         forward_device=forward_device,
+        forward_is_partitioned=forward_is_partitioned,
     )
 
 
@@ -2387,7 +2395,7 @@ def compile_fx_forward(
     # original strides
     _recursive_record_user_visible_output_idxs(gm)
 
-    return inner_compile(
+    result = inner_compile(
         gm,
         example_inputs,
         static_input_idxs=get_static_input_idxs(fixed),
@@ -2396,6 +2404,16 @@ def compile_fx_forward(
         is_inference=is_inference,
         boxed_forward_device_index=compiler_config_extra.forward_device,
     )
+
+    if (
+        not is_inference
+        and isinstance(result, CompiledFxGraph)
+        and result.partition_maps
+        and len(result.partition_maps) > 1
+    ):
+        compiler_config_extra.forward_is_partitioned.value = True
+
+    return result
 
 
 def compile_fx_backward(
@@ -2428,6 +2446,13 @@ def compile_fx_backward(
             model_outputs_node.meta["user_visible_output_idxs"] = []
 
         fixed = count_tangents(gm)
+        # When the forward was partitioned, saved activations from inline
+        # code between partitions are NOT at fixed addresses. Only mark
+        # primals (params/buffers) as static.
+        if compiler_config_extra.forward_is_partitioned.value:
+            static_input_idxs: Sequence[int] = get_static_bw_input_idxs(gm)
+        else:
+            static_input_idxs = list(range(fixed))
         with (
             config.patch(get_cpp_wrapper_config())
             if config.cpp_wrapper
@@ -2436,7 +2461,7 @@ def compile_fx_backward(
             return inner_compile(
                 gm,
                 example_inputs,
-                static_input_idxs=list(range(fixed)),
+                static_input_idxs=static_input_idxs,
                 cudagraphs=compiler_config_extra.cudagraphs,
                 is_backward=True,
                 graph_id=compiler_config_extra.graph_id,
