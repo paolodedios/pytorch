@@ -27,21 +27,23 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import argparse
-from typing import Type, Tuple, Union
+from typing import Tuple, Type, Union
 
 import cuda.bindings.driver as cuda
-import torch
 
 import cutlass
 import cutlass.cute as cute
-from cutlass.cute.nvgpu import cpasync, tcgen05
+import cutlass.pipeline as pipeline
 import cutlass.torch as cutlass_torch
 import cutlass.utils as utils
-import cutlass.pipeline as pipeline
-from cutlass.pipeline import pipeline_init_arrive, pipeline_init_wait
 import cutlass.utils.blackwell_helpers as sm100_utils
 import cutlass.utils.blockscaled_layout as blockscaled_utils
+from cutlass.cute.nvgpu import cpasync, tcgen05
 from cutlass.cute.runtime import from_dlpack
+from cutlass.pipeline import pipeline_init_arrive, pipeline_init_wait
+
+import torch
+
 
 """
 This example provides an experimental implementation of the SM100 batched dense blockscaled GEMM kernel, please note that the APIs and implementation details related to this kernel may change in future releases.
@@ -152,11 +154,17 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
 
     Example:
         >>> gemm = Sm100BlockScaledPersistentDenseGemmKernel(
-        ...     sf_vec_size=16,
-        ...     mma_tiler_mn=(256, 128),
-        ...     cluster_shape_mn=(2, 1)
+        ...     sf_vec_size=16, mma_tiler_mn=(256, 128), cluster_shape_mn=(2, 1)
         ... )
-        >>> gemm(a_tensor, b_tensor, sfa_tensor, sfb_tensor, c_tensor, max_active_clusters, stream)
+        >>> gemm(
+        ...     a_tensor,
+        ...     b_tensor,
+        ...     sfa_tensor,
+        ...     sfb_tensor,
+        ...     c_tensor,
+        ...     max_active_clusters,
+        ...     stream,
+        ... )
     """
 
     def __init__(
@@ -370,13 +378,23 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
 
         # Compute number of TMEM columns for SFA/SFB/Accumulator
         sf_atom_mn = 32
-        self.num_sfa_tmem_cols = (self.cta_tile_shape_mnk[0] // sf_atom_mn) * mma_inst_tile_k
-        self.num_sfb_tmem_cols = (self.cta_tile_shape_mnk_sfb[1] // sf_atom_mn) * mma_inst_tile_k
+        self.num_sfa_tmem_cols = (
+            self.cta_tile_shape_mnk[0] // sf_atom_mn
+        ) * mma_inst_tile_k
+        self.num_sfb_tmem_cols = (
+            self.cta_tile_shape_mnk_sfb[1] // sf_atom_mn
+        ) * mma_inst_tile_k
         self.num_sf_tmem_cols = self.num_sfa_tmem_cols + self.num_sfb_tmem_cols
-        self.num_accumulator_tmem_cols = self.cta_tile_shape_mnk[1] * self.num_acc_stage if not self.overlapping_accum else self.cta_tile_shape_mnk[1] * 2 - self.num_sf_tmem_cols
+        self.num_accumulator_tmem_cols = (
+            self.cta_tile_shape_mnk[1] * self.num_acc_stage
+            if not self.overlapping_accum
+            else self.cta_tile_shape_mnk[1] * 2 - self.num_sf_tmem_cols
+        )
 
         # Only when overlapping_accum is enabled, we need to release accumulator buffer early in epilogue
-        self.iter_acc_early_release_in_epilogue = self.num_sf_tmem_cols // self.epi_tile_n
+        self.iter_acc_early_release_in_epilogue = (
+            self.num_sf_tmem_cols // self.epi_tile_n
+        )
 
     @cute.jit
     def __call__(
@@ -556,25 +574,21 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
             y = cute.ceil_div(tma_tensor_sfb.shape[0][1], 4)
 
             new_shape = (
-                (
-                    tma_tensor_sfb.shape[0][0],
-                    ((2, 2), y)
-                ),
+                (tma_tensor_sfb.shape[0][0], ((2, 2), y)),
                 tma_tensor_sfb.shape[1],
-                tma_tensor_sfb.shape[2]
+                tma_tensor_sfb.shape[2],
             )
             # Use right multiplication for ScaledBasis (3 * x instead of x * 3)
             x_times_3 = 3 * x
             new_stride = (
-                (
-                    tma_tensor_sfb.stride[0][0],
-                    ((x, x), x_times_3)
-                ),
+                (tma_tensor_sfb.stride[0][0], ((x, x), x_times_3)),
                 tma_tensor_sfb.stride[1],
-                tma_tensor_sfb.stride[2]
+                tma_tensor_sfb.stride[2],
             )
             tma_tensor_sfb_new_layout = cute.make_layout(new_shape, stride=new_stride)
-            tma_tensor_sfb = cute.make_tensor(tma_tensor_sfb.iterator, tma_tensor_sfb_new_layout)
+            tma_tensor_sfb = cute.make_tensor(
+                tma_tensor_sfb.iterator, tma_tensor_sfb_new_layout
+            )
 
         a_copy_size = cute.size_in_bytes(self.a_dtype, a_smem_layout)
         b_copy_size = cute.size_in_bytes(self.b_dtype, b_smem_layout)
@@ -962,13 +976,13 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
                 tCtAcc_fake.iterator,
                 cute.make_layout(
                     tCtAcc_fake.shape,
-                    stride = (
+                    stride=(
                         tCtAcc_fake.stride[0],
                         tCtAcc_fake.stride[1],
                         tCtAcc_fake.stride[2],
-                        (256 - self.num_sf_tmem_cols) * tCtAcc_fake.stride[0][1]
-                    ) 
-                )
+                        (256 - self.num_sf_tmem_cols) * tCtAcc_fake.stride[0][1],
+                    ),
+                ),
             )
         else:
             # (MMA, MMA_M, MMA_N, STAGE)
@@ -1027,9 +1041,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
                 if cutlass.const_expr(self.cta_tile_shape_mnk[1] == 64):
                     slice_n = mma_tile_coord_mnl[1] // 2
                 # ((atom_v, rest_v), RestK)
-                tBgSFB_slice = tBgSFB[
-                    (None, slice_n, None, mma_tile_coord_mnl[2])
-                ]
+                tBgSFB_slice = tBgSFB[(None, slice_n, None, mma_tile_coord_mnl[2])]
 
                 # Peek (try_wait) AB buffer empty for k_tile = prefetch_k_tile_cnt
                 ab_producer_state.reset_count()
@@ -1205,11 +1217,15 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
                 tCtSFB_mma = tCtSFB
                 if cutlass.const_expr(self.cta_tile_shape_mnk[1] == 192):
                     # If this is an ODD tile, shift the TMEM start address for cta_tile_shape_n=192 case by two words (ignores first 64 columns of SFB)
-                    offset = cutlass.Int32(2) if mma_tile_coord_mnl[1] % 2 == 1 else cutlass.Int32(0)
+                    offset = (
+                        cutlass.Int32(2)
+                        if mma_tile_coord_mnl[1] % 2 == 1
+                        else cutlass.Int32(0)
+                    )
                     shifted_ptr = cute.recast_ptr(
                         acc_tmem_ptr
-                         + self.num_accumulator_tmem_cols
-                         + self.num_sfa_tmem_cols
+                        + self.num_accumulator_tmem_cols
+                        + self.num_sfa_tmem_cols
                         + offset,
                         dtype=self.sf_dtype,
                     )
@@ -1218,7 +1234,7 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
                     # Move in increments of 64 columns of SFB
                     offset = cutlass.Int32((mma_tile_coord_mnl[1] % 2) * 2)
                     shifted_ptr = cute.recast_ptr(
-                        acc_tmem_ptr 
+                        acc_tmem_ptr
                         + self.num_accumulator_tmem_cols
                         + self.num_sfa_tmem_cols
                         + offset,
@@ -1415,7 +1431,11 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
                 # Get accumulator stage index
                 if cutlass.const_expr(self.overlapping_accum):
                     acc_stage_index = acc_consumer_state.phase
-                    reverse_subtile = cutlass.Boolean(True) if acc_stage_index == 0 else cutlass.Boolean(False)
+                    reverse_subtile = (
+                        cutlass.Boolean(True)
+                        if acc_stage_index == 0
+                        else cutlass.Boolean(False)
+                    )
                 else:
                     acc_stage_index = acc_consumer_state.index
 
@@ -1442,7 +1462,11 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
                     real_subtile_idx = subtile_idx
                     if cutlass.const_expr(self.overlapping_accum):
                         if reverse_subtile:
-                            real_subtile_idx = self.cta_tile_shape_mnk[1] // self.epi_tile_n - 1 - subtile_idx
+                            real_subtile_idx = (
+                                self.cta_tile_shape_mnk[1] // self.epi_tile_n
+                                - 1
+                                - subtile_idx
+                            )
                     #
                     # Load accumulator from tensor memory buffer to register
                     #
@@ -2129,4 +2153,3 @@ def cvt_sf_MKL_to_M32x4xrm_K4xrk_L(
     for i in cutlass.range(cute.size(sf_ref_tensor)):
         mkl_coord = sf_ref_tensor.layout.get_hier_coord(i)
         sf_mma_tensor[mkl_coord] = sf_ref_tensor[mkl_coord]
-
