@@ -540,8 +540,6 @@ if torch.backends.mps.is_available():
             ],
             "nn.functional.norm": None,
             "ormqr": None,
-            "pow": [torch.bool],
-            "remainder": [torch.bool],
             "rounddecimals_0": [
                 torch.uint8,
                 torch.int8,
