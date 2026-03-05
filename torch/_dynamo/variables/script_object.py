@@ -20,6 +20,7 @@ by limiting operations to known-safe patterns and failing fast for unsafe usage.
 
 import functools
 import inspect
+import types
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, Optional, TYPE_CHECKING, TypeVar
 from typing_extensions import ParamSpec
@@ -144,6 +145,17 @@ class OpaqueObjectClassVariable(UserDefinedVariable):
 
         source = AttrSource(self.source, name) if self.source else None
         return VariableTracker.build(tx, obj, source)
+
+    def call_obj_hasattr(
+        self, tx: "InstructionTranslator", name: str
+    ) -> ConstantVariable:
+        if self.source:
+            from ..guards import GuardBuilder, install_guard
+
+            source = AttrSource(self.source, name)
+            install_guard(source.make_guard(GuardBuilder.HASATTR))
+            return ConstantVariable(hasattr(self.value, name))
+        return super().call_obj_hasattr(tx, name)
 
     def call_function(
         self,
@@ -270,7 +282,9 @@ class TorchScriptObjectVariable(UserDefinedObjectVariable):
 
             if member_type == MemberType.USE_REAL:
                 value = getattr(real_obj, name)
-                if inspect.ismethod(value):
+                if inspect.ismethod(value) or isinstance(
+                    value, types.MethodWrapperType
+                ):
                     return LambdaVariable(
                         lambda *args, **kwargs: self.call_method(tx, name, args, kwargs)
                     )
@@ -345,8 +359,7 @@ class TorchScriptObjectVariable(UserDefinedObjectVariable):
         constant_val = method(*args_const, **kwargs_const)
 
         if any(
-            is_opaque_reference_type(type(r))
-            for r in pytree.tree_leaves(constant_val)
+            is_opaque_reference_type(type(r)) for r in pytree.tree_leaves(constant_val)
         ):
             unimplemented(
                 gb_type="Opaque object member with method-type USE_REAL returned a reference-type opaque object.",

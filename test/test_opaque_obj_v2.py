@@ -1,6 +1,7 @@
 # Owner(s): ["module: custom-operators"]
 
 import contextlib
+import enum
 import gc
 import random
 from contextlib import ExitStack
@@ -2325,6 +2326,21 @@ class GraphModule(torch.nn.Module):
 
         expected = x * float(Color.RED.value)
         self.assertTrue(torch.allclose(result, expected))
+
+    def test_enum_export(self):
+        class Direction(enum.Enum):
+            UP = 0
+            DOWN = 1
+
+        class Mod(torch.nn.Module):
+            def forward(self, x, d):
+                return x + d.value
+
+        ep = torch.export.export(Mod(), (torch.randn(4, 4), Direction.UP), strict=False)
+        self.assertEqual(
+            ep.module()(torch.ones(4, 4), Direction.UP),
+            torch.ones(4, 4) + Direction.UP.value,
+        )
 
 
 instantiate_parametrized_tests(TestOpaqueObject)

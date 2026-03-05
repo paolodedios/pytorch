@@ -265,7 +265,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         return key in self.value.__dict__
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
-        from . import ConstantVariable, EnumVariable
+        from . import ConstantVariable
 
         source = AttrSource(self.source, name) if self.source is not None else None
 
@@ -329,7 +329,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if ConstantVariable.is_literal(obj):
             return ConstantVariable.create(obj)
         elif isinstance(obj, enum.Enum):
-            return EnumVariable(obj)
+            return VariableTracker.build(tx, obj, source)
         elif self.value is collections.OrderedDict:
             return variables.GetAttrVariable(self, name)
         elif name in getattr(self.value, "__dict__", {}) or (
@@ -1033,11 +1033,7 @@ class UserDefinedEnumClassVariable(UserDefinedClassVariable):
         if method in enum_type_methods:
             if name == "__contains__" and len(args) == 1 and not kwargs:
                 arg = args[0]
-                if isinstance(arg, variables.EnumVariable):
-                    # Check if the enum value is a member of this enum class
-                    return variables.ConstantVariable.create(arg.value in self.value)
-                elif arg.is_python_constant():
-                    # Check if a constant value is in the enum
+                if arg.is_python_constant():
                     return variables.ConstantVariable.create(
                         arg.as_python_constant() in self.value
                     )

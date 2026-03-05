@@ -16,6 +16,7 @@ import torch
 import torch.fx._pytree as fx_pytree
 import torch.utils._pytree as pytree
 from torch._library.fake_class_registry import FakeScriptObject
+from torch._library.opaque_object import is_opaque_reference_type
 from torch.export import ExportedProgram
 from torch.export._tree_utils import reorder_kwargs
 from torch.export.exported_program import (
@@ -131,9 +132,9 @@ def _assign_attr(
                     torch.Tensor,
                     torch.ScriptObject,
                 ),
-            ):
+            ) and not is_opaque_reference_type(type(from_obj)):
                 raise AssertionError(
-                    f"expected torch.Tensor or torch.ScriptObject for CONSTANT attr_kind, got {type(from_obj)}"
+                    f"expected torch.Tensor, torch.ScriptObject, or opaque reference type for CONSTANT attr_kind, got {type(from_obj)}"
                 )
             setattr(to_module, field, from_obj)
         elif attr_kind == _AttrKind.MODULE:

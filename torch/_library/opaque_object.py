@@ -183,7 +183,9 @@ def register_opaque_type(
             "registered as a pytree. Opaque objects must be pytree leaves."
         )
 
-    if not isinstance(cls, OpaqueBaseMeta):
+    # Value types store the real object directly during tracing (no
+    # FakeScriptObject wrapper), so they don't need OpaqueBaseMeta.
+    if typ != "value" and not isinstance(cls, OpaqueBaseMeta):
         raise TypeError(
             f"Opaque type {cls} must subclass torch._opaque_base.OpaqueBase "
             "or 'metaclass=torch._opaque_base.OpaqueBaseMeta'. "
@@ -198,7 +200,7 @@ def register_opaque_type(
         )
 
     if typ == "value":
-        if cls.__eq__ is object.__eq__:  # type: ignore[comparison-overlap]
+        if not issubclass(cls, Enum) and cls.__eq__ is object.__eq__:  # type: ignore[comparison-overlap]
             raise TypeError(
                 f"Value-type opaque object of type {cls} is "
                 "expected to have a non-default `__eq__` "
@@ -240,6 +242,30 @@ def register_opaque_type(
     _OPAQUE_TYPES_BY_NAME[name] = type_info
 
     torch._C._register_opaque_type(name)
+
+
+def _maybe_register_enum_as_opaque(cls: type) -> None:
+    """Auto-register an enum.Enum subclass as an opaque value type if not already registered."""
+    if not issubclass(cls, Enum):
+        return
+
+    if _resolve_opaque_type_info(cls) is not None:
+        return
+
+    if "__fx_repr__" not in cls.__dict__:
+
+        def _enum_fx_repr(self):
+            return (
+                f"{type(self).__name__}.{self.name}",
+                {type(self).__name__: type(self)},
+            )
+
+        cls.__fx_repr__ = _enum_fx_repr
+
+    register_opaque_type(
+        cls,
+        typ="value",
+    )
 
 
 def is_opaque_value(value: object) -> TypeIs[OpaqueType]:
