@@ -21,7 +21,7 @@ from torch._higher_order_ops.flex_attention import flex_attention as flex_attent
 from torch._higher_order_ops.utils import setup_compilation_env
 from torch._prims_common import DeviceLikeType
 from torch.nn.attention._utils import _validate_sdpa_input
-from torch.utils._pytree import GetAttrKey
+from torch.utils._pytree import GetAttrKey, tree_map_only
 
 
 # Private debug flag to disable internal compilation wrapping for debugging purposes.
@@ -971,35 +971,25 @@ class BlockMask:
             may or may not be moved to the specified device, depending on their
             current device placement.
         """
-        to_dev = lambda x: x.to(device)
-        return BlockMask(
-            seq_lengths=self.seq_lengths,
-            kv_num_blocks=to_dev(self.kv_num_blocks),
-            kv_indices=to_dev(self.kv_indices),
-            full_kv_num_blocks=to_dev(self.full_kv_num_blocks)
-            if self.full_kv_num_blocks is not None
-            else None,
-            full_kv_indices=to_dev(self.full_kv_indices)
-            if self.full_kv_indices is not None
-            else None,
-            q_num_blocks=to_dev(self.q_num_blocks)
-            if self.q_num_blocks is not None
-            else None,
-            q_indices=to_dev(self.q_indices) if self.q_indices is not None else None,
-            full_q_num_blocks=to_dev(self.full_q_num_blocks)
-            if self.full_q_num_blocks is not None
-            else None,
-            full_q_indices=to_dev(self.full_q_indices)
-            if self.full_q_indices is not None
-            else None,
-            BLOCK_SIZE=self.BLOCK_SIZE,
-            mask_mod_gm=self.mask_mod_gm.to(device)
-            if self.mask_mod_gm is not None
-            else None,
-            mask_mod_captured_tensors=tuple(
-                to_dev(t) for t in self.mask_mod_captured_tensors
+        mapped = tree_map_only(
+            (torch.Tensor, torch.nn.Module),
+            lambda x: x.to(device),
+            (
+                self.seq_lengths,
+                self.kv_num_blocks,
+                self.kv_indices,
+                self.full_kv_num_blocks,
+                self.full_kv_indices,
+                self.q_num_blocks,
+                self.q_indices,
+                self.full_q_num_blocks,
+                self.full_q_indices,
+                self.BLOCK_SIZE,
+                self.mask_mod_gm,
+                self.mask_mod_captured_tensors,
             ),
         )
+        return BlockMask(*mapped)
 
     @staticmethod
     def _wrap_context_value(attr: str, value: Any) -> Any:
