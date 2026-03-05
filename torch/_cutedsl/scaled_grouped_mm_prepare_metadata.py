@@ -21,10 +21,16 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
         base_c_u64: cutlass.Int64,
         base_scale_a_u64: cutlass.Int64,
         base_scale_b_u64: cutlass.Int64,
+        base_global_scale_u64: cutlass.Int64,
         offs: cute.Tensor,
+        logical_vals_per_elem: cutlass.Int32,
+        scale_vec_size: cutlass.Int32,
         sizeof_ab: cutlass.Int64,
         sizeof_scale_ab: cutlass.Int64,
         sizeof_c: cutlass.Int64,
+        sizeof_global_scale: cutlass.Int64,
+        stride_a_packed: tuple[cutlass.Int64, cutlass.Int64],
+        stride_b_packed: tuple[cutlass.Int64, cutlass.Int64, cutlass.Int64],
         stride_a: tuple[cutlass.Int64, cutlass.Int64],
         stride_b: tuple[cutlass.Int64, cutlass.Int64, cutlass.Int64],
         stride_c: tuple[cutlass.Int64, cutlass.Int64],
@@ -38,6 +44,7 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
         out_mnkl: cute.Tensor,
         out_ptrs_abc: cute.Tensor,
         out_ptrs_scale_ab: cute.Tensor,
+        out_ptrs_global_scale: cute.Tensor,
         out_strides_abc: cute.Tensor,
         out_nclusters: cute.Tensor,
     ):
@@ -64,9 +71,13 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
             if not cutlass.const_expr(A_IS_2D and B_IS_2D):
                 # 2d/3d: offs partition rows (M) of A/output.
                 byte_off_a = (
-                    cutlass.Int64(off_start) * stride_a[0] * cutlass.Int64(sizeof_ab)
+                    cutlass.Int64(off_start)
+                    * stride_a_packed[0]
+                    * cutlass.Int64(sizeof_ab)
                 )
-                b_byte_off = cutlass.Int64(g) * stride_b[0] * cutlass.Int64(sizeof_ab)
+                b_byte_off = (
+                    cutlass.Int64(g) * stride_b_packed[0] * cutlass.Int64(sizeof_ab)
+                )
                 c_byte_off = (
                     cutlass.Int64(off_start) * stride_c[0] * cutlass.Int64(sizeof_c)
                 )
@@ -103,11 +114,16 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
                 problem_k = K
             else:
                 # 2d/2d: offs partition contraction dim (K) of both A and B.
+                packed_off_start = off_start // logical_vals_per_elem
                 byte_off_a = (
-                    cutlass.Int64(off_start) * stride_a[1] * cutlass.Int64(sizeof_ab)
+                    cutlass.Int64(packed_off_start)
+                    * stride_a_packed[1]
+                    * cutlass.Int64(sizeof_ab)
                 )
                 b_byte_off = (
-                    cutlass.Int64(off_start) * stride_b[1] * cutlass.Int64(sizeof_ab)
+                    cutlass.Int64(packed_off_start)
+                    * stride_b_packed[1]
+                    * cutlass.Int64(sizeof_ab)
                 )
                 c_byte_off = (
                     cutlass.Int64(g)
@@ -116,7 +132,7 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
                     * cutlass.Int64(sizeof_c)
                 )
 
-                scale_cols_padded = cute.ceil_div(group_size, 32)
+                scale_cols_padded = cute.ceil_div(group_size, scale_vec_size)
                 scale_cols_padded = cute.ceil_div(scale_cols_padded, 4) * 4
                 m_rounded = cute.ceil_div(M, 128) * 128
                 n_rounded = cute.ceil_div(N, 128) * 128
@@ -129,7 +145,7 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
                             prev_off_start = offs[i - 1]
                         prev_off_end = offs[i]
                         prev_group_k = prev_off_end - prev_off_start
-                        prev_scale_cols = cute.ceil_div(prev_group_k, 32)
+                        prev_scale_cols = cute.ceil_div(prev_group_k, scale_vec_size)
                         prev_scale_cols = cute.ceil_div(prev_scale_cols, 4) * 4
                         off_start_scale_a += m_rounded * prev_scale_cols
                         off_start_scale_b += n_rounded * prev_scale_cols
@@ -156,6 +172,9 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
             out_mnkl[g, 1] = problem_n
             out_mnkl[g, 2] = problem_k
             out_mnkl[g, 3] = cutlass.Int32(1)
+            out_ptrs_global_scale[g] = base_global_scale_u64 + cutlass.Int64(
+                g
+            ) * cutlass.Int64(sizeof_global_scale)
 
             if transpose_ab != 0:
                 out_ptrs_abc[g, 0] = base_b_u64 + b_byte_off
@@ -221,10 +240,16 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
         base_c_u64: cutlass.Int64,
         base_scale_a_u64: cutlass.Int64,
         base_scale_b_u64: cutlass.Int64,
+        base_global_scale_u64: cutlass.Int64,
         offs: cute.Tensor,
+        logical_vals_per_elem: cutlass.Int32,
+        scale_vec_size: cutlass.Int32,
         sizeof_ab: cutlass.Int64,
         sizeof_scale_ab: cutlass.Int64,
         sizeof_c: cutlass.Int64,
+        sizeof_global_scale: cutlass.Int64,
+        stride_a_packed: tuple[cutlass.Int64, cutlass.Int64],
+        stride_b_packed: tuple[cutlass.Int64, cutlass.Int64, cutlass.Int64],
         stride_a: tuple[cutlass.Int64, cutlass.Int64],
         stride_b: tuple[cutlass.Int64, cutlass.Int64, cutlass.Int64],
         stride_c: tuple[cutlass.Int64, cutlass.Int64],
@@ -238,6 +263,7 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
         out_mnkl: cute.Tensor,
         out_ptrs_abc: cute.Tensor,
         out_ptrs_scale_ab: cute.Tensor,
+        out_ptrs_global_scale: cute.Tensor,
         out_strides_abc: cute.Tensor,
         out_nclusters: cute.Tensor,
         num_blocks: cutlass.Int32,
@@ -254,10 +280,16 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
             base_c_u64,
             base_scale_a_u64,
             base_scale_b_u64,
+            base_global_scale_u64,
             offs,
+            logical_vals_per_elem,
+            scale_vec_size,
             sizeof_ab,
             sizeof_scale_ab,
             sizeof_c,
+            sizeof_global_scale,
+            stride_a_packed,
+            stride_b_packed,
             stride_a,
             stride_b,
             stride_c,
@@ -271,6 +303,7 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
             out_mnkl,
             out_ptrs_abc,
             out_ptrs_scale_ab,
+            out_ptrs_global_scale,
             out_strides_abc,
             out_nclusters,
         ).launch(
@@ -281,6 +314,7 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
     fake_offs = make_fake_tensor(cutlass.Int32, (g,), stride=(1,))
     fake_ptrs_abc = make_fake_tensor(cutlass.Int64, (g, 3), stride=(3, 1))
     fake_ptrs_scale_ab = make_fake_tensor(cutlass.Int64, (g, 2), stride=(2, 1))
+    fake_ptrs_global_scale = make_fake_tensor(cutlass.Int64, (g,), stride=(1,))
     fake_mnkl = make_fake_tensor(cutlass.Int32, (g, 4), stride=(4, 1))
     fake_strides_abc = make_fake_tensor(cutlass.Int64, (g, 3, 2), stride=(6, 2, 1))
     fake_nclusters = make_fake_tensor(cutlass.Int32, (1,), stride=(1,))
@@ -298,10 +332,16 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
             base_c_u64=0,
             base_scale_a_u64=0,
             base_scale_b_u64=0,
+            base_global_scale_u64=0,
             offs=fake_offs,
+            logical_vals_per_elem=1,
+            scale_vec_size=32,
             sizeof_ab=cutlass.Int64(1),
             sizeof_scale_ab=cutlass.Int64(1),
             sizeof_c=cutlass.Int64(2),
+            sizeof_global_scale=cutlass.Int64(4),
+            stride_a_packed=(cute.sym_int(64), cute.sym_int(64)),
+            stride_b_packed=(cute.sym_int(64), cute.sym_int(64), cute.sym_int(64)),
             stride_a=(cute.sym_int(64), cute.sym_int(64)),
             stride_b=(cute.sym_int(64), cute.sym_int(64), cute.sym_int(64)),
             stride_c=(cute.sym_int(64), cute.sym_int(64)),
@@ -315,6 +355,7 @@ def _compile_scaled_grouped_mm_prepare_metadata(a_is_2d: bool, b_is_2d: bool):
             out_mnkl=fake_mnkl,
             out_ptrs_abc=fake_ptrs_abc,
             out_ptrs_scale_ab=fake_ptrs_scale_ab,
+            out_ptrs_global_scale=fake_ptrs_global_scale,
             out_strides_abc=fake_strides_abc,
             out_nclusters=fake_nclusters,
             num_blocks=1,

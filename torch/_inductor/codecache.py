@@ -34,7 +34,7 @@ from pathlib import Path
 from tempfile import _TemporaryFileWrapper
 from time import time, time_ns
 from types import ModuleType
-from typing import Any, cast, Generic, NoReturn, Optional, TYPE_CHECKING, TypeVar, Union
+from typing import Any, cast, Generic, NoReturn, TYPE_CHECKING, TypeVar
 from typing_extensions import override, Self
 
 import torch
@@ -110,7 +110,11 @@ from torch.compiler._cache import (
 )
 from torch.export.pt2_archive._package_weights import TensorProperties, Weights
 from torch.export.pt2_archive.constants import CUSTOM_OBJ_FILENAME_PREFIX
-from torch.fx.experimental.symbolic_shapes import has_hint, ShapeEnv, size_hint
+from torch.fx.experimental.symbolic_shapes import (
+    guarding_hint_or_throw,
+    has_guarding_hint,
+    ShapeEnv,
+)
 from torch.utils._ordered_set import OrderedSet
 
 from .output_code import CompiledFxGraph
@@ -888,6 +892,22 @@ class FxGraphHashDetails:
             torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction,
         )
 
+        # Include cudagraph annotation in cache key only when it changes
+        # behavior. When both fwd and bwd are overridden to the same value,
+        # normalize to a simple boolean (equivalent to flipping the config).
+        # When fwd and bwd differ, include the full annotation.
+        if gm is not None:
+            annotation = gm.meta.get("cudagraph_annotation")
+            if annotation is not None:
+                default = config.triton.cudagraphs
+                if annotation.fwd == annotation.bwd and annotation.fwd is not None:
+                    if annotation.fwd != default:
+                        self.cudagraph_override = annotation.fwd
+                elif (annotation.fwd is not None and annotation.fwd != default) or (
+                    annotation.bwd is not None and annotation.bwd != default
+                ):
+                    self.cudagraph_annotation = annotation
+
         # Also hash on various system info (including the triton compiler version).
         self.torch_version = torch_key()
         self.system_info = CacheBase.get_system()
@@ -1178,7 +1198,9 @@ class GuardedCache(Generic[T]):
         Get the backed SymInt objects from the input list. Note that we can never
         have guards that depend on unbacked symint.
         """
-        return [s for s in inputs if isinstance(s, torch.SymInt) and has_hint(s)]
+        return [
+            s for s in inputs if isinstance(s, torch.SymInt) and has_guarding_hint(s)
+        ]
 
     @classmethod
     def _get_shape_env(cls: type[GuardedCache[T]]) -> ShapeEnv | None:
@@ -1415,7 +1437,7 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
         assert shape_env is not None
 
         symints = FxGraphCache._filter_backed_symints(example_inputs)
-        hints = [size_hint(s) for s in symints]
+        hints = [guarding_hint_or_throw(s) for s in symints]
 
         # If this config is turned on, everything is a guard hit and we check nothing
         if config.unsafe_skip_cache_dynamic_shape_guards:
@@ -1824,7 +1846,7 @@ class AotCodeCompiler:
         *,
         device_type: str,
         additional_files: list[str],
-    ) -> list[Union[str, Weights]] | str:
+    ) -> list[str | Weights] | str:
         """
         Returns the .so path, or returns a list of files that were generated if
         config.aot_inductor.package=True.
@@ -4004,7 +4026,7 @@ class CUTLASSCodeCache:
         src_files: list[str],
         dst_file: str,
         dst_file_ext: str,
-        extra_args: Optional[list[str]] = None,
+        extra_args: list[str] | None = None,
     ) -> str:
         raise NotImplementedError
 
@@ -4221,7 +4243,7 @@ class CUDACodeCache(CUTLASSCodeCache):
         src_files: list[str],
         dst_file: str,
         dst_file_ext: str,
-        extra_args: Optional[list[str]] = None,
+        extra_args: list[str] | None = None,
     ) -> str:
         return cuda_compile_utils.cuda_compile_command(
             src_files, dst_file, dst_file_ext, extra_args=extra_args

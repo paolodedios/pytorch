@@ -1,7 +1,10 @@
-from .scaled_grouped_mm_mxfp8 import (
-    scaled_grouped_mm_mxfp8,
-    scaled_grouped_mm_mxfp8_register_kernels,
+from .scaled_grouped_mm_blockscaled import (
+    scaled_grouped_mm_blockscaled,
+    scaled_grouped_mm_blockscaled_register_kernels,
 )
 
 
-__all__ = ["scaled_grouped_mm_mxfp8", "scaled_grouped_mm_mxfp8_register_kernels"]
+__all__ = [
+    "scaled_grouped_mm_blockscaled",
+    "scaled_grouped_mm_blockscaled_register_kernels",
+]
