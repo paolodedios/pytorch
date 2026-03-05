@@ -1104,17 +1104,13 @@ def identify_accessed_tensors(
         analyze_kernel_access.reset()
         get_tma_stores.reset()
 
-        mutations = analyze_kernel_mutations(
-            functions, kernel_name, len(ordered_arg_names)
+        return analyze_kernel_access(
+            functions,
+            kernel_name,
+            len(ordered_arg_names),
+            tuple(ordered_arg_names),
         )
 
-        # Filter out scalars as analyze_kernel_mutations will flag any parameter transitively
-        # used by a mutating operation.
-        return [
-            ordered_arg_names[i]
-            for i, mutated in enumerate(mutations)
-            if mutated and isinstance(kwargs[ordered_arg_names[i]], (Tensor, TensorBox))
-        ]
 
     except Exception:
         log.warning(
