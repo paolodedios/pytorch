@@ -35,6 +35,7 @@ from typing import Any, TYPE_CHECKING
 import torch
 import torch.nn
 from torch._dynamo.variables.misc import AutogradFunctionContextVariable
+from torch.utils._ordered_set import OrderedSet
 
 from . import config, graph_break_hints, utils, variables
 from .bytecode_transformation import (
@@ -57,7 +58,6 @@ from .variables.base import (
     VariableTracker,
 )
 from .variables.user_defined import FrozenDataClassVariable
-from torch.utils._ordered_set import OrderedSet
 
 
 if TYPE_CHECKING:
