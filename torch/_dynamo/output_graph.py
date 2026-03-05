@@ -816,6 +816,17 @@ class OutputGraph(OutputGraphCommon):
         # Bytecode to insert right before we call the graph
         self.pregraph_bytecode: list[Instruction] = []
 
+        # Maps SyntheticLocalSource → (fn, args, arg_sources) for hoisted
+        # graph inputs created by synthetic_graph_input, so invoke_subgraph
+        # reuse can recreate them on cache hit. arg_sources allows stamp-out
+        # to resolve new ctor arg values via source replacement.
+        self.synthetic_source_ctor_info: dict[
+            SyntheticLocalSource,
+            tuple[
+                Callable[..., Any], tuple[Any, ...], tuple[Source | None, ...] | None
+            ],
+        ] = {}
+
         # Use to pass values to backward hooks when using compiled autograd
         self.backward_state: dict[str, VariableTracker] = {}
         self.backward_state_proxy: torch.fx.Proxy | None = None
@@ -1019,7 +1030,10 @@ class OutputGraph(OutputGraphCommon):
         return [pack_subgraph_name, unpack_subgraph_name]
 
     def synthetic_graph_input(
-        self, fn: Callable[..., Any], args: tuple[Any, ...]
+        self,
+        fn: Callable[..., Any],
+        args: tuple[Any, ...],
+        ctor_arg_sources: tuple[Source | None, ...] | None = None,
     ) -> VariableTracker:
         """
         call fn(*args) before the graph runs and turn the result into a fake input.
@@ -1038,6 +1052,7 @@ class OutputGraph(OutputGraphCommon):
         cg.store(varname)
         self.pregraph_bytecode.extend(cg.get_instructions())
         source = SyntheticLocalSource(varname)
+        self.synthetic_source_ctor_info[source] = (fn, args, ctor_arg_sources)
         result = VariableTracker.build(self.root_tx, example_value, source)
         # Realize the VT because we will delete the guards on it in the next line.
         result = result.realize()
@@ -2704,7 +2719,8 @@ class OutputGraph(OutputGraphCommon):
                 inline_invoke_subgraph,
             )
 
-            gm = inline_invoke_subgraph(gm)
+            with dynamo_timed("inline_invoke_subgraph"):
+                gm = inline_invoke_subgraph(gm)
 
         try:
             _step_logger()(logging.INFO, f"calling compiler function {name}")
