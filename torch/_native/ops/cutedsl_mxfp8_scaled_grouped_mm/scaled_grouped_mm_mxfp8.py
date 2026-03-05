@@ -913,7 +913,6 @@ def _scaled_grouped_mm_v2_conditional_cuda_impl(dispatch_keys, *args, **kwargs):
         use_fast_accum,
     ) = args
 
-    print("calling cutedsl conditional")
     if _should_use_cutedsl_scaled_grouped_mm_mxfp8(
         mat_a,
         mat_b,

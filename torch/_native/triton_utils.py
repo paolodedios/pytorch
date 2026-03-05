@@ -13,9 +13,8 @@ from .registry import _RegisterFn, register_op_registerer
 log = logging.getLogger(__name__)
 
 
-_BLESSED_VERSIONS: set[tuple[int, int, int]] = {
-    (3, 6, 0),
-}
+_TRITON_REQUIRED_VERSION_MAJOR = 3
+_TRITON_MINIMUM_VERSION_MINOR = 6
 
 
 @functools.cache
@@ -23,7 +22,7 @@ def _check_runtime_available() -> tuple[bool, tuple[int, int, int] | None]:
     """
     Check if triton is available
 
-    NOTE: Doesn't import at this point
+    NOTE: must not import at this point
     """
 
     deps = [
@@ -40,7 +39,7 @@ def _check_runtime_available() -> tuple[bool, tuple[int, int, int] | None]:
     return available, version
 
 
-def runtime_available() -> None | bool:
+def runtime_available() -> bool:
     available, _ = _check_runtime_available()
     return available
 
@@ -50,11 +49,16 @@ def runtime_version() -> None | tuple[int, int, int]:
     return version
 
 
-def _version_is_blessed() -> bool:
+def _version_is_sufficient() -> bool:
     _, version = _check_runtime_available()
+    if version is None:
+        return False
     if check_native_version_skip():
         return True
-    return version in _BLESSED_VERSIONS
+    # Either exact version, or same major
+    major_ok = version[0] == _TRITON_REQUIRED_VERSION_MAJOR
+    minor_ok = version[1] >= _TRITON_MINIMUM_VERSION_MINOR
+    return major_ok and minor_ok
 
 
 def register_op(fn: _RegisterFn) -> None:
@@ -62,12 +66,13 @@ def register_op(fn: _RegisterFn) -> None:
     if (not available) or check_native_jit_disabled():
         return
 
-    if not _version_is_blessed():
+    if not _version_is_sufficient():
         log.warning(
-            "triton version %s is not blessed (blessed: %s); "
+            "triton version %s is not sufficient (>= (%s.%s.*)); "
             "set TORCH_NATIVE_SKIP_VERSION_CHECK=1 to override",
             version,
-            _BLESSED_VERSIONS,
+            _TRITON_REQUIRED_VERSION_MAJOR,
+            _TRITON_MINIMUM_VERSION_MINOR,
         )
         return
 

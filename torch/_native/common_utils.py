@@ -1,7 +1,6 @@
 import importlib
 import importlib.metadata
 import os
-import re
 from functools import cache
 
 
@@ -23,8 +22,7 @@ def _unavailable_reason(deps: list[tuple[str, str]]) -> None | str:
     NOTE: Doesn't actually import anything.
     """
     for package_name, module_name in deps:
-        # This doesn't actually import the packages, to reduce
-        # overall import time & memory.
+        # Note this doesn't actually import the packages
         if importlib.util.find_spec(module_name) is None:
             return (
                 f"missing optional dependency `{package_name}` "
@@ -41,20 +39,19 @@ def _available_version(package: str) -> tuple[int, int, int] | None:
     stripping non-numeric tails from each component. Returns None on
     parse failure.
     """
-    version = importlib.metadata.version(package)
-    parts = version.split(".")[:3]
-    if len(parts) != 3:
-        return None
     try:
-        nums = []
-        for part in parts:
-            m = re.match(r"(\d+)", part)
-            if m is None:
-                return None
-            nums.append(int(m.group(1)))
-        return (nums[0], nums[1], nums[2])
-    except (ValueError, IndexError):
+        version = importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
         return None
+
+    import packaging.version
+
+    try:
+        v = packaging.version.parse(version)
+    except packaging.version.InvalidVersion:
+        return None
+
+    return (v.major, v.minor, v.micro)
 
 
 @cache

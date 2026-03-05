@@ -1,4 +1,4 @@
-# Owner(s): ["module: unknown"]
+# Owner(s): ["module: dsl-native-ops"]
 
 import os
 import subprocess
