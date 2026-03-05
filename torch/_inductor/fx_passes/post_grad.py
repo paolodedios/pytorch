@@ -1797,6 +1797,23 @@ class ConstructorMoverPass:
         return cpu_indeg
 
     @staticmethod
+    def _is_node_mutated(node: fx.Node) -> bool:
+        """
+        Check if any user of node mutates it via schema alias_info.is_write.
+        """
+        for user in node.users:
+            if not isinstance(user.target, torch._ops.OpOverload):
+                continue
+            schema = user.target._schema
+            for i, arg in enumerate(user.args):
+                if arg is not node or i >= len(schema.arguments):
+                    continue
+                alias_info = schema.arguments[i].alias_info
+                if alias_info is not None and alias_info.is_write:
+                    return True
+        return False
+
+    @staticmethod
     def _batch_device_copy(
         graph: fx.Graph,
         scalars: list[fx.Node],
@@ -1925,23 +1942,29 @@ class ConstructorMoverPass:
                     graph.erase_node(node)
 
             # For any GPU node that now appears in the output (e.g. a CPU
-            # placeholder saved for backward), batch a single D2H copy
-            # so the graph output stays on CPU while the cudagraph
-            # partition only sees CUDA tensors.
+            # placeholder saved for backward), restore the CPU tensor if it
+            # was mutated as a CUDA tensor.
             output_node = next(n for n in graph.nodes if n.op == "output")
+            gpu_to_placeholder = {v: k for k, v in placeholder_to_gpu.items()}
             gpu_nodes_in_output = [
                 gpu_node
                 for gpu_node in placeholder_to_gpu.values()
                 if gpu_node in output_node.args[0]
             ]
             if gpu_nodes_in_output:
-                cpu_results, _ = self._batch_device_copy(
-                    graph,
-                    gpu_nodes_in_output,
-                    torch.device("cpu"),
-                    insert_after=output_node._prev,
-                )
-                gpu_to_cpu = dict(zip(gpu_nodes_in_output, cpu_results))
+                gpu_to_cpu: dict[fx.Node, fx.Node] = {}
+                needs_d2h = [g for g in gpu_nodes_in_output if self._is_node_mutated(g)]
+                for g in gpu_nodes_in_output:
+                    if g not in needs_d2h:
+                        gpu_to_cpu[g] = gpu_to_placeholder[g]
+                if needs_d2h:
+                    cpu_results, _ = self._batch_device_copy(
+                        graph,
+                        needs_d2h,
+                        torch.device("cpu"),
+                        insert_after=output_node._prev,
+                    )
+                    gpu_to_cpu.update(dict(zip(needs_d2h, cpu_results)))
                 new_output_args = [
                     gpu_to_cpu.get(arg, arg) if isinstance(arg, fx.Node) else arg
                     for arg in output_node.args[0]

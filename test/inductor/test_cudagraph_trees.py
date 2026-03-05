@@ -3842,6 +3842,14 @@ if HAS_CUDA_AND_TRITON:
 
             compiled_model = torch.compile(model, mode="reduce-overhead")
 
+            # Verify graph_partition produces the expected partitions.
+            log_stream, ctx = logs_to_string("torch._inductor.scheduler", "cudagraphs")
+            with ctx():
+                compiled_model(x)
+            FileCheck().check("1 cudagraphable, 2 non-cudagraphable").run(
+                log_stream.getvalue()
+            )
+
             criterion = torch.nn.CrossEntropyLoss()
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
