@@ -136,6 +136,14 @@ def _register_single_dim_pointwise(
             _fn: Callable = inner_fn,
         ) -> list[list[Placement | _ShardingPlaceholder]]:
             strategies = _fn(op, args, kwargs)
+            n_tensor_args = sum(1 for a in args if isinstance(a, TensorMeta))
+            for s in strategies:
+                if len(s) != 1 + n_tensor_args:
+                    raise AssertionError(
+                        f"Strategy length {len(s)} != expected {1 + n_tensor_args} "
+                        f"(1 output + {n_tensor_args} args) for {op}. "
+                        f"out kwarg will be appended by infra."
+                    )
             return [s + [s[0]] for s in strategies]
 
         strategy_fn = _out_wrapper
