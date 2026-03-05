@@ -1335,6 +1335,7 @@ _flash_attention_forward_no_dropout_inplace(
     const std::optional<Tensor>& _alibi_slopes,
     const std::optional<Tensor>& _block_table
     ) {
+  TORCH_CHECK(dropout_p == 0.0);
   auto [output, logsumexp, philox_seed, philox_offset, debug_attn_mask] =
       _flash_attention_forward_impl(
           query, key, value,

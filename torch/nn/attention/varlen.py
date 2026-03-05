@@ -268,6 +268,7 @@ def varlen_attn(
         ...     query, key, value, cu_seq, cu_seq, max_len, max_len
         ... )
     """
+
     is_causal = window_size == (-1, 0)
     out, lse, _ = torch.ops.torch_attn._varlen_attn(
         query,
@@ -303,7 +304,7 @@ def _varlen_attn_out(
     window_size: list[int] | None = None,
     seqused_k: torch.Tensor | None = None,
     block_table: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     """
     Private custom op for variable-length attention with pre-allocated output.
     Same as _varlen_attn but writes the attention output into the provided out tensor.
@@ -336,10 +337,7 @@ def _varlen_attn_out(
         block_table=block_table,
     )
 
-    rng_state_ = torch.zeros(
-        (2,), dtype=torch.uint64, device=query.device
-    )  # hardcoded since dropout is hardcoded to 0
-    return softmax_lse, rng_state_
+    return softmax_lse
 
 
 @_varlen_attn_out.register_fake
@@ -357,25 +355,25 @@ def _varlen_attn_out_fake(
     window_size: list[int] | None = None,
     seqused_k: torch.Tensor | None = None,
     block_table: torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> torch.Tensor:
     """
     Fake implementation for meta tensor computation and tracing.
     """
     total_q = query.size(0)
     num_heads = query.size(1)
+    logsumexp = torch.empty(
+        (num_heads, total_q), dtype=torch.float, device=query.device
+    )
+
     if torch.version.hip:
-        batch_size = cu_seq_q.size(0) - 1
-        logsumexp = torch.empty(
-            (batch_size, num_heads, max_q), dtype=torch.float, device=query.device
-        )
-    else:
-        logsumexp = torch.empty(
-            (num_heads, total_q), dtype=torch.float, device=query.device
-        )
+        preferred = torch._C._get_rocm_fa_preferred_backend()
+        if preferred == torch._C._ROCmFABackend.AOTriton:
+            batch_size = cu_seq_q.size(0) - 1
+            logsumexp = torch.empty(
+                (batch_size, num_heads, max_q), dtype=torch.float, device=query.device
+            )
 
-    rng_state = torch.empty((2,), dtype=torch.uint64, device=query.device)
-
-    return logsumexp, rng_state
+    return logsumexp
 
 
 def varlen_attn_out(
@@ -401,7 +399,7 @@ def varlen_attn_out(
 
     """
     is_causal = window_size == (-1, 0)
-    lse, _ = torch.ops.torch_attn._varlen_attn_out(
+    lse = torch.ops.torch_attn._varlen_attn_out(
         out,
         query,
         key,
