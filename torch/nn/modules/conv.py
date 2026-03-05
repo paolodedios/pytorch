@@ -194,7 +194,6 @@ class _ConvNd(Module):
             else:
                 # Standard initialization for default contiguous memory format
                 init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-                
             if self.bias is not None:
                 # Bias initialization remains independent of weight memory format
                 fan_in, _ = init._calculate_fan_in_and_fan_out(self.weight)
