@@ -1,22 +1,8 @@
 # torchtitan Test Library Configuration
-# Each test plan maps to torchtitan's own test runners and pytest suites.
+# Each test plan maps to torchtitan's own test runners.
 # When tests are added/removed in torchtitan, the daily pin bump picks them up.
-
-torchtitan_unit_tests:
-  title: torchtitan CPU Unit Tests
-  id: torchtitan_unit_tests
-  steps:
-    # Excluded tests:
-    # - test_tokenizer.py, test_download_hf_assets.py: require network access to HuggingFace Hub
-    # - test_dataset_flux.py: requires transformers package (not installed)
-    # - test_flux_config_via_cli: transitively imports transformers via flux config registry
-    - >-
-      pytest tests/unit_tests
-      --ignore=tests/unit_tests/test_tokenizer.py
-      --ignore=tests/unit_tests/test_download_hf_assets.py
-      --ignore=tests/unit_tests/test_dataset_flux.py
-      -k "not test_flux_config_via_cli"
-      --cov=. --durations=20 -vv
+# Test filtering and exclusions are managed in the torchtitan repo via
+# scripts/ci/pytorch_ci_test_runner.sh.
 
 torchtitan_features_integration:
   title: torchtitan Feature Integration Tests (8 GPU)
@@ -24,13 +10,7 @@ torchtitan_features_integration:
   env_vars:
     NGPU: "8"
   steps:
-    # TODO: we should debug this, maybe it's a known issue or a test config issue,
-    # then we should also have a cleaner way to disable tests than using sed (--exclude / --skip flag?)
-    # Disable cpu_offload+opt_in_bwd+TP+DP+CP test (times out on CI runners)
-    - >-
-      sed -i 's/"cpu_offload+opt_in_bwd+TP+DP+CP",/"cpu_offload+opt_in_bwd+TP+DP+CP",\n            disabled=True,/'
-      tests/integration_tests/features.py
-    - python -m tests.integration_tests.run_tests --test_suite features artifacts-to-be-uploaded --ngpu 8
+    - scripts/ci/pytorch_ci_test_runner.sh feature_tests
 
 torchtitan_models_integration:
   title: torchtitan Model Integration Tests (8 GPU)
@@ -38,13 +18,4 @@ torchtitan_models_integration:
   env_vars:
     NGPU: "8"
   steps:
-    - python -m tests.integration_tests.run_tests --test_suite models artifacts-to-be-uploaded --ngpu 8
-
-torchtitan_h100_integration:
-  title: torchtitan H100 Integration Tests (8 GPU)
-  id: torchtitan_h100_integration
-  env_vars:
-    NGPU: "8"
-    TORCH_SHOW_CPP_STACKTRACES: "1"
-  steps:
-    - python -m tests.integration_tests.run_tests --test_suite h100 artifacts-to-be-uploaded --ngpu 8
+    - scripts/ci/pytorch_ci_test_runner.sh model_tests
