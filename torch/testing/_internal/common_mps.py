@@ -898,9 +898,6 @@ if torch.backends.mps.is_available():
             "_upsample_bicubic2d_aa": None,  # `_upsample_bilinear2d_aa_backward_out` not implemented for MPS
             "sparse.mmreduce": [torch.float32],  # csr not supported
             "linalg.householder_product": None,
-            "pca_lowrank": [
-                torch.float32
-            ],  # linalg_svd autograd not registered for CPU fallback
             "unique_consecutive": [torch.float16, torch.float32],
             "scalar_tensor": [torch.float16, torch.float32],
             "cdist": None,
