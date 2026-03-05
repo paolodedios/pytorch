@@ -19279,8 +19279,10 @@ op_db: list[OpInfo] = [
                DecorateInfo(unittest.expectedFailure, 'TestSchemaCheckModeOpInfo', 'test_schema_correctness',
                             dtypes=(torch.complex64, torch.complex128)),
                DecorateInfo(slowTest, 'TestCompositeCompliance', 'test_forward_ad'),
-               # MPS matmul does not support uint8, also svd_lowrank calls linalg_qr which is float32-only on MPS
-               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
+               # MPS matmul aborts with uint8 input
+               DecorateInfo(unittest.skip("MPS driver aborts process on uint8 matmul"), 'TestCommon', 'test_dtypes',
+                            device_type='mps'),
+               # svd_lowrank calls linalg_qr internally, MPS linalg_qr supports float32 only
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
                             device_type='mps', dtypes=(torch.complex64,)),
                DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager',
