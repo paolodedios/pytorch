@@ -676,6 +676,7 @@ class TestVarlenAttention(NNTestCase):
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Flash Attention not supported"
     )
+    @unittest.skipIf(TEST_WITH_ROCM, "ROCm does not support seqused_k")
     @parametrize("dtype", [torch.bfloat16, torch.float16])
     @parametrize(
         "actual_kv_lens",
