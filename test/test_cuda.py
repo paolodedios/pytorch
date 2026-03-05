@@ -36,6 +36,7 @@ from torch.testing._internal.autocast_test_lists import AutocastTestLists, TestA
 from torch.testing._internal.common_cuda import (
     _create_scaling_case,
     _get_torch_cuda_version,
+    blas_library_context,
     PLATFORM_SUPPORTS_GREEN_CONTEXT,
     SM70OrLater,
     TEST_CUDNN,
@@ -672,10 +673,9 @@ print(t.is_pinned())
             self.assertEqual("_BlasBackend.Cublaslt", r)
 
     @unittest.skipIf(TEST_CUDAMALLOCASYNC, "temporarily disabled for async")
-    @setBlasBackendsToDefaultFinally
     @serialTest()
+    @blas_library_context("cublas")
     def test_cublas_workspace_explicit_allocation(self):
-        torch.backends.cuda.preferred_blas_library("cublas")
         a = torch.randn(7, 7, device="cuda", requires_grad=False)
         if torch.version.hip:
             default_workspace_size = 1024 * 32 * 1024  # :1024:32  32MiB
@@ -2468,9 +2468,8 @@ exit(2)
         not TEST_CUDA_GRAPH, "CUDA >= 11.0 or ROCM >= 5.3 required for graphs"
     )
     @serialTest()
-    @setBlasBackendsToDefaultFinally
+    @blas_library_context("cublas")
     def test_repeat_graph_capture_cublas_workspace_memory(self):
-        torch.backends.cuda.preferred_blas_library("cublas")
         (x, y, z) = 1024, 512, 64
         a = torch.rand((x, y), device="cuda")
         b = torch.rand((y, z), device="cuda")
@@ -2478,19 +2477,19 @@ exit(2)
         # warmup
         torch.mm(a, b)
 
-        free_bytes_before, total_bytes = torch.cuda.mem_get_info()
-        used_gb_before = (total_bytes - free_bytes_before) / 1e9
-
-        for _ in range(100):
+        for i in range(100):
             torch_graph = torch.cuda.CUDAGraph()
             with torch.cuda.graph(torch_graph):
                 torch.mm(a, b)
             torch_graph.replay()
+            if i == 0:
+                free_bytes_before, total_bytes = torch.cuda.mem_get_info()
+                used_gb_before = (total_bytes - free_bytes_before) / 1e9
 
         free_bytes_after, _ = torch.cuda.mem_get_info()
         used_gb_after = (total_bytes - free_bytes_after) / 1e9
 
-        self.assertFalse(used_gb_before + 0.1 < used_gb_after)
+        self.assertGreater(0.005 + used_gb_before, used_gb_after)
 
     @unittest.skipIf(
         not TEST_CUDA_GRAPH, "CUDA >= 11.0 or ROCM >= 5.3 required for graphs"
@@ -4195,6 +4194,37 @@ class TestCudaMallocAsync(TestCase):
 
         finally:
             torch.cuda.memory._record_memory_history(None)
+
+    @unittest.skipIf(
+        TEST_CUDAMALLOCASYNC, "setContextRecorder not supported by CUDAMallocAsync"
+    )
+    def test_allocation_traceback(self):
+        def this_is_a_funky_allocator():
+            return torch.rand(311, 411, device="cuda")
+
+        try:
+            torch.cuda.memory.empty_cache()
+            torch.cuda.memory._record_memory_history("all", stacks="python")
+
+            x = this_is_a_funky_allocator()
+            frames = torch.cuda.memory._allocation_traceback(x.data_ptr())
+            self.assertIsInstance(frames, list)
+            self.assertGreater(len(frames), 0)
+            func_names = [f["name"] for f in frames]
+            self.assertIn("this_is_a_funky_allocator", func_names)
+
+            # freed pointer should return None
+            ptr = x.data_ptr()
+            del x
+            torch.cuda.empty_cache()
+            self.assertIsNone(torch.cuda.memory._allocation_traceback(ptr))
+        finally:
+            torch.cuda.memory._record_memory_history(None)
+
+    def test_allocation_traceback_no_recording(self):
+        torch.cuda.memory._record_memory_history(None)
+        x = torch.rand(64, device="cuda")
+        self.assertIsNone(torch.cuda.memory._allocation_traceback(x.data_ptr()))
 
     @unittest.skipUnless(IS_X86 and IS_LINUX, "x86 linux only cpp unwinding")
     def test_direct_traceback(self):
