@@ -91,14 +91,14 @@ def register_sharding(op: OpOverload | list[OpOverload]):
 
         single_mesh_dim_strategies: list[PlacementList] = []
         for output_specs, input_specs in acceptable_shardings:
-            single_mesh_dim_strategies.append(output_specs + input_specs)
+            single_mesh_dim_strategies.append(input_specs + output_specs)
 
         # TODO: handle out variant ops
         return expand_to_full_mesh_op_strategy(
             mesh,
             op_schema,
             single_mesh_dim_strategies,
-            input_index=len(op_schema.op._schema.returns),
+            num_outputs=len(op_schema.op._schema.returns),
             inplace_op=op_schema.is_inplace_op(),
         )
 

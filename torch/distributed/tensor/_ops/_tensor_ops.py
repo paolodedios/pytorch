@@ -296,11 +296,11 @@ def bucketize_single_dim_strategy(
     strategies: list[list[Placement | _ShardingPlaceholder]] = []
     for dim in range(len(input_meta.shape)):
         strategies.append(
-            [_ShardingPlaceholder(dim), _ShardingPlaceholder(dim), Replicate()]
+            [_ShardingPlaceholder(dim), Replicate(), _ShardingPlaceholder(dim)]
         )
-    strategies.append([Partial("sum"), Replicate(), _ShardingPlaceholder(0)])
+    strategies.append([Replicate(), _ShardingPlaceholder(0), Partial("sum")])
     for reduce_op in ("max", "min"):
-        strategies.append([Partial(reduce_op), Partial(reduce_op), Replicate()])
+        strategies.append([Partial(reduce_op), Replicate(), Partial(reduce_op)])
     return strategies
 
 
@@ -641,7 +641,7 @@ def scatter_add_strategy(op_schema: OpSchema) -> StrategyType:
 
     single_mesh_dim_strategies = []
 
-    # placement list stores placements of [output, input, index, src]
+    # placement list stores placements of [input, index, src, output]
     # first we always have replicate all for inputs and output
     all_replicate: PlacementList = [Replicate()] * 4
     single_mesh_dim_strategies.append(all_replicate)
@@ -653,7 +653,7 @@ def scatter_add_strategy(op_schema: OpSchema) -> StrategyType:
                 single_mesh_dim_strategies.append(sharding)
 
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=1
+        mesh, op_schema, single_mesh_dim_strategies, num_outputs=1
     )
 
 
@@ -670,7 +670,7 @@ def gather_strategy(op_schema: OpSchema) -> StrategyType:
 
     single_mesh_dim_strategies = []
 
-    # placement list stores placements of [output, input, index]
+    # placement list stores placements of [input, index, output]
     # first we always have replicate all for inputs and output
     all_replicate: PlacementList = [Replicate()] * 3
     single_mesh_dim_strategies.append(all_replicate)
@@ -681,15 +681,15 @@ def gather_strategy(op_schema: OpSchema) -> StrategyType:
     if dim < len(index_shape) and index_shape[dim] == 1:
         index_partial_placement = _MaskPartial(offset_shape=input_shape, offset_dim=dim)
         input_sharding: PlacementList = [
-            index_partial_placement,
             Shard(dim),
+            index_partial_placement,
             index_partial_placement,
         ]
         single_mesh_dim_strategies.append(input_sharding)
 
     # index sharding, input replicated, index sharded, output follows index
     # this only works when the sharding dimension is the gather dimension
-    index_sharding: PlacementList = [Shard(dim), Replicate(), Shard(dim)]
+    index_sharding: PlacementList = [Replicate(), Shard(dim), Shard(dim)]
     single_mesh_dim_strategies.append(index_sharding)
 
     if len(input_shape) == len(index_shape):
@@ -699,7 +699,7 @@ def gather_strategy(op_schema: OpSchema) -> StrategyType:
                 single_mesh_dim_strategies.append(sharding)
 
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=1
+        mesh, op_schema, single_mesh_dim_strategies, num_outputs=1
     )
 
 
@@ -983,7 +983,7 @@ def index_put_single_dim_strategy(
 ) -> list[list[Placement | _ShardingPlaceholder]]:
     """Single-dim sharding strategy for index_put(self, indices, values).
 
-    Strategy format: [output, input, *indices, value]
+    Strategy format: [input, *indices, value, output]
 
     How index_put works:
 
@@ -1030,7 +1030,7 @@ def index_put_single_dim_strategy(
     broadcast_ndim = len(torch.broadcast_shapes(*index_shapes)) if index_shapes else 0
 
     # values shape = (*broadcast_shape, *non_indexed_dim_sizes)
-    # Strategy format: [output, input, *indices, value]
+    # Strategy format: [input, *indices, value, output]
     # The infra flattens the indices list and drops None entries, so only
     # non-None index tensors get a placement slot (all Replicate).
     strategies: list[list[Placement | _ShardingPlaceholder]] = []
@@ -1039,11 +1039,11 @@ def index_put_single_dim_strategy(
         strategies.append(
             [
                 _ShardingPlaceholder(self_dim),
-                _ShardingPlaceholder(self_dim),
                 *([Replicate()] * n_indexed),
                 Replicate()
                 if values_meta.shape[values_dim] == 1
                 else _ShardingPlaceholder(values_dim),
+                _ShardingPlaceholder(self_dim),
             ]
         )
 
@@ -1051,8 +1051,8 @@ def index_put_single_dim_strategy(
     strategies.append(
         [
             Partial(),
-            Partial(),
             *([Replicate()] * n_indexed),
+            Partial(),
             Partial(),
         ]
     )

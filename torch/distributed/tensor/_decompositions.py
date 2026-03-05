@@ -226,7 +226,7 @@ class DecompShardingStrategy:
             output_placements = (
                 [output] if not isinstance(output, tuple) else list(output)
             )
-            single_dim_strategies.append(output_placements + list(input_placements))
+            single_dim_strategies.append(list(input_placements) + output_placements)
 
         if not single_dim_strategies:
             raise AssertionError(
@@ -241,7 +241,7 @@ class DecompShardingStrategy:
         )
 
         return expand_to_full_mesh_op_strategy(
-            mesh, strategy_schema, single_dim_strategies, input_index=n_outputs
+            mesh, strategy_schema, single_dim_strategies, num_outputs=n_outputs
         )
 
     def _propagate_through_decomp(

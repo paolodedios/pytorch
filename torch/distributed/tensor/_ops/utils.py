@@ -133,7 +133,7 @@ def replicate_op_strategy(op_schema: OpSchema) -> StrategyType:
     dim_sharding: PlacementList = [Replicate()] * (output_len + len(inputs_strategy))
     single_dim_placement = [dim_sharding]
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_dim_placement, input_index=output_len
+        mesh, op_schema, single_dim_placement, num_outputs=output_len
     )
 
 
@@ -357,7 +357,7 @@ def expand_to_full_mesh_op_strategy(
     single_mesh_dim_strategies: list[PlacementList],
     *,
     output_tensor_meta: TensorMeta | Sequence[TensorMeta | None] | None = None,
-    input_index: int = 1,
+    num_outputs: int = 1,
     inplace_op: bool = False,
     allow_unbacked_sharding: bool | None = None,
     is_valid_strategy_cb: Callable[
@@ -373,22 +373,22 @@ def expand_to_full_mesh_op_strategy(
         mesh (DeviceMesh): the device mesh to expand the strategy to
         op_schema (OpSchema): the op schema
         single_mesh_dim_strategies (list[PlacementList]): the sharding strategies to expand. The outer list is over
-            different strategies.  The inner PlacementList is over the outputs and inputs of the op. If input_index is 1,
-            a PlacementList looks like [output_placement, input_placement1, input_placement2, ...].
+            different strategies.  The inner PlacementList is over the inputs and outputs of the op. If num_outputs is 1,
+            a PlacementList looks like [input_placement1, input_placement2, ..., output_placement].
         output_tensor_meta: tensor metadata for the output(s), used to populate DTensorSpec.tensor_meta field
-        input_index: the number of outputs of the op, defaults to 1
+        num_outputs: the number of outputs of the op, defaults to 1
         inplace_op: whether the op is inplace or not, defaults to False
         is_valid_strategy_cb: a callback function to filter out invalid sharding rules, defaults to None.
 
-    Example: Let's say `my_op(tensor_x, tensor_y) - > output_tensor`  can support sharding or replicating tensor_x,
+    Example: Let's say `my_op(tensor_x, tensor_y) -> output_tensor` can support sharding or replicating tensor_x,
     but always requires tensor_y to be replicated.  We can specify these valid combinations ignoring mesh dims.
     Then, we can rely on `expand_to_full_mesh_op_strategy` to create every possible combination of these shardings
     over multiple mesh dimensions, filtering out any combinations that are invalid based on the actual mesh dim size.
 
         single_mesh_dim_strategies = [
-            # first strategy: return output sharded on first dim, shard tensor_x on its first dim, replicate tensor_y
-            [Shard(0), Shard(0), Replicate()]
-            # second strategy: replicate output, and both inputs
+            # first strategy: shard tensor_x on its first dim, replicate tensor_y, return output sharded on first dim
+            [Shard(0), Replicate(), Shard(0)]
+            # second strategy: replicate both inputs and output
             [Replicate(), Replicate(), Replicate()]
         ]
     """
@@ -401,6 +401,11 @@ def expand_to_full_mesh_op_strategy(
     kwargs_strategy = op_schema.kwargs_strategy
     input_args_strategy = args_strategy + kwargs_strategy
     all_strategies = []
+    # Inputs come first, outputs last. Compute the boundary once.
+    num_positions = (
+        len(single_mesh_dim_strategies[0]) if single_mesh_dim_strategies else 0
+    )
+    output_start = num_positions - num_outputs
     # Track input placements if we skip strategies due to inplace placement mismatch
     blocking_inplace_input_placements: tuple[Placement, ...] | None = None
     for strategy_comb in strategy_combs:
@@ -414,13 +419,9 @@ def expand_to_full_mesh_op_strategy(
         input_strategy_counter = 0
         for position, specs in enumerate(zip(*strategy_comb, strict=True)):
             if specs[0] is not None:
-                # Populate tensor_meta field for both output and input specs,
-                # including for tuple output cases
                 tensor_meta = None
-                # Use position to determine output vs input territory
-                # (position includes None entries, unlike the old spec_index)
-                if position < input_index:
-                    # This is an output position
+                if position >= output_start:
+                    # Output position
                     if output_tensor_meta is not None:
                         if isinstance(output_tensor_meta, TensorMeta):
                             tensor_meta = output_tensor_meta
@@ -429,8 +430,7 @@ def expand_to_full_mesh_op_strategy(
                                 tensor_meta = output_tensor_meta[output_spec_count]
                     output_spec_count += 1
                 else:
-                    # This is an input position
-                    # Only get tensor_meta if we have a corresponding input_args_strategy entry
+                    # Input position
                     if input_strategy_counter < len(input_args_strategy):
                         tensor_meta = input_args_strategy[
                             input_strategy_counter
@@ -465,7 +465,7 @@ def expand_to_full_mesh_op_strategy(
             continue
 
         input_specs: list[DTensorSpec] = [
-            s for s in spec_list[input_index:] if isinstance(s, DTensorSpec)
+            s for s in spec_list[:output_start] if isinstance(s, DTensorSpec)
         ]
 
         if len(input_specs) != len(input_args_strategy):
@@ -489,20 +489,20 @@ def expand_to_full_mesh_op_strategy(
             and isinstance(op_schema.kwargs_schema["out"], OpStrategy)
         ):
             out_kwarg_spec = op_schema.kwargs_schema["out"].strategies[0].output_spec
-            # spec_list[0] is the output spec for this strategy combination
-            if spec_list[0] is not None:
-                if spec_list[0].placements != out_kwarg_spec.placements:
+            output_spec_for_check = spec_list[output_start]
+            if output_spec_for_check is not None:
+                if output_spec_for_check.placements != out_kwarg_spec.placements:
                     continue
 
         output_specs: tuple[DTensorSpec | None, ...] | DTensorSpec | None
-        if input_index == 0:
-            # No outputs (e.g., _linalg_check_errors)
+        if num_outputs == 0:
             output_specs = None
-        elif input_index > 1:
-            output_specs = tuple(spec_list[:input_index])
+        elif num_outputs > 1:
+            output_specs = tuple(spec_list[output_start:])
         else:
-            if spec_list[0] is not None:
-                output_specs = spec_list[0]
+            output_spec = spec_list[output_start]
+            if output_spec is not None:
+                output_specs = output_spec
             else:
                 raise RuntimeError("output spec is None")
 

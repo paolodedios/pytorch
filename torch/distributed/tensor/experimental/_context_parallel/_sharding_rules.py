@@ -103,6 +103,9 @@ def _scaled_dot_product_flash_attention_cp_strategy(op_schema: OpSchema) -> OpSt
     debug_attn_mask_sharding = Shard(SEQ_DIM) if return_debug_mask else Replicate()
 
     cp_strategy: PlacementList = [
+        Shard(SEQ_DIM),  # q
+        Shard(SEQ_DIM),  # k
+        Shard(SEQ_DIM),  # v
         Shard(SEQ_DIM),  # output
         Shard(SEQ_DIM),  # logsumexp
         None,  # cum_seq_q
@@ -112,14 +115,11 @@ def _scaled_dot_product_flash_attention_cp_strategy(op_schema: OpSchema) -> OpSt
         Replicate(),  # rng_state
         None,  # unused
         debug_attn_mask_sharding,  # debugattn
-        Shard(SEQ_DIM),  # q
-        Shard(SEQ_DIM),  # k
-        Shard(SEQ_DIM),  # v
     ]
     single_mesh_dim_strategies.append(cp_strategy)
 
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=9
+        mesh, op_schema, single_mesh_dim_strategies, num_outputs=9
     )
 
 
@@ -147,9 +147,6 @@ def _scaled_dot_product_flash_attention_backward_cp_strategy(
 
     # Context Parallelism: shards on the sequence dim
     cp_strategy: PlacementList = [
-        Shard(SEQ_DIM),  # grad_q
-        Shard(SEQ_DIM),  # grad_k
-        Shard(SEQ_DIM),  # grad_v
         Shard(SEQ_DIM),  # grad_output
         Shard(SEQ_DIM),  # q
         Shard(SEQ_DIM),  # k
@@ -158,10 +155,11 @@ def _scaled_dot_product_flash_attention_backward_cp_strategy(
         Shard(SEQ_DIM),  # logsumexp
     ]
     cp_strategy.extend([Replicate()] * (num_tensor_inputs - 6))
+    cp_strategy.extend([Shard(SEQ_DIM)] * 3)  # grad_q, grad_k, grad_v
     single_mesh_dim_strategies.append(cp_strategy)
 
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=3
+        mesh, op_schema, single_mesh_dim_strategies, num_outputs=3
     )
 
 
@@ -187,20 +185,24 @@ def _scaled_dot_product_efficient_attention_cp_strategy(
     has_attn_bias = op_schema.args_schema[3] is not None
 
     cp_strategy: PlacementList = [
-        Shard(SEQ_DIM),  # output
-        Shard(SEQ_DIM),  # logsumexp
-        None,  # philox_seed
-        None,  # philox_offset
         Shard(SEQ_DIM),  # q
         Shard(SEQ_DIM),  # k
         Shard(SEQ_DIM),  # v
     ]
     if has_attn_bias:
         cp_strategy.append(Replicate())  # attn bias - not sharded for CP
+    cp_strategy.extend(
+        [
+            Shard(SEQ_DIM),  # output
+            Shard(SEQ_DIM),  # logsumexp
+            None,  # philox_seed
+            None,  # philox_offset
+        ]
+    )
     single_mesh_dim_strategies.append(cp_strategy)
 
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=4
+        mesh, op_schema, single_mesh_dim_strategies, num_outputs=4
     )
 
 
@@ -223,24 +225,29 @@ def _scaled_dot_product_efficient_attention_backward_cp_strategy(
 
     # Context Parallelism: shards on the sequence dim
     cp_strategy: PlacementList = [
-        Shard(SEQ_DIM),  # grad_q
-        Shard(SEQ_DIM),  # grad_k
-        Shard(SEQ_DIM),  # grad_v
-        Shard(1) if has_attn_bias else None,  # grad_bias
         Shard(SEQ_DIM),  # grad_output
         Shard(SEQ_DIM),  # q
         Shard(SEQ_DIM),  # k
         Shard(SEQ_DIM),  # v
-        Shard(SEQ_DIM),  # output
-        Shard(SEQ_DIM),  # logsumexp
     ]
     if has_attn_bias:
-        cp_strategy.insert(8, Shard(1))  # attn_bias input
-    cp_strategy.extend([Replicate(), Replicate()])
+        cp_strategy.append(Shard(1))  # attn_bias input
+    cp_strategy.extend(
+        [
+            Shard(SEQ_DIM),  # output
+            Shard(SEQ_DIM),  # logsumexp
+            Replicate(),  # philox_seed
+            Replicate(),  # philox_offset
+            Shard(SEQ_DIM),  # grad_q
+            Shard(SEQ_DIM),  # grad_k
+            Shard(SEQ_DIM),  # grad_v
+            Shard(1) if has_attn_bias else None,  # grad_bias
+        ]
+    )
     single_mesh_dim_strategies.append(cp_strategy)
 
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=4
+        mesh, op_schema, single_mesh_dim_strategies, num_outputs=4
     )
 
 
@@ -276,25 +283,29 @@ def _scaled_dot_product_cudnn_attention_cp_strategy(op_schema: OpSchema) -> OpSt
     debug_attn_mask_sharding = Shard(SEQ_DIM) if return_debug_mask else None
 
     cp_strategy: PlacementList = [
-        Shard(SEQ_DIM),  # output
-        logsumexp_sharding,  # logsumexp
-        None,  # cum_seq_q
-        None,  # cum_seq_k
-        None,  # max_q
-        None,  # max_k
-        None,  # philox_seed
-        None,  # philox_offset
-        debug_attn_mask_sharding,  # debug_attn_mask
         Shard(SEQ_DIM),  # q
         Shard(SEQ_DIM),  # k
         Shard(SEQ_DIM),  # v
     ]
     if has_attn_bias:
         cp_strategy.append(Replicate())  # attn_bias - not sharded for CP
+    cp_strategy.extend(
+        [
+            Shard(SEQ_DIM),  # output
+            logsumexp_sharding,  # logsumexp
+            None,  # cum_seq_q
+            None,  # cum_seq_k
+            None,  # max_q
+            None,  # max_k
+            None,  # philox_seed
+            None,  # philox_offset
+            debug_attn_mask_sharding,  # debug_attn_mask
+        ]
+    )
     single_mesh_dim_strategies.append(cp_strategy)
 
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=9
+        mesh, op_schema, single_mesh_dim_strategies, num_outputs=9
     )
 
 
@@ -317,7 +328,6 @@ def _scaled_dot_product_cudnn_attention_backward_cp_strategy(
     has_scale = len(op_schema.args_schema) >= 16 and False
 
     # Context Parallelism: shards on the sequence dim
-    cp_sharding_gout: PlacementList = [Shard(SEQ_DIM)] * 3  # grad_q, grad_k, grad_v
     cp_sharding_ginp: PlacementList = [
         Shard(SEQ_DIM)
     ] * 6  # grad_output, q, k, v, output, logsumexp
@@ -328,12 +338,13 @@ def _scaled_dot_product_cudnn_attention_backward_cp_strategy(
     ] * 6  # cum_seq_q, cum_seq_k, max_q, max_k, dropout_p, is_causal
     if has_scale:
         cp_sharding_ginp.append(None)
+    cp_sharding_gout: PlacementList = [Shard(SEQ_DIM)] * 3  # grad_q, grad_k, grad_v
 
-    cp_sharding = cp_sharding_gout + cp_sharding_ginp
+    cp_sharding = cp_sharding_ginp + cp_sharding_gout
     single_mesh_dim_strategies.append(cp_sharding)
 
     return expand_to_full_mesh_op_strategy(
-        mesh, op_schema, single_mesh_dim_strategies, input_index=3
+        mesh, op_schema, single_mesh_dim_strategies, num_outputs=3
     )
 
 

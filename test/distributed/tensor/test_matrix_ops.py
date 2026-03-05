@@ -256,14 +256,14 @@ class DistMatrixOpsTest(DTensorTestBase):
         )
 
         # Find strategies where output is Partial (contracting dim case)
-        # Strategy format: [output, bias, mat1, mat2]
+        # Strategy format: [bias, mat1, mat2, output]
         for strategies, bias_shape in [
             (strategies_1d, bias_shape_1d),
             (strategies_2d, bias_shape_2d),
         ]:
             for strategy in strategies:
-                output_placement = strategy[0]
-                bias_placement = strategy[1]
+                output_placement = strategy[-1]
+                bias_placement = strategy[0]
 
                 if isinstance(output_placement, Partial):
                     # Bug: _derive_bias_placement was returning Partial() without

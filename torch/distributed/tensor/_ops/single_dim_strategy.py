@@ -104,12 +104,12 @@ def _fill_single_dim_strategy_placeholders(
     Supports implicit replication.
 
     Example:
-    single_dim_strategies_with_placeholders = [[Partial(), _ShardingPlaceholder(1), _ShardingPlaceholder(0)]]
+    single_dim_strategies_with_placeholders = [[_ShardingPlaceholder(1), _ShardingPlaceholder(0), Partial()]]
     input0: Shard(0)
     input1: StridedShard(1, split_factor=2)
     returns: [
-       [Partial(), Shard(1), Shard(0)],
-       [Partial(), StridedShard(1, split_factor=2), StridedShard(0, split_factor=2)],
+       [Shard(1), Shard(0), Partial()],
+       [StridedShard(1, split_factor=2), StridedShard(0, split_factor=2), Partial()],
        [Replicate(), Replicate(), Replicate()]
     ]
     """
@@ -294,16 +294,16 @@ class _PreparedSingleDimStrategy:
         # Build strategy lookup: map input placements -> output placements
         self.strategy_lookup = {}
         for strategy in self.expanded_strategies:
-            input_key = tuple(strategy[num_outputs:])
+            input_key = tuple(strategy[:num_inputs])
             if input_key not in self.strategy_lookup:
-                self.strategy_lookup[input_key] = tuple(strategy[:num_outputs])
+                self.strategy_lookup[input_key] = tuple(strategy[num_inputs:])
 
         # Precompute allowed placements per input from the expanded rules
         self.allowed_sharding_per_input: dict[int, set[Placement]] = defaultdict(set)
         self.allowed_partial_per_input: dict[int, set[Placement]] = defaultdict(set)
         for strategy in self.expanded_strategies:
             for input_idx in range(num_inputs):
-                p = strategy[num_outputs + input_idx]
+                p = strategy[input_idx]
                 if _is_sharding(p):
                     self.allowed_sharding_per_input[input_idx].add(p)
                 elif isinstance(p, Partial):
@@ -419,7 +419,7 @@ def _expand_single_dim_strategy_to_mesh(
                 cast(list[PlacementList], prepared_strategy.expanded_strategies),
                 output_tensor_meta=output_tensor_meta,
                 inplace_op=is_inplace,
-                input_index=prepared_strategy.num_outputs,
+                num_outputs=prepared_strategy.num_outputs,
                 allow_unbacked_sharding=prepared_strategy.allow_unbacked_sharding,
             )
 
