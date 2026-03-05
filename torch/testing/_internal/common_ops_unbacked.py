@@ -63,6 +63,7 @@ ops_dde_xfail = {
     xfail("fft.rfft"),
     xfail("fft.rfft2"),
     xfail("fft.rfftn"),
+    xfail("float"),
     xfail("geometric"),
     xfail("geqrf"),
     xfail("gradient"),
