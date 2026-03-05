@@ -386,13 +386,13 @@ class TensorWithCounter(torch.Tensor):
         return f"TensorWithCounter({self.a}, {self.b}, {self._counter}, {self._size_store})"
 
     def __tensor_flatten__(self):
-        return ["a", "b", "_counter", "_size_store"], ()
+        return ["a", "b", "_counter"], (self._size_store,)
 
     @staticmethod
     def __tensor_unflatten__(inner_tensors, ctx, outer_size, outer_stride):
         a, b = inner_tensors["a"], inner_tensors["b"]
         counter = inner_tensors["_counter"]
-        size_store = inner_tensors["_size_store"]
+        (size_store,) = ctx
         return TensorWithCounter(a, b, counter, size_store, outer_size, outer_stride)
 
     @classmethod
@@ -1990,13 +1990,14 @@ class GraphModule(torch.nn.Module):
         self.assertTrue(isinstance(out2, TensorWithCounter))
         # Key checks: should use runtime instances, not traced instances
         self.assertIs(out2._counter, counter2)
-        self.assertIs(out2._size_store, size2)
+        # Value-type opaques in ctx are baked at compile time
+        self.assertEqual(out2._size_store, size2)
 
         out2.sum().backward()
         self.assertIsNotNone(x2.grad)
         self.assertTrue(isinstance(x2.grad, TensorWithCounter))
         self.assertIs(x2.grad._counter, counter2)
-        self.assertIs(x2.grad._size_store, size2)
+        self.assertEqual(x2.grad._size_store, size2)
 
     def test_tensor_subclass_opaque_backward_compiled_autograd(self):
         """Test opaque objects work with compiled autograd backward."""
@@ -2034,19 +2035,15 @@ class GraphModule(torch.nn.Module):
         out2 = opt_fn(x2)
         self.assertTrue(isinstance(out2, TensorWithCounter))
         self.assertIs(out2._counter, counter2)
-        self.assertIs(out2._size_store, size2)
+        self.assertEqual(out2._size_store, size2)
 
         with torch._dynamo.compiled_autograd._enable(torch.compile(backend="eager")):
             out2.sum().backward()
 
         self.assertIsNotNone(x2.grad)
         self.assertTrue(isinstance(x2.grad, TensorWithCounter))
-        # Opaques flow through the flat arg list in the backward, so
-        # tangent opaques are correctly propagated. In compiled autograd
-        # a stale ctx_opaque_objects replacement still interferes with some
-        # opaques; _counter flows correctly, _size_store does not yet.
         self.assertIs(x2.grad._counter, counter2)
-        self.assertIsNot(x2.grad._size_store, size2)
+        self.assertEqual(x2.grad._size_store, size2)
 
     def test_tensor_subclass_shared_opaque_remapping(self):
         """Test that shared opaques across inputs are correctly handled."""
@@ -2086,7 +2083,7 @@ class GraphModule(torch.nn.Module):
         out2 = opt_fn(x2, y2)
         self.assertTrue(isinstance(out2, TensorWithCounter))
         self.assertIs(out2._counter, counter2)
-        self.assertIs(out2._size_store, size2)
+        self.assertEqual(out2._size_store, size2)
 
     def test_shared_opaque_identity_guard(self):
         """When inputs share an opaque at trace time, breaking that sharing
@@ -2225,14 +2222,14 @@ class GraphModule(torch.nn.Module):
         out2 = opt_fn(x2, y2)
         self.assertTrue(isinstance(out2, TensorWithCounter))
         self.assertIs(out2._counter, counter2)
-        self.assertIs(out2._size_store, size2)
+        self.assertEqual(out2._size_store, size2)
 
         out2.sum().backward()
         self.assertIsNotNone(x2.grad)
         self.assertIsNotNone(y2.grad)
         self.assertTrue(isinstance(x2.grad, TensorWithCounter))
         self.assertIs(x2.grad._counter, counter2)
-        self.assertIs(x2.grad._size_store, size2)
+        self.assertEqual(x2.grad._size_store, size2)
 
     def test_deeply_nested_tensor_subclass_with_opaque(self):
         """Test opaque objects in nested tensor subclasses are correctly remapped."""
@@ -2340,7 +2337,9 @@ class GraphModule(torch.nn.Module):
         self.assertTrue(isinstance(out2, NestedSubclass))
         # Key checks: should use runtime instances, not traced instances
         self.assertIs(out2._inner._counter, counter2)
-        self.assertIs(out2._inner._size_store, size2)
+        # Value-type opaques in ctx are baked at compile time, so identity
+        # is not preserved across re-invocations.
+        self.assertEqual(out2._inner._size_store, size2)
         self.assertEqual(out2._scale, 2.0)
 
         out2.sum().backward()
@@ -2348,7 +2347,185 @@ class GraphModule(torch.nn.Module):
         self.assertTrue(isinstance(x2.grad, NestedSubclass))
         self.assertTrue(isinstance(x2.grad._inner, TensorWithCounter))
         self.assertIs(x2.grad._inner._counter, counter2)
-        self.assertIs(x2.grad._inner._size_store, size2)
+        self.assertEqual(x2.grad._inner._size_store, size2)
+
+    def test_value_type_opaque_in_tensor_attrs_errors(self):
+        """Value-type opaques must go in ctx, not tensor attrs."""
+
+        class BadSubclass(torch.Tensor):
+            @staticmethod
+            def __new__(cls, data, size_store):
+                kwargs = {
+                    "strides": data.stride(),
+                    "storage_offset": data.storage_offset(),
+                    "device": data.device,
+                    "layout": data.layout,
+                    "requires_grad": data.requires_grad,
+                    "dtype": data.dtype,
+                }
+                return torch.Tensor._make_wrapper_subclass(cls, data.size(), **kwargs)
+
+            def __init__(self, data, size_store):
+                self._data = data
+                self._size_store = size_store
+
+            def __tensor_flatten__(self):
+                # BUG: SizeStore is value-type, should be in ctx not tensor attrs
+                return ["_data", "_size_store"], ()
+
+            @staticmethod
+            def __tensor_unflatten__(inner_tensors, ctx, outer_size, outer_stride):
+                return BadSubclass(inner_tensors["_data"], inner_tensors["_size_store"])
+
+            @classmethod
+            def __torch_dispatch__(cls, func, types, args, kwargs):
+                if kwargs is None:
+                    kwargs = {}
+
+                def unwrap(x):
+                    return x._data if isinstance(x, BadSubclass) else x
+
+                size_store = None
+                for arg in torch.utils._pytree.tree_leaves(args):
+                    if isinstance(arg, BadSubclass):
+                        size_store = arg._size_store
+                        break
+
+                unwrapped_args = torch.utils._pytree.tree_map(unwrap, args)
+                unwrapped_kwargs = torch.utils._pytree.tree_map(unwrap, kwargs)
+                out = func(*unwrapped_args, **unwrapped_kwargs)
+
+                def wrap(x):
+                    if isinstance(x, torch.Tensor):
+                        return BadSubclass(x, size_store)
+                    return x
+
+                return torch.utils._pytree.tree_map(wrap, out)
+
+        def fn(x):
+            return x * 2
+
+        x = BadSubclass(torch.rand(4, 4), SizeStore(4))
+        opt_fn = torch.compile(fn, backend="aot_eager", fullgraph=True)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "value-type.*tensor attrs",
+        ):
+            opt_fn(x)
+
+    def test_multi_reference_opaque_identity(self):
+        """Test identity preservation with multiple reference-type opaques in tensor attrs."""
+
+        class Tag(OpaqueBase):
+            def __init__(self, name):
+                self.name = name
+
+            def __eq__(self, other):
+                return isinstance(other, Tag) and self.name == other.name
+
+            def __hash__(self):
+                return hash(self.name)
+
+        register_opaque_type(Tag, typ="reference")
+
+        class TwoRefSubclass(torch.Tensor):
+            @staticmethod
+            def __new__(cls, data, counter, tag):
+                kwargs = {
+                    "strides": data.stride(),
+                    "storage_offset": data.storage_offset(),
+                    "device": data.device,
+                    "layout": data.layout,
+                    "requires_grad": data.requires_grad,
+                    "dtype": data.dtype,
+                }
+                return torch.Tensor._make_wrapper_subclass(cls, data.size(), **kwargs)
+
+            def __init__(self, data, counter, tag):
+                self._data = data
+                self._counter = counter
+                self._tag = tag
+
+            def __repr__(self):
+                return f"TwoRefSubclass({self._data})"
+
+            def __tensor_flatten__(self):
+                return ["_data", "_counter", "_tag"], ()
+
+            @staticmethod
+            def __tensor_unflatten__(inner_tensors, ctx, outer_size, outer_stride):
+                return TwoRefSubclass(
+                    inner_tensors["_data"],
+                    inner_tensors["_counter"],
+                    inner_tensors["_tag"],
+                )
+
+            @classmethod
+            def __torch_dispatch__(cls, func, types, args, kwargs):
+                if kwargs is None:
+                    kwargs = {}
+
+                def unwrap(x):
+                    return x._data if isinstance(x, TwoRefSubclass) else x
+
+                counter = None
+                tag = None
+                for arg in torch.utils._pytree.tree_leaves(args):
+                    if isinstance(arg, TwoRefSubclass):
+                        counter = arg._counter
+                        tag = arg._tag
+                        break
+
+                unwrapped_args = torch.utils._pytree.tree_map(unwrap, args)
+                unwrapped_kwargs = torch.utils._pytree.tree_map(unwrap, kwargs)
+                out = func(*unwrapped_args, **unwrapped_kwargs)
+
+                def wrap(x):
+                    if isinstance(x, torch.Tensor):
+                        return TwoRefSubclass(x, counter, tag)
+                    return x
+
+                return torch.utils._pytree.tree_map(wrap, out)
+
+        def fn(x):
+            return x * 2 + 1
+
+        counter = Counter(start=3, end=10)
+        tag = Tag("test")
+        x = TwoRefSubclass(torch.rand(4, 4, requires_grad=True), counter, tag)
+
+        cnt = CompileCounterWithBackend("aot_eager")
+        opt_fn = torch.compile(fn, backend=cnt, fullgraph=True)
+        out = opt_fn(x)
+
+        self.assertIsInstance(out, TwoRefSubclass)
+        self.assertIs(out._counter, counter)
+        self.assertIs(out._tag, tag)
+
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+        self.assertEqual(cnt.frame_count, 1)
+
+        # Second invocation with different-but-equal opaques
+        counter2 = Counter(start=3, end=10)
+        tag2 = Tag("test")
+        self.assertEqual(counter, counter2)
+        self.assertIsNot(counter, counter2)
+        x2 = TwoRefSubclass(torch.rand(4, 4, requires_grad=True), counter2, tag2)
+
+        out2 = opt_fn(x2)
+        self.assertEqual(cnt.frame_count, 1)  # No recompilation
+
+        self.assertIsInstance(out2, TwoRefSubclass)
+        self.assertIs(out2._counter, counter2)
+        self.assertIs(out2._tag, tag2)
+
+        out2.sum().backward()
+        self.assertIsNotNone(x2.grad)
+        self.assertIsInstance(x2.grad, TwoRefSubclass)
+        self.assertIs(x2.grad._counter, counter2)
+        self.assertIs(x2.grad._tag, tag2)
 
     def test_opaque_obj_saved_for_backward(self):
         """Test that opaque objects are correctly saved and passed to backward."""
@@ -2937,7 +3114,7 @@ def forward(self, p_linear_weight, p_linear_bias, obj_lifted_custom_0, x):
         self.assertIsInstance(out2, TensorWithCounter)
         # Runtime opaque values should be used, not the serialized ones
         self.assertIs(out2._counter, counter2)
-        self.assertIs(out2._size_store, size2)
+        self.assertEqual(out2._size_store, size2)
         self.assertEqual(counters["aot_autograd"]["autograd_cache_hit"], 1)
 
 

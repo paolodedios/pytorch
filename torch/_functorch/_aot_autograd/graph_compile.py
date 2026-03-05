@@ -1825,9 +1825,7 @@ def _aot_stage2a_partition(
                         }
                         if dynamic_dims:
                             fw_metadata.dynamic_saved_tensors_idxs[idx] = dynamic_dims
-                    elif isinstance(
-                        node.meta["val"], (FakeScriptObject, OpaqueBase)
-                    ):
+                    elif isinstance(node.meta["val"], (FakeScriptObject, OpaqueBase)):
                         opaque_outs_saved_for_bw.append(node)
 
             num_symints_saved_for_bw = len(symint_outs_saved_for_bw)
