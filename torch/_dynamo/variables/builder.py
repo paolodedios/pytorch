@@ -2634,6 +2634,9 @@ class VariableBuilder:
                 is_unspecialized_nn_module=self.source.guard_source.is_unspecialized_nn_module(),
             )
 
+            # Record concrete scalar value for per-cache-entry exclusion guards.
+            self.tx.output.scalar_source_to_value[self.source.name] = value
+
             # TODO: This should be dynamic, as we in general do not
             # know if bare integers are actually going to be sizevars
             # and it is inappropriate to eagerly duck size them with
@@ -2668,17 +2671,10 @@ class VariableBuilder:
                 self.install_guards(GuardBuilder.CONSTANT_MATCH)
                 return ConstantVariable.create(value=value)
 
-            excluded_scalar = (
-                frame_state_entry.excluded_scalar
-                if frame_state_entry is not None
-                and config.stable_graph_selection_for_automatic_dynamic
-                else None
-            )
             wrapped_value = shape_env.create_unspecified_symint_and_symbol(
                 value,
                 source=self.source,
                 dynamic_dim=dynamic_dim,
-                excluded_value=excluded_scalar,
             )
 
             self.tx.output.tracked_fakes.append(
@@ -3933,7 +3929,6 @@ def _automatic_dynamic(
         tensor_source=source,
         shape_env_to_source_to_symbol_cache=shape_env_to_source_to_symbol_cache,
         shape_ids=getattr(e, "_dynamo_shape_ids", None),
-        excluded_sizes=frame_state_entry.excluded_sizes,
     )
 
 
