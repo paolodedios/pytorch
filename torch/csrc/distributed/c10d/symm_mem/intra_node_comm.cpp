@@ -40,23 +40,28 @@ static NvlMesh getNvlMesh(const std::vector<int>& rankToDeviceIdx) {
 
   auto ret = amdsmi_init(AMDSMI_INIT_AMD_GPUS);
   if (ret != AMDSMI_STATUS_SUCCESS) {
-    LOG(ERROR) << "IntraNodeComm:: rendezvous failed in amdsmi_init, ret=" << static_cast<int>(ret);
+    LOG(ERROR) << "IntraNodeComm:: rendezvous failed in amdsmi_init, ret="
+               << static_cast<int>(ret);
     return {};
   }
 
-  //First find number of sockets
+  // First find number of sockets
   uint32_t socket_count = 0;
   ret = amdsmi_get_socket_handles(&socket_count, nullptr);
   if (ret != AMDSMI_STATUS_SUCCESS) {
-    LOG(ERROR) << "IntraNodeComm:: getNvlMesh: amdsmi_get_socket_handles returned error ret=" << static_cast<int>(ret);
+    LOG(ERROR)
+        << "IntraNodeComm:: getNvlMesh: amdsmi_get_socket_handles returned error ret="
+        << static_cast<int>(ret);
     return {};
   }
 
-  //Then get the socket handles
+  // Then get the socket handles
   std::vector<amdsmi_socket_handle> socket_handles(socket_count);
   ret = amdsmi_get_socket_handles(&socket_count, &socket_handles[0]);
   if (ret != AMDSMI_STATUS_SUCCESS) {
-    LOG(ERROR) << "IntraNodeComm:: getNvlMesh: amdsmi_get_socket_handles returned error ret=" << static_cast<int>(ret);
+    LOG(ERROR)
+        << "IntraNodeComm:: getNvlMesh: amdsmi_get_socket_handles returned error ret="
+        << static_cast<int>(ret);
     return {};
   }
 
@@ -64,20 +69,30 @@ static NvlMesh getNvlMesh(const std::vector<int>& rankToDeviceIdx) {
   for (size_t i = 0; i < socket_count; ++i) {
     // For each socket, find number of devices
     uint32_t device_count = 0;
-    ret = amdsmi_get_processor_handles(socket_handles[i], &device_count, nullptr);
+    ret =
+        amdsmi_get_processor_handles(socket_handles[i], &device_count, nullptr);
     if (ret != AMDSMI_STATUS_SUCCESS) {
-      LOG(ERROR) << "IntraNodeComm:: getNvlMesh: amdsmi_get_device_count returned error ret=" << static_cast<int>(ret);
+      LOG(ERROR)
+          << "IntraNodeComm:: getNvlMesh: amdsmi_get_device_count returned error ret="
+          << static_cast<int>(ret);
       return {};
     }
     // Then get the processor handles for all the devices on this socket
     std::vector<amdsmi_processor_handle> _processor_handles(device_count);
-    ret = amdsmi_get_processor_handles(socket_handles[i], &device_count, &_processor_handles[0]);
+    ret = amdsmi_get_processor_handles(
+        socket_handles[i], &device_count, &_processor_handles[0]);
     if (ret != AMDSMI_STATUS_SUCCESS) {
-      LOG(ERROR) << "IntraNodeComm:: getNvlMesh: amdsmi_get_processor_handles returned error ret=" << static_cast<int>(ret);
+      LOG(ERROR)
+          << "IntraNodeComm:: getNvlMesh: amdsmi_get_processor_handles returned error ret="
+          << static_cast<int>(ret);
       return {};
     }
-    // Add the processor handles for all the devices on this socket to the list of processor handles
-    processor_handles.insert(processor_handles.end(), _processor_handles.begin(), _processor_handles.end());
+    // Add the processor handles for all the devices on this socket to the list
+    // of processor handles
+    processor_handles.insert(
+        processor_handles.end(),
+        _processor_handles.begin(),
+        _processor_handles.end());
   }
 
   // For each device, loop over devices connected to it
@@ -87,7 +102,8 @@ static NvlMesh getNvlMesh(const std::vector<int>& rankToDeviceIdx) {
         continue;
 
       bool conn = false;
-      auto ret = amdsmi_is_P2P_accessible(processor_handles[idx], processor_handles[link], &conn);
+      auto ret = amdsmi_is_P2P_accessible(
+          processor_handles[idx], processor_handles[link], &conn);
       if (ret != AMDSMI_STATUS_SUCCESS) {
         LOG(ERROR)
             << "IntraNodeComm: getNvlMesh: amdsmi_is_P2P_accessible returned error ret="
