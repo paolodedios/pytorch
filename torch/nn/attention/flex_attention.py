@@ -430,10 +430,11 @@ def _adjust_num_blocks_and_indices(
 
 
 class _MaskModWrapper:
-    """Wraps mask_mod_gm for pytree context equality comparison.
+    """Wraps a mask_mod GraphModule with value-based equality.
 
-    Compares via gm.code — same approach as torch.compile cache
-    infrastructure (FxGraphCachePickler).
+    BlockMask stores a traced GraphModule (mask_mod_gm) in its pytree context.
+    This wrapper compares GraphModules by their code string, avoiding tensor
+    comparisons that fail under FunctionalTensorMode.
     """
 
     __slots__ = ("gm",)
@@ -1023,14 +1024,13 @@ class BlockMask:
         return value
 
     def _flatten(self):
-        """Flatten BlockMask into tensors and context.
+        """Flatten BlockMask into a list of tensors and context.
 
+        Wraps mask_mod in _MaskModWrapper for value-based comparison in TreeSpec.
         Captured tensors are appended to the tensor list (pytree leaves).
-        Context stores mask_mod_gm (wrapped) and the count of captured tensors.
         """
         block_tensors = tuple(getattr(self, attr) for attr in self._TENSOR_ATTRS)
         tensors = block_tensors + tuple(self.mask_mod_captured_tensors)
-        # Build context: seq_lengths, BLOCK_SIZE, mask_mod_gm (wrapped), n_captured
         context_values = {
             "seq_lengths": self.seq_lengths,
             "BLOCK_SIZE": self.BLOCK_SIZE,
@@ -1062,7 +1062,7 @@ class BlockMask:
     def _flatten_with_keys(self):
         """Flatten BlockMask with keys for better tracing.
 
-        Captured tensors get keys like 'mask_mod_captured_0', 'mask_mod_captured_1', etc.
+        Wraps mask_mod in _MaskModWrapper for value-based comparison in TreeSpec.
         """
         block_tensors = tuple(
             (GetAttrKey(attr), getattr(self, attr)) for attr in self._TENSOR_ATTRS
@@ -1699,6 +1699,7 @@ def flex_attention(
         block_mask = _create_empty_block_mask(query, key)
 
     # If BlockMask was sliced, its mask_mod is intentionally replaced with an error-raising stub.
+    # This guard ensures we surface the intended error message before any shape-based checks.
     if block_mask.mask_mod_gm is None:
         raise RuntimeError("Cannot use mask_mod from a sliced BlockMask")
 
