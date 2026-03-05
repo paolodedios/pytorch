@@ -37,7 +37,7 @@ import types
 import weakref
 from collections.abc import Callable, MutableMapping
 from types import ModuleType
-from typing import Any, NamedTuple, NoReturn, Optional, overload, TYPE_CHECKING, Union
+from typing import Any, NamedTuple, NoReturn, overload, TYPE_CHECKING, Union
 
 import sympy
 
@@ -175,6 +175,7 @@ from ..utils import (
     wrap_fake_exception,
 )
 from .base import (
+    AttributeMutationExisting,
     AttributeMutationNew,
     typestr,
     ValueMutationExisting,
@@ -202,7 +203,7 @@ from .dicts import (
     OrderedSetVariable,
     SetVariable,
 )
-from .distributed import WorldMetaClassVariable
+from .distributed import DeviceMeshVariable, WorldMetaClassVariable
 from .functions import (
     BuiltinMethodVariable,
     CollectionsNamedTupleFunction,
@@ -210,7 +211,6 @@ from .functions import (
     CreateTMADescriptorExperimentalVariable,
     CreateTMADescriptorStableVariable,
     FunctoolsPartialVariable,
-    FunctoolsWrapsVariable,
     SysFunctionVariable,
     TritonKernelVariable,
     TritonSetAllocatorSkipVariable,
@@ -1217,12 +1217,20 @@ class VariableBuilder:
         elif isinstance(value, torch.optim.Optimizer):
             self.install_guards(GuardBuilder.ID_MATCH)
             self.source = OptimizerSource(self.source)
-            return OptimizerVariable(value, source=self.source)
+            return OptimizerVariable(
+                value,
+                source=self.source,
+                mutation_type=AttributeMutationExisting(),
+            )
         elif isinstance(value, torch.DispatchKeySet):
             self.install_guards(GuardBuilder.DISPATCH_KEY_SET_MATCH)
             return DispatchKeySetVariable(value)
         elif WorldMetaClassVariable.is_group_member_type(value):
             return WorldMetaClassVariable(value, source=self.source)
+        elif DeviceMeshVariable.is_device_mesh(value):
+            # TODO: see if we need to add custom guard instead of a simple ID_MATCH
+            self.install_guards(GuardBuilder.EQUALS_MATCH)
+            return DeviceMeshVariable(value, source=self.source)
         elif value is OrderedSet:
             self.install_guards(GuardBuilder.ID_MATCH)
             return OrderedSetClassVariable()
@@ -1391,9 +1399,6 @@ class VariableBuilder:
             return WrapperUserFunctionVariable(
                 value, "_torchdynamo_inline", source=self.source
             )
-        elif value is functools.wraps:
-            self.install_guards(GuardBuilder.ID_MATCH)
-            return FunctoolsWrapsVariable(value, source=self.source)
         elif value is collections.namedtuple:
             self.install_guards(GuardBuilder.ID_MATCH)
             return CollectionsNamedTupleFunction(value, source=self.source)
@@ -2215,14 +2220,14 @@ class VariableBuilder:
     @overload
     def _wrap_lazy_constant(
         self,
-        value: Union[int, float, bool, str],
+        value: int | float | bool | str,
         wrap_fn: None = None,
     ) -> VariableTracker: ...
 
     def _wrap_lazy_constant(
         self,
-        value: Union[int, float, bool, str],
-        wrap_fn: Optional[Callable[[Any], VariableTracker]] = None,
+        value: int | float | bool | str,
+        wrap_fn: Callable[[Any], VariableTracker] | None = None,
     ) -> VariableTracker:
         """Wrap a primitive constant, deferring guard installation if allowed."""
         if not self.allow_lazy_constant:
@@ -3372,6 +3377,8 @@ def handle_traced_output(
         proxy.node.target
         in [
             torch.sym_int,
+            torch.sym_max,
+            torch.sym_min,
             getattr,
             operator.getitem,
             torch._utils._element_size,
@@ -4175,8 +4182,8 @@ class SourcelessBuilder:
             return SourcelessGraphModuleVariable(value)
         elif isinstance(value, torch.utils._pytree.TreeSpec):
             return UserDefinedObjectVariable(value)
-        elif value is functools.wraps:
-            return FunctoolsWrapsVariable(value)
+        elif DeviceMeshVariable.is_device_mesh(value):
+            return DeviceMeshVariable(value)
         elif isinstance(value, re.Pattern):
             return ConstantLikeVariable(value)
         elif isinstance(value, torch._dynamo.variables.lazy.LazySymNodeFormatString):

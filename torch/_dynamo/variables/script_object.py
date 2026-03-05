@@ -22,7 +22,7 @@ import functools
 import inspect
 import types
 from collections.abc import Callable, Iterable, Sequence
-from typing import Any, Optional, TYPE_CHECKING, TypeVar
+from typing import Any, TYPE_CHECKING, TypeVar
 from typing_extensions import ParamSpec
 
 import torch
@@ -102,7 +102,7 @@ class OpaqueObjectClassVariable(UserDefinedVariable):
         return False
 
     def is_python_hashable(self) -> bool:
-        return is_opaque_value_type(self.value)
+        return is_opaque_value_type(self.value)  # pyrefly: ignore[bad-argument-type]
 
     def as_proxy(self) -> Any:
         return self.value
@@ -212,7 +212,7 @@ class TorchScriptObjectVariable(UserDefinedObjectVariable):
         proxy: Proxy,
         value: Any,
         ctor_args_kwargs: Any = None,
-        source: Optional[Source] = None,
+        source: Source | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(value, **kwargs)
