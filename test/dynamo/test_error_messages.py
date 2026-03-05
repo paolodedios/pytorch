@@ -2229,7 +2229,6 @@ from user code:
     triton.set_allocator(lambda size, align, stream: None)""",
         )
 
-
     @make_logging_test(graph_breaks=True)
     def test_nested_generic_ctx_mgr(self, records):
         def inner():
