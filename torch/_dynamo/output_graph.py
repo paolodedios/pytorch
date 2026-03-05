@@ -658,6 +658,7 @@ class OutputGraph(OutputGraphCommon):
         self.cudagraph_annotation: _CudagraphAnnotation | None = None
 
         self.region_tracker = GraphRegionTracker()
+        self._emit_debugger_breakpoint: bool = False
 
         # tracked_fakes says where any tensor that was wrapped to fake came
         # from.  It is similar to GraphArg, in that all GraphArgs will get
@@ -1206,6 +1207,19 @@ class OutputGraph(OutputGraphCommon):
     def current_tx(self) -> "InstructionTranslatorBase":
         return self.root_tx if not self._current_tx else self._current_tx[-1]
 
+    def resolve_source_value(self, source: Source) -> Any:
+        """
+        Resolve the runtime value a Source points to using root_tx's frame.
+
+        Useful to inspect the python object associated with the source during
+        debugging. Will also be used by invoke subgraph caching later on.
+        """
+        return source.get_value(
+            {"G": self.root_tx.f_globals, "L": self.root_tx.f_locals},
+            {},
+            {},  # type: ignore[arg-type]
+        )
+
     def count_calls(self) -> int:
         return count_calls(self.graph)
 
@@ -1698,6 +1712,12 @@ class OutputGraph(OutputGraphCommon):
         self.side_effects.prune_dead_object_new(tx)
 
         self.add_output_instructions(prefix_insts)
+
+        if self._emit_debugger_breakpoint:
+            from .bytecode_transformation import create_breakpoint
+
+            self.add_output_instructions(create_breakpoint())
+            self._emit_debugger_breakpoint = False
 
         assert not (self.pregraph_bytecode and self.export), (
             "export does not support pregraph_bytecode"
@@ -2679,6 +2699,13 @@ class OutputGraph(OutputGraphCommon):
             if hasattr(compiler_fn, "__name__")
             else "<unknown compiler_fn>"
         )
+        if config.inline_invoke_subgraph:
+            from torch._higher_order_ops.passes.inline_invoke_subgraph import (
+                inline_invoke_subgraph,
+            )
+
+            gm = inline_invoke_subgraph(gm)
+
         try:
             _step_logger()(logging.INFO, f"calling compiler function {name}")
             if config.verify_correctness:
@@ -3276,6 +3303,8 @@ class SubgraphTracer(fx.Tracer):
         # This is set when enable_side_effects_in_hop=True for HOPs like invoke_subgraph
         # and checkpoint (when skip_fwd_side_effects_in_bwd_under_checkpoint config is True).
         self.allow_side_effects_in_hop = False
+        # Set to True when a side effect is detected and allowed (not raised).
+        self.has_side_effect = False
 
         # True if this tracer is currently tracing (reconstructing) into a Python generator
         self.is_reconstructing_generator = False
