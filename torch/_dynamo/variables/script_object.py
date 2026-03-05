@@ -421,7 +421,7 @@ class TorchScriptObjectVariable(UserDefinedObjectVariable):
         self,
         tx: "InstructionTranslator",
         name: str,
-        args: Iterable[Any],
+        args: list[Any],
         kwargs: dict[str, Any],
     ) -> VariableTracker:
         from .builder import wrap_fx_proxy
