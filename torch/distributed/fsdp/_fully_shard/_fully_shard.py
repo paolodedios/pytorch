@@ -606,6 +606,20 @@ class FSDPModule:
         Copy Engine All-Gather may be used. For multi-node, Symmetric Kernel
         All-Gather may be used.
 
+        To enable Copy Engine All-Gather, you need to set the NCCL process group
+        with the zero-CTA policy.
+        ```python
+        opts = dist.ProcessGroupNCCL.Options()
+        opts.config.cta_policy = dist.ProcessGroupNCCL.NCCL_CTA_POLICY_ZERO
+        dist.init_process_group(backend="nccl", pg_options=opts, device_id=device)
+        ```
+        Alternatively, you can set the environment variable `NCCL_CTA_POLICY` to 2.
+        ```bash
+        export NCCL_CTA_POLICY=2
+        ```
+        For more details, see [Copy Engine
+        Collectives](https://docs.pytorch.org/docs/2.11/symmetric_memory.html#copy-engine-collectives).
+
         This cannot be used together with :meth:`set_custom_all_gather` or
         :meth:`set_custom_reduce_scatter`.
 

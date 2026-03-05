@@ -90,8 +90,10 @@ class SymmMemAllocMixin:
         self._group = group
         super().__init__(*args, **kwargs)
         symm_mem.set_backend(backend)
-        # Force initialization of communicator; otherwise, the rendezvous may fail.
+        # Force initialization of communicator; otherwise, the rendezvous may
+        # see empty communicator.
         # TODO: Remove this, maybe by warning user to perform eager dist init.
+        # For now, it is okay since it isjust a one-time cost at init.
         dist.barrier(group=group)
 
     def allocate(
