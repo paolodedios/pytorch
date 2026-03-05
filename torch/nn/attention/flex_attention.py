@@ -338,34 +338,9 @@ def noop_mask(
     return batch.new_ones(size=(), dtype=torch.bool, device=batch.device)
 
 
-def _sliced_mask_mod_error(
-    batch: Tensor,
-    head: Tensor,
-    token_q: Tensor,
-    token_kv: Tensor,
-) -> Tensor:
-    """
-    Raises helpful error when using mask_mod from a sliced BlockMask.
-
-    After slicing a BlockMask, the mask_mod is reset and cannot be used directly.
-    Users must reassign mask_mod from the original (unsliced) BlockMask.
-    """
-    raise RuntimeError(
-        "Cannot use mask_mod from a sliced BlockMask. "
-        "When you slice a BlockMask using [], the mask_mod attribute is reset. "
-        "You must set it from the original BlockMask's mask_mod."
-        "\n\nIncorrect usage:"
-        "\n  base_mask = create_block_mask(my_mask_fn, ...)"
-        "\n  sliced_mask = base_mask[:, :, block_idx]"
-        "\n  sliced_mask.mask_mod = apply_offset(sliced_mask.mask_mod, offset)  # WRONG!"
-        "\n\nCorrect usage:"
-        "\n  base_mask = create_block_mask(my_mask_fn, ...)"
-        "\n  sliced_mask = base_mask[:, :, block_idx]"
-        "\n  sliced_mask.mask_mod = apply_offset(base_mask.mask_mod, offset)  # Use base_mask!"
-    )
-
 
 _DEFAULT_SPARSE_BLOCK_SIZE = 128
+_UNSET = object()  # sentinel for "not provided" vs explicit None
 _LARGE_SPARSE_BLOCK_SIZE = 1 << 30
 
 
@@ -427,55 +402,38 @@ def _adjust_num_blocks_and_indices(
     return num_blocks, indices
 
 
-def _closure_contents(fn: object) -> tuple[object, ...]:
-    """Extract closure cell contents for comparison."""
-    closure = getattr(fn, "__closure__", None)
-    if closure is None:
-        return ()
-    return tuple(cell.cell_contents for cell in closure)
+class _MaskModGraphWrapper:
+    """Wraps mask_mod_gm for pytree context equality comparison.
 
-
-class _MaskModWrapper:
-    """Wraps a mask_mod function with value-based equality.
-
-    BlockMask stores an arbitrary callable (mask_mod) in its pytree context.
-    The default __eq__ for functions uses identity comparison, which is too
-    strict when the same closure is recreated (e.g., defined inside forward()).
-    This wrapper compares functions by their code object and closure contents.
+    Compares via gm.code — same approach as torch.compile cache
+    infrastructure (FxGraphCachePickler).
     """
 
-    __slots__ = ("fn",)
+    __slots__ = ("gm",)
 
-    def __init__(self, fn: _mask_mod_signature) -> None:
-        self.fn = fn
-
-    def __call__(self, *args, **kwargs):
-        return self.fn(*args, **kwargs)
+    def __init__(self, gm: Any) -> None:
+        self.gm = gm
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, _MaskModWrapper):
+        if not isinstance(other, _MaskModGraphWrapper):
             return False
-        if self.fn is other.fn:
+        if self.gm is other.gm:
             return True
-        if (
-            inspect.isfunction(self.fn)
-            and inspect.isfunction(other.fn)
-            and self.fn.__code__ == other.fn.__code__
-            and _closure_contents(self.fn) == _closure_contents(other.fn)
+        if self.gm is None or other.gm is None:
+            return self.gm is other.gm
+        if isinstance(self.gm, torch.fx.GraphModule) and isinstance(
+            other.gm, torch.fx.GraphModule
         ):
-            return True
-        # For callable objects (not plain functions), delegate to their __eq__
-        if not inspect.isfunction(self.fn) and not inspect.isfunction(other.fn):
-            return self.fn == other.fn
-        return False
+            return self.gm.code == other.gm.code
+        return self.gm is other.gm
 
     def __hash__(self) -> int:
-        if inspect.isfunction(self.fn):
-            return hash(self.fn.__code__)
-        return hash(self.fn)
+        if isinstance(self.gm, torch.fx.GraphModule):
+            return hash(self.gm.code)
+        return id(self.gm)
 
     def __repr__(self) -> str:
-        return f"_MaskModWrapper({self.fn})"
+        return f"_MaskModGraphWrapper({self.gm})"
 
 
 class BlockMask:
@@ -549,7 +507,8 @@ class BlockMask:
     full_q_num_blocks: Tensor | None
     full_q_indices: Tensor | None
     BLOCK_SIZE: tuple[int, int]
-    mask_mod: _mask_mod_signature
+    mask_mod_gm: torch.fx.GraphModule | None
+    mask_mod_captured_tensors: tuple[Tensor, ...]
 
     # Attribute lists for pytree flatten/unflatten
     _TENSOR_ATTRS = [
@@ -566,7 +525,8 @@ class BlockMask:
     _CONTEXT_ATTRS = [
         "seq_lengths",
         "BLOCK_SIZE",
-        "mask_mod",
+        "mask_mod_gm",
+        "n_mask_mod_captured_tensors",
     ]
 
     def __init__(
@@ -581,7 +541,8 @@ class BlockMask:
         full_q_num_blocks: Tensor | None,
         full_q_indices: Tensor | None,
         BLOCK_SIZE: tuple[int, int],
-        mask_mod: _mask_mod_signature,
+        mask_mod_gm: torch.fx.GraphModule | None,
+        mask_mod_captured_tensors: tuple[Tensor, ...] = (),
     ) -> None:
         if kv_indices.dim() < 2:
             raise RuntimeError("BlockMask must have at least 2 dimensions")
@@ -608,7 +569,23 @@ class BlockMask:
         self.full_q_num_blocks = full_q_num_blocks
         self.full_q_indices = full_q_indices
         self.BLOCK_SIZE = BLOCK_SIZE
-        self.mask_mod = mask_mod
+        self.mask_mod_gm = mask_mod_gm
+        self.mask_mod_captured_tensors = mask_mod_captured_tensors
+
+    @property
+    def mask_mod(self) -> _mask_mod_signature:
+        """Backward-compat property: reconstruct callable from graph + captured tensors."""
+        gm = self.mask_mod_gm
+        if gm is None:
+            raise RuntimeError("mask_mod unavailable on sliced BlockMask")
+        buffers = self.mask_mod_captured_tensors
+        if not buffers:
+            return gm  # type: ignore[return-value]
+
+        def _bound(b, h, q_idx, kv_idx):
+            return gm(b, h, q_idx, kv_idx, *buffers)
+
+        return _bound
 
     @classmethod
     def from_kv_blocks(
@@ -619,6 +596,8 @@ class BlockMask:
         full_kv_indices: Tensor | None = None,
         BLOCK_SIZE: int | tuple[int, int] = _DEFAULT_SPARSE_BLOCK_SIZE,
         mask_mod: _mask_mod_signature | None = None,
+        mask_mod_gm: Any = _UNSET,
+        mask_mod_captured_tensors: tuple[Tensor, ...] = (),
         seq_lengths: tuple[int, int] | None = None,
         compute_q_blocks: bool = True,
     ):
@@ -631,14 +610,13 @@ class BlockMask:
             full_kv_num_blocks (Optional[Tensor]): Number of full kv_blocks in each Q_BLOCK_SIZE row tile.
             full_kv_indices (Optional[Tensor]): Indices of full key-value blocks in each Q_BLOCK_SIZE row tile.
             BLOCK_SIZE (Union[int, tuple[int, int]]): Size of KV_BLOCK_SIZE x Q_BLOCK_SIZE tiles.
-            mask_mod (Optional[Callable]): Function to modify the mask.
+            mask_mod (Optional[Callable]): Legacy parameter — raw mask_mod callable.
+                Will be traced into a GraphModule via _trace_mask_mod.
+            mask_mod_gm (Optional[GraphModule]): Traced GraphModule for mask_mod.
+            mask_mod_captured_tensors (tuple): Lifted closure tensors for mask_mod_gm.
 
         Returns:
             BlockMask: Instance with full Q information generated via _transposed_ordered
-
-        Raises:
-            RuntimeError: If kv_indices has < 2 dimensions.
-            AssertionError: If only one of full_kv_* args is provided.
         """
         if kv_indices.dim() < 2:
             raise RuntimeError("BlockMask must have at least 2 dimensions")
@@ -666,7 +644,18 @@ class BlockMask:
         if isinstance(BLOCK_SIZE, int):
             BLOCK_SIZE = (BLOCK_SIZE, BLOCK_SIZE)
 
-        mask_mod = mask_mod if mask_mod is not None else noop_mask
+        # Backward compat: trace raw mask_mod callable into GraphModule.
+        if mask_mod is not None:
+            if mask_mod_gm is _UNSET:
+                mask_mod_gm, mask_mod_captured_tensors = _trace_mask_mod(
+                    mask_mod, kv_indices.device
+                )
+        elif mask_mod_gm is _UNSET:
+            # Neither mask_mod nor mask_mod_gm specified → default to noop
+            mask_mod_gm, mask_mod_captured_tensors = _trace_mask_mod(
+                noop_mask, kv_indices.device
+            )
+
         if seq_lengths is None:
             q_length = kv_indices.shape[-2] * BLOCK_SIZE[0]
             kv_length = kv_indices.shape[-1] * BLOCK_SIZE[1]
@@ -683,7 +672,8 @@ class BlockMask:
             full_q_num_blocks=full_q_num_blocks,
             full_q_indices=full_q_indices,
             BLOCK_SIZE=BLOCK_SIZE,
-            mask_mod=mask_mod,
+            mask_mod_gm=mask_mod_gm,
+            mask_mod_captured_tensors=mask_mod_captured_tensors,
         )
 
     def as_tuple(self, flatten: bool = True):
@@ -700,6 +690,7 @@ class BlockMask:
             block_size = (self.BLOCK_SIZE,)  # type: ignore[assignment]
             seq_lengths = (self.seq_lengths,)  # type: ignore[assignment]
 
+        # Last element is mask_mod (backward-compat callable via property)
         # pyrefly: ignore [not-iterable]
         return (
             *seq_lengths,
@@ -794,7 +785,8 @@ class BlockMask:
             new_full_kv_num_blocks,
             new_full_kv_indices,
             BLOCK_SIZE=self.BLOCK_SIZE,
-            mask_mod=_sliced_mask_mod_error,
+            mask_mod_gm=None,
+            mask_mod_captured_tensors=(),
             seq_lengths=self.seq_lengths,
             compute_q_blocks=self.q_indices is not None,
         )
@@ -802,6 +794,14 @@ class BlockMask:
     def __repr__(self) -> str:
         def shape_or_none(x: torch.Tensor | None):
             return x.shape if x is not None else None
+
+        gm = self.mask_mod_gm
+        if hasattr(gm, "__name__"):
+            gm_str = gm.__name__
+        elif isinstance(gm, torch.fx.GraphModule):
+            gm_str = f"GraphModule({len(list(gm.graph.nodes))} nodes)"
+        else:
+            gm_str = repr(gm)
 
         return (
             f"BlockMask(\n"
@@ -816,7 +816,8 @@ class BlockMask:
             f"    BLOCK_SIZE={self.BLOCK_SIZE},\n"
             f"    shape={self.shape},\n"
             f"    sparsity={self.sparsity():.2f}%,\n"
-            f"    mask_mod={self.mask_mod.__name__ if hasattr(self.mask_mod, '__name__') else self.mask_mod}\n"
+            f"    mask_mod_gm={gm_str},\n"
+            f"    mask_mod_captured_tensors={len(self.mask_mod_captured_tensors)} tensors\n"
             f")"
         )
 
@@ -847,7 +848,8 @@ class BlockMask:
             new_full_kv_num_blocks,
             new_full_kv_indices,
             self.BLOCK_SIZE,
-            self.mask_mod,
+            mask_mod_gm=self.mask_mod_gm,
+            mask_mod_captured_tensors=self.mask_mod_captured_tensors,
         )
 
     def numel(self):
@@ -965,35 +967,55 @@ class BlockMask:
             may or may not be moved to the specified device, depending on their
             current device placement.
         """
-        mapped_attributes = tree_map_only(
-            torch.Tensor,
-            lambda x: x.to(device),
-            self.as_tuple(flatten=False),
+        to_dev = lambda x: x.to(device)
+        return BlockMask(
+            seq_lengths=self.seq_lengths,
+            kv_num_blocks=to_dev(self.kv_num_blocks),
+            kv_indices=to_dev(self.kv_indices),
+            full_kv_num_blocks=to_dev(self.full_kv_num_blocks) if self.full_kv_num_blocks is not None else None,
+            full_kv_indices=to_dev(self.full_kv_indices) if self.full_kv_indices is not None else None,
+            q_num_blocks=to_dev(self.q_num_blocks) if self.q_num_blocks is not None else None,
+            q_indices=to_dev(self.q_indices) if self.q_indices is not None else None,
+            full_q_num_blocks=to_dev(self.full_q_num_blocks) if self.full_q_num_blocks is not None else None,
+            full_q_indices=to_dev(self.full_q_indices) if self.full_q_indices is not None else None,
+            BLOCK_SIZE=self.BLOCK_SIZE,
+            mask_mod_gm=self.mask_mod_gm.to(device) if self.mask_mod_gm is not None else None,
+            mask_mod_captured_tensors=tuple(to_dev(t) for t in self.mask_mod_captured_tensors),
         )
-        return BlockMask(*mapped_attributes)
 
     @staticmethod
     def _wrap_context_value(attr: str, value: Any) -> Any:
-        if attr == "mask_mod":
-            return _MaskModWrapper(value)
+        if attr == "mask_mod_gm":
+            return _MaskModGraphWrapper(value)
         return value
 
     @staticmethod
     def _unwrap_context_value(attr: str, value: Any) -> Any:
-        if attr == "mask_mod":
-            if not isinstance(value, _MaskModWrapper):
-                raise AssertionError(f"Expected _MaskModWrapper, got {type(value)}")
-            return value.fn
+        if attr == "mask_mod_gm":
+            if not isinstance(value, _MaskModGraphWrapper):
+                raise AssertionError(
+                    f"Expected _MaskModGraphWrapper, got {type(value)}"
+                )
+            return value.gm
         return value
 
     def _flatten(self):
-        """Flatten BlockMask into a list of tensors and context.
+        """Flatten BlockMask into tensors and context.
 
-        Wraps mask_mod in _MaskModWrapper for value-based comparison in TreeSpec.
+        Captured tensors are appended to the tensor list (pytree leaves).
+        Context stores mask_mod_gm (wrapped) and the count of captured tensors.
         """
-        tensors = tuple(getattr(self, attr) for attr in self._TENSOR_ATTRS)
+        block_tensors = tuple(getattr(self, attr) for attr in self._TENSOR_ATTRS)
+        tensors = block_tensors + tuple(self.mask_mod_captured_tensors)
+        # Build context: seq_lengths, BLOCK_SIZE, mask_mod_gm (wrapped), n_captured
+        context_values = {
+            "seq_lengths": self.seq_lengths,
+            "BLOCK_SIZE": self.BLOCK_SIZE,
+            "mask_mod_gm": self.mask_mod_gm,
+            "n_mask_mod_captured_tensors": len(self.mask_mod_captured_tensors),
+        }
         context = tuple(
-            self._wrap_context_value(attr, getattr(self, attr))
+            self._wrap_context_value(attr, context_values[attr])
             for attr in self._CONTEXT_ATTRS
         )
         return tensors, context
@@ -1001,23 +1023,43 @@ class BlockMask:
     @classmethod
     def _unflatten(cls, tensors, context):
         """Unflatten tensors and context back into a BlockMask."""
-        kwargs = {
+        ctx = {
             attr: cls._unwrap_context_value(attr, val)
             for attr, val in zip(cls._CONTEXT_ATTRS, context)
         }
-        kwargs.update(zip(cls._TENSOR_ATTRS, tensors))
+        n_block_tensors = len(cls._TENSOR_ATTRS)
+        n_captured = ctx.pop("n_mask_mod_captured_tensors")
+        block_tensors = tensors[:n_block_tensors]
+        captured_tensors = tensors[n_block_tensors : n_block_tensors + n_captured]
+        kwargs = dict(zip(cls._TENSOR_ATTRS, block_tensors))
+        kwargs.update(ctx)
+        kwargs["mask_mod_captured_tensors"] = tuple(captured_tensors)
         return cls(**kwargs)
 
     def _flatten_with_keys(self):
         """Flatten BlockMask with keys for better tracing.
 
-        Wraps mask_mod in _MaskModWrapper for value-based comparison in TreeSpec.
+        Captured tensors get keys like 'mask_mod_captured_0', 'mask_mod_captured_1', etc.
         """
-        tensors = tuple(
+        block_tensors = tuple(
             (GetAttrKey(attr), getattr(self, attr)) for attr in self._TENSOR_ATTRS
         )
+        captured_tensors = tuple(
+            (GetAttrKey(f"mask_mod_captured_{i}"), t)
+            for i, t in enumerate(self.mask_mod_captured_tensors)
+        )
+        tensors = block_tensors + captured_tensors
+        context_values = {
+            "seq_lengths": self.seq_lengths,
+            "BLOCK_SIZE": self.BLOCK_SIZE,
+            "mask_mod_gm": self.mask_mod_gm,
+            "n_mask_mod_captured_tensors": len(self.mask_mod_captured_tensors),
+        }
         context = tuple(
-            (GetAttrKey(attr), self._wrap_context_value(attr, getattr(self, attr)))
+            (
+                GetAttrKey(attr),
+                self._wrap_context_value(attr, context_values[attr]),
+            )
             for attr in self._CONTEXT_ATTRS
         )
         return tensors, context
@@ -1131,7 +1173,8 @@ def _convert_block_mask_to_mask(
 
 def _create_sparse_block_from_block_mask(
     block_mask: tuple[Tensor, Tensor | None],
-    mask_mod: Callable | None,
+    mask_mod_gm: torch.fx.GraphModule | Callable | None,
+    mask_mod_captured_tensors: tuple[Tensor, ...],
     seq_lengths: tuple[int, int],
     Q_BLOCK_SIZE: int = _DEFAULT_SPARSE_BLOCK_SIZE,
     KV_BLOCK_SIZE: int = _DEFAULT_SPARSE_BLOCK_SIZE,
@@ -1150,7 +1193,8 @@ def _create_sparse_block_from_block_mask(
         full_bm[0],
         full_bm[1],
         BLOCK_SIZE=(Q_BLOCK_SIZE, KV_BLOCK_SIZE),
-        mask_mod=mask_mod,
+        mask_mod_gm=mask_mod_gm,
+        mask_mod_captured_tensors=mask_mod_captured_tensors,
         seq_lengths=seq_lengths,
     )
 
@@ -1204,6 +1248,37 @@ def create_mask(
             return mask
         else:
             raise AssertionError
+
+
+def _trace_mask_mod(
+    mask_mod: _mask_mod_signature,
+    device: DeviceLikeType = "cpu",
+) -> tuple[torch.fx.GraphModule, tuple[Tensor, ...]]:
+    """Trace mask_mod into a 4-arg GraphModule.
+
+    Uses torch._dynamo.export when available (preserves the (b, h, q_idx, kv_idx)
+    signature with pytree wrapping). Falls back to torch.fx.symbolic_trace which
+    works under FakeTensorMode / FunctionalTensorMode.
+
+    Captured tensors are stored as GraphModule attributes (get_attr nodes).
+    Returns (gm, ()) — captured tensors stay inside the GraphModule.
+    """
+    can_dynamo_export = (
+        not torch.compiler.is_dynamo_compiling()
+        and not torch._guards.detect_fake_mode()
+    )
+    if can_dynamo_export:
+        example_inputs = tuple(
+            torch.zeros((), dtype=torch.int, device=device) for _ in range(4)
+        )
+        gm, _guards = torch._dynamo.export(
+            mask_mod, aten_graph=False, same_signature=True
+        )(*example_inputs)
+        return gm, ()
+
+    # Fallback: symbolic_trace (works under FakeTensorMode + FunctionalTensorMode)
+    gm = torch.fx.symbolic_trace(mask_mod)
+    return gm, ()
 
 
 def create_block_mask(
@@ -1281,9 +1356,13 @@ def create_block_mask(
         KV_BLOCK_SIZE=KV_BLOCK_SIZE,
         separate_full_blocks=True,
     )
+
+    mask_mod_gm, captured_tensors = _trace_mask_mod(mask_mod, device)
+
     block_mask = _create_sparse_block_from_block_mask(
         (partial_block_mask, full_block_mask),
-        mask_mod,
+        mask_mod_gm,
+        captured_tensors,
         (Q_LEN, KV_LEN),
         Q_BLOCK_SIZE,
         KV_BLOCK_SIZE,
@@ -1587,9 +1666,8 @@ def flex_attention(
     if block_mask is None:
         block_mask = _create_empty_block_mask(query, key)
 
-    # If BlockMask was sliced, its mask_mod is intentionally replaced with an error-raising stub.
-    # This guard ensures we surface the intended error message before any shape-based checks.
-    if getattr(block_mask, "mask_mod", None) is _sliced_mask_mod_error:
+    # If BlockMask was sliced, mask_mod_gm is None.
+    if block_mask.mask_mod_gm is None:
         raise RuntimeError("Cannot use mask_mod from a sliced BlockMask")
 
     if (
