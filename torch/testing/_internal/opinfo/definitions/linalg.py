@@ -1947,6 +1947,12 @@ op_db: list[OpInfo] = [
             DecorateInfo(
                 unittest.expectedFailure,
                 "TestCommon",
+                "test_dtypes",
+                device_type="mps",
+            ),
+            DecorateInfo(
+                unittest.expectedFailure,
+                "TestCommon",
                 device_type="mps",
                 dtypes=(torch.complex64,),
             ),
