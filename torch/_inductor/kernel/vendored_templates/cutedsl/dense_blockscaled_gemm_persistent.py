@@ -1373,20 +1373,6 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         sSF: cute.Tensor,
         tSF: cute.Tensor,
     ) -> Tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]:
-        """
-        Make tiledCopy for smem to tmem load for scale factor tensor, then use it to partition smem memory (source) and tensor memory (destination).
-
-        :param sSF: The scale factor tensor in smem
-        :type sSF: cute.Tensor
-        :param tSF: The scale factor tensor in tmem
-        :type tSF: cute.Tensor
-
-        :return: A tuple containing (tiled_copy_s2t, tCsSF_compact_s2t, tCtSF_compact_s2t) where:
-            - tiled_copy_s2t: The tiled copy operation for smem to tmem load for scale factor tensor(s2t)
-            - tCsSF_compact_s2t: The partitioned scale factor tensor in smem
-            - tSF_compact_s2t: The partitioned scale factor tensor in tmem
-        :rtype: Tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]
-        """
         # (MMA, MMA_MN, MMA_K, STAGE)
         tCsSF_compact = cute.filter_zeros(sSF)
         # (MMA, MMA_MN, MMA_K)
@@ -1419,26 +1405,6 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         epi_tile: cute.Tile,
         use_2cta_instrs: Union[cutlass.Boolean, bool],
     ) -> Tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]:
-        """
-        Make tiledCopy for tensor memory load, then use it to partition tensor memory (source) and register array (destination).
-
-        :param tidx: The thread index in epilogue warp groups
-        :type tidx: cutlass.Int32
-        :param tAcc: The accumulator tensor to be copied and partitioned
-        :type tAcc: cute.Tensor
-        :param gC_mnl: The global tensor C
-        :type gC_mnl: cute.Tensor
-        :param epi_tile: The epilogue tiler
-        :type epi_tile: cute.Tile
-        :param use_2cta_instrs: Whether use_2cta_instrs is enabled
-        :type use_2cta_instrs: bool
-
-        :return: A tuple containing (tiled_copy_t2r, tTR_tAcc, tTR_rAcc) where:
-            - tiled_copy_t2r: The tiled copy operation for tmem to register copy(t2r)
-            - tTR_tAcc: The partitioned accumulator tensor
-            - tTR_rAcc: The accumulated tensor in register used to hold t2r results
-        :rtype: Tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]
-        """
         # Make tiledCopy for tensor memory load
         copy_atom_t2r = sm100_utils.get_tmem_load_op(
             self.cta_tile_shape_mnk,
@@ -1481,25 +1447,6 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         tidx: cutlass.Int32,
         sC: cute.Tensor,
     ) -> Tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]:
-        """
-        Make tiledCopy for shared memory store, then use it to partition register array (source) and shared memory (destination).
-
-        :param tiled_copy_t2r: The tiled copy operation for tmem to register copy(t2r)
-        :type tiled_copy_t2r: cute.TiledCopy
-        :param tTR_rC: The partitioned accumulator tensor
-        :type tTR_rC: cute.Tensor
-        :param tidx: The thread index in epilogue warp groups
-        :type tidx: cutlass.Int32
-        :param sC: The shared memory tensor to be copied and partitioned
-        :type sC: cute.Tensor
-        :type sepi: cute.Tensor
-
-        :return: A tuple containing (tiled_copy_r2s, tRS_rC, tRS_sC) where:
-            - tiled_copy_r2s: The tiled copy operation for register to smem copy(r2s)
-            - tRS_rC: The partitioned tensor C (register source)
-            - tRS_sC: The partitioned tensor C (smem destination)
-        :rtype: Tuple[cute.TiledCopy, cute.Tensor, cute.Tensor]
-        """
         copy_atom_r2s = sm100_utils.get_smem_store_op(
             self.c_layout, self.c_dtype, self.acc_dtype, tiled_copy_t2r
         )
@@ -1519,26 +1466,6 @@ class Sm100BlockScaledPersistentDenseGemmKernel:
         epi_tile: cute.Tile,
         sC: cute.Tensor,
     ) -> Tuple[cute.CopyAtom, cute.Tensor, cute.Tensor]:
-        """Make tiledCopy for global memory store, then use it to:
-        partition shared memory (source) and global memory (destination) for TMA store version.
-
-        :param tidx: The thread index in epilogue warp groups
-        :type tidx: cutlass.Int32
-        :param atom: The copy_atom_c to be used for TMA store version, or tiled_copy_t2r for none TMA store version
-        :type atom: cute.CopyAtom or cute.TiledCopy
-        :param gC_mnl: The global tensor C
-        :type gC_mnl: cute.Tensor
-        :param epi_tile: The epilogue tiler
-        :type epi_tile: cute.Tile
-        :param sC: The shared memory tensor to be copied and partitioned
-        :type sC: cute.Tensor
-
-        :return: A tuple containing (tma_atom_c, bSG_sC, bSG_gC) where:
-            - tma_atom_c: The TMA copy atom
-            - bSG_sC: The partitioned shared memory tensor C
-            - bSG_gC: The partitioned global tensor C
-        :rtype: Tuple[cute.CopyAtom, cute.Tensor, cute.Tensor]
-        """
         # (EPI_TILE_M, EPI_TILE_N, EPI_M, EPI_N, RestM, RestN, RestL)
         gC_epi = cute.flat_divide(
             gC_mnl[((None, None), 0, 0, None, None, None)], epi_tile
