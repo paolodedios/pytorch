@@ -85,17 +85,46 @@ with compute. This is almost never what you want.
 **If you apply** ``fully_shard`` **per submodule** — for example, calling
 ``fully_shard(m2)``, ``fully_shard(m3)``, and then ``fully_shard(model)`` —
 the remaining parameters (``a`` and ``d``) form the root group, while ``m2``
-and ``m3`` each get their own group:
+and ``m3`` each get their own group.
+
+In **forward**, all-gathers run on a separate CUDA stream, so the next
+module's all-gather can overlap with the current module's forward compute.
+Each module's pre-forward hook issues its own all-gather and waits for it to
+complete before running the module. Because the CPU typically runs ahead of
+the GPU, the next module's all-gather is issued on the AG stream while the
+current module's forward is still executing on the compute stream:
 
 ```
-all-gather(a,d) -> fwd(m1) -> all-gather(b) -> fwd(m2) -> all-gather(c) -> fwd(m3,m4)
--> bwd(m4,m3) -> reduce-scatter(c) -> bwd(m2) -> reduce-scatter(b) -> bwd(m1) -> reduce-scatter(a,d)
+              time ──────────────────────────────────────────────►
+
+compute:      [wait] [ fwd(m1)   | fwd(m2)    | fwd(m3,m4)     ]
+AG stream:    [AG(a,d)]  [AG(b)  |    AG(c)   ]
 ```
 
-Now communication can overlap with compute: while one group's parameters are
-being all-gathered, another group's forward or backward is executing. This is
-why the recommended pattern is to apply ``fully_shard`` bottom-up to each
-layer before applying it to the root.
+While ``fwd(m1)`` runs on the compute stream, the CPU fires ``m2``'s
+pre-forward hook, which issues ``AG(b)`` on the AG stream. To make this
+overlap more robust (e.g. when CPU-side overhead reduces the lead), use
+``set_modules_to_forward_prefetch`` to issue the next all-gather earlier —
+inside the current module's pre-forward hook rather than waiting for the next
+module's hook to fire.
+
+In **backward**, FSDP2 additionally prefetches the next module's all-gather
+explicitly and runs reduce-scatters on a separate CUDA stream, all without
+any additional configuration:
+
+```
+              time ──────────────────────────────────────────────►
+
+compute:      [ bwd(m4,m3)     | bwd(m2)        | bwd(m1)       ]
+AG stream:    [AG(c)] [ AG(b)  |   AG(a,d)      ]
+RS stream:                     |[RS(c)]  [ RS(b)|     RS(a,d)   ]
+```
+
+While ``bwd(m4,m3)`` runs on the compute stream, the all-gather for ``b``
+(needed by ``m2``) is prefetched on the AG stream. While ``bwd(m2)`` runs,
+both ``AG(a,d)`` and ``RS(c)`` overlap with compute. This pipelining is why
+the recommended pattern is to apply ``fully_shard`` bottom-up to each layer
+before applying it to the root.
 
 To control the size of each communication group, choose which modules to wrap:
 wrapping more fine-grained modules produces smaller, more overlappable groups
