@@ -16,17 +16,20 @@ def inline_invoke_subgraph(gm: GraphModule) -> GraphModule:
     HOPs or prefer a flat graph, but we still want the Dynamo tracing-time
     benefits of auto-caching (trace once, stamp out cached calls).
     """
-    # First, recursively inline any nested invoke_subgraph calls inside
-    # subgraph modules themselves.
-    for name, mod in gm.named_modules():
-        if name and isinstance(mod, GraphModule):
-            inline_invoke_subgraph(mod)
-
     invoke_nodes = list(
         gm.graph.find_nodes(
             op="call_function", target=torch.ops.higher_order.invoke_subgraph
         )
     )
+    if not invoke_nodes:
+        return gm
+
+    # Recursively inline any nested invoke_subgraph calls inside
+    # subgraph modules themselves.
+    for name, mod in gm.named_modules():
+        if name and isinstance(mod, GraphModule):
+            inline_invoke_subgraph(mod)
+
     for node in invoke_nodes:
         get_attr_node = node.args[0]
         # args[1] is the identifier string, args[2:] are operands
@@ -63,5 +66,4 @@ def inline_invoke_subgraph(gm: GraphModule) -> GraphModule:
         if not get_attr_node.users:
             gm.graph.erase_node(get_attr_node)
 
-    gm.recompile()
     return gm
