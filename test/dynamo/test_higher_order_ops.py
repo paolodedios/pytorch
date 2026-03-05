@@ -3774,7 +3774,7 @@ class FuncTorchHigherOrderOpTests(torch._dynamo.test_case.TestCase):
 
     def test_teardown_resets_nested_graph_breaks(self):
         expected_nested_state = getattr(
-            self, "prev_nested_graph_breaks", torch._dynamo.config.nested_graph_breaks
+            self, "_prior_nested_graph_breaks", torch._dynamo.config.nested_graph_breaks
         )
 
         def _check_flag():

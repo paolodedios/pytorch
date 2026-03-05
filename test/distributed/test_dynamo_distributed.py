@@ -1777,6 +1777,7 @@ class TestSingleProc(DynamoDistributedSingleProcTestCase):
             self.assertTrue(same(correct_outputs, opt_outputs))
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+    @torch._dynamo.config.patch("nested_graph_breaks", False)
     def test_graph_split_inductor_layout_optimizations_training(self):
         self._test_graph_split_inductor_layout_optimizations_impl(
             contextlib.nullcontext
