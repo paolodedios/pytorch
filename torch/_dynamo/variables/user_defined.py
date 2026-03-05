@@ -1183,13 +1183,13 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             # TODO else try reconstructing the object by, e.g., leveraging side
             # effects and `as_python_constant`.
 
-        # Special case for _MaskModGraphWrapper during legacy export: Dynamo
+        # Special case for _MaskModWrapper during legacy export: Dynamo
         # creates objects via __new__ without calling __init__, so
         # self.value.gm is unset. Reconstruct from the tracked side-effect
         # attribute instead.
-        from torch.nn.attention.flex_attention import _MaskModGraphWrapper
+        from torch.nn.attention.flex_attention import _MaskModWrapper
 
-        if isinstance(self.value, _MaskModGraphWrapper):
+        if isinstance(self.value, _MaskModWrapper):
             from torch._dynamo.symbolic_convert import InstructionTranslator
 
             tx = InstructionTranslator.current_tx()
@@ -1197,7 +1197,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 gm_vt = tx.output.side_effects.load_attr(self, "gm", deleted_ok=True)
                 if gm_vt is not None:
                     gm = gm_vt.as_python_constant()
-                    return _MaskModGraphWrapper(gm)
+                    return _MaskModWrapper(gm)
 
         return super().as_python_constant()
 

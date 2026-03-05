@@ -453,7 +453,7 @@ def forward(self, args_0):
     def test_aot_export_flex_attention_callable_mask_mod(self):
         """Test flex_attention AOT export with callable class as mask_mod.
 
-        _MaskModGraphWrapper must compare gm.code for TreeSpec
+        _MaskModWrapper must compare gm.code for TreeSpec
         comparison in AOTAutograd's PytreeThunk.set() (utils.py:162).
         """
         from torch._functorch.aot_autograd import aot_export_module

@@ -402,7 +402,7 @@ def _adjust_num_blocks_and_indices(
     return num_blocks, indices
 
 
-class _MaskModGraphWrapper:
+class _MaskModWrapper:
     """Wraps mask_mod_gm for pytree context equality comparison.
 
     Compares via gm.code — same approach as torch.compile cache
@@ -415,7 +415,7 @@ class _MaskModGraphWrapper:
         self.gm = gm
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, _MaskModGraphWrapper):
+        if not isinstance(other, _MaskModWrapper):
             return False
         if self.gm is other.gm:
             return True
@@ -433,7 +433,7 @@ class _MaskModGraphWrapper:
         return id(self.gm)
 
     def __repr__(self) -> str:
-        return f"_MaskModGraphWrapper({self.gm})"
+        return f"_MaskModWrapper({self.gm})"
 
 
 class BlockMask:
@@ -617,6 +617,10 @@ class BlockMask:
 
         Returns:
             BlockMask: Instance with full Q information generated via _transposed_ordered
+
+        Raises:
+            RuntimeError: If kv_indices has < 2 dimensions.
+            AssertionError: If only one of full_kv_* args is provided.
         """
         if kv_indices.dim() < 2:
             raise RuntimeError("BlockMask must have at least 2 dimensions")
@@ -1000,16 +1004,14 @@ class BlockMask:
     @staticmethod
     def _wrap_context_value(attr: str, value: Any) -> Any:
         if attr == "mask_mod_gm":
-            return _MaskModGraphWrapper(value)
+            return _MaskModWrapper(value)
         return value
 
     @staticmethod
     def _unwrap_context_value(attr: str, value: Any) -> Any:
         if attr == "mask_mod_gm":
-            if not isinstance(value, _MaskModGraphWrapper):
-                raise AssertionError(
-                    f"Expected _MaskModGraphWrapper, got {type(value)}"
-                )
+            if not isinstance(value, _MaskModWrapper):
+                raise AssertionError(f"Expected _MaskModWrapper, got {type(value)}")
             return value.gm
         return value
 
