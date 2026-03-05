@@ -6,7 +6,7 @@ from typing import Union
 
 import torch
 from torch._inductor import config
-from torch._inductor.decomposition import mm
+from torch._inductor.decomposition import bmm as decomp_bmm, mm
 from torch._subclasses.fake_tensor import FakeTensorMode
 from torch.fx.experimental.symbolic_shapes import (
     DimDynamic,
@@ -167,6 +167,21 @@ class TestDecomp(NNTestCase):
         t2 = torch.randn(1, 2, 1, device=device)
 
         run_comp_nocomp(torch_bmm, t1, t2, rtol=rtol, atol=atol)
+
+    @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
+    @config.patch(coordinate_descent_tuning=False)
+    def test_bmm_outer_product_k_is_one(self, device):
+        t1 = torch.randn(32, 8, 1, device=device)
+        t2 = torch.randn(32, 1, 256, device=device)
+        expected = torch.bmm(t1, t2)
+
+        out = decomp_bmm(t1, t2)
+
+        if device == "cpu":
+            self.assertIs(out, NotImplemented)
+        else:
+            self.assertIsNot(out, NotImplemented)
+            self.assertEqual(expected, out)
 
     @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
     @parametrize("dtype", [torch.float, torch.bfloat16, torch.int])
