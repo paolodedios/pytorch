@@ -2699,6 +2699,13 @@ class OutputGraph(OutputGraphCommon):
             if hasattr(compiler_fn, "__name__")
             else "<unknown compiler_fn>"
         )
+        if config.inline_invoke_subgraph:
+            from torch._higher_order_ops.passes.inline_invoke_subgraph import (
+                inline_invoke_subgraph,
+            )
+
+            gm = inline_invoke_subgraph(gm)
+
         try:
             _step_logger()(logging.INFO, f"calling compiler function {name}")
             if config.verify_correctness:
@@ -3296,6 +3303,8 @@ class SubgraphTracer(fx.Tracer):
         # This is set when enable_side_effects_in_hop=True for HOPs like invoke_subgraph
         # and checkpoint (when skip_fwd_side_effects_in_bwd_under_checkpoint config is True).
         self.allow_side_effects_in_hop = False
+        # Set to True when a side effect is detected and allowed (not raised).
+        self.has_side_effect = False
 
         # True if this tracer is currently tracing (reconstructing) into a Python generator
         self.is_reconstructing_generator = False
