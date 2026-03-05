@@ -8933,6 +8933,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         assertGeneratedKernelCountEqual(self, 2)
 
     @skip_if_halide
+    @skip_if_pallas
     def test_index_put_duplicate_indices_no_accumulate(self):
         # https://github.com/pytorch/pytorch/issues/174074
         def fn(x):
