@@ -6664,7 +6664,6 @@ class TestMemPool(TestCase):
             "graph_capture_record_stream_reuse:False"
         )
 
-    @skipIfRocm(msg="expandable_segments mode is not supported on ROCm")
     @unittest.skipIf(IS_FBCODE or IS_SANDCASTLE, "Load_inline doesn't work in fbcode")
     def test_mempool_expandable(self):
         torch.cuda.empty_cache()
