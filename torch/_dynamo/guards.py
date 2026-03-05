@@ -5223,7 +5223,7 @@ GUARD_VALUE_DISPATCH: dict[str, GuardCheckSpec | object] = {
 # Validate that every guard method has an explicit guard_check_spec.
 # Guard methods are identified by: uppercase name, callable, and first
 # non-self parameter is 'guard'.
-_missing_specs = [
+MISSING_GUARD_SPECS = [
     _name
     for _name in dir(GuardBuilder)
     if _name[0].isupper()
@@ -5233,9 +5233,9 @@ _missing_specs = [
     and _params[1] == "guard"
     and not hasattr(_method, "guard_check_spec")
 ]
-if _missing_specs:
+if MISSING_GUARD_SPECS:
     raise RuntimeError(
         f"GuardBuilder methods missing guard_check_spec decorator: "
-        f"{', '.join(_missing_specs)}. Use @register_guard_check_spec, "
+        f"{', '.join(MISSING_GUARD_SPECS)}. Use @register_guard_check_spec, "
         f"@skip_guard_check_spec, or @unsupported_guard_check_spec."
     )
