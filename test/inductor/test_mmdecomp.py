@@ -168,7 +168,6 @@ class TestDecomp(NNTestCase):
 
         run_comp_nocomp(torch_bmm, t1, t2, rtol=rtol, atol=atol)
 
-    @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
     @config.patch(coordinate_descent_tuning=False)
     def test_bmm_outer_product_k_is_one(self, device):
         t1 = torch.randn(32, 8, 1, device=device)
@@ -177,16 +176,13 @@ class TestDecomp(NNTestCase):
 
         out = decomp_bmm(t1, t2)
 
-        if device == "cpu":
-            self.assertIs(out, NotImplemented)
-        else:
-            self.assertIsNot(out, NotImplemented)
-            self.assertEqual(expected, out)
+        self.assertIsNot(out, NotImplemented)
+        self.assertEqual(expected, out)
 
     @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
     def test_bmm_outer_product_k_is_one_with_unbacked_k(self, device):
         if device == "cpu":
-            self.skipTest("test exercises non-CPU bmm decomposition")
+            self.skipTest("unbacked symints require GPU fake tensors")
 
         shape_env = ShapeEnv()
         with FakeTensorMode(shape_env=shape_env):
@@ -212,6 +208,39 @@ class TestDecomp(NNTestCase):
                 decomp_bmm(lhs_unbacked_k, rhs_unbacked_k),
                 NotImplemented,
             )
+
+    @config.patch(coordinate_descent_tuning=False)
+    def test_bmm_outer_product_permuted_inputs(self, device):
+        B, M, N = 4, 8, 16
+
+        cases = [
+            # LHS: batch dim permuted
+            (
+                torch.randn(M, B, 1, device=device).permute(1, 0, 2),
+                torch.randn(B, 1, N, device=device),
+            ),
+            # RHS: batch dim permuted
+            (
+                torch.randn(B, M, 1, device=device),
+                torch.randn(N, B, 1, device=device).permute(1, 2, 0),
+            ),
+            # Both permuted
+            (
+                torch.randn(M, B, 1, device=device).permute(1, 0, 2),
+                torch.randn(N, B, 1, device=device).permute(1, 2, 0),
+            ),
+            # LHS: fully transposed [1, M, B] -> [B, M, 1]
+            (
+                torch.randn(1, M, B, device=device).permute(2, 1, 0),
+                torch.randn(B, 1, N, device=device),
+            ),
+        ]
+
+        for t1, t2 in cases:
+            expected = torch.bmm(t1, t2)
+            out = decomp_bmm(t1, t2)
+            self.assertIsNot(out, NotImplemented)
+            self.assertEqual(expected, out, exact_stride=True)
 
     @unittest.skipIf(not HAS_GPU, "GPU tests require triton")
     @parametrize("dtype", [torch.float, torch.bfloat16, torch.int])
