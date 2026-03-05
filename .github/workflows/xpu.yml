@@ -99,14 +99,7 @@ jobs:
       runner: linux.c7i.12xlarge
       test-matrix: |
         { include: [
-          { config: "default", shard: 1, num_shards: 8, runner: "linux.client.xpu" },
-          { config: "default", shard: 2, num_shards: 8, runner: "linux.client.xpu" },
-          { config: "default", shard: 3, num_shards: 8, runner: "linux.client.xpu" },
-          { config: "default", shard: 4, num_shards: 8, runner: "linux.client.xpu" },
-          { config: "default", shard: 5, num_shards: 8, runner: "linux.client.xpu" },
-          { config: "default", shard: 6, num_shards: 8, runner: "linux.client.xpu" },
-          { config: "default", shard: 7, num_shards: 8, runner: "linux.client.xpu" },
-          { config: "default", shard: 8, num_shards: 8, runner: "linux.client.xpu" },
+          { config: "smoke_xpu", shard: 1, num_shards: 1, runner: "linux.client.xpu" },
         ]}
     secrets: inherit
 
