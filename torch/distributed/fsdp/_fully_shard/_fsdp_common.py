@@ -4,7 +4,7 @@ import math
 import traceback
 from dataclasses import dataclass, field
 from enum import auto, Enum
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional
 
 import torch
 import torch.distributed as dist
@@ -14,8 +14,7 @@ from torch.distributed.tensor import DeviceMesh, DTensor, Shard
 from torch.distributed.tensor._dtensor_spec import DTensorSpec
 
 
-if TYPE_CHECKING:
-    from ._fsdp_api import DataParallelMeshDims
+from ._fsdp_api import DataParallelMeshDims
 
 
 def _dynamo_disable(func):
@@ -35,10 +34,8 @@ class DataParallelMeshInfo:
     mesh: DeviceMesh
     shard_mesh_dim: int | None = None
     replicate_mesh_dim: int | None = None
-    dp_mesh_dim_names: "DataParallelMeshDims | None" = None
-    # The original full SPMD mesh passed to fully_shard (before extracting
-    # the DP submesh). Used to validate that param DTensor meshes match.
-    spmd_source_mesh: "DeviceMesh | None" = field(default=None, repr=False)
+    dp_mesh_dim_names: DataParallelMeshDims | None = None
+    spmd_mesh: DeviceMesh | None = field(default=None, repr=False)
     is_spmd_mesh: bool = field(default=False, init=False, repr=False)
 
     def __post_init__(self):

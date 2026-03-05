@@ -342,8 +342,8 @@ class FSDPParam:
         if spmd_mesh.mesh_dim_names is None:
             raise AssertionError("spmd_mesh.mesh_dim_names must not be None")
         if (
-            self.mesh_info.spmd_source_mesh is not None
-            and spmd_mesh is not self.mesh_info.spmd_source_mesh
+            self.mesh_info.spmd_mesh is not None
+            and spmd_mesh is not self.mesh_info.spmd_mesh
         ):
             raise ValueError(
                 "Expected param's DTensor mesh to be the same mesh passed "
@@ -433,16 +433,15 @@ class FSDPParam:
                 Replicate(),
                 *self._tp_spec.placements,
             )
+        self._spmd_placements: tuple[Placement, ...]
         if isinstance(self.mesh_info, HSDPMeshInfo):
             if self.mesh_info.replicate_mesh_dim != 0:
                 raise AssertionError(
                     f"Expected replicate_mesh_dim to be 0, got {self.mesh_info.replicate_mesh_dim}"
                 )
-            self._spmd_placements: tuple[Placement, ...] = (
-                Replicate(),
-            ) + dp_shard_tp_placement
+            self._spmd_placements = (Replicate(),) + dp_shard_tp_placement
         else:
-            self._spmd_placements: tuple[Placement, ...] = dp_shard_tp_placement
+            self._spmd_placements = dp_shard_tp_placement
 
         self._sharding_spec = DTensorSpec(
             self._spmd_mesh,
@@ -586,23 +585,9 @@ class FSDPParam:
                 else self._tp_spec
             )
             unsharded_param = _from_local_no_grad(unsharded_param, spec)
-        if hasattr(self, "_unsharded_param"):
-            with (
-                torch.no_grad(),
-                torch.autograd._unsafe_preserve_version_counter(self._unsharded_param),
-            ):
-                # NOTE: Under compile, if an unsharded param goes through
-                # resize_(full) -> copy_ -> resize_(0) pattern, we will remove those
-                # resize_ and copy_ ops in a compiler graph pass
-                # `remove_fsdp2_unsharded_param_graph_input_usage` to recover performance.
-                self._unsharded_param.untyped_storage().resize_(
-                    self._unsharded_param.numel() * self._unsharded_param.itemsize
-                )
-                torch.ops.fsdp.copy_(self._unsharded_param, unsharded_param)
-        else:
-            self._unsharded_param = nn.Parameter(
-                unsharded_param, requires_grad=self.sharded_param.requires_grad
-            )
+        self._unsharded_param = nn.Parameter(
+            unsharded_param, requires_grad=self.sharded_param.requires_grad
+        )
 
     def _unflatten_all_gather_outputs(self) -> tuple[torch.Tensor, ...]:
         return tuple(
