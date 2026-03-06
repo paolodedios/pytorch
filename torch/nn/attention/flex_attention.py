@@ -428,26 +428,34 @@ def _adjust_num_blocks_and_indices(
     return num_blocks, indices
 
 
-def _closure_contents(fn: object) -> tuple[object, ...]:
-    """Extract closure cell contents for comparison."""
-    closure = getattr(fn, "__closure__", None)
-    if closure is None:
-        return ()
-    return tuple(cell.cell_contents for cell in closure)
-
-
 # TreeSpec for an empty tuple — used as the sentinel when there are no closure leaves.
 _EMPTY_CLOSURE_SPEC = tree_flatten(())[1]
+
+
+class _StrippedClosure(typing.NamedTuple):
+    """Data container holding the parts of a function needed for reconstruction.
+
+    Created by _extract_closure_pytree when closure tensors are lifted into
+    pytree leaves.  Unlike a FunctionType with None-filled cells, this is not
+    callable — it is pure data stored in the pytree context.
+    """
+
+    code: types.CodeType
+    globals_dict: dict[str, Any]
+    name: str
+    defaults: tuple[Any, ...] | None
+    kwdefaults: dict[str, Any] | None
+    extra_dict: dict[str, Any]
 
 
 def _extract_closure_pytree(fn):
     """Extract closure contents as a flattened sub-pytree.
 
-    Returns (closure_leaves, closure_spec, stripped_fn) where:
+    Returns (closure_leaves, closure_spec, fn_or_stripped) where:
     - closure_leaves: flattened tensor/scalar contents from the closure
     - closure_spec: TreeSpec describing how to reconstruct the closure contents
-    - stripped_fn: a copy of fn with all closure cells replaced by None sentinels
-      (safe to store in pytree context — comparing Nones won't trigger dispatch)
+    - fn_or_stripped: either the original fn (no extraction) or a
+      _StrippedClosure carrying the function parts needed for reconstruction
 
     If fn is not a plain function, has no closure, or has empty cells, returns
     the original function unchanged with no closure leaves.
@@ -471,65 +479,69 @@ def _extract_closure_pytree(fn):
 
     closure_leaves, closure_spec = tree_flatten(contents)
 
-    stripped = types.FunctionType(
-        fn.__code__,
-        fn.__globals__,
-        fn.__name__,
-        fn.__defaults__,
-        tuple(types.CellType(None) for _ in closure),
+    stripped = _StrippedClosure(
+        code=fn.__code__,
+        globals_dict=fn.__globals__,
+        name=fn.__name__,
+        defaults=fn.__defaults__,
+        kwdefaults=fn.__kwdefaults__,
+        extra_dict=dict(fn.__dict__) if fn.__dict__ else {},
     )
-    if fn.__kwdefaults__:
-        stripped.__kwdefaults__ = fn.__kwdefaults__
-    if fn.__dict__:
-        stripped.__dict__.update(fn.__dict__)
 
     return tuple(closure_leaves), closure_spec, stripped
 
 
-def _reconstruct_closure_fn(stripped_fn, closure_leaves, closure_spec):
-    """Rebuild a function by restoring its closure from flattened leaves + spec."""
-    if closure_spec is None or closure_spec == _EMPTY_CLOSURE_SPEC:
-        return stripped_fn
+def _reconstruct_closure_fn(stripped, closure_leaves, closure_spec):
+    """Rebuild a function from a _StrippedClosure and flattened closure leaves."""
+    if not isinstance(stripped, _StrippedClosure):
+        return stripped
 
     contents = tree_unflatten(list(closure_leaves), closure_spec)
     new_cells = tuple(types.CellType(v) for v in contents)
 
     restored = types.FunctionType(
-        stripped_fn.__code__,
-        stripped_fn.__globals__,
-        stripped_fn.__name__,
-        stripped_fn.__defaults__,
+        stripped.code,
+        stripped.globals_dict,
+        stripped.name,
+        stripped.defaults,
         new_cells,
     )
-    if stripped_fn.__kwdefaults__:
-        restored.__kwdefaults__ = stripped_fn.__kwdefaults__
-    if stripped_fn.__dict__:
-        restored.__dict__.update(stripped_fn.__dict__)
+    if stripped.kwdefaults:
+        restored.__kwdefaults__ = stripped.kwdefaults
+    if stripped.extra_dict:
+        restored.__dict__.update(stripped.extra_dict)
 
     return restored
 
 
 class _MaskModWrapper:
-    """Wraps a mask_mod function with value-based equality.
+    """Wraps a mask_mod or _StrippedClosure with value-based equality.
 
     BlockMask stores an arbitrary callable (mask_mod) in its pytree context.
     The default __eq__ for functions uses identity comparison, which is too
     strict when the same closure is recreated (e.g., defined inside forward()).
 
-    When closure tensors have been extracted into pytree leaves (by
-    _extract_closure_pytree), the wrapped function has an all-None closure and
-    closure_spec records the sub-pytree structure.  Equality then compares code
-    objects + closure_spec + the (all-None) closure contents — no tensor
-    dispatch is triggered.
+    When closure tensors have been extracted (by _extract_closure_pytree), fn
+    is a _StrippedClosure (pure data, not callable).  Equality compares the
+    code objects + closure_spec — no tensor dispatch is triggered.
+
+    When extraction is skipped (e.g., under Dynamo), fn is the original
+    callable and equality compares code objects + closure contents (for plain
+    functions) or delegates to __eq__ (for callable objects).
     """
 
     __slots__ = ("fn", "closure_spec")
 
-    def __init__(self, fn: _mask_mod_signature, closure_spec=None) -> None:
+    def __init__(self, fn, closure_spec=None) -> None:
         self.fn = fn
         self.closure_spec = closure_spec
 
     def __call__(self, *args, **kwargs):
+        if isinstance(self.fn, _StrippedClosure):
+            raise RuntimeError(
+                "_MaskModWrapper with _StrippedClosure is not callable — "
+                "use _reconstruct_closure_fn to rebuild the function first"
+            )
         return self.fn(*args, **kwargs)
 
     def __eq__(self, other: object) -> bool:
@@ -537,20 +549,27 @@ class _MaskModWrapper:
             return False
         if self.fn is other.fn and self.closure_spec is other.closure_spec:
             return True
-        if (
-            inspect.isfunction(self.fn)
-            and inspect.isfunction(other.fn)
-            and self.fn.__code__ == other.fn.__code__
-            and self.closure_spec == other.closure_spec
-            and _closure_contents(self.fn) == _closure_contents(other.fn)
+        # Extracted case: _StrippedClosure — compare code + closure_spec
+        if isinstance(self.fn, _StrippedClosure) and isinstance(
+            other.fn, _StrippedClosure
         ):
-            return True
-        # For callable objects (not plain functions), delegate to their __eq__
-        if not inspect.isfunction(self.fn) and not inspect.isfunction(other.fn):
+            return (
+                self.fn.code == other.fn.code
+                and self.closure_spec == other.closure_spec
+            )
+        # Non-extracted plain functions: compare code + closure contents
+        if inspect.isfunction(self.fn) and inspect.isfunction(other.fn):
+            return self.fn.__code__ == other.fn.__code__
+        # Callable objects: delegate to their __eq__
+        if not isinstance(self.fn, _StrippedClosure) and not isinstance(
+            other.fn, _StrippedClosure
+        ):
             return self.fn == other.fn
         return False
 
     def __hash__(self) -> int:
+        if isinstance(self.fn, _StrippedClosure):
+            return hash(self.fn.code)
         if inspect.isfunction(self.fn):
             return hash(self.fn.__code__)
         return hash(self.fn)
@@ -1075,14 +1094,12 @@ class BlockMask:
         infrastructure (instead of being hidden in the pytree context).
         """
         tensors = tuple(getattr(self, attr) for attr in self._TENSOR_ATTRS)
-        closure_leaves, closure_spec, stripped_fn = _extract_closure_pytree(
-            self.mask_mod
-        )
+        closure_leaves, closure_spec, stripped = _extract_closure_pytree(self.mask_mod)
         all_leaves = tensors + closure_leaves
         context = tuple(
             self._wrap_context_value(attr, getattr(self, attr))
             if attr != "mask_mod"
-            else _MaskModWrapper(stripped_fn, closure_spec)
+            else _MaskModWrapper(stripped, closure_spec)
             for attr in self._CONTEXT_ATTRS
         )
         return all_leaves, context
@@ -1114,9 +1131,7 @@ class BlockMask:
         tensors = tuple(
             (GetAttrKey(attr), getattr(self, attr)) for attr in self._TENSOR_ATTRS
         )
-        closure_leaves, closure_spec, stripped_fn = _extract_closure_pytree(
-            self.mask_mod
-        )
+        closure_leaves, closure_spec, stripped = _extract_closure_pytree(self.mask_mod)
         closure_with_keys = tuple(
             (GetAttrKey(f"_closure_{i}"), leaf) for i, leaf in enumerate(closure_leaves)
         )
@@ -1124,7 +1139,7 @@ class BlockMask:
         context = tuple(
             (GetAttrKey(attr), self._wrap_context_value(attr, getattr(self, attr)))
             if attr != "mask_mod"
-            else (GetAttrKey(attr), _MaskModWrapper(stripped_fn, closure_spec))
+            else (GetAttrKey(attr), _MaskModWrapper(stripped, closure_spec))
             for attr in self._CONTEXT_ATTRS
         )
         return all_leaves, context
