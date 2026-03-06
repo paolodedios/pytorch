@@ -203,12 +203,13 @@ def _wrap_with_inductor_config(
 ) -> Callable[..., Any]:
     """
     Wrap a compiler function to apply inductor config patches during compilation.
+
+    Passes config_patches as a keyword argument so that compile_fx can
+    propagate them to backward compilation via its inner_compile wrapping.
     """
-    from torch._inductor import config as inductor_config
 
     def wrapped(gm: Any, example_inputs: Any) -> Any:
-        with inductor_config.patch(config_patches):
-            return compiler_fn(gm, example_inputs)
+        return compiler_fn(gm, example_inputs, config_patches=config_patches)
 
     # Preserve function metadata for logging
     wrapped.__name__ = getattr(compiler_fn, "__name__", "<wrapped>")
@@ -1047,7 +1048,13 @@ class OutputGraph(OutputGraphCommon):
                 fn.__name__,
             )
         )
-        cg.foreach(map(variables.ConstantVariable.create, args))
+        if ctor_arg_sources:
+            cg.foreach(
+                src if src is not None else variables.ConstantVariable.create(val)
+                for val, src in zip(args, ctor_arg_sources)
+            )
+        else:
+            cg.foreach(map(variables.ConstantVariable.create, args))
         cg.call_function(len(args), False)
         cg.store(varname)
         self.pregraph_bytecode.extend(cg.get_instructions())
