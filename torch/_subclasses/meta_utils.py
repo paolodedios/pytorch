@@ -38,6 +38,7 @@ from torch._C._functorch import (
 )
 from torch._dispatch.python import enable_python_dispatcher
 from torch._logging import trace_structured
+from torch._opaque_base import OpaqueBase
 from torch.utils._mode_utils import no_dispatch
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 from torch.utils.weak import WeakIdKeyDictionary
@@ -48,7 +49,6 @@ if TYPE_CHECKING:
 
     from torch._C._functorch import CInterpreter
     from torch._guards import Source
-    from torch._opaque_base import OpaqueBase
     from torch._subclasses.fake_tensor import FakeTensor, FakeTensorMode
 
     # Import here to avoid cycle
@@ -379,14 +379,19 @@ class MetaTensorDescriber:
             opaque_attrs = {}
             for attr in raw_attrs:
                 inner = getattr(t, attr)
-                if isinstance(inner, torch.Tensor):
-                    attrs[attr] = self.describe_tensor(inner, trace=trace)
-                else:
-                    from torch._library.fake_class_registry import (
-                        maybe_unwrap_fake_script_object,
-                    )
+                match inner:
+                    case torch.Tensor():
+                        attrs[attr] = self.describe_tensor(inner, trace=trace)
+                    case OpaqueBase():
+                        from torch._library.fake_class_registry import (
+                            maybe_unwrap_fake_script_object,
+                        )
 
-                    opaque_attrs[attr] = maybe_unwrap_fake_script_object(inner)
+                        opaque_attrs[attr] = maybe_unwrap_fake_script_object(inner)
+                    case _:
+                        raise AssertionError(
+                            f"expected Tensor or OpaqueBase, got {type(inner)}"
+                        )
             type_v = type(t)
 
         from torch.nested._internal.nested_tensor import _tensor_symint_registry

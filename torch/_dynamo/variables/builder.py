@@ -63,6 +63,7 @@ from torch._library.opaque_object import (
     is_opaque_value_type,
     should_hoist,
 )
+from torch._opaque_base import OpaqueBase
 from torch._ops import HigherOrderOperator, OpOverload, OpOverloadPacket
 from torch._subclasses.fake_tensor import (
     FakeTensor,
@@ -3706,13 +3707,18 @@ def _automatic_dynamic(
         inner_contexts = {}  # mapping from attr -> symbolic context
         attrs, _ = type(e).__tensor_flatten__(e)
         for attr in attrs:
-            inner_value = getattr(e, attr)
-            if not isinstance(inner_value, torch.Tensor):
-                continue
-            inner_source = AttrSource(source, attr)
-            inner_contexts[attr] = _automatic_dynamic(
-                inner_value, tx, inner_source, static_shapes
-            )
+            match getattr(e, attr):
+                case torch.Tensor() as inner_value:
+                    inner_source = AttrSource(source, attr)
+                    inner_contexts[attr] = _automatic_dynamic(
+                        inner_value, tx, inner_source, static_shapes
+                    )
+                case OpaqueBase():
+                    pass
+                case unexpected:
+                    raise AssertionError(
+                        f"expected Tensor or OpaqueBase, got {type(unexpected)}"
+                    )
 
         return SubclassSymbolicContext(
             dynamic_sizes=outer_context.dynamic_sizes,

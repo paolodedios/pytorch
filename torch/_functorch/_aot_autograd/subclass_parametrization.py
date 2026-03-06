@@ -6,6 +6,7 @@ from typing import Any, TYPE_CHECKING
 
 import torch
 from torch._library.opaque_object import is_opaque_reference_type
+from torch._opaque_base import OpaqueBase
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 from .schemas import OpaqueMeta
@@ -13,8 +14,6 @@ from .schemas import OpaqueMeta
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-
-    from torch._opaque_base import OpaqueBase
 
 
 # This is technically very similar to SubclassCreatingMeta
@@ -73,22 +72,27 @@ class UnwrapTensorSubclass(torch.nn.Module):
             attr_to_meta: dict[str, SubclassCreationMeta | OpaqueMeta | None] = {}
             for attr in inner_tensors_attrnames:
                 val = getattr(tensor, attr)
-                if not isinstance(val, torch.Tensor):
-                    if not is_opaque_reference_type(type(val)):
-                        raise ValueError(
-                            f"{type(val).__name__!r} found in tensor attrs of "
-                            f"{type(tensor).__name__}.__tensor_flatten__(). "
-                            "Only tensors and reference-type opaques are allowed "
-                            "in tensor attrs."
+                match val:
+                    case OpaqueBase():
+                        if not is_opaque_reference_type(type(val)):
+                            raise ValueError(
+                                f"{type(val).__name__!r} found in tensor attrs of "
+                                f"{type(tensor).__name__}.__tensor_flatten__(). "
+                                "Only tensors and reference-type opaques are allowed "
+                                "in tensor attrs."
+                            )
+                        attr_to_meta[attr] = OpaqueMeta()
+                        plain_tensor_container.append(val)
+                        new_idx += 1
+                    case torch.Tensor():
+                        subclass_meta, new_idx = _create_subclass_meta(
+                            val, new_idx, plain_tensor_container
                         )
-                    attr_to_meta[attr] = OpaqueMeta()
-                    plain_tensor_container.append(val)
-                    new_idx += 1
-                    continue
-                subclass_meta, new_idx = _create_subclass_meta(
-                    val, new_idx, plain_tensor_container
-                )
-                attr_to_meta[attr] = subclass_meta
+                        attr_to_meta[attr] = subclass_meta
+                    case _:
+                        raise AssertionError(
+                            f"expected Tensor or OpaqueBase, got {type(val)}"
+                        )
             return (
                 SubclassCreationMeta(
                     start_idx=idx,
