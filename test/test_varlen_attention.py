@@ -8,7 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.attention import (
     activate_flash_attention_impl,
-    list_flash_attention_impls,
     restore_flash_attention_impl,
 )
 from torch.nn.attention.varlen import varlen_attn
@@ -26,6 +25,11 @@ from torch.utils._python_dispatch import TorchDispatchMode
 def use_fa3():
     try:
         activate_flash_attention_impl("FA3")
+    except (ModuleNotFoundError, RuntimeError) as err:
+        raise unittest.SkipTest(
+            "FA3 backend not available (flash_attn_interface missing)"
+        ) from err
+    try:
         yield
     finally:
         restore_flash_attention_impl()
@@ -889,21 +893,20 @@ class TestVarlenAttention(NNTestCase):
             self.assertEqual(output_fa2, output_reference)
 
         # FA3 path: paged KV with block_table
-        if "FA3" in list_flash_attention_impls():
-            with use_fa3(), torch.no_grad():
-                output_fa3 = attn_fn(
-                    q_packed,
-                    k_pages,
-                    v_pages,
-                    cu_seq_q,
-                    None,
-                    max_q,
-                    cache_size,
-                    seqused_k=seqused_k,
-                    block_table=block_table,
-                )
+        with use_fa3(), torch.no_grad():
+            output_fa3 = attn_fn(
+                q_packed,
+                k_pages,
+                v_pages,
+                cu_seq_q,
+                None,
+                max_q,
+                cache_size,
+                seqused_k=seqused_k,
+                block_table=block_table,
+            )
 
-            self.assertEqual(output_fa3, output_reference)
+        self.assertEqual(output_fa3, output_reference)
 
 
 device_types = ("cuda",)
