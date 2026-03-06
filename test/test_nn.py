@@ -7643,18 +7643,18 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
     def test_conv3d_initialization_consistency(self):
         # 1. Create a Conv3d layer
         m = torch.nn.Conv3d(3, 6, kernel_size=3)
-        
+
         # 2. Test initialization in default (contiguous) format
         torch.manual_seed(42)
         m.reset_parameters()
         weights_default = m.weight.clone().detach()
-        
+
         # 3. Test initialization in channels_last_3d format
         m.to(memory_format=torch.channels_last_3d)
         torch.manual_seed(42)
         m.reset_parameters()
         weights_channels_last = m.weight.clone().detach()
-        
+
         # 4. Verify both initializations are identical
         self.assertEqual(
             weights_default,
