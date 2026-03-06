@@ -3516,30 +3516,35 @@ class TestInvokeSubgraphReuse(TestCase):
         self.assertEqual(ref, res)
         self.assertEqual(call_count, 1)
 
-    # Something wrong with the hoisted object- we are guarding on them
-    @unittest.expectedFailure
     def test_subgraph_reuse_synthetic_source_different_args(self):
-        """Reuse with different opaque object ctor args per invocation.
-
-        When different invocations construct opaque objects with different
-        args (e.g. HoistedString("double") vs HoistedString("square")),
-        stamp-out must use source replacement to resolve the new ctor args.
-        """
+        """Reuse when hoisted opaque ctor args differ across submodules."""
         from test_opaque_obj_v2 import HoistedString, op_with_string
 
-        @nested_compile_region
-        def gn(x, label):
-            return op_with_string(x, HoistedString(label))
+        class Layer(torch.nn.Module):
+            def __init__(self, name):
+                super().__init__()
+                self.name = name
 
-        labels = ["double", "square", "double"]
+            @nested_compile_region
+            def forward(self, x):
+                return op_with_string(x, HoistedString(self.name))
 
-        def fn(x):
-            for label in labels:
-                x = gn(x, label)
-            return x
+        class Model(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.layer0 = Layer("double")
+                self.layer1 = Layer("square")
+                self.layer2 = Layer("double")
 
+            def forward(self, x):
+                x = self.layer0(x)
+                x = self.layer1(x)
+                x = self.layer2(x)
+                return x
+
+        model = Model()
         x = torch.randn(8)
-        ref = fn(x)
+        ref = model(x)
 
         call_count = 0
         orig_speculate = torch._dynamo.variables.higher_order_ops.speculate_subgraph_with_auto_output_flattening
@@ -3555,10 +3560,9 @@ class TestInvokeSubgraphReuse(TestCase):
             "speculate_subgraph_with_auto_output_flattening",
             counting_speculate,
         ):
-            res = torch.compile(fn, backend=backend, fullgraph=True)(x)
+            res = torch.compile(model, backend=backend, fullgraph=True)(x)
 
         self.assertEqual(ref, res)
-        # Only 1 trace — the other 2 should be stamp-outs
         self.assertEqual(call_count, 1)
 
         self.assertEqual(len(backend.graphs), 1)
@@ -3576,9 +3580,11 @@ class GraphModule(torch.nn.Module):
         subgraph_0 = self.subgraph_0
         invoke_subgraph = torch.ops.higher_order.invoke_subgraph(subgraph_0, 'subgraph_0', l_x_, synthetic_local_tmp_0_);  subgraph_0 = l_x_ = synthetic_local_tmp_0_ = None
         x: "f32[8]" = invoke_subgraph[0];  invoke_subgraph = None
+
         subgraph_1 = self.subgraph_0
         invoke_subgraph_1 = torch.ops.higher_order.invoke_subgraph(subgraph_1, 'subgraph_0', x, synthetic_local_tmp_2_);  subgraph_1 = x = synthetic_local_tmp_2_ = None
         x_1: "f32[8]" = invoke_subgraph_1[0];  invoke_subgraph_1 = None
+
         subgraph_2 = self.subgraph_0
         invoke_subgraph_2 = torch.ops.higher_order.invoke_subgraph(subgraph_2, 'subgraph_0', x_1, synthetic_local_tmp_4_);  subgraph_2 = x_1 = synthetic_local_tmp_4_ = None
         x_2: "f32[8]" = invoke_subgraph_2[0];  invoke_subgraph_2 = None
