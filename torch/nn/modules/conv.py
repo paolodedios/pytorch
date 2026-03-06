@@ -186,7 +186,7 @@ class _ConvNd(Module):
             if not self.weight.is_contiguous():
                 # Use an empty contiguous buffer to optimize memory and ensure consistent initialization
                 temp_weight = torch.empty_like(
-                    self.weight, memory_format=torch.contiguous_format
+                    self.weight, memory_format = torch.contiguous_format
                 )
                 init.kaiming_uniform_(temp_weight, a=math.sqrt(5))
                 # Copy the initialized values back to the original tensor
