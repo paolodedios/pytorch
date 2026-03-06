@@ -337,11 +337,9 @@ class FSDPState(_State):
                     state._finalize_backward()
             if self._state_ctx.is_last_backward:
                 self._comm_ctx.post_forward_order.clear()
-                if self._comm_ctx.reduce_scatter_state is not None:
-                    self._device_handle.current_stream().wait_event(
-                        self._comm_ctx.reduce_scatter_state.event
-                    )
-                    self._comm_ctx.reduce_scatter_state = None
+                self._comm_ctx.wait_and_del_all_reduce_scatter_states(
+                    self._device_handle
+                )
             self._state_ctx.post_backward_final_callback_queued = False
 
     def _finalize_backward(self) -> None:
