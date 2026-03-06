@@ -7578,20 +7578,18 @@ def resize(x, size, *, memory_format=None):
     if V.graph.sizevars.statically_known_equals(old_numel, 0):  # type: ignore[arg-type]
         return full(size, uninitialized_val, dtype=dtype, device=device)
 
-    # aten::resize (non-inplace) = clone + resize_. Clone preserves strides
-    # for non-overlapping tensors (storage order is maintained), but for
-    # overlapping tensors (e.g. stride 0 from as_strided/expand), clone
-    # materializes logical elements into contiguous storage.
     strides = x.maybe_get_stride()
     has_overlapping = strides is not None and any(
         V.graph.sizevars.statically_known_equals(s, 0) for s in strides
     )
     if has_overlapping:
-        x = clone(x)
-    elif isinstance(x.data, ir.BaseView):
-        x.data = x.data.unwrap_view()
-
-    x_flat = as_strided(x, [old_numel], [1])
+        # overlapping: materializes logical elements into contiguous storage
+        x_flat = view(x, [old_numel])
+    else:
+        # non-overlapping: keep storage order
+        if isinstance(x.data, ir.BaseView):
+            x.data = x.data.unwrap_view()
+        x_flat = as_strided(x, [old_numel], [1])
     flat_loader = x_flat.make_loader()
     out_stride = ir.FlexibleLayout.stride_ordered_for_memory_format(size, memory_format)
     out_indexer = ir.FixedLayout(device, dtype, size, out_stride).make_indexer()

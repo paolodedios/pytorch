@@ -12518,10 +12518,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             view = torch.as_strided(x, (100,), (0,))
             return torch.ops.aten.resize(view, (50,))
 
-        x = torch.ones(10, device=self.device)
-        expected = fn(x)
-        actual = torch.compile(fn, fullgraph=True)(x.clone())
-        self.assertEqual(actual, expected)
+        self.common(fn, (torch.ones(10),))
 
     def test_resize(self):
         def fn(x, size, memory_format):
