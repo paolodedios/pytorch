@@ -314,6 +314,7 @@ Tensor& addmm_out_cuda_impl(Tensor& result, const Tensor& self, const Tensor& ma
 
   #ifdef USE_ROCM
   disable_addmm_cuda_lt = disable_addmm_cuda_lt || is_float_output_with_half_input;
+  disable_addmm_cuda_lt = disable_addmm_cuda_lt || (beta.toComplexDouble() != 1.0);
   #endif
 
   // Handle result/self shapes
