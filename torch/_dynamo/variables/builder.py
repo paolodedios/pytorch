@@ -203,7 +203,7 @@ from .dicts import (
     OrderedSetVariable,
     SetVariable,
 )
-from .distributed import DeviceMeshVariable, WorldMetaClassVariable
+from .distributed import WorldMetaClassVariable
 from .functions import (
     BuiltinMethodVariable,
     CollectionsNamedTupleFunction,
@@ -1228,10 +1228,6 @@ class VariableBuilder:
             return DispatchKeySetVariable(value)
         elif WorldMetaClassVariable.is_group_member_type(value):
             return WorldMetaClassVariable(value, source=self.source)
-        elif DeviceMeshVariable.is_device_mesh(value):
-            # TODO: see if we need to add custom guard instead of a simple ID_MATCH
-            self.install_guards(GuardBuilder.EQUALS_MATCH)
-            return DeviceMeshVariable(value, source=self.source)
         elif value is OrderedSet:
             self.install_guards(GuardBuilder.ID_MATCH)
             return OrderedSetClassVariable()
@@ -1523,6 +1519,12 @@ class VariableBuilder:
                 FlattenScriptObjectSource,
                 ScriptObjectQualifiedNameSource,
             )
+
+            # Unwrap FakeScriptObject to the underlying real object so the
+            # rest of this branch (guards, graph inputs, etc.) operates on
+            # the real opaque object type.
+            if isinstance(value, torch._library.fake_class_registry.FakeScriptObject):
+                value = value.real_obj
 
             # type: ignore[arg-type]
             if torch._library.fake_class_registry.tracing_with_real(value):
@@ -4183,8 +4185,6 @@ class SourcelessBuilder:
             return SourcelessGraphModuleVariable(value)
         elif isinstance(value, torch.utils._pytree.TreeSpec):
             return UserDefinedObjectVariable(value)
-        elif DeviceMeshVariable.is_device_mesh(value):
-            return DeviceMeshVariable(value)
         elif isinstance(value, re.Pattern):
             return ConstantLikeVariable(value)
         elif isinstance(value, torch._dynamo.variables.lazy.LazySymNodeFormatString):
