@@ -21,12 +21,12 @@ from typing import Any as _Any, TYPE_CHECKING as _TYPE_CHECKING
 
 import torch.utils._pytree as python
 from torch.utils._pytree import (  # these type aliases are identical in both implementations
-    FlattenFunc,
-    FlattenWithKeysFunc,
-    FromDumpableContextFunc,
+    FlattenFn,
+    FlattenWithKeysFn,
+    FromDumpableContextFn,
     PyTree,
-    ToDumpableContextFunc,
-    UnflattenFunc,
+    ToDumpableContextFn,
+    UnflattenFn,
 )
 
 
@@ -203,20 +203,19 @@ else:
 def register_pytree_node(
     cls: type[_Any],
     /,
-    # intentionally use `*_func` over `*_fn` to match annotations
-    flatten_func: FlattenFunc,
-    unflatten_func: UnflattenFunc,
+    flatten_fn: FlattenFn,
+    unflatten_fn: UnflattenFn,
 ) -> None:
     """Register a container-like type as pytree node.
 
     Args:
         cls (type): A Python type to treat as an internal pytree node.
-        flatten_func (callable): A function to be used during flattening, taking an instance of
+        flatten_fn (callable): A function to be used during flattening, taking an instance of
             ``cls`` and returning a pair, with (1) an iterable for the children to be flattened
             recursively, and (2) some hashable auxiliary data to be stored in the treespec and to be
-            passed to the ``unflatten_func``.
-        unflatten_func (callable): A function taking two arguments: the unflattened children, and
-            the auxiliary data that was returned by ``flatten_func`` and stored in the treespec.
+            passed to the ``unflatten_fn``.
+        unflatten_fn (callable): A function taking two arguments: the unflattened children, and
+            the auxiliary data that was returned by ``flatten_fn`` and stored in the treespec.
             The function should return an instance of ``cls``.
 
     Example::
@@ -233,8 +232,8 @@ def register_pytree_node(
     """
     _register_pytree_node(
         cls,
-        flatten_func,
-        unflatten_func,
+        flatten_fn,
+        unflatten_fn,
     )
 
 

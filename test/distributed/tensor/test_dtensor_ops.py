@@ -64,7 +64,8 @@ def skipOps(op_db, test_case_name, base_test_name, to_skip):
             for o in all_opinfos
             if o.name == op_name and o.variant_test_name == variant_name
         ]
-        assert len(matching_opinfos) >= 1, f"Couldn't find OpInfo for {xfail}"
+        if not (len(matching_opinfos) >= 1):
+            raise AssertionError(f"Couldn't find OpInfo for {xfail}")
         for opinfo in matching_opinfos:
             decorators = list(opinfo.decorators)
             if expected_failure:
@@ -200,8 +201,6 @@ dtensor_fails = {
     xfail("nn.functional.conv_transpose3d"),
     # in-place op requires placement change during decomposition
     xfail("nn.functional.cosine_similarity"),
-    # Shard(0) causes local tensor index out of bounds for value broadcasting
-    xfail("index_put"),
     # "cannot resize variables that require grad" from test harness
     xfail("resize_"),
     xfail("resize_as_"),
@@ -285,8 +284,6 @@ dtensor_compiled_fails = {
     xfail("expand_as"),
     xfail("hsplit"),
     xfail("linalg.diagonal"),
-    xfail("max", "reduction_with_dim"),
-    xfail("min", "reduction_with_dim"),
     xfail("movedim"),
     xfail("narrow"),
     xfail("permute"),
@@ -391,24 +388,8 @@ dtensor_fails_no_strategy = {
     xfail("cummin"),
     xfail("diagonal_scatter"),
     xfail("exponential"),
-    xfail("fft.fft"),
-    xfail("fft.fft2"),
-    xfail("fft.fftn"),
-    xfail("fft.fftshift"),
-    xfail("fft.ifft"),
-    xfail("fft.ifft2"),
-    xfail("fft.ifftshift"),
-    xfail("fft.ihfft"),
     xfail("fft.ihfft2"),
     xfail("fft.ihfftn"),
-    xfail("fft.irfft2"),
-    xfail("fft.irfftn"),
-    xfail("fft.rfft"),
-    xfail("fft.rfft2"),
-    xfail("fft.rfftn"),
-    xfail("flip"),
-    xfail("fliplr"),
-    xfail("flipud"),
     xfail("geometric"),
     xfail("geqrf"),
     xfail("grid_sampler_2d"),
@@ -513,8 +494,6 @@ dtensor_fails_no_strategy = {
     xfail("polar"),
     xfail("put"),
     xfail("renorm"),
-    xfail("roll"),
-    xfail("rot90"),
     xfail("scatter_reduce", "amax"),
     xfail("scatter_reduce", "amin"),
     xfail("scatter_reduce", "mean"),
@@ -750,7 +729,8 @@ class TestDTensorOps(TestCase):
 
     def run_one_hot(self):
         ops = [op for op in op_db if op.name == "nn.functional.one_hot"]
-        assert len(ops) == 1
+        if len(ops) != 1:
+            raise AssertionError(f"Expected 1 op, got {len(ops)}")
         op = ops[0]
         # num_classes = -1 appears to have a bug with dtensor.max().item()
         self.run_opinfo_test(
@@ -918,6 +898,7 @@ ops_unbacked_dtensor_dde = {
     xfail("clamp_max"),
     xfail("clamp_min"),
     xfail("column_stack"),
+    xfail("constant_pad_nd"),
     xfail("copysign"),
     xfail("cumprod"),
     xfail("diagflat"),
@@ -932,6 +913,9 @@ ops_unbacked_dtensor_dde = {
     xfail("expand_copy"),
     xfail("fill"),
     xfail("flatten"),
+    xfail("flip"),
+    xfail("fliplr"),
+    xfail("flipud"),
     xfail("float_power"),
     xfail("floor_divide"),
     xfail("fmax"),
@@ -1002,6 +986,7 @@ ops_unbacked_dtensor_dde = {
     xfail("nn.functional.mish"),
     xfail("nn.functional.multilabel_soft_margin_loss"),
     xfail("nn.functional.normalize"),
+    xfail("nn.functional.pad", "constant"),
     xfail("nn.functional.pixel_unshuffle"),
     xfail("nn.functional.poisson_nll_loss"),
     xfail("nn.functional.relu6"),
@@ -1020,6 +1005,7 @@ ops_unbacked_dtensor_dde = {
     xfail("reshape"),
     xfail("reshape_as"),
     xfail("rsub"),
+    xfail("rot90"),
     xfail("scatter"),
     xfail("scatter_add"),
     xfail("slice"),
@@ -1246,8 +1232,11 @@ class TestSingleDimStrategies(DTensorOpTestBase):
             lambda s: Shard(s.dim),
             single_dim_strats[aten_op](aten_op, args_meta, kwargs_meta),
         )
-        # TODO(pianpwk): handle multi-output once that lands for single-dim
-        for output_placement, *input_placements in strategies:
+        n_inputs = len(all_tensor_meta)
+        for strategy in strategies:
+            input_placements = strategy[-n_inputs:]
+            output_placements = strategy[:-n_inputs]
+
             # skip strategies with invalid shards
             def is_invalid_shard(meta, p):
                 ndim = len(meta.shape)
@@ -1267,17 +1256,16 @@ class TestSingleDimStrategies(DTensorOpTestBase):
             ):
                 continue
 
-            # add the validate_sharding_rule function
             self.assertTrue(
                 validate_sharding_rule_sample(
                     aten_op,
                     full_args,
                     full_kwargs,
                     input_placements,
-                    (output_placement,),
+                    tuple(output_placements),
                     mesh,
                 ),
-                f"{op.name}: {input_placements} -> {(output_placement,)} failed",
+                f"{op.name}: {input_placements} -> {tuple(output_placements)} failed",
             )
 
 
