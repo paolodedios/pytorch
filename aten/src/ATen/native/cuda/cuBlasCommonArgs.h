@@ -239,6 +239,10 @@ struct cublasCommonArgs {
         bias_ld = static_cast<int64_t>(0);
       }
       else if (bias_col_broadcasts) {
+        // Not yet supporeted in Lt, because:
+        // 1. Cannot set C desc layout != D desc layout.
+        // 2. Can match layout with op(C) = Z or T,
+        //    but it is not supported.
         must_copy_bias = true;
       } else if (self->dim() == 2) { // 2D bias
         // Bias should match the result's layout
