@@ -932,6 +932,10 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
 
     @staticmethod
     def _get_frozen_inp_indices() -> frozenset[int]:
+        # fw_compiler_freezing (compile_fx.py) bakes frozen params into the
+        # graph and sets their TracingContext.params_flat entries to None
+        # before post_compile runs.  We pass these indices to codegen so it
+        # can emit straight-line code instead of a runtime None check.
         tc = TracingContext.try_get()
         if tc is None or tc.params_flat is None:
             return frozenset()

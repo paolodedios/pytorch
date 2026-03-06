@@ -144,7 +144,7 @@ def _codegen_wrap_subclass(
     def _build_tuple(
         outer: Iterable[None | int | SymInt], placeholders: list[bool]
     ) -> str:
-        parts = []
+        parts: list[str] = []
         for val, is_sym in zip(outer, placeholders):
             if is_sym:
                 idx = out_idx_ref[0]
@@ -174,12 +174,12 @@ def _codegen_wrap_subclass(
 
 
 def codegen_subclass_wrapper(
-    compiled_fn: Callable,
+    compiled_fn: Callable[..., object],
     inp_metas: list[PlainTensorMeta | SubclassCreationMeta],
     out_metas: list[PlainTensorMeta | SubclassCreationMeta],
     num_fw_outs_saved_for_bw: int | None,
     frozen_inp_indices: frozenset[int] = frozenset(),
-) -> Callable:
+) -> Callable[..., object]:
     """Generate a specialized wrapper function for subclass unwrap/wrap."""
     state = _CodegenState()
     state.add_global("compiled_fn", compiled_fn)
