@@ -1,7 +1,6 @@
-"""
-AC rematerialize pass: Duplicates checkpointed nodes for backward, then DCE removes unused forward versions.
-"""
+"""AC rematerialize pass: Duplicates checkpointed nodes for backward, then DCE removes unused forward versions."""
 
+import logging
 from typing import Any, overload
 
 import torch
@@ -17,6 +16,8 @@ from torch._functorch.partitioners import (
     is_not_collective,
     must_recompute,
 )
+
+log = logging.getLogger(__name__)
 
 
 def is_impure_node_for_dce(node: fx.Node) -> bool:
@@ -96,10 +97,11 @@ def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModul
     def gather_checkpointed_deps(node: fx.Node, visited: set[fx.Node]) -> None:
         if node in visited or node in recomputed_nodes:
             return
+        if not must_recompute(node):
+            return
         visited.add(node)
         for inp in node.all_input_nodes:
-            if must_recompute(inp):
-                gather_checkpointed_deps(inp, visited)
+            gather_checkpointed_deps(inp, visited)
 
     # Insert backward nodes
     for node in list(gm.graph.nodes)[bwd_start:]:
@@ -112,12 +114,17 @@ def remat_using_tags_for_fwd_loss_bwd_graph(gm: fx.GraphModule) -> fx.GraphModul
         # Insert deps in forward order (guaranteed disjoint from already-inserted)
         # This is not as inefficient as it looks, because we only add fresh dependencies
         # when they are not yet processed as recomputed nodes.
-        for dep in sorted(deps, key=lambda n: order[n]):
-            if dep in recomputed_nodes:
-                raise AssertionError(
-                    f"We shouldn't have recomputed {dep} before, "
-                    f"but found it in recomputed_nodes"
-                )
+        new_deps = sorted(
+            (dep for dep in deps if dep not in recomputed_nodes),
+            key=lambda n: order[n],
+        )
+        if new_deps and torch.distributed.get_rank() == 0:
+            print(
+                "remat: to compute backward node %s, recomputing [%s]",
+                node.name,
+                ", ".join(dep.name for dep in new_deps),
+            )
+        for dep in new_deps:
             dup = new_graph.node_copy(dep, remat_input)
             dup.name = dep.name + "_recomputed"
             recomputed_nodes[dep] = dup
