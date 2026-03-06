@@ -2726,8 +2726,7 @@ class OutputGraph(OutputGraphCommon):
                 inline_invoke_subgraph,
             )
 
-            with dynamo_timed("inline_invoke_subgraph"):
-                gm = inline_invoke_subgraph(gm)
+            gm = inline_invoke_subgraph(gm)
 
         try:
             _step_logger()(logging.INFO, f"calling compiler function {name}")
