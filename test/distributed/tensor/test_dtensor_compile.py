@@ -4,6 +4,7 @@
 import contextlib
 import copy
 import functools
+import logging
 import unittest
 from unittest.mock import patch
 
@@ -1660,6 +1661,45 @@ class outer_fn(torch.nn.Module):
 
         # Test backward pass
         result.sum().backward()
+
+    @torch._functorch.config.patch(enable_autograd_cache=False)
+    @torch._inductor.config.patch(fx_graph_cache=True)
+    @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+    def test_dtensor_compile_inductor_fxgraphcache(self):
+        """
+        Test that the inductor FxGraphCache can pickle the cache key when
+        DeviceMesh is lifted as a FakeScriptObject graph input. Uses a
+        flattened mesh (from a 2D mesh) which has circular references between
+        parent and child meshes that break pickle with fast=True.
+        """
+        mesh_2d = init_device_mesh(
+            self.device_type,
+            (1, self.world_size),
+            mesh_dim_names=("dp", "tp"),
+        )
+        flat_mesh = mesh_2d._flatten("dp_tp")
+
+        @torch.compile(fullgraph=True)
+        def fn(x):
+            dt = DTensor.from_local(x, flat_mesh, [Shard(0)], run_check=False)
+            dt = dt.redistribute(flat_mesh, [Replicate()])
+            return dt.to_local() + 1
+
+        # clear caches
+        torch.compiler.reset()
+
+        codecache_logger = logging.getLogger("torch._inductor.codecache")
+        x = torch.randn(4, 4, device=self.device_type)
+        with self.assertLogs(codecache_logger, level="DEBUG") as cm:
+            codecache_logger.debug("something to pass assert")
+            fn(x)
+
+        pickle_failures = [
+            msg
+            for msg in cm.output
+            if "Failed to pickle cache key" in msg or "Bypassing FX Graph Cache" in msg
+        ]
+        self.assertEqual(len(pickle_failures), 0)
 
 
 @instantiate_parametrized_tests
