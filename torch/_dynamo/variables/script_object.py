@@ -180,8 +180,13 @@ class OpaqueObjectClassVariable(UserDefinedVariable):
         var_kwargs = ConstDictVariable(
             {VariableTracker.build(tx, k): v for k, v in kwargs.items()}
         )
-        constant_args = var_args.as_python_constant()
-        constant_kwargs = var_kwargs.as_python_constant()
+        if should_hoist(self.value):
+            with tx.output.tracing_context.guards_context.skip_guard_install():
+                constant_args = var_args.as_python_constant()
+                constant_kwargs = var_kwargs.as_python_constant()
+        else:
+            constant_args = var_args.as_python_constant()
+            constant_kwargs = var_kwargs.as_python_constant()
         opaque_obj = self.value(  # pyrefly: ignore[not-callable]
             *constant_args, **constant_kwargs
         )
