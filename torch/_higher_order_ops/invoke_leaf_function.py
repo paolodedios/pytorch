@@ -584,6 +584,7 @@ class InvokeLeafFunction(HigherOrderOperator):
         gen.add_arg("mutated_arg_indices", mutated_arg_indices)
         for i, arg in enumerate(flat_args):
             gen.add_arg(f"arg{i}", arg, is_mutated=i in mutated_set)
+        gen.add_arg("requires_grad_indices", requires_grad_indices, default_value="", kw_only=True)
 
         if isinstance(fake_outputs, tuple):
             for out in fake_outputs:
