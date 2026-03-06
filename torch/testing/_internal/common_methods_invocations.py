@@ -24710,10 +24710,6 @@ python_ref_db = [
         "_refs.nn.functional.pairwise_distance",
         torch_opinfo_name="nn.functional.pairwise_distance",
         supports_out=True,
-        skips=(
-            # TypeError: Trying to convert ComplexDouble to the MPS backend but it does not have support for that dtype.
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref', device_type='mps', dtypes=(torch.complex64,)),
-        ),
     ),
     PythonRefInfo(
         "_refs.nn.functional.pdist",
@@ -25733,8 +25729,6 @@ python_ref_db = [
             # Greatest relative difference: 8.519846983548175e-06 at index (4,) (up to 1.3e-06 allowed)
             DecorateInfo(unittest.skip("Skipped!"), 'TestCommon', 'test_python_ref',
                          dtypes=(torch.uint8,), device_type="cpu"),
-            # TypeError: Trying to convert ComplexDouble to the MPS backend but it does not have support for that dtype.
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref', device_type='mps', dtypes=(torch.complex64,)),
         )
     ),
     ElementwiseBinaryPythonRefInfo(
@@ -26737,8 +26731,8 @@ python_ref_db = [
             ),
             # TypeError: Trying to convert ComplexDouble to the MPS backend but it does not have support for that dtype.
             DecorateInfo(
-                unittest.expectedFailure, 'TestCommon', device_type='mps',
-                dtypes=(torch.complex32, torch.complex64)
+                unittest.expectedFailure, 'TestCommon', 'test_python_ref', device_type='mps',
+                dtypes=(torch.complex32,)
             ),
         ),
     ),
