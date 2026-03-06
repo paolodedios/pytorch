@@ -4334,9 +4334,11 @@ def _linspace_from_neg_one(
 ):
     if num_steps <= 1:
         return torch.tensor(0, device=device, dtype=dtype)
-
-    a = ((num_steps - 1) / num_steps) if not align_corners else 1
-    return torch.linspace(-a, a, steps=num_steps, device=device, dtype=dtype)
+    if align_corners:
+        return torch.linspace(-1, 1, steps=num_steps, device=device, dtype=dtype)
+    return torch.linspace(-1, 1, steps=num_steps, device=device, dtype=dtype) * (
+        (num_steps - 1) / num_steps
+    )
 
 
 def _make_base_grid_4d(theta: Tensor, h: int, w: int, align_corners: bool):
@@ -4376,26 +4378,21 @@ def _make_base_grid_5d(theta: Tensor, d: int, h: int, w: int, align_corners: boo
 def _affine_grid_generator_4d(theta: Tensor, size: list[int], align_corners: bool):
     n, _, h, w = size
     base_grid = _make_base_grid_4d(theta, h, w, align_corners=align_corners)
-    # base_grid shape is (h, w, 3) and theta shape is (n, 2, 3)
-    # We do manually a matrix multiplication which is faster than mm()
-    # (h * w, 3, 1) * (n, 1, 3, 2) -> (n, h * w, 2)
-    grid = (base_grid.view(-1, 3, 1) * theta.mT.unsqueeze(1)).sum(-2)
+    # base_grid: (h, w, 3), theta: (n, 2, 3)
+    grid = base_grid.view(1, h * w, 3).expand(n, -1, -1).bmm(theta.mT)
     return grid.view(n, h, w, 2)
 
 
 def _affine_grid_generator_5d(theta: Tensor, size: list[int], align_corners: bool):
     n, _, d, h, w = size
     base_grid = _make_base_grid_5d(theta, d, h, w, align_corners=align_corners)
-    # base_grid shape is (d, h, w, 4) and theta shape is (n, 3, 4)
-    # We do manually a matrix multiplication which is faster than mm()
-    # (d * h * w, 4, 1) * (n, 1, 4, 3) -> (n, h * w, 3)
-    grid = (base_grid.view(-1, 4, 1) * theta.mT.unsqueeze(1)).sum(-2)
+    # base_grid: (d, h, w, 4), theta: (n, 3, 4)
+    grid = base_grid.view(1, d * h * w, 4).expand(n, -1, -1).bmm(theta.mT)
     return grid.view(n, d, h, w, 3)
 
 
 @register_decomposition(aten.affine_grid_generator)
 @out_wrapper()
-@pw_cast_for_opmath
 def affine_grid_generator(theta: Tensor, size: list[int], align_corners: bool):
     torch._check(
         len(size) in (4, 5),

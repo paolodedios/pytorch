@@ -6677,6 +6677,31 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                 self.assertEqual(out_cpu, out_cuda)
                 self.assertEqual(input_cpu.grad, input_gpu.grad)
 
+    @unittest.skipIf(not TEST_CUDA, 'CUDA not available')
+    def test_affine_grid_inductor_float16(self):
+        # Verify that the affine_grid_generator decomposition under inductor
+        # matches the native CUDA kernel for reduced-precision types.
+        for dtype in [torch.float16, torch.bfloat16]:
+            for align_corners in [True, False]:
+                for h, w in [(8, 8), (7, 13), (32, 32)]:
+                    torch._dynamo.reset()
+                    theta = torch.randn(2, 2, 3, dtype=dtype, device="cuda")
+                    size = [2, 1, h, w]
+                    expected = torch.ops.aten.affine_grid_generator(
+                        theta, size=size, align_corners=align_corners
+                    )
+
+                    def fn(theta, size):
+                        return torch.ops.aten.affine_grid_generator(
+                            theta, size=size, align_corners=align_corners
+                        )
+
+                    actual = torch.compile(fn, backend="inductor")(theta, size)
+                    # Allow small tolerance for residual fp32-vs-dtype rounding
+                    # from inductor's codegen_upcast_to_fp32
+                    atol = 2e-3 if dtype == torch.float16 else 0.035
+                    self.assertEqual(actual, expected, atol=atol, rtol=0)
+
     def test_channel_shuffle_return_alias_of_self(self):
         # gh-76616: nn.ChannelShuffle will return alias of self with an empty input tensor
         groups = 3
