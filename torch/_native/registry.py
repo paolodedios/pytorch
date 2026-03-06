@@ -8,6 +8,9 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 _OpOverrideFn = Callable[Concatenate[torch.DispatchKeySet, P], R]
+_OpReplaceFn = Callable[P, R]
+
+_OpFn = _OpOverrideFn | _OpReplaceFn
 
 
 libs = {}
@@ -33,13 +36,22 @@ def _register_op_override(
     lib_symbol: str,
     op_symbol: str,
     dispatch_key: str,
-    impl: _OpOverrideFn,
+    impl: _OpOverrideFn | _OpReplaceFn,
     *,
-    allow_override=False,
+    allow_multiple_override=False,
+    unconditional_override=False,
 ) -> None:
     """
     Register a passed override function to the dispatcher, based on the
     passed lib and op symbols, and the dispatch key.
+
+    lib_symbol: str - library yourve overriding symbols in (generally "aten")
+    op_symbol: str - name of the op you're overriding
+    dispatch_key: str - dispatch key to override
+    impl: Fn - implementation for the override
+    allow_multiple_override: bool - allow overriding an existing override
+    unconditional_override: bool - Impl doesn't have a fallback, and doesn't require
+                                   torch.DispatchKeySet as the first argument.
     """
     lib = _get_library(lib_symbol, dispatch_key)
 
@@ -47,6 +59,6 @@ def _register_op_override(
         op_symbol,
         impl,
         dispatch_key,
-        with_keyset=True,
-        allow_override=allow_override,
+        with_keyset=(not unconditional_override),
+        allow_override=allow_multiple_override,
     )
