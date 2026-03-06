@@ -113,9 +113,7 @@ class FSDPCommContext:
     def del_reduce_scatter_state(self, pg: dist.ProcessGroup) -> None:
         self._pg_to_reduce_scatter_state.pop(pg, None)
 
-    def wait_and_del_all_reduce_scatter_states(
-        self, device_handle: Any
-    ) -> None:
+    def wait_and_del_all_reduce_scatter_states(self, device_handle: Any) -> None:
         for rs_state in self._pg_to_reduce_scatter_state.values():
             if rs_state.event is not None:
                 device_handle.current_stream().wait_event(rs_state.event)
