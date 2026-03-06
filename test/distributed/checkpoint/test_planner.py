@@ -386,7 +386,7 @@ class TestSavePlan(TestCase):
 
         with patch(
             "torch.distributed.checkpoint.default_planner._validate_global_plan",
-            return_value=False,
+            return_value=["mock validation error"],
         ):
             with self.assertRaises(ValueError):
                 planner.create_global_plan(all_plans)
