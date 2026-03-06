@@ -1415,7 +1415,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 fset_source = None
                 if self.cls_source:
                     fset_source = AttrSource(
-                        self.get_source_by_walking_mro(name_str), "fset"
+                        self.get_source_by_walking_mro(tx, name_str), "fset"
                     )
                 fset_var = VariableTracker.build(
                     tx, descriptor.fset, source=fset_source
