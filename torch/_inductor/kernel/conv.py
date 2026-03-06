@@ -752,9 +752,9 @@ def conv_bwd_input_layout(
     groups: int,
 ) -> ir.Layout:
     with V.graph.fake_mode:
-        go = ir.ir_node_to_tensor(grad_out, guard_shape=True)
-        x = ir.ir_node_to_tensor(input, guard_shape=True)
-        w = ir.ir_node_to_tensor(weight, guard_shape=True)
+        go = ir.ir_node_to_tensor(grad_out)
+        x = ir.ir_node_to_tensor(input)
+        w = ir.ir_node_to_tensor(weight)
 
         dx, _, _ = torch.ops.aten.convolution_backward(
             go,
@@ -792,9 +792,9 @@ def conv_bwd_weight_layout(
     groups: int,
 ) -> ir.Layout:
     with V.graph.fake_mode:
-        go = ir.ir_node_to_tensor(grad_out, guard_shape=True)
-        x = ir.ir_node_to_tensor(input, guard_shape=True)
-        w = ir.ir_node_to_tensor(weight, guard_shape=True)
+        go = ir.ir_node_to_tensor(grad_out)
+        x = ir.ir_node_to_tensor(input)
+        w = ir.ir_node_to_tensor(weight)
 
         _, dw, _ = torch.ops.aten.convolution_backward(
             go,
@@ -948,7 +948,7 @@ def convolution_backward_lowering(
     grad_out: TensorBox,
     input: TensorBox,
     weight: TensorBox,
-    bias_sizes: Optional[Sequence[int]],
+    bias_sizes: Sequence[int] | None,
     stride: Sequence[int],
     padding: Sequence[int],
     dilation: Sequence[int],
