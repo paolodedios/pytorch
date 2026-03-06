@@ -3597,6 +3597,28 @@ class GraphModule(torch.nn.Module):
 """,  # noqa: B950
             )
 
+    # Fix depends on LazyConstantVariable not eagerly installing guards
+    @unittest.expectedFailure
+    def test_unused_arg_no_recompile(self):
+        """Unused constant arg to nested_compile_region must not cause recompile."""
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @nested_compile_region
+        def gn(x, unused_label):
+            return x * 2
+
+        def fn(x, label):
+            return gn(x, label)
+
+        opt_fn = torch.compile(fn, backend=cnt, fullgraph=True)
+        x = torch.randn(8)
+
+        opt_fn(x, "hello")
+        self.assertEqual(cnt.frame_count, 1)
+
+        opt_fn(x, "world")
+        self.assertEqual(cnt.frame_count, 1)
+
     def test_subgraph_reuse_different_list_lengths(self):
         """Reuse must be skipped when list args have different lengths.
 
