@@ -249,7 +249,7 @@ bool TensorImpl::compute_strides_like_channels_last_2d() const {
   if (is_sparse()) {
     return false;
   }
-  return is_channels_last_strides_2d<int64_t>(
+  return is_channels_last_strides_2d_or_false<int64_t>(
       sizes_and_strides_.sizes_arrayref(),
       sizes_and_strides_.strides_arrayref());
 }
@@ -258,7 +258,7 @@ bool TensorImpl::compute_strides_like_channels_last_3d() const {
   if (is_sparse()) {
     return false;
   }
-  return is_channels_last_strides_3d<int64_t>(
+  return is_channels_last_strides_3d_or_false<int64_t>(
       sizes_and_strides_.sizes_arrayref(),
       sizes_and_strides_.strides_arrayref());
 }

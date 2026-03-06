@@ -191,6 +191,33 @@ class FakeTensorTest(TestCase):
             x = torch.empty(2, 2, device="meta")
             self.assertEqual(repr(x), "FakeTensor(..., device='meta', size=(2, 2))")
 
+    def test_fake_device_property_normalization(self):
+        """Test that fake_device property normalizes device on assignment."""
+        with FakeTensorMode() as mode:
+            # Test CPU device - should remain unchanged
+            cpu_tensor = torch.empty(2, 2, device="meta")
+            fake_cpu = FakeTensor(mode, cpu_tensor, torch.device("cpu"))
+            self.assertEqual(fake_cpu.fake_device, torch.device("cpu"))
+
+            # Test device with explicit index - should remain unchanged
+            cuda_device_with_index = torch.device("cuda:0")
+            fake_cuda = FakeTensor(mode, cpu_tensor, cuda_device_with_index)
+            self.assertEqual(fake_cuda.fake_device, torch.device("cuda:0"))
+
+            # Test MPS device without index - should normalize to mps:0
+            mps_device = torch.device("mps")
+            fake_mps = FakeTensor(mode, cpu_tensor, mps_device)
+            self.assertEqual(fake_mps.fake_device, torch.device("mps:0"))
+
+            # Test property setter normalization with MPS
+            fake_tensor = FakeTensor(mode, cpu_tensor, torch.device("cpu"))
+            fake_tensor.fake_device = torch.device("mps")
+            self.assertEqual(fake_tensor.fake_device, torch.device("mps:0"))
+
+            # Test property setter normalization with CUDA
+            fake_tensor.fake_device = torch.device("cuda")
+            self.assertEqual(fake_tensor.fake_device, torch.device("cuda:0"))
+
     def test_convert_fake_to_real(self):
         x = torch.ones([20])
         with FakeTensorMode(allow_non_fake_inputs=True) as m:
@@ -1070,7 +1097,7 @@ class FakeTensorTest(TestCase):
         tensors with degenerate dimensions (H=1, W=1) that have ambiguous strides.
         This is a regression test for a bug where the Python implementation checked
         strides[d] > 1 instead of shape[d] > 1, causing incorrect channels_last
-        classification. See c10/core/MemoryFormat.h is_channels_last_strides_2d_s4.
+        classification. See c10/core/MemoryFormat.h is_channels_last_strides_2d_s4_or_false.
         """
         # Create a tensor that mimics the problematic case:
         # shape (1, 512, 1, 1) with strides (512, 1, 512, 1)

@@ -101,20 +101,20 @@ inline std::vector<int64_t> get_channels_last_strides_3d(IntArrayRef sizes) {
 // 3. All helper functions have similar comments, only 1st helper function is
 // commented here.
 template <typename T>
-inline bool is_channels_last_strides_2d_s4(
+inline bool is_channels_last_strides_2d_s4_or_false(
     const ArrayRef<T> sizes,
     const ArrayRef<T> strides) {
   T min = 0;
   // special case for trivial C dimension. default to NCHW
-  if (TORCH_GUARD_OR_FALSE(sym_eq(strides[1], 0))) {
+  if (TORCH_GUARD_OR_TRUE(sym_eq(strides[1], 0))) {
     return false;
   }
   // loop strides indices
   for (auto& d : {1, 3, 2, 0}) {
-    if (TORCH_GUARD_OR_FALSE(sym_eq(sizes[d], 0))) {
+    if (TORCH_GUARD_OR_TRUE(sym_eq(sizes[d], 0))) {
       return false;
     }
-    if (TORCH_GUARD_OR_FALSE(sym_lt(strides[d], min))) {
+    if (TORCH_GUARD_OR_TRUE(sym_lt(strides[d], min))) {
       return false;
     }
     // Fallback to NCHW as default layout for ambiguous cases
@@ -127,43 +127,36 @@ inline bool is_channels_last_strides_2d_s4(
     if (d == 0 && TORCH_GUARD_OR_FALSE(sym_eq(min, strides[1]))) {
       return false;
     }
-    // This is necessary to:
-    // 1. distinguish the memory_format of N1H1;
-    //     [H, 1, 1, 1] channels_last stride
-    //     [H, H, 1, 1] contiguous stride
-    // 2. permutation of 1C1W:
-    //     [1, C, 1, H]@[HC, H, H, 1] transpose(1, 3)
-    //     [1, H, 1, C]@[HC, 1, H, H] shouldn't be identified as channels_last
+    // sizes[d] == 0 already returned false above, so multiplying by
+    // sizes[d] == 1 is a no-op.
     min = strides[d];
-    if (TORCH_GUARD_OR_TRUE(sym_gt(sizes[d], 1))) {
-      min *= sizes[d];
-    }
+    min *= sizes[d];
   }
   return true;
 }
 
 template <typename T>
-inline bool is_channels_last_strides_3d_s5(
+inline bool is_channels_last_strides_3d_s5_or_false(
     const ArrayRef<T> sizes,
     const ArrayRef<T> strides) {
   T min = 0;
-  if (TORCH_GUARD_OR_FALSE(sym_eq(strides[1], 0))) {
+  if (TORCH_GUARD_OR_TRUE(sym_eq(strides[1], 0))) {
     return false;
   }
   for (auto& d : {1, 4, 3, 2, 0}) {
-    if (TORCH_GUARD_OR_FALSE(sym_eq(sizes[d], 0))) {
+    if (TORCH_GUARD_OR_TRUE(sym_eq(sizes[d], 0))) {
       return false;
     }
-    if (TORCH_GUARD_OR_FALSE(sym_lt(strides[d], min))) {
+    if (TORCH_GUARD_OR_TRUE(sym_lt(strides[d], min))) {
       return false;
     }
     if (d == 0 && TORCH_GUARD_OR_FALSE(sym_eq(min, strides[1]))) {
       return false;
     }
+    // sizes[d] == 0 already returned false above, so multiplying by
+    // sizes[d] == 1 is a no-op.
     min = strides[d];
-    if (TORCH_GUARD_OR_TRUE(sym_gt(sizes[d], 1))) {
-      min *= sizes[d];
-    }
+    min *= sizes[d];
   }
   return true;
 }
@@ -219,12 +212,12 @@ inline bool is_channels_last_strides_3d_s5(
 // (is_channels_last_strides_*d_s*) for more details.
 
 template <typename T>
-inline bool is_channels_last_strides_2d(
+inline bool is_channels_last_strides_2d_or_false(
     const ArrayRef<T> sizes,
     const ArrayRef<T> strides) {
   switch (sizes.size()) {
     case 4:
-      return is_channels_last_strides_2d_s4(sizes, strides);
+      return is_channels_last_strides_2d_s4_or_false(sizes, strides);
       // NOLINTNEXTLINE(bugprone-branch-clone)
     case 3:
       // TODO dim == 3 case will be enabled once it is fully tested
@@ -235,12 +228,12 @@ inline bool is_channels_last_strides_2d(
 }
 
 template <typename T>
-inline bool is_channels_last_strides_3d(
+inline bool is_channels_last_strides_3d_or_false(
     const ArrayRef<T> sizes,
     const ArrayRef<T> strides) {
   switch (sizes.size()) {
     case 5:
-      return is_channels_last_strides_3d_s5(sizes, strides);
+      return is_channels_last_strides_3d_s5_or_false(sizes, strides);
       // NOLINTNEXTLINE(bugprone-branch-clone)
     case 4:
       // TODO dim == 4 case will be enabled once it is fully tested
@@ -253,13 +246,13 @@ inline bool is_channels_last_strides_3d(
 inline bool is_channels_last_strides_2d(
     const IntArrayRef sizes,
     const IntArrayRef strides) {
-  return is_channels_last_strides_2d<int64_t>(sizes, strides);
+  return is_channels_last_strides_2d_or_false<int64_t>(sizes, strides);
 }
 
 inline bool is_channels_last_strides_3d(
     const IntArrayRef sizes,
     const IntArrayRef strides) {
-  return is_channels_last_strides_3d<int64_t>(sizes, strides);
+  return is_channels_last_strides_3d_or_false<int64_t>(sizes, strides);
 }
 
 } // namespace c10
