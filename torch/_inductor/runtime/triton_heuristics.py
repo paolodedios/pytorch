@@ -3101,7 +3101,7 @@ def _reduction_configs(
     loads_and_red = inductor_meta.get("num_load", 0) + inductor_meta.get(
         "num_reduction", 0
     )
-    if size_hints["x"] >= 1024 and loads_and_red >= 15:
+    if size_hints["x"] >= 1024 and loads_and_red >= 10:
         # A heuristics to reduce R0_BLOCK if a kernel potentially need many registers.
         # Consider load and reduction since load need move data into registers and
         # reduction needs an accumulator.
