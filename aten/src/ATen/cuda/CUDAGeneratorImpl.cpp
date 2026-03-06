@@ -140,33 +140,42 @@ c10::intrusive_ptr<CUDAGeneratorState> CUDAGeneratorState::clone() {
 }
 
 /**
- * Lookup capture state for a capture ID. Returns nullptr if not found.
+ * Get or create capture state for a capture ID.
+ * When create_if_not_found is true and the state doesn't exist, lazily creates
+ * it and registers the generator with the capturing graph.
  */
-CUDAGeneratorCaptureState* CUDAGeneratorState::get_capture_state(CaptureId_t capture_id) {
-  std::lock_guard<std::mutex> lock(capture_states_mutex_);
-  auto it = capture_states_.find(capture_id);
-  if (it != capture_states_.end()) {
-    return it->second.get();
+CUDAGeneratorCaptureState* CUDAGeneratorState::get_capture_state(CaptureId_t capture_id, bool create_if_not_found) {
+  {
+    std::lock_guard<std::mutex> lock(capture_states_mutex_);
+    auto it = capture_states_.find(capture_id);
+    if (it != capture_states_.end()) {
+      return it->second.get();
+    }
+    if (!create_if_not_found) {
+      return nullptr;
+    }
   }
-  return nullptr;
-}
 
-/**
- * Create and initialize capture state for a given capture ID.
- * Called during capture_begin for each registered generator.
- */
-CUDAGeneratorCaptureState* CUDAGeneratorState::init_capture_state(CaptureId_t capture_id) {
+  auto* graph = cuda::get_graph_from_capture_id(capture_id);
+  TORCH_CHECK(graph != nullptr,
+      "RNG op during graph capture but could not find the CUDAGraph object.");
+
   auto capture_state = make_intrusive<CUDAGeneratorCaptureState>();
   capture_state->initialize(seed_);
 
-  std::lock_guard<std::mutex> lock(capture_states_mutex_);
-  auto it = capture_states_.find(capture_id);
-  if (it != capture_states_.end()) {
-    return it->second.get();
+  graph->register_generator_state(
+      c10::intrusive_ptr<CUDAGeneratorState>::reclaim_copy(this));
+
+  {
+    std::lock_guard<std::mutex> lock(capture_states_mutex_);
+    auto it = capture_states_.find(capture_id);
+    if (it != capture_states_.end()) {
+      return it->second.get();
+    }
+    auto* ptr = capture_state.get();
+    capture_states_[capture_id] = std::move(capture_state);
+    return ptr;
   }
-  auto* ptr = capture_state.get();
-  capture_states_[capture_id] = std::move(capture_state);
-  return ptr;
 }
 
 /**
@@ -178,11 +187,7 @@ void CUDAGeneratorState::increase(uint64_t increment) {
 
   auto capture_id = c10::cuda::currentStreamCaptureIdMayInitCtx();
   if (capture_id.has_value()) {
-    auto* capture_state = get_capture_state(capture_id.value());
-    TORCH_CHECK(capture_state != nullptr,
-        "RNG op during graph capture but generator is not registered with "
-        "the capturing graph. Call graph.register_generator_state() before "
-        "capture_begin().");
+    auto* capture_state = get_capture_state(capture_id.value(), true);
     capture_state->increase(increment);
   } else {
     TORCH_INTERNAL_ASSERT(
@@ -193,7 +198,7 @@ void CUDAGeneratorState::increase(uint64_t increment) {
 }
 
 uint64_t CUDAGeneratorState::capture_epilogue(CaptureId_t capture_id) {
-  auto* capture_state = get_capture_state(capture_id);
+  auto* capture_state = get_capture_state(capture_id, false);
   if (capture_state) {
     return capture_state->finalize();
   }
@@ -390,9 +395,7 @@ void CUDAGeneratorImpl::set_philox_offset_per_thread(uint64_t offset) {
   if (C10_LIKELY(!capture_id.has_value())) {
     state_->philox_offset_per_thread_ = offset;
   } else {
-    auto* capture_state = state_->get_capture_state(capture_id.value());
-    TORCH_CHECK(capture_state != nullptr,
-        "Generator not registered with the capturing graph.");
+    auto* capture_state = state_->get_capture_state(capture_id.value(), true);
     capture_state->offset_intragraph_ = offset;
   }
 }
@@ -402,15 +405,9 @@ uint64_t CUDAGeneratorImpl::philox_offset_per_thread() const {
   if (C10_LIKELY(!capture_id.has_value())) {
     return state_->philox_offset_per_thread_;
   } else {
-    auto* capture_state = state_->get_capture_state(capture_id.value());
-    TORCH_CHECK(capture_state != nullptr,
-        "Generator not registered with the capturing graph.");
+    auto* capture_state = state_->get_capture_state(capture_id.value(), true);
     return capture_state->offset_intragraph_;
   }
-}
-
-void CUDAGeneratorImpl::register_graph(cuda::CUDAGraph* graph) {
-  graph->register_generator_state(state_);
 }
 
 /**
@@ -425,12 +422,7 @@ void CUDAGeneratorImpl::register_graph(cuda::CUDAGraph* graph) {
 PhiloxCudaState CUDAGeneratorImpl::philox_cuda_state(uint64_t increment) {
   auto capture_id = c10::cuda::currentStreamCaptureIdMayInitCtx();
   if (capture_id.has_value()) {
-    auto* capture_state = state_->get_capture_state(capture_id.value());
-    TORCH_CHECK(capture_state != nullptr,
-        "RNG op during graph capture but generator is not registered with "
-        "the capturing graph. Call graph.register_generator_state() before "
-        "capture_begin().");
-
+    auto* capture_state = state_->get_capture_state(capture_id.value(), true);
     uint64_t offset = capture_state->offset_intragraph_;
     state_->increase(increment);
 

@@ -23,6 +23,15 @@ static bool _cuda_graphs_debug = false;
 static std::mutex _currently_capturing_graphs_mutex;
 static ska::flat_hash_map<CaptureId_t, CUDAGraph*> _currently_capturing_graphs;
 
+CUDAGraph* get_graph_from_capture_id(CaptureId_t capture_id) {
+  std::lock_guard<std::mutex> lock(_currently_capturing_graphs_mutex);
+  auto it = _currently_capturing_graphs.find(capture_id);
+  if (it != _currently_capturing_graphs.end()) {
+    return it->second;
+  }
+  return nullptr;
+}
+
 MempoolId_t graph_pool_handle() {
   // Sets just the second value, to distinguish it from MempoolId_ts created from
   // cudaStreamGetCaptureInfo id_s in capture_begin.
@@ -61,14 +70,6 @@ void CUDAGraph::register_generator_state(
   captured_generator_states_[std::move(state)] = 0;
 }
 
-void CUDAGraph::register_generator_state(const at::Generator& generator) {
-  c10::intrusive_ptr<CUDAGeneratorImpl> cuda_gen =
-      dynamic_intrusive_pointer_cast<CUDAGeneratorImpl>(
-          generator.getIntrusivePtr());
-  cuda_gen->register_graph(this);
-}
-
-
 template <>
 std::function<bool(cudaStream_t)> CUDAGraph::create_allocate_filter<cudaStream_t>() const {
   return [this](cudaStream_t stream) {
@@ -92,11 +93,6 @@ void CUDAGraph::capture_begin(MempoolId_t pool/*={0,0}*/, cudaStreamCaptureMode 
               "To capture a new graph, create a new instance.");
 
   capture_mode_ = capture_mode;
-
-  // default generator is always registered
-  auto* gen = get_generator_or_default<CUDAGeneratorImpl>(
-      std::nullopt, cuda::detail::getDefaultCUDAGenerator());
-  gen->register_graph(this);
 
   auto stream = at::cuda::getCurrentCUDAStream();
 
@@ -144,10 +140,6 @@ void CUDAGraph::capture_begin(MempoolId_t pool/*={0,0}*/, cudaStreamCaptureMode 
     _currently_capturing_graphs.emplace(capture_id_, this);
   }
 
-  for (auto& [generator_state, wholegraph_increment] :
-       captured_generator_states_) {
-    generator_state->init_capture_state(capture_id_);
-  }
 }
 
 void CUDAGraph::capture_end() {
@@ -297,6 +289,15 @@ void CUDAGraph::reset() {
   // If the user catches the failure exception in a script, or is running in REPL or (god forbid)
   // a Jupyter notebook, I don't see an easy way for reset() to gracefully fix all such possible error states.
 
+  // Note [RNG state tensor lifetime vs graph replay]
+  // RNG state tensors are allocated in the default pool, not the graph pool.
+  // Freeing them here while a graph replay is still in flight on another
+  // stream is a potential use-after-free: the default stream could reuse the
+  // memory before the replay finishes reading it. This is a pre-existing issue
+  // (the original register_graph design had the same problem) and is not
+  // introduced by the per-capture state refactor.
+  // TODO: consider recording an event after each replay and waiting on it
+  // here, or using a dedicated long-lived mempool for RNG state tensors.
   if (capture_id_ != 0) {
     for (auto& [generator_state, wholegraph_increment] : captured_generator_states_) {
       generator_state->remove_capture_state(capture_id_);

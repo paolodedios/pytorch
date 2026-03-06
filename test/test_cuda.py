@@ -2153,11 +2153,6 @@ torch.cuda.synchronize()
             # Return the original generator and its two states
             return generator, old_state, new_state
 
-        def register_states_to_graph(generator_state, graph):
-            _, old_state, new_state = generator_state
-            graph.register_generator_state(old_state)
-            graph.register_generator_state(new_state)
-
         # Define a function to perform specific RNG actions using the generator's states
         def perform_random_generation_steps(generator_state):
             generator, old_state, new_state = generator_state
@@ -2191,7 +2186,6 @@ torch.cuda.synchronize()
         s = torch.cuda.Stream()
         default_generator = torch.cuda.default_generators[0]
         default_generator_state = create_states(default_generator)
-        register_states_to_graph(default_generator_state, g)
 
         # Perform random number generation within a CUDA graph
         with torch.cuda.stream(s):
@@ -2332,8 +2326,6 @@ torch.cuda.synchronize()
                 generator_states.append(default_generator.clone_state())
 
             for graph in graphs:
-                for generator_state in generator_states:
-                    graph.register_generator_state(generator_state)
                 simple_graph_task(graph, default_generator, generator_states)
 
             # Assert conditions after graph tasks
