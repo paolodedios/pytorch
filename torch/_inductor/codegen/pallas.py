@@ -887,7 +887,7 @@ class PallasKernel(SIMDKernel):
         self.strided_input_buffers: dict[str, list[tuple[int, int, int]]] = {}
         # Buffers that already use flatten+gather indexing; strided
         # decomposition must not reshape these (it would break flat offsets).
-        self.flatten_indexed_buffers: set[str] = set()
+        self.flatten_indexed_buffers: OrderedSet[str] = OrderedSet()
 
     def check_bounds(
         self, expr: sympy.Expr, size: sympy.Expr, lower: bool, upper: bool
@@ -1084,7 +1084,7 @@ class PallasKernel(SIMDKernel):
 
     def _decompose_strided_access(
         self, index: sympy.Expr, name: str
-    ) -> Optional[list[tuple[int, int, int]]]:
+    ) -> list[tuple[int, int, int]] | None:
         """Decompose a flat index into per-dimension (stride, offset, skip) triples.
 
         Given flat index like ``64*x0 + 2*x1 + 5`` and buffer shape ``(32, 64)``
@@ -1113,9 +1113,10 @@ class PallasKernel(SIMDKernel):
             return None
         _, buf_size, _, _, _ = info
 
-        buf_shape = [self._safe_int(s) for s in buf_size]
-        if any(s is None or s <= 0 for s in buf_shape):
+        buf_shape_maybe = [self._safe_int(s) for s in buf_size]
+        if any(s is None or s <= 0 for s in buf_shape_maybe):
             return None
+        buf_shape: list[int] = buf_shape_maybe  # type: ignore[assignment]
         ndim = len(buf_shape)
         if ndim == 0:
             return None
@@ -1195,7 +1196,7 @@ class PallasKernel(SIMDKernel):
             n_blocks = buf_shape[d] // stride
             if skip >= n_blocks:
                 return None
-            output_numel_expected *= (n_blocks - skip)
+            output_numel_expected *= n_blocks - skip
             decomposed.append((stride, offset, skip))
 
         output_numel, _ = self._compute_output_numel_from_index(index)
@@ -1221,16 +1222,14 @@ class PallasKernel(SIMDKernel):
         return decomposed
 
     @staticmethod
-    def _strided_load_expr(
-        buf: str, decomp: list[tuple[int, int, int]]
-    ) -> str:
+    def _strided_load_expr(buf: str, decomp: list[tuple[int, int, int]]) -> str:
         """Build ``buf[:, :, offset]`` for strided dims, ``:`` for others."""
         parts: list[str] = []
         for stride, offset, _skip in decomp:
             if stride == 1:
                 parts.append(":")
             else:
-                parts.append(":")       # the halved dim
+                parts.append(":")  # the halved dim
                 parts.append(str(offset))  # static index into stride dim
         return f"{buf}[{', '.join(parts)}]"
 
@@ -1285,9 +1284,7 @@ class PallasKernel(SIMDKernel):
                         else:
                             slice_parts.append(f"{skip}:" if skip > 0 else ":")
                             slice_parts.append(":")
-                    code.writeline(
-                        f"{param} = {param}[{', '.join(slice_parts)}]"
-                    )
+                    code.writeline(f"{param} = {param}[{', '.join(slice_parts)}]")
 
     @staticmethod
     def _c_contiguous_strides(shape: list[int]) -> list[int]:
@@ -2299,7 +2296,9 @@ class PallasKernel(SIMDKernel):
             )
 
             # Build the load expression
-            load_expr = self._build_load_expr(buf, name, index, index_str, needs_flatten)
+            load_expr = self._build_load_expr(
+                buf, name, index, index_str, needs_flatten
+            )
 
         # Handle intermediate buffer squeezing for correct broadcasting
         if not needs_flatten and index_str == "...":
@@ -3628,7 +3627,7 @@ from torch._inductor.runtime.runtime_utils import (
             "        return pallas_gpu_unpad_results(_result, out_shapes, _is_scalar)"
         )
 
-    def _param_to_buf_name(self, param: str) -> Optional[str]:
+    def _param_to_buf_name(self, param: str) -> str | None:
         """Map a kernel parameter name back to its graph buffer name."""
         for graph_name, inner_name in self.args.input_buffers.items():
             if inner_name == param:
