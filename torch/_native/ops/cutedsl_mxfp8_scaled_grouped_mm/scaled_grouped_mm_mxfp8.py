@@ -879,8 +879,13 @@ def _should_use_cutedsl_scaled_grouped_mm_mxfp8(
     return True
 
 
-def _scaled_grouped_mm_v2_conditional_cuda_impl(dispatch_keys, *args, **kwargs):
-    kernel = _ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL
+_ORIGINAL_SCALED_GROUPED_MM_OP = None
+
+
+def _scaled_grouped_mm_v2_conditional_cuda_impl(
+    dispatch_keys, *args, boxed_kernel=None, **kwargs
+):
+    kernel = boxed_kernel  # _ORIGINAL_SCALED_GROUPED_MM_OP
     if kernel is None:
         raise RuntimeError(
             "scaled_grouped_mm_mxfp8_register_kernels() must initialize "
@@ -943,6 +948,7 @@ def _scaled_grouped_mm_v2_conditional_cuda_impl(dispatch_keys, *args, **kwargs):
             import torch._dynamo as torch_dynamo
 
             cutedsl_call = torch_dynamo.disable(cutedsl_call)
+        print("calling cutedsl scaled_grouped_mm")
         return cutedsl_call(
             mat_a_t,
             mat_b_t,
@@ -962,29 +968,22 @@ def _scaled_grouped_mm_v2_conditional_cuda_impl(dispatch_keys, *args, **kwargs):
     return kernel.call_boxed(dispatch_keys, *args)
 
 
-def scaled_grouped_mm_mxfp8_register_kernels() -> Library:
-    global _NN_LIB, _ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL
-    if _NN_LIB is not None:
-        return _NN_LIB
+def scaled_grouped_mm_mxfp8_register_op_override() -> None:
+    original_kernel = torch.library.get_kernel("aten::_scaled_grouped_mm_v2", "CUDA")
 
-    # Capture original CUDA kernel before installing override.
-    if _ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL is None:
-        dispatch_get = (
-            torch._C._dispatch_get_computed_kernel_for_dispatch_key
-        )  # pyrefly: ignore [missing-module-attribute]
-        _ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL = dispatch_get(
-            "aten::_scaled_grouped_mm_v2", "CUDA"
-        )
-
-    lib = Library("aten", "IMPL", "CUDA")
-    lib.impl(
+    cu.register_op_override(
+        "aten",
         "_scaled_grouped_mm_v2",
-        _scaled_grouped_mm_v2_conditional_cuda_impl,
         "CUDA",
-        with_keyset=True,
+        functools.partial(
+            _scaled_grouped_mm_v2_conditional_cuda_impl,
+            boxed_kernel=original_kernel,
+        ),
     )
-    _NN_LIB = lib
-    return lib
 
 
-__all__ = ["scaled_grouped_mm_mxfp8", "scaled_grouped_mm_mxfp8_register_kernels"]
+scaled_grouped_mm_mxfp8_register_op_override()
+
+__all__ = [
+    "scaled_grouped_mm_mxfp8",
+]
