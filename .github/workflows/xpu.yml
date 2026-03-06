@@ -71,6 +71,10 @@ jobs:
           { config: "default", shard: 10, num_shards: 12, runner: "linux.idc.xpu" },
           { config: "default", shard: 11, num_shards: 12, runner: "linux.idc.xpu" },
           { config: "default", shard: 12, num_shards: 12, runner: "linux.idc.xpu" },
+          { config: "inductor", shard: 1, num_shards: 2, runner: "linux.idc.xpu" },
+          { config: "inductor", shard: 2, num_shards: 2, runner: "linux.idc.xpu" },
+          { config: "inductor_cpp_wrapper", shard: 1, num_shards: 2, runner: "linux.idc.xpu" },
+          { config: "inductor_cpp_wrapper", shard: 2, num_shards: 2, runner: "linux.idc.xpu" },
         ]}
     secrets: inherit
 
