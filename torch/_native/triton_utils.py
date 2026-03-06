@@ -7,7 +7,10 @@ from .common_utils import (
     check_native_jit_disabled,
     check_native_version_skip,
 )
-from .registry import _OpOverrideFn, _register_op_override
+from .registry import (
+    _OpFn,
+    _register_op_override,
+)
 
 
 log = logging.getLogger(__name__)
@@ -65,10 +68,16 @@ def register_op_override(
     lib_symbol: str,
     op_symbol: str,
     dispatch_key: str,
-    impl: _OpOverrideFn,
+    impl: _OpFn,
     *,
-    allow_override=False,
+    allow_multiple_override: bool = False,
+    unconditional_override: bool = False,
 ) -> None:
+    """
+    See torch/_native/registry.py for the underlying implementation
+    and arguments. This is a thin, DSL-checking wrapper over
+    _register_op_override
+    """
     available, version = _check_runtime_available()
     if (not available) or check_native_jit_disabled():
         return
@@ -88,5 +97,6 @@ def register_op_override(
         op_symbol,
         dispatch_key,
         impl,
-        allow_override=allow_override,
+        allow_multiple_override=allow_multiple_override,
+        unconditional_override=unconditional_override,
     )
