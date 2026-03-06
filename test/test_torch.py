@@ -6816,6 +6816,19 @@ class TestTorch(TestCase):
             self.assertFalse(torch.logspace(torch.tensor(start, requires_grad=True), end, step).requires_grad)
             self.assertFalse(torch.logspace(start, torch.tensor(end, requires_grad=True), step).requires_grad)
 
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    def test_linspace_fp16_decomp(self):
+        # The linspace decomposition should match the native CUDA kernel for
+        # reduced-precision types.  Previously the decomposition promoted
+        # fp16/bf16 to fp32 for the step computation, causing numerical drift.
+        from torch._refs import linspace as linspace_decomp
+
+        for dtype in [torch.float16, torch.bfloat16]:
+            for steps in [8, 13, 32, 64, 128]:
+                native = torch.linspace(-1, 1, steps=steps, device="cuda", dtype=dtype)
+                decomp = linspace_decomp(-1, 1, steps=steps, device="cuda", dtype=dtype)
+                self.assertEqual(native, decomp)
+
     # FIXME: move to shape ops test suite
     def test_unflatten(self):
         # test args: tensor, int, sizes

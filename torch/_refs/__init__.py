@@ -5501,25 +5501,32 @@ def linspace(
     # Perform in arange in int because some backends like ATen or Triton do not support all the dtypes
     rg = torch.arange(0, steps, **factory_kwargs)  # type: ignore[arg-type]
 
-    # Small types need to be computed in higher precision as this is, at heart, an associative scan
     dtype_red = (
         torch.int64
         if (utils.is_boolean_dtype(dtype) or utils.is_integer_dtype(dtype))
         else dtype
     )
-    computation_dtype, _ = utils.reduction_dtypes(
-        rg, REDUCTION_OUTPUT_TYPE_KIND.SAME, dtype_red
-    )
-    cast_rg = partial(_maybe_convert_to_dtype, dtype=computation_dtype)
+    cast_rg = partial(_maybe_convert_to_dtype, dtype=dtype_red)
 
-    # We implement torch.lerp without performing rg / (steps - 1) explicitly
-    # With this we get out[0] == start, out[-1] == end
-    step = (end - start) / (steps - 1)
+    # Native CUDA/CPU linspace kernels compute step in scalar_t (the target
+    # dtype).  For reduced-precision types (fp16/bf16) this matters: computing
+    # step in fp64 gives visibly different rounding.  Cast start/end to the
+    # target dtype so step arithmetic matches the native kernels.
+    if dtype in (torch.float16, torch.bfloat16):
+        start_val = torch.tensor(start, dtype=dtype, device=device)
+        end_val = torch.tensor(end, dtype=dtype, device=device)
+        steps_div = torch.tensor(steps - 1, dtype=dtype, device=device)
+        step = (end_val - start_val) / steps_div
+    else:
+        start_val = start
+        end_val = end
+        step = (end - start) / (steps - 1)
+
     # pyrefly: ignore [no-matching-overload]
     out = torch.where(
         rg < steps / 2,
-        start + step * cast_rg(rg),  # type: ignore[arg-type,operator]
-        end - step * cast_rg((steps - 1) - rg),  # type: ignore[arg-type,operator]
+        start_val + step * cast_rg(rg),  # type: ignore[arg-type,operator]
+        end_val - step * cast_rg((steps - 1) - rg),  # type: ignore[arg-type,operator]
     )
     return _maybe_convert_to_dtype(out, dtype)  # type: ignore[return-value]
 
