@@ -4864,6 +4864,7 @@ class TestSDPAXpuOnly(NNTestCase):
                 self.assertRaises(RuntimeError, lambda: torch.nn.functional.scaled_dot_product_attention(
                     q, k, v, None, 0.0, is_causal=True))
 
+    @unittest.skipIf(isPVCDevice, "PVC LTS driver not support those tests")
     @unittest.skipIf(not PLATFORM_SUPPORTS_XPU_FLASH_ATTENTION, "XPU Flash Attention is not supported")
     @parametrize("fused_kernel", [SDPBackend.FLASH_ATTENTION])
     @parametrize("dtype", [torch.half, torch.bfloat16])
