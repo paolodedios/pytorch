@@ -882,6 +882,7 @@ class CudaReproTests(TestCase):
             check_lowp=False,
         )
 
+    @skipIfXpu(msg="TypeError, torch-xpu-ops: 3004")
     def test_memory_history_inductor(self):
         def called_inside_compile(x, w, b):
             a = x @ w + b
@@ -898,7 +899,7 @@ class CudaReproTests(TestCase):
 
         def record_memory_history(value: bool):
             if torch.xpu.is_available():
-                torch.xpu._record_memory_history(value)
+                torch.xpu.memory._record_memory_history(value)
             else:
                 torch.cuda.memory._record_memory_history(value)
 
