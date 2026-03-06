@@ -990,7 +990,7 @@ class TestVarlenAttention(NNTestCase):
             self.assertEqual(out_buf, output_fa3)
 
         # compile the lower level aten op, will cause graph break
-        if compile and "FA3" in list_flash_attention_impls():
+        if compile:
             compiled_aten_op = torch.compile(
                 torch.ops.aten._flash_attention_forward_no_dropout_inplace
             )
