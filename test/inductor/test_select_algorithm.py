@@ -25,6 +25,7 @@ from torch._inductor.ir import FixedLayout
 from torch._inductor.kernel_inputs import KernelInputs
 from torch._inductor.select_algorithm import (
     autotune_select_algorithm,
+    ExternalTritonTemplateKernel,
     ExternKernelChoice,
     TritonTemplate,
     TritonTemplateKernel,
@@ -897,6 +898,179 @@ class TestTemplateRender(TestCase):
             FileCheck().check("triton_meta=").check(str(custom_triton_meta)).run(
                 kernels[0]
             )
+
+    @requires_gpu()
+    @requires_triton()
+    @config.patch(cuda_backend="triton")
+    def test_external_template_prologue_epilogue_fusion(self):
+        """
+        Tests prologue fusion, epilogue fusion, and extra inputs through the
+        ExternalTritonTemplateKernel path.
+
+        Compiled function: relu(template_add(a, sigmoid(b))) * bias
+          - Prologue: sigmoid(b) fused into template as _LOAD_INPUT_B
+          - Epilogue: relu(...) * bias fused into template as _STORE_OUTPUT_0
+          - Extra inputs: bias is read by the epilogue but is not among the
+            template's original inputs, exercising spec.extra_inputs
+        """
+        import torch._inductor.ir as ir
+        from torch._inductor.ir import (
+            OrderedSet,
+            TemplateFusionOutput,
+            TemplateFusionSpec,
+        )
+        from torch._inductor.utils import Placeholder, run_and_get_code
+
+        XBLOCK = 128
+        captured_specs: list[TemplateFusionSpec] = []
+
+        class _MockExternalTemplateBuffer(ir.TemplateBuffer):
+            def __init__(self, layout, inputs):
+                def _make_kernel_render(out_node, hint_override=None):
+                    return ExternalTritonTemplateKernel(self), lambda: None
+
+                super().__init__(
+                    layout,
+                    inputs,
+                    _make_kernel_render,
+                    named_inputs={"A": inputs[0], "B": inputs[1]},
+                )
+                # Allow prologue fusion on input B (sigmoid(b) can be
+                # absorbed so the template reads b directly)
+                self.allowed_prologue_inps = OrderedSet([inputs[1].get_name()])
+                self.epilogue_fusable_outputs = {self.name: "result"}
+
+            def fuse(self, spec: TemplateFusionSpec) -> TemplateFusionOutput:
+                captured_specs.append(spec)
+
+                # --- Prologue handling for B ---
+                b_arg = self.inputs[1].get_name()
+                prologue_load_b = "    b = tl.load(B + xindex, mask=xmask)\n"
+                for ps in spec.prologue_specs:
+                    if ps.input_param == "B" and ps.source_buffer is not None:
+                        b_arg = ps.source_buffer
+                        prologue_load_b = (
+                            "    _prologue_B_xindex = xindex\n"
+                            "    _prologue_B_xmask = xmask\n"
+                            "    _LOAD_INPUT_B\n"
+                            "    b = _prologue_B_result\n"
+                        )
+
+                call_args = [self.inputs[0].get_name(), b_arg]
+
+                # --- Epilogue handling ---
+                removed_buffers: OrderedSet[str] = OrderedSet()
+                out_param = "result"
+                out_arg = self.name
+                if spec.epilogue_specs:
+                    epi = spec.epilogue_specs[0]
+                    if epi.store_target is not None and epi.store_target_param:
+                        out_param = epi.store_target_param
+                        out_arg = epi.store_target
+                        if epi.can_remove_output:
+                            removed_buffers.add(epi.kernel_output_buf)
+
+                call_args.append(out_arg)
+
+                # --- Extra inputs ---
+                extra_params = []
+                for buf_name, param_name in spec.extra_inputs.items():
+                    extra_params.append(param_name)
+                    call_args.append(buf_name)
+
+                numel = self.get_size()[0]
+                call_args.append(str(numel))
+
+                # Build the inner kernel signature
+                extra_sig = ", " + ", ".join(extra_params) if extra_params else ""
+
+                kn = str(Placeholder.KERNEL_NAME)
+                source = (
+                    "import triton\n"
+                    "import triton.language as tl\n"
+                    "import torch\n"
+                    "from torch._inductor.runtime import triton_helpers\n"
+                    "\n"
+                    "@triton.jit\n"
+                    f"def _mock_inner_add(A, B, {out_param}"
+                    f"{extra_sig},"
+                    " numel, XBLOCK: tl.constexpr):\n"
+                    "    xoffset = tl.program_id(0) * XBLOCK\n"
+                    "    xindex = xoffset + tl.arange(0, XBLOCK)\n"
+                    "    xmask = xindex < numel\n"
+                    "    a = tl.load(A + xindex, mask=xmask)\n"
+                    + prologue_load_b
+                    + "    _kernel_val_0 = a + b\n"
+                    "    x_epilogue0_0 = xindex\n"
+                    "    _tile_mask_0 = xmask\n"
+                    "    _STORE_OUTPUT_0\n"
+                    "\n"
+                    f"def {kn}(A, B, {out_param}"
+                    f"{extra_sig}, numel):\n"
+                    f"    grid = ((numel + {XBLOCK} - 1) // {XBLOCK},)\n"
+                    f"    _mock_inner_add[grid]("
+                    f"A, B, {out_param}"
+                    f"{extra_sig}, numel, XBLOCK={XBLOCK})\n"
+                    f"    return {out_param}\n"
+                )
+
+                return TemplateFusionOutput(
+                    source=source,
+                    call_args=call_args,
+                    call_preamble=[],
+                    removed_buffers=removed_buffers,
+                )
+
+        def add_override(a, b, alpha=None):
+            layout = FixedLayout(a.get_device(), a.get_dtype(), a.get_size())
+            a = ir.ExternKernel.require_stride1(ir.ExternKernel.realize_input(a))
+            b = ir.ExternKernel.require_stride1(ir.ExternKernel.realize_input(b))
+            return ir.TensorBox.create(_MockExternalTemplateBuffer(layout, [a, b]))
+
+        with patch_lowering(
+            {
+                torch.ops.aten.add.Tensor: (
+                    add_override,
+                    True,
+                    ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT,
+                    False,
+                )
+            }
+        ):
+
+            @torch.compile
+            def f(a, b, bias):
+                # Use * for bias so it doesn't trigger add_override again
+                return torch.relu(a + torch.sigmoid(b)) * bias
+
+            a = torch.randn(32, device=GPU_TYPE)
+            b = torch.randn(32, device=GPU_TYPE)
+            bias = torch.randn(32, device=GPU_TYPE)
+
+            result, (code,) = run_and_get_code(f, a, b, bias)
+            expected = torch.relu(a + torch.sigmoid(b)) * bias
+            torch.testing.assert_close(result, expected)
+
+            # Verify template kernel was used
+            self.assertIn("_mock_inner_add", code)
+            # Verify epilogue fusion: relu fused via hook
+            self.assertIn("triton_helpers.maximum", code)
+            # Verify prologue fusion: sigmoid fused via hook
+            self.assertIn("tl.sigmoid", code)
+
+            # Verify the TemplateFusionSpec fields
+            self.assertEqual(len(captured_specs), 1)
+            spec = captured_specs[0]
+            # Prologue: should have an entry for "B" with a source buffer
+            self.assertTrue(len(spec.prologue_specs) > 0)
+            b_prologue = [p for p in spec.prologue_specs if p.input_param == "B"]
+            self.assertEqual(len(b_prologue), 1)
+            self.assertIsNotNone(b_prologue[0].source_buffer)
+            # Epilogue: should have an entry with kernel_output_param
+            self.assertTrue(len(spec.epilogue_specs) > 0)
+            self.assertEqual(spec.epilogue_specs[0].kernel_output_param, "result")
+            # Extra inputs: bias should appear
+            self.assertTrue(len(spec.extra_inputs) > 0)
 
 
 if __name__ == "__main__":
