@@ -7583,7 +7583,7 @@ def resize(x, size, *, memory_format=None):
         V.graph.sizevars.statically_known_equals(s, 0) for s in strides
     )
     if has_overlapping:
-        # overlapping: materializes logical elements into contiguous storage
+        # overlapping: provide a contiguous logical view
         x_flat = view(x, [old_numel])
     else:
         # non-overlapping: keep storage order
