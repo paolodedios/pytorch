@@ -5257,17 +5257,43 @@ def get_flat_proxies(flat_vts: list[tuple[str, Any]]) -> list[Proxy]:
     return flat_proxies
 
 
+@dataclass
+class LiftedUserArg:
+    """Lifted arg that came from a user argument (intermediate activation or explicit input)."""
+
+    index: int
+
+
+@dataclass
+class LiftedCapturedSource:
+    """Lifted arg that is a captured variable (e.g. a weight or parameter) with a Source."""
+
+    source: Any  # Source
+
+
+@dataclass
+class LiftedSyntheticObject:
+    """Lifted arg that is a TorchScriptObject with a SyntheticLocalSource."""
+
+    ctor_fn: Any  # Callable
+    ctor_args: tuple[Any, ...]
+    ctor_arg_sources: tuple[Any, ...] | None
+
+
+LiftedArgOrigin = LiftedUserArg | LiftedCapturedSource | LiftedSyntheticObject
+
+
 def get_fn_id(fn_var: Any) -> int | None:
     if isinstance(fn_var, UserFunctionVariable):
         return id(fn_var.get_function())
     elif isinstance(fn_var, UnspecializedNNModuleVariable):
-        return id(fn_var.value.forward.__func__)
+        return id(fn_var.value.forward.__func__)  # pyrefly: ignore[missing-attribute]
     return None
 
 
 def has_mutated_vars(
     tx: "InstructionTranslator",
-    traced_sources: set[Any],
+    traced_sources: OrderedSet[Any],
 ) -> bool:
     """Check if any source accessed by the subgraph has been mutated.
 
@@ -5290,7 +5316,7 @@ def is_reuse_eligible(
     body_r: Any,
     fingerprint: InputFingerprint,
     tracing_info: SubgraphTracingInfo,
-    traced_sources: set[Any] | None = None,
+    traced_sources: OrderedSet[Any] | None = None,
 ) -> bool:
     """Best-effort check for whether a traced subgraph result can be reused.
 
@@ -5354,7 +5380,7 @@ def build_reuse_condition(
     tx: "InstructionTranslator",
     flat_vts: list[tuple[str, Any]],
     arg_sources: list[Any],
-    traced_sources: set[Any],
+    traced_sources: OrderedSet[Any],
     treespec: Any = None,
 ) -> InvokeSubgraphReuseCondition | None:
     """Build an InvokeSubgraphReuseCondition from a traced subgraph.
@@ -5404,11 +5430,11 @@ def build_reuse_condition(
     # and for the flattened arg sources.
     all_sources = set(traced_sources)
     all_sources.update(arg_sources)
-    all_relevant_guards: set = set()
+    all_relevant_guards: set[Any] = set()
     for source in all_sources:
         all_relevant_guards.update(tx.output.guards.get_guards_for_source(source))
 
-    guard_tuples: list[tuple[Any, Any, Any]] = []
+    guard_tuples: list[tuple[Any, Any, Any, Any]] = []
     for guard in all_relevant_guards:
         source = guard.originating_source
         type_str = guard.create_fn_name()
@@ -5431,10 +5457,12 @@ def build_reuse_condition(
 
         # TODO(anijain2305): vLLM workaround -- skip CONSTANT_MATCH on
         # strings. Re-evaluate once vLLM migrates off this pattern.
-        if type_str == "CONSTANT_MATCH" and isinstance(value, str):
-            continue
+        # if type_str == "CONSTANT_MATCH" and isinstance(value, str):
+        #     continue
 
-        expected = handler.get_metadata_fn(guard, value)
+        expected = handler.get_metadata_fn(  # pyrefly: ignore[missing-attribute]
+            guard, value
+        )
         guard_tuples.append((source, handler, expected, guard))
 
     hc_log.debug("Number of guards %s", len(guard_tuples))
@@ -5535,6 +5563,12 @@ def is_reusable(
         if old is not None and new is not None and old != new
     }
 
+    # Parameterized source - this function gives you new sources parameterized
+    # on the arg_sources. For example, if the input to the nested compile region
+    # is a nn Module layer with source `layers[0]`, then old source
+    # `layers[0].weight` gets remapped to `layers[1].weight`. This
+    # parameterization is central in getting the new sources and then running
+    # guards on them.
     def replacement_fn(s: Any) -> Any:
         return source_replacement.get(s, s)
 
@@ -5553,12 +5587,12 @@ def is_reusable(
 
     # Shared resolution context so source.get_value memoizes intermediate
     # results (e.g. common base sources) across all guards in this check.
-    resolve_globals = {
+    resolve_globals: dict[str, Any] = {
         "G": tx.output.root_tx.f_globals,
         "L": tx.output.root_tx.f_locals,
     }
-    resolve_locals: dict = {}
-    resolve_cache: dict = {}
+    resolve_locals: dict[str, Any] = {}
+    resolve_cache: dict[str, Any] = {}
 
     for source, handler, expected, guard in condition.guards:
         new_source = source.clone(replacement_fn)
@@ -5631,6 +5665,9 @@ def find_reuse_match(
     if fn_id is None:
         return None
 
+    # this evaluator function is called one by one for all the invoke subgraph
+    # reuse entries - the one that evaluates to True is stamped out in the
+    # graph.
     def evaluator(cond: "InvokeSubgraphReuseCondition", entry: Any) -> bool:
         return is_reusable(tx, cond, flat_vts, new_arg_sources, entry, treespec)
 
@@ -5644,7 +5681,7 @@ def save_reuse_entry(
     body_name: str,
     body_gmod: Any,
     config: Any,
-    p_args: tuple,
+    p_args: tuple[Any, ...],
     body_r: Any,
     example_value: Any,
     condition: "InvokeSubgraphReuseCondition",
@@ -5725,45 +5762,49 @@ def stamp_out_subgraph(
     new_lifted_args = []
     # Shared resolution context so get_value memoizes intermediate results
     # (e.g. L['self'].layers) across all freevars in this stamp-out.
-    resolve_globals = {
+    resolve_globals: dict[str, Any] = {
         "G": tx.output.root_tx.f_globals,
         "L": tx.output.root_tx.f_locals,
     }
-    resolve_locals: dict = {}
-    resolve_cache: dict = {}
+    resolve_locals: dict[str, Any] = {}
+    resolve_cache: dict[str, Any] = {}
 
-    for user_arg_idx, data in cached.freevar_mapping:
-        if user_arg_idx >= 0:
-            new_lifted_args.append(flat_proxies[user_arg_idx])
-        elif user_arg_idx == -2:
-            # TorchScriptObject with SyntheticLocalSource: create a
-            # fresh synthetic graph input using the cached constructor.
-            # If ctor_arg_sources are available, use source replacement
-            # to resolve new arg values (e.g. different string per layer).
-            ctor_fn, ctor_args, ctor_arg_sources = data
+    # Find the args for the about-to-be-inserted invoke_subgraph call.
+    for freevar in cached.freevar_mapping:
+        if isinstance(freevar, LiftedUserArg):
+            new_lifted_args.append(flat_proxies[freevar.index])
+        elif isinstance(freevar, LiftedSyntheticObject):
+            ctor_args = freevar.ctor_args
+            ctor_arg_sources = freevar.ctor_arg_sources
             if ctor_arg_sources and source_replacement:
                 new_ctor_args = []
+                new_ctor_arg_sources = []
                 for val, arg_src in zip(ctor_args, ctor_arg_sources):
                     if arg_src is not None:
                         new_src = arg_src.clone(lambda s: source_replacement.get(s, s))
                         val = new_src.get_value(
                             resolve_globals, resolve_locals, resolve_cache
                         )
+                        arg_src = new_src
                     new_ctor_args.append(val)
+                    new_ctor_arg_sources.append(arg_src)
                 ctor_args = tuple(new_ctor_args)
-            vt = tx.output.synthetic_graph_input(ctor_fn, ctor_args, ctor_arg_sources)
+                ctor_arg_sources = tuple(new_ctor_arg_sources)
+            vt = tx.output.synthetic_graph_input(
+                freevar.ctor_fn, ctor_args, ctor_arg_sources
+            )
             new_lifted_args.append(vt.as_proxy())
-        else:
-            source = data
-            new_source = source
+        elif isinstance(freevar, LiftedCapturedSource):
+            new_source = freevar.source
             if source_replacement:
-                new_source = source.clone(lambda s: source_replacement.get(s, s))
+                new_source = new_source.clone(lambda s: source_replacement.get(s, s))
             # VariableBuilder deduplicates via input_source_to_var,
             # so this reuses existing graph placeholders automatically.
             value = new_source.get_value(resolve_globals, resolve_locals, resolve_cache)
             vt = VariableBuilder(tx, new_source)(value)
             new_lifted_args.append(vt.as_proxy())
 
+    # Generate fake tensor outputs
     assert tx.fake_mode is not None
     with tx.fake_mode:
         example_value = tuple(
@@ -5777,7 +5818,7 @@ def stamp_out_subgraph(
             for shape, stride, dtype, device, req_grad in cached.output_metadata
         )
 
-    # TODO - claude - Check if this is doing fake tensor prop
+    # Install the invoke_subgraph call
     body_node = make_attr(tx, cached.body_name)
     p_args = (body_node, cached.body_name, *new_lifted_args)
     flat_variable = add_call_function(
@@ -5791,33 +5832,28 @@ def stamp_out_subgraph(
 
     # Validate output structure matches what was cached
     if cached.single_tensor_output:
-        assert isinstance(flat_variable.items[0], TensorVariable), (
-            f"Expected tensor output but got {type(flat_variable.items[0]).__name__}"
+        items = flat_variable.items  # pyrefly: ignore[missing-attribute]
+        assert isinstance(items[0], TensorVariable), (
+            f"Expected tensor output but got {type(items[0]).__name__}"
         )
-        return flat_variable.items[0]
+        return items[0]
     return flat_variable
 
 
 def build_freevar_mapping(
     tx: "InstructionTranslator",
-    p_args: tuple,
+    p_args: tuple[Any, ...],
     flat_vts: list[tuple[str, Any]],
-) -> list[tuple[int, Any]]:
+) -> list[LiftedArgOrigin]:
     """Build a mapping that records the origin of each lifted arg for a subgraph.
 
     On a cache hit, we stamp out a new invoke_subgraph call and need to
     reconstruct its argument list in the correct order. Each lifted arg
     (p_args[2:], skipping body_node and body_name) comes from one of:
 
-    (1) A user argument (intermediate activation or explicit input) that
-        appears in flat_vts — we record its index so we can look it up
-        from the new call's flat proxies.
-    (2) A sourceful captured variable (e.g. a weight or parameter) — we
-        record its Source so we can re-derive the correct proxy on cache
-        hit via source replacement.
-    (3) A TorchScriptObjectVariable with a SyntheticLocalSource — we
-        record its constructor (type, args) so we can call
-        synthetic_graph_input on stamp-out to create a fresh graph input.
+    - LiftedUserArg: a user argument (intermediate activation or explicit input)
+    - LiftedCapturedSource: a captured variable (e.g. a weight or parameter)
+    - LiftedSyntheticObject: a TorchScriptObject with a SyntheticLocalSource
     """
     proxy_node_to_idx: dict[torch.fx.Node, int] = {}
     idx = 0
@@ -5828,11 +5864,11 @@ def build_freevar_mapping(
                 proxy_node_to_idx[node] = idx
                 idx += 1
 
-    freevar_mapping: list[tuple[int, Any]] = []
+    freevar_mapping: list[LiftedArgOrigin] = []
     for outer_proxy in p_args[2:]:
         matched_idx = proxy_node_to_idx.get(outer_proxy.node, -1)
         if matched_idx >= 0:
-            freevar_mapping.append((matched_idx, None))
+            freevar_mapping.append(LiftedUserArg(matched_idx))
         else:
             grapharg = outer_proxy.node.meta.get("grapharg", None)
             source = grapharg.source if grapharg is not None else None
@@ -5842,25 +5878,24 @@ def build_freevar_mapping(
                 f"function argument was not included in the proxy matching"
             )
             if isinstance(source, SyntheticLocalSource):
-                # SyntheticLocalSource can't be resolved via
-                # resolve_source_value or cloned via source replacement.
-                # Look up constructor info so stamp-out can call
-                # synthetic_graph_input to recreate the graph input.
                 ctor_info = tx.output.synthetic_source_ctor_info.get(source)
                 if ctor_info is not None:
-                    freevar_mapping.append((-2, ctor_info))
+                    ctor_fn, ctor_args, ctor_arg_sources = ctor_info
+                    freevar_mapping.append(
+                        LiftedSyntheticObject(ctor_fn, ctor_args, ctor_arg_sources)
+                    )
                     continue
-            freevar_mapping.append((-1, source))
+            freevar_mapping.append(LiftedCapturedSource(source))
     return freevar_mapping
 
 
 # Note: [invoke_subgraph subgraph reuse]
 #
 # When mark_compile_region wraps a function called N times (e.g. 80 identical
-# transformer layers), Dynamo would normally trace the subgraph N times. Each
-# trace involves speculation, guard collection, and graph construction -- all
-# redundant after the first call. Subgraph reuse traces once and stamps out
-# cached copies for subsequent calls.
+# transformer layers), Dynamo traces the subgraph once and stamps out cached
+# copies for subsequent calls. It does safety checks to ensure that a subgraph
+# is reusable, if not (e.g. side-effect), it will fallback to tracing the
+# next invocation.
 #
 # HIGH-LEVEL FLOW
 # ===============
@@ -5916,17 +5951,21 @@ def build_freevar_mapping(
 # STAMP OUT (stamp_out_subgraph)
 # ==============================
 #
-# On cache hit, reconstruct the argument list using the freevar mapping:
+# On cache hit, reconstruct the argument list using the freevar mapping
+# (list[LiftedArgOrigin]):
 #
-#   index >= 0  -> User arg (activation / explicit input)
-#                  Looked up from new call's flat proxies.
+#   LiftedUserArg(index)
+#       User arg (activation / explicit input).
+#       Looked up from new call's flat proxies.
 #
-#   index == -1 -> Sourceful captured var (weight, param, etc)
-#                  Source is cloned with replacement map, resolved via
-#                  VariableBuilder. Deduplicates via input_source_to_var.
+#   LiftedCapturedSource(source)
+#       Sourceful captured var (weight, param, etc).
+#       Source is cloned with replacement map, resolved via
+#       VariableBuilder. Deduplicates via input_source_to_var.
 #
-#   index == -2 -> Synthetic object (opaque type with SyntheticLocalSource)
-#                  Reconstructed via cached (ctor_fn, ctor_args).
+#   LiftedSyntheticObject(ctor_fn, ctor_args, ctor_arg_sources)
+#       Synthetic object (opaque type with SyntheticLocalSource).
+#       Reconstructed via synthetic_graph_input with cached constructor info.
 #
 # SAFETY
 # ======
@@ -6043,15 +6082,16 @@ class InvokeSubgraphHigherOrderVariable(WrapHigherOrderVariable):
                 )
                 raise
 
+        # TODO (anijain2305) - Collect issues why this does not work for export,
+        # and enable if request arises.
         reuse = not tx.output.export
 
-        # Auto-cache lookup: check fn_id first (cheap) to avoid the
+        # Reuse lookup: check fn_id first (cheap) to avoid the
         # expensive pytree flatten in build_input_fingerprint on the
         # first call when there's nothing in the cache yet.
         if reuse and has_reuse_entries(tx, fn_var):
             with dynamo_timed("invoke_subgraph_reuse_lookup"):
-                with dynamo_timed("invoke_subgraph_build_fingerprint"):
-                    fingerprint = build_input_fingerprint(tx, fn_args_vt, kwargs)
+                fingerprint = build_input_fingerprint(tx, fn_args_vt, kwargs)
                 match = find_reuse_match(
                     tx,
                     fn_var,

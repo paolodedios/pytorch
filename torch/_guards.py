@@ -765,10 +765,7 @@ class InvokeSubgraphReuseEntry:
     body_name: str
     body_gmod: Any  # GraphModule
     config: Any  # NestedCompileRegionOptions | None
-    # Per lifted freevar (in subgraph input order):
-    #   idx >= 0 → came from flat_arg_sources[idx]; data is None
-    #   idx == -1 → captured variable; data is the Source object
-    freevar_mapping: list[tuple[int, Any]]
+    freevar_mapping: list[Any]  # list[LiftedArgOrigin]
     single_tensor_output: bool
     # Per-output tensor metadata (shape, stride, dtype, device, requires_grad)
     # cached from the first trace so we can construct fresh FakeTensors on
@@ -796,7 +793,7 @@ class InvokeSubgraphReuseCondition:
     # Guards captured during the trace (delta + source-mapped).
     # Each entry: (source, handler, expected_value)
     # handler is a pre-resolved GuardValueHandler from GUARD_VALUE_DISPATCH.
-    guards: list[tuple[Any, Any, Any]]
+    guards: list[tuple[Any, Any, Any, Any]]
 
     # TreeSpec from pytree.tree_flatten of the (args, kwargs) structure.
     # On cache hit, we verify the new call has the same treespec.

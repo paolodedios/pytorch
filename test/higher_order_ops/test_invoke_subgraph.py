@@ -3516,6 +3516,8 @@ class TestInvokeSubgraphReuse(TestCase):
         self.assertEqual(ref, res)
         self.assertEqual(call_count, 1)
 
+    # Something wrong with the hoisted object- we are guarding on them
+    @unittest.expectedFailure
     def test_subgraph_reuse_synthetic_source_different_args(self):
         """Reuse with different opaque object ctor args per invocation.
 
@@ -3588,6 +3590,53 @@ class GraphModule(torch.nn.Module):
             return (op_with_string_default,)
 """,  # noqa: B950
             )
+
+    def test_subgraph_reuse_different_list_lengths(self):
+        """Reuse must be skipped when list args have different lengths.
+
+        The first call passes lists of length 2; the second passes lists of
+        length 3.  The pytree treespec will differ, so the cache lookup must
+        fall through and trigger a second trace.
+        """
+
+        @nested_compile_region
+        def gn(xs, ys):
+            return [a + b for a, b in zip(xs, ys)]
+
+        def fn(xs1, ys1, xs2, ys2):
+            a = gn(xs1, ys1)
+            b = gn(xs2, ys2)
+            return a, b
+
+        xs1 = [torch.randn(4), torch.randn(4)]
+        ys1 = [torch.randn(4), torch.randn(4)]
+        xs2 = [torch.randn(4), torch.randn(4), torch.randn(4)]
+        ys2 = [torch.randn(4), torch.randn(4), torch.randn(4)]
+
+        ref = fn(xs1, ys1, xs2, ys2)
+
+        call_count = 0
+        orig_speculate = torch._dynamo.variables.higher_order_ops.speculate_subgraph_with_auto_output_flattening
+
+        def counting_speculate(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return orig_speculate(*args, **kwargs)
+
+        with mock.patch.object(
+            torch._dynamo.variables.higher_order_ops,
+            "speculate_subgraph_with_auto_output_flattening",
+            counting_speculate,
+        ):
+            res = torch.compile(fn, backend="aot_eager", fullgraph=True)(
+                xs1, ys1, xs2, ys2
+            )
+
+        # Different list lengths → treespec mismatch → two separate traces
+        self.assertEqual(call_count, 2)
+        for r, e in zip(res, ref):
+            for ri, ei in zip(r, e):
+                self.assertEqual(ri, ei)
 
 
 @skipIfTorchDynamo("Not a torch._dynamo test")

@@ -709,7 +709,9 @@ def nested_compile_region(
         mark_compile_region as _mark_compile_region,
     )
 
-    return _mark_compile_region(fn, options=options, max_reuse_entries=max_reuse_entries)
+    return _mark_compile_region(
+        fn, options=options, max_reuse_entries=max_reuse_entries
+    )
 
 
 def load_compiled_function(

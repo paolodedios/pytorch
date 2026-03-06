@@ -77,7 +77,6 @@ class NestedCompileRegionOptions:
     decompositions: dict[str, Any] | None = None
 
 
-
 def _extract_nested_region_config(fn):
     """
     Extract the NestedCompileRegionOptions from the HOP subgraph gm.meta["nested_region_config"]
