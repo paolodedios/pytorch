@@ -34,14 +34,124 @@ from ._fsdp_common import (
     FSDPMeshInfo,
     HSDPMeshInfo,
     is_bw,
+    make_fx_tracing_enabled,
     TrainingState,
 )
-from ._fsdp_param import alloc_storage, FSDPParam, ParamModuleInfo, ShardedState
+from ._fsdp_param import (
+    alloc_storage,
+    FSDPParam,
+    ParamModuleInfo,
+    ShardedState,
+    unsafe_setattr_param,
+)
 
 
 logger = logging.getLogger("torch.distributed.fsdp.fully_shard")
 
 _ModuleToHandleDict = dict[nn.Module, RemovableHandle]  # for state dict
+
+
+# =============================================
+# Custom op: black-box unshard for make_fx tracing
+# =============================================
+
+
+@torch.library.custom_op("fsdp::unshard", mutates_args=())
+def _unshard_op(
+    sharded_data: torch.Tensor,
+    group_size: int,
+    orig_size: list[int],
+    orig_stride: list[int],
+) -> torch.Tensor:
+    """Black-box unshard: all-gather one sharded param, return unsharded.
+
+    This op appears as a single node in the FX graph, making the data flow
+    from sharded input to unsharded param explicit and traceable.
+    """
+    gathered = torch.empty(
+        sharded_data.numel() * group_size,
+        dtype=sharded_data.dtype,
+        device=sharded_data.device,
+    )
+    dist.all_gather_into_tensor(gathered, sharded_data)
+    return torch.as_strided(
+        gathered, orig_size, orig_stride
+    ).contiguous()
+
+
+@_unshard_op.register_fake
+def _unshard_op_fake(
+    sharded_data: torch.Tensor,
+    group_size: int,
+    orig_size: list[int],
+    orig_stride: list[int],
+) -> torch.Tensor:
+    return sharded_data.new_empty(orig_size)
+
+
+def _unshard_op_setup_context(ctx, inputs, output):
+    sharded_data, group_size, orig_size, orig_stride = inputs
+    ctx.group_size = group_size
+    ctx.sharded_numel = sharded_data.numel()
+
+
+def _unshard_op_backward(ctx, grad_output):
+    grad_sharded = torch.ops.fsdp.reduce_scatter_grad(
+        grad_output, ctx.group_size, ctx.sharded_numel
+    )
+    return grad_sharded, None, None, None
+
+
+_unshard_op.register_autograd(
+    _unshard_op_backward, setup_context=_unshard_op_setup_context
+)
+
+
+@torch.library.custom_op("fsdp::reduce_scatter_grad", mutates_args=())
+def _reduce_scatter_grad_op(
+    grad: torch.Tensor,
+    group_size: int,
+    sharded_numel: int,
+) -> torch.Tensor:
+    """Reduce-scatter gradient: inverse of all-gather unshard."""
+    flat_grad = grad.contiguous().view(-1)
+    output = torch.empty(
+        sharded_numel, dtype=flat_grad.dtype, device=flat_grad.device
+    )
+    dist.reduce_scatter_tensor(output, flat_grad)
+    return output
+
+
+@_reduce_scatter_grad_op.register_fake
+def _reduce_scatter_grad_op_fake(
+    grad: torch.Tensor,
+    group_size: int,
+    sharded_numel: int,
+) -> torch.Tensor:
+    return grad.new_empty(sharded_numel)
+
+
+@torch.library.custom_op("fsdp::reshard", mutates_args=())
+def _reshard_op(
+    unsharded: torch.Tensor,
+    group_size: int,
+    sharded_numel: int,
+) -> torch.Tensor:
+    """Reshard: return the local shard of an unsharded param.
+
+    Inverse of unshard. In eager mode, this is just slicing the local chunk.
+    In a real training loop, this represents freeing the all-gather buffer.
+    """
+    return unsharded.contiguous().view(-1)[:sharded_numel].clone()
+
+
+@_reshard_op.register_fake
+def _reshard_op_fake(
+    unsharded: torch.Tensor,
+    group_size: int,
+    sharded_numel: int,
+) -> torch.Tensor:
+    return unsharded.new_empty(sharded_numel)
 
 
 """
@@ -445,16 +555,79 @@ class FSDPParamGroup:
             logger.debug("%s", self._with_fqn("FSDP::pre_forward"))
         with record_function(self._with_fqn("FSDP::pre_forward")):
             self._training_state = TrainingState.FORWARD
-            self.unshard(self.unshard_async_op)
-            self.wait_for_unshard()
+            if make_fx_tracing_enabled():
+                self._unshard_via_custom_op()
+            else:
+                self.unshard(self.unshard_async_op)
+                self.wait_for_unshard()
             args, kwargs = self._register_post_backward_hook(args, kwargs)
             return args, kwargs
+
+    def _unshard_via_custom_op(self) -> None:
+        """Unshard using black-box custom op for make_fx tracing.
+
+        Calls fsdp::unshard per param, which takes sharded data and returns
+        unsharded param. This makes the data flow explicit in the FX graph.
+
+        Unlike the normal unshard path, we do NOT wrap in nn.Parameter because
+        that detaches the tensor (Parameters are leaves), breaking gradient
+        flow for autograd.grad tracing. Instead we set the raw tensor directly
+        on the module so gradients flow through fsdp::unshard.
+        """
+        if isinstance(self.mesh_info, FSDPMeshInfo):
+            group_size = self._all_gather_process_group.size()
+        else:
+            group_size = 1
+
+        for fsdp_param in self.fsdp_params:
+            unsharded_data = torch.ops.fsdp.unshard(
+                fsdp_param._sharded_param_data,
+                group_size,
+                list(fsdp_param._orig_size),
+                list(fsdp_param._contiguous_orig_stride),
+            )
+            # Set directly on module, bypassing nn.Parameter to avoid detach
+            module_info = fsdp_param._module_info
+            unsafe_setattr_param(
+                module_info.module, module_info.param_name, unsharded_data
+            )
+            for shared_module, shared_param_name in zip(
+                module_info.shared_modules, module_info.shared_param_names
+            ):
+                unsafe_setattr_param(shared_module, shared_param_name, unsharded_data)
+        self._sharded_state = ShardedState.UNSHARDED
+
+    def _reshard_via_custom_op(self) -> None:
+        """Reshard using custom op for make_fx tracing.
+
+        Calls fsdp::reshard per param, which takes the unsharded param and
+        returns the sharded data. The sharded output is stored so that
+        pre_backward can unshard from it.
+        """
+        if isinstance(self.mesh_info, FSDPMeshInfo):
+            group_size = self._all_gather_process_group.size()
+        else:
+            group_size = 1
+
+        for fsdp_param in self.fsdp_params:
+            module_info = fsdp_param._module_info
+            unsharded = getattr(module_info.module, module_info.param_name)
+            sharded = torch.ops.fsdp.reshard(
+                unsharded,
+                group_size,
+                fsdp_param._sharded_param_data.numel(),
+            )
+            # Store resharded data so pre_backward can unshard from it
+            fsdp_param._sharded_param_data = sharded
+        self._sharded_state = ShardedState.SHARDED
 
     def post_forward(self, module: nn.Module, input: Any, output: Any):
         if not compiled_autograd_enabled():
             logger.debug("%s", self._with_fqn("FSDP::post_forward"))
         with record_function(self._with_fqn("FSDP::post_forward")):
-            if not compiled_autograd_enabled():
+            if make_fx_tracing_enabled():
+                self._reshard_via_custom_op()
+            elif not compiled_autograd_enabled():
                 # for AC(fully_shard(model)), AC runs fsdp's _pre_forward
                 # it shouldn't change post_forward_order
                 if not is_bw():
@@ -487,10 +660,13 @@ class FSDPParamGroup:
             logger.debug("%s", self._with_fqn("FSDP::pre_backward"))
         with record_function(self._with_fqn("FSDP::pre_backward")):
             self._training_state = TrainingState.PRE_BACKWARD
-            self.unshard(self.unshard_async_op)  # no-op if prefetched
-            self.wait_for_unshard()
-            if default_prefetch and not compiled_autograd_enabled():
-                self._backward_prefetch()
+            if make_fx_tracing_enabled():
+                self._unshard_via_custom_op()
+            else:
+                self.unshard(self.unshard_async_op)  # no-op if prefetched
+                self.wait_for_unshard()
+                if default_prefetch:
+                    self._backward_prefetch()
 
     def post_backward(self, *unused: Any):
         # This method should be idempotent and safe to call even when this

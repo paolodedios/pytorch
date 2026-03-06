@@ -14,6 +14,12 @@ from torch.distributed.tensor._dtensor_spec import DTensorSpec
 
 
 _compiled_autograd_enabled: bool = False
+_make_fx_tracing: bool = False
+
+
+def make_fx_tracing_enabled() -> bool:
+    global _make_fx_tracing
+    return _make_fx_tracing
 
 
 def detect_compiled_autograd():
