@@ -294,7 +294,7 @@ def _get_override_for_compile_id(
     compile_id: CompileId | None,
     config_str: str,
     create_router: Callable[[str], _GraphRouterBase[T]],
-    log_msg: str,
+    label: str,
 ) -> T | None:
     """
     Get the override value for a given CompileId.
@@ -311,7 +311,7 @@ def _get_override_for_compile_id(
     router = create_router(config_str)
     value = router.get_value_for_graph(graph_id)
     if value is not None:
-        log.info(log_msg, compile_id, graph_id, value)
+        log.info("[%s] Overriding %s: %s", compile_id, label, value)
     return value
 
 
@@ -340,7 +340,7 @@ def get_backend_override_for_compile_id(
         compile_id,
         config_str,
         _create_backend_router,
-        "Graph %s (frame_id=%d) overridden to use backend: %s",
+        "torch.compile backend",
     )
 
 
@@ -357,7 +357,7 @@ def get_inductor_config_override_for_compile_id(
         compile_id,
         config_str,
         _create_config_router,  # type: ignore[arg-type]
-        "Graph %s (frame_id=%d) overridden with inductor config: %s",
+        "inductor config",
     )
 
 
