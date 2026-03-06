@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
     from types import ModuleType
 
+    from torch._inductor.codegen.wrapper import EnterCudaStreamContextLine
+
     from .codegen.wrapper import PythonWrapperCodegen
 
 import sympy
@@ -40,6 +42,7 @@ from torch._inductor.autotune_process import use_pipelined_autotuning
 from torch._inductor.codecache import LambdaFuture, PyCodeCache
 from torch._inductor.ir import TritonTemplateCallerBase
 from torch._inductor.metrics import get_metric_table, is_metric_table_enabled
+from torch._inductor.stream_utils import get_stream_name
 from torch.fx.experimental.symbolic_shapes import free_symbols
 from torch.utils._sympy.symbol import free_symbol_is_type, symbol_is_type, SymT
 from torch.utils._triton import has_triton
@@ -3255,6 +3258,9 @@ class Scheduler:
         # fx graph node to the position it appears in the graph
         # for debug attribution
         self.origin_to_index: dict[torch.fx.Node, int] = {}
+
+        # The only source of which stream context are we currently in at the scheduling phase.
+        self._current_stream_ctx: EnterCudaStreamContextLine | None = None
 
         get_metric_table("graph_stats").add_row(
             lambda: {
@@ -7378,6 +7384,66 @@ class Scheduler:
                         and buffer.get_size() == []
                     ):
                         V.graph.zero_dim_cpu_tensor_list.add(read.name)
+
+    @property
+    def current_stream_idx(self) -> int | None:
+        """CUDA Stream index that current scheduler node assigned to."""
+        if self._current_stream_ctx is not None:
+            return self._current_stream_ctx.stream_idx
+        else:
+            return None
+
+    @property
+    def current_stream_name(self) -> str | None:
+        """CUDA Stream name that current scheduler node assigned to."""
+        if (stream_idx := self.current_stream_idx) is not None:
+            return get_stream_name(stream_idx)
+        else:
+            return None
+
+    def generate_stream_ctx_enter(self, node: BaseSchedulerNode) -> None:
+        """Code-gen to enter the Stream context assigned to node."""
+        assert not isinstance(node, NopKernelSchedulerNode)
+        # pyrefly: ignore[missing-attribute]
+        node_stream = self.node_to_stream[node]
+        self._current_stream_ctx = V.graph.wrapper_code.codegen_cuda_stream_enter(
+            stream_idx=node_stream,
+        )
+
+    def generate_stream_ctx_exit(self) -> None:
+        """Code-gen to exit from the current Stream context."""
+        assert self._current_stream_ctx is not None
+        V.graph.wrapper_code.codegen_cuda_stream_exit()
+        self._current_stream_ctx = None
+
+    def generate_stream_ctx_switching(self, node: BaseSchedulerNode) -> None:
+        """Generate stream entering and exiting to properly run node in a multi-stream scenario.
+
+        Stream context switching is only generated if `node`'s assigned stream is different from
+        the previous node's stream. If the node is a no-op, its code will be generated in the same
+        context of previous node.
+        """
+        # pyrefly: ignore[missing-attribute]
+        assert node in self.node_to_stream
+        stream = (
+            None
+            if isinstance(node, NopKernelSchedulerNode)
+            # pyrefly: ignore[missing-attribute]
+            else self.node_to_stream[node]
+        )
+        if self.current_stream_idx == stream:
+            return
+        elif self.current_stream_idx is not None and stream is None:
+            # Don't generate ctx switching. Memory plaining code (e.g., delete buffers) on current
+            # node goes to previous stream ctx.
+            return
+        elif self.current_stream_idx is None and stream is not None:
+            # Enter new ctx, update current stream status.
+            self.generate_stream_ctx_enter(node)
+        else:
+            # Switching from previous stream ctx to the new stream ctx.
+            self.generate_stream_ctx_exit()
+            self.generate_stream_ctx_enter(node)
 
 
 class BaseScheduling:  # noqa: docstring_linter
