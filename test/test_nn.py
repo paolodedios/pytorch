@@ -7654,9 +7654,13 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         torch.manual_seed(42)
         m.reset_parameters()
         weights_channels_last = m.weight.clone().detach()
+        
         # 4. Verify both initializations are identical
-        self.assertEqual(weights_default, weights_channels_last,msg="Conv3d initialization is inconsistent between memory formats")
-
+        self.assertEqual(
+            weights_default,
+            weights_channels_last,
+            msg="Conv3d initialization is inconsistent between memory formats"
+        )
 class TestFusionEval(TestCase):
     @set_default_dtype(torch.double)
     @given(X=hu.tensor(shapes=((5, 3, 5, 5),), dtype=np.double),
