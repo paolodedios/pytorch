@@ -1857,6 +1857,21 @@ def _compile(
         torch._dynamo.utils.ReinplaceCounters.clear()
         guarded_code = None
         tracer_output = None
+        # Eagerly validate config override strings before entering the
+        # compilation try/except so that typos surface as clean ValueErrors
+        # instead of being wrapped as InternalTorchDynamoError.
+        from .graph_id_filter import (
+            _validate_backend_names,
+            _validate_dynamo_config_keys,
+            _validate_inductor_config_keys,
+        )
+
+        if err := _validate_backend_names(config.debug_backend_override):
+            raise ValueError(err)
+        if err := _validate_dynamo_config_keys(config.debug_dynamo_config_override):
+            raise ValueError(err)
+        if err := _validate_inductor_config_keys(config.debug_inductor_config_override):
+            raise ValueError(err)
         try:
             guarded_code, tracer_output = compile_inner(code, one_graph, hooks)
 
