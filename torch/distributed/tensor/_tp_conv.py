@@ -131,7 +131,9 @@ def tp_convolution(
         return local_results
     else:
         if not _is_supported(in_tensor.shape, weight.shape, stride, padding, dilation):
-            raise AssertionError
+            raise AssertionError(
+                "tp_convolution data exchange requires supported stride/padding/dilation"
+            )
         # step 0 compute the overlap pixels of the input tensor
         d = weight.shape[-1] - 1
         d1 = d // 2
@@ -191,7 +193,9 @@ def tp_convolution_backward(
         return local_results
     else:
         if not _is_supported(in_tensor.shape, weight.shape, stride, padding, dilation):
-            raise AssertionError
+            raise AssertionError(
+                "tp_convolution_backward data exchange requires supported stride/padding/dilation"
+            )
         # step 0 compute the overlap pixels of the input tensor
         d = weight.shape[3] - 1
         d1 = d // 2

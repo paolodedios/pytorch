@@ -13,6 +13,7 @@ from torch.distributed.tensor import (
     Replicate,
     Shard,
 )
+from torch.distributed.tensor.debug import CommDebugMode
 from torch.nn import functional as F
 from torch.testing._internal.common_cuda import with_tf32_off
 from torch.testing._internal.common_utils import run_tests
@@ -309,13 +310,20 @@ class DistConvolutionOpsTest(DTensorTestBase):
         x_ref = x.detach().clone().requires_grad_(True)
         x_dt = distribute_tensor(x, device_mesh, [Shard(0)])
 
-        out_dt = model(x_dt)
+        comm_mode = CommDebugMode()
+        with comm_mode:
+            out_dt = model(x_dt)
+        self.assertEqual(comm_mode.get_total_counts(), 0)
+
         out_ref = model_ref(x_ref)
         self.assertEqual(out_dt.full_tensor(), out_ref)
 
         grad = torch.randn_like(out_ref)
         grad_dt = distribute_tensor(grad, device_mesh, [Shard(0)])
-        out_dt.backward(grad_dt)
+        with comm_mode:
+            out_dt.backward(grad_dt)
+        self.assertEqual(comm_mode.get_total_counts(), 0)
+
         out_ref.backward(grad)
         self.assertEqual(x_dt.grad.full_tensor(), x_ref.grad)
 
