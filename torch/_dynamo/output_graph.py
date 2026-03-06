@@ -203,12 +203,13 @@ def _wrap_with_inductor_config(
 ) -> Callable[..., Any]:
     """
     Wrap a compiler function to apply inductor config patches during compilation.
+
+    Passes config_patches as a keyword argument so that compile_fx can
+    propagate them to backward compilation via its inner_compile wrapping.
     """
-    from torch._inductor import config as inductor_config
 
     def wrapped(gm: Any, example_inputs: Any) -> Any:
-        with inductor_config.patch(config_patches):
-            return compiler_fn(gm, example_inputs)
+        return compiler_fn(gm, example_inputs, config_patches=config_patches)
 
     # Preserve function metadata for logging
     wrapped.__name__ = getattr(compiler_fn, "__name__", "<wrapped>")
@@ -3303,8 +3304,14 @@ class SubgraphTracer(fx.Tracer):
         # This is set when enable_side_effects_in_hop=True for HOPs like invoke_subgraph
         # and checkpoint (when skip_fwd_side_effects_in_bwd_under_checkpoint config is True).
         self.allow_side_effects_in_hop = False
-        # Set to True when a side effect is detected and allowed (not raised).
-        self.has_side_effect = False
+        # User code stack at the point where an externally-visible side effect
+        # was first detected and allowed (not raised).  None means no side
+        # effect; non-None means one occurred.
+        self.side_effect_stack: traceback.StackSummary | None = None
+        # All sources accessed via VariableBuilder (and cell loads) during
+        # this subtracer's trace. Used by invoke_subgraph reuse to collect
+        # guards and detect mutations on captured variables.
+        self.traced_sources: OrderedSet[Source] = OrderedSet()
 
         # True if this tracer is currently tracing (reconstructing) into a Python generator
         self.is_reconstructing_generator = False
