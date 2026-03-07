@@ -12,7 +12,6 @@ import tempfile
 import time
 import unittest
 from collections.abc import Callable
-from typing import Optional
 from unittest import mock
 from unittest.mock import patch
 
@@ -2942,8 +2941,8 @@ class TestMaxAutotunePrecompile(TestCase):
             op: str,
             inputs: str,
             benchmark: Callable[[Any], dict[ChoiceCaller, float]],
-            hint_override: Optional[int] = None,
-        ) -> Optional[dict[ChoiceCaller, float]]:
+            hint_override: int | None = None,
+        ) -> dict[ChoiceCaller, float] | None:
             if benchmark is not None:
                 return benchmark(choices)
 
@@ -3293,7 +3292,7 @@ class _TestTritonTemplateCaller(TritonTemplateCaller):
 
 
 class TestTuningProcess(TestCase):
-    def check_healthy(self, p: TuningProcess, device: Optional[int] = None):
+    def check_healthy(self, p: TuningProcess, device: int | None = None):
         result = random.random()
         bmreq = _TestBenchmarkRequest(result, device=device)
         p.put(bmreq.benchmark)
