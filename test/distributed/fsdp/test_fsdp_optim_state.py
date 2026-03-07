@@ -78,8 +78,7 @@ class Bias(torch.nn.Module):
 
     def __init__(self, dim: int) -> None:
         super().__init__()
-        if not (dim > 0):
-            raise AssertionError(f"Expected dim > 0, but got {dim}")
+        assert dim > 0
         torch.manual_seed(0)
         self.bias = torch.nn.Parameter(torch.randn((dim,)))
 
@@ -100,10 +99,7 @@ class BlockA(torch.nn.Module):
 
     def __init__(self, in_dim: int, out_dim: int) -> None:
         super().__init__()
-        if not all(v > 0 for v in (in_dim, out_dim)):
-            raise AssertionError(
-                f"Expected in_dim > 0 and out_dim > 0, but got in_dim={in_dim}, out_dim={out_dim}"
-            )
+        assert all(v > 0 for v in (in_dim, out_dim))
         torch.manual_seed(0)
         self.bias_module0 = Bias(out_dim)
         self.weight = torch.nn.Parameter(torch.randn((in_dim, out_dim)))
@@ -131,10 +127,7 @@ class BlockB(torch.nn.Module):
 
     def __init__(self, in_dim: int, out_dim: int) -> None:
         super().__init__()
-        if not all(v > 0 for v in (in_dim, out_dim)):
-            raise AssertionError(
-                f"Expected in_dim > 0 and out_dim > 0, but got in_dim={in_dim}, out_dim={out_dim}"
-            )
+        assert all(v > 0 for v in (in_dim, out_dim))
         torch.manual_seed(0)
         self.weight = torch.nn.Parameter(torch.randn((in_dim, out_dim)))
         self.bias_module0 = Bias(out_dim)
@@ -266,16 +259,12 @@ class NestedModel(torch.nn.Module):
         for i in range(1, len(param_ids)):
             diff = param_ids[i] - param_ids[i - 1]
             if diff != 1:
-                if not (diff > 1):
-                    raise AssertionError(
-                        f"Invalid IDs: {param_ids[i - 1]} {param_ids[i]}"
-                    )
+                assert diff > 1, f"Invalid IDs: {param_ids[i - 1]} {param_ids[i]}"
                 unmanaged_param_id = param_ids[i - 1] + 1
                 break
         if unmanaged_param_id == -1:
             unmanaged_param_id = len(param_ids)  # last ID skipped
-        if not (unmanaged_param_id >= 0):
-            raise AssertionError("One parameter ID should be skipped")
+        assert unmanaged_param_id >= 0, "One parameter ID should be skipped"
         # Add a state entry for the unmanaged parameter
         state_device = next(iter(next(iter(osd["state"].values())).values())).device
         osd["state"][unmanaged_param_id] = {
@@ -435,8 +424,7 @@ class TestFSDPOptimState(FSDPTest):
             if type(value1) is not type(value2):
                 return False
             if torch.is_tensor(value1):  # tensor state
-                if not torch.is_tensor(value2):
-                    raise AssertionError("Expected value2 to be a tensor")
+                assert torch.is_tensor(value2)
                 # Check the values on CPU to be device-agnostic
                 value1 = value1.cpu()
                 value2 = value2.cpu()
@@ -459,8 +447,7 @@ class TestFSDPOptimState(FSDPTest):
         If ``check_same_param_keys=True``, then checks that the parameter keys
         match (e.g. when both should be parameter names), and does not check
         the parameter keys otherwise."""
-        if "state" not in ref_osd:
-            raise AssertionError("Expected 'state' in ref_osd")
+        assert "state" in ref_osd
         self.assertTrue("state" in fsdp_osd)
         ref_osd_state = ref_osd["state"]
         fsdp_osd_state = {
@@ -509,8 +496,7 @@ class TestFSDPOptimState(FSDPTest):
         "param_groups" part. If ``check_same_param_keys=True`, then checks that
         the parameter keys match (e.g. when both should be parameter names),
         and does not check the parameter keys otherwise."""
-        if "param_groups" not in ref_osd:
-            raise AssertionError("Expected 'param_groups' in ref_osd")
+        assert "param_groups" in ref_osd
         self.assertTrue("param_groups" in full_osd)
         ref_osd_param_groups = ref_osd["param_groups"]
         full_osd_param_groups = full_osd["param_groups"]
@@ -606,8 +592,7 @@ class TestFSDPOptimState(FSDPTest):
         ref_osd = optim2.state_dict()
         # Check the losses to eliminate model drift as a source of error
         for i, (l1, l2) in enumerate(zip(losses1, losses2)):
-            if l1 != l2:
-                raise AssertionError(f"Losses differ on iter {i}: {l1:.5f} {l2:.5f}")
+            assert l1 == l2, f"Losses differ on iter {i}: {l1:.5f} {l2:.5f}"
         # Do not check the parameter keys since the full/sharded optimizer state
         # dict uses parameter names, while the non-wrapped equivalent uses
         # parameter IDs

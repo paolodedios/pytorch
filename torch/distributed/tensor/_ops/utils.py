@@ -4,7 +4,7 @@ import functools
 import itertools
 import operator
 from collections.abc import Callable, Iterable, Sequence
-from typing import cast, TypeAlias, TypeVar
+from typing import cast, Optional, TypeAlias, TypeVar, Union
 
 import torch
 from torch._prims_common import DimsSequenceType, DimsType
@@ -32,9 +32,9 @@ from torch.distributed.tensor.placement_types import (
 
 def _get_registration_wrapper(
     registration_fn,
-    op: torch._ops.OpOverload | list[torch._ops.OpOverload],
-    schema_info: RuntimeSchemaInfo | None,
-    arg_names_that_require_specializing_cache_strategy: list[str] | None,
+    op: Union[torch._ops.OpOverload, list[torch._ops.OpOverload]],
+    schema_info: Optional[RuntimeSchemaInfo],
+    arg_names_that_require_specializing_cache_strategy: Optional[list[str]],
 ):
     def wrapper(impl):
         overloads = op if isinstance(op, list) else [op]
@@ -194,8 +194,7 @@ def is_tensor_shardable(
     """
     from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
 
-    if allow_unbacked_sharding not in [None, True, False]:
-        raise AssertionError
+    assert allow_unbacked_sharding in [None, True, False]
     guard_fn = {
         None: bool,
         True: guard_or_false,
@@ -307,8 +306,7 @@ def map_placements_after_broadcast(
         elif isinstance(placement, Replicate):
             new_placements.append(placement)
         else:
-            if not isinstance(placement, Shard | _StridedShard):
-                raise AssertionError
+            assert isinstance(placement, Shard | _StridedShard)
             shard_dim = normalize_dim(placement.dim, len(shape))
             new_shard_dim = broadcast_dims_map[shard_dim]
             if new_shard_dim != -1:
@@ -359,8 +357,6 @@ def expand_to_full_mesh_op_strategy(
     output_tensor_meta: TensorMeta | Sequence[TensorMeta | None] | None = None,
     input_index: int = 1,
     inplace_op: bool = False,
-    allow_unbacked_sharding: bool | None = None,
-    allow_uneven_sharding: bool = False,
     is_valid_strategy_cb: Callable[
         [list[DTensorSpec], DTensorSpec | tuple[DTensorSpec | None, ...]], bool
     ]
@@ -443,28 +439,6 @@ def expand_to_full_mesh_op_strategy(
             else:
                 spec_list.append(None)
 
-        # Skip strategy combinations that would create mixed partial types
-        # (except sum+avg which commute with each other).
-        # We check (type, reduce_op) pairs rather than just reduce_op because
-        # Partial subclasses like _MaskPartial have different reduction semantics
-        # even when they share the same reduce_op string.
-        has_mixed_partial = False
-        for spec in spec_list:
-            if spec is not None:
-                partial_kinds = {
-                    (type(p), p.reduce_op)
-                    for p in spec.placements
-                    if isinstance(p, Partial)
-                }
-                if len(partial_kinds) > 1:
-                    reduce_ops = {ro for _, ro in partial_kinds}
-                    types = {t for t, _ in partial_kinds}
-                    if not (len(types) == 1 and reduce_ops == {"sum", "avg"}):
-                        has_mixed_partial = True
-                        break
-        if has_mixed_partial:
-            continue
-
         input_specs: list[DTensorSpec] = [
             s for s in spec_list[input_index:] if isinstance(s, DTensorSpec)
         ]
@@ -476,14 +450,9 @@ def expand_to_full_mesh_op_strategy(
             )
         self_spec = input_args_strategy[0].strategies[0].output_spec
 
-        redistribute_input = self_spec.placements != input_specs[0].placements
-        mismatching_input_output = (
-            spec_list[0] is not None and spec_list[0].placements != self_spec.placements
-        )
-        if inplace_op and (redistribute_input or mismatching_input_output):
-            # For inplace ops, both the proposed input[0] and the output must
-            # match self's runtime placement: input[0] because self can't be
-            # redistributed, output because the result IS self.
+        if inplace_op and self_spec.placements != input_specs[0].placements:
+            # if it's inplace op, we would only allow the OpSpec to be added when the
+            # input_spec matches the first argument's runtime sharding, otherwise we skip
             if blocking_inplace_input_placements is None:
                 blocking_inplace_input_placements = self_spec.placements
             continue
@@ -514,13 +483,7 @@ def expand_to_full_mesh_op_strategy(
 
         # check all inputs are shardable
         if not all(
-            is_tensor_shardable(
-                inp.shape, s, allow_unbacked_sharding=allow_unbacked_sharding
-            )
-            or (
-                allow_uneven_sharding
-                and inp.strategies[0].output_spec.placements == s.placements
-            )
+            is_tensor_shardable(inp.shape, s)
             for inp, s in zip(input_args_strategy, input_specs)
         ):
             continue

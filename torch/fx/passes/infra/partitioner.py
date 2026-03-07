@@ -4,6 +4,7 @@ import itertools
 import logging
 import operator
 from collections.abc import Iterable, Sequence
+from typing import Optional
 
 from torch.fx.graph_module import GraphModule
 from torch.fx.node import _get_qualified_name, Node
@@ -18,12 +19,12 @@ logger.setLevel(logging.WARNING)
 class Partition:
     def __init__(
         self,
-        id: int | None = None,
-        nodes: Iterable[Node] | None = None,
-        node_orders: Iterable[int] | None = None,
+        id: Optional[int] = None,
+        nodes: Optional[Iterable[Node]] = None,
+        node_orders: Optional[Iterable[int]] = None,
     ):
         self.id = id
-        self.nodes: dict[Node, int | None] = {}
+        self.nodes: dict[Node, Optional[int]] = {}
         if nodes is not None:
             if node_orders is None:
                 self.nodes = dict.fromkeys(nodes, None)
@@ -39,7 +40,7 @@ class Partition:
     def __repr__(self) -> str:
         return str(self.nodes)
 
-    def add_node(self, node: Node, node_order: int | None = None):
+    def add_node(self, node: Node, node_order: Optional[int] = None):
         self.nodes.update({node: node_order})
 
     def remove_node(self, node: Node):
@@ -69,8 +70,8 @@ class CapabilityBasedPartitioner:
         graph_module: GraphModule,
         operator_support: OperatorSupportBase,
         allows_single_node_partition: bool = False,
-        non_compute_ops: Sequence[str] | None = None,
-        allowed_single_node_partition_ops: Sequence[str] | None = None,
+        non_compute_ops: Optional[Sequence[str]] = None,
+        allowed_single_node_partition_ops: Optional[Sequence[str]] = None,
     ) -> None:
         self.graph_module = graph_module
         self.operator_support = operator_support
@@ -185,7 +186,7 @@ class CapabilityBasedPartitioner:
 
             return merge_id, True
 
-        def merge_single_node(node: Node, node_order: int | None, id: int | None):
+        def merge_single_node(node: Node, node_order: Optional[int], id: Optional[int]):
             def _update_partition_map(node: Node, id: int):
                 # Iterate through all the users of this node and update the partition map to indicate
                 # that there is a path from the partition id of this node to the target partition id.

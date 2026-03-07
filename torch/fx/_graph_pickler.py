@@ -1,4 +1,3 @@
-import contextlib
 import dataclasses
 import importlib
 import io
@@ -6,7 +5,7 @@ import itertools
 import pickle
 from abc import abstractmethod
 from collections.abc import Callable
-from typing import Any, NewType, TypeVar
+from typing import Any, NewType, Optional, TypeVar, Union
 from typing_extensions import override, Self
 
 from torch.utils._import_utils import import_dill
@@ -60,26 +59,10 @@ def _node_metadata_key_filter_safe(key: str) -> bool:
 class Options:
     # A filter for which ops will cause the pickler to raise a
     # BypassFxGraphCache exception. If None then all ops are allowed.
-    ops_filter: Callable[[str], bool] | None = _ops_filter_safe
-    node_metadata_key_filter: Callable[[str], bool] | None = (
+    ops_filter: Optional[Callable[[str], bool]] = _ops_filter_safe
+    node_metadata_key_filter: Optional[Callable[[str], bool]] = (
         _node_metadata_key_filter_safe
     )
-
-
-@contextlib.contextmanager
-def patch_pytree_map_over_slice():
-    if slice in pytree.SUPPORTED_NODES:
-        yield
-        return
-
-    pytree._private_register_pytree_node(
-        slice, lambda x: ([x.start, x.stop, x.step], None), lambda x, c: slice(*x)
-    )
-
-    try:
-        yield
-    finally:
-        pytree._deregister_pytree_node(slice)
 
 
 # pyrefly: ignore [invalid-inheritance]
@@ -89,7 +72,7 @@ class GraphPickler(pickle.Pickler):
     GraphModule.
     """
 
-    def __init__(self, file: io.BytesIO, options: Options | None = None) -> None:
+    def __init__(self, file: io.BytesIO, options: Optional[Options] = None) -> None:
         if dill is not None:
             super().__init__(file, byref=True)
         else:
@@ -153,18 +136,18 @@ class GraphPickler(pickle.Pickler):
 
     @override
     # pyrefly: ignore [bad-override]
-    def persistent_id(self, obj: object) -> str | None:
+    def persistent_id(self, obj: object) -> Optional[str]:
         if obj is self._unpickle_state:
             return "unpickle_state"
         else:
             return None
 
     @classmethod
-    def dumps(cls, obj: object, options: Options | None = None) -> bytes:
+    def dumps(cls, obj: object, options: Optional[Options] = None) -> bytes:
         """
         Pickle an object.
         """
-        with patch_pytree_map_over_slice(), io.BytesIO() as stream:
+        with io.BytesIO() as stream:
             pickler = cls(stream, options)
             pickler.dump(obj)
             return stream.getvalue()
@@ -174,13 +157,10 @@ class GraphPickler(pickle.Pickler):
         """
         Unpickle an object.
         """
-        from torch._dynamo.utils import dynamo_timed
-
-        with patch_pytree_map_over_slice(), dynamo_timed("GraphPickler.loads"):
-            state = _UnpickleState(fake_mode)
-            with io.BytesIO(data) as stream:
-                unpickler = _GraphUnpickler(stream, state)
-                return unpickler.load()
+        state = _UnpickleState(fake_mode)
+        with io.BytesIO(data) as stream:
+            unpickler = _GraphUnpickler(stream, state)
+            return unpickler.load()
 
     @classmethod
     def debug_dumps(
@@ -191,7 +171,7 @@ class GraphPickler(pickle.Pickler):
         max_depth: int = 80,
         max_iter_items: int = 50,
         verbose: bool = True,
-    ) -> str | None:
+    ) -> Optional[str]:
         """
         Find the first leaf that GraphPickler.dumps cannot serialize and return its path.
 
@@ -221,14 +201,14 @@ class GraphPickler(pickle.Pickler):
             if verbose:
                 print(msg)
 
-        def fail_exc(o: Any) -> BaseException | None:
+        def fail_exc(o: Any) -> Optional[BaseException]:
             try:
                 cls.dumps(o, options)
                 return None
             except Exception as e:
                 return e
 
-        def walk(o: Any, path: str, depth: int) -> str | None:
+        def walk(o: Any, path: str, depth: int) -> Optional[str]:
             if depth > max_depth:
                 log(f"{'  ' * depth}Depth limit at {path} ({type(o)})")
                 return path + " (depth_limit)"
@@ -517,7 +497,7 @@ class _TensorPickleData:
             metadata = dataclasses.replace(metadata, base=new_base)
 
         def with_fake(
-            make_meta_t: Callable[[], torch.Tensor], device: torch.device | str
+            make_meta_t: Callable[[], torch.Tensor], device: Union[torch.device, str]
         ) -> FakeTensor:
             with no_dispatch():
                 return FakeTensor(
@@ -540,12 +520,11 @@ class _TorchNumpyPickleData:
     @classmethod
     def reduce_helper(
         cls, pickler: GraphPickler, obj: object
-    ) -> (
+    ) -> Optional[
         tuple[
             Callable[[Self, _UnpickleState], object], tuple[Self, _UnpickleStateToken]
         ]
-        | None
-    ):
+    ]:
         if data := cls.from_object(obj):
             return (cls.unpickle, (data, pickler._unpickle_state))
         else:
@@ -560,7 +539,7 @@ class _TorchNumpyPickleData:
         return torch._dynamo.variables.misc.get_np_to_tnp_map()[np]
 
     @classmethod
-    def from_object(cls, tnp: object) -> Self | None:
+    def from_object(cls, tnp: object) -> Optional[Self]:
         if not callable(tnp):
             return None
 
@@ -706,7 +685,9 @@ class _OpPickleData:
     @staticmethod
     def _pickle_op(
         name: str,
-        datacls: type["_OpOverloadPickleData"] | type["_OpOverloadPacketPickleData"],
+        datacls: Union[
+            type["_OpOverloadPickleData"], type["_OpOverloadPacketPickleData"]
+        ],
         options: Options,
     ) -> "_OpPickleData":
         if (ops_filter := options.ops_filter) and not ops_filter(name):

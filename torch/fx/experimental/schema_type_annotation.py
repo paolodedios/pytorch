@@ -1,6 +1,6 @@
 # mypy: allow-untyped-defs
 import inspect
-from typing import Any
+from typing import Any, Optional
 
 import torch
 import torch.fx
@@ -121,7 +121,7 @@ class AnnotateTypesWithSchema(Transformer):
 
         return attr_proxy
 
-    def _extract_python_return_type(self, target: Target) -> Any | None:
+    def _extract_python_return_type(self, target: Target) -> Optional[Any]:
         """
         Given a Python call target, try to extract the Python return annotation
         if it is available, otherwise return None

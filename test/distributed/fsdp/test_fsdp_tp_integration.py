@@ -93,10 +93,9 @@ class TestTPFSDPIntegration(FSDPTestContinuous):
         tensor_parallel_size: int,
     ) -> tuple[dict[str, int], dict[str, tuple[torch.Size, int]]]:
         """ """
-        if type(model) is not SimpleModel:
-            raise AssertionError(
-                "Expects a `SimpleModel` since the sharding cases on the model definition"
-            )
+        assert type(model) is SimpleModel, (
+            "Expects a `SimpleModel` since the sharding cases on the model definition"
+        )
         param_name_to_numel = OrderedDict()
         param_name_to_sharding_info = OrderedDict()
         for param_name, param in model.named_parameters():
@@ -144,14 +143,13 @@ class TestTPFSDPIntegration(FSDPTestContinuous):
         """
         tp_world_size = tp_pg.size()
         fsdp_world_size = self.world_size // tp_world_size
-        if not (
+        assert (
             type(tp_fsdp_model) is FSDP
             and len([m for m in tp_fsdp_model.modules() if type(m) is FSDP]) == 1
-        ):
-            raise AssertionError(
-                "The following logic assumes a single top-level-only FSDP wrapping "
-                "the model with TP already applied"
-            )
+        ), (
+            "The following logic assumes a single top-level-only FSDP wrapping "
+            "the model with TP already applied"
+        )
         for flat_param in tp_fsdp_model.params:
             splits = tuple(param_name_to_numel.values())
             # Create a mask over the gradient elements to manually reduce
@@ -299,14 +297,8 @@ class TestTPFSDPIntegration(FSDPTestContinuous):
             sequence_parallelize_plan,
         )
         tp_pg = mesh_2d["tp"].get_group(mesh_dim=0)
-        if not isinstance(tp_fsdp_model.net1.weight, DTensor):
-            raise AssertionError(
-                f"Expected DTensor, got {type(tp_fsdp_model.net1.weight)}"
-            )
-        if not isinstance(tp_fsdp_model.net2.weight, DTensor):
-            raise AssertionError(
-                f"Expected DTensor, got {type(tp_fsdp_model.net2.weight)}"
-            )
+        assert isinstance(tp_fsdp_model.net1.weight, DTensor)
+        assert isinstance(tp_fsdp_model.net2.weight, DTensor)
         tp_fsdp_model = FSDP(
             tp_fsdp_model,
             cpu_offload=cpu_offload,

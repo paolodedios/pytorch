@@ -480,21 +480,20 @@ std::vector<Tensor> foreach_tensor_norm_cuda_internal(
                 multi_tensor_apply<1>(
                     tensor_lists,
                     LpNormFunctor<scalar_t, NormType::L1, out_t>(),
-                    output_per_tensor.template mutable_data_ptr<out_opmath_t>(),
+                    output_per_tensor.mutable_data_ptr<out_opmath_t>(),
                     max_chunks_per_tensor);
               } else if (p == static_cast<double>(2)) {
                 multi_tensor_apply<1>(
                     tensor_lists,
                     LpNormFunctor<scalar_t, NormType::L2, out_t>(),
-                    output_per_tensor.template mutable_data_ptr<out_opmath_t>(),
+                    output_per_tensor.mutable_data_ptr<out_opmath_t>(),
                     max_chunks_per_tensor);
               } else if constexpr (support_infinity) {
                 if (p == std::numeric_limits<double>::infinity()) {
                   multi_tensor_apply<1>(
                       tensor_lists,
                       LpNormFunctor<scalar_t, NormType::LInf, out_t>(),
-                      output_per_tensor
-                          .template mutable_data_ptr<out_opmath_t>(),
+                      output_per_tensor.mutable_data_ptr<out_opmath_t>(),
                       max_chunks_per_tensor);
                 }
               }
@@ -516,14 +515,13 @@ std::vector<Tensor> foreach_tensor_norm_cuda_internal(
                 for (const auto j : c10::irange(num_tensors_this_kernel)) {
                   addr_struct.addresses[j] =
                       vec_res[i * MAX_TENSORS_PER_KERNEL + j]
-                          .template mutable_data_ptr<out_t>();
+                          .mutable_data_ptr<out_t>();
                 }
 
                 if (p == static_cast<double>(1)) {
                   lpnorm_cleanup<scalar_t, NormType::L1, out_t, apply_root>
                       <<<num_tensors_this_kernel, 512, 0, stream>>>(
-                          output_per_tensor
-                                  .template const_data_ptr<out_opmath_t>() +
+                          output_per_tensor.const_data_ptr<out_opmath_t>() +
                               i * MAX_TENSORS_PER_KERNEL *
                                   max_chunks_per_tensor,
                           addr_struct,
@@ -531,8 +529,7 @@ std::vector<Tensor> foreach_tensor_norm_cuda_internal(
                 } else if (p == static_cast<double>(2)) {
                   lpnorm_cleanup<scalar_t, NormType::L2, out_t, apply_root>
                       <<<num_tensors_this_kernel, 512, 0, stream>>>(
-                          output_per_tensor
-                                  .template const_data_ptr<out_opmath_t>() +
+                          output_per_tensor.const_data_ptr<out_opmath_t>() +
                               i * MAX_TENSORS_PER_KERNEL *
                                   max_chunks_per_tensor,
                           addr_struct,
@@ -541,8 +538,7 @@ std::vector<Tensor> foreach_tensor_norm_cuda_internal(
                   if (p == std::numeric_limits<double>::infinity()) {
                     lpnorm_cleanup<scalar_t, NormType::LInf, out_t, apply_root>
                         <<<num_tensors_this_kernel, 512, 0, stream>>>(
-                            output_per_tensor
-                                    .template const_data_ptr<out_opmath_t>() +
+                            output_per_tensor.const_data_ptr<out_opmath_t>() +
                                 i * MAX_TENSORS_PER_KERNEL *
                                     max_chunks_per_tensor,
                             addr_struct,

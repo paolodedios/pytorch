@@ -40,8 +40,7 @@ def with_temp_dir(
     """
     Wrapper to initialize temp directory for distributed checkpoint.
     """
-    if func is None:
-        raise AssertionError("Expected func to not be None")
+    assert func is not None
 
     @wraps(func)
     def wrapper(self, *args: tuple[object], **kwargs: dict[str, Any]) -> None:

@@ -4,7 +4,7 @@ import heapq
 import operator
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional, Union
 
 import torch
 import torch.fx
@@ -21,8 +21,8 @@ __all__ = [
     "stable_topological_sort",
 ]
 
-Tensors = tuple[torch.Tensor] | list[torch.Tensor]
-TensorOrTensors = torch.Tensor | Tensors
+Tensors = Union[tuple[torch.Tensor], list[torch.Tensor]]
+TensorOrTensors = Union[torch.Tensor, Tensors]
 NodeList = list[torch.fx.Node]
 NodeSet = set[torch.fx.Node]
 Names = list[str]
@@ -146,8 +146,8 @@ class FxNetAccFusionsFinder:
     def recursive_add_node(
         self,
         fusion_group: "FxNetAccFusionsFinder.FusionGroup",
-        inputs: NodeSet | NodeList,
-        visited: NodeSet | None = None,
+        inputs: Union[NodeSet, NodeList],
+        visited: Optional[NodeSet] = None,
     ):
         """
         Start from inputs and going reverse topological order. If any upstream node

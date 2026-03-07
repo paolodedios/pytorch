@@ -1,13 +1,12 @@
 # mypy: allow-untyped-defs
 r"""Implementation for Stochastic Weight Averaging implementation."""
 
-from __future__ import annotations
-
 import itertools
 import math
 import warnings
+from collections.abc import Callable, Iterable
 from copy import deepcopy
-from typing import Any, cast, Literal, TYPE_CHECKING
+from typing import Any, cast, Literal, Union
 from typing_extensions import override
 
 import torch
@@ -16,11 +15,7 @@ from torch.nn import Module
 from torch.optim.lr_scheduler import _format_param, LRScheduler
 from torch.utils._foreach_utils import _get_foreach_kernels_supported_devices
 
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
-
-    from .optimizer import Optimizer
+from .optimizer import Optimizer
 
 
 __all__ = [
@@ -36,7 +31,7 @@ __all__ = [
 from torch.utils._foreach_utils import _group_tensors_by_device_and_dtype
 
 
-PARAM_LIST = tuple[Tensor, ...] | list[Tensor]
+PARAM_LIST = Union[tuple[Tensor, ...], list[Tensor]]
 
 
 def get_ema_multi_avg_fn(decay=0.999):

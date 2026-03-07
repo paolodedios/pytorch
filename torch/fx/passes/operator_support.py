@@ -23,13 +23,12 @@ __all__ = [
 TargetTypeName = str
 
 # Arguments' dtypes for a given node, see `OperatorSupport`
-SupportedArgumentDTypes = (
+SupportedArgumentDTypes = t.Optional[
     tuple[
         t.Sequence[t.Sequence[torch.dtype]],
         dict[str, t.Sequence[torch.dtype]],
     ]
-    | None
-)
+]
 
 SupportDict = t.Mapping[TargetTypeName, SupportedArgumentDTypes]
 
@@ -67,7 +66,7 @@ class OperatorSupport(OperatorSupportBase):
 
     _support_dict: SupportDict
 
-    def __init__(self, support_dict: SupportDict | None = None):
+    def __init__(self, support_dict: t.Optional[SupportDict] = None):
         self._support_dict = support_dict or {}
 
     def is_node_supported(
