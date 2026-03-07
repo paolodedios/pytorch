@@ -136,6 +136,8 @@ decomps_to_exclude: list[torch._ops.OpOverload | torch._ops.OpOverloadPacket] = 
     aten.addcdiv_,
     aten._foreach_addcdiv.Scalar,
     aten._foreach_addcdiv_,
+    aten.lerp,
+    aten.lerp_,
 ]
 
 remove_decompositions(decompositions, decomps_to_exclude)
@@ -148,6 +150,29 @@ def register_decomposition(
         if op in decompositions:
             log.warning("duplicate decomp: %s", ops)
     return decomp.register_decomposition(ops, decompositions)
+
+
+@register_decomposition([aten.lerp.Scalar])
+def _lerp_scalar(start: torch.Tensor, end: torch.Tensor, weight: float) -> torch.Tensor:
+    # Decompose into sub + add(alpha=weight) so that the add lowering emits FMA,
+    # matching eager CUDA's dual-formula (see aten/src/ATen/native/Lerp.h).
+    diff = end - start
+    if weight >= 0.5 or weight <= -0.5:
+        return torch.add(end, diff, alpha=-(1.0 - weight))
+    return torch.add(start, diff, alpha=weight)
+
+
+@register_decomposition([aten.lerp.Tensor])
+def _lerp_tensor(
+    start: torch.Tensor, end: torch.Tensor, weight: torch.Tensor
+) -> torch.Tensor:
+    # Same dual-formula as foreach_lerp polyfill: decompose into sub + addcmul.
+    diff = end - start
+    mask = weight.abs() >= 0.5
+    neg_omw = -(1.0 - weight)
+    w = torch.where(mask, neg_omw, weight)
+    base = torch.where(mask, end, start)
+    return torch.addcmul(base, w, diff, value=1)
 
 
 @register_decomposition([aten.embedding_dense_backward])
