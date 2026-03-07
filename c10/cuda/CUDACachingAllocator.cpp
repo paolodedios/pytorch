@@ -815,8 +815,7 @@ struct ExpandableSegment {
       Handle h = handles_.at(i).value();
       handles_.at(i) = std::nullopt;
 #ifdef USE_ROCM
-      C10_CUDA_CHECK(hipMemUnmap(
-          ptr() + segment_size_ * i, segment_size_));
+      C10_CUDA_CHECK(hipMemUnmap(ptr() + segment_size_ * i, segment_size_));
 #else
       // NOLINTNEXTLINE(performance-no-int-to-ptr)
       C10_CUDA_DRIVER_CHECK(DriverAPI::get()->cuMemUnmap_(
