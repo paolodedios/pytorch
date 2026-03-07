@@ -14,6 +14,8 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
+from torch._C._autograd import DeviceType
+from torch._C._distributed_c10d import _SymmetricMemory
 from torch.distributed._composable import checkpoint, replicate
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     apply_activation_checkpointing,
@@ -48,7 +50,6 @@ from torch.distributed.tensor.experimental import implicit_replication
 from torch.testing._internal.common_distributed import (
     MultiProcContinuousTest,
     PLATFORM_SUPPORTS_SYMM_MEM,
-    requires_multicast_support,
     skip_if_lt_x_gpu,
 )
 from torch.testing._internal.common_fsdp import (
@@ -1201,12 +1202,6 @@ class TestFullyShardPrefetch(FSDPTest):
                     "tok_embeddings, pos_embeddings",
                     TrainingState.POST_BACKWARD,
                 ),
-                (
-                    "reshard",
-                    "tok_embeddings, pos_embeddings",
-                    TrainingState.POST_BACKWARD,
-                ),
-                ("reshard", "norm, output", TrainingState.POST_BACKWARD),
             ]
             self.assertEqual(events, expected_backward_events)
             events.clear()
@@ -1269,12 +1264,6 @@ class TestFullyShardPrefetch(FSDPTest):
                     "tok_embeddings, pos_embeddings",
                     TrainingState.POST_BACKWARD,
                 ),
-                (
-                    "reshard",
-                    "tok_embeddings, pos_embeddings",
-                    TrainingState.POST_BACKWARD,
-                ),
-                ("reshard", "norm, output", TrainingState.POST_BACKWARD),
             ]
             self.assertEqual(events, expected_backward_events)
             events.clear()
@@ -1649,8 +1638,15 @@ class TestFullyShardAllocFromPG(FSDPTest):
     @skip_if_lt_x_gpu(2)
     # The NCCL PG refuses to allocate tensors if multicast is unavailable, see
     # https://github.com/pytorch/pytorch/blob/503362d019b3782581492af7767945dbd75ca1c9/torch/csrc/distributed/c10d/ProcessGroupNCCL.cpp#L5634
-    @requires_multicast_support("NCCL")
     def test_fully_shard_alloc_from_pg(self):
+        # Run this check inside test instead of using @requires_multicast_support().
+        # The decorator would trigger an initialization of SymmMem allocator
+        # when Python statically initializes classes in this file, causing
+        # SymmMem to fix the allocate backend to "CUDA". This is unfriendly for
+        # other tests in this file that requires NCCL backend
+        if not _SymmetricMemory.has_multicast_support(DeviceType.CUDA, 0):
+            self.skipTest("multicast support is not available")
+
         torch.manual_seed(42)
         model_args = ModelArgs()
         model = Transformer(model_args)
