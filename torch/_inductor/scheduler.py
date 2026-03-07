@@ -5532,9 +5532,8 @@ class Scheduler:
         Is this node unfusable under any conditions.
         """
         if isinstance(node, NopKernelSchedulerNode):
-            return (
-                not node.is_template()
-                and not is_output_of_multi_outputs_template(node.node)
+            return not node.is_template() and not is_output_of_multi_outputs_template(
+                node.node
             )
         if isinstance(node, ExternKernelSchedulerNode):
             # Only UserDefinedTritonKernel nodes that can fuse epilogues are fusable
