@@ -2808,6 +2808,7 @@ def triton_poi_fused_add_reflection_pad2d_0(in_ptr0, in_ptr1, out_ptr0, xnumel, 
 
         self.assertEqual(compile_decimal, Decimal(0))
 
+    @skipIfXpu(msg="AssertionError: torch-xpu-ops: #3006")
     @config.patch(
         {"triton.use_block_ptr": True, "triton.codegen_upcast_to_fp32": False}
     )
@@ -2816,7 +2817,7 @@ def triton_poi_fused_add_reflection_pad2d_0(in_ptr0, in_ptr1, out_ptr0, xnumel, 
         def fn(input: torch.Tensor) -> torch.Tensor:
             return torch.argmax(input, dim=0)
 
-        input = torch.randn(20, 20, device="cuda", dtype=torch.float16)
+        input = torch.randn(20, 20, device=device_type, dtype=torch.float16)
         _, code = run_and_get_code(fn, input)
         # There should not be any conversions to float16 in this code, since the input
         # is already float16 and the output is int64.

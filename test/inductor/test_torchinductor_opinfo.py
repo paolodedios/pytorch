@@ -233,7 +233,6 @@ inductor_skips["xpu"] = {}
 
 # torch-xpu-ops: #2956
 inductor_skips["xpu"]["lu"] = {f32}
-# torch-xpu-ops: #2997
 inductor_skips["xpu"]["nn.functional.linear"] = {f16}
 
 inductor_expected_failures_single_sample = defaultdict(dict)
