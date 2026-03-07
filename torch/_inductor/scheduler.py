@@ -5531,11 +5531,18 @@ class Scheduler:
         """
         Is this node unfusable under any conditions.
         """
-        return (
-            isinstance(node, (NopKernelSchedulerNode,))
-            and not node.is_template()
-            and not is_output_of_multi_outputs_template(node.node)
-        )
+        if isinstance(node, NopKernelSchedulerNode):
+            return (
+                not node.is_template()
+                and not is_output_of_multi_outputs_template(node.node)
+            )
+        if isinstance(node, ExternKernelSchedulerNode):
+            # Only UserDefinedTritonKernel nodes that can fuse epilogues are fusable
+            return not (
+                isinstance(node.node, ir.UserDefinedTritonKernel)
+                and node.node.can_fuse_epilogue()
+            )
+        return False
 
     def check_prologue_fusion_heuristics_fusable(
         self,
