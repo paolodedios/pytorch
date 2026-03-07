@@ -273,6 +273,9 @@ prologue_fusion = prologue_fusion_enabled()
 # do epilogue fusions before other fusions
 epilogue_fusion_first = False
 
+# do epilogue fusions for user defined triton kernels
+epilogue_fusion_user_defined_triton_kernel = False
+
 # enable pattern match+replace optimizations
 pattern_matcher = True
 
@@ -1512,6 +1515,9 @@ class cpp:
         os.environ.get("TORCHINDUCTOR_CPP_USE_CONSTEXPR_FOR_INT_ARRAY", "1") == "1"
     )
 
+    # threshold between two step reduction algorithm and welford reduction algorithm
+    use_two_step_variance_threshold = 1024
+
 
 class triton:
     """
@@ -1803,6 +1809,11 @@ class triton:
     # If set to true, will skip some non-critical checks in the mix order reduction
     # this could be helpful to avoid recompilations in some cases
     mix_order_reduction_non_strict_mode = False
+
+    # Don't allow multi-stages by default to avoid out of shared memory
+    mix_order_reduction_allow_multi_stages = (
+        os.environ.get("TORCHINDUCTOR_MIX_ORDER_REDUCTION_ALLOW_MULTI_STAGES") == "1"
+    )
 
     enable_tlx_templates: bool = (
         os.environ.get("TORCHINDUCTOR_ENABLE_TLX_TEMPLATES", "0") == "1"
