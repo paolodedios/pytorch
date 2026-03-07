@@ -52,106 +52,239 @@ _ModuleToHandleDict = dict[nn.Module, RemovableHandle]  # for state dict
 
 
 # =============================================
-# Custom op: black-box unshard for make_fx tracing
+# Custom ops for make_fx tracing of FSDP hooks
+# (per param group — one op call per FSDPParamGroup)
+#
+# These ops are thin wrappers over the original FSDP implementation.
+# A module-level _param_group_ctx is set by the caller to pass the
+# FSDPParamGroup instance, so the ops can delegate to original methods.
 # =============================================
 
 
-@torch.library.custom_op("fsdp::unshard", mutates_args=())
-def _unshard_op(
-    sharded_data: torch.Tensor,
+# Set by _unshard_via_custom_op / _reshard_via_custom_op before calling the op
+_param_group_ctx: "FSDPParamGroup | None" = None
+
+
+def _split_by_ndims(flat: list[int], ndims: list[int]) -> list[list[int]]:
+    """Split a flat list into sublists based on ndims."""
+    result = []
+    idx = 0
+    for nd in ndims:
+        result.append(flat[idx : idx + nd])
+        idx += nd
+    return result
+
+
+def _unshard_all(
+    sharded_datas: list[torch.Tensor],
     group_size: int,
-    orig_size: list[int],
-    orig_stride: list[int],
-) -> torch.Tensor:
-    """Black-box unshard: all-gather one sharded param, return unsharded.
+    orig_sizes_flat: list[int],
+    orig_strides_flat: list[int],
+    ndims: list[int],
+) -> list[torch.Tensor]:
+    """Standalone all-gather fallback (used when replaying traced graph)."""
+    orig_sizes = _split_by_ndims(orig_sizes_flat, ndims)
+    orig_strides = _split_by_ndims(orig_strides_flat, ndims)
+    results = []
+    for sharded_data, orig_size, orig_stride in zip(
+        sharded_datas, orig_sizes, orig_strides
+    ):
+        gathered = torch.empty(
+            sharded_data.numel() * group_size,
+            dtype=sharded_data.dtype,
+            device=sharded_data.device,
+        )
+        dist.all_gather_into_tensor(gathered, sharded_data)
+        results.append(
+            torch.as_strided(gathered, orig_size, orig_stride).contiguous()
+        )
+    return results
 
-    This op appears as a single node in the FX graph, making the data flow
-    from sharded input to unsharded param explicit and traceable.
-    """
-    gathered = torch.empty(
-        sharded_data.numel() * group_size,
-        dtype=sharded_data.dtype,
-        device=sharded_data.device,
-    )
-    dist.all_gather_into_tensor(gathered, sharded_data)
-    return torch.as_strided(
-        gathered, orig_size, orig_stride
-    ).contiguous()
 
-
-@_unshard_op.register_fake
-def _unshard_op_fake(
-    sharded_data: torch.Tensor,
+def _unshard_all_fake(
+    sharded_datas: list[torch.Tensor],
     group_size: int,
-    orig_size: list[int],
-    orig_stride: list[int],
-) -> torch.Tensor:
-    return sharded_data.new_empty(orig_size)
+    orig_sizes_flat: list[int],
+    orig_strides_flat: list[int],
+    ndims: list[int],
+) -> list[torch.Tensor]:
+    orig_sizes = _split_by_ndims(orig_sizes_flat, ndims)
+    return [s.new_empty(sz) for s, sz in zip(sharded_datas, orig_sizes)]
 
 
-def _unshard_op_setup_context(ctx, inputs, output):
-    sharded_data, group_size, orig_size, orig_stride = inputs
+def _reshard_all(
+    unshardeds: list[torch.Tensor],
+    group_size: int,
+    sharded_numels: list[int],
+) -> list[torch.Tensor]:
+    """Standalone reshard fallback (used when replaying traced graph)."""
+    return [
+        u.contiguous().view(-1)[:n].clone()
+        for u, n in zip(unshardeds, sharded_numels)
+    ]
+
+
+def _reshard_all_fake(
+    unshardeds: list[torch.Tensor],
+    group_size: int,
+    sharded_numels: list[int],
+) -> list[torch.Tensor]:
+    return [u.new_empty(n) for u, n in zip(unshardeds, sharded_numels)]
+
+
+def _reduce_scatter_all(
+    grads: list[torch.Tensor],
+    group_size: int,
+    sharded_numels: list[int],
+) -> list[torch.Tensor]:
+    """Standalone reduce-scatter fallback (used when replaying traced graph)."""
+    results = []
+    for grad, sharded_numel in zip(grads, sharded_numels):
+        flat_grad = grad.contiguous().view(-1)
+        output = torch.empty(
+            sharded_numel, dtype=flat_grad.dtype, device=flat_grad.device
+        )
+        dist.reduce_scatter_tensor(output, flat_grad)
+        results.append(output)
+    return results
+
+
+def _reduce_scatter_all_fake(
+    grads: list[torch.Tensor],
+    group_size: int,
+    sharded_numels: list[int],
+) -> list[torch.Tensor]:
+    return [g.new_empty(n) for g, n in zip(grads, sharded_numels)]
+
+
+# -- fsdp::pre_forward: all-gather in forward, with autograd backward --
+
+@torch.library.custom_op("fsdp::pre_forward", mutates_args=())
+def _pre_forward_op(
+    sharded_datas: list[torch.Tensor],
+    group_size: int,
+    orig_sizes_flat: list[int],
+    orig_strides_flat: list[int],
+    ndims: list[int],
+) -> list[torch.Tensor]:
+    pg = _param_group_ctx
+    if pg is not None:
+        pg.unshard(pg.unshard_async_op)
+        pg.wait_for_unshard()
+        return [fp._unsharded_param.data for fp in pg.fsdp_params]
+    return _unshard_all(sharded_datas, group_size, orig_sizes_flat, orig_strides_flat, ndims)
+
+
+@_pre_forward_op.register_fake
+def _pre_forward_op_fake(
+    sharded_datas: list[torch.Tensor],
+    group_size: int,
+    orig_sizes_flat: list[int],
+    orig_strides_flat: list[int],
+    ndims: list[int],
+) -> list[torch.Tensor]:
+    return _unshard_all_fake(sharded_datas, group_size, orig_sizes_flat, orig_strides_flat, ndims)
+
+
+def _pre_forward_op_setup_context(ctx, inputs, output):
+    sharded_datas, group_size, orig_sizes_flat, orig_strides_flat, ndims = inputs
     ctx.group_size = group_size
-    ctx.sharded_numel = sharded_data.numel()
+    ctx.sharded_numels = [s.numel() for s in sharded_datas]
 
 
-def _unshard_op_backward(ctx, grad_output):
-    grad_sharded = torch.ops.fsdp.reduce_scatter_grad(
-        grad_output, ctx.group_size, ctx.sharded_numel
+def _pre_forward_op_backward(ctx, *grad_outputs):
+    # For list[Tensor] output, grad_outputs is (list_of_grads,)
+    grads = grad_outputs[0] if len(grad_outputs) == 1 and isinstance(grad_outputs[0], list) else list(grad_outputs)
+    grad_shardeds = torch.ops.fsdp.post_backward(
+        grads, ctx.group_size, ctx.sharded_numels,
     )
-    return grad_sharded, None, None, None
+    return grad_shardeds, None, None, None, None
 
 
-_unshard_op.register_autograd(
-    _unshard_op_backward, setup_context=_unshard_op_setup_context
+_pre_forward_op.register_autograd(
+    _pre_forward_op_backward, setup_context=_pre_forward_op_setup_context
 )
 
 
-@torch.library.custom_op("fsdp::reduce_scatter_grad", mutates_args=())
-def _reduce_scatter_grad_op(
-    grad: torch.Tensor,
+# -- fsdp::post_forward: reshard after forward --
+
+@torch.library.custom_op("fsdp::post_forward", mutates_args=())
+def _post_forward_op(
+    unshardeds: list[torch.Tensor],
     group_size: int,
-    sharded_numel: int,
-) -> torch.Tensor:
-    """Reduce-scatter gradient: inverse of all-gather unshard."""
-    flat_grad = grad.contiguous().view(-1)
-    output = torch.empty(
-        sharded_numel, dtype=flat_grad.dtype, device=flat_grad.device
-    )
-    dist.reduce_scatter_tensor(output, flat_grad)
-    return output
+    sharded_numels: list[int],
+) -> list[torch.Tensor]:
+    pg = _param_group_ctx
+    if pg is not None:
+        pg.reshard()
+        return [fp._sharded_param_data for fp in pg.fsdp_params]
+    return _reshard_all(unshardeds, group_size, sharded_numels)
 
 
-@_reduce_scatter_grad_op.register_fake
-def _reduce_scatter_grad_op_fake(
-    grad: torch.Tensor,
+@_post_forward_op.register_fake
+def _post_forward_op_fake(
+    unshardeds: list[torch.Tensor],
     group_size: int,
-    sharded_numel: int,
-) -> torch.Tensor:
-    return grad.new_empty(sharded_numel)
+    sharded_numels: list[int],
+) -> list[torch.Tensor]:
+    return _reshard_all_fake(unshardeds, group_size, sharded_numels)
 
 
-@torch.library.custom_op("fsdp::reshard", mutates_args=())
-def _reshard_op(
-    unsharded: torch.Tensor,
+# -- fsdp::pre_backward: all-gather in backward --
+
+@torch.library.custom_op("fsdp::pre_backward", mutates_args=())
+def _pre_backward_op(
+    sharded_datas: list[torch.Tensor],
     group_size: int,
-    sharded_numel: int,
-) -> torch.Tensor:
-    """Reshard: return the local shard of an unsharded param.
+    orig_sizes_flat: list[int],
+    orig_strides_flat: list[int],
+    ndims: list[int],
+) -> list[torch.Tensor]:
+    pg = _param_group_ctx
+    if pg is not None:
+        pg.unshard(pg.unshard_async_op)
+        pg.wait_for_unshard()
+        return [fp._unsharded_param.data for fp in pg.fsdp_params]
+    return _unshard_all(sharded_datas, group_size, orig_sizes_flat, orig_strides_flat, ndims)
 
-    Inverse of unshard. In eager mode, this is just slicing the local chunk.
-    In a real training loop, this represents freeing the all-gather buffer.
-    """
-    return unsharded.contiguous().view(-1)[:sharded_numel].clone()
 
-
-@_reshard_op.register_fake
-def _reshard_op_fake(
-    unsharded: torch.Tensor,
+@_pre_backward_op.register_fake
+def _pre_backward_op_fake(
+    sharded_datas: list[torch.Tensor],
     group_size: int,
-    sharded_numel: int,
-) -> torch.Tensor:
-    return unsharded.new_empty(sharded_numel)
+    orig_sizes_flat: list[int],
+    orig_strides_flat: list[int],
+    ndims: list[int],
+) -> list[torch.Tensor]:
+    return _unshard_all_fake(sharded_datas, group_size, orig_sizes_flat, orig_strides_flat, ndims)
+
+
+# -- fsdp::post_backward: reduce-scatter gradient --
+
+@torch.library.custom_op("fsdp::post_backward", mutates_args=())
+def _post_backward_op(
+    grads: list[torch.Tensor],
+    group_size: int,
+    sharded_numels: list[int],
+) -> list[torch.Tensor]:
+    pg = _param_group_ctx
+    if pg is not None:
+        # Set grads on unsharded params, then delegate to original post_backward
+        for fp, grad in zip(pg.fsdp_params, grads):
+            if hasattr(fp, "_unsharded_param"):
+                fp._unsharded_param.grad = grad
+        pg.post_backward()
+        return [fp.sharded_param.grad for fp in pg.fsdp_params]
+    return _reduce_scatter_all(grads, group_size, sharded_numels)
+
+
+@_post_backward_op.register_fake
+def _post_backward_op_fake(
+    grads: list[torch.Tensor],
+    group_size: int,
+    sharded_numels: list[int],
+) -> list[torch.Tensor]:
+    return _reduce_scatter_all_fake(grads, group_size, sharded_numels)
 
 
 """
@@ -556,37 +689,52 @@ class FSDPParamGroup:
         with record_function(self._with_fqn("FSDP::pre_forward")):
             self._training_state = TrainingState.FORWARD
             if make_fx_tracing_enabled():
-                self._unshard_via_custom_op()
+                self._unshard_via_custom_op(is_forward=True)
             else:
                 self.unshard(self.unshard_async_op)
                 self.wait_for_unshard()
             args, kwargs = self._register_post_backward_hook(args, kwargs)
             return args, kwargs
 
-    def _unshard_via_custom_op(self) -> None:
-        """Unshard using black-box custom op for make_fx tracing.
+    def _unshard_via_custom_op(self, *, is_forward: bool) -> None:
+        """Unshard using custom op for make_fx tracing (per param group).
 
-        Calls fsdp::unshard per param, which takes sharded data and returns
-        unsharded param. This makes the data flow explicit in the FX graph.
+        Wraps the original unshard/wait_for_unshard via fsdp::pre_forward or
+        fsdp::pre_backward custom op. The op delegates to self.unshard() +
+        self.wait_for_unshard() via _param_group_ctx.
 
-        Unlike the normal unshard path, we do NOT wrap in nn.Parameter because
-        that detaches the tensor (Parameters are leaves), breaking gradient
-        flow for autograd.grad tracing. Instead we set the raw tensor directly
-        on the module so gradients flow through fsdp::unshard.
+        The raw tensors (not nn.Parameter) are then set on modules to preserve
+        gradient flow for autograd.grad tracing.
         """
+        global _param_group_ctx
+
         if isinstance(self.mesh_info, FSDPMeshInfo):
             group_size = self._all_gather_process_group.size()
         else:
             group_size = 1
 
-        for fsdp_param in self.fsdp_params:
-            unsharded_data = torch.ops.fsdp.unshard(
-                fsdp_param._sharded_param_data,
-                group_size,
-                list(fsdp_param._orig_size),
-                list(fsdp_param._contiguous_orig_stride),
-            )
-            # Set directly on module, bypassing nn.Parameter to avoid detach
+        unshard_op = torch.ops.fsdp.pre_forward if is_forward else torch.ops.fsdp.pre_backward
+
+        sharded_datas = [fp._sharded_param_data for fp in self.fsdp_params]
+        orig_sizes_flat = []
+        orig_strides_flat = []
+        ndims = []
+        for fp in self.fsdp_params:
+            sz = list(fp._orig_size)
+            st = list(fp._contiguous_orig_stride)
+            orig_sizes_flat.extend(sz)
+            orig_strides_flat.extend(st)
+            ndims.append(len(sz))
+
+        _param_group_ctx = self
+        unsharded_list = unshard_op(
+            sharded_datas, group_size, orig_sizes_flat, orig_strides_flat, ndims
+        )
+        _param_group_ctx = None
+
+        # Override module params with the custom op outputs (raw tensors, not
+        # nn.Parameter) so gradient flows through the op for autograd.grad.
+        for fsdp_param, unsharded_data in zip(self.fsdp_params, unsharded_list):
             module_info = fsdp_param._module_info
             unsafe_setattr_param(
                 module_info.module, module_info.param_name, unsharded_data
@@ -598,26 +746,28 @@ class FSDPParamGroup:
         self._sharded_state = ShardedState.UNSHARDED
 
     def _reshard_via_custom_op(self) -> None:
-        """Reshard using custom op for make_fx tracing.
+        """Reshard using custom op for make_fx tracing (per param group).
 
-        Calls fsdp::reshard per param, which takes the unsharded param and
-        returns the sharded data. The sharded output is stored so that
-        pre_backward can unshard from it.
+        Wraps the original reshard() via fsdp::post_forward custom op.
         """
+        global _param_group_ctx
+
         if isinstance(self.mesh_info, FSDPMeshInfo):
             group_size = self._all_gather_process_group.size()
         else:
             group_size = 1
 
-        for fsdp_param in self.fsdp_params:
-            module_info = fsdp_param._module_info
-            unsharded = getattr(module_info.module, module_info.param_name)
-            sharded = torch.ops.fsdp.reshard(
-                unsharded,
-                group_size,
-                fsdp_param._sharded_param_data.numel(),
-            )
-            # Store resharded data so pre_backward can unshard from it
+        unshardeds = [
+            getattr(fp._module_info.module, fp._module_info.param_name)
+            for fp in self.fsdp_params
+        ]
+        sharded_numels = [fp._sharded_param_data.numel() for fp in self.fsdp_params]
+
+        _param_group_ctx = self
+        sharded_list = torch.ops.fsdp.post_forward(unshardeds, group_size, sharded_numels)
+        _param_group_ctx = None
+
+        for fsdp_param, sharded in zip(self.fsdp_params, sharded_list):
             fsdp_param._sharded_param_data = sharded
         self._sharded_state = ShardedState.SHARDED
 
@@ -661,7 +811,7 @@ class FSDPParamGroup:
         with record_function(self._with_fqn("FSDP::pre_backward")):
             self._training_state = TrainingState.PRE_BACKWARD
             if make_fx_tracing_enabled():
-                self._unshard_via_custom_op()
+                self._unshard_via_custom_op(is_forward=False)
             else:
                 self.unshard(self.unshard_async_op)  # no-op if prefetched
                 self.wait_for_unshard()
