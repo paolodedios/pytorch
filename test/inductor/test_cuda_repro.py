@@ -1452,6 +1452,7 @@ class CudaReproTests(TestCase):
             torch._dynamo.reset()
             gc.collect()
 
+    @skipIfXpu(msg="AssertionError, torch-xpu-ops: #3007")
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION, "flash attention not supported"
     )
