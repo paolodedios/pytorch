@@ -6444,7 +6444,8 @@ def var_mean_sum_(x, axis, correction, keepdim, return_mean):
 
 
 def use_two_step_variance(x, axis, keepdim):
-    # Instead of unrolling welford, just unroll the simpler two-step var
+    # two-step algorithm can get better performance in small reductions size
+    # while it can accumulate more numerical error than Welford algorithm.
     axis = _validate_reduction_axis(x, axis)
     kwargs = _make_reduction_inner(
         x, axis=axis, keepdims=keepdim, dtype=None, override_return_dtype=None
@@ -6452,9 +6453,16 @@ def use_two_step_variance(x, axis, keepdim):
 
     ranges = kwargs["ranges"]
     reduction_numel = sympy_product(kwargs["reduction_ranges"])
+    device = x.get_device()
+    if not (device and device.type == "cpu"):
+        threshold = config.unroll_reductions_threshold
+    else:
+        # 1024 is a default value to pass all the UTs about accuracy.
+        # A larger threshold can still get performance benefits.
+        threshold = config.cpp.use_two_step_variance_threshold
     return (
         isinstance(reduction_numel, sympy.Integer)
-        and int(reduction_numel) < config.unroll_reductions_threshold
+        and int(reduction_numel) <= threshold
         and sympy_product(ranges) != 1
     )
 
@@ -7561,9 +7569,6 @@ def resize(x, size, *, memory_format=None):
     dtype = x.get_dtype()
     device = x.get_device_or_error()
 
-    if isinstance(x.data, ir.BaseView):
-        x.data = x.data.unwrap_view()
-
     if (
         torch.are_deterministic_algorithms_enabled()
         and torch.utils.deterministic.fill_uninitialized_memory  # type: ignore[attr-defined]
@@ -7581,15 +7586,20 @@ def resize(x, size, *, memory_format=None):
     if V.graph.sizevars.statically_known_equals(old_numel, 0):  # type: ignore[arg-type]
         return full(size, uninitialized_val, dtype=dtype, device=device)
 
-    x_flat = as_strided(
-        x,
-        [
-            old_numel,
-        ],
-        [
-            1,
-        ],
+    # aten::resize (non-inplace) = clone + resize_. Clone preserves strides
+    # for non-overlapping tensors (storage order is maintained), but for
+    # overlapping tensors (e.g. stride 0 from as_strided/expand), clone
+    # materializes logical elements into contiguous storage.
+    strides = x.maybe_get_stride()
+    has_overlapping = strides is not None and any(
+        V.graph.sizevars.statically_known_equals(s, 0) for s in strides
     )
+    if has_overlapping:
+        x = clone(x)
+    elif isinstance(x.data, ir.BaseView):
+        x.data = x.data.unwrap_view()
+
+    x_flat = as_strided(x, [old_numel], [1])
     flat_loader = x_flat.make_loader()
     out_stride = ir.FlexibleLayout.stride_ordered_for_memory_format(size, memory_format)
     out_indexer = ir.FixedLayout(device, dtype, size, out_stride).make_indexer()
