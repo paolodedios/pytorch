@@ -477,11 +477,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             return VariableTracker.build(tx, self.value == args[0].value)
         elif name == "__ne__" and len(args) == 1 and hasattr(args[0], "value"):
             return VariableTracker.build(tx, self.value != args[0].value)
-        elif (
-            issubclass(self.value, (dict,))
-            and name != "__new__"
-            and getattr(self.value, name) in dict_methods
-        ):
+        elif issubclass(self.value, dict) and name != "__new__":
             # __new__ is handled below
             return SourcelessBuilder.create(tx, dict).call_method(
                 tx, name, args, kwargs
@@ -1408,8 +1404,27 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                     func_source = AttrSource(TypeSource(desc_source), "__set__")
                 desc_var = VariableTracker.build(tx, descriptor, desc_source)
                 func_var = VariableTracker.build(tx, setter, func_source, realize=True)
-                args = [desc_var, self, value]
+                if isinstance(descriptor, property):
+                    args = [self, value]  # property.fset(self, value)
+                else:
+                    args = [desc_var, self, value]  # __set__(desc, self, value)
                 return func_var.call_function(tx, args, {})
+
+            # Handle Python property descriptors whose __set__ is a C slot
+            # wrapper (not a Python function), which the above check misses.
+            # Mirrors the property getter handling in var_getattr.
+            descriptor = inspect.getattr_static(type(self.value), name_str, None)
+            if isinstance(descriptor, property) and descriptor.fset is not None:
+                fset_source = None
+                if self.cls_source:
+                    fset_source = AttrSource(
+                        self.get_source_by_walking_mro(tx, name_str), "fset"
+                    )
+                fset_var = VariableTracker.build(
+                    tx, descriptor.fset, source=fset_source
+                )
+                return fset_var.call_function(tx, [self, value], {})
+
             # NOTE: else we assume the descriptor (if any) has a
             # side-effect-free `__set__` as far as Dynamo tracing is concerned.
 
@@ -1619,6 +1634,9 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         self, attr_name: str
     ) -> tuple[object, object] | None:
         descriptor = inspect.getattr_static(type(self.value), attr_name, None)
+        # Handle property descriptors with setters - call fset directly
+        if isinstance(descriptor, property) and descriptor.fset is not None:
+            return (descriptor, descriptor.fset)
         setter = inspect.getattr_static(type(descriptor), "__set__", None)
         if inspect.isfunction(setter):
             return (descriptor, setter)
@@ -2656,13 +2674,8 @@ class UserDefinedDictVariable(UserDefinedObjectVariable):
             assert self.source is None, (
                 "dict_vt must be constructed by builder.py when source is present"
             )
-            user_cls = (
-                collections.OrderedDict
-                if isinstance(value, collections.OrderedDict)
-                else dict
-            )
-            self._dict_vt = variables.ConstDictVariable(
-                user_cls(), user_cls=user_cls, mutation_type=ValueMutationNew()
+            self._dict_vt = ConstDictVariable(
+                {}, type(value), mutation_type=ValueMutationNew()
             )
         else:
             self._dict_vt = dict_vt
