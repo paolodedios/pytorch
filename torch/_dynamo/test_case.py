@@ -17,6 +17,7 @@ import re
 import sys
 import unittest
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -180,6 +181,31 @@ class CPythonTestCase(TestCase):
     assertLogs = unittest.TestCase.assertLogs
     fail = unittest.TestCase.fail
     failureException = unittest.TestCase.failureException
+
+    def _callTestMethod(self, method):
+        with self.assertLogs("torch._dynamo.convert_frame") as captured:
+            try:
+                super()._callTestMethod(method)
+            finally:
+                frame_skip_msg = f"WON'T CONVERT {self._testMethodName}"
+                if frame_skip_msg in "\n".join(captured.output):
+                    expected_failures_dir = Path("test") / "dynamo_expected_failures"
+                    skip_test_file = expected_failures_dir / self._dynamo_test_key()
+                    reason = (
+                        f"Test method '{self._testMethodName}' was not compiled by Dynamo.\n\n"
+                        f"Expected behavior: When PYTORCH_TEST_WITH_DYNAMO=1 is set, CPython test methods "
+                        f"should be fully compiled by Dynamo. Instead, this test was partially executed by CPython "
+                        f"without compilation.\n\n"
+                        f"To resolve this, either:\n"
+                        f"  1. Fix the test to be Dynamo-compatible (preferred)\n"
+                        f"  2. Mark as an expected failure by creating:\n"
+                        f"     'touch {skip_test_file}'\n\n"
+                        f"For debugging, run with TORCH_LOGS=dynamo to see what prevented compilation."
+                    )
+                    if skip_test_file.exists():
+                        raise unittest.SkipTest(reason)
+                    else:
+                        self.fail(reason)
 
     def compile_fn(
         self,
