@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 import copy
 from dataclasses import dataclass, field
+from typing import Optional, Union
 
 import torch.fx
 from torch.fx._compatibility import compatibility
@@ -66,7 +67,7 @@ class Component:
     # Mapping from get_attr node in original graph to get_attr node in `graph`.
     getattr_maps: dict[torch.fx.Node, torch.fx.Node] = field(default_factory=dict)
     constructor_args: list[str] = field(default_factory=list)
-    gm: torch.fx.GraphModule | None = None
+    gm: Optional[torch.fx.GraphModule] = None
 
 
 @compatibility(is_backward_compatible=False)
@@ -76,7 +77,7 @@ def split_by_tags(
     return_fqn_mapping: bool = False,
     return_tuple: bool = False,
     GraphModuleCls: type[torch.fx.GraphModule] = torch.fx.GraphModule,
-) -> torch.fx.GraphModule | tuple[torch.fx.GraphModule, dict[str, str]]:
+) -> Union[torch.fx.GraphModule, tuple[torch.fx.GraphModule, dict[str, str]]]:
     """
     Splits a GraphModule using tags on its graph nodes. We honor the order of
     tags. For example, we have tags = ["a", "b", "c"], the function will create
@@ -165,7 +166,7 @@ def split_by_tags(
     main_remapping: dict[torch.fx.Node, torch.fx.Node] = {}
 
     # Output node of original module.
-    output_node: torch.fx.Node | None = None
+    output_node: Optional[torch.fx.Node] = None
 
     # Create a component for each tag, we don't expect to create other components afterwards.
     for tag in tags:

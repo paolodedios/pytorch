@@ -157,14 +157,8 @@ class TestFSDPHybridShard(FSDPTestContinuous):
         optim.step()
         shard_g = model.process_group
         replicate_g = model._inter_node_pg
-        if shard_g != my_shard_group:
-            raise AssertionError(
-                f"Expected shard_g == my_shard_group, got {shard_g} vs {my_shard_group}"
-            )
-        if replicate_g != my_replicate_group:
-            raise AssertionError(
-                f"Expected replicate_g == my_replicate_group, got {replicate_g} vs {my_replicate_group}"
-            )
+        assert shard_g == my_shard_group
+        assert replicate_g == my_replicate_group
         with FSDP.state_dict_type(model, StateDictType.SHARDED_STATE_DICT):
             msd = model.state_dict()
             osd = FSDP.optim_state_dict(model, optim)
@@ -366,8 +360,9 @@ class TestFSDPHybridShard(FSDPTestContinuous):
             use_orig_params,
             hsdp_process_groups=hsdp_pgs,
         )
-        if not (hsdp_model._inter_node_pg.size() > 1):
-            raise AssertionError("HSDP model initialized without replication")
+        assert hsdp_model._inter_node_pg.size() > 1, (
+            "HSDP model initialized without replication"
+        )
         fsdp_optim = torch.optim.Adam(fsdp_model.parameters(), lr=1e-2)
         hsdp_optim = torch.optim.Adam(hsdp_model.parameters(), lr=1e-2)
         torch.manual_seed(global_pg.rank() + 1)
@@ -410,10 +405,7 @@ class TestFSDPHybridShard(FSDPTestContinuous):
         ] = None,
         hsdp_device_mesh: Optional = None,
     ):
-        if not (hsdp_process_groups is None or hsdp_device_mesh is None):
-            raise AssertionError(
-                "Expected hsdp_process_groups or hsdp_device_mesh to be None"
-            )
+        assert hsdp_process_groups is None or hsdp_device_mesh is None
         auto_wrap_policy = ModuleWrapPolicy(
             {TransformerEncoderLayer, TransformerDecoderLayer},
         )

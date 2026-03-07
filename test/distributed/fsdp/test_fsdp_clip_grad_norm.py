@@ -193,18 +193,12 @@ class TestClipGradNorm(FSDPTestContinuous):
         self.assertEqual(ddp_total_norm, fsdp_total_norm)
         # Check that the gradients were modified by `clip_grad_norm_()`
         for param, orig_grad in zip(ddp_model.parameters(), orig_ddp_grads):
-            if torch.equal(param.grad, orig_grad):
-                raise AssertionError(
-                    "Expected gradient to be modified by clip_grad_norm_()"
-                )
+            assert not torch.equal(param.grad, orig_grad)
         for param, orig_grad in zip(fsdp_model.parameters(), orig_fsdp_grads):
             if param.grad is None:
                 self.assertEqual(param.grad, orig_grad)  # `None`
             else:
-                if torch.equal(param.grad, orig_grad):
-                    raise AssertionError(
-                        "Expected gradient to be modified by clip_grad_norm_()"
-                    )
+                assert not torch.equal(param.grad, orig_grad)
         # Run an optimizer step to ensure gradients matched after clipping
         ddp_optim.step()
         fsdp_optim.step()

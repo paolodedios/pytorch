@@ -428,8 +428,7 @@ class TestAutoWrap(TestCase):
             with enable_wrap(wrapper_cls=FSDP, process_group=self.process_group):
                 layer = wrap(nn.Linear(5, 5))
         else:
-            if wrap_method != WrapMethod.FSDP_CTOR:
-                raise AssertionError(f"Unexpected wrap_method: {wrap_method}")
+            assert wrap_method == WrapMethod.FSDP_CTOR
             layer = FSDP(
                 nn.Linear(5, 5),
                 process_group=self.process_group,
@@ -818,7 +817,7 @@ class TestAutoWrap(TestCase):
             with enable_wrap(wrapper_cls=FSDP, **fsdp_kwargs):
                 model = wrap(sequential)
         else:
-            raise AssertionError(f"Unsupported wrap method: {wrap_method}")
+            assert 0, f"Unsupported wrap method: {wrap_method}"
         # All non-ignored modules should be wrapped with FSDP
         self.assertTrue(isinstance(model, FSDP))
         self.assertTrue(isinstance(model.module[0], FSDP))
@@ -847,7 +846,7 @@ class TestAutoWrap(TestCase):
             with enable_wrap(wrapper_cls=FSDP, **fsdp_kwargs):
                 model = wrap(sequential)
         else:
-            raise AssertionError(f"Unsupported wrap method: {wrap_method}")
+            assert 0, f"Unsupported wrap method: {wrap_method}"
         # Since the 2nd linear (`sequential[1]`) is ignored, the wrapping
         # policy does not exceed the parameter threshold before the inner
         # sequential (`sequential[2]`) anymore; hence, it flattens

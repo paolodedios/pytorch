@@ -143,8 +143,7 @@ class TestForwardOverlapWorldSizeOne(FSDPTestContinuous):
                     all_gather_called = True
                     if torch.cuda.is_available():
                         torch.cuda._sleep(all_gather_cycles)
-                    if not orig_all_gather:
-                        raise AssertionError("Expected orig_all_gather to be truthy")
+                    assert orig_all_gather
                     return orig_all_gather(*args, **kwargs)
 
                 # forward pass

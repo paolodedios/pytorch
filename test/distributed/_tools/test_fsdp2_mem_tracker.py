@@ -243,10 +243,7 @@ class TestTrackerFullyShard1DTrainingCompose(FSDPTest):
     def _test_tracker_with_activation_checkpointing(
         self, reshard_after_forward: Union[bool, int], checkpoint_impl: str
     ):
-        if checkpoint_impl not in ("composable", "wrapper"):
-            raise AssertionError(
-                f"Expected checkpoint_impl in ('composable', 'wrapper'), got {checkpoint_impl}"
-            )
+        assert checkpoint_impl in ("composable", "wrapper")
         debug = False
         dev = torch.device(torch.accelerator.current_device_index())
         _init_cublas_workspace(dev)

@@ -76,7 +76,6 @@
 #include <torch/csrc/export/pybind.h>
 #include <torch/csrc/functionalization/Module.h>
 #include <torch/csrc/functorch/init.h>
-#include <torch/csrc/fx/graph.h>
 #include <torch/csrc/fx/node.h>
 #include <torch/csrc/inductor/aoti_package/pybind.h>
 #include <torch/csrc/inductor/aoti_runner/pybind.h>
@@ -1571,16 +1570,12 @@ static PyObject* THPModule_setCheckSparseTensorInvariants(
     PyObject* _unused,
     PyObject* arg) {
   HANDLE_TH_ERRORS
-  if (arg == Py_None) {
-    at::globalContext().setCheckSparseTensorInvariants(std::nullopt);
-  } else {
-    TORCH_CHECK(
-        PyBool_Check(arg),
-        "set_check_sparse_tensor_invariants expects a bool or None, "
-        "but got ",
-        THPUtils_typename(arg));
-    at::globalContext().setCheckSparseTensorInvariants(arg == Py_True);
-  }
+  TORCH_CHECK(
+      PyBool_Check(arg),
+      "set_check_sparse_tensor_invariants expects a bool, "
+      "but got ",
+      THPUtils_typename(arg));
+  at::globalContext().setCheckSparseTensorInvariants(arg == Py_True);
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -1588,7 +1583,7 @@ static PyObject* THPModule_setCheckSparseTensorInvariants(
 static PyObject* THPModule_checkSparseTensorInvariants(
     PyObject* _unused,
     PyObject* noargs) {
-  if (at::globalContext().checkSparseTensorInvariants().value_or(false))
+  if (at::globalContext().checkSparseTensorInvariants())
     Py_RETURN_TRUE;
   else
     Py_RETURN_FALSE;
@@ -2270,7 +2265,6 @@ PyObject* initModule() {
   THPEvent_init(module);
   NodeBase_init(module);
   NodeIter_init(module);
-  Namespace_init(module);
   ASSERT_TRUE(THPVariable_initModule(module));
   ASSERT_TRUE(THPFunction_initModule(module));
   ASSERT_TRUE(THPEngine_initModule(module));
@@ -2739,14 +2733,6 @@ Call this whenever a new thread is created in order to propagate values from
   });
   py_module.def("_get_rocm_fa_preferred_backend", []() {
     return at::globalContext().getROCmFAPreferredBackend();
-  });
-
-  py_module.def("_is_ck_sdpa_available", []() {
-#ifdef USE_ROCM
-    return at::globalContext().ckSupported() && at::globalContext().hasCKSDPA();
-#else
-    return false;
-#endif
   });
 
   py_module.def(

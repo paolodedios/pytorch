@@ -916,19 +916,16 @@ def partialize_and_update_signature(func, **kwargs):
     return wrapper
 
 
-def _get_sfdp_patterns(input_device: torch.device | None = None):
+def _get_sfdp_patterns():
     from .joint_graph import patterns
 
-    if input_device:
-        device = str(input_device)
+    if torch.cuda.is_available():
+        # workaround https://github.com/pytorch/pytorch/issues/97894
+        device = "cuda"
+    elif torch.xpu.is_available():
+        device = "xpu"
     else:
-        if torch.cuda.is_available():
-            # workaround https://github.com/pytorch/pytorch/issues/97894
-            device = "cuda"
-        elif torch.xpu.is_available():
-            device = "xpu"
-        else:
-            device = "cpu"
+        device = "cpu"
 
     # sizes/values don't actually matter for initial trace
     # once we get a possible match we re-trace with the actual values and verify the match still holds
@@ -1284,7 +1281,6 @@ def _get_sfdp_patterns(input_device: torch.device | None = None):
                     "pass_dicts": patterns,
                     "extra_check": extra_check,
                     "scalar_workaround": workaround,
-                    "skip_duplicates": True,
                 },
             )
 
@@ -1316,6 +1312,6 @@ def _get_sfdp_patterns(input_device: torch.device | None = None):
 
 
 @functools.cache
-def _sfdp_init(input_device: torch.device | None = None):
-    for key, register_replacement_kwargs in _get_sfdp_patterns(input_device):
+def _sfdp_init():
+    for key, register_replacement_kwargs in _get_sfdp_patterns():
         gen_register_replacement(key, **register_replacement_kwargs)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING, Union
 
 from sympy import Integer, Number, Symbol
 from sympy.logic.boolalg import BooleanAtom
@@ -155,7 +155,7 @@ def tensorify_python_scalars(
         # cache constants, why not
         if isinstance(expr, (Integer, Number, BooleanAtom)):
             dtype = None
-            c: bool | int | float
+            c: Union[bool, int, float]
             if isinstance(expr, BooleanAtom):
                 dtype = torch.bool
                 c = bool(expr)

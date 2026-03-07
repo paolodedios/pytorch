@@ -16,7 +16,7 @@ from ..graph_bytecode_inputs import (
 )
 from ..source import CurrentStreamSource
 from .base import VariableTracker
-from .constant import CONSTANT_VARIABLE_NONE, ConstantVariable
+from .constant import ConstantVariable
 from .ctx_manager import FxTracebackAnnotateVariable
 from .lazy import LazyVariableTracker
 
@@ -86,6 +86,32 @@ def _get_event_by_index(index: int) -> torch.Event:
     return event
 
 
+def _ensure_device_specific_stream(stream: torch.Stream) -> torch.Stream:
+    """Convert a generic torch.Stream to a device-specific stream if needed.
+
+    torch.accelerator.current_stream() returns a generic torch.Stream, but
+    device-specific event operations (record, wait) dispatch through the base
+    THPStream C methods which use the c10::Event interface. This interface
+    checks that the event's device type matches the stream's device type,
+    which fails for device-specific events (e.g. torch.cuda.Event) whose
+    c10::Event field may not be initialized.
+
+    Converting to a device-specific stream (e.g. torch.cuda.Stream) ensures
+    that record_event/wait_event dispatch through the correct device-specific
+    C methods instead.
+    """
+    if type(stream) is not torch.Stream:
+        return stream
+    device = stream.device
+    if device.type == "cuda" and torch.cuda.is_available():
+        return torch.cuda.Stream(
+            stream_id=stream.stream_id,
+            device_index=stream.device_index,
+            device_type=stream.device_type,
+        )
+    return stream
+
+
 @custom_op("streams::fork", mutates_args=())
 def fork_stream(
     from_index: int,  # kept to make stream transitions clearer
@@ -125,7 +151,7 @@ has_side_effect(torch.ops.streams.join.default)
 def record_event(event_index: int, stream_index: int) -> None:
     event = _get_event_by_index(event_index)
     stream = _get_stream_by_index(stream_index)
-    stream.record_event(event)
+    _ensure_device_specific_stream(stream).record_event(event)
 
 
 @record_event.register_fake
@@ -143,7 +169,7 @@ has_side_effect(torch.ops.streams.record_event.default)
 def wait_event(event_index: int, stream_index: int) -> None:
     event = _get_event_by_index(event_index)
     stream = _get_stream_by_index(stream_index)
-    stream.wait_event(event)
+    _ensure_device_specific_stream(stream).wait_event(event)
 
 
 @wait_event.register_fake
@@ -229,7 +255,7 @@ class SymbolicStreamState:
     def exit_stream(self) -> None:
         self.cur_stream_stack.pop()
 
-    def cur_stream(self, device: torch.device | None = None) -> "StreamVariable":
+    def cur_stream(self, device: Optional[torch.device] = None) -> "StreamVariable":
         if device is not None:
             for stream in reversed(self.cur_stream_stack):
                 if stream.device == device:
@@ -294,7 +320,7 @@ class StreamVariable(StreamContextVariable):
         self,
         proxy: Proxy,
         value: torch.Stream,
-        user_object_index: int | None = None,
+        user_object_index: Optional[int] = None,
         **kwargs: Any,
     ) -> None:
         # Index into the user object table
@@ -304,6 +330,7 @@ class StreamVariable(StreamContextVariable):
 
         self.proxy = proxy
         self.value = value
+        # pyrefly: ignore [read-only]
         self.device = value.device
 
         self.user_object_index = user_object_index
@@ -328,7 +355,7 @@ class StreamVariable(StreamContextVariable):
             tx.output.create_proxy(
                 "call_method", name, *proxy_args_kwargs([self] + args, kwargs)
             )
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable(None)
         elif name == "query":
             return wrap_fx_proxy_cls(
                 target_cls=ConstantVariable,
@@ -355,14 +382,13 @@ class StreamVariable(StreamContextVariable):
             # constant values
             other = args[0]
             if not isinstance(other, StreamVariable):
-                return VariableTracker.build(tx, NotImplemented)
+                return ConstantVariable.create(NotImplemented)
 
             if other.source:
                 assert self.source is not None
                 install_guard(self.source.make_guard(GuardBuilder.EQUALS_MATCH))
-            return VariableTracker.build(
-                tx,
-                cmp_name_to_op_mapping[name](self.value, other.value),  # type: ignore[arg-type]
+            return ConstantVariable.create(
+                cmp_name_to_op_mapping[name](self.value, other.value)  # type: ignore[arg-type]
             )
 
         return super().call_method(tx, name, args, kwargs)
@@ -427,7 +453,7 @@ class EventVariable(VariableTracker):
         self,
         proxy: Proxy,
         value: torch.Event,
-        user_object_index: int | None,
+        user_object_index: Optional[int],
         **kwargs: Any,
     ) -> None:
         if proxy is not None and "example_value" in proxy.node.meta:
@@ -457,7 +483,7 @@ class EventVariable(VariableTracker):
                 ),
                 {},
             )
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable(None)
         elif name == "record":
             tx.output.create_proxy(
                 "call_function",
@@ -468,12 +494,12 @@ class EventVariable(VariableTracker):
                 ),
                 {},
             )
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable(None)
         elif name == "synchronize":
             tx.output.create_proxy(
                 "call_method", name, *proxy_args_kwargs([self] + args, kwargs)
             )
-            return CONSTANT_VARIABLE_NONE
+            return ConstantVariable(None)
         elif name == "query":
             return wrap_fx_proxy_cls(
                 target_cls=ConstantVariable,

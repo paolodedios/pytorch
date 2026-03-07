@@ -952,10 +952,7 @@ class TestStateDict(DTensorTestBase, VerifyStateDictMixin):
             model.state_dict().items(),
             expected_state_dict.items(),
         ):
-            if actual_name != expected_name:
-                raise AssertionError(
-                    f"Expected name {expected_name}, got {actual_name}"
-                )
+            assert actual_name == expected_name
             torch.testing.assert_close(tensor, expected_tensor, msg=expected_name)
 
     @with_comms

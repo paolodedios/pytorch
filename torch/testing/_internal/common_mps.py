@@ -1,5 +1,6 @@
 import unittest
 from collections.abc import Sequence
+from typing import Optional
 
 import torch
 
@@ -12,7 +13,7 @@ if torch.backends.mps.is_available():
     def mps_ops_modifier(
         ops: Sequence[OpInfo],
         device_type: str = "mps",
-        xfail_exclusion: list[str] | None = None,
+        xfail_exclusion: Optional[list[str]] = None,
         sparse: bool = False,
     ) -> Sequence[OpInfo]:
         if xfail_exclusion is None:
@@ -54,7 +55,6 @@ if torch.backends.mps.is_available():
             "contiguous",
             "cos",
             "cosh",
-            "cross",
             "diag",
             "diag_embed",
             "diagflat",
@@ -81,7 +81,6 @@ if torch.backends.mps.is_available():
             "imag",
             "index_add",
             "index_copy",
-            "index_fill",
             "index_select",
             "index_put",
             "isfinite",
@@ -89,7 +88,6 @@ if torch.backends.mps.is_available():
             "isreal",
             "item",
             "kron",
-            "linalg.cross",
             "linalg.diagonal",
             "linalg.householder_product",
             "linalg.svd",
@@ -308,7 +306,7 @@ if torch.backends.mps.is_available():
         }
 
         # Those ops are not expected to work
-        UNIMPLEMENTED_XFAILLIST: dict[str, list | None] = {
+        UNIMPLEMENTED_XFAILLIST: dict[str, Optional[list]] = {
             # Failures due to lack of op implementation on MPS backend
             "logspace": None,
             "logspacetensor_overload": None,
@@ -321,6 +319,10 @@ if torch.backends.mps.is_available():
             "nn.functional.grid_sample": None,  # Unsupported Border padding mode
             "hash_tensor": None,
             "heaviside": None,
+            "index_reduceprod": None,
+            "index_reducemean": None,
+            "index_reduceamax": None,
+            "index_reduceamin": None,
             # "kthvalue": None,
             "lcm": None,
             "linalg.cond": None,
@@ -344,6 +346,7 @@ if torch.backends.mps.is_available():
                 torch.int32,
                 torch.int64,
                 torch.uint8,
+                torch.bool,
             ],
             "median": [torch.bool],
             "mode": None,
@@ -374,6 +377,7 @@ if torch.backends.mps.is_available():
                 torch.int16,
                 torch.int32,
                 torch.uint8,
+                torch.bool,
                 torch.int8,
             ],
             "nn.functional.batch_norm": [
@@ -522,6 +526,8 @@ if torch.backends.mps.is_available():
                 torch.bool,
                 torch.int8,
             ],
+            "nn.functional.padreflect": [torch.bool],
+            "nn.functional.padreplicate": [torch.bool],
             "nn.functional.padreplicate_negative": [torch.bool],
             "nn.functional.pdist": None,
             "nn.functional.relu": [torch.bool],
@@ -530,6 +536,7 @@ if torch.backends.mps.is_available():
                 torch.int16,
                 torch.int32,
                 torch.uint8,
+                torch.bool,
                 torch.int8,
             ],
             "nn.functional.softplus": [
@@ -540,9 +547,12 @@ if torch.backends.mps.is_available():
                 torch.int16,
             ],
             "nn.functional.norm": None,
+            "nn.functional.threshold": [torch.bool],
             "ormqr": None,
             "pca_lowrank": None,
+            "pow": [torch.bool],
             "qr": None,
+            "remainder": [torch.bool],
             "rounddecimals_0": [
                 torch.uint8,
                 torch.int8,
@@ -578,6 +588,7 @@ if torch.backends.mps.is_available():
             "symeig": None,
             "take": None,
             "to": None,
+            "trunc": [torch.bool],
             "var_meanunbiased": [
                 torch.uint8,
                 torch.int8,
@@ -646,7 +657,7 @@ if torch.backends.mps.is_available():
                 torch.int8,
             ],
         }
-        UNIMPLEMENTED_XFAILLIST_SPARSE: dict[str, list | None] = {
+        UNIMPLEMENTED_XFAILLIST_SPARSE: dict[str, Optional[list]] = {
             "logspace": None,
             "logspacetensor_overload": None,
             "linalg.eig": None,
@@ -664,7 +675,7 @@ if torch.backends.mps.is_available():
         if sparse:
             UNIMPLEMENTED_XFAILLIST.update(UNIMPLEMENTED_XFAILLIST_SPARSE)
 
-        UNDEFINED_XFAILLIST: dict[str, list | None] = {
+        UNDEFINED_XFAILLIST: dict[str, Optional[list]] = {
             # Top 60 operators
             # topk fails with duplicate indices
             "topk": [
@@ -758,12 +769,18 @@ if torch.backends.mps.is_available():
             ],
         }
 
-        ON_MPS_XFAILLIST: dict[str, list | None] = {
+        ON_MPS_XFAILLIST: dict[str, Optional[list]] = {
             # Failures due to lack of implementation of downstream functions on MPS backend
             # TODO: remove these once downstream function 'aten::_linalg_svd.U' have been implemented
             "linalg.matrix_rank": None,
             # Exception: Caused by `torch.arange(-8.001, -4.0, dtype=torch.uint8, device="mps")`
             "arange": [torch.uint8],
+            # before macOS 13.2 it falls back to cpu and pass the forward pass
+            "grid_sampler_2d": [
+                torch.float32,
+                torch.float16,
+                torch.bfloat16,
+            ],  # Unsupported Border padding mode
             # Failure due to precision issue for fp16
             # on both cpu and mps there are test cases that might produce inf result
             # 'nn.functional.pairwise_distance': [torch.float16],
@@ -906,10 +923,18 @@ if torch.backends.mps.is_available():
             "scalar_tensor": [torch.float16, torch.float32],
             "cdist": None,
             "masked.scatter": [torch.float16, torch.float32],
-            "grid_sampler_2d": None,
             "grid_sampler_3d": None,
             "igamma": None,  # currently not supported for any device
             "igammac": None,  # currently not supported for any device
+            "linalg.solve": [torch.float16, torch.float32],  # missing `aten::lu_solve`.
+            "linalg.solve_ex": [
+                torch.float16,
+                torch.float32,
+            ],  # missing `aten::lu_solve`.
+            "linalg.tensorsolve": [
+                torch.float16,
+                torch.float32,
+            ],  # missing `aten::lu_solve`.
             "aminmax": [torch.float32, torch.float16],
             "special.i1": [torch.float16],  # "i1_backward" not implemented for 'Half'
             "special.i1e": [torch.float16],  # "i1e_backward" not implemented for 'Half'
@@ -1017,6 +1042,9 @@ if torch.backends.mps.is_available():
             "masked_scatter",
             # unsupported float64 dtype
             "multinomial",
+            "nn.functional.conv1d",
+            "nn.functional.conv2d",
+            "nn.functional.conv3d",
             "gather",
             "scatter",
             "scatter_add",
@@ -1040,7 +1068,7 @@ else:
     def mps_ops_modifier(
         ops: Sequence[OpInfo],
         device_type: str = "mps",
-        xfail_exclusion: list[str] | None = None,
+        xfail_exclusion: Optional[list[str]] = None,
         sparse: bool = False,
     ) -> Sequence[OpInfo]:
         return ops

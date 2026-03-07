@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 import re
 from collections.abc import Callable
+from typing import Optional, Union
 
 import torch.fx
 from torch.fx.node import map_arg
@@ -28,8 +29,8 @@ class FoldedGraphModule(torch.fx.GraphModule):
         self,
         root: torch.nn.Module,
         graph: torch.fx.Graph,
-        const_subgraph: torch.fx.Graph | None = None,
-        fx_const_folded_attrs_name: str | None = None,
+        const_subgraph: Optional[torch.fx.Graph] = None,
+        fx_const_folded_attrs_name: Optional[str] = None,
         device_for_folded_attrs: str = "cuda",
     ):
         super().__init__(root, graph)
@@ -192,8 +193,8 @@ def get_unique_attr_name_in_module(mod_traced: torch.fx.GraphModule, name: str) 
 
 
 def split_const_subgraphs(
-    module: torch.nn.Module | torch.fx.GraphModule,
-    skip_folding_node_fn: Callable[[torch.fx.Node], bool] | None = None,
+    module: Union[torch.nn.Module, torch.fx.GraphModule],
+    skip_folding_node_fn: Optional[Callable[[torch.fx.Node], bool]] = None,
     device_for_folded_attrs: str = "cpu",
 ) -> FoldedGraphModule:
     """

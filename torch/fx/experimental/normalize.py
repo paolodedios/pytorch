@@ -1,7 +1,7 @@
 # mypy: allow-untyped-defs
 import operator
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Optional
 
 import torch
 import torch.fx
@@ -70,8 +70,8 @@ class NormalizeArgs(Transformer):
         target: Target,
         args: tuple[Argument, ...],
         kwargs: dict[str, Any],
-        arg_types: tuple[Any, ...] | None = None,
-        kwarg_types: dict[str, Any] | None = None,
+        arg_types: Optional[tuple[Any, ...]] = None,
+        kwarg_types: Optional[dict[str, Any]] = None,
     ):
         if not callable(target):
             raise AssertionError(f"Expected callable target, got {type(target)}")

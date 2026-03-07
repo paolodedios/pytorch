@@ -420,7 +420,7 @@ class UnspecTests(torch._dynamo.test_case.TestCase):
             comptime.assert_static(x.size(0))
             return x + 1
 
-        opt_fn = torch.compile(fn, dynamic=True, fullgraph=True, backend="eager")
+        opt_fn = torch.compile(fn, dynamic=True, fullgraph=True)
         opt_fn(torch.randn(12, 23))
 
     def test_shape_graph_break(self):
@@ -437,7 +437,7 @@ class UnspecTests(torch._dynamo.test_case.TestCase):
 
     def test_isinstance_symint(self):
         def fn(x):
-            assert isinstance(x.size(0), int)  # noqa: S101
+            assert isinstance(x.size(0), int)
             return x * 2
 
         x = torch.randn(20)
@@ -467,7 +467,7 @@ class UnspecTests(torch._dynamo.test_case.TestCase):
             out = F.conv1d(x, kernel, padding=padding, stride=2)
             return out
 
-        opt_func = torch.compile(func, backend="eager")
+        opt_func = torch.compile(func)
 
         x = torch.randn(1, 1, 175)
         opt_func(x)  # passes
@@ -493,9 +493,7 @@ class UnspecTests(torch._dynamo.test_case.TestCase):
         def shift_right(tensor: torch.Tensor) -> torch.Tensor:
             return (tensor >> 2).to(torch.long)
 
-        opt_fn = torch.compile(
-            shift_right, fullgraph=True, dynamic=True, backend="eager"
-        )
+        opt_fn = torch.compile(shift_right, fullgraph=True, dynamic=True)
         sample_input = torch.tensor([4, 4, 16, 32], dtype=torch.uint8)
         opt_fn(sample_input)
 
@@ -879,7 +877,7 @@ def forward(self):
         x = torch.randn(1)
         torch._dynamo.decorators.mark_unbacked(x, 0)
 
-        @torch.compile(backend="eager")
+        @torch.compile()
         def f(x):
             if guard_size_oblivious(x.size(0) != 1):
                 return x + 3

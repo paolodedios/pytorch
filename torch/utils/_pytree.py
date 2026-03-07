@@ -39,6 +39,7 @@ from typing import (
     TYPE_CHECKING,
     TypeAlias,
     TypeVar,
+    Union,
 )
 from typing_extensions import deprecated, NamedTuple, Self, TypeIs
 
@@ -609,7 +610,7 @@ def _private_register_pytree_node(
     """
     from torch._library.opaque_object import is_opaque_type
 
-    if isinstance(cls, type) and is_opaque_type(cls):
+    if is_opaque_type(cls):
         raise ValueError(
             f"{cls} cannot be registered as a pytree as it has been "
             "registered as an opaque object. Opaque objects must be pytree leaves."
@@ -1384,7 +1385,7 @@ def treespec_dict(
 
 def _is_pytreespec_instance(
     obj: Any,
-) -> TypeIs["TreeSpec | cxx_pytree.PyTreeSpec"]:
+) -> TypeIs[Union[TreeSpec, "cxx_pytree.PyTreeSpec"]]:
     if isinstance(obj, TreeSpec):
         return True
     if "torch.utils._cxx_pytree" in sys.modules:
@@ -1406,7 +1407,7 @@ def _is_pytreespec_instance(
 
 
 def _ensure_python_treespec_instance(
-    treespec: "TreeSpec | cxx_pytree.PyTreeSpec",
+    treespec: Union[TreeSpec, "cxx_pytree.PyTreeSpec"],
 ) -> TreeSpec:
     if isinstance(treespec, TreeSpec):
         return treespec

@@ -154,9 +154,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         start_method="spawn",
         exit_barrier_timeout: float = 300,
         log_line_prefix_template: str | None = None,
-        shutdown_timeout: int = 30,
     ):
-        super().__init__(spec, exit_barrier_timeout, shutdown_timeout)
+        super().__init__(spec, exit_barrier_timeout)
         self._start_method = start_method
         self._pcontext: PContext | None = None
         self._rdzv_handler = spec.rdzv_handler
@@ -293,8 +292,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _start_workers(self, worker_group: WorkerGroup) -> dict[int, Any]:
         spec = worker_group.spec
         store = worker_group.store
-        if store is None:
-            raise AssertionError
+        assert store is not None
         restart_count = spec.max_restarts - self._remaining_restarts
 
         use_agent_store: bool = spec.rdzv_handler.use_agent_store
@@ -350,10 +348,8 @@ class LocalElasticAgent(SimpleElasticAgent):
         self._setup_local_watchdog(envs=envs)
         self._setup_healthcheck()
 
-        if spec.entrypoint is None:
-            raise AssertionError
-        if self._logs_specs is None:
-            raise AssertionError
+        assert spec.entrypoint is not None
+        assert self._logs_specs is not None
         self._pcontext = start_processes(
             name=spec.role,
             entrypoint=spec.entrypoint,
@@ -409,9 +405,7 @@ class LocalElasticAgent(SimpleElasticAgent):
         if "CUDA_VISIBLE_DEVICES" in os.environ:
             worker_env["CUDA_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES"]
 
-    def _shutdown(
-        self, death_sig: signal.Signals = signal.SIGTERM, timeout: int = 30
-    ) -> None:
+    def _shutdown(self, death_sig: signal.Signals = signal.SIGTERM) -> None:
         if self._worker_watchdog is not None:
             self._worker_watchdog.stop()
             self._worker_watchdog = None
@@ -419,7 +413,7 @@ class LocalElasticAgent(SimpleElasticAgent):
             self._health_check_server.stop()
             self._health_check_server = None
         if self._pcontext:
-            self._pcontext.close(death_sig, timeout)
+            self._pcontext.close(death_sig)
 
     # pyre-fixme[56]: Pyre was not able to infer the type of the decorator
     #  `torch.distributed.elastic.metrics.prof`.
@@ -427,8 +421,7 @@ class LocalElasticAgent(SimpleElasticAgent):
     def _monitor_workers(self, worker_group: WorkerGroup) -> RunResult:
         role = worker_group.spec.role
         worker_pids = {w.id for w in worker_group.workers}
-        if self._pcontext is None:
-            raise AssertionError
+        assert self._pcontext is not None
         pc_pids = set(self._pcontext.pids().values())
         if worker_pids != pc_pids:
             logger.error(

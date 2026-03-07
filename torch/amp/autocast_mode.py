@@ -2,7 +2,7 @@
 import collections
 import functools
 import warnings
-from typing import Any
+from typing import Any, Optional
 
 import torch
 from torch.types import _dtype
@@ -222,9 +222,9 @@ class autocast:
     def __init__(
         self,
         device_type: str,
-        dtype: _dtype | None = None,
+        dtype: Optional[_dtype] = None,
         enabled: bool = True,
-        cache_enabled: bool | None = None,
+        cache_enabled: Optional[bool] = None,
     ):
         if not isinstance(device_type, str):
             raise ValueError(
@@ -442,7 +442,7 @@ def custom_fwd(
     fwd=None,
     *,
     device_type: str,
-    cast_inputs: _dtype | None = None,
+    cast_inputs: Optional[_dtype] = None,
 ):
     """
     Create a helper decorator for ``forward`` methods of custom autograd functions.

@@ -12,7 +12,6 @@ from typing import Any
 
 import torch.fx as fx
 import torch.utils._pytree as pytree
-from torch._C import DispatchKey
 from torch._higher_order_ops.utils import register_fake
 from torch._ops import HigherOrderOperator
 from torch.utils._ordered_set import OrderedSet
@@ -62,20 +61,6 @@ control_deps = ControlDeps()
 @register_fake(control_deps)
 def _(additional_deps, subgraph, *args, **kwargs):
     """Fake tensor implementation - execute the subgraph."""
-    return subgraph(*args, **kwargs)
-
-
-# Register eager execution implementation
-@control_deps.py_impl(DispatchKey.CompositeExplicitAutograd)
-def control_deps_eager(additional_deps, subgraph, *args, **kwargs):
-    """Eager implementation - just execute the subgraph."""
-    return subgraph(*args, **kwargs)
-
-
-# Autograd impl needed because additional_deps tensors may have autograd state,
-# causing dispatch through AutogradCUDA even in post-autograd graphs.
-@control_deps.py_impl(DispatchKey.Autograd)
-def control_deps_autograd(additional_deps, subgraph, *args, **kwargs):
     return subgraph(*args, **kwargs)
 
 
@@ -200,11 +185,9 @@ def preserve_node_ordering(
         replacements[dependent_node] = ordered_node
 
 
-def _create_subgraph_for_node(
-    graph: fx.Graph, node: fx.Node, additional_deps=None
-) -> fx.GraphModule:
+def _create_subgraph_for_node(graph: fx.Graph, node: fx.Node) -> fx.GraphModule:
     """
-    Create a subgraph that exactly recreates a node's operation optionally passing through additional dependencies.
+    Create a subgraph that exactly recreates a node's operation.
 
     The subgraph takes only the fx.Node arguments and recreates the operation
     with the exact target, args structure, and kwargs.
@@ -212,7 +195,6 @@ def _create_subgraph_for_node(
     Args:
         graph: The parent graph
         node: The node to wrap in a subgraph
-        additional_deps: Additional dependencies to pass through the subgraph
 
     Returns:
         A GraphModule containing the subgraph
@@ -240,13 +222,6 @@ def _create_subgraph_for_node(
             return node_to_placeholder[item]
         return item
 
-    additional_deps_placeholders = []
-    for idx, dep in enumerate(additional_deps or ()):
-        placeholder = subgraph.placeholder(f"dep_{idx}")
-        if "val" in dep.meta:
-            placeholder.meta.update(dep.meta)
-        additional_deps_placeholders.append(placeholder)
-
     new_flat = [replace_nodes(item) for item in flat_args_kwargs]
     new_args, new_kwargs = pytree.tree_unflatten(new_flat, spec)
 
@@ -261,13 +236,8 @@ def _create_subgraph_for_node(
     # Copy metadata from the original node
     result.meta.update(node.meta)
 
-    if additional_deps_placeholders:
-        outputs = tuple([result] + additional_deps_placeholders)
-        out = subgraph.output(outputs)
-        out.meta["val"] = tuple(output.meta.get("val") for output in outputs)
-    else:
-        out = subgraph.output(result)
-        if "val" in result.meta:
-            out.meta["val"] = result.meta["val"]
+    out = subgraph.output(result)
+    if "val" in result.meta:
+        out.meta["val"] = result.meta["val"]
 
     return fx.GraphModule(owning_module, subgraph)

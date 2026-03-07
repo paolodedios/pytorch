@@ -184,8 +184,6 @@ class LazyVariableTracker(VariableTracker, metaclass=VariableTrackerMeta):
         elif issubclass(value_cls, VariableTracker):
             # update value in-place
             result = value
-            # update cache now to prevent infinite recursion
-            cache[idx] = (result, value)
             value_dict = value.__dict__
             nonvars = value._nonvar_fields
             for key in value_dict:
@@ -257,7 +255,7 @@ class LazyConstantVariable(LazyVariableTracker):
     supported_types = (int, float, bool, str)
 
     @staticmethod
-    def create(
+    def create(  # pyrefly: ignore[bad-override]
         value: Any,
         source: Any,
         **options: Any,

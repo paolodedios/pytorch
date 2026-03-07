@@ -329,8 +329,8 @@ class _ConfigEntry:
             if self.value_type not in (
                 bool,
                 str,
-                Optional[bool],  # noqa: UP045
-                Optional[str],  # noqa: UP045
+                Optional[bool],
+                Optional[str],
             ):
                 raise AssertionError(
                     f"envvar configs only support (optional) booleans or strings, {self.value_type} is neither"

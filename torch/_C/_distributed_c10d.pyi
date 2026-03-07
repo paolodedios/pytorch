@@ -3,7 +3,7 @@
 from collections.abc import Callable
 from datetime import timedelta
 from enum import Enum
-from typing import Any, overload
+from typing import Any, Optional, overload, Union
 
 import torch
 from torch import Tensor
@@ -158,7 +158,7 @@ class AllreduceOptions:
     reduceOp: ReduceOp
     timeout: timedelta
     asyncOp: bool
-    sparseIndices: Tensor | None
+    sparseIndices: Optional[Tensor]
 
 class AllreduceCoalescedOptions(AllreduceOptions): ...
 
@@ -218,7 +218,7 @@ class Store:
     @overload
     def wait(self, keys: list[str], timeout: timedelta) -> None: ...
     def queue_pop(self, key: str, block: bool = True) -> bytes: ...
-    def queue_push(self, key: str, value: bytes | str) -> None: ...
+    def queue_push(self, key: str, value: Union[bytes, str]) -> None: ...
     def queue_len(self, key: str) -> int: ...
     def list_keys(self) -> list[str]: ...
 
@@ -375,18 +375,18 @@ class ProcessGroup:
     def split_group(
         self,
         new_ranks: list[int],
-        timeout: timedelta | None = None,
-        opts: Backend.Options | None = None,
+        timeout: Optional[timedelta] = None,
+        opts: Optional[Backend.Options] = None,
         group_name: GroupName | None = None,
-        group_desc: str | None = None,
-    ) -> ProcessGroup | None: ...
+        group_desc: Optional[str] = None,
+    ) -> Optional[ProcessGroup]: ...
     def merge_remote_group(
         self,
         store: Store,
         size: int,
         timeout: timedelta,
         group_name: GroupName | None = None,
-        group_desc: str | None = None,
+        group_desc: Optional[str] = None,
     ) -> ProcessGroup: ...
     def abort(self) -> None: ...
     def set_timeout(self, timeout: timedelta) -> None: ...
@@ -795,7 +795,7 @@ class _SymmetricMemory:
     @staticmethod
     def set_backend(name: str) -> None: ...
     @staticmethod
-    def get_backend(device: torch.device) -> str | None: ...
+    def get_backend(device: torch.device) -> Optional[str]: ...
     @staticmethod
     def get_mempool_allocator(device: torch.device) -> Any: ...
     signal_pad_size: int
@@ -860,8 +860,6 @@ class _SymmetricMemory:
     def multicast_ptr(self) -> int: ...
     @property
     def buffer_size(self) -> int: ...
-    @property
-    def device(self) -> torch.device: ...
 
 class ProcessGroupXCCL(Backend):
     class Options(Backend.Options):

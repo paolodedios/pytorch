@@ -30,7 +30,7 @@ __all__ = [
     "Module",
 ]
 
-_grad_t = tuple[Tensor, ...] | Tensor
+_grad_t = Union[tuple[Tensor, ...], Tensor]
 # See https://mypy.readthedocs.io/en/latest/generics.html#generic-methods-and-generic-self for the use
 # of `T` to annotate `self`. Many methods of `Module` return `self` and we want those return values to be
 # the type of the subclass, not the looser type of `Module`.
@@ -44,6 +44,7 @@ class _IncompatibleKeys(
     __slots__ = ()
 
     def __repr__(self) -> str:
+        # pyrefly: ignore [missing-attribute]
         if not self.missing_keys and not self.unexpected_keys:
             return "<All keys matched successfully>"
         return super().__repr__()
@@ -72,7 +73,7 @@ _global_parameter_registration_hooks: dict[int, Callable] = OrderedDict()
 
 
 class _WrappedHook:
-    def __init__(self, hook: Callable, module: Optional["Module"] = None) -> None:  # noqa: UP007
+    def __init__(self, hook: Callable, module: Optional["Module"] = None) -> None:
         self.hook: Callable = hook
         functools.update_wrapper(self, hook)
 
@@ -93,7 +94,7 @@ class _WrappedHook:
     def __getstate__(self) -> dict:
         result = {"hook": self.hook, "with_module": self.with_module}
         if self.with_module:
-            # pyrefly: ignore [bad-typed-dict-key]
+            # pyrefly: ignore [unsupported-operation]
             result["module"] = self.module()
 
         return result
@@ -475,7 +476,7 @@ class Module:
     _load_state_dict_pre_hooks: dict[int, Callable]
     _state_dict_pre_hooks: dict[int, Callable]
     _load_state_dict_post_hooks: dict[int, Callable]
-    _modules: dict[str, Optional["Module"]]  # noqa: UP007
+    _modules: dict[str, Optional["Module"]]
     call_super_init: bool = False
     _compiled_call_impl: Callable | None = None
 
@@ -639,7 +640,7 @@ class Module:
                     param = output
             self._parameters[name] = param
 
-    def add_module(self, name: str, module: Optional["Module"]) -> None:  # noqa: UP007
+    def add_module(self, name: str, module: Optional["Module"]) -> None:
         r"""Add a child module to the current module.
 
         The module can be accessed as an attribute using the given name.
@@ -667,7 +668,7 @@ class Module:
                 module = output
         self._modules[name] = module
 
-    def register_module(self, name: str, module: Optional["Module"]) -> None:  # noqa: UP007
+    def register_module(self, name: str, module: Optional["Module"]) -> None:
         r"""Alias for :func:`add_module`."""
         self.add_module(name, module)
 
@@ -817,7 +818,7 @@ class Module:
                 raise AttributeError("`" + atoms[-1] + "` is not an nn.Module")
         setattr(parent, atoms[-1], module)
 
-    def get_parameter(self, target: str) -> Parameter:
+    def get_parameter(self, target: str) -> "Parameter":
         """Return the parameter given by ``target`` if it exists, otherwise throw an error.
 
         See the docstring for ``get_submodule`` for a more detailed
@@ -853,7 +854,7 @@ class Module:
 
         return param
 
-    def get_buffer(self, target: str) -> Tensor:
+    def get_buffer(self, target: str) -> "Tensor":
         """Return the buffer given by ``target`` if it exists, otherwise throw an error.
 
         See the docstring for ``get_submodule`` for a more detailed
@@ -2835,7 +2836,7 @@ class Module:
 
     def named_modules(
         self,
-        memo: Optional[set["Module"]] = None,  # noqa: UP007
+        memo: set["Module"] | None = None,
         prefix: str = "",
         remove_duplicate: bool = True,
     ):
