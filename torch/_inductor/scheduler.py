@@ -1491,6 +1491,9 @@ class ExternKernelSchedulerNode(BaseSchedulerNode):
     def is_extern(self) -> bool:
         return True
 
+    def is_template(self) -> bool:
+        return isinstance(self.node, ir.TemplateBuffer)
+
     def has_side_effects(self) -> bool:
         assert self.node is not None
         return hasattr(self.node, "has_side_effects") and self.node.has_side_effects()
@@ -5536,11 +5539,13 @@ class Scheduler:
                 node.node
             )
         if isinstance(node, ExternKernelSchedulerNode):
-            # Only UserDefinedTritonKernel nodes that can fuse epilogues are fusable
-            return not (
-                isinstance(node.node, ir.UserDefinedTritonKernel)
-                and node.node.can_fuse_epilogue()
-            )
+            # Template-based extern kernels are always fusable
+            if node.is_template():
+                return False
+            # UserDefinedTritonKernel nodes are fusable only if they can fuse epilogues
+            if isinstance(node.node, ir.UserDefinedTritonKernel):
+                return not node.node.can_fuse_epilogue()
+            return True
         return False
 
     def check_prologue_fusion_heuristics_fusable(
