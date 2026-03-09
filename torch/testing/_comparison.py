@@ -1573,6 +1573,41 @@ def assert_close(
     # Hide this function from `pytest`'s traceback
     __tracebackhide__ = True
 
+    # handle DTensor cases explicitly
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        DTensor = None
+
+    if DTensor is not None:
+        actual_dt = isinstance(actual, DTensor)
+        expected_dt = isinstance(expected, DTensor)
+        if actual_dt and expected_dt:
+            if actual.placements != expected.placements:
+                raise AssertionError(
+                    f"DTensor placements do not match: "
+                    f"{actual.placements} != {expected.placements}"
+                )
+            if actual.device_mesh != expected.device_mesh:
+                raise AssertionError(
+                    f"DTensor device meshes do not match: "
+                    f"{actual.device_mesh} != {expected.device_mesh}"
+                )
+            actual = actual.to_local()
+            expected = expected.to_local()
+        elif actual_dt != expected_dt:
+            non_dt = expected if actual_dt else actual
+            if isinstance(non_dt, torch.Tensor):
+                raise TypeError(
+                    "Comparing a DTensor to a regular Tensor is ambiguous. "
+                    "Call .full_tensor() to compare the full logical tensor "
+                    "or .to_local() to compare the local shard."
+                )
+            if actual_dt:
+                actual = actual.to_local()
+            else:
+                expected = expected.to_local()
+
     error_metas = not_close_error_metas(
         actual,
         expected,

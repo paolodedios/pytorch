@@ -4315,6 +4315,41 @@ class TestCase(expecttest.TestCase):
         if isinstance(y, torch.Tensor) and y.is_nested and y.layout == torch.strided:
             y = y.unbind()
 
+        # handle DTensor cases explicitly
+        try:
+            from torch.distributed.tensor import DTensor
+        except ImportError:
+            DTensor = None
+
+        if DTensor is not None:
+            x_dt = isinstance(x, DTensor)
+            y_dt = isinstance(y, DTensor)
+            if x_dt and y_dt:
+                if x.placements != y.placements:
+                    raise AssertionError(
+                        f"DTensor placements do not match: "
+                        f"{x.placements} != {y.placements}"
+                    )
+                if x.device_mesh != y.device_mesh:
+                    raise AssertionError(
+                        f"DTensor device meshes do not match: "
+                        f"{x.device_mesh} != {y.device_mesh}"
+                    )
+                x = x.to_local()
+                y = y.to_local()
+            elif x_dt != y_dt:
+                non_dt = y if x_dt else x
+                if isinstance(non_dt, torch.Tensor):
+                    raise TypeError(
+                        "Comparing a DTensor to a regular Tensor is ambiguous. "
+                        "Call .full_tensor() to compare the full logical tensor "
+                        "or .to_local() to compare the local shard."
+                    )
+                if x_dt:
+                    x = x.to_local()
+                else:
+                    y = y.to_local()
+
         error_metas = not_close_error_metas(
             x,
             y,
