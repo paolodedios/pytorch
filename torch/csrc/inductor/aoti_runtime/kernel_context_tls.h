@@ -14,7 +14,8 @@ struct KernelContext {
   std::string compressed_python_stack;
 
   KernelContext(std::string name, std::string stack)
-      : kernel_name(std::move(name)), python_stack(std::move(stack)) {
+      : kernel_name(std::move(name)) {
+    python_stack = trim_python_stack(stack);
     compressed_python_stack = compress_python_stack(python_stack);
   }
 
@@ -24,26 +25,68 @@ struct KernelContext {
   KernelContext& operator=(KernelContext&&) = default;
 
  private:
+  static std::string trim_python_stack(std::string stack) {
+    auto pos = stack.find_first_not_of('\n');
+    if (pos != stack.npos) {
+      stack.erase(0, pos);
+      pos = stack.find_last_not_of('\n');
+      if (pos != stack.npos) {
+        stack.erase(pos + 1);
+      }
+    }
+    return stack;
+  }
+
   static std::string compress_python_stack(const std::string& stack) {
     namespace fs = std::filesystem;
-    char func[129];
-    char path[1025];
-    uint32_t line;
-    int ret;
+    char function[1025];
+    char filename[1025];
+    uint32_t fileline;
+    int ret, n, ws;
+    const char* p;
     std::string compressed_stack;
     std::stringstream stream{stack};
-    std::string str;
-    std::string fmt = "File \"%1024[^\"]\", line %u, in %128[^\n]\n";
-    while (std::getline(stream, str)) {
-      ret = sscanf(str.c_str(), fmt.c_str(), path, &line, func);
-      if (ret == 3) {
-        compressed_stack += func;
-        compressed_stack += ' ';
-        compressed_stack += fs::path{path}.filename();
-        compressed_stack += ':';
-        compressed_stack += std::to_string(line);
+    std::string line;
+    std::string fmt = "File \"%1024[^\"]\", line %u, in %1024[^\n]\n%n";
+    while (std::getline(stream, line)) {
+      // check if new stack
+      if (line.empty()) {
         compressed_stack += '\n';
+        continue;
       }
+      p = line.c_str();
+      ws = 0;
+      while (*p == ' ') {
+        ++p;
+        ++ws;
+      }
+      // check if new file
+      if (ws != 0 && ws != 2) {
+        return {};
+      }
+      ret = sscanf(p, fmt.c_str(), filename, &fileline, function, &n);
+      if (ret != 3) {
+        return {};
+      }
+      if (!std::getline(stream, line)) {
+        return {};
+      }
+      p = line.c_str();
+      ws = 0;
+      while (*p == ' ') {
+        ++p;
+        ++ws;
+      }
+      // check if command
+      if (ws != 4) {
+        return {};
+      }
+      compressed_stack += std::string{function} + '[' + std::string{p} + ']';
+      compressed_stack += '\n';
+      compressed_stack += fs::path{filename}.filename();
+      compressed_stack += '\n';
+      compressed_stack += std::to_string(fileline);
+      compressed_stack += '\n';
     }
     return compressed_stack;
   }
