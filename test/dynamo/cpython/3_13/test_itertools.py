@@ -47,15 +47,16 @@ def pickle_deprecated(testfunc):
     Third, run with warnings promoted to errors.
     """
     def inner(self):
-        with self.assertWarns(DeprecationWarning):
-            testfunc(self)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", category=DeprecationWarning)
-            testfunc(self)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", category=DeprecationWarning)
-            with self.assertRaises((DeprecationWarning, AssertionError, SystemError)):
+        with torch._dynamo.error_on_graph_break(False):
+            with self.assertWarns(DeprecationWarning):
                 testfunc(self)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=DeprecationWarning)
+                testfunc(self)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", category=DeprecationWarning)
+                with self.assertRaises((DeprecationWarning, AssertionError, SystemError)):
+                    testfunc(self)
 
     return inner
 
@@ -480,9 +481,10 @@ class TestBasicOps(__TestCase):
         # Test implementation detail:  tuple re-use
     @support.impl_detail("tuple reuse is specific to CPython")
     def test_combinations_with_replacement_tuple_reuse(self):
-        cwr = combinations_with_replacement
-        self.assertEqual(len(set(map(id, cwr('abcde', 3)))), 1)
-        self.assertNotEqual(len(set(map(id, list(cwr('abcde', 3))))), 1)
+        with torch._dynamo.error_on_graph_break(False):
+            cwr = combinations_with_replacement
+            self.assertEqual(len(set(map(id, cwr('abcde', 3)))), 1)
+            self.assertNotEqual(len(set(map(id, list(cwr('abcde', 3))))), 1)
 
     def test_permutations(self):
         self.assertEqual(list(permutations('abc', 32)), [])     # r > n
@@ -1880,11 +1882,12 @@ class TestBasicOps(__TestCase):
 
     @support.cpython_only
     def test_combinations_with_replacement_result_gc(self):
-        # Ditto for combinations_with_replacement.
-        it = combinations_with_replacement([None, []], 1)
-        next(it)
-        gc.collect()
-        self.assertTrue(gc.is_tracked(next(it)))
+        with torch._dynamo.error_on_graph_break(False):
+            # Ditto for combinations_with_replacement.
+            it = combinations_with_replacement([None, []], 1)
+            next(it)
+            gc.collect()
+            self.assertTrue(gc.is_tracked(next(it)))
 
     @support.cpython_only
     def test_permutations_result_gc(self):

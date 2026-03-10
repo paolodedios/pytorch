@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "accumulate",
+    "combinations_with_replacement",
     "chain",
     "chain_from_iterable",
     "compress",
@@ -30,6 +31,9 @@ __all__ = [
     "tee",
     "zip_longest",
 ]
+
+if hasattr(itertools, "batched"):
+    __all__.append("batched")
 
 
 _T = TypeVar("_T")
@@ -179,6 +183,34 @@ def islice(iterable: Iterable[_T], /, *args: int | None) -> Iterator[_T]:
                 next_i += step
 
 
+if hasattr(itertools, "batched"):
+    # Reference: https://docs.python.org/3/library/itertools.html#itertools.batched
+    @substitute_in_graph(itertools.batched, is_embedded_type=True)  # type: ignore[arg-type]
+    def batched(*args, **kwargs) -> Iterator[tuple[_T, ...]]:  # type: ignore[no-untyped-def]
+        if len(args) != 2:
+            raise TypeError(f"batched expected 2 arguments, got {len(args)}")
+        if kwargs.keys() - {"strict"}:
+            unexpected = next(iter(kwargs.keys() - {"strict"}))
+            raise TypeError(
+                f"batched() got an unexpected keyword argument '{unexpected}'"
+            )
+
+        iterable, n = args
+        strict = kwargs.pop("strict", False)
+        if n < 1:
+            raise ValueError("n must be at least one")
+
+        iterator = iter(iterable)
+
+        def _batched(iterator: Iterator[_T]) -> Iterator[tuple[_T, ...]]:
+            while batch := tuple(islice(iterator, n)):
+                if strict and len(batch) != n:
+                    raise ValueError("batched(): incomplete batch")
+                yield batch
+
+        return _batched(iterator)
+
+
 # Reference: https://docs.python.org/3/library/itertools.html#itertools.pairwise
 @substitute_in_graph(itertools.pairwise, is_embedded_type=True)  # type: ignore[arg-type]
 def pairwise(iterable: Iterable[_T], /) -> Iterator[tuple[_T, _T]]:
@@ -190,6 +222,48 @@ def pairwise(iterable: Iterable[_T], /) -> Iterator[tuple[_T, _T]]:
         else:
             yield a, b  # type: ignore[misc]
         a = b
+
+
+# Reference: https://docs.python.org/3/library/itertools.html#itertools.combinations_with_replacement
+@substitute_in_graph(itertools.combinations_with_replacement, is_embedded_type=True)  # type: ignore[arg-type]
+def combinations_with_replacement(*args, **kwargs) -> Iterator[tuple[_T, ...]]:  # type: ignore[no-untyped-def]
+    if len(args) != 2:
+        raise TypeError(
+            f"combinations_with_replacement expected 2 arguments, got {len(args)}"
+        )
+    if kwargs:
+        unexpected = next(iter(kwargs))
+        raise TypeError(
+            "combinations_with_replacement() got an unexpected keyword "
+            f"argument '{unexpected}'"
+        )
+
+    iterable, r = args
+    if r < 0:
+        raise ValueError("r must be non-negative")
+
+    pool = tuple(iterable)
+    n = len(pool)
+
+    def _combinations_with_replacement() -> Iterator[tuple[_T, ...]]:
+        if r == 0:
+            yield ()
+            return
+        if n == 0:
+            return
+
+        indices = [0] * r
+        yield tuple(pool[i] for i in indices)
+        while True:
+            for i in range(r - 1, -1, -1):
+                if indices[i] != n - 1:
+                    break
+            else:
+                return
+            indices[i:] = [indices[i] + 1] * (r - i)
+            yield tuple(pool[i] for i in indices)
+
+    return _combinations_with_replacement()
 
 
 # Reference: https://docs.python.org/3/library/itertools.html#itertools.tee
