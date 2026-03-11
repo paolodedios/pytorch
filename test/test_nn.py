@@ -38,7 +38,6 @@ from torch.testing._internal.common_utils import dtype_name, freeze_rng_state, r
     IS_PPC, \
     parametrize as parametrize_test, subtest, \
     skipIfTorchDynamo, gcIfJetson, set_default_dtype, ACCELERATOR_TYPE
-
 from torch.testing._internal.common_cuda import TEST_CUDA, TEST_MULTIGPU, TEST_CUDNN, \
     _get_torch_rocm_version
 from torch.testing._internal.common_nn import NNTestCase, NewModuleTest, CriterionTest, \
@@ -60,7 +59,6 @@ from torch.types import _TensorOrTensors
 from torch.testing._internal.common_mkldnn import reduced_f32_on_and_off
 
 AMPERE_OR_ROCM = TEST_WITH_ROCM or torch.cuda.is_tf32_supported()
-
 
 if TEST_WITH_ROCM:
     os.environ["PYTORCH_MIOPEN_SUGGEST_NHWC"] = "1"
@@ -1702,7 +1700,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         finally:
             torch.__future__.set_overwrite_module_params_on_conversion(False)
 
-    @unittest.skipIf(os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1", "RuntimeError: _apply(): Couldn't swap Linear.weight")
     def test_swap_module_params_poisons_acc_grad(self):
         try:
             torch.__future__.set_swap_module_params_on_conversion(True)
@@ -2295,8 +2292,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         mask[0, 2] = False
         self.assertRaises(RuntimeError, lambda: torch._nested_tensor_from_mask(input, mask))
 
-    @unittest.skipIf(os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1",
-                     "TypeError: add(): argument 'input' (position 1) must be Tensor, not NoneType")
     def test_normalize(self):
         inputs = torch.randn(1, 3, 4, 4, requires_grad=True, dtype=torch.double)
         self.assertTrue(gradcheck(lambda x: F.normalize(x, p=1, dim=-1), (inputs,)))
@@ -4705,7 +4700,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         gradcheck(func, [v])
         gradgradcheck(func, [v])
 
-    @unittest.skipIf(os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1", "RuntimeError when making fake tensor call")
     def test_relu_inplace_on_view(self):
         v = torch.tensor([1.0, -1.0, 1.0, -1.0], requires_grad=True, dtype=torch.double)
 
@@ -5611,8 +5605,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         self.assertEqual(F.margin_ranking_loss(input1, input2, target, margin=0.5, reduction='none'),
                          loss_reference_fns['MarginRankingLoss'](input1, input2, target, margin=0.5, reduction='none'))
 
-    @unittest.skipIf(os.environ.get('PYTORCH_TEST_WITH_DYNAMO', '0') == '1',
-                     "TypeError: add(): argument 'input' (position 1) must be Tensor, not NoneType")
     def test_triplet_margin_loss(self):
         input1 = torch.randn(5, 10, requires_grad=True, dtype=torch.double)
         input2 = torch.randn(5, 10, requires_grad=True, dtype=torch.double)
@@ -5622,8 +5614,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         self.assertEqual(F.triplet_margin_loss(input1, input2, input3),
                          loss_reference_fns['TripletMarginLoss'](input1, input2, input3))
 
-    @unittest.skipIf(os.environ.get('PYTORCH_TEST_WITH_DYNAMO', '0') == '1',
-                     "TypeError: add(): argument 'input' (position 1) must be Tensor, not NoneType")
     def test_triplet_margin_loss_swap(self):
         input1 = torch.randn(5, 10, requires_grad=True, dtype=torch.double)
         input2 = torch.randn(5, 10, requires_grad=True, dtype=torch.double)
@@ -5633,8 +5623,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         self.assertEqual(F.triplet_margin_loss(input1, input2, input3, swap=True),
                          loss_reference_fns['TripletMarginLoss'](input1, input2, input3, swap=True))
 
-    @unittest.skipIf(os.environ.get('PYTORCH_TEST_WITH_DYNAMO', '0') == '1',
-                     "TypeError: add(): argument 'input' (position 1) must be Tensor, not NoneType")
     def test_triplet_margin_loss_no_reduce(self):
         input1 = torch.randn(5, 10, requires_grad=True, dtype=torch.double)
         input2 = torch.randn(5, 10, requires_grad=True, dtype=torch.double)
@@ -5644,8 +5632,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         self.assertEqual(F.triplet_margin_loss(input1, input2, input3, reduction='none'),
                          loss_reference_fns['TripletMarginLoss'](input1, input2, input3, reduction='none'))
 
-    @unittest.skipIf(os.environ.get('PYTORCH_TEST_WITH_DYNAMO', '0') == '1',
-                     "TypeError: add(): argument 'input' (position 1) must be Tensor, not NoneType")
     def test_triplet_margin_loss_swap_no_reduce(self):
         input1 = torch.randn(5, 10, requires_grad=True, dtype=torch.double)
         input2 = torch.randn(5, 10, requires_grad=True, dtype=torch.double)
@@ -6733,7 +6719,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         output = torch.native_channel_shuffle(input_tensor, groups)
         torch.testing.assert_close(output, input_tensor)
 
-    @unittest.skipIf(os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1", "RuntimeError when making fake tensor call")
     @set_default_dtype(torch.double)
     def test_upsamplingLinear1d(self):
         for align_corners in [True, False]:
@@ -6767,8 +6752,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
 
     @set_default_dtype(torch.double)
     def test_upsampling_not_recompute_scale_factor(self, device):
-        if device == 'cpu' and os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1":
-            raise SkipTest("RuntimeError when making fake tensor call")
         # test output against known input: result must match opencv
         in_t = torch.arange(8.).view(1, 2, 2, 2)
         expected_out_t = torch.tensor(
@@ -6835,9 +6818,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         self.assertEqual(expected_out_t, out_t)
 
     def test_upsampling_bfloat16(self, device, dtype=torch.bfloat16):
-        if device == 'cpu' and os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1":
-            raise SkipTest("RuntimeError when making fake tensor call")
-
         def helper(size, scale_factor, mode, device, memory_format=torch.contiguous_format):
             input = torch.randn(size, device=device, dtype=dtype).to(memory_format=memory_format).detach().requires_grad_(True)
             inputf = input.to(torch.float32).to(memory_format=torch.contiguous_format).detach().requires_grad_(True)
@@ -7040,7 +7020,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         with self.assertRaisesRegex(RuntimeError, ".*both arguments.*1D.*"):
             m(inp)
 
-    @unittest.skipIf(os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1", "NotImplementedError")
     @tf32_on_and_off(0.005)
     @parametrize_test('bias', [
         subtest(False, name='nobias'), subtest(True, name='bias')])
@@ -7449,7 +7428,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         tensor_output = flatten(tensor_input)
         self.assertEqual(tensor_output.size(), torch.Size([2, 6]))
 
-    @unittest.skipIf(os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1", "RuntimeError when making fake tensor call")
     def test_unflatten(self):
         tensor_input = torch.randn(2, 50)
 
@@ -10230,7 +10208,6 @@ class TestNNDeviceType(NNTestCase):
         test('threshold', 3, 2)
         test('threshold', 3, 2, inplace=True)
 
-    @unittest.skipIf(os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1", "RuntimeError when making fake tensor call")
     @expectedFailureMPS  # TypeError: float64 the MPS framework doesn't support float64
     @parametrize_test("mode", ["nearest-exact", "nearest"])
     def test_upsamplingNearest1d(self, device, mode):
@@ -10550,9 +10527,6 @@ class TestNNDeviceType(NNTestCase):
     @expectedFailureMPS  # double device type
     @onlyNativeDeviceTypes
     def test_upsamplingBiMode2d(self, device, antialias, align_corners, mode, memory_format):
-        if device == 'cpu' and os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1":
-            raise SkipTest("RuntimeError when making fake tensor call")
-
         # Forward AD does not support XLA because XLA tensors don't have storage
         check_forward_ad = torch.device(device).type != 'xla'
 
@@ -10835,8 +10809,6 @@ class TestNNDeviceType(NNTestCase):
     @parametrize_test("align_corners", [True, False])
     @parametrize_test("memory_format", [torch.contiguous_format, torch.channels_last_3d])
     def test_upsamplingTrilinear3d(self, device, align_corners, memory_format):
-        if device == 'cpu' and os.environ.get("PYTORCH_TEST_WITH_DYNAMO") == "1":
-            raise SkipTest("RuntimeError when making fake tensor call")
         kwargs = dict(mode='trilinear', align_corners=align_corners)
 
         # test float scale factor up & downsampling
@@ -14267,7 +14239,13 @@ class TestUtils(TestCase):
 
 
 instantiate_device_type_tests(TestNNDeviceType, globals(), allow_mps=True)
-instantiate_device_type_tests(TestNN, globals())
+
+# https://github.com/pytorch/pytorch/issues/177119
+if os.environ.get('PYTORCH_TEST_WITH_DYNAMO', '0') == '0':
+    device_list = ('cuda', 'cpu')
+else:
+    device_list = ('cuda',)
+instantiate_device_type_tests(TestNN, globals(), only_for=tuple(device_list))
 
 
 if __name__ == '__main__':
