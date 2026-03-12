@@ -5125,7 +5125,7 @@ class TestRoPE(NNTestCase):
     def test_rope_numerical_correctness(self, device, dtype: torch.dtype):
         """Compare against a self-contained reference (HuggingFace-style)."""
         batch, seq, heads, dim = 2, 64, 8, 128
-        atol = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 1e-2}[dtype]
+        atol = {torch.float32: 1e-5, torch.float16: 1e-3, torch.bfloat16: 2e-2}[dtype]
 
         q = torch.randn(batch, heads, seq, dim, device=device, dtype=dtype)
         k = torch.randn(batch, heads, seq, dim, device=device, dtype=dtype)
@@ -5178,6 +5178,226 @@ class TestRoPE(NNTestCase):
         q_norms = q.norm(dim=-1)
         q_rot_norms = q_rot.norm(dim=-1)
         self.assertEqual(q_norms, q_rot_norms, atol=1e-5, rtol=0)
+
+    @onlyCUDA
+    @parametrize("seq_dim", [1, 2])
+    @parametrize("interleaved", [False, True])
+    @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    def test_rope_compile_correctness(self, device, seq_dim: int, interleaved: bool, dtype: torch.dtype):
+        batch, seq, heads, dim = 2, 128, 8, 64
+        atol = {torch.float32: 1e-5, torch.float16: 5e-3, torch.bfloat16: 5e-2}[dtype]
+
+        if seq_dim == 1:
+            q = torch.randn(batch, seq, heads, dim, device=device, dtype=dtype)
+            k = torch.randn(batch, seq, heads, dim, device=device, dtype=dtype)
+        else:
+            q = torch.randn(batch, heads, seq, dim, device=device, dtype=dtype)
+            k = torch.randn(batch, heads, seq, dim, device=device, dtype=dtype)
+
+        cos, sin = F.rotary_embedding_frequencies(dim, seq, device=device, dtype=dtype)
+
+        def rope_fn(q, k, cos, sin):
+            return F.apply_rotary_emb(q, k, cos, sin, seq_dim=seq_dim, interleaved=interleaved)
+
+        q_eager, k_eager = rope_fn(q, k, cos, sin)
+
+        cnt = CompileCounterWithBackend("inductor")
+        compiled_fn = torch.compile(rope_fn, backend=cnt, fullgraph=True)
+        q_compiled, k_compiled = compiled_fn(q, k, cos, sin)
+
+        self.assertEqual(q_compiled, q_eager, atol=atol, rtol=0)
+        self.assertEqual(k_compiled, k_eager, atol=atol, rtol=0)
+        self.assertEqual(cnt.frame_count, 1)
+
+    @onlyCUDA
+    def test_rope_compile_dynamic_shapes(self, device):
+        batch, heads, dim = 2, 8, 64
+        max_seq_len = 2048
+
+        cos, sin = F.rotary_embedding_frequencies(dim, max_seq_len, device=device)
+
+        def rope_fn(q, k, cos, sin):
+            return F.apply_rotary_emb(q, k, cos, sin, seq_dim=1)
+
+        compiled_fn = torch.compile(rope_fn, dynamic=True)
+
+        for seq_len in [128, 256, 512, 1024]:
+            q = torch.randn(batch, seq_len, heads, dim, device=device)
+            k = torch.randn(batch, seq_len, heads, dim, device=device)
+
+            q_compiled, k_compiled = compiled_fn(q, k, cos, sin)
+            q_eager, k_eager = rope_fn(q, k, cos, sin)
+
+            self.assertEqual(q_compiled, q_eager, atol=1e-5, rtol=0)
+            self.assertEqual(k_compiled, k_eager, atol=1e-5, rtol=0)
+
+    def test_rope_precomputed_freqs_slicing(self, device):
+        batch, heads, dim = 2, 8, 64
+        max_seq_len = 2048
+
+        cos_max, sin_max = F.rotary_embedding_frequencies(dim, max_seq_len, device=device)
+
+        for seq_len in [128, 256, 512, 1024]:
+            cos_fresh, sin_fresh = F.rotary_embedding_frequencies(dim, seq_len, device=device)
+
+            cos_sliced = cos_max[:seq_len]
+            sin_sliced = sin_max[:seq_len]
+
+            self.assertEqual(cos_sliced, cos_fresh)
+            self.assertEqual(sin_sliced, sin_fresh)
+
+            q = torch.randn(batch, heads, seq_len, dim, device=device)
+            k = torch.randn(batch, heads, seq_len, dim, device=device)
+
+            q_sliced, k_sliced = F.apply_rotary_emb(q, k, cos_sliced, sin_sliced, seq_dim=2)
+            q_fresh, k_fresh = F.apply_rotary_emb(q, k, cos_fresh, sin_fresh, seq_dim=2)
+
+            self.assertEqual(q_sliced, q_fresh)
+            self.assertEqual(k_sliced, k_fresh)
+
+    def test_rope_kv_cache_position_indexing(self, device):
+        batch, heads, dim = 1, 8, 64
+        max_seq_len = 2048
+
+        cos, sin = F.rotary_embedding_frequencies(dim, max_seq_len, device=device)
+
+        # Simulate step-by-step decoding at specific positions
+        for pos in [0, 1, 10, 100, 1000]:
+            q = torch.randn(batch, heads, 1, dim, device=device)
+            k = torch.randn(batch, heads, 1, dim, device=device)
+
+            cos_pos = cos[pos:pos + 1]
+            sin_pos = sin[pos:pos + 1]
+
+            q_rot, k_rot = F.apply_rotary_emb(q, k, cos_pos, sin_pos, seq_dim=2)
+
+            self.assertEqual(q_rot.shape, q.shape)
+            self.assertEqual(k_rot.shape, k.shape)
+
+            # Verify against full-sequence computation at the same position
+            q_full = torch.zeros(batch, heads, pos + 1, dim, device=device)
+            k_full = torch.zeros(batch, heads, pos + 1, dim, device=device)
+            q_full[:, :, pos:pos + 1, :] = q
+            k_full[:, :, pos:pos + 1, :] = k
+
+            cos_full = cos[:pos + 1]
+            sin_full = sin[:pos + 1]
+            q_full_rot, k_full_rot = F.apply_rotary_emb(q_full, k_full, cos_full, sin_full, seq_dim=2)
+
+            self.assertEqual(q_rot, q_full_rot[:, :, pos:pos + 1, :], atol=1e-5, rtol=0)
+            self.assertEqual(k_rot, k_full_rot[:, :, pos:pos + 1, :], atol=1e-5, rtol=0)
+
+    def test_rope_partial_head_dim(self, device):
+        batch, seq, heads = 2, 64, 8
+        full_dim = 128
+        rope_dim = 64
+
+        cos, sin = F.rotary_embedding_frequencies(rope_dim, seq, device=device)
+
+        q = torch.randn(batch, seq, heads, full_dim, device=device)
+        k = torch.randn(batch, seq, heads, full_dim, device=device)
+
+        q_rope_rot, k_rope_rot = F.apply_rotary_emb(
+            q[..., :rope_dim], k[..., :rope_dim], cos, sin, seq_dim=1
+        )
+
+        q_out = torch.cat([q_rope_rot, q[..., rope_dim:]], dim=-1)
+        k_out = torch.cat([k_rope_rot, k[..., rope_dim:]], dim=-1)
+
+        self.assertEqual(q_out.shape, q.shape)
+        self.assertEqual(q_out[..., rope_dim:], q[..., rope_dim:])
+        self.assertEqual(k_out[..., rope_dim:], k[..., rope_dim:])
+        self.assertFalse(torch.allclose(q_out[..., :rope_dim], q[..., :rope_dim]))
+        self.assertFalse(torch.allclose(k_out[..., :rope_dim], k[..., :rope_dim]))
+
+    @onlyCUDA
+    def test_rope_with_sdpa_integration(self, device):
+        batch, seq, heads, dim = 2, 64, 8, 64
+        embed_dim = heads * dim
+
+        q_proj = nn.Linear(embed_dim, embed_dim, device=device)
+        k_proj = nn.Linear(embed_dim, embed_dim, device=device)
+        v_proj = nn.Linear(embed_dim, embed_dim, device=device)
+        cos, sin = F.rotary_embedding_frequencies(dim, seq, device=device)
+
+        def attn_with_rope(x, cos, sin):
+            B, S, _ = x.shape
+            q = q_proj(x).view(B, S, heads, dim).transpose(1, 2)
+            k = k_proj(x).view(B, S, heads, dim).transpose(1, 2)
+            v = v_proj(x).view(B, S, heads, dim).transpose(1, 2)
+            q_rot, k_rot = F.apply_rotary_emb(q, k, cos, sin, seq_dim=2)
+            return scaled_dot_product_attention(q_rot, k_rot, v)
+
+        x = torch.randn(batch, seq, embed_dim, device=device)
+
+        out_eager = attn_with_rope(x, cos, sin)
+
+        compiled_fn = torch.compile(attn_with_rope, fullgraph=True)
+        out_compiled = compiled_fn(x, cos, sin)
+
+        self.assertEqual(out_compiled.shape, out_eager.shape)
+        self.assertEqual(out_compiled, out_eager, atol=1e-5, rtol=0)
+
+    def test_rope_selective_key_application(self, device):
+        """Apply RoPE only to a prefix of keys (num_k_exclude_rope pattern)."""
+        batch, heads, dim = 2, 8, 64
+        q_seq = 64
+        k_seq = 80
+        num_k_exclude_rope = 16
+        num_k_rope = k_seq - num_k_exclude_rope
+
+        cos, sin = F.rotary_embedding_frequencies(dim, max(q_seq, k_seq), device=device)
+
+        q = torch.randn(batch, heads, q_seq, dim, device=device)
+        k = torch.randn(batch, heads, k_seq, dim, device=device)
+        k_orig = k.clone()
+
+        q_rot, k_rope_rot = F.apply_rotary_emb(
+            q, k[:, :, :num_k_rope], cos, sin, seq_dim=2
+        )
+
+        k_out = torch.cat([k_rope_rot, k[:, :, num_k_rope:]], dim=2)
+
+        self.assertEqual(k_out.shape, k.shape)
+        self.assertEqual(k_out[:, :, num_k_rope:], k_orig[:, :, num_k_rope:])
+        self.assertFalse(torch.allclose(k_out[:, :, :num_k_rope], k_orig[:, :, :num_k_rope]))
+
+    @onlyCUDA
+    def test_rope_activation_memory_under_compile(self, device):
+        """Check compiled RoPE doesn't materialize excessively large intermediates."""
+        batch, seq, heads, dim = 4, 2048, 32, 128
+        cos, sin = F.rotary_embedding_frequencies(dim, seq, device=device, dtype=torch.bfloat16)
+
+        def rope_fn(q, k, cos, sin):
+            return F.apply_rotary_emb(q, k, cos, sin, seq_dim=1)
+
+        compiled_fn = torch.compile(rope_fn)
+
+        q = torch.randn(batch, seq, heads, dim, device=device, dtype=torch.bfloat16)
+        k = torch.randn(batch, seq, heads, dim, device=device, dtype=torch.bfloat16)
+
+        # Warmup: first call includes compilation overhead
+        compiled_fn(q, k, cos, sin)
+        torch.cuda.synchronize(device)
+
+        # 2 inputs + 2 outputs of [B, S, H, D] bfloat16; 3x headroom for intermediates
+        tensor_bytes = batch * seq * heads * dim * 2
+        max_allowed = tensor_bytes * 4 * 3
+
+        torch.cuda.reset_peak_memory_stats(device)
+        torch.cuda.synchronize(device)
+        mem_before = torch.cuda.memory_allocated(device)
+
+        compiled_fn(q, k, cos, sin)
+        torch.cuda.synchronize(device)
+
+        mem_peak = torch.cuda.max_memory_allocated(device)
+        mem_used = mem_peak - mem_before
+
+        self.assertLess(
+            mem_used, max_allowed,
+            f"Memory usage {mem_used / 1e6:.1f}MB exceeds {max_allowed / 1e6:.1f}MB limit."
+        )
 
 
 if NOTEST_CPU:

@@ -16425,6 +16425,59 @@ if RUN_GPU:
             code = run_and_get_triton_code(compiled_fn, q, k, cos, sin, pos_ids)
             self.assertEqual(code.count(".run("), 1)
 
+        @config.patch(expand_dimension_for_pointwise_nodes=True)
+        def test_rope_F_api_fusion(self):
+            batch_size, seq_length = 4, 128
+            num_heads, head_dim = 8, 64
+
+            q = torch.randn(
+                (batch_size, seq_length, num_heads, head_dim), device=GPU_TYPE
+            )
+            k = torch.randn(
+                (batch_size, seq_length, num_heads, head_dim), device=GPU_TYPE
+            )
+            cos, sin = F.rotary_embedding_frequencies(
+                head_dim, seq_length, device=GPU_TYPE
+            )
+
+            def apply_rope(q, k, cos, sin):
+                return F.apply_rotary_emb(q, k, cos, sin, seq_dim=1)
+
+            compiled_fn = torch.compile(apply_rope)
+            compiled_out = compiled_fn(q, k, cos, sin)
+            eager_out = apply_rope(q, k, cos, sin)
+            self.assertEqual(compiled_out, eager_out)
+
+            code = run_and_get_triton_code(compiled_fn, q, k, cos, sin)
+            self.assertEqual(code.count(".run("), 1)
+
+        @config.patch(expand_dimension_for_pointwise_nodes=True)
+        def test_rope_linear_epilogue_fusion(self):
+            batch_size, seq_length = 4, 128
+            num_heads, head_dim = 8, 64
+            embed_dim = num_heads * head_dim
+
+            linear_q = nn.Linear(embed_dim, embed_dim, device=GPU_TYPE)
+            linear_k = nn.Linear(embed_dim, embed_dim, device=GPU_TYPE)
+            cos, sin = F.rotary_embedding_frequencies(
+                head_dim, seq_length, device=GPU_TYPE
+            )
+
+            def proj_and_rope(x, cos, sin):
+                q = linear_q(x).view(batch_size, seq_length, num_heads, head_dim)
+                k = linear_k(x).view(batch_size, seq_length, num_heads, head_dim)
+                return F.apply_rotary_emb(q, k, cos, sin, seq_dim=1)
+
+            x = torch.randn(batch_size, seq_length, embed_dim, device=GPU_TYPE)
+
+            compiled_fn = torch.compile(proj_and_rope)
+            compiled_out = compiled_fn(x, cos, sin)
+            eager_out = proj_and_rope(x, cos, sin)
+            self.assertEqual(compiled_out, eager_out)
+
+            code = run_and_get_triton_code(compiled_fn, x, cos, sin)
+            self.assertLessEqual(code.count(".run("), 3)
+
         def test_numpy_autograd(self):
             def my_torch(x):
                 y = torch.cat([torch.sin(x) ** 2, torch.max(x)[None]])
