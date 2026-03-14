@@ -3,6 +3,7 @@ import abc
 import cmath
 import collections.abc
 import contextlib
+import importlib.util
 from collections.abc import Callable, Collection, Sequence
 from typing import Any, NoReturn
 from typing_extensions import deprecated
@@ -17,6 +18,8 @@ try:
 except ModuleNotFoundError:
     HAS_NUMPY = False
     np = None  # type: ignore[assignment]
+
+_HAS_DTENSOR = importlib.util.find_spec("torch.distributed.tensor") is not None
 
 
 class ErrorMeta(Exception):
@@ -1573,13 +1576,9 @@ def assert_close(
     # Hide this function from `pytest`'s traceback
     __tracebackhide__ = True
 
-    # handle DTensor cases explicitly
-    try:
+    if _HAS_DTENSOR:
         from torch.distributed.tensor import DTensor
-    except ImportError:
-        DTensor = None
 
-    if DTensor is not None:
         actual_dt = isinstance(actual, DTensor)
         expected_dt = isinstance(expected, DTensor)
         if actual_dt and expected_dt:
@@ -1596,17 +1595,11 @@ def assert_close(
             actual = actual.to_local()
             expected = expected.to_local()
         elif actual_dt != expected_dt:
-            non_dt = expected if actual_dt else actual
-            if isinstance(non_dt, torch.Tensor):
-                raise TypeError(
-                    "Comparing a DTensor to a regular Tensor is ambiguous. "
-                    "Call .full_tensor() to compare the full logical tensor "
-                    "or .to_local() to compare the local shard."
-                )
-            if actual_dt:
-                actual = actual.to_local()
-            else:
-                expected = expected.to_local()
+            raise TypeError(
+                "Comparing a DTensor to a non-DTensor is ambiguous. "
+                "Call .full_tensor() to compare the full logical tensor "
+                "or .to_local() to compare the local shard."
+            )
 
     error_metas = not_close_error_metas(
         actual,

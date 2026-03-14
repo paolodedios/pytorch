@@ -934,22 +934,27 @@ class DTensorTest(DTensorTestBase):
             self.assertEqual(dt1, dt_shard)
 
         with self.assertRaisesRegex(
-            TypeError, "Comparing a DTensor to a regular Tensor is ambiguous"
+            TypeError, "Comparing a DTensor to a non-DTensor is ambiguous"
         ):
             self.assertEqual(dt1, local)
         with self.assertRaisesRegex(
-            TypeError, "Comparing a DTensor to a regular Tensor is ambiguous"
+            TypeError, "Comparing a DTensor to a non-DTensor is ambiguous"
         ):
             self.assertEqual(local, dt1)
         with self.assertRaisesRegex(
-            TypeError, "Comparing a DTensor to a regular Tensor is ambiguous"
+            TypeError, "Comparing a DTensor to a non-DTensor is ambiguous"
         ):
             torch.testing.assert_close(dt1, local)
 
         dt_scalar = DTensor.from_local(
             torch.tensor(42.0, device=self.device_type), mesh, [Replicate()]
         )
-        self.assertEqual(dt_scalar, 42.0)
+        with self.assertRaisesRegex(
+            TypeError, "Comparing a DTensor to a non-DTensor is ambiguous"
+        ):
+            self.assertEqual(dt_scalar, 42.0)
+        self.assertEqual(dt_scalar.full_tensor(), 42.0)
+        self.assertEqual(dt_scalar.to_local(), 42.0)
 
 
 DTensorTestWithLocalTensor = create_local_tensor_test_class(

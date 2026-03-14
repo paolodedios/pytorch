@@ -99,6 +99,8 @@ try:
 except ImportError:
     has_pytest = False
 
+_HAS_DTENSOR = _check_module_exists("torch.distributed.tensor")
+
 SEED = 1234
 MI350_ARCH = ("gfx950",)
 MI300_ARCH = ("gfx942",)
@@ -4315,13 +4317,9 @@ class TestCase(expecttest.TestCase):
         if isinstance(y, torch.Tensor) and y.is_nested and y.layout == torch.strided:
             y = y.unbind()
 
-        # handle DTensor cases explicitly
-        try:
+        if _HAS_DTENSOR:
             from torch.distributed.tensor import DTensor
-        except ImportError:
-            DTensor = None
 
-        if DTensor is not None:
             x_dt = isinstance(x, DTensor)
             y_dt = isinstance(y, DTensor)
             if x_dt and y_dt:
@@ -4338,17 +4336,11 @@ class TestCase(expecttest.TestCase):
                 x = x.to_local()
                 y = y.to_local()
             elif x_dt != y_dt:
-                non_dt = y if x_dt else x
-                if isinstance(non_dt, torch.Tensor):
-                    raise TypeError(
-                        "Comparing a DTensor to a regular Tensor is ambiguous. "
-                        "Call .full_tensor() to compare the full logical tensor "
-                        "or .to_local() to compare the local shard."
-                    )
-                if x_dt:
-                    x = x.to_local()
-                else:
-                    y = y.to_local()
+                raise TypeError(
+                    "Comparing a DTensor to a non-DTensor is ambiguous. "
+                    "Call .full_tensor() to compare the full logical tensor "
+                    "or .to_local() to compare the local shard."
+                )
 
         error_metas = not_close_error_metas(
             x,
