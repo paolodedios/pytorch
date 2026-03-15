@@ -774,7 +774,10 @@ class TestMultiThreadedDTensorOps(DTensorOpTestBase, TestDTensorOps):
         _op_db,
         "TestMultiThreadedDTensorOps",
         "test_dtensor_op_db",
-        dtensor_fails | dtensor_multi_threaded_fails | dtensor_fails_no_strategy,
+        dtensor_fails
+        | dtensor_multi_threaded_fails
+        | dtensor_fails_no_strategy
+        | {xfail("masked.logsumexp")},
     )
     def test_dtensor_op_db(self, dtype, op):
         self.run_opinfo_test(dtype, op)

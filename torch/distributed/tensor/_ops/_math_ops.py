@@ -1661,7 +1661,7 @@ def histc_strategy(op_schema: OpSchema) -> OpStrategy:
 
 
 @register_op_strategy(
-    [aten.logsumexp.default],
+    [aten.logsumexp.default, aten.logsumexp.dim_IntList],
     schema_info=RuntimeSchemaInfo(
         # static_argnum is the position where non-Tensor args beings.
         static_argnum=1,
