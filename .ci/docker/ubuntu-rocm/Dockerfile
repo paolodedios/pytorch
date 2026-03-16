@@ -78,6 +78,7 @@ ENV ROCM_PATH=/opt/rocm \
     HIP_DEVICE_LIB_PATH=/opt/rocm/amdgcn/bitcode \
     MAGMA_HOME=/opt/rocm/magma
 ENV PATH=/opt/rocm/bin:/opt/rocm/llvm/bin:$PATH
+ENV LD_LIBRARY_PATH=/opt/rocm/lib:${LD_LIBRARY_PATH:-}
 
 ENV LANG C.UTF-8
 ENV LC_ALL C.UTF-8
