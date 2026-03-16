@@ -977,6 +977,14 @@ class GraphRuntimeEnv:
             backend_id: compiled_fn,
         }
 
+        # Reconstruct __builtins_dict__ if the bytecode references it
+        # but it's missing from f_globals (e.g. after deserialization).
+        import builtins as _builtins
+
+        for ref in self.external_refs:
+            if ref.startswith("__builtins_dict__") and ref not in f_globals:
+                f_globals[ref] = _builtins.__dict__
+
         # check that all external references are available
         self._check_external_refs(f_globals)
 
