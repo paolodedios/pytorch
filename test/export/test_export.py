@@ -17713,9 +17713,7 @@ def forward(self, q, k, v):
                 ),
             ).run_decompositions()
 
-        ops = {
-            node.target for node in ep.graph.nodes if node.op == "call_function"
-        }
+        ops = {node.target for node in ep.graph.nodes if node.op == "call_function"}
         self.assertIn(
             torch.ops.aten._scaled_dot_product_efficient_attention.default,
             ops,
