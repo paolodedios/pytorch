@@ -701,6 +701,7 @@ class profile:
                 flow_id=kineto_event.flow_id(),
                 flow_type=kineto_event.flow_type(),
                 flow_start=kineto_event.flow_start(),
+                activity_type=kineto_event.activity_type(),
             )
             max_evt_id = max(max_evt_id, fe.id)
             if fe.device_type == DeviceType.CPU and not fe.is_async:

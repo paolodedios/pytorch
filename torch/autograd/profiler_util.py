@@ -641,6 +641,7 @@ class FunctionEvent(FormattedTimesMixin):
         flow_id=None,
         flow_type=None,
         flow_start=None,
+        activity_type=None,
     ):
         self.id: int = id
         self.node_id: int = node_id
@@ -686,6 +687,7 @@ class FunctionEvent(FormattedTimesMixin):
         self.flow_id: int | None = flow_id
         self.flow_type: int | None = flow_type
         self.flow_start: bool | None = flow_start
+        self.activity_type: str | None = activity_type
 
     def append_kernel(self, name, device, duration):
         if self.device_type != DeviceType.CPU:
