@@ -3913,6 +3913,48 @@ if HAS_CUDA_AND_TRITON:
             self.assertEqual(compiled_out, eager_out)
 
         @torch._inductor.config.patch("graph_partition", True)
+        def test_graph_partition_backward_cpu_scalar_in_output(self):
+            """
+            When a CPU scalar placeholder is moved to GPU by ConstructorMoverPass,
+            the forward graph's output must NOT replace the CPU placeholder with
+            the GPU copy. Otherwise, the backward receives a GPU tensor where it
+            expects CPU, and the backward's CPU C++ kernel will segfault trying
+            to dereference a GPU pointer.
+            """
+
+            class Mod(torch.nn.Module):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.linear = torch.nn.Linear(4, 4, device="cuda")
+                    # CPU scalar parameter used directly in GPU mul — the pass
+                    # will move it to GPU. It's also saved for backward, so it
+                    # must stay CPU in the forward output.
+                    self.cpu_scale = torch.nn.Parameter(torch.tensor(1.0))
+
+                def forward(self, x):
+                    return self.linear(x) * self.cpu_scale
+
+            model = Mod()
+            x = torch.randn(4, 4, device="cuda")
+
+            compiled_model = torch.compile(model, mode="reduce-overhead")
+            compiled_model(x)
+
+            criterion = torch.nn.CrossEntropyLoss()
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+
+            for _ in range(5):
+                output = compiled_model(x)
+                loss = criterion(output, torch.randint(0, 4, (4,)).cuda())
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            eager_out = model(x)
+            compiled_out = compiled_model(x)
+            self.assertEqual(compiled_out, eager_out)
+
+        @torch._inductor.config.patch("graph_partition", True)
         def test_graph_partition_cpu_only(self):
             class Mod(torch.nn.Module):
                 def __init__(self) -> None:
