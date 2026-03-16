@@ -3,7 +3,6 @@ import abc
 import cmath
 import collections.abc
 import contextlib
-import importlib.util
 from collections.abc import Callable, Collection, Sequence
 from typing import Any, NoReturn
 from typing_extensions import deprecated
@@ -19,7 +18,7 @@ except ModuleNotFoundError:
     HAS_NUMPY = False
     np = None  # type: ignore[assignment]
 
-_HAS_DTENSOR = importlib.util.find_spec("torch.distributed.tensor") is not None
+_HAS_DTENSOR = torch.distributed.is_available()
 
 
 class ErrorMeta(Exception):

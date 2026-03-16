@@ -99,7 +99,7 @@ try:
 except ImportError:
     has_pytest = False
 
-_HAS_DTENSOR = _check_module_exists("torch.distributed.tensor")
+_HAS_DTENSOR = torch.distributed.is_available()
 
 SEED = 1234
 MI350_ARCH = ("gfx950",)
