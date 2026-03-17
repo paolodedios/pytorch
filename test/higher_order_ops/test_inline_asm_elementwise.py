@@ -391,6 +391,37 @@ class TestInlineAsmElementwiseEdgeCases(TestCase):
         self.assertTrue(torch.equal(eager_result, compiled_result))
         self.assertTrue(torch.allclose(eager_result, x * 2 + y + 1.0))
 
+    def test_output_strides_mixed_inputs(self):
+        """Verify fake mode output strides match eager (TensorIterator) strides."""
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        # Two inputs with different strides: one contiguous, one transposed.
+        # This exercises TensorIterator's slow path for stride computation.
+        x = torch.randn(8, 16, device="cuda", dtype=torch.float32)
+        y = torch.randn(16, 8, device="cuda", dtype=torch.float32).t()
+
+        eager_result = inline_asm_elementwise(
+            x,
+            y,
+            asm_str="add.f32 $0, $1, $2;",
+            constraints="=f,f,f",
+            dtype=torch.float32,
+        )
+
+        with FakeTensorMode() as mode:
+            fake_x = mode.from_tensor(x)
+            fake_y = mode.from_tensor(y)
+            fake_result = inline_asm_elementwise(
+                fake_x,
+                fake_y,
+                asm_str="add.f32 $0, $1, $2;",
+                constraints="=f,f,f",
+                dtype=torch.float32,
+            )
+
+        self.assertEqual(eager_result.shape, fake_result.shape)
+        self.assertEqual(eager_result.stride(), fake_result.stride())
+
     def test_dynamic_shapes(self):
         def fn(x, y):
             return inline_asm_elementwise(
@@ -478,6 +509,44 @@ class TestInlineAsmPackPadding(TestCase):
 
         self.assertTrue(torch.equal(result, x))
         FileCheck().check("inline_asm_pack").check("inline_asm_unpack").run(code)
+
+    def test_pack2_xblock1_yblock1_padding(self):
+        """Force XBLOCK=1, YBLOCK=1 with pack=2 on a 2D-tiled kernel."""
+        from torch._inductor.choices import InductorChoices
+        from torch._inductor.codegen.triton import FixedTritonConfig
+        from torch._inductor.utils import run_and_get_code
+        from torch.testing import FileCheck
+
+        class ForceXY1(InductorChoices):
+            def triton_kernel_kwargs(self, kernel_cls, features, groups, kernel_kwargs):
+                return {
+                    **kernel_kwargs,
+                    "fixed_config": FixedTritonConfig({"XBLOCK": 1, "YBLOCK": 1}),
+                }
+
+        def fn(x, y):
+            return inline_asm_elementwise(
+                x,
+                y,
+                asm_str="add.f32 $0, $2, $4; add.f32 $1, $3, $5;",
+                constraints="=f,=f,f,f,f,f",
+                dtype=torch.float32,
+                pack=2,
+            )
+
+        x = torch.randn(8, 16, device="cuda", dtype=torch.float32)
+        # Transposed input triggers 2D tiling (different stride patterns)
+        y = torch.randn(16, 8, device="cuda", dtype=torch.float32).T
+        with torch._inductor.virtualized.V.set_choices_handler(ForceXY1()):
+            torch._dynamo.reset()
+            result, (code,) = run_and_get_code(
+                torch.compile(fn, backend="inductor"), x, y
+            )
+
+        self.assertTrue(torch.allclose(result, x + y))
+        FileCheck().check("YBLOCK").check("inline_asm_pack").check(
+            "inline_asm_unpack"
+        ).run(code)
 
 
 if __name__ == "__main__":

@@ -70,11 +70,14 @@ _DTYPE_TO_CUDA_TYPE = {
 }
 
 
+_TRITON_ARG_RE = re.compile(r"\$(\d+)")
+
+
 def _triton_asm_to_cuda_asm(asm_str: str) -> str:
-    return re.sub(r"\$(\d+)", r"%\1", asm_str)
+    return _TRITON_ARG_RE.sub(r"%\1", asm_str)
 
 
-@functools.lru_cache(maxsize=256)
+@functools.lru_cache
 def _get_jiterator_fn(
     asm_str: str,
     constraints: str,
@@ -176,25 +179,32 @@ inline_asm_elementwise.py_autograd_impl(
 )
 
 
+def _elementwise_output_like(*inputs, dtype):
+    from torch._prims_common import compute_elementwise_output_logical_to_physical_perm
+
+    broadcasted = torch.broadcast_tensors(*inputs)
+    l2p_perm, _ = compute_elementwise_output_logical_to_physical_perm(*broadcasted)
+    return torch.empty_permuted(
+        broadcasted[0].shape, l2p_perm, dtype=dtype, device=broadcasted[0].device
+    )
+
+
 @inline_asm_elementwise.py_impl(FakeTensorMode)
 def inline_asm_fake(mode, *inputs, asm_str, constraints, dtype, is_pure=True, pack=1):
     with mode:
-        broadcasted = torch.broadcast_tensors(*inputs)
-        return torch.empty_like(broadcasted[0], dtype=dtype)
+        return _elementwise_output_like(*inputs, dtype=dtype)
 
 
 @inline_asm_elementwise.py_impl(DispatchKey.Meta)
 def inline_asm_meta(*inputs, asm_str, constraints, dtype, is_pure=True, pack=1):
-    broadcasted = torch.broadcast_tensors(*inputs)
-    return torch.empty_like(broadcasted[0], dtype=dtype)
+    return _elementwise_output_like(*inputs, dtype=dtype)
 
 
 def trace_inline_asm(
     proxy_mode, func_overload, *inputs, asm_str, constraints, dtype, is_pure, pack
 ):
     with disable_proxy_modes_tracing():
-        broadcasted = torch.broadcast_tensors(*inputs)
-        out = torch.empty_like(broadcasted[0], dtype=dtype)
+        out = _elementwise_output_like(*inputs, dtype=dtype)
 
     node_args = inputs
     proxy_args = pytree.tree_map(proxy_mode.tracer.unwrap_proxy, node_args)
