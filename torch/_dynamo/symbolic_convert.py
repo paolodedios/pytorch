@@ -1728,6 +1728,7 @@ class InstructionTranslatorBase(
                         exc=e,
                     )
 
+                self.output.side_effects.log_side_effects_summary()
                 if hasattr(e, "msg") and "Data-dependent" in e.msg:
                     readable_graph = torch.fx.GraphModule(
                         self.output.nn_modules, self.output.graph
@@ -1741,6 +1742,7 @@ class InstructionTranslatorBase(
             except Exception as e:
                 if self.exec_recorder:
                     e.exec_record = self.exec_recorder.get_record()  # type: ignore[attr-defined]
+                self.output.side_effects.log_side_effects_summary()
 
                 raise
             finally:

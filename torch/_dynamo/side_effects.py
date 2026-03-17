@@ -1352,6 +1352,13 @@ class SideEffects:
                 payload_fn=lambda: combined_msg,
             )
 
+    def log_side_effects_summary(self) -> None:
+        if config.side_effect_replay_policy == "silent":
+            return
+        for var in self._get_modified_vars():
+            msg = self._format_side_effect_message(var)
+            side_effects_log.debug(msg)
+
     def is_empty(self) -> bool:
         return not (
             any(map(self.is_modified, self.id_to_variable.values()))
