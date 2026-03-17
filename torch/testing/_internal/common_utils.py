@@ -82,13 +82,14 @@ from torch.onnx import (
 )
 from torch.testing import make_tensor
 from torch.testing._comparison import (
+    _unwrap_dtensor_for_comparison,
     BooleanPair,
     NonePair,
+    not_close_error_metas,
     NumberPair,
     Pair,
     TensorLikePair,
 )
-from torch.testing._comparison import not_close_error_metas
 from torch.testing._internal.common_dtype import get_all_dtypes
 from torch.utils._import_utils import _check_module_exists
 import torch.utils._pytree as pytree
@@ -98,8 +99,6 @@ try:
     has_pytest = True
 except ImportError:
     has_pytest = False
-
-_HAS_DTENSOR = torch.distributed.is_available()
 
 SEED = 1234
 MI350_ARCH = ("gfx950",)
@@ -4317,30 +4316,7 @@ class TestCase(expecttest.TestCase):
         if isinstance(y, torch.Tensor) and y.is_nested and y.layout == torch.strided:
             y = y.unbind()
 
-        if _HAS_DTENSOR:
-            from torch.distributed.tensor import DTensor
-
-            x_dt = isinstance(x, DTensor)
-            y_dt = isinstance(y, DTensor)
-            if x_dt and y_dt:
-                if x.placements != y.placements:
-                    raise AssertionError(
-                        f"DTensor placements do not match: "
-                        f"{x.placements} != {y.placements}"
-                    )
-                if x.device_mesh != y.device_mesh:
-                    raise AssertionError(
-                        f"DTensor device meshes do not match: "
-                        f"{x.device_mesh} != {y.device_mesh}"
-                    )
-                x = x.to_local()
-                y = y.to_local()
-            elif x_dt != y_dt:
-                raise TypeError(
-                    "Comparing a DTensor to a non-DTensor is ambiguous. "
-                    "Call .full_tensor() to compare the full logical tensor "
-                    "or .to_local() to compare the local shard."
-                )
+        x, y = _unwrap_dtensor_for_comparison(x, y)
 
         error_metas = not_close_error_metas(
             x,
