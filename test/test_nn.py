@@ -234,10 +234,10 @@ class TestNN(NNTestCase):
         if ACCELERATOR_TYPE == device:
             for gpu in [device,
                         str(torch.device(0)) if torch.accelerator.device_count() == 1 else str(torch.device(1))]:
-                m2 = m.to(device)
-                self.assertIs(m2, m2.to(device))
+                m2 = m.to(gpu)
+                self.assertIs(m2, m2.to(gpu))
                 self.assertEqual(m, m2.to('cpu'))
-                self.assertEqual(m2, m.to(device))
+                self.assertEqual(m2, m.to(gpu))
                 self.assertIs(m2, m2.to(dtype=torch.float32))
                 self.assertEqual(m2.double(), m2.to(dtype=torch.float64))
 
@@ -1758,7 +1758,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
             self.assertIsInstance(l.weight.data, torch.cuda.DoubleTensor)
             self.assertIsInstance(l.bias.data, torch.cuda.DoubleTensor)
             self.assertIsInstance(net.indices, torch.cuda.LongTensor)
-            net.to(torch.empty(1, device="cuda", dtype=torch.half))
+            net.to(torch.empty(1, device="cuda:0", dtype=torch.half))
             self.assertIsInstance(l.weight.data, torch.cuda.HalfTensor)
             self.assertIsInstance(l.bias.data, torch.cuda.HalfTensor)
             self.assertIsInstance(net.indices, torch.cuda.LongTensor)
@@ -2669,30 +2669,28 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         expected_loss = torch.tensor(0.25)
         self.assertTrue(torch.isclose(loss, expected_loss), f"Expected {expected_loss}, but got {loss}")
 
-    def test_mse_loss_mixed_dtype_grad(self):
-        devices = ['cpu'] + (['cuda'] if TEST_CUDA else [])
-        for device in devices:
-            for reduction in ['mean', 'sum', 'none']:
-                x = torch.tensor([1.0, 2.0], dtype=torch.float32, requires_grad=True, device=device)
-                y = torch.tensor([1.5, 2.5], dtype=torch.float64, requires_grad=True, device=device)
-                loss = F.mse_loss(x, y, reduction=reduction)
-                if reduction == 'mean':
-                    expected_loss = torch.tensor(0.25, dtype=torch.float64, device=device)
-                    expected_grad_x = torch.tensor([-0.5, -0.5], dtype=torch.float32, device=device)
-                    expected_grad_y = torch.tensor([0.5, 0.5], dtype=torch.float64, device=device)
-                elif reduction == 'sum':
-                    expected_loss = torch.tensor(0.5, dtype=torch.float64, device=device)
-                    expected_grad_x = torch.tensor([-1.0, -1.0], dtype=torch.float32, device=device)
-                    expected_grad_y = torch.tensor([1.0, 1.0], dtype=torch.float64, device=device)
-                else:  # 'none'
-                    expected_loss = torch.tensor([0.25, 0.25], dtype=torch.float64, device=device)
-                    expected_grad_x = torch.tensor([-1.0, -1.0], dtype=torch.float32, device=device)
-                    expected_grad_y = torch.tensor([1.0, 1.0], dtype=torch.float64, device=device)
-                self.assertEqual(loss, expected_loss, atol=1e-6, rtol=0)
-                grad = torch.ones_like(loss) if reduction == 'none' else None
-                loss.backward(grad)
-                self.assertEqual(x.grad, expected_grad_x, atol=1e-6, rtol=0)
-                self.assertEqual(y.grad, expected_grad_y, atol=1e-6, rtol=0)
+    def test_mse_loss_mixed_dtype_grad(self, device):
+        for reduction in ['mean', 'sum', 'none']:
+            x = torch.tensor([1.0, 2.0], dtype=torch.float32, requires_grad=True, device=device)
+            y = torch.tensor([1.5, 2.5], dtype=torch.float64, requires_grad=True, device=device)
+            loss = F.mse_loss(x, y, reduction=reduction)
+            if reduction == 'mean':
+                expected_loss = torch.tensor(0.25, dtype=torch.float64, device=device)
+                expected_grad_x = torch.tensor([-0.5, -0.5], dtype=torch.float32, device=device)
+                expected_grad_y = torch.tensor([0.5, 0.5], dtype=torch.float64, device=device)
+            elif reduction == 'sum':
+                expected_loss = torch.tensor(0.5, dtype=torch.float64, device=device)
+                expected_grad_x = torch.tensor([-1.0, -1.0], dtype=torch.float32, device=device)
+                expected_grad_y = torch.tensor([1.0, 1.0], dtype=torch.float64, device=device)
+            else:  # 'none'
+                expected_loss = torch.tensor([0.25, 0.25], dtype=torch.float64, device=device)
+                expected_grad_x = torch.tensor([-1.0, -1.0], dtype=torch.float32, device=device)
+                expected_grad_y = torch.tensor([1.0, 1.0], dtype=torch.float64, device=device)
+            self.assertEqual(loss, expected_loss, atol=1e-6, rtol=0)
+            grad = torch.ones_like(loss) if reduction == 'none' else None
+            loss.backward(grad)
+            self.assertEqual(x.grad, expected_grad_x, atol=1e-6, rtol=0)
+            self.assertEqual(y.grad, expected_grad_y, atol=1e-6, rtol=0)
 
     def test_weighted_l1_loss_with_weights(self):
         inputs = torch.tensor([1.0, 2.0, 3.0, 4.0], requires_grad=True)
@@ -3928,7 +3926,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         bad_size = 7  # prime number so that no size can divide it.
 
         def test(input_shape, hidden_h_shape, hidden_c_shape, device):
-            for input, hidden in get_inputs(input_shape, hidden_h_shape, hidden_c_shape):
+            for input, hidden in get_inputs(input_shape, hidden_h_shape, hidden_c_shape, device):
                 model = nn.LSTM(input_size, hidden_size, num_layers, proj_size=proj_size, device=device)
                 self.assertRaises(RuntimeError, lambda: model(input, hidden))
 
@@ -3941,12 +3939,12 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
             new_shape[dim] = new_dim_size
             return tuple(new_shape)
 
-        def get_inputs(input_shape, hidden_h_shape, hidden_c_shape):
+        def get_inputs(input_shape, hidden_h_shape, hidden_c_shape, device):
             '''returns list( tuple(input, hidden) )
             where input, hidden are inputs to a model'''
-            input = torch.randn(input_shape)
-            hidden_h = torch.randn(hidden_h_shape)
-            hidden_c = torch.randn(hidden_c_shape)
+            input = torch.randn(input_shape, device=device)
+            hidden_h = torch.randn(hidden_h_shape, device=device)
+            hidden_c = torch.randn(hidden_c_shape, device=device)
             return [(input, (hidden_h, hidden_c))]
 
         # Incorrect input batch size
@@ -4449,9 +4447,8 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         for module in (nn.RNN, nn.LSTM, nn.GRU):
             input = torch.zeros((5, 0, 3))
             rnn = module(input_size=3, hidden_size=4)
-            if device in ['cuda', 'xpu', 'mps']:
-                rnn.to(device)
-                input = input.to(device)
+            rnn.to(device)
+            input = input.to(device)
             outs = rnn(input)
             self.assertEqual(outs[0].shape, torch.Size([5, 0, 4]))
             # Check that backward does not cause a hard error
@@ -5066,7 +5063,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         helper(self, torch.bfloat16)
         helper(self, torch.float16)
 
-    @onlyAccelerator
+    @unittest.skipIf(not TEST_CUDA, "CUDA unavailable")
     @unittest.skipIf(not TEST_CUDNN, "needs cudnn")
     def test_batchnorm_cudnn_nhwc(self):
         def run_test(input, grad_output):
@@ -5259,7 +5256,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                 f"test_batchnorm_2D_train_NHWC_vs_NCHW_mixed_bfloat16_{device}_{_dtype}",
                 f"test_batchnorm_3D_train_NHWC_vs_NCHW_mixed_bfloat16_{device}_{_dtype}"]
             skip_tests = skip_tests + (
-                ["test_batchnorm_3D_train_NCHW_vs_native_mixed_float16_{device}_{_dtype}"] if torch.version.cuda else []
+                [f"test_batchnorm_3D_train_NCHW_vs_native_mixed_float16_{device}_{_dtype}"] if torch.version.cuda else []
             )
             if self._testMethodName in skip_tests:
                 self.skipTest(f"Failed on {device.upper()}")
@@ -5790,8 +5787,8 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
             result_acc = F.cosine_similarity(x3_acc, x4_acc, dim=1, eps=1e-8)
             self.assertTrue(torch.allclose(result_cpu, result_acc.cpu(), rtol=1e-5, atol=1e-5))
         # test: Float16 inputs with appropriate eps
-        x5 = torch.ones(2, 3, dtype=torch.float16)
-        x6 = torch.ones(2, 3, dtype=torch.float16)
+        x5 = torch.ones(2, 3, dtype=torch.float16, device=device)
+        x6 = torch.ones(2, 3, dtype=torch.float16, device=device)
         result = F.cosine_similarity(x5, x6, dim=1, eps=1e-8)
         self.assertEqual(result.dtype, torch.float16)
         self.assertEqual(result.shape, torch.Size([2]))
@@ -6424,11 +6421,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                         test(N, C, D, H, W, mode, padding_mode, align_corners, input_requires_grad, device=device)
 
     def test_grid_sample_nearest_neighbor_rounding_mode_consistency(self, device):
-
-        device_list = ['cpu']
-        if ACCELERATOR_TYPE == device:
-            device_list.append(device)
-
         def normalize_indices(indices_unnormalized: torch.Tensor, dim_size: int, align_corners: bool):
             if align_corners:
                 indices_normalized = 2 * indices_unnormalized / (dim_size - 1) - 1
@@ -6444,146 +6436,145 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         channel_size = 1
 
         mode = 'nearest'
-        for device in device_list:
-            for padding_mode in ('zeros', 'border', 'reflection'):
-                for align_corners in (True, False):
-                    # Unnormalized inquiry indices
-                    inquiry_indices_unnormalized = torch.arange(
-                        0,
-                        test_dim_size - 1 + step_size, step_size,
-                        dtype=torch.float32,
-                        device=device
-                    )
-                    # Note that even though we are trying to create normalized indices
-                    # which results in x.0 and x.5 indices after unnormalization,
-                    # because of the numerical error,
-                    # the rounding direction might not always be expected as designed.
-                    # The best we could do is to ensure the rounding behaviors across
-                    # different implementations for different dimensions are
-                    # exactly the same.
-                    inquiry_indices = normalize_indices(
-                        indices_unnormalized=inquiry_indices_unnormalized,
-                        dim_size=test_dim_size,
-                        align_corners=align_corners
-                    )
-                    num_inqueries = inquiry_indices.shape[0]
-                    inquiry_fixed_indices = torch.full((num_inqueries,), 0.5, dtype=torch.float32, device=device)
-                    array_data = torch.rand(test_dim_size, dtype=torch.float32, device=device)
-                    # 2D grid sample x-dim interpolation
-                    # The input_tensor_2d_x is of shape
-                    # [batch_size, channel_size, non_test_dim_size, test_dim_size]
-                    input_tensor_2d_x = array_data.reshape(1, test_dim_size).repeat(
-                        batch_size,
-                        channel_size,
-                        non_test_dim_size,
-                        1
-                    )
-                    # The grid_tensor_2d_x is of shape
-                    # [batch_size, 1, num_inqueries]
-                    grid_tensor_2d_x = torch.cat(
-                        tensors=(
-                            inquiry_indices.reshape(num_inqueries, 1),
-                            inquiry_fixed_indices.reshape(num_inqueries, 1),
-                        ),
-                        dim=1
-                    ).repeat(batch_size, 1, 1, 1)
-                    # The output_tensor_2d_x is of shape
-                    # [batch_size, channel_size, 1, num_inqueries]
-                    output_tensor_2d_x = F.grid_sample(
-                        input=input_tensor_2d_x,
-                        grid=grid_tensor_2d_x,
-                        mode=mode,
-                        padding_mode=padding_mode,
-                        align_corners=align_corners,
-                    )
-                    # 2D grid sample y-dim interpolation
-                    # The input_tensor_2d_y is of shape
-                    # [batch_size, channel_size, test_dim_size, non_test_dim_size]
-                    input_tensor_2d_y = torch.transpose(input_tensor_2d_x, 3, 2)
-                    # The grid_tensor_2d_y is of shape
-                    # [batch_size, 1, num_inqueries]
-                    grid_tensor_2d_y = torch.index_select(
-                        grid_tensor_2d_x,
-                        -1,
-                        torch.tensor([1, 0], dtype=torch.int64, device=device)
-                    )
-                    # The output_tensor_2d_y is of shape
-                    # [batch_size, channel_size, 1, num_inqueries]
-                    output_tensor_2d_y = F.grid_sample(
-                        input=input_tensor_2d_y,
-                        grid=grid_tensor_2d_y,
-                        mode=mode,
-                        padding_mode=padding_mode,
-                        align_corners=align_corners,
-                    )
-                    self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_2d_y[0, 0, 0, :], atol=0, rtol=0)
-                    # 3D grid sample x-dim interpolation
-                    # The input_tensor_3d_x is of shape
-                    # [batch_size, channel_size, non_test_dim_size, non_test_dim_size, test_dim_size]
-                    input_tensor_3d_x = array_data.reshape(1, test_dim_size).repeat(
-                        batch_size, channel_size, non_test_dim_size, non_test_dim_size, 1)
-                    # The grid_tensor_3d_x is of shape
-                    # [batch_size, 1, 1, num_inqueries]
-                    grid_tensor_3d_x = torch.cat(
-                        tensors=(
-                            inquiry_indices.reshape(num_inqueries, 1),
-                            inquiry_fixed_indices.reshape(num_inqueries, 1),
-                            inquiry_fixed_indices.reshape(num_inqueries, 1),
-                        ),
-                        dim=1
-                    ).repeat(batch_size, 1, 1, 1, 1)
-                    # The output_tensor_3d_x is of shape
-                    # [batch_size, channel_size, 1, 1, num_inqueries]
-                    output_tensor_3d_x = F.grid_sample(
-                        input=input_tensor_3d_x,
-                        grid=grid_tensor_3d_x,
-                        mode=mode,
-                        padding_mode=padding_mode,
-                        align_corners=align_corners,
-                    )
-                    self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_3d_x[0, 0, 0, 0, :], atol=0, rtol=0)
-                    # 3D grid sample y-dim interpolation
-                    # The input_tensor_3d_y is of shape
-                    # [batch_size, channel_size, non_test_dim_size, test_dim_size, non_test_dim_size]
-                    input_tensor_3d_y = torch.transpose(input_tensor_3d_x, 4, 3)
-                    # The grid_tensor_3d_y is of shape
-                    # [batch_size, 1, 1, num_inqueries]
-                    grid_tensor_3d_y = torch.index_select(
-                        grid_tensor_3d_x,
-                        -1,
-                        torch.tensor([1, 0, 2], dtype=torch.int64, device=device)
-                    )
-                    # The output_tensor_3d_y is of shape
-                    # [batch_size, channel_size, 1, 1, num_inqueries]
-                    output_tensor_3d_y = F.grid_sample(
-                        input=input_tensor_3d_y,
-                        grid=grid_tensor_3d_y,
-                        mode=mode,
-                        padding_mode=padding_mode,
-                        align_corners=align_corners,
-                    )
-                    self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_3d_y[0, 0, 0, 0, :], atol=0, rtol=0)
-                    # 3D grid sample z-dim interpolation
-                    # The input_tensor_3d_z is of shape
-                    # [batch_size, channel_size, non_test_dim_size, non_test_dim_size, test_dim_size]
-                    input_tensor_3d_z = torch.transpose(input_tensor_3d_x, 4, 2)
-                    # The grid_tensor_3d_z is of shape
-                    # [batch_size, 1, 1, num_inqueries]
-                    grid_tensor_3d_z = torch.index_select(
-                        grid_tensor_3d_x,
-                        -1,
-                        torch.tensor([1, 2, 0], dtype=torch.int64, device=device)
-                    )
-                    # The output_tensor_3d_z is of shape
-                    # [batch_size, channel_size, 1, 1, num_inqueries]
-                    output_tensor_3d_z = F.grid_sample(
-                        input=input_tensor_3d_z,
-                        grid=grid_tensor_3d_z,
-                        mode=mode,
-                        padding_mode=padding_mode,
-                        align_corners=align_corners,
-                    )
-                    self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_3d_z[0, 0, 0, 0, :], atol=0, rtol=0)
+        for padding_mode in ('zeros', 'border', 'reflection'):
+            for align_corners in (True, False):
+                # Unnormalized inquiry indices
+                inquiry_indices_unnormalized = torch.arange(
+                    0,
+                    test_dim_size - 1 + step_size, step_size,
+                    dtype=torch.float32,
+                    device=device
+                )
+                # Note that even though we are trying to create normalized indices
+                # which results in x.0 and x.5 indices after unnormalization,
+                # because of the numerical error,
+                # the rounding direction might not always be expected as designed.
+                # The best we could do is to ensure the rounding behaviors across
+                # different implementations for different dimensions are
+                # exactly the same.
+                inquiry_indices = normalize_indices(
+                    indices_unnormalized=inquiry_indices_unnormalized,
+                    dim_size=test_dim_size,
+                    align_corners=align_corners
+                )
+                num_inqueries = inquiry_indices.shape[0]
+                inquiry_fixed_indices = torch.full((num_inqueries,), 0.5, dtype=torch.float32, device=device)
+                array_data = torch.rand(test_dim_size, dtype=torch.float32, device=device)
+                # 2D grid sample x-dim interpolation
+                # The input_tensor_2d_x is of shape
+                # [batch_size, channel_size, non_test_dim_size, test_dim_size]
+                input_tensor_2d_x = array_data.reshape(1, test_dim_size).repeat(
+                    batch_size,
+                    channel_size,
+                    non_test_dim_size,
+                    1
+                )
+                # The grid_tensor_2d_x is of shape
+                # [batch_size, 1, num_inqueries]
+                grid_tensor_2d_x = torch.cat(
+                    tensors=(
+                        inquiry_indices.reshape(num_inqueries, 1),
+                        inquiry_fixed_indices.reshape(num_inqueries, 1),
+                    ),
+                    dim=1
+                ).repeat(batch_size, 1, 1, 1)
+                # The output_tensor_2d_x is of shape
+                # [batch_size, channel_size, 1, num_inqueries]
+                output_tensor_2d_x = F.grid_sample(
+                    input=input_tensor_2d_x,
+                    grid=grid_tensor_2d_x,
+                    mode=mode,
+                    padding_mode=padding_mode,
+                    align_corners=align_corners,
+                )
+                # 2D grid sample y-dim interpolation
+                # The input_tensor_2d_y is of shape
+                # [batch_size, channel_size, test_dim_size, non_test_dim_size]
+                input_tensor_2d_y = torch.transpose(input_tensor_2d_x, 3, 2)
+                # The grid_tensor_2d_y is of shape
+                # [batch_size, 1, num_inqueries]
+                grid_tensor_2d_y = torch.index_select(
+                    grid_tensor_2d_x,
+                    -1,
+                    torch.tensor([1, 0], dtype=torch.int64, device=device)
+                )
+                # The output_tensor_2d_y is of shape
+                # [batch_size, channel_size, 1, num_inqueries]
+                output_tensor_2d_y = F.grid_sample(
+                    input=input_tensor_2d_y,
+                    grid=grid_tensor_2d_y,
+                    mode=mode,
+                    padding_mode=padding_mode,
+                    align_corners=align_corners,
+                )
+                self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_2d_y[0, 0, 0, :], atol=0, rtol=0)
+                # 3D grid sample x-dim interpolation
+                # The input_tensor_3d_x is of shape
+                # [batch_size, channel_size, non_test_dim_size, non_test_dim_size, test_dim_size]
+                input_tensor_3d_x = array_data.reshape(1, test_dim_size).repeat(
+                    batch_size, channel_size, non_test_dim_size, non_test_dim_size, 1)
+                # The grid_tensor_3d_x is of shape
+                # [batch_size, 1, 1, num_inqueries]
+                grid_tensor_3d_x = torch.cat(
+                    tensors=(
+                        inquiry_indices.reshape(num_inqueries, 1),
+                        inquiry_fixed_indices.reshape(num_inqueries, 1),
+                        inquiry_fixed_indices.reshape(num_inqueries, 1),
+                    ),
+                    dim=1
+                ).repeat(batch_size, 1, 1, 1, 1)
+                # The output_tensor_3d_x is of shape
+                # [batch_size, channel_size, 1, 1, num_inqueries]
+                output_tensor_3d_x = F.grid_sample(
+                    input=input_tensor_3d_x,
+                    grid=grid_tensor_3d_x,
+                    mode=mode,
+                    padding_mode=padding_mode,
+                    align_corners=align_corners,
+                )
+                self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_3d_x[0, 0, 0, 0, :], atol=0, rtol=0)
+                # 3D grid sample y-dim interpolation
+                # The input_tensor_3d_y is of shape
+                # [batch_size, channel_size, non_test_dim_size, test_dim_size, non_test_dim_size]
+                input_tensor_3d_y = torch.transpose(input_tensor_3d_x, 4, 3)
+                # The grid_tensor_3d_y is of shape
+                # [batch_size, 1, 1, num_inqueries]
+                grid_tensor_3d_y = torch.index_select(
+                    grid_tensor_3d_x,
+                    -1,
+                    torch.tensor([1, 0, 2], dtype=torch.int64, device=device)
+                )
+                # The output_tensor_3d_y is of shape
+                # [batch_size, channel_size, 1, 1, num_inqueries]
+                output_tensor_3d_y = F.grid_sample(
+                    input=input_tensor_3d_y,
+                    grid=grid_tensor_3d_y,
+                    mode=mode,
+                    padding_mode=padding_mode,
+                    align_corners=align_corners,
+                )
+                self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_3d_y[0, 0, 0, 0, :], atol=0, rtol=0)
+                # 3D grid sample z-dim interpolation
+                # The input_tensor_3d_z is of shape
+                # [batch_size, channel_size, non_test_dim_size, non_test_dim_size, test_dim_size]
+                input_tensor_3d_z = torch.transpose(input_tensor_3d_x, 4, 2)
+                # The grid_tensor_3d_z is of shape
+                # [batch_size, 1, 1, num_inqueries]
+                grid_tensor_3d_z = torch.index_select(
+                    grid_tensor_3d_x,
+                    -1,
+                    torch.tensor([1, 2, 0], dtype=torch.int64, device=device)
+                )
+                # The output_tensor_3d_z is of shape
+                # [batch_size, channel_size, 1, 1, num_inqueries]
+                output_tensor_3d_z = F.grid_sample(
+                    input=input_tensor_3d_z,
+                    grid=grid_tensor_3d_z,
+                    mode=mode,
+                    padding_mode=padding_mode,
+                    align_corners=align_corners,
+                )
+                self.assertEqual(output_tensor_2d_x[0, 0, 0, :], output_tensor_3d_z[0, 0, 0, 0, :], atol=0, rtol=0)
 
     @set_default_dtype(torch.double)
     def test_affine_grid(self, device):
@@ -6833,33 +6824,32 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
             outf.backward(ginputf)
             self.assertEqual(input.grad.to(torch.float32), inputf.grad, atol=0.01, rtol=0.01)
 
-        for device in ['cpu']:
-            helper([3, 20, 11, 7], 2, 'nearest', device)
-            helper([3, 20, 11, 7], 2, 'nearest', device, torch.channels_last)
-            helper([3, 20, 11, 7, 3], 2, 'nearest', device)
-            helper([3, 20, 30], 2, 'linear', device)
-            helper([3, 20, 11, 7], 2, 'bilinear', device)
-            helper([3, 20, 11, 7], 2, 'bilinear', device, torch.channels_last)
-            helper([1, 3, 11, 7], 2, 'bicubic', device)
-            helper([1, 3, 11, 7], 2, 'bicubic', device, torch.channels_last)
-            helper([3, 20, 11, 7, 3], 2, 'trilinear', device)
+        helper([3, 20, 11, 7], 2, 'nearest', device)
+        helper([3, 20, 11, 7], 2, 'nearest', device, torch.channels_last)
+        helper([3, 20, 11, 7, 3], 2, 'nearest', device)
+        helper([3, 20, 30], 2, 'linear', device)
+        helper([3, 20, 11, 7], 2, 'bilinear', device)
+        helper([3, 20, 11, 7], 2, 'bilinear', device, torch.channels_last)
+        helper([1, 3, 11, 7], 2, 'bicubic', device)
+        helper([1, 3, 11, 7], 2, 'bicubic', device, torch.channels_last)
+        helper([3, 20, 11, 7, 3], 2, 'trilinear', device)
 
-            helper([3, 5, 5], 257., 'nearest', device)
-            helper([3, 20, 11, 7], 20, 'nearest', device)
-            helper([3, 20, 11, 7, 3], 20, 'nearest', device)
-            helper([1, 2, 11, 7], 257, 'nearest', device, torch.channels_last)
-            helper([1, 2, 2000, 2000], 1 / 377., 'nearest', device)
-            helper([1, 2, 2000, 2000], 1 / 257., 'nearest', device, torch.channels_last)
-            helper([3, 2, 11, 7, 3], 20, 'nearest', device, torch.channels_last_3d)
-            helper([3, 5, 5], 10, 'linear', device)
-            helper([3, 5, 5], 257, 'linear', device)
-            helper([1, 2, 11, 7], 257, 'bilinear', device)
-            helper([1, 2, 11, 7], 257, 'bilinear', device, torch.channels_last)
-            helper([1, 3, 11, 7], 10, 'bicubic', device)
-            helper([1, 3, 11, 7], 10, 'bicubic', device, torch.channels_last)
-            helper([1, 1, 11, 7], 257, 'bicubic', device)
-            helper([3, 2, 11, 7, 3], 20, 'trilinear', device)
-            helper([3, 2, 11, 7, 3], 20, 'trilinear', device, torch.channels_last_3d)
+        helper([3, 5, 5], 257., 'nearest', device)
+        helper([3, 20, 11, 7], 20, 'nearest', device)
+        helper([3, 20, 11, 7, 3], 20, 'nearest', device)
+        helper([1, 2, 11, 7], 257, 'nearest', device, torch.channels_last)
+        helper([1, 2, 2000, 2000], 1 / 377., 'nearest', device)
+        helper([1, 2, 2000, 2000], 1 / 257., 'nearest', device, torch.channels_last)
+        helper([3, 2, 11, 7, 3], 20, 'nearest', device, torch.channels_last_3d)
+        helper([3, 5, 5], 10, 'linear', device)
+        helper([3, 5, 5], 257, 'linear', device)
+        helper([1, 2, 11, 7], 257, 'bilinear', device)
+        helper([1, 2, 11, 7], 257, 'bilinear', device, torch.channels_last)
+        helper([1, 3, 11, 7], 10, 'bicubic', device)
+        helper([1, 3, 11, 7], 10, 'bicubic', device, torch.channels_last)
+        helper([1, 1, 11, 7], 257, 'bicubic', device)
+        helper([3, 2, 11, 7, 3], 20, 'trilinear', device)
+        helper([3, 2, 11, 7, 3], 20, 'trilinear', device, torch.channels_last_3d)
 
     @onlyAccelerator
     def test_interpolate_illegal_memory_access(self, device):
@@ -6925,10 +6915,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         size_dtype_list.append(([1, 10, 2, 2**11 + 4], torch.half))
         size_dtype_list.append(([1, 10, 2, 2, 2**11 + 4], torch.half))
 
-        # TODO: turn on cuda test after buffer overflow issue is fixed in cuda kernel
-        # devices = ['cpu'] + (['cuda'] if torch.cuda.is_available() else [])
-        devices = ['cpu']
-
         for mode in ('linear', 'bilinear', 'bicubic', 'trilinear'):
             for size_dtype in size_dtype_list:
                 size, dtype = size_dtype
@@ -6939,15 +6925,14 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                     or (mode == 'trilinear' and len(size) != 5)
                 ):
                     continue
-                for device in devices:
-                    if (
-                        device == 'cpu' and dtype == torch.half
-                        or (device == 'cuda' and dtype == torch.bfloat16)
-                    ):
-                        # no half precision support on cpu or bfloat16 on cuda yet
-                        continue
-                    for is_channels_last in (True, False):
-                        helper(size, dtype, mode, device, is_channels_last)
+                if (
+                    device == 'cpu' and dtype == torch.half
+                    or (device == 'cuda' and dtype == torch.bfloat16)
+                ):
+                    # no half precision support on cpu or bfloat16 on cuda yet
+                    continue
+                for is_channels_last in (True, False):
+                    helper(size, dtype, mode, device, is_channels_last)
 
 
     @set_default_dtype(torch.double)
@@ -7478,8 +7463,8 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
         atol = 1e-5
         rtol = 1e-3
 
-        x = torch.randn((4, 4, 16), requires_grad=True)
-        layer_norm = nn.LayerNorm((16,), 1e-5, True)
+        x = torch.randn((4, 4, 16), requires_grad=True).to(device)
+        layer_norm = nn.LayerNorm((16,), 1e-5, True).to(device)
         with torch.no_grad():
             layer_norm.weight = torch.nn.Parameter(0.1 * torch.ones_like(layer_norm.weight))
 
@@ -7488,14 +7473,6 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
 
         self.assertEqual(grads1, grads2, rtol=rtol, atol=atol)
 
-        if ACCELERATOR_TYPE == device:
-            x = x.to(device)
-            layer_norm = layer_norm.to(device)
-
-            grads1 = torch.autograd.grad(layer_norm(x).sum(), x, create_graph=False)[0]
-            grads2 = torch.autograd.grad(layer_norm(x).sum(), x, create_graph=True)[0]
-
-            self.assertEqual(grads1, grads2, rtol=rtol, atol=atol)
 
     def test_layer_norm_eps(self):
         # test for https://github.com/pytorch/pytorch/issues/108072
@@ -7536,7 +7513,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
                     self.assertEqual(ln.bias.grad, ln_cuda.bias.grad, f"bias grad failed: {m=} {n=}", rtol=rtol, atol=atol)
 
     @onlyAccelerator
-    @largeTensorTest("40GB", device="cuda")
+    @largeTensorTest("40GB")
     def test_layer_norm_large_tensor(self, device):
         # test for https://github.com/pytorch/pytorch/issues/136291
         device = torch.device(device)
@@ -7576,7 +7553,7 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
             res = arg_class(*arg_3)
 
     @onlyAccelerator
-    @largeTensorTest("20GB", device="cuda")
+    @largeTensorTest("20GB")
     def test_large_max_pool2d_ch_last(self, device):
         # https://github.com/pytorch/pytorch/issues/165297
         N, C, H, W = 70, 64, 512, 960  # dims to extend > int32
@@ -14240,12 +14217,12 @@ class TestUtils(TestCase):
 
 instantiate_device_type_tests(TestNNDeviceType, globals(), allow_mps=True)
 
-# https://github.com/pytorch/pytorch/issues/177119
-if os.environ.get('PYTORCH_TEST_WITH_DYNAMO', '0') == '0':
-    device_list = ('cuda', 'cpu')
-else:
-    device_list = ('cuda',)
-instantiate_device_type_tests(TestNN, globals(), only_for=tuple(device_list))
+device_list = None
+# # https://github.com/pytorch/pytorch/issues/177119
+# if os.environ.get('PYTORCH_TEST_WITH_DYNAMO', '0') == '1':
+#     device_list = ('cpu', )
+
+instantiate_device_type_tests(TestNN, globals(), except_for=device_list)
 
 
 if __name__ == '__main__':
