@@ -49,6 +49,9 @@ RUN yum install -y --enablerepo=powertools ninja-build
 ENV PATH=/opt/rh/gcc-toolset-${DEVTOOLSET_VERSION}/root/usr/bin:$PATH
 ENV LD_LIBRARY_PATH=/opt/rh/gcc-toolset-${DEVTOOLSET_VERSION}/root/usr/lib64:/opt/rh/gcc-toolset-${DEVTOOLSET_VERSION}/root/usr/lib:$LD_LIBRARY_PATH
 
+# Create python3 symlink for tools that expect it in PATH (e.g., NCCL build)
+RUN ln -sf /opt/python/cp310-cp310/bin/python3 /usr/local/bin/python3
+
 # Build a newer version of libgomp than that supported in Almalinux 8.
 COPY ./common/install_libgomp.sh install_libgomp.sh
 RUN bash ./install_libgomp.sh && rm -f install_libgomp.sh
@@ -73,9 +76,9 @@ RUN bash ./install_openblas.sh && rm -f install_openblas.sh
 
 # Install Arm Compute Library
 FROM base as arm_compute
-# use python3.9 to install scons
-RUN python3.9 -m pip install scons==4.7.0
-RUN ln -sf /opt/python/cp39-cp39/bin/scons /usr/local/bin
+# Install scons using the manylinux-provided CPython 3.9
+RUN /opt/python/cp39-cp39/bin/python -m pip install scons==4.7.0 && \
+    ln -sf /opt/python/cp39-cp39/bin/scons /usr/local/bin
 COPY ./common/install_acl.sh install_acl.sh
 RUN bash ./install_acl.sh && rm -f install_acl.sh
 
