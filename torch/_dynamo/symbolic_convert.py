@@ -4233,7 +4233,20 @@ class InstructionTranslatorBase(
         self.push(fn)
 
     def CONVERT_VALUE(self, inst: Instruction) -> None:
-        self.push(self._convert_value(self.pop(), inst.argval))
+        # Python 3.13+ may surface CONVERT_VALUE either as a numeric arg or
+        # as a resolved argval (str/repr/ascii). Normalize to the numeric flag
+        # expected by _convert_value to preserve CPython conversion semantics.
+        flag = inst.arg
+        if not isinstance(flag, int):
+            if inst.argval is str:
+                flag = 1
+            elif inst.argval is repr:
+                flag = 2
+            elif inst.argval is ascii:
+                flag = 3
+            else:
+                flag = 0
+        self.push(self._convert_value(self.pop(), flag))
 
     def FORMAT_SIMPLE(self, inst: Instruction) -> None:
         self._format_value(VariableTracker.build(self, ""), 0)

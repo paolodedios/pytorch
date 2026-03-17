@@ -1637,6 +1637,21 @@ class BuiltinVariable(VariableTracker):
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker | None:
         """Handle repr() on user defined objects."""
+        if isinstance(
+            arg,
+            (variables.ExceptionVariable, variables.UserDefinedExceptionObjectVariable),
+        ):
+            try:
+                const_args = tuple(a.as_python_constant() for a in arg.args)
+            except NotImplementedError:
+                return None
+            if len(const_args) == 0:
+                value = f"{arg.exc_type.__name__}()"
+            elif len(const_args) == 1:
+                value = f"{arg.exc_type.__name__}({const_args[0]!r})"
+            else:
+                value = f"{arg.exc_type.__name__}{const_args!r}"
+            return VariableTracker.build(tx, value)
         if isinstance(arg, variables.UserDefinedObjectVariable):
             repr_method = arg.value.__repr__
 
@@ -1674,6 +1689,22 @@ class BuiltinVariable(VariableTracker):
     def call_str(
         self, tx: "InstructionTranslator", arg: VariableTracker
     ) -> VariableTracker | None:
+        if isinstance(
+            arg,
+            (variables.ExceptionVariable, variables.UserDefinedExceptionObjectVariable),
+        ):
+            try:
+                const_args = tuple(a.as_python_constant() for a in arg.args)
+            except NotImplementedError:
+                return None
+            if len(const_args) == 0:
+                value = ""
+            elif len(const_args) == 1:
+                value = str(const_args[0])
+            else:
+                value = str(const_args)
+            return VariableTracker.build(tx, value)
+
         # Handle `str` on a user defined function or object
         if isinstance(arg, (variables.UserFunctionVariable)):
             return VariableTracker.build(tx, str(arg.fn))
@@ -1722,12 +1753,6 @@ class BuiltinVariable(VariableTracker):
 
                 # Inline the user function
                 return user_func_variable.call_function(tx, [arg], {})
-        elif isinstance(arg, (variables.ExceptionVariable,)):
-            if len(arg.args) == 0:
-                value = f"{arg.exc_type}"
-            else:
-                value = ", ".join(a.as_python_constant() for a in arg.args)
-            return VariableTracker.build(tx, value)
         return None
 
     def _call_min_max(
@@ -1741,6 +1766,34 @@ class BuiltinVariable(VariableTracker):
         elif len(args) > 2:
             return self._call_min_max_seq(tx, args)
         return None
+
+    def call_mod(
+        self,
+        tx: "InstructionTranslator",
+        left: VariableTracker,
+        right: VariableTracker,
+    ) -> VariableTracker | None:
+        # For constant-like inputs, defer to the generic constant-fold path.
+        # This preserves CPython %-format semantics (including %r) in one place.
+        if check_unspec_or_constant_args((left, right), {}):
+            return None
+        try:
+            left_value = left.as_python_constant()
+        except NotImplementedError:
+            return None
+        if not isinstance(left_value, str):
+            return None
+        try:
+            right_value = right.as_python_constant()
+            return VariableTracker.build(tx, left_value % right_value)
+        except NotImplementedError:
+            return None
+        except Exception as exc:
+            raise_observed_exception(
+                type(exc),
+                tx,
+                args=[VariableTracker.build(tx, a) for a in exc.args],
+            )
 
     def _call_min_max_seq(
         self, tx: "InstructionTranslator", items: Sequence[VariableTracker]
@@ -2585,6 +2638,8 @@ class BuiltinVariable(VariableTracker):
 
     def var_getattr(self, tx: "InstructionTranslator", name: str) -> VariableTracker:
         source = self.source and AttrSource(self.source, name)
+        if isinstance(self.fn, type) and name == "__name__":
+            return VariableTracker.build(tx, self.fn.__name__, source)
         if self.fn is object:
             # for object, we can just directly read the attribute
             try:

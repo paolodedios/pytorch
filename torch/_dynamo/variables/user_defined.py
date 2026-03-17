@@ -2552,8 +2552,12 @@ class UserDefinedExceptionObjectVariable(UserDefinedObjectVariable):
             and len(kwargs) == 0
         ):
             self.exc_vt.args = tuple(args)
+            eager_args = tuple(
+                arg.as_python_constant() if arg.is_python_constant() else arg
+                for arg in args
+            )
             # pyrefly: ignore[missing-attribute]
-            self.value.args = args
+            self.value.args = eager_args
             return variables.CONSTANT_VARIABLE_NONE
         elif (
             name == "__setattr__"
