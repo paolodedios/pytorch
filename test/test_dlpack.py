@@ -803,10 +803,13 @@ class TestTorchDlPack(TestCase):
             functions=["test_dlpack_exchange_api"],
             verbose=False,
             with_cuda=device.startswith("cuda"),
+            with_sycl=device.startswith("xpu"),
         )
 
         # Run the comprehensive C++ test
-        module.test_dlpack_exchange_api(tensor, api_capsule, device.startswith("cuda"))
+        module.test_dlpack_exchange_api(
+            tensor, api_capsule, device.startswith(("cuda", "xpu"))
+        )
 
     @skipMeta
     @onlyCUDA
