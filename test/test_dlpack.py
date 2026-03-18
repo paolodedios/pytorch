@@ -224,12 +224,12 @@ class TestTorchDlPack(TestCase):
         torch.float4_e2m1fn_x2,
     )
     def test_dlpack_conversion_with_diff_streams_narrow_precision(self, device, dtype):
-        stream_a = torch.Stream()
-        stream_b = torch.Stream()
-        with stream_a:
+        stream_a = torch.cuda.Stream()
+        stream_b = torch.cuda.Stream()
+        with torch.cuda.stream(stream_a):
             x = make_tensor((5,), dtype=torch.uint8, device=device) + 1
             x = x.view(dtype)
-            z = torch.from_dlpack(x.__dlpack__(stream=stream_b))
+            z = torch.from_dlpack(x.__dlpack__(stream=stream_b.cuda_stream))
             stream_a.synchronize()
         stream_b.synchronize()
         self.assertEqual(z.view(torch.uint8), x.view(torch.uint8))
@@ -803,13 +803,10 @@ class TestTorchDlPack(TestCase):
             functions=["test_dlpack_exchange_api"],
             verbose=False,
             with_cuda=device.startswith("cuda"),
-            with_sycl=device.startswith("xpu"),
         )
 
         # Run the comprehensive C++ test
-        module.test_dlpack_exchange_api(
-            tensor, api_capsule, device.startswith(("cuda", "xpu"))
-        )
+        module.test_dlpack_exchange_api(tensor, api_capsule, device.startswith("cuda"))
 
     @skipMeta
     @onlyCUDA
