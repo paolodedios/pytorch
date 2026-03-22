@@ -5,12 +5,10 @@
 source "$(dirname "${BASH_SOURCE[0]}")/common_utils.sh"
 set -ex -o pipefail
 
-# ROCm env vars (ROCM_PATH, PATH, etc.) are set via Dockerfile ENV.
-# TheRock nightly tarball needs extra include paths and MSLK disabled.
-if [[ "${BUILD_ENVIRONMENT}" == *rocm* ]] && [[ "${ROCM_VERSION:-}" == "nightly" ]]; then
-  export CPLUS_INCLUDE_PATH=/opt/rocm/lib/rocm_sysdeps/include:${CPLUS_INCLUDE_PATH:-}
-  export C_INCLUDE_PATH=/opt/rocm/lib/rocm_sysdeps/include:${C_INCLUDE_PATH:-}
-  export USE_MSLK=0
+# Source ROCm environment variables (paths may vary between tarball/wheel installs)
+if [[ "${BUILD_ENVIRONMENT}" == *rocm* ]] && [[ -f /etc/rocm_env.sh ]]; then
+  # shellcheck disable=SC1091
+  source /etc/rocm_env.sh
 fi
 
 # Required environment variables:
