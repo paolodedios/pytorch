@@ -549,17 +549,6 @@ std::optional<Tensor> convert_boolean_attn_mask(const std::optional<Tensor>& att
   return attn_mask;
 }
 
-std::optional<Tensor> convert_boolean_attn_mask(const std::optional<Tensor>& attn_mask, caffe2::TypeMeta dtype) {
-  return convert_boolean_attn_mask_(attn_mask, dtype, -std::numeric_limits<double>::infinity());
-}
-
-// alternate version to workaround -inf issue with cuDNN
-// TODO(eqy): delete this when cuDNN -inf issue is resolved
-std::optional<Tensor> convert_boolean_attn_mask_cudnn(const std::optional<Tensor>& attn_mask, caffe2::TypeMeta dtype) {
-  // TODO Use the max type of the input and output
-  return convert_boolean_attn_mask_(attn_mask, dtype, -65504.0);
-}
-
 // Memory Efficient Attention requires aligned non-last strides for its bias.
 // We preserve the visible mask shape and copy it into fresh storage whose row
 // stride is rounded up to the requested alignment.
