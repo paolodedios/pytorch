@@ -138,8 +138,14 @@ export USE_MSLK=0
 ROCM_ENV
 
       echo "source /etc/rocm_env.sh" >> /etc/bash.bashrc
+
+      # --- End of theRock nightly tarball installation ---
       exit 0
     fi
+
+    # =========================================================================
+    # Non-nightly: install ROCm from repo.radeon.com apt packages
+    # =========================================================================
 
     # Make sure rocm packages from repo.radeon.com have highest priority
     cat << EOF > /etc/apt/preferences.d/rocm-pin-600
