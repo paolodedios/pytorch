@@ -59,7 +59,6 @@
 #include <ATen/ops/cat.h>
 #include <ATen/ops/chunk_native.h>
 #include <ATen/ops/dropout.h>
-#include <ATen/ops/empty_strided.h>
 #include <ATen/ops/linear_native.h>
 #include <ATen/ops/matmul.h>
 #include <ATen/ops/matmul_native.h>
@@ -534,7 +533,7 @@ inline void validate_sdpa_input(
 // the math and memory efficient attn_mask implementation
 //  Args:
 //    attn_mask: attn_mask of shape (B, L, S) or (L, S) or (B, N_heads, L, S)
-std::optional<Tensor> convert_boolean_attn_mask(const std::optional<Tensor>& attn_mask, caffe2::TypeMeta dtype) {
+std::optional<Tensor> convert_boolean_attn_mask_(const std::optional<Tensor>& attn_mask, caffe2::TypeMeta dtype, double neg_inf) {
   // Pass through
   if (!attn_mask.has_value()) {
     return std::nullopt;
@@ -542,28 +541,35 @@ std::optional<Tensor> convert_boolean_attn_mask(const std::optional<Tensor>& att
   // Convert boolean mask to additive mask; need to invert mask to indicate what
   // to mask *out*.
   if (attn_mask->dtype() == at::kBool) {
-    constexpr double neg_inf = -std::numeric_limits<double>::infinity();
     return at::where(*attn_mask, 0.0, at::scalar_tensor(neg_inf, at::TensorOptions().dtype(dtype).device(attn_mask->device())));
   }
   // Otherwise, attn_mask represents an additive attention tensor
   return attn_mask;
 }
 
-// Memory Efficient Attention requires aligned non-last strides for its bias.
-// We preserve the visible mask shape and copy it into fresh storage whose row
-// stride is rounded up to the requested alignment.
-
-template <int alignment>
-c10::SymInt round_up_to_multiple(const c10::SymInt& size) {
-  return ((size + (alignment - 1)) / alignment) * alignment;
+std::optional<Tensor> convert_boolean_attn_mask(const std::optional<Tensor>& attn_mask, caffe2::TypeMeta dtype) {
+  return convert_boolean_attn_mask_(attn_mask, dtype, -std::numeric_limits<double>::infinity());
 }
+
+// alternate version to workaround -inf issue with cuDNN
+// TODO(eqy): delete this when cuDNN -inf issue is resolved
+std::optional<Tensor> convert_boolean_attn_mask_cudnn(const std::optional<Tensor>& attn_mask, caffe2::TypeMeta dtype) {
+  // TODO Use the max type of the input and output
+  return convert_boolean_attn_mask_(attn_mask, dtype, -65504.0);
+}
+
+// Memory Efficient Attention requires a padded attn mask bias
+// This function pads the attn_mask bias to be a multiple of 16
+// Then slices the padded bias to the original size
+// We apply this function to the top level SDPA so that
+// if padding is done it will be tracked for backward automatically
 
 template<int alignment>
 bool aligned_tensor(const at::Tensor& tensor){
   for(const auto i : c10::irange(tensor.dim() - 1)){
     auto stride = tensor.sym_stride(i).maybe_as_int();
-    // If the stride is unknown at compilation time, route through the
-    // aligned-copy path instead of guarding on the concrete alignment.
+    // If the stride is unknown at compilation time, assume it is unaligned
+    // and always pad it. This is helpful to avoid unnecessary guards.
     if (!stride)
       return false;
 
@@ -575,25 +581,11 @@ bool aligned_tensor(const at::Tensor& tensor){
 }
 
 template <int alignment>
-at::Tensor copy_to_aligned_bias(const at::Tensor& attn_bias) {
-  TORCH_INTERNAL_ASSERT(attn_bias.dim() > 0);
-
-  c10::SymDimVector aligned_strides(attn_bias.dim());
-  aligned_strides.back() = c10::SymInt(1);
-
-  c10::SymInt next_stride =
-      round_up_to_multiple<alignment>(attn_bias.sym_size(-1));
-  for (int64_t dim = attn_bias.dim() - 1; dim-- > 0;) {
-    aligned_strides[dim] = next_stride;
-    next_stride = next_stride * attn_bias.sym_size(dim);
-  }
-
-  auto aligned_bias = at::empty_strided_symint(
-      attn_bias.sym_sizes(),
-      aligned_strides,
-      attn_bias.options());
-  aligned_bias.copy_(attn_bias);
-  return aligned_bias;
+at::Tensor pad_bias(const at::Tensor& attn_bias) {
+  auto last_dim_size = attn_bias.sym_size(-1);
+  auto pad_count = alignment - (last_dim_size % alignment);
+  auto padded_bias = at::pad_symint(attn_bias, {c10::SymInt(0), pad_count});
+  return padded_bias.slice_symint(-1, 0, last_dim_size);
 }
 
 at::Tensor preprocess_mask(
@@ -604,7 +596,7 @@ at::Tensor preprocess_mask(
   constexpr int mem_eff_alignment = 8;
   at::Tensor result_mask = mask;
   if (!aligned_tensor<mem_eff_alignment>(mask)) {
-    result_mask = copy_to_aligned_bias<mem_eff_alignment>(mask);
+    result_mask = pad_bias<mem_eff_alignment>(mask);
   }
   return result_mask.expand_symint(
       {query.sym_size(0),
@@ -752,7 +744,8 @@ Tensor scaled_dot_product_attention(
   }
   const auto query_device_type = query_.device().type();
   const auto backend = static_cast<SDPBackend>(choice_int);
-  auto attn_mask = convert_boolean_attn_mask(attn_mask_, query_.dtype());
+  const auto convert_attn_func = backend != SDPBackend::cudnn_attention ? convert_boolean_attn_mask : convert_boolean_attn_mask_cudnn;
+  auto attn_mask = convert_attn_func(attn_mask_, query_.dtype());
   switch (backend) {
     case SDPBackend::cudnn_attention: {
       bool compute_logsumexp = should_compute_logsumexp(query_, key, value);
@@ -861,6 +854,7 @@ Tensor scaled_dot_product_attention(
       TORCH_CHECK(
           false,
           "No viable backend for scaled_dot_product_attention was found.");
+      return Tensor();
   }
 }
 
@@ -1070,6 +1064,11 @@ _scaled_dot_product_fused_attention_overrideable_backward(
     const at::Tensor & philox_offset,
     std::optional<double> scale) {
   TORCH_CHECK_NOT_IMPLEMENTED(false, "_scaled_dot_product_fused_attention_overrideable_backward not implemented: This is an operator for privateuse1 backends, please use TORCH_LIBRARY_IMPL to override this function ");
+  return std::tuple<Tensor, Tensor, Tensor, Tensor>(
+          at::empty_like(query),
+          at::empty_like(key),
+          at::empty_like(value),
+          at::empty_like(attn_bias));
 }
 
 Tensor triton_multi_head_attention(

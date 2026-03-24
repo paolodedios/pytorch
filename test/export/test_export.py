@@ -17693,7 +17693,10 @@ def forward(self, q, k, v):
                     q, k, v, attn_mask=attn_mask, dropout_p=0.0
                 )
 
-        seq_len = Dim("seq_len", min=1, max=32)
+        # Efficient attention requires strides aligned to 8, so seq_len must
+        # be expressed as a multiple of 8 to satisfy the alignment guards.
+        _seq_len = Dim("_seq_len", min=1, max=4)
+        seq_len = 8 * _seq_len
         q = torch.randn(2, 4, 8, 64, dtype=torch.float16, device="cuda")
         k = torch.randn(2, 4, 8, 64, dtype=torch.float16, device="cuda")
         v = torch.randn(2, 4, 8, 64, dtype=torch.float16, device="cuda")
