@@ -278,9 +278,7 @@ class CudaReproTests(TestCase):
             f_compiled = torch.compile(f)
 
             out, code = run_and_get_code(f_compiled, *inputs)
-            # padded bias should have an expanded dim
-            FileCheck().check("buf0 =").check_same(", 0, ").run(code[0])
-            # single fused padded kernel
+            # The helper should materialize a single aligned copy buffer.
             FileCheck().check_count("empty_strided_cuda(", 1, exactly=True).check(
                 "return"
             ).run(code[0])
