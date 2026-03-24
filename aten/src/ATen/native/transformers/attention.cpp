@@ -592,19 +592,6 @@ at::Tensor copy_to_aligned_bias(const at::Tensor& attn_bias) {
       attn_bias.sym_sizes(),
       aligned_strides,
       attn_bias.options());
-  if (aligned_bias.unsafeGetTensorImpl()->has_symbolic_sizes_strides()) {
-    auto& sym_shape_meta =
-        aligned_bias.unsafeGetTensorImpl()->symbolic_shape_meta();
-    // This layout is intentionally non-dense when the visible mask shape is not
-    // already aligned. Recording that fact avoids export solving symbolic
-    // contiguity predicates like round_up(seq_len) == seq_len during tracing.
-    sym_shape_meta.assume_contiguous(false);
-    sym_shape_meta.assume_channels_last_contiguous(false);
-    sym_shape_meta.assume_channels_last_3d_contiguous(false);
-    sym_shape_meta.assume_channels_last(false);
-    sym_shape_meta.assume_channels_last_3d(false);
-    sym_shape_meta.assume_non_overlapping_and_dense(false);
-  }
   aligned_bias.copy_(attn_bias);
   return aligned_bias;
 }
