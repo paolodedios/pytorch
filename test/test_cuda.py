@@ -7747,9 +7747,7 @@ class TestMemPool(TestCase):
         prev = 0
         with torch.cuda.use_mem_pool(pool):
             for i in range(4):
-                tensors.append(
-                    torch.randn(NELEMS, device="cuda", dtype=torch.float32)
-                )
+                tensors.append(torch.randn(NELEMS, device="cuda", dtype=torch.float32))
                 cur = torch.cuda.private_pool_memory_reserved()
                 self.assertGreaterEqual(cur, (i + 1) * TENSOR_SIZE)
                 self.assertGreaterEqual(cur, prev)
