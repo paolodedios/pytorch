@@ -67,7 +67,6 @@ from torch.testing._internal.common_utils import (
     parametrize,
     run_tests,
     set_default_dtype,
-    skipIfRocm,
     skipIfTorchDynamo,
     skipIfTorchInductor,
     suppress_warnings,
