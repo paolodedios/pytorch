@@ -256,6 +256,7 @@ from .misc import (
     RandomClassVariable,
     RandomVariable,
     SavedTensorBox,
+    StringFormatVariable,
     TorchVersionVariable,
     TypingVariable,
     WeakRefVariable,
@@ -4291,7 +4292,11 @@ class SourcelessBuilder:
         elif isinstance(value, re.Pattern):
             return ConstantLikeVariable(value)
         elif isinstance(value, torch._dynamo.variables.lazy.LazySymNodeFormatString):
-            return ConstantVariable.create(str(value))
+            return StringFormatVariable.create(
+                value.fmt_var.as_python_constant(),
+                [value.sym_node_var],
+                {},
+            )
         elif isinstance(value, type(torch._higher_order_ops.flex_attention_backward)):
             return torch._dynamo.variables.higher_order_ops.FlexAttentionBackwardHighOrderVariable(
                 value

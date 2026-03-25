@@ -302,6 +302,26 @@ Unsupported Tensor.item() call with capture_scalar_outputs=False
  For more details about this graph break, please visit: https://meta-pytorch.github.io/compile-graph-break-site/gb/gb0124.html""",  # noqa: B950
         )
 
+    @torch._dynamo.config.patch(reorderable_logging_functions={print})
+    def test_reorder_print_data_dependent_fstring(self):
+        """Print with data-dependent bool in f-string should work with reorderable logging."""
+
+        def f(x, mask):
+            make_causal = bool((mask == 0).all())
+            print(f"make_causal={make_causal}")
+            return make_causal + x + 1
+
+        x = torch.randn(2, 3)
+        mask = torch.zeros(2, 3)
+
+        opt_f = torch.compile(backend="eager", fullgraph=True)(f)
+        with patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+            opt_out = opt_f(x, mask)
+            printed_output = mock_stdout.getvalue().strip()
+
+        self.assertEqual(printed_output, "make_causal=True")
+        self.assertTrue(same(f(x, mask), opt_out))
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
