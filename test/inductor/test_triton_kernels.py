@@ -3568,7 +3568,6 @@ class MutationTests(torch._inductor.test_case.TestCase):
         )
 
     @skipIfXpu(msg="Blocked by https://github.com/pytorch/pytorch/issues/170049")
-    @skipIfRocm(msg="Fails with Triton 3.7")
     @make_mutation_test
     def test_for_loop_arg_2():
         @triton.jit
@@ -3630,7 +3629,6 @@ class MutationTests(torch._inductor.test_case.TestCase):
         )
 
     @skipIfXpu(msg="Blocked by https://github.com/pytorch/pytorch/issues/170049")
-    @skipIfRocm(msg="Fails with Triton 3.7")
     @make_mutation_test
     def test_while_loop():
         @triton.jit

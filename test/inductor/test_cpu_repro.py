@@ -5236,7 +5236,6 @@ class CPUReproTests(TestCase):
         get_gcc_major_version() == 13,
         "Fails under GCC 13 due to vector codegen (passes with GCC 11)",
     )
-    @skipIfRocm(msg="Fails with Triton 3.7")
     def test_convert_fp32_to_double_vec(self):
         def fn(x):
             return x.to(torch.double)

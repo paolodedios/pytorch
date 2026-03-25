@@ -322,7 +322,6 @@ class TestAOTInductorPackage(TestCase):
                 self.assertTrue(torch.allclose(actual, expected))
 
     @requires_triton_ptxas_compat
-    @skipIfRocm(msg="Fails with Triton 3.7")
     @unittest.skipIf(IS_FBCODE, "cmake won't work in fbcode")
     def test_compile_after_package_multi_arch(self):
         if self.device != GPU_TYPE:

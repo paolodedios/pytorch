@@ -240,7 +240,6 @@ class TestOperatorReorderForPeakMemory(TestCase):
             outp = compiled_model(self.inputs)
             self.assertTrue(same(outp, outp_corr))
 
-    @skipIfRocm(msg="Fails with Triton 3.7")
     @skipIfXpu(msg="Blocked by https://github.com/pytorch/pytorch/issues/170049")
     @mock.patch.object(config, "allow_buffer_reuse", False)
     @unittest.skipUnless(TRITON_AVAILABLE, "Triton is not available")

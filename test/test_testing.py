@@ -2399,7 +2399,6 @@ class TestImports(TestCase):
     @skipIfXpu(msg="The test is flaky on XPU, see https://github.com/pytorch/pytorch/issues/110040")
     # The test is flaky on ROCm/XPU and has been open and close multiple times
     # https://github.com/pytorch/pytorch/issues/110040
-    @skipIfRocm(msg="Fails with Triton 3.7")
     def test_circular_dependencies(self) -> None:
         """ Checks that all modules inside torch can be imported
         Prevents regression reported in https://github.com/pytorch/pytorch/issues/77441 """

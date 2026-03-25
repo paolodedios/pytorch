@@ -744,7 +744,6 @@ class StructuredTraceTest(TestCase):
 
         self.assertParses()
 
-    @skipIfRocm(msg="Fails with Triton 3.7")
     @requires_tlparse
     @unittest.skip("https://github.com/pytorch/pytorch/issues/176188")
     def test_graph_breaks(self):
