@@ -2953,7 +2953,7 @@ class GuardManager {
     // During interpreter shutdown, weakrefs/callbacks/capsules may already
     // have been torn down before the C++ GuardManager destructor runs. In
     // that state we must not call Python C API from destructor cleanup.
-    if (!Py_IsInitialized() || _Py_IsFinalizing()) {
+    if (!Py_IsInitialized() || Py_IsFinalizing()) {
       _tag_safe_entries.clear();
       _dict_pointers.clear();
       _disable_dict_tag_matching = true;
