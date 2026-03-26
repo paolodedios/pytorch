@@ -31,7 +31,6 @@ from torch.testing import FileCheck
 from torch.testing._internal import common_utils
 from torch.testing._internal.common_utils import (
     parametrize,
-    skipIfRocm,
     skipIfWindows,
     skipIfXpu,
 )
