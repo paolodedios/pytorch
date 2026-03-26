@@ -7958,8 +7958,6 @@ class TestLearnableBiases(InductorTestCase):
         )
 
     @skip_on_cpu
-    # Fails with triton 3.7
-    @skip_on_rocm
     def test_flex_attention_with_dynamic_max_autotune(self, device):
         self._test_flex_attention_with_dynamic_max_autotune(device)
 
