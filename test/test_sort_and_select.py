@@ -27,7 +27,6 @@ from torch.testing._internal.common_dtype import (
 from torch.testing._internal.common_utils import (
     parametrize,
     run_tests,
-    skipIfRocm,
     skipIfTorchDynamo,
     slowTest,
     TestCase,
