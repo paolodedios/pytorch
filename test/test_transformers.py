@@ -5399,6 +5399,207 @@ class TestRoPE(NNTestCase):
             f"Memory usage {mem_used / 1e6:.1f}MB exceeds {max_allowed / 1e6:.1f}MB limit."
         )
 
+    @onlyCUDA
+    def test_rope_ragged_batch_compile(self, device):
+        """Varying seqlens across the batch with position_ids under compile."""
+        batch, heads, dim = 3, 8, 64
+        max_seq = 128
+        seq_lens = [32, 96, 128]
+
+        cos, sin = F.rotary_embedding_frequencies(dim, max_seq, device=device)
+
+        # Build position_ids: [0..seq_len-1] per item, padded with 0s
+        position_ids = torch.zeros(batch, max_seq, dtype=torch.long, device=device)
+        for i, sl in enumerate(seq_lens):
+            position_ids[i, :sl] = torch.arange(sl, device=device)
+
+        # Gather per-position per-batch-item frequencies: [batch, max_seq, dim]
+        cos_gathered = cos[position_ids]
+        sin_gathered = sin[position_ids]
+
+        q = torch.randn(batch, max_seq, heads, dim, device=device)
+        k = torch.randn(batch, max_seq, heads, dim, device=device)
+
+        def ragged_rope(q, k, cos_g, sin_g):
+            # BSHD: [batch, seq, heads, dim]; cos_g: [batch, seq, 1, dim]
+            c = cos_g.unsqueeze(2)
+            s = sin_g.unsqueeze(2)
+            q_rot = q * c + F.rotate_half(q) * s
+            k_rot = k * c + F.rotate_half(k) * s
+            return q_rot, k_rot
+
+        q_eager, k_eager = ragged_rope(q, k, cos_gathered, sin_gathered)
+
+        compiled_fn = torch.compile(ragged_rope, fullgraph=True)
+        q_compiled, k_compiled = compiled_fn(q, k, cos_gathered, sin_gathered)
+
+        self.assertEqual(q_compiled, q_eager, atol=1e-5, rtol=0)
+        self.assertEqual(k_compiled, k_eager, atol=1e-5, rtol=0)
+
+        # Cross-check: each item's valid region matches per-item apply_rotary_emb
+        for i, sl in enumerate(seq_lens):
+            q_i = q[i:i + 1, :sl]
+            k_i = k[i:i + 1, :sl]
+            q_ref, k_ref = F.apply_rotary_emb(q_i, k_i, cos[:sl], sin[:sl], seq_dim=1)
+            self.assertEqual(q_eager[i:i + 1, :sl], q_ref, atol=1e-5, rtol=0)
+            self.assertEqual(k_eager[i:i + 1, :sl], k_ref, atol=1e-5, rtol=0)
+
+    @onlyCUDA
+    def test_rope_precomputed_freqs_slice_compile(self, device):
+        """Precomputed max-length freqs, sliced per call, under compile with dynamic shapes."""
+        batch, heads, dim = 2, 8, 64
+        max_seq_len = 2048
+
+        cos, sin = F.rotary_embedding_frequencies(dim, max_seq_len, device=device)
+
+        def rope_with_sliced_freqs(q, k, cos, sin):
+            return F.apply_rotary_emb(q, k, cos, sin, seq_dim=1)
+
+        compiled_fn = torch.compile(rope_with_sliced_freqs, dynamic=True)
+
+        for seq_len in [128, 256, 512, 1024]:
+            q = torch.randn(batch, seq_len, heads, dim, device=device)
+            k = torch.randn(batch, seq_len, heads, dim, device=device)
+
+            cos_slice = cos[:seq_len]
+            sin_slice = sin[:seq_len]
+
+            q_compiled, k_compiled = compiled_fn(q, k, cos_slice, sin_slice)
+            q_eager, k_eager = rope_with_sliced_freqs(q, k, cos_slice, sin_slice)
+
+            self.assertEqual(q_compiled, q_eager, atol=1e-5, rtol=0)
+            self.assertEqual(k_compiled, k_eager, atol=1e-5, rtol=0)
+
+    @onlyCUDA
+    def test_rope_kv_cache_decode_compile(self, device):
+        """Autoregressive KV-cache decoding: single-token steps with position indexing under compile."""
+        batch, heads, dim = 2, 8, 64
+        max_seq_len = 2048
+
+        cos, sin = F.rotary_embedding_frequencies(dim, max_seq_len, device=device)
+
+        def decode_step(q, k, cos_pos, sin_pos):
+            return F.apply_rotary_emb(q, k, cos_pos, sin_pos, seq_dim=2)
+
+        compiled_fn = torch.compile(decode_step)
+
+        for pos in [0, 1, 10, 100, 500]:
+            q = torch.randn(batch, heads, 1, dim, device=device)
+            k = torch.randn(batch, heads, 1, dim, device=device)
+
+            cos_pos = cos[pos:pos + 1]
+            sin_pos = sin[pos:pos + 1]
+
+            q_compiled, k_compiled = compiled_fn(q, k, cos_pos, sin_pos)
+            q_eager, k_eager = decode_step(q, k, cos_pos, sin_pos)
+
+            self.assertEqual(q_compiled, q_eager, atol=1e-5, rtol=0)
+            self.assertEqual(k_compiled, k_eager, atol=1e-5, rtol=0)
+
+    @onlyCUDA
+    @parametrize("dtype", [torch.float32, torch.bfloat16])
+    def test_rope_transformer_block_compile_dynamic(self, device, dtype: torch.dtype):
+        """Full transformer block: proj -> reshape -> RoPE -> SDPA, compiled with dynamic seqlens."""
+        num_heads, head_dim = 8, 64
+        embed_dim = num_heads * head_dim
+        batch = 2
+        atol = {torch.float32: 1e-5, torch.bfloat16: 5e-2}[dtype]
+        max_seq = 512
+
+        q_proj = nn.Linear(embed_dim, embed_dim, device=device, dtype=dtype)
+        k_proj = nn.Linear(embed_dim, embed_dim, device=device, dtype=dtype)
+        v_proj = nn.Linear(embed_dim, embed_dim, device=device, dtype=dtype)
+        cos, sin = F.rotary_embedding_frequencies(head_dim, max_seq, device=device, dtype=dtype)
+
+        def transformer_block(x, cos, sin):
+            B, S, _ = x.shape
+            q = q_proj(x).view(B, S, num_heads, head_dim)
+            k = k_proj(x).view(B, S, num_heads, head_dim)
+            v = v_proj(x).view(B, S, num_heads, head_dim).transpose(1, 2)
+            q_rot, k_rot = F.apply_rotary_emb(q, k, cos, sin, seq_dim=1)
+            return scaled_dot_product_attention(
+                q_rot.transpose(1, 2), k_rot.transpose(1, 2), v
+            )
+
+        compiled_fn = torch.compile(transformer_block, fullgraph=True, dynamic=True)
+
+        for seq_len in [64, 128, 256]:
+            x = torch.randn(batch, seq_len, embed_dim, device=device, dtype=dtype)
+            cos_s, sin_s = cos[:seq_len], sin[:seq_len]
+
+            out_eager = transformer_block(x, cos_s, sin_s)
+            out_compiled = compiled_fn(x, cos_s, sin_s)
+
+            self.assertEqual(out_compiled, out_eager, atol=atol, rtol=0)
+
+    @onlyCUDA
+    def test_rope_gqa_compile(self, device):
+        """Grouped query attention: fewer KV heads than Q heads, with RoPE under compile."""
+        batch, seq = 2, 128
+        num_q_heads, num_kv_heads, head_dim = 32, 8, 64
+        q_dim = num_q_heads * head_dim
+        kv_dim = num_kv_heads * head_dim
+
+        q_proj = nn.Linear(q_dim, q_dim, device=device)
+        k_proj = nn.Linear(q_dim, kv_dim, device=device)
+        v_proj = nn.Linear(q_dim, kv_dim, device=device)
+        cos, sin = F.rotary_embedding_frequencies(head_dim, seq, device=device)
+
+        def gqa_with_rope(x, cos, sin):
+            B, S, _ = x.shape
+            q = q_proj(x).view(B, S, num_q_heads, head_dim)
+            k = k_proj(x).view(B, S, num_kv_heads, head_dim)
+            v = v_proj(x).view(B, S, num_kv_heads, head_dim).transpose(1, 2)
+            q_rot, k_rot = F.apply_rotary_emb(q, k, cos, sin, seq_dim=1)
+            q_rot = q_rot.transpose(1, 2)
+            k_rot = k_rot.transpose(1, 2)
+            # Expand KV heads for GQA: [B, num_kv_heads, S, D] -> [B, num_q_heads, S, D]
+            repeat = num_q_heads // num_kv_heads
+            k_rot = k_rot.repeat_interleave(repeat, dim=1)
+            v = v.repeat_interleave(repeat, dim=1)
+            return scaled_dot_product_attention(q_rot, k_rot, v)
+
+        x = torch.randn(batch, seq, q_dim, device=device)
+
+        out_eager = gqa_with_rope(x, cos, sin)
+
+        compiled_fn = torch.compile(gqa_with_rope, fullgraph=True)
+        out_compiled = compiled_fn(x, cos, sin)
+
+        self.assertEqual(out_compiled, out_eager, atol=1e-5, rtol=0)
+
+    @onlyCUDA
+    def test_rope_prefill_then_decode_compile(self, device):
+        """Simulate prefill + decode with a single compiled function and precomputed freqs."""
+        batch, heads, dim = 1, 8, 64
+        max_seq = 1024
+
+        cos, sin = F.rotary_embedding_frequencies(dim, max_seq, device=device)
+
+        def rope_step(q, k, cos_s, sin_s):
+            return F.apply_rotary_emb(q, k, cos_s, sin_s, seq_dim=2)
+
+        compiled_fn = torch.compile(rope_step, dynamic=True)
+
+        # Prefill: process initial prompt
+        prefill_len = 64
+        q = torch.randn(batch, heads, prefill_len, dim, device=device)
+        k = torch.randn(batch, heads, prefill_len, dim, device=device)
+        q_rot, k_rot = compiled_fn(q, k, cos[:prefill_len], sin[:prefill_len])
+        q_eager, k_eager = rope_step(q, k, cos[:prefill_len], sin[:prefill_len])
+        self.assertEqual(q_rot, q_eager, atol=1e-5, rtol=0)
+
+        # Decode: single-token steps at increasing positions
+        for pos in range(prefill_len, prefill_len + 10):
+            q_tok = torch.randn(batch, heads, 1, dim, device=device)
+            k_tok = torch.randn(batch, heads, 1, dim, device=device)
+
+            q_compiled, k_compiled = compiled_fn(q_tok, k_tok, cos[pos:pos + 1], sin[pos:pos + 1])
+            q_eager, k_eager = rope_step(q_tok, k_tok, cos[pos:pos + 1], sin[pos:pos + 1])
+
+            self.assertEqual(q_compiled, q_eager, atol=1e-5, rtol=0)
+            self.assertEqual(k_compiled, k_eager, atol=1e-5, rtol=0)
+
 
 if NOTEST_CPU:
     device_types = ("cuda", "mps", "mtia")
