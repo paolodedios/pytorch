@@ -2,7 +2,6 @@
 import contextlib
 import dataclasses
 import functools
-import gc
 import hashlib
 import inspect
 import itertools
@@ -4011,8 +4010,6 @@ class AlgorithmSelectorCache(PersistentCache):
         # cached sites can keep sharing their precompile work.
         if precompile_key is not None:
             self.precompile_cache.pop(precompile_key, None)
-
-        gc.collect()
 
         return result
 
