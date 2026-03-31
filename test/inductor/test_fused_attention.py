@@ -15,7 +15,14 @@ from torch.testing._internal.common_cuda import (
     PLATFORM_SUPPORTS_FUSED_ATTENTION,
     SM80OrLater,
 )
-from torch.testing._internal.common_utils import IS_LINUX, skipIfXpu, TEST_WITH_ROCM
+from torch.testing._internal.common_utils import (
+    IS_ARM64,
+    IS_CPU_CAPABILITY_SVE256,
+    IS_LINUX,
+    skipIfXpu,
+    TEST_WITH_ROCM,
+    xfailIf,
+)
 from torch.testing._internal.inductor_utils import (
     GPU_TYPE,
     HAS_CPU,
@@ -85,9 +92,9 @@ class TestSDPAPatternRewriterTemplate(TestCase):
                     x.requires_grad = training
 
             if not self.use_static_shapes:
-                torch._dynamo.mark_dynamic(args2[0], 0)
-                torch._dynamo.mark_dynamic(args2[1], 0)
-                torch._dynamo.mark_dynamic(args2[2], 0)
+                for i in range(min(3, len(args2))):
+                    if isinstance(args2[i], torch.Tensor):
+                        torch._dynamo.mark_dynamic(args2[i], 0)
 
             dropout_arg = [training] if has_dropout else []
             torch.manual_seed(1234)
@@ -182,11 +189,6 @@ class TestSDPAPatternRewriterTemplate(TestCase):
                 )
 
     def _test_insignificant_strides(self):
-        if self.device == "xpu":
-            self.skipTest(
-                "The operator 'aten::_scaled_dot_product_efficient_attention'"
-                " is not currently implemented for the XPU device. "
-            )
         f32 = torch.float32
 
         # repro taken from https://github.com/pytorch/pytorch/issues/124289
@@ -1577,6 +1579,32 @@ class TestSDPAPatternRewriterTemplate(TestCase):
             check_train=True,
         )
 
+    def _test_sdpa_rewriter_28(self):
+        def dot_prod_attention(
+            qkv: torch.Tensor,
+            training: bool,
+        ) -> torch.Tensor:
+            q, k, v = qkv.permute(1, 0, 2, 4, 3).unbind(0)
+            scores = torch.matmul(q, k.transpose(-2, -1))
+            scores = scores.mul(0.2)
+            attn_weights = scores.softmax(dim=-1)
+            attn_weights = torch.nn.functional.dropout(
+                attn_weights, p=0.1, training=training
+            )
+            return attn_weights.matmul(v)
+
+        tensor_shape = (2, 3, 4, 16, 8)
+        args = [
+            torch.randn(tensor_shape, dtype=torch.half, device=self.device),
+        ]
+        self._check_common(
+            dot_prod_attention,
+            args1=args,
+            contains=False,
+            has_dropout=True,
+            check_train=True,
+        )
+
 
 if HAS_XPU_AND_TRITON or (HAS_CUDA_AND_TRITON and PLATFORM_SUPPORTS_FUSED_ATTENTION):
 
@@ -1662,6 +1690,9 @@ if HAS_XPU_AND_TRITON or (HAS_CUDA_AND_TRITON and PLATFORM_SUPPORTS_FUSED_ATTENT
         test_cache_sdpa_constraint_shared_kv_gpu = (
             TestSDPAPatternRewriterTemplate._test_cache_sdpa_constraint_shared_kv
         )
+        test_sdpa_rewriter_28_gpu = functools.partialmethod(
+            TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_28
+        )
         if HAS_XPU_AND_TRITON:
             test_sdpa_rewriter_25_gpu = functools.partialmethod(
                 TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_25
@@ -1723,7 +1754,10 @@ if HAS_CPU:
             TestSDPAPatternRewriterTemplate._test_pattern_fails_with_reuse
         )
         test_sdpa_rewriter_2_cpu = TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_2
-        test_sdpa_rewriter_5_cpu = TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_5
+        # see https://github.com/pytorch/pytorch/issues/177244
+        test_sdpa_rewriter_5_cpu = xfailIf(IS_ARM64 and IS_CPU_CAPABILITY_SVE256)(
+            TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_5
+        )
         test_pattern_fails_with_tensor_factor_cpu = (
             TestSDPAPatternRewriterTemplate._test_pattern_fails_with_tensor_factor
         )
@@ -1742,7 +1776,8 @@ if HAS_CPU:
         test_sdpa_rewriter_13_cpu = functools.partialmethod(
             TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_13, dtype=torch.float32
         )
-        test_sdpa_rewriter_14_cpu = functools.partialmethod(
+        # see https://github.com/pytorch/pytorch/issues/177244
+        test_sdpa_rewriter_14_cpu = xfailIf(IS_ARM64 and IS_CPU_CAPABILITY_SVE256)(
             TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_14
         )
         test_sdpa_rewriter_15_cpu = functools.partialmethod(
@@ -1780,6 +1815,9 @@ if HAS_CPU:
         )
         test_cache_sdpa_constraint_shared_kv_cpu = (
             TestSDPAPatternRewriterTemplate._test_cache_sdpa_constraint_shared_kv
+        )
+        test_sdpa_rewriter_28_cpu = functools.partialmethod(
+            TestSDPAPatternRewriterTemplate._test_sdpa_rewriter_28
         )
 
     class SDPAPatternRewriterCpuDynamicTests(SDPAPatternRewriterCpuTests):

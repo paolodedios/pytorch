@@ -1,14 +1,8 @@
-"""
-Activation offloading for memory optimization in (more like post) partitioners.
+"""Activation offloading for memory optimization during compilation.
 
-This module provides functionality to offload activations to CPU during forward pass
-and reload them during backward pass, reducing GPU memory usage.
-
-Additional TODO:
-* given the fact that PT2 stream support is in active development, testings should
-  be done once that is more finalized. A issue currently known is that with streams,
-  each iteration will have its own offload streams, but the streams should be shared
-  across the iterations.
+This module provides functionality to offload activations to CPU during the forward
+pass and reload them during the backward pass, reducing GPU memory usage. It can be
+applied to graphs produced by both AOT Autograd partitioners and make_fx-based tracing.
 """
 
 import logging
@@ -17,13 +11,12 @@ from dataclasses import dataclass
 
 import torch
 import torch.fx as fx
-from torch._dynamo.variables.streams import get_current_stream, new_event, new_stream
-from torch._functorch._activation_offloading.offload_ops import (  # noqa: F401 -- registers ao::offload, ao::reload, ao::wait ops
+from torch._dynamo.variables.streams import new_event, new_stream
+from torch._functorch._activation_offloading.offload_ops import (  # noqa: F401 -- registers ao::offload, ao::reload, ao::wait_tensor ops
     offload,
     reload,
-    wait,
+    wait_tensor,
 )
-from torch._inductor import config as inductor_config
 from torch._inductor.fx_passes.overlap_scheduling import benchmark_node, is_compute_node
 from torch._subclasses.fake_tensor import extract_tensor_metadata
 from torch.utils._ordered_set import OrderedSet
@@ -60,15 +53,12 @@ class ReloadNodeInfo:
     """
     Information about backward reload related nodes for each reload operation.
 
-    Pattern: fork → wait_stream → device_put → record_event → join → wait_event
+    Pattern: ao.reload → ao.wait_tensor
 
-    This pattern is divided into two logical groups for optimization purposes:
-    - Reload group (fork → wait_stream → device_put → record_event → join):
-      Performs the actual asynchronous data transfer on a separate stream.
-      These nodes can be moved earlier in the graph to overlap with computation.
-    - Wait group (wait_event):
-      Synchronization point that blocks until the data transfer completes.
-      This must remain at the point where the reloaded data is first needed.
+    - Reload group (ao.reload): Performs the actual asynchronous data transfer.
+      Can be moved earlier in the graph to overlap with computation.
+    - Wait node (ao.wait_tensor): Synchronization point that blocks until the data
+      transfer completes. Must remain at the point where the data is first needed.
     """
 
     reload_group_nodes: list[fx.Node]
@@ -197,14 +187,13 @@ def reload_activation_bw(graph: fx.Graph) -> None:
 
 
 def offload_activation_fw_async(graph: fx.Graph) -> None:
-    """
-    Insert async CPU offload operations in the forward pass graph.
+    """Insert async CPU offload operations in the forward pass graph.
 
-    Uses ao.offload + ao.wait ops which encapsulate stream management internally,
-    producing a clean 2-node IR instead of 7+ stream operation nodes.
+    Uses ao.offload + ao.wait_tensor ops which encapsulate stream management internally,
+    producing a clean 2-node IR per offloaded tensor.
 
-    Streams and events are created via new_stream()/new_event() so torchdynamo
-    manages their lifecycle and they are reused across iterations.
+    Streams and events are created via new_stream()/new_event() and passed as
+    integer indices into the graph's external object table.
     """
 
     op_types: OpTypes = get_default_op_list()
@@ -225,11 +214,7 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
     if not nodes_to_offload:
         return
 
-    current_stream_id: int = get_current_stream(nodes_to_offload[0].meta["val"].device)
     transfer_stream_id: int = new_stream()
-
-    # Track (completion_event, gpu_tensor) for sync_dealloc at end of graph
-    offloaded_tensors: list[tuple[int, fx.Node]] = []
 
     for node in fwd_outputs:
         if node.meta.get("saved_for_offloading", False) is False:
@@ -252,28 +237,19 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
             offload_node.meta["tensor_meta"] = extract_tensor_metadata(
                 offload_node.meta["val"]
             )
+        # The keepalive=node arg extends the GPU tensor's lifetime in the
+        # graph so the allocator doesn't reclaim it before the async D2H
+        # copy completes.
         with graph.inserting_after(offload_node):
             wait_node: fx.Node = graph.call_function(
-                torch.ops.ao.wait.default,
-                args=(current_stream_id, completion_event_id, offload_node),
+                torch.ops.ao.wait_tensor.default,
+                args=(offload_node, node),
                 name=CPU_OFFLOAD_PREFIX + str(node.name),
             )
             wait_node.meta["val"] = offload_node.meta["val"]
             wait_node.meta["tensor_meta"] = offload_node.meta["tensor_meta"]
 
         node_to_offload[node] = wait_node
-        offloaded_tensors.append((completion_event_id, node))
-
-    # Insert sync_dealloc at end of graph for each offloaded GPU tensor.
-    # By this point the D2H transfer is long done, so the event wait is
-    # essentially free — we just need to extend the GPU tensor's lifetime
-    # so the allocator doesn't reuse its memory before the copy completes.
-    with graph.inserting_before(output_node):
-        for completion_event_id, gpu_tensor in offloaded_tensors:
-            graph.call_function(
-                torch.ops.streams.sync_dealloc.default,
-                args=(completion_event_id, current_stream_id, gpu_tensor),
-            )
 
     output_node.update_arg(
         0, tuple(node_to_offload.get(node, node) for node in fwd_outputs)
@@ -281,17 +257,15 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
 
 
 def reload_activation_bw_async(graph: fx.Graph) -> None:
-    """
-    Insert async GPU reload operations in the backward pass graph.
+    """Insert async GPU reload operations in the backward pass graph.
 
-    Uses ao.reload + ao.wait ops which encapsulate stream management internally,
-    producing a clean 2-node IR instead of 5+ stream operation nodes.
+    Uses ao.reload + ao.wait_tensor ops which encapsulate stream management internally,
+    producing a clean 2-node IR per reloaded tensor.
     """
 
     node_to_index: dict[fx.Node, int] = {
         node: idx for idx, node in enumerate(graph.nodes)
     }
-    output_node: fx.Node = graph.find_nodes(op="output")[0]
 
     nodes_to_reload = [
         n
@@ -301,22 +275,18 @@ def reload_activation_bw_async(graph: fx.Graph) -> None:
     if not nodes_to_reload:
         return
 
-    original_device: torch.device = nodes_to_reload[0].meta["original_device"]
-    current_stream_id: int = get_current_stream(
-        original_device
-    )  # pyrefly: ignore [bad-argument-type]
     transfer_stream_id: int = new_stream()
 
     for node in nodes_to_reload:
         completion_event_id: int = new_event()
 
-        insert_point: fx.Node = (
-            min(node.users.keys(), key=lambda n: node_to_index[n])
-            if node.users
-            else output_node
-        )
+        if not node.users:
+            raise RuntimeError(
+                f"Offloaded tensor {node.name} has no users in the backward graph"
+            )
+        insert_point: fx.Node = min(node.users.keys(), key=lambda n: node_to_index[n])
 
-        original_device = node.meta["original_device"]
+        original_device: torch.device = node.meta["original_device"]
         with graph.inserting_before(insert_point):
             reload_node: fx.Node = graph.call_function(
                 torch.ops.ao.reload.default,
@@ -334,8 +304,8 @@ def reload_activation_bw_async(graph: fx.Graph) -> None:
                 reload_node.meta["val"]
             )
             wait_node: fx.Node = graph.call_function(
-                torch.ops.ao.wait.default,
-                args=(current_stream_id, completion_event_id, reload_node),
+                torch.ops.ao.wait_tensor.default,
+                args=(reload_node,),
                 name=str(node.name).replace(CPU_OFFLOAD_PREFIX, GPU_RELOAD_PREFIX),
             )
             wait_node.meta["val"] = reload_node.meta["val"]
@@ -501,12 +471,16 @@ def offload_chosen_sets_async(
     """
     Add async offload and reload nodes using ao ops.
 
-    Uses ao.offload/ao.reload + ao.wait which encapsulate stream management,
+    Uses ao.offload/ao.reload + ao.wait_tensor which encapsulate stream management,
     instead of device_put + explicit stream operations.
     """
 
     offload_activation_fw_async(fwd_module.graph)
 
+    # Replace backward graph placeholders with their offloaded (CPU) counterparts.
+    # For each offloaded forward output, find the matching backward input and swap
+    # it with a new placeholder carrying the CPU tensor's metadata, then mark it
+    # for reloading.
     bwd_inputs: dict[str, fx.Node] = {
         node.name: node for node in bwd_module.graph.find_nodes(op="placeholder")
     }
@@ -528,10 +502,15 @@ def offload_chosen_sets_async(
 
 
 def activation_offload_sink_wait_async(fwd_module: fx.GraphModule) -> None:
-    """
-    Sink ao.wait operations for offload completion to the end of the graph.
+    """Sink ao.wait_tensor operations for offload completion to the end of the graph.
 
     This allows computation to overlap with offload operations.
+
+    NOTE: Sinking waits to the end delays GPU memory release of the source
+    tensor (kept alive via the wait's keepalive arg) until the end of the
+    compiled graph. For per-layer compile this is fine (one layer's worth of
+    memory), but for full-model compile this means offloaded GPU tensors are
+    not freed until the entire forward pass completes.
     """
     graph: fx.Graph = fwd_module.graph
     output_node: fx.Node = graph.find_nodes(op="output")[0]
@@ -540,12 +519,13 @@ def activation_offload_sink_wait_async(fwd_module: fx.GraphModule) -> None:
         node
         for node in graph.nodes
         if node.op == "call_function"
-        and node.target == torch.ops.ao.wait.default
-        and isinstance(node.args[2], fx.Node)
-        and node.args[2].op == "call_function"
-        and node.args[2].target == torch.ops.ao.offload.default
+        and node.target == torch.ops.ao.wait_tensor.default
+        and isinstance(node.args[0], fx.Node)
+        and node.args[0].op == "call_function"
+        and node.args[0].target == torch.ops.ao.offload.default
     ]
 
+    # prepend moves the node from its current position (no manual removal needed)
     for wait_node in wait_nodes_to_sink:
         output_node.prepend(wait_node)
 
@@ -554,7 +534,7 @@ def activation_reload_prefetch_async(bwd_module: fx.GraphModule) -> None:
     """
     Prefetch backward reload operations by moving ao.reload nodes earlier
     in the graph to overlap data transfer with computation, while keeping
-    ao.wait at its original position.
+    ao.wait_tensor at its original position.
     """
     graph: fx.Graph = bwd_module.graph
     nodes_list: list[fx.Node] = list(graph.nodes)
@@ -567,7 +547,7 @@ def activation_reload_prefetch_async(bwd_module: fx.GraphModule) -> None:
         ):
             continue
         wait_node = next(
-            (u for u in node.users if u.target == torch.ops.ao.wait.default),
+            (u for u in node.users if u.target == torch.ops.ao.wait_tensor.default),
             None,
         )
         if wait_node is None:
@@ -593,16 +573,16 @@ def _calculate_transfer_size(device_put_node: fx.Node) -> int:
         return _size_of(device_put_node.args[2])  # pyrefly: ignore [bad-argument-type]
     if device_put_node.target == torch.ops.ao.reload.default:
         return _size_of(device_put_node.args[3])  # pyrefly: ignore [bad-argument-type]
-    return _size_of(device_put_node.args[0])  # pyrefly: ignore [bad-argument-type]
+    raise ValueError(f"Unexpected transfer op: {device_put_node.target}")
 
 
 def _estimate_transfer_time_in_ms(transfer_size_bytes: int) -> float:
-    """
-    Estimate transfer time in milliseconds based on size and bandwidth.
-    NOTE: potentially could be standardized in node estimator class
-    """
+    """Estimate transfer time in milliseconds based on size and bandwidth.
 
-    return transfer_size_bytes / (1024**3) * 1_000 / inductor_config.cpu_gpu_bw
+    Uses config.activation_offload_cpu_gpu_bw (GB/s) which should be set by
+    the user to match their hardware.
+    """
+    return transfer_size_bytes / (1024**3) * 1_000 / config.activation_offload_cpu_gpu_bw
 
 
 def identify_reload_patterns(
@@ -836,7 +816,7 @@ def enable_activation_offloading(
 
     # Step 2: Add offload and reload nodes to the graphs
     if config.activation_offload_separate_stream:
-        # Use async ao ops (2 nodes each: offload/reload + wait)
+        # Use async ao ops (2 nodes each: offload/reload + wait_tensor)
         offload_chosen_sets_async(fwd_module, bwd_module)
         if config.activation_offload_sink_wait:
             activation_offload_sink_wait_async(fwd_module)

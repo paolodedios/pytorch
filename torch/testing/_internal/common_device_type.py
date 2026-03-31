@@ -318,6 +318,15 @@ def _update_param_kwargs(param_kwargs, name, value):
 class DeviceTypeTestBase(TestCase):
     device_type: str = "generic_device_type"
 
+    # When True, @onlyOn-based decorators (@onlyCUDA, @onlyMPS, etc.) will not
+    # skip tests for this device type. This is a pragmatic short-term solution to
+    # allow PrivateUse1 backends to run tests that are currently gated behind
+    # device-specific decorators. It is intended to be used together with the
+    # skip mechanism (see https://github.com/pytorch/pytorch/issues/177253).
+    # In the longer term, we are incrementally migrating accelerator tests to be
+    # device-generic and removing @onlyCUDA on tests that should be device-generic.
+    bypass_device_restrictions: bool = False
+
     # Flag to disable test suite early due to unrecoverable error such as CUDA error.
     _stop_test_suite = False
 
@@ -670,6 +679,7 @@ class PrivateUse1TestBase(DeviceTypeTestBase):
     primary_device: ClassVar[str]
     device_mod = None
     device_type = "privateuse1"
+    bypass_device_restrictions = False
 
     @classmethod
     def get_primary_device(cls):
@@ -1444,6 +1454,8 @@ class onlyOn:
         @wraps(fn)
         def only_fn(slf, *args, **kwargs):
             if slf.device_type not in self.device_type:
+                if getattr(slf, "bypass_device_restrictions", False):
+                    return fn(slf, *args, **kwargs)
                 reason = f"Only runs on {self.device_type}"
                 if IS_SANDCASTLE or IS_FBCODE:
                     print(
@@ -1680,19 +1692,6 @@ def onlyXPU(fn):
 
 def onlyHPU(fn):
     return onlyOn("hpu")(fn)
-
-
-def onlyAccelerator(fn):
-    """Skip test if not running on an accelerator device (i.e., skip on CPU and meta)."""
-
-    @wraps(fn)
-    def only_fn(self, *args, **kwargs):
-        if self.device_type in ("cpu", "meta"):
-            reason = "onlyAccelerator: doesn't run on CPU or meta devices"
-            raise unittest.SkipTest(reason)
-        return fn(self, *args, **kwargs)
-
-    return only_fn
 
 
 def onlyPRIVATEUSE1(fn):

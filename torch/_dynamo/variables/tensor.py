@@ -386,14 +386,12 @@ class TensorVariable(VariableTracker):
         try:
             real_value = getattr(_input_associated_real_value, name)
         except AttributeError:
-            error_message = VariableTracker.build(
-                tx,
-                f"'{type(_input_associated_real_value).__name__}' object has no attribute '{name}'",
-            )
             raise_observed_exception(
                 AttributeError,
                 tx,
-                args=[error_message],
+                args=[
+                    f"'{type(_input_associated_real_value).__name__}' object has no attribute '{name}'"
+                ],
             )
 
         attr_source = AttrSource(self.source, name)
@@ -783,6 +781,16 @@ class TensorVariable(VariableTracker):
                 hints=[],
             )
 
+        if name == "__deepcopy__":
+            unimplemented(
+                gb_type="Attempted to copy.deepcopy a tensor",
+                context=f"copy.deepcopy({self})",
+                explanation="Dynamo does not support copy.deepcopy() on tensors.",
+                hints=[
+                    "Avoid calling copy.deepcopy() on tensors inside compiled regions.",
+                ],
+            )
+
         # Only override builtin tensor methods
         # The user can manually add override handling
         # with a decorator for other methods (e.g. a dispatch subclass with other methods)
@@ -875,6 +883,23 @@ class TensorVariable(VariableTracker):
                     hints=[],
                     from_exc=e,
                 )
+
+        # Guard against unknown methods reaching the generic proxy path.
+        # For traceable wrapper subclasses (DTensor, NestedTensor), class_type
+        # is torch.Tensor, so check the example_value's actual type instead.
+        example_value = self.proxy.node.meta.get("example_value")
+        check_type = (
+            type(example_value) if example_value is not None else self.class_type
+        )
+        if not hasattr(check_type, name):
+            unimplemented(
+                gb_type="Unhandled tensor method",
+                context=f"call_method {self} {name} {args} {kwargs}",
+                explanation=f"Tensor method `{name}` is not defined on "
+                f"{check_type.__name__} and does not have an explicit "
+                "handler in TensorVariable.",
+                hints=[*graph_break_hints.SUPPORTABLE],
+            )
 
         from .builder import wrap_fx_proxy
 
@@ -1369,6 +1394,25 @@ class TensorVariable(VariableTracker):
         **kwargs: VariableTracker,
     ) -> "DataPtrVariable":
         return DataPtrVariable(self)
+
+    def method_record_stream(
+        self,
+        tx: "InstructionTranslator",
+        stream: VariableTracker,
+    ) -> VariableTracker:
+        from .streams import StreamVariable
+
+        if not isinstance(stream, StreamVariable):
+            raise RuntimeError(
+                f"record_stream() expects a Stream argument, got {stream.python_type().__name__}"
+            )
+        tx.output.create_proxy(
+            "call_function",
+            torch.ops.streams.record_stream,
+            (self.as_proxy(), stream.user_object_index),
+            {},
+        )
+        return CONSTANT_VARIABLE_NONE
 
     def method_item(
         self,
@@ -1874,6 +1918,20 @@ class TensorVariable(VariableTracker):
                     )
         return self
 
+    def method_detach_(self, tx: "InstructionTranslator") -> "TensorVariable":
+        from .builder import wrap_fx_proxy
+
+        proxy = tx.output.create_proxy(
+            "call_method",
+            "detach_",
+            (self.as_proxy(),),
+            {},
+        )
+        # Run the fake op so the proxy metadata reflects the detached tensor state.
+        wrap_fx_proxy(tx, proxy)
+        self.synchronize_attributes(tx)
+        return self
+
     def method_share_memory_(self) -> NoReturn:
         unimplemented(
             gb_type="Unsupported Tensor.share_memory_() call",
@@ -1994,7 +2052,7 @@ class SymNodeVariable(VariableTracker):
 
         out = SymNodeVariable(proxy, sym_num, **options)
         if proxy.node.op != "placeholder":
-            tx.output.current_tracer.record_tensor_or_symint_vt(out)
+            tx.output.current_tracer.record_proxyable_vt(out)
         return out
 
     def __init__(self, proxy: Any, sym_num: Any, **kwargs: Any) -> None:
