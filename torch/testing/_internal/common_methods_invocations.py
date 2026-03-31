@@ -20621,11 +20621,6 @@ op_db: list[OpInfo] = [
                # JIT tests don't work with Tensor keyword arguments
                # https://github.com/pytorch/pytorch/issues/58507
                DecorateInfo(unittest.expectedFailure, 'TestJit', 'test_variant_consistency_jit'),
-               # RuntimeError: histogramdd(): weight should be contiguous on MPS
-               DecorateInfo(
-                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
-                   device_type='mps', dtypes=(torch.float32,)
-               ),
                # Not implemented on XPU
                DecorateInfo(unittest.expectedFailure, 'TestCompositeCompliance', 'test_cow_input', device_type='xpu'),
            )),
