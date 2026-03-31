@@ -1570,12 +1570,16 @@ static PyObject* THPModule_setCheckSparseTensorInvariants(
     PyObject* _unused,
     PyObject* arg) {
   HANDLE_TH_ERRORS
-  TORCH_CHECK(
-      PyBool_Check(arg),
-      "set_check_sparse_tensor_invariants expects a bool, "
-      "but got ",
-      THPUtils_typename(arg));
-  at::globalContext().setCheckSparseTensorInvariants(arg == Py_True);
+  if (arg == Py_None) {
+    at::globalContext().setCheckSparseTensorInvariants(std::nullopt);
+  } else {
+    TORCH_CHECK(
+        PyBool_Check(arg),
+        "set_check_sparse_tensor_invariants expects a bool or None, "
+        "but got ",
+        THPUtils_typename(arg));
+    at::globalContext().setCheckSparseTensorInvariants(arg == Py_True);
+  }
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -1583,7 +1587,7 @@ static PyObject* THPModule_setCheckSparseTensorInvariants(
 static PyObject* THPModule_checkSparseTensorInvariants(
     PyObject* _unused,
     PyObject* noargs) {
-  if (at::globalContext().checkSparseTensorInvariants())
+  if (at::globalContext().checkSparseTensorInvariants().value_or(false))
     Py_RETURN_TRUE;
   else
     Py_RETURN_FALSE;
@@ -2363,7 +2367,7 @@ PyObject* initModule() {
 #endif
   ASSERT_TRUE(set_module_attr("_has_cudnn", has_cudnn));
 
-#if defined(USE_CUSPARSELT)
+#if defined(USE_CUSPARSELT) || defined(USE_ROCM)
   PyObject* has_cusparselt = Py_True;
 #else
   PyObject* has_cusparselt = Py_False;
