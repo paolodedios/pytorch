@@ -10,6 +10,7 @@
 #include <ATen/cuda/PeerToPeerAccess.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/util/env.h>
 #include <c10/util/error.h>
 
 #include <sys/socket.h>
@@ -501,6 +502,21 @@ struct RendezvousRequest {
   char hostname[HOST_NAME_MAX + 1];
 };
 
+static std::string import_err_msg(
+    int rank,
+    int peer,
+    const std::vector<RendezvousRequest>& reqs) {
+  std::ostringstream oss;
+  oss << ". Rank " << rank << " (host: " << reqs[rank].hostname
+      << ", device: " << reqs[rank].device_idx << ", fabric_info: {"
+      << get_nvml_fabric_info(reqs[rank].device_idx)
+      << "}) failed to import memory from rank " << peer
+      << " (host: " << reqs[peer].hostname
+      << ", device: " << reqs[peer].device_idx << ", NCCL_MNNVL_CLIQUE_ID: "
+      << c10::utils::get_env("NCCL_MNNVL_CLIQUE_ID").value_or("unset") << ").";
+  return oss.str();
+}
+
 void validate_rendezvous_requests(
     const std::vector<RendezvousRequest>& reqs,
     int world_size) {
@@ -760,15 +776,19 @@ c10::intrusive_ptr<CUDAPeerAllocInfo> make_peer_alloc_info(
     // note how in one case it's directly imported_handles[r] and in another
     // &(imported_handles[r]) so can't do with just type definitions
     if constexpr (!use_fabric_handle) {
-      C10_CUDA_DRIVER_CHECK(driver_api->cuMemImportFromShareableHandle_(
-          &handles[r],
-          (void*)(uintptr_t)imported_handles[r],
-          CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR));
+      C10_CUDA_DRIVER_CHECK_MSG(
+          driver_api->cuMemImportFromShareableHandle_(
+              &handles[r],
+              (void*)(uintptr_t)imported_handles[r],
+              CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR),
+          import_err_msg(rank, r, reqs));
     } else {
-      C10_CUDA_DRIVER_CHECK(driver_api->cuMemImportFromShareableHandle_(
-          &handles[r],
-          (void*)&(imported_handles[r]),
-          CU_MEM_HANDLE_TYPE_FABRIC));
+      C10_CUDA_DRIVER_CHECK_MSG(
+          driver_api->cuMemImportFromShareableHandle_(
+              &handles[r],
+              (void*)&(imported_handles[r]),
+              CU_MEM_HANDLE_TYPE_FABRIC),
+          import_err_msg(rank, r, reqs));
     }
 #elif defined(USE_ROCM)
     C10_CUDA_CHECK(hipMemImportFromShareableHandle(

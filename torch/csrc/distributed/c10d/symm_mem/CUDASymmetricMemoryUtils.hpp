@@ -104,6 +104,10 @@ class StoreExchange {
   size_t seq_id_ = 0;
 };
 
+// Returns NVML fabric info (clique_id, cluster_uuid, state, status,
+// health_mask) for the given device. Only evaluated on error paths.
+std::string get_nvml_fabric_info(int device_idx);
+
 // Returns a pointer of virtual address that is mapped to the physical memory
 // held by the handle.
 void map_block(

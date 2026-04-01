@@ -2,9 +2,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include <iomanip>
+
 #include <c10/util/error.h>
 
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
+#include <c10/cuda/CUDAException.h>
 #include <c10/cuda/driver_api.h>
 #elif defined(USE_ROCM)
 #include <c10/hip/HIPException.h>
@@ -267,6 +270,109 @@ void map_block(
 #else
   TORCH_CHECK(
       false, "CUDASymmetricMemory requires PYTORCH_C10_DRIVER_API_SUPPORTED");
+#endif
+}
+
+std::string get_nvml_fabric_info([[maybe_unused]] int device_idx) {
+#if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED) && \
+    defined(CUDA_VERSION) && CUDA_VERSION >= 12040
+  auto driver_api = c10::cuda::DriverAPI::get();
+  if (driver_api->nvmlDeviceGetGpuFabricInfoV_ == nullptr) {
+    return "fabric info unsupported (nvmlDeviceGetGpuFabricInfoV not available)";
+  }
+
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, device_idx) != cudaSuccess) {
+    return "fabric info unknown (cudaGetDeviceProperties failed)";
+  }
+
+  char pci_id[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];
+  snprintf(
+      pci_id,
+      sizeof(pci_id),
+      NVML_DEVICE_PCI_BUS_ID_FMT,
+      prop.pciDomainID,
+      prop.pciBusID,
+      prop.pciDeviceID);
+
+  nvmlDevice_t nvml_device = nullptr;
+  if (driver_api->nvmlDeviceGetHandleByPciBusId_v2_(pci_id, &nvml_device) !=
+      NVML_SUCCESS) {
+    return "fabric info unknown (nvmlDeviceGetHandleByPciBusId failed)";
+  }
+
+  struct FabricFields {
+    unsigned int clique_id = 0;
+    unsigned char cluster_uuid[NVML_GPU_FABRIC_UUID_LEN] = {};
+    nvmlReturn_t status = NVML_SUCCESS;
+    nvmlGpuFabricState_t state = NVML_GPU_FABRIC_STATE_NOT_SUPPORTED;
+    unsigned int health_mask = 0;
+    int health_summary = -1;
+  };
+
+  auto extract = [](auto& info) -> FabricFields {
+    FabricFields f;
+    f.clique_id = info.cliqueId;
+    std::memcpy(f.cluster_uuid, info.clusterUuid, NVML_GPU_FABRIC_UUID_LEN);
+    f.status = info.status;
+    f.state = info.state;
+    f.health_mask = info.healthMask;
+    return f;
+  };
+
+  FabricFields fields;
+  nvmlGpuFabricInfoV_t fabric_info{};
+#ifdef nvmlGpuFabricInfo_v3
+  // Try v3 first
+  fabric_info.version = nvmlGpuFabricInfo_v3;
+  if (driver_api->nvmlDeviceGetGpuFabricInfoV_(nvml_device, &fabric_info) ==
+      NVML_SUCCESS) {
+    fields = extract(fabric_info);
+    fields.health_summary = fabric_info.healthSummary;
+  } else
+#endif
+  {
+    fabric_info = {};
+    fabric_info.version = nvmlGpuFabricInfo_v2;
+    if (driver_api->nvmlDeviceGetGpuFabricInfoV_(nvml_device, &fabric_info) !=
+        NVML_SUCCESS) {
+      return "fabric info unknown (nvmlDeviceGetGpuFabricInfoV failed)";
+    }
+    fields = extract(fabric_info);
+  }
+
+  char uuid_hex[33];
+  for (int i = 0; i < 16; ++i) {
+    snprintf(uuid_hex + i * 2, 3, "%02x", fields.cluster_uuid[i]);
+  }
+
+  const char* state_str = "unknown";
+  switch (fields.state) {
+    case NVML_GPU_FABRIC_STATE_NOT_SUPPORTED:
+      state_str = "not_supported";
+      break;
+    case NVML_GPU_FABRIC_STATE_NOT_STARTED:
+      state_str = "not_started";
+      break;
+    case NVML_GPU_FABRIC_STATE_IN_PROGRESS:
+      state_str = "in_progress";
+      break;
+    case NVML_GPU_FABRIC_STATE_COMPLETED:
+      state_str = "completed";
+      break;
+  }
+
+  std::ostringstream oss;
+  oss << "clique_id=" << fields.clique_id << ", cluster_uuid=" << uuid_hex
+      << ", state=" << state_str << ", status=" << fields.status
+      << ", health_mask=0x" << std::hex << std::setfill('0') << std::setw(8)
+      << fields.health_mask;
+  if (fields.health_summary >= 0) {
+    oss << ", health_summary=" << std::dec << fields.health_summary;
+  }
+  return oss.str();
+#else
+  return "fabric info unsupported (requires CUDA >= 12.4)";
 #endif
 }
 
