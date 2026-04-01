@@ -2040,7 +2040,7 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
                 selector._problem,
                 selector._hardware,
                 selector._configs,
-                10,
+                4,
             )
             seen = OrderedSet()
             for result in topk_results:
@@ -2062,12 +2062,22 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
                     cfg,
                     grid,
                 )
+                tile_area = cfg.mt.m * cfg.mt.n
+                if tile_area <= 1024:
+                    num_warps = 1
+                elif tile_area <= 2048:
+                    num_warps = 2
+                elif tile_area <= 4096:
+                    num_warps = 4
+                else:
+                    num_warps = 8
+
                 yield {
                     "EVEN_K": math.gcd(k, cfg.mt.k) == cfg.mt.k,
                     "USE_FAST_ACCUM": False,
                     "ACC_TYPE": "tl.float32",
                     "num_stages": 2,
-                    "num_warps": 8,
+                    "num_warps": num_warps,
                     "BLOCK_M": cfg.mt.m,
                     "BLOCK_N": cfg.mt.n,
                     "BLOCK_K": cfg.mt.k,
