@@ -173,12 +173,7 @@ EOF
 
     DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-unauthenticated \
                    rocm-dev \
-                   rocm-utils \
-                   rocm-libs \
-                   rccl \
-                   rocprofiler-dev \
-                   roctracer-dev \
-                   amd-smi-lib
+                   rocm-libs
 
     if [[ $(ver $ROCM_VERSION) -ge $(ver 6.1) ]]; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y --allow-unauthenticated rocm-llvm-dev
@@ -294,13 +289,8 @@ install_centos() {
   yum update -y
 
   yum install -y \
-                   rocm-dev \
-                   rocm-utils \
-                   rocm-libs \
-                   rccl \
-                   rocprofiler-dev \
-                   roctracer-dev \
-                   amd-smi-lib
+                   rocm-dev
+                   rocm-libs
 
   # precompiled miopen kernels; search for all unversioned packages
   # if search fails it will abort this script; use true to avoid case where search fails
