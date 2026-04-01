@@ -472,7 +472,8 @@ def offload_chosen_sets_async(
     Add async offload and reload nodes using ao ops.
 
     Uses ao.offload/ao.reload + ao.wait_tensor which encapsulate stream management,
-    instead of device_put + explicit stream operations.
+    instead of device_put + explicit stream operations. Can be applied to
+    partitioned forward/backward graphs or to a joint graph produced by make_fx.
     """
 
     offload_activation_fw_async(fwd_module.graph)

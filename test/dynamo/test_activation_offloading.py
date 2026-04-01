@@ -315,6 +315,147 @@ def forward(self, cos, cpu_offload_cos_1, cos_2, tangents_1):
                 atol=1e-5,
             )
 
+    def test_wait_tensor_error_no_pending_transfer(self):
+        """Test _pop_wait raises RuntimeError for unregistered tensor."""
+        from torch._functorch._activation_offloading.offload_ops import (
+            _clear_wait_registry,
+            _pop_wait,
+        )
+
+        _clear_wait_registry()
+        x = torch.randn(4, device=GPU_TYPE)
+        with self.assertRaisesRegex(RuntimeError, "no pending transfer"):
+            _pop_wait(x)
+
+    def test_offload_reload_fake_tensor(self):
+        """Test fake tensor implementations for offload, reload, and wait_tensor."""
+        import torch._functorch._activation_offloading.offload_ops  # noqa: F401
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        with FakeTensorMode():
+            x_gpu = torch.randn(4, 8, device=GPU_TYPE)
+
+            # offload fake: GPU -> CPU with same shape/dtype
+            cpu_result = torch.ops.ao.offload.default(0, 0, x_gpu)
+            self.assertEqual(cpu_result.shape, (4, 8))
+            self.assertEqual(cpu_result.device.type, "cpu")
+            self.assertEqual(cpu_result.dtype, x_gpu.dtype)
+
+            # reload fake: CPU -> GPU with same shape/dtype
+            x_cpu = torch.randn(4, 8)
+            gpu_result = torch.ops.ao.reload.default(
+                0, 0, None, x_cpu, torch.device(GPU_TYPE)
+            )
+            self.assertEqual(gpu_result.shape, (4, 8))
+            self.assertEqual(gpu_result.device.type, GPU_TYPE)
+            self.assertEqual(gpu_result.dtype, x_cpu.dtype)
+
+            # wait_tensor fake: returns same tensor (aliasing)
+            wait_result = torch.ops.ao.wait_tensor.default(x_gpu)
+            self.assertEqual(wait_result.shape, x_gpu.shape)
+            self.assertEqual(wait_result.device, x_gpu.device)
+
+    def test_multiple_tensors_offload_ao_ops(self):
+        """Test offloading all saved tensors simultaneously with ao ops."""
+
+        def mark_all_cos_for_offloading(gm, joint_inputs):
+            for node in gm.graph.nodes:
+                if node.name.startswith("cos"):
+                    node.meta["should_offload"] = True
+            return gm
+
+        reset_user_object_tracking()
+        torch._dynamo.reset()
+        with torch._functorch.config.patch(
+            enable_activation_offloading=True,
+            activation_offload_separate_stream=True,
+            joint_custom_pass=mark_all_cos_for_offloading,
+        ):
+            fw_graph, bw_graph = get_fw_bw_graph(self.fn, [self.x])
+
+        fw_code = fw_graph.code
+        self.assertEqual(fw_code.count("ao.offload.default"), 3)
+        self.assertEqual(fw_code.count("ao.wait_tensor.default"), 3)
+
+        bw_code = bw_graph.code
+        self.assertEqual(bw_code.count("ao.reload.default"), 3)
+        self.assertEqual(bw_code.count("ao.wait_tensor.default"), 3)
+
+    def test_multiple_tensors_offload_ao_ops_accuracy(self):
+        """Test accuracy when offloading all saved tensors with ao ops."""
+
+        def mark_all_cos_for_offloading(gm, joint_inputs):
+            for node in gm.graph.nodes:
+                if node.name.startswith("cos"):
+                    node.meta["should_offload"] = True
+            return gm
+
+        x_ref = [x.detach().clone().requires_grad_(True) for x in self.x]
+        out_ref = self.fn(x_ref)
+        out_ref.sum().backward()
+        grads_ref = [inp.grad for inp in x_ref]
+
+        reset_user_object_tracking()
+        torch._dynamo.reset()
+        with torch._functorch.config.patch(
+            enable_activation_offloading=True,
+            activation_offload_separate_stream=True,
+            joint_custom_pass=mark_all_cos_for_offloading,
+        ):
+            fw_graph, bw_graph = get_fw_bw_graph(self.fn, [self.x])
+
+        # Verify ao ops are used (not old stream ops)
+        self.assertIn("ao.offload.default", fw_graph.code)
+        self.assertIn("ao.reload.default", bw_graph.code)
+
+        reset_user_object_tracking()
+        torch._dynamo.reset()
+        with torch._functorch.config.patch(
+            enable_activation_offloading=True,
+            activation_offload_separate_stream=True,
+            joint_custom_pass=mark_all_cos_for_offloading,
+        ):
+            x_compile = [x.detach().clone().requires_grad_(True) for x in self.x]
+            compiled_fn = torch.compile(self.fn, backend="aot_eager")
+            out_compiled = compiled_fn(x_compile)
+            out_compiled.sum().backward()
+            grads_compiled = [inp.grad for inp in x_compile]
+
+        for grad_ref, grad_compiled in zip(grads_ref, grads_compiled):
+            torch.testing.assert_close(grad_compiled, grad_ref, rtol=1e-5, atol=1e-5)
+
+    def test_inductor_offload_ao_ops(self):
+        """Test inductor code generation with ao ops."""
+        reset_user_object_tracking()
+        torch._dynamo.reset()
+
+        def run_compiled():
+            return torch.compile(self.fn)(self.x)
+
+        with torch._functorch.config.patch(
+            enable_activation_offloading=True,
+            activation_offload_separate_stream=True,
+            joint_custom_pass=self.joint_custom_pass,
+        ):
+            _, (fw_code, bw_code) = run_fw_bw_and_get_code(run_compiled)
+
+        (FileCheck().check("ao.offload").check("ao.wait_tensor").run(fw_code))
+        (FileCheck().check("ao.reload").check("ao.wait_tensor").run(bw_code))
+
+    def test_estimate_transfer_time_config(self):
+        """Test bandwidth config controls transfer time estimation."""
+        from torch._functorch._activation_offloading.activation_offloading import (
+            _estimate_transfer_time_in_ms,
+        )
+
+        size_bytes = 1024**3  # 1 GB
+        # 1 GB at 50 GB/s = 20 ms
+        with torch._functorch.config.patch(activation_offload_cpu_gpu_bw=50.0):
+            self.assertAlmostEqual(_estimate_transfer_time_in_ms(size_bytes), 20.0)
+        # 1 GB at 25 GB/s = 40 ms
+        with torch._functorch.config.patch(activation_offload_cpu_gpu_bw=25.0):
+            self.assertAlmostEqual(_estimate_transfer_time_in_ms(size_bytes), 40.0)
+
 
 @unittest.skipIf(not HAS_GPU, "requires GPU")
 class DefaultPartitionerActivationOffloadingTests(TestCase):
