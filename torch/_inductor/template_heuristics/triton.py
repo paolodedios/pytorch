@@ -2063,14 +2063,15 @@ class MMTemplateConfigMixin(GemmMaxAutotuneTemplateConfigHeuristics):
                     grid,
                 )
                 tile_area = cfg.mt.m * cfg.mt.n
-                if tile_area <= 1024:
-                    num_warps = 1
-                elif tile_area <= 2048:
-                    num_warps = 2
-                elif tile_area <= 4096:
-                    num_warps = 4
-                else:
-                    num_warps = 8
+                warp_size = torch.cuda.get_device_properties(
+                    device
+                ).warp_size
+                mfma_dim = 16
+                max_warps = 2 * selector._hardware.parallel_mi_cu
+                num_warps = min(
+                    max_warps,
+                    max(1, tile_area // (mfma_dim * warp_size)),
+                )
 
                 yield {
                     "EVEN_K": math.gcd(k, cfg.mt.k) == cfg.mt.k,
