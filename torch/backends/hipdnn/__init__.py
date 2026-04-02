@@ -7,14 +7,17 @@ from torch.backends import __allow_nonbracketed_mutation, ContextProp, PropModul
 
 
 def is_available():
+    # pyrefly: ignore [missing-attribute]
     return torch._C._has_hipdnn
 
 
 def set_flags(
     _enabled=None,
 ):
+    # pyrefly: ignore [missing-attribute]
     orig_flags = (torch._C._get_hipdnn_enabled(),)
     if _enabled is not None:
+        # pyrefly: ignore [missing-attribute]
         torch._C._set_hipdnn_enabled(_enabled)
     return orig_flags
 
@@ -36,6 +39,7 @@ def flags(
 
 
 class HipdnnModule(PropModule):
+    # pyrefly: ignore [missing-attribute]
     enabled = ContextProp(torch._C._get_hipdnn_enabled, torch._C._set_hipdnn_enabled)
 
 
