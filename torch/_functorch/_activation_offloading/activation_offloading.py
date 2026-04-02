@@ -11,7 +11,6 @@ from dataclasses import dataclass
 
 import torch
 import torch.fx as fx
-from torch._dynamo.variables.streams import new_event, new_stream
 from torch._functorch._activation_offloading.offload_ops import (  # noqa: F401 -- registers ao::offload, ao::reload, ao::wait_tensor ops
     offload,
     reload,
@@ -189,11 +188,8 @@ def reload_activation_bw(graph: fx.Graph) -> None:
 def offload_activation_fw_async(graph: fx.Graph) -> None:
     """Insert async CPU offload operations in the forward pass graph.
 
-    Uses ao.offload + ao.wait_tensor ops which encapsulate stream management internally,
-    producing a clean 2-node IR per offloaded tensor.
-
-    Streams and events are created via new_stream()/new_event() and passed as
-    integer indices into the graph's external object table.
+    Uses ao.offload + ao.wait_tensor ops which encapsulate stream management
+    internally, producing a clean 2-node IR per offloaded tensor.
     """
 
     op_types: OpTypes = get_default_op_list()
@@ -208,19 +204,12 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
         node: idx for idx, node in enumerate(graph.nodes)
     }
 
-    nodes_to_offload = [
-        n for n in fwd_outputs if n.meta.get("saved_for_offloading", False)
-    ]
-    if not nodes_to_offload:
+    if not any(n.meta.get("saved_for_offloading", False) for n in fwd_outputs):
         return
-
-    transfer_stream_id: int = new_stream()
 
     for node in fwd_outputs:
         if node.meta.get("saved_for_offloading", False) is False:
             continue
-
-        completion_event_id: int = new_event()
 
         if all_effective_users := _find_all_effective_users(node, op_types):
             last_user = max(all_effective_users, key=lambda n: node_to_index[n])
@@ -230,7 +219,7 @@ def offload_activation_fw_async(graph: fx.Graph) -> None:
         with graph.inserting_after(last_user):
             offload_node: fx.Node = graph.call_function(
                 torch.ops.ao.offload.default,
-                args=(transfer_stream_id, completion_event_id, node),
+                args=(node,),
                 name=f"async_{CPU_OFFLOAD_PREFIX}{node.name}",
             )
             offload_node.meta["val"] = node.meta["val"].to(torch.device("cpu"))
@@ -275,11 +264,7 @@ def reload_activation_bw_async(graph: fx.Graph) -> None:
     if not nodes_to_reload:
         return
 
-    transfer_stream_id: int = new_stream()
-
     for node in nodes_to_reload:
-        completion_event_id: int = new_event()
-
         if not node.users:
             raise RuntimeError(
                 f"Offloaded tensor {node.name} has no users in the backward graph"
@@ -290,13 +275,7 @@ def reload_activation_bw_async(graph: fx.Graph) -> None:
         with graph.inserting_before(insert_point):
             reload_node: fx.Node = graph.call_function(
                 torch.ops.ao.reload.default,
-                args=(
-                    transfer_stream_id,
-                    completion_event_id,
-                    None,
-                    node,
-                    original_device,
-                ),
+                args=(node, original_device),
                 name=f"async_{str(node.name).replace(CPU_OFFLOAD_PREFIX, GPU_RELOAD_PREFIX)}",
             )
             reload_node.meta["val"] = node.meta["val"].to(original_device)
@@ -568,12 +547,13 @@ def activation_reload_prefetch_async(bwd_module: fx.GraphModule) -> None:
 def _calculate_transfer_size(device_put_node: fx.Node) -> int:
     """Calculate the size in bytes of data being transferred."""
 
-    # ao.offload(stream, event, tensor) -> tensor at args[2]
-    # ao.reload(stream, completion_event, start_event, tensor, device) -> tensor at args[3]
-    if device_put_node.target == torch.ops.ao.offload.default:
-        return _size_of(device_put_node.args[2])  # pyrefly: ignore [bad-argument-type]
-    if device_put_node.target == torch.ops.ao.reload.default:
-        return _size_of(device_put_node.args[3])  # pyrefly: ignore [bad-argument-type]
+    # ao.offload(tensor) -> tensor at args[0]
+    # ao.reload(tensor, device) -> tensor at args[0]
+    if device_put_node.target in (
+        torch.ops.ao.offload.default,
+        torch.ops.ao.reload.default,
+    ):
+        return _size_of(device_put_node.args[0])  # pyrefly: ignore [bad-argument-type]
     raise ValueError(f"Unexpected transfer op: {device_put_node.target}")
 
 

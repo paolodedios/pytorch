@@ -174,7 +174,7 @@ def forward(self, cos, cpu_offload_cos_1, cos_2, tangents_1):
                 offload_node = node.args[0]
                 keepalive_node = node.args[1]
                 # keepalive should be the same GPU tensor that was offloaded
-                self.assertIs(keepalive_node, offload_node.args[2])
+                self.assertIs(keepalive_node, offload_node.args[0])
 
         bw_code = bw_graph.code
         # Backward: ao.reload produces async GPU tensor, ao.wait_tensor synchronizes
@@ -336,16 +336,14 @@ def forward(self, cos, cpu_offload_cos_1, cos_2, tangents_1):
             x_gpu = torch.randn(4, 8, device=GPU_TYPE)
 
             # offload fake: GPU -> CPU with same shape/dtype
-            cpu_result = torch.ops.ao.offload.default(0, 0, x_gpu)
+            cpu_result = torch.ops.ao.offload.default(x_gpu)
             self.assertEqual(cpu_result.shape, (4, 8))
             self.assertEqual(cpu_result.device.type, "cpu")
             self.assertEqual(cpu_result.dtype, x_gpu.dtype)
 
             # reload fake: CPU -> GPU with same shape/dtype
             x_cpu = torch.randn(4, 8)
-            gpu_result = torch.ops.ao.reload.default(
-                0, 0, None, x_cpu, torch.device(GPU_TYPE)
-            )
+            gpu_result = torch.ops.ao.reload.default(x_cpu, torch.device(GPU_TYPE))
             self.assertEqual(gpu_result.shape, (4, 8))
             self.assertEqual(gpu_result.device.type, GPU_TYPE)
             self.assertEqual(gpu_result.dtype, x_cpu.dtype)
