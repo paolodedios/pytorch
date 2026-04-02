@@ -1298,8 +1298,8 @@ class TestFP8Lowering(TestCase):
                         msg=f"idx {i} seed {seed}",
                     )
 
-    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     @onlyOn(["cuda", "xpu", "cpu"])
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     @parametrize("M", (1, 3, 33, 257, 1024))
     @parametrize("K", (16, 32, 1024))
     @parametrize("N", (16, 2048))
