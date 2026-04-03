@@ -863,7 +863,7 @@ class CppOverrides(OpOverrides):
     def floordiv(a, b):
         # a and b are integer type
         code = BracesBuffer()
-        code.writeline(f"TORCH_CHECK({b} != 0, \"ZeroDivisionError\");")
+        code.writeline(f'TORCH_CHECK({b} != 0, "ZeroDivisionError");')
         V.kernel.compute.splice(code)
         quot = f"{a} / {b}"
         rem = f"{a} % {b}"
@@ -881,14 +881,14 @@ class CppOverrides(OpOverrides):
     def truncdiv(a, b):
         # a and b are integer type
         code = BracesBuffer()
-        code.writeline(f"TORCH_CHECK({b} != 0, \"ZeroDivisionError\");")
+        code.writeline(f'TORCH_CHECK({b} != 0, "ZeroDivisionError");')
         V.kernel.compute.splice(code)
         return f"{a} / {b}"
 
     @staticmethod
     def truediv(a, b):
         code = BracesBuffer()
-        code.writeline(f"TORCH_CHECK({b} != 0, \"ZeroDivisionError\");")
+        code.writeline(f'TORCH_CHECK({b} != 0, "ZeroDivisionError");')
         V.kernel.compute.splice(code)
         return f"{a} / {b}"
 
