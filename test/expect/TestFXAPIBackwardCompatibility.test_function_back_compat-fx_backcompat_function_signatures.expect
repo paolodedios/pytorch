@@ -61,7 +61,7 @@ torch.fx.node.Node.update_arg(self, idx: int, arg: torch.fx.node.Argument) -> No
 torch.fx.node.Node.update_kwarg(self, key: str, arg: torch.fx.node.Argument) -> None
 torch.fx.node.map_aggregate(a: torch.fx.node.Argument, fn: Callable[[torch.fx.node.Argument], torch.fx.node.Argument]) -> torch.fx.node.Argument
 torch.fx.node.map_arg(a: torch.fx.node.Argument, fn: Callable[[torch.fx.node.Node], torch.fx.node.Argument]) -> torch.fx.node.Argument
-torch.fx.passes.reinplace.reinplace(gm, *sample_args)
+torch.fx.passes.reinplace.reinplace(gm: torch.fx.GraphModule, *sample_args: Any) -> torch.fx.GraphModule
 torch.fx.passes.runtime_assert.insert_deferred_runtime_asserts(gm: torch.fx.graph_module.GraphModule, shape_env: Any, name: str, export: bool = False) -> None
 torch.fx.passes.split_module.split_module(m: torch.fx.graph_module.GraphModule, root_m: torch.nn.modules.module.Module, split_callback: Callable[[torch.fx.node.Node], int], qualname_map: Optional[Dict[str, str]] = None, keep_original_order: Optional[bool] = False, keep_original_node_name: Optional[bool] = False, keep_original_input_name: bool = True, partition_affix: Optional[str] = None, tuple_return: bool = False) -> torch.fx.graph_module.GraphModule
 torch.fx.proxy.Attribute.__init__(self, root: torch.fx.proxy.Proxy, attr: str) -> None
@@ -70,7 +70,7 @@ torch.fx.proxy.Proxy.keys(self) -> 'Proxy'
 torch.fx.proxy.TracerBase.create_arg(self, a: Any) -> torch.fx.node.Argument
 torch.fx.proxy.TracerBase.create_node(self, kind: str, target: torch.fx.node.Target, args: Tuple[torch.fx.node.Argument, ...], kwargs: Dict[str, torch.fx.node.Argument], name: Optional[str] = None, type_expr: Optional[Any] = None) -> torch.fx.node.Node
 torch.fx.proxy.TracerBase.create_proxy(self, kind: str, target: torch.fx.node.Target, args: Tuple[Any, ...], kwargs: Dict[str, Any], name: Optional[str] = None, type_expr: Optional[Any] = None, proxy_factory_fn: Optional[Callable[[torch.fx.node.Node], Proxy]] = None) -> 'Proxy'
-torch.fx.proxy.TracerBase.iter(self, obj: 'Proxy') -> Iterator
+torch.fx.proxy.TracerBase.iter(self, obj: 'Proxy') -> Iterator[Any]
 torch.fx.proxy.TracerBase.keys(self, obj: 'Proxy') -> 'Proxy'
 torch.fx.proxy.TracerBase.proxy(self, node: torch.fx.node.Node) -> 'Proxy'
 torch.fx.proxy.TracerBase.to_bool(self, obj: 'Proxy') -> bool
