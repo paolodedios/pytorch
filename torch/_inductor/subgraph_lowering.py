@@ -137,7 +137,7 @@ class InputDescriptor:
 class TracingOpsHandler(WrapperHandler):
     def __init__(self, tracer: torch.fx.Tracer, num_inputs: int) -> None:
         parent = tracer.create_proxy("placeholder", "ops", (), {})
-        super().__init__(parent)
+        super().__init__(parent)  # pyrefly: ignore[bad-argument-type]
         self.tracer = tracer
 
         self.placeholders = [
