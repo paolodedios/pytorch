@@ -13,6 +13,7 @@
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
 #else
+#include <ATen/ops/_sample_dirichlet_native.h>
 #include <ATen/ops/_standard_gamma_grad_native.h>
 #include <ATen/ops/_standard_gamma_native.h>
 #include <ATen/ops/argmax.h>
@@ -21,6 +22,7 @@
 #include <ATen/ops/cumsum.h>
 #include <ATen/ops/div.h>
 #include <ATen/ops/multinomial_native.h>
+#include <ATen/ops/poisson_native.h>
 #include <ATen/ops/rand.h>
 #include <ATen/ops/randperm.h>
 #include <ATen/ops/randperm_native.h>
@@ -532,6 +534,71 @@ Tensor _standard_gamma_grad_mps(const Tensor& self, const Tensor& output) {
   }
 
   return ret;
+}
+
+Tensor _s_poisson_mps(const Tensor& lambda, std::optional<Generator> gen) {
+  if (lambda.numel() == 0) {
+    return at::empty_like(lambda);
+  }
+
+  using namespace mps;
+
+  auto mps_gen = get_generator_or_default<MPSGeneratorImpl>(gen, at::mps::detail::getDefaultMPSGenerator());
+  auto stream = getCurrentMPSStream();
+  Tensor ret = at::empty_like(lambda, lambda.options(), at::MemoryFormat::Contiguous);
+  auto lambda_contig = lambda.contiguous();
+
+  @autoreleasepool {
+    auto pso = lib.getPipelineStateForFunc("poisson_" + scalarToMetalTypeString(ret));
+
+    int64_t seed;
+    int64_t base_offset;
+    // Each thread may consume up to POISSON_RANDOMS_STRIDE random numbers
+    constexpr int64_t POISSON_RANDOMS_STRIDE = 32;
+    {
+      // See Note [Acquire lock when using random generators]
+      std::lock_guard<std::mutex> lock(mps_gen->mutex_);
+      seed = static_cast<int64_t>(mps_gen->current_seed());
+      base_offset = static_cast<int64_t>(mps_gen->get_offset());
+      mps_gen->set_offset(base_offset + POISSON_RANDOMS_STRIDE * ret.numel());
+    }
+
+    dispatch_sync_with_rethrow(stream->queue(), ^() {
+      @autoreleasepool {
+        auto computeEncoder = stream->commandEncoder();
+        [computeEncoder setComputePipelineState:pso];
+        mtl_setArgs(computeEncoder, ret, lambda_contig, std::array<long, 2>{seed, base_offset});
+        mtl_dispatch1DJob(computeEncoder, pso, ret.numel());
+      }
+    });
+  }
+
+  return ret;
+}
+
+Tensor _s_dirichlet_mps(const Tensor& alpha, std::optional<Generator> gen) {
+  // Dirichlet sampling: normalize independent Gamma samples
+  // Uses float32 for intermediate gamma sampling when input is half/bfloat16
+  // to prevent underflow, matching CPU behavior (Distributions.cpp uses double).
+  Tensor alpha_for_gamma = alpha;
+  if (alpha.scalar_type() == ScalarType::Half || alpha.scalar_type() == ScalarType::BFloat16) {
+    alpha_for_gamma = alpha.to(ScalarType::Float);
+  }
+
+  Tensor gamma_samples = at::native::_s_gamma_mps(alpha_for_gamma, gen);
+  Tensor gamma_sum = gamma_samples.sum(/*dim=*/-1, /*keepdim=*/true);
+  gamma_sum = gamma_sum.clamp_min(std::numeric_limits<float>::min());
+
+  Tensor result = gamma_samples / gamma_sum;
+  result = result.clamp(
+      std::numeric_limits<float>::min(),
+      1.0 - std::numeric_limits<float>::epsilon());
+
+  if (result.scalar_type() != alpha.scalar_type()) {
+    result = result.to(alpha.scalar_type());
+  }
+
+  return result;
 }
 
 Tensor& randperm_out_mps(int64_t n, std::optional<Generator> generator, Tensor& result) {

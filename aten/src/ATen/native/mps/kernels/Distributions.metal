@@ -501,3 +501,92 @@ kernel void standard_gamma_grad(
 REGISTER_GAMMA_GRAD(float);
 REGISTER_GAMMA_GRAD(half);
 REGISTER_GAMMA_GRAD(bfloat);
+
+// ============================================================================
+// Poisson Distribution
+// Knuth algorithm for small lambda, Hörmann (1993) PTRD for large lambda.
+// Adapted from aten/src/ATen/native/Distributions.h.
+// ============================================================================
+constant constexpr int POISSON_RANDOMS_STRIDE = 32;
+
+inline int sample_poisson_knuth(float lambda, long seed, long base, thread int& rng_idx) {
+  float enlam = ::metal::precise::exp(-lambda);
+  int x = 0;
+  float prod = 1.0f;
+  while (true) {
+    float u = c10::metal::rand(seed, base + rng_idx++);
+    prod *= u;
+    if (prod > enlam) {
+      x += 1;
+    } else {
+      return x;
+    }
+  }
+}
+
+inline int sample_poisson_hormann(float lambda, long seed, long base, thread int& rng_idx) {
+  float slam = ::metal::precise::sqrt(lambda);
+  float loglam = ::metal::precise::log(lambda);
+  float b = 0.931f + 2.53f * slam;
+  float a = -0.059f + 0.02483f * b;
+  float invalpha = 1.1239f + 1.1328f / (b - 3.4f);
+  float vr = 0.9277f - 3.6224f / (b - 2.0f);
+
+  while (true) {
+    float u = c10::metal::rand(seed, base + rng_idx++) - 0.5f;
+    // v in (0, 1] so log(v) is finite (matches standard_gamma's rand pattern).
+    float v = 1.0f - c10::metal::rand(seed, base + rng_idx++);
+    float us = 0.5f - abs(u);
+    float k = floor((2.0f * a / us + b) * u + lambda + 0.43f);
+
+    if (k < 0.0f) continue;
+    if ((us >= 0.07f) && (v <= vr)) return int(k);
+    if ((us < 0.013f) && (v > us)) continue;
+
+    float kp1 = k + 1.0f;
+    // Stirling: log(k!) ≈ (k+0.5)*log(k+1) - (k+1) + 0.5*log(2*pi)
+    float lgamma_kp1 = (k + 0.5f) * ::metal::precise::log(kp1) - kp1 + 0.91893853320467274f;
+
+    if ((::metal::precise::log(v) + ::metal::precise::log(invalpha) -
+         ::metal::precise::log(a / (us * us) + b)) <=
+        (-lambda + k * loglam - lgamma_kp1)) {
+      return int(k);
+    }
+  }
+}
+
+template <typename T>
+kernel void poisson_kernel(
+    device T* output [[buffer(0)]],
+    device const T* lambda_in [[buffer(1)]],
+    constant long2& seed_base_offset [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  float lambda = static_cast<float>(lambda_in[tid]);
+  long base =
+      seed_base_offset.y + static_cast<long>(tid) * POISSON_RANDOMS_STRIDE;
+  long seed = seed_base_offset.x;
+  int rng_idx = 0;
+
+  int result;
+  // Guard against non-finite or non-positive lambda; both rejection loops
+  // below would otherwise never terminate on NaN/+inf inputs (NaN compares
+  // false to everything, +inf propagates through sqrt/log).
+  if (!(lambda > 0.0f) || isinf(lambda)) {
+    result = 0;
+  } else if (lambda < 10.0f) {
+    result = sample_poisson_knuth(lambda, seed, base, rng_idx);
+  } else {
+    result = sample_poisson_hormann(lambda, seed, base, rng_idx);
+  }
+
+  output[tid] = static_cast<T>(result);
+}
+
+#define REGISTER_POISSON(DTYPE)                    \
+  template [[host_name("poisson_" #DTYPE)]]        \
+  kernel void poisson_kernel<DTYPE>(               \
+      device DTYPE*, device const DTYPE*, constant long2&, uint)
+
+REGISTER_POISSON(float);
+REGISTER_POISSON(half);
+REGISTER_POISSON(bfloat);
