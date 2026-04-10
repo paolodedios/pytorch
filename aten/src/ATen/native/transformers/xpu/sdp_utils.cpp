@@ -29,7 +29,8 @@ bool check_flash_attention_hardware_support(
       c10::array_of<sycl::ext::oneapi::experimental::architecture>(
           sycl::ext::oneapi::experimental::architecture::intel_gpu_pvc,
           sycl::ext::oneapi::experimental::architecture::intel_gpu_pvc_vg,
-          sycl::ext::oneapi::experimental::architecture::intel_gpu_bmg_g21);
+          sycl::ext::oneapi::experimental::architecture::intel_gpu_bmg_g21,
+          sycl::ext::oneapi::experimental::architecture::intel_gpu_bmg_g31);
   auto* device_prop = at::xpu::getCurrentDeviceProperties();
   auto device_architecture = device_prop->architecture;
 
