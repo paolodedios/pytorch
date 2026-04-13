@@ -5529,6 +5529,7 @@ class DefaultsTests(torch._dynamo.test_case.TestCase):
             with torch.accelerator.device_index(1):
                 self.assertEqual(opt_fn(x), fn(x))
                 self.assertEqual(counter.frame_count, 2)
+				
     def test_fn_with_attr(self):
         def fn(x):
             if fn.pred:
