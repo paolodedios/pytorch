@@ -1350,10 +1350,9 @@ class CachingAutotuner(KernelInterface):
             for ci, cfg in enumerate(cfgs):
                 trial_kwargs = dict(current_kwargs)
                 for idx in member_indices:
-                    for key, value in cfg.kwargs.items():
-                        if skip_rblock and key.startswith("R") and "BLOCK" in key:
-                            continue
-                        trial_kwargs[f"{key}_{idx}"] = value
+                    _update_combo_kernel_kwargs(
+                        trial_kwargs, cfg.kwargs, idx, skip_rblock
+                    )
 
                 if trial_kwargs == current_kwargs:
                     log.debug("    cfg[%d] skip (same as current)", ci)
@@ -2897,6 +2896,27 @@ def _get_config(numels: dict[str, int]) -> dict[str, int]:
     return {prefix.upper() + "BLOCK": numel for prefix, numel in numels.items()}
 
 
+_COMBO_KERNEL_HIP_COMPILE_OPTION_KEYS = frozenset(
+    ("matrix_instr_nonkdim", "waves_per_eu", "kpack")
+)
+
+
+def _update_combo_kernel_kwargs(
+    kwargs: dict[str, Any],
+    cfg_kwargs: dict[str, Any],
+    subkernel_idx: int,
+    skip_rblock: bool,
+) -> None:
+    for key, value in cfg_kwargs.items():
+        # These are Triton backend compile options, not per-subkernel constexpr args.
+        if key in _COMBO_KERNEL_HIP_COMPILE_OPTION_KEYS:
+            kwargs[key] = value
+            continue
+        if skip_rblock and key.startswith("R") and "BLOCK" in key:
+            continue
+        kwargs[f"{key}_{subkernel_idx}"] = value
+
+
 def _handle_combo_kernel_per_subkernel_blocks(
     size_hints: dict[str, int],
     inductor_meta: dict[str, Any],
@@ -2978,10 +2998,7 @@ def _handle_combo_kernel_per_subkernel_blocks(
             raise ValueError(f"Unknown heuristic: {subkernel_heuristic}")
 
         cfg = cfgs[0]
-        for key, value in cfg.kwargs.items():
-            if skip_rblock and key.startswith("R") and "BLOCK" in key:
-                continue
-            combined_kwargs[f"{key}_{i}"] = value
+        _update_combo_kernel_kwargs(combined_kwargs, cfg.kwargs, i, skip_rblock)
 
         all_num_warps.append(cfg.num_warps)
         all_num_stages.append(cfg.num_stages)
