@@ -11611,7 +11611,6 @@ for shape in [(1,), ()]:
             y = f(a)
             torch.cuda.memory_allocated() if TEST_CUDA else torch.xpu.memory_allocated()
         self.assertGreater(memory_with_grad, memory_without_grad)
-
         del a
         del y
 
