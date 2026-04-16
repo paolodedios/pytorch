@@ -991,6 +991,9 @@ def _iterate_exprs(val: IterateExprs) -> Iterator[sympy.Basic]:
     elif isinstance(val, (tuple, list)):
         for s in val:
             yield from _iterate_exprs(s)
+    elif isinstance(val, dict):
+        for s in val.values():
+            yield from _iterate_exprs(s)
     elif is_sparse_any(val):
         yield from _iterate_exprs(val.size())
     elif isinstance(val, torch.Tensor):
