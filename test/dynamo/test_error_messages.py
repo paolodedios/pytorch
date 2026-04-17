@@ -196,9 +196,15 @@ def _skip_frame_in_loop_message_stack_source_attribution() -> str:
     )
 
 
-def _munge_graph_break_message(message: str) -> str:
+def _munge_graph_break_message_with_normalized_markers(message: str) -> str:
     munged = munge_exc(message, suppress_suffix=True, skip=0)
-    return re.sub(r"^[ ]+(\^+)$", r"\1", munged, flags=re.MULTILINE)
+    # CPython 3.13+ can use mixed `~`/`^` marker lines for the same source span.
+    return re.sub(
+        r"^[ ]+([~^]+)$",
+        lambda match: "^" * len(match.group(1)),
+        munged,
+        flags=re.MULTILINE,
+    )
 
 
 class ErrorMessagesTest(LoggingTestCase):
@@ -741,7 +747,9 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message(records[0].getMessage()),
+            _munge_graph_break_message_with_normalized_markers(
+                records[0].getMessage()
+            ),
             expected,
         )
 
@@ -902,7 +910,11 @@ User code traceback:
         )
 
         self.assertEqual(
-            post_munge(_munge_graph_break_message(records[1].getMessage())),
+            post_munge(
+                _munge_graph_break_message_with_normalized_markers(
+                    records[1].getMessage()
+                )
+            ),
             expected,
         )
 
@@ -1141,7 +1153,9 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message(records[0].getMessage()),
+            _munge_graph_break_message_with_normalized_markers(
+                records[0].getMessage()
+            ),
             expected,
         )
 
@@ -1291,7 +1305,9 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message(records[0].getMessage()),
+            _munge_graph_break_message_with_normalized_markers(
+                records[0].getMessage()
+            ),
             expected,
         )
 
@@ -1347,7 +1363,9 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message(records[1].getMessage()),
+            _munge_graph_break_message_with_normalized_markers(
+                records[1].getMessage()
+            ),
             expected,
         )
 
@@ -1393,7 +1411,9 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message(records[0].getMessage()),
+            _munge_graph_break_message_with_normalized_markers(
+                records[0].getMessage()
+            ),
             expected,
         )
 
@@ -2396,7 +2416,9 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message(records[0].getMessage()),
+            _munge_graph_break_message_with_normalized_markers(
+                records[0].getMessage()
+            ),
             expected,
         )
         self.assertExpectedInline(
@@ -2482,7 +2504,9 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message(records[0].getMessage()),
+            _munge_graph_break_message_with_normalized_markers(
+                records[0].getMessage()
+            ),
             expected,
         )
 
@@ -2540,7 +2564,9 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message(records[0].getMessage()),
+            _munge_graph_break_message_with_normalized_markers(
+                records[0].getMessage()
+            ),
             expected,
         )
 
