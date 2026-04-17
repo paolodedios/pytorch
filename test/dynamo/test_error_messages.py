@@ -196,6 +196,11 @@ def _skip_frame_in_loop_message_stack_source_attribution() -> str:
     )
 
 
+def _munge_graph_break_message(message: str) -> str:
+    munged = munge_exc(message, suppress_suffix=True, skip=0)
+    return re.sub(r"^[ ]+(\^+)$", r"\1", munged, flags=re.MULTILINE)
+
+
 class ErrorMessagesTest(LoggingTestCase):
     def test_dynamic_shape_operator_no_meta_kernel(self):
         def fn():
@@ -735,8 +740,8 @@ User code traceback:
     torch._dynamo.graph_break()
 """
         )
-        self.assertExpectedInline(
-            munge_exc(records[0].getMessage(), suppress_suffix=True, skip=0),
+        self.assertEqual(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -896,10 +901,8 @@ User code traceback:
 """
         )
 
-        self.assertExpectedInline(
-            post_munge(
-                munge_exc(records[1].getMessage(), suppress_suffix=True, skip=0)
-            ),
+        self.assertEqual(
+            post_munge(_munge_graph_break_message(records[1].getMessage())),
             expected,
         )
 
@@ -1137,8 +1140,8 @@ User code traceback:
     assert x is None  # noqa: S101
 """
         )
-        self.assertExpectedInline(
-            munge_exc(records[0].getMessage(), suppress_suffix=True, skip=0),
+        self.assertEqual(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -1287,8 +1290,8 @@ User code traceback:
     torch._dynamo.graph_break()
 """
         )
-        self.assertExpectedInline(
-            munge_exc(records[0].getMessage(), suppress_suffix=True, skip=0),
+        self.assertEqual(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -1343,8 +1346,8 @@ User code traceback:
     if x.sum() > 0:
 """
         )
-        self.assertExpectedInline(
-            munge_exc(records[1].getMessage(), suppress_suffix=True, skip=0),
+        self.assertEqual(
+            _munge_graph_break_message(records[1].getMessage()),
             expected,
         )
 
@@ -1389,8 +1392,8 @@ User code traceback:
     if x.sum() > 0:
 """
         )
-        self.assertExpectedInline(
-            munge_exc(records[0].getMessage(), suppress_suffix=True, skip=0),
+        self.assertEqual(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -2392,8 +2395,8 @@ User code traceback:
     torch._dynamo.graph_break()
 """
         )
-        self.assertExpectedInline(
-            munge_exc(records[0].getMessage(), suppress_suffix=True, skip=0),
+        self.assertEqual(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
         self.assertExpectedInline(
@@ -2478,8 +2481,8 @@ User code traceback:
     torch._dynamo.graph_break()
 """
         )
-        self.assertExpectedInline(
-            munge_exc(records[0].getMessage(), suppress_suffix=True, skip=0),
+        self.assertEqual(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -2536,8 +2539,8 @@ User code traceback:
     if x.sum() > 0:
 """
         )
-        self.assertExpectedInline(
-            munge_exc(records[0].getMessage(), suppress_suffix=True, skip=0),
+        self.assertEqual(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
