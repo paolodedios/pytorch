@@ -747,9 +747,7 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(
-                records[0].getMessage()
-            ),
+            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
             expected,
         )
 
@@ -1153,9 +1151,7 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(
-                records[0].getMessage()
-            ),
+            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
             expected,
         )
 
@@ -1305,9 +1301,7 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(
-                records[0].getMessage()
-            ),
+            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
             expected,
         )
 
@@ -1363,9 +1357,7 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(
-                records[1].getMessage()
-            ),
+            _munge_graph_break_message_with_normalized_markers(records[1].getMessage()),
             expected,
         )
 
@@ -1411,9 +1403,7 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(
-                records[0].getMessage()
-            ),
+            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
             expected,
         )
 
@@ -2416,9 +2406,7 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(
-                records[0].getMessage()
-            ),
+            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
             expected,
         )
         self.assertExpectedInline(
@@ -2504,9 +2492,7 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(
-                records[0].getMessage()
-            ),
+            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
             expected,
         )
 
@@ -2564,9 +2550,7 @@ User code traceback:
 """
         )
         self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(
-                records[0].getMessage()
-            ),
+            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
             expected,
         )
 
