@@ -2826,11 +2826,7 @@ class TestTensorCreation(TestCase):
                 self.assertEqual(op(values, dtype=torch.float64).device, torch_device)
 
                 if self.device_type in ('cuda', 'xpu'):
-                    with torch.get_device_module(device_type).device(device):
-                        self.assertEqual(op(values.cpu()).device, torch.device('cpu'))
-
-                if self.device_type == 'xpu':
-                    with torch.xpu.device(device):
+                    with torch.accelerator.device_index(0):
                         self.assertEqual(op(values.cpu()).device, torch.device('cpu'))
 
         # Tests sparse ctor
@@ -2845,8 +2841,8 @@ class TestTensorCreation(TestCase):
         sparse_with_dtype = torch.sparse_coo_tensor(indices, values, sparse_size, dtype=torch.float64)
         self.assertEqual(sparse_with_dtype.device, torch_device)
 
-        if self.device_type in ('cuda', 'xpu'):
-            with torch.cuda.device(device):
+        if torch.accelerator.is_available():
+            with torch.accelerator.device_index(0):
                 sparse_with_dtype = torch.sparse_coo_tensor(indices.cpu(), values.cpu(),
                                                             sparse_size, dtype=torch.float64)
                 self.assertEqual(sparse_with_dtype.device, torch.device('cpu'))
