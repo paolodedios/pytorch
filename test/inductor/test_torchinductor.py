@@ -2331,6 +2331,15 @@ class CommonTemplate:
             self.common(fn, (inp.view(-1),), rtol=1e-4, atol=1e-5, check_lowp=False)
             self.common(fn, (inp.view(10, -1),), rtol=1e-4, atol=1e-5, check_lowp=False)
 
+    def test_split_cumsum_broadcast(self):
+        # https://github.com/pytorch/pytorch/issues/180221
+        def fn(x, b):
+            return torch.cumsum(x + b, dim=1)
+
+        x = make_tensor(1, 129, 64, low=0, dtype=torch.float32, device=self.device)
+        b = make_tensor(64, low=0, dtype=torch.float32, device=self.device)
+        self.common(fn, (x, b))
+
     @skipCUDAIf(not SM80OrLater, "Requires sm80")
     @skip_if_gpu_halide  # accuracy issue
     def test_split_cumsum_low_prec(self):
@@ -5408,6 +5417,22 @@ class CommonTemplate:
             check_lowp=False,
         )
         assertGeneratedKernelCountEqual(self, 0)
+
+    @requires_gpu()
+    @skip_if_gpu_halide  # slow
+    @xfail_if_mps  # Non-divisible input sizes are not implemented on MPS device
+    @parametrize("comprehensive_padding", (False, True))
+    def test_adaptive_avg_pool2d_flatten_sum(self, comprehensive_padding):
+        def fn(x):
+            y = F.adaptive_avg_pool2d(x, 7)
+            return y.flatten(1).sum(dim=-1)
+
+        with config.patch(comprehensive_padding=comprehensive_padding):
+            self.common(
+                fn,
+                (torch.randn(2, 33, 8, 8, device=self.device, dtype=torch.float64),),
+                check_lowp=False,
+            )
 
     @xfail_if_mps
     @skip_if_gpu_halide  # slow
@@ -17710,15 +17735,8 @@ if RUN_GPU:
 
         @torch._functorch.config.patch("donated_buffer", True)
         # The inplace updating does not happen after we fused the
-        # layernorm backward, or if we do cooperative reductions (due to the change in
-        # optimal peak memory ordering).
-        @torch._inductor.config.patch(
-            {
-                "triton.cooperative_reductions": False,
-                "triton.force_cooperative_reductions": False,
-                "triton.mix_order_reduction": False,
-            }
-        )
+        # layernorm backward.
+        @torch._inductor.config.patch({"triton.mix_order_reduction": False})
         def test_donated_buffer_inplace(self):
             batch_size = 32
             seq_length = 50

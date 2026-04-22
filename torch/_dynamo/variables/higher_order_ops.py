@@ -2495,7 +2495,7 @@ class CallTorchbindHigherOrderVariable(TorchHigherOrderOperatorVariable):
 def validate_subgraph_output_types(
     output: VariableTracker | Sequence[VariableTracker],
 ) -> None:
-    """Verify that that the output of the subgraph is a tensor,
+    """Verify that the output of the subgraph is a tensor,
     int, bool, SymBool, or SymInt.
     """
     from . import TensorVariable
@@ -4765,6 +4765,7 @@ class AutogradFunctionApplyVariable(VariableTracker):
                 enable_grad=None,
                 set_subgraph_inputs="automatic",
                 allow_side_effects=True,
+                filter_aliased_intermediates=True,
                 tracer=fwd_tracer,
             )
         )

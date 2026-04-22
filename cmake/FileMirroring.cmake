@@ -19,9 +19,6 @@ endif()
 # so that torchgen can be used standalone without the full source tree.
 install(FILES
   "${PROJECT_SOURCE_DIR}/aten/src/ATen/native/native_functions.yaml"
-  DESTINATION "${SKBUILD_PLATLIB_DIR}/torchgen/packaged/ATen/native"
-)
-install(FILES
   "${PROJECT_SOURCE_DIR}/aten/src/ATen/native/tags.yaml"
   DESTINATION "${SKBUILD_PLATLIB_DIR}/torchgen/packaged/ATen/native"
 )
@@ -66,7 +63,6 @@ endif()
 install(FILES
   "${PROJECT_SOURCE_DIR}/torch/_utils_internal.py"
   DESTINATION "${SKBUILD_PLATLIB_DIR}/tools/shared"
-  RENAME "_utils_internal.py"
 )
 install(FILES
   "${PROJECT_SOURCE_DIR}/third_party/valgrind-headers/callgrind.h"
