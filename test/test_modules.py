@@ -1012,6 +1012,88 @@ class TestModule(TestCase):
                 self.assertTrue(all(a != b for a, b in zip(p_cdatas_before, p_cdatas_after)))
 
 
+class TestJitReplaceSubmodule(TestCase):
+    def test_jit_replace_submodule(self):
+        from torch.jit._recursive import wrap_cpp_module
+
+        class SubA(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        class SubB(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.linear(x) * 2
+
+        class Parent(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.child = SubA()
+
+            def forward(self, x):
+                return self.child(x)
+
+        root = torch.jit.script(Parent())
+        new_child = torch.jit.script(SubB())
+
+        inp = torch.randn(2, 4)
+        out_before = root(inp)
+
+        root = wrap_cpp_module(
+            torch._C._jit_replace_submodule(root._c, "child", new_child._c)
+        )
+
+        out_after = root(inp)
+        self.assertFalse(torch.equal(out_before, out_after))
+        self.assertEqual(
+            root.child._c._type().name(),
+            new_child._c._type().name(),
+        )
+
+    def test_jit_replace_submodule_nested(self):
+        class Leaf(torch.nn.Module):
+            def __init__(self, scale: float) -> None:
+                super().__init__()
+                self.scale = scale
+
+            def forward(self, x):
+                return x * self.scale
+
+        class Mid(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.leaf = Leaf(1.0)
+
+            def forward(self, x):
+                return self.leaf(x)
+
+        class Root(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.mid = Mid()
+
+            def forward(self, x):
+                return self.mid(x)
+
+        root = torch.jit.script(Root())
+        new_leaf = torch.jit.script(Leaf(3.0))
+
+        inp = torch.randn(2, 4)
+        root = torch.jit._recursive.wrap_cpp_module(
+            torch._C._jit_replace_submodule(root._c, "mid.leaf", new_leaf._c)
+        )
+
+        out_after = root(inp)
+        self.assertEqual(out_after, inp * 3.0)
+
+
 instantiate_device_type_tests(TestModule, globals(), allow_mps=True, allow_xpu=True)
 
 if __name__ == '__main__':
