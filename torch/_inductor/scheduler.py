@@ -3246,6 +3246,9 @@ class Scheduler:
         # reordering these can cause a nccl hang
         self._enforce_conditional_ordering()
 
+        # Random ops consume global RNG state and must preserve program order
+        self._add_random_dep_chain()
+
         # Peak memory pass and overlap pass must run last, otherwise
         # other reordering passes could undo their effects.
         if config.reorder_for_peak_memory:
@@ -3942,6 +3945,45 @@ class Scheduler:
             mutating_buf = next(iter(conditional_nodes[i].get_buffer_names()))
             prev_buf = next(iter(conditional_nodes[i - 1].get_buffer_names()))
             conditional_nodes[i].add_fake_dep(
+                WeakDep(prev_buf, mutating_buf=mutating_buf, is_fake=True)
+            )
+
+    @staticmethod
+    def _is_random_node(node: BaseSchedulerNode) -> bool:
+        """Check if a scheduler node consumes global RNG state."""
+        ir_node = node.node
+        op = getattr(ir_node, "op_overload", None)
+        if op is None:
+            return False
+        tags = getattr(op, "tags", ())
+        return torch.Tag.nondeterministic_seeded in tags
+
+    def _add_random_dep_chain(self) -> None:
+        """Chain random ops with WeakDep to preserve program order.
+
+        With fallback_random=True, random ops are eager aten calls that
+        consume global RNG state and must execute in program order.
+        With fallback_random=False, Inductor fuses multiple randn calls
+        into a single Triton kernel. Since Triton kernels cannot access the
+        global CUDA RNG, each fused random op needs its own self-contained
+        Philox stream seeded by an independent int64 from inductor_seeds.
+        Ordering doesn't matter in this case, but values differ from eager.
+        """
+        # TODO: extend align_random_eager to support randn so that
+        # fallback_random=False can also match eager.
+        if not config.fallback_random:
+            return
+        random_nodes = []
+        for n in self.nodes:
+            if isinstance(n, FusedSchedulerNode):
+                if any(self._is_random_node(sn) for sn in n.snodes):
+                    random_nodes.append(n)
+            elif self._is_random_node(n):
+                random_nodes.append(n)
+        for i in range(1, len(random_nodes)):
+            mutating_buf = next(iter(random_nodes[i].get_buffer_names()))
+            prev_buf = next(iter(random_nodes[i - 1].get_buffer_names()))
+            random_nodes[i].add_fake_dep(
                 WeakDep(prev_buf, mutating_buf=mutating_buf, is_fake=True)
             )
 

@@ -10393,6 +10393,36 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             ),
         )
 
+    @parametrize(
+        "fallback_random",
+        [
+            subtest(True, name="fallback"),
+            subtest(False, name="inductor", decorators=[unittest.expectedFailure]),
+        ],
+    )
+    def test_randn_order_preserved(self, fallback_random):
+        if self.device == "cpu":
+            raise unittest.SkipTest("conv2d randn ordering requires CUDA")
+
+        def fn():
+            a = torch.randn(2, 4, 4, 4, device=self.device)
+            b = torch.randn(2, 3, 4, 4, device=self.device)
+            c = torch.randn(4, 3, 3, 3, device=self.device)
+            y = torch.nn.functional.conv2d(b, c, padding=1)
+            z = a + y
+            return z
+
+        with config.patch(fallback_random=fallback_random):
+            compiled = torch.compile(fn)
+
+            torch.manual_seed(42)
+            eager_out = fn()
+
+            torch.manual_seed(42)
+            compiled_out = compiled()
+
+            self.assertEqual(compiled_out, eager_out)
+
     def test_randn_like_empty(self):
         class Model(torch.nn.Module):
             def __init__(
