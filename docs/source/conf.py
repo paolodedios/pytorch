@@ -2542,7 +2542,7 @@ def _skip_git_dates_on_ci(app):
     Release builds (WITH_PUSH=true) keep the original behavior so dates
     appear in published docs.
     """
-    if not os.environ.get("CI") or os.environ.get("WITH_PUSH") == "true":
+    if not os.environ.get("CI"):
         return
 
     try:
