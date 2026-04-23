@@ -723,6 +723,8 @@ class TestVarlenAttention(NNTestCase):
         self, device, dtype, num_splits, window_size, backend, sdpa_backend=None
     ):
         if TEST_WITH_ROCM:
+            if num_splits is not None:
+                self.skipTest("num_splits is not supported on ROCm")
             torch.backends.cuda.preferred_rocm_fa_library(sdpa_backend)
         torch.manual_seed(42)
 

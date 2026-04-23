@@ -114,7 +114,12 @@ def _exec_with_source(
     src: str, globals: dict[str, Any], co_fields: dict[str, Any] | None = None
 ) -> None:
     key = _loader.cache(src, globals, co_fields)
-    exec(compile(src, key, "exec"), globals)
+    # dont_inherit=True prevents this module's `from __future__ import
+    # annotations` from leaking into the generated code, which would turn
+    # type annotations into strings and break downstream consumers like
+    # TorchScript that expect real type objects.
+    # TODO: Fix TorchScript BC to avoid breakages like these
+    exec(compile(src, key, "exec", dont_inherit=True), globals)
 
 
 def _forward_from_src(
