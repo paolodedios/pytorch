@@ -41,7 +41,11 @@ if(NOT DEFINED USE_SYSTEM_LIBS OR NOT USE_SYSTEM_LIBS)
     endif()
   endforeach()
 
-  if(_all_missing AND GIT_FOUND)
+  # Only attempt `git submodule update` when building from a git checkout.
+  # Source tarballs / nightly build trees have no .git directory; running
+  # `git submodule` there would fail and abort the build even when the
+  # submodule trees are already populated from the tarball.
+  if(_all_missing AND GIT_FOUND AND EXISTS "${PROJECT_SOURCE_DIR}/.git")
     message(STATUS "Initializing git submodules...")
     execute_process(
       COMMAND ${GIT_EXECUTABLE} submodule update --init --recursive
