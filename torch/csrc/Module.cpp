@@ -241,7 +241,7 @@ static PyObject* THPModule_initExtension(
 
   auto module = THPObjectPtr(PyImport_ImportModule("torch"));
   if (!module)
-    throw python_error(); // @allow-raw-throw
+    throw python_error();
 
   THPStorage_postInit(module);
   THPAutograd_initFunctions();
@@ -473,7 +473,7 @@ static PyObject* THPModule_addDocStr(PyObject* _unused, PyObject* args) {
           m->d_getset->name);
     }
     m->d_getset->doc = doc_str;
-  } else if (PyType_Check(obj)) {
+  } else if (Py_TYPE(obj) == &PyType_Type) {
     PyTypeObject* t = reinterpret_cast<PyTypeObject*>(obj);
     if (t->tp_doc) {
       return PyErr_Format(
@@ -682,7 +682,7 @@ static PyObject* THPModule_torchDeviceToDLDevice(
 
   auto tuple = PyTuple_New(2);
   if (!tuple) {
-    throw python_error(); // @allow-raw-throw
+    throw python_error();
   }
 
   PyTuple_SET_ITEM(tuple, 0, THPUtils_packInt64(dl_device.device_type));
@@ -1634,7 +1634,7 @@ static PyObject* THPModule_willEngineExecuteNode(
       exec_info,
       "_get_should_execute_nodes should only be called during the backward pass");
   torch::autograd::Node* node = nullptr;
-  c10::intrusive_ptr<torch::autograd::Node> node_sp;
+  std::shared_ptr<torch::autograd::Node> node_sp;
   if (isTHPFunction) {
     node_sp = (reinterpret_cast<THPFunction*>(arg))->cdata.lock();
     node = node_sp.get();
@@ -2390,6 +2390,7 @@ PyObject* initModule() {
 #endif
 #if defined(USE_CUDA)
   ASSERT_TRUE(StaticCudaLauncher_init(module));
+  ASSERT_TRUE(FastCudaLauncher_init(module));
 #endif
 #if defined(USE_XPU) && !defined(_WIN32)
   ASSERT_TRUE(StaticXpuLauncher_init(module));
