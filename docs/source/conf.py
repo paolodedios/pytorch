@@ -109,7 +109,7 @@ autosectionlabel_prefix_document = True
 #
 #
 
-katex_prerender = False
+katex_prerender = True
 
 # General information about the project.
 project = "PyTorch"
@@ -156,7 +156,7 @@ html_theme_options = {
         },
     ],
     "show_version_warning_banner": True,
-    "llm_disabled": "true",
+    "llm_disabled": False,
     "icon_links": [
         {
             "name": "X",
