@@ -109,7 +109,7 @@ autosectionlabel_prefix_document = True
 #
 #
 
-katex_prerender = True
+katex_prerender = False
 
 # General information about the project.
 project = "PyTorch"
