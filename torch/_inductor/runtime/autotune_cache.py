@@ -112,8 +112,21 @@ class AutotuneCacheArtifact(CacheArtifact):
         return content_bytes
 
 
+_TRITON_NAME_RE = re.compile(r"^def [^(]+\(", re.MULTILINE)
+
+
+def _name_agnostic_source_hash(source: str) -> str:
+    """Hash kernel source with function name stripped, so that kernel
+    renumbering (from model changes or fusion decision changes) doesn't
+    change the cache key.  Same regex as generate_lookup_hash_from_source_code
+    used by the LUT."""
+    source_stripped = _TRITON_NAME_RE.sub("(", source.strip(), count=1)
+    return hashlib.sha256(source_stripped.encode("utf-8")).hexdigest()
+
+
 @dataclasses.dataclass
 class AutotuneCache:
+    """Cache for storing and retrieving the best triton kernel autotuning configs."""
     configs_hash: str
     local_cache: tuple[RemoteCache[JsonDataTy], str] | None = None
     remote_cache: tuple[RemoteCache[JsonDataTy], str] | None = None
@@ -121,10 +134,13 @@ class AutotuneCache:
     # Create a AutotuneCache. Returns None if none of the caches can be used.
     @staticmethod
     def create(
-        inductor_meta: _InductorMetaTy, filename: str, configs_hash: str
+        inductor_meta: _InductorMetaTy,
+        filename: str,
+        configs_hash: str,
+        fn_src: str | None = None,
     ) -> AutotuneCache | None:
         cache = AutotuneCache(configs_hash)
-        key = AutotuneCache._prepare_key(filename)
+        key = AutotuneCache._prepare_key(filename, fn_src, configs_hash)
 
         cache._setup_local_cache(inductor_meta, os.path.dirname(filename), key)
         cache._setup_remote_autotune_cache(inductor_meta, key)
@@ -134,11 +150,21 @@ class AutotuneCache:
             return None
 
     @staticmethod
-    def _prepare_key(filename: str) -> str:
+    def _prepare_key(
+        filename: str, fn_src: str | None = None, configs_hash: str | None = None
+    ) -> str:
         from torch.compiler import config as cconfig
 
-        # base of filename is already sha256 hash the source contents
-        key = f"{os.path.basename(filename)}:{cconfig.cache_key_tag}"
+        if fn_src is not None:
+            # Use fn.src (kernel body) with function name stripped for stable keys.
+            # Stable across kernel renumbering and model changes.
+            key = _name_agnostic_source_hash(fn_src)
+            if configs_hash:
+                key = f"{key}:{configs_hash}"
+        else:
+            # Fallback: base of filename is already sha256 hash of source contents
+            key = os.path.basename(filename)
+        key = f"{key}:{cconfig.cache_key_tag}"
         return AUTOTUNE_CACHE_KEY_STRATEGY.key(key)
 
     # Read the best config options from the most local cache and return it.
