@@ -60,34 +60,38 @@ def _get_iter_has_positions() -> bool:
 
 
 def _generic_ctx_mgr_stack_source_attribution() -> str:
-    if sys.version_info >= (3, 11):
-        caret = "^^^^^^^^^^^^^^^\n"
+    if sys.version_info >= (3, 14):
+        marker = "~~~~~~~~~~~~~^^\n"
+    elif sys.version_info >= (3, 11):
+        marker = "^^^^^^^^^^^^^^^\n"
     else:
-        caret = ""
+        marker = ""
     return (
         "Stack variable source attribution:\n"
         "  WithExitFunctionVariable() originated from:\n"
         '  File "test_error_messages.py", line N\n'
         "                with GenericCtxMgr():\n"
-        f"{caret}"
+        f"{marker}"
         "  WithExitFunctionVariable() originated from:\n"
         '  File "test_error_messages.py", line N\n'
         "                    with GenericCtxMgr():\n"
-        f"{caret}"
+        f"{marker}"
     )
 
 
 def _assert_failure_stack_source_attribution() -> str:
-    if sys.version_info >= (3, 11):
-        caret = "^^^^^^^^^^^^^^^\n"
+    if sys.version_info >= (3, 14):
+        marker = "~~~~~~~~~~~~~^^\n"
+    elif sys.version_info >= (3, 11):
+        marker = "^^^^^^^^^^^^^^^\n"
     else:
-        caret = ""
+        marker = ""
     return (
         "Stack variable source attribution:\n"
         "  WithExitFunctionVariable() originated from:\n"
         '  File "test_error_messages.py", line N\n'
         "                with GenericCtxMgr():\n"
-        f"{caret}"
+        f"{marker}"
     )
 
 
@@ -145,12 +149,16 @@ def _reconstruction_failure_gb_stack_source_attribution() -> str:
 
 def _graph_break_in_loop_stack_source_attribution() -> str:
     if sys.version_info >= (3, 11) and _get_iter_has_positions():
+        if sys.version_info >= (3, 14):
+            marker = "~~~~~^^^\n"
+        else:
+            marker = "^^^^^^^^\n"
         return (
             "Stack variable source attribution:\n"
             "  RangeIteratorVariable() originated from:\n"
             '  File "test_error_messages.py", line N\n'
             "                for i in range(2):\n"
-            "^^^^^^^^\n"
+            f"{marker}"
             "\n"
         )
 
@@ -168,16 +176,22 @@ def _graph_break_in_loop_stack_source_attribution() -> str:
 
 def _skip_frame_in_loop_message_stack_source_attribution() -> str:
     if sys.version_info >= (3, 11) and _get_iter_has_positions():
+        if sys.version_info >= (3, 14):
+            range_marker = "~~~~~^^^\n"
+            ctx_mgr_marker = "~~~~~~~~~~~~~^^\n"
+        else:
+            range_marker = "^^^^^^^^\n"
+            ctx_mgr_marker = "^^^^^^^^^^^^^^^\n"
         return (
             "Stack variable source attribution:\n"
             "  RangeIteratorVariable() originated from:\n"
             '  File "test_error_messages.py", line N\n'
             "                for i in range(2):\n"
-            "^^^^^^^^\n"
+            f"{range_marker}"
             "  WithExitFunctionVariable() originated from:\n"
             '  File "test_error_messages.py", line N\n'
             "                    with GenericCtxMgr():\n"
-            "^^^^^^^^^^^^^^^\n"
+            f"{ctx_mgr_marker}"
             "\n"
         )
 
@@ -196,15 +210,9 @@ def _skip_frame_in_loop_message_stack_source_attribution() -> str:
     )
 
 
-def _munge_graph_break_message_with_normalized_markers(message: str) -> str:
+def _munge_graph_break_message(message: str) -> str:
     munged = munge_exc(message, suppress_suffix=True, skip=0)
-    # CPython 3.13+ can use mixed `~`/`^` marker lines for the same source span.
-    return re.sub(
-        r"^[ ]+([~^]+)$",
-        lambda match: "^" * len(match.group(1)),
-        munged,
-        flags=re.MULTILINE,
-    )
+    return re.sub(r"^[ ]+([~^]+)$", r"\1", munged, flags=re.MULTILINE)
 
 
 class ErrorMessagesTest(LoggingTestCase):
@@ -746,8 +754,8 @@ User code traceback:
     torch._dynamo.graph_break()
 """
         )
-        self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
+        self.assertExpectedInline(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -907,11 +915,9 @@ User code traceback:
 """
         )
 
-        self.assertEqual(
+        self.assertExpectedInline(
             post_munge(
-                _munge_graph_break_message_with_normalized_markers(
-                    records[1].getMessage()
-                )
+                _munge_graph_break_message(records[1].getMessage())
             ),
             expected,
         )
@@ -1150,8 +1156,8 @@ User code traceback:
     assert x is None  # noqa: S101
 """
         )
-        self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
+        self.assertExpectedInline(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -1300,8 +1306,8 @@ User code traceback:
     torch._dynamo.graph_break()
 """
         )
-        self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
+        self.assertExpectedInline(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -1356,8 +1362,8 @@ User code traceback:
     if x.sum() > 0:
 """
         )
-        self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(records[1].getMessage()),
+        self.assertExpectedInline(
+            _munge_graph_break_message(records[1].getMessage()),
             expected,
         )
 
@@ -1402,8 +1408,8 @@ User code traceback:
     if x.sum() > 0:
 """
         )
-        self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
+        self.assertExpectedInline(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -2405,8 +2411,8 @@ User code traceback:
     torch._dynamo.graph_break()
 """
         )
-        self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
+        self.assertExpectedInline(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
         self.assertExpectedInline(
@@ -2491,8 +2497,8 @@ User code traceback:
     torch._dynamo.graph_break()
 """
         )
-        self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
+        self.assertExpectedInline(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
@@ -2549,8 +2555,8 @@ User code traceback:
     if x.sum() > 0:
 """
         )
-        self.assertEqual(
-            _munge_graph_break_message_with_normalized_markers(records[0].getMessage()),
+        self.assertExpectedInline(
+            _munge_graph_break_message(records[0].getMessage()),
             expected,
         )
 
