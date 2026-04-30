@@ -17,11 +17,44 @@ from torch.fx.experimental.proxy_tensor import (
 from torch.types import _device, _dtype
 
 
-def throw_on_non_cuda(device):
+# Backends that expose a Philox/counter-based RNG with the same
+# (initial_seed, _get_rng_state_offset, _set_rng_state_offset, set_rng_state)
+# API as torch.cuda. Imported by torch._decomp.decompositions_for_rng.
+PHILOX_BACKENDS = ("cuda", "xpu")
+
+
+def throw_on_non_philox_device(device):
+    if device.type not in PHILOX_BACKENDS:
+        raise RuntimeError(
+            f"You are trying to functionalize a {device.type} RNG operator but {device.type} does not "
+            f"use Philox/counter-based RNG. Therefore, functionalizing a {device.type} RNG operator is "
+            "not supported. We are discussing the possibility of a Philox-based RNG implementation for CPU."
+        )
+
+
+# Back-compat alias for external callers that imported the old name.
+throw_on_non_cuda = throw_on_non_philox_device
+
+
+def _get_philox_grid_caps(device):
+    """Return (mp_count, max_threads_per_mp) for the philox_rand_offset formula.
+
+    The formula in `philox_rand_offset` was originally written for CUDA and
+    consults `multi_processor_count` and `max_threads_per_multi_processor`.
+    Other Philox-capable backends provide analogous values under different
+    names, so we centralize the lookup here.
+    """
+    if device.type == "cuda":
+        p = torch.cuda.get_device_properties()
+        return p.multi_processor_count, p.max_threads_per_multi_processor
+    if device.type == "xpu":
+        p = torch.xpu.get_device_properties()
+        # XPU subslices play the role of CUDA SMs; max_work_group_size is the
+        # closest analogue to max_threads_per_multi_processor for the purpose
+        # of capping concurrent threads in the offset estimate.
+        return p.gpu_subslice_count, p.max_work_group_size
     raise RuntimeError(
-        f"You are trying to functionalize a {device.type} RNG operator but {device.type} does not "
-        f"use Philox/counter-based RNG. Therefore, functionalizing a {device.type} RNG operator is "
-        "not supported. We are discussing the possibility of a Philox-based RNG implementation for CPU."
+        f"philox_rand offset estimation is not implemented for device type {device.type!r}"
     )
 
 
@@ -56,6 +89,7 @@ def philox_rand_offset_meta(
 
 def philox_rand_offset(
     shape: torch.Size,
+    device: _device | None = None,
 ):
     # For impl, look at the function calc_execution_policy in the file
     # aten/src/ATen/native/cuda/DistributionTemplates.h. The impl was copied at
@@ -68,11 +102,12 @@ def philox_rand_offset(
     block_size = 256
     unroll = 4
     curand4_engine_calls = 4
-    device_property = torch.cuda.get_device_properties(torch.cuda.current_device())
-    blocks_per_sm = device_property.max_threads_per_multi_processor // block_size
+
+    mp_count, max_threads_per_mp = _get_philox_grid_caps(device)
+    blocks_per_sm = max_threads_per_mp // block_size
     num = cast(int, numel)
     grid_size = (num + block_size - 1) // block_size
-    grid_size = min(grid_size, device_property.multi_processor_count * blocks_per_sm)
+    grid_size = min(grid_size, mp_count * blocks_per_sm)
     return ((num - 1) // (block_size * grid_size * unroll) + 1) * curand4_engine_calls
 
 
@@ -114,14 +149,15 @@ def register_philox_rand():
         else:
             devices = [device]
 
-        if device.type != "cuda":
-            raise throw_on_non_cuda(device)
+        throw_on_non_philox_device(device)
 
-        with torch.random.fork_rng(devices):
+        with torch.random.fork_rng(devices, device_type=device.type):
+            # CUDARngStateHelper is a back-compat alias for the device-agnostic
+            # RngStateHelper which routes via torch.accelerator.current_accelerator().
             CUDARngStateHelper.set_torch_state_tensor(seed, offset)
             random_values = torch.rand(shape, device=device, dtype=dtype)
 
-        return random_values, philox_rand_offset(shape)
+        return random_values, philox_rand_offset(shape, device)
 
     register_rng_prim(
         name=name,
