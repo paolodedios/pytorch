@@ -1535,7 +1535,6 @@ MACOS_VERSION = float('.'.join(platform.mac_ver()[0].split('.')[:2]) or -1)
 TEST_XPU = torch.xpu.is_available()
 TEST_HPU = bool(hasattr(torch, "hpu") and torch.hpu.is_available())
 TEST_CUDA = torch.cuda.is_available()
-TEST_MULTIGPU = torch.accelerator.is_available() and torch.accelerator.device_count() >= 2
 TEST_ACCELERATOR = LazyVal(lambda: torch.accelerator.is_available())  # type: ignore[call-arg]
 TEST_MULTIACCELERATOR = LazyVal(lambda: torch.accelerator.device_count() > 1)  # type: ignore[call-arg]
 custom_device_mod = getattr(torch, torch._C._get_privateuse1_backend_name(), None)
@@ -5793,7 +5792,10 @@ def get_cycles_per_ms(device: str = "cuda") -> float:
             return cycles_per_ms
     else:
         def measure() -> float:
-            if torch.cuda.is_available():
+            if device == "xpu":
+                cycles_per_ms = 1000000 / 1000.0
+                return cycles_per_ms
+            else:
                 start = torch.cuda.Event(enable_timing=True)
                 end = torch.cuda.Event(enable_timing=True)
                 start.record()
@@ -5801,8 +5803,6 @@ def get_cycles_per_ms(device: str = "cuda") -> float:
                 end.record()
                 end.synchronize()
                 cycles_per_ms = test_cycles / start.elapsed_time(end)
-            elif torch.xpu.is_available():
-                cycles_per_ms = 1000000 / 1000.0
                 return cycles_per_ms
 
     # Get 10 values and remove the 2 max and 2 min and return the avg.
