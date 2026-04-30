@@ -70,6 +70,7 @@ from torch.testing._internal.common_device_type import (
 )
 from torch.testing._internal.common_quantized import _snr
 from torch.testing._internal.common_utils import (  # noqa: F401
+    isRocmArchAnyOf,
     MI200_ARCH,
     skipIfRocm,
     skipIfRocmArch,
@@ -2619,17 +2620,24 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
     @dtypes(*device_configs["cpu"].dtypes)
     @dtypesIfCUDA(*device_configs["cuda"].dtypes)
     @dtypesIfXPU(*device_configs["xpu"].dtypes)
-    @common_utils.skipIfRocmArch(common_utils.MI200_ARCH)
     def test_autocast(self, device, dtype):
         """Test torch autocast functionality"""
         q = torch.randn(1, 1, 1024, 64, device=device, dtype=dtype).to(torch.float16)
         k = torch.randn(1, 1, 1024, 64, device=device, dtype=dtype)
         v = torch.randn(1, 1, 1024, 64, device=device, dtype=dtype)
 
+        atol = 1e-3
+        rtol = 1e-3
+
+        if isRocmArchAnyOf(MI200_ARCH) and dtype == torch.float16:
+            # this behavior matches known subnormal (denormal) handling on MI200 for float16
+            atol = 0.002
+            rtol = 0.41  # relative difference can become large at small tensor values
+
         with torch.autocast(dtype=torch.float16, enabled=True, device_type=device):
             sdpa_output = torch.nn.functional.scaled_dot_product_attention(q, k, v)
             flex_output = flex_attention(q, k, v)
-            torch.testing.assert_close(sdpa_output, flex_output, atol=1e-3, rtol=1e-3)
+            torch.testing.assert_close(sdpa_output, flex_output, atol=atol, rtol=rtol)
             self.assertEqual(flex_output.dtype, torch.float16)
 
     @supported_platform
