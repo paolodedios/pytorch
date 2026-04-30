@@ -8419,11 +8419,6 @@ def gemm_epilogue_fusion_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_o
 
         alpha = gemm_kwargs.get("alpha", 1.0)
         beta = gemm_kwargs.get("beta", 1.0)
-        if alpha != 1.0 or beta != 1.0:
-            raise NotImplementedError(
-                "QUACK GEMM epilogue backend currently supports only default "
-                "alpha=1.0 and beta=1.0"
-            )
         epilogue_key, epilogue_source = materialize_quack_epilogue(
             subgraph.graph_module
         )
