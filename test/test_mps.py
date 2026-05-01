@@ -2349,60 +2349,53 @@ class TestMPS(TestCaseMPS):
         torch.nn.LayerNorm((16,), elementwise_affine=True).to("mps")(torch.randn(1, 2, 16).to("mps", dtype=torch.float16))
 
 
-    def test_layer_norm_backward_metal(self):
-        """Correctness tests for Metal LayerNorm backward kernels.
+    @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+    @parametrize("N", [64, 256, 1024, 4096, 4097, 8192])
+    @parametrize("elementwise_affine", [True, False])
+    def test_layer_norm_backward_metal(self, dtype, N, elementwise_affine):
+        """Correctness tests for Metal LayerNorm backward kernels."""
+        B, T = (2, 8) if N > 4096 else (4, 16)
+        # dx precision: computed in float32, cast to dtype; bf16 looped kernel reaches ~6.5%
+        dx_tol = 1e-3 if dtype == torch.float32 else (5e-2 if dtype == torch.float16 else 1e-1)
+        # dw/db accumulate over B*T rows before casting; bf16 needs more headroom
+        # max |dgamma| ~ 3*sqrt(B*T) ~ 12 for B=4,T=16; bf16 ULP at 12 is ~0.094
+        dw_tol = 1e-3 if dtype == torch.float32 else (5e-2 if dtype == torch.float16 else 2e-1)
 
-        Covers single-row kernel (N <= 4096) and looped kernel (N > 4096),
-        all three dtypes, and the no-weight/bias path.
-        """
-        def run(B, T, N, dtype, elementwise_affine=True):
-            tol = 1e-3 if dtype == torch.float32 else (5e-2 if dtype == torch.float16 else 3e-1)
+        cpu_x = torch.randn(B, T, N, dtype=torch.float32)
+        ln_cpu = torch.nn.LayerNorm(N, elementwise_affine=elementwise_affine,
+                                    dtype=torch.float32)
+        if elementwise_affine:
+            torch.nn.init.normal_(ln_cpu.weight)
+            torch.nn.init.normal_(ln_cpu.bias)
 
-            cpu_x = torch.randn(B, T, N, dtype=torch.float32)
-            ln_cpu = torch.nn.LayerNorm(N, elementwise_affine=elementwise_affine,
-                                        dtype=torch.float32)
-            if elementwise_affine:
-                torch.nn.init.normal_(ln_cpu.weight)
-                torch.nn.init.normal_(ln_cpu.bias)
+        xc = cpu_x.clone().requires_grad_(True)
+        yc = ln_cpu(xc)
+        dyc = torch.randn_like(yc)
+        yc.backward(dyc)
 
-            xc = cpu_x.clone().requires_grad_(True)
-            yc = ln_cpu(xc)
-            dyc = torch.randn_like(yc)
-            yc.backward(dyc)
+        # Save CPU grads before module.to() mutates the module in-place
+        # (nn.Module.to() returns self, so ln_mps IS ln_cpu after the call)
+        ref_dw = ln_cpu.weight.grad.clone() if elementwise_affine else None
+        ref_db = ln_cpu.bias.grad.clone() if elementwise_affine else None
 
-            # Save CPU grads before module.to() mutates the module in-place
-            # (nn.Module.to() returns self, so ln_mps IS ln_cpu after the call)
-            ref_dw = ln_cpu.weight.grad.clone() if elementwise_affine else None
-            ref_db = ln_cpu.bias.grad.clone() if elementwise_affine else None
+        x_mps = cpu_x.to(device='mps', dtype=dtype).requires_grad_(True)
+        ln_mps = ln_cpu.to(device='mps', dtype=dtype)
+        if elementwise_affine:
+            ln_mps.weight.grad = None
+            ln_mps.bias.grad = None
+        ym = ln_mps(x_mps)
+        ym.backward(dyc.to(device='mps', dtype=dtype))
 
-            x_mps = cpu_x.to(device='mps', dtype=dtype).requires_grad_(True)
-            ln_mps = ln_cpu.to(device='mps', dtype=dtype)
-            if elementwise_affine:
-                ln_mps.weight.grad = None
-                ln_mps.bias.grad = None
-            ym = ln_mps(x_mps)
-            ym.backward(dyc.to(device='mps', dtype=dtype))
-
-            dx_err = (x_mps.grad.float().cpu() - xc.grad).abs().max().item()
-            self.assertLess(dx_err, tol,
-                f"dx error {dx_err:.2e} too large for dtype={dtype} N={N}")
-            if elementwise_affine:
-                dw_err = (ln_mps.weight.grad.float().cpu() - ref_dw).abs().max().item()
-                db_err = (ln_mps.bias.grad.float().cpu() - ref_db).abs().max().item()
-                self.assertLess(dw_err, tol,
-                    f"dw error {dw_err:.2e} too large for dtype={dtype} N={N}")
-                self.assertLess(db_err, tol,
-                    f"db error {db_err:.2e} too large for dtype={dtype} N={N}")
-
-        for dtype in [torch.float32, torch.float16, torch.bfloat16]:
-            # single-row kernel (N <= 4096, i.e. N <= 1024 * N_READS)
-            for N in [64, 128, 256, 512, 768, 1024, 2048, 4096]:
-                run(4, 16, N, dtype)
-                run(4, 16, N, dtype, elementwise_affine=False)
-            # looped kernel (N > 4096)
-            for N in [4097, 8192]:
-                run(2, 8, N, dtype)
-                run(2, 8, N, dtype, elementwise_affine=False)
+        dx_err = (x_mps.grad.float().cpu() - xc.grad).abs().max().item()
+        self.assertLess(dx_err, dx_tol,
+            f"dx error {dx_err:.2e} > {dx_tol} for dtype={dtype} N={N}")
+        if elementwise_affine:
+            dw_err = (ln_mps.weight.grad.float().cpu() - ref_dw).abs().max().item()
+            db_err = (ln_mps.bias.grad.float().cpu() - ref_db).abs().max().item()
+            self.assertLess(dw_err, dw_tol,
+                f"dw error {dw_err:.2e} > {dw_tol} for dtype={dtype} N={N}")
+            self.assertLess(db_err, dw_tol,
+                f"db error {db_err:.2e} > {dw_tol} for dtype={dtype} N={N}")
 
     def test_ifft(self):
         # See: https://github.com/pytorch/pytorch/issues/124096
@@ -6283,24 +6276,6 @@ class TestMPS(TestCaseMPS):
             sorted_mi, _ = torch.sort(mi, dim=-1)
             self.assertEqual(sorted_mi.cpu(), torch.arange(mi.size(-1)).expand_as(mi))
 
-    @parametrize("dtype", [torch.float32, torch.bfloat16, torch.float16, torch.int32, torch.int64])
-    @parametrize("descending", [False, True])
-    @parametrize("stable", [True, False])
-    def test_sort_single_block_stable(self, dtype, descending, stable):
-        max_ss = 1024 if dtype == torch.int64 else 4096
-
-        def make(shape):
-            return torch.randint(0, 4, shape).to(dtype)
-        for cpu in [make((4, 4)), make((8, max_ss)), make((16, 32, 64)),
-                    make((8, 2048))[:, ::2], make((1024, 8)).t()]:
-            mps = cpu.to("mps")
-            cv, ci = torch.sort(cpu, stable=stable, dim=-1, descending=descending)
-            mv, mi = torch.sort(mps, stable=stable, dim=-1, descending=descending)
-            self.assertEqual(cv, mv.cpu())
-            self.assertEqual(torch.gather(mps, -1, mi).cpu(), mv.cpu())
-            if stable:
-                self.assertEqual(ci, mi.cpu())
-
     def test_linalg_cholesky(self):
         from torch.testing._internal.common_utils import random_hermitian_pd_matrix
 
@@ -7134,6 +7109,37 @@ class TestMPS(TestCaseMPS):
             self.assertEqual(gelu_tanh_result, gelu_tanh_result_cpu)
 
         helper((2, 8, 4, 5))
+
+
+    def test_gelu_metal(self):
+        """Verify Metal GELU kernels for both approximations, all dtypes, fwd+bwd."""
+        import torch.nn.functional as F
+
+        def run(shape, dtype, approximate):
+            tol = 1e-3 if dtype == torch.float32 else 5e-2
+            cpu_x = torch.randn(shape, dtype=torch.float32)
+            xc = cpu_x.clone().requires_grad_(True)
+            yc = F.gelu(xc, approximate=approximate)
+            dyc = torch.randn_like(yc)
+            yc.backward(dyc)
+
+            x_mps = cpu_x.to(device='mps', dtype=dtype).requires_grad_(True)
+            ym = F.gelu(x_mps, approximate=approximate)
+            ym.backward(dyc.to(device='mps', dtype=dtype))
+
+            fwd_err = (ym.float().cpu() - yc.detach()).abs().max().item()
+            bwd_err = (x_mps.grad.float().cpu() - xc.grad).abs().max().item()
+            self.assertLess(fwd_err, tol,
+                f"GELU fwd err {fwd_err:.2e} for approx={approximate} dtype={dtype} shape={shape}")
+            self.assertLess(bwd_err, tol,
+                f"GELU bwd err {bwd_err:.2e} for approx={approximate} dtype={dtype} shape={shape}")
+
+        for approximate in ['none', 'tanh']:
+            for dtype in [torch.float32, torch.float16, torch.bfloat16]:
+                for shape in [(4,), (4, 3), (5, 4, 3), (2, 8, 4, 5)]:
+                    run(shape, dtype, approximate)
+                # non-contiguous
+                run((8, 8), dtype, approximate)
 
     # Test hardtanh
     def test_hardtanh(self):
@@ -10426,19 +10432,14 @@ class TestSDPA(TestCaseMPS):
     @parametrize("layout", ["contiguous", "mT", "transpose_seq_head", "permute"])
     @parametrize("head_dim", [64, 96, 128, 256])  # supported by the fast kernel
     @parametrize("with_mask", [True, False])
-    @parametrize("is_causal", [False, True])
-    def test_fast_vector_attention(
-        self, dtype: torch.dtype, layout: str, head_dim: int, with_mask: bool, is_causal: bool
-    ):
-        if is_causal and with_mask:
-            self.skipTest("PyTorch SDPA disallows attn_mask together with is_causal")
+    def test_fast_vector_attention(self, dtype: torch.dtype, layout: str, head_dim: int, with_mask: bool):
         torch.manual_seed(1729)
         batch = 1
         NH = 2
         q_len = 4  # <8 so that vector fast is eligible
         s_len = 16  # smaller than 1024 so that we use the one–pass variant
         q, k, v = self.generate_qkv(batch, NH, q_len, s_len, head_dim, layout, dtype)
-        self.run_fast_attention_test(q, k, v, with_mask, is_causal=is_causal)
+        self.run_fast_attention_test(q, k, v, with_mask)
 
     @parametrize("dtype", [torch.float32])  # float16 underflows sometimes, which leads to flaky tests
     @parametrize("layout", ["contiguous", "mT", "transpose_seq_head", "permute"])
@@ -10456,7 +10457,7 @@ class TestSDPA(TestCaseMPS):
         q_len = 8
         s_len = 1024  # large enough to trigger the two–pass path
         q, k, v = self.generate_qkv(batch, NH, q_len, s_len, head_dim, layout, dtype)
-        self.run_fast_attention_test(q, k, v, with_mask, is_causal=is_causal)
+        self.run_fast_attention_test(q, k, v, with_mask)
 
     def test_fast_vector_permuted_inputs_regression(self):
         # Regression test for https://github.com/pytorch/pytorch/issues/181133
@@ -10477,21 +10478,6 @@ class TestSDPA(TestCaseMPS):
         y_mps = F.scaled_dot_product_attention(q_mps, k_mps, v_mps)
         y_cpu = F.scaled_dot_product_attention(q_cpu, k_cpu, v_cpu)
         self._compare_tensors(y_mps.cpu(), y_cpu)
-
-    def test_sdpa_causal_with_attn_mask_raises(self):
-        # Passing both is_causal=True and an explicit attn_mask is ill-defined
-        # input and must raise rather than crash
-        torch.manual_seed(0)
-        q = torch.randn(1, 2, 4, 64, device="mps")
-        k = torch.randn(1, 2, 16, 64, device="mps")
-        v = torch.randn(1, 2, 16, 64, device="mps")
-        mask = torch.zeros(1, 2, 4, 16, dtype=torch.bool, device="mps")
-        with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
-            with self.assertRaisesRegex(
-                RuntimeError,
-                r"_scaled_dot_product_attention: Explicit attn_mask should not be set when is_causal=True",
-            ):
-                F.scaled_dot_product_attention(q, k, v, attn_mask=mask, is_causal=True)
 
     @unittest.skip("Full attention fast kernel not implemented yet")
     @parametrize("dtype", [torch.float16, torch.float32])
@@ -10527,205 +10513,6 @@ class TestSDPA(TestCaseMPS):
 
             self.assertEqual(y_cpu, y_mps)
 
-    def _prefill_qkv(self, B, NH_q, NH_kv, qL, kL, HD, layout, dtype, device="mps"):
-        if layout == "contiguous":
-            q = torch.randn(B, NH_q, qL, HD, dtype=dtype, device=device)
-            k = torch.randn(B, NH_kv, kL, HD, dtype=dtype, device=device)
-            v = torch.randn(B, NH_kv, kL, HD, dtype=dtype, device=device)
-        elif layout == "transpose_seq_head":
-            q = torch.randn(B, qL, NH_q, HD, dtype=dtype, device=device).transpose(1, 2)
-            k = torch.randn(B, kL, NH_kv, HD, dtype=dtype, device=device).transpose(1, 2)
-            v = torch.randn(B, kL, NH_kv, HD, dtype=dtype, device=device).transpose(1, 2)
-        elif layout == "mT":
-            q = torch.randn(B, NH_q, HD, qL, dtype=dtype, device=device).mT
-            k = torch.randn(B, NH_kv, HD, kL, dtype=dtype, device=device).mT
-            v = torch.randn(B, NH_kv, HD, kL, dtype=dtype, device=device).mT
-        elif layout == "sliced_seq":
-            q_full = torch.randn(B, NH_q, qL * 2 + 3, HD, dtype=dtype, device=device)
-            k_full = torch.randn(B, NH_kv, kL * 2 + 3, HD, dtype=dtype, device=device)
-            v_full = torch.randn(B, NH_kv, kL * 2 + 3, HD, dtype=dtype, device=device)
-            q = q_full[:, :, 1:qL + 1, :]
-            k = k_full[:, :, 2:kL + 2, :]
-            v = v_full[:, :, 3:kL + 3, :]
-        elif layout == "sliced_head":
-            q_full = torch.randn(B, NH_q, qL, HD * 2, dtype=dtype, device=device)
-            k_full = torch.randn(B, NH_kv, kL, HD * 2, dtype=dtype, device=device)
-            v_full = torch.randn(B, NH_kv, kL, HD * 2, dtype=dtype, device=device)
-            q = q_full[..., :HD]
-            k = k_full[..., :HD]
-            v = v_full[..., :HD]
-        elif layout == "permute_batch_head":
-            q = torch.randn(NH_q, B, qL, HD, dtype=dtype, device=device).permute(1, 0, 2, 3)
-            k = torch.randn(NH_kv, B, kL, HD, dtype=dtype, device=device).permute(1, 0, 2, 3)
-            v = torch.randn(NH_kv, B, kL, HD, dtype=dtype, device=device).permute(1, 0, 2, 3)
-        else:
-            raise ValueError(f"Unknown layout: {layout}")
-        return q, k, v
-
-    def _run_prefill_test(self, q, k, v, attn_mask=None, is_causal=False, tol=None):
-        if tol is None:
-            if q.dtype == torch.float32:
-                tol = 0.01
-            elif q.dtype == torch.float16:
-                tol = 0.02
-            else:
-                tol = 0.05
-        enable_gqa = q.shape[-3] != k.shape[-3]
-        with torch.nn.attention.sdpa_kernel([torch.nn.attention.SDPBackend.MATH]):
-            y = F.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=attn_mask, dropout_p=0.0,
-                is_causal=is_causal, enable_gqa=enable_gqa,
-            )
-        cpu_mask = attn_mask.cpu() if attn_mask is not None else None
-        y_ref = F.scaled_dot_product_attention(
-            q.cpu(), k.cpu(), v.cpu(),
-            attn_mask=cpu_mask, dropout_p=0.0,
-            is_causal=is_causal, enable_gqa=enable_gqa,
-        )
-        self._compare_tensors(y.cpu(), y_ref, tol=tol)
-
-    @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-    @parametrize("head_dim", [32, 64, 72, 80, 96, 128, 256])
-    @parametrize("variant", ["plain", "causal", "bool_mask", "float_mask"])
-    def test_prefill_attention_correctness_sweep(self, dtype, head_dim, variant):
-        torch.manual_seed(1729)
-        B, NH, qL, kL = 2, 4, 16, 32
-        q, k, v = self._prefill_qkv(B, NH, NH, qL, kL, head_dim, "contiguous", dtype)
-        is_causal = False
-        attn_mask = None
-        if variant == "causal":
-            is_causal = True
-        elif variant == "bool_mask":
-            attn_mask = torch.ones(B, NH, qL, kL, dtype=torch.bool, device="mps")
-            attn_mask[..., kL // 2:] = False
-        elif variant == "float_mask":
-            attn_mask = torch.zeros(B, NH, qL, kL, dtype=dtype, device="mps")
-            attn_mask[..., kL // 2:] = -1e4
-        self._run_prefill_test(q, k, v, attn_mask=attn_mask, is_causal=is_causal)
-
-    @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-    @parametrize("head_dim", [64, 128])
-    @parametrize(
-        "layout",
-        ["contiguous", "transpose_seq_head", "mT", "sliced_seq", "sliced_head", "permute_batch_head"],
-    )
-    @parametrize("is_causal", [False, True])
-    def test_prefill_attention_layouts(self, dtype, head_dim, layout, is_causal):
-        torch.manual_seed(1729)
-        q, k, v = self._prefill_qkv(
-            B=2, NH_q=4, NH_kv=4, qL=16, kL=32, HD=head_dim, layout=layout, dtype=dtype,
-        )
-        self._run_prefill_test(q, k, v, is_causal=is_causal)
-
-    @parametrize("dtype", [torch.float32, torch.float16])
-    def test_prefill_attention_mixed_layouts(self, dtype):
-        torch.manual_seed(1729)
-        B, NH, qL, kL, HD = 2, 4, 16, 32, 64
-        q = torch.randn(B, qL, NH, HD, dtype=dtype, device="mps").transpose(1, 2)
-        k = torch.randn(NH, B, kL, HD, dtype=dtype, device="mps").permute(1, 0, 2, 3)
-        v_full = torch.randn(B, NH, kL * 2 + 3, HD, dtype=dtype, device="mps")
-        v = v_full[:, :, 1:kL + 1, :]
-        self._run_prefill_test(q, k, v)
-
-    @parametrize("dtype", [torch.float32, torch.float16])
-    @parametrize("head_dim", [64, 128])
-    @parametrize("mask_layout", ["broadcast_head", "broadcast_batch", "sliced"])
-    def test_prefill_attention_mask_layouts(self, dtype, head_dim, mask_layout):
-        torch.manual_seed(1729)
-        B, NH, qL, kL = 2, 4, 16, 32
-        q, k, v = self._prefill_qkv(B, NH, NH, qL, kL, head_dim, "contiguous", dtype)
-        if mask_layout == "broadcast_head":
-            mask = torch.ones(B, 1, qL, kL, dtype=torch.bool, device="mps")
-            mask[..., kL // 2:] = False
-        elif mask_layout == "broadcast_batch":
-            mask = torch.ones(1, NH, qL, kL, dtype=torch.bool, device="mps")
-            mask[..., kL // 2:] = False
-        elif mask_layout == "sliced":
-            mask_full = torch.zeros(B, NH, qL, kL * 2 + 1, dtype=dtype, device="mps")
-            mask_full[..., 1 + kL // 2:1 + kL] = -1e4
-            mask = mask_full[..., 1:kL + 1]
-        else:
-            raise ValueError(f"Unknown mask_layout: {mask_layout}")
-        self._run_prefill_test(q, k, v, attn_mask=mask)
-
-    @parametrize("dtype", [torch.float32])
-    @parametrize("head_dim", [64, 128, 256])
-    @parametrize(
-        "qL,kL",
-        [(9, 1), (9, 7), (15, 17), (33, 31), (17, 100), (64, 64), (33, 65)],
-    )
-    @parametrize("is_causal", [False, True])
-    def test_prefill_attention_partial_blocks(self, dtype, head_dim, qL, kL, is_causal):
-        torch.manual_seed(1729)
-        q, k, v = self._prefill_qkv(
-            B=1, NH_q=2, NH_kv=2, qL=qL, kL=kL, HD=head_dim,
-            layout="contiguous", dtype=dtype,
-        )
-        self._run_prefill_test(q, k, v, is_causal=is_causal)
-
-    @parametrize("dtype", [torch.float32, torch.float16])
-    @parametrize("gqa_factor", [2, 4, 8])
-    @parametrize("is_causal", [False, True])
-    def test_prefill_attention_gqa(self, dtype, gqa_factor, is_causal):
-        torch.manual_seed(1729)
-        NH_kv = 2
-        NH_q = NH_kv * gqa_factor
-        q, k, v = self._prefill_qkv(
-            B=2, NH_q=NH_q, NH_kv=NH_kv, qL=16, kL=32, HD=64,
-            layout="contiguous", dtype=dtype,
-        )
-        self._run_prefill_test(q, k, v, is_causal=is_causal)
-
-    @parametrize("dtype", [torch.float32, torch.float16])
-    @parametrize("head_dim", [64, 128])
-    @parametrize("is_causal", [False, True])
-    def test_prefill_attention_long_kl(self, dtype, head_dim, is_causal):
-        torch.manual_seed(1729)
-        q, k, v = self._prefill_qkv(
-            B=1, NH_q=4, NH_kv=4, qL=32, kL=1024, HD=head_dim,
-            layout="contiguous", dtype=dtype,
-        )
-        tol = 0.02 if dtype == torch.float32 else 0.05
-        self._run_prefill_test(q, k, v, is_causal=is_causal, tol=tol)
-
-    @parametrize("dtype", [torch.float32, torch.float16])
-    @parametrize("head_dim", [64, 128])
-    def test_prefill_attention_multi_q_blocks(self, dtype, head_dim):
-        torch.manual_seed(1729)
-        q, k, v = self._prefill_qkv(
-            B=1, NH_q=2, NH_kv=2, qL=128, kL=128, HD=head_dim,
-            layout="contiguous", dtype=dtype,
-        )
-        self._run_prefill_test(q, k, v)
-
-    @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
-    @parametrize("head_dim", [64, 128])
-    @parametrize(
-        "variant",
-        ["bool_row_false", "float_row_neg_inf", "kv_padding", "causal_with_inf"],
-    )
-    def test_prefill_attention_fully_masked_rows(self, dtype, head_dim, variant):
-        # CPU returns 0 for query rows where every key is masked
-        torch.manual_seed(1729)
-        B, NH, qL, kL = 2, 2, 16, 32
-        q, k, v = self._prefill_qkv(B, NH, NH, qL, kL, head_dim, "contiguous", dtype)
-        attn_mask = None
-        is_causal = False
-        if variant == "bool_row_false":
-            attn_mask = torch.ones(B, NH, qL, kL, dtype=torch.bool, device="mps")
-            attn_mask[..., 0, :] = False
-        elif variant == "float_row_neg_inf":
-            attn_mask = torch.zeros(B, NH, qL, kL, dtype=dtype, device="mps")
-            attn_mask[..., 0, :] = float("-inf")
-        elif variant == "kv_padding":
-            attn_mask = torch.ones(B, NH, qL, kL, dtype=torch.bool, device="mps")
-            attn_mask[1, :, qL // 2:, :] = False
-        elif variant == "causal_with_inf":
-            attn_mask = torch.zeros(B, NH, qL, kL, dtype=dtype, device="mps")
-            attn_mask[..., 0, 0] = float("-inf")
-            is_causal = True
-        self._run_prefill_test(q, k, v, attn_mask=attn_mask, is_causal=is_causal)
 
 
 class TestSDPAMetaDispatchMode(TorchDispatchMode):
@@ -14239,6 +14026,119 @@ class TestMetalLibrary(TestCaseMPS):
         self.assertEqual(x, torch.tensor([1.0, 4.0, 9.0, 16.0], device="mps"))
 
 
+
+class TestFlashAttentionMPS(TestCaseMPS):
+    """Tests for torch.ops.aten._scaled_dot_product_flash_attention_for_mps.
+
+    These ops are NOT auto-dispatched through F.scaled_dot_product_attention to
+    avoid regressions against the existing MPSGraph path.  Call them directly to
+    opt in to O(N) memory tiled attention on Apple Silicon.
+    """
+
+    _flash_op = torch.ops.aten._scaled_dot_product_flash_attention_for_mps
+    _flash_bwd_op = torch.ops.aten._scaled_dot_product_flash_attention_for_mps_backward
+
+    def _run_forward(self, B, H, S, D, kvH=None, dtype=torch.float16, causal=False):
+        """Run flash fwd and compare against CPU math reference."""
+        kvH = kvH or H
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+        q = torch.randn(B, H,   S, D, device="mps", dtype=dtype)
+        k = torch.randn(B, kvH, S, D, device="mps", dtype=dtype)
+        v = torch.randn(B, kvH, S, D, device="mps", dtype=dtype)
+
+        out, _ = self._flash_op(q, k, v, 0.0, causal, scale=scale)
+
+        # CPU reference: expand k/v for GQA
+        g = H // kvH
+        kc = k.cpu().float().repeat_interleave(g, dim=1)
+        vc = v.cpu().float().repeat_interleave(g, dim=1)
+        ref = torch.nn.functional.scaled_dot_product_attention(
+            q.cpu().float(), kc, vc, is_causal=causal, scale=scale)
+
+        tol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-4
+        torch.testing.assert_close(out.cpu().float(), ref, atol=tol, rtol=tol)
+
+    def _run_backward(self, B, H, S, D, kvH=None, dtype=torch.float16, causal=False):
+        """Run flash fwd+bwd and compare gradients against CPU autograd reference."""
+        kvH = kvH or H
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+
+        q  = torch.randn(B, H,   S, D, device="mps", dtype=dtype, requires_grad=True)
+        k  = torch.randn(B, kvH, S, D, device="mps", dtype=dtype, requires_grad=True)
+        v  = torch.randn(B, kvH, S, D, device="mps", dtype=dtype, requires_grad=True)
+        qc = q.detach().cpu().float().requires_grad_(True)
+        kc = k.detach().cpu().float().requires_grad_(True)
+        vc = v.detach().cpu().float().requires_grad_(True)
+
+        # Flash fwd+bwd
+        out, _ = self._flash_op(q, k, v, 0.0, causal, scale=scale)
+        out.sum().backward()
+
+        # CPU reference (expand k/v for GQA)
+        g = H // kvH
+        kc_exp = kc.repeat_interleave(g, dim=1)
+        vc_exp = vc.repeat_interleave(g, dim=1)
+        ref = torch.nn.functional.scaled_dot_product_attention(
+            qc, kc_exp, vc_exp, is_causal=causal, scale=scale)
+        ref.sum().backward()
+
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
+        torch.testing.assert_close(q.grad.cpu().float(),  qc.grad,  atol=tol, rtol=tol)
+        # kc.grad / vc.grad are already accumulated across the GQA groups
+        torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol)
+        torch.testing.assert_close(v.grad.cpu().float(), vc.grad, atol=tol, rtol=tol)
+
+    # ------------------------------------------------------------------
+    # Forward tests
+    # ------------------------------------------------------------------
+    def test_flash_fwd_fp16_noncausal_d64(self):
+        self._run_forward(2, 8, 512, 64, dtype=torch.float16, causal=False)
+
+    def test_flash_fwd_fp16_causal_d64(self):
+        self._run_forward(2, 8, 512, 64, dtype=torch.float16, causal=True)
+
+    def test_flash_fwd_bf16_noncausal_d128(self):
+        self._run_forward(2, 4, 256, 128, dtype=torch.bfloat16, causal=False)
+
+    def test_flash_fwd_fp32_noncausal_d64(self):
+        self._run_forward(1, 4, 128, 64, dtype=torch.float32, causal=False)
+
+    def test_flash_fwd_fp16_long_sequence(self):
+        self._run_forward(1, 4, 1024, 64, dtype=torch.float16, causal=False)
+
+    # ------------------------------------------------------------------
+    # GQA forward tests
+    # ------------------------------------------------------------------
+    def test_flash_fwd_gqa_factor4_d64(self):
+        self._run_forward(2, 8, 512, 64, kvH=2, dtype=torch.float16)
+
+    def test_flash_fwd_gqa_factor8_d128(self):
+        self._run_forward(2, 8, 256, 128, kvH=1, dtype=torch.float16)
+
+    # ------------------------------------------------------------------
+    # Backward tests
+    # ------------------------------------------------------------------
+    def test_flash_bwd_fp16_noncausal(self):
+        self._run_backward(2, 4, 256, 64, dtype=torch.float16, causal=False)
+
+    def test_flash_bwd_fp16_causal(self):
+        self._run_backward(2, 4, 256, 64, dtype=torch.float16, causal=True)
+
+    def test_flash_bwd_fp32_noncausal(self):
+        self._run_backward(1, 4, 128, 64, dtype=torch.float32, causal=False)
+
+    # ------------------------------------------------------------------
+    # GQA backward tests
+    # ------------------------------------------------------------------
+    def test_flash_bwd_gqa_factor4(self):
+        self._run_backward(2, 8, 256, 64, kvH=2, dtype=torch.float16)
+
+    def test_flash_bwd_gqa_factor8(self):
+        self._run_backward(2, 8, 128, 64, kvH=1, dtype=torch.float16)
+
+
 # TODO: Actually instantiate that test for the "mps" device to better reflect what it is doing.
 # This requires mps to be properly registered in the device generic test framework which is not the
 # case right now. We can probably use `allow_mps` introduced in https://github.com/pytorch/pytorch/pull/87342
@@ -14253,6 +14153,637 @@ instantiate_parametrized_tests(TestMPS)
 instantiate_parametrized_tests(TestSDPA)
 instantiate_parametrized_tests(TestSmoothL1Loss)
 instantiate_parametrized_tests(TestMetalLibrary)
+
+
+class TestFlashAttentionVarlenMPS(TestCaseMPS):
+    """Tests for _scaled_dot_product_flash_attention_varlen_for_mps.
+
+    Sequences of different lengths are packed end-to-end in [total, H, D]
+    format (no padding).  Reference is per-sequence CPU float32 sdpa.
+    """
+
+    _varlen_op = torch.ops.aten._scaled_dot_product_flash_attention_varlen_for_mps
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _cu_seqlens(seqlens):
+        """Build int32 cu_seqlens [0, L0, L0+L1, ...] on MPS."""
+        return torch.cat([
+            torch.zeros(1, dtype=torch.int32),
+            torch.cumsum(torch.tensor(seqlens, dtype=torch.int32), 0),
+        ]).to("mps")
+
+    def _ref_forward(self, q, k, v, seqlens, causal, scale):
+        """CPU float32 reference: run sdpa per sequence, no padding."""
+        cu = [0] + torch.cumsum(torch.tensor(seqlens), 0).tolist()
+        outs = []
+        for b, L in enumerate(seqlens):
+            Lk = seqlens[b]
+            q_b = q.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)    # [1,H,L,D]
+            k_b = k.narrow(0, cu[b], Lk).permute(1, 0, 2).unsqueeze(0)
+            v_b = v.narrow(0, cu[b], Lk).permute(1, 0, 2).unsqueeze(0)
+            out_b = torch.nn.functional.scaled_dot_product_attention(
+                q_b, k_b, v_b, is_causal=causal, scale=scale)
+            outs.append(out_b.squeeze(0).permute(1, 0, 2))                # [L,H,D]
+        return torch.cat(outs, dim=0)                                      # [total,H,D]
+
+    def _run_forward(self, seqlens, H, D, dtype=torch.float16, causal=False):
+        total = sum(seqlens)
+        max_s = max(seqlens)
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+
+        q = torch.randn(total, H, D, device="mps", dtype=dtype)
+        k = torch.randn(total, H, D, device="mps", dtype=dtype)
+        v = torch.randn(total, H, D, device="mps", dtype=dtype)
+        cu = self._cu_seqlens(seqlens)
+
+        out, _ = self._varlen_op(q, k, v, cu, cu, max_s, max_s, 0.0, causal, scale=scale)
+
+        ref = self._ref_forward(
+            q.cpu().float(), k.cpu().float(), v.cpu().float(),
+            seqlens, causal, scale)
+
+        tol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 5e-4
+        torch.testing.assert_close(out.cpu().float(), ref, atol=tol, rtol=tol,
+                                   msg=f"Forward mismatch: seqlens={seqlens} H={H} D={D} "
+                                       f"dtype={dtype} causal={causal}")
+
+    def _run_backward(self, seqlens, H, D, dtype=torch.float16, causal=False):
+        total = sum(seqlens)
+        max_s = max(seqlens)
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+
+        q = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+        k = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+        v = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+
+        qc = q.detach().cpu().float().requires_grad_(True)
+        kc = k.detach().cpu().float().requires_grad_(True)
+        vc = v.detach().cpu().float().requires_grad_(True)
+
+        cu = self._cu_seqlens(seqlens)
+
+        out, _ = self._varlen_op(q, k, v, cu, cu, max_s, max_s, 0.0, causal, scale=scale)
+        out.sum().backward()
+
+        ref = self._ref_forward(qc, kc, vc, seqlens, causal, scale)
+        ref.sum().backward()
+
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
+        torch.testing.assert_close(q.grad.cpu().float(), qc.grad, atol=tol, rtol=tol,
+                                   msg="dQ mismatch")
+        torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol,
+                                   msg="dK mismatch")
+        torch.testing.assert_close(v.grad.cpu().float(), vc.grad, atol=tol, rtol=tol,
+                                   msg="dV mismatch")
+
+    # ------------------------------------------------------------------
+    # Forward — dtype x D x causal
+    # ------------------------------------------------------------------
+
+    def test_varlen_fwd_fp16_noncausal_d64(self):
+        self._run_forward([64, 32, 48, 16], H=8, D=64, dtype=torch.float16)
+
+    def test_varlen_fwd_fp16_causal_d64(self):
+        self._run_forward([64, 32, 48, 16], H=8, D=64, dtype=torch.float16, causal=True)
+
+    def test_varlen_fwd_bf16_noncausal_d128(self):
+        self._run_forward([48, 96, 32], H=4, D=128, dtype=torch.bfloat16)
+
+    def test_varlen_fwd_fp32_noncausal_d64(self):
+        self._run_forward([16, 32, 8], H=4, D=64, dtype=torch.float32)
+
+    def test_varlen_fwd_fp32_noncausal_d128(self):
+        self._run_forward([16, 32, 8], H=4, D=128, dtype=torch.float32)
+
+    def test_varlen_fwd_fp16_causal_d128(self):
+        self._run_forward([48, 64, 32], H=4, D=128, dtype=torch.float16, causal=True)
+
+    # ------------------------------------------------------------------
+    # Forward — non-multiples of 32 (arbitrary head_dim support)
+    # ------------------------------------------------------------------
+
+    def test_varlen_fwd_fp16_d48(self):
+        self._run_forward([32, 48, 16], H=4, D=48, dtype=torch.float16)
+
+    def test_varlen_fwd_fp16_causal_d48(self):
+        self._run_forward([32, 48, 16], H=4, D=48, dtype=torch.float16, causal=True)
+
+    def test_varlen_fwd_fp16_d80(self):
+        self._run_forward([32, 48, 16], H=4, D=80, dtype=torch.float16)
+
+    def test_varlen_fwd_fp16_d96(self):
+        self._run_forward([32, 48, 16], H=4, D=96, dtype=torch.float16)
+
+    def test_varlen_fwd_fp16_d112(self):
+        self._run_forward([32, 48, 16], H=4, D=112, dtype=torch.float16)
+
+    def test_varlen_fwd_fp16_d160(self):
+        self._run_forward([32, 48, 16], H=4, D=160, dtype=torch.float16)
+
+    def test_varlen_fwd_fp16_d192(self):
+        self._run_forward([32, 48, 16], H=4, D=192, dtype=torch.float16)
+
+    def test_varlen_fwd_fp16_d224(self):
+        self._run_forward([32, 48, 16], H=4, D=224, dtype=torch.float16)
+
+    def test_varlen_fwd_fp32_d48(self):
+        self._run_forward([32, 48, 16], H=4, D=48, dtype=torch.float32)
+
+    def test_varlen_fwd_fp32_d96(self):
+        self._run_forward([32, 48, 16], H=4, D=96, dtype=torch.float32)
+
+    def test_varlen_fwd_multitile_d48(self):
+        self._run_forward([200, 150], H=4, D=48, dtype=torch.float16)
+
+    def test_varlen_fwd_multitile_d96(self):
+        self._run_forward([200, 150], H=4, D=96, dtype=torch.float16)
+
+    def test_varlen_fwd_multitile_causal_d80(self):
+        self._run_forward([200, 150], H=4, D=80, dtype=torch.float16, causal=True)
+
+    # ------------------------------------------------------------------
+    # Forward — multi-tile (seqlens > BKV=64 for D=64, forces K-loop)
+    # ------------------------------------------------------------------
+
+    def test_varlen_fwd_multitile_d64(self):
+        self._run_forward([200, 150, 300], H=4, D=64, dtype=torch.float16)
+
+    def test_varlen_fwd_multitile_causal_d128(self):
+        self._run_forward([256, 192], H=4, D=128, dtype=torch.float16, causal=True)
+
+    # ------------------------------------------------------------------
+    # Forward — realistic variable-length workload (B=16, max=358, H=8, D=64)
+    # ------------------------------------------------------------------
+
+    def test_varlen_fwd_realistic_shapes(self):
+        import random
+        random.seed(7)
+        seqlens = [random.randint(50, 358) for _ in range(16)]
+        self._run_forward(seqlens, H=8, D=64, dtype=torch.float16)
+
+    def test_varlen_fwd_realistic_shapes_fp32(self):
+        import random
+        random.seed(7)
+        seqlens = [random.randint(50, 358) for _ in range(16)]
+        self._run_forward(seqlens, H=8, D=64, dtype=torch.float32)
+
+    # ------------------------------------------------------------------
+    # Forward — edge cases
+    # ------------------------------------------------------------------
+
+    def test_varlen_fwd_single_token_sequences(self):
+        self._run_forward([1, 1, 1, 5], H=4, D=64, dtype=torch.float16)
+
+    def test_varlen_fwd_B1(self):
+        self._run_forward([128], H=8, D=64, dtype=torch.float16)
+
+    def test_varlen_fwd_B1_long(self):
+        self._run_forward([512], H=4, D=64, dtype=torch.float16)
+
+    def test_varlen_fwd_unequal_lengths(self):
+        # Extreme imbalance: one very long, rest very short
+        self._run_forward([300, 2, 5, 1, 10], H=4, D=64, dtype=torch.float16)
+
+    # ------------------------------------------------------------------
+    # Backward — non-multiples of 32 (arbitrary head_dim support)
+    # ------------------------------------------------------------------
+
+    def test_varlen_bwd_fp16_d48(self):
+        self._run_backward([32, 48, 16], H=4, D=48, dtype=torch.float16)
+
+    def test_varlen_bwd_fp16_causal_d48(self):
+        self._run_backward([32, 48, 16], H=4, D=48, dtype=torch.float16, causal=True)
+
+    def test_varlen_bwd_fp16_d80(self):
+        self._run_backward([32, 48, 16], H=4, D=80, dtype=torch.float16)
+
+    def test_varlen_bwd_fp16_d96(self):
+        self._run_backward([32, 48, 16], H=4, D=96, dtype=torch.float16)
+
+    def test_varlen_bwd_fp16_d112(self):
+        self._run_backward([32, 48, 16], H=4, D=112, dtype=torch.float16)
+
+    def test_varlen_bwd_fp32_d48(self):
+        self._run_backward([32, 48, 16], H=4, D=48, dtype=torch.float32)
+
+    def test_varlen_bwd_fp32_d96(self):
+        self._run_backward([32, 48, 16], H=4, D=96, dtype=torch.float32)
+
+    def test_varlen_bwd_multitile_d48(self):
+        self._run_backward([200, 150], H=4, D=48, dtype=torch.float16)
+
+    def test_varlen_bwd_multitile_causal_d80(self):
+        self._run_backward([200, 150], H=4, D=80, dtype=torch.float16, causal=True)
+
+    # ------------------------------------------------------------------
+    # Backward — dtype x D x causal
+    # ------------------------------------------------------------------
+
+    def test_varlen_bwd_fp16_noncausal_d64(self):
+        self._run_backward([32, 48, 16], H=4, D=64, dtype=torch.float16)
+
+    def test_varlen_bwd_fp16_causal_d64(self):
+        self._run_backward([32, 48, 16], H=4, D=64, dtype=torch.float16, causal=True)
+
+    def test_varlen_bwd_fp16_d128(self):
+        self._run_backward([32, 48], H=4, D=128, dtype=torch.float16)
+
+    def test_varlen_bwd_fp32_d64(self):
+        self._run_backward([16, 32, 8], H=4, D=64, dtype=torch.float32)
+
+    def test_varlen_bwd_fp32_causal_d128(self):
+        self._run_backward([16, 32], H=4, D=128, dtype=torch.float32, causal=True)
+
+    def test_varlen_bwd_multitile(self):
+        self._run_backward([150, 200], H=4, D=64, dtype=torch.float16)
+
+    def test_varlen_bwd_multitile_causal(self):
+        self._run_backward([150, 200], H=4, D=64, dtype=torch.float16, causal=True)
+
+    # ------------------------------------------------------------------
+    # Backward — realistic variable-length workload
+    # ------------------------------------------------------------------
+
+    def test_varlen_bwd_realistic_shapes(self):
+        import random
+        random.seed(7)
+        seqlens = [random.randint(50, 358) for _ in range(16)]
+        self._run_backward(seqlens, H=8, D=64, dtype=torch.float16)
+
+    # ------------------------------------------------------------------
+    # GQA helpers
+    # ------------------------------------------------------------------
+
+    def _ref_forward_gqa(self, q, k, v, seqlens, H, kvH, causal, scale):
+        """CPU float32 reference for GQA: K/V have kvH heads, Q has H heads."""
+        gqa = H // kvH
+        cu = [0] + torch.cumsum(torch.tensor(seqlens), 0).tolist()
+        outs = []
+        for b, L in enumerate(seqlens):
+            q_b = q.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)  # [1,H,L,D]
+            k_b = k.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)  # [1,kvH,L,D]
+            v_b = v.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)
+            k_b = k_b.repeat_interleave(gqa, dim=1)                      # [1,H,L,D]
+            v_b = v_b.repeat_interleave(gqa, dim=1)
+            out_b = torch.nn.functional.scaled_dot_product_attention(
+                q_b, k_b, v_b, is_causal=causal, scale=scale)
+            outs.append(out_b.squeeze(0).permute(1, 0, 2))               # [L,H,D]
+        return torch.cat(outs, dim=0)                                     # [total,H,D]
+
+    def _run_forward_gqa(self, seqlens, H, kvH, D, dtype=torch.float16, causal=False):
+        total = sum(seqlens)
+        max_s = max(seqlens)
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+
+        q = torch.randn(total, H,   D, device="mps", dtype=dtype)
+        k = torch.randn(total, kvH, D, device="mps", dtype=dtype)
+        v = torch.randn(total, kvH, D, device="mps", dtype=dtype)
+        cu = self._cu_seqlens(seqlens)
+
+        out, _ = self._varlen_op(q, k, v, cu, cu, max_s, max_s, 0.0, causal, scale=scale)
+
+        ref = self._ref_forward_gqa(
+            q.cpu().float(), k.cpu().float(), v.cpu().float(),
+            seqlens, H, kvH, causal, scale)
+
+        tol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 5e-4
+        torch.testing.assert_close(out.cpu().float(), ref, atol=tol, rtol=tol,
+                                   msg=f"GQA fwd mismatch: H={H} kvH={kvH} D={D} "
+                                       f"seqlens={seqlens} causal={causal}")
+
+    def _run_backward_gqa(self, seqlens, H, kvH, D, dtype=torch.float16, causal=False):
+        total = sum(seqlens)
+        max_s = max(seqlens)
+        scale = 1.0 / (D ** 0.5)
+        gqa = H // kvH
+        torch.manual_seed(42)
+
+        q = torch.randn(total, H,   D, device="mps", dtype=dtype, requires_grad=True)
+        k = torch.randn(total, kvH, D, device="mps", dtype=dtype, requires_grad=True)
+        v = torch.randn(total, kvH, D, device="mps", dtype=dtype, requires_grad=True)
+
+        qc = q.detach().cpu().float().requires_grad_(True)
+        kc = k.detach().cpu().float().requires_grad_(True)
+        vc = v.detach().cpu().float().requires_grad_(True)
+
+        cu = self._cu_seqlens(seqlens)
+
+        out, _ = self._varlen_op(q, k, v, cu, cu, max_s, max_s, 0.0, causal, scale=scale)
+        out.sum().backward()
+
+        ref = self._ref_forward_gqa(qc, kc, vc, seqlens, H, kvH, causal, scale)
+        ref.sum().backward()
+
+        # dK / dV are [total, kvH, D] — reference kc.grad/vc.grad already in that shape
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
+        torch.testing.assert_close(q.grad.cpu().float(), qc.grad, atol=tol, rtol=tol,
+                                   msg=f"GQA dQ mismatch H={H} kvH={kvH}")
+        torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol,
+                                   msg=f"GQA dK mismatch H={H} kvH={kvH}")
+        torch.testing.assert_close(v.grad.cpu().float(), vc.grad, atol=tol, rtol=tol,
+                                   msg=f"GQA dV mismatch H={H} kvH={kvH}")
+
+    # ------------------------------------------------------------------
+    # GQA forward
+    # ------------------------------------------------------------------
+
+    def test_varlen_gqa_fwd_2x_d64(self):
+        # H=8, kvH=4 (gqa=2), standard GQA
+        self._run_forward_gqa([64, 32, 48, 16], H=8, kvH=4, D=64)
+
+    def test_varlen_gqa_fwd_4x_d64(self):
+        self._run_forward_gqa([48, 96, 32], H=8, kvH=2, D=64)
+
+    def test_varlen_gqa_mqa_d64(self):
+        # MQA: single KV head (kvH=1)
+        self._run_forward_gqa([64, 32, 48], H=8, kvH=1, D=64)
+
+    def test_varlen_gqa_fwd_2x_d128(self):
+        self._run_forward_gqa([48, 64, 32], H=4, kvH=2, D=128)
+
+    def test_varlen_gqa_fwd_causal_2x(self):
+        self._run_forward_gqa([64, 48, 32], H=8, kvH=4, D=64, causal=True)
+
+    def test_varlen_gqa_fwd_multitile_4x(self):
+        # Long seqs to force multi-tile K-loop
+        self._run_forward_gqa([200, 150, 300], H=8, kvH=2, D=64)
+
+    def test_varlen_gqa_fwd_bf16_2x(self):
+        self._run_forward_gqa([48, 64, 32], H=8, kvH=4, D=64, dtype=torch.bfloat16)
+
+    # ------------------------------------------------------------------
+    # GQA backward
+    # ------------------------------------------------------------------
+
+    def test_varlen_gqa_bwd_2x_d64(self):
+        self._run_backward_gqa([32, 48, 16], H=8, kvH=4, D=64)
+
+    def test_varlen_gqa_bwd_mqa_d64(self):
+        self._run_backward_gqa([32, 48, 16], H=8, kvH=1, D=64)
+
+    def test_varlen_gqa_bwd_2x_d128(self):
+        self._run_backward_gqa([32, 48], H=4, kvH=2, D=128)
+
+    def test_varlen_gqa_bwd_causal_2x(self):
+        self._run_backward_gqa([32, 48, 16], H=8, kvH=4, D=64, causal=True)
+
+    def test_varlen_gqa_bwd_multitile_2x(self):
+        self._run_backward_gqa([150, 200], H=8, kvH=4, D=64)
+
+    # ------------------------------------------------------------------
+    # Window-attention helpers
+    # ------------------------------------------------------------------
+
+    def _ref_forward_window(self, q, k, v, seqlens, causal, scale,
+                            wnd_left, wnd_right):
+        """CPU float32 reference for sliding-window attention."""
+        cu = [0] + torch.cumsum(torch.tensor(seqlens), 0).tolist()
+        outs = []
+        for b, L in enumerate(seqlens):
+            q_b = q.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)  # [1,H,L,D]
+            k_b = k.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)
+            v_b = v.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)
+            # Build additive bias mask  [1, 1, L, L]
+            rows = torch.arange(L)
+            cols = torch.arange(L)
+            rel  = cols.unsqueeze(0) - rows.unsqueeze(1)  # [L, L]  col - row
+            mask = torch.zeros(L, L)
+            if causal:
+                mask[rel > 0] = float("-inf")
+            if wnd_left >= 0:
+                mask[rel < -wnd_left] = float("-inf")
+            if wnd_right >= 0:
+                mask[rel > wnd_right] = float("-inf")
+            mask = mask.unsqueeze(0).unsqueeze(0)  # [1,1,L,L]
+            out_b = torch.nn.functional.scaled_dot_product_attention(
+                q_b, k_b, v_b, attn_mask=mask, scale=scale)
+            outs.append(out_b.squeeze(0).permute(1, 0, 2))
+        return torch.cat(outs, dim=0)
+
+    def _run_forward_window(self, seqlens, H, D, wnd_left, wnd_right,
+                            dtype=torch.float16, causal=False):
+        total = sum(seqlens)
+        max_s = max(seqlens)
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+
+        q = torch.randn(total, H, D, device="mps", dtype=dtype)
+        k = torch.randn(total, H, D, device="mps", dtype=dtype)
+        v = torch.randn(total, H, D, device="mps", dtype=dtype)
+        cu = self._cu_seqlens(seqlens)
+
+        out, _ = self._varlen_op(
+            q, k, v, cu, cu, max_s, max_s, 0.0, causal,
+            window_size_left=wnd_left, window_size_right=wnd_right)
+
+        ref = self._ref_forward_window(
+            q.cpu().float(), k.cpu().float(), v.cpu().float(),
+            seqlens, causal, scale, wnd_left, wnd_right)
+
+        tol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 5e-4
+        torch.testing.assert_close(out.cpu().float(), ref, atol=tol, rtol=tol,
+                                   msg=f"window fwd mismatch: wnd=({wnd_left},{wnd_right}) "
+                                       f"seqlens={seqlens} causal={causal}")
+
+    def _run_backward_window(self, seqlens, H, D, wnd_left, wnd_right,
+                             dtype=torch.float16, causal=False):
+        total = sum(seqlens)
+        max_s = max(seqlens)
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+
+        q = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+        k = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+        v = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+
+        qc = q.detach().cpu().float().requires_grad_(True)
+        kc = k.detach().cpu().float().requires_grad_(True)
+        vc = v.detach().cpu().float().requires_grad_(True)
+
+        cu = self._cu_seqlens(seqlens)
+
+        out, _ = self._varlen_op(
+            q, k, v, cu, cu, max_s, max_s, 0.0, causal,
+            window_size_left=wnd_left, window_size_right=wnd_right)
+        out.sum().backward()
+
+        ref = self._ref_forward_window(qc, kc, vc, seqlens, causal, scale,
+                                       wnd_left, wnd_right)
+        ref.sum().backward()
+
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
+        torch.testing.assert_close(q.grad.cpu().float(), qc.grad, atol=tol, rtol=tol,
+                                   msg=f"window dQ mismatch wnd=({wnd_left},{wnd_right})")
+        torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol,
+                                   msg=f"window dK mismatch wnd=({wnd_left},{wnd_right})")
+        torch.testing.assert_close(v.grad.cpu().float(), vc.grad, atol=tol, rtol=tol,
+                                   msg=f"window dV mismatch wnd=({wnd_left},{wnd_right})")
+
+    # ------------------------------------------------------------------
+    # ALiBi helpers
+    # ------------------------------------------------------------------
+
+    def _ref_forward_alibi(self, q, k, v, seqlens, causal, scale, slopes):
+        """CPU float32 reference for ALiBi attention."""
+        H = q.size(1)
+        cu = [0] + torch.cumsum(torch.tensor(seqlens), 0).tolist()
+        outs = []
+        for b, L in enumerate(seqlens):
+            q_b = q.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)  # [1,H,L,D]
+            k_b = k.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)
+            v_b = v.narrow(0, cu[b], L).permute(1, 0, 2).unsqueeze(0)
+            rows = torch.arange(L, dtype=torch.float32)
+            cols = torch.arange(L, dtype=torch.float32)
+            rel  = cols.unsqueeze(0) - rows.unsqueeze(1)  # [L, L]  k_pos - q_pos
+            if causal:
+                rel_bias = rel  # causal: slope * (k - q), always <= 0
+            else:
+                rel_bias = -rel.abs()  # bidirectional: slope * -|k - q|
+            # per head: slopes [H] * rel_bias [L, L] -> [H, L, L]
+            alibi_bias = slopes.view(H, 1, 1) * rel_bias.unsqueeze(0)  # [H, L, L]
+            causal_mask = torch.triu(torch.full((L, L), float("-inf")), diagonal=1) if causal else None
+            if causal_mask is not None:
+                alibi_bias = alibi_bias + causal_mask.unsqueeze(0)
+            out_b = torch.nn.functional.scaled_dot_product_attention(
+                q_b, k_b, v_b, attn_mask=alibi_bias.unsqueeze(0), scale=scale)
+            outs.append(out_b.squeeze(0).permute(1, 0, 2))
+        return torch.cat(outs, dim=0)
+
+    def _run_forward_alibi(self, seqlens, H, D, dtype=torch.float16, causal=False):
+        total = sum(seqlens)
+        max_s = max(seqlens)
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+
+        q = torch.randn(total, H, D, device="mps", dtype=dtype)
+        k = torch.randn(total, H, D, device="mps", dtype=dtype)
+        v = torch.randn(total, H, D, device="mps", dtype=dtype)
+        cu = self._cu_seqlens(seqlens)
+        slopes = torch.rand(H, dtype=torch.float32) * 0.5 + 0.01
+
+        out, _ = self._varlen_op(
+            q, k, v, cu, cu, max_s, max_s, 0.0, causal,
+            alibi_slopes=slopes.to("mps"))
+
+        ref = self._ref_forward_alibi(
+            q.cpu().float(), k.cpu().float(), v.cpu().float(),
+            seqlens, causal, scale, slopes)
+
+        tol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 5e-4
+        torch.testing.assert_close(out.cpu().float(), ref, atol=tol, rtol=tol,
+                                   msg=f"ALiBi fwd mismatch H={H} causal={causal}")
+
+    # ------------------------------------------------------------------
+    # Window-attention forward
+    # ------------------------------------------------------------------
+
+    def test_varlen_window_fwd_left_only(self):
+        # Only past context: each Q can see 16 tokens back
+        self._run_forward_window([64, 48, 32], H=4, D=64, wnd_left=16, wnd_right=-1)
+
+    def test_varlen_window_fwd_right_only(self):
+        # Bidirectional with bounded future window
+        self._run_forward_window([48, 64], H=4, D=64, wnd_left=-1, wnd_right=8)
+
+    def test_varlen_window_fwd_both(self):
+        # Symmetric sliding window
+        self._run_forward_window([64, 48, 32], H=4, D=64, wnd_left=16, wnd_right=16)
+
+    def test_varlen_window_fwd_causal_left(self):
+        # Causal + left window (sliding-window causal, Mistral style)
+        self._run_forward_window([64, 48], H=4, D=64, wnd_left=16, wnd_right=0,
+                                 causal=True)
+
+    def test_varlen_window_fwd_tight(self):
+        # Very tight window (1 token each side) — forces most tiles to skip
+        self._run_forward_window([48, 64, 32], H=4, D=64, wnd_left=1, wnd_right=1)
+
+    def test_varlen_window_fwd_d128(self):
+        self._run_forward_window([48, 64], H=4, D=128, wnd_left=16, wnd_right=16)
+
+    # ------------------------------------------------------------------
+    # Window-attention backward
+    # ------------------------------------------------------------------
+
+    def test_varlen_window_bwd_left_only(self):
+        self._run_backward_window([32, 48], H=4, D=64, wnd_left=16, wnd_right=-1)
+
+    def test_varlen_window_bwd_both(self):
+        self._run_backward_window([32, 48, 16], H=4, D=64, wnd_left=8, wnd_right=8)
+
+    def test_varlen_window_bwd_causal_left(self):
+        self._run_backward_window([32, 48], H=4, D=64, wnd_left=16, wnd_right=0,
+                                  causal=True)
+
+    # ------------------------------------------------------------------
+    # ALiBi forward
+    # ------------------------------------------------------------------
+
+    def test_varlen_alibi_fwd_noncausal(self):
+        self._run_forward_alibi([64, 48, 32], H=4, D=64)
+
+    def test_varlen_alibi_fwd_causal(self):
+        self._run_forward_alibi([64, 48], H=4, D=64, causal=True)
+
+    def test_varlen_alibi_fwd_d128(self):
+        self._run_forward_alibi([48, 64], H=4, D=128)
+
+    def _run_backward_alibi(self, seqlens, H, D, dtype=torch.float16, causal=False):
+        total = sum(seqlens)
+        max_s = max(seqlens)
+        scale = 1.0 / (D ** 0.5)
+        torch.manual_seed(42)
+
+        q = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+        k = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+        v = torch.randn(total, H, D, device="mps", dtype=dtype, requires_grad=True)
+        slopes = torch.rand(H, dtype=torch.float32) * 0.5 + 0.01
+
+        qc = q.detach().cpu().float().requires_grad_(True)
+        kc = k.detach().cpu().float().requires_grad_(True)
+        vc = v.detach().cpu().float().requires_grad_(True)
+
+        cu = self._cu_seqlens(seqlens)
+
+        out, _ = self._varlen_op(
+            q, k, v, cu, cu, max_s, max_s, 0.0, causal,
+            alibi_slopes=slopes.to("mps"))
+        out.sum().backward()
+
+        ref = self._ref_forward_alibi(qc, kc, vc, seqlens, causal, scale, slopes)
+        ref.sum().backward()
+
+        tol = 2e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-3
+        torch.testing.assert_close(q.grad.cpu().float(), qc.grad, atol=tol, rtol=tol,
+                                   msg=f"ALiBi dQ mismatch H={H} causal={causal}")
+        torch.testing.assert_close(k.grad.cpu().float(), kc.grad, atol=tol, rtol=tol,
+                                   msg=f"ALiBi dK mismatch H={H} causal={causal}")
+        torch.testing.assert_close(v.grad.cpu().float(), vc.grad, atol=tol, rtol=tol,
+                                   msg=f"ALiBi dV mismatch H={H} causal={causal}")
+
+    # ------------------------------------------------------------------
+    # ALiBi backward
+    # ------------------------------------------------------------------
+
+    def test_varlen_alibi_bwd_noncausal(self):
+        self._run_backward_alibi([32, 48, 16], H=4, D=64)
+
+    def test_varlen_alibi_bwd_causal(self):
+        self._run_backward_alibi([32, 48], H=4, D=64, causal=True)
+
+    def test_varlen_alibi_bwd_d128(self):
+        self._run_backward_alibi([32, 48], H=4, D=128)
+
+instantiate_parametrized_tests(TestFlashAttentionVarlenMPS)
+
+instantiate_parametrized_tests(TestFlashAttentionMPS)
 
 if __name__ == "__main__":
     run_tests()

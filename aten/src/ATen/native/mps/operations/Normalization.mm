@@ -968,7 +968,7 @@ std::tuple<Tensor, Tensor, Tensor> layer_norm_mps(const Tensor& input,
   @autoreleasepool {
     dispatch_sync_with_rethrow(stream->queue(), ^() {
       // which kernel variant to use based on the normalized axis N size
-      const int N_READS = 4;
+      constexpr int N_READS = 4;
       auto metalType = mps::scalarToMetalTypeString(input);
       id<MTLComputePipelineState> layerNormKernel = nil;
       if (axis_size <= 1024 * N_READS) {
@@ -1071,7 +1071,6 @@ std::tuple<Tensor, Tensor, Tensor> layer_norm_backward_mps(const Tensor& grad_ou
     const int iN = static_cast<int>(N);
     const int iM = static_cast<int>(M);
     const bool has_weight = (weight_opt.has_value() && weight_opt->defined());
-    int use_weight_buf = has_weight ? 1 : 0;
 
     // Flatten mean/rstd from stat_shape [...outer, 1,..1] to [M]
     auto mean_flat = mean.contiguous().view({iM});
@@ -1090,22 +1089,18 @@ std::tuple<Tensor, Tensor, Tensor> layer_norm_backward_mps(const Tensor& grad_ou
       // --- dx kernel ---
       if (grad_input_mask[0] && grad_input.numel() > 0) {
         id<MTLComputePipelineState> dxKernel;
+        std::string wsfx = has_weight ? "_w" : "_nw";
         if (iN <= 1024 * N_READS) {
-          dxKernel = mps::lib.getPipelineStateForFunc("layer_norm_bwd_dx_single_row_" + metalType);
+          dxKernel = mps::lib.getPipelineStateForFunc("layer_norm_bwd_dx_single_row_" + metalType + wsfx);
         } else {
-          dxKernel = mps::lib.getPipelineStateForFunc("layer_norm_bwd_dx_looped_" + metalType);
+          dxKernel = mps::lib.getPipelineStateForFunc("layer_norm_bwd_dx_looped_" + metalType + wsfx);
         }
         [computeEncoder setComputePipelineState:dxKernel];
         mps::mtl_setArgs(computeEncoder, *dOut, *X, mean_flat, rstd_flat);
-        // buffer(4) must always be bound even when weight is absent; Metal will fault on
-        // an unbound slot regardless of whether the shader reads it conditionally.
         if (has_weight) {
           mps::mtl_setArgs<4>(computeEncoder, *gamma);
-        } else {
-          Tensor dummy_w = at::empty({1}, X->options().device(kMPS));
-          mps::mtl_setArgs<4>(computeEncoder, dummy_w);
         }
-        mps::mtl_setArgs<5>(computeEncoder, grad_input, (uint)iN, use_weight_buf);
+        mps::mtl_setArgs<5>(computeEncoder, grad_input, (uint)iN);
         MTLSize numThreadsDx = MTLSizeMake(std::min((iN + N_READS - 1) / N_READS, 1024), 1, 1);
         MTLSize numGroupsDx = MTLSizeMake(iM, 1, 1);
         [computeEncoder dispatchThreadgroups:numGroupsDx threadsPerThreadgroup:numThreadsDx];
@@ -1120,8 +1115,8 @@ std::tuple<Tensor, Tensor, Tensor> layer_norm_backward_mps(const Tensor& grad_ou
         [computeEncoder setComputePipelineState:dwdbKernel];
         mps::mtl_setArgs(computeEncoder, *dOut, *X, mean_flat, rstd_flat, dw_buf, db_buf, (uint)iN, (uint)iM);
         MTLSize numThreadsDwDb = MTLSizeMake(std::min(iN, 1024), 1, 1);
-        MTLSize numGroupsDwDb = MTLSizeMake((iN + 1023) / 1024, 1, 1);
-        [computeEncoder dispatchThreadgroups:numGroupsDwDb threadsPerThreadgroup:numThreadsDwDb];
+        MTLSize totalThreadsDwDb = MTLSizeMake(iN, 1, 1);
+        [computeEncoder dispatchThreads:totalThreadsDwDb threadsPerThreadgroup:numThreadsDwDb];
       }
     });
   }
