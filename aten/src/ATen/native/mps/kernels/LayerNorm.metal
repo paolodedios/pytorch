@@ -291,3 +291,316 @@ kernel void layer_norm_looped(
 instantiate_layer_norm(float);
 instantiate_layer_norm(half);
 instantiate_layer_norm(bfloat);
+
+// =============================================================
+//  Backward: grad_input (dx)
+//  One threadgroup per row.  Two passes:
+//    1. reduce sb = sum_j(gamma_j*dy_j) and ss = sum_j(gamma_j*dy_j*xhat_j)
+//    2. dx_i = (rstd/N) * (N*gamma_i*dy_i - sb - xhat_i*ss)
+// =============================================================
+template <typename T>
+kernel void layer_norm_bwd_dx_single_row(
+    device const T* dy [[buffer(0)]],
+    device const T* x [[buffer(1)]],
+    device const T* mean [[buffer(2)]],
+    device const T* rstd [[buffer(3)]],
+    device const T* weight [[buffer(4)]],
+    device T* dx [[buffer(5)]],
+    constant uint& N [[buffer(6)]],
+    constant int& use_weight [[buffer(7)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simdgroup_id [[simdgroup_index_in_threadgroup]]) {
+  constexpr int N_READS = 4;
+
+  uint row_off = tg_id * N;
+  float mu = float(mean[tg_id]);
+  float rs = float(rstd[tg_id]);
+
+  float sb = 0.0f, ss = 0.0f;
+  uint base = tid * N_READS;
+  if (base + N_READS <= N) {
+    for (int i = 0; i < N_READS; i++) {
+      uint idx = base + i;
+      float dyi = float(dy[row_off + idx]);
+      float xi = float(x[row_off + idx]);
+      float wi = use_weight ? float(weight[idx]) : 1.0f;
+      float xh = (xi - mu) * rs;
+      float wdy = wi * dyi;
+      sb += wdy;
+      ss += wdy * xh;
+    }
+  } else {
+    for (int i = 0; i < N_READS; i++) {
+      uint idx = base + i;
+      if (idx < N) {
+        float dyi = float(dy[row_off + idx]);
+        float xi = float(x[row_off + idx]);
+        float wi = use_weight ? float(weight[idx]) : 1.0f;
+        float xh = (xi - mu) * rs;
+        float wdy = wi * dyi;
+        sb += wdy;
+        ss += wdy * xh;
+      }
+    }
+  }
+
+  sb = simd_sum(sb);
+  ss = simd_sum(ss);
+
+  threadgroup float lcl_sb[simdgroup_size];
+  threadgroup float lcl_ss[simdgroup_size];
+  threadgroup float tg_sb[1];
+  threadgroup float tg_ss[1];
+
+  if (simdgroup_id == 0) {
+    lcl_sb[simd_lane_id] = 0.0f;
+    lcl_ss[simd_lane_id] = 0.0f;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (simd_lane_id == 0) {
+    lcl_sb[simdgroup_id] = sb;
+    lcl_ss[simdgroup_id] = ss;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (simdgroup_id == 0) {
+    float s = simd_sum(lcl_sb[simd_lane_id]);
+    float t = simd_sum(lcl_ss[simd_lane_id]);
+    if (simd_lane_id == 0) {
+      tg_sb[0] = s;
+      tg_ss[0] = t;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  sb = tg_sb[0];
+  ss = tg_ss[0];
+
+  float c = rs / float(N);
+  float fN = float(N);
+  if (base + N_READS <= N) {
+    for (int i = 0; i < N_READS; i++) {
+      uint idx = base + i;
+      float dyi = float(dy[row_off + idx]);
+      float xi = float(x[row_off + idx]);
+      float wi = use_weight ? float(weight[idx]) : 1.0f;
+      float xh = (xi - mu) * rs;
+      dx[row_off + idx] = T(c * (fN * wi * dyi - sb - xh * ss));
+    }
+  } else {
+    for (int i = 0; i < N_READS; i++) {
+      uint idx = base + i;
+      if (idx < N) {
+        float dyi = float(dy[row_off + idx]);
+        float xi = float(x[row_off + idx]);
+        float wi = use_weight ? float(weight[idx]) : 1.0f;
+        float xh = (xi - mu) * rs;
+        dx[row_off + idx] = T(c * (fN * wi * dyi - sb - xh * ss));
+      }
+    }
+  }
+}
+
+template <typename T>
+kernel void layer_norm_bwd_dx_looped(
+    device const T* dy [[buffer(0)]],
+    device const T* x [[buffer(1)]],
+    device const T* mean [[buffer(2)]],
+    device const T* rstd [[buffer(3)]],
+    device const T* weight [[buffer(4)]],
+    device T* dx [[buffer(5)]],
+    constant uint& N [[buffer(6)]],
+    constant int& use_weight [[buffer(7)]],
+    uint tg_id [[threadgroup_position_in_grid]],
+    uint tid [[thread_position_in_threadgroup]],
+    uint lsize [[threads_per_threadgroup]],
+    uint simd_lane_id [[thread_index_in_simdgroup]],
+    uint simdgroup_id [[simdgroup_index_in_threadgroup]]) {
+  constexpr int N_READS = 4;
+
+  uint row_off = tg_id * N;
+  float mu = float(mean[tg_id]);
+  float rs = float(rstd[tg_id]);
+
+  float sb = 0.0f, ss = 0.0f;
+  for (uint r = 0; r < N; r += lsize * N_READS) {
+    uint base = r + tid * N_READS;
+    if (base + N_READS <= N) {
+      for (int i = 0; i < N_READS; i++) {
+        uint idx = base + i;
+        float dyi = float(dy[row_off + idx]);
+        float xi = float(x[row_off + idx]);
+        float wi = use_weight ? float(weight[idx]) : 1.0f;
+        float xh = (xi - mu) * rs;
+        float wdy = wi * dyi;
+        sb += wdy;
+        ss += wdy * xh;
+      }
+    } else {
+      for (int i = 0; i < N_READS; i++) {
+        uint idx = base + i;
+        if (idx < N) {
+          float dyi = float(dy[row_off + idx]);
+          float xi = float(x[row_off + idx]);
+          float wi = use_weight ? float(weight[idx]) : 1.0f;
+          float xh = (xi - mu) * rs;
+          float wdy = wi * dyi;
+          sb += wdy;
+          ss += wdy * xh;
+        }
+      }
+    }
+  }
+
+  sb = simd_sum(sb);
+  ss = simd_sum(ss);
+
+  threadgroup float lcl_sb[simdgroup_size];
+  threadgroup float lcl_ss[simdgroup_size];
+  threadgroup float tg_sb[1];
+  threadgroup float tg_ss[1];
+
+  if (simd_lane_id == 0) {
+    lcl_sb[simdgroup_id] = 0.0f;
+    lcl_ss[simdgroup_id] = 0.0f;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (simd_lane_id == 0) {
+    lcl_sb[simdgroup_id] = sb;
+    lcl_ss[simdgroup_id] = ss;
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  if (simdgroup_id == 0) {
+    float s = simd_sum(lcl_sb[simd_lane_id]);
+    float t = simd_sum(lcl_ss[simd_lane_id]);
+    if (simd_lane_id == 0) {
+      tg_sb[0] = s;
+      tg_ss[0] = t;
+    }
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  sb = tg_sb[0];
+  ss = tg_ss[0];
+
+  float c = rs / float(N);
+  float fN = float(N);
+  for (uint r = 0; r < N; r += lsize * N_READS) {
+    uint base = r + tid * N_READS;
+    if (base + N_READS <= N) {
+      for (int i = 0; i < N_READS; i++) {
+        uint idx = base + i;
+        float dyi = float(dy[row_off + idx]);
+        float xi = float(x[row_off + idx]);
+        float wi = use_weight ? float(weight[idx]) : 1.0f;
+        float xh = (xi - mu) * rs;
+        dx[row_off + idx] = T(c * (fN * wi * dyi - sb - xh * ss));
+      }
+    } else {
+      for (int i = 0; i < N_READS; i++) {
+        uint idx = base + i;
+        if (idx < N) {
+          float dyi = float(dy[row_off + idx]);
+          float xi = float(x[row_off + idx]);
+          float wi = use_weight ? float(weight[idx]) : 1.0f;
+          float xh = (xi - mu) * rs;
+          dx[row_off + idx] = T(c * (fN * wi * dyi - sb - xh * ss));
+        }
+      }
+    }
+  }
+}
+
+// =============================================================
+//  Backward: grad_weight (dgamma) and grad_bias (dbeta)
+//  One thread per column j.  Iterates over all M rows.
+//    dgamma[j] = sum_m(dy[m,j] * xhat[m,j])
+//    dbeta[j]  = sum_m(dy[m,j])
+// =============================================================
+template <typename T>
+kernel void layer_norm_bwd_dw_db(
+    device const T* dy [[buffer(0)]],
+    device const T* x [[buffer(1)]],
+    device const T* mean [[buffer(2)]],
+    device const T* rstd [[buffer(3)]],
+    device T* dgamma [[buffer(4)]],
+    device T* dbeta [[buffer(5)]],
+    constant uint& N [[buffer(6)]],
+    constant uint& M [[buffer(7)]],
+    uint gid [[thread_position_in_grid]]) {
+  if (gid >= N)
+    return;
+  float dgam = 0.0f, dbet = 0.0f;
+  for (uint m = 0; m < M; m++) {
+    float mu = float(mean[m]);
+    float rs = float(rstd[m]);
+    float dyi = float(dy[m * N + gid]);
+    float xi = float(x[m * N + gid]);
+    float xh = (xi - mu) * rs;
+    dgam += dyi * xh;
+    dbet += dyi;
+  }
+  dgamma[gid] = T(dgam);
+  dbeta[gid] = T(dbet);
+}
+
+#define instantiate_layer_norm_bwd_dx_single_row(DTYPE)                     \
+  template                                                                  \
+      [[host_name("layer_norm_bwd_dx_single_row_" #DTYPE)]] [[kernel]] void \
+      layer_norm_bwd_dx_single_row<DTYPE>(                                  \
+          device const DTYPE* dy [[buffer(0)]],                             \
+          device const DTYPE* x [[buffer(1)]],                              \
+          device const DTYPE* mean [[buffer(2)]],                           \
+          device const DTYPE* rstd [[buffer(3)]],                           \
+          device const DTYPE* weight [[buffer(4)]],                         \
+          device DTYPE* dx [[buffer(5)]],                                   \
+          constant uint& N [[buffer(6)]],                                   \
+          constant int& use_weight [[buffer(7)]],                           \
+          uint tg_id [[threadgroup_position_in_grid]],                      \
+          uint tid [[thread_position_in_threadgroup]],                      \
+          uint simd_lane_id [[thread_index_in_simdgroup]],                  \
+          uint simdgroup_id [[simdgroup_index_in_threadgroup]]);
+
+#define instantiate_layer_norm_bwd_dx_looped(DTYPE)                          \
+  template [[host_name("layer_norm_bwd_dx_looped_" #DTYPE)]] [[kernel]] void \
+  layer_norm_bwd_dx_looped<DTYPE>(                                           \
+      device const DTYPE* dy [[buffer(0)]],                                  \
+      device const DTYPE* x [[buffer(1)]],                                   \
+      device const DTYPE* mean [[buffer(2)]],                                \
+      device const DTYPE* rstd [[buffer(3)]],                                \
+      device const DTYPE* weight [[buffer(4)]],                              \
+      device DTYPE* dx [[buffer(5)]],                                        \
+      constant uint& N [[buffer(6)]],                                        \
+      constant int& use_weight [[buffer(7)]],                                \
+      uint tg_id [[threadgroup_position_in_grid]],                           \
+      uint tid [[thread_position_in_threadgroup]],                           \
+      uint lsize [[threads_per_threadgroup]],                                \
+      uint simd_lane_id [[thread_index_in_simdgroup]],                       \
+      uint simdgroup_id [[simdgroup_index_in_threadgroup]]);
+
+#define instantiate_layer_norm_bwd_dw_db(DTYPE)                          \
+  template [[host_name("layer_norm_bwd_dw_db_" #DTYPE)]] [[kernel]] void \
+  layer_norm_bwd_dw_db<DTYPE>(                                           \
+      device const DTYPE* dy [[buffer(0)]],                              \
+      device const DTYPE* x [[buffer(1)]],                               \
+      device const DTYPE* mean [[buffer(2)]],                            \
+      device const DTYPE* rstd [[buffer(3)]],                            \
+      device DTYPE* dgamma [[buffer(4)]],                                \
+      device DTYPE* dbeta [[buffer(5)]],                                 \
+      constant uint& N [[buffer(6)]],                                    \
+      constant uint& M [[buffer(7)]],                                    \
+      uint gid [[thread_position_in_grid]]);
+
+#define instantiate_layer_norm_bwd(DTYPE)         \
+  instantiate_layer_norm_bwd_dx_single_row(DTYPE) \
+      instantiate_layer_norm_bwd_dx_looped(DTYPE) \
+          instantiate_layer_norm_bwd_dw_db(DTYPE)
+
+instantiate_layer_norm_bwd(float);
+instantiate_layer_norm_bwd(half);
+instantiate_layer_norm_bwd(bfloat);

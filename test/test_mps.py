@@ -2348,6 +2348,57 @@ class TestMPS(TestCaseMPS):
         # Regression test for https://github.com/pytorch/pytorch/issues/96113
         torch.nn.LayerNorm((16,), elementwise_affine=True).to("mps")(torch.randn(1, 2, 16).to("mps", dtype=torch.float16))
 
+
+    def test_layer_norm_backward_metal(self):
+        """Correctness tests for Metal LayerNorm backward kernels.
+
+        Covers single-row kernel (N <= 4096) and looped kernel (N > 4096),
+        all three dtypes, and the no-weight/bias path.
+        """
+        def run(B, T, N, dtype, elementwise_affine=True):
+            tol = 1e-3 if dtype == torch.float32 else 5e-2
+
+            cpu_x = torch.randn(B, T, N, dtype=torch.float32)
+            ln_cpu = torch.nn.LayerNorm(N, elementwise_affine=elementwise_affine,
+                                        dtype=torch.float32)
+            if elementwise_affine:
+                torch.nn.init.normal_(ln_cpu.weight)
+                torch.nn.init.normal_(ln_cpu.bias)
+
+            xc = cpu_x.clone().requires_grad_(True)
+            yc = ln_cpu(xc)
+            dyc = torch.randn_like(yc)
+            yc.backward(dyc)
+
+            x_mps = cpu_x.to(device='mps', dtype=dtype).requires_grad_(True)
+            ln_mps = ln_cpu.to(device='mps', dtype=dtype)
+            if elementwise_affine:
+                ln_mps.weight.grad = None
+                ln_mps.bias.grad = None
+            ym = ln_mps(x_mps)
+            ym.backward(dyc.to(device='mps', dtype=dtype))
+
+            dx_err = (x_mps.grad.float().cpu() - xc.grad).abs().max().item()
+            self.assertLess(dx_err, tol,
+                f"dx error {dx_err:.2e} too large for dtype={dtype} N={N}")
+            if elementwise_affine:
+                dw_err = (ln_mps.weight.grad.float().cpu() - ln_cpu.weight.grad).abs().max().item()
+                db_err = (ln_mps.bias.grad.float().cpu() - ln_cpu.bias.grad).abs().max().item()
+                self.assertLess(dw_err, tol,
+                    f"dw error {dw_err:.2e} too large for dtype={dtype} N={N}")
+                self.assertLess(db_err, tol,
+                    f"db error {db_err:.2e} too large for dtype={dtype} N={N}")
+
+        for dtype in [torch.float32, torch.float16, torch.bfloat16]:
+            # single-row kernel (N <= 4096, i.e. N <= 1024 * N_READS)
+            for N in [64, 128, 256, 512, 768, 1024, 2048, 4096]:
+                run(4, 16, N, dtype)
+                run(4, 16, N, dtype, elementwise_affine=False)
+            # looped kernel (N > 4096)
+            for N in [4097, 8192]:
+                run(2, 8, N, dtype)
+                run(2, 8, N, dtype, elementwise_affine=False)
+
     def test_ifft(self):
         # See: https://github.com/pytorch/pytorch/issues/124096
         device = torch.device("mps")
