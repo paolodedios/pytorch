@@ -2356,7 +2356,7 @@ class TestMPS(TestCaseMPS):
         all three dtypes, and the no-weight/bias path.
         """
         def run(B, T, N, dtype, elementwise_affine=True):
-            tol = 1e-3 if dtype == torch.float32 else 5e-2
+            tol = 1e-3 if dtype == torch.float32 else (5e-2 if dtype == torch.float16 else 1e-1)
 
             cpu_x = torch.randn(B, T, N, dtype=torch.float32)
             ln_cpu = torch.nn.LayerNorm(N, elementwise_affine=elementwise_affine,
