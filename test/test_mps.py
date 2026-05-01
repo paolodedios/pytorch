@@ -2370,6 +2370,11 @@ class TestMPS(TestCaseMPS):
             dyc = torch.randn_like(yc)
             yc.backward(dyc)
 
+            # Save CPU grads before module.to() mutates the module in-place
+            # (nn.Module.to() returns self, so ln_mps IS ln_cpu after the call)
+            ref_dw = ln_cpu.weight.grad.clone() if elementwise_affine else None
+            ref_db = ln_cpu.bias.grad.clone() if elementwise_affine else None
+
             x_mps = cpu_x.to(device='mps', dtype=dtype).requires_grad_(True)
             ln_mps = ln_cpu.to(device='mps', dtype=dtype)
             if elementwise_affine:
@@ -2382,8 +2387,8 @@ class TestMPS(TestCaseMPS):
             self.assertLess(dx_err, tol,
                 f"dx error {dx_err:.2e} too large for dtype={dtype} N={N}")
             if elementwise_affine:
-                dw_err = (ln_mps.weight.grad.float().cpu() - ln_cpu.weight.grad).abs().max().item()
-                db_err = (ln_mps.bias.grad.float().cpu() - ln_cpu.bias.grad).abs().max().item()
+                dw_err = (ln_mps.weight.grad.float().cpu() - ref_dw).abs().max().item()
+                db_err = (ln_mps.bias.grad.float().cpu() - ref_db).abs().max().item()
                 self.assertLess(dw_err, tol,
                     f"dw error {dw_err:.2e} too large for dtype={dtype} N={N}")
                 self.assertLess(db_err, tol,
