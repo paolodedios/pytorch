@@ -21,12 +21,12 @@ namespace {
 
 using namespace at;
 
-Tensor _triu_mask(int64_t n, int64_t dims, bool diagonal, TensorOptions opt) {
+Tensor _triu_mask(c10::SymInt n, int64_t dims, bool diagonal, TensorOptions opt) {
   // get a mask that has value 1 whose indices satisfies i < j < k < ...
   // or i <= j <= k <= ... (depending on diagonal)
   Tensor range = at::arange(n, opt.dtype(kLong));
   std::vector<Tensor> index_grids = at::meshgrid(std::vector<Tensor>(dims, range), "ij");
-  Tensor mask = at::full(index_grids[0].sizes(), true, opt.dtype(kBool));
+  Tensor mask = at::full(index_grids[0].sym_sizes(), true, opt.dtype(kBool));
   if(diagonal) {
     for(int64_t i = 0; i < dims - 1; i++) {
       mask *= index_grids[i] <= index_grids[i+1];
@@ -63,7 +63,7 @@ Tensor combinations(const Tensor& self, int64_t r, bool with_replacement) {
   if (r == 0) {
     return at::empty({0}, self.options());
   }
-  int64_t num_elements = self.numel();
+  c10::SymInt num_elements = self.sym_numel();
   std::vector<Tensor> grids = at::meshgrid(std::vector<Tensor>(r, self), "ij");
   Tensor mask = _triu_mask(num_elements, r, with_replacement, self.options());
   for(Tensor &t : grids) {
