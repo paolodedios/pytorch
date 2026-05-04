@@ -2373,9 +2373,11 @@ def initialize_rng_states(
     graphsafe_idx: int,
     fwd_rng_states: list[torch.Generator],
     bwd_rng_states: list[torch.Generator],
+    *,
+    device: torch.device,
 ) -> None:
     """
-    Initialize the cudagraph safe rng states.
+    Initialize the graphsafe rng states.
 
     Initialization of rng states should have a few properties:
     - the initialization for each rng state should be independent
@@ -2387,23 +2389,16 @@ def initialize_rng_states(
     with preserve_rng_states. Seed initialization should advance the rng states so consecutive compilations
     do not give equal randomness.
     """
+    from .utils import get_default_generator
+
     with torch.utils._python_dispatch._disable_current_modes():
         seeds = torch.randint(0, torch.iinfo(torch.int64).max, (num_rng,), device="cpu")
+        generator = get_default_generator(device)
         fwd_rng_states.extend(
-            [
-                torch.cuda.default_generators[graphsafe_idx]
-                .clone_state()
-                .manual_seed(int(seeds[i]))
-                for i in range(num_rng)
-            ]
+            [generator.clone_state().manual_seed(int(seeds[i])) for i in range(num_rng)]
         )
         bwd_rng_states.extend(
-            [
-                torch.cuda.default_generators[graphsafe_idx]
-                .clone_state()
-                .manual_seed(int(seeds[i]))
-                for i in range(num_rng)
-            ]
+            [generator.clone_state().manual_seed(int(seeds[i])) for i in range(num_rng)]
         )
 
 
@@ -2666,6 +2661,7 @@ class _AutogradForwardEpilogue:
 class _AutogradRngStateTracker:
     num_rng: int
     graphsafe_idx: int | None
+    device: torch.device | None = None
     fwd_rng_states: list[torch.Generator] = field(default_factory=list)
     bwd_rng_states: list[torch.Generator] = field(default_factory=list)
     curr_fwd_iter: Any = field(default_factory=lambda: itertools.count(0))
@@ -2682,11 +2678,14 @@ class _AutogradRngStateTracker:
         if len(self.fwd_rng_states) == 0:
             if self.graphsafe_idx is None:
                 raise AssertionError("graphsafe_idx must not be None when num_rng > 0")
+            if self.device is None:
+                raise AssertionError("device must not be None when num_rng > 0")
             initialize_rng_states(
                 self.num_rng,
                 self.graphsafe_idx,
                 self.fwd_rng_states,
                 self.bwd_rng_states,
+                device=self.device,
             )
 
         curr_iter = next(self.curr_fwd_iter)
@@ -3212,6 +3211,7 @@ class _AOTDispatchAutogradFunctionFactory:
         rng_state = _AutogradRngStateTracker(
             num_rng=self.spec.fw_metadata.num_graphsafe_rng_states,
             graphsafe_idx=self.spec.fw_metadata.graphsafe_rng_state_index,
+            device=self.spec.fw_metadata.graphsafe_rng_device,
         )
         backward_compiler = _AutogradBackwardCompiler(
             compiled_bw=self.spec.compiled_bw_func,
@@ -3264,7 +3264,6 @@ class _AOTDispatchAutogradFunctionFactory:
             rng_state.num_rng,
             fw_metadata.num_tensors_saved_with_no_vc_check,
         )
-
 
         # Codegen for CompiledFunction.forward: emit straight-line TensorAlias
         # wrapping, _unsafe_view, and non-differentiable output collection with
