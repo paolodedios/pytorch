@@ -1238,6 +1238,9 @@ class TritonOverrides(OpOverrides):
         else:
             out_dtype = triton_store_type(dtype)
 
+        if triton_type(x.dtype) == out_dtype:
+            return x
+
         return f"{x}.to({out_dtype})"
 
     @staticmethod
