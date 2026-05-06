@@ -2463,10 +2463,15 @@ class DeviceCachingAllocator {
       stats.inactive_split[statType].reset_accumulated();
       stats.allocated_bytes[statType].reset_accumulated();
       stats.reserved_bytes[statType].reset_accumulated();
-      stats.private_pool_reserved_bytes[statType].reset_accumulated();
       stats.active_bytes[statType].reset_accumulated();
       stats.inactive_split_bytes[statType].reset_accumulated();
       stats.requested_bytes[statType].reset_accumulated();
+    }
+    for (auto& [_, stat_array] : stats.reserved_bytes_by_private_pools) {
+      for (const auto statType :
+           c10::irange(static_cast<size_t>(StatType::NUM_TYPES))) {
+        stat_array[statType].reset_accumulated();
+      }
     }
 
     stats.num_alloc_retries = 0;
@@ -2491,10 +2496,15 @@ class DeviceCachingAllocator {
       stats.inactive_split[statType].reset_peak();
       stats.allocated_bytes[statType].reset_peak();
       stats.reserved_bytes[statType].reset_peak();
-      stats.private_pool_reserved_bytes[statType].reset_peak();
       stats.active_bytes[statType].reset_peak();
       stats.inactive_split_bytes[statType].reset_peak();
       stats.requested_bytes[statType].reset_peak();
+    }
+    for (auto& [_, stat_array] : stats.reserved_bytes_by_private_pools) {
+      for (const auto statType :
+           c10::irange(static_cast<size_t>(StatType::NUM_TYPES))) {
+        stat_array[statType].reset_peak();
+      }
     }
     stats.oversize_allocations.reset_peak();
     stats.oversize_segments.reset_peak();
@@ -3271,7 +3281,8 @@ class DeviceCachingAllocator {
     for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
       stats.reserved_bytes[stat_type].increase(mapped_range.size);
       if (to_map->pool->owner_PrivatePool) {
-        stats.private_pool_reserved_bytes[stat_type].increase(
+        auto _mempool_id = to_map->pool->owner_MempoolId();
+        stats.reserved_bytes_by_private_pools[_mempool_id][stat_type].increase(
             mapped_range.size);
       }
     });
@@ -3767,7 +3778,9 @@ class DeviceCachingAllocator {
       stats.segment[stat_type].increase(1);
       stats.reserved_bytes[stat_type].increase(size);
       if (p.pool->owner_PrivatePool) {
-        stats.private_pool_reserved_bytes[stat_type].increase(size);
+        const auto _mempool_id = p.pool->owner_MempoolId();
+        stats.reserved_bytes_by_private_pools[_mempool_id][stat_type].increase(
+            size);
       }
     });
     if (size >= AcceleratorAllocatorConfig::max_split_size())
@@ -3949,7 +3962,9 @@ class DeviceCachingAllocator {
       stats.segment[stat_type].decrease(1);
       stats.reserved_bytes[stat_type].decrease(block->size);
       if (pool->owner_PrivatePool) {
-        stats.private_pool_reserved_bytes[stat_type].decrease(block->size);
+        auto _mempool_id = pool->owner_MempoolId();
+        stats.reserved_bytes_by_private_pools[_mempool_id][stat_type].decrease(
+            block->size);
       }
     });
     auto reserved_bytes_gauge =
@@ -4012,7 +4027,9 @@ class DeviceCachingAllocator {
     for_each_selected_stat_type(stat_types, [&](size_t stat_type) {
       stats.reserved_bytes[stat_type].decrease(unmapped.size);
       if (block->pool->owner_PrivatePool) {
-        stats.private_pool_reserved_bytes[stat_type].decrease(unmapped.size);
+        auto _mempool_id = block->pool->owner_MempoolId();
+        stats.reserved_bytes_by_private_pools[_mempool_id][stat_type].decrease(
+            unmapped.size);
       }
     });
     auto reserved_bytes_gauge =
