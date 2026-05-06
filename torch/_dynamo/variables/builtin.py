@@ -119,6 +119,7 @@ from .tensor import (
     UnspecializedPythonVariable,
 )
 from .user_defined import (
+    DefaultDictVariable,
     MutableMappingVariable,
     UserDefinedDictVariable,
     UserDefinedListVariable,
@@ -172,20 +173,23 @@ def _unwrap_user_defined_container(
     return the inner VariableTracker that Dynamo uses to track the contents.
     Otherwise return `arg` unchanged.
     """
+    base_vt = None
     if isinstance(arg, UserDefinedListVariable) and type(arg.value) is list:
-        return arg._list_vt
-    if isinstance(arg, UserDefinedTupleVariable) and type(arg.value) is tuple:
-        return arg._tuple_vt
-    if isinstance(arg, UserDefinedDictVariable) and type(arg.value) in (
+        base_vt = arg._base_vt
+    elif isinstance(arg, UserDefinedTupleVariable) and type(arg.value) is tuple:
+        base_vt = arg._base_vt
+    elif isinstance(arg, UserDefinedDictVariable) and type(arg.value) in (
         dict,
         OrderedDict,
     ):
-        return arg._dict_vt
-    if isinstance(arg, UserDefinedSetVariable) and type(arg.value) in (
+        base_vt = arg._base_vt
+    elif isinstance(arg, UserDefinedSetVariable) and type(arg.value) in (
         set,
         frozenset,
     ):
-        return arg._set_vt
+        base_vt = arg._base_vt
+    if base_vt is not None:
+        return base_vt
     return arg
 
 
