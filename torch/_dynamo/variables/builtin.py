@@ -120,7 +120,6 @@ from .tensor import (
 )
 from .user_defined import (
     DefaultDictVariable,
-    MutableMappingVariable,
     UserDefinedDictVariable,
     UserDefinedListVariable,
     UserDefinedObjectVariable,
