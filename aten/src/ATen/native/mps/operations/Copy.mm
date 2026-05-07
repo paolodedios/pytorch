@@ -163,7 +163,7 @@ static at::Tensor& copy_from_mps_(at::Tensor& dst_, const at::Tensor& src_, bool
 }
 
 // Copies tensor from cpu to mps backed by identical strided-contiguous data
-static void copy_to_mps_stride_contig(at::Tensor& dst, const at::Tensor& src, bool non_blocking) {
+static void copy_to_mps_stride_contig(at::Tensor& dst, const at::Tensor& src, bool non_blocking, bool is_direct = false) {
   MPSStream* stream = getCurrentMPSStream();
   id<MTLDevice> device = MPSDevice::getInstance()->device();
   auto dst_byte_offset = dst.storage_offset() * dst.itemsize();
@@ -173,6 +173,17 @@ static void copy_to_mps_stride_contig(at::Tensor& dst, const at::Tensor& src, bo
   const void* host_src = static_cast<const char*>(src.storage().data()) + src_byte_offset;
 
   TORCH_INTERNAL_ASSERT(src.dtype() == dst.dtype() && src.strides() == dst.strides() && is_dense_in_storage(src));
+
+  // Fast path: on Apple Silicon (unified memory), MPS buffers use MTLStorageModeShared.
+  // CPU can write directly to the shared buffer without issuing a Metal blit command.
+  // Only applied for is_direct=true (final destination owned by caller), because an
+  // intermediate buffer that feeds a subsequent GPU command must be anchored by a Metal
+  // blit to prevent the allocator from recycling it before the GPU reads it.
+  if (is_direct && [destBuffer storageMode] == MTLStorageModeShared) {
+    void* dst_ptr = static_cast<char*>([destBuffer contents]) + dst_byte_offset;
+    std::memcpy(dst_ptr, host_src, size_to_copy);
+    return;
+  }
 
   @autoreleasepool {
     MTLResourceOptions options = MTLResourceCPUCacheModeDefaultCache | MTLResourceStorageModeShared;
@@ -220,8 +231,16 @@ static at::Tensor& copy_to_mps_(at::Tensor& dst_, const at::Tensor& src_, bool n
     needs_copy = true;
     dst = at::empty_like(src, at::device(at::kMPS));
   }
-  copy_to_mps_stride_contig(dst, src, non_blocking && !needs_copy);
-  return needs_copy ? dst_.copy_(dst) : dst_;
+  copy_to_mps_stride_contig(dst, src, non_blocking && !needs_copy, /*is_direct=*/!needs_copy);
+  if (needs_copy) {
+    dst_.copy_(dst);
+    // The scatter above reads from dst (an intermediate buffer that is freed when
+    // this function returns). Commit and wait while dst is still alive so the MPS
+    // driver cannot reuse its physical GPU memory before the scatter executes.
+    getCurrentMPSStream()->synchronize(SyncType::COMMIT_AND_WAIT);
+    return dst_;
+  }
+  return dst_;
 }
 
 void copy_blit_mps(void* dst, const void* src, size_t size) {
