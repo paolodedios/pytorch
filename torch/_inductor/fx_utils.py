@@ -22,7 +22,16 @@ import torch
 import torch.fx
 from torch._dispatch.python import enable_python_dispatcher
 from torch._inductor.fx_passes.control_dependencies import control_deps
+from torch._inductor.utils import maybe_cpp_fake_mode_ctx
 from torch._subclasses.fake_tensor import FakeTensorMode
+
+
+def _get_shape_env():
+    from torch._inductor.virtualized import V
+
+    if torch._C._does_cpp_fake_tensor_mode_exist():
+        return torch._C._get_cpp_fake_mode_shape_env()
+    return V.fake_mode.shape_env
 from torch.fx.experimental.symbolic_shapes import (
     compute_unbacked_bindings,
     rebind_unbacked,
@@ -778,7 +787,7 @@ class FakeTensorUpdater:
                 if not any_output_updated and "val" in node.meta:
                     continue
 
-            with V.fake_mode, enable_python_dispatcher():
+            with maybe_cpp_fake_mode_ctx(V.fake_mode), enable_python_dispatcher():
                 new_fake_tensor = node.target(*args, **kwargs)
 
             if update_node_fake_tensor(node, new_fake_tensor):

@@ -25,6 +25,7 @@ from torch._dynamo.repro.after_aot import save_graph_repro
 from torch._dynamo.utils import get_debug_dir
 from torch._functorch import config as functorch_config
 from torch._inductor import utils
+from torch._inductor.utils import maybe_cpp_fake_mode_ctx
 from torch._logging import getArtifactLogger
 from torch._logging._internal import trace_structured
 from torch._utils_internal import signpost_event

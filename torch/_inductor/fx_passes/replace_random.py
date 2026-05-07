@@ -8,6 +8,7 @@ from torch.fx.passes.graph_transform_observer import GraphTransformObserver
 from torch.fx.passes.shape_prop import _extract_tensor_metadata
 
 from .. import config, inductor_prims
+from ..utils import maybe_cpp_fake_mode_ctx
 from ..pattern_matcher import (
     CallFunctionVarArgs,
     Match,

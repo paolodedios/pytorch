@@ -19,6 +19,7 @@ from torch._inductor.comm_analysis import (
 )
 from torch._inductor.fx_passes.utils import BitsetAncestors
 from torch._inductor.runtime.runtime_utils import dynamo_timed
+from torch._inductor.utils import maybe_cpp_fake_mode_ctx
 from torch._logging import trace_structured
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.traceback import NodeSource, NodeSourceAction
@@ -1143,7 +1144,7 @@ def _trace(fn, inps) -> torch.fx.GraphModule:  # type: ignore[no-untyped-def]
             shape_env.pending_fresh_unbacked_symbols.clear()
             shape_env.ignorable_fresh_unbacked_symbols.clear()
         try:
-            with fake_mode, enable_python_dispatcher():
+            with maybe_cpp_fake_mode_ctx(fake_mode), enable_python_dispatcher():
                 out = make_fx(fn)(*inps)
         finally:
             if shape_env is not None:

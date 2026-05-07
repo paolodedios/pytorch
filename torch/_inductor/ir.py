@@ -126,6 +126,7 @@ from .utils import (
     ir_dataclass,
     is_dynamic,
     is_gpu,
+    maybe_cpp_fake_mode_ctx,
     sympy_dot,
     sympy_index_symbol,
     sympy_index_symbol_with_prefix,
@@ -4433,7 +4434,7 @@ class Layout(OutputSpec):
         return self.device
 
     def get_example(self) -> torch.Tensor:
-        with V.fake_mode:
+        with maybe_cpp_fake_mode_ctx(V.fake_mode):
             return torch.empty_strided(
                 convert_shape_to_symint(self.size),
                 convert_shape_to_symint(self.stride),

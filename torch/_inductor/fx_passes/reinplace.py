@@ -20,6 +20,7 @@ from torch._higher_order_ops.triton_kernel_wrap import (
 )
 from torch._inductor import config, inductor_prims
 from torch._inductor.fx_utils import get_node_storage, is_node_realized
+from torch._inductor.utils import maybe_cpp_fake_mode_ctx
 from torch._inductor.lowering import (
     inplaceable_foreach_ops as inplaceable_foreach_ops_lowerings,
 )
@@ -68,7 +69,7 @@ def graph_call_function(graph: torch.fx.Graph, fn, *args, **kwargs):
         lambda node: node.meta["val"] if isinstance(node, torch.fx.Node) else node,
         (args, kwargs),
     )
-    with V.fake_mode:
+    with maybe_cpp_fake_mode_ctx(V.fake_mode):
         fake_result = fn(*fake_args, **fake_kwargs)
 
     node = graph.call_function(fn, args, kwargs)
@@ -535,9 +536,11 @@ def _decompose_scatter_mutating(
     for view in _decode_view_ops(cast(EncodedViewOps, tuple(view_ops))):
         tmp = graph_call_function(graph, view.target, tmp, *view.args, **view.kwargs)  # type: ignore[union-attr]
         # we need to set unbacked bindings that could have been created in the view ops.
-        if (V.fake_mode.shape_env) and (
+        from torch._inductor.fx_utils import _get_shape_env
+
+        if (_shape_env := _get_shape_env()) and (
             symbol_to_path := compute_unbacked_bindings(
-                V.fake_mode.shape_env, tmp.meta["val"]
+                _shape_env, tmp.meta["val"]
             )
         ):
             tmp.meta["unbacked_bindings"] = symbol_to_path
