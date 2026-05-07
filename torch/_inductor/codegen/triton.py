@@ -3712,7 +3712,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 self,
                 dtype,
                 for_store=False,
-                force=getattr(self, "tma_load", False),
+                force=getattr(self, "tma_load_for_template_epilogue", False),
             ),
         )
 
