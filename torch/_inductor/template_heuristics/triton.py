@@ -2276,7 +2276,12 @@ class BlackwellTMATemplateConfigMixin(TMATemplateConfigMixin):
                 template_kwargs.get("WARP_SPECIALIZE", True)
                 and not constraints_violated
             )
-            flatten = template_kwargs.get("FLATTEN", True) and not constraints_violated
+            # Meta WS pass has only validated flatten=False; OSS Triton uses flatten=True
+            flatten = (
+                template_kwargs.get("FLATTEN", True)
+                and not constraints_violated
+                and os.environ.get("TRITON_USE_META_WS", "0") == "0"
+            )
             yield {
                 **template_kwargs,
                 "NUM_SMS": get_num_sms(),
