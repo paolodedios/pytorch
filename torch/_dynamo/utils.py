@@ -3827,6 +3827,21 @@ def _wrap_graph_break_with_torch_runtime_err(gb_fn: Callable[[], NoReturn]) -> N
     raise AssertionError("should be unreachable")
 
 
+def _has_exception_handler(tx: InstructionTranslatorBase) -> bool:
+    """
+    Check if the current instruction has an exception handler.
+
+    Returns True if user code has a try-except block that would catch
+    the exception, False if the exception would bubble to interpreter.
+    """
+    if sys.version_info >= (3, 11):
+        # Python 3.11+ uses exception table entries
+        return tx.current_instruction.exn_tab_entry is not None
+    else:
+        # Python 3.10 and below use block stack
+        return len(tx.block_stack) > 0
+
+
 def get_fake_value(
     node: torch.fx.Node,
     tx: InstructionTranslatorBase,
@@ -4026,15 +4041,28 @@ def _get_fake_value_impl(
                 from_exc=cause,
             )
         msg = get_concrete_sizes_from_symints(str(e), fake_mode)
-        _wrap_graph_break_with_torch_runtime_err(
-            lambda: unimplemented(
-                gb_type="RuntimeError when making fake tensor call",
-                context="",
+
+        # Check if user has exception handler for this RuntimeError
+        if _has_exception_handler(tx):
+            # Graph break, but let eager mode handle the exception
+            unimplemented(
+                gb_type="RuntimeError during FakeTensor execution in try-except",
+                context=f"Operation raised RuntimeError with active exception handler",
                 explanation=msg,
                 hints=[*graph_break_hints.USER_ERROR],
                 from_exc=cause,
             )
-        )
+        else:
+            # No exception handler - wrap as TorchRuntimeError (current behavior)
+            _wrap_graph_break_with_torch_runtime_err(
+                lambda: unimplemented(
+                    gb_type="RuntimeError when making fake tensor call",
+                    context="",
+                    explanation=msg,
+                    hints=[*graph_break_hints.USER_ERROR],
+                    from_exc=cause,
+                )
+            )
         raise AssertionError("should not reachable") from None
 
     if not allow_non_graph_fake:

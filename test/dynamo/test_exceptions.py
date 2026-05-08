@@ -622,6 +622,24 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
         res = opt_m(x)
         self.assertEqual(ref, res)
 
+    def test_runtime_error_in_try_except(self):
+        class M(torch.nn.Module):
+            def forward(self, x):
+                try:
+                    with torch.no_grad():
+                        torch.linalg.inv(x)
+                except RuntimeError:
+                    return x + 1
+                return x
+
+        m = M()
+        opt_m = torch.compile(m, backend="eager")
+        # Non-square matrix will raise RuntimeError
+        x = torch.randn(2, 3)
+        ref = m(x)
+        res = opt_m(x)
+        self.assertEqual(ref, res)
+
     def test_raise_from_None(self):
         # Inspired from os.environ
         class MyMapping:
