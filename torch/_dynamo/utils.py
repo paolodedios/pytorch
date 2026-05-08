@@ -4047,7 +4047,7 @@ def _get_fake_value_impl(
             # Graph break, but let eager mode handle the exception
             unimplemented(
                 gb_type="RuntimeError during FakeTensor execution in try-except",
-                context=f"Operation raised RuntimeError with active exception handler",
+                context="Operation raised RuntimeError with active exception handler",
                 explanation=msg,
                 hints=[*graph_break_hints.USER_ERROR],
                 from_exc=cause,
