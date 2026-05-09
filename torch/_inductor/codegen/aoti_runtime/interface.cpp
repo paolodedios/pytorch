@@ -236,6 +236,25 @@ AOTIRuntimeError AOTInductorModelContainerExtractConstantsMap(
     })
 }
 
+AOTIRuntimeError AOTInductorModelContainerExtractConstantsMapForEach(
+    AOTInductorModelContainerHandle container_handle,
+    AOTInductorConstantMapEntryCallback callback,
+    void* ctx,
+    bool use_inactive) {
+  auto* container =
+      reinterpret_cast<torch::aot_inductor::AOTInductorModelContainer*>(
+          container_handle);
+  CONVERT_EXCEPTION_TO_ERROR_CODE({
+    const auto extracted = container->extract_constants_map(use_inactive);
+    for (const auto& [name, handle] : extracted) {
+      AOTIRuntimeError err = callback(ctx, name.c_str(), handle);
+      if (err != AOTI_RUNTIME_SUCCESS) {
+        return err;
+      }
+    }
+  })
+}
+
 AOTIRuntimeError AOTInductorModelContainerUpdateUserManagedConstantBuffer(
     AOTInductorModelContainerHandle container_handle,
     AOTInductorConstantMapHandle constant_map_handle,

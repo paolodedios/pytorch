@@ -188,9 +188,29 @@ AOTI_API AOTIRuntimeError AOTInductorModelContainerGetConstantDataSize(
     size_t* data_size);
 
 // Extract the constants that is being used in the container.
+//
+// DEPRECATED: V1 API; see AOTInductorModelContainerExtractConstantsMapForEach.
 AOTI_API AOTIRuntimeError AOTInductorModelContainerExtractConstantsMap(
     AOTInductorModelContainerHandle container_handle,
     AOTInductorConstantMapHandle constant_map_handle,
+    bool use_inactive);
+
+// C-ABI-safe variant of AOTInductorModelContainerExtractConstantsMap.
+// The DSO invokes `callback(ctx, name, handle)` once per constant. The
+// `name` pointer is valid only for the duration of the callback call;
+// callers that need to retain it should copy. The callback should return
+// AOTI_RUNTIME_SUCCESS to continue iterating, or any other value to abort
+// (which becomes the return value of this function).
+typedef AOTIRuntimeError (*AOTInductorConstantMapEntryCallback)(
+    void* ctx,
+    const char* name,
+    AtenTensorHandle handle);
+
+AOTI_API AOTIRuntimeError
+AOTInductorModelContainerExtractConstantsMapForEach(
+    AOTInductorModelContainerHandle container_handle,
+    AOTInductorConstantMapEntryCallback callback,
+    void* ctx,
     bool use_inactive);
 
 // Setup the constant buffer in model container with provided ConstantMap.
