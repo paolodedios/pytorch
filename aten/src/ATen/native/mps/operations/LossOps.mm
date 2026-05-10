@@ -64,12 +64,15 @@ static void mse_fwd_metal(const Tensor& input, const Tensor& target,
             threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
       }
     });
+    stream->synchronize(SyncType::COMMIT);
   } else {
     const float scale = (reduction == Reduction::Mean) ? 1.f / static_cast<float>(N) : 1.f;
     PointwiseLossParams p{N, scale, static_cast<uint32_t>(reduction)};
     const uint32_t n_tg = (N + kLossKernelTgsz - 1) / kLossKernelTgsz;
     Tensor partial  = at::empty({static_cast<int64_t>(n_tg)}, input.options().dtype(at::kFloat));
-    Tensor loss_f32 = at::empty({}, input.options().dtype(at::kFloat));
+    const bool mse_f32_out = (output.scalar_type() == at::kFloat);
+    Tensor mse_tmp; if (!mse_f32_out) mse_tmp = at::empty({}, input.options().dtype(at::kFloat));
+    const Tensor mse_dest = mse_f32_out ? output : mse_tmp;
     dispatch_sync_with_rethrow(stream->queue(), ^() {
       @autoreleasepool {
         id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
@@ -78,10 +81,11 @@ static void mse_fwd_metal(const Tensor& input, const Tensor& target,
         mtl_setArgs(enc, input, target, partial, p);
         [enc dispatchThreads:MTLSizeMake(N, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
-        encode_reduce_partials(enc, partial, loss_f32, n_tg);
+        encode_reduce_partials(enc, partial, mse_dest, n_tg);
       }
     });
-    output.copy_(loss_f32);
+    if (!mse_f32_out) output.copy_(mse_tmp);
+    stream->synchronize(SyncType::COMMIT);
   }
 }
 
@@ -102,6 +106,7 @@ static void mse_bwd_metal(const Tensor& grad_output, const Tensor& input,
           threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
     }
   });
+  stream->synchronize(SyncType::COMMIT);
 }
 
 static Tensor& bce_loss_metal(const Tensor& input, const Tensor& target,
@@ -134,6 +139,7 @@ static Tensor& bce_loss_metal(const Tensor& input, const Tensor& target,
             threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
       }
     });
+    stream->synchronize(SyncType::COMMIT);
     return loss;
   }
   if (reduction == Reduction::None) {
@@ -147,10 +153,13 @@ static Tensor& bce_loss_metal(const Tensor& input, const Tensor& target,
             threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
       }
     });
+    stream->synchronize(SyncType::COMMIT);
   } else {
     const uint32_t n_tg = (N + kLossKernelTgsz - 1) / kLossKernelTgsz;
     Tensor partial  = at::empty({static_cast<int64_t>(n_tg)}, input.options().dtype(at::kFloat));
-    Tensor loss_f32 = at::empty({}, input.options().dtype(at::kFloat));
+    const bool bce_f32_out = (loss.scalar_type() == at::kFloat);
+    Tensor bce_tmp; if (!bce_f32_out) bce_tmp = at::empty({}, input.options().dtype(at::kFloat));
+    const Tensor bce_dest = bce_f32_out ? loss : bce_tmp;
     dispatch_sync_with_rethrow(stream->queue(), ^() {
       @autoreleasepool {
         id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
@@ -159,10 +168,11 @@ static Tensor& bce_loss_metal(const Tensor& input, const Tensor& target,
         mtl_setArgs(enc, input, target, wt, partial, p);
         [enc dispatchThreads:MTLSizeMake(N, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
-        encode_reduce_partials(enc, partial, loss_f32, n_tg);
+        encode_reduce_partials(enc, partial, bce_dest, n_tg);
       }
     });
-    loss.copy_(loss_f32);
+    if (!bce_f32_out) loss.copy_(bce_tmp);
+    stream->synchronize(SyncType::COMMIT);
   }
   return loss;
 }
@@ -191,10 +201,13 @@ static void smooth_huber_fwd_metal(const Tensor& input, const Tensor& target,
             threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
       }
     });
+    stream->synchronize(SyncType::COMMIT);
   } else {
     const uint32_t n_tg = (N + kLossKernelTgsz - 1) / kLossKernelTgsz;
     Tensor partial  = at::empty({static_cast<int64_t>(n_tg)}, input.options().dtype(at::kFloat));
-    Tensor loss_f32 = at::empty({}, input.options().dtype(at::kFloat));
+    const bool sh_f32_out = (output.scalar_type() == at::kFloat);
+    Tensor sh_tmp; if (!sh_f32_out) sh_tmp = at::empty({}, input.options().dtype(at::kFloat));
+    const Tensor sh_dest = sh_f32_out ? output : sh_tmp;
     dispatch_sync_with_rethrow(stream->queue(), ^() {
       @autoreleasepool {
         id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
@@ -203,10 +216,11 @@ static void smooth_huber_fwd_metal(const Tensor& input, const Tensor& target,
         mtl_setArgs(enc, input, target, partial, p);
         [enc dispatchThreads:MTLSizeMake(N, 1, 1)
             threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
-        encode_reduce_partials(enc, partial, loss_f32, n_tg);
+        encode_reduce_partials(enc, partial, sh_dest, n_tg);
       }
     });
-    output.copy_(loss_f32);
+    if (!sh_f32_out) output.copy_(sh_tmp);
+    stream->synchronize(SyncType::COMMIT);
   }
 }
 
@@ -229,6 +243,7 @@ static void smooth_huber_bwd_metal(const Tensor& grad_output, const Tensor& inpu
           threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
     }
   });
+  stream->synchronize(SyncType::COMMIT);
 }
 
 static std::string reductionToString(int64_t reduction) {

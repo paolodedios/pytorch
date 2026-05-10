@@ -50,12 +50,16 @@ struct NLLParams {
 
 template <typename T>
 inline T tg_sum(T val, threadgroup T* smem, uint lid, uint tgsz) {
-    smem[lid] = val;
+    // SIMD-group reduce: hardware, zero barriers within warp
+    float f = simd_sum(float(val));
+    if ((lid & 31u) == 0u) smem[lid >> 5u] = T(f);
     threadgroup_barrier(mem_flags::mem_threadgroup);
-    for (uint s = tgsz >> 1; s > 0; s >>= 1) {
-        if (lid < s) smem[lid] += smem[lid + s];
-        threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (lid == 0u) {
+        float acc = 0.f;
+        for (uint g = 0u; g < (tgsz >> 5u); ++g) acc += float(smem[g]);
+        smem[0] = T(acc);
     }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
     return smem[0];
 }
 
