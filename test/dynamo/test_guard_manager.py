@@ -10,14 +10,9 @@ import torch._dynamo.test_case
 from torch._C._dynamo import guards
 from torch._dynamo.convert_frame import GlobalStateGuard
 from torch._dynamo.eval_frame import _debug_get_cache_entry_list
-from torch._library.fake_class_reg-istry import FakeScriptObject
-from torch.testing._internal.common_utils import set_default_dtype, TEST_CUDA, TEST_XPU
+from torch._library.fake_class_registry import FakeScriptObject
+from torch.testing._internal.common_utils import set_default_dtype
 
-
-device_type = (
-    acc.type if (acc := torch.accelerator.current_accelerator(True)) else "cpu"
-)
-TEST_GPU = TEST_XPU or TEST_CUDA
 
 RootGuardManager = guards.RootGuardManager
 DictGuardManager = guards.DictGuardManager
@@ -287,8 +282,12 @@ user_stack=None)
         guard = guards.DEFAULT_DEVICE(root, ["cpu device"], None)
         self.assertTrue(guard(foo))
 
+        if not torch.accelerator.is_available():
+            self.skipTest("Accelerator is not available")
+
         try:
-            torch.set_default_device(device_type)
+            device = torch.accelerator.current_accelerator()
+            torch.set_default_device(device)
             self.assertFalse(guard(foo))
         finally:
             torch.set_default_device(None)
