@@ -3527,7 +3527,6 @@ class <lambda>(torch.nn.Module):
         self.assertEqual(shell._data, data)
         self.assertEqual(shell._scale, 2.0)
 
-<<<<<<< fix-subclass-generator-iteration-crash
     def test_generator_iteration_over_subclass(self):
         class YieldTensor(torch.Tensor):
             @staticmethod
@@ -3554,7 +3553,7 @@ class <lambda>(torch.nn.Module):
         output1 = m(x)
         output2 = torch.compile(m)(x)
         self.assertEqual(output1, output2)
-=======
+
     def test_tensor_subclass_super_new(self):
         # super().__new__(cls, tensor) should be traceable in Tensor subclasses
         class MyTensor(torch.Tensor):
@@ -3569,7 +3568,6 @@ class <lambda>(torch.nn.Module):
         result = forward(x)
         self.assertIsInstance(result, MyTensor)
         self.assertEqual(result, x)
->>>>>>> main
 
 
 instantiate_parametrized_tests(SubclassTests)
