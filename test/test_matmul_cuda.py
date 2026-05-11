@@ -1,6 +1,8 @@
 # Owner(s): ["module: linear algebra"]
 
 import contextlib
+import json
+import math
 import os
 import unittest
 from itertools import product
@@ -51,6 +53,7 @@ from torch.testing._internal.common_utils import (
     TEST_CUDA,
     TEST_WITH_ROCM,
     TestCase,
+    TemporaryFileName,
     decorateIf,
 )
 
@@ -94,6 +97,16 @@ def rocm_group_gemm_ck_env(value):
         else:
             os.environ[var] = old
 
+
+@contextlib.contextmanager
+def sm_carveout(value: int | None):
+    torch._C._set_sm_carveout_experimental(value)
+    try:
+        yield
+    finally:
+        torch._C._set_sm_carveout_experimental(None)
+
+
 class TestMatmulCuda(InductorTestCase):
     def setUp(self):
         super().setUp()
@@ -102,6 +115,48 @@ class TestMatmulCuda(InductorTestCase):
     def tearDown(self):
         torch.backends.cuda.matmul.allow_tf32 = True
         super().tearDown()
+
+    @onlyCUDA
+    @skipIfRocm
+    def test_legacy_cublas_honors_sm_carveout(self, device):
+        if torch.version.cuda is None or int(torch.version.cuda.split(".")[0]) < 12:
+            raise unittest.SkipTest("cublasSetSmCountTarget requires CUDA 12+")
+
+        torch._C._set_sm_carveout_experimental(None)
+        dtype = torch.float16
+        sm_count = torch.cuda.get_device_properties().multi_processor_count
+        carveout = max(1, sm_count // 2)
+        a = torch.empty(8192, 8192, device=device, dtype=dtype)
+        b = torch.empty(8192, 8192, device=device, dtype=dtype)
+
+        def mm_grid_size(carveout_value: int | None) -> int:
+            with sm_carveout(carveout_value), TemporaryFileName(mode="w+") as fname:
+                with profile(activities=[ProfilerActivity.CUDA]) as prof:
+                    torch.mm(a, b)
+                prof.export_chrome_trace(fname)
+                with open(fname) as trace_file:
+                    grid_sizes = [
+                        math.prod(evt.get("args", {}).get("grid", []))
+                        for evt in json.load(trace_file)["traceEvents"]
+                        if evt.get("cat", "") == "kernel"
+                        and evt.get("args", {}).get("grid")
+                    ]
+
+            self.assertNotEqual([], grid_sizes)
+            return max(grid_sizes)
+
+        with blas_library_context("cublas"):
+            torch.mm(a, b)
+            torch.cuda.synchronize()
+
+            no_carveout = mm_grid_size(None)
+            carveout_0 = mm_grid_size(0)
+            carved_out = mm_grid_size(carveout)
+            no_carveout_again = mm_grid_size(None)
+
+        self.assertEqual(no_carveout, carveout_0)
+        self.assertNotEqual(no_carveout, carved_out)
+        self.assertEqual(no_carveout, no_carveout_again)
 
     def cublas_addmm(
         self,

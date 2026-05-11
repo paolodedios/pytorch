@@ -175,6 +175,33 @@ void _cublasAdjustLdLevel3(
   }
 }
 
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+class CuBlasSMCarveoutGuard {
+ public:
+  explicit CuBlasSMCarveoutGuard(cublasHandle_t handle) : handle_(handle) {
+    const auto smCarveout = at::globalContext()._SMCarveout_EXPERIMENTAL();
+    if (smCarveout.has_value()) {
+      TORCH_CUDABLAS_CHECK(cublasSetSmCountTarget(
+          handle_,
+          at::cuda::getCurrentDeviceProperties()->multiProcessorCount -
+              smCarveout.value()));
+      enabled_ = true;
+    }
+  }
+  ~CuBlasSMCarveoutGuard() {
+    if (enabled_) {
+      TORCH_CUDABLAS_CHECK(cublasSetSmCountTarget(handle_, 0));
+    }
+  }
+  CuBlasSMCarveoutGuard(const CuBlasSMCarveoutGuard&) = delete;
+  CuBlasSMCarveoutGuard& operator=(const CuBlasSMCarveoutGuard&) = delete;
+
+ private:
+  cublasHandle_t handle_;
+  bool enabled_ = false;
+};
+#endif
+
 #ifndef USE_ROCM
 uint32_t _getAlignment(uintptr_t address) {
   // alignment are in bytes
@@ -613,6 +640,9 @@ inline void bgemm_internal_cublas(CUDABLAS_BGEMM_ARGTYPES_AND_C_DTYPE(Dtype, C_D
 template <>
 void bgemm_internal_cublas<double>(CUDABLAS_BGEMM_ARGTYPES(double)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -624,6 +654,9 @@ void bgemm_internal_cublas<double>(CUDABLAS_BGEMM_ARGTYPES(double)) {
 template <>
 void bgemm_internal_cublas<float>(CUDABLAS_BGEMM_ARGTYPES(float)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -635,6 +668,9 @@ void bgemm_internal_cublas<float>(CUDABLAS_BGEMM_ARGTYPES(float)) {
 template <>
 void bgemm_internal_cublas<c10::complex<double>>(CUDABLAS_BGEMM_ARGTYPES(c10::complex<double>)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -648,6 +684,9 @@ void bgemm_internal_cublas<c10::complex<double>>(CUDABLAS_BGEMM_ARGTYPES(c10::co
 template <>
 void bgemm_internal_cublas<c10::complex<float>>(CUDABLAS_BGEMM_ARGTYPES(c10::complex<float>)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -661,6 +700,9 @@ void bgemm_internal_cublas<c10::complex<float>>(CUDABLAS_BGEMM_ARGTYPES(c10::com
 template <typename C_Dtype>
 inline void bgemm_internal_cublas_half_helper(CUDABLAS_BGEMM_ARGTYPES_AND_C_DTYPE(at::Half, C_Dtype)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -733,6 +775,9 @@ template <typename C_Dtype>
 inline void bgemm_internal_cublas_bfloat16_helper(CUDABLAS_BGEMM_ARGTYPES_AND_C_DTYPE(at::BFloat16, C_Dtype)) {
   BGEMM_CHECK_ARGVALUES(at::BFloat16);
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   const float falpha = alpha;
@@ -1055,6 +1100,9 @@ inline void gemm_internal_cublas(CUDABLAS_GEMM_ARGTYPES_AND_C_DTYPE(Dtype, C_Dty
 template <>
 void gemm_internal_cublas<double>(CUDABLAS_GEMM_ARGTYPES(double)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -1066,6 +1114,9 @@ void gemm_internal_cublas<double>(CUDABLAS_GEMM_ARGTYPES(double)) {
 template <>
 void gemm_internal_cublas<float>(CUDABLAS_GEMM_ARGTYPES(float)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -1077,6 +1128,9 @@ void gemm_internal_cublas<float>(CUDABLAS_GEMM_ARGTYPES(float)) {
 template <>
 void gemm_internal_cublas<c10::complex<double>>(CUDABLAS_GEMM_ARGTYPES(c10::complex<double>)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -1090,6 +1144,9 @@ void gemm_internal_cublas<c10::complex<double>>(CUDABLAS_GEMM_ARGTYPES(c10::comp
 template <>
 void gemm_internal_cublas<c10::complex<float>>(CUDABLAS_GEMM_ARGTYPES(c10::complex<float>)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   _cublasAdjustLdLevel3(transa, transb, m, n, k, &lda, &ldb, &ldc);
@@ -1103,6 +1160,9 @@ void gemm_internal_cublas<c10::complex<float>>(CUDABLAS_GEMM_ARGTYPES(c10::compl
 template <typename C_Dtype>
 inline void gemm_internal_cublas_half_helper(CUDABLAS_GEMM_ARGTYPES_AND_C_DTYPE(at::Half, C_Dtype)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   float falpha = alpha;
@@ -1218,6 +1278,9 @@ inline void gemm_internal_cublas_half_helper(CUDABLAS_GEMM_ARGTYPES_AND_C_DTYPE(
 template <typename C_Dtype>
 inline void gemm_internal_cublas_bfloat16_helper(CUDABLAS_GEMM_ARGTYPES_AND_C_DTYPE(at::BFloat16, C_Dtype)) {
   cublasHandle_t handle = at::cuda::getCurrentCUDABlasHandle();
+#if !defined(USE_ROCM) && defined(CUDA_VERSION) && CUDA_VERSION >= 12000
+  CuBlasSMCarveoutGuard smCarveoutGuard(handle);
+#endif
   cublasOperation_t opa = _cublasOpFromChar(transa);
   cublasOperation_t opb = _cublasOpFromChar(transb);
   float falpha = alpha;
