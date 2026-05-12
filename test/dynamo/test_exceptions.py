@@ -623,21 +623,17 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(ref, res)
 
     def test_runtime_error_in_try_except(self):
-        class M(torch.nn.Module):
-            def forward(self, x):
-                try:
-                    with torch.no_grad():
-                        torch.linalg.inv(x)
-                except RuntimeError:
-                    return x + 1
-                return x
+        def fn(x):
+            try:
+                torch.linalg.inv(x)
+            except RuntimeError:
+                return x + 1
+            return x
 
-        m = M()
-        opt_m = torch.compile(m, backend="eager")
-        # Non-square matrix will raise RuntimeError
+        opt_m = torch.compile(fn, backend="eager")
         x = torch.randn(2, 3)
-        ref = m(x)
-        res = opt_m(x)
+        ref = fn(x)
+        res = opt_m(x)  # crash
         self.assertEqual(ref, res)
 
     def test_raise_from_None(self):
