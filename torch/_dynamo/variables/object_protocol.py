@@ -7,8 +7,9 @@ Per-type hook implementations (bool_impl, richcompare_impl, etc.)
 live in their respective VT files.
 """
 
-from functools import lru_cache
-from typing import TYPE_CHECKING
+import collections
+from functools import lru_cache, partial
+from typing import NoReturn, TYPE_CHECKING
 
 from torch._C._dynamo import (
     get_type_slots,
@@ -309,23 +310,28 @@ def generic_bool(tx: "InstructionTranslator", obj: VariableTracker) -> VariableT
     return ConstantVariable.create(True)
 
 
+_repr_running: set[int] = set()
+
+
 def generic_repr(tx: "InstructionTranslator", obj: VariableTracker) -> VariableTracker:
-    """Mirrors PyObject_Repr.
+    """Mirrors PyObject_Repr with Py_ReprEnter/Py_ReprLeave cycle detection.
 
     https://github.com/python/cpython/blob/v3.13.3/Objects/object.c#L745-L778
 
-    Resolution order: constants -> tp_repr -> TypeError if the result is not str.
+    Resolution order: tp_repr -> TypeError if the result is not str.
     """
-    if obj.is_python_constant():
-        try:
-            return ConstantVariable.create(repr(obj.as_python_constant()))
-        except Exception as e:
-            raise_observed_exception(type(e), tx, args=list(e.args))
-
     obj_type = maybe_get_python_type(obj)
 
     if type_implements_tp_repr(obj_type):
-        result = obj.repr_impl(tx)
+        obj_id = id(obj)
+        if obj_id in _repr_running:
+            sentinel = {list: "[...]", dict: "{...}", collections.deque: "[...]"}
+            return ConstantVariable.create(sentinel.get(obj_type, "..."))
+        _repr_running.add(obj_id)
+        try:
+            result = obj.repr_impl(tx)
+        finally:
+            _repr_running.discard(obj_id)
         result_type = maybe_get_python_type(result)
         if not issubclass(result_type, str):
             raise_type_error(

@@ -159,28 +159,23 @@ def _is_sym_arith_operand(vt: VariableTracker) -> bool:
     return isinstance(vt, ConstantVariable) and isinstance(vt.value, (float, int, bool))
 =======
 def _tensor_debug_repr(value: torch.Tensor, type_name: str = "Tensor") -> str:
-    try:
-        if torch._C._functorch.is_batchedtensor(value):
-            level = torch._C._functorch.maybe_get_level(value)
-            bdim = torch._C._functorch.maybe_get_bdim(value)
-            unwrapped = torch._C._functorch.get_unwrapped(value)
-            return (
-                "BatchedTensor("
-                f"lvl={level}, bdim={bdim}, value={_tensor_debug_repr(unwrapped)}"
-                ")"
-            )
-        if torch._C._functorch.is_gradtrackingtensor(value):
-            level = torch._C._functorch.maybe_get_level(value)
-            unwrapped = torch._C._functorch.get_unwrapped(value)
-            return f"GradTrackingTensor(lvl={level}, value={_tensor_debug_repr(unwrapped)})"
-        if torch._C._functorch.is_functionaltensor(value):
-            level = torch._C._functorch.maybe_get_level(value)
-            unwrapped = torch._C._functorch.get_unwrapped(value)
-            return (
-                f"FunctionalTensor(lvl={level}, value={_tensor_debug_repr(unwrapped)})"
-            )
-    except Exception:
-        pass
+    if torch._C._functorch.is_batchedtensor(value):
+        level = torch._C._functorch.maybe_get_level(value)
+        bdim = torch._C._functorch.maybe_get_bdim(value)
+        unwrapped = torch._C._functorch.get_unwrapped(value)
+        return (
+            "BatchedTensor("
+            f"lvl={level}, bdim={bdim}, value={_tensor_debug_repr(unwrapped)}"
+            ")"
+        )
+    if torch._C._functorch.is_gradtrackingtensor(value):
+        level = torch._C._functorch.maybe_get_level(value)
+        unwrapped = torch._C._functorch.get_unwrapped(value)
+        return f"GradTrackingTensor(lvl={level}, value={_tensor_debug_repr(unwrapped)})"
+    if torch._C._functorch.is_functionaltensor(value):
+        level = torch._C._functorch.maybe_get_level(value)
+        unwrapped = torch._C._functorch.get_unwrapped(value)
+        return f"FunctionalTensor(lvl={level}, value={_tensor_debug_repr(unwrapped)})"
     return f"{type_name}(shape={tuple(value.shape)}, dtype={value.dtype})"
 >>>>>>> e57b48f8d08 ( python test/dynamo/test_comptime.py -k test_print_single -v)
 
@@ -853,7 +848,7 @@ class TensorVariable(VariableTracker):
             )
 
         if name == "__repr__" and not args and not kwargs:
-            return super().call_method(tx, name, list(args), kwargs)
+            return self.repr_impl(tx)
 
         if name == "__deepcopy__":
             unimplemented(
