@@ -3829,17 +3829,64 @@ def _wrap_graph_break_with_torch_runtime_err(gb_fn: Callable[[], NoReturn]) -> N
 
 def _has_exception_handler(tx: InstructionTranslatorBase) -> bool:
     """
-    Check if the current instruction has an exception handler.
-
-    Returns True if user code has a try-except block that would catch
-    the exception, False if the exception would bubble to interpreter.
+    Check if the current instruction is inside a try-except block that can catch exceptions.
     """
+
+    def _check_exception_handler_recursive(
+        current_entry: Any, visited_targets: set[int], instructions: Any
+    ) -> bool:
+        """
+        Recursively walk the exception handler stack to find a try-except block.
+        """
+
+        if current_entry is None:
+            return False
+
+        target_offset = current_entry.target.offset
+        if target_offset in visited_targets:
+            return False
+
+        visited_targets.add(target_offset)
+        has_check_exc_match = _handler_has_check_exc_match(target_offset, instructions)
+        if has_check_exc_match:
+            return True
+
+        next_entry = current_entry.target.exn_tab_entry
+        return _check_exception_handler_recursive(
+            next_entry, visited_targets, instructions
+        )
+
+    def _handler_has_check_exc_match(target_offset: int, instructions: Any) -> bool:
+        """Check if exception handler at target_offset contains CHECK_EXC_MATCH bytecode."""
+        for i, inst in enumerate(instructions):
+            if inst.offset == target_offset:
+                for j in range(i, len(instructions)):
+                    opname = instructions[j].opname
+                    if opname in ("CHECK_EXC_MATCH", "CHECK_EG_MATCH"):
+                        return True
+                    if opname in (
+                        "RERAISE",
+                        "RETURN_VALUE",
+                        "RETURN_CONST",
+                        "CLEANUP_THROW",
+                    ):
+                        if j > i:
+                            return False
+                return False
+        return False
+
     if sys.version_info >= (3, 11):
-        # Python 3.11+ uses exception table entries
-        return tx.current_instruction.exn_tab_entry is not None
+        # Python 3.11+ uses exception table
+        current_entry = tx.current_instruction.exn_tab_entry
+        visited_targets: set[int] = set()
+        return _check_exception_handler_recursive(
+            current_entry, visited_targets, tx.instructions
+        )
     else:
-        # Python 3.10 and below use block stack
-        return len(tx.block_stack) > 0
+        # Python <=3.10 uses block stack
+        # The block stack already contains all handlers from inner to outer
+        # Just check if ANY of them is SETUP_EXCEPT
+        return any(entry.inst.opname == "SETUP_EXCEPT" for entry in tx.block_stack)
 
 
 def get_fake_value(
