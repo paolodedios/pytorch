@@ -1715,16 +1715,16 @@ def gather_node_runtime_estimations(
 
         elif node.op == "call_function" and node not in estimations:
             custom_est = get_custom_estimation(
-            node,
-            custom_runtime_estimation,
-            None,
-        )
+                node,
+                custom_runtime_estimation,
+                None,
+            )
             if custom_est is not None:
                 estimations[node] = custom_est
             else:
                 est = estimate_roofline_runtime_ms(node)
                 if est > 0:
-                     estimations[node] = est
+                    estimations[node] = est
 
     # Fusion region costs (call_module nodes from collapse_fusion_regions)
     for node, region in fusion_region_of.items():
