@@ -115,7 +115,6 @@ from .object_protocol import (
     generic_neg,
     generic_pos,
     generic_repr,
-    vt_add,
     vt_getitem,
     vt_identity_compare,
 )

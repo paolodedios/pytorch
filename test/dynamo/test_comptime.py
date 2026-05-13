@@ -4,6 +4,7 @@ import collections
 import re
 import sys
 import time
+import typing
 from io import StringIO
 
 import torch._dynamo.test_case
@@ -30,7 +31,9 @@ class ComptimeTests(torch._dynamo.test_case.TestCase):
             def _(ctx):
                 ctx.print(ctx.get_local("e"), file=FILE)
 
-        Employee = collections.namedtuple("Employee", ["name", "id"])
+        class Employee(typing.NamedTuple):
+            name: object
+            id: object
 
         class mylist(list):
             pass

@@ -147,7 +147,6 @@ def is_bound_tensor_method(value: object) -> bool:
 all_tensor_attrs = torch._C.TensorBase.__dict__ | torch.Tensor.__dict__
 
 
-<<<<<<< HEAD
 def _is_sym_arith_operand(vt: VariableTracker) -> bool:
     """True if vt can be the other operand of a SymNode arithmetic op
     (add/sub). Accepts SymNode-like values plus float ConstantVariable —
@@ -157,7 +156,8 @@ def _is_sym_arith_operand(vt: VariableTracker) -> bool:
 
     # mirror sym_node.py::binary_magic_impl
     return isinstance(vt, ConstantVariable) and isinstance(vt.value, (float, int, bool))
-=======
+
+
 def _tensor_debug_repr(value: torch.Tensor, type_name: str = "Tensor") -> str:
     if torch._C._functorch.is_batchedtensor(value):
         level = torch._C._functorch.maybe_get_level(value)
@@ -177,7 +177,6 @@ def _tensor_debug_repr(value: torch.Tensor, type_name: str = "Tensor") -> str:
         unwrapped = torch._C._functorch.get_unwrapped(value)
         return f"FunctionalTensor(lvl={level}, value={_tensor_debug_repr(unwrapped)})"
     return f"{type_name}(shape={tuple(value.shape)}, dtype={value.dtype})"
->>>>>>> e57b48f8d08 ( python test/dynamo/test_comptime.py -k test_print_single -v)
 
 
 class TensorVariable(VariableTracker):

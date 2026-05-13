@@ -8,8 +8,8 @@ live in their respective VT files.
 """
 
 import collections
-from functools import lru_cache, partial
-from typing import NoReturn, TYPE_CHECKING
+from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from torch._C._dynamo import (
     get_type_slots,

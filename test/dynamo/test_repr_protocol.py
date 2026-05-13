@@ -3,6 +3,7 @@
 
 import collections
 import enum
+import typing
 
 import torch
 from torch._dynamo.test_case import run_tests, TestCase
@@ -357,7 +358,8 @@ class TpReprTests(TestCase):
             def __repr__(self):
                 return f"Obj({self.val})"
 
-        Named = collections.namedtuple("Named", ["obj"])
+        class Named(typing.NamedTuple):
+            obj: object
 
         def fn(x, obj):
             ordered = collections.OrderedDict([("obj", obj)])

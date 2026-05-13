@@ -35,7 +35,6 @@ import sys
 import traceback
 import types
 import typing
-from collections import namedtuple
 from collections.abc import Callable, Sequence
 from types import CellType, FunctionType
 from typing import Any, cast, Literal, Optional, TYPE_CHECKING, TypeVar
@@ -3566,7 +3565,7 @@ class PyTreeGetNodeTypeFunctionVariable(UserFunctionVariable):
         #      `namedtuple` instead of the actual namedtuple type. Even if the type
         #      is explicitly registered.
         if is_namedtuple_class(node_type):
-            return namedtuple
+            return collections.namedtuple
         return node_type
     """
 
@@ -3586,8 +3585,12 @@ class PyTreeGetNodeTypeFunctionVariable(UserFunctionVariable):
             type_source = TypeSource(args[0].source)
         python_type = args[0].python_type()
         if is_namedtuple_class(python_type):
+            import collections
+
             type_source = AttrSource(ImportSource("collections"), "namedtuple")
-            return VariableTracker.build(tx, namedtuple, type_source)
+            return VariableTracker.build(
+                tx, vars(collections)["namedtuple"], type_source
+            )
         return VariableTracker.build(tx, python_type, source=type_source)
 
 
