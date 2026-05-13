@@ -48,7 +48,8 @@ def vq(x):
 def test_fn():
     with patch_exp_decomp():
         vq_compiled = torch.compile(vq)
-        x = torch.randn(4, 400, 256).cuda()
+        acc = torch.accelerator.current_accelerator()
+        x = torch.randn(4, 400, 256, device=acc)
         out_compiled = vq_compiled(x)
 
     return 1 if out_compiled.isnan().any() else 0
