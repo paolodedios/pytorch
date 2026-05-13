@@ -837,7 +837,6 @@ ops_unbacked_dtensor_dde = {
     xfail("nn.functional.margin_ranking_loss"),
     xfail("nn.functional.multilabel_soft_margin_loss"),
     xfail("nn.functional.pad", "constant"),
-    xfail("nn.functional.pixel_shuffle"),
     xfail("nn.functional.poisson_nll_loss"),
     xfail("nn.functional.soft_margin_loss"),
     xfail("nn.functional.triplet_margin_loss"),
@@ -867,7 +866,6 @@ ops_unbacked_dtensor_dde = {
     xfail("view"),
     xfail("view_as"),
     xfail("view_as_complex"),
-    xfail("view_copy"),
 }
 
 
