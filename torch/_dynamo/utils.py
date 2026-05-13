@@ -3831,14 +3831,47 @@ def _has_exception_handler(tx: InstructionTranslatorBase) -> bool:
     """
     Check if the current instruction is inside a try-except block that can catch exceptions.
     """
+    instructions = tx.instructions
+    offset_to_index = {inst.offset: i for i, inst in enumerate(instructions)}
+
+    def check_exc_match_newer_python(target_offset: int) -> bool:
+        """Check if exception handler at target_offset contains CHECK_EXC_MATCH bytecode for >3.10."""
+        start = offset_to_index.get(target_offset)
+        if start is None:
+            return False
+
+        for j in range(start, len(instructions)):
+            opname = instructions[j].opname
+            if opname in ("CHECK_EXC_MATCH", "CHECK_EG_MATCH"):
+                return True
+            # Boundary opcodes mark the end of handler region
+            if opname in ("RERAISE", "RETURN_VALUE", "RETURN_CONST", "POP_EXCEPT"):
+                if j > start:
+                    return False
+        return False
+
+    def check_exc_match_older_python(target_offset: int) -> bool:
+        """Check if exception handler at target_offset contains JUMP_IF_NOT_EXC_MATCH bytecode for <=3.10."""
+        start = offset_to_index.get(target_offset)
+        if start is None:
+            return False
+
+        for j in range(start, len(instructions)):
+            opname = instructions[j].opname
+            if opname == "JUMP_IF_NOT_EXC_MATCH":
+                return True
+            # Boundary opcodes mark the end of handler region
+            if opname in ("RERAISE", "POP_EXCEPT"):
+                if j > start:
+                    return False
+        return False
 
     def _check_exception_handler_recursive(
-        current_entry: Any, visited_targets: set[int], instructions: Any
+        current_entry: Any, visited_targets: set[int]
     ) -> bool:
         """
         Recursively walk the exception handler stack to find a try-except block.
         """
-
         if current_entry is None:
             return False
 
@@ -3847,46 +3880,25 @@ def _has_exception_handler(tx: InstructionTranslatorBase) -> bool:
             return False
 
         visited_targets.add(target_offset)
-        has_check_exc_match = _handler_has_check_exc_match(target_offset, instructions)
-        if has_check_exc_match:
+        if check_exc_match_newer_python(target_offset):
             return True
 
         next_entry = current_entry.target.exn_tab_entry
-        return _check_exception_handler_recursive(
-            next_entry, visited_targets, instructions
-        )
-
-    def _handler_has_check_exc_match(target_offset: int, instructions: Any) -> bool:
-        """Check if exception handler at target_offset contains CHECK_EXC_MATCH bytecode."""
-        for i, inst in enumerate(instructions):
-            if inst.offset == target_offset:
-                for j in range(i, len(instructions)):
-                    opname = instructions[j].opname
-                    if opname in ("CHECK_EXC_MATCH", "CHECK_EG_MATCH"):
-                        return True
-                    if opname in (
-                        "RERAISE",
-                        "RETURN_VALUE",
-                        "RETURN_CONST",
-                        "CLEANUP_THROW",
-                    ):
-                        if j > i:
-                            return False
-                return False
-        return False
+        return _check_exception_handler_recursive(next_entry, visited_targets)
 
     if sys.version_info >= (3, 11):
-        # Python 3.11+ uses exception table
         current_entry = tx.current_instruction.exn_tab_entry
         visited_targets: set[int] = set()
-        return _check_exception_handler_recursive(
-            current_entry, visited_targets, tx.instructions
-        )
+        return _check_exception_handler_recursive(current_entry, visited_targets)
     else:
-        # Python <=3.10 uses block stack
-        # The block stack already contains all handlers from inner to outer
-        # Just check if ANY of them is SETUP_EXCEPT
-        return any(entry.inst.opname == "SETUP_EXCEPT" for entry in tx.block_stack)
+        # Python <=3.10 uses block stack, not exception table
+        # Block stack is already a flat list from inner to outer handlers
+        for block_entry in tx.block_stack:
+            if block_entry.inst.opname == "SETUP_FINALLY":
+                target_offset = block_entry.inst.target.offset
+                if check_exc_match_older_python(target_offset):
+                    return True
+        return False
 
 
 def get_fake_value(
