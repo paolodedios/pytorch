@@ -193,7 +193,12 @@ def is_tensor_shardable(
         True: assumes shardability; we return True, allowing zero-size shards at runtime when u0 < num_shards.
         False: returns False, and lower-bounding u0, e.g. torch._check(u0 >= num_shards), is needed to enable sharding.
     """
-    from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
+    from torch.fx.experimental.symbolic_shapes import (
+        free_unbacked_symbols,
+        guard_or_false,
+        guard_or_true,
+        optimization_hint,
+    )
 
     if allow_unbacked_sharding not in [None, True, False]:
         raise AssertionError
@@ -202,6 +207,24 @@ def is_tensor_shardable(
         True: guard_or_false,
         False: guard_or_true,
     }[allow_unbacked_sharding]
+
+    def hint_proves_at_least(size, lower_bound: int) -> bool:
+        if guard_or_false(size >= lower_bound):
+            return True
+        if not (
+            isinstance(size, torch.SymInt)
+            and (shape_env := getattr(size.node, "shape_env", None)) is not None
+            and (unbacked_symbols := free_unbacked_symbols(size.node.expr))
+            and unbacked_symbols.issubset(shape_env.var_to_hint_override.keys())
+            and optimization_hint(size, fallback=None) >= lower_bound
+        ):
+            return False
+
+        # Shardability is a correctness property, not just an optimization.
+        # A user-provided unbacked hint can select the shardable branch, but
+        # the runtime extent must still be checked before the strategy is used.
+        torch._check(size >= lower_bound)
+        return True
 
     # number of shards in each tensor dimension
     num_shards = [1] * len(shape)
@@ -214,12 +237,16 @@ def is_tensor_shardable(
             if isinstance(placement, _StridedShard):
                 # make sure tensor dim `shard_dim` is shardable after splitting
                 # with split_factor
-                if guard_fn(
-                    shape[shard_dim] < num_shards[shard_dim] * placement.split_factor
+                lower_bound = num_shards[shard_dim] * placement.split_factor
+                if not hint_proves_at_least(shape[shard_dim], lower_bound) and guard_fn(
+                    shape[shard_dim] < lower_bound
                 ):
                     return False
             else:
-                if guard_fn(shape[shard_dim] < num_shards[shard_dim]):
+                lower_bound = num_shards[shard_dim]
+                if not hint_proves_at_least(shape[shard_dim], lower_bound) and guard_fn(
+                    shape[shard_dim] < lower_bound
+                ):
                     return False
 
     return True

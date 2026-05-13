@@ -3,11 +3,21 @@ import copy
 import itertools
 
 import torch
+from torch._subclasses import FakeTensorMode
+from torch.distributed.device_mesh import DeviceMesh
+from torch.distributed.tensor._dtensor_spec import DTensorSpec
+from torch.distributed.tensor._ops.utils import is_tensor_shardable
 from torch.distributed.tensor.placement_types import (
+    _hint_proves_even_shard,
     _StridedShard,
     Partial,
     Replicate,
     Shard,
+)
+from torch.fx.experimental.symbolic_shapes import (
+    free_unbacked_symbols,
+    GuardOnDataDependentSymNode,
+    ShapeEnv,
 )
 from torch.testing._internal.common_utils import run_tests, TestCase
 
@@ -143,6 +153,101 @@ class PlacementTypesTestCase(TestCase):
                 index=symint_index,
                 with_padding=True,
             )
+
+    def test_hinted_unbacked_even_shard_skips_padding(self):
+        fake_mode = FakeTensorMode(allow_non_fake_inputs=True, shape_env=ShapeEnv())
+        shard = Shard(0)
+
+        with fake_mode:
+            dim_size = fake_mode.shape_env.create_unbacked_symint()
+            torch._dynamo.override_optimization_hint(dim_size, 8)
+            local_tensor = torch.empty(dim_size // 4, 4)
+            full_tensor = torch.empty(dim_size, 4)
+
+            padded = shard._maybe_pad_tensor(local_tensor, dim_size, 4)
+            unpadded = shard._maybe_unpad_tensor(full_tensor, dim_size, 4)
+
+        self.assertEqual(padded.shape, local_tensor.shape)
+        self.assertEqual(unpadded.shape, full_tensor.shape)
+
+    def test_hinted_unbacked_even_chunk_preserves_symbolic_shard_size(self):
+        fake_mode = FakeTensorMode(allow_non_fake_inputs=True, shape_env=ShapeEnv())
+
+        with fake_mode:
+            batch = fake_mode.shape_env.create_unbacked_symint()
+            torch._dynamo.override_optimization_hint(batch, 4)
+            dim_size = 4096 * batch - 2 * torch.sym_min(1024 * batch, 2048 * batch)
+            tensor = torch.empty(dim_size, 256)
+            expected_chunk_size = dim_size // 8
+
+            chunks = Shard._custom_chunk(tensor, 8, dim=0)
+
+        self.assertEqual(len(chunks), 8)
+        for chunk in chunks:
+            self.assertEqual(chunk.size(0).node.expr, expected_chunk_size.node.expr)
+            self.assertEqual(
+                free_unbacked_symbols(chunk.size(0).node.expr),
+                free_unbacked_symbols(batch.node.expr),
+            )
+
+    def test_unbacked_even_fallback_hint_requires_override(self):
+        fake_mode = FakeTensorMode(allow_non_fake_inputs=True, shape_env=ShapeEnv())
+
+        with fake_mode:
+            dim_size = fake_mode.shape_env.create_unbacked_symint()
+            self.assertFalse(_hint_proves_even_shard(dim_size, 4))
+
+            torch._dynamo.override_optimization_hint(dim_size, 8)
+            self.assertTrue(_hint_proves_even_shard(dim_size, 4))
+
+    def test_hinted_unbacked_shardability_adds_runtime_check(self):
+        fake_mode = FakeTensorMode(allow_non_fake_inputs=True, shape_env=ShapeEnv())
+        mesh = DeviceMesh("cpu", torch.arange(4), _init_backend=False, _rank=0)
+        spec = DTensorSpec(mesh, (Shard(1),))
+
+        with fake_mode:
+            dim_size = fake_mode.shape_env.create_unbacked_symint()
+
+            with self.assertRaises(GuardOnDataDependentSymNode):
+                is_tensor_shardable((2, dim_size), spec)
+
+            torch._dynamo.override_optimization_hint(dim_size, 16)
+            self.assertTrue(is_tensor_shardable((2, dim_size), spec))
+
+    def test_strided_shard_unbacked_local_size_avoids_chunk_guard(self):
+        fake_mode = FakeTensorMode(allow_non_fake_inputs=True, shape_env=ShapeEnv())
+
+        with fake_mode:
+            dim_size = fake_mode.shape_env.create_unbacked_symint()
+
+        local_size, offsets = _StridedShard(
+            dim=1, split_factor=9
+        ).local_shard_size_and_offset(
+            dim_size,
+            num_chunks=2,
+            rank=0,
+            return_first_offset=False,
+        )
+
+        self.assertTrue(free_unbacked_symbols(local_size.node.expr))
+        self.assertEqual(offsets, [])
+
+    def test_strided_shard_split_tensor_uses_unbacked_safe_chunking(self):
+        fake_mode = FakeTensorMode(allow_non_fake_inputs=True, shape_env=ShapeEnv())
+
+        with fake_mode:
+            dim_size = fake_mode.shape_env.create_unbacked_symint()
+            tensor = torch.empty(1, dim_size)
+            shards, pad_sizes = _StridedShard(dim=1, split_factor=9)._split_tensor(
+                tensor,
+                num_chunks=2,
+                with_padding=False,
+                contiguous=False,
+            )
+
+        self.assertEqual(len(shards), 2)
+        self.assertEqual(pad_sizes, [])
+        self.assertTrue(free_unbacked_symbols(shards[0].size(1).node.expr))
 
 
 if __name__ == "__main__":
