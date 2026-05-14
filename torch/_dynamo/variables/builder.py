@@ -3447,7 +3447,7 @@ class VariableBuilder:
         if (
             isinstance(fake_tensor_value, FakeTensor)
             and fake_tensor_value.fake_mode is not self.tx.fake_mode
-            or not cpp_fake_belongs_to_mode(fake_tensor_value)
+            and not cpp_fake_belongs_to_mode(fake_tensor_value)
         ):
             raise AssertionError(
                 f"fake mode ({fake_tensor_value.fake_mode}) from fake tensor metadata doesn't match mode"
@@ -3546,7 +3546,7 @@ class VariableBuilder:
             if (
                 isinstance(fake_tensor_value, FakeTensor)
                 and fake_tensor_value.fake_mode is not self.tx.fake_mode
-                or not cpp_fake_belongs_to_mode(fake_tensor_value)
+                and not cpp_fake_belongs_to_mode(fake_tensor_value)
             ):
                 raise AssertionError(
                     f"fake mode ({fake_tensor_value.fake_mode}) from fake tensor metadata doesn't match mode"
