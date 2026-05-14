@@ -286,6 +286,8 @@ size_t getCUDABlasLtWorkspaceSize() {
 }
 
 at::DataPtr getNewWorkspace() {
+  // this should go through the filter, and thus use an allocation
+  // that doesn't die until the cuda graph dies
   return c10::cuda::CUDACachingAllocator::get()->allocate(getChosenWorkspaceSize());
 }
 
