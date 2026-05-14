@@ -246,7 +246,9 @@ class SIMDKernelFeatures:
             )
         return result
 
-    def get_reg_cached_persistent_reduction_config(self) -> PersistentReductionTileConfig | None:
+    def get_reg_cached_persistent_reduction_config(
+        self,
+    ) -> PersistentReductionTileConfig | None:
         """Check if this kernel qualifies for register-cached persistent reduction.
 
         Requires exactly one reduction node and one pointwise (epilogue) node
@@ -272,7 +274,9 @@ class SIMDKernelFeatures:
             return None
 
         def mem_dep_names(node: SchedulerNode) -> OrderedSet[str]:
-            return OrderedSet(d.name for d in node.read_writes.reads if isinstance(d, MemoryDep))
+            return OrderedSet(
+                d.name for d in node.read_writes.reads if isinstance(d, MemoryDep)
+            )
 
         shared_read_names = mem_dep_names(reductions[0]) & mem_dep_names(pointwise[0])
         if not shared_read_names:
@@ -286,8 +290,10 @@ class SIMDKernelFeatures:
 
         # Only beneficial for half-precision inputs where retained loads
         # use half the registers compared to fp32 compute type.
-        shared_dtypes = {V.graph.get_dtype(name) for name in shared_read_names}
-        if not shared_dtypes.issubset({torch.bfloat16, torch.float16}):
+        shared_dtypes = OrderedSet(
+            [V.graph.get_dtype(name) for name in shared_read_names]
+        )
+        if not shared_dtypes.issubset(OrderedSet([torch.bfloat16, torch.float16])):
             return None
 
         rnumel = V.graph.sizevars.simplify(self.reduction_numel)
@@ -308,8 +314,11 @@ class SIMDKernelFeatures:
 
         # R0_BLOCK must be a power of 2 (Triton requirement for block shapes)
         num_tiles = next(
-            (nt for nt in range(max_tiles, min_tiles - 1, -1)
-             if rnumel % nt == 0 and (rnumel // nt & (rnumel // nt - 1)) == 0),
+            (
+                nt
+                for nt in range(max_tiles, min_tiles - 1, -1)
+                if rnumel % nt == 0 and (rnumel // nt & (rnumel // nt - 1)) == 0
+            ),
             None,
         )
         if num_tiles is None:

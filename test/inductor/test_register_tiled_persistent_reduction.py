@@ -57,7 +57,7 @@ class TestRegisterTiledPersistentReduction(TestCase):
         # Check register-tiled expectation from decorator
         test_method = getattr(self, self._testMethodName)
         expect = getattr(test_method, "_expects_register_tiled", None)
-        assert expect is not None, "test must use @expects_register_tiled decorator"
+        self.assertIsNotNone(expect, "test must use @expects_register_tiled decorator")
         if expect:
             self.assertIn("tl.static_range(NUM_TILES)", code[0])
         else:

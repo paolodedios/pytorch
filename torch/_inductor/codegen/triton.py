@@ -1293,9 +1293,6 @@ class TritonOverrides(OpOverrides):
         else:
             out_dtype = triton_store_type(dtype)
 
-        if triton_type(x.dtype) == out_dtype:
-            return x
-
         return f"{x}.to({out_dtype})"
 
     @staticmethod
@@ -3154,7 +3151,9 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
     def codegen_range_tree(self):
         for tree in self.range_trees:
             # reduction ranges change per tile, so we compute them in the loop instead of the header
-            if not tree.is_loop and not (tree.is_reduction and self.num_persistent_tiles > 1):
+            if not tree.is_loop and not (
+                tree.is_reduction and self.num_persistent_tiles > 1
+            ):
                 self.iteration_ranges_codegen_header(tree, self.body)
             elif tree.is_loop and self.inside_reduction:
                 # workaround for this issue:
@@ -3979,7 +3978,10 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         # Register-tiled epilogue: reuse the retained register copy instead of
         # reloading from memory.  _forwarded_<name> is set per tile by the
         # if-chain in codegen_body's epilogue loop.
-        if self._persistent_tile_phase == "epilogue" and name in self.persistent_shared_read_names:
+        if (
+            self._persistent_tile_phase == "epilogue"
+            and name in self.persistent_shared_read_names
+        ):
             safe_name = name.replace(".", "_")
             forwarded_name = f"_forwarded_{safe_name}"
             dtype = V.graph.get_dtype(name)
@@ -4197,7 +4199,10 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         if not self.inside_reduction or (not indexing.has_rmask() and not has_rindex):
             self.outside_loop_vars.add(result_var)
 
-        if self._persistent_tile_phase == "reduction" and name in self.persistent_shared_read_names:
+        if (
+            self._persistent_tile_phase == "reduction"
+            and name in self.persistent_shared_read_names
+        ):
             if name not in self._retained_loads_current:
                 self._retained_loads_current[name] = result_var
 
@@ -5554,9 +5559,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                         var_names.append(vname)
                     self._retained_load_var_names[name] = var_names
 
-            self.body.writeline(
-                "for _tile in tl.static_range(NUM_TILES):"
-            )
+            self.body.writeline("for _tile in tl.static_range(NUM_TILES):")
             with self.body.indent():
                 # Emit tile range header using R0_BLOCK (autotunable constexpr)
                 for tree in self.range_trees:
