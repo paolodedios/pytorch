@@ -23,6 +23,10 @@ import torch.nn as nn
 from torch._dynamo.testing import CompileCounterWithBackend, normalize_gm
 from torch._inductor import config, metrics
 from torch._inductor.exc import InductorError
+from torch._inductor.kernel.flex.flex_attention import (
+    _prune_unused_score_mod_buffers,
+    _prune_unused_subgraph_buffers,
+)
 from torch._inductor.runtime.triton_compat import HAS_WARP_SPEC
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._inductor.utils import run_and_get_code
@@ -3677,6 +3681,29 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
+    def test_backward_unbacked_batch(self, device):
+        x = torch.randn(
+            (4, 2, 128, 64),
+            device=device,
+            dtype=torch.float32,
+            requires_grad=True,
+        )
+        torch._dynamo.decorators.mark_unbacked(x, 0, hint_override=x.shape[0])
+
+        @torch.compile(dynamic=True, fullgraph=True)
+        def fn(x):
+            mid = x.shape[0] // 2
+            chunk0 = x[:mid]
+            chunk1 = x[mid:]
+            return (
+                flex_attention(chunk0, chunk0, chunk0).sum()
+                + flex_attention(chunk1, chunk1, chunk1).sum()
+            )
+
+        fn(x).backward()
+
+    @supported_platform
+    @skip_on_cpu
     def test_differentiable_logsumexp_gradcheck(self, device):
         make_tensor = functools.partial(
             torch.randn,
@@ -6126,6 +6153,54 @@ class GraphModule(torch.nn.Module):
             flexible_layout_called,
             "get_stride_and_maybe_freeze_layout should be called with FlexibleLayout nodes",
         )
+
+
+class TestFlexAttentionLowering(InductorTestCase):
+    def test_prune_unused_subgraph_buffers(self):
+        def mask_graph(b, _h, q_idx, _kv_idx, unused_capture, used_capture):
+            return q_idx < used_capture[b]
+
+        graph_module = torch.fx.symbolic_trace(mask_graph)
+        unused_buffer = object()
+        used_buffer = object()
+
+        kept_buffers = _prune_unused_subgraph_buffers(
+            graph_module,
+            num_fixed_placeholders=4,
+            other_buffers=[unused_buffer, used_buffer],
+        )
+
+        self.assertEqual(kept_buffers, [used_buffer])
+        self.assertNotIn(
+            "unused_capture",
+            [node.name for node in graph_module.graph.nodes],
+        )
+
+    def test_prune_unused_score_mod_buffers_across_fw_and_joint_graphs(self):
+        def fw_graph(score, _b, _h, _m, _n, unused, fw_used, joint_used):
+            return score + fw_used
+
+        def joint_graph(score, _b, _h, _m, _n, grad, unused, fw_used, joint_used):
+            return score + grad + joint_used
+
+        fw_graph_module = torch.fx.symbolic_trace(fw_graph)
+        joint_graph_module = torch.fx.symbolic_trace(joint_graph)
+        unused_buffer = object()
+        fw_used_buffer = object()
+        joint_used_buffer = object()
+
+        kept_buffers = _prune_unused_score_mod_buffers(
+            fw_graph_module,
+            joint_graph_module,
+            [unused_buffer, fw_used_buffer, joint_used_buffer],
+        )
+
+        self.assertEqual(kept_buffers, [fw_used_buffer, joint_used_buffer])
+        for graph_module in (fw_graph_module, joint_graph_module):
+            self.assertNotIn(
+                "unused",
+                [node.name for node in graph_module.graph.nodes],
+            )
 
 
 class TestBlockMask(InductorTestCase):
