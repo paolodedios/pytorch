@@ -327,15 +327,21 @@ def _stable_topological_sort_impl(
     graph: torch.fx.Graph,
     node_to_additional_deps: dict[Node, OrderedSet[Node]],
     do_sort: bool = True,
+    region: OrderedSet[Node] | None = None,
 ) -> bool:
     # Nodes are in exactly one of these four collections:
 
     # - Nodes in `pending` are waiting to be processed (in reverse order):
-    pending = list(reversed(graph.nodes))
+    pending = list(reversed(region or graph.nodes))
 
     # - Nodes in `ready` have been processed and are already in the correct
-    #   order.
+    #   order.  When sorting a region, nodes outside the region are
+    #   pre-marked as ready so their deps are considered satisfied.
     ready = OrderedSet[Node]()
+    if region is not None:
+        for n in graph.nodes:
+            if n not in region:
+                ready.add(n)
 
     # - `waiting` is a mapping from a dependency to nodes which depend on that
     #   dependency.
@@ -384,6 +390,14 @@ def _stable_topological_sort(
 ) -> None:
     if not _stable_topological_sort_impl(graph, node_to_additional_deps):
         raise AssertionError("stable topological sort failed")
+
+
+def _stable_topological_sort_region(
+    graph: torch.fx.Graph,
+    region: OrderedSet[Node],
+) -> None:
+    if not _stable_topological_sort_impl(graph, {}, region=region):
+        raise AssertionError("stable topological sort of region failed")
 
 
 def _has_cycle(
