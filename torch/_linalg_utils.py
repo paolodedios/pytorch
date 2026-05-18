@@ -156,7 +156,7 @@ def qr(
     *,
     out=None,
 ) -> tuple[Tensor, Tensor]:
-    reduced = 'reduced' if some else 'complete'
+    reduced = "reduced" if some else "complete"
     raise RuntimeError(
         "This function was deprecated since version 1.9 and is now removed. "
         "`torch.qr` is deprecated in favor of `torch.linalg.qr` and the boolean parameter "

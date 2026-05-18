@@ -107,7 +107,6 @@
 #include <ATen/ops/lu_unpack_native.h>
 #include <ATen/ops/orgqr_native.h>
 #include <ATen/ops/ormqr_native.h>
-#include <ATen/ops/qr_native.h>
 #include <ATen/ops/real.h>
 #include <ATen/ops/resize_as_native.h>
 #include <ATen/ops/sum.h>

@@ -340,6 +340,7 @@ def get_ignored_functions() -> set[Callable]:
         Tensor.as_subclass,
         Tensor.eig,
         Tensor.lstsq,
+        Tensor.qr,
         Tensor.reinforce,
         Tensor.new,
         Tensor.new_tensor,
