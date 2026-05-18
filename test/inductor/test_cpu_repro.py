@@ -6527,6 +6527,19 @@ class CPUReproTests(TestCase):
         actual = torch.compile(f, backend="inductor")(buf, idx)
         self.assertEqual(actual, expected)
 
+    def test_reduction_transpose(self):
+        def f(x: torch.Tensor) -> torch.Tensor:
+            x.sin_()
+            y = x.t()
+            return y.argmin()
+
+        torch.manual_seed(21)
+
+        x = torch.randn(5, 7, device="cpu")
+        expected = f(x.clone())
+        actual = torch.compile(f, backend="inductor")(x.clone())
+        self.assertEqual(actual, expected)
+
 
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
