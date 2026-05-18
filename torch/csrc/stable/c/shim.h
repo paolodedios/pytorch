@@ -247,6 +247,10 @@ AOTI_TORCH_EXPORT const char* torch_exception_get_what();
 /// thread is shutdown.
 AOTI_TORCH_EXPORT const char* torch_exception_get_what_without_backtrace();
 
+/// Backend-specific non-owning stream handle (e.g. `cudaStream_t` for CUDA).
+AOTI_TORCH_EXPORT AOTITorchError
+torch_stream_native_handle(StreamHandle stream, void** ret_native_handle);
+
 #endif // TORCH_FEATURE_VERSION >= TORCH_VERSION_2_13_0
 
 #ifdef __cplusplus

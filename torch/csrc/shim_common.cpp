@@ -1,5 +1,6 @@
 #include <c10/core/Device.h>
 #include <c10/core/DispatchKey.h>
+#include <c10/core/Stream.h>
 #include <c10/util/Exception.h>
 #include <torch/csrc/inductor/aoti_runtime/utils.h>
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
@@ -751,6 +752,15 @@ AOTI_TORCH_EXPORT AOTITorchError torch_library_set_python_module(
   AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
     reinterpret_cast<torch::Library*>(self)->set_python_module(
         pymodule, context);
+  });
+}
+
+AOTITorchError torch_stream_native_handle(
+    StreamHandle stream,
+    void** ret_native_handle) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    c10::Stream* stream_ptr = reinterpret_cast<c10::Stream*>(stream);
+    *ret_native_handle = stream_ptr->native_handle();
   });
 }
 
