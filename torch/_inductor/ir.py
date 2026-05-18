@@ -5868,6 +5868,7 @@ class QuackGemmEpilogueTemplateBuffer(TemplateBuffer):
         epilogue_arg_indices: Sequence[int] = (),
         local_reduce_out_index: int | None = None,
         local_reduce_group: int | None = None,
+        local_reduce_dim: int | None = None,
         local_reduce_feeds_main: bool = False,
         mutated_inputs: Iterable[IRNode] | None = None,
     ) -> None:
@@ -5881,6 +5882,7 @@ class QuackGemmEpilogueTemplateBuffer(TemplateBuffer):
         self.epilogue_arg_indices = tuple(epilogue_arg_indices)
         self.local_reduce_out_index = local_reduce_out_index
         self.local_reduce_group = local_reduce_group
+        self.local_reduce_dim = local_reduce_dim
         self.local_reduce_feeds_main = local_reduce_feeds_main
 
     def should_allocate(self) -> bool:
