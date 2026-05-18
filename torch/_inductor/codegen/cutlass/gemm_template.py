@@ -1661,8 +1661,24 @@ class CUTLASS3xGemmTemplate(CUTLASSGemmTemplate):
             raise RuntimeError("Invalid Gemm config: \n" + op_def)
         op_type = match.groups()[0]
         if op.gemm_kind == cutlass_lib.GemmKind.Universal3x:
-            op_def += f"\n  using {op_type}_device_type = cutlass::gemm::device::GemmUniversalAdapter<{op_type}>;\n"
-            op_type = f"{op_type}_device_type"
+            if self.device_type == "xpu":
+                # For SYCL/XPU, the struct name becomes the SYCL kernel class name
+                # used by the runtime to dispatch the correct device binary.
+                # When multiple .so files define kernels with the same GEMM core but
+                # different epilogues (e.g., LinearCombination vs EVT), they produce
+                # identical struct names, causing the SYCL ProgramManager to select
+                # the wrong binary. Appending KERNEL_NAME (which gets replaced with a
+                # unique per-.so hash in scheduling.py) ensures each kernel gets a
+                # unique SYCL kernel class name.
+                unique_op_type = f"{op_type}_{Placeholder.KERNEL_NAME}"
+                op_def = op_def.replace(
+                    f"struct {op_type} :", f"struct {unique_op_type} :"
+                )
+                op_def += f"\n  using {unique_op_type}_device_type = cutlass::gemm::device::GemmUniversalAdapter<{unique_op_type}>;\n"
+                op_type = f"{unique_op_type}_device_type"
+            else:
+                op_def += f"\n  using {op_type}_device_type = cutlass::gemm::device::GemmUniversalAdapter<{op_type}>;\n"
+                op_type = f"{op_type}_device_type"
 
         return op_def, op_type
 
