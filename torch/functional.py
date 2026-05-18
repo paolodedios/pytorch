@@ -28,6 +28,7 @@ __all__ = [
     "cartesian_prod",
     "block_diag",
     "cdist",
+    "chain_matmul",
     "einsum",
     "istft",
     "lu",
@@ -1952,6 +1953,13 @@ def norm(
                 return _VF.norm(input, p, _dim, keepdim=keepdim, out=out)  # type: ignore[attr-defined]
             else:
                 return _VF.norm(input, p, _dim, keepdim=keepdim, dtype=dtype, out=out)  # type: ignore[attr-defined]
+
+
+def chain_matmul(*matrices, out=None):
+    from torch._linalg_utils import chain_matmul as _chain_matmul
+
+    return _chain_matmul(*matrices, out=out)
+
 
 def unravel_index(
     indices: Tensor,
