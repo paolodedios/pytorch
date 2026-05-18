@@ -1,3 +1,4 @@
+#include <c10/util/env.h>
 #include <c10/util/irange.h>
 #include <torch/csrc/lazy/core/debug_util.h>
 
@@ -5,7 +6,6 @@
 #include <torch/csrc/lazy/core/helpers.h>
 #include <torch/csrc/lazy/core/ir.h>
 #include <torch/csrc/lazy/core/ir_dump_util.h>
-#include <torch/csrc/lazy/core/ir_util.h>
 #include <torch/csrc/lazy/core/unique.h>
 
 #include <fstream>
@@ -13,13 +13,12 @@
 #include <sstream>
 #include <unordered_set>
 
-namespace torch {
-namespace lazy {
-namespace  {
+namespace torch::lazy {
+namespace {
 
 std::string GetEnvString(const char* name, const std::string& defval) {
-  const char* env = std::getenv(name);
-  return env != nullptr ? env : defval;
+  const auto env = c10::utils::get_env(name);
+  return env.value_or(defval);
 }
 
 DebugUtil::GraphFormat DefaultGraphFormat() {
@@ -47,9 +46,9 @@ std::unordered_set<std::string>* LoadExperiments() {
   return xset.release();
 }
 
-}  // namespace
+} // namespace
 
-std::vector<SourceLocation> NoPythonFrames(){
+static std::vector<SourceLocation> NoPythonFrames() {
   SourceLocation dummy_loc;
   dummy_loc.file = "No Python Frames";
   return {dummy_loc};
@@ -65,10 +64,30 @@ DebugUtil::GraphFormat DebugUtil::GetDefaultGraphFormat() {
   return format;
 }
 
-std::string DebugUtil::GetTensorsGraphInfo(c10::ArrayRef<torch::lazy::LazyTensorPtr> tensors,
-                                           const std::vector<size_t>* indices,
-                                           GraphFormat format) {
-  std::vector<torch::lazy::Node*> root_nodes;
+std::string GetFirstUserFrameInPython() {
+  std::string empty;
+  if (!torch::lazy::GetPythonFramesFunction()) {
+    return empty;
+  }
+
+  auto frames = torch::lazy::GetPythonFramesFunction()();
+
+  for (auto i = frames.size(); i > 0; i--) {
+    auto& loc = frames[i - 1];
+    if (loc.file.find("site-packages") == std::string::npos) {
+      std::stringstream ss;
+      ss << loc.file << ' ' << loc.function << ' ' << loc.line;
+      return ss.str();
+    }
+  }
+  return empty;
+}
+
+std::string DebugUtil::GetTensorsGraphInfo(
+    c10::ArrayRef<torch::lazy::LazyTensorPtr> tensors,
+    const std::vector<size_t>* indices,
+    GraphFormat format) {
+  std::vector<const torch::lazy::Node*> root_nodes;
   std::vector<torch::lazy::Value> root_values;
   std::vector<torch::lazy::hash_t> root_hashes;
   torch::lazy::Unique<torch::lazy::BackendDevice> unique_device;
@@ -95,11 +114,12 @@ std::string DebugUtil::GetTensorsGraphInfo(c10::ArrayRef<torch::lazy::LazyTensor
     }
   }
   std::stringstream ss;
-  // Call into a function pointer that may backed by python or empty depending on runtime
+  // Call into a function pointer that may backed by python or empty depending
+  // on runtime
   std::vector<SourceLocation> frames = GetPythonFramesFunction()();
   ss << "Python Stacktrace:\n";
   for (auto& location : frames) {
-    ss << "  " << location.function << " (" << location.file << ":"
+    ss << "  " << location.function << " (" << location.file << ':'
        << location.line << ")\n";
   }
   ss << "\nHashes: (";
@@ -127,17 +147,19 @@ std::string DebugUtil::GetTensorsGraphInfo(c10::ArrayRef<torch::lazy::LazyTensor
   return ss.str();
 }
 
-void DebugUtil::SaveTensorsGraphInfo(const char* name,
-                                     c10::ArrayRef<torch::lazy::LazyTensorPtr> tensors,
-                                     const std::vector<size_t>* indices,
-                                     GraphFormat format) {
-  static const std::string save_file = GetEnvString("LTC_SAVE_TENSORS_FILE", "");
+void DebugUtil::SaveTensorsGraphInfo(
+    const char* name,
+    c10::ArrayRef<torch::lazy::LazyTensorPtr> tensors,
+    const std::vector<size_t>* indices,
+    GraphFormat format) {
+  static const std::string save_file =
+      GetEnvString("LTC_SAVE_TENSORS_FILE", "");
   if (!save_file.empty()) {
     static std::mutex lock;
     std::string info = GetTensorsGraphInfo(tensors, indices, format);
     std::lock_guard<std::mutex> guard(lock);
     std::ofstream graph_file(save_file, std::ios_base::app);
-    graph_file << "[" << name << "]\n" << info << "\n";
+    graph_file << '[' << name << "]\n" << info << '\n';
   }
 }
 
@@ -146,5 +168,4 @@ bool DebugUtil::ExperimentEnabled(const std::string& name) {
   return xset->find(name) != xset->end();
 }
 
-}  // namespace lazy
-}  // namespace torch
+} // namespace torch::lazy

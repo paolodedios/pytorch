@@ -1,8 +1,9 @@
 #pragma once
 #include <c10/util/Exception.h>
 
-namespace at {
-namespace native {
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wswitch-default")
+
+namespace at::native {
 
 // Used as an interface between the different BLAS-like libraries
 enum class TransposeType {
@@ -12,7 +13,7 @@ enum class TransposeType {
 };
 
 // Transforms TransposeType into the BLAS / LAPACK format
-static char to_blas(TransposeType trans) {
+[[maybe_unused]] static inline char to_blas(TransposeType trans) {
   switch (trans) {
     case TransposeType::Transpose: return 'T';
     case TransposeType::NoTranspose: return 'N';
@@ -21,4 +22,6 @@ static char to_blas(TransposeType trans) {
   TORCH_INTERNAL_ASSERT(false, "Invalid transpose type");
 }
 
-}}  // at::native
+}  // namespace at::native
+
+C10_DIAGNOSTIC_POP()

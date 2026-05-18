@@ -1,4 +1,3 @@
-#include <ATen/Utils.h>
 
 #include <ATen/code_template.h>
 #include <ATen/cuda/CUDAConfig.h>
@@ -8,15 +7,13 @@
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/frozen_conv_add_relu_fusion.h>
 #include <torch/csrc/jit/passes/graph_rewrite_helper.h>
-#include <torch/csrc/jit/passes/remove_mutation.h>
 #include <torch/csrc/jit/passes/subgraph_rewrite.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 void fuseFrozenConvAddReluImpl(std::shared_ptr<Graph>& graph) {
-#if AT_CUDNN_ENABLED()
+#if AT_CUDNN_ENABLED() || AT_ROCM_ENABLED()
   GRAPH_DEBUG("Before fuseFrozenConvAddReluImpl: ", *graph);
   SubgraphRewriter rewriter;
 
@@ -31,10 +28,17 @@ void fuseFrozenConvAddReluImpl(std::shared_ptr<Graph>& graph) {
       %res = aten::${relu}(%x)
       return (%res))");
 
+#ifdef USE_ROCM
+  std::string conv_relu_fused = R"(
+    graph(%input, %weight, %bias, %stride:int[], %padding:int[], %dilation:int[], %groups:int):
+        %res = aten::miopen_convolution_relu(%input, %weight, %bias, %stride, %padding, %dilation, %groups)
+        return (%res))";
+#else
   std::string conv_relu_fused = R"(
     graph(%input, %weight, %bias, %stride:int[], %padding:int[], %dilation:int[], %groups:int):
         %res = aten::cudnn_convolution_relu(%input, %weight, %bias, %stride, %padding, %dilation, %groups)
         return (%res))";
+#endif
 
   auto conv_add_relu_rstring = at::jit::CodeTemplate(R"(
     graph(%input, %weight, %bias, %z, %alpha, %stride:int[], %padding:int[], %dilation:int[], %groups:int):
@@ -43,10 +47,17 @@ void fuseFrozenConvAddReluImpl(std::shared_ptr<Graph>& graph) {
       %res = aten::${relu}(%y)
       return (%res))");
 
+#ifdef USE_ROCM
+  std::string conv_add_relu_fused = R"(
+    graph(%input, %weight, %bias, %z, %alpha, %stride:int[], %padding:int[], %dilation:int[], %groups:int):
+        %res = aten::miopen_convolution_add_relu(%input, %weight, %z, %alpha, %bias, %stride, %padding, %dilation, %groups)
+        return (%res))";
+#else
   std::string conv_add_relu_fused = R"(
     graph(%input, %weight, %bias, %z, %alpha, %stride:int[], %padding:int[], %dilation:int[], %groups:int):
         %res = aten::cudnn_convolution_add_relu(%input, %weight, %z, %alpha, %bias, %stride, %padding, %dilation, %groups)
         return (%res))";
+#endif
 
   for (const auto& conv : conv_operators) {
     for (const auto& relu : relu_operators) {
@@ -117,5 +128,4 @@ auto dummyInitializer = []() {
 
 } // namespace
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit
