@@ -7211,6 +7211,8 @@ class Scheduler:
             assert len(node1.node.mutation_outputs) == 1
             written_buffer_name = node1.node.mutation_outputs[0].name
 
+            # The epilogue must be an in-place, unary pointwise operation.
+            # Any other tensor/s would require additional load expressions.
             reads = list(node2.read_writes.reads)
             if (
                 len(reads) != 1
