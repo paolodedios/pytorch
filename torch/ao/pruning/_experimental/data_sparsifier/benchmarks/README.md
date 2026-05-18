@@ -8,13 +8,13 @@ The objective of this exercise is to use the data sparsifier to prune the embedd
 3. **Model forward time**: Can we speed up the model forward time by utilizing the sparsity? Specifically, can we introduce torch.sparse interim to reduce number of computations.
 
 ## Scope
-The [DataNormSparsifier](https://github.com/pytorch/pytorch/blob/master/torch/ao/sparsity/_experimental/data_sparsifier/data_norm_sparsifier.py) is used to sparsify the embeddings of the DLRM model. The model is sparsified for all the combinations of -
+The [DataNormSparsifier](https://github.com/pytorch/pytorch/blob/main/torch/ao/pruning/_experimental/data_sparsifier/data_norm_sparsifier.py) is used to sparsify the embeddings of the DLRM model. The model is sparsified for all the combinations of -
 1. Sparsity Levels: [0.0, 0.1, 0.2, ... 0.9, 0.91, 0.92, ... 0.99, 1.0]
 2. Sparse Block shapes: (1,1) and (1,4)
 3. Norm: L1 and L2
 
 ## Dataset
-The benchmarks are created for the dlrm model on the Kaggle CriteoDataset which can be downloaded from [here](https://ailab.criteo.com/ressources/) or [here](https://figshare.com/articles/dataset/Kaggle_Display_Advertising_Challenge_dataset/5732310/1).
+The benchmarks are created for the dlrm model on the Kaggle CriteoDataset which can be downloaded from [here](https://ailab.criteo.com/ressources/) or [here](https://figshare.com/articles/dataset/Kaggle_Display_Advertising_Challenge_dataset/5732310/1). <!-- codespell:ignore -->
 
 ## Results
 1. **Disk Usage**: Introducing sparsity in the embeddings reduces file size after compression. The compressed model size goes down from 1.9 GB to 150 MB after 100% sparsity.
@@ -34,7 +34,7 @@ The takeaway is that the dlrm model with sparse coo tensor is slower (roughly 2x
 ## Setup
 The benchmark codes depend on the [DLRM codebase](https://github.com/facebookresearch/dlrm).
 1. Clone the dlrm git repository
-2. Download the dataset from [here](https://ailab.criteo.com/ressources/) or [here](https://figshare.com/articles/dataset/Kaggle_Display_Advertising_Challenge_dataset/5732310/1)
+2. Download the dataset from [here](https://ailab.criteo.com/ressources/) or [here](https://figshare.com/articles/dataset/Kaggle_Display_Advertising_Challenge_dataset/5732310/1) <!-- codespell:ignore -->
 3. The DLRM model can be trained using the following script
 ```
 # Make sure you go into the file and make sure that the path to dataset is correct.
@@ -50,7 +50,7 @@ The benchmark codes depend on the [DLRM codebase](https://github.com/facebookres
 
 ### **Disk savings**
 ```
-python evaluate_disk_savings.py --model_path=<path_to_model_checkpoint> --sparsified_model_dump_path=<path_to_dump_sparsified_models>
+python evaluate_disk_savings.py --model-path=<path_to_model_checkpoint> --sparsified-model-dump-path=<path_to_dump_sparsified_models>
 ```
 
 Running this script should dump
@@ -62,13 +62,13 @@ Running this script should dump
 
 ### **Model Quality**
 ```
-python evaluate_model_metrics.py --raw_data_file=<path_to_raw_data_txt_file> --processed_data_file=<path_to_kaggleAdDisplayChallenge_processed.npz> --sparse_model_metadata=<path_to_sparse_model_metadata_csv>
+python evaluate_model_metrics.py --raw-data-file=<path_to_raw_data_txt_file> --processed-data-file=<path_to_kaggleAdDisplayChallenge_processed.npz> --sparse-model-metadata=<path_to_sparse_model_metadata_csv>
 ```
 Running this script should dump ```sparse_model_metrics.csv``` that contains evaluation metrics for all sparsified models.
 
 ### **Model forward time**:
 ```
-python evaluate_forward_time.py --raw_data_file=<path_to_raw_data_txt_file> --processed_data_file=<path_to_kaggleAdDisplayChallenge_processed.npz> --sparse_model_metadata=<path_to_sparse_model_metadata_csv>
+python evaluate_forward_time.py --raw-data-file=<path_to_raw_data_txt_file> --processed-data-file=<path_to_kaggleAdDisplayChallenge_processed.npz> --sparse-model-metadata=<path_to_sparse_model_metadata_csv>
 ```
 Running this script should dump ```dlrm_forward_time_info.csv``` that contains forward time for all sparsified models with and without torch.sparse in the forward pass.
 

@@ -22,6 +22,7 @@ from typing import Any
 
 from coverage import CoverageData, CoveragePlugin  # type: ignore[import]
 
+
 # All coverage stats resulting from this plug-in will be in a separate .coverage file that should be merged later with
 # `coverage combine`. The convention seems to be .coverage.dotted.suffix based on the following link:
 # https://coverage.readthedocs.io/en/coverage-5.5/cmd.html#combining-data-files-coverage-combine
@@ -29,7 +30,7 @@ cov_data = CoverageData(basename=f".coverage.jit.{time()}")
 
 
 def is_not_builtin_class(obj: Any) -> bool:
-    return isclass(obj) and not type(obj).__module__ == "builtins"
+    return isclass(obj) and type(obj).__module__ != "builtins"
 
 
 class JitPlugin(CoveragePlugin):  # type: ignore[misc, no-any-unimported]

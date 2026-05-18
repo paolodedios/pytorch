@@ -5,18 +5,19 @@
 #include <c10/core/impl/alloc_cpu.h>
 #include <c10/mobile/CPUCachingAllocator.h>
 #include <c10/mobile/CPUProfilingAllocator.h>
+#include <c10/util/Logging.h>
 
 // TODO: rename flag to C10
 C10_DEFINE_bool(
     caffe2_report_cpu_memory_usage,
     false,
-    "If set, print out detailed memory usage");
+    "If set, print out detailed memory usage")
 
 namespace c10 {
 
 struct C10_API DefaultCPUAllocator final : at::Allocator {
   DefaultCPUAllocator() = default;
-  at::DataPtr allocate(size_t nbytes) const override {
+  at::DataPtr allocate(size_t nbytes) override {
     void* data = nullptr;
     try {
       data = c10::alloc_cpu(nbytes);
@@ -38,6 +39,10 @@ struct C10_API DefaultCPUAllocator final : at::Allocator {
 
   at::DeleterFnPtr raw_deleter() const override {
     return &ReportAndDelete;
+  }
+
+  void copy_data(void* dest, const void* src, std::size_t count) const final {
+    default_copy_data(dest, src, count);
   }
 };
 
@@ -70,10 +75,6 @@ ProfiledCPUMemoryReporter& profiledCPUMemoryReporter() {
 template <uint32_t PreGuardBytes, uint32_t PostGuardBytes>
 class DefaultMobileCPUAllocator final : public at::Allocator {
  public:
-  DefaultMobileCPUAllocator() = default;
-  // NOLINTNEXTLINE(modernize-use-override)
-  ~DefaultMobileCPUAllocator() override = default;
-
   static void deleter(void* const pointer) {
     if (C10_UNLIKELY(!pointer)) {
       return;
@@ -99,7 +100,7 @@ class DefaultMobileCPUAllocator final : public at::Allocator {
     }
   }
 
-  DataPtr allocate(const size_t nbytes) const override {
+  DataPtr allocate(const size_t nbytes) override {
     if (C10_UNLIKELY(0u == nbytes)) {
       return {
           nullptr,
@@ -110,8 +111,7 @@ class DefaultMobileCPUAllocator final : public at::Allocator {
     }
 
     auto alloc_size = PreGuardBytes + nbytes + PostGuardBytes;
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    void* data;
+    void* data = nullptr;
     auto allocator_ptr = GetThreadLocalCachingAllocator();
     auto profiling_allocator_ptr = GetThreadLocalProfilingAllocator();
     if (allocator_ptr != nullptr) {
@@ -142,9 +142,19 @@ class DefaultMobileCPUAllocator final : public at::Allocator {
   DeleterFnPtr raw_deleter() const override {
     return deleter;
   }
+
+  bool is_simple_data_ptr(const c10::DataPtr& data_ptr) const final {
+    return reinterpret_cast<const uint8_t*>(data_ptr.get()) ==
+        reinterpret_cast<const uint8_t*>(data_ptr.get_context()) +
+        PreGuardBytes;
+  }
+
+  void copy_data(void* dest, const void* src, std::size_t count) const final {
+    default_copy_data(dest, src, count);
+  }
 };
 
-void NoDelete(void*) {}
+void NoDelete(void* /*unused*/) {}
 
 at::Allocator* GetCPUAllocator() {
   return GetAllocator(DeviceType::CPU);
@@ -186,7 +196,7 @@ at::Allocator* GetDefaultCPUAllocator() {
   return &g_cpu_alloc;
 }
 
-REGISTER_ALLOCATOR(DeviceType::CPU, &g_cpu_alloc);
+REGISTER_ALLOCATOR(DeviceType::CPU, &g_cpu_alloc)
 
 #endif /* C10_Mobile */
 
@@ -208,7 +218,11 @@ void ProfiledCPUMemoryReporter::New(void* ptr, size_t nbytes) {
   }
   if (profile_memory) {
     reportMemoryUsageToProfiler(
-        ptr, nbytes, allocated, 0, c10::Device(c10::DeviceType::CPU));
+        ptr,
+        static_cast<int64_t>(nbytes),
+        allocated,
+        0,
+        c10::Device(c10::DeviceType::CPU));
   }
 }
 
@@ -243,7 +257,11 @@ void ProfiledCPUMemoryReporter::Delete(void* ptr) {
   }
   if (profile_memory) {
     reportMemoryUsageToProfiler(
-        ptr, -nbytes, allocated, 0, c10::Device(c10::DeviceType::CPU));
+        ptr,
+        -static_cast<int64_t>(nbytes),
+        allocated,
+        0,
+        c10::Device(c10::DeviceType::CPU));
   }
 }
 
@@ -265,13 +283,15 @@ void ProfiledCPUMemoryReporter::OutOfMemory(size_t nbytes) {
   if (profile_memory) {
     reportOutOfMemoryToProfiler(
         static_cast<int64_t>(nbytes),
-        static_cast<int64_t>(allocated),
+        allocated,
         0,
         c10::Device(c10::DeviceType::CPU));
   }
 }
 
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 C10_API at::Allocator* cpu_caching_alloc = nullptr;
+// NOLINTNEXTLINE(misc-use-internal-linkage)
 C10_API uint8_t cpu_caching_alloc_priority = 0;
 
 void SetCPUCachingAllocator(Allocator* alloc, uint8_t priority) {

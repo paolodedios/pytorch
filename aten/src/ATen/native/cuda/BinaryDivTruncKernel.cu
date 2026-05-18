@@ -12,8 +12,7 @@
 
 #include <type_traits>
 
-namespace at {
-namespace native {
+namespace at::native {
 namespace binary_internal {
 
 void div_trunc_kernel_cuda(TensorIteratorBase& iter) {
@@ -49,7 +48,6 @@ void div_trunc_kernel_cuda(TensorIteratorBase& iter) {
 }
 } // namespace binary_internal
 
-REGISTER_DISPATCH(div_trunc_stub, &binary_internal::div_trunc_kernel_cuda);
+REGISTER_DISPATCH(div_trunc_stub, &binary_internal::div_trunc_kernel_cuda)
 
-} // namespace native
-} // namespace at
+} // namespace at::native

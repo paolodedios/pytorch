@@ -21,11 +21,9 @@
 #include <ATen/ops/empty.h>
 #include <ATen/ops/max_pool3d_with_indices_native.h>
 #include <ATen/ops/max_pool3d_with_indices_backward_native.h>
-#include <ATen/ops/zeros_like.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 namespace {
 
 __device__ inline int min(int a, int b) {
@@ -34,7 +32,7 @@ __device__ inline int min(int a, int b) {
 
 template <typename scalar_t>
 __global__ static void max_pool3d_with_indices_single_out_frame(
-  scalar_t* inputData,
+  const scalar_t* inputData,
   scalar_t* outputData,
   int64_t* indicesData,
   int features,
@@ -132,7 +130,7 @@ __global__ static void max_pool3d_with_indices_single_out_frame(
 
 template <typename scalar_t>
 void max_pool3d_with_indices_out_frame(
-  scalar_t* input_data,
+  const scalar_t* input_data,
   const Tensor& output,
   const Tensor& indices,
   int features,
@@ -165,8 +163,8 @@ void max_pool3d_with_indices_out_frame(
     max_pool3d_with_indices_single_out_frame
       <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
          input_data,
-         output.data_ptr<scalar_t>(),
-         indices.data_ptr<int64_t>(),
+         output.mutable_data_ptr<scalar_t>(),
+         indices.mutable_data_ptr<int64_t>(),
          features,
          itime, iheight, iwidth,
          obatch, otime, oheight, owidth,
@@ -187,8 +185,8 @@ void max_pool3d_with_indices_out_frame(
 template <typename scalar_t>
 __global__ static void max_pool3d_with_indices_backward_single_out_frame(
   scalar_t *gradInputData,
-  scalar_t *gradOutputData,
-  int64_t *indicesData,
+  const scalar_t *gradOutputData,
+  const int64_t *indicesData,
   int features,
   int itime, int iheight, int iwidth,
   int obatch, int otime, int oheight, int owidth,
@@ -268,8 +266,8 @@ void max_pool3d_with_indices_backward_out_frame(
     max_pool3d_with_indices_backward_single_out_frame
       <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
         gradInputData,
-        gradOutput.data_ptr<scalar_t>(),
-        indices.data_ptr<int64_t>(),
+        gradOutput.const_data_ptr<scalar_t>(),
+        indices.const_data_ptr<int64_t>(),
         features,
         itime, iheight, iwidth,
         obatch, otime, oheight, owidth,
@@ -302,29 +300,29 @@ void max_pool3d_with_indices_out_cuda_template(
   // #20866, #22032: Guarantee this for the official C++ API?
   TORCH_CHECK(kernel_size.size() == 1 || kernel_size.size() == 3,
     "max_pool3d: kernel_size must either be a single int, or a tuple of three ints")
-  const int kT = safe_downcast<int, int64_t>(kernel_size[0]);
-  const int kH = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[1]);
-  const int kW = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[2]);
+  const int kT = c10::checked_convert<int>(kernel_size[0], "int");
+  const int kH = kernel_size.size() == 1 ? kT : c10::checked_convert<int>(kernel_size[1], "int");
+  const int kW = kernel_size.size() == 1 ? kT : c10::checked_convert<int>(kernel_size[2], "int");
 
   TORCH_CHECK(stride.size() == 0 || stride.size() == 1 || stride.size() == 3,
     "max_pool3d: stride must either be omitted, a single int, or a tuple of three ints")
-  const int dT = stride.empty() ? kT : safe_downcast<int, int64_t>(stride[0]);
+  const int dT = stride.empty() ? kT : c10::checked_convert<int>(stride[0], "int");
   const int dH = stride.empty() ? kH :
-                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[1]);
+                 stride.size() == 1 ? dT : c10::checked_convert<int>(stride[1], "int");
   const int dW = stride.empty() ? kW :
-                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[2]);
+                 stride.size() == 1 ? dT : c10::checked_convert<int>(stride[2], "int");
 
   TORCH_CHECK(padding.size() == 1 || padding.size() == 3,
-    "max_pool3d: padding must be either be a single int, or a tuple of three ints");
-  const int pT = safe_downcast<int, int64_t>(padding[0]);
-  const int pH = padding.size() == 1 ? pT : safe_downcast<int, int64_t>(padding[1]);
-  const int pW = padding.size() == 1 ? pT : safe_downcast<int, int64_t>(padding[2]);
+    "max_pool3d: padding must either be a single int, or a tuple of three ints");
+  const int pT = c10::checked_convert<int>(padding[0], "int");
+  const int pH = padding.size() == 1 ? pT : c10::checked_convert<int>(padding[1], "int");
+  const int pW = padding.size() == 1 ? pT : c10::checked_convert<int>(padding[2], "int");
 
   TORCH_CHECK(dilation.size() == 1 || dilation.size() == 3,
     "max_pool3d: dilation must be either a single int, or a tuple of three ints");
-  const int dilationT = safe_downcast<int, int64_t>(dilation[0]);
-  const int dilationH = dilation.size() == 1 ? dilationT : safe_downcast<int, int64_t>(dilation[1]);
-  const int dilationW = dilation.size() == 1 ? dilationT : safe_downcast<int, int64_t>(dilation[2]);
+  const int dilationT = c10::checked_convert<int>(dilation[0], "int");
+  const int dilationH = dilation.size() == 1 ? dilationT : c10::checked_convert<int>(dilation[1], "int");
+  const int dilationW = dilation.size() == 1 ? dilationT : c10::checked_convert<int>(dilation[2], "int");
 
   const int64_t nbatch = input.ndimension() == 5 ? input.size(-5) : 1;
   const int64_t nslices = input.size(-4);
@@ -393,7 +391,7 @@ void max_pool3d_with_indices_out_cuda_template(
     input.scalar_type(),
     "max_pool3d_with_indices_out_frame",
     [&]{
-      scalar_t *input_data = work_input.data_ptr<scalar_t>();
+      const scalar_t *input_data = work_input.const_data_ptr<scalar_t>();
       const int64_t totalZ = otime * nslices * nbatch;
 
       max_pool3d_with_indices_out_frame(
@@ -432,29 +430,29 @@ void max_pool3d_with_indices_backward_out_cuda_template(
   // #20866, #22032: Guarantee this for the official C++ API?
   TORCH_CHECK(kernel_size.size() == 1 || kernel_size.size() == 3,
     "max_pool3d: kernel_size must either be a single int, or a tuple of three ints")
-  const int kT = safe_downcast<int, int64_t>(kernel_size[0]);
-  const int kH = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[1]);
-  const int kW = kernel_size.size() == 1 ? kT : safe_downcast<int, int64_t>(kernel_size[2]);
+  const int kT = c10::checked_convert<int>(kernel_size[0], "int");
+  const int kH = kernel_size.size() == 1 ? kT : c10::checked_convert<int>(kernel_size[1], "int");
+  const int kW = kernel_size.size() == 1 ? kT : c10::checked_convert<int>(kernel_size[2], "int");
 
   TORCH_CHECK(stride.size() == 0 || stride.size() == 1 || stride.size() == 3,
     "max_pool3d: stride must either be omitted, a single int, or a tuple of three ints")
-  const int dT = stride.empty() ? kT : safe_downcast<int, int64_t>(stride[0]);
+  const int dT = stride.empty() ? kT : c10::checked_convert<int>(stride[0], "int");
   const int dH = stride.empty() ? kH :
-                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[1]);
+                 stride.size() == 1 ? dT : c10::checked_convert<int>(stride[1], "int");
   const int dW = stride.empty() ? kW :
-                 stride.size() == 1 ? dT : safe_downcast<int, int64_t>(stride[2]);
+                 stride.size() == 1 ? dT : c10::checked_convert<int>(stride[2], "int");
 
   TORCH_CHECK(padding.size() == 1 || padding.size() == 3,
-    "max_pool3d: padding must be either be a single int, or a tuple of three ints");
-  const int pT = safe_downcast<int, int64_t>(padding[0]);
-  const int pH = padding.size() == 1 ? pT : safe_downcast<int, int64_t>(padding[1]);
-  const int pW = padding.size() == 1 ? pT : safe_downcast<int, int64_t>(padding[2]);
+    "max_pool3d: padding must either be a single int, or a tuple of three ints");
+  const int pT = c10::checked_convert<int>(padding[0], "int");
+  const int pH = padding.size() == 1 ? pT : c10::checked_convert<int>(padding[1], "int");
+  const int pW = padding.size() == 1 ? pT : c10::checked_convert<int>(padding[2], "int");
 
   TORCH_CHECK(dilation.size() == 1 || dilation.size() == 3,
     "max_pool3d: dilation must be either a single int, or a tuple of three ints");
-  const int dilationT = safe_downcast<int, int64_t>(dilation[0]);
-  const int dilationH = dilation.size() == 1 ? dilationT : safe_downcast<int, int64_t>(dilation[1]);
-  const int dilationW = dilation.size() == 1 ? dilationT : safe_downcast<int, int64_t>(dilation[2]);
+  const int dilationT = c10::checked_convert<int>(dilation[0], "int");
+  const int dilationH = dilation.size() == 1 ? dilationT : c10::checked_convert<int>(dilation[1], "int");
+  const int dilationW = dilation.size() == 1 ? dilationT : c10::checked_convert<int>(dilation[2], "int");
 
   TORCH_CHECK((input.ndimension() == 4 || input.ndimension() == 5),
     "max_pool2d_with_indices_backward_out_cuda_template(): ",
@@ -533,7 +531,7 @@ void max_pool3d_with_indices_backward_out_cuda_template(
     "max_pool3d_with_indices_backward_out_frame",
     [&] {
       const int64_t totalZ = otime * nslices * nbatch;
-      scalar_t *grad_input_data = work_grad_input.data_ptr<scalar_t>();
+      scalar_t *grad_input_data = work_grad_input.mutable_data_ptr<scalar_t>();
 
       max_pool3d_with_indices_backward_out_frame(
         grad_input_data, work_grad_output, work_indices,
@@ -637,7 +635,7 @@ Tensor max_pool3d_with_indices_backward_cuda(
   // See Note [Writing Nondeterministic Operations]
   // Nondeterministic because of atomicAdd usage
   globalContext().alertNotDeterministic("max_pool3d_with_indices_backward_cuda");
-  auto gradInput = at::zeros_like(input, input.suggest_memory_format());
+  auto gradInput = at::empty(input.sizes(), input.options());
   max_pool3d_with_indices_backward_out_cuda_template(
     gradInput,
     gradOutput,
@@ -652,4 +650,3 @@ Tensor max_pool3d_with_indices_backward_cuda(
 }
 
 } // at::native
-} // at

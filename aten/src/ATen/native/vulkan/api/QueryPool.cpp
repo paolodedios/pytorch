@@ -1,13 +1,15 @@
 #include <ATen/native/vulkan/api/QueryPool.h>
 #include <ATen/native/vulkan/api/Utils.h>
-#include <ATen/native/vulkan/ops/Tensor.h>
 #ifdef USE_KINETO
 #include <torch/csrc/autograd/profiler_kineto.h>
 #include <torch/csrc/profiler/orchestration/vulkan.h>
 #endif // USE_KINETO
 
+#include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
+#include <utility>
 
 namespace at {
 namespace native {
@@ -18,7 +20,7 @@ namespace {
 // On Mali gpus timestamp_period seems to return 0.
 // For some reason when 52.08 is used op runtimes seem to make more sense
 // TODO: Figure out what is special about 52.08
-constexpr int64_t default_ns_per_tick = 52; // lround(52.08f);
+constexpr int64_t kDefaultNsPerTick = 52; // lround(52.08f);
 } // namespace
 
 QueryPool::QueryPool(const QueryPoolConfig& config, const Adapter* adapter_p)
@@ -43,9 +45,9 @@ QueryPool::QueryPool(const QueryPoolConfig& config, const Adapter* adapter_p)
 
   shader_log().reserve(config_.initialReserveSize);
 
-  TORCH_CHECK(adapter_p, "Valid GPU device must be created for QueryPool");
+  VK_CHECK_COND(adapter_p, "Valid GPU device must be created for QueryPool");
   ns_per_tick_ = std::lround(adapter_p->timestamp_period());
-  ns_per_tick_ = (ns_per_tick_ == 0) ? default_ns_per_tick : ns_per_tick_;
+  ns_per_tick_ = (ns_per_tick_ == 0) ? kDefaultNsPerTick : ns_per_tick_;
 
 #ifdef USE_KINETO
   torch::profiler::impl::vulkan::registerGetShaderNameAndDurationNs(
@@ -71,13 +73,13 @@ void QueryPool::reset(const CommandBuffer& cmd) {
   cmd.reset_querypool(querypool_, 0u, in_use_);
   previous_shader_count_ += shader_log().size();
   in_use_ = 0u;
-  shader_logs_.push_back(std::vector<ShaderDuration>());
+  shader_logs_.emplace_back();
   shader_log().reserve(config_.initialReserveSize);
   results_pending_ = false;
 }
 
 size_t QueryPool::write_timestamp(const CommandBuffer& cmd) {
-  TORCH_CHECK(
+  VK_CHECK_COND(
       in_use_ < config_.maxQueryCount,
       "Vulkan QueryPool: Exceeded the maximum number of queries "
       "allowed by the queryPool (",
@@ -169,16 +171,10 @@ void QueryPool::extract_results() {
   results_pending_ = false;
 }
 
-std::ostream& operator<<(std::ostream& os, const VkExtent3D& extents) {
-  os << "{" << extents.width << ", " << extents.height << ", " << extents.depth
-     << "}";
-  return os;
-}
-
-std::string stringize(const VkExtent3D& extents) {
+static std::string stringize(const VkExtent3D& extents) {
   std::stringstream ss;
-  ss << "{" << extents.width << ", " << extents.height << ", " << extents.depth
-     << "}";
+  ss << '{' << extents.width << ", " << extents.height << ", " << extents.depth
+     << '}';
   return ss.str();
 }
 
@@ -187,7 +183,7 @@ std::string QueryPool::generate_string_report() {
 
   std::stringstream ss;
 
-  int kernel_name_w = 25;
+  int kernel_name_w = 40;
   int global_size_w = 15;
   int duration_w = 25;
 
@@ -221,7 +217,7 @@ void QueryPool::print_results() {
   std::cout << generate_string_report() << std::endl;
 }
 
-uint64_t QueryPool::get_total_op_ns(std::string op_name) {
+uint64_t QueryPool::get_total_op_ns(const std::string& op_name) {
   std::lock_guard<std::mutex> lock(mutex_);
   uint64_t sum = 0;
   for (ShaderDuration& entry : shader_log()) {
@@ -235,7 +231,7 @@ uint64_t QueryPool::get_total_op_ns(std::string op_name) {
 void QueryPool::shader_log_for_each(
     std::function<void(const ShaderDuration&)> fn) {
   std::lock_guard<std::mutex> lock(mutex_);
-  std::for_each(shader_log().begin(), shader_log().end(), fn);
+  std::for_each(shader_log().begin(), shader_log().end(), std::move(fn));
 }
 
 std::tuple<std::string, uint64_t> QueryPool::
@@ -245,7 +241,7 @@ std::tuple<std::string, uint64_t> QueryPool::
   std::lock_guard<std::mutex> lock(mutex_);
 
   const size_t entry_count = shader_logs_entry_count_thread_unsafe();
-  TORCH_CHECK(
+  VK_CHECK_COND(
       (query_index >= 0 && query_index < entry_count),
       "query_index of ",
       query_index,

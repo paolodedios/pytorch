@@ -1,17 +1,13 @@
 #include <torch/optim/adagrad.h>
 
-#include <torch/csrc/autograd/variable.h>
 #include <torch/optim/serialize.h>
-#include <torch/serialize/archive.h>
 #include <torch/utils.h>
 
-#include <ATen/ATen.h>
 #include <c10/util/irange.h>
 
 #include <functional>
 
-namespace torch {
-namespace optim {
+namespace torch::optim {
 
 AdagradOptions::AdagradOptions(double lr) : lr_(lr) {}
 
@@ -77,11 +73,11 @@ Tensor Adagrad::step(LossClosure closure) {
       }
       auto grad = p.grad();
       TORCH_INTERNAL_ASSERT(
-          state_[c10::guts::to_string(p.unsafeGetTensorImpl())] != nullptr,
+          state_[p.unsafeGetTensorImpl()] != nullptr,
           "state found NULL for the Tensor ",
           p);
-      auto& state = static_cast<AdagradParamState&>(
-          *state_[c10::guts::to_string(p.unsafeGetTensorImpl())]);
+      auto& state =
+          static_cast<AdagradParamState&>(*state_[p.unsafeGetTensorImpl()]);
       auto& options = static_cast<AdagradOptions&>(group.options());
 
       state.step(state.step() + 1);
@@ -147,10 +143,8 @@ void Adagrad::load(serialize::InputArchive& archive) {
       auto state = std::make_unique<AdagradParamState>();
       state->step(step_buffers[idx]);
       state->sum(sum_buffers[idx]);
-      state_[c10::guts::to_string(params[idx].unsafeGetTensorImpl())] =
-          std::move(state);
+      state_[params[idx].unsafeGetTensorImpl()] = std::move(state);
     }
   }
 }
-} // namespace optim
-} // namespace torch
+} // namespace torch::optim

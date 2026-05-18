@@ -2,6 +2,7 @@
 #include <ATen/core/Tensor.h>
 #include <ATen/Config.h>
 #include <ATen/Dispatch.h>
+#include <ATen/Dispatch_v2.h>
 #include <ATen/Parallel.h>
 #include <ATen/native/BatchLinearAlgebra.h>
 #include <ATen/native/LinearAlgebraUtils.h>
@@ -15,9 +16,10 @@
 #else
 #include <ATen/ops/empty.h>
 #include <ATen/ops/empty_strided.h>
-#endif
 
-namespace at { namespace native {
+#include <algorithm>
+#endif
+namespace at::native {
 
 namespace {
 /*
@@ -137,6 +139,78 @@ Tensor& cholesky_inverse_kernel_impl(Tensor& result, Tensor& infos, bool upper) 
   return result;
 }
 
+// This function returns complex-valued eigenvectors that is obtained from LAPACK GEEV's real-valued output
+// This function is also used for the MAGMA path because intermediate MAGMA's results live on CPU
+template <typename scalar_t>
+static void linalg_eig_make_complex_eigenvectors_cpu_impl(const Tensor& result, const Tensor& complex_values, const Tensor& real_vectors) {
+  // From GEEV documentation:
+  // Complex conjugate pairs of eigenvalues appear consecutively with the eigenvalue having the positive imaginary part first
+  // If the j-th eigenvalue is real, then v(j) = VR(:,j), the j-th column of VR.
+  // If the j-th and (j+1)-st eigenvalues form a complex conjugate pair, then v(j) = VR(:,j) + i*VR(:,j+1) and v(j+1) = VR(:,j) - i*VR(:,j+1).
+
+  auto batch_size = batchCount(real_vectors);
+  auto n = real_vectors.size(-1);
+  auto matrix_stride = matrixStride(real_vectors);
+
+  auto result_data = result.data_ptr<c10::complex<scalar_t>>();
+  auto real_vectors_data = real_vectors.const_data_ptr<scalar_t>();
+  auto values_data = complex_values.const_data_ptr<c10::complex<scalar_t>>();
+
+  for (auto b = decltype(batch_size){0}; b < batch_size; b++) {
+    const scalar_t* vecs = &real_vectors_data[b * matrix_stride];
+    c10::complex<scalar_t>* res = &result_data[b * matrix_stride];
+    const c10::complex<scalar_t>* vals = &values_data[b * n];
+    for (auto j = decltype(n){0}; j < n; j++) {
+      if (vals[j].imag() == 0.0) {  // eigenvalue is real, then v(j) = VR(:,j)
+        for (auto i = decltype(n){0}; i < n; i++) {
+          res[j * n + i] = c10::complex<scalar_t>(vecs[j * n + i], 0);
+        }
+      } else {
+        for (auto i = decltype(n){0}; i < n; i++) {
+          res[j * n + i] = c10::complex<scalar_t>(vecs[j * n + i],  vecs[(j+1) * n + i]);      // v(j)   = VR(:,j) + i*VR(:,j+1)
+          res[(j+1) * n + i] = c10::complex<scalar_t>(vecs[j * n + i], -vecs[(j+1) * n + i]);  // v(j+1) = VR(:,j) - i*VR(:,j+1)
+        }
+        j++;
+      }
+    }
+  }
+}
+
+// CPU dispatch kernel
+void linalg_eig_make_complex_eigenvectors_cpu(const Tensor& complex_vectors, const Tensor& complex_values, const Tensor& real_vectors) {
+  TORCH_INTERNAL_ASSERT_DEBUG_ONLY(complex_vectors.mT().is_contiguous());
+  TORCH_INTERNAL_ASSERT_DEBUG_ONLY(complex_values.is_contiguous());
+  TORCH_INTERNAL_ASSERT_DEBUG_ONLY(real_vectors.mT().is_contiguous());
+
+  AT_DISPATCH_V2(
+    real_vectors.scalar_type(),
+    "linalg_eig_make_complex_eigenvectors_cpu",
+    AT_WRAP([&] {
+      linalg_eig_make_complex_eigenvectors_cpu_impl<scalar_t>(
+        complex_vectors, complex_values, real_vectors);
+    }),
+    AT_EXPAND(AT_FLOATING_TYPES));
+}
+
+/*
+ LAPACK query functions return workspace size as floating point value, which means
+ that it might not be accurately represented if it's size exceed mantissa of the
+ corresponding type. Fix it by adding 1ULP to the value before casting to it
+ For more info see https://github.com/pytorch/pytorch/issues/145801#issuecomment-2631781776
+*/
+template <typename T>
+inline
+std::enable_if_t<std::is_floating_point_v<T>, int> lapack_work_to_int(const T val) {
+    const auto next_after = std::nextafter(val, std::numeric_limits<T>::infinity());
+    return std::max<int>(1, std::ceil(next_after));
+}
+template <typename T>
+inline
+std::enable_if_t<c10::is_complex<T>::value, int> lapack_work_to_int(const T val) {
+    return lapack_work_to_int(val.real());
+}
+
+
 /*
   Computes the eigenvalues and eigenvectors of n-by-n matrix 'input'.
   This is an in-place routine, content of 'input', 'values', 'vectors' is overwritten.
@@ -171,7 +245,7 @@ void apply_linalg_eig(Tensor& values, Tensor& vectors, Tensor& input, Tensor& in
   if (input.is_complex()) {
     ScalarType real_dtype = toRealValueType(input.scalar_type());
     rwork = at::empty({lda * 2}, input.options().dtype(real_dtype));
-    rwork_data = rwork.data_ptr<value_t>();
+    rwork_data = rwork.mutable_data_ptr<value_t>();
   }
 
   // call lapackEig once to get the optimal size for work data
@@ -179,9 +253,9 @@ void apply_linalg_eig(Tensor& values, Tensor& vectors, Tensor& input, Tensor& in
   lapackEig<scalar_t, value_t>(jobvl, jobvr, n, input_data, lda, values_data,
     lvectors_data, ldvl, rvectors_data, ldvr, &work_query, -1, rwork_data, &infos_data[0]);
 
-  int lwork = std::max<int>(1, static_cast<int>(real_impl<scalar_t, value_t>(work_query)));
+  int lwork = lapack_work_to_int(work_query);
   Tensor work = at::empty({lwork}, input.dtype());
-  auto work_data = work.data_ptr<scalar_t>();
+  auto work_data = work.mutable_data_ptr<scalar_t>();
 
   for (const auto i : c10::irange(batch_size)) {
     scalar_t* input_working_ptr = &input_data[i * input_matrix_stride];
@@ -219,6 +293,8 @@ void linalg_eig_kernel(Tensor& eigenvalues, Tensor& eigenvectors, Tensor& infos,
   'compute_eigenvectors' controls whether eigenvectors should be computed.
   This function doesn't do any error checks and it's assumed that every argument is valid.
 */
+
+
 template <typename scalar_t>
 void apply_lapack_eigh(const Tensor& values, const Tensor& vectors, const Tensor& infos, bool upper, bool compute_eigenvectors) {
 #if !AT_BUILD_WITH_LAPACK()
@@ -251,27 +327,27 @@ void apply_lapack_eigh(const Tensor& values, const Tensor& vectors, const Tensor
   int liwork = -1;
   scalar_t lwork_query;
   value_t rwork_query;
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  int iwork_query;
+  int iwork_query = 0;
 
   // call lapackSyevd once to get the optimal size for work data
   lapackSyevd<scalar_t, value_t>(jobz, uplo, n, vectors_data, lda, values_data,
     &lwork_query, lwork, &rwork_query, lrwork, &iwork_query, liwork, infos_data);
 
-  lwork = std::max<int>(1, real_impl<scalar_t, value_t>(lwork_query));
+  lwork = lapack_work_to_int(lwork_query);
+
   Tensor work = at::empty({lwork}, vectors.options());
-  auto work_data = work.data_ptr<scalar_t>();
+  auto work_data = work.mutable_data_ptr<scalar_t>();
 
   liwork = std::max<int>(1, iwork_query);
   Tensor iwork = at::empty({liwork}, vectors.options().dtype(at::kInt));
-  auto iwork_data = iwork.data_ptr<int>();
+  auto iwork_data = iwork.mutable_data_ptr<int>();
 
   Tensor rwork;
   value_t* rwork_data = nullptr;
   if (vectors.is_complex()) {
-    lrwork = std::max<int>(1, rwork_query);
+    lrwork = lapack_work_to_int(rwork_query);
     rwork = at::empty({lrwork}, values.options());
-    rwork_data = rwork.data_ptr<value_t>();
+    rwork_data = rwork.mutable_data_ptr<value_t>();
   }
 
   // Now call lapackSyevd for each matrix in the batched input
@@ -323,14 +399,13 @@ void linalg_eigh_kernel(const Tensor& eigenvalues, const Tensor& eigenvectors, c
   For further details, please see the LAPACK documentation for GEQRF.
 */
 template <typename scalar_t>
-static void apply_geqrf(const Tensor& input, const Tensor& tau) {
+void apply_geqrf(const Tensor& input, const Tensor& tau) {
 #if !AT_BUILD_WITH_LAPACK()
   TORCH_CHECK(
       false,
       "Calling torch.geqrf on a CPU tensor requires compiling ",
       "PyTorch with LAPACK. Please use PyTorch built with LAPACK support.");
 #else
-  using value_t = typename c10::scalar_value_type<scalar_t>::type;
   auto input_data = input.data_ptr<scalar_t>();
   auto tau_data = tau.data_ptr<scalar_t>();
   auto input_matrix_stride = matrixStride(input);
@@ -338,10 +413,9 @@ static void apply_geqrf(const Tensor& input, const Tensor& tau) {
   auto batch_size = batchCount(input);
   auto m = input.size(-2);
   auto n = input.size(-1);
-  auto lda = std::max<int>(1, m);
+  auto lda = std::max<int64_t>(1, m);
 
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  int info;
+  int info = 0;
   // Run once, first to get the optimum work size.
   // Since we deal with batches of matrices with the same dimensions, doing this outside
   // the loop saves (batch_size - 1) workspace queries which would provide the same result
@@ -353,7 +427,7 @@ static void apply_geqrf(const Tensor& input, const Tensor& tau) {
 
   // if lwork is less than 'n' then a warning is printed:
   // Intel MKL ERROR: Parameter 7 was incorrect on entry to SGEQRF.
-  lwork = std::max<int>(std::max<int>(1, n), real_impl<scalar_t, value_t>(wkopt));
+  lwork = std::max<int>(static_cast<int>(n), lapack_work_to_int(wkopt));
   Tensor work = at::empty({lwork}, input.options());
 
   for (const auto i : c10::irange(batch_size)) {
@@ -401,9 +475,8 @@ inline void apply_orgqr(Tensor& self, const Tensor& tau) {
     return;
   }
 
-  using value_t = typename c10::scalar_value_type<scalar_t>::type;
   auto self_data = self.data_ptr<scalar_t>();
-  auto tau_data = tau.data_ptr<scalar_t>();
+  auto tau_data = tau.const_data_ptr<scalar_t>();
   auto self_matrix_stride = matrixStride(self);
   auto tau_stride = tau.size(-1);
   auto batch_size = batchCount(self);
@@ -411,8 +484,7 @@ inline void apply_orgqr(Tensor& self, const Tensor& tau) {
   auto n = self.size(-1);
   auto k = tau.size(-1);
   auto lda = std::max<int64_t>(1, m);
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  int info;
+  int info = 0;
 
   // LAPACK's requirement
   TORCH_INTERNAL_ASSERT(m >= n);
@@ -424,17 +496,17 @@ inline void apply_orgqr(Tensor& self, const Tensor& tau) {
   // and (batch_size - 1) calls to allocate and deallocate workspace using at::empty()
   int lwork = -1;
   scalar_t wkopt;
-  lapackOrgqr<scalar_t>(m, n, k, self_data, lda, tau_data, &wkopt, lwork, &info);
+  lapackOrgqr<scalar_t>(m, n, k, self_data, lda, const_cast<scalar_t*>(tau_data), &wkopt, lwork, &info);
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(info == 0);
-  lwork = std::max<int>(1, real_impl<scalar_t, value_t>(wkopt));
+  lwork = lapack_work_to_int(wkopt);
   Tensor work = at::empty({lwork}, self.options());
 
   for (const auto i : c10::irange(batch_size)) {
     scalar_t* self_working_ptr = &self_data[i * self_matrix_stride];
-    scalar_t* tau_working_ptr = &tau_data[i * tau_stride];
+    const scalar_t* tau_working_ptr = &tau_data[i * tau_stride];
 
     // now compute the actual Q
-    lapackOrgqr<scalar_t>(m, n, k, self_working_ptr, lda, tau_working_ptr, work.data_ptr<scalar_t>(), lwork, &info);
+    lapackOrgqr<scalar_t>(m, n, k, self_working_ptr, lda, const_cast<scalar_t*>(tau_working_ptr), work.data_ptr<scalar_t>(), lwork, &info);
 
     // info from lapackOrgqr only reports if the i-th parameter is wrong
     // so we don't need to check it all the time
@@ -497,12 +569,12 @@ void apply_lstsq(const Tensor& A, Tensor& B, Tensor& rank, Tensor& singular_valu
   auto n = A.size(-1);
   auto nrhs = B.size(-1);
   auto lda = std::max<int64_t>(1, m);
-  auto ldb = std::max<int64_t>(1, std::max(m, n));
+  auto ldb = std::max<int64_t>({static_cast<int64_t>(1), m, n});
   auto infos_data = infos.data_ptr<int>();
 
   // only 'gels' driver does not compute the rank
-  int rank_32;
-  int64_t* rank_data;
+  int rank_32 = 0;
+  int64_t* rank_data = nullptr;
   int64_t* rank_working_ptr = nullptr;
   if (driver_t::Gels != driver_type) {
     rank_data = rank.data_ptr<int64_t>();
@@ -511,9 +583,9 @@ void apply_lstsq(const Tensor& A, Tensor& B, Tensor& rank, Tensor& singular_valu
 
   // 'gelsd' and 'gelss' are SVD-based algorithms
   // so we can get singular values
-  value_t* s_data;
+  value_t* s_data = nullptr;
   value_t* s_working_ptr = nullptr;
-  int64_t s_stride;
+  int64_t s_stride = 0;
   if (driver_t::Gelsd == driver_type || driver_t::Gelss == driver_type) {
     s_data = singular_values.data_ptr<value_t>();
     s_working_ptr = s_data;
@@ -525,14 +597,14 @@ void apply_lstsq(const Tensor& A, Tensor& B, Tensor& rank, Tensor& singular_valu
   int* jpvt_data = nullptr;
   if (driver_t::Gelsy == driver_type) {
     jpvt = at::empty({std::max<int64_t>(1, n)}, A.options().dtype(at::kInt));
-    jpvt_data = jpvt.data_ptr<int>();
+    jpvt_data = jpvt.mutable_data_ptr<int>();
   }
 
   // Run once the driver, first to get the optimal workspace size
   int lwork = -1; // default value to decide the opt size for workspace arrays
   scalar_t work_opt;
   value_t rwork_opt;
-  int iwork_opt;
+  int iwork_opt = 0;
   lapack_func(trans, m, n, nrhs,
     A_data, lda,
     B_data, ldb,
@@ -545,15 +617,15 @@ void apply_lstsq(const Tensor& A, Tensor& B, Tensor& rank, Tensor& singular_valu
     s_working_ptr,
     &iwork_opt);
 
-  lwork = std::max<int>(1, real_impl<scalar_t, value_t>(work_opt));
+  lwork = lapack_work_to_int(work_opt);
   Tensor work = at::empty({lwork}, A.options());
-  scalar_t* work_data = work.data_ptr<scalar_t>();
+  scalar_t* work_data = work.mutable_data_ptr<scalar_t>();
 
   // 'rwork' only used for complex inputs and 'gelsy', 'gelsd' and 'gelss' drivers
   Tensor rwork;
-  value_t* rwork_data;
+  value_t* rwork_data = nullptr;
   if (A.is_complex() && driver_t::Gels != driver_type) {
-    int64_t rwork_len;
+    int64_t rwork_len = 0;
     switch (driver_type) {
       case driver_t::Gelsy:
         rwork_len = std::max<int64_t>(1, 2 * n);
@@ -566,15 +638,15 @@ void apply_lstsq(const Tensor& A, Tensor& B, Tensor& rank, Tensor& singular_valu
         rwork_len = std::max<int64_t>(1, rwork_opt);
     }
     rwork = at::empty({rwork_len}, A.options().dtype(c10::toRealValueType(A.scalar_type())));
-    rwork_data = rwork.data_ptr<value_t>();
+    rwork_data = rwork.mutable_data_ptr<value_t>();
   }
 
   // 'iwork' workspace array is relevant only for 'gelsd'
   Tensor iwork;
-  int* iwork_data;
+  int* iwork_data = nullptr;
   if (driver_t::Gelsd == driver_type) {
     iwork = at::empty({std::max<int>(1, iwork_opt)}, A.options().dtype(at::kInt));
-    iwork_data = iwork.data_ptr<int>();
+    iwork_data = iwork.mutable_data_ptr<int>();
   }
 
   at::native::batch_iterator_with_broadcasting<scalar_t>(A, B,
@@ -610,7 +682,7 @@ void apply_lstsq(const Tensor& A, Tensor& B, Tensor& rank, Tensor& singular_valu
 // This is a type and driver dispatching helper function for 'apply_lstsq'
 void lstsq_kernel(const Tensor& a, Tensor& b, Tensor& rank, Tensor& singular_values, Tensor& infos, double rcond, std::string driver_name) {
 
-  static auto driver_string_to_type = std::unordered_map<c10::string_view, LapackLstsqDriverType>({
+  static auto driver_string_to_type = std::unordered_map<std::string_view, LapackLstsqDriverType>({
     {"gels", at::native::LapackLstsqDriverType::Gels},
     {"gelsy", at::native::LapackLstsqDriverType::Gelsy},
     {"gelsd", at::native::LapackLstsqDriverType::Gelsd},
@@ -650,8 +722,8 @@ void apply_ormqr(const Tensor& input, const Tensor& tau, const Tensor& other, bo
   char side = left ? 'L' : 'R';
   char trans = transpose ? (input.is_complex() ? 'C' : 'T') : 'N';
 
-  auto input_data = input.data_ptr<scalar_t>();
-  auto tau_data = tau.data_ptr<scalar_t>();
+  auto input_data = input.const_data_ptr<scalar_t>();
+  auto tau_data = tau.const_data_ptr<scalar_t>();
   auto other_data = other.data_ptr<scalar_t>();
 
   auto input_matrix_stride = matrixStride(input);
@@ -671,21 +743,21 @@ void apply_ormqr(const Tensor& input, const Tensor& tau, const Tensor& other, bo
   // Query for the optimal size of the workspace tensor
   int lwork = -1;
   scalar_t wkopt;
-  lapackOrmqr<scalar_t>(side, trans, m, n, k, input_data, lda, tau_data, other_data, ldc, &wkopt, lwork, &info);
+  lapackOrmqr<scalar_t>(side, trans, m, n, k, const_cast<scalar_t*>(input_data), lda, const_cast<scalar_t*>(tau_data), other_data, ldc, &wkopt, lwork, &info);
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(info == 0);
   lwork = std::max<int>(1, real_impl<scalar_t, value_t>(wkopt));
   Tensor work = at::empty({lwork}, input.options());
 
   for (const auto i : c10::irange(batch_size)) {
-    scalar_t* input_working_ptr = &input_data[i * input_matrix_stride];
+    const scalar_t* input_working_ptr = &input_data[i * input_matrix_stride];
     scalar_t* other_working_ptr = &other_data[i * other_matrix_stride];
-    scalar_t* tau_working_ptr = &tau_data[i * tau_stride];
+    const scalar_t* tau_working_ptr = &tau_data[i * tau_stride];
 
     // now compute the actual result
     lapackOrmqr<scalar_t>(
         side, trans, m, n, k,
-        input_working_ptr, lda,
-        tau_working_ptr,
+        const_cast<scalar_t*>(input_working_ptr), lda,
+        const_cast<scalar_t*>(tau_working_ptr),
         other_working_ptr, ldc,
         work.data_ptr<scalar_t>(), lwork, &info);
 
@@ -726,7 +798,7 @@ void apply_triangular_solve(const Tensor& A, const Tensor& B, bool left, bool up
   char side = left ? 'L' : 'R';
   const char trans = to_blas(transpose);
 
-  auto A_data = A.data_ptr<scalar_t>();
+  auto A_data = A.const_data_ptr<scalar_t>();
   auto B_data = B.data_ptr<scalar_t>();
   auto A_mat_stride = matrixStride(A);
   auto B_mat_stride = matrixStride(B);
@@ -738,9 +810,9 @@ void apply_triangular_solve(const Tensor& A, const Tensor& B, bool left, bool up
   auto ldb = std::max<int64_t>(1, B.size(-2));
 
   for (const auto i : c10::irange(batch_size)) {
-    scalar_t* A_working_ptr = &A_data[i * A_mat_stride];
+    const scalar_t* A_working_ptr = &A_data[i * A_mat_stride];
     scalar_t* B_working_ptr = &B_data[i * B_mat_stride];
-    blasTriangularSolve<scalar_t>(side, uplo, trans, diag, m, n, A_working_ptr, lda, B_working_ptr, ldb);
+    blasTriangularSolve<scalar_t>(side, uplo, trans, diag, m, n, const_cast<scalar_t*>(A_working_ptr), lda, B_working_ptr, ldb);
   }
 #endif
 }
@@ -785,7 +857,7 @@ void apply_ldl_factor(
   using value_t = typename c10::scalar_value_type<scalar_t>::type;
   int lwork = std::max<int>(1, real_impl<scalar_t, value_t>(wkopt));
   Tensor work = at::empty({lwork}, A.dtype());
-  auto work_data = work.data_ptr<scalar_t>();
+  auto work_data = work.mutable_data_ptr<scalar_t>();
 
   for (const auto i : c10::irange(batch_size)) {
     scalar_t* a_working_ptr = &a_data[i * a_stride];
@@ -842,26 +914,26 @@ void apply_ldl_solve(
   auto b_stride = B.dim() > 2 ? B.stride(-3) : 0;
   auto pivots_stride = pivots.dim() > 1 ? pivots.stride(-2) : 0;
 
-  auto a_data = A.data_ptr<scalar_t>();
+  auto a_data = A.const_data_ptr<scalar_t>();
   auto b_data = B.data_ptr<scalar_t>();
   auto pivots_ = pivots.to(kInt);
-  auto pivots_data = pivots_.data_ptr<int>();
+  auto pivots_data = pivots_.const_data_ptr<int>();
 
   auto ldl_solve_func = hermitian ? lapackLdlSolveHermitian<scalar_t>
                                   : lapackLdlSolveSymmetric<scalar_t>;
 
   int info = 0;
   for (const auto i : c10::irange(batch_size)) {
-    scalar_t* a_working_ptr = &a_data[i * a_stride];
+    const scalar_t* a_working_ptr = &a_data[i * a_stride];
     scalar_t* b_working_ptr = &b_data[i * b_stride];
-    auto* pivots_working_ptr = &pivots_data[i * pivots_stride];
+    const auto* pivots_working_ptr = &pivots_data[i * pivots_stride];
     ldl_solve_func(
         uplo,
         n,
         nrhs,
-        a_working_ptr,
+        const_cast<scalar_t*>(a_working_ptr),
         lda,
-        pivots_working_ptr,
+        const_cast<int*>(pivots_working_ptr),
         b_working_ptr,
         ldb,
         &info);
@@ -876,6 +948,16 @@ void ldl_solve_kernel(
     const Tensor& result,
     bool upper,
     bool hermitian) {
+  // Lapack SYTRS writes into unrelated memory if |IPIV(k)| is outside [1, N]
+  // (negative values encode 2x2 block pivots), so sanity-check user-provided
+  // pivots before dispatch on CPU.
+  TORCH_CHECK(pivots.abs().ge(1).all().item<bool>(),
+              "Pivots given to ldl_solve must all satisfy |pivot| >= 1. "
+              "Did you properly pass the result of ldl_factor?");
+  TORCH_CHECK(pivots.abs().le(LD.size(-2)).all().item<bool>(),
+              "Pivots given to ldl_solve must all satisfy |pivot| <= LD.size(-2). "
+              "Did you properly pass the result of ldl_factor?");
+
   AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(
       LD.scalar_type(), "ldl_solve_kernel_cpu", [&] {
         apply_ldl_solve<scalar_t>(LD, pivots, result, upper, hermitian);
@@ -915,12 +997,28 @@ void apply_lu_factor(const Tensor& input, const Tensor& pivots, const Tensor& in
   auto n = input.size(-1);
   auto leading_dimension = std::max<int64_t>(1, m);
 
-  for (const auto i : c10::irange(batch_size)) {
-    scalar_t* input_working_ptr = &input_data[i * input_matrix_stride];
-    int* pivots_working_ptr = &pivots_data[i * pivots_stride];
-    int* infos_working_ptr = &infos_data[i];
-    lapackLu<scalar_t>(m, n, input_working_ptr, leading_dimension, pivots_working_ptr, infos_working_ptr);
-  }
+  const auto loop = [&](int64_t start, int64_t end) {
+    for (const auto i : c10::irange(start, end)) {
+      scalar_t* input_working_ptr = &input_data[i * input_matrix_stride];
+      int* pivots_working_ptr = &pivots_data[i * pivots_stride];
+      int* infos_working_ptr = &infos_data[i];
+      lapackLu<scalar_t>(
+          m,
+          n,
+          input_working_ptr,
+          leading_dimension,
+          pivots_working_ptr,
+          infos_working_ptr);
+    }
+  };
+  // avoid overflow
+  auto matrix_rank = std::min(m, n);
+  // A heuristic tested on a 32 core/socket ICX system
+  // https://github.com/pytorch/pytorch/pull/93037#discussion_r1090112948
+  int64_t chunk_size_per_thread = static_cast<int64_t>(
+      std::min(1.0, 3200.0 / (matrix_rank * matrix_rank * matrix_rank)));
+  int64_t grain_size = chunk_size_per_thread * at::get_num_threads();
+  at::parallel_for(0, batch_size, grain_size, loop);
 #endif
 }
 
@@ -953,9 +1051,9 @@ void apply_lu_solve(const Tensor& LU, const Tensor& pivots, const Tensor& B, Tra
       "PyTorch with LAPACK. Please use PyTorch built with LAPACK support.");
 #else
   auto b_data = B.data_ptr<scalar_t>();
-  auto lu_data = LU.data_ptr<scalar_t>();
+  auto lu_data = LU.const_data_ptr<scalar_t>();
   const auto trans = to_blas(transpose);
-  auto pivots_data = pivots.data_ptr<int>();
+  auto pivots_data = pivots.const_data_ptr<int>();
   auto b_stride = matrixStride(B);
   auto lu_stride = LU.dim() > 2 ? LU.stride(-3) : 0;
   auto pivots_stride = pivots.dim() > 1 ? pivots.stride(-2) : 0;
@@ -977,10 +1075,10 @@ void apply_lu_solve(const Tensor& LU, const Tensor& pivots, const Tensor& B, Tra
   for (const auto i : c10::irange(batch_size)) {
     int64_t lu_index_i = lu_index(i);
     scalar_t* b_working_ptr = &b_data[i * b_stride];
-    scalar_t* lu_working_ptr = &lu_data[lu_index_i * lu_stride];
-    int* pivots_working_ptr = &pivots_data[lu_index_i * pivots_stride];
+    const scalar_t* lu_working_ptr = &lu_data[lu_index_i * lu_stride];
+    const int* pivots_working_ptr = &pivots_data[lu_index_i * pivots_stride];
 
-    lapackLuSolve<scalar_t>(trans, n, nrhs, lu_working_ptr, leading_dimension, pivots_working_ptr,
+    lapackLuSolve<scalar_t>(trans, n, nrhs, const_cast<scalar_t*>(lu_working_ptr), leading_dimension, const_cast<int*>(pivots_working_ptr),
                             b_working_ptr, leading_dimension, &info);
 
     // info from lapackLuSolve only reports if the i-th parameter is wrong
@@ -1007,7 +1105,7 @@ void lu_solve_kernel(const Tensor& LU, const Tensor& pivots, const Tensor& B, Tr
 }
 
 template <typename scalar_t>
-static void apply_svd(const Tensor& A,
+void apply_svd(const Tensor& A,
                       const bool full_matrices,
                       const bool compute_uv,
                       const Tensor& U,
@@ -1051,7 +1149,7 @@ static void apply_svd(const Tensor& A,
   {
     scalar_t wkopt;
     lapackSvd<scalar_t, value_t>(jobz, m, n, A_data, lda, S_data, U_data, ldu, Vh_data, ldvh, &wkopt, lwork, rwork_data, iwork_data, info_data);
-    lwork = std::max<int>(1, real_impl<scalar_t, value_t>(wkopt));
+    lwork = lapack_work_to_int(wkopt);
   }
   auto work = std::vector<scalar_t>(lwork);
   auto* const work_data = work.data();
@@ -1072,7 +1170,7 @@ static void apply_svd(const Tensor& A,
 void svd_kernel(const Tensor& A,
                 const bool full_matrices,
                 const bool compute_uv,
-                const c10::optional<c10::string_view>& driver,
+                const std::optional<std::string_view>& driver,
                 const Tensor& U,
                 const Tensor& S,
                 const Tensor& Vh,
@@ -1087,15 +1185,14 @@ void svd_kernel(const Tensor& A,
 }
 
 void unpack_pivots_cpu_kernel(TensorIterator& iter, const int64_t dim_size, const int64_t max_pivot) {
-  if (iter.numel() == 0) {
+  if (iter.numel() == 0 || dim_size == 0) {
     return;
   }
   auto loop = [&](char* const* const  data, const int64_t* const strides, const int64_t nelems) {
     auto* perm_ptr = data[0];
     const auto* pivots_ptr = data[1];
 
-    for (const auto elem : c10::irange(nelems)) {
-      (void)elem; //Suppress unused variable warning
+    for ([[maybe_unused]] const auto elem : c10::irange(nelems)) {
       // WARNING: linalg.lu_factor returns int32 pivots,
       // this behavior could change in the future.
       const auto perm_data = reinterpret_cast<int64_t*>(perm_ptr);
@@ -1121,92 +1218,20 @@ void unpack_pivots_cpu_kernel(TensorIterator& iter, const int64_t dim_size, cons
 }
 } // anonymous namespace
 
-REGISTER_ARCH_DISPATCH(cholesky_stub, DEFAULT, &cholesky_kernel);
-REGISTER_AVX512_DISPATCH(cholesky_stub, &cholesky_kernel);
-REGISTER_AVX2_DISPATCH(cholesky_stub, &cholesky_kernel);
-REGISTER_VSX_DISPATCH(cholesky_stub, &cholesky_kernel);
-REGISTER_ZVECTOR_DISPATCH(cholesky_stub, &cholesky_kernel);
-
-REGISTER_ARCH_DISPATCH(cholesky_inverse_stub, DEFAULT, &cholesky_inverse_kernel_impl);
-REGISTER_AVX512_DISPATCH(cholesky_inverse_stub, &cholesky_inverse_kernel_impl);
-REGISTER_AVX2_DISPATCH(cholesky_inverse_stub, &cholesky_inverse_kernel_impl);
-REGISTER_VSX_DISPATCH(cholesky_inverse_stub, &cholesky_inverse_kernel_impl);
-REGISTER_ZVECTOR_DISPATCH(cholesky_inverse_stub, &cholesky_inverse_kernel_impl);
-
-REGISTER_ARCH_DISPATCH(linalg_eig_stub, DEFAULT, &linalg_eig_kernel);
-REGISTER_AVX512_DISPATCH(linalg_eig_stub, &linalg_eig_kernel);
-REGISTER_AVX2_DISPATCH(linalg_eig_stub, &linalg_eig_kernel);
-REGISTER_VSX_DISPATCH(linalg_eig_stub, &linalg_eig_kernel);
-REGISTER_ZVECTOR_DISPATCH(linalg_eig_stub, &linalg_eig_kernel);
-
-REGISTER_ARCH_DISPATCH(linalg_eigh_stub, DEFAULT, &linalg_eigh_kernel);
-REGISTER_AVX512_DISPATCH(linalg_eigh_stub, &linalg_eigh_kernel);
-REGISTER_AVX2_DISPATCH(linalg_eigh_stub, &linalg_eigh_kernel);
-REGISTER_VSX_DISPATCH(linalg_eigh_stub, &linalg_eigh_kernel);
-REGISTER_ZVECTOR_DISPATCH(linalg_eigh_stub, &linalg_eigh_kernel);
-
-REGISTER_ARCH_DISPATCH(geqrf_stub, DEFAULT, &geqrf_kernel);
-REGISTER_AVX512_DISPATCH(geqrf_stub, &geqrf_kernel);
-REGISTER_AVX2_DISPATCH(geqrf_stub, &geqrf_kernel);
-REGISTER_VSX_DISPATCH(geqrf_stub, &geqrf_kernel);
-REGISTER_ZVECTOR_DISPATCH(geqrf_stub, &geqrf_kernel);
-
-REGISTER_ARCH_DISPATCH(orgqr_stub, DEFAULT, &orgqr_kernel_impl);
-REGISTER_AVX512_DISPATCH(orgqr_stub, &orgqr_kernel_impl);
-REGISTER_AVX2_DISPATCH(orgqr_stub, &orgqr_kernel_impl);
-REGISTER_VSX_DISPATCH(orgqr_stub, &orgqr_kernel_impl);
-REGISTER_ZVECTOR_DISPATCH(orgqr_stub, &orgqr_kernel_impl);
-
-REGISTER_ARCH_DISPATCH(ormqr_stub, DEFAULT, &ormqr_kernel);
-REGISTER_AVX512_DISPATCH(ormqr_stub, &ormqr_kernel);
-REGISTER_AVX2_DISPATCH(ormqr_stub, &ormqr_kernel);
-REGISTER_VSX_DISPATCH(ormqr_stub, &ormqr_kernel);
-REGISTER_ZVECTOR_DISPATCH(ormqr_stub, &ormqr_kernel);
-
-REGISTER_ARCH_DISPATCH(lstsq_stub, DEFAULT, &lstsq_kernel);
-REGISTER_AVX512_DISPATCH(lstsq_stub, &lstsq_kernel);
-REGISTER_AVX2_DISPATCH(lstsq_stub, &lstsq_kernel);
-REGISTER_VSX_DISPATCH(lstsq_stub, &lstsq_kernel);
-REGISTER_ZVECTOR_DISPATCH(lstsq_stub, &lstsq_kernel);
-
-REGISTER_ARCH_DISPATCH(triangular_solve_stub, DEFAULT, &triangular_solve_kernel);
-REGISTER_AVX512_DISPATCH(triangular_solve_stub, &triangular_solve_kernel);
-REGISTER_AVX2_DISPATCH(triangular_solve_stub, &triangular_solve_kernel);
-REGISTER_VSX_DISPATCH(triangular_solve_stub, &triangular_solve_kernel);
-REGISTER_ZVECTOR_DISPATCH(triangular_solve_stub, &triangular_solve_kernel);
-
-REGISTER_ARCH_DISPATCH(lu_factor_stub, DEFAULT, &lu_factor_kernel);
-REGISTER_AVX512_DISPATCH(lu_factor_stub, &lu_factor_kernel);
-REGISTER_AVX2_DISPATCH(lu_factor_stub, &lu_factor_kernel);
-REGISTER_VSX_DISPATCH(lu_factor_stub, &lu_factor_kernel);
-REGISTER_ZVECTOR_DISPATCH(lu_factor_stub, &lu_factor_kernel);
-
-REGISTER_ARCH_DISPATCH(ldl_factor_stub, DEFAULT, &ldl_factor_kernel);
-REGISTER_AVX512_DISPATCH(ldl_factor_stub, &ldl_factor_kernel);
-REGISTER_AVX2_DISPATCH(ldl_factor_stub, &ldl_factor_kernel);
-REGISTER_VSX_DISPATCH(ldl_factor_stub, &ldl_factor_kernel);
-REGISTER_ZVECTOR_DISPATCH(ldl_factor_stub, &ldl_factor_kernel);
-
-REGISTER_ARCH_DISPATCH(ldl_solve_stub, DEFAULT, &ldl_solve_kernel);
-REGISTER_AVX512_DISPATCH(ldl_solve_stub, &ldl_solve_kernel);
-REGISTER_AVX2_DISPATCH(ldl_solve_stub, &ldl_solve_kernel);
-REGISTER_VSX_DISPATCH(ldl_solve_stub, &ldl_solve_kernel);
-REGISTER_ZVECTOR_DISPATCH(ldl_solve_stub, &ldl_solve_kernel);
-REGISTER_ARCH_DISPATCH(lu_solve_stub, DEFAULT, &lu_solve_kernel);
-REGISTER_AVX512_DISPATCH(lu_solve_stub, &lu_solve_kernel);
-REGISTER_AVX2_DISPATCH(lu_solve_stub, &lu_solve_kernel);
-REGISTER_VSX_DISPATCH(lu_solve_stub, &lu_solve_kernel);
-REGISTER_ZVECTOR_DISPATCH(lu_solve_stub, &lu_solve_kernel);
-
-REGISTER_ARCH_DISPATCH(svd_stub, DEFAULT, &svd_kernel);
-REGISTER_AVX512_DISPATCH(svd_stub, &svd_kernel);
-REGISTER_AVX2_DISPATCH(svd_stub, &svd_kernel);
-REGISTER_VSX_DISPATCH(svd_stub, &svd_kernel);
-REGISTER_ZVECTOR_DISPATCH(svd_stub, &svd_kernel);
-
-REGISTER_ARCH_DISPATCH(unpack_pivots_stub, DEFAULT, &unpack_pivots_cpu_kernel);
-REGISTER_AVX512_DISPATCH(unpack_pivots_stub, &unpack_pivots_cpu_kernel);
-REGISTER_AVX2_DISPATCH(unpack_pivots_stub, &unpack_pivots_cpu_kernel);
-REGISTER_VSX_DISPATCH(unpack_pivots_stub, &unpack_pivots_cpu_kernel);
-REGISTER_ZVECTOR_DISPATCH(unpack_pivots_stub, &unpack_pivots_cpu_kernel);
-}} // namespace at::native
+REGISTER_ALL_CPU_DISPATCH(cholesky_stub, &cholesky_kernel)
+REGISTER_ALL_CPU_DISPATCH(cholesky_inverse_stub, &cholesky_inverse_kernel_impl)
+REGISTER_ALL_CPU_DISPATCH(linalg_eig_make_complex_eigenvectors_stub, &linalg_eig_make_complex_eigenvectors_cpu)
+REGISTER_ALL_CPU_DISPATCH(linalg_eig_stub, &linalg_eig_kernel)
+REGISTER_ALL_CPU_DISPATCH(linalg_eigh_stub, &linalg_eigh_kernel)
+REGISTER_ALL_CPU_DISPATCH(geqrf_stub, &geqrf_kernel)
+REGISTER_ALL_CPU_DISPATCH(orgqr_stub, &orgqr_kernel_impl)
+REGISTER_ALL_CPU_DISPATCH(ormqr_stub, &ormqr_kernel)
+REGISTER_ALL_CPU_DISPATCH(lstsq_stub, &lstsq_kernel)
+REGISTER_ALL_CPU_DISPATCH(triangular_solve_stub, &triangular_solve_kernel)
+REGISTER_ALL_CPU_DISPATCH(lu_factor_stub, &lu_factor_kernel)
+REGISTER_ALL_CPU_DISPATCH(ldl_factor_stub, &ldl_factor_kernel)
+REGISTER_ALL_CPU_DISPATCH(ldl_solve_stub, &ldl_solve_kernel)
+REGISTER_ALL_CPU_DISPATCH(lu_solve_stub, &lu_solve_kernel)
+REGISTER_ALL_CPU_DISPATCH(svd_stub, &svd_kernel)
+REGISTER_ALL_CPU_DISPATCH(unpack_pivots_stub, &unpack_pivots_cpu_kernel)
+} // namespace at::native

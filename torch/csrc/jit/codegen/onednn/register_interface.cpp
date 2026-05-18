@@ -1,11 +1,8 @@
 #include <torch/csrc/jit/runtime/profiling_record.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace onednn {
+namespace torch::jit::fuser::onednn {
 
-bool canFuseNode(const Node* node) {
+static bool canFuseNode(const Node* node) {
   switch (node->kind()) {
     case aten::conv2d:
     case aten::_convolution:
@@ -48,7 +45,4 @@ class RegisterInterface {
 static RegisterInterface register_interface_;
 } // namespace
 
-} // namespace onednn
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::fuser::onednn

@@ -76,6 +76,14 @@ TEST(TensorTest, ToTensorAndTensorAttributes) {
   REQUIRE_TENSOR_OPTIONS(at::kCPU, -1, at::kInt, at::kStrided);
 }
 
+TEST(TensorTest, TensorAttributes) {
+  std::vector<float> v = {1.0, 2.0, 3.0};
+  auto options = c10::requires_grad(true);
+  auto tensor = at::from_blob(v.data(), {3}, options);
+  REQUIRE_TENSOR_OPTIONS(at::kCPU, -1, at::kFloat, at::kStrided);
+  ASSERT_TRUE(tensor.requires_grad());
+}
+
 // Not currently supported.
 // TEST(TensorTest, ToLayout) {
 //   auto tensor = at::empty({3, 4});
@@ -912,7 +920,9 @@ TEST(TensorTest, Arange) {
 }
 
 TEST(TensorTest, PrettyPrintTensorDataContainer) {
-  { ASSERT_EQ(c10::str(torch::detail::TensorDataContainer(1.1)), "1.1"); }
+  {
+    ASSERT_EQ(c10::str(torch::detail::TensorDataContainer(1.1)), "1.1");
+  }
   {
     ASSERT_EQ(
         c10::str(torch::detail::TensorDataContainer({1.1, 2.2})), "{1.1, 2.2}");
@@ -1099,6 +1109,13 @@ TEST(TensorTest, BackwardNonScalarOutputs) {
       y.backward(), "grad can be implicitly created only for scalar outputs");
 }
 
+TEST(TensorTest, BackwardComplexScalarOutput) {
+  auto x = torch::randn({5, 5}, torch::requires_grad());
+  auto y = (x * c10::Scalar(c10::complex<float>(0, 0.5))).sum();
+  ASSERT_THROWS_WITH(
+      y.backward(), "grad can be computed only for real scalar outputs");
+}
+
 TEST(TensorTest, IsLeaf) {
   auto x = torch::tensor({5}, torch::dtype(torch::kFloat).requires_grad(true));
   auto y = x * x;
@@ -1209,4 +1226,45 @@ TEST(TensorTest, ReshapeAlias) {
   (y * y).view({-1}).mean().backward();
   torch::_reshape_alias((z * z), {9}, {1}).mean().backward();
   ASSERT_TRUE(torch::equal(y.grad(), z.grad()));
+}
+
+TEST(TensorTest, BackendMetadata) {
+  // Tests ability to assign custom backend metadata to tensor.
+
+  struct CustomBackendMetadata : public c10::BackendMeta {
+    mutable bool cloned_{false}; // for testing this field will mutate when
+                                 // clone() is called by shallow_copy_from.
+    c10::intrusive_ptr<c10::BackendMeta> clone(
+        const c10::intrusive_ptr<c10::BackendMeta>& ptr) const override {
+      cloned_ = true;
+      return c10::BackendMeta::clone(ptr);
+    }
+  };
+
+  at::Tensor y;
+  c10::intrusive_ptr<c10::BackendMeta> tmeta{};
+  CustomBackendMetadata* custom_tmeta{nullptr};
+
+  {
+    auto x = torch::ones({3, 3});
+    auto impl{x.unsafeGetTensorImpl()};
+    ASSERT_TRUE(impl != nullptr);
+
+    tmeta = impl->get_backend_meta_intrusive_ptr();
+    ASSERT_TRUE(tmeta == nullptr);
+    c10::intrusive_ptr<c10::BackendMeta> new_tmeta{
+        std::unique_ptr<c10::BackendMeta>(new CustomBackendMetadata())};
+    impl->set_backend_meta(new_tmeta);
+    tmeta = impl->get_backend_meta_intrusive_ptr();
+    ASSERT_TRUE(tmeta == new_tmeta);
+    custom_tmeta = dynamic_cast<CustomBackendMetadata*>(tmeta.get());
+    ASSERT_TRUE(custom_tmeta != nullptr);
+    ASSERT_TRUE(custom_tmeta->cloned_ == false);
+    y.unsafeGetTensorImpl()->shallow_copy_from(x.getIntrusivePtr());
+  }
+
+  ASSERT_TRUE(
+      tmeta == y.unsafeGetTensorImpl()->get_backend_meta_intrusive_ptr());
+  ASSERT_TRUE(tmeta.get() == y.unsafeGetTensorImpl()->get_backend_meta());
+  ASSERT_TRUE(custom_tmeta->cloned_ == true);
 }

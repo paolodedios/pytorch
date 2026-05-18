@@ -2,9 +2,7 @@
 
 #include <ATen/CollapseDims.h>
 
-namespace at {
-namespace cuda {
-namespace detail {
+namespace at::cuda::detail {
 
 #define MAX_TENSORINFO_DIMS 25
 
@@ -95,7 +93,7 @@ struct IndexToOffset {
   }
 };
 
-// Uses dynamic (runtime) instead of static (compiletime) dims
+// Uses dynamic (runtime) instead of static (compile time) dims
 template <typename T, typename IndexType>
 struct IndexToOffset<T, IndexType, -1> {
   static inline __host__ __device__ IndexType get(
@@ -115,6 +113,4 @@ struct IndexToOffset<T, IndexType, -1> {
   }
 };
 
-} // detail
-} // cuda
-} // at
+} // namespace at::cuda::detail

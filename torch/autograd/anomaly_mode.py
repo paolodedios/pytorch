@@ -1,12 +1,15 @@
-import torch
+# mypy: allow-untyped-defs
+r"""Autograd anomaly mode."""
+
 import warnings
 
-from typing import Any
+import torch
+
 
 __all__ = ["detect_anomaly", "set_detect_anomaly"]
 
 
-class detect_anomaly(object):
+class detect_anomaly:
     r"""Context-manager that enable anomaly detection for the autograd engine.
 
     This does two things:
@@ -22,14 +25,14 @@ class detect_anomaly(object):
         will slow down your program execution.
 
     Example:
-
-        >>> # xdoctest: +REQUIRES(env:TORCH_DOCTEST_ANOMOLY)
+        >>> # xdoctest: +REQUIRES(env:TORCH_DOCTEST_ANOMALY)
         >>> import torch
         >>> from torch import autograd
         >>> class MyFunc(autograd.Function):
         ...     @staticmethod
         ...     def forward(ctx, inp):
         ...         return inp.clone()
+        ...
         ...     @staticmethod
         ...     def backward(ctx, gO):
         ...         # Error during the backward pass
@@ -77,18 +80,21 @@ class detect_anomaly(object):
         self.prev = torch.is_anomaly_enabled()
         self.check_nan = check_nan
         self.prev_check_nan = torch.is_anomaly_check_nan_enabled()
-        warnings.warn('Anomaly Detection has been enabled. '
-                      'This mode will increase the runtime '
-                      'and should only be enabled for debugging.', stacklevel=2)
+        warnings.warn(
+            "Anomaly Detection has been enabled. "
+            "This mode will increase the runtime "
+            "and should only be enabled for debugging.",
+            stacklevel=2,
+        )
 
     def __enter__(self) -> None:
         torch.set_anomaly_enabled(True, self.check_nan)
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *args: object) -> None:
         torch.set_anomaly_enabled(self.prev, self.prev_check_nan)
 
 
-class set_detect_anomaly(object):
+class set_detect_anomaly:
     r"""Context-manager that sets the anomaly detection for the autograd engine on or off.
 
     ``set_detect_anomaly`` will enable or disable the autograd anomaly detection
@@ -113,5 +119,5 @@ class set_detect_anomaly(object):
     def __enter__(self) -> None:
         pass
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *args: object) -> None:
         torch.set_anomaly_enabled(self.prev, self.prev_check_nan)

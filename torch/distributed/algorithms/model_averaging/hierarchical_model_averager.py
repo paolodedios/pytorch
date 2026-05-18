@@ -1,13 +1,15 @@
+# mypy: allow-untyped-defs
 # Copyright 2022 Cruise LLC
 import logging
 import warnings
 from collections import OrderedDict
-from typing import Union, Iterable, Dict
+from collections.abc import Iterable
 
 import torch
 import torch.distributed as dist
 import torch.distributed.algorithms.model_averaging.averagers as averagers
 import torch.distributed.algorithms.model_averaging.utils as utils
+
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +17,8 @@ logger = logging.getLogger(__name__)
 class HierarchicalModelAverager(averagers.ModelAverager):
     r"""
     Runs hierarchical model averaging (`hierarchical SGD <https://arxiv.org/pdf/2010.12998.pdf>`_).
-    Process groups of different sizes are organized in a hierarhicy, and they average parameters
+
+    Process groups of different sizes are organized in a hierarchy, and they average parameters
     by using different periods concurrently after the warm-up stage.
     This is an extension of :class:`~torch.distributed.algorithms.model_averaging.averagers.PeriodicModelAverager`
     that supports `post-local SGD <https://arxiv.org/abs/1808.07217>`_, which essentially only supports
@@ -101,14 +104,17 @@ class HierarchicalModelAverager(averagers.ModelAverager):
             raise ValueError("Arg ``period_group_size_dict`` must not be empty.")
         self._periods = list(period_group_size_dict.keys())
         if self._periods[0] <= 0:
-            raise ValueError("The minimum period in arg ``period_group_size_dict`` must be a positive value.")
+            raise ValueError(
+                "The minimum period in arg ``period_group_size_dict`` must be a positive value."
+            )
         elif self._periods[-1] == 1:
             warnings.warn(
                 "When the maximum period in arg ``period_group_size_dict`` is 1, "
                 "no need to use model averaging because the communication cost "
                 "of all-reducing parameters will be no less than the cost of all-reducing gradients "
                 "by DistributedDataParallel in the backward pass. Therefore, only "
-                "DistributedDataParallel should be used for this case."
+                "DistributedDataParallel should be used for this case.",
+                stacklevel=2,
             )
         overall_group_size = dist.get_world_size(group=self.process_group)
         if list(period_group_size_dict.values())[-1] != overall_group_size:
@@ -121,11 +127,15 @@ class HierarchicalModelAverager(averagers.ModelAverager):
         logger.info("Model averaging hierarchy:")
         for period, group_size in period_group_size_dict.items():
             logger.info(
-                f"\tEach group that has {group_size} processes average parameters every {period} iterations, "
-                "if no higher-level averaging.")
+                "\tEach group that has %s processes average parameters every %s iterations, "
+                "if no higher-level averaging.",
+                group_size,
+                period,
+            )
             if group_size != overall_group_size:
                 self.period_process_group_dict[period], _ = dist.new_subgroups(
-                    group_size=group_size, group=self.process_group)
+                    group_size=group_size, group=self.process_group
+                )
             else:
                 self.period_process_group_dict[period] = self.process_group
 
@@ -135,8 +145,8 @@ class HierarchicalModelAverager(averagers.ModelAverager):
 
     def _find_process_group(self):
         """
-        Returns a process group as the value of an ``period_process_group_dict`` entry,
-        if ``step`` can be divided by a period in the keys of ``period_process_group_dict``.
+        Return a process group as the value of an ``period_process_group_dict`` entry.
+
         If ``step`` can be divided by multiple periods in the keys of ``period_process_group_dict``,
         then the returned process group is the one corresponding to the largest period,
         since this process group will be used for averaging parameters at this ``step``.
@@ -147,9 +157,14 @@ class HierarchicalModelAverager(averagers.ModelAverager):
                 return self.period_process_group_dict[period]
         return None
 
-    def average_parameters(self, params: Union[Iterable[torch.nn.Parameter], Iterable[Dict[str, torch.nn.Parameter]]]):
+    def average_parameters(
+        self,
+        params: Iterable[torch.nn.Parameter] | Iterable[dict[str, torch.nn.Parameter]],
+    ):
         """
-        Averages parameters or parameter groups of an optimizer if ``step`` is no less than ``warmup_steps``
+        Averages parameters or parameter groups of an optimizer.
+
+        Averaging only occurs if ``step`` is no less than ``warmup_steps``
         and it can be divided by a period in the keys of ``period_process_group_dict``,
         where ``step`` is increased by 1 at each iteration in the training loop.
         If ``step`` can be divided by multiple periods in the keys of ``period_process_group_dict``,

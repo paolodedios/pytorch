@@ -3,8 +3,7 @@
 #include <torch/csrc/lazy/core/ir_metadata.h>
 #include <functional>
 
-namespace torch {
-namespace lazy {
+namespace torch::lazy {
 
 void EmitShortFrameInfo(
     std::ostream& stream,
@@ -17,8 +16,8 @@ void EmitShortFrameInfo(
     } else {
       ++pos;
     }
-    stream << ", location=" << frame.function << "@" << frame.file.substr(pos)
-           << ":" << frame.line;
+    stream << ", location=" << frame.function << '@' << frame.file.substr(pos)
+           << ':' << frame.line;
   }
 }
 
@@ -27,7 +26,7 @@ std::ostream& operator<<(
     const std::vector<SourceLocation>& frames) {
   stream << "Frames:\n";
   for (auto& location : frames) {
-    stream << "  " << location.function << " (" << location.file << ":"
+    stream << "  " << location.function << " (" << location.file << ':'
            << location.line << ")\n";
   }
   return stream;
@@ -73,7 +72,7 @@ void PopScope() {
 }
 
 void ResetScopeContext() {
-  if (g_scope_context.scopes.size() != 0) {
+  if (!g_scope_context.scopes.empty()) {
     TORCH_CHECK(
         false, "Expecting scope to be empty but it is " + GetCurrentScope());
   }
@@ -103,5 +102,4 @@ MetaData GetMetaDataIfDebugging() {
   return meta;
 }
 
-} // namespace lazy
-} // namespace torch
+} // namespace torch::lazy

@@ -1,13 +1,11 @@
+#include <unordered_map>
 #include <unordered_set>
 
+#include <c10/util/error.h>
 #include <torch/csrc/profiler/perf-inl.h>
 #include <torch/csrc/profiler/perf.h>
 
-namespace torch {
-namespace profiler {
-namespace impl {
-
-namespace linux_perf {
+namespace torch::profiler::impl::linux_perf {
 
 #if defined(__ANDROID__) || defined(__linux__)
 
@@ -19,7 +17,7 @@ namespace linux_perf {
 /*
  * Syscall wrapper for perf_event_open(2)
  */
-inline long perf_event_open(
+inline static long perf_event_open(
     struct perf_event_attr* hw_event,
     pid_t pid,
     int cpu,
@@ -65,8 +63,7 @@ void PerfEvent::Init() {
     TORCH_CHECK(false, "Unsupported profiler event name: ", name_);
   }
 
-  struct perf_event_attr attr {};
-  memset(&attr, 0, sizeof(attr));
+  struct perf_event_attr attr{};
 
   attr.size = sizeof(perf_event_attr);
   attr.type = it->second.first;
@@ -90,7 +87,9 @@ void PerfEvent::Init() {
   fd_ = static_cast<int>(perf_event_open(&attr, pid, cpu, group_fd, flags));
   if (fd_ == -1) {
     TORCH_CHECK(
-        false, "perf_event_open() failed, error: ", std::strerror(errno));
+        false,
+        "perf_event_open() failed, error: ",
+        c10::utils::str_error(errno));
   }
   Reset();
 }
@@ -103,7 +102,7 @@ uint64_t PerfEvent::ReadCounter() const {
       "Read failed for Perf event fd, event : ",
       name_,
       ", error: ",
-      std::strerror(errno));
+      c10::utils::str_error(errno));
   TORCH_CHECK(
       counter.time_enabled == counter.time_running,
       "Hardware performance counter time multiplexing is not handled yet",
@@ -122,13 +121,13 @@ uint64_t PerfEvent::ReadCounter() const {
  * value
  */
 
-PerfEvent::~PerfEvent(){};
+PerfEvent::~PerfEvent() {}
 
-void PerfEvent::Init(){};
+void PerfEvent::Init() {}
 
 uint64_t PerfEvent::ReadCounter() const {
   return 0;
-};
+}
 
 #endif /* __ANDROID__ || __linux__ */
 
@@ -158,14 +157,14 @@ void PerfProfiler::Configure(std::vector<std::string>& event_names) {
 }
 
 void PerfProfiler::Enable() {
-  if (start_values_.size()) {
+  if (!start_values_.empty()) {
     StopCounting();
   }
 
   start_values_.emplace(events_.size(), 0);
 
   auto& sv = start_values_.top();
-  for (int i = 0; i < events_.size(); ++i) {
+  for (unsigned i = 0; i < events_.size(); ++i) {
     sv[i] = events_[i].ReadCounter();
   }
   StartCounting();
@@ -177,23 +176,19 @@ void PerfProfiler::Disable(perf_counters_t& vals) {
       vals.size() == events_.size(),
       "Can not fit all perf counters in the supplied container");
   TORCH_CHECK(
-      start_values_.size() > 0,
-      "PerfProfiler must be enabled before disabling");
+      !start_values_.empty(), "PerfProfiler must be enabled before disabling");
 
   /* Always connecting this disable event to the last enable event i.e. using
    * whatever is on the top of the start counter value stack. */
   perf_counters_t& sv = start_values_.top();
-  for (int i = 0; i < events_.size(); ++i) {
+  for (unsigned i = 0; i < events_.size(); ++i) {
     vals[i] = CalcDelta(sv[i], events_[i].ReadCounter());
   }
   start_values_.pop();
 
   // Restore it for a parent
-  if (start_values_.size()) {
+  if (!start_values_.empty()) {
     StartCounting();
   }
 }
-} // namespace linux_perf
-} // namespace impl
-} // namespace profiler
-} // namespace torch
+} // namespace torch::profiler::impl::linux_perf

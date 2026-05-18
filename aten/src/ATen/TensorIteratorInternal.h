@@ -25,8 +25,8 @@ inline void get_data_ptrs(
     ArrayRef<char*> base,
     IntArrayRef strides,
     IntArrayRef counter) {
-  const int64_t ntensors = base.size();
-  const int64_t ndim = counter.size();
+  const auto ntensors = base.size();
+  const auto ndim = counter.size();
   std::copy(base.begin(), base.end(), ptrs);
   for (const auto dim : c10::irange(ndim)) {
     int64_t value = counter[dim];
@@ -41,7 +41,7 @@ inline void serial_for_each(
     IntArrayRef strides,
     char** base_ptrs,
     size_t ntensors,
-    typename TensorIteratorBase::loop2d_t loop,
+    TensorIteratorBase::loop2d_t loop,
     Range range) {
   const auto ndim = shape.size();
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(

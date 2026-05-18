@@ -2,9 +2,9 @@
 // This file should only be compiled if this condition holds, so it should be
 // safe.
 #if defined(USE_CUDNN) || defined(USE_ROCM)
+#include <ATen/detail/CUDAHooksInterface.h>
 #include <torch/csrc/utils/pybind.h>
 
-#include <array>
 #include <tuple>
 
 namespace {
@@ -22,22 +22,18 @@ version_tuple getCompileVersion() {
 
 version_tuple getRuntimeVersion() {
 #ifndef USE_STATIC_CUDNN
-  auto version = cudnnGetVersion();
-  auto major = version / 1000;
-  auto minor = (version % 1000) / 100;
-  auto patch = version % 10;
-  return version_tuple(major, minor, patch);
+  int major = 0, minor = 0, patch = 0;
+  cudnnGetProperty(MAJOR_VERSION, &major);
+  cudnnGetProperty(MINOR_VERSION, &minor);
+  cudnnGetProperty(PATCH_LEVEL, &patch);
+  return version_tuple((size_t)major, (size_t)minor, (size_t)patch);
 #else
   return getCompileVersion();
 #endif
 }
 
 size_t getVersionInt() {
-#ifndef USE_STATIC_CUDNN
-  return cudnnGetVersion();
-#else
-  return CUDNN_VERSION;
-#endif
+  return at::detail::getCUDAHooks().versionRuntimeCuDNN();
 }
 
 } // namespace
@@ -66,17 +62,14 @@ version_tuple getRuntimeVersion() {
 
 size_t getVersionInt() {
   // miopen version is MAJOR*1000000 + MINOR*1000 + PATCH
-  size_t major, minor, patch;
-  std::tie(major, minor, patch) = getRuntimeVersion();
+  auto [major, minor, patch] = getRuntimeVersion();
   return major * 1000000 + minor * 1000 + patch;
 }
 
 } // namespace
 #endif
 
-namespace torch {
-namespace cuda {
-namespace shared {
+namespace torch::cuda::shared {
 
 void initCudnnBindings(PyObject* module) {
   auto m = py::handle(module).cast<py::module>();
@@ -101,7 +94,5 @@ void initCudnnBindings(PyObject* module) {
   cudnn.def("getVersionInt", getVersionInt);
 }
 
-} // namespace shared
-} // namespace cuda
-} // namespace torch
+} // namespace torch::cuda::shared
 #endif

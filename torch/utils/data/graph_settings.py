@@ -1,12 +1,16 @@
+# mypy: allow-untyped-defs
 import inspect
 import warnings
-
-from typing import Any, List, Optional, Set
+from typing import Any
+from typing_extensions import deprecated
 
 import torch
-
+from torch.utils.data.datapipes.iter.sharding import (
+    _ShardingIterDataPipe,
+    SHARDING_PRIORITIES,
+)
 from torch.utils.data.graph import DataPipe, DataPipeGraph, traverse_dps
-from torch.utils.data.datapipes.iter.grouping import SHARDING_PRIORITIES
+
 
 __all__ = [
     "apply_random_seed",
@@ -17,12 +21,14 @@ __all__ = [
 ]
 
 
-def get_all_graph_pipes(graph: DataPipeGraph) -> List[DataPipe]:
+def get_all_graph_pipes(graph: DataPipeGraph) -> list[DataPipe]:
     return _get_all_graph_pipes_helper(graph, set())
 
 
-def _get_all_graph_pipes_helper(graph: DataPipeGraph, id_cache: Set[int]) -> List[DataPipe]:
-    results: List[DataPipe] = []
+def _get_all_graph_pipes_helper(
+    graph: DataPipeGraph, id_cache: set[int]
+) -> list[DataPipe]:
+    results: list[DataPipe] = []
     for dp_id, (datapipe, sub_graph) in graph.items():
         if dp_id in id_cache:
             continue
@@ -32,26 +38,44 @@ def _get_all_graph_pipes_helper(graph: DataPipeGraph, id_cache: Set[int]) -> Lis
     return results
 
 
-def apply_sharding(datapipe: DataPipe,
-                   num_of_instances: int,
-                   instance_id: int,
-                   sharding_group=SHARDING_PRIORITIES.DEFAULT) -> DataPipe:
+def _is_sharding_datapipe(datapipe: DataPipe) -> bool:
+    return isinstance(datapipe, _ShardingIterDataPipe) or (
+        hasattr(datapipe, "apply_sharding")
+        and inspect.ismethod(datapipe.apply_sharding)
+    )
+
+
+def apply_sharding(
+    datapipe: DataPipe,
+    num_of_instances: int,
+    instance_id: int,
+    sharding_group=SHARDING_PRIORITIES.DEFAULT,
+) -> DataPipe:
     r"""
     Apply dynamic sharding over the ``sharding_filter`` DataPipe that has a method ``apply_sharding``.
+
     RuntimeError will be raised when multiple ``sharding_filter`` are presented in the same branch.
     """
     graph = traverse_dps(datapipe)
 
-    def _helper(graph, prev_applied=None):
-        for _, (dp, sub_graph) in graph.items():
+    def _helper(graph, prev_applied=None) -> None:
+        for dp, sub_graph in graph.values():
             applied = None
-            if hasattr(dp, 'is_shardable') and dp.is_shardable():
-                if hasattr(dp, 'apply_sharding'):
-                    if prev_applied is not None:
-                        raise RuntimeError("Sharding twice on a single pipeline is likely unintended and will cause data loss. "
-                                           f"Sharding already applied to {prev_applied} while trying to apply to {dp}")
-                    dp.apply_sharding(num_of_instances, instance_id, sharding_group=sharding_group)
-                    applied = dp
+            if _is_sharding_datapipe(dp):
+                if prev_applied is not None:
+                    raise RuntimeError(
+                        "Sharding twice on a single pipeline is likely unintended and will cause data loss. "
+                        f"Sharding already applied to {prev_applied} while trying to apply to {dp}"
+                    )
+                # For BC, only provide sharding_group if accepted
+                sig = inspect.signature(dp.apply_sharding)
+                if len(sig.parameters) < 3:
+                    dp.apply_sharding(num_of_instances, instance_id)
+                else:
+                    dp.apply_sharding(
+                        num_of_instances, instance_id, sharding_group=sharding_group
+                    )
+                applied = dp
             if applied is None:
                 applied = prev_applied
             _helper(sub_graph, applied)
@@ -62,17 +86,20 @@ def apply_sharding(datapipe: DataPipe,
 
 
 def _is_shuffle_datapipe(datapipe: DataPipe) -> bool:
-    if not hasattr(datapipe, "set_shuffle") or not hasattr(datapipe, "set_seed"):
-        return False
-    if not inspect.ismethod(datapipe.set_shuffle) or not inspect.ismethod(datapipe.set_seed):
-        return False
-    return True
+    return (
+        hasattr(datapipe, "set_shuffle")
+        and hasattr(datapipe, "set_seed")
+        and inspect.ismethod(datapipe.set_shuffle)
+        and inspect.ismethod(datapipe.set_seed)
+    )
 
 
-def apply_shuffle_settings(datapipe: DataPipe, shuffle: Optional[bool] = None) -> DataPipe:
+def apply_shuffle_settings(datapipe: DataPipe, shuffle: bool | None = None) -> DataPipe:
     r"""
-    Traverse the graph of ``DataPipes`` to find and set shuffle attribute
-    to each `DataPipe` that has APIs of ``set_shuffle`` and ``set_seed``.
+    Traverse the graph of ``DataPipes`` to find and set shuffle attribute.
+
+    Apply the method to each `DataPipe` that has APIs of ``set_shuffle``
+    and ``set_seed``.
 
     Args:
         datapipe: DataPipe that needs to set shuffle attribute
@@ -87,10 +114,13 @@ def apply_shuffle_settings(datapipe: DataPipe, shuffle: Optional[bool] = None) -
     if not shufflers and shuffle:
         warnings.warn(
             "`shuffle=True` was set, but the datapipe does not contain a `Shuffler`. Adding one at the end. "
-            "Be aware that the default buffer size might not be sufficient for your task."
+            "Be aware that the default buffer size might not be sufficient for your task.",
+            stacklevel=2,
         )
         datapipe = datapipe.shuffle()
-        shufflers = [datapipe, ]  # type: ignore[list-item]
+        shufflers = [
+            datapipe,
+        ]
 
     for shuffler in shufflers:
         shuffler.set_shuffle(shuffle)
@@ -98,24 +128,24 @@ def apply_shuffle_settings(datapipe: DataPipe, shuffle: Optional[bool] = None) -
     return datapipe
 
 
+@deprecated(
+    "`apply_shuffle_seed` is deprecated since 1.12 and will be removed in the future releases. "
+    "Please use `apply_random_seed` instead.",
+    category=FutureWarning,
+)
 def apply_shuffle_seed(datapipe: DataPipe, rng: Any) -> DataPipe:
-    warnings.warn(
-        "`apply_shuffle_seed` is deprecated since 1.12 and will be removed in the future releases."
-        "\nPlease use `apply_random_seed` instead."
-    )
     return apply_random_seed(datapipe, rng)
 
 
 def _is_random_datapipe(datapipe: DataPipe) -> bool:
-    if hasattr(datapipe, "set_seed") and inspect.ismethod(datapipe.set_seed):
-        return True
-    return False
+    return hasattr(datapipe, "set_seed") and inspect.ismethod(datapipe.set_seed)
 
 
 def apply_random_seed(datapipe: DataPipe, rng: torch.Generator) -> DataPipe:
     r"""
-    Traverse the graph of ``DataPipes`` to find random ``DataPipe`` with an API of
-    ``set_seed`` then set the random seed based on the provided RNG.
+    Traverse the graph of ``DataPipes`` to find random ``DataPipe`` with an API of ``set_seed``.
+
+    Then set the random seed based on the provided RNG to those ``DataPipe``.
 
     Args:
         datapipe: DataPipe that needs to set randomness
@@ -135,7 +165,9 @@ def apply_random_seed(datapipe: DataPipe, rng: torch.Generator) -> DataPipe:
             cache.add(id(pipe))
 
     for pipe in random_datapipes:
-        random_seed = int(torch.empty((), dtype=torch.int64).random_(generator=rng).item())
+        random_seed = int(
+            torch.empty((), dtype=torch.int64).random_(generator=rng).item()
+        )
         pipe.set_seed(random_seed)
 
     return datapipe

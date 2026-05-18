@@ -4,19 +4,18 @@
 #include <torch/csrc/jit/passes/onnx/helper.h>
 #include <torch/csrc/jit/passes/onnx/naming.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
-const std::string kTopModuleVariableName = "";
+const std::string kTopModuleVariableName;
 
 std::string TidyClassNameFromTorchScript(
-    const c10::optional<c10::QualifiedName>& class_name) {
+    const std::optional<c10::QualifiedName>& class_name) {
   if (!class_name) {
     return "UNKNOWN_CLASS";
   }
-  std::string out = "";
+  std::string out;
   for (const auto& atom : class_name->atoms()) {
     bool is_internal_torch_atom = (atom == "__torch__");
     bool is_mangle_atom = (atom.find("__torch_mangle") != std::string::npos);
@@ -40,7 +39,7 @@ std::string GetCallNodeVariableName(const Node* call_node) {
     return "";
   }
   std::string module_name = module_node->s(attr::name);
-  if (module_node->inputs().size() == 0) {
+  if (module_node->inputs().empty()) {
     return module_name;
   }
   // If module is from container, attr::name in module node only carries
@@ -53,7 +52,7 @@ std::string GetCallNodeVariableName(const Node* call_node) {
             "__torch__.torch.nn.modules.container.ModuleList") {
       auto parent_module_node = parent_module_value->node();
       module_name = parent_module_node->s(attr::name) + "." + module_name;
-      parent_module_value = parent_module_node->inputs().size() > 0
+      parent_module_value = !parent_module_node->inputs().empty()
           ? parent_module_node->input(0)
           : nullptr;
     } else {
@@ -167,7 +166,7 @@ void functionCallSubstitution(Block* block) {
 }
 
 ScopePtr ONNXGraphTopLevelScope(Graph& graph) {
-  if (graph.inputs().size() == 0) {
+  if (graph.inputs().empty()) {
     return graph.current_scope();
   }
   if (auto top_module_type = graph.inputs().at(0)->type()->cast<ClassType>()) {
@@ -193,5 +192,4 @@ void ONNXFunctionCallSubstitution(Graph& graph) {
   GRAPH_DUMP("After function call substitution calls: ", &graph);
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

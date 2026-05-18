@@ -1,11 +1,13 @@
 #pragma once
 
+#include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <unordered_map>
 
 #include <c10/core/Allocator.h>
-#include <c10/core/alignment.h> // legacy, update dependents to include this directly
-#include <c10/util/Logging.h>
+#include <c10/macros/Export.h>
+#include <c10/util/Flags.h>
 
 // TODO: rename to c10
 C10_DECLARE_bool(caffe2_report_cpu_memory_usage);
@@ -15,7 +17,7 @@ namespace c10 {
 using MemoryDeleter = void (*)(void*);
 
 // A helper function that is basically doing nothing.
-C10_API void NoDelete(void*);
+C10_API void NoDelete(void* /*unused*/);
 
 // A simple struct that is used to report C10's memory allocation,
 // deallocation status and out-of-memory events to the profiler

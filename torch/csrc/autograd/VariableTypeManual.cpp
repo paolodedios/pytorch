@@ -2,14 +2,17 @@
 #include <ATen/TracerMode.h>
 #include <ATen/core/op_registration/op_registration.h>
 #include <c10/core/ScalarType.h>
-#include <c10/util/Optional.h>
 #include <c10/util/irange.h>
 #include <torch/csrc/autograd/FunctionsManual.h>
 #include <torch/csrc/autograd/VariableTypeUtils.h>
 #include <torch/csrc/autograd/autograd.h>
 #include <torch/csrc/autograd/functions/utils.h>
-#include <torch/csrc/utils/memory.h>
+#include <torch/csrc/autograd/generated/VariableType.h>
+#include <torch/csrc/autograd/generated/ViewFuncs.h>
 #include <torch/library.h>
+#include <optional>
+
+#include <utility>
 
 using namespace at;
 using namespace torch::autograd::generated;
@@ -17,10 +20,10 @@ using torch::autograd::as_view;
 using torch::autograd::CreationMeta;
 
 namespace torch {
-namespace autograd {
-namespace VariableType {
 
-std::vector<at::DeprecatedTypeProperties*> allTypesForBackends(
+namespace autograd::VariableType {
+
+static std::vector<at::DeprecatedTypeProperties*> allTypesForBackends(
     at::ArrayRef<at::Backend> backends) {
   std::vector<DeprecatedTypeProperties*> res;
   res.reserve(backends.size());
@@ -35,13 +38,23 @@ std::vector<at::DeprecatedTypeProperties*> allTypesForBackends(
   return res;
 }
 
-C10_EXPORT std::vector<at::DeprecatedTypeProperties*> allCPUTypes() {
+std::vector<at::DeprecatedTypeProperties*> allCPUTypes() {
   return allTypesForBackends({Backend::CPU, Backend::SparseCPU});
 }
 
-C10_EXPORT std::vector<at::DeprecatedTypeProperties*> allCUDATypes() {
-  at::globalContext().lazyInitCUDA();
+std::vector<at::DeprecatedTypeProperties*> allCUDATypes() {
+  at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
   return allTypesForBackends({Backend::CUDA, Backend::SparseCUDA});
+}
+
+std::vector<at::DeprecatedTypeProperties*> allXPUTypes() {
+  return allTypesForBackends({Backend::XPU, Backend::SparseXPU});
+}
+
+std::vector<at::DeprecatedTypeProperties*> allPrivateUser1Types() {
+  at::globalContext().lazyInitDevice(c10::DeviceType::PrivateUse1);
+  return allTypesForBackends(
+      {Backend::PrivateUse1, Backend::SparsePrivateUse1});
 }
 
 namespace {
@@ -50,7 +63,8 @@ const Variable& checked_cast_variable(
     const char* name,
     int pos) {
   if (!t.defined()) {
-    AT_ERROR(
+    TORCH_CHECK(
+        false,
         "Expected a proper Tensor but got None (or an undefined Tensor in C++) ",
         "for argument #",
         pos,
@@ -63,7 +77,8 @@ const Variable& checked_cast_variable(
 
 Variable& checked_cast_variable(Tensor& t, const char* name, int pos) {
   if (!t.defined()) {
-    AT_ERROR(
+    TORCH_CHECK(
+        false,
         "Expected a proper Tensor but got None (or an undefined Tensor in C++) ",
         "for argument #",
         pos,
@@ -91,13 +106,13 @@ Tensor unpack_opt(const Tensor& t, const char* name, int pos) {
 }
 
 std::vector<at::Tensor> unpack(
-    at::ITensorListRef tl,
+    const at::ITensorListRef& tl,
     const char* name,
     int pos) {
   std::vector<at::Tensor> ret;
   ret.reserve(tl.size());
   for (const auto& t : tl) {
-    ret.push_back(t.defined() ? static_cast<const Variable&>(t) : Variable{});
+    ret.push_back(t);
   }
   return ret;
 }
@@ -107,9 +122,9 @@ namespace {
 // Taken from codegened version
 Tensor _fw_primal(c10::DispatchKeySet ks, const Tensor& self, int64_t level) {
   auto& self_ = unpack(self, "self", 0);
-  std::shared_ptr<Identity> grad_fn;
+  c10::intrusive_ptr<Identity> grad_fn;
   if (compute_requires_grad(self)) {
-    grad_fn = std::make_shared<Identity>();
+    grad_fn = c10::make_intrusive<Identity>();
     grad_fn->set_next_edges(collect_next_edges(self));
   }
 
@@ -151,9 +166,9 @@ Tensor _make_dual(
       " is not supported.");
   auto& primal_ = unpack(primal, "primal", 0);
   auto& tangent_ = unpack(tangent, "tangent", 0);
-  std::shared_ptr<ViewBackward0> grad_fn;
+  c10::intrusive_ptr<ViewBackward0> grad_fn;
   if (compute_requires_grad(primal_)) {
-    grad_fn = std::make_shared<ViewBackward0>();
+    grad_fn = c10::make_intrusive<ViewBackward0>();
     grad_fn->self_sym_sizes = primal_.sym_sizes().vec();
     grad_fn->set_next_edges(collect_next_edges(primal_));
   }
@@ -183,12 +198,12 @@ Tensor& copy_(
   // it automatically
   auto& self_ = unpack(self, "self", 0);
   auto& src_ = unpack(src, "src", 1);
-  std::shared_ptr<CopyBackwards> grad_fn;
+  c10::intrusive_ptr<CopyBackwards> grad_fn;
   auto requires_grad = compute_requires_grad(self, src);
   requires_grad &= isDifferentiableType(self.scalar_type());
   check_inplace(self, requires_grad);
   if (requires_grad) {
-    grad_fn = std::make_shared<CopyBackwards>();
+    grad_fn = c10::make_intrusive<CopyBackwards>();
     grad_fn->set_next_edges(collect_next_edges(self, src));
     grad_fn->src_options = src.options();
   }
@@ -227,10 +242,10 @@ const Tensor& resize_(
     c10::DispatchKeySet ks,
     const Tensor& self,
     SymIntArrayRef size,
-    c10::optional<MemoryFormat> optional_memory_format) {
+    std::optional<MemoryFormat> optional_memory_format) {
   auto& self_ = unpack(self, "self", 0);
   if (self.requires_grad()) {
-    AT_ERROR("cannot resize variables that require grad");
+    TORCH_CHECK(false, "cannot resize variables that require grad");
   }
   {
     at::AutoDispatchBelowAutograd mode;
@@ -239,7 +254,7 @@ const Tensor& resize_(
   }
 
   if (self._fw_grad(/* level */ 0).defined()) {
-    AT_ERROR("cannot resize variables that has a forward grad");
+    TORCH_CHECK(false, "cannot resize variables that has a forward grad");
   }
 
   return self;
@@ -249,11 +264,11 @@ const Tensor& resize_as_(
     c10::DispatchKeySet ks,
     const Tensor& self,
     const Tensor& the_template,
-    c10::optional<MemoryFormat> optional_memory_format) {
+    std::optional<MemoryFormat> optional_memory_format) {
   auto& self_ = unpack(self, "self", 0);
   auto& the_template_ = unpack(the_template, "the_template", 1);
   if (self.requires_grad()) {
-    AT_ERROR("cannot resize variables that require grad");
+    TORCH_CHECK(false, "cannot resize variables that require grad");
   }
   {
     at::AutoDispatchBelowAutograd mode;
@@ -266,8 +281,9 @@ const Tensor& resize_as_(
 
   // Handle fw grad
   if (self._fw_grad(/* level */ 0).defined()) {
-    AT_ERROR("cannot resize variables that has a forward grad");
+    TORCH_CHECK(false, "cannot resize variables that has a forward grad");
   }
+
   return self;
 }
 
@@ -289,7 +305,8 @@ Tensor& detach_(c10::DispatchKeySet ks, Tensor& self) {
   RECORD_FUNCTION("detach_", std::vector<c10::IValue>({self}));
   if (self.is_view()) {
     // See NOTE [ View + Inplace detection ]
-    AT_ERROR(
+    TORCH_CHECK(
+        false,
         "Can't detach views in-place. Use detach() instead. "
         "If you are using DistributedDataParallel (DDP) for training, "
         "and gradient_as_bucket_view is set as True, gradients are "
@@ -358,8 +375,7 @@ TORCH_LIBRARY_IMPL(aten, Autograd, m) {
 }
 
 } // namespace
-} // namespace VariableType
-} // namespace autograd
+} // namespace autograd::VariableType
 
 namespace ADInplaceOrView {
 #define CREATION_META_DEFINITION                            \
@@ -368,7 +384,7 @@ namespace ADInplaceOrView {
       : (at::GradMode::is_enabled() ? CreationMeta::DEFAULT \
                                     : CreationMeta::NO_GRAD_MODE)
 
-Tensor& copy_(
+static Tensor& copy_(
     c10::DispatchKeySet ks,
     Tensor& self,
     const Tensor& src,
@@ -382,38 +398,91 @@ Tensor& copy_(
   return self;
 }
 
-Tensor detach(c10::DispatchKeySet ks, const Tensor& self) {
+static const Tensor& resize_(
+    c10::DispatchKeySet ks,
+    const Tensor& self,
+    SymIntArrayRef size,
+    std::optional<MemoryFormat> optional_memory_format) {
+  // Hold sizes to verify if we actually resize `self`.
+  // Explicitly copy data, since resizing can move original data
+  // and make references invalid.
+  auto org_size = self.sym_sizes().vec();
+  {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    at::redispatch::resize__symint(
+        ks & c10::after_ADInplaceOrView_keyset,
+        self,
+        size,
+        optional_memory_format);
+  }
+  // If `self` was resized, increment the version.
+  if (org_size != size) {
+    torch::autograd::increment_version(self);
+  }
+  return self;
+}
+
+static const Tensor& resize_as_(
+    c10::DispatchKeySet ks,
+    const Tensor& self,
+    const Tensor& the_template,
+    std::optional<MemoryFormat> optional_memory_format) {
+  // Hold sizes to verify if we actually resize `self`.
+  // Explicitly copy data, since resizing can move original data
+  // and make references invalid.
+  auto org_size = self.sym_sizes().vec();
+  {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    at::redispatch::resize_as_(
+        ks & c10::after_ADInplaceOrView_keyset,
+        self,
+        the_template,
+        optional_memory_format);
+  }
+
+  // If `self` was resized, increment the version.
+  if (org_size != the_template.sym_sizes()) {
+    torch::autograd::increment_version(self);
+  }
+  return self;
+}
+
+static Tensor detach(c10::DispatchKeySet ks, const Tensor& self) {
   auto out = ([&]() {
     at::AutoDispatchBelowADInplaceOrView guard;
     return at::_ops::detach::redispatch(
         ks & c10::after_ADInplaceOrView_keyset, self);
   })();
-  // NB: we can't make detach() a normal view operator because the codegen
-  // generates allow_tensor_metadata_change = True for them. In the future we
-  // should have an option for this in the codegen.
-  std::function<at::Tensor(const at::Tensor&)> func = nullptr;
-  auto result = as_view(
-      /* base */ self,
-      /* output */ out,
-      /* is_bw_differentiable */ false,
-      /* is_fw_differentiable */ false,
-      /* view_func */ func,
-      /* creation_meta */ CreationMeta::DEFAULT,
-      /*allow_tensor_metadata_change=*/false);
-
-  return result;
+  // NB: we can't make detach() a normal view operator because the
+  // codegen generates allow_tensor_metadata_change = True (and leaves
+  // is_fresh_tensor to the default setting of False) for them. In the
+  // future we should have an option for this in the codegen.
+  if (self.is_inference()) {
+    return out;
+  }
+  return ::torch::autograd::make_variable_non_differentiable_view(
+      self,
+      out,
+      /* allow_tensor_metadata_change */ false,
+      /* is_fresh_tensor */ true);
 }
 
-Tensor _fw_primal(c10::DispatchKeySet ks, const Tensor& self, int64_t level) {
+static Tensor _fw_primal(
+    c10::DispatchKeySet ks,
+    const Tensor& self,
+    int64_t level) {
   auto tmp = ([&]() {
     at::AutoDispatchBelowADInplaceOrView guard;
     return at::alias(self);
   })();
-  std::function<at::Tensor(const at::Tensor&)> func = nullptr;
+  std::unique_ptr<torch::autograd::ViewFunc> func(nullptr);
+  std::function<at::Tensor(const at::Tensor&)> rev_func = nullptr;
   if (!self.unsafeGetTensorImpl()->support_as_strided()) {
-    auto size_vec = self.sizes().vec();
-    func = [=](const at::Tensor& input_base) {
-      return input_base.view(size_vec);
+    func = std::make_unique<ViewViewFunc>(self.sym_sizes());
+    rev_func = [=](const at::Tensor& input_view) -> at::Tensor {
+      TORCH_INTERNAL_ASSERT(
+          false,
+          "Reverse view_func for _fw_primal() is not currently supported");
     };
   }
   auto result = as_view(
@@ -421,14 +490,15 @@ Tensor _fw_primal(c10::DispatchKeySet ks, const Tensor& self, int64_t level) {
       /* output */ tmp,
       /* is_bw_differentiable */ true,
       /* is_fw_differentiable */ false,
-      /* view_func */ func,
+      /* view_func */ std::move(func),
+      /* rev_view_func */ std::move(rev_func),
       /* creation_meta */ CREATION_META_DEFINITION);
 
   return result;
 }
 
 // NB: This does not redispatch any further
-Tensor _make_dual(
+static Tensor _make_dual(
     c10::DispatchKeySet ks,
     const Tensor& primal,
     const Tensor& tangent,
@@ -437,11 +507,14 @@ Tensor _make_dual(
     at::AutoDispatchBelowADInplaceOrView guard;
     return at::alias(primal);
   })();
-  std::function<at::Tensor(const at::Tensor&)> func = nullptr;
+  std::unique_ptr<torch::autograd::ViewFunc> func(nullptr);
+  std::function<at::Tensor(const at::Tensor&)> rev_func = nullptr;
   if (!primal.unsafeGetTensorImpl()->support_as_strided()) {
-    auto size_vec = primal.sizes().vec();
-    func = [=](const at::Tensor& input_base) {
-      return input_base.view(size_vec);
+    func = std::make_unique<ViewViewFunc>(primal.sym_sizes());
+    rev_func = [=](const at::Tensor& input_view) -> at::Tensor {
+      TORCH_INTERNAL_ASSERT(
+          false,
+          "Reverse view_func for _make_dual() is not currently supported");
     };
   }
   auto result = as_view(
@@ -449,7 +522,8 @@ Tensor _make_dual(
       /* output */ tmp,
       /* is_bw_differentiable */ true,
       /* is_fw_differentiable */ false,
-      /* view_func */ func,
+      /* view_func */ std::move(func),
+      /* rev_view_func */ std::move(rev_func),
       /* creation_meta */ CREATION_META_DEFINITION);
 
   return result;
@@ -465,6 +539,14 @@ TORCH_LIBRARY_IMPL(aten, ADInplaceOrView, m) {
       "detach",
       torch::dispatch(
           DispatchKey::ADInplaceOrView, TORCH_FN(ADInplaceOrView::detach)));
+  m.impl(
+      "resize_",
+      torch::dispatch(
+          DispatchKey::ADInplaceOrView, TORCH_FN(ADInplaceOrView::resize_)));
+  m.impl(
+      "resize_as_",
+      torch::dispatch(
+          DispatchKey::ADInplaceOrView, TORCH_FN(ADInplaceOrView::resize_as_)));
   m.impl(
       "_fw_primal",
       torch::dispatch(

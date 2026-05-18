@@ -13,10 +13,7 @@
 
 #include <c10/util/Exception.h>
 
-namespace torch {
-namespace profiler {
-namespace impl {
-namespace linux_perf {
+namespace torch::profiler::impl::linux_perf {
 
 /*
  * Maximum number of events supported
@@ -38,8 +35,10 @@ struct PerfCounter {
  */
 class PerfEvent {
  public:
-  explicit PerfEvent(std::string& name) : name_(name), fd_(-1) {}
+  explicit PerfEvent(std::string& name) : name_(name) {}
 
+  PerfEvent(const PerfEvent& other) = delete;
+  PerfEvent& operator=(const PerfEvent&) = delete;
   PerfEvent& operator=(PerfEvent&& other) noexcept {
     if (this != &other) {
       fd_ = other.fd_;
@@ -89,7 +88,7 @@ class PerfProfiler {
 
   /* Disable counting and fill in the caller supplied container with delta
    * calculated from the start count values since last Enable() */
-  void Disable(perf_counters_t&);
+  void Disable(perf_counters_t& /*vals*/);
 
  private:
   uint64_t CalcDelta(uint64_t start, uint64_t end) const;
@@ -99,7 +98,4 @@ class PerfProfiler {
   std::vector<PerfEvent> events_;
   std::stack<perf_counters_t> start_values_;
 };
-} // namespace linux_perf
-} // namespace impl
-} // namespace profiler
-} // namespace torch
+} // namespace torch::profiler::impl::linux_perf

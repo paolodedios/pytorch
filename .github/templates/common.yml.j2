@@ -1,13 +1,10 @@
 {%- set upload_artifact_s3_action = "seemethere/upload-artifact-s3@v5" -%}
 {%- set download_artifact_s3_action = "seemethere/download-artifact-s3@v4" -%}
-{%- set upload_artifact_action = "actions/upload-artifact@v3" -%}
-{%- set download_artifact_action = "actions/download-artifact@v3" -%}
+{%- set upload_artifact_action = "actions/upload-artifact@v4.4.0" -%}
+{%- set download_artifact_action = "actions/download-artifact@v4.1.7" -%}
 
 {%- set timeout_minutes = 240 -%}
-
-# NOTE: If testing pytorch/builder changes you can change this variable to change what pytorch/builder reference
-#       the binary builds will check out
-{%- set builder_branch = "main" -%}
+{%- set timeout_minutes_windows_binary = 360 -%}
 
 {%- macro concurrency(build_environment) -%}
 concurrency:
@@ -24,7 +21,7 @@ concurrency:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
@@ -32,86 +29,58 @@ concurrency:
           echo "system info $(uname -a)"
 {%- endmacro -%}
 
-
 {%- macro setup_ec2_windows() -%}
       !{{ display_ec2_information() }}
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: seemethere/add-github-ssh-key@v1
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
+        continue-on-error: true
         with:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          github-secret: ${{ secrets.GITHUB_TOKEN }}
+      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
+        shell: bash
+        run: |
+          git config --global core.longpaths true
+          git config --global core.symlinks true
+
+          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
+          # the directory on Windows and prevent GHA from checking out as reported
+          # in https://github.com/actions/checkout/issues/1018
+          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
         run: |
           Set-ItemProperty -Path "HKLM:\\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1
-      # Since it's just a defensive command, the workflow should continue even the command fails
-      - name: Disables Windows Defender scheduled and real-time scanning for files in pytorch directory.
+      # Since it's just a defensive command, the workflow should continue even the command fails. This step can be
+      # removed once Windows Defender is removed from the AMI
+      - name: Disables Windows Defender scheduled and real-time scanning for files in directories used by PyTorch
+        continue-on-error: true
         shell: powershell
         run: |
-          Add-MpPreference -ExclusionPath $(Get-Location).tostring() -ErrorAction Ignore
+          Add-MpPreference -ExclusionPath $(Get-Location).tostring(),$Env:TEMP -ErrorAction Ignore
+          # Let's both exclude the path and disable Windows Defender completely just to be sure
+          # that it doesn't interfere
+          Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
 {%- endmacro -%}
 
-{%- macro setup_rocm_linux() -%}
-      - name: Clean workspace
-        run: |
-          rm -rf "${GITHUB_WORKSPACE}"
-          mkdir "${GITHUB_WORKSPACE}"
-      - name: Set DOCKER_HOST
-        run: echo "DOCKER_HOST=unix:///run/user/$(id -u)/docker.sock" >> "${GITHUB_ENV}"
-      - name: Runner health check system info
-        if: always()
-        run: |
-          cat /etc/os-release || true
-          cat /etc/apt/sources.list.d/rocm.list || true
-          cat /opt/rocm/.info/version || true
-          whoami
-      - name: Runner health check rocm-smi
-        if: always()
-        run: |
-          rocm-smi
-      - name: Runner health check rocminfo
-        if: always()
-        run: |
-          rocminfo
-      - name: Runner health check GPU count
-        if: always()
-        run: |
-          ngpu=$(rocminfo | grep -c -E 'Name:.*\sgfx')
-          msg="Please file an issue on pytorch/pytorch reporting the faulty runner. Include a link to the runner logs so the runner can be identified"
-          if [[ $ngpu -eq 0 ]]; then
-              echo "Error: Failed to detect any GPUs on the runner"
-              echo "$msg"
-              exit 1
-          fi
-          if [[ $ngpu -eq 1 ]]; then
-              echo "Error: only 1 GPU detected, at least 2 GPUs are needed for distributed jobs"
-              echo "$msg"
-              exit 1
-          fi
-      - name: Runner health check disconnect on failure
-        if: ${{ failure() }}
-        run: |
-          killall runsvc.sh
-      - name: Preserve github env variables for use in docker
-        run: |
-          env | grep '^GITHUB' >> "/tmp/github_env_${GITHUB_RUN_ID}"
-          env | grep '^CI' >> "/tmp/github_env_${GITHUB_RUN_ID}"
-{%- endmacro -%}
-
-{%- macro teardown_rocm_linux() -%}
-      - name: Kill containers, clean up images
-        if: always()
-        run: |
-          # ignore expansion of "docker ps -q" since it could be empty
-          # shellcheck disable=SC2046
-          docker stop $(docker ps -q) || true
-          # Prune all of the docker images
-          docker system prune -af
+{%- macro apply_filter() -%}
+      - name: Check if the job is disabled
+        id: filter
+        # Binary workflows checkout to pytorch subdirectory instead
+        uses: ./pytorch/.github/actions/filter-test-configs
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # NB: Use a mock test matrix with a default value here. After filtering, if the
+          # returned matrix is empty, it means that the job is disabled
+          test-matrix: |
+            { include: [
+              { config: "default" },
+            ]}
 {%- endmacro -%}
 
 {%- macro checkout(submodules="recursive", deep_clone=True, directory="", repository="pytorch/pytorch", branch="", checkout_pr_head=True) -%}
       - name: Checkout !{{ 'PyTorch' if repository == "pytorch/pytorch" else repository }}
-        uses: malfet/checkout@silent-checkout
+        uses: actions/checkout@v4
         with:
       {%- if branch %}
           ref: !{{ branch }}
@@ -129,7 +98,7 @@ concurrency:
       {%- if directory %}
           path: !{{ directory }}
       {%- endif %}
-          quiet-checkout: true
+          show-progress: false
       - name: Clean !{{ 'PyTorch' if repository == "pytorch/pytorch" else repository }} checkout
         run: |
           # Remove any artifacts from the previous checkouts

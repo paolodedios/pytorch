@@ -1,4 +1,5 @@
 # Owner(s): ["module: fft"]
+# ruff: noqa: F841
 
 import torch
 import unittest
@@ -10,18 +11,16 @@ import doctest
 import inspect
 
 from torch.testing._internal.common_utils import \
-    (TestCase, run_tests, TEST_NUMPY, TEST_LIBROSA, TEST_MKL, first_sample, TEST_WITH_ROCM,
-     make_tensor)
+    (TestCase, run_tests, TEST_NUMPY, TEST_LIBROSA, requires_mkl, first_sample, TEST_WITH_ROCM,
+     make_tensor, skipIfTorchDynamo)
 from torch.testing._internal.common_device_type import \
     (instantiate_device_type_tests, ops, dtypes, onlyNativeDeviceTypes,
-     skipCPUIfNoFFT, deviceCountAtLeast, onlyCUDA, OpDTypes, skipIf, toleranceOverride, tol)
+     skipCPUIfNoFFT, deviceCountAtLeast, onlyCUDA, OpDTypes, toleranceOverride, tol)
 from torch.testing._internal.common_methods_invocations import (
     spectral_funcs, SpectralFuncType)
-from torch.testing._internal.common_cuda import SM53OrLater
 from torch._prims_common import corresponding_complex_dtype
 
-from setuptools import distutils
-from typing import Optional, List
+from packaging import version
 
 
 if TEST_NUMPY:
@@ -38,11 +37,10 @@ try:
 except ModuleNotFoundError:
     pass
 
-LooseVersion = distutils.version.LooseVersion
 REFERENCE_NORM_MODES = (
     (None, "forward", "backward", "ortho")
-    if LooseVersion(np.__version__) >= '1.20.0' and (
-        not has_scipy_fft or LooseVersion(scipy.__version__) >= '1.6.0')
+    if version.parse(np.__version__) >= version.parse('1.20.0') and (
+        not has_scipy_fft or version.parse(scipy.__version__) >= version.parse('1.6.0'))
     else (None, "ortho"))
 
 
@@ -60,20 +58,22 @@ def _hermitian_conj(x, dim):
     """
     out = torch.empty_like(x)
     mid = (x.size(dim) - 1) // 2
-    idx = [slice(None)] * out.dim()
-    idx_center = list(idx)
-    idx_center[dim] = 0
+    idx = tuple([slice(None)] * out.dim())
     out[idx] = x[idx]
 
     idx_neg = list(idx)
     idx_neg[dim] = slice(-mid, None)
-    idx_pos = idx
+    idx_neg = tuple(idx_neg)
+    idx_pos = list(idx)
     idx_pos[dim] = slice(1, mid + 1)
+    idx_pos = tuple(idx_pos)
 
     out[idx_pos] = x[idx_neg].flip(dim)
     out[idx_neg] = x[idx_pos].flip(dim)
     if (2 * mid + 1 < x.size(dim)):
+        idx = list(idx)
         idx[dim] = mid + 1
+        idx = tuple(idx)
         out[idx] = x[idx]
     return out.conj()
 
@@ -121,10 +121,6 @@ def skip_helper_for_fft(device, dtype):
 
     if device_type == 'cpu':
         raise unittest.SkipTest("half and complex32 are not supported on CPU")
-    if TEST_WITH_ROCM:
-        raise unittest.SkipTest("half and complex32 are not supported on ROCM")
-    if not SM53OrLater:
-        raise unittest.SkipTest("half and complex32 are only supported on CUDA device with SM>53")
 
 
 # Tests of functions related to Fourier analysis in the torch.fft namespace
@@ -326,12 +322,11 @@ class TestFFT(TestCase):
         # TODO: Remove torch.half error when complex32 is fully implemented
         sample = first_sample(self, op.sample_inputs(device, dtype))
         device_type = torch.device(device).type
+        default_msg = "Unsupported dtype"
         if dtype is torch.half and device_type == 'cuda' and TEST_WITH_ROCM:
-            err_msg = "Unsupported dtype "
-        elif dtype is torch.half and device_type == 'cuda' and not SM53OrLater:
-            err_msg = "cuFFT doesn't support signals of half type with compute capability less than SM_53"
+            err_msg = default_msg
         else:
-            err_msg = "Unsupported dtype "
+            err_msg = default_msg
         with self.assertRaisesRegex(RuntimeError, err_msg):
             op(sample.input, *sample.args, **sample.kwargs)
 
@@ -356,6 +351,9 @@ class TestFFT(TestCase):
     @unittest.skipIf(not TEST_NUMPY, 'NumPy not found')
     @ops([op for op in spectral_funcs if op.ndimensional == SpectralFuncType.ND],
          allowed_dtypes=(torch.cfloat, torch.cdouble))
+    @toleranceOverride({
+        torch.cfloat : tol(2e-4, 1.3e-6),
+    })
     def test_reference_nd(self, device, dtype, op):
         if op.ref is None:
             raise unittest.SkipTest("No reference implementation")
@@ -445,11 +443,12 @@ class TestFFT(TestCase):
          allowed_dtypes=[torch.float, torch.cfloat])
     def test_fftn_invalid(self, device, dtype, op):
         a = torch.rand(10, 10, 10, device=device, dtype=dtype)
-
-        with self.assertRaisesRegex(RuntimeError, "dims must be unique"):
+        # FIXME: https://github.com/pytorch/pytorch/issues/108205
+        errMsg = "dims must be unique"
+        with self.assertRaisesRegex(RuntimeError, errMsg):
             op(a, dim=(0, 1, 0))
 
-        with self.assertRaisesRegex(RuntimeError, "dims must be unique"):
+        with self.assertRaisesRegex(RuntimeError, errMsg):
             op(a, dim=(2, -1))
 
         with self.assertRaisesRegex(RuntimeError, "dim and shape .* same length"):
@@ -460,6 +459,31 @@ class TestFFT(TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "tensor only has 3 dimensions"):
             op(a, s=(10, 10, 10, 10))
+
+    @skipCPUIfNoFFT
+    @onlyNativeDeviceTypes
+    @dtypes(torch.half, torch.float, torch.double, torch.cfloat, torch.cdouble)
+    def test_fftn_noop_transform(self, device, dtype):
+        skip_helper_for_fft(device, dtype)
+        RESULT_TYPE = {
+            torch.half: torch.chalf,
+            torch.float: torch.cfloat,
+            torch.double: torch.cdouble,
+        }
+
+        for op in [
+            torch.fft.fftn,
+            torch.fft.ifftn,
+            torch.fft.fft2,
+            torch.fft.ifft2,
+        ]:
+            inp = make_tensor((10, 10), device=device, dtype=dtype)
+            out = op(inp, dim=[])
+
+            expect_dtype = RESULT_TYPE.get(inp.dtype, inp.dtype)
+            expect = inp.to(expect_dtype)
+            self.assertEqual(expect, out)
+
 
     @skipCPUIfNoFFT
     @onlyNativeDeviceTypes
@@ -493,6 +517,7 @@ class TestFFT(TestCase):
             lastdim_size = input.size(lastdim) // 2 + 1
             idx = [slice(None)] * input_ndim
             idx[lastdim] = slice(0, lastdim_size)
+            idx = tuple(idx)
             input = input[idx]
 
             s = [shape[dim] for dim in actual_dims]
@@ -533,6 +558,7 @@ class TestFFT(TestCase):
             lastdim_size = expect.size(lastdim) // 2 + 1
             idx = [slice(None)] * input_ndim
             idx[lastdim] = slice(0, lastdim_size)
+            idx = tuple(idx)
             expect = expect[idx]
 
             actual = torch.fft.ihfftn(input, dim=dim, norm="ortho")
@@ -572,7 +598,7 @@ class TestFFT(TestCase):
                 else:
                     numpy_fn = getattr(np.fft, fname)
 
-                def fn(t: torch.Tensor, s: Optional[List[int]], dim: List[int] = (-2, -1), norm: Optional[str] = None):
+                def fn(t: torch.Tensor, s: list[int] | None, dim: list[int] = (-2, -1), norm: str | None = None):
                     return torch_fn(t, s, dim, norm)
 
                 torch_fns = (torch_fn, torch.jit.script(fn))
@@ -811,8 +837,10 @@ class TestFFT(TestCase):
                 plan_cache = torch.backends.cuda.cufft_plan_cache[device]
             original = plan_cache.max_size
             plan_cache.max_size = n
-            yield
-            plan_cache.max_size = original
+            try:
+                yield
+            finally:
+                plan_cache.max_size = original
 
         with plan_cache_max_size(devices[0], max(1, torch.backends.cuda.cufft_plan_cache.size - 10)):
             self._test_fft_ifft_rfft_irfft(devices[0], dtype)
@@ -871,7 +899,24 @@ class TestFFT(TestCase):
                             self.assertEqual(torch.backends.cuda.cufft_plan_cache.max_size, 10)  # default is cuda:0
                         self.assertEqual(torch.backends.cuda.cufft_plan_cache.max_size, 11)  # default is cuda:1
 
+    @onlyCUDA
+    @dtypes(torch.cfloat, torch.cdouble)
+    def test_cufft_context(self, device, dtype):
+        # Regression test for https://github.com/pytorch/pytorch/issues/109448
+        x = torch.randn(32, dtype=dtype, device=device, requires_grad=True)
+        dout = torch.zeros(32, dtype=dtype, device=device)
+
+        # compute iFFT(FFT(x))
+        out = torch.fft.ifft(torch.fft.fft(x))
+        out.backward(dout, retain_graph=True)
+
+        dx = torch.fft.fft(torch.fft.ifft(dout))
+
+        self.assertTrue((x.grad - dx).abs().max() == 0)
+        self.assertFalse((x.grad - x).abs().max() == 0)
+
     # passes on ROCm w/ python 2.7, fails w/ python 3.6
+    @skipIfTorchDynamo("cannot set WRITEABLE flag to True of this array")
     @skipCPUIfNoFFT
     @onlyNativeDeviceTypes
     @dtypes(torch.double)
@@ -945,6 +990,7 @@ class TestFFT(TestCase):
         _test((10,), 5, 4, win_sizes=(11,), expected_error=RuntimeError)
         _test((10,), 5, 4, win_sizes=(1, 1), expected_error=RuntimeError)
 
+    @skipIfTorchDynamo("double")
     @skipCPUIfNoFFT
     @onlyNativeDeviceTypes
     @dtypes(torch.double)
@@ -1181,6 +1227,30 @@ class TestFFT(TestCase):
         with self.assertRaisesRegex(RuntimeError, 'stft requires the return_complex parameter'):
             y = x.stft(10, pad_mode='constant')
 
+    @onlyNativeDeviceTypes
+    @skipCPUIfNoFFT
+    def test_stft_align_to_window_only_requires_non_center(self, device):
+        x = torch.rand(100)
+        for align_to_window in [True, False]:
+            with self.assertRaisesRegex(RuntimeError, 'stft align_to_window should only be set when center = false'):
+                y = x.stft(10, center=True, return_complex=True, align_to_window=align_to_window)
+
+    # stft and istft are currently warning if a window is not provided
+    @onlyNativeDeviceTypes
+    @skipCPUIfNoFFT
+    def test_stft_requires_window(self, device):
+        x = torch.rand(100)
+        with self.assertWarnsOnceRegex(UserWarning, "A window was not provided"):
+            y = x.stft(10, pad_mode='constant', return_complex=True)
+
+    @onlyNativeDeviceTypes
+    @skipCPUIfNoFFT
+    def test_istft_requires_window(self, device):
+        stft = torch.rand((51, 5), dtype=torch.cdouble)
+        # 51 = 2 * n_fft + 1, 5 = number of frames
+        with self.assertWarnsOnceRegex(UserWarning, "A window was not provided"):
+            x = torch.istft(stft, n_fft=100, length=100)
+
     @skipCPUIfNoFFT
     def test_fft_input_modification(self, device):
         # FFT functions should not modify their input (gh-34551)
@@ -1242,7 +1312,7 @@ class TestFFT(TestCase):
             istft_kwargs = stft_kwargs.copy()
             del istft_kwargs['pad_mode']
             for sizes in data_sizes:
-                for i in range(num_trials):
+                for _ in range(num_trials):
                     original = torch.randn(*sizes, dtype=dtype, device=device)
                     stft = torch.stft(original, return_complex=True, **stft_kwargs)
                     inversed = torch.istft(stft, length=original.size(1), **istft_kwargs)
@@ -1297,7 +1367,7 @@ class TestFFT(TestCase):
                 'onesided': True,
             },
         ]
-        for i, pattern in enumerate(patterns):
+        for pattern in patterns:
             _test_istft_is_inverse_of_stft(pattern)
 
     @onlyNativeDeviceTypes
@@ -1313,7 +1383,7 @@ class TestFFT(TestCase):
             del stft_kwargs['size']
             istft_kwargs = stft_kwargs.copy()
             del istft_kwargs['pad_mode']
-            for i in range(num_trials):
+            for _ in range(num_trials):
                 original = torch.randn(*sizes, dtype=dtype, device=device)
                 stft = torch.stft(original, return_complex=True, **stft_kwargs)
                 with self.assertWarnsOnceRegex(UserWarning, "The length of signal is shorter than the length parameter."):
@@ -1364,7 +1434,7 @@ class TestFFT(TestCase):
                 'onesided': True,
             },
         ]
-        for i, pattern in enumerate(patterns):
+        for pattern in patterns:
             _test_istft_is_inverse_of_stft_with_padding(pattern)
 
     @onlyNativeDeviceTypes
@@ -1383,6 +1453,7 @@ class TestFFT(TestCase):
         self.assertRaises(RuntimeError, torch.istft, torch.zeros((3, 0, 2)), 2)
         self.assertRaises(RuntimeError, torch.istft, torch.zeros((0, 3, 2)), 2)
 
+    @skipIfTorchDynamo("Failed running call_function")
     @onlyNativeDeviceTypes
     @skipCPUIfNoFFT
     @dtypes(torch.double)
@@ -1427,7 +1498,7 @@ class TestFFT(TestCase):
         complex_dtype = corresponding_complex_dtype(dtype)
 
         def _test(data_size, kwargs):
-            for i in range(num_trials):
+            for _ in range(num_trials):
                 tensor1 = torch.randn(data_size, device=device, dtype=complex_dtype)
                 tensor2 = torch.randn(data_size, device=device, dtype=complex_dtype)
                 a, b = torch.rand(2, dtype=dtype, device=device)
@@ -1506,7 +1577,7 @@ class TestFFT(TestCase):
         self.assertEqual(i_original.repeat(4, 1), i_multi, atol=1e-6, rtol=0, exact_dtype=True)
 
     @onlyCUDA
-    @skipIf(not TEST_MKL, "Test requires MKL")
+    @requires_mkl
     def test_stft_window_device(self, device):
         # Test the (i)stft window must be on the same device as the input
         x = torch.randn(1000, dtype=torch.complex64)
@@ -1531,7 +1602,7 @@ class FFTDocTestFinder:
     '''The default doctest finder doesn't like that function.__module__ doesn't
     match torch.fft. It assumes the functions are leaked imports.
     '''
-    def __init__(self):
+    def __init__(self) -> None:
         self.parser = doctest.DocTestParser()
 
     def find(self, obj, name=None, module=None, globs=None, extraglobs=None):

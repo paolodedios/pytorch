@@ -1,17 +1,22 @@
 """
 NEWLINE: Checks files to make sure there are no trailing newlines.
 """
+
+from __future__ import annotations
+
 import argparse
 import json
 import logging
+import os
 import sys
-
 from enum import Enum
-from typing import List, NamedTuple, Optional
+from typing import NamedTuple
+
 
 NEWLINE = 10  # ASCII "\n"
 CARRIAGE_RETURN = 13  # ASCII "\r"
 LINTER_CODE = "NEWLINE"
+MAX_FILE_SIZE: int = 1024 * 1024 * 1024  # 1GB in bytes
 
 
 class LintSeverity(str, Enum):
@@ -22,19 +27,47 @@ class LintSeverity(str, Enum):
 
 
 class LintMessage(NamedTuple):
-    path: Optional[str]
-    line: Optional[int]
-    char: Optional[int]
+    path: str | None
+    line: int | None
+    char: int | None
     code: str
     severity: LintSeverity
     name: str
-    original: Optional[str]
-    replacement: Optional[str]
-    description: Optional[str]
+    original: str | None
+    replacement: str | None
+    description: str | None
 
 
-def check_file(filename: str) -> Optional[LintMessage]:
+def check_file(filename: str) -> LintMessage | None:
     logging.debug("Checking file %s", filename)
+
+    # Check if file is too large
+    try:
+        file_size = os.path.getsize(filename)
+        if file_size > MAX_FILE_SIZE:
+            return LintMessage(
+                path=filename,
+                line=None,
+                char=None,
+                code=LINTER_CODE,
+                severity=LintSeverity.WARNING,
+                name="file-too-large",
+                original=None,
+                replacement=None,
+                description=f"File size ({file_size} bytes) exceeds {MAX_FILE_SIZE} bytes limit, skipping",
+            )
+    except OSError as err:
+        return LintMessage(
+            path=filename,
+            line=None,
+            char=None,
+            code=LINTER_CODE,
+            severity=LintSeverity.ERROR,
+            name="file-access-error",
+            original=None,
+            replacement=None,
+            description=f"Failed to get file size: {err}",
+        )
 
     with open(filename, "rb") as f:
         lines = f.readlines()
@@ -85,7 +118,7 @@ def check_file(filename: str) -> Optional[LintMessage]:
             description="Trailing newline found. Run `lintrunner --take NEWLINE -a` to apply changes.",
         )
     has_changes = False
-    original_lines: Optional[List[bytes]] = None
+    original_lines: list[bytes] | None = None
     for idx, line in enumerate(lines):
         if len(line) >= 2 and line[-1] == NEWLINE and line[-2] == CARRIAGE_RETURN:
             if not has_changes:
@@ -95,7 +128,8 @@ def check_file(filename: str) -> Optional[LintMessage]:
 
     if has_changes:
         try:
-            assert original_lines is not None
+            if original_lines is None:
+                raise AssertionError("original_lines is None")
             original = b"".join(original_lines).decode("utf-8")
             replacement = b"".join(lines).decode("utf-8")
         except Exception as err:

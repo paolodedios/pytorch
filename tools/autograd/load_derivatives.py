@@ -2,13 +2,16 @@
 #
 # Each autograd function is represented by `DifferentiabilityInfo` containing
 # a list of `Derivative`. See `torchgen.api.autograd` for the data models.
+
+from __future__ import annotations
+
 import re
-from collections import defaultdict
-from typing import Any, Counter, Dict, List, Match, Optional, Sequence, Set, Tuple
+from collections import Counter, defaultdict
+from typing import Any, TYPE_CHECKING
 
 import yaml
-from torchgen.api import cpp
 
+from torchgen.api import cpp
 from torchgen.api.autograd import (
     Derivative,
     DifferentiabilityInfo,
@@ -46,28 +49,37 @@ from torchgen.model import (
     Type,
     Variant,
 )
-from torchgen.utils import concatMap, IDENT_REGEX, split_name_params, YamlLoader
+from torchgen.utils import concatMap, IDENT_REGEX, split_name_params
+from torchgen.yaml_utils import YamlLoader
 
-_GLOBAL_LOAD_DERIVATIVE_CACHE = {}
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
+DerivativeRet = tuple[dict[FunctionSchema, dict[str, DifferentiabilityInfo]], set[str]]
+
+_GLOBAL_LOAD_DERIVATIVE_CACHE: dict[tuple[str, str], DerivativeRet] = {}
 
 _VALID_AUTOGRAD_KEYS = set(AUTOGRAD_KEYS)
+
 
 # This function directly adds per-dispatchkey derivative entries for {view}_copy variants of each view op.
 # Since every {view} and {view}_copy op shares the same derivative formula,
 # we generate them here instead of duplicating them in the yaml.
 # See Note [Codegen'd {view}_copy Operators]
 def add_view_copy_derivatives(
-    infos: Dict[FunctionSchema, Dict[str, DifferentiabilityInfo]],
-    view_groups: List[NativeFunctionsViewGroup],
+    infos: dict[FunctionSchema, dict[str, DifferentiabilityInfo]],
+    view_groups: list[NativeFunctionsViewGroup],
 ) -> None:
     # Get the map from each view op's name to its corresponding view group
-    view_name_to_group: Dict[OperatorName, NativeFunctionsViewGroup] = {
+    view_name_to_group: dict[OperatorName, NativeFunctionsViewGroup] = {
         g.view.func.name: g for g in view_groups
     }
 
     view_infos = {}
 
-    for _, info_dispatch_dict in infos.items():
+    for info_dispatch_dict in infos.values():
         # maybe_view_group only needs to be calculated once per info_dispatch_dict
         maybe_view_group = None
         view_copy_differentiability_infos = {}
@@ -82,8 +94,11 @@ def add_view_copy_derivatives(
                     view_copy_differentiability_infos[dispatch_key] = view_copy_info
             else:
                 break
-        if len(view_copy_differentiability_infos) > 0:
-            assert fn_schema is not None
+        # prefer manually-defined derivatives if any
+        # pyrefly: ignore [unbound-name]
+        if len(view_copy_differentiability_infos) > 0 and fn_schema not in infos:
+            if fn_schema is None:
+                raise AssertionError("Expected fn_schema to be non-None")
             view_infos[fn_schema] = view_copy_differentiability_infos
 
     infos.update(view_infos)
@@ -91,24 +106,22 @@ def add_view_copy_derivatives(
 
 def load_derivatives(
     derivatives_yaml_path: str, native_yaml_path: str, tags_yaml_path: str
-) -> Tuple[Dict[FunctionSchema, Dict[str, DifferentiabilityInfo]], Set[str]]:
+) -> DerivativeRet:
     # Do some caching as this is a deterministic function
     global _GLOBAL_LOAD_DERIVATIVE_CACHE
     key = (derivatives_yaml_path, native_yaml_path)
     if key not in _GLOBAL_LOAD_DERIVATIVE_CACHE:
-
-        with open(derivatives_yaml_path, "r") as f:
+        with open(derivatives_yaml_path) as f:
             definitions = yaml.load(f, Loader=YamlLoader)
 
         funcs = parse_native_yaml(native_yaml_path, tags_yaml_path).native_functions
         # From the parsed native functions, separate out the (generated) view_copy functions,
         # so we can generate derivatives for them separately.
         native_functions_with_view_groups = get_grouped_by_view_native_functions(funcs)
-        native_functions_without_view_copies = concatMap(
-            # We need to pull out the view_inplace ops too, since they might have their own derivative entries.
+        native_functions = concatMap(
             lambda g: [g]
             if isinstance(g, NativeFunction)
-            else list(g.functions(include_copy=False)),
+            else list(g.functions(include_copy=True)),
             native_functions_with_view_groups,
         )
         view_groups = [
@@ -121,13 +134,14 @@ def load_derivatives(
         # function schema is the complete declaration including mutability annotation / default value and etc.
         # signature is the canonical schema for a group of functions (in-place/out/functional variants)
         # that are semantically related.
-        functions_by_signature: Dict[
-            FunctionSchema, List[NativeFunction]
-        ] = defaultdict(list)
-        functions_by_schema: Dict[str, NativeFunction] = {}
-        for function in native_functions_without_view_copies:
+        functions_by_signature: dict[FunctionSchema, list[NativeFunction]] = (
+            defaultdict(list)
+        )
+        functions_by_schema: dict[str, NativeFunction] = {}
+        for function in native_functions:
             functions_by_signature[function.func.signature()].append(function)
-            assert str(function.func) not in functions_by_schema
+            if str(function.func) in functions_by_schema:
+                raise AssertionError(f"Duplicate function schema: {str(function.func)}")
             functions_by_schema[str(function.func)] = function
 
         # Keep track of how many of which ops we've seen so we can
@@ -137,8 +151,8 @@ def load_derivatives(
         # infos is a dict that maps FunctionSchema -> a dict of per dispatch key DifferentiabilityInfos
         # this is useful because in tools/autograd/gen_autograd.py:match_differentiability_info
         # we ultimately need to categorize the DifferentiabilityInfos by FunctionSchema
-        infos: Dict[FunctionSchema, Dict[str, DifferentiabilityInfo]] = {}
-        used_dispatch_keys: Set[str] = set()
+        infos: dict[FunctionSchema, dict[str, DifferentiabilityInfo]] = {}
+        used_dispatch_keys: set[str] = set()
         for defn_dict in definitions:
             # Ensure that the old derivatives.yaml schema with no dispatch key can be loaded.
             if "dispatch" not in defn_dict:
@@ -160,7 +174,7 @@ def load_derivatives(
 
         add_view_copy_derivatives(infos, view_groups)
 
-        # cache both loaded infos as well a a set of all the dispatch_keys/aliases
+        # cache both loaded infos as well as a set of all the dispatch_keys/aliases
         # that appear in derivatives.yaml. used_dispatch_keys is useful for generating
         # VariableType.cpp where we need a TORCH_LIBRARY_IMPL for every autograd dispatch key used
         _GLOBAL_LOAD_DERIVATIVE_CACHE[key] = infos, used_dispatch_keys
@@ -181,11 +195,11 @@ def cpp_arguments(f: NativeFunction) -> Sequence[Binding]:
 def create_derivative(
     f: NativeFunction,
     formula: str,
-    var_names: Tuple[str, ...],
+    var_names: tuple[str, ...],
     available_named_gradients: Sequence[str],
 ) -> Derivative:
     original_formula = formula
-    arguments: List[NamedCType] = [
+    arguments: list[NamedCType] = [
         a.nctype.remove_const_ref() for a in cpp_arguments(f)
     ]
 
@@ -226,31 +240,35 @@ def create_derivative(
 
 
 def create_forward_derivative(
-    f: NativeFunction, formula: str, names: Tuple[str, ...]
+    f: NativeFunction, formula: str, names: tuple[str, ...]
 ) -> ForwardDerivative:
     var_names = names
-    var_types: Optional[Tuple[Type, ...]] = None
+    var_types: tuple[Type, ...] | None = None
     for r in f.func.returns:
         if r.name in var_names:
             if var_types is None:
-                var_types = tuple()
+                var_types = ()
             var_types = var_types + (r.type,)
 
     # Handle default return names
     if var_types is None:
         if var_names == ("result",):
-            assert len(f.func.returns) == 1
+            if len(f.func.returns) != 1:
+                raise AssertionError(
+                    f"Expected 1 return for 'result', got {len(f.func.returns)}"
+                )
             var_types = (f.func.returns[0].type,)
         else:
             for var_name in var_names:
                 res = re.findall(r"^result(\d+)$", var_name)
                 if len(res) == 1:
                     if var_types is None:
-                        var_types = tuple()
+                        var_types = ()
                     arg_idx = int(res[0])
                     var_types = var_types + (f.func.returns[arg_idx].type,)
 
-    assert var_types is not None, "No matching output for forward derivative definition"
+    if var_types is None:
+        raise AssertionError("No matching output for forward derivative definition")
     return ForwardDerivative(
         formula=formula,
         var_names=var_names,
@@ -265,15 +283,19 @@ def create_forward_derivative(
 def postprocess_forward_derivatives(
     f: NativeFunction,
     defn_name: str,
-    all_arg_names: List[str],
-    derivatives: List[Derivative],
-    forward_derivatives: List[ForwardDerivative],
+    all_arg_names: list[str],
+    derivatives: list[Derivative],
+    forward_derivatives: list[ForwardDerivative],
     args_with_derivatives: Sequence[Binding],
-) -> List[ForwardDerivative]:
-    def find_required_inputs(formula: str, postfix: str) -> Tuple[str, ...]:
+) -> list[ForwardDerivative]:
+    def find_required_inputs(formula: str, postfix: str) -> tuple[str, ...]:
+        is_foreach = f.func.name.name.base.startswith("_foreach_")
         required_inputs = set()
         for arg in args_with_derivatives:
-            if arg.type in ("at::TensorList", "const at::ITensorListRef &"):
+            if (
+                arg.type in ("at::TensorList", "const at::ITensorListRef &")
+                and not is_foreach
+            ):
                 # The functions taking TensorList handle everything internally
                 continue
             arg_name = arg.name
@@ -292,15 +314,16 @@ def postprocess_forward_derivatives(
 
         return tuple(required_inputs)
 
-    updated_derivatives: List[ForwardDerivative] = []
+    updated_derivatives: list[ForwardDerivative] = []
 
     for defn in forward_derivatives:
         formula = defn.formula
         required_inputs_tangent = find_required_inputs(formula, "_t")
         if formula == "auto_element_wise":
-            assert (
-                f.func.kind() != SchemaKind.inplace
-            ), f"Cannot use auto_element_wise with {f.func.name} because it is an in-place variant"
+            if f.func.kind() == SchemaKind.inplace:
+                raise AssertionError(
+                    f"Cannot use auto_element_wise with {f.func.name} because it is an in-place variant"
+                )
             if (
                 (not len(args_with_derivatives) == 1)
                 or len(forward_derivatives) > 1
@@ -321,7 +344,7 @@ def postprocess_forward_derivatives(
             # This transformation is based on the observation that for element-wise functions, the Jacobian
             # matrix is diagonal and thus doing J * v is the same as (v^T J)^T (in practice, we ignore the transpositions)
             # For the complex case, we use hermitian transpose and get (v.conj() J).conj()
-            # So here we are going to re-use the backward formula and replace two things:
+            # So here we are going to reuse the backward formula and replace two things:
             # 1) all occurrences of "grad" with "foo_t.conj()", where foo is the name of the unique differentiable input.
             # 2) all usage of an original input "foo" with its primal value "foo_p".
             # 3) conjugate the final result
@@ -376,7 +399,8 @@ def postprocess_forward_derivatives(
             # the vector where all the differentiable inputs are stacked.
 
             diff_arg_names = [arg.name for arg in args_with_derivatives]
-            assert len(diff_arg_names) > 0
+            if len(diff_arg_names) == 0:
+                raise AssertionError("Expected at least one differentiable argument")
 
             # Do replacement of input variables
             new_args = []
@@ -391,12 +415,13 @@ def postprocess_forward_derivatives(
 
             # Call into the forward again. We need two cases here to handle both Tensor methods and at:: functions.
             if Variant.function in f.variants:
-                fw_formula = "at::{}({})".format(defn_name, ", ".join(new_args))
+                fw_formula = f"at::{defn_name}({', '.join(new_args)})"
             else:
-                assert Variant.method in f.variants
-                fw_formula = "{}.{}({})".format(
-                    new_args[0], defn_name, ", ".join(new_args[1:])
-                )
+                if Variant.method not in f.variants:
+                    raise AssertionError(
+                        f"Expected Variant.method in variants for {f.func.name}"
+                    )
+                fw_formula = f"{new_args[0]}.{defn_name}({', '.join(new_args[1:])})"
 
             # All of the input tangents are always used so all of them are required here.
             required_inputs_tangent = tuple(diff_arg_names)
@@ -424,23 +449,20 @@ def postprocess_forward_derivatives(
 
 
 def is_forward_derivative_definition(
-    all_arg_names: List[str], names: Tuple[str, ...]
+    all_arg_names: list[str], names: tuple[str, ...]
 ) -> bool:
     for name in names:
-        if name not in all_arg_names:
-            return True
-        else:
-            return False
+        return name not in all_arg_names
     raise RuntimeError("Expected `names` to be non-empty")
 
 
 def create_differentiability_info(
-    defn_dict: Dict[Any, Any],
-    functions_by_signature: Dict[FunctionSchema, List[NativeFunction]],
-    functions_by_schema: Dict[str, NativeFunction],
+    defn_dict: dict[Any, Any],
+    functions_by_signature: dict[FunctionSchema, list[NativeFunction]],
+    functions_by_schema: dict[str, NativeFunction],
     op_counter: Counter[str],
-    used_dispatch_keys: Set[str],
-) -> Tuple[FunctionSchema, Dict[str, DifferentiabilityInfo]]:
+    used_dispatch_keys: set[str],
+) -> tuple[FunctionSchema, dict[str, DifferentiabilityInfo]]:
     """Processes a single entry `defn` in derivatives.yaml"""
 
     def canonical_function(
@@ -454,10 +476,13 @@ def create_differentiability_info(
             ):
                 return f
         # some functions only have in-place variants
-        assert name + "_" == cpp.name(functions[0].func)
+        if name + "_" != cpp.name(functions[0].func):
+            raise AssertionError(
+                f"Expected inplace function name '{name}_', got '{cpp.name(functions[0].func)}'"
+            )
         return functions[0]
 
-    def split_names(raw_names: str) -> Tuple[str, ...]:
+    def split_names(raw_names: str) -> tuple[str, ...]:
         """Given "foo, bar", return ["foo", "bar"]."""
         return tuple(x.strip() for x in raw_names.split(","))
 
@@ -471,7 +496,7 @@ def create_differentiability_info(
         uses_grad = False  # true if any derivative uses "grad"
         num_grads_uses = 0  # count of uses of "grads" or "grads[INDEX]"
         uses_named_grads = False  # true if any derivative uses "grad_{name}"
-        used_grads_indices: List[int] = []  # which indices of grads are used
+        used_grads_indices: list[int] = []  # which indices of grads are used
         for d in derivatives:
             formula = d.formula
             uses_grad = uses_grad or bool(
@@ -484,7 +509,10 @@ def create_differentiability_info(
         # "grads" should be no fewer than the number of indices we see
         # inside "grads". They may not be equal because we may use
         # "grads" without an index.
-        assert num_grads_uses >= len(used_grads_indices)
+        if num_grads_uses < len(used_grads_indices):
+            raise AssertionError(
+                f"num_grads_uses ({num_grads_uses}) < len(used_grads_indices) ({len(used_grads_indices)})"
+            )
         # Thus if the number is equal, every use of grads is also
         # indexed.
         only_used_grads_indices = num_grads_uses == len(used_grads_indices)
@@ -515,7 +543,7 @@ def create_differentiability_info(
     @with_native_function
     def set_up_derivatives(
         f: NativeFunction,
-    ) -> Tuple[
+    ) -> tuple[
         Sequence[Derivative],
         Sequence[ForwardDerivative],
         Sequence[Binding],
@@ -523,10 +551,10 @@ def create_differentiability_info(
         Sequence[str],
     ]:
         # Set up the derivative information
-        derivatives: List[Derivative] = []
-        forward_derivatives: List[ForwardDerivative] = []
-        non_differentiable_arg_names: List[str] = []
-        args_with_derivatives_set: Set[str] = set()
+        derivatives: list[Derivative] = []
+        forward_derivatives: list[ForwardDerivative] = []
+        non_differentiable_arg_names: list[str] = []
+        args_with_derivatives_set: set[str] = set()
 
         all_arg_names = [a.name for a in cpp_arguments(f)]
         all_ret_names = [
@@ -559,10 +587,11 @@ def create_differentiability_info(
             names = split_names(raw_names)
 
             for name in names:
-                assert not (name in all_arg_names and name in all_ret_names), (
-                    f"While processing the derivative formula for '{f.func.name}' wrt '{name}', "
-                    f"expected '{name}' to not be both an input arg and named return. "
-                )
+                if name in all_arg_names and name in all_ret_names:
+                    raise AssertionError(
+                        f"While processing the derivative formula for '{f.func.name}' wrt '{name}', "
+                        f"expected '{name}' to not be both an input arg and named return."
+                    )
 
             if is_forward_derivative_definition(all_arg_names, names):
                 forward_derivatives.append(create_forward_derivative(f, formula, names))
@@ -619,13 +648,13 @@ def create_differentiability_info(
     output_differentiability = defn_dict.pop("output_differentiability", None)
     output_differentiability_conditions = None
     if output_differentiability and any(
-        [isinstance(diff, str) for diff in output_differentiability]
+        isinstance(diff, str) for diff in output_differentiability
     ):
         if len(output_differentiability) != 1:
             raise RuntimeError(
                 f"Not supported: for {specification},"
                 f"output_differentiability must either be "
-                f"List[bool] or a List[str] where each str is a "
+                f"list[bool] or a list[str] where each str is a "
                 f"condition. In the case where it is a condition, "
                 f"we only support single-output functions. "
                 f"Please file us an issue. "
@@ -693,7 +722,7 @@ def create_differentiability_info(
             available_named_gradients,
         ) = set_up_derivatives(canonical)
 
-        used_named_gradients: Set[str] = set()
+        used_named_gradients: set[str] = set()
         for d in derivatives:
             used_named_gradients |= d.named_gradients
 
@@ -732,7 +761,7 @@ def create_differentiability_info(
 GRAD_INDEX_REGEX = r"(?:^|\W)grads\[(\d+)\]"
 
 
-def used_gradient_indices(formula: str) -> List[int]:
+def used_gradient_indices(formula: str) -> list[int]:
     """Determine a list of gradient indices (the i in grads[i]) that
     are used by the formula.
 
@@ -744,17 +773,18 @@ def used_gradient_indices(formula: str) -> List[int]:
 
 def saved_variables(
     formula: str,
-    nctypes: List[NamedCType],
-    var_names: Tuple[str, ...],
-) -> Tuple[str, Tuple[SavedAttribute, ...]]:
+    nctypes: list[NamedCType],
+    var_names: tuple[str, ...],
+) -> tuple[str, tuple[SavedAttribute, ...]]:
     def stride_expr(name: str) -> str:
-        assert var_names == (name,), (
-            'Replacement for ".strides()" is currently only supported for single derivatives of the same tensor '
-            'that ".strides()" is being called on.'
-        )
+        if var_names != (name,):
+            raise AssertionError(
+                'Replacement for ".strides()" is currently only supported for single derivatives of the same tensor '
+                'that ".strides()" is being called on.'
+            )
         return f'strides_or_error({name}, "{name}")'
 
-    REPLACEMENTS: List[Tuple[str, Dict[str, Any]]] = [
+    REPLACEMENTS: list[tuple[str, dict[str, Any]]] = [
         # replace self.sym_sizes() with self_sym_sizes
         (
             r"{}.sym_sizes\(\)",
@@ -771,7 +801,7 @@ def saved_variables(
                 "nctype": lambda name: NamedCType(
                     name, OptionalCType(BaseCType(symIntArrayRefT))
                 ),
-                "expr": lambda name: f"{name}.has_value() ? c10::optional<c10::SymIntArrayRef>({name}->sym_sizes()) : c10::nullopt",
+                "expr": lambda name: f"{name}.has_value() ? std::optional<c10::SymIntArrayRef>({name}->sym_sizes()) : std::nullopt",
             },
         ),
         # replace self.sym_blocksize() with self_sym_blocksize_opt
@@ -807,9 +837,7 @@ def saved_variables(
         (
             r"{}.sym_size\((-?\w+)\)",
             {
-                "suffix": lambda m: "_sym_argsize_{}".format(
-                    m.groups()[0].replace("-", "minus_")
-                ),
+                "suffix": lambda m: f"_sym_argsize_{m.groups()[0].replace('-', 'minus_')}",
                 "nctype": lambda name: NamedCType(name, BaseCType(SymIntT)),
             },
         ),
@@ -819,6 +847,14 @@ def saved_variables(
             {
                 "suffix": "_numel",
                 "nctype": lambda name: NamedCType(name, BaseCType(longT)),
+            },
+        ),
+        # replace self.sym_numel() with self_sym_numel
+        (
+            r"{}.sym_numel\(\)",
+            {
+                "suffix": "_sym_numel",
+                "nctype": lambda name: NamedCType(name, BaseCType(SymIntT)),
             },
         ),
         # replace to_args_sizes(self) with self_args_sizes
@@ -902,7 +938,7 @@ def saved_variables(
     ]
 
     # find which arguments need to be saved
-    saved: List[SavedAttribute] = []
+    saved: list[SavedAttribute] = []
 
     if ".sizes()" in formula or "->sizes()" in formula:
         raise RuntimeError(
@@ -929,8 +965,9 @@ def saved_variables(
         # when the autograd Function is created to avoid saving variables
         for regex, info in REPLACEMENTS:
 
-            def repl(m: Match[str]) -> str:
+            def repl(m: re.Match[str]) -> str:
                 suffix: str = (
+                    # pyrefly: ignore [bad-assignment]
                     info["suffix"](m) if callable(info["suffix"]) else info["suffix"]
                 )
                 expr: str = info["expr"](name) if "expr" in info else m.group(0)
@@ -947,13 +984,13 @@ def saved_variables(
 
             formula = re.sub(regex.format(name), repl, formula)
 
-        # c10::optional<std::string> types stored in Backward nodes must be
-        # converted to c10::optional<c10::string_view> before being passed into
+        # std::optional<std::string> types stored in Backward nodes must be
+        # converted to std::optional<std::string_view> before being passed into
         # the backward function
         if nctype.type == OptionalCType(BaseCType(stringT)):
             formula = re.sub(
                 rf"\b{name}\b",
-                f"{name}.has_value() ? c10::optional<c10::string_view>({name}.value()) : c10::nullopt",
+                f"{name}.has_value() ? std::optional<std::string_view>({name}.value()) : std::nullopt",
                 formula,
             )
 
@@ -970,7 +1007,7 @@ def saved_variables(
 
 
 def _create_op_prefix(name: str) -> str:
-    """Takes a native function name converts to a op prefix name.
+    r"""Takes a native function name converts to an op prefix name.
 
     Note that the "name" parameter must be the native function name
     without the optional variant suffix, so "add" instead of
@@ -979,16 +1016,17 @@ def _create_op_prefix(name: str) -> str:
     OP names correspond to classes, hence the change to title case.
 
     Example::
-    >>> _create_op_prefix('add')
-    'AddBackward'
+
+        >>> _create_op_prefix("add")
+        'AddBackward'
     """
     camel_case = "".join([p.title() for p in name.split("_")])
     return (camel_case + "Backward").replace("ForwardBackward", "Backward")
 
 
 def dedup_vars(vars: Sequence[SavedAttribute]) -> Sequence[SavedAttribute]:
-    seen: Set[str] = set()
-    saved: List[SavedAttribute] = []
+    seen: set[str] = set()
+    saved: list[SavedAttribute] = []
     for var in vars:
         name = (
             var.nctype.name.name

@@ -1,4 +1,6 @@
-from typing import List, Union, Mapping, Dict, Any
+# mypy: allow-untyped-defs
+from collections.abc import Mapping
+from typing import Any
 
 import torch.optim as optim
 from torch import Tensor
@@ -8,10 +10,10 @@ from torch.distributed._shard.sharded_tensor import ShardedTensor
 class ShardedOptimizer(optim.Optimizer):
     def __init__(
         self,
-        named_params: Mapping[str, Union[Tensor, ShardedTensor]],
+        named_params: Mapping[str, Tensor | ShardedTensor],
         optimizer_class,
         *optimizer_args,
-        **optimizer_kwargs
+        **optimizer_kwargs,
     ):
         """
         ShardedOptimizer collects all tensors and local shard tensors of
@@ -27,11 +29,12 @@ class ShardedOptimizer(optim.Optimizer):
             **optimizer_kwargs: the key-word arguments to initialize the optimizer.
 
         """
-        tensors: List[Tensor] = []
+        tensors: list[Tensor] = []
         for value in named_params.values():
             if isinstance(value, ShardedTensor):
-                for local_shard in value.local_shards():
-                    tensors.append(local_shard.tensor)
+                tensors.extend(
+                    local_shard.tensor for local_shard in value.local_shards()
+                )
             else:
                 tensors.append(value)
 
@@ -40,8 +43,8 @@ class ShardedOptimizer(optim.Optimizer):
         self.param_groups = self._optim.param_groups
         self.state = self._optim.state
 
-    def zero_grad(self, set_to_none: bool = False):  # type: ignore[override]
-        r"""Sets the gradients of all optimized :class:`torch.Tensor` s to zero.
+    def zero_grad(self, set_to_none: bool = True):  # type: ignore[override]
+        r"""Resets the gradients of all optimized :class:`torch.Tensor` s.
 
         Args:
             set_to_none (bool): instead of setting to zero, set the grads to None.
@@ -70,7 +73,7 @@ class ShardedOptimizer(optim.Optimizer):
         """
         self._optim.step(closure)
 
-    def state_dict(self) -> Dict[str, Any]:
+    def state_dict(self) -> dict[str, Any]:
         """
         Returned state and param_groups will contain parameter keys
         instead of parameter indices like torch.optim.Optimizer.
@@ -78,7 +81,6 @@ class ShardedOptimizer(optim.Optimizer):
         """
         # TODO: implement state_dict
         raise NotImplementedError("ShardedOptimizer state_dict not implemented yet!")
-
 
     def load_state_dict(self, state_dict: Mapping[str, Any]):
         r"""Loads the ShardedOptimizer state.
@@ -88,10 +90,13 @@ class ShardedOptimizer(optim.Optimizer):
                 from a call to :meth:`state_dict`.
         """
         # TODO: implement load_state_dict
-        raise NotImplementedError("ShardedOptimizer load_state_dict not implemented yet!")
+        raise NotImplementedError(
+            "ShardedOptimizer load_state_dict not implemented yet!"
+        )
 
     def add_param_group(self, param_group: Any):
-        r"""Add a new param group
-        """
+        r"""Add a new param group"""
         # TODO: implement add_param_group
-        raise NotImplementedError("ShardedOptimizer add_param_group not implemented yet!")
+        raise NotImplementedError(
+            "ShardedOptimizer add_param_group not implemented yet!"
+        )

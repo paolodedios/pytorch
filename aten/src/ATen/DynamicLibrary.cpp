@@ -1,13 +1,12 @@
 #include <c10/util/Exception.h>
-#include <c10/util/Unicode.h>
 #include <ATen/DynamicLibrary.h>
-#include <ATen/Utils.h>
 
 #ifndef _WIN32
 #include <dlfcn.h>
 #include <libgen.h>
 #else
 #include <c10/util/win32-headers.h>
+#include <c10/util/Unicode.h>
 #endif
 
 namespace at {
@@ -25,9 +24,7 @@ static void* checkDL(void* x) {
 
   return x;
 }
-DynamicLibrary::DynamicLibrary(const char* name, const char* alt_name, bool leak_handle_): leak_handle(leak_handle_) {
-  // NOLINTNEXTLINE(hicpp-signed-bitwise)
-  handle = dlopen(name, RTLD_LOCAL | RTLD_NOW);
+DynamicLibrary::DynamicLibrary(const char* name, const char* alt_name, bool leak_handle_): leak_handle(leak_handle_), handle(dlopen(name, RTLD_LOCAL | RTLD_NOW)) {
   if (!handle) {
     if (alt_name) {
       handle = dlopen(alt_name, RTLD_LOCAL | RTLD_NOW);

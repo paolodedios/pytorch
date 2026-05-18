@@ -5,8 +5,7 @@
 #include <ATen/TensorIterator.h>
 #include <c10/core/Scalar.h>
 
-namespace at {
-namespace native {
+namespace at::native {
 
 template <typename scalar_t>
 C10_HOST_DEVICE C10_ALWAYS_INLINE bool is_lerp_weight_small(scalar_t weight) {
@@ -41,8 +40,7 @@ using lerp_fn_scalar = void (*)(
 using lerp_fn_tensor = void (*)(
     at::TensorIteratorBase& iter);
 
-DECLARE_DISPATCH(lerp_fn_scalar, lerp_kernel_scalar_weight);
-DECLARE_DISPATCH(lerp_fn_tensor, lerp_kernel_tensor_weight);
+DECLARE_DISPATCH(lerp_fn_scalar, lerp_kernel_scalar_weight)
+DECLARE_DISPATCH(lerp_fn_tensor, lerp_kernel_tensor_weight)
 
-} // namespace native
-} // namespace at
+} // namespace at::native

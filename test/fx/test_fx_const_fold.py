@@ -6,7 +6,7 @@ import torch
 import torch.fx
 from torch.fx.experimental import const_fold
 from torch.fx.passes.shape_prop import _extract_tensor_metadata, ShapeProp
-from torch.testing._internal.common_utils import TestCase
+from torch.testing._internal.common_utils import raise_on_run_directly, TestCase
 
 
 class TestConstFold(TestCase):
@@ -61,7 +61,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr_1 = torch.nn.Parameter(torch.tensor([[-0.9]]))
                 self.attr_2 = torch.nn.Parameter(torch.tensor([[17.1]]))
@@ -106,7 +106,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 # Note: Named as such to result in name collision.
                 self.add_1__CF = torch.nn.Parameter(torch.tensor([[1.0]]))
@@ -133,9 +133,6 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
             def forward(self, x, y):
                 return x * 2 + y
 
@@ -171,7 +168,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr1 = torch.nn.Parameter(torch.tensor([[-0.9]]))
 
@@ -214,7 +211,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr1 = torch.nn.Parameter(torch.tensor([[-0.9]]))
                 self.attr1 = torch.nn.Parameter(torch.tensor([[1.32]]))
@@ -257,7 +254,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr1 = torch.nn.Parameter(torch.randn(2, 3))
                 self.attr2 = torch.nn.Parameter(torch.randn(2, 3))
@@ -304,7 +301,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr1 = torch.nn.Parameter(torch.randn(4, 4))
                 self.attr2 = torch.nn.Parameter(torch.randn(4, 4))
@@ -335,7 +332,7 @@ class TestConstFold(TestCase):
         """
 
         class TracedThroughModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.internal_attr = torch.nn.Parameter(torch.randn(2, 3))
 
@@ -343,7 +340,7 @@ class TestConstFold(TestCase):
                 return self.internal_attr
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.my_mod = TracedThroughModule()
                 self.attr = torch.nn.Parameter(torch.randn(2, 3))
@@ -367,7 +364,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr = torch.nn.Parameter(torch.randn(2, 3))
 
@@ -416,7 +413,7 @@ class TestConstFold(TestCase):
 
     def test_const_fold_has_inlined_call_module_node(self):
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr = torch.nn.Parameter(torch.randn(2, 3))
                 self.mod = torch.nn.Identity()
@@ -437,7 +434,7 @@ class TestConstFold(TestCase):
 
     def test_const_fold_module_attr(self):
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.const = torch.nn.Parameter(torch.randn(2, 3))
                 self.mod = torch.nn.Identity()
@@ -459,7 +456,7 @@ class TestConstFold(TestCase):
 
     def test_const_fold_unused_placeholder(self):
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.const = torch.nn.Parameter(torch.randn(2, 3))
 
@@ -478,7 +475,7 @@ class TestConstFold(TestCase):
 
     def test_dict_output(self):
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.const = torch.nn.Parameter(torch.randn(2, 3))
 
@@ -497,7 +494,7 @@ class TestConstFold(TestCase):
 
     def test_two_outputs(self):
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.const = torch.nn.Parameter(torch.randn(2, 3))
 
@@ -517,7 +514,7 @@ class TestConstFold(TestCase):
 
     def test_three_outputs(self):
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.const = torch.nn.Parameter(torch.randn(2, 3))
 
@@ -543,7 +540,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr = torch.nn.Parameter(torch.randn(2, 3))
 
@@ -575,7 +572,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr = torch.nn.Parameter(torch.randn(2, 3))
 
@@ -608,7 +605,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.weight = torch.nn.Parameter(torch.randn(4, 4))
                 self.bias = torch.nn.Parameter(torch.randn(4))
@@ -653,7 +650,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.lin_input = torch.nn.Parameter(torch.randn(4, 4))
                 self.lin = torch.nn.Linear(4, 4)
@@ -679,7 +676,7 @@ class TestConstFold(TestCase):
         """
 
         class ConstFoldTestModule(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.attr_1 = torch.nn.Parameter(torch.tensor([[-0.9]]), requires_grad)
                 self.attr_2 = torch.nn.Parameter(torch.tensor([[17.1]]), requires_grad)
@@ -703,9 +700,80 @@ class TestConstFold(TestCase):
         for n in mod_folded.graph.nodes:
             if n.op == "get_attr":
                 attr = self._get_attr(n)
-                self.assertEquals(_extract_tensor_metadata(attr), n.meta["tensor_meta"])
+                self.assertEqual(_extract_tensor_metadata(attr), n.meta["tensor_meta"])
 
         # Now run both folded and non-folded to check results equal.
         base_result = mod(in_x, in_y)
         fold_result = mod_folded(in_x, in_y)
         self.assertTrue(torch.equal(fold_result, base_result))
+
+    def test_fold_pure_subgraph(self):
+        class SubModule(torch.nn.Module):
+            def forward(self):
+                return torch.full((5, 10), 2.0) + 1
+
+        # Create a parent graph with this module as a subgraph and output
+        ep = torch.export.export(SubModule(), ())
+        parent_graph = torch.fx.Graph()
+        call_mod = parent_graph.call_module("sub", args=())
+        get_item = parent_graph.call_function(
+            operator.getitem, args=(call_mod, slice(None))
+        )
+        parent_graph.output((get_item,))
+        parent = torch.fx.GraphModule({"sub": ep.module()}, parent_graph)
+
+        mod_folded: const_fold.FoldedGraphModule = const_fold.split_const_subgraphs(
+            parent, device_for_folded_attrs="cpu"
+        )
+        self._verify_const_fold_mod(mod_folded)
+
+    def test_do_not_fold_impure_subgraph(self):
+        """
+        Skip folding any subgraph containing impure ops.
+        """
+
+        class SubModule(torch.nn.Module):
+            def forward(self):
+                return torch.randn(5, 10) + 1
+
+        # Create a parent graph with this module as a subgraph and output
+        ep = torch.export.export(SubModule(), ())
+        parent_graph = torch.fx.Graph()
+        call_mod = parent_graph.call_module("sub", args=())
+        get_item = parent_graph.call_function(
+            operator.getitem, args=(call_mod, slice(None))
+        )
+        parent_graph.output((get_item,))
+        parent = torch.fx.GraphModule({"sub": ep.module()}, parent_graph)
+
+        mod_folded: const_fold.FoldedGraphModule = const_fold.split_const_subgraphs(
+            parent, device_for_folded_attrs="cpu"
+        )
+        self.assertIsNone(mod_folded.const_subgraph_module)
+
+    def test_const_fold_partial_graph(self):
+        """
+        If a model graph is partially const folded,
+        the non-const subgraph should be inlined back and erased.
+        """
+
+        class TestModule(torch.nn.Module):
+            def __init__(self, p):
+                super().__init__()
+                self.p = p
+
+            def forward(self, x):
+                probs = torch.empty_permuted(x.shape, [0, 1])
+                mask = torch.bernoulli(probs, 1 - self.p)
+                return x * mask / (1 - self.p)
+
+        ep = torch.export.export(TestModule(0.4), (torch.randn(5, 10),))
+
+        mod_folded: const_fold.FoldedGraphModule = const_fold.split_const_subgraphs(
+            ep.module(), device_for_folded_attrs="cpu"
+        )
+        self._verify_const_fold_mod(mod_folded)
+
+
+if __name__ == "__main__":
+    raise_on_run_directly("test/test_fx.py")

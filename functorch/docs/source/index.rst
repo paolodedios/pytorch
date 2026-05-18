@@ -7,14 +7,14 @@ functorch
 
 functorch is `JAX-like <https://github.com/google/jax>`_ composable function transforms for PyTorch.
 
-.. note::
-   This library is currently in `beta <https://pytorch.org/blog/pytorch-feature-classification-changes/#beta>`_.
-   What this means is that the features generally work (unless otherwise documented)
-   and we (the PyTorch team) are committed to bringing this library forward. However, the APIs
-   may change under user feedback and we don't have full coverage over PyTorch operations.
+.. warning::
 
-   If you have suggestions on the API or use-cases you'd like to be covered, please
-   open an github issue or reach out. We'd love to hear about how you're using the library.
+   We've integrated functorch into PyTorch. As the final step of the
+   integration, the functorch APIs are deprecated as of PyTorch 2.0.
+   Please use the torch.func APIs instead and see the
+   `migration guide <https://pytorch.org/docs/main/func.migrating.html>`_
+   and `docs <https://pytorch.org/docs/main/func.html>`_
+   for more details.
 
 What are composable function transforms?
 ----------------------------------------
@@ -55,7 +55,7 @@ Check out our `whirlwind tour <whirlwind_tour>`_ or some of our tutorials mentio
    :caption: functorch: Getting Started
 
    install
-   notebooks/whirlwind_tour.ipynb
+   tutorials/whirlwind_tour.ipynb
    ux_limitations
 
 .. toctree::
@@ -70,9 +70,9 @@ Check out our `whirlwind tour <whirlwind_tour>`_ or some of our tutorials mentio
    :maxdepth: 1
    :caption: functorch Tutorials
 
-   notebooks/jacobians_hessians.ipynb
-   notebooks/ensembling.ipynb
-   notebooks/per_sample_grads.ipynb
-   notebooks/neural_tangent_kernels.ipynb
-   notebooks/aot_autograd_optimizations.ipynb
-   notebooks/minifier.ipynb
+   tutorials/jacobians_hessians.ipynb
+   tutorials/ensembling.ipynb
+   tutorials/per_sample_grads.ipynb
+   tutorials/neural_tangent_kernels.ipynb
+   tutorials/aot_autograd_optimizations.ipynb
+   tutorials/minifier.ipynb

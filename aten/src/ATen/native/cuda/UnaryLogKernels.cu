@@ -10,9 +10,12 @@
 #include <ATen/native/TensorIterator.h>
 #include <ATen/native/cuda/Math.cuh>
 
-namespace at { namespace native {
+namespace at::native {
 
-const char log_name[] = "log_kernel";
+#if AT_USE_JITERATOR()
+constexpr char log_name[] = "log_kernel";
+#endif
+
 void log_kernel_cuda(TensorIteratorBase& iter) {
   auto common_dtype = iter.common_dtype();
   if (at::isComplexType(common_dtype)) {
@@ -44,7 +47,7 @@ void log_kernel_cuda(TensorIteratorBase& iter) {
   }
 }
 
-const char log10_name[] = "log10_kernel";
+constexpr char log10_name[] = "log10_kernel";
 void log10_kernel_cuda(TensorIteratorBase& iter) {
   auto common_dtype = iter.common_dtype();
   if (at::isComplexType(common_dtype)) {
@@ -81,7 +84,7 @@ void log1p_kernel_cuda(TensorIteratorBase& iter) {
   });
 }
 
-const char log2_name[] = "log2_kernel";
+constexpr char log2_name[] = "log2_kernel";
 void log2_kernel_cuda(TensorIteratorBase& iter) {
   auto common_dtype = iter.common_dtype();
   if (at::isComplexType(common_dtype)) {
@@ -110,9 +113,9 @@ void log2_kernel_cuda(TensorIteratorBase& iter) {
   }
 }
 
-REGISTER_DISPATCH(log_stub, &log_kernel_cuda);
-REGISTER_DISPATCH(log10_stub, &log10_kernel_cuda);
-REGISTER_DISPATCH(log2_stub, &log2_kernel_cuda);
-REGISTER_DISPATCH(log1p_stub, &log1p_kernel_cuda);
+REGISTER_DISPATCH(log_stub, &log_kernel_cuda)
+REGISTER_DISPATCH(log10_stub, &log10_kernel_cuda)
+REGISTER_DISPATCH(log2_stub, &log2_kernel_cuda)
+REGISTER_DISPATCH(log1p_stub, &log1p_kernel_cuda)
 
-}} // namespace at::native
+} // namespace at::native

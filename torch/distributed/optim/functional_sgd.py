@@ -1,11 +1,15 @@
-from typing import Dict, List, Optional
+# mypy: allow-untyped-defs
 
 import torch
 import torch.optim._functional as F
-
 from torch import Tensor
+from torch.distributed.optim._deprecation_warning import (
+    _scripted_functional_optimizer_deprecation_warning,
+)
 
-__all__: List[str] = []
+
+__all__: list[str] = []
+
 
 # Define a TorchScript compatible Functional SGD Optimizer
 # where we use these optimizer in a functional way.
@@ -17,10 +21,10 @@ __all__: List[str] = []
 # NOTE: This should be only used by distributed optimizer internals
 # and not meant to expose to the user.
 @torch.jit.script
-class _FunctionalSGD(object):
+class _FunctionalSGD:
     def __init__(
         self,
-        params: List[Tensor],
+        params: list[Tensor],
         lr: float = 1e-2,
         momentum: float = 0.0,
         dampening: float = 0.0,
@@ -28,8 +32,10 @@ class _FunctionalSGD(object):
         nesterov: bool = False,
         maximize: bool = False,
         foreach: bool = False,
+        fused: bool = False,
         _allow_empty_param_list: bool = False,
     ):
+        _scripted_functional_optimizer_deprecation_warning(stacklevel=2)
         self.defaults = {
             "lr": lr,
             "momentum": momentum,
@@ -39,7 +45,8 @@ class _FunctionalSGD(object):
         self.nesterov = nesterov
         self.maximize = maximize
         self.foreach = foreach
-        self.state = torch.jit.annotate(Dict[torch.Tensor, Dict[str, torch.Tensor]], {})
+        self.fused = fused
+        self.state = torch.jit.annotate(dict[torch.Tensor, dict[str, torch.Tensor]], {})
 
         if len(params) == 0 and not _allow_empty_param_list:
             raise ValueError("optimizer got an empty parameter list")
@@ -48,7 +55,7 @@ class _FunctionalSGD(object):
         # param group as it's not a common use case.
         self.param_group = {"params": params}
 
-    def step_param(self, param: Tensor, grad: Optional[Tensor]):
+    def step_param(self, param: Tensor, grad: Tensor | None):
         """Similar to self.step, but operates on a single parameter and
         its gradient.
         """
@@ -59,7 +66,7 @@ class _FunctionalSGD(object):
         dampening = self.defaults["dampening"]
         lr = self.defaults["lr"]
         params = [param]
-        momentum_buffer_list: List[Optional[Tensor]] = []
+        momentum_buffer_list: list[Tensor | None] = []
         grads = []
 
         has_sparse_grad = False
@@ -88,6 +95,9 @@ class _FunctionalSGD(object):
                 maximize=self.maximize,
                 has_sparse_grad=has_sparse_grad,
                 foreach=self.foreach,
+                fused=self.fused,
+                grad_scale=None,
+                found_inf=None,
             )
         # update momentum_buffer in state
         state = self.state[param]
@@ -95,11 +105,11 @@ class _FunctionalSGD(object):
         if momentum_buffer is not None:
             state["momentum_buffer"] = momentum_buffer
 
-    def step(self, gradients: List[Optional[Tensor]]):
+    def step(self, gradients: list[Tensor | None]):
         params = self.param_group["params"]
         params_with_grad = []
         grads = []
-        momentum_buffer_list: List[Optional[Tensor]] = []
+        momentum_buffer_list: list[Tensor | None] = []
         lr = self.defaults["lr"]
         weight_decay = self.defaults["weight_decay"]
         momentum = self.defaults["momentum"]
@@ -142,6 +152,9 @@ class _FunctionalSGD(object):
                 maximize=self.maximize,
                 has_sparse_grad=has_sparse_grad,
                 foreach=self.foreach,
+                fused=self.fused,
+                grad_scale=None,
+                found_inf=None,
             )
 
         # update momentum_buffers in state

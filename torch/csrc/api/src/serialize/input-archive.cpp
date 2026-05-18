@@ -13,8 +13,7 @@
 #include <string>
 #include <utility>
 
-namespace torch {
-namespace serialize {
+namespace torch::serialize {
 
 InputArchive::InputArchive()
     : module_("Module", std::make_shared<jit::CompilationUnit>()) {}
@@ -93,22 +92,20 @@ void InputArchive::read(const std::string& key, InputArchive& archive) {
 
 void InputArchive::load_from(
     const std::string& filename,
-    c10::optional<torch::Device> device /*= c10::nullopt*/) {
-  // NOLINTNEXTLINE(performance-move-const-arg)
-  module_ = torch::jit::load(filename, std::move(device));
+    std::optional<torch::Device> device /*= std::nullopt*/) {
+  module_ = torch::jit::load(filename, device);
 }
 
 void InputArchive::load_from(
     std::istream& stream,
-    c10::optional<torch::Device> device /*= c10::nullopt*/) {
-  // NOLINTNEXTLINE(performance-move-const-arg)
-  module_ = torch::jit::load(stream, std::move(device));
+    std::optional<torch::Device> device /*= std::nullopt*/) {
+  module_ = torch::jit::load(stream, device);
 }
 
 void InputArchive::load_from(
     const char* data,
     size_t size,
-    c10::optional<torch::Device> device /*= c10::nullopt*/) {
+    std::optional<torch::Device> device /*= std::nullopt*/) {
   using caffe2::serialize::ReadAdapterInterface;
   class OurAdapter : public ReadAdapterInterface {
    public:
@@ -116,9 +113,11 @@ void InputArchive::load_from(
     size_t size() const override {
       return size_;
     }
-    size_t read(uint64_t pos, void* buf, size_t n, const char* what = "")
-        const override {
-      (void)what;
+    size_t read(
+        uint64_t pos,
+        void* buf,
+        size_t n,
+        [[maybe_unused]] const char* what = "") const override {
       if (pos >= size_) {
         return 0;
       }
@@ -131,15 +130,13 @@ void InputArchive::load_from(
     const char* data_;
     size_t size_;
   };
-  std::unique_ptr<OurAdapter> adapter(new OurAdapter(data, size));
-  // NOLINTNEXTLINE(performance-move-const-arg)
-  module_ = torch::jit::load(std::move(adapter), std::move(device));
+  module_ = torch::jit::load(std::make_unique<OurAdapter>(data, size), device);
 }
 
 void InputArchive::load_from(
     const std::function<size_t(uint64_t, void*, size_t)>& read_func,
     const std::function<size_t(void)>& size_func,
-    c10::optional<torch::Device> device /*= c10::nullopt*/) {
+    std::optional<torch::Device> device /*= std::nullopt*/) {
   using caffe2::serialize::ReadAdapterInterface;
   class OurAdapter : public ReadAdapterInterface {
    public:
@@ -157,12 +154,13 @@ void InputArchive::load_from(
     }
 
    private:
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::function<size_t(uint64_t, void*, size_t)>& read_func_;
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::function<size_t(void)>& size_func_;
   };
-  std::unique_ptr<OurAdapter> adapter(new OurAdapter(read_func, size_func));
-  // NOLINTNEXTLINE(performance-move-const-arg)
-  module_ = torch::jit::load(std::move(adapter), std::move(device));
+  module_ = torch::jit::load(
+      std::make_unique<OurAdapter>(read_func, size_func), device);
 }
 
 std::vector<std::string> InputArchive::keys() {
@@ -177,5 +175,4 @@ std::vector<std::string> InputArchive::keys() {
   return all_keys;
 }
 
-} // namespace serialize
-} // namespace torch
+} // namespace torch::serialize

@@ -1,4 +1,4 @@
-# coding=utf-8
+# mypy: allow-untyped-defs
 
 import torch
 import torch.distributed as dist
@@ -58,6 +58,7 @@ def _register_sharded_op_on_local_tensor(
     @custom_sharding_spec_op(ChunkShardingSpec, op)
     @_sharded_op_common(op, early_stop_func, extra_check)
     def sharded_tensor_op_on_local_tensor(types, args=(), kwargs=None, pg=None):
+        # pyrefly: ignore [bad-index]
         st = args[0]
         sharding_spec = st.sharding_spec()
         if len(st.local_shards()) != 1:
@@ -107,7 +108,7 @@ def _handle_col_wise_sharding_base(
         col_dim: dim of result tensor after the operation.
         input: tensor to be applied op on.
         world_size: number of ranks.
-        weight: shareded weight tensor.
+        weight: sharded weight tensor.
         local_shard: col-wise sharded weight tensor.
         pg: process group.
         gathered_inputs: list of inputs from all ranks. If specified, we
@@ -118,7 +119,7 @@ def _handle_col_wise_sharding_base(
         padding_idx: If specified, the entries at padding_idx do
             not contribute to the gradient; therefore, the embedding
             vector at padding_idx is not updated during training,
-            i.e. it remains as a fixed “pad”.
+            i.e. it remains as a fixed "pad".
             Note that the embedding vector at padding_idx is
             excluded from the reduction.
 
@@ -127,18 +128,19 @@ def _handle_col_wise_sharding_base(
     # run the operator's function for all the inputs.
     results = []
     for i, inp in enumerate(gathered_inputs):
-        if op_func == torch.nn.functional.embedding_bag:
+        if op_func is torch.nn.functional.embedding_bag:
             result = op_func(
                 inp,
                 local_shard,
                 offsets=gathered_offsets[i] if gathered_offsets is not None else None,
+                # pyrefly: ignore [bad-argument-type]
                 mode=mode,
                 per_sample_weights=gathered_per_sample_weights[i]
                 if gathered_per_sample_weights is not None
                 else None,
                 padding_idx=padding_idx,
             )
-        elif op_func == torch.nn.functional.embedding:
+        elif op_func is torch.nn.functional.embedding:
             result = op_func(
                 inp,
                 local_shard,
@@ -170,7 +172,7 @@ def _result_distribute_with_col_rearrange(results, input, world_size, weight, pg
             We need to distribute them back to their original ranks.
         input: tensor to be applied op to.
         world_size: number of ranks.
-        weight: shareded weight tensor.
+        weight: sharded weight tensor.
         pg: process group.
 
     Return: column rearranged result.
@@ -200,10 +202,8 @@ def _result_distribute_with_col_rearrange(results, input, world_size, weight, pg
 
     # Check if we need to rearrange columns appropriately for output.
     rearrange_columns = any(
-        [
-            idx != placement.rank()
-            for idx, placement in enumerate(weight._sharding_spec.placements)
-        ]
+        idx != placement.rank()
+        for idx, placement in enumerate(weight._sharding_spec.placements)
     )
     if not rearrange_columns:
         return output
@@ -212,10 +212,8 @@ def _result_distribute_with_col_rearrange(results, input, world_size, weight, pg
     for placement in weight._sharding_spec.placements:
         dim_size = output_split_sizes[placement.rank()]
         start = sum(
-            [
-                split_size if i < placement.rank() else 0
-                for i, split_size in enumerate(output_split_sizes)
-            ]
+            split_size if i < placement.rank() else 0
+            for i, split_size in enumerate(output_split_sizes)
         )
         indices += list(range(start, start + dim_size))
 
@@ -317,7 +315,7 @@ def _handle_row_wise_mask(gather_inp, padding_idx, weight, world_size, rank):
         padding_idx: If specified, the entries at padding_idx do
             not contribute to the gradient; therefore, the embedding
             vector at padding_idx is not updated during training,
-            i.e. it remains as a fixed “pad”.
+            i.e. it remains as a fixed "pad".
             Note that the embedding vector at padding_idx is
             excluded from the reduction.
         weight: weight tensor of Embedding look-up table.

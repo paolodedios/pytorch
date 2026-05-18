@@ -4,8 +4,7 @@
 #include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/jit/runtime/static/impl.h>
 
-namespace at {
-namespace native {
+namespace at::native {
 at::Tensor& reshape_copy_out(
     at::Tensor& out,
     const at::Tensor& self,
@@ -16,43 +15,41 @@ at::Tensor& to_copy_out(
     const Tensor& self,
     bool non_blocking,
     bool copy_strides,
-    c10::optional<MemoryFormat> memory_format);
-} // namespace native
-} // namespace at
+    std::optional<MemoryFormat> memory_format);
+} // namespace at::native
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 using SROpFunctor = SROperator (*)(Node* n);
 struct SROperatorFunctor {
-  virtual SROperator Generate(Node*) {
+  virtual SROperator Generate(Node* /*unused*/) {
     SROperator out;
     return out;
   }
   virtual ~SROperatorFunctor() = default;
 };
 
-C10_DECLARE_REGISTRY(SROperatorRegistry, SROperatorFunctor);
+TORCH_DECLARE_REGISTRY(SROperatorRegistry, SROperatorFunctor);
 
 #define REGISTER_OPERATOR_FUNCTOR(name, id, ...)             \
   struct SROperatorFunctor_##id : public SROperatorFunctor { \
-    const SROpFunctor fn = __VA_ARGS__;                      \
+    SROpFunctor fn = __VA_ARGS__;                            \
     SROperator Generate(Node* n) override {                  \
       return fn(n);                                          \
     }                                                        \
   };                                                         \
-  C10_REGISTER_CLASS(SROperatorRegistry, name, SROperatorFunctor_##id);
+  C10_REGISTER_CLASS(SROperatorRegistry, name, SROperatorFunctor_##id)
 
-C10_DECLARE_REGISTRY(SRNativeOperatorRegistry, SROperatorFunctor);
+TORCH_DECLARE_REGISTRY(SRNativeOperatorRegistry, SROperatorFunctor);
 #define REGISTER_NATIVE_OPERATOR_FUNCTOR(name, id, ...)            \
   struct SRNativeOperatorFunctor_##id : public SROperatorFunctor { \
-    const SROpFunctor fn = __VA_ARGS__;                            \
+    SROpFunctor fn = __VA_ARGS__;                                  \
     SROperator Generate(Node* n) override {                        \
       return fn(n);                                                \
     }                                                              \
   };                                                               \
   C10_REGISTER_CLASS(                                              \
-      SRNativeOperatorRegistry, name, SRNativeOperatorFunctor_##id);
+      SRNativeOperatorRegistry, name, SRNativeOperatorFunctor_##id)
 
 inline at::Tensor create_empty_from(const at::Tensor& t) {
   return at::detail::empty_cpu(
@@ -60,8 +57,8 @@ inline at::Tensor create_empty_from(const at::Tensor& t) {
       c10::typeMetaToScalarType(t.dtype()),
       t.layout(),
       t.device(),
-      c10::nullopt,
-      c10::nullopt);
+      std::nullopt,
+      std::nullopt);
 }
 
 inline at::Tensor create_empty_from(
@@ -72,20 +69,20 @@ inline at::Tensor create_empty_from(
       c10::typeMetaToScalarType(t.dtype()),
       t.layout(),
       t.device(),
-      c10::nullopt,
-      c10::nullopt);
+      std::nullopt,
+      std::nullopt);
 }
 
 inline at::Tensor create_empty(c10::ScalarType dtype) {
   return at::detail::empty_cpu(
-      {0}, dtype, c10::nullopt, c10::nullopt, c10::nullopt, c10::nullopt);
+      {0}, dtype, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
 }
 
 inline at::Tensor create_empty_from(
     const at::Tensor& t,
     c10::ScalarType dtype) {
   return at::detail::empty_cpu(
-      {0}, dtype, t.layout(), t.device(), c10::nullopt, c10::nullopt);
+      {0}, dtype, t.layout(), t.device(), std::nullopt, std::nullopt);
 }
 
 inline at::Tensor create_empty_from(const at::Tensor& t, c10::Layout layout) {
@@ -94,8 +91,8 @@ inline at::Tensor create_empty_from(const at::Tensor& t, c10::Layout layout) {
       c10::typeMetaToScalarType(t.dtype()),
       layout,
       t.device(),
-      c10::nullopt,
-      c10::nullopt);
+      std::nullopt,
+      std::nullopt);
 }
 
 inline at::Tensor create_empty_from(const at::Tensor& t, c10::Device device) {
@@ -104,8 +101,8 @@ inline at::Tensor create_empty_from(const at::Tensor& t, c10::Device device) {
       c10::typeMetaToScalarType(t.dtype()),
       t.layout(),
       device,
-      c10::nullopt,
-      c10::nullopt);
+      std::nullopt,
+      std::nullopt);
 }
 
 inline at::Tensor create_empty_from(
@@ -116,7 +113,7 @@ inline at::Tensor create_empty_from(
       c10::typeMetaToScalarType(t.dtype()),
       t.layout(),
       t.device(),
-      c10::nullopt,
+      std::nullopt,
       memory_format);
 }
 
@@ -125,7 +122,7 @@ inline at::Tensor create_empty_from(
     c10::ScalarType dtype,
     c10::MemoryFormat memory_format) {
   return at::detail::empty_cpu(
-      {0}, dtype, t.layout(), t.device(), c10::nullopt, memory_format);
+      {0}, dtype, t.layout(), t.device(), std::nullopt, memory_format);
 }
 
 inline bool checkResizedDataPtr(at::Tensor& t) {
@@ -148,10 +145,10 @@ bool nativeOpIsRegistered(const c10::Symbol& op_name);
 
 bool canReuseInputsOutputs(
     Node* n,
-    const FastMap<Node*, bool>& node_has_out_variant);
+    const c10::FastMap<Node*, bool>& node_has_out_variant);
 bool isOptimizableContainerType(
     Node* n,
-    const FastMap<Node*, bool>& node_has_out_variant);
+    const c10::FastMap<Node*, bool>& node_has_out_variant);
 
 SROperator getOutOfPlaceOperation(Node* n);
 SROperator getNativeOperation(Node* n);
@@ -168,7 +165,7 @@ inline void LogAndDumpSchema(const Node* node) {
   VLOG(1) << "Found schema mismatch for: " << node->schema();
 }
 
-inline bool sr_schema_check(torch::jit::Node*) {
+inline bool sr_schema_check(torch::jit::Node* /*unused*/) {
   return true;
 }
 
@@ -185,6 +182,6 @@ bool sr_schema_check(
 }
 
 bool sr_schema_check_kind(torch::jit::Node* node, c10::Symbol node_kind);
+} // namespace torch::jit
 
-} // namespace jit
-} // namespace torch
+C10_DECLARE_bool(static_runtime_enable_fast_math);

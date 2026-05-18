@@ -1,5 +1,7 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <c10/util/irange.h>
+#include <torch/csrc/autograd/function.h>
+#include <torch/csrc/autograd/input_metadata.h>
 #include <torch/csrc/autograd/variable.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
@@ -10,8 +12,7 @@
 #include <ATen/ops/zeros.h>
 #endif
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 using at::Tensor;
 
@@ -54,7 +55,7 @@ using at::Tensor;
 //
 // This layout constraint is ensured in the `set_fw_grad` function below
 
-// More complex cases arrise when non-dual Tensor interact with dual Tensors.
+// More complex cases arise when non-dual Tensor interact with dual Tensors.
 // The two most important cases are:
 //
 //     # Have:
@@ -116,24 +117,24 @@ bool has_same_meta(const Variable& base, const Variable& other) {
     return false;
   }
   for (const auto i : c10::irange(base.dim())) {
-    if (base.sizes()[i] != other.sizes()[i]) {
+    if (base.sym_sizes()[i] != other.sym_sizes()[i]) {
       return false;
     }
   }
 
   // The check below will always be vacuously true for 0-element tensors
-  if (base.numel() == 0 && other.numel() == 0) {
+  if (base.sym_numel() == 0 && other.sym_numel() == 0) {
     return true;
   }
 
   // 2) The same indices refer to the same elements in storage
-  if (base.storage_offset() != other.storage_offset()) {
+  if (base.sym_storage_offset() != other.sym_storage_offset()) {
     return false;
   }
 
   for (const auto i : c10::irange(base.dim())) {
-    if (base.strides()[i] != other.strides()[i] && base.sizes()[i] != 1 &&
-        base.sizes()[i] != 0) {
+    if (base.sym_strides()[i] != other.sym_strides()[i] &&
+        base.sym_sizes()[i] != 1 && base.sym_sizes()[i] != 0) {
       return false;
     }
   }
@@ -213,7 +214,7 @@ void AutogradMeta::set_fw_grad(
       //   - Copy the given new_grad into this view
       //   - Use this view as the new new_grad
       if (this_view_meta->has_fw_view()) {
-        auto view_info = this_view_meta->get_forward_view();
+        auto& view_info = this_view_meta->get_forward_view();
         auto& base = view_info.base_;
 
         if (!base._fw_grad(level).defined()) {
@@ -223,7 +224,7 @@ void AutogradMeta::set_fw_grad(
           if (utils::has_same_meta(new_grad, base) &&
               utils::has_same_meta(new_grad, self)) {
             // TODO extend this special case to when the underlying storage of
-            // new_grad can be re-used.
+            // new_grad can be reused.
             new_base_fw_grad = new_grad;
           } else {
             new_base_fw_grad =
@@ -276,7 +277,7 @@ const Variable& AutogradMeta::fw_grad(
     return ForwardGrad::undef_grad();
   }
 
-  // Ensure that concurent fw_grad() "reads" are thread safe
+  // Ensure that concurrent fw_grad() "reads" are thread safe
   std::lock_guard<std::mutex> lock(mutex_);
 
   const auto& direct_fw_grad =
@@ -290,17 +291,14 @@ const Variable& AutogradMeta::fw_grad(
         static_cast<const torch::autograd::DifferentiableViewMeta*>(this);
     // This is ok to do as we ONLY modify fw_grad_ and this field is properly
     // locked in all methods
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
-    auto this_view_meta =
-        const_cast<torch::autograd::DifferentiableViewMeta*>(const_view_meta);
-    if (this_view_meta->has_fw_view()) {
-      const auto& view_info = this_view_meta->get_forward_view();
+    if (const_view_meta->has_fw_view()) {
+      const auto& view_info = const_view_meta->get_forward_view();
       const auto& base = view_info.base_;
 
       const auto& base_val = base._fw_grad(level);
       if (base_val.defined()) {
         // Lazy initialization of fw_grad_
-        this_view_meta->fw_grad_ = std::make_shared<ForwardGrad>();
+        const_view_meta->fw_grad_ = std::make_shared<ForwardGrad>();
 
         Variable new_val;
         if (view_info.has_view_fn()) {
@@ -310,13 +308,12 @@ const Variable& AutogradMeta::fw_grad(
               self.sizes(), self.strides(), self.storage_offset());
         }
 
-        this_view_meta->fw_grad_->set_value(new_val, level);
-        return this_view_meta->fw_grad_->value(level);
+        const_view_meta->fw_grad_->set_value(new_val, level);
+        return const_view_meta->fw_grad_->value(level);
       }
     }
   }
   return direct_fw_grad;
 }
 
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd

@@ -10,8 +10,7 @@
 
 #include <ostream>
 
-namespace torch {
-namespace nn {
+namespace torch::nn {
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Transformer ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -31,7 +30,6 @@ namespace nn {
 /// ```
 /// Transformer trans(TransformerOptions(512, 8));
 /// ```
-// NOLINTNEXTLINE(bugprone-exception-escape)
 class TORCH_API TransformerImpl : public Cloneable<TransformerImpl> {
  public:
   explicit TransformerImpl(TransformerOptions options_);
@@ -140,5 +138,4 @@ class TORCH_API TransformerImpl : public Cloneable<TransformerImpl> {
 /// module storage semantics.
 TORCH_MODULE(Transformer);
 
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn

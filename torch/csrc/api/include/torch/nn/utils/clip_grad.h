@@ -2,9 +2,11 @@
 
 #include <torch/csrc/Export.h>
 
-namespace torch {
-namespace nn {
-namespace utils {
+#include <torch/types.h>
+#include <utility>
+#include <vector>
+
+namespace torch::nn::utils {
 
 // Clips gradient norm of a vector of Tensors.
 // See
@@ -17,7 +19,7 @@ namespace utils {
 // sense!) in order to return a CPU-side `double`. This C++ version therefore
 // cannot be run fully asynchronously w.r.t. the device of the gradients.
 inline double clip_grad_norm_(
-    std::vector<Tensor> parameters,
+    const std::vector<Tensor>& parameters,
     double max_norm,
     double norm_type = 2.0,
     bool error_if_nonfinite = false) {
@@ -62,7 +64,7 @@ inline double clip_grad_norm_(
   // synchronizing the CPU and the gradients' device until the very end to
   // preserve async execution on the device. When checking for finite-ness, this
   // optional ensures we only sync once.
-  c10::optional<double> total_norm = c10::nullopt;
+  std::optional<double> total_norm = std::nullopt;
   if (error_if_nonfinite) {
     total_norm = total_norm_tensor.item().toDouble();
     TORCH_CHECK(
@@ -77,7 +79,7 @@ inline double clip_grad_norm_(
 
   auto clip_coef = max_norm / (total_norm_tensor + 1e-6);
   auto clip_coef_clamped =
-      torch::clamp(clip_coef, c10::nullopt /* min */, 1.0 /* max */);
+      torch::clamp(clip_coef, std::nullopt /* min */, 1.0 /* max */);
   for (auto& param : params_with_grad) {
     param.grad().data().mul_(clip_coef_clamped);
   }
@@ -106,7 +108,7 @@ inline double clip_grad_norm_(
     double max_norm,
     double norm_type = 2.0,
     bool error_if_nonfinite = false) {
-  std::vector<Tensor> params = {parameter};
+  std::vector<Tensor> params = {std::move(parameter)};
   return clip_grad_norm_(params, max_norm, norm_type, error_if_nonfinite);
 }
 
@@ -115,7 +117,7 @@ inline double clip_grad_norm_(
 // See https://pytorch.org/docs/stable/nn.html#clip-grad-value
 // for more details about this module.
 inline void clip_grad_value_(
-    std::vector<Tensor> parameters,
+    const std::vector<Tensor>& parameters,
     double clip_value) {
   for (const auto& param : parameters) {
     if (param.grad().defined()) {
@@ -135,10 +137,8 @@ inline void clip_grad_value_(
 // A wrapper around clip_grad_value_ that allows us to call the function with a
 // single Tensor.
 inline void clip_grad_value_(Tensor parameter, double clip_value) {
-  std::vector<Tensor> params = {parameter};
+  std::vector<Tensor> params = {std::move(parameter)};
   clip_grad_value_(params, clip_value);
 }
 
-} // namespace utils
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn::utils

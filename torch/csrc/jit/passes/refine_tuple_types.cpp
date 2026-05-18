@@ -1,10 +1,9 @@
 #include <torch/csrc/jit/passes/refine_tuple_types.h>
 #include <torch/csrc/jit/runtime/graph_iterator.h>
 
-#include <ATen/core/type_factory.h>
+#include <utility>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 static void VisitTupleNode(Node* node) {
@@ -25,7 +24,7 @@ static void VisitTupleNode(Node* node) {
   }
 
   // Construct new tuple type based on input types.
-  output->setType(tuple_type.withContained(types));
+  output->setType(tuple_type.withContained(std::move(types)));
 }
 } // anonymous namespace
 
@@ -38,5 +37,4 @@ void RefineTupleTypes(std::shared_ptr<Graph>& graph) {
   }
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

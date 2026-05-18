@@ -6,11 +6,9 @@
 #include <torch/csrc/jit/runtime/instruction.h>
 #include <torch/csrc/jit/serialization/import_export_constants.h>
 #include <torch/csrc/jit/serialization/import_export_functions.h>
-#include <torch/custom_class_detail.h>
 
-namespace torch {
-namespace jit {
-OpCode parseOpCode(const char* str);
+namespace torch::jit {
+
 using c10::IValue;
 
 IValue expect_field(
@@ -24,7 +22,7 @@ IValue expect_field(
       expected_name,
       " found ",
       row->elements().at(0).toStringRef());
-  return std::move(row->elements().at(1));
+  return std::move(row)->elements().at(1);
 }
 
 namespace mobile {
@@ -74,7 +72,6 @@ void applyUpgrader(mobile::Function* function, uint64_t operator_version) {
   for (size_t i = 0; i < code.instructions_.size(); i++) {
     Instruction& inst = code.instructions_[i];
     if (inst.op == OpCode::OP) {
-      std::string op_name = code.op_names_[inst.X].name;
       std::string operator_name = code.op_names_[inst.X].name +
           (code.op_names_[inst.X].overload_name.empty()
                ? ""
@@ -89,8 +86,8 @@ void applyUpgrader(mobile::Function* function, uint64_t operator_version) {
         // algorithm, because the number of upgrader per operator will be just a
         // few and tend to keep the code light-weight from binary size concern.
         for (const auto& upgrader : upgrader_list) {
-          if (operator_version <= upgrader.max_version &&
-              operator_version >= upgrader.min_version) {
+          if (static_cast<int>(operator_version) <= upgrader.max_version &&
+              static_cast<int>(operator_version) >= upgrader.min_version) {
             // If there exists a valid upgrader, change the instruction OP to
             // CALL, and the index will point to the according upgrader
             // function. All upgrader function are available in
@@ -102,7 +99,7 @@ void applyUpgrader(mobile::Function* function, uint64_t operator_version) {
             // new_inst.X = upgrader.index;
             // code->instructions_[i] = new_inst;
             TORCH_CHECK(
-                upgrader.index < code.functions_.size(),
+                upgrader.index < static_cast<int>(code.functions_.size()),
                 "upgrader index is, ",
                 upgrader.index,
                 " and it's larger than the upgrader function list length ",
@@ -156,8 +153,8 @@ void parseInstructions(
         "There should be three parts in an instruction. The function name is ",
         function_name);
     OpCode op_code = opCodeCache.parse(*ins_item[0].toString());
-    int X = ins_item[1].toInt();
-    int N = ins_item[2].toInt();
+    auto X = ins_item[1].toInt();
+    auto N = ins_item[2].toInt();
 
     if (!debug_handles_list.empty()) {
       int64_t debug_handle = debug_handles_list[j];
@@ -195,5 +192,4 @@ void parseRegisterSize(size_t rsize, mobile::Function* function) {
 }
 
 } // namespace mobile
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

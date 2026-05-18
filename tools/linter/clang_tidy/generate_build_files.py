@@ -1,15 +1,15 @@
+from __future__ import annotations
+
 import os
 import subprocess
 import sys
-from typing import List
 
 
-def run_cmd(cmd: List[str]) -> None:
+def run_cmd(cmd: list[str]) -> None:
     print(f"Running: {cmd}")
     result = subprocess.run(
         cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     stdout, stderr = (
         result.stdout.decode("utf-8").strip(),
@@ -19,11 +19,7 @@ def run_cmd(cmd: List[str]) -> None:
     print(stderr)
     if result.returncode != 0:
         print(f"Failed to run {cmd}")
-        exit(1)
-
-
-def run_timed_cmd(cmd: List[str]) -> None:
-    run_cmd(["time"] + cmd)
+        sys.exit(1)
 
 
 def update_submodules() -> None:
@@ -32,13 +28,15 @@ def update_submodules() -> None:
 
 def gen_compile_commands() -> None:
     os.environ["USE_NCCL"] = "0"
+    os.environ["USE_PRECOMPILED_HEADERS"] = "1"
     os.environ["CC"] = "clang"
     os.environ["CXX"] = "clang++"
-    run_timed_cmd([sys.executable, "setup.py", "--cmake-only", "build"])
+    os.environ["CMAKE_ONLY"] = "1"
+    run_cmd([sys.executable, "setup.py", "build"])
 
 
 def run_autogen() -> None:
-    run_timed_cmd(
+    run_cmd(
         [
             sys.executable,
             "-m",
@@ -51,7 +49,7 @@ def run_autogen() -> None:
         ]
     )
 
-    run_timed_cmd(
+    run_cmd(
         [
             sys.executable,
             "tools/setup_helpers/generate_code.py",
@@ -59,7 +57,7 @@ def run_autogen() -> None:
             "aten/src/ATen/native/native_functions.yaml",
             "--tags-path",
             "aten/src/ATen/native/tags.yaml",
-            "--gen_lazy_ts_backend",
+            "--gen-lazy-ts-backend",
         ]
     )
 

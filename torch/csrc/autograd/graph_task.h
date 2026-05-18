@@ -6,18 +6,13 @@
 #include <torch/csrc/autograd/utils/warnings.h>
 #include <vector>
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 using edge_list = std::vector<Edge>;
 struct ReadyQueue;
 
 static constexpr int NO_DEVICE = -2;
 static constexpr int CPU_DEVICE = -1;
-
-namespace {
-std::atomic<uint64_t> graph_task_id{0};
-}
 
 // GraphTask holds metadata needed for a single execution of backward()
 struct GraphTask : std::enable_shared_from_this<GraphTask> {
@@ -49,13 +44,14 @@ struct GraphTask : std::enable_shared_from_this<GraphTask> {
   // executed through .grad(), or when inputs arg is specified for .backward(),
   // exec_info will be non-empty.
   //
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   struct ExecInfo {
     struct Capture {
       Capture(const Capture&) = delete;
       Capture(Capture&&) = default;
+      Capture& operator=(const Capture&) = delete;
+      Capture& operator=(Capture&&) = default;
+      ~Capture() = default;
 
-      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
       Capture(int input_idx, int output_idx)
           : input_idx_(input_idx), output_idx_(output_idx) {}
       int input_idx_; // within Node inputs
@@ -67,6 +63,42 @@ struct GraphTask : std::enable_shared_from_this<GraphTask> {
         virtual ~GradCaptureHook() = default;
         virtual at::Tensor operator()(const at::Tensor& grad) = 0;
       };
+      // NOTE [Deprecated capture hooks]
+      //
+      // The current status of capture hooks is that we continue to support
+      // the single usage of it by distributed in the dist_engine. If anyone
+      // else needs to use it for other purposes, they should file an issue.
+      //
+      // Capture hooks were originally created because there did not exist
+      // any way to register pre/post hooks to grad_fn in a way such that it
+      // would still be executed even if that is the grad_fn of a Tensor
+      // passed as input= of .grad. As far as I know, only dist_engine uses
+      // this hook.
+      //
+      // However, there are other alternatives today like tensor hooks that can
+      // replace the usage that originally motivated its creation. Also,
+      // Captures hooks are an outlier in terms of the types of hook that
+      // autograd offers in how it is registered and behaves, e.g. it is a hook
+      // registered not to the graph, but to a particular graph_task! This makes
+      // it a burden to maintain.
+      //
+      // It would be very nice to clean up/do a migration from pre/post
+      // hooks used in distributed to use tensor hooks, but for now we just
+      // mark this method as deprecated to prevent additional usage.
+      //
+      // If you still think you really need to capture hooks, please file an
+      // issue (and tag autograd).
+      const std::vector<std::unique_ptr<GradCaptureHook>>&
+      DO_NOT_USE_DEPRECATED_get_capture_hooks() const {
+        return hooks_;
+      }
+      // See NOTE [deprecated capture hooks]
+      void DO_NOT_USE_DEPRECATED_register_capture_hook(
+          std::unique_ptr<GradCaptureHook> hook) {
+        hooks_.push_back(std::move(hook));
+      }
+
+     private:
       // The hooks will be called one by one in the order as they were added.
       // The input grad of a hook will be the output of its preceding hook. The
       // first hook will take the captured grad as the input. The output of the
@@ -90,15 +122,15 @@ struct GraphTask : std::enable_shared_from_this<GraphTask> {
 
   // Note: this field is not ready to be used until the proper
   // `thread_locals_.set_grad_mode()` call in the constructor.
-  at::ThreadLocalState thread_locals_ = at::ThreadLocalState();
+  at::ThreadLocalState thread_locals_;
 
   std::unordered_set<c10::Stream> leaf_streams;
 
   // Per-device current streams of the execute() that called this GraphTask.
   // These will be synced with leaf_streams in exec_post_processing.
-  std::vector<c10::optional<c10::Stream>> caller_current_streams_;
+  std::vector<std::optional<c10::Stream>> caller_current_streams_;
 
-  // Collects caller_current_streams_
+  // Collects caller_current_streams_ for the accelerator device.
   void stash_current_streams();
 
   void init_to_execute(
@@ -109,9 +141,10 @@ struct GraphTask : std::enable_shared_from_this<GraphTask> {
 
   // The value of worker_device in the thread that created this task.
   // See Note [Reentrant backwards]
-  // Safe to read owner_ and reentrant_depth_ without synchronizaton
-  int owner_;
+  // Safe to read owner_ and reentrant_depth_ without synchronization
+  int owner_{NO_DEVICE};
   // The number of parent graph tasks for this graph task
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   const int reentrant_depth_;
 
   bool can_checkpoint() const {
@@ -125,13 +158,15 @@ struct GraphTask : std::enable_shared_from_this<GraphTask> {
 
   // Set an appropriate exception on this graph_task which was encountered while
   // running the provided function.
-  void set_exception(std::exception_ptr eptr, const std::shared_ptr<Node>& fn);
+  void set_exception(
+      std::exception_ptr eptr,
+      const c10::intrusive_ptr<Node>& fn);
 
   // Set an appropriate exception on this graph_task which was encountered while
   // running the provided function. But doesn't signal completion on
   // 'future_result_' right away. The user needs to explicitly mark
   // 'future_result_' completed with an appropriate exception.
-  void set_exception_without_signal(const std::shared_ptr<Node>& fn);
+  void set_exception_without_signal(const c10::intrusive_ptr<Node>& fn);
 
   // Whether or not to stop execution for this GraphTask when an error is
   // encountered. When set to true, this would cause Engine::execute() to throw
@@ -159,25 +194,13 @@ struct GraphTask : std::enable_shared_from_this<GraphTask> {
 
   uint64_t id_;
 
-  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   GraphTask(
       bool keep_graph,
       bool grad_mode,
       int reentrant_depth,
       std::shared_ptr<ReadyQueue> cpu_ready_queue,
       c10::SmallVector<Node*, 4> graph_roots,
-      bool exit_on_error = false)
-      : keep_graph_(keep_graph),
-        graph_roots_(std::move(graph_roots)),
-        owner_(NO_DEVICE),
-        reentrant_depth_(reentrant_depth),
-        exit_on_error_(exit_on_error),
-        cpu_ready_queue_(std::move(cpu_ready_queue)),
-        future_result_(c10::make_intrusive<at::ivalue::Future>(
-            c10::ListType::create(c10::TensorType::get()))),
-        id_(graph_task_id.fetch_add(1, std::memory_order_relaxed)) {
-    thread_locals_.set_grad_mode(grad_mode);
-  }
+      bool exit_on_error = false);
 
  private:
   // run GraphTask post processing
@@ -205,5 +228,4 @@ TORCH_API std::vector<Node*> get_current_graph_task_execution_order();
 TORCH_API int get_current_graph_task_id();
 void add_node_to_current_graph_task_exec_info(Node* fn);
 
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd

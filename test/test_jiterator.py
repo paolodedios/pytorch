@@ -5,15 +5,14 @@ from torch.cuda.jiterator import _create_jit_fn as create_jit_fn
 from torch.cuda.jiterator import _create_multi_output_jit_fn as create_multi_output_jit_fn
 import sys
 from itertools import product
-from torch.testing._internal.common_utils import TestCase, parametrize, run_tests, TEST_CUDA
+from torch.testing._internal.common_utils import TestCase, parametrize, run_tests, TEST_CUDA, NoTest
 from torch.testing._internal.common_dtype import all_types_and_complex_and
 from torch.testing._internal.common_device_type import (
-    skipCUDAIfRocm, skipCUDAIf, instantiate_device_type_tests, dtypes, toleranceOverride, tol)
-from torch.testing._internal.common_cuda import _get_torch_cuda_version
+    instantiate_device_type_tests, dtypes, toleranceOverride, tol)
 
 if not TEST_CUDA:
     print('CUDA not available, skipping tests', file=sys.stderr)
-    TestCase = object  # noqa: F811
+    TestCase = NoTest
 
 
 code_string = "template <typename T> T my_fused_kernel(T x, T y, T alpha, T beta) { return alpha * x + beta * y; }"
@@ -40,10 +39,6 @@ class TestPythonJiterator(TestCase):
 
         self.assertEqual(expected, result)
 
-    @skipCUDAIfRocm
-    # See https://github.com/pytorch/pytorch/pull/76394#issuecomment-1118018287 for details
-    @skipCUDAIf(_get_torch_cuda_version() < (11, 6), "On cuda 11.3, nvrtcCompileProgram is taking too long to "
-                "compile jiterator generated kernels for non-contiguous input that requires dynamic-casting.")
     @parametrize("shape_strides", [
         (([3, 3], [1, 3]), ([3, 1], [1, 3])),  # non-contiguous
     ])
@@ -116,7 +111,7 @@ class TestPythonJiterator(TestCase):
     @parametrize("num_inputs", [1, 5, 8])
     def test_various_num_inputs(self, num_inputs):
         inputs = []
-        for i in range(num_inputs):
+        for _ in range(num_inputs):
             inputs.append(torch.rand(3, device='cuda').mul(10))
 
         input_string = ",".join([f"T i{i}" for i in range(num_inputs)])
@@ -166,7 +161,7 @@ class TestPythonJiterator(TestCase):
     ])
     def test_invalid_function_name(self, code_string):
         with self.assertRaises(Exception):
-            jitted_fn = create_jit_fn(code_string)
+            create_jit_fn(code_string)
 
 
 instantiate_device_type_tests(TestPythonJiterator, globals(), only_for="cuda")

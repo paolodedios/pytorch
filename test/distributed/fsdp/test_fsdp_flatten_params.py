@@ -6,14 +6,20 @@ import torch
 import torch.nn as nn
 from torch import distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp.flat_param import (
+from torch.distributed.fsdp._flat_param import (
     FlatParamHandle,
     FlatParamShardMetadata,
     HandleShardingStrategy,
 )
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
-from torch.testing._internal.common_fsdp import FSDPTest
-from torch.testing._internal.common_utils import run_tests, TEST_WITH_DEV_DBG_ASAN
+from torch.testing._internal.common_fsdp import FSDPTestContinuous
+from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    parametrize,
+    run_tests,
+    TEST_WITH_DEV_DBG_ASAN,
+)
+
 
 if not dist.is_available():
     print("Distributed not available, skipping tests", file=sys.stderr)
@@ -27,7 +33,7 @@ if TEST_WITH_DEV_DBG_ASAN:
     sys.exit(0)
 
 
-class TestFlattenParams(FSDPTest):
+class TestFlattenParams(FSDPTestContinuous):
     """Tests parameter flattening and shard metadata logic."""
 
     @property
@@ -38,7 +44,20 @@ class TestFlattenParams(FSDPTest):
         return 1
 
     def _get_default_config(self):
-        return (HandleShardingStrategy.FULL_SHARD, False, None, None, False)
+        device_type = (
+            acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
+        )
+        return {
+            "device": torch.device(device_type),
+            "sharding_strategy": HandleShardingStrategy.FULL_SHARD,
+            "offload_params": False,
+            "mp_param_dtype": None,
+            "mp_reduce_dtype": None,
+            "keep_low_precision_grads": False,
+            "process_group": self.process_group,
+            "use_orig_params": False,
+            "fsdp_extension": None,
+        }
 
     def _get_transformer(self, seed=0):
         torch.manual_seed(seed)  # keep everything deterministic
@@ -49,7 +68,7 @@ class TestFlattenParams(FSDPTest):
             dim_feedforward=128,
             dropout=0.1,
         )
-        module.register_buffer("dummy_buffer", torch.tensor(1.0))
+        module.dummy_buffer = nn.Buffer(torch.tensor(1.0))
 
         def get_input(device, dtype):
             torch.manual_seed(1)  # keep everything deterministic
@@ -141,15 +160,12 @@ class TestFlattenParams(FSDPTest):
             module = module.half()
         with self.assertRaisesRegex(
             ValueError,
-            "Cannot initialize a `FlatParameter` from an empty parameter list",
+            "Cannot construct a FlatParamHandle with an empty parameter list",
         ):
             FlatParamHandle(
                 [],
                 module,
-                torch.device("cuda"),
-                *self._get_default_config(),
-                self.process_group,
-                False,
+                **self._get_default_config(),
             )
 
     @skip_if_lt_x_gpu(1)
@@ -218,10 +234,7 @@ class TestFlattenParams(FSDPTest):
         flat_param_handle = FlatParamHandle(
             params_to_flatten,
             module,
-            torch.device("cuda"),
-            *self._get_default_config(),
-            self.process_group,
-            False,
+            **self._get_default_config(),
         )
         self.assertEqual(ref_numel, flat_param_handle.flat_param.numel())
 
@@ -303,142 +316,372 @@ class TestFlattenParams(FSDPTest):
         optim.step()
         return torch.norm(torch.stack([p.detach().norm() for p in module.parameters()]))
 
-    def test_flat_param_shard_metadata(self):
+    def test_flat_param_shard_metadata_unaligned(self):
         """
-        Tests that ``FlatParameter`` shard metadata are computed as expected.
+        Tests that ``FlatParameter`` shard metadata are computed as expected
+        without any explicit alignment padding.
         """
         module = torch.nn.Sequential(
             torch.nn.Linear(10, 10, bias=False),
-            torch.nn.ReLU(),
+            nn.ReLU(),
             torch.nn.Linear(10, 10, bias=False),
-            torch.nn.ReLU(),
+            nn.ReLU(),
             torch.nn.Linear(10, 10, bias=False),
-            torch.nn.ReLU(),
+            nn.ReLU(),
         )
         params_to_flatten = list(module.parameters())
-        flat_param_handle = FlatParamHandle(
+        handle = FlatParamHandle(
             params_to_flatten,
             module,
-            torch.device("cuda"),
-            *self._get_default_config(),
-            self.process_group,
-            False,
+            **self._get_default_config(),
         )
 
-        def _test(kwargs, expected):
-            """
-            Tests the subroutine ``_get_shard_metadata()`` that computes shard
-            metadata based on start and end indices in the unsharded flattened
-            parameter.
-
-            We manually set the relevant attributes on the flattened parameter
-            to be able to check the effect of ``_get_shard_metadata()`` via
-            ``shard_metadata()`` since normally the attributes are set in
-            ``init_shard_info()`` with the start and end indices fixed based on
-            rank and world size.
-            """
-            flat_param = flat_param_handle.flat_param
-            (
-                flat_param._shard_param_offsets,
-                flat_param._shard_indices,
-            ) = flat_param_handle._get_shard_metadata(kwargs["start"], kwargs["end"])
-            self.assertEqual(
-                flat_param_handle.shard_metadata(),
-                expected,
-                msg=f"{flat_param_handle.shard_metadata()}, {expected}",
-            )
-
-        _test(
-            kwargs={"start": 0, "end": 0},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=0,
+            end=0,
             expected=FlatParamShardMetadata(
                 param_names=["0.weight"],
                 param_shapes=[(10, 10)],
+                param_strides=[(10, 1)],
+                param_contiguities=[True],
                 param_numels=[100],
                 param_offsets=[(0, 0)],
             ),
         )
-        _test(
-            kwargs={"start": 0, "end": 50},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=0,
+            end=50,
             expected=FlatParamShardMetadata(
                 param_names=["0.weight"],
                 param_shapes=[(10, 10)],
+                param_strides=[(10, 1)],
+                param_contiguities=[True],
                 param_numels=[100],
                 param_offsets=[(0, 50)],
             ),
         )
-        _test(
-            kwargs={"start": 0, "end": 99},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=0,
+            end=99,
             expected=FlatParamShardMetadata(
                 param_names=["0.weight"],
                 param_shapes=[(10, 10)],
+                param_strides=[(10, 1)],
+                param_contiguities=[True],
                 param_numels=[100],
                 param_offsets=[(0, 99)],
             ),
         )
-        _test(
-            kwargs={"start": 50, "end": 149},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=50,
+            end=149,
             expected=FlatParamShardMetadata(
                 param_names=["0.weight", "2.weight"],
                 param_shapes=[(10, 10), (10, 10)],
+                param_strides=[(10, 1), (10, 1)],
+                param_contiguities=[True, True],
                 param_numels=[100, 100],
                 param_offsets=[(50, 99), (0, 49)],
             ),
         )
-        _test(
-            kwargs={"start": 50, "end": 199},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=50,
+            end=199,
             expected=FlatParamShardMetadata(
                 param_names=["0.weight", "2.weight"],
                 param_shapes=[(10, 10), (10, 10)],
+                param_strides=[(10, 1), (10, 1)],
+                param_contiguities=[True, True],
                 param_numels=[100, 100],
                 param_offsets=[(50, 99), (0, 99)],
             ),
         )
-        _test(
-            kwargs={"start": 99, "end": 199},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=99,
+            end=199,
             expected=FlatParamShardMetadata(
                 param_names=["0.weight", "2.weight"],
                 param_shapes=[(10, 10), (10, 10)],
+                param_strides=[(10, 1), (10, 1)],
+                param_contiguities=[True, True],
                 param_numels=[100, 100],
                 param_offsets=[(99, 99), (0, 99)],
             ),
         )
-        _test(
-            kwargs={"start": 100, "end": 199},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=100,
+            end=199,
             expected=FlatParamShardMetadata(
                 param_names=["2.weight"],
                 param_shapes=[(10, 10)],
+                param_strides=[(10, 1)],
+                param_contiguities=[True],
                 param_numels=[100],
                 param_offsets=[(0, 99)],
             ),
         )
-        _test(
-            kwargs={"start": 100, "end": 299},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=100,
+            end=299,
             expected=FlatParamShardMetadata(
                 param_names=["2.weight", "4.weight"],
                 param_shapes=[(10, 10), (10, 10)],
+                param_strides=[(10, 1), (10, 1)],
+                param_contiguities=[True, True],
                 param_numels=[100, 100],
                 param_offsets=[(0, 99), (0, 99)],
             ),
         )
-        _test(
-            kwargs={"start": 100, "end": 1000},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=100,
+            end=1000,
             expected=FlatParamShardMetadata(
                 param_names=["2.weight", "4.weight"],
                 param_shapes=[(10, 10), (10, 10)],
+                param_strides=[(10, 1), (10, 1)],
+                param_contiguities=[True, True],
                 param_numels=[100, 100],
                 param_offsets=[(0, 99), (0, 99)],
             ),
         )
-        _test(
-            kwargs={"start": 299, "end": 299},
+        self._test_flat_param_shard_metadata(
+            handle,
+            start=299,
+            end=299,
             expected=FlatParamShardMetadata(
                 param_names=["4.weight"],
                 param_shapes=[(10, 10)],
+                param_strides=[(10, 1)],
+                param_contiguities=[True],
                 param_numels=[100],
                 param_offsets=[(99, 99)],
             ),
         )
 
+    def test_flat_param_shard_metadata_aligned_full_precision(self):
+        """
+        Tests that ``FlatParameter`` shard metadata are computed as expected
+        with alignment padding and parameter full precision.
+        """
+        module = torch.nn.Sequential(
+            torch.nn.Linear(3, 7, bias=False),  # 0.weight
+            torch.nn.Linear(7, 5, bias=False),  # 1.weight
+            torch.nn.Linear(5, 5, bias=False),  # 2.weight
+        )
+        params_to_flatten = list(module.parameters())
+        handle_kwargs = self._get_default_config()
+        handle_kwargs["use_orig_params"] = True
+        handle = FlatParamHandle(params_to_flatten, module, **handle_kwargs)
+        # For 32-bit full precision, FSDP pads up to 3 numel after each
+        # original parameter to achieve 0 mod 4 numel (i.e. 0 mod 16 bytes).
+        # Thus, the unsharded `FlatParameter` layout looks like:
+        #   21 + (3) + 35 + (1) + 25
+        # where (x) means x numel of padding. This gives a total of 85 numel.
+
+        # The `FlatParamShardMetadata` do not include alignment padding but do
+        # account for them
+        self._test_flat_param_shard_metadata(
+            handle,
+            # Emulate rank 0 of 2 ranks
+            start=0,
+            end=42,
+            expected=FlatParamShardMetadata(
+                param_names=["0.weight", "1.weight"],
+                param_shapes=[(7, 3), (5, 7)],
+                param_strides=[(3, 1), (7, 1)],
+                param_contiguities=[True, True],
+                param_numels=[21, 35],
+                # 21 + (3) + 19 = 43
+                param_offsets=[(0, 20), (0, 18)],
+            ),
+        )
+        self._test_flat_param_shard_metadata(
+            handle,
+            # Emulate rank 1 of 2 ranks
+            start=43,
+            end=85,
+            expected=FlatParamShardMetadata(
+                param_names=["1.weight", "2.weight"],
+                param_shapes=[(5, 7), (5, 5)],
+                param_strides=[(7, 1), (5, 1)],
+                param_contiguities=[True, True],
+                param_numels=[35, 25],
+                # 16 + (1) + 25 = 42
+                param_offsets=[(19, 34), (0, 24)],
+            ),
+        )
+
+    def test_flat_param_shard_metadata_aligned_mixed_precision(self):
+        """
+        Tests that ``FlatParameter`` shard metadata are computed as expected
+        with alignment padding and parameter mixed precision.
+        """
+        module = torch.nn.Sequential(
+            torch.nn.Linear(2, 5, bias=False),  # 0.weight
+            torch.nn.Linear(5, 5, bias=False),  # 1.weight
+            torch.nn.Linear(5, 3, bias=False),  # 2.weight
+        )
+        params_to_flatten = list(module.parameters())
+        handle_kwargs = self._get_default_config()
+        handle_kwargs["use_orig_params"] = True
+        handle_kwargs["mp_param_dtype"] = torch.float16
+        handle = FlatParamHandle(params_to_flatten, module, **handle_kwargs)
+        # For 16-bit mixed precision, FSDP pads up to 7 numel after each
+        # original parameter to achieve 0 mod 8 numel (i.e. 0 mod 16 bytes).
+        # Thus, the unsharded `FlatParameter` layout looks like:
+        #   10 + (6) + 25 + (7) + 15
+        # where (x) means x numel of padding. This gives a total of 63 numel.
+
+        # The `FlatParamShardMetadata` do not include alignment padding but do
+        # account for them
+        self._test_flat_param_shard_metadata(
+            handle,
+            # Emulate rank 0 of 2 ranks
+            start=0,
+            end=31,
+            expected=FlatParamShardMetadata(
+                param_names=["0.weight", "1.weight"],
+                param_shapes=[(5, 2), (5, 5)],
+                param_strides=[(2, 1), (5, 1)],
+                param_contiguities=[True, True],
+                param_numels=[10, 25],
+                # 10 + (6) + 16 = 32
+                param_offsets=[(0, 9), (0, 15)],
+            ),
+        )
+        self._test_flat_param_shard_metadata(
+            handle,
+            # Emulate rank 1 of 2 ranks
+            start=32,
+            end=63,
+            expected=FlatParamShardMetadata(
+                param_names=["1.weight", "2.weight"],
+                param_shapes=[(5, 5), (3, 5)],
+                param_strides=[(5, 1), (5, 1)],
+                param_contiguities=[True, True],
+                param_numels=[25, 15],
+                # 9 + (7) + 15 = 31
+                param_offsets=[(16, 24), (0, 14)],
+            ),
+        )
+
+    def _test_flat_param_shard_metadata(
+        self,
+        handle: FlatParamHandle,
+        start: int,
+        end: int,
+        expected: FlatParamShardMetadata,
+    ):
+        """
+        Tests the subroutine ``_get_shard_metadata()`` that computes shard
+        metadata based on start and end indices in the unsharded flat
+        parameter, where both indices are inclusive.
+
+        We manually set the relevant attributes on the flat parameter to be
+        able to check the effect of ``_get_shard_metadata()`` via
+        ``shard_metadata()`` since normally the attributes are set in
+        ``_init_shard_metadata()`` with the start and end indices fixed based
+        on rank and world size.
+        """
+        flat_param = handle.flat_param
+        flat_param._shard_param_infos = handle._get_shard_metadata(start, end)
+        shard_metadata = handle.shard_metadata()
+        self.assertEqual(
+            shard_metadata,
+            expected,
+            msg=f"{handle.shard_metadata()}, {expected}",
+        )
+
+    @parametrize("memory_format", [torch.contiguous_format, torch.channels_last])
+    def test_flat_param_shard_metadata_with_memory_format(self, memory_format):
+        """
+        Tests that ``FlatParameter`` shard metadata are computed as expected
+        with alignment padding and parameter full precision.
+        """
+        module = torch.nn.Sequential(
+            torch.nn.Conv2d(10, 20, 3, bias=False),  # 0.weight, 1800 params
+            torch.nn.Conv2d(20, 10, 5, bias=False),  # 1.weight, 5000 params
+            torch.nn.Conv2d(10, 10, 1, bias=False),  # 2.weight, 100 params
+        ).to(memory_format=memory_format)
+        params_to_flatten = list(module.parameters())
+        handle_kwargs = self._get_default_config()
+        handle_kwargs["use_orig_params"] = True
+        handle = FlatParamHandle(params_to_flatten, module, **handle_kwargs)
+        contiguous_tensors = memory_format == torch.contiguous_format
+        self._test_flat_param_shard_metadata(
+            handle,
+            # Emulate rank 0 of 2 ranks
+            start=0,
+            end=2999,
+            expected=FlatParamShardMetadata(
+                param_names=["0.weight", "1.weight"],
+                param_shapes=[(20, 10, 3, 3), (10, 20, 5, 5)],
+                param_strides=[(90, 9, 3, 1), (500, 25, 5, 1)]
+                if contiguous_tensors
+                else [(90, 1, 30, 10), (500, 1, 100, 20)],
+                param_contiguities=[contiguous_tensors, contiguous_tensors],
+                param_numels=[1800, 5000],
+                param_offsets=[(0, 1799), (0, 1199)],
+            ),
+        )
+        self._test_flat_param_shard_metadata(
+            handle,
+            # Emulate rank 1 of 2 ranks
+            start=3000,
+            end=6899,
+            expected=FlatParamShardMetadata(
+                param_names=["1.weight", "2.weight"],
+                param_shapes=[(10, 20, 5, 5), (10, 10, 1, 1)],
+                param_strides=[(500, 25, 5, 1), (10, 1, 1, 1)]
+                if contiguous_tensors
+                else [(500, 1, 100, 20), (10, 1, 10, 10)],
+                param_contiguities=[contiguous_tensors, contiguous_tensors],
+                param_numels=[5000, 100],
+                param_offsets=[(1200, 4999), (0, 99)],
+            ),
+        )
+
+    @skip_if_lt_x_gpu(1)
+    def test_writeback_orig_params_no_shard(self):
+        class EmbeddingModel(nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.emb = nn.Embedding(5, 4)
+
+            def forward(self, x: torch.Tensor) -> torch.Tensor:
+                return self.emb(x).sum()
+
+        model = EmbeddingModel().half().to(self.rank)
+        fsdp_model = FSDP(
+            model,
+            sharding_strategy=HandleShardingStrategy.NO_SHARD,
+            use_orig_params=True,
+        )
+
+        # Copied from https://github.com/huggingface/accelerate/blob/main/src/accelerate/accelerator.py#L1679-1719
+        for fsdp_module in FSDP.fsdp_modules(fsdp_model):
+            if not fsdp_module._has_params:
+                continue
+            param = fsdp_module._flat_param
+            param.data = param.data.float()
+            fsdp_module._handle._orig_param_dtype = torch.float32
+
+        x = torch.randint(0, 5, (20,), device=self.rank)
+        with torch.no_grad():
+            out = fsdp_model(x)
+        self.assertEqual(out.shape, torch.Size([]))
+
+
+instantiate_parametrized_tests(TestFlattenParams)
 
 if __name__ == "__main__":
     run_tests()

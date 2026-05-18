@@ -2,8 +2,7 @@
 
 #include <torch/csrc/jit/runtime/static/impl.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 // A StorageGroup represents a collection of tensors that share backing storage.
 class StorageGroup {
@@ -36,13 +35,65 @@ class StorageGroup {
   // allocated for all tensors in this storage group. Initially it
   // is zero, eventually it gets updated by the MemoryPlanner.
   size_t max_tensor_size_ = 0;
-  std::vector<at::Tensor*> group_{};
+  std::vector<at::Tensor*> group_;
+};
+
+// A contiguous buffer of `StorageImpl`s
+class ManagedStorages {
+ public:
+  ManagedStorages();
+
+  ~ManagedStorages();
+
+  void allocate(size_t capacity);
+
+  void deallocate();
+
+  bool is_allocated() const {
+    return storages_ != nullptr;
+  }
+
+  // Append a new StorageImpl to the buffer. The new StorageImpl is given the
+  // same size and allocator as `storageImpl` argument
+  void append(at::StorageImpl& storageImpl);
+
+  at::StorageImpl& operator[](size_t idx) {
+    TORCH_INTERNAL_ASSERT(storages_ != nullptr);
+    return storages_[idx];
+  }
+
+  const at::StorageImpl& operator[](size_t idx) const {
+    TORCH_INTERNAL_ASSERT(storages_ != nullptr);
+    return storages_[idx];
+  }
+
+  size_t size() const {
+    return size_;
+  }
+
+  bool empty() const {
+    return size_ == 0;
+  }
+
+  size_t capacity() const {
+    return capacity_;
+  }
+
+ private:
+  // We will use placement-new to add new storages to this buffer
+  at::StorageImpl* storages_{nullptr};
+
+  // Current number of storages that have been placed into the storage buffer
+  size_t size_{0};
+
+  // Total allocated capacity of the storage buffer
+  size_t capacity_{0};
 };
 
 TORCH_API std::vector<StorageGroup> assignStorageToManagedTensors(
     graph_node_list nodes,
     const ManagedTensorRanges& ranges,
-    const FastMap<const Value*, at::Tensor*>& tensor_value_to_tensor);
+    const c10::FastMap<const Value*, at::Tensor*>& tensor_value_to_tensor);
 
 // There are three types of ops in a processed graph in Static Runtime:
 //   1. op with _out variant
@@ -121,15 +172,15 @@ class MemoryPlanner {
     return managed_output_tensors_.size();
   }
 
-  C10_NODISCARD size_t total_num_unmanaged() const {
+  [[nodiscard]] size_t total_num_unmanaged() const {
     return num_unmanaged_non_scalars() + num_unmanaged_scalars();
   }
 
-  C10_NODISCARD size_t num_unmanaged_non_scalars() const {
+  [[nodiscard]] size_t num_unmanaged_non_scalars() const {
     return unmanaged_ivalues_.size() + unmanaged_borrowed_ivalues_.size();
   }
 
-  C10_NODISCARD size_t num_unmanaged_scalars() const {
+  [[nodiscard]] size_t num_unmanaged_scalars() const {
     return num_unmanaged_scalar_ivalues_;
   }
 
@@ -162,18 +213,16 @@ class MemoryPlanner {
   }
 
   bool isManagedStorageImpl(const at::StorageImpl* impl) const {
-    if (managed_tensor_storage_impls_.empty()) {
+    if (storages_.empty()) {
       return false;
     }
     // Comparing pointers that aren't within the same array is
     // UB. We're doing fancy memory allocation stuff, so we cast to an
     // integer type and carry on.
     const auto impl_p = reinterpret_cast<uintptr_t>(impl);
-    const auto start =
-        reinterpret_cast<uintptr_t>(managed_tensor_storage_impls_.data());
-    const auto end = reinterpret_cast<uintptr_t>(
-        managed_tensor_storage_impls_.data() +
-        managed_tensor_storage_impls_.size());
+    const auto start = reinterpret_cast<uintptr_t>(&storages_[0]);
+    const auto end =
+        reinterpret_cast<uintptr_t>(&storages_[0] + storages_.size());
     return impl_p >= start && impl_p < end;
   }
 
@@ -187,10 +236,6 @@ class MemoryPlanner {
   size_t managed_bytes_{0};
   size_t reused_tensors_{0};
 
-  // each pair contains the size (in bytes) of data to be allocated
-  // and a vector of Tensors' storages that should be backed by that
-  // same data. Thus, if memonger is disabled, all vectors are of
-  // size 1.
   // We allocate StorageImpls ourselves so that 1) we don't have to do
   // an extra two loads per Tensor (which will likely miss in the CPU
   // data cache) first reading the Storage (i.e., StorageImpl pointer)
@@ -199,8 +244,10 @@ class MemoryPlanner {
   // We don't have any guarantee that the model doesn't change the
   // Storage for managed tensors out from under us during execution,
   // so we have to check the StorageImpls each time we deallocate.
-  std::vector<std::pair<size_t, at::StorageImpl>>
-      managed_tensor_storage_impls_{};
+  ManagedStorages storages_;
+
+  // Contains the size (in bytes) of the data to be allocated for each storage
+  std::vector<size_t> storages_nbytes_;
 
  private:
   // ivalues created in one run but not managed by MemoryPlanner
@@ -216,7 +263,7 @@ class MemoryPlanner {
   // to an ordinary "strong reference" state.
   std::vector<IValue*> borrowed_ivalues_needing_incref_;
 
-  std::vector<std::pair<size_t, at::Tensor*>> managed_output_tensors_{};
+  std::vector<std::pair<size_t, at::Tensor*>> managed_output_tensors_;
   at::DataPtr buffer_; // allocated each time we call Run()
   uint8_t* buffer_start_{nullptr};
   uint8_t* buffer_end_{nullptr};
@@ -245,8 +292,7 @@ class StandardMemoryPlanner : public MemoryPlanner {
   void allocateManagedTensors() override;
   void deallocateManagedTensors() override;
 
-  std::vector<StorageGroup> managed_tensors_{};
+  std::vector<StorageGroup> managed_tensors_;
 };
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

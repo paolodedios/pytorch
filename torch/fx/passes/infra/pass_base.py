@@ -1,22 +1,28 @@
 import abc
 from collections import namedtuple
-from typing import Optional
 
-from torch.fx.graph_module import GraphModule
+import torch.nn as nn
 from torch.fx._compatibility import compatibility
+from torch.fx.graph_module import GraphModule
 
 
-__all__ = ['PassResult', 'PassBase']
+__all__ = ["PassResult", "PassBase"]
+
 
 @compatibility(is_backward_compatible=False)
+# pyrefly: ignore [invalid-inheritance]
 class PassResult(namedtuple("PassResult", ["graph_module", "modified"])):
     """
     Result of a pass:
         graph_module: The modified graph module
         modified: A flag for if the pass has modified the graph module
     """
-    def __new__(cls, graph_module, modified):
+
+    __slots__: tuple[str, ...] = ()
+
+    def __new__(cls, graph_module: nn.Module, modified: bool) -> "PassResult":
         return super().__new__(cls, graph_module, modified)
+
 
 @compatibility(is_backward_compatible=False)
 class PassBase(abc.ABC):
@@ -31,10 +37,7 @@ class PassBase(abc.ABC):
     the PassManager's `passes` attribute.
     """
 
-    def __init__(self) -> None:
-        pass
-
-    def __call__(self, graph_module: GraphModule) -> Optional[PassResult]:
+    def __call__(self, graph_module: GraphModule) -> PassResult | None:
         """
         Runs the precondition check, the pass itself, and the postcondition check.
         """
@@ -45,7 +48,7 @@ class PassBase(abc.ABC):
         return res
 
     @abc.abstractmethod
-    def call(self, graph_module: GraphModule) -> Optional[PassResult]:
+    def call(self, graph_module: GraphModule) -> PassResult | None:
         """
         The pass that is run through the given graph module. To implement a
         pass, it is required to implement this function.
@@ -53,9 +56,8 @@ class PassBase(abc.ABC):
         Args:
             graph_module: The graph module we will run a pass on
         """
-        pass
 
-    def requires(self, graph_module: GraphModule) -> None:
+    def requires(self, graph_module: GraphModule) -> None:  # noqa: B027
         """
         This function will be called before the pass is run and will check that
         the given graph module contains the preconditions needed to run the
@@ -64,9 +66,8 @@ class PassBase(abc.ABC):
         Args:
             graph_module: The graph module we will run checks on
         """
-        pass
 
-    def ensures(self, graph_module: GraphModule) -> None:
+    def ensures(self, graph_module: GraphModule) -> None:  # noqa: B027
         """
         This function will be called after the pass is run and will check that
         the given graph module contains the postconditions needed to run the
@@ -75,4 +76,3 @@ class PassBase(abc.ABC):
         Args:
             graph_module: The graph module we will run checks on
         """
-        pass

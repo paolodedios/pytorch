@@ -3,14 +3,17 @@
 # This source code is licensed under the BSD license found in the
 # LICENSE file in the root directory of this source tree.
 
+r"""Zero Redundancy Optimizer."""
+
 import collections
 import copy
 import enum
 import inspect
 import io
 import logging
+from collections.abc import Callable
 from itertools import chain
-from typing import Any, Callable, Dict, List, Optional, Set, Type, Union
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -19,9 +22,10 @@ from torch.distributed.optim.utils import functional_optim_map
 from torch.optim import Optimizer
 
 
-logger = logging.getLogger(__name__)
-
 __all__ = ["ZeroRedundancyOptimizer"]
+
+
+logger = logging.getLogger(__name__)
 
 
 # Credits:  classy_vision/generic/distributed_util.py
@@ -31,12 +35,14 @@ def _recursive_copy_to_device(
     device: torch.device,
 ) -> Any:
     r"""
-    Recursively searches lists, tuples, dicts and copies tensors to device if
-    possible. Non-tensor values are passed as-is in the result.
+    Recursively searches lists, tuples, dicts and copies tensors to device if possible.
 
-    .. note:  These are all copies, so if there are two objects that reference
-    the same object, then after this call, there will be two different objects
-    referenced on the device.
+    Non-tensor values are passed as-is in the result.
+
+    .. note::
+        These are all copies, so if there are two objects that reference
+        the same object, then after this call, there will be two different objects
+        referenced on the device.
     """
     if isinstance(value, torch.Tensor):
         return value.to(device, non_blocking=non_blocking)
@@ -60,10 +66,7 @@ def _recursive_copy_to_device(
 
 
 def _is_trainable(param: torch.Tensor) -> bool:
-    r"""
-    Returns if a parameter is trainable, where trainability is equivalent to
-    requiring a gradient.
-    """
+    r"""Return if a parameter is trainable, where trainability is equivalent to requiring a gradient."""
     return param.requires_grad
 
 
@@ -74,8 +77,10 @@ def _broadcast_object(
     device: torch.device = torch.device("cpu"),
 ) -> Any:
     r"""
-    Broadcasts an object to the given group, sending the object if called from
-    the source rank and receiving the object otherwise.
+    Broadcasts an object to the given group.
+
+    It will be sending the object if called from the source rank and receiving
+    the object otherwise.
 
     Arguments:
         obj: object to broadcast; only used if called on the source rank.
@@ -95,33 +100,40 @@ def _broadcast_object(
         data = bytearray(buffer.getbuffer())
         length_tensor = torch.LongTensor([len(data)]).to(device)
         data_send_tensor = torch.ByteTensor(data).to(device)
+        # pyrefly: ignore [bad-argument-type]
         dist.broadcast(length_tensor, src=src_rank, group=group, async_op=False)
+        # pyrefly: ignore [bad-argument-type]
         dist.broadcast(data_send_tensor, src=src_rank, group=group, async_op=False)
     else:
         # Receive the object
         length_tensor = torch.LongTensor([0]).to(device)
+        # pyrefly: ignore [bad-argument-type]
         dist.broadcast(length_tensor, src=src_rank, group=group, async_op=False)
         data_recv_tensor = torch.empty(
             [int(length_tensor.item())], dtype=torch.uint8, device=device
         )
+        # pyrefly: ignore [bad-argument-type]
         dist.broadcast(data_recv_tensor, src=src_rank, group=group, async_op=False)
         buffer = io.BytesIO(data_recv_tensor.cpu().numpy())
-        obj = torch.load(buffer, map_location=device)
+        obj = torch.load(buffer, map_location=device, weights_only=False)
     return obj
 
 
 class _ZeROJoinHook(JoinHook):
     def __init__(self, zero):
-        assert isinstance(zero, ZeroRedundancyOptimizer), (
-            "ZeRO join hook requires passing in a ZeroRedundancyOptimizer "
-            "instance as the state"
-        )
+        if not isinstance(zero, ZeroRedundancyOptimizer):
+            raise AssertionError(
+                "ZeRO join hook requires passing in a "
+                "ZeroRedundancyOptimizer instance as the state"
+            )
         self.zero = zero
         super().__init__()
 
     def main_hook(self):
         """
-        Performs an optimizer step, which updates the joined process's shard of
+        Perform an optimizer step.
+
+        This step updates the joined process's shard of
         the parameters and broadcasts those parameters.
         """
         self.zero.step()
@@ -129,8 +141,9 @@ class _ZeROJoinHook(JoinHook):
 
 class _DDPBucketAssignment:
     r"""
-    This represents a :class:`DistributedDataParallel` bucket assignment,
-    meaning a (possibly non-strict) subset of the parameters corresponding to
+    Represent a :class:`DistributedDataParallel` bucket assignment.
+
+    This means that a (possibly non-strict) subset of the parameters corresponding to
     a DDP bucket assigned to a rank to update.
 
     Attributes:
@@ -150,7 +163,7 @@ class _DDPBucketAssignment:
     def __init__(
         self,
         bucket_index: int,
-        parameters: List[torch.Tensor],
+        parameters: list[torch.Tensor],
         offset: int,
     ):
         self.bucket_index = bucket_index
@@ -160,15 +173,14 @@ class _DDPBucketAssignment:
             raise ValueError("Empty bucket assignment")
         # DDP guarantees all parameters in the bucket have the same device
         self.device: torch.device = self.parameters[0].device
-        self.tensor: Optional[torch.Tensor] = None
+        self.tensor: torch.Tensor | None = None
 
 
 class _OverlapStatus(enum.IntEnum):
     r"""
-    This defines the three possible statuses that
-    :class:`ZeroRedundancyOptimizer` can be in when overlapping with
-    :class:`DistributedDataParallel`.
+    Define possible statuses that :class:`ZeroRedundancyOptimizer` can be in when overlapping with :class:`DistributedDataParallel`.
 
+    Attributes:
         ``UNINITIALIZED``: The ZeRO instance is effectively uninitialized and
             is waiting for DDP to finalize its bucketing.
         ``DDP_HAS_REBUILT_BUCKETS``: DDP has rebuilt its buckets, meaning that
@@ -177,6 +189,7 @@ class _OverlapStatus(enum.IntEnum):
         ``INITIALIZED``: The ZeRO instance is fully initialized and can now
             optimize parameters.
     """
+
     UNINITIALIZED = 0
     DDP_HAS_REBUILT_BUCKETS = 1
     INITIALIZED = 2
@@ -184,8 +197,7 @@ class _OverlapStatus(enum.IntEnum):
 
 class _OverlapInfo:
     r"""
-    This contains the information needed by :class:`ZeroRedundancyOptimizer`
-    to overlap with :class:`DistributedDataParallel`.
+    Information needed by :class:`ZeroRedundancyOptimizer` to overlap with :class:`DistributedDataParallel`.
 
     Arguments:
         world_size (int): world size of the process group being used.
@@ -234,38 +246,41 @@ class _OverlapInfo:
         self.shard_buckets: bool = False
 
         # Modified per bucket reconstruction
-        self.params_per_bucket: List[List[torch.Tensor]] = []
-        self.params_per_rank: List[List[torch.Tensor]] = [[] for _ in range(world_size)]
-        self.offsets: Dict[int, int] = {}
+        self.params_per_bucket: list[list[torch.Tensor]] = []
+        self.params_per_rank: list[list[torch.Tensor]] = [[] for _ in range(world_size)]
+        self.offsets: dict[int, int] = {}
         # Group Ranks
-        self.assigned_ranks_per_bucket: List[Set[int]] = []
+        self.assigned_ranks_per_bucket: list[set[int]] = []
         self.num_bucket_assignments: int = 0
-        self.total_size: Optional[int] = None
+        self.total_size: int | None = None
 
         # Modified per iteration
-        self.broadcast_handles: List[Any] = []
-        self.bucket_indices_seen: List[int] = []
+        self.broadcast_handles: list[Any] = []
+        self.bucket_indices_seen: list[int] = []
         # Used by `hook_with_zero_step()`
-        self.bucket_index_to_future: Dict[int, torch.futures.Future] = {}
-        self.bucket_index_to_bucket: Dict[int, dist.GradBucket] = {}
+        self.bucket_index_to_future: dict[int, torch.futures.Future] = {}
+        self.bucket_index_to_bucket: dict[int, dist.GradBucket] = {}
 
     def wait_for_broadcasts(self) -> None:
         r"""
-        Waits for all parameter broadcasts. This should be called once all
-        broadcasts have been scheduled, meaning ``self.broadcast_handles`` is
-        filled. This clears ``self.broadcast_handles`` in preparation for the
-        next iteration.
+        Wait for all parameter broadcasts.
+
+        This function should be called once all broadcasts have been scheduled,
+        meaning ``self.broadcast_handles`` is filled. This clears ``self.broadcast_handles``
+        in preparation for the next iteration.
         """
-        assert (
-            len(self.broadcast_handles) == self.num_bucket_assignments
-        ), f"Missing at least one broadcast handle on rank {dist.get_rank()}"
-        _ = list(map(lambda x: x.wait(), self.broadcast_handles))
+        if len(self.broadcast_handles) != self.num_bucket_assignments:
+            raise AssertionError(
+                f"Missing at least one broadcast handle on rank {dist.get_rank()}"
+            )
+        _ = [x.wait() for x in self.broadcast_handles]
         self.broadcast_handles.clear()
 
     def clear_per_iter_info(self) -> None:
         r"""
-        Clears the data structures that are modified per-iteration. This should
-        be called at the end of an iteration.
+        Clear the data structures that are modified per-iteration.
+
+        This function should be called at the end of an iteration.
         """
         self.bucket_indices_seen.clear()
         self.bucket_index_to_future.clear()
@@ -274,9 +289,11 @@ class _OverlapInfo:
 
 class ZeroRedundancyOptimizer(Optimizer, Joinable):
     r"""
-    This class wraps an arbitrary :class:`optim.Optimizer
-    <torch.optim.Optimizer>` and shards its states across ranks in the group as
-    described by ZeRO_. The local optimizer instance in each rank is only
+    Wrap an arbitrary :class:`optim.Optimizer <torch.optim.Optimizer>` and shards its states across ranks in the group.
+
+    The sharing is done as described by `ZeRO <https://arxiv.org/abs/1910.02054>`_.
+
+    The local optimizer instance in each rank is only
     responsible for updating approximately ``1 / world_size`` parameters and
     hence only needs to keep ``1 / world_size`` optimizer states. After
     parameters are updated locally, each rank will broadcast its parameters to
@@ -355,20 +372,18 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         is to prepend dummy inputs.
 
     .. warning:: ZeroRedundancyOptimizer is experimental and subject to change.
-
-    .. _ZeRO: https://arxiv.org/abs/1910.02054
-
     """
 
     def __init__(
         self,
         params,
-        optimizer_class: Type[Optimizer],
-        process_group: Optional[Any] = None,
+        optimizer_class: type[Optimizer],
+        process_group: Any | None = None,
         parameters_as_bucket_view: bool = False,
         overlap_with_ddp: bool = False,
         **defaults: Any,
     ):
+        r"""Init."""
         # Perform type and assumption checks on the input parameters
         params = self._verify_and_init_params(params)
         self._verify_same_dense_param_type()
@@ -385,15 +400,15 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         # `self.param_groups`
 
         # Internal data structures (`_cache` indicates lazily evaluated)
-        self._param_to_rank_cache: Dict[torch.Tensor, int] = {}
-        self._param_to_index_cache: Dict[torch.Tensor, int] = {}
-        self._partition_parameters_cache: List[List[Dict]] = []
-        self._index_to_param_cache: List[torch.Tensor] = []
-        self._device_to_params_per_rank_cache: Dict[
-            torch.device, List[List[torch.Tensor]]
+        self._param_to_rank_cache: dict[torch.Tensor, int] = {}
+        self._param_to_index_cache: dict[torch.Tensor, int] = {}
+        self._partition_parameters_cache: list[list[dict]] = []
+        self._index_to_param_cache: list[torch.Tensor] = []
+        self._device_to_params_per_rank_cache: dict[
+            torch.device, list[list[torch.Tensor]]
         ] = {}
-        self._bucket_assignments_per_rank_cache: List[
-            Dict[int, _DDPBucketAssignment]
+        self._bucket_assignments_per_rank_cache: list[
+            dict[int, _DDPBucketAssignment]
         ] = []
         self._is_trainable_mask = self._get_is_trainable_mask()
 
@@ -406,7 +421,9 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         self.world_size: int = dist.get_world_size(self.process_group)
         self.rank: int = dist.get_rank(self.process_group)
         self.global_rank: int = dist.distributed_c10d.get_global_rank(
-            self.process_group, self.rank
+            # pyrefly: ignore [bad-argument-type]
+            self.process_group,
+            self.rank,
         )
 
         self._overlap_with_ddp: bool = overlap_with_ddp
@@ -429,19 +446,17 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         # `self._buckets` is used if `parameters_as_bucket_view=True`, in
         # which case parameter data is flattened into contiguous bucket tensors
         self.parameters_as_bucket_view = parameters_as_bucket_view
-        self._buckets: List[List[torch.Tensor]] = []
+        self._buckets: list[list[torch.Tensor]] = []
         self._build_param_buckets()
 
         # Optional consolidated optimizer state, only populated if this rank
         # is the target in `consolidate_state_dict()`
-        self._all_state_dicts: List[Dict[str, Any]] = []
+        self._all_state_dicts: list[dict[str, Any]] = []
 
         self.initialized = True
 
     def _clear_cache(self) -> None:
-        r"""
-        Clears the cached data structures giving partition information.
-        """
+        r"""Clear the cached data structures giving partition information."""
         self._partition_parameters_cache.clear()
         self._param_to_rank_cache.clear()
         self._index_to_param_cache.clear()
@@ -449,7 +464,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         self._device_to_params_per_rank_cache.clear()
         self._bucket_assignments_per_rank_cache.clear()
 
-    def add_param_group(self, param_group: dict) -> None:
+    def add_param_group(self, param_group: dict[str, Any]) -> None:
         r"""
         Add a parameter group to the :class:`Optimizer` 's ``param_groups``.
 
@@ -497,8 +512,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def consolidate_state_dict(self, to: int = 0) -> None:
         r"""
-        Consolidate a list of ``state_dict`` s (one per rank) on the target
-        rank.
+        Consolidate a list of ``state_dict`` s (one per rank) on the target rank.
 
         Arguments:
             to (int): the rank that receives the optimizer states (default: 0).
@@ -529,7 +543,9 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         self._all_state_dicts = []
         for rank in range(self.world_size):
             global_rank = dist.distributed_c10d.get_global_rank(
-                self.process_group, rank
+                # pyrefly: ignore [bad-argument-type]
+                self.process_group,
+                rank,
             )
             if self.rank == to:
                 # Consolidate all local `state_dict`s on this rank, storing on
@@ -579,12 +595,13 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def _verify_params_per_rank(
         self,
-        params_per_rank: List[List[torch.Tensor]],
+        params_per_rank: list[list[torch.Tensor]],
     ) -> None:
         r"""
-        Verifies ``params_per_rank`` for :meth:`_partition_parameters`,
-        checking that ``params_per_rank`` has length equal to the world size
-        and that it does not contain any parameters not passed into the
+        Verify ``params_per_rank`` for :meth:`_partition_parameters`.
+
+        The verification is done by checking that ``params_per_rank`` has length equal
+        to the world size and that it does not contain any parameters not passed into the
         :class:`ZeroRedundancyOptimizer` constructor.
 
         The parameters in ``params_per_rank`` being a strict subset of those
@@ -611,14 +628,13 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                     )
 
     def _partition_param_group(
-        self, param_group: Dict[str, Any], params_per_rank: List[List[torch.Tensor]]
+        self, param_group: dict[str, Any], params_per_rank: list[list[torch.Tensor]]
     ) -> None:
         r"""
-        Partitions the parameter group ``param_group`` according to
-        ``params_per_rank`` by modifying ``self._partition_parameters_cache``.
+        Partition the parameter group ``param_group`` according to ``params_per_rank``.
 
-        This method should only be used as a subroutine for
-        :meth:`_partition_parameters`.
+        The partition will modify the ``self._partition_parameters_cache``. This method should
+        only be used as a subroutine for :meth:`_partition_parameters`.
 
         Arguments:
             param_group (dict[str, Any]): a parameter group as normally defined
@@ -634,8 +650,8 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def _partition_parameters(
         self,
-        params_per_rank: Optional[List[List[torch.Tensor]]] = None,
-    ) -> List[List[Dict]]:
+        params_per_rank: list[list[torch.Tensor]] | None = None,
+    ) -> list[list[dict]]:
         r"""
         Partitions parameters across distributed data parallel ranks.
 
@@ -667,7 +683,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 self._partition_parameters_cache = [[] for _ in range(self.world_size)]
                 sizes = [0] * self.world_size
                 for param_group in self.param_groups:
-                    param_group_params_per_rank: List[List] = [
+                    param_group_params_per_rank: list[list] = [
                         [] for _ in range(self.world_size)
                     ]
                     # Sort the parameters by size (largest first)
@@ -687,13 +703,14 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
             return self._partition_parameters_cache
 
         # Partition the parameters according to `params_per_rank`
-        assert len(self._partition_parameters_cache) == 0, (
-            "Specifying `params_per_rank` should only be done when the "
-            "parameters have not been partitioned yet"
-        )
+        if len(self._partition_parameters_cache) != 0:
+            raise AssertionError(
+                "Specifying `params_per_rank` should only be done when the "
+                "parameters have not been partitioned yet"
+            )
         if len(self.param_groups) != 1:
             raise RuntimeError(
-                "Specifying `params_per_rank` only supports a single " "parameter group"
+                "Specifying `params_per_rank` only supports a single parameter group"
             )
         self._verify_params_per_rank(params_per_rank)
         self._partition_parameters_cache = [[] for _ in range(self.world_size)]
@@ -705,11 +722,8 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         return self._partition_parameters_cache
 
     @property
-    def _param_to_rank(self) -> Dict[torch.Tensor, int]:
-        r"""
-        :class:`dict` mapping parameters to their assigned data parallel rank
-        in the partition.
-        """
+    def _param_to_rank(self) -> dict[torch.Tensor, int]:
+        r""":class:`dict` mapping parameters to their assigned data parallel rank in the partition."""
         if len(self._param_to_rank_cache) == 0:
             for rank, param_groups in enumerate(self._partition_parameters()):
                 for param_group in param_groups:
@@ -718,10 +732,9 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         return self._param_to_rank_cache
 
     @property
-    def _param_to_index(self) -> Dict[torch.Tensor, int]:
+    def _param_to_index(self) -> dict[torch.Tensor, int]:
         r"""
-        :class:`dict` mapping parameters to their indices in the global
-        optimizer state.
+        :class:`dict` mapping parameters to their indices in the global optimizer state.
 
         NOTE: This assumes that the global optimizer state's indexing (in
         ``state_dict``) follows a linear ordering over the parameter groups.
@@ -729,26 +742,24 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         if len(self._param_to_index_cache) == 0:
             self._param_to_index_cache = {
                 p: i
-                for i, p in enumerate(chain(*(g["params"] for g in self.param_groups)))
+                for i, p in enumerate(
+                    chain.from_iterable(g["params"] for g in self.param_groups)
+                )
             }
         return self._param_to_index_cache
 
     @property
-    def _index_to_param(self) -> List[torch.Tensor]:
-        r"""
-        List mapping parameter indices in the global optimizer scheme to the
-        actual params.
-        """
+    def _index_to_param(self) -> list[torch.Tensor]:
+        r"""List mapping parameter indices in the global optimizer scheme to the actual params."""
         if len(self._index_to_param_cache) == 0:
             self._index_to_param_cache = list(
-                chain(*(g["params"] for g in self.param_groups))
+                chain.from_iterable(g["params"] for g in self.param_groups)
             )
         return self._index_to_param_cache
 
     def _broadcast_params_from_rank(self, rank: int):
         r"""
-        Broadcasts the shard of parameters from a given rank to all other
-        ranks asynchronously.
+        Broadcast the shard of parameters from a given rank to all other ranks asynchronously.
 
         Arguments:
             rank (int): the source rank.
@@ -757,17 +768,20 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
             A :class:`list` of async work handles for the ``broadcast()`` s
             performed to synchronize the parameters.
         """
-        assert not self._overlap_with_ddp, (
-            "`_broadcast_params_from_rank()` should not be used if "
-            "`overlap_with_ddp=True`; instead, the broadcasting should "
-            "happen in the DDP communication hook"
-        )
+        if self._overlap_with_ddp:
+            raise AssertionError(
+                "`_broadcast_params_from_rank()` should not be used if "
+                "`overlap_with_ddp=True`; instead, the broadcasting should "
+                "happen in the DDP communication hook"
+            )
         handles = []
         if self.parameters_as_bucket_view:
             for dev_i_buckets in self._buckets:
                 bucket = dev_i_buckets[rank]
                 global_rank = dist.distributed_c10d.get_global_rank(
-                    self.process_group, rank
+                    # pyrefly: ignore [bad-argument-type]
+                    self.process_group,
+                    rank,
                 )
                 handles.append(
                     dist.broadcast(
@@ -780,23 +794,25 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         else:
             param_groups = self._partition_parameters()[rank]
             global_rank = dist.distributed_c10d.get_global_rank(
-                self.process_group, rank
+                # pyrefly: ignore [bad-argument-type]
+                self.process_group,
+                rank,
             )
             for param_group in param_groups:
-                for param in param_group["params"]:
-                    handles.append(
-                        dist.broadcast(
-                            tensor=param.data,
-                            src=global_rank,
-                            group=self.process_group,
-                            async_op=True,
-                        )
+                handles.extend(
+                    dist.broadcast(
+                        tensor=param.data,
+                        src=global_rank,
+                        group=self.process_group,
+                        async_op=True,
                     )
+                    for param in param_group["params"]
+                )
         return handles
 
     def _sync_params(self):
         r"""
-        Syncs all parameter shards across the ranks.
+        Sync all parameter shards across the ranks.
 
         This rank sends its shard of the parameters to all other ranks and
         receives a shard from each other rank. This is done using
@@ -807,13 +823,15 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         handles = []
         for rank in range(self.world_size):
             handles.extend(self._broadcast_params_from_rank(rank))
-        _ = list(map(lambda x: x.wait(), handles))
+        _ = [x.wait() for x in handles]
 
     @property
     def _device_to_params_per_rank(
         self,
-    ) -> Dict[torch.device, List[List[torch.Tensor]]]:
+    ) -> dict[torch.device, list[list[torch.Tensor]]]:
         r"""
+        Return device parameters assigned per rank.
+
         :class:`dict` mapping each device to a :class:`list` of the per-rank parameter
         lists filtered to only include the parameters stored on that device.
         Each per-rank parameter list gives the parameters assigned to that rank
@@ -833,10 +851,11 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
             ...
         ...
         """
-        assert self.parameters_as_bucket_view, (
-            "`_device_to_params_per_rank` should only be used if "
-            "`parameters_as_bucket_view=True`"
-        )
+        if not self.parameters_as_bucket_view:
+            raise AssertionError(
+                "`_device_to_params_per_rank` should only be used if "
+                "`parameters_as_bucket_view=True`"
+            )
         if len(self._device_to_params_per_rank_cache) == 0:
             for rank, param_groups in enumerate(self._partition_parameters()):
                 for param_group in param_groups:
@@ -853,16 +872,17 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def _get_min_index(
         self,
-        values: List[int],
-        disallowed_indices: Optional[Set[int]] = None,
+        values: list[int],
+        disallowed_indices: set[int] | None = None,
     ) -> int:
         r"""
-        Returns ``values.index(min(values))``, except only uses one pass. It
-        also excludes any indices in ``disallowed_indices`` if provided.
+        Return ``values.index(min(values))``, except only uses one pass.
+
+        It also excludes any indices in ``disallowed_indices`` if provided.
 
         Arguments:
             values: (List[int]): :class:`list` of values.
-            disallowed_indices (Optional[Set[int]]): indices that are
+            disallowed_indices (Optional[set[int]]): indices that are
                 disallowed from being the returned min index.
         """
         min_index = -1
@@ -873,22 +893,23 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
             if value < min_value:
                 min_value = value
                 min_index = i
-        assert min_index >= 0, "All indices are disallowed"
+        if min_index < 0:
+            raise AssertionError("All indices are disallowed")
         return min_index
 
     def _assign_bucket_subset_to_rank(
         self,
         bucket_index: int,
-        bucket_params: List[torch.Tensor],
+        bucket_params: list[torch.Tensor],
         bucket_offset: int,
         assigned_rank: int,
-        assigned_ranks_per_bucket: List[Set[int]],
+        assigned_ranks_per_bucket: list[set[int]],
     ) -> None:
         r"""
-        Assigns the model parameters given by ``bucket_params``, representing a
-        (possibly non-strict) subset of the parameters corresponding to a
-        :class:`DistributedDataParallel` bucket, to the rank with the least
-        size assigned so far and collects relevant information.
+        Assign ``bucket_params`` to the rank with the least size assigned so far and collects relevant information.
+
+        The model parameters given by ``bucket_params`` represents a (possibly non-strict)
+        subset of the parameters corresponding to a :class:`DistributedDataParallel` bucket.
 
         Arguments:
             bucket_index (int): index of the :class:`DistributedDataParallel`
@@ -898,7 +919,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
             bucket_offset (int): offset giving the index of the first element
                 in ``bucket_params`` in the bucket's full parameter list.
             assigned_rank (int): group rank to assign to.
-            assigned_ranks_per_bucket (List[Set[int]]): :class:`set` of group ranks
+            assigned_ranks_per_bucket (list[set[int]]): :class:`set` of group ranks
                 assigned to each bucket.
         """
         overlap_info = self._overlap_info
@@ -907,9 +928,9 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         params_per_rank = overlap_info.params_per_rank
         offsets = overlap_info.offsets
 
-        self._bucket_assignments_per_rank_cache[assigned_rank][
-            bucket_index
-        ] = _DDPBucketAssignment(bucket_index, bucket_params, bucket_offset)
+        self._bucket_assignments_per_rank_cache[assigned_rank][bucket_index] = (
+            _DDPBucketAssignment(bucket_index, bucket_params, bucket_offset)
+        )
         if self.global_rank == assigned_rank:
             offsets[bucket_index] = len(params_per_rank[assigned_rank])
         params_per_rank[assigned_rank].extend(bucket_params)
@@ -917,27 +938,32 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         self._overlap_info.num_bucket_assignments += 1
 
     @property
-    def _bucket_assignments_per_rank(self) -> List[Dict[int, _DDPBucketAssignment]]:
+    def _bucket_assignments_per_rank(self) -> list[dict[int, _DDPBucketAssignment]]:
         r"""
+        Return DDP bucket parameters assigned per rank.
+
         :class:`list` of length world size consisting of :class:`dict` s
         mapping bucket indices to :class:`_DDPBucketAssignment` s for each
         rank.
         """
-        assert self._overlap_with_ddp, (
-            "`_bucket_assignments_per_rank` " "only be used if `overlap_with_ddp=True`"
-        )
+        if not self._overlap_with_ddp:
+            raise AssertionError(
+                "`_bucket_assignments_per_rank` only be used if `overlap_with_ddp=True`"
+            )
         if len(self._bucket_assignments_per_rank_cache) > 0:
             return self._bucket_assignments_per_rank_cache
 
         overlap_info = self._overlap_info
-        assert overlap_info.status == _OverlapStatus.INITIALIZED
+        if overlap_info.status != _OverlapStatus.INITIALIZED:
+            raise AssertionError
 
         self._bucket_assignments_per_rank_cache = [{} for _ in range(self.world_size)]
         params_per_bucket = overlap_info.params_per_bucket
 
         if overlap_info.shard_buckets:
             # Define the assignment threshold to approximate uniformity
-            assert overlap_info.total_size is not None, "`total_size` was not computed"
+            if overlap_info.total_size is None:
+                raise AssertionError("`total_size` was not computed")
             threshold = overlap_info.total_size / self.world_size  # type: ignore[operator]
             size_per_rank = [0 for _ in range(self.world_size)]
 
@@ -947,7 +973,8 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         if not overlap_info.shard_buckets:
             # Assign each DDP bucket entirely to a single rank
             for bucket_index, bucket_params in enumerate(params_per_bucket):
-                assert len(bucket_params) > 0, "Empty bucket"
+                if len(bucket_params) <= 0:
+                    raise AssertionError("Empty bucket")
                 assigned_rank = self._get_assigned_rank(bucket_index)
                 self._assign_bucket_subset_to_rank(
                     bucket_index,
@@ -968,17 +995,21 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 enumerate(params_per_bucket), key=lambda x: sum(p.numel() for p in x[1])
             )
             for bucket_index, bucket_params in params_per_bucket_enum:
-                assert len(bucket_params) > 0, "Empty bucket"
+                if len(bucket_params) <= 0:
+                    raise AssertionError("Empty bucket")
                 bucket_offset = 0
                 assignment_size = 0
                 for param_index, param in enumerate(bucket_params):
                     param_numel = param.numel()
                     if (
+                        # pyrefly: ignore [unbound-name]
                         assignment_size + param_numel >= threshold
                         and param_index > bucket_offset
                     ):
                         assigned_rank = self._get_min_index(
-                            size_per_rank, assigned_ranks_per_bucket[bucket_index]
+                            # pyrefly: ignore [unbound-name]
+                            size_per_rank,
+                            assigned_ranks_per_bucket[bucket_index],
                         )
                         # Include up to but not including the parameter that
                         # exceeded the threshold
@@ -989,6 +1020,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                             assigned_rank,
                             assigned_ranks_per_bucket,
                         )
+                        # pyrefly: ignore [unbound-name]
                         size_per_rank[assigned_rank] += assignment_size
                         bucket_offset = param_index
                         assignment_size = 0
@@ -996,7 +1028,9 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 # Assign the remainder of the bucket so that no assignment
                 # spans across two buckets
                 assigned_rank = self._get_min_index(
-                    size_per_rank, assigned_ranks_per_bucket[bucket_index]
+                    # pyrefly: ignore [unbound-name]
+                    size_per_rank,
+                    assigned_ranks_per_bucket[bucket_index],
                 )
                 self._assign_bucket_subset_to_rank(
                     bucket_index,
@@ -1005,19 +1039,19 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                     assigned_rank,
                     assigned_ranks_per_bucket,
                 )
+                # pyrefly: ignore [unbound-name]
                 size_per_rank[assigned_rank] += assignment_size
 
         return self._bucket_assignments_per_rank_cache
 
     def _local_step(
         self,
-        gradients: Optional[List[Optional[torch.Tensor]]] = None,
-        closure: Optional[Callable[[], float]] = None,
+        gradients: list[torch.Tensor | None] | None = None,
+        closure: Callable[[], float] | None = None,
         **kwargs: Any,
-    ) -> Optional[float]:
+    ) -> float | None:
         r"""
-        Performs a single optimizer step without syncing parameters across
-        ranks.
+        Perform a single optimizer step without syncing parameters across ranks.
 
         Arguments:
             gradients (list[Optional[torch.Tensor]], optional): a :class:`list`
@@ -1069,13 +1103,15 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 else self.optim.step(closure=closure, **kwargs)
             )
         else:
-            assert self._overlap_with_ddp, (
-                "Specifying `gradients` should not "
-                "be used when `overlap_with_ddp=False`"
-            )
-            assert closure is None, (
-                "`closure` is not supported when using " "a local functional optimizer"
-            )
+            if not self._overlap_with_ddp:
+                raise AssertionError(
+                    "Specifying `gradients` should not "
+                    "be used when `overlap_with_ddp=False`"
+                )
+            if closure is not None:
+                raise AssertionError(
+                    "`closure` is not supported when using a local functional optimizer"
+                )
             loss = self.optim.step(gradients=gradients)
 
         # Sync any updated attributes in the local optimizer to the exposed
@@ -1084,13 +1120,14 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
         return loss
 
+    # pyrefly: ignore [bad-override]
     def step(
         self,
-        closure: Optional[Callable[[], float]] = None,
+        closure: Callable[[], float] | None = None,
         **kwargs: Any,
-    ) -> Optional[float]:
+    ) -> float | None:
         r"""
-        Performs a single optimizer step and syncs parameters across all ranks.
+        Perform a single optimizer step and syncs parameters across all ranks.
 
         Arguments:
             closure (Callable): a closure that re-evaluates the model and
@@ -1098,7 +1135,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         Returns:
             Optional loss depending on the underlying local optimizer.
 
-        .. note: Any extra parameters are passed to the base optimizer as-is.
+        .. note:: Any extra parameters are passed to the base optimizer as-is.
         """
         if self._overlap_with_ddp:
             logger.warning(
@@ -1115,9 +1152,11 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
         return loss
 
-    def join_hook(self, **kwargs):
+    def join_hook(self, **_kwargs: Any) -> JoinHook:
         r"""
-        Returns the ZeRO join hook, which enables training on uneven inputs by
+        Return the ZeRO join hook.
+
+        It enables training on uneven inputs by
         shadowing the collective communications in the optimizer step.
 
         Gradients must be properly set before this hook is called.
@@ -1135,16 +1174,17 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     @property
     def join_device(self) -> torch.device:
+        r"""Return default device."""
         return self._default_device
 
     @property
     def join_process_group(self) -> Any:
+        r"""Return process group."""
         return self.process_group
 
-    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
         r"""
-        Load the state pertaining to the given rank from the input
-        ``state_dict``, updating the local optimizer as needed.
+        Load the state pertaining to the given rank from the input ``state_dict``, updating the local optimizer as needed.
 
         Arguments:
             state_dict (dict): optimizer state; should be an object returned
@@ -1180,9 +1220,9 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         self._sync_param_groups(state_dict["param_groups"], self.param_groups)
         self._sync_param_groups(self.param_groups, self.optim.param_groups)
 
-    def state_dict(self) -> Dict[str, Any]:
+    def state_dict(self) -> dict[str, Any]:
         r"""
-        Returns the last global optimizer state known to this rank.
+        Return the last global optimizer state known to this rank.
 
         .. warning:
             If the state has not been consolidated to this rank, this raises a
@@ -1215,9 +1255,10 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
         for rank, local_state_dict in enumerate(self._all_state_dicts):
             local_param_groups = local_state_dict["param_groups"]
             global_param_groups = self._partition_parameters()[rank]
-            assert len(local_param_groups) == len(
-                global_param_groups
-            ), "Mismatch between number of local and global parameter groups"
+            if len(local_param_groups) != len(global_param_groups):
+                raise AssertionError(
+                    "Mismatch between number of local and global parameter groups"
+                )
 
             for local_param_group, global_param_group in zip(
                 local_param_groups, global_param_groups
@@ -1227,9 +1268,11 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 local_param_indices = local_param_group["params"]
                 global_params = global_param_group["params"]
 
-                assert len(local_param_indices) == len(
-                    global_params
-                ), "Mismatch between number of local and global parameters in parameter group"
+                if len(local_param_indices) != len(global_params):
+                    raise AssertionError(
+                        "Mismatch between number of local and global "
+                        "parameters in parameter group"
+                    )
                 for local_param_index, global_param in zip(
                     local_param_indices, global_params
                 ):
@@ -1246,12 +1289,11 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     @staticmethod
     def _sync_param_groups(
-        src_param_groups: List[Dict[Any, Any]],
-        dst_param_groups: List[Dict[Any, Any]],
+        src_param_groups: list[dict[Any, Any]],
+        dst_param_groups: list[dict[Any, Any]],
     ) -> None:
         r"""
-        Syncs the attributes from the source parameter groups to the
-        destination parameter groups.
+        Sync the attributes from the source parameter groups to the destination parameter groups.
 
         Example attributes include learning rate or scheduler attributes. The
         two parameter groups should have the same length (i.e. same number of
@@ -1263,9 +1305,10 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
             dst_param_groups (list[dict]): parameter groups giving the
                 attribute settings to set.
         """
-        assert len(src_param_groups) == len(
-            dst_param_groups
-        ), "Mismatch between number of source and destination parameter groups"
+        if len(src_param_groups) != len(dst_param_groups):
+            raise AssertionError(
+                "Mismatch between number of source and destination parameter groups"
+            )
         for src_param_group, dst_param_group in zip(src_param_groups, dst_param_groups):
             # Sync all attributes except the parameters
             for attr in filter(lambda x: x != "params", src_param_group.keys()):
@@ -1273,8 +1316,9 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def _build_param_buckets(self) -> None:
         r"""
-        Builds parameter buckets if ``parameters_as_bucket_view=True`` so
-        that for each device that stores this rank's parameters, there is a
+        Build parameter buckets if ``parameters_as_bucket_view=True``.
+
+        For each device that stores this rank's parameters, there is a
         bucket (represented as a tensor) containing all of the parameters on
         that device that are assigned to a given rank in the parameter update
         partition.
@@ -1333,6 +1377,8 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def _build_ddp_param_buckets(self) -> None:
         r"""
+        Build the DDP bucket with parameters assigned to this rank.
+
         For each DDP bucket with parameters assigned to this rank, flattens the
         data of those parameters into a single tensor and saves the tensor to
         the ``tensor`` attribute in the corresponding
@@ -1349,14 +1395,16 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 bucket_size = 0
                 dtype = None
                 for param in params:
-                    assert _is_trainable(param), (
-                        "Model parameter "
-                        "corresponding to a gradient in a DDP bucket should "
-                        "require a gradient"
-                    )
+                    if not _is_trainable(param):
+                        raise AssertionError(
+                            "Model parameter "
+                            "corresponding to a gradient in a DDP bucket should "
+                            "require a gradient"
+                        )
                     bucket_size += param.numel()
                     dtype = param.dtype  # assumes all same dtype
-                assert bucket_size > 0, "Empty bucket"
+                if bucket_size <= 0:
+                    raise AssertionError("Empty bucket")
 
                 # Construct the bucket tensor (assuming all dense and same dtype)
                 tensor = torch.empty(
@@ -1373,14 +1421,14 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
     def _verify_and_init_params(
         self,
         params: Any,
-    ) -> Union[List[torch.Tensor], List[dict]]:
+    ) -> list[torch.Tensor] | list[dict]:
         r"""
-        Verifies the type of ``params`` and initializes ``self._all_params``
-        as a :class:`list` of all parameters if ``params`` is valid.
+        Verify the type of ``params`` and initializes ``self._all_params`` as a :class:`list` of all parameters.
+
+        The initializagtion will first make sure that provided ``params`` is valid.
 
         Arguments:
-            params (Any): Candidate parameter list or parameter groups to
-                verify.
+            params (Any): Candidate parameter list or parameter groups to verify.
 
         Raises:
             TypeError: ``params`` has an invalid type.
@@ -1404,7 +1452,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 f" or dicts, but got {torch.typename(params)}"
             ) from e
         if len(all_params) == 0:
-            raise ValueError("ZeroRedundancyOptimizer got an empty parameter " "list")
+            raise ValueError("ZeroRedundancyOptimizer got an empty parameter list")
         all_tensors = True
         all_dicts = True
         for param in all_params:
@@ -1412,7 +1460,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
             all_dicts &= isinstance(param, dict)
         if not all_tensors and not all_dicts:
             raise TypeError(
-                "`params` argument should be an iterable of " "Tensors or dicts"
+                "`params` argument should be an iterable of Tensors or dicts"
             )
         # Ensure that `self._all_params` contains a list of all parameters
         if all_tensors:
@@ -1432,7 +1480,7 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def _verify_same_dense_param_type(self) -> None:
         r"""
-        Verifies that all parameters are of the same dense type.
+        Verify that all parameters are of the same dense type.
 
         The method assumes that ``self._all_params`` has been initialized
         and is non-empty.
@@ -1461,33 +1509,29 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                     f"{other_typename}"
                 )
 
-    def _get_is_trainable_mask(self) -> List[bool]:
-        r"""
-        Returns a boolean mask indicating if each parameter is trainable
-        (``requires_grad``) or not.
-        """
+    def _get_is_trainable_mask(self) -> list[bool]:
+        r"""Return a boolean mask indicating if each parameter is trainable (``requires_grad``) or not."""
         return list(map(_is_trainable, self._all_params))
 
     def _init_local_optimizer(self) -> None:
         r"""
-        Initializes this rank's local optimizer, responsible for its subset of
-        the parameters.
+        Initialize this rank's local optimizer, responsible for its subset of the parameters.
 
         The local optimizer is saved in ``self.optim``.
         """
-        assert (
-            self._optim_constructor is not None
-        ), "The local optimizer class has not been set"
+        if self._optim_constructor is None:
+            raise AssertionError("The local optimizer class has not been set")
 
         param_groups = self._partition_parameters()[self.rank]
         # `overlap_with_ddp=True` requires a local functional optimizer
         if self._overlap_with_ddp:
             # Functional optimizers only support a single parameter group and
             # require passing in the parameters as a list
-            assert len(param_groups) == 1, (
-                "Initializing the local "
-                "functional optimizer with more than one parameter group"
-            )
+            if len(param_groups) != 1:
+                raise AssertionError(
+                    "Initializing the local functional optimizer "
+                    "with more than one parameter group"
+                )
             params = param_groups[0]["params"]
             # Try to pass `_allow_empty_param_list=True` to avoid erroring
             if (
@@ -1499,11 +1543,14 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 )
             else:
                 logger.warning(
-                    f"{self._optim_constructor} does not support the argument "
+                    "%s does not support the argument "
                     "`_allow_empty_param_list`; ZeroRedundancyOptimizer may "
-                    "error due to an empty parameter list"
+                    "error due to an empty parameter list",
+                    self._optim_constructor,
                 )
-                self.optim: Any = self._optim_constructor(params, **self._optim_defaults)  # type: ignore[no-redef]
+                self.optim: Any = self._optim_constructor(
+                    params, **self._optim_defaults
+                )  # type: ignore[no-redef]
 
             # Log information about the DDP and ZeRO bucketing
             if dist.get_debug_level() != dist.DebugLevel.OFF:
@@ -1512,42 +1559,44 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                     self._bucket_assignments_per_rank[self.global_rank]
                 )
                 logger.info(
-                    f"rank {self.global_rank} with {local_numel} parameters "
-                    f"across {num_assigned_buckets} buckets"
+                    "rank %s with %s parameters across %s buckets",
+                    self.global_rank,
+                    local_numel,
+                    num_assigned_buckets,
                 )
                 if self.global_rank == 0:
                     logger.info(
-                        f"{len(self._overlap_info.params_per_bucket)} DDP "
-                        f"buckets and "
-                        f"{self._overlap_info.num_bucket_assignments} bucket "
-                        "assignments"
+                        "%s DDP buckets and %s bucket assignments",
+                        len(self._overlap_info.params_per_bucket),
+                        self._overlap_info.num_bucket_assignments,
                     )
         else:
             # NOTE: Passing `param_groups` into the local optimizer constructor
             # bypasses the empty parameter list check
-            self.optim: Optimizer = self._optim_constructor(param_groups, **self._optim_defaults)  # type: ignore[no-redef]
+            self.optim: Optimizer = self._optim_constructor(
+                param_groups, **self._optim_defaults
+            )  # type: ignore[no-redef]
 
         # TODO: Manually add `self.param_groups` if using a functional
         # optimizer; remove this if/when the functional optimizers support
         # multiple parameter groups
         if self._overlap_with_ddp and not hasattr(self.optim, "param_groups"):
-            assert hasattr(self.optim, "param_group"), (
-                "The functional optimizer should set at least one of the "
-                "attributes `param_group` or `param_groups`"
-            )
+            if not hasattr(self.optim, "param_group"):
+                raise AssertionError(
+                    "The functional optimizer should set at least one of "
+                    "the attributes `param_group` or `param_groups`"
+                )
             self.optim.param_groups = [self.optim.param_group]  # type: ignore[attr-defined]
 
         self._sync_param_groups(self.optim.param_groups, self.param_groups)
 
     def _init_zero_for_overlap(self) -> None:
-        r"""
-        Performs a delayed initialization of the local optimizer and the
-        supporting data structures.
-        """
-        assert self._overlap_with_ddp, (
-            "`_init_zero_for_overlap()` should only be called when "
-            "`overlap_with_ddp=True`"
-        )
+        r"""Perform a delayed initialization of the local optimizer and the supporting data structures."""
+        if not self._overlap_with_ddp:
+            raise AssertionError(
+                "`_init_zero_for_overlap()` should only be called when "
+                "`overlap_with_ddp=True`"
+            )
         self._overlap_info.status = _OverlapStatus.INITIALIZED
         self._clear_cache()
         self._partition_parameters(self._overlap_info.params_per_rank)
@@ -1556,23 +1605,25 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def _get_assigned_rank(self, bucket_index: int) -> int:
         r"""
-        Returns the single rank assigned to a :class:`DistributedDataParallel`
-        gradient bucket.
+        Return the single rank assigned to a :class:`DistributedDataParallel` gradient bucket.
 
         Arguments:
             bucket_index (int): index of the :class:`DistributedDataParallel`
                 bucket for which to get the assigned rank.
         """
-        assert not self._overlap_info.shard_buckets, (
-            "The bucket assignment requires global bucket information and "
-            "will be computed later; there should be no need to use this "
-            "method"
-        )
+        if self._overlap_info.shard_buckets:
+            raise AssertionError(
+                "The bucket assignment requires global bucket information "
+                "and will be computed later; there should be no need to "
+                "use this method"
+            )
         return bucket_index % self.world_size
 
     def _check_overlap_initialized(self):
         r"""
-        Checks that the delayed initialization has occurred (see
+        Check the delayed initialization depending on the value of ``overlap_with_ddp``.
+
+        The delayed initialization has occurred (see
         :meth:`_init_zero_for_overlap`) if ``overlap_with_ddp=True``, and
         raises a ``RuntimeError`` if not. This should preface methods that
         should not be run before that delayed initialization.
@@ -1593,11 +1644,9 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
 
     def _get_optimizer_constructor(self, optimizer_class: Any) -> Any:
         r"""
-        Returns the proper optimizer constructor, performing the necessary
-        validation and transformation depending on ``overlap_with_ddp``.
+        Return the optimizer constructor using validation and transformation depending on ``overlap_with_ddp``.
 
         Returns:
-
             - ``optimizer_class`` if ``overlap_with_ddp=False`` and
                 ``optimizer_class`` is not a functional optimizer.
             - ``optimizer_class`` if ``overlap_with_ddp=True`` and
@@ -1636,9 +1685,11 @@ class ZeroRedundancyOptimizer(Optimizer, Joinable):
                 # equivalent if `overlap_with_ddp=True`
                 optim_constructor = functional_optim_map[optimizer_class]
                 logger.info(
-                    f"Using the functional optimizer {optim_constructor} "
-                    f"instead of {optimizer_class} since "
-                    "`overlap_with_ddp=True`"
+                    "Using the functional optimizer %s "
+                    "instead of %s since "
+                    "`overlap_with_ddp=True`",
+                    optim_constructor,
+                    optimizer_class,
                 )
                 return optim_constructor
             else:

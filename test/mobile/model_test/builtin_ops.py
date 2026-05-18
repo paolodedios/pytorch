@@ -5,14 +5,10 @@ import torch
 
 
 class TSBuiltinOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(TSBuiltinOpsModule, self).__init__()
-
     def forward(self):
         x = torch.tensor(1)
         y = torch.tensor(0.5)
         b = float(1)
-        s = "abcde"
         l = ["1", "2", "test", "a{}b"]
         d = {"key": 1}
         d2 = {0: 100}
@@ -90,9 +86,6 @@ class TSBuiltinOpsModule(torch.nn.Module):
 
 
 class TSCollectionOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(TSCollectionOpsModule, self).__init__()
-
     def forward(self):
         s = "abcde"
         # list

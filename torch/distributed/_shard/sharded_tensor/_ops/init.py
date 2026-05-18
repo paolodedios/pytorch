@@ -1,12 +1,13 @@
+# mypy: allow-untyped-defs
 import torch
 import torch.distributed._shard.sharded_tensor as sharded_tensor
-from torch.distributed._shard.sharded_tensor import (
-    _sharded_op_impl,
-)
+from torch.distributed._shard.sharded_tensor import _sharded_op_impl
+
 
 def validate_param(param, param_name):
     if param is None:
         raise ValueError(f"param: {param_name} shouldn't be None!")
+
 
 @_sharded_op_impl(torch.nn.init.uniform_)
 def uniform_(types, args=(), kwargs=None, pg=None):
@@ -19,16 +20,20 @@ def uniform_(types, args=(), kwargs=None, pg=None):
         b: the upper bound of the uniform distribution
     """
     validate_param(kwargs, "kwargs")
+    # pyrefly: ignore [unsupported-operation]
     sharded_tensor = kwargs["tensor"]
     validate_param(sharded_tensor, "tensor")
-    a = kwargs['a']
+    # pyrefly: ignore [unsupported-operation]
+    a = kwargs["a"]
     validate_param(a, "a")
-    b = kwargs['b']
+    # pyrefly: ignore [unsupported-operation]
+    b = kwargs["b"]
     validate_param(b, "b")
 
     for shard in sharded_tensor.local_shards():
         torch.nn.init.uniform_(shard.tensor, a=a, b=b)
     return sharded_tensor
+
 
 @_sharded_op_impl(torch.nn.init.normal_)
 def normal_(types, args=(), kwargs=None, pg=None):
@@ -41,16 +46,20 @@ def normal_(types, args=(), kwargs=None, pg=None):
         std: the standard deviation of the normal distribution
     """
     validate_param(kwargs, "kwargs")
+    # pyrefly: ignore [unsupported-operation]
     sharded_tensor = kwargs["tensor"]
     validate_param(sharded_tensor, "tensor")
-    mean = kwargs['mean']
+    # pyrefly: ignore [unsupported-operation]
+    mean = kwargs["mean"]
     validate_param(mean, "mean")
-    std = kwargs['std']
+    # pyrefly: ignore [unsupported-operation]
+    std = kwargs["std"]
     validate_param(std, "std")
 
     for shard in sharded_tensor.local_shards():
         torch.nn.init.normal_(shard.tensor, mean=mean, std=std)
     return sharded_tensor
+
 
 @_sharded_op_impl(torch.nn.init.kaiming_uniform_)
 def kaiming_uniform_(types, args=(), kwargs=None, pg=None):
@@ -75,18 +84,25 @@ def kaiming_uniform_(types, args=(), kwargs=None, pg=None):
             recommended to use only with ``'relu'`` or ``'leaky_relu'`` (default).
     """
     validate_param(kwargs, "kwargs")
+    # pyrefly: ignore [unsupported-operation]
     sharded_tensor = kwargs["tensor"]
     validate_param(sharded_tensor, "tensor")
-    a = kwargs['a']
+    # pyrefly: ignore [unsupported-operation]
+    a = kwargs["a"]
     validate_param(a, "a")
-    mode = kwargs['mode']
+    # pyrefly: ignore [unsupported-operation]
+    mode = kwargs["mode"]
     validate_param(mode, "mode")
-    nonlinearity = kwargs['nonlinearity']
+    # pyrefly: ignore [unsupported-operation]
+    nonlinearity = kwargs["nonlinearity"]
     validate_param(nonlinearity, "nonlinearity")
 
     for shard in sharded_tensor.local_shards():
-        torch.nn.init.kaiming_uniform_(shard.tensor, a=a, mode=mode, nonlinearity=nonlinearity)
+        torch.nn.init.kaiming_uniform_(
+            shard.tensor, a=a, mode=mode, nonlinearity=nonlinearity
+        )
     return sharded_tensor
+
 
 @_sharded_op_impl(torch.nn.init.constant_)
 def constant_(types, args=(), kwargs=None, pg=None):
@@ -97,13 +113,16 @@ def constant_(types, args=(), kwargs=None, pg=None):
         val: the value to fill the tensor with
     """
     validate_param(kwargs, "kwargs")
+    # pyrefly: ignore [unsupported-operation]
     sharded_tensor = kwargs["tensor"]
     validate_param(sharded_tensor, "tensor")
-    val = kwargs['val']
+    # pyrefly: ignore [unsupported-operation]
+    val = kwargs["val"]
     validate_param(val, "val")
     for shard in sharded_tensor.local_shards():
         torch.nn.init.constant_(shard.tensor, val=val)
     return sharded_tensor
+
 
 tensor_like_creation_op_map = {
     torch.full_like: sharded_tensor.full,
@@ -114,6 +133,7 @@ tensor_like_creation_op_map = {
     torch.randn_like: sharded_tensor.randn,
 }
 
+
 # tensor ops that behave the same as the default tensor
 def register_tensor_creation_op(op):
     @_sharded_op_impl(op)
@@ -123,12 +143,13 @@ def register_tensor_creation_op(op):
         takes a ShardedTensor as argument, such as ``torch.zeros_like`` or
         ``torch.full_like``.
         """
-        creation_op = tensor_like_creation_op_map.get(op, None)
+        creation_op = tensor_like_creation_op_map.get(op)
         if creation_op is None:
             raise RuntimeError(f"Tensor creation {op} not supported!")
         if kwargs is None:
             kwargs = {}
 
+        # pyrefly: ignore [bad-index]
         st = args[0]
 
         new_st = creation_op(st.sharding_spec(), st.size(), *args[1:], **kwargs)  # type: ignore[operator]

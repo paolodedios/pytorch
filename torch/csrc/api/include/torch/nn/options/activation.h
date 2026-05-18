@@ -5,8 +5,7 @@
 #include <torch/enum.h>
 #include <torch/types.h>
 
-namespace torch {
-namespace nn {
+namespace torch::nn {
 
 /// Options for the `ELU` module.
 ///
@@ -252,7 +251,7 @@ struct TORCH_API SoftmaxFuncOptions {
   /// If specified, the input tensor is casted to `dtype` before the operation
   /// is performed. This is useful for preventing data type overflows. Default:
   /// None.
-  TORCH_ARG(c10::optional<torch::Dtype>, dtype) = c10::nullopt;
+  TORCH_ARG(std::optional<torch::Dtype>, dtype) = std::nullopt;
 };
 
 } // namespace functional
@@ -293,7 +292,7 @@ struct TORCH_API SoftminFuncOptions {
   /// If specified, the input tensor is casted to `dtype` before the operation
   /// is performed. This is useful for preventing data type overflows. Default:
   /// None.
-  TORCH_ARG(c10::optional<torch::Dtype>, dtype) = c10::nullopt;
+  TORCH_ARG(std::optional<torch::Dtype>, dtype) = std::nullopt;
 };
 
 } // namespace functional
@@ -334,7 +333,7 @@ struct TORCH_API LogSoftmaxFuncOptions {
   /// If specified, the input tensor is casted to `dtype` before the operation
   /// is performed. This is useful for preventing data type overflows. Default:
   /// None.
-  TORCH_ARG(c10::optional<torch::Dtype>, dtype) = c10::nullopt;
+  TORCH_ARG(std::optional<torch::Dtype>, dtype) = std::nullopt;
 };
 
 } // namespace functional
@@ -640,10 +639,10 @@ struct TORCH_API MultiheadAttentionOptions {
   /// add a new batch of zeros to the key and value sequences at dim=1.
   TORCH_ARG(bool, add_zero_attn) = false;
 
-  /// total number of features in key. Default: c10::nullopt.
+  /// total number of features in key. Default: std::nullopt.
   TORCH_ARG(int64_t, kdim);
 
-  /// total number of features in key. Default: c10::nullopt.
+  /// total number of features in key. Default: std::nullopt.
   TORCH_ARG(int64_t, vdim);
 };
 
@@ -687,28 +686,27 @@ struct TORCH_API MultiheadAttentionForwardFuncOptions {
 
   TORCH_ARG(bool, training) = true;
 
-  TORCH_ARG(Tensor, key_padding_mask) = {};
+  TORCH_ARG(Tensor, key_padding_mask);
 
   TORCH_ARG(bool, need_weights) = true;
 
-  TORCH_ARG(Tensor, attn_mask) = {};
+  TORCH_ARG(Tensor, attn_mask);
 
   TORCH_ARG(bool, use_separate_proj_weight) = false;
 
-  TORCH_ARG(Tensor, q_proj_weight) = {};
+  TORCH_ARG(Tensor, q_proj_weight);
 
-  TORCH_ARG(Tensor, k_proj_weight) = {};
+  TORCH_ARG(Tensor, k_proj_weight);
 
-  TORCH_ARG(Tensor, v_proj_weight) = {};
+  TORCH_ARG(Tensor, v_proj_weight);
 
-  TORCH_ARG(Tensor, static_k) = {};
+  TORCH_ARG(Tensor, static_k);
 
-  TORCH_ARG(Tensor, static_v) = {};
+  TORCH_ARG(Tensor, static_v);
 
   TORCH_ARG(bool, average_attn_weights) = true;
 };
 
 } // namespace functional
 
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn

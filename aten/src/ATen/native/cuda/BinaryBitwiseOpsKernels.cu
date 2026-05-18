@@ -8,7 +8,7 @@
 // NOTE: CUDA on Windows requires that the enclosing function
 // of a __device__ lambda not have internal linkage.
 
-namespace at { namespace native {
+namespace at::native {
 
 template<typename scalar_t>
 struct BitwiseAndFunctor {
@@ -73,9 +73,9 @@ void bitwise_xor_kernel_cuda(TensorIteratorBase& iter) {
   });
 }
 
-REGISTER_DISPATCH(bitwise_and_stub, &bitwise_and_kernel_cuda);
-REGISTER_DISPATCH(bitwise_or_stub, &bitwise_or_kernel_cuda);
-REGISTER_DISPATCH(bitwise_xor_stub, &bitwise_xor_kernel_cuda);
+REGISTER_DISPATCH(bitwise_and_stub, &bitwise_and_kernel_cuda)
+REGISTER_DISPATCH(bitwise_or_stub, &bitwise_or_kernel_cuda)
+REGISTER_DISPATCH(bitwise_xor_stub, &bitwise_xor_kernel_cuda)
 
 
-}} // namespace at::native
+} // namespace at::native

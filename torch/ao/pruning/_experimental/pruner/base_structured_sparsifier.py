@@ -1,24 +1,29 @@
+# mypy: allow-untyped-defs
+from collections.abc import Callable
 from itertools import chain
+from operator import getitem
+
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.ao.pruning.sparsifier.base_sparsifier import BaseSparsifier
 from torch.fx import symbolic_trace
 from torch.nn.utils import parametrize
-from typing import Type, Set, Dict, Callable, Tuple, Optional, Union
 
-from torch.ao.pruning import BaseSparsifier
-from .parametrization import FakeStructuredSparsity, BiasHook
-from .match_utils import apply_match
+from .match_utils import apply_match, MatchAllNode
+from .parametrization import BiasHook, FakeStructuredSparsity, module_contains_param
 from .prune_functions import (
-    prune_linear,
-    prune_linear_linear,
-    prune_linear_activation_linear,
     prune_conv2d,
-    prune_conv2d_conv2d,
     prune_conv2d_activation_conv2d,
     prune_conv2d_activation_pool_conv2d,
+    prune_conv2d_conv2d,
     prune_conv2d_pool_activation_conv2d,
     prune_conv2d_pool_flatten_linear,
+    prune_linear,
+    prune_linear_activation_linear,
+    prune_linear_linear,
+    prune_lstm_output_layernorm_linear,
+    prune_lstm_output_linear,
 )
 
 
@@ -26,6 +31,7 @@ def _get_supported_structured_pruning_modules():
     SUPPORTED_STRUCTURED_PRUNING_MODULES = {  # added to config if None given
         nn.Linear,
         nn.Conv2d,
+        nn.LSTM,
     }
     return SUPPORTED_STRUCTURED_PRUNING_MODULES
 
@@ -52,6 +58,7 @@ def _get_supported_activation_functions():
         F.prelu,
         F.softsign,
         F.tanhshrink,
+        F.gelu,
     }
     return SUPPORTED_ACTIVATION_FUNCTIONS
 
@@ -78,19 +85,20 @@ def _get_supported_activation_modules():
         nn.PReLU,
         nn.Softsign,
         nn.Tanhshrink,
+        nn.GELU,
     }
     return SUPPORTED_ACTIVATION_MODULES
 
 
-def _get_default_structured_pruning_patterns() -> Dict[
-    Tuple[Union[Type[nn.Module], Callable[[torch.Tensor], torch.Tensor], str], ...],
+def _get_default_structured_pruning_patterns() -> dict[
+    tuple[type[nn.Module] | Callable | MatchAllNode | str, ...],
     Callable[..., None],
 ]:
     """
     Returns the patterns for conv2d / linear conversion for each element in the activation functions/modules defined above.
     """
-    patterns: Dict[
-        Tuple[Union[Type[nn.Module], Callable[[torch.Tensor], torch.Tensor], str], ...],
+    patterns: dict[
+        tuple[type[nn.Module] | Callable | MatchAllNode | str, ...],
         Callable[..., None],
     ] = {
         # linear -> linear
@@ -99,6 +107,13 @@ def _get_default_structured_pruning_patterns() -> Dict[
         # conv2d -> conv2d
         (nn.Conv2d, "output"): prune_conv2d,
         (nn.Conv2d, nn.Conv2d): prune_conv2d_conv2d,
+        # TODO LSTM Structured pruning does not support returned state currently.
+        # Should find a way to explicitly match getitem(0) instead of getitem.
+        # This will also require changing the pruning function.
+        # lstm -> getitem(0) -> linear
+        (nn.LSTM, getitem, nn.Linear): prune_lstm_output_linear,
+        # lstm -> getitem(0) -> layernorm -> linear
+        (nn.LSTM, getitem, nn.LayerNorm, nn.Linear): prune_lstm_output_layernorm_linear,
     }
 
     for activation in chain(
@@ -212,7 +227,7 @@ class BaseStructuredSparsifier(BaseSparsifier):
     def make_config_from_model(
         self,
         model: nn.Module,
-        SUPPORTED_MODULES: Optional[Set[Type]] = None,
+        SUPPORTED_MODULES: set[type] | None = None,
     ) -> None:
         if SUPPORTED_MODULES is None:
             SUPPORTED_MODULES = _get_supported_structured_pruning_modules()
@@ -222,8 +237,6 @@ class BaseStructuredSparsifier(BaseSparsifier):
         r"""This function will attach the FakeStructuredSparsity parameterizations
         and BiasHooks at the appropriate points in the model.
         """
-        self.bias_handles = []
-
         for config in self.groups:
             module = config["module"]
             tensor_name = config["tensor_name"]
@@ -238,17 +251,21 @@ class BaseStructuredSparsifier(BaseSparsifier):
             parametrize.register_parametrization(
                 module, tensor_name, parametrization(mask)
             )
-            prune_bias = config.get("prune_bias", True)
-            if module.bias is not None:
-                module.register_parameter("_bias", nn.Parameter(module.bias.detach()))
-                module.bias = None
-                module.prune_bias = prune_bias
 
-            self.bias_handles.append(
+            # if linear / conv, we add in bias hooks
+            if isinstance(module, (nn.Linear, nn.Conv2d)):
+                prune_bias = config.get("prune_bias", True)
+                if module.bias is not None:
+                    module.register_parameter(
+                        "_bias", nn.Parameter(module.bias.detach())
+                    )
+                    # pyrefly: ignore [bad-assignment]
+                    module.bias = None
+                    module.prune_bias = prune_bias
+
                 module.register_forward_hook(
-                    BiasHook(module.parametrizations.weight[0], prune_bias)
+                    BiasHook(module.parametrizations.weight[0], prune_bias)  # type: ignore[union-attr, index]
                 )
-            )
 
     def prune(self) -> None:
         r"""
@@ -264,22 +281,19 @@ class BaseStructuredSparsifier(BaseSparsifier):
 
         # Right now we check for matches simply by iterating across all the patterns
         # if this is slow we can store patterns in a trie-structure and modify this code for faster lookup
-
         for node in self.traced.graph.nodes:
             for pattern, convert_fn in self.patterns.items():
                 matched = apply_match(modules, pattern, node, [])
                 if matched is None:
                     continue
 
+                # pyrefly: ignore [no-matching-overload]
                 first_module = modules.get(node.target)
-                # check if first module exists and has apropriate parameterization, otherwise skip
+                # check if first module exists and has appropriate parameterization, otherwise skip
                 if (
                     first_module is not None
                     and parametrize.is_parametrized(first_module)
-                    and isinstance(
-                        first_module.parametrizations["weight"][0],
-                        FakeStructuredSparsity,
-                    )
+                    and module_contains_param(first_module, FakeStructuredSparsity)
                 ):
                     convert_block = []
                     for node in matched:
@@ -289,6 +303,12 @@ class BaseStructuredSparsifier(BaseSparsifier):
                             convert_block.append(node.target)
                     convert_fn(*convert_block)
 
+        for module in self.traced.modules():
+            if module_contains_param(module, FakeStructuredSparsity):
+                raise Exception(  # noqa: TRY002
+                    f"Error: {module} still contains FakeStructuredSparsity parametrizations!"
+                )
+
         self.traced.graph.lint()
         self.traced.recompile()
-        return self.traced
+        return self.traced  # type: ignore[return-value]

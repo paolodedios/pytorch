@@ -1,8 +1,9 @@
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
-#include <c10/util/Optional.h>
+
+#include <algorithm>
+#include <array>
 #include <atomic>
-#include <memory>
 #include <mutex>
 
 namespace c10 {
@@ -29,8 +30,8 @@ std::string DeviceTypeName(DeviceType d, bool lower_case) {
       return lower_case ? "ve" : "VE";
     case DeviceType::FPGA:
       return lower_case ? "fpga" : "FPGA";
-    case DeviceType::ORT:
-      return lower_case ? "ort" : "ORT";
+    case DeviceType::MAIA:
+      return lower_case ? "maia" : "MAIA";
     case DeviceType::XLA:
       return lower_case ? "xla" : "XLA";
     case DeviceType::Lazy:
@@ -49,6 +50,8 @@ std::string DeviceTypeName(DeviceType d, bool lower_case) {
       return lower_case ? "hpu" : "HPU";
     case DeviceType::IPU:
       return lower_case ? "ipu" : "IPU";
+    case DeviceType::MTIA:
+      return lower_case ? "mtia" : "MTIA";
     case DeviceType::PrivateUse1:
       return get_privateuse1_backend(/*lower_case=*/lower_case);
     default:
@@ -59,9 +62,6 @@ std::string DeviceTypeName(DeviceType d, bool lower_case) {
           ". If you have recently updated the caffe2.proto file to add a new "
           "device type, did you forget to update the DeviceTypeName() "
           "function to reflect such recent changes?");
-      // The below code won't run but is needed to suppress some compiler
-      // warnings.
-      return "";
   }
 }
 
@@ -83,7 +83,7 @@ bool isValidDeviceType(DeviceType d) {
     case DeviceType::HIP:
     case DeviceType::VE:
     case DeviceType::FPGA:
-    case DeviceType::ORT:
+    case DeviceType::MAIA:
     case DeviceType::XLA:
     case DeviceType::Lazy:
     case DeviceType::MPS:
@@ -93,6 +93,7 @@ bool isValidDeviceType(DeviceType d) {
     case DeviceType::Meta:
     case DeviceType::HPU:
     case DeviceType::IPU:
+    case DeviceType::MTIA:
     case DeviceType::PrivateUse1:
       return true;
     default:
@@ -112,10 +113,10 @@ std::ostream& operator<<(std::ostream& stream, DeviceType type) {
 //     It's also totally fine for this to be slow, since it happens exactly once
 //     at import time.
 // (2) Atomic is needed during reading:
-//     Whenever a user prints a privatuse1 device name, they need to read this
+//     Whenever a user prints a privateuse1 device name, they need to read this
 //     variable. Although unlikely, we'll data race if someone else is trying to
 //     set this variable at the same time that another thread is print the
-//     device name. We could re-use the same mutex, but reading the atomic will
+//     device name. We could reuse the same mutex, but reading the atomic will
 //     be much faster.
 static std::atomic<bool> privateuse1_backend_name_set;
 static std::string privateuse1_backend_name;
@@ -130,10 +131,13 @@ std::string get_privateuse1_backend(bool lower_case) {
   // set, and will never be written to.
   auto backend_name =
       name_registered ? privateuse1_backend_name : "privateuseone";
+  auto op_case = lower_case ? ::tolower : ::toupper;
+  std::transform(
+      backend_name.begin(), backend_name.end(), backend_name.begin(), op_case);
   return backend_name;
 }
 
-void register_privateuse1_backend(std::string backend_name) {
+void register_privateuse1_backend(const std::string& backend_name) {
   std::lock_guard<std::mutex> guard(privateuse1_lock);
   TORCH_CHECK(
       !privateuse1_backend_name_set.load() ||
@@ -141,10 +145,21 @@ void register_privateuse1_backend(std::string backend_name) {
       "torch.register_privateuse1_backend() has already been set! Current backend: ",
       privateuse1_backend_name);
 
+  static const std::array<std::string, 6> types = {
+      "cpu", "cuda", "hip", "mps", "xpu", "mtia"};
+  TORCH_CHECK(
+      std::find(types.begin(), types.end(), backend_name) == types.end(),
+      "Cannot register privateuse1 backend with in-tree device name: ",
+      backend_name);
+
   privateuse1_backend_name = backend_name;
   // Invariant: once this flag is set, privateuse1_backend_name is NEVER written
   // to.
-  privateuse1_backend_name_set.store(true, std::memory_order_relaxed);
+  privateuse1_backend_name_set.store(true, std::memory_order_release);
+}
+
+bool is_privateuse1_backend_registered() {
+  return privateuse1_backend_name_set.load(std::memory_order_acquire);
 }
 
 } // namespace c10

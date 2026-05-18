@@ -1,15 +1,12 @@
 #include <torch/csrc/jit/tensorexpr/bounds_overlap.h>
 #include <torch/csrc/jit/tensorexpr/ir_simplifier.h>
-#include <torch/csrc/jit/tensorexpr/ir_visitor.h>
-#include <torch/csrc/jit/tensorexpr/stmt.h>
 
-namespace torch {
-namespace jit {
-namespace tensorexpr {
-namespace analysis {
+#include <iostream>
+
+namespace torch::jit::tensorexpr::analysis {
 
 // Returns true if the given expression is guaranteed to be positive.
-bool mustBePositive(ExprPtr e) {
+static bool mustBePositive(const ExprPtr& e) {
   if (e->isConstant()) {
     int e_val = immediateAs<int>(e);
     return e_val > 0;
@@ -18,7 +15,7 @@ bool mustBePositive(ExprPtr e) {
 }
 
 // Returns true if the given expression is guaranteed to be negative.
-bool mustBeNegative(ExprPtr e) {
+static bool mustBeNegative(const ExprPtr& e) {
   if (e->isConstant()) {
     int e_val = immediateAs<int>(e);
     return e_val < 0;
@@ -27,7 +24,7 @@ bool mustBeNegative(ExprPtr e) {
 }
 
 // Returns true if the given expression is guaranteed to be zero.
-bool mustBeZero(ExprPtr e) {
+static bool mustBeZero(const ExprPtr& e) {
   if (e->isConstant()) {
     int e_val = immediateAs<int>(e);
     return e_val == 0;
@@ -36,7 +33,7 @@ bool mustBeZero(ExprPtr e) {
 }
 
 void Bound::print() const {
-  std::cout << "(" << *start << ", " << *end << ")";
+  std::cout << '(' << *start << ", " << *end << ')';
 }
 
 bool Bound::equals(const Bound& other) const {
@@ -82,7 +79,7 @@ bool Bound::operator<(const Bound& other) const {
   return mustBeNegative(ret_expr);
 }
 
-OverlapKind boundOverlap(Bound a, Bound b) {
+OverlapKind boundOverlap(const Bound& a, const Bound& b) {
   // If they're equal they're equal.
   bool startEqual = exprEquals(a.start, b.start);
   bool endEqual = exprEquals(a.end, b.end);
@@ -238,7 +235,7 @@ OverlapKind overlaps(const IndexBounds& a, const IndexBounds& b) {
   return overlap;
 }
 
-std::vector<Bound> subtractBound(Bound a, Bound b) {
+std::vector<Bound> subtractBound(const Bound& a, const Bound& b) {
   OverlapKind overlap = boundOverlap(a, b);
   if (overlap == OverlapKind::NoOverlap) {
     return {a};
@@ -368,7 +365,4 @@ subtractIndicesBounds(const IndexBounds& A, const IndexBounds& B) {
   return subtractIndicesBounds(A, B, overlaps(A, B));
 }
 
-} // namespace analysis
-} // namespace tensorexpr
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::tensorexpr::analysis

@@ -1,13 +1,17 @@
+from __future__ import annotations
+
 import contextlib
 import os
 import typing
 import unittest
 import unittest.mock
-from typing import Iterator, Optional, Sequence
 
 import tools.setup_helpers.cmake
+import tools.setup_helpers.env
 
-import tools.setup_helpers.env  # noqa: F401 unused but resolves circular import
+
+if typing.TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
 
 
 T = typing.TypeVar("T")
@@ -26,8 +30,8 @@ class TestCMake(unittest.TestCase):
             ((None, False, False), ["-j", "13"]),  # noqa: E201,E241
             (("6", True, True), ["-j", "6"]),  # noqa: E201,E241
             ((None, True, True), None),  # noqa: E201,E241
-            (("11", False, True), ["/p:CL_MPCount=11"]),  # noqa: E201,E241
-            ((None, False, True), ["/p:CL_MPCount=13"]),  # noqa: E201,E241
+            (("11", False, True), ["-j", "11"]),  # noqa: E201,E241
+            ((None, False, True), ["-j", "13"]),  # noqa: E201,E241
         ]
         for (max_jobs, use_ninja, is_windows), want in cases:
             with self.subTest(
@@ -72,14 +76,17 @@ class TestCMake(unittest.TestCase):
         # window matches.
         for i in range(len(sequence) - len(subsequence) + 1):
             candidate = sequence[i : i + len(subsequence)]
-            assert len(candidate) == len(subsequence)  # sanity check
+            if len(candidate) != len(subsequence):  # sanity check
+                raise AssertionError(
+                    f"candidate length mismatch: {len(candidate)} != {len(subsequence)}"
+                )
             if candidate == subsequence:
                 return  # found it
         raise AssertionError(f"{subsequence} not found in {sequence}")
 
 
 @contextlib.contextmanager
-def env_var(key: str, value: Optional[str]) -> Iterator[None]:
+def env_var(key: str, value: str | None) -> Iterator[None]:
     """Sets/clears an environment variable within a Python context."""
     # Get the previous value and then override it.
     previous_value = os.environ.get(key)
@@ -91,7 +98,7 @@ def env_var(key: str, value: Optional[str]) -> Iterator[None]:
         set_env_var(key, previous_value)
 
 
-def set_env_var(key: str, value: Optional[str]) -> None:
+def set_env_var(key: str, value: str | None) -> None:
     """Sets/clears an environment variable."""
     if value is None:
         os.environ.pop(key, None)

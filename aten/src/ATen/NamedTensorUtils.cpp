@@ -8,12 +8,14 @@
 
 namespace at {
 
+#ifndef STRIP_ERROR_MESSAGES
 // Returns "Tensor['N', 'C', 'H', 'W']" for a tensor with names ('N', 'C', 'H', 'W').
 static std::string toDimnameRepr(const Tensor& tensor) {
   std::ostringstream os;
   os << "Tensor" << tensor.names();
   return os.str();
 }
+#endif
 
 int64_t dimname_to_position(const Tensor& tensor, Dimname dim) {
   TORCH_CHECK(dim.type() != NameType::WILDCARD,
@@ -38,7 +40,7 @@ std::vector<int64_t> dimnames_to_positions(const Tensor& tensor, DimnameList dim
   return result;
 }
 
-static void report_positional_error(
+[[noreturn]] static void report_positional_error(
     const Dimname& name,
     const Dimname& other_name,
     DimnameList names,
@@ -128,7 +130,7 @@ static void assert_names_equal(DimnameList a, DimnameList b) {
 }
 
 const Tensor& propagate_names_if_present_and_nonempty(const Tensor& result,
-    c10::optional<DimnameList> maybe_names,
+    std::optional<DimnameList> maybe_names,
     bool validate_names) {
   auto maybe_name_list = maybe_names.value_or(at::ArrayRef<Dimname>{});
   propagate_names_if_nonempty(result.unsafeGetTensorImpl(), maybe_name_list, validate_names);
@@ -177,7 +179,7 @@ void propagate_names_except(const Tensor& result, const Tensor& src, IntArrayRef
     return;
   }
   const auto src_names = src.names();
-  const auto result_dim = static_cast<int64_t>(result.dim());
+  const auto result_dim = result.dim();
   const auto src_dim = static_cast<int64_t>(src_names.size());
   const auto excluded_dim = static_cast<int64_t>(excluded_idxs.size());
   TORCH_INTERNAL_ASSERT(src_dim - excluded_dim == result_dim);
@@ -207,7 +209,7 @@ void propagate_names_for_reduction(const Tensor& result, const Tensor& src, IntA
     return;
   }
   // This actually means "full reduction"
-  if (reduced_dims.size() == 0) {
+  if (reduced_dims.empty()) {
     return;
   }
   propagate_names_except(result, src, reduced_dims);
@@ -277,7 +279,7 @@ std::vector<Dimname> compute_diagonal_outnames(
 static void check_feature_names_are_distinct(
     DimnameList self_names,
     DimnameList other_names,
-    DimnameList outnames) {
+    const DimnameList& outnames) {
   if (self_names.size() < 2 || other_names.size() < 2) {
     // There are less than 2 feature dims in outnames so there is nothing to check
     return;
@@ -297,13 +299,13 @@ static int64_t num_batch_dims(DimnameList names) {
   if (names.size() <= 2) {
     return 0;
   }
-  return names.size() - 2;
+  return static_cast<int64_t>(names.size() - 2);
 }
 
 static std::vector<Dimname> compute_matmul_outnames(
     DimnameList self_names,
     DimnameList other_names) {
-  TORCH_CHECK(self_names.size() >= 1 && other_names.size() >= 1,
+  TORCH_CHECK(!self_names.empty() && !other_names.empty(),
       "both arguments to matmul need to be at least 1D, but they are ",
       self_names.size(), "D and ", other_names.size(), "D");
 
@@ -335,10 +337,9 @@ static std::vector<Dimname> compute_matmul_outnames(
   if (other_names.size() >= 2) {
     working_names.append(TensorName(other_names, -1));
   }
-  const auto result = working_names.toDimnameVec();
+  auto result = working_names.toDimnameVec();
 
   check_feature_names_are_distinct(self_names, other_names, result);
-  // NOLINTNEXTLINE(performance-no-automatic-move)
   return result;
 }
 
@@ -390,10 +391,8 @@ void propagate_names_for_expand(const Tensor& result, const Tensor& self) {
     return;
   }
   std::vector<Dimname> outnames(result_dim, Dimname::wildcard());
-  std::copy(
-      self.opt_names()->begin(),
-      self.opt_names()->end(),
-      outnames.begin() + result_dim - self.dim());
+  auto const names = self.names();
+  std::copy( names.begin(), names.end(), outnames.begin() + result_dim - self.dim());
   propagate_names(result, outnames);
 }
 
@@ -431,7 +430,7 @@ std::vector<Dimname> compute_cat_outnames(const MaterializedITensorListRef& tens
   std::vector<Dimname> result;
   for (const Tensor& tensor : tensors) {
     const auto tensor_names = tensor.names();
-    TORCH_CHECK(tensor_names.size() > 0, "zero-dimensional tensor cannot be concatenated");
+    TORCH_CHECK(!tensor_names.empty(), "zero-dimensional tensor cannot be concatenated");
     TORCH_CHECK(result.empty() || tensor_names.size() == result.size(),
         "Tensors must have same number of dimensions: got ", result.size(),
         " and ", tensor_names.size());

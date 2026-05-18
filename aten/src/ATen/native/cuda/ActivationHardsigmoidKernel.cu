@@ -16,8 +16,7 @@
 #include <ATen/cuda/detail/OffsetCalculator.cuh>
 #include <ATen/native/cuda/Loops.cuh>
 
-namespace at {
-namespace native {
+namespace at::native {
 namespace {
 
 void hardsigmoid_kernel(TensorIteratorBase& iter) {
@@ -37,7 +36,7 @@ void hardsigmoid_kernel(TensorIteratorBase& iter) {
             [zero, one_sixth, three, six] GPU_LAMBDA(
                 scalar_t self_val) -> scalar_t {
               opmath_t x = static_cast<opmath_t>(self_val);
-              return std::min(std::max(x + three, zero), six) * one_sixth;
+              return std::min<opmath_t>(std::max<opmath_t>(x + three, zero), six) * one_sixth;
             });
       });
 }
@@ -69,8 +68,7 @@ void hardsigmoid_backward_kernel(TensorIteratorBase& iter) {
 
 } // namespace
 
-REGISTER_DISPATCH(hardsigmoid_stub, &hardsigmoid_kernel);
-REGISTER_DISPATCH(hardsigmoid_backward_stub, &hardsigmoid_backward_kernel);
+REGISTER_DISPATCH(hardsigmoid_stub, &hardsigmoid_kernel)
+REGISTER_DISPATCH(hardsigmoid_backward_stub, &hardsigmoid_backward_kernel)
 
-} // namespace native
-} // namespace at
+} // namespace at::native

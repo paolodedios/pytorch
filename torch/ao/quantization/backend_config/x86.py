@@ -1,4 +1,5 @@
 import torch
+
 from ._common_operator_config_utils import (
     _get_binary_op_configs,
     _get_bn_configs,
@@ -10,8 +11,10 @@ from ._common_operator_config_utils import (
     _get_linear_configs,
     _get_rnn_op_configs,
     _get_share_qparams_op_configs,
+    _get_tensor_info_op_configs,
 )
 from .backend_config import BackendConfig, DTypeConfig
+
 
 __all__ = [
     "get_x86_backend_config",
@@ -75,6 +78,7 @@ x86_weight_only_quint4x2_dtype_config = DTypeConfig(
 # |  BACKEND CONFIGS  |
 # =====================
 
+
 def get_x86_backend_config() -> BackendConfig:
     """
     Return the `BackendConfig` for PyTorch's native x86 backend.
@@ -89,6 +93,7 @@ def get_x86_backend_config() -> BackendConfig:
     default_op_dtype_configs = [x86_default_op_quint8_dtype_config]
     fixed_qparams_op_dtype_configs = [x86_weighted_op_int8_dtype_config]
     share_qparams_op_dtype_configs = [x86_default_op_quint8_dtype_config]
+    tensor_info_op_dtype_configs = [x86_default_op_quint8_dtype_config]
     rnn_op_dtype_configs = [
         x86_default_dynamic_int8_dtype_config,
         x86_default_dynamic_float16_dtype_config,
@@ -97,14 +102,25 @@ def get_x86_backend_config() -> BackendConfig:
         x86_weight_only_quint8_dtype_config,
         x86_weight_only_quint4x2_dtype_config,
     ]
-    return BackendConfig("x86") \
-        .set_backend_pattern_configs(_get_conv_configs(conv_dtype_configs)) \
-        .set_backend_pattern_configs(_get_linear_configs(linear_dtype_configs)) \
-        .set_backend_pattern_configs(_get_binary_op_configs(binary_op_dtype_configs)) \
-        .set_backend_pattern_config(_get_cat_config(default_op_dtype_configs)) \
-        .set_backend_pattern_configs(_get_default_op_configs(default_op_dtype_configs)) \
-        .set_backend_pattern_configs(_get_fixed_qparams_op_configs(fixed_qparams_op_dtype_configs)) \
-        .set_backend_pattern_configs(_get_share_qparams_op_configs(share_qparams_op_dtype_configs)) \
-        .set_backend_pattern_configs(_get_bn_configs(default_op_dtype_configs)) \
-        .set_backend_pattern_configs(_get_rnn_op_configs(rnn_op_dtype_configs)) \
-        .set_backend_pattern_configs(_get_embedding_op_configs(embedding_op_dtype_configs))
+    return (
+        BackendConfig("x86")
+        .set_backend_pattern_configs(_get_conv_configs(conv_dtype_configs))
+        .set_backend_pattern_configs(_get_linear_configs(linear_dtype_configs))
+        .set_backend_pattern_configs(_get_binary_op_configs(binary_op_dtype_configs))
+        .set_backend_pattern_config(_get_cat_config(default_op_dtype_configs))
+        .set_backend_pattern_configs(_get_default_op_configs(default_op_dtype_configs))
+        .set_backend_pattern_configs(
+            _get_fixed_qparams_op_configs(fixed_qparams_op_dtype_configs)
+        )
+        .set_backend_pattern_configs(
+            _get_share_qparams_op_configs(share_qparams_op_dtype_configs)
+        )
+        .set_backend_pattern_configs(
+            _get_tensor_info_op_configs(tensor_info_op_dtype_configs)
+        )
+        .set_backend_pattern_configs(_get_bn_configs(default_op_dtype_configs))
+        .set_backend_pattern_configs(_get_rnn_op_configs(rnn_op_dtype_configs))
+        .set_backend_pattern_configs(
+            _get_embedding_op_configs(embedding_op_dtype_configs)
+        )
+    )

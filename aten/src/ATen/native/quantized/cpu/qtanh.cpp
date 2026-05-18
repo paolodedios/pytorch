@@ -15,14 +15,13 @@
 #include <ATen/ops/tanh_native.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
 DEFINE_DISPATCH(qtanh_stub);
 
 #ifdef USE_PYTORCH_QNNPACK
 // This ALWAYS outputs scale=2.0/256, zp=128, dtype=quint8
-Tensor qnnpack_tanh(Tensor input) {
+static Tensor qnnpack_tanh(Tensor input) {
   TORCH_CHECK(input.ndimension() > 0, "qnnpack_tanh(): Got empty input tensor");
   TORCH_CHECK(input.scalar_type() == c10::kQUInt8,
                "qnnpack_tanh(): Expected input data type ",
@@ -70,7 +69,7 @@ Tensor qnnpack_tanh(Tensor input) {
   const pytorch_qnnp_status setupStatus = pytorch_qnnp_setup_tanh_nc_q8(
     tanh_op,
     input_contig.size(0) /* batch size */,
-    (uint8_t*)input_contig.data_ptr<c10::quint8>() /* input data */,
+    (uint8_t*)input_contig.const_data_ptr<c10::quint8>() /* input data */,
     num_elems /* input stride */,
     (uint8_t*)qy.data_ptr<c10::quint8>() /* output data */,
     num_elems /* output stride */);
@@ -100,4 +99,4 @@ Tensor tanh_quantized_cpu(const Tensor& qx) {
   qtanh_stub(qx.device().type(), qx, qy);
   return qy;
 }
-}}  // namespace at::native
+}  // namespace at::native

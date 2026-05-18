@@ -1,17 +1,20 @@
+# mypy: allow-untyped-defs
 import random
+from collections.abc import Iterator
+from typing import TypeVar
 
 import torch
 from torch.utils.data.datapipes.datapipe import IterDataPipe, MapDataPipe
-from typing import Iterator, List, Optional, TypeVar
-
-__all__ = ["ShufflerIterDataPipe", ]
 
 
-T_co = TypeVar('T_co', covariant=True)
+__all__ = ["ShufflerIterDataPipe"]
+
+
+_T_co = TypeVar("_T_co", covariant=True)
 
 
 # @functional_datapipe('shuffle')
-class ShufflerIterDataPipe(IterDataPipe[T_co]):
+class ShufflerIterDataPipe(IterDataPipe[_T_co]):
     r"""
     Shuffle the input MapDataPipe via its indices (functional name: ``shuffle``).
 
@@ -42,28 +45,31 @@ class ShufflerIterDataPipe(IterDataPipe[T_co]):
         [7, 8, 1, 5, 3, 4, 2, 0, 9, 6]
 
     Note:
-        Even thought this ``shuffle`` operation takes a ``MapDataPipe`` as the input, it would return an
+        Even though this ``shuffle`` operation takes a ``MapDataPipe`` as the input, it would return an
         ``IterDataPipe`` rather than a ``MapDataPipe``, because ``MapDataPipe`` should be non-sensitive to
         the order of data order for the sake of random reads, but ``IterDataPipe`` depends on the order
         of data during data-processing.
     """
-    datapipe: MapDataPipe[T_co]
+
+    datapipe: MapDataPipe[_T_co]
     _enabled: bool
-    _seed: Optional[int]
+    _seed: int | None
     _rng: random.Random
 
-    def __init__(self,
-                 datapipe: MapDataPipe[T_co],
-                 *,
-                 indices: Optional[List] = None,
-                 ) -> None:
+    def __init__(
+        self,
+        datapipe: MapDataPipe[_T_co],
+        *,
+        indices: list | None = None,
+    ) -> None:
         super().__init__()
         self.datapipe = datapipe
+        # pyrefly: ignore [bad-argument-type]
         self.indices = list(range(len(datapipe))) if indices is None else indices
         self._enabled = True
         self._seed = None
         self._rng = random.Random()
-        self._shuffled_indices: List = self.indices
+        self._shuffled_indices: list = self.indices
 
     def set_shuffle(self, shuffle=True):
         self._enabled = shuffle
@@ -73,7 +79,7 @@ class ShufflerIterDataPipe(IterDataPipe[T_co]):
         self._seed = seed
         return self
 
-    def __iter__(self) -> Iterator[T_co]:
+    def __iter__(self) -> Iterator[_T_co]:
         if not self._enabled:
             for idx in self.indices:
                 yield self.datapipe[idx]
@@ -90,6 +96,7 @@ class ShufflerIterDataPipe(IterDataPipe[T_co]):
         self._shuffled_indices = self._rng.sample(self.indices, len(self.indices))
 
     def __len__(self) -> int:
+        # pyrefly: ignore [bad-argument-type]
         return len(self.datapipe)
 
     def __getstate__(self):

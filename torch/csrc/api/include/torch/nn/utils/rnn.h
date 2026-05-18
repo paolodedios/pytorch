@@ -3,10 +3,9 @@
 #include <c10/util/irange.h>
 #include <torch/types.h>
 
-namespace torch {
-namespace nn {
-namespace utils {
-namespace rnn {
+#include <utility>
+
+namespace torch::nn::utils::rnn {
 
 inline Tensor invert_permutation(const Tensor& permutation) {
   if (!permutation.defined()) {
@@ -74,10 +73,10 @@ class PackedSequence {
         "They should be instantiated by functions like pack_sequence "
         "and pack_padded_sequences in nn::utils::rnn. "
         "https://pytorch.org/docs/stable/nn.html#torch.nn.utils.rnn.pack_sequence");
-    data_ = data;
-    batch_sizes_ = batch_sizes;
-    sorted_indices_ = sorted_indices;
-    unsorted_indices_ = unsorted_indices;
+    data_ = std::move(data);
+    batch_sizes_ = std::move(batch_sizes);
+    sorted_indices_ = std::move(sorted_indices);
+    unsorted_indices_ = std::move(unsorted_indices);
   }
 
   const Tensor& data() const {
@@ -130,7 +129,10 @@ class PackedSequence {
                 options.device(data.device()).dtype(unsorted_indices_.dtype()))
           : Tensor();
       return PackedSequence(
-          data, batch_sizes_, sorted_indices, unsorted_indices);
+          std::move(data),
+          batch_sizes_,
+          std::move(sorted_indices),
+          std::move(unsorted_indices));
     }
   }
 
@@ -207,10 +209,10 @@ inline PackedSequence pack_padded_sequence(
     input = input.index_select(batch_dim, sorted_indices);
   }
 
-  Tensor data, batch_sizes;
-  std::tie(data, batch_sizes) =
+  auto [data, batch_sizes] =
       torch::_pack_padded_sequence(input, lengths, batch_first);
-  return PackedSequence(data, batch_sizes, sorted_indices, {});
+  return PackedSequence(
+      std::move(data), std::move(batch_sizes), std::move(sorted_indices), {});
 }
 
 /// Pads a packed batch of variable length sequences.
@@ -239,10 +241,10 @@ inline PackedSequence pack_padded_sequence(
 ///     Tuple of Tensor containing the padded sequence, and a Tensor
 ///     containing the list of lengths of each sequence in the batch.
 inline std::tuple<Tensor, Tensor> pad_packed_sequence(
-    PackedSequence sequence,
+    const PackedSequence& sequence,
     bool batch_first = false,
     double padding_value = 0.0,
-    c10::optional<int64_t> total_length = torch::nullopt) {
+    std::optional<int64_t> total_length = std::nullopt) {
   int64_t max_seq_length = sequence.batch_sizes().size(0);
   if (total_length.has_value()) {
     int64_t total_length_val = total_length.value();
@@ -256,8 +258,7 @@ inline std::tuple<Tensor, Tensor> pad_packed_sequence(
         max_seq_length);
     max_seq_length = total_length_val;
   }
-  Tensor padded_output, lengths;
-  std::tie(padded_output, lengths) = torch::_pad_packed_sequence(
+  auto [padded_output, lengths] = torch::_pad_packed_sequence(
       sequence.data(),
       sequence.batch_sizes(),
       batch_first,
@@ -268,7 +269,7 @@ inline std::tuple<Tensor, Tensor> pad_packed_sequence(
     int64_t batch_dim = batch_first ? 0 : 1;
     return std::make_tuple(
         padded_output.index_select(batch_dim, unsorted_indices),
-        lengths.index({unsorted_indices}));
+        lengths.index({unsorted_indices.cpu()}));
   }
   return std::make_tuple(padded_output, lengths);
 }
@@ -296,6 +297,8 @@ inline std::tuple<Tensor, Tensor> pad_packed_sequence(
 ///     or in
 ///         ``T x B x *`` otherwise
 ///     padding_value (double, optional): value for padded elements. Default: 0.
+///     padding_side (str, optional): the side to pad the sequences on. Default:
+///         "right".
 ///
 /// Returns:
 ///     Tensor of size ``T x B x *`` if `batch_first` is ``false``.
@@ -303,8 +306,9 @@ inline std::tuple<Tensor, Tensor> pad_packed_sequence(
 inline Tensor pad_sequence(
     ArrayRef<Tensor> sequences,
     bool batch_first = false,
-    double padding_value = 0) {
-  return at::pad_sequence(sequences, batch_first, padding_value);
+    double padding_value = 0,
+    std::string_view padding_side = "right") {
+  return at::pad_sequence(sequences, batch_first, padding_value, padding_side);
 }
 
 /// Packs a list of variable length Tensors
@@ -332,16 +336,13 @@ inline PackedSequence pack_sequence(
     bool enforce_sorted = true) {
   Tensor lengths = torch::empty({(int64_t)sequences.size()}, kInt64);
   for (const auto i : c10::irange(sequences.size())) {
-    lengths[i] = sequences[i].size(0);
+    lengths[static_cast<int64_t>(i)] = sequences[i].size(0);
   }
   return pack_padded_sequence(
       at::pad_sequence(sequences),
-      lengths,
+      std::move(lengths),
       /*batch_first=*/false,
       /*enforce_sorted=*/enforce_sorted);
 }
 
-} // namespace rnn
-} // namespace utils
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn::utils::rnn

@@ -1,17 +1,24 @@
-"""Freezing
+# mypy: allow-untyped-defs
+"""Freezing.
 
 This is not intended to be imported directly; please use the exposed
 functionalities in `torch.jit`.
 """
 
-from typing import Optional, List
+import warnings
 
 import torch
 from torch.jit._script import RecursiveScriptModule, ScriptModule
 
 
-def freeze(mod, preserved_attrs: Optional[List[str]] = None, optimize_numerics: bool = True):
-    r"""
+def freeze(
+    mod, preserved_attrs: list[str] | None = None, optimize_numerics: bool = True
+):
+    r"""Freeze ScriptModule, inline submodules, and attributes as constants.
+
+    .. deprecated:: 2.5
+        TorchScript is deprecated, please use ``torch.compile`` instead.
+
     Freezing a :class:`ScriptModule` will clone it and attempt to inline the cloned
     module's submodules, parameters, and attributes as constants in the TorchScript IR Graph.
     By default, `forward` will be preserved, as well as attributes & methods specified in
@@ -40,7 +47,7 @@ def freeze(mod, preserved_attrs: Optional[List[str]] = None, optimize_numerics: 
         import torch
         class MyModule(torch.nn.Module):
             def __init__(self, N, M):
-                super(MyModule, self).__init__()
+                super().__init__()
                 self.weight = torch.nn.Parameter(torch.rand(N, M))
                 self.linear = torch.nn.Linear(N, M)
 
@@ -61,8 +68,8 @@ def freeze(mod, preserved_attrs: Optional[List[str]] = None, optimize_numerics: 
     .. testcode::
         import torch
         class MyModule2(torch.nn.Module):
-            def __init__(self):
-                super(MyModule2, self).__init__()
+            def __init__(self) -> None:
+                super().__init__()
                 self.modified_tensor = torch.tensor(10.)
                 self.version = 1
 
@@ -96,6 +103,10 @@ def freeze(mod, preserved_attrs: Optional[List[str]] = None, optimize_numerics: 
         You can remap devices by specifying `map_location` in `torch.jit.load`, however
         device-specific logic may have been baked into the model.
     """
+    warnings.warn(
+        "`torch.jit.freeze` is deprecated. Please use `torch.compile` instead.",
+        DeprecationWarning,
+    )
     if not isinstance(mod, ScriptModule):
         raise RuntimeError(
             "Freezing expects a ScriptModule as input. "
@@ -120,10 +131,11 @@ def freeze(mod, preserved_attrs: Optional[List[str]] = None, optimize_numerics: 
 
 
 def run_frozen_optimizations(
-    mod, optimize_numerics: bool = True, preserved_methods: Optional[List[str]] = None
-):
+    mod, optimize_numerics: bool = True, preserved_methods: list[str] | None = None
+) -> None:
     r"""
-    Runs a series of optimizations looking for patterns that occur in frozen graphs.
+    Run a series of optimizations looking for patterns that occur in frozen graphs.
+
     The current set of optimizations includes:
         - Dropout Removal
         - Pretranspose Linear Layers
@@ -145,14 +157,17 @@ def run_frozen_optimizations(
         None
 
     Note:
-        In rare occassions, this can result in slower execution.
+        In rare occasions, this can result in slower execution.
 
     Example (Freezing a module with Conv->Batchnorm)
     .. code-block:: python
         import torch
+
         in_channels, out_channels = 3, 32
-        conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, bias=True)
-        bn = torch.nn.BatchNorm2d(out_channels, eps=.001)
+        conv = torch.nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=2, bias=True
+        )
+        bn = torch.nn.BatchNorm2d(out_channels, eps=0.001)
         mod = torch.nn.Sequential(conv, bn)
         # set optimize to False here, by default freezing runs run_frozen_optimizations
         frozen_mod = torch.jit.freeze(torch.jit.script(mod.eval()), optimize=False)
@@ -174,10 +189,16 @@ def run_frozen_optimizations(
         )
 
 
-def optimize_for_inference(mod: ScriptModule, other_methods: Optional[List[str]] = None) -> ScriptModule:
+def optimize_for_inference(
+    mod: ScriptModule, other_methods: list[str] | None = None
+) -> ScriptModule:
     """
-    Performs a set of optimization passes to optimize a model for the
-    purposes of inference. If the model is not already frozen, optimize_for_inference
+    Perform a set of optimization passes to optimize a model for the purposes of inference.
+
+    .. deprecated:: 2.5
+        TorchScript is deprecated, please use ``torch.compile`` instead.
+
+    If the model is not already frozen, optimize_for_inference
     will invoke `torch.jit.freeze` automatically.
 
     In addition to generic optimizations that should speed up your model regardless
@@ -194,19 +215,27 @@ def optimize_for_inference(mod: ScriptModule, other_methods: Optional[List[str]]
     Example (optimizing a module with Conv->Batchnorm)::
 
         import torch
+
         in_channels, out_channels = 3, 32
-        conv = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=2, bias=True)
-        bn = torch.nn.BatchNorm2d(out_channels, eps=.001)
+        conv = torch.nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, stride=2, bias=True
+        )
+        bn = torch.nn.BatchNorm2d(out_channels, eps=0.001)
         mod = torch.nn.Sequential(conv, bn)
         frozen_mod = torch.jit.optimize_for_inference(torch.jit.script(mod.eval()))
         assert "batch_norm" not in str(frozen_mod.graph)
         # if built with MKLDNN, convolution will be run with MKLDNN weights
         assert "MKLDNN" in frozen_mod.graph
     """
+    warnings.warn(
+        "`torch.jit.optimize_for_inference` is deprecated. Please use `torch.compile` instead.",
+        DeprecationWarning,
+    )
     if not isinstance(mod, ScriptModule):
         raise RuntimeError(
             "optimize_for_inference expects a ScriptModule as input. "
-            "Please use torch.jit.script or torch.jit.trace to script your 'nn.Module'.")
+            "Please use torch.jit.script or torch.jit.trace to script your 'nn.Module'."
+        )
 
     if other_methods is None:
         other_methods = []

@@ -12,8 +12,7 @@
 #include <sstream>
 #include <unordered_map>
 
-namespace torch {
-namespace lazy {
+namespace torch::lazy {
 namespace {
 
 std::vector<at::Tensor> _to_eager(
@@ -69,16 +68,16 @@ std::vector<at::Tensor> to_eager(
   return eager_tensors;
 }
 
-std::vector<c10::optional<at::Tensor>> to_eager(
-    const std::vector<c10::optional<at::Tensor>>& tensors,
+std::vector<std::optional<at::Tensor>> to_eager(
+    const std::vector<std::optional<at::Tensor>>& tensors,
     c10::DeviceType device_type) {
   // We can't just call _to_eager() on the entire list of Tensors because it
   // will break on undefined tensors. Separate out undefined tensors first.
-  std::vector<c10::optional<at::Tensor>> eager_tensors(tensors.size());
+  std::vector<std::optional<at::Tensor>> eager_tensors(tensors.size());
   std::vector<at::Tensor> valid_tensors;
   std::vector<bool> to_translate(tensors.size());
   for (size_t i = 0; i < tensors.size(); ++i) {
-    const c10::optional<at::Tensor>& tensor = tensors[i];
+    const std::optional<at::Tensor>& tensor = tensors[i];
     // Explicitly handling undefined tensors here instead of letting `_to_eager`
     // handle it. Otherwise, we'd need to require all backends with their own
     // implementation of _to_eager to properly handle undefined tensors.
@@ -107,19 +106,19 @@ c10::DispatchKey dispatch_key(c10::DeviceType device_type) {
       return c10::DispatchKey::CUDA;
     }
     default: {
-      AT_ERROR("Unsupported device type: ", device_type);
+      TORCH_CHECK(false, "Unsupported device type: ", device_type);
     }
   }
 }
 
-c10::optional<c10::Device> compute_target_device(
+std::optional<c10::Device> compute_target_device(
     std::vector<at::Tensor>& t_args,
-    std::vector<c10::List<at::Tensor>> tlist_args,
-    std::vector<c10::List<c10::optional<at::Tensor>>> opt_tlist_args) {
+    const std::vector<c10::List<at::Tensor>>& tlist_args,
+    const std::vector<c10::List<std::optional<at::Tensor>>>& opt_tlist_args) {
   // Decide what device to move the output tensor(s) to.
   // The current convention is that we use the first tensor arg to pick the
   // device Barring that, we take the first tensor from a TensorList arg.
-  if (t_args.size() > 0) {
+  if (!t_args.empty()) {
     return t_args[0].device();
   } else {
     // We need to loop through all of the (potentially multiple) TensorList
@@ -131,13 +130,14 @@ c10::optional<c10::Device> compute_target_device(
     }
     for (auto& tens_list : opt_tlist_args) {
       for (const auto i : c10::irange(tens_list.size())) {
-        if (tens_list.get(i).has_value()) {
-          return tens_list.get(i)->device();
+        auto const& e = tens_list.get(i);
+        if (e.has_value()) {
+          return e->device();
         }
       }
     }
   }
-  return c10::nullopt;
+  return std::nullopt;
 }
 
 } // namespace
@@ -214,14 +214,14 @@ void ts_eager_fallback(
   const auto arguments_begin = stack->size() - num_arguments;
 
   std::vector<at::Tensor> tensor_args;
-  std::vector<int> tensor_args_indices;
+  std::vector<size_t> tensor_args_indices;
 
   std::vector<c10::List<at::Tensor>> tensorlist_args;
-  std::vector<c10::List<c10::optional<at::Tensor>>> opt_tensorlist_args;
+  std::vector<c10::List<std::optional<at::Tensor>>> opt_tensorlist_args;
 
   // Step 1: Convert all non-eager tensor inputs into eager tensors and put them
   // on the stack at the correct indices.
-  for (int64_t idx = 0; idx < arguments.size(); ++idx) {
+  for (size_t idx = 0; idx < arguments.size(); ++idx) {
     const auto& ivalue = arguments[idx];
     if (ivalue.isTensor()) {
       tensor_args.push_back(ivalue.toTensor());
@@ -236,7 +236,7 @@ void ts_eager_fallback(
       (*stack)[arguments_begin + idx] = std::move(eager_ivalue);
       tensorlist_args.push_back(ivalue.toTensorList());
     } else if (ivalue.isOptionalTensorList()) {
-      auto eager_ivalue = c10::IValue(c10::List<c10::optional<at::Tensor>>(
+      auto eager_ivalue = c10::IValue(c10::List<std::optional<at::Tensor>>(
           to_eager(ivalue.toOptionalTensorVector(), device_type)));
       (*stack)[arguments_begin + idx] = std::move(eager_ivalue);
       opt_tensorlist_args.push_back(ivalue.toOptionalTensorList());
@@ -246,7 +246,7 @@ void ts_eager_fallback(
   // CPU together.
   auto eager_tensors = to_eager(tensor_args, device_type);
 
-  for (auto i = 0; i < tensor_args_indices.size(); ++i) {
+  for (const auto i : c10::irange(tensor_args_indices.size())) {
     auto idx = tensor_args_indices[i];
     (*stack)[arguments_begin + idx] = c10::IValue(eager_tensors[i]);
   }
@@ -257,7 +257,7 @@ void ts_eager_fallback(
   // Step 3: We need to take special care to handle mutable aliases properly:
   // If any input tensors are mutable aliases, we need to directly copy the
   // updated data on the eager tensors back to the original inputs.
-  for (int64_t i = 0; i < tensor_args_indices.size(); ++i) {
+  for (const auto i : c10::irange(tensor_args_indices.size())) {
     auto tensor_idx = tensor_args_indices[i];
     const auto alias_info = schema_args[tensor_idx].alias_info();
     if (alias_info != nullptr && alias_info->isWrite()) {
@@ -271,7 +271,7 @@ void ts_eager_fallback(
   // the temporary eager output tensor that we created.
   //
   // Note [Eager Fallback Does Not Handle View Operators]
-  // Also note that we are incapable of handling immutable alises properly.
+  // Also note that we are incapable of handling immutable aliases properly.
   // Why?
   // Schemas with an immutable alias'd tensor outputs correspond to view
   // operators. For example, the `view_as` schema from native_functions.yaml:
@@ -288,7 +288,7 @@ void ts_eager_fallback(
   auto returns = torch::jit::last(stack, num_returns);
   const auto returns_begin = stack->size() - num_returns;
 
-  for (int64_t idx = 0; idx < returns.size(); ++idx) {
+  for (const auto idx : c10::irange(returns.size())) {
     if (returns[idx].isTensor()) {
       const auto& return_tens = returns[idx].toTensor();
       if (return_tens.defined()) {
@@ -299,7 +299,7 @@ void ts_eager_fallback(
           bool found_alias = false;
           // We could store some extra metadata on the function schema to avoid
           // the loop here if we need to improve perf.
-          for (int64_t i = 0; i < tensor_args_indices.size(); ++i) {
+          for (const auto i : c10::irange(tensor_args_indices.size())) {
             auto input_tensor_idx = tensor_args_indices[i];
             const auto& input_tensor = eager_tensors[i];
             const auto input_alias_info =
@@ -323,7 +323,7 @@ void ts_eager_fallback(
               "mutable alias: ",
               schema_returns[idx]);
         } else {
-          c10::optional<c10::Device> tgt_device = compute_target_device(
+          std::optional<c10::Device> tgt_device = compute_target_device(
               tensor_args, tensorlist_args, opt_tensorlist_args);
           if (alias_info != nullptr && !alias_info->isWrite()) {
             // immutable alias (view) case: Warn here, since we're copying and
@@ -340,7 +340,7 @@ void ts_eager_fallback(
             // We should never hit this for a view op,
             // because LazyTensor should provide a lowering for the
             // corresponding view_copy operator. The functionalization pass will
-            // take care of calling the view_copy operator intead of the view.
+            // take care of calling the view_copy operator instead of the view.
             TORCH_CHECK(
                 false,
                 "The operator ",
@@ -368,5 +368,4 @@ void ts_eager_fallback(
   }
 }
 
-} // namespace lazy
-} // namespace torch
+} // namespace torch::lazy

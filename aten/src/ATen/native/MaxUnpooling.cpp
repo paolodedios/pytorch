@@ -12,8 +12,7 @@
 #include <ATen/ops/max_unpool3d_native.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
 Tensor& max_unpooling2d_forward_out_cpu(
     const Tensor& self_,
@@ -24,8 +23,6 @@ Tensor& max_unpooling2d_forward_out_cpu(
   // Nondeterministic with duplicate indices
   at::globalContext().alertNotDeterministic("max_unpooling2d_forward_out");
 
-  auto oheight = output_size[0];
-  auto owidth = output_size[1];
   TORCH_CHECK(
       indices_.scalar_type() == at::ScalarType::Long,
       "elements in indices should be type int64 but got: ", indices_.scalar_type());
@@ -46,6 +43,9 @@ Tensor& max_unpooling2d_forward_out_cpu(
                 self_.sizes(), " with dimension ", i , " being empty.");
   }
 
+  auto oheight = output_size[0];
+  auto owidth = output_size[1];
+
   auto memory_format = self_.suggest_memory_format();
   auto self = self_.contiguous(memory_format);
   auto indices = indices_.contiguous(memory_format);
@@ -65,7 +65,7 @@ Tensor& max_unpooling2d_forward_out_cpu(
   }
 
   return output;
-};
+}
 
 Tensor max_unpooling2d_forward_cpu(
     const Tensor& self,
@@ -84,9 +84,7 @@ static void max_unpooling3d_shape_check(
     IntArrayRef stride,
     IntArrayRef padding,
     const char *fn_name) {
-  int64_t oT = output_size[0];
-  int64_t oH = output_size[1];
-  int64_t oW = output_size[2];
+
   TORCH_CHECK(
       indices.scalar_type() == at::ScalarType::Long,
       "elements in indices should be type int64");
@@ -118,6 +116,10 @@ static void max_unpooling3d_shape_check(
       "strides should be greater than zero, but got stride: ",
       stride);
 
+  int64_t oT = output_size[0];
+  int64_t oH = output_size[1];
+  int64_t oW = output_size[2];
+
   int dimw = 3;
   int dimh = 2;
   int dimt = 1;
@@ -135,7 +137,7 @@ static void max_unpooling3d_shape_check(
   if (gradOutput.defined()) {
     if (oT != gradOutput.size(dimt) || oH != gradOutput.size(dimh) ||
         oW != gradOutput.size(dimw)) {
-      AT_ERROR(
+      TORCH_CHECK(false,
           "Inconsistent gradOutput size. oT= ",
           oT,
           ", oH= ",
@@ -167,15 +169,16 @@ Tensor& max_unpooling3d_forward_out_cpu(const Tensor& self_,
   at::globalContext().alertNotDeterministic("max_unpooling3d_forward_out");
 
   TORCH_CHECK(output.is_contiguous(), "output must be contiguous");
-  int64_t oT = output_size[0];
-  int64_t oH = output_size[1];
-  int64_t oW = output_size[2];
 
   auto self = self_.contiguous();
   auto indices = indices_.contiguous();
 
   max_unpooling3d_shape_check(
     self_, Tensor(), indices_, output_size, stride, padding, "max_unpooling3d_forward_out_cpu()");
+
+  int64_t oT = output_size[0];
+  int64_t oH = output_size[1];
+  int64_t oW = output_size[2];
 
   if (self_.ndimension() == 5) {
     output.resize_({self.size(0), self.size(1), oT, oH, oW});
@@ -205,5 +208,4 @@ Tensor max_unpooling3d_forward_cpu(
 DEFINE_DISPATCH(max_unpool2d_kernel);
 DEFINE_DISPATCH(max_unpool3d_kernel);
 
-} // namespace native
-} // namespace at
+} // namespace at::native

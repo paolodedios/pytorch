@@ -7,18 +7,15 @@
 #include <ATen/functorch/DynamicLayer.h>
 #include <ATen/functorch/TensorWrapper.h>
 #include <ATen/functorch/BatchedTensorImpl.h>
-#include <ATen/functorch/BatchRulesHelper.h>
 
 #include <torch/library.h>
 #include <c10/core/impl/LocalDispatchKeySet.h>
 #include <ATen/core/dispatch/Dispatcher.h>
-#include <ATen/FunctionalTensorWrapper.h>
 #include <c10/util/irange.h>
 #include <ATen/FuncTorchTLS.h>
 #include <iostream>
 
-namespace at {
-namespace functorch {
+namespace at::functorch {
 
 void setDynamicLayerFrontBackKeysIncluded(bool included) {
   c10::impl::tls_set_dispatch_key_included(DispatchKey::FuncTorchDynamicLayerFrontMode, included);
@@ -28,11 +25,12 @@ void setDynamicLayerFrontBackKeysIncluded(bool included) {
 DynamicLayer::DynamicLayer(
     TransformType transform_type,
     int64_t layerId,
-    optional<int64_t> batchSize,
-    optional<RandomnessType> randomness,
-    optional<bool> prev_grad_mode,
-    optional<bool> prev_fwd_grad_mode,
-    optional<bool> functionalize_add_back_views)
+    std::optional<c10::SymInt> batchSize,
+    std::optional<RandomnessType> randomness,
+    std::optional<bool> prev_grad_mode,
+    std::optional<bool> prev_fwd_grad_mode,
+    std::optional<bool> functionalize_add_back_views,
+    std::optional<bool> prev_inference_mode)
 {
   if (transform_type == TransformType::Grad) {
     TORCH_INTERNAL_ASSERT(prev_grad_mode.has_value());
@@ -42,15 +40,17 @@ DynamicLayer::DynamicLayer(
   }
   switch (transform_type) {
     case TransformType::Vmap:
-      interpreter_ = Interpreter::Vmap(layerId, batchSize.value(), randomness.value());
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      interpreter_ = Interpreter::Vmap(layerId, std::move(batchSize.value()), randomness.value());
       break;
     case TransformType::Grad:
-      interpreter_ = Interpreter::Grad(layerId, prev_grad_mode.value());
+      interpreter_ = Interpreter::Grad(layerId, prev_grad_mode.value(), prev_inference_mode.value_or(false));
       break;
     case TransformType::Jvp:
-      interpreter_ = Interpreter::Jvp(layerId, prev_fwd_grad_mode.value());
+      interpreter_ = Interpreter::Jvp(layerId, prev_fwd_grad_mode.value(), prev_inference_mode.value_or(false));
       break;
     case TransformType::Functionalize:
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
       interpreter_ = Interpreter::Functionalize(layerId, functionalize_add_back_views.value());
       break;
     default:
@@ -66,7 +66,7 @@ int64_t DynamicLayer::layerId() const {
   return interpreter_.level();
 }
 
-int64_t DynamicLayer::batchSize() const {
+c10::SymInt DynamicLayer::batchSize() const {
   return VmapInterpreterPtr(&interpreter_).batchSize();
 }
 
@@ -91,15 +91,22 @@ class FuncTorchTLS : public FuncTorchTLSBase {
     return result;
   }
 
-  int64_t checkSupportsAutogradFunction() const override {
-    TORCH_CHECK(dynamicLayerStack.size() == 0 || getAutogradFunctionAllowed(),
-        "functorch functions (vmap, grad, vjp, etc.) currently do not support the use of autograd.Function. ",
-        "Please rewrite your function to not use autograd.Function while we work on fixing this");
+  int64_t checkSupportsSingleLevelAutogradFunction() const override {
+    TORCH_INTERNAL_ASSERT(dynamicLayerStack.empty() || getSingleLevelAutogradFunctionAllowed(),
+        "functorch functions (vmap, grad, vjp, etc.) incorrectly used with ",
+        "torch.autograd.function._SingleLevelFunction. ",
+        "This is not expected, please file a bug.");
     return 0;
   }
 
+  void checkSupportsCppAutogradFunction() const override {
+    TORCH_CHECK(
+        dynamicLayerStack.empty(),
+        "cannot use C++ torch::autograd::Function with functorch transforms (vmap, grad, vjp, etc)");
+  }
+
   void checkSupportsInplaceRequiresGrad() const override {
-    TORCH_CHECK(dynamicLayerStack.size() == 0 || allow_inplace_requires_grad_,
+    TORCH_CHECK(dynamicLayerStack.empty() || allow_inplace_requires_grad_,
         "You are attempting to call Tensor.requires_grad_() (or perhaps using ",
         "torch.autograd.functional.* APIs) inside of a function being transformed ",
         "by a functorch transform. ",
@@ -108,7 +115,7 @@ class FuncTorchTLS : public FuncTorchTLSBase {
         "outside of a function being transformed instead.");
   }
   void checkSupportsRetainGrad() const override {
-    TORCH_CHECK(dynamicLayerStack.size() == 0,
+    TORCH_CHECK(dynamicLayerStack.empty(),
         "You are attempting to call Tensor.retain_grad() ",
         "inside of a function being transformed ",
         "by a functorch transform. ",
@@ -119,7 +126,7 @@ class FuncTorchTLS : public FuncTorchTLSBase {
 
   std::vector<DynamicLayer> dynamicLayerStack;
   bool allow_inplace_requires_grad_ = false;
-  bool allow_autograd_function_ = false;
+  bool allow_single_level_autograd_function_ = false;
 };
 
 static FuncTorchTLS* getRawFunctorchTLS() {
@@ -143,14 +150,14 @@ bool getInplaceRequiresGradAllowed() {
   return functorch_tls->allow_inplace_requires_grad_;
 }
 
-void setAutogradFunctionAllowed(bool allowed) {
+void setSingleLevelAutogradFunctionAllowed(bool allowed) {
   auto* functorch_tls = getRawFunctorchTLS();
-  functorch_tls->allow_autograd_function_ = allowed;
+  functorch_tls->allow_single_level_autograd_function_ = allowed;
 }
 
-bool getAutogradFunctionAllowed() {
+bool getSingleLevelAutogradFunctionAllowed() {
   auto* functorch_tls = getRawFunctorchTLS();
-  return functorch_tls->allow_autograd_function_;
+  return functorch_tls->allow_single_level_autograd_function_;
 }
 
 static std::vector<DynamicLayer>& dynamicLayerStackAccessor() {
@@ -169,9 +176,9 @@ const std::shared_ptr<bool>& getLifeHandleForLevel(int64_t level) {
   return dynamic_layer.interpreter().is_alive_ptr();
 }
 
-optional<DynamicLayer> maybeCurrentDynamicLayer() {
+std::optional<DynamicLayer> maybeCurrentDynamicLayer() {
   auto& dynamicLayerStack = dynamicLayerStackAccessor();
-  if (dynamicLayerStack.size() == 0) {
+  if (dynamicLayerStack.empty()) {
     return {};
   }
   return dynamicLayerStack.back();
@@ -181,14 +188,14 @@ struct SaveLocalDispatchKeySet {
  public:
   SaveLocalDispatchKeySet() {
     auto& dynamicLayerStack = dynamicLayerStackAccessor();
-    TORCH_INTERNAL_ASSERT(dynamicLayerStack.size() > 0);
+    TORCH_INTERNAL_ASSERT(!dynamicLayerStack.empty());
     auto& layer = dynamicLayerStack.back();
     auto tmp = c10::impl::tls_local_dispatch_key_set();
     layer.interpreter().saveLocalDispatchKeySet(tmp);
   }
   ~SaveLocalDispatchKeySet() {
     auto& dynamicLayerStack = dynamicLayerStackAccessor();
-    TORCH_INTERNAL_ASSERT(dynamicLayerStack.size() > 0);
+    TORCH_INTERNAL_ASSERT(!dynamicLayerStack.empty());
     auto& layer = dynamicLayerStack.back();
     auto tmp = layer.interpreter().getSavedLocalDispatchKeySet();
     layer.interpreter().clearSavedLocalDispatchKeySet();
@@ -196,6 +203,8 @@ struct SaveLocalDispatchKeySet {
   }
   SaveLocalDispatchKeySet(const SaveLocalDispatchKeySet&) = delete;
   SaveLocalDispatchKeySet& operator=(const SaveLocalDispatchKeySet&) = delete;
+  SaveLocalDispatchKeySet(SaveLocalDispatchKeySet&&) = delete;
+  SaveLocalDispatchKeySet& operator=(SaveLocalDispatchKeySet&&) = delete;
 };
 
 const std::vector<DynamicLayer>& getDynamicLayerStack() {
@@ -208,16 +217,11 @@ void setDynamicLayerStack(const std::vector<DynamicLayer>& stack) {
 
 DynamicLayer popDynamicLayer() {
   auto& dynamicLayerStack = dynamicLayerStackAccessor();
-  TORCH_INTERNAL_ASSERT(dynamicLayerStack.size() > 0);
+  TORCH_INTERNAL_ASSERT(!dynamicLayerStack.empty());
   auto result = dynamicLayerStack.back();
   dynamicLayerStack.pop_back();
 
-  if (dynamicLayerStack.size() == 0) {
-#ifdef HAS_TORCH_SHOW_DISPATCH_TRACE
-    if (c10::show_dispatch_trace_enabled()) {
-      std::cout << "DynamicLayer off" << std::endl;
-    }
-#endif
+  if (dynamicLayerStack.empty()) {
     setDynamicLayerFrontBackKeysIncluded(false);
   }
 
@@ -226,17 +230,12 @@ DynamicLayer popDynamicLayer() {
 
 int64_t pushDynamicLayer(DynamicLayer&& dynamic_layer) {
   auto& dynamicLayerStack = dynamicLayerStackAccessor();
-  int64_t layerId = 1 + dynamicLayerStack.size();
+  int64_t layerId = static_cast<int64_t>(1 + dynamicLayerStack.size());
   TORCH_INTERNAL_ASSERT(layerId == dynamic_layer.layerId());
-  dynamicLayerStack.emplace_back(dynamic_layer);
+  dynamicLayerStack.emplace_back(std::move(dynamic_layer));
 
   if (layerId == 1) {
     setDynamicLayerFrontBackKeysIncluded(true);
-#ifdef HAS_TORCH_SHOW_DISPATCH_TRACE
-    if (c10::show_dispatch_trace_enabled()) {
-      std::cout << "DynamicLayer on" << std::endl;
-    }
-#endif
   }
 
   return layerId;
@@ -244,18 +243,19 @@ int64_t pushDynamicLayer(DynamicLayer&& dynamic_layer) {
 
 int64_t initAndPushDynamicLayer(
     TransformType transform_type,
-    optional<int64_t> batch_size,
-    optional<RandomnessType> randomness,
-    optional<bool> prev_grad_mode,
-    optional<bool> prev_fwd_grad_mode,
-    optional<bool> functionalize_add_back_views) {
+    std::optional<c10::SymInt> batch_size,
+    std::optional<RandomnessType> randomness,
+    std::optional<bool> prev_grad_mode,
+    std::optional<bool> prev_fwd_grad_mode,
+    std::optional<bool> functionalize_add_back_views,
+    std::optional<bool> prev_inference_mode) {
   const auto& dynamicLayerStack = dynamicLayerStackAccessor();
-  const auto layerId = 1 + dynamicLayerStack.size();
-  DynamicLayer new_layer(transform_type, layerId, batch_size, randomness, prev_grad_mode, prev_fwd_grad_mode, functionalize_add_back_views);
-  pushDynamicLayer(std::move(new_layer));
-
+  const int64_t layerId = static_cast<int64_t>(1 + dynamicLayerStack.size());
+  DynamicLayer new_layer(transform_type, layerId, std::move(batch_size), randomness, prev_grad_mode, prev_fwd_grad_mode, functionalize_add_back_views, prev_inference_mode);
   // NB: this function should be called while holding the GIL to avoid races
   new_layer.interpreter().set_is_alive(true);
+  pushDynamicLayer(std::move(new_layer));
+
 
   if (transform_type == TransformType::Grad) {
     TORCH_INTERNAL_ASSERT(prev_grad_mode.has_value());
@@ -300,7 +300,7 @@ void foreachTensorInplace(std::vector<IValue>& args, int64_t begin, int64_t end,
 }
 
 void foreachTensorInplaceWithFlag(std::vector<IValue>& args, int64_t begin, int64_t end,
-    const std::bitset<64> use_flag_relative, std::function<Tensor(const Tensor&, bool)> func){
+    const std::bitset<64> use_flag_relative, const std::function<Tensor(const Tensor&, bool)>& func){
   TORCH_INTERNAL_ASSERT(begin >= 0);
   TORCH_INTERNAL_ASSERT(end >= 0);
   TORCH_INTERNAL_ASSERT(begin <= end);
@@ -337,9 +337,7 @@ void foreachTensorInplaceWithFlag(std::vector<IValue>& args, int64_t begin, int6
     if (!ivalue.isTensor()) {
       continue;
     }
-    Tensor value = ivalue.toTensor();
-    Tensor replacement = func(value, flag);
-    args[idx] = std::move(replacement);
+    args[idx] = func(ivalue.toTensor(), flag);
     // sanity checks
     if (ivalue.toTensor().defined()) {
       TORCH_INTERNAL_ASSERT(args[idx].toTensor().defined());
@@ -348,15 +346,15 @@ void foreachTensorInplaceWithFlag(std::vector<IValue>& args, int64_t begin, int6
 }
 
 std::ostream& operator<< (std::ostream& os, const DynamicLayer& layer) {
-  os << layer.layerId() << ":" << layer.key();
+  os << layer.layerId() << ':' << layer.key();
   return os;
 }
 std::ostream& operator<< (std::ostream& os, const std::vector<DynamicLayer>& dls) {
   os << "DynamicLayerStack[ ";
   for (const auto& layer : dls) {
-    os << layer << " ";
+    os << layer << ' ';
   }
-  os << "]";
+  os << ']';
   return os;
 }
 
@@ -381,25 +379,21 @@ bool isInplaceOp(const FunctionSchema& schema) {
   return return_alias_info && return_alias_info->isWrite();
 }
 
-c10::optional<size_t> findAliasedOutput(const FunctionSchema& schema, const int64_t immutable_input_idx) {
+std::optional<size_t> findAliasedOutput(const FunctionSchema& schema, const int64_t immutable_input_idx) {
   for (size_t res_idx = 0; res_idx != schema.returns().size(); ++res_idx) {
     if (schema.may_contain_alias(SchemaArgument(SchemaArgType::input, immutable_input_idx), SchemaArgument(SchemaArgType::output, res_idx))) {
       return res_idx; // for everything currently in native_functions, each input aliases at most one output (tensor list counts as one output)
     }
   }
-  return nullopt;
+  return std::nullopt;
 }
-
-#ifdef HAS_TORCH_SHOW_DISPATCH_TRACE
-static void dump_local_tls() {
-  auto tls = c10::impl::tls_local_dispatch_key_set();
-  std::cout << "[Local Include] " << tls.included_ << std::endl;
-  std::cout << "[Local Exclude] " << tls.excluded_ << std::endl;
-}
-#endif
 
 struct WithoutTop {
   WithoutTop();
+  WithoutTop(WithoutTop&& other) = delete;
+  WithoutTop(const WithoutTop&) = delete;
+  WithoutTop& operator=(const WithoutTop&) = delete;
+  WithoutTop& operator=(WithoutTop&&) = delete;
   ~WithoutTop();
   DynamicLayer layer_;
 };
@@ -438,13 +432,7 @@ static void dynamicLayerFrontFallback(
     const c10::OperatorHandle& op,
     torch::jit::Stack* stack) {
   auto& dynamicLayerStack = dynamicLayerStackAccessor();
-  TORCH_INTERNAL_ASSERT(dynamicLayerStack.size() > 0);
-#ifdef HAS_TORCH_SHOW_DISPATCH_TRACE
-  if (c10::show_dispatch_trace_enabled()) {
-    std::cout << dynamicLayerStack << std::endl;
-    dump_local_tls();
-  }
-#endif
+  TORCH_INTERNAL_ASSERT(!dynamicLayerStack.empty());
   // Save the current LocalDispatchKeySet (to the current DynamicLayer).
   // Upon exiting the current scope, that LocalDispatchKeySet gets restored.
   // When the current DynamicLayer dispatches to the next (inner) DynamicLayer,
@@ -453,7 +441,7 @@ static void dynamicLayerFrontFallback(
 
   // Unwrap escaped GradWrappers
   auto num_args = op.schema().arguments().size();
-  foreachTensorInplace(*stack, stack->size() - num_args, stack->size(), unwrapIfDead);
+  foreachTensorInplace(*stack, static_cast<int64_t>(stack->size() - num_args), static_cast<int64_t>(stack->size()), unwrapIfDead);
 
   auto& layer = dynamicLayerStack.back();
   layer.interpreter().process(op, stack);
@@ -466,21 +454,22 @@ restoreLocalDispatchKeySetRAII(const c10::impl::LocalDispatchKeySet& key_set) {
 
 // right now grad_special_case as a bool is sufficient because this is the only special case for grad. If we need to add
 // more special cases, it's more scalable to add an enum to know which op we're looking at without looking at the schema
-void dynamicLayerBack(const c10::OperatorHandle& op, torch::jit::Stack* stack, bool grad_special_case) {
-  auto& layer = dynamicLayerStackAccessor().back();
-  auto restore_guard = restoreLocalDispatchKeySetRAII(layer.interpreter().getSavedLocalDispatchKeySet());
+static void dynamicLayerBack(const c10::OperatorHandle& op, torch::jit::Stack* stack, bool grad_special_case) {
+  auto restore_guard = restoreLocalDispatchKeySetRAII(
+      dynamicLayerStackAccessor().back().interpreter().getSavedLocalDispatchKeySet());
   WithoutTop guard;
 
-  layer.interpreter().sendToNextInterpreter(op, stack, grad_special_case);
+  // WithoutTop stores the popped DynamicLayer object.
+  guard.layer_.interpreter().sendToNextInterpreter(op, stack, grad_special_case);
 }
 
 // used for functions that have aliasing operations but should be treated like they're out of place (i.e. lift_fresh)
-void dynamicLayerBackGradSpecialCase(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
-  return dynamicLayerBack(op, stack, true);
+static void dynamicLayerBackGradSpecialCase(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+  dynamicLayerBack(op, stack, true);
 }
 
-void dynamicLayerBackFallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
-  return dynamicLayerBack(op, stack, false);
+static void dynamicLayerBackFallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+  dynamicLayerBack(op, stack, false);
 }
 
 TORCH_LIBRARY_IMPL(_, FuncTorchDynamicLayerFrontMode, m) {
@@ -503,5 +492,4 @@ TORCH_LIBRARY_IMPL(aten, FuncTorchDynamicLayerBackMode, m) {
   SPECIAL_GRAD_CASE(alias);
 }
 
-}
-} // namespace at
+} // namespace at::functorch

@@ -1,25 +1,28 @@
 //  Copyright © 2022 Apple Inc.
-
-#include <ATen/ATen.h>
-#include <ATen/Tensor.h>
-#include <ATen/Utils.h>
-
-#include <ATen/mps/MPSStream.h>
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/Dispatch.h>
+#include <ATen/mps/MPSProfiler.h>
 #include <ATen/native/LinearAlgebraUtils.h>
+#include <ATen/native/Repeat.h>
 #include <ATen/native/mps/OperationUtils.h>
-#include <torch/library.h>
+#include <ATen/ops/permute_native.h>
+#include <ATen/ops/repeat_interleave_native.h>
+#include <ATen/ops/repeat_native.h>
+#include <fmt/format.h>
 
-#ifdef __OBJC__
-#include <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/view_as_complex.h>
+#include <ATen/ops/view_as_real.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
 Tensor permute_mps(const Tensor& self, IntArrayRef dims) {
   auto nDims = self.dim();
-  TORCH_CHECK(dims.size() == (size_t)nDims,
-           "number of dims don't match in permute");
+  TORCH_CHECK(dims.size() == (size_t)nDims, "number of dims don't match in permute");
   auto oldSizes = self.sizes();
   auto oldStrides = self.strides();
   DimVector newSizes(nDims);
@@ -27,8 +30,7 @@ Tensor permute_mps(const Tensor& self, IntArrayRef dims) {
   std::vector<bool> seen(nDims);
   for (const auto i : c10::irange(nDims)) {
     auto dim = maybe_wrap_dim(dims[i], nDims);
-    TORCH_CHECK(!seen[dim],
-             "repeated dim in permute");
+    TORCH_CHECK(!seen[dim], "repeated dim in permute");
     seen[dim] = true;
     newSizes[i] = oldSizes[dim];
     newStrides[i] = oldStrides[dim];
@@ -36,148 +38,114 @@ Tensor permute_mps(const Tensor& self, IntArrayRef dims) {
   return self.as_strided(newSizes, newStrides);
 }
 
-void set_apparent_shapes(NSArray<NSNumber*> * input_shape,
-                         NSArray<NSNumber*> * &apparent_input_shape,
-                         int64_t num_input_dims,
-                         IntArrayRef repeats,
-                         NSMutableArray<NSNumber*> * &repeats_shape,
-                         int64_t num_repeat_dims) {
-
-
-  bool repeat_empty = false;
-  if(num_repeat_dims == 0) {
-    num_repeat_dims = num_input_dims;
-    repeat_empty = true;
-  }
-
-  // Set repeats_shape
-  repeats_shape = [NSMutableArray<NSNumber*> arrayWithCapacity:num_repeat_dims];
-
-  for(int i = 0; i < num_repeat_dims; i++) {
-    if(repeat_empty)
-      repeats_shape[i] = [NSNumber numberWithInteger:1];
-    else
-      repeats_shape[i] = [NSNumber numberWithInteger:repeats[i]];
-  }
-
-  // If no extension of the shape is needed
-  if(num_repeat_dims == num_input_dims) {
-    apparent_input_shape = input_shape;
-  }
-  // num_repeat_dims > num_input_dims
-  else {
-    auto rc = [NSMutableArray<NSNumber*> arrayWithCapacity:num_repeat_dims];
-
-    for(int i = 0; i < num_repeat_dims - num_input_dims; i++)
-      rc[i] = @1;
-
-    for(int i = num_repeat_dims - num_input_dims; i < num_repeat_dims; i++)
-      rc[i] = input_shape[i + num_input_dims - num_repeat_dims];
-    apparent_input_shape = rc;
-  }
-
-}
-
 Tensor repeat_mps(const Tensor& self, IntArrayRef repeats) {
-
   using namespace mps;
+  using CachedGraph = MPSUnaryCachedGraph;
 
   TORCH_CHECK(repeats.size() >= (size_t)self.dim(),
-           "Number of dimensions of repeat dims can not be smaller than number of dimensions of tensor");
-  struct CachedGraph : public MPSCachedGraph
-  {
-    CachedGraph(MPSGraph *graph) : MPSCachedGraph(graph) {}
-    MPSGraphTensor *inputTensor_ = nil;
-    MPSGraphTensor *outputTensor_ = nil;
-  };
+              "Number of dimensions of repeat dims can not be smaller than number of dimensions of tensor");
 
-  MPSGraphCache* cache_ = MPSGraphCache::getInstance();
+  if (self.is_complex()) {
+    std::vector<int64_t> repeats_real = repeats.vec();
+    repeats_real.push_back(1);
+    auto self_real = at::view_as_real(self);
+    return at::view_as_complex(repeat_mps(self_real, repeats_real));
+  }
 
-  NSArray<NSNumber*> *apparent_input_shape = nil;
-  NSMutableArray<NSNumber*> *repeats_shape = nil;
-
-  auto input_shape = getMPSShape(self);
-  auto num_input_dims = [input_shape count];
-  auto num_repeat_dims = repeats.size();
-
-  set_apparent_shapes(input_shape,
-                      apparent_input_shape,
-                      num_input_dims,
-                      repeats,
-                      repeats_shape,
-                      num_repeat_dims);
-
-  // Set output shape
-  std::vector<int64_t> output_shape(num_repeat_dims);
+  // Add new leading dimensions to the tensor if the
+  // number of target dimensions is larger than the
+  // number of source dimensions.
+  int64_t num_new_dimensions = repeats.size() - self.dim();
+  DimVector padded_size(num_new_dimensions, 1);
+  padded_size.insert(padded_size.end(), self.sizes().begin(), self.sizes().end());
+  DimVector target_size(repeats.size());
   bool zero_tensor = false;
-  for(auto i : c10::irange(num_repeat_dims)) {
-    output_shape[i] = repeats[i] * [apparent_input_shape[i] intValue];
-    if(output_shape[i] == 0) {
+  for (const auto idx : c10::irange(repeats.size())) {
+    if (repeats[idx] == 0) {
       zero_tensor = true;
     }
+    target_size[idx] = padded_size[idx] * repeats[idx];
   }
 
-  Tensor output = at::native::empty_mps(
-                      IntArrayRef(output_shape),
-                      self.scalar_type(),
-                      c10::nullopt,
-                      kMPS,
-                      c10::nullopt,
-                      c10::nullopt);
-
-  // Empty output
-  if(zero_tensor || output.numel() == 0)
-    return output;
+  Tensor expanded_tensor = self.expand(padded_size);
+  Tensor result = at::empty(target_size, self.options());
+  if (zero_tensor || result.numel() == 0) {
+    return result;
+  }
 
   auto stream = at::mps::getCurrentMPSStream();
+  auto inputDataType = getMPSDataType(expanded_tensor);
+  auto outputDataType = getMPSDataType(result);
 
   @autoreleasepool {
+    std::string key = "repeat_mps:" + getTensorsStringKey(self) + ":" + getArrayRefString(repeats);
+    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
+      MPSGraphTensor* inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, inputDataType, getMPSShape(expanded_tensor));
+      MPSGraphTensor* outputTensor = [mpsGraph tileTensor:inputTensor withMultiplier:getMPSShape(repeats) name:nil];
 
-    NSString* ns_shape_key = [[input_shape valueForKey:@"description"] componentsJoinedByString:@","];
-    NSString* ns_repeats_key = [[repeats_shape valueForKey:@"description"] componentsJoinedByString:@","];
+      newCachedGraph->inputTensor_ = inputTensor;
+      newCachedGraph->outputTensor_ = outputTensor;
+    });
 
-    string key = "repeat_mps:" + getMPSTypeString(self.scalar_type())
-                               + ":" + string([ns_shape_key UTF8String])
-                               + ":" + string([ns_repeats_key UTF8String]);
-    CachedGraph* cachedGraph = static_cast<CachedGraph *>(cache_->LookUp(key));
+    Placeholder selfPlaceholder = Placeholder(
+        cachedGraph->inputTensor_, expanded_tensor, /*mpsShape=*/nil, /*gatherTensorData=*/true, inputDataType);
+    Placeholder outputPlaceholder =
+        Placeholder(cachedGraph->outputTensor_, result, /*mpsShape=*/nil, /*gatherTensorData*/ false, outputDataType);
 
-    if(!cachedGraph) {
-      MPSCachedGraph *tmpCachedGraph = cache_->CreateCachedGraph(key, ^ MPSCachedGraph * () {
-        CachedGraph *newCachedGraph = nil;
-
-        @autoreleasepool {
-          MPSGraph* mpsGraph = make_mps_graph();
-          newCachedGraph = new CachedGraph(mpsGraph);
-
-          MPSGraphTensor* inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, getMPSDataType(self.scalar_type()), apparent_input_shape);
-          MPSGraphTensor* outputTensor = [mpsGraph tileTensor:inputTensor
-                                               withMultiplier:repeats_shape
-                                                         name:nil];
-
-          newCachedGraph->inputTensor_ = inputTensor;
-          newCachedGraph->outputTensor_ = outputTensor;
-        }
-        return newCachedGraph;
-      });
-      cachedGraph = static_cast<CachedGraph *>(tmpCachedGraph);
-    }
-
-    Placeholder selfPlaceholder = Placeholder(cachedGraph->inputTensor_, self, apparent_input_shape);
-    Placeholder outputPlaceholder = Placeholder(cachedGraph->outputTensor_, output);
-
-    NSDictionary<MPSGraphTensor*, MPSGraphTensorData*>* feeds = @{
-      selfPlaceholder.getMPSGraphTensor() : selfPlaceholder.getMPSGraphTensorData()
-    };
-    NSDictionary<MPSGraphTensor*, MPSGraphTensorData*>* results = @{
-      outputPlaceholder.getMPSGraphTensor() : outputPlaceholder.getMPSGraphTensorData()
-    };
-
-    runMPSGraph(stream, cachedGraph->graph(), feeds, results);
+    auto feeds = dictionaryFromPlaceholders(selfPlaceholder);
+    runMPSGraph(stream, cachedGraph->graph(), feeds, outputPlaceholder);
   }
 
-  return output;
-
+  return result;
 }
 
+#ifndef PYTORCH_JIT_COMPILE_SHADERS
+static auto& lib = mps::MetalShaderLibrary::getBundledLibrary();
+#else
+#include <ATen/native/mps/Repeat_metallib.h>
+#endif
+
+Tensor repeat_interleave_mps(const Tensor& repeat, std::optional<int64_t> output_size) {
+  TORCH_CHECK(repeat.dim() == 1, "repeat_interleave only accept 1D vector as repeat");
+  std::string scalar_type;
+  if (repeat.scalar_type() == kInt) {
+    scalar_type = "int32_t";
+  } else if (repeat.scalar_type() == kLong) {
+    scalar_type = "int64_t";
+  } else {
+    TORCH_CHECK(false, "repeats has to be Long or Int tensor");
+  }
+  if (repeat.size(0) == 0) {
+    return at::empty_like(repeat, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+  }
+  Tensor cumsum = repeat.cumsum(0);
+  int64_t total = 0;
+  if (output_size.has_value()) {
+    total = output_size.value();
+  } else {
+    total = cumsum[-1].item<int64_t>();
+    TORCH_CHECK((repeat >= 0).all().item<uint8_t>(), "repeats can not be negative");
+  }
+
+  auto result = at::empty({total}, repeat.options());
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+  dispatch_sync(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = mpsStream->commandEncoder();
+      auto pipelineState = lib.getPipelineStateForFunc(fmt::format("repeat_interleave_{}", scalar_type));
+
+      // this function call is a no-op if MPS Profiler is not enabled
+      getMPSProfiler().beginProfileKernel(pipelineState, "repeat_interleave:" + scalar_type, false);
+
+      [computeEncoder setComputePipelineState:pipelineState];
+      mps::mtl_setArgs(computeEncoder, repeat, cumsum, result, repeat.stride(0));
+      mps::mtl_dispatch1DJob(computeEncoder, pipelineState, repeat.size(0));
+
+      getMPSProfiler().endProfileKernel(pipelineState);
+    }
+  });
+  return result;
 }
-}
+
+} // namespace at::native

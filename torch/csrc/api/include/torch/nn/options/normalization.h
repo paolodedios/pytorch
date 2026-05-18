@@ -5,8 +5,7 @@
 #include <torch/types.h>
 #include <vector>
 
-namespace torch {
-namespace nn {
+namespace torch::nn {
 
 /// Options for the `LayerNorm` module.
 ///
@@ -44,9 +43,9 @@ struct TORCH_API LayerNormFuncOptions {
   /// input shape from an expected input.
   TORCH_ARG(std::vector<int64_t>, normalized_shape);
 
-  TORCH_ARG(Tensor, weight) = {};
+  TORCH_ARG(Tensor, weight);
 
-  TORCH_ARG(Tensor, bias) = {};
+  TORCH_ARG(Tensor, bias);
 
   /// a value added to the denominator for numerical stability. ``Default:
   /// 1e-5``.
@@ -133,7 +132,7 @@ struct TORCH_API NormalizeFuncOptions {
   TORCH_ARG(double, eps) = 1e-12;
   /// the output tensor. If `out` is used, this
   /// operation won't be differentiable.
-  TORCH_ARG(c10::optional<Tensor>, out) = c10::nullopt;
+  TORCH_ARG(std::optional<Tensor>, out) = std::nullopt;
 };
 
 } // namespace functional
@@ -178,9 +177,9 @@ struct TORCH_API GroupNormFuncOptions {
   /// number of groups to separate the channels into
   TORCH_ARG(int64_t, num_groups);
 
-  TORCH_ARG(Tensor, weight) = {};
+  TORCH_ARG(Tensor, weight);
 
-  TORCH_ARG(Tensor, bias) = {};
+  TORCH_ARG(Tensor, bias);
 
   /// a value added to the denominator for numerical stability. Default: 1e-5
   TORCH_ARG(double, eps) = 1e-5;
@@ -188,5 +187,4 @@ struct TORCH_API GroupNormFuncOptions {
 
 } // namespace functional
 
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn

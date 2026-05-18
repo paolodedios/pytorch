@@ -2,9 +2,6 @@ import torch
 
 
 class TensorOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(TensorOpsModule, self).__init__()
-
     def forward(self):
         return self.tensor_general_ops()
 
@@ -102,15 +99,11 @@ class TensorOpsModule(torch.nn.Module):
 
 
 class TensorCreationOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(TensorCreationOpsModule, self).__init__()
-
     def forward(self):
         return self.tensor_creation_ops()
 
     def tensor_creation_ops(self):
         i = torch.tensor([[0, 1, 1], [2, 0, 2]])
-        v = torch.tensor([3, 4, 5], dtype=torch.float32)
         real = torch.tensor([1, 2], dtype=torch.float32)
         imag = torch.tensor([3, 4], dtype=torch.float32)
         inp = torch.tensor([-1.5, 0.0, 2.0])
@@ -161,9 +154,6 @@ class TensorCreationOpsModule(torch.nn.Module):
 
 
 class TensorIndexingOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(TensorIndexingOpsModule, self).__init__()
-
     def forward(self):
         return self.tensor_indexing_ops()
 
@@ -227,9 +217,6 @@ class TensorIndexingOpsModule(torch.nn.Module):
 
 
 class TensorTypingOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(TensorTypingOpsModule, self).__init__()
-
     def forward(self):
         return self.tensor_typing_ops()
 
@@ -255,9 +242,6 @@ class TensorTypingOpsModule(torch.nn.Module):
 
 
 class TensorViewOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(TensorViewOpsModule, self).__init__()
-
     def forward(self):
         return self.tensor_view_ops()
 

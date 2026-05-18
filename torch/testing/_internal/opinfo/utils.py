@@ -1,9 +1,12 @@
+# mypy: ignore-errors
+
 import collections
 import warnings
+from collections.abc import Sequence
 from functools import partial, wraps
-from typing import Sequence
 
 import numpy as np
+import numpy.typing as npt
 
 import torch
 from torch.testing._internal.common_cuda import TEST_CUDA
@@ -56,10 +59,14 @@ class _dynamic_dispatch_dtypes(_dispatch_dtypes):
 
 def get_supported_dtypes(op, sample_inputs_fn, device_type):
     # Returns the supported dtypes for the given operator and device_type pair.
-    assert device_type in ["cpu", "cuda"]
+    if device_type not in ["cpu", "cuda"]:
+        raise AssertionError(
+            f"Expected device_type in ['cpu', 'cuda'], got {device_type!r}"
+        )
     if not TEST_CUDA and device_type == "cuda":
         warnings.warn(
-            "WARNING: CUDA is not available, empty_dtypes dispatch will be returned!"
+            "WARNING: CUDA is not available, empty_dtypes dispatch will be returned!",
+            stacklevel=2,
         )
         return _dynamic_dispatch_dtypes(())
 
@@ -73,7 +80,8 @@ def get_supported_dtypes(op, sample_inputs_fn, device_type):
             # We raise a warning, so that user knows that this was the case
             # and can investigate if there was an issue with the `sample_inputs_fn`.
             warnings.warn(
-                f"WARNING: Unable to generate sample for device:{device_type} and dtype:{dtype}"
+                f"WARNING: Unable to generate sample for device:{device_type} and dtype:{dtype}",
+                stacklevel=2,
             )
             continue
 
@@ -83,7 +91,7 @@ def get_supported_dtypes(op, sample_inputs_fn, device_type):
         for sample in samples:
             try:
                 op(sample.input, *sample.args, **sample.kwargs)
-            except RuntimeError as re:
+            except RuntimeError:
                 # dtype is not supported
                 supported = False
                 break
@@ -101,7 +109,7 @@ def dtypes_dispatch_hint(dtypes):
 
     # CUDA is not available, dtypes will be empty.
     if len(dtypes) == 0:
-        return return_type((), str(tuple()))
+        return return_type((), "()")
 
     set_dtypes = set(dtypes)
     for dispatch in COMPLETE_DTYPES_DISPATCH:
@@ -139,16 +147,12 @@ def is_dynamic_dtype_set(op):
 
 
 def str_format_dynamic_dtype(op):
-    fmt_str = """
-        OpInfo({name},
-               dtypes={dtypes},
-               dtypesIfCUDA={dtypesIfCUDA},
+    fmt_str = f"""
+        OpInfo({op.name},
+               dtypes={dtypes_dispatch_hint(op.dtypes).dispatch_fn_str},
+               dtypesIfCUDA={dtypes_dispatch_hint(op.dtypesIfCUDA).dispatch_fn_str},
         )
-        """.format(
-        name=op.name,
-        dtypes=dtypes_dispatch_hint(op.dtypes).dispatch_fn_str,
-        dtypesIfCUDA=dtypes_dispatch_hint(op.dtypesIfCUDA).dispatch_fn_str,
-    )
+        """
 
     return fmt_str
 
@@ -157,7 +161,7 @@ def np_unary_ufunc_integer_promotion_wrapper(fn):
     # Wrapper that passes PyTorch's default scalar
     #   type as an argument to the wrapped NumPy
     #   unary ufunc when given an integer input.
-    #   This mimicks PyTorch's integer->floating point
+    #   This mimics PyTorch's integer->floating point
     #   type promotion.
     #
     # This is necessary when NumPy promotes
@@ -208,7 +212,7 @@ def reference_reduction_numpy(f, supports_keepdims=True):
     """
 
     @wraps(f)
-    def wrapper(x: np.ndarray, *args, **kwargs):
+    def wrapper(x: npt.NDArray, *args, **kwargs):
         # Copy keys into a set
         keys = set(kwargs.keys())
 
@@ -231,7 +235,10 @@ def reference_reduction_numpy(f, supports_keepdims=True):
         if "mask" in keys:
             mask = kwargs.pop("mask")
             if mask is not None:
-                assert mask.layout == torch.strided
+                if mask.layout != torch.strided:
+                    raise AssertionError(
+                        f"Expected mask.layout == torch.strided, got {mask.layout}"
+                    )
                 kwargs["where"] = mask.cpu().numpy()
 
         if "identity" in keys:

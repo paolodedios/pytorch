@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import concurrent.futures
 import json
@@ -5,9 +7,10 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 from enum import Enum
-from typing import List, NamedTuple, Optional, Pattern
+from typing import NamedTuple
 
 
 LINTER_CODE = "ACTIONLINT"
@@ -21,18 +24,18 @@ class LintSeverity(str, Enum):
 
 
 class LintMessage(NamedTuple):
-    path: Optional[str]
-    line: Optional[int]
-    char: Optional[int]
+    path: str | None
+    line: int | None
+    char: int | None
     code: str
     severity: LintSeverity
     name: str
-    original: Optional[str]
-    replacement: Optional[str]
-    description: Optional[str]
+    original: str | None
+    replacement: str | None
+    description: str | None
 
 
-RESULTS_RE: Pattern[str] = re.compile(
+RESULTS_RE: re.Pattern[str] = re.compile(
     r"""(?mx)
     ^
     (?P<file>.*?):
@@ -46,15 +49,14 @@ RESULTS_RE: Pattern[str] = re.compile(
 
 
 def run_command(
-    args: List[str],
-) -> "subprocess.CompletedProcess[bytes]":
+    args: list[str],
+) -> subprocess.CompletedProcess[bytes]:
     logging.debug("$ %s", " ".join(args))
     start_time = time.monotonic()
     try:
         return subprocess.run(
             args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
     finally:
         end_time = time.monotonic()
@@ -64,9 +66,22 @@ def run_command(
 def check_file(
     binary: str,
     file: str,
-) -> List[LintMessage]:
+) -> list[LintMessage]:
     try:
-        proc = run_command([binary, file])
+        proc = run_command(
+            [
+                binary,
+                "-ignore",
+                '"runs-on" section must be sequence node but got mapping node with "!!map" tag',
+                "-ignore",
+                'input "freethreaded" is not defined in action "actions/setup-python@v',
+                # GitHub increased workflow_dispatch limit to 25 inputs (Dec 2025).
+                # actionlint fixed this in v1.7.10; remove after upgrading from v1.7.7.
+                "-ignore",
+                'maximum number of inputs for "workflow_dispatch" event is 10 but',
+                file,
+            ]
+        )
     except OSError as err:
         return [
             LintMessage(
@@ -132,7 +147,7 @@ if __name__ == "__main__":
             ),
         )
         print(json.dumps(err_msg._asdict()), flush=True)
-        exit(0)
+        sys.exit(0)
 
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=os.cpu_count(),

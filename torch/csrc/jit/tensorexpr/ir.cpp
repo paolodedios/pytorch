@@ -1,28 +1,25 @@
 #include <torch/csrc/jit/tensorexpr/ir.h>
-
-#include <torch/csrc/jit/tensorexpr/tensor.h>
+#include <torch/csrc/jit/tensorexpr/stmt.h>
 
 #include <c10/util/irange.h>
 
 #include <utility>
 
-namespace torch {
-namespace jit {
-namespace tensorexpr {
+namespace torch::jit::tensorexpr {
 
 static Dtype ChooseDtype(const Dtype& buffer_dtype, const Dtype& index_dtype) {
   return Dtype(buffer_dtype, index_dtype.lanes());
 }
 
 static Dtype dtypeOfIndices(const std::vector<ExprPtr>& indices) {
-  if (!indices.size()) {
+  if (indices.empty()) {
     // Return something so we can handle scalar buffers.
     return kInt;
   }
   return indices.at(0)->dtype();
 }
 
-void castIndicesToInts(std::vector<ExprPtr>& indices) {
+static void castIndicesToInts(std::vector<ExprPtr>& indices) {
   // Cast all indices to either Int or Long
   auto index_dtype = ScalarType::Int;
   for (auto& index : indices) {
@@ -47,7 +44,7 @@ Load::Load(Dtype dtype, BufPtr buf, std::vector<ExprPtr> indices)
   castIndicesToInts(indices_);
 }
 
-Load::Load(BufPtr buf, const std::vector<ExprPtr>& indices)
+Load::Load(const BufPtr& buf, const std::vector<ExprPtr>& indices)
     : Load(ChooseDtype(buf->dtype(), dtypeOfIndices(indices)), buf, indices) {}
 
 ExprHandle Load::make(
@@ -128,8 +125,8 @@ Dtype Intrinsics::IntrinsicsDtype(
     IntrinsicsOp op_type,
     const std::vector<ExprPtr>& params) {
   // TODO: check the op_type and make a real decision
-  // Doesnt this fail with kRand?
-  if (params.size() == 0) {
+  // Doesn't this fail with kRand?
+  if (params.empty()) {
     throw malformed_input("invalid params in Intrinsics");
   } else if (params.size() == 1) {
     return IntrinsicsDtype(op_type, params[0]->dtype());
@@ -139,7 +136,7 @@ Dtype Intrinsics::IntrinsicsDtype(
   return params[0]->dtype();
 }
 
-int Intrinsics::OpArgCount(IntrinsicsOp op_type) {
+size_t Intrinsics::OpArgCount(IntrinsicsOp op_type) {
   switch (op_type) {
     case kSin:
     case kCos:
@@ -178,7 +175,7 @@ int Intrinsics::OpArgCount(IntrinsicsOp op_type) {
     case kRemainder:
       return 2;
     default:
-      throw std::runtime_error("invalid op_type: " + c10::to_string(op_type));
+      throw std::runtime_error("invalid op_type: " + std::to_string(op_type));
   }
 }
 
@@ -264,7 +261,7 @@ std::vector<VarHandle> VarVectorToVarHandleVector(
   return result;
 }
 
-bool immediateIsNegative(ExprPtr e) {
+bool immediateIsNegative(const ExprPtr& e) {
 #define TYPE_CASE(Type, Name)                \
   if (Name##ImmPtr imm = to<Name##Imm>(e)) { \
     return imm->value() < 0;                 \
@@ -274,26 +271,24 @@ bool immediateIsNegative(ExprPtr e) {
   return false;
 }
 
-bool immediateIsPositive(ExprPtr e) {
+bool immediateIsPositive(const ExprPtr& e) {
 #define TYPE_CASE(Type, Name)                \
   if (Name##ImmPtr imm = to<Name##Imm>(e)) { \
     return imm->value() > 0;                 \
   }
-  AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, TYPE_CASE);
+  AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, TYPE_CASE)
 #undef TYPE_CASE
   return false;
 }
 
-bool immediateIsZero(ExprPtr e) {
+bool immediateIsZero(const ExprPtr& e) {
 #define TYPE_CASE(Type, Name)                \
   if (Name##ImmPtr imm = to<Name##Imm>(e)) { \
     return imm->value() == 0;                \
   }
-  AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, TYPE_CASE);
+  AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, TYPE_CASE)
 #undef TYPE_CASE
   return false;
 }
 
-} // namespace tensorexpr
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::tensorexpr

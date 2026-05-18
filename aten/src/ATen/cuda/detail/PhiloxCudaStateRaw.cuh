@@ -1,6 +1,6 @@
 // No "#pragma once" because this is a raw definition that can be copied by jit codegen.
 // Eager mode clients should not include this file directly, instead,
-// they should #include <ATen/cuda/CUDAGeneratorImpl.h>, which has a #pragma once.
+// they should #include <ATen/cuda/PhiloxCudaState.h>, which has a #pragma once.
 
 // Stores RNG state values. Passed as a kernel argument.
 // See Note [CUDA Graph-safe RNG states].
@@ -19,7 +19,7 @@ struct PhiloxCudaState {
   // Called if graph capture is underway
   PhiloxCudaState(int64_t* seed,
                   int64_t* offset_extragraph,
-                  uint32_t offset_intragraph) {
+                  uint64_t offset_intragraph) {
     seed_.ptr = seed;
     offset_.ptr = offset_extragraph;
     offset_intragraph_ = offset_intragraph;
@@ -34,9 +34,9 @@ struct PhiloxCudaState {
     int64_t* ptr;
   };
 
-  Payload seed_;
-  Payload offset_;
-  uint32_t offset_intragraph_ = 0;
+  Payload seed_{};
+  Payload offset_{};
+  uint64_t offset_intragraph_ = 0;
   bool captured_ = false;
 };
 

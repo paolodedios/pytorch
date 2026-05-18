@@ -1,314 +1,212 @@
 //  Copyright © 2022 Apple Inc.
-
-#include <ATen/native/mps/OperationUtils.h>
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/mps/IndexKernels.h>
+#include <ATen/mps/MPSAllocatorInterface.h>
+#include <ATen/mps/MPSProfiler.h>
 #include <ATen/native/Resize.h>
-#include <ATen/mps/MPSAllocator.h>
+#include <ATen/native/mps/OperationUtils.h>
+#include <fmt/format.h>
 
-namespace at {
-namespace native {
-namespace mps {
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/as_strided_native.h>
+#include <ATen/ops/view_as_real.h>
+#endif
 
-struct ViewCachedGraph : public MPSCachedGraph
-{
-  ViewCachedGraph(MPSGraph *graph) : MPSCachedGraph(graph) {}
-  MPSGraphTensor* inputTensor = nil;
-  MPSGraphTensor* outputTensor = nil;
-  MPSGraphTensor* updatesTensor = nil;
-  MPSGraphTensor* storageOffsetTensor = nil;
-  std::vector<MPSGraphTensor*> strideTensors;
-};
+namespace at::native::mps {
 
-static std::string getStridedKey(const ScalarType& self_dtype, const ScalarType& updates_dtype, const IntArrayRef& base_shape,
-                          const IntArrayRef& new_shape, bool is_scatter)
-{
-  std::string dtype_key = getMPSTypeString(self_dtype);
-  if (is_scatter) {
-    dtype_key += ":" + getMPSTypeString(updates_dtype);
-  }
+// For both scatter and gather kernels, there are 4 specized ones (for 1D to 4D tensor)
+// and one generic, for 5+D ones. Assumption (to be tested) about specialized kernels
+// is that reduction of n-dimensional vector, where n is 2, should be slower
+// than reduction of 2D one, as n is not known at compiler time, therefore compiler
+// could not do loop unrolls, that is
+// float sum(float* v, int n) {
+//   float rc = 0;
+//   for (int idx = 0; idx < n; idx++)
+//    rc += v[idx];
+//   return rc;
+// }
+// would be slower than
+// float sum2(float* v) { return v[0] + v[1]; }
+//
+// TODOS:
+//   - Benchmark on whether or not this is really the case
+//   - Instantiate specialized tensors from template
+//   - Have proper error checking for 64-bit tensors
+//   - Merged both scatter and gather templates together, as they more or less alike
 
-  return (is_scatter ? "scatter:" : "gather:") + dtype_key + "[" +
-         getArrayRefString(base_shape) + "]:[" + getArrayRefString(new_shape) + "]";
+static std::string getGatherScatterFunctionName(ScalarType scalarType, int64_t dim, bool needsScatter) {
+  std::string kernelName = needsScatter ? "scatter" : "gather";
+  return kernelName + "_kernel_" + (dim < 5 ? std::to_string(dim == 0 ? 1 : dim) : "n");
 }
 
-// initializes the MTLBuffers for tensor data and runs the MPSGraph for the view op
-static Tensor& runViewGraph(ViewCachedGraph* cachedGraph, const at::Tensor& src, Tensor& output,
-                            bool needsScatter, bool requires_sync = false)
-{
-  const id<MTLBuffer> sourceBuffer = getMTLBufferStorage(src);
-  const id<MTLBuffer> outputBuffer = getMTLBufferStorage(output);
+static std::string genScatterGatherCvtFunc(const std::string& dtypeSrc, const std::string& dtypeDst, bool needsConj) {
+  const bool srcComplex = dtypeSrc[dtypeSrc.size() - 1] == '2';
+  const bool dstComplex = dtypeDst[dtypeDst.size() - 1] == '2';
+  if (dstComplex) {
+    // TODO: Document why explicit cast is needed only for bfloat types
+    if (dtypeSrc == "bfloat") {
+      return dtypeDst + "(float(x), 0.0)";
+    }
+    return dtypeDst + (srcComplex ? needsConj ? "(x.x, -x.y)" : "(x.x, x.y)" : "(x,  0.0)");
+  }
+  if (srcComplex) {
+    // TODO: Document why explicit cast is needed only for bfloat types
+    if (dtypeDst == "bfloat") {
+      return "bfloat(x.x)";
+    }
+    return "x.x";
+  }
+  // TODO: Document why explicit cast is needed only for bfloat types
+  if (dtypeDst == "bfloat") {
+    return "bfloat(x)";
+  }
+  return dtypeSrc == "bfloat" ? dtypeDst + "(x)" : "(x)";
+}
 
-  const IntArrayRef& strides   = needsScatter ? output.strides() : src.strides();
-  const IntArrayRef& sizes     = needsScatter ? output.sizes() : src.sizes();
-  const int64_t storage_offset = needsScatter ? output.storage_offset() : src.storage_offset();
-  const MPSDataType inputType  = [cachedGraph->inputTensor dataType];
+static MetalShaderLibrary scatterLib(SCATTER_OPS_TEMPLATE, 3);
+static MetalShaderLibrary gatherLib(GATHER_OPS_TEMPLATE, 3);
 
-  MPSShape *inputShape = [cachedGraph->inputTensor shape];
-  MPSShape *outputShape = needsScatter ? inputShape : getMPSShape(src);
+static id<MTLComputePipelineState> getPipelineState(const std::string& kernel,
+                                                    const std::string& dtypeSrc,
+                                                    const std::string& dtypeDst,
+                                                    bool needsScatter,
+                                                    bool needsConj) {
+  auto cvtFunc = genScatterGatherCvtFunc(dtypeSrc, dtypeDst, needsConj);
+  return (needsScatter ? scatterLib : gatherLib).getPipelineStateForFunc(kernel, {dtypeSrc, dtypeDst, cvtFunc});
+}
 
-  MPSStream* stream = getCurrentMPSStream();
-  @autoreleasepool {
-    NSMutableDictionary *feeds = [[NSMutableDictionary new] autorelease];
-    // in case of scatter, we use output tensor as input buffer and write the results back to the source buffer
-    feeds[cachedGraph->inputTensor] = [[[MPSGraphTensorData alloc] initWithMTLBuffer: needsScatter ? outputBuffer : sourceBuffer
-                                                                               shape: inputShape
-                                                                            dataType: inputType] autorelease];
-    if (needsScatter) {
-      auto updatesType = getMPSScalarType(src.scalar_type());
-      if (updatesType == MPSDataTypeUInt8 || updatesType == MPSDataTypeBool) {
-        updatesType = MPSDataTypeInt8;
+static bool viewNeeds64BitOffsets(const at::Tensor& view) {
+  int64_t max_offset = 0;
+  for (const auto i : c10::irange(view.dim())) {
+    if (view.size(i) > 0) {
+      max_offset += (view.size(i) - 1) * view.stride(i);
+    }
+  }
+  return max_offset >= (int64_t(1) << 32);
+}
+
+template <typename OffsetT>
+static std::vector<OffsetT> makeStridesBuffer(const at::Tensor& view) {
+  uint32_t kernel_size = view.sizes().size();
+  std::vector<OffsetT> strides(kernel_size == 0 ? 1 : kernel_size);
+  if (kernel_size == 0) {
+    strides[0] = 1;
+  } else {
+    for (const auto i : c10::irange(kernel_size)) {
+      strides[i] = static_cast<OffsetT>(view.strides()[i]);
+    }
+  }
+  return strides;
+}
+
+Tensor gatherViewTensor(const at::Tensor& src, at::Tensor& dst) {
+  Tensor output = dst;
+  if (!dst.has_storage()) {
+    output = at::empty(src.sizes(), src.scalar_type(), std::nullopt, kMPS, std::nullopt, std::nullopt);
+  }
+
+  if (src.numel() == 0 || output.numel() == 0) {
+    return dst;
+  }
+
+  uint32_t numThreads = output.numel();
+  const bool needs64Bit = viewNeeds64BitOffsets(src);
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+    std::string functionName = getGatherScatterFunctionName(output.scalar_type(), output.dim(), /*needsScatter=*/false);
+    id<MTLComputePipelineState> gatherPSO = getPipelineState(functionName + (needs64Bit ? "_u64" : "_u32"),
+                                                             scalarToMetalTypeString(src),
+                                                             scalarToMetalTypeString(output),
+                                                             /*needsScatter=*/false,
+                                                             src.is_conj() != dst.is_conj());
+
+    // this function call is a no-op if MPS Profiler is not enabled
+    getMPSProfiler().beginProfileKernel(gatherPSO, functionName, {src, output});
+
+    uint32_t kernel_size = src.sizes().size();
+    std::vector<uint32_t> src_sizes(kernel_size == 0 ? 1 : kernel_size);
+    if (kernel_size == 0) {
+      src_sizes[0] = 1;
+    } else {
+      for (const auto i : c10::irange(kernel_size)) {
+        src_sizes[i] = (uint32_t)(src.sizes()[i]);
+      }
+    }
+
+    [computeEncoder setComputePipelineState:gatherPSO];
+    auto encode = [&](auto strides) {
+      mtl_setArgs(computeEncoder, src, dst.has_storage() ? dst : output, src_sizes, strides, numThreads);
+    };
+    if (needs64Bit) {
+      encode(makeStridesBuffer<uint64_t>(src));
+    } else {
+      encode(makeStridesBuffer<uint32_t>(src));
+    }
+    if (src.dim() > 4) {
+      mtl_setBytes<int32_t>(computeEncoder, src.dim(), 5);
+    }
+    mtl_dispatch1DJob(computeEncoder, gatherPSO, numThreads);
+
+    getMPSProfiler().endProfileKernel(gatherPSO);
+  });
+
+  return (dst.has_storage()) ? dst : output;
+}
+
+Tensor& scatterViewTensor(const at::Tensor& src, at::Tensor& output) {
+  if (src.numel() == 0 || output.numel() == 0) {
+    return output;
+  }
+
+  uint32_t numThreads = src.numel();
+  const bool needs64Bit = viewNeeds64BitOffsets(output);
+
+  MPSStream* mpsStream = getCurrentMPSStream();
+  dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+      std::string functionName =
+          getGatherScatterFunctionName(output.scalar_type(), output.dim(), /*needsScatter=*/true);
+      id<MTLComputePipelineState> scatterPSO = getPipelineState(functionName + (needs64Bit ? "_u64" : "_u32"),
+                                                                scalarToMetalTypeString(src),
+                                                                scalarToMetalTypeString(output),
+                                                                /*needsScatter=*/true,
+                                                                src.is_conj() != output.is_conj());
+
+      getMPSProfiler().beginProfileKernel(scatterPSO, functionName, {src, output});
+
+      uint32_t kernel_size = output.sizes().size();
+      std::vector<uint32_t> output_sizes(kernel_size == 0 ? 1 : kernel_size);
+      if (kernel_size == 0) {
+        output_sizes[0] = 1;
+      } else {
+        for (const auto i : c10::irange(kernel_size)) {
+          output_sizes[i] = (uint32_t)(output.sizes()[i]);
+        }
       }
 
-      feeds[cachedGraph->updatesTensor] = [[[MPSGraphTensorData alloc] initWithMTLBuffer: sourceBuffer
-                                                                                   shape: getMPSShape(src.numel())
-                                                                                dataType: updatesType] autorelease];
-    }
-    MPSScalar storageOffsetScalar = getMPSScalar(storage_offset, ScalarType::Int);
-    feeds[cachedGraph->storageOffsetTensor] = getMPSGraphTensorFromScalar(stream, storageOffsetScalar);
+      [computeEncoder setComputePipelineState:scatterPSO];
+      auto encode = [&](auto strides) { mtl_setArgs(computeEncoder, src, output, output_sizes, strides, numThreads); };
+      if (needs64Bit) {
+        encode(makeStridesBuffer<uint64_t>(output));
+      } else {
+        encode(makeStridesBuffer<uint32_t>(output));
+      }
+      if (output.dim() > 4) {
+        mtl_setBytes<int32_t>(computeEncoder, output.dim(), 5);
+      }
+      mtl_dispatch1DJob(computeEncoder, scatterPSO, numThreads);
 
-    std::vector<MPSScalar> strideScalars(sizes.size());
-    for (int i = 0; i < sizes.size(); i++) {
-      strideScalars[i] = getMPSScalar(strides[i], ScalarType::Int);
-      feeds[cachedGraph->strideTensors[i]] = getMPSGraphTensorFromScalar(stream, strideScalars[i]);
+      getMPSProfiler().endProfileKernel(scatterPSO);
     }
-    // Workaround for MPSShaderLibrary bug
-    // TODO: Remove once https://github.com/pytorch/pytorch/issues/82305 is resolved
-    auto outputType = getMPSDataType(output.scalar_type());
-    if (outputType ==  MPSDataTypeUInt8) {
-        outputType =  MPSDataTypeInt8;
-    }
-    MPSGraphTensorData* outputTensorData = [[[MPSGraphTensorData alloc] initWithMTLBuffer: outputBuffer
-                                                                                    shape: outputShape
-                                                                                 dataType: outputType] autorelease];
-    NSDictionary<MPSGraphTensor*, MPSGraphTensorData*>* results = @{
-      cachedGraph->outputTensor : outputTensorData
-    };
-    stream->executeMPSGraph(cachedGraph->graph(), feeds, results,
-                            requires_sync ? SyncType::COMMIT : SyncType::COMMIT_ADAPTIVE);
-  }
+  });
+
   return output;
 }
 
-static MPSGraphTensor* chainViewOperation(ViewCachedGraph* cachedGraph, const IntArrayRef& size,
-                                          const IntArrayRef& stride, int64_t offset,
-                                          const IntArrayRef& base_shape, bool needsScatter,
-                                          const bool needsBoolCast,
-                                          MPSGraphTensor* updatesTensor)
-{
-  MPSGraph* mpsGraph = cachedGraph->graph();
-  MPSGraphTensor *outputTensor = nil;
-  const size_t shape_size = size.size();
-
-  @autoreleasepool {
-    std::vector<int32_t> sizeArray(shape_size);
-    const int64_t int_max = std::numeric_limits<int32_t>::max();
-    for (int i = 0; i < shape_size; i++) {
-      TORCH_CHECK(size[i] <= int_max);
-      sizeArray[i] = static_cast<int32_t>(size[i]);
-    }
-    NSData* shapeData = [NSData dataWithBytes: sizeArray.data()
-                                       length: shape_size * sizeof(int32_t)];
-    MPSGraphTensor* shapeTensor = [mpsGraph constantWithData: shapeData
-                                                       shape: @[[NSNumber numberWithUnsignedInteger: shape_size]]
-                                                    dataType: MPSDataTypeInt32];
-    MPSGraphTensor* indicesTensor = nil;
-    // create stride Tensors for each rank of the input tensor
-    for (int i = 0; i < shape_size; i++) {
-      MPSGraphTensor* rangeTensor = [mpsGraph coordinateAlongAxis: (-i - 1)
-                                                  withShapeTensor: shapeTensor
-                                                             name: nil];
-      MPSGraphTensor* strideTensor = cachedGraph->strideTensors[shape_size - i - 1];
-      MPSGraphTensor* indexTensor = [mpsGraph multiplicationWithPrimaryTensor: rangeTensor
-                                                              secondaryTensor: strideTensor
-                                                                         name: nil];
-      if (!indicesTensor) {
-        indicesTensor = indexTensor;
-      } else {
-        indicesTensor = [mpsGraph additionWithPrimaryTensor: indexTensor
-                                            secondaryTensor: indicesTensor
-                                                       name: nil];
-      }
-    }
-
-    indicesTensor = [mpsGraph additionWithPrimaryTensor: indicesTensor
-                                        secondaryTensor: cachedGraph->storageOffsetTensor
-                                                   name: nil];
-    MPSGraphTensor *inputTensor = cachedGraph->inputTensor;
-
-    // Workaround for bool scatter/gather deficiency
-    // See https://github.com/pytorch/pytorch/issues/82663
-    if (needsBoolCast) {
-      inputTensor = [mpsGraph castTensor:inputTensor
-                                  toType:MPSDataTypeInt8
-                                    name:@"Cast away from bool"];
-    }
-
-    MPSGraphTensor *reshapedInputTensor = [mpsGraph reshapeTensor: inputTensor
-                                                        withShape: @[@-1]
-                                                             name: nil];
-    MPSGraphTensor *reshapedIndicesTensor = [mpsGraph reshapeTensor: indicesTensor
-                                                          withShape: @[@-1]
-                                                               name: nil];
-    if (needsScatter) {
-      MPSGraphTensor* scatteredTensor = [mpsGraph scatterAlongAxis: (NSInteger) 0
-                                                    withDataTensor: reshapedInputTensor
-                                                     updatesTensor: updatesTensor
-                                                     indicesTensor: reshapedIndicesTensor
-                                                              mode: MPSGraphScatterModeSet
-                                                              name: nil];
-      outputTensor = [mpsGraph reshapeTensor: scatteredTensor
-                                   withShape: getMPSShape(base_shape)
-                                        name: nil];
-    } else {
-      // Call gather to coalesce the needed values. Result will be of same shape as flattened indices tensor
-      MPSGraphTensor *gatheredTensor = [mpsGraph gatherWithUpdatesTensor: reshapedInputTensor
-                                                           indicesTensor: reshapedIndicesTensor
-                                                                    axis: 0
-                                                         batchDimensions: 0
-                                                                    name: nil];
-      // Reshape the data to desired size
-      outputTensor =  [mpsGraph reshapeTensor: gatheredTensor
-                              withShapeTensor: shapeTensor
-                                         name: nil];
-    }
-
-    // Workaround for bool scatter/gather deficiency
-    // See https://github.com/pytorch/pytorch/issues/82663
-    if (needsBoolCast) {
-      outputTensor = [mpsGraph castTensor:outputTensor
-                                   toType:MPSDataTypeBool
-                                     name:@"Cast back to bool"];
-    }
-  }
-  return outputTensor;
-}
-
-// There are few cases we need to consider:
-// Here nodes are the Tensors and the edges are the operations performed on the
-// Tensor. As a result of the operation performed we can have result as View
-// Tensor (View T) or a Non view tensor (NonView T). The difference is if its
-// mapped by the same underlying storage ptr or a new MTLBuffer was allocated.
-//                T = Tensor
-//                 ----------
-//                 | Orig T |
-//                 ----------
-//                /     |     \
-//             View T  View T  NonView T
-//             /      /    \      |
-//            View T /      \     |
-//            |     /        \    |
-//            |    /          \   |
-//            |   /            \  |
-//            NonView T         NonView T
-static ViewCachedGraph* createViewGraph(const Tensor& self, const Tensor &updates, IntArrayRef size, IntArrayRef stride, int64_t storage_offset, bool needsScatter)
-{
-  IntArrayRef base_shape = get_buffer_shape(self.storage().data());
-  if (base_shape.size() == 0) {
-    // IntArrayRef wouldn't own the data, so we use a static storage
-    static const int64_t shape_1d = 1;
-    // self.sizes().size() could be zero
-    base_shape = self.sizes().size() ? self.sizes() :
-                      self.is_view() ? self._base().sizes() : IntArrayRef(&shape_1d, 1);
-
-    // base_shape will be retained in MPSAllocator until buffer gets recycled
-    if (self.storage().data())
-      set_buffer_shape(self.storage().data(), base_shape);
-  }
-  MPSGraphCache* cache_ = MPSGraphCache::getInstance();
-
-  @autoreleasepool {
-    string key = getStridedKey(self.scalar_type(), updates.scalar_type(), base_shape, size, needsScatter);
-    ViewCachedGraph* cachedGraph = static_cast<ViewCachedGraph *>(cache_->LookUp(key));
-
-    if (!cachedGraph) {
-      cachedGraph = static_cast<ViewCachedGraph *>(cache_->CreateCachedGraph(key, ^ MPSCachedGraph * () {
-        ViewCachedGraph *newCachedGraph = nil;
-        @autoreleasepool {
-            MPSGraph* mpsGraph = make_mps_graph();
-            MPSGraphTensor* updatesTensor = nil;
-            newCachedGraph = new ViewCachedGraph(mpsGraph);
-            // Workaround for MPSShaderLibrary bug
-            // TODO: Remove once https://github.com/pytorch/pytorch/issues/82305 is resolved
-            auto inputType = getMPSScalarType(self.scalar_type());
-            if (inputType == MPSDataTypeUInt8) {
-                inputType = MPSDataTypeInt8;
-            }
-            auto needsBoolCast = inputType == MPSDataTypeBool;
-            // Self is the input tensor we are creating view of
-            newCachedGraph->inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, inputType, getMPSShape(base_shape));
-            newCachedGraph->storageOffsetTensor = mpsGraphRankedPlaceHolder(mpsGraph, MPSDataTypeInt32, @[@1]);
-            for (int i = 0; i < size.size(); i++) {
-              newCachedGraph->strideTensors.push_back(mpsGraphRankedPlaceHolder(mpsGraph, MPSDataTypeInt32, @[@1]));
-            }
-            if (needsScatter) {
-              auto updatesType = getMPSScalarType(updates.scalar_type());
-              if (updatesType == MPSDataTypeUInt8) {
-                updatesType = MPSDataTypeInt8;
-              }
-              newCachedGraph->updatesTensor = mpsGraphUnrankedPlaceHolder(mpsGraph, updatesType);
-              updatesTensor = newCachedGraph->updatesTensor;
-              if (inputType != updatesType) {
-                updatesTensor = [mpsGraph castTensor:updatesTensor
-                                              toType:inputType
-                                                name:@"castUpdatesTensor"];
-              }
-            }
-            newCachedGraph->outputTensor = chainViewOperation(newCachedGraph, size, stride, storage_offset, base_shape, needsScatter, needsBoolCast, updatesTensor);
-        }
-        return newCachedGraph;
-      }));
-    }
-    return cachedGraph;
-  }
-}
-
-Tensor gatherViewTensor(const at::Tensor& src, at::Tensor& dst)
-{
-  ViewCachedGraph* cachedGraph = nullptr;
-
-  const IntArrayRef& base_shape = get_buffer_shape(src.storage().data());
-  if (base_shape.size() > 0) {
-    string key = getStridedKey(src.scalar_type(), dst.scalar_type(), base_shape, src.sizes(), /*is_scatter*/ false);
-    cachedGraph = static_cast<ViewCachedGraph *>(MPSGraphCache::getInstance()->LookUp(key));
-  }
-  // there are cases where gatherViewTensor() is called without having as_strided() called beforehand.
-  // this typically may come from copy_mps variants. In such cases, when the base_shape isn't found the
-  // callers would resort to make the tensor contiguous in an alternative code path.
-  if (!cachedGraph) {
-    return Tensor();
-  }
-
-  bool requires_sync = false;
-  Tensor output;
-  if (!dst.has_storage()) {
-    output = at::native::empty_mps(src.sizes(), src.scalar_type(), c10::nullopt, kMPS);
-    requires_sync = true;
-  }
-
-  return runViewGraph(cachedGraph, src, dst.has_storage() ? dst : output, /*needsScatter*/ false, requires_sync);
-}
-
-Tensor& scatterViewTensor(const at::Tensor& src, at::Tensor& output)
-{
-  ViewCachedGraph* cachedGraph = createViewGraph(output, src, output.sizes(), output.strides(),
-                                                 output.storage_offset(), /*needsScatter*/ true);
-  return runViewGraph(cachedGraph, src, output, /*needsScatter*/ true, /*requires_sync*/  true);
-}
-
-} // namespace mps
-
-// implementation of as_strided() op
-Tensor as_strided_tensorimpl_mps(const Tensor& self, IntArrayRef size, IntArrayRef stride, c10::optional<int64_t> storage_offset_)
-{
-  auto storage_offset = storage_offset_.value_or(self.storage_offset());
-  auto result = detail::make_tensor<TensorImpl>(c10::TensorImpl::VIEW, Storage(self.storage()), self.key_set(), self.dtype());
-  setStrided(result, size, stride, storage_offset);
-
-  // 0 sizes won't result in any change in the shape of the Tensor so we can skip it.
-  if (size.size() > 0)
-    mps::createViewGraph(self, self, size, stride, storage_offset, /*needsScatter*/ false);
-
-  return result;
-}
-
-} // namespace native
-} // namespace at
+} // namespace at::native::mps

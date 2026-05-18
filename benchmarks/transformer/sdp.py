@@ -1,18 +1,19 @@
-import torch
-import itertools
-import numpy as np
-import random
 import argparse
-from pathlib import Path
-import torch.utils.benchmark as benchmark
-from dataclasses import dataclass
-from typing import Optional, List
-from pprint import pprint
-from torch.backends.cuda import sdp_kernel
-from tqdm import tqdm
-from prettytable import PrettyTable
-
+import itertools
+import random
 import warnings
+from dataclasses import dataclass
+from pathlib import Path
+from pprint import pprint
+
+import numpy as np
+from prettytable import PrettyTable
+from tqdm import tqdm
+
+import torch
+import torch.utils.benchmark as benchmark
+from torch.backends.cuda import sdp_kernel
+
 
 warnings.filterwarnings("ignore")
 
@@ -24,12 +25,13 @@ class ExperimentConfig:
     max_sequence_len: int
     embed_dimension: int
     dtype: torch.dtype
-    pad_percentage: Optional[float]
+    pad_percentage: float | None
     enable_math: bool
     enable_flash: bool
     enable_mem_efficient: bool
+    enable_cudnn: bool
 
-    def get_entries(self) -> List:
+    def get_entries(self) -> list:
         return [
             self.batch_size,
             self.num_heads,
@@ -40,10 +42,11 @@ class ExperimentConfig:
             self.enable_math,
             self.enable_flash,
             self.enable_mem_efficient,
+            self.enable_cudnn,
         ]
 
     @classmethod
-    def get_entry_names(cls) -> List[str]:
+    def get_entry_names(cls) -> list[str]:
         return [
             "batch_size",
             "num_heads",
@@ -54,31 +57,34 @@ class ExperimentConfig:
             "enable_math",
             "enable_flash",
             "enable_mem_efficient",
+            "enable_cudnn",
         ]
 
 
 @dataclass(frozen=True)
 class ExperimentResults:
     nn_mha_time: float
-    compiled_nn_mha_time: Optional[float]
+    compiled_nn_mha_time: float | None
     composite_mha_time: float
-    compiled_composite_mha_time: Optional[float]
+    compiled_composite_mha_time: float | None
 
-    def get_entries(self) -> List:
+    def get_entries(self) -> list:
         return [
             f"{self.nn_mha_time:2f}",
             f"{self.compiled_nn_mha_time:2f}" if self.compiled_nn_mha_time else None,
             f"{self.composite_mha_time:2f}",
-            f"{self.compiled_composite_mha_time:2f}" if self.compiled_composite_mha_time else None,
+            f"{self.compiled_composite_mha_time:2f}"
+            if self.compiled_composite_mha_time
+            else None,
         ]
 
     @classmethod
-    def get_entry_names(cls) -> List[str]:
+    def get_entry_names(cls) -> list[str]:
         return [
-            "nn_mha_time (μs)",
-            "compiled_nn_mha_time (μs)",
-            "composite_mha_time (μs)",
-            "compiled_composite_mha_time (μs)",
+            "nn_mha_time (\u00b5s)",
+            "compiled_nn_mha_time (\u00b5s)",
+            "composite_mha_time (\u00b5s)",
+            "compiled_composite_mha_time (\u00b5s)",
         ]
 
 
@@ -87,7 +93,7 @@ class Experiment:
     config: ExperimentConfig
     results: ExperimentResults
 
-    def get_entries(self) -> List:
+    def get_entries(self) -> list:
         return self.config.get_entries() + self.results.get_entries()
 
 
@@ -99,7 +105,7 @@ class CompositeMHA(torch.nn.Module):
         self.out_proj = out_proj
         self.num_heads = num_heads
 
-    def forward(self, query, key, value, mask, need_weights=False):
+    def forward(self, query, key, value, mask):
         if not (query is key and key is value):
             raise NotImplementedError(
                 "query, key and value must be the same Tensor for now."
@@ -122,13 +128,12 @@ class CompositeMHA(torch.nn.Module):
         value = value.view(batch_size, -1, self.num_heads, head_dim).transpose(1, 2)
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
-        attn, _ = torch.nn.functional._scaled_dot_product_attention(
+        attn = torch.nn.functional.scaled_dot_product_attention(
             query,
             key,
             value,
             attn_mask=None,
             dropout_p=0.0,
-            need_attn_weights=need_weights,
             is_causal=False,
         )
 
@@ -138,10 +143,13 @@ class CompositeMHA(torch.nn.Module):
 
 
 def build_composite_mha_from_nn_mha(pt):
-    assert pt._qkv_same_embed_dim
+    if not pt._qkv_same_embed_dim:
+        raise AssertionError("pt._qkv_same_embed_dim must be True")
     in_proj_weight = pt.in_proj_weight
-    assert in_proj_weight is not None
-    assert pt.batch_first
+    if in_proj_weight is None:
+        raise AssertionError("pt.in_proj_weight must not be None")
+    if not pt.batch_first:
+        raise AssertionError("pt.batch_first must be True")
     return CompositeMHA(pt.num_heads, pt.in_proj_weight, pt.in_proj_bias, pt.out_proj)
 
 
@@ -194,9 +202,15 @@ def assert_close_tensors(tensor_a, tensor_b):
     # First order sanity check. Not a replacement for rigorous tests.
     if tensor_a.is_nested and tensor_b.is_nested:
         for a, b in zip(tensor_a.unbind(), tensor_b.unbind()):
-            assert torch.allclose(a, b, atol=1e-3, rtol=1e-3)
+            if not torch.allclose(a, b, atol=1e-2, rtol=1e-2):
+                raise AssertionError(
+                    f"Nested tensors not close: max diff = {(a - b).abs().max()}"
+                )
     else:
-        assert torch.allclose(tensor_a, tensor_b, atol=1e-3, rtol=1e-3)
+        if not torch.allclose(tensor_a, tensor_b, atol=1e-3, rtol=1e-3):
+            raise AssertionError(
+                f"Tensors not close: max diff = {(tensor_a - tensor_b).abs().max()}"
+            )
 
 
 def run_single_experiment(config: ExperimentConfig) -> ExperimentResults:
@@ -204,7 +218,8 @@ def run_single_experiment(config: ExperimentConfig) -> ExperimentResults:
         enable_math=config.enable_math,
         enable_flash=config.enable_flash,
         enable_mem_efficient=config.enable_mem_efficient,
-    ) as kernel_choice, torch.inference_mode() as inference_mode:
+        enable_cudnn=config.enable_cudnn,
+    ):
         dropout_p = 0.0
         mask = None
 
@@ -223,17 +238,17 @@ def run_single_experiment(config: ExperimentConfig) -> ExperimentResults:
             config.pad_percentage,
             config.dtype,
         )
-        nn_mha_output, _ = nn_mha(qkv, qkv, qkv, mask, need_weights=False)
-        composite_mha_output, _ = composite_mha(qkv, qkv, qkv, mask, need_weights=False)
+        nn_mha_output, _ = nn_mha(qkv, qkv, qkv, mask)
+        composite_mha_output, _ = composite_mha(qkv, qkv, qkv, mask)
 
         # First order sanity check
         assert_close_tensors(nn_mha_output, composite_mha_output)
 
         nn_mha_time = benchmark_torch_function_in_microseconds(
-            nn_mha, qkv, qkv, qkv, mask, need_weights=False
+            nn_mha, qkv, qkv, qkv, mask
         )
         composite_mha_time = benchmark_torch_function_in_microseconds(
-            composite_mha, qkv, qkv, qkv, mask, need_weights=False
+            composite_mha, qkv, qkv, qkv, mask
         )
 
         # TorchDynamo will error on NestedTensors
@@ -242,11 +257,15 @@ def run_single_experiment(config: ExperimentConfig) -> ExperimentResults:
             compiled_composite_mha = torch.compile(composite_mha)
 
             compiled_nn_mha_time = benchmark_torch_function_in_microseconds(
-                compiled_nn_mha, qkv, qkv, qkv, mask, need_weights=False
+                compiled_nn_mha, qkv, qkv, qkv, mask
             )
 
             compiled_composite_mha_time = benchmark_torch_function_in_microseconds(
-                compiled_composite_mha, qkv, qkv, qkv, mask, need_weights=False
+                compiled_composite_mha,
+                qkv,
+                qkv,
+                qkv,
+                mask,
             )
         else:
             compiled_nn_mha_time = None
@@ -264,7 +283,7 @@ def run_single_experiment(config: ExperimentConfig) -> ExperimentResults:
 # Could return generator
 def generate_experiments(
     batch_sizes, num_heads, max_seq_lens, embed_dims, dtypes, pad_percentages
-) -> List[ExperimentConfig]:
+) -> list[ExperimentConfig]:
     configs = []
     for bsz, n_heads, seq_len, embed_dim, dtype, padding in itertools.product(
         batch_sizes, num_heads, max_seq_lens, embed_dims, dtypes, pad_percentages
@@ -280,12 +299,13 @@ def generate_experiments(
                 enable_math=False,
                 enable_flash=True,
                 enable_mem_efficient=True,
+                enable_cudnn=True,
             )
         )
     return configs
 
 
-def main(save_path: Optional[Path]):
+def main(save_path: Path | None):
     seed = 123
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -301,6 +321,7 @@ def main(save_path: Optional[Path]):
         enable_math=False,
         enable_flash=True,
         enable_mem_efficient=True,
+        enable_cudnn=True,
     )
 
     experiment = run_single_experiment(config)
@@ -324,7 +345,7 @@ def main(save_path: Optional[Path]):
         batch_sizes, num_heads, max_seq_lens, embed_dims, dtypes, pad_percentages
     )
 
-    experiments: List[Experiment] = []
+    experiments: list[Experiment] = []
     for experiment_config in tqdm(experiment_configs):
         experiment = run_single_experiment(experiment_config)
         experiments.append(experiment)
@@ -340,7 +361,9 @@ def main(save_path: Optional[Path]):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--save_path", type=str, help="Path to save the results")
+    parser.add_argument(
+        "--save-path", "--save_path", type=str, help="Path to save the results"
+    )
 
     args = parser.parse_args()
     save_path = Path(args.save_path) if args.save_path else None

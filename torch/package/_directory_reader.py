@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 import os.path
 from glob import glob
 from typing import cast
@@ -5,8 +6,12 @@ from typing import cast
 import torch
 from torch.types import Storage
 
+
+__serialization_id_record_name__ = ".data/serialization_id"
+
+
 # because get_storage_from_record returns a tensor!?
-class _HasStorage(object):
+class _HasStorage:
     def __init__(self, storage):
         self._storage = storage
 
@@ -14,7 +19,7 @@ class _HasStorage(object):
         return self._storage
 
 
-class DirectoryReader(object):
+class DirectoryReader:
     """
     Class to allow PackageImporter to operate on unzipped packages. Methods
     copy the behavior of the internal PyTorchFileReader class (which is used for
@@ -45,8 +50,17 @@ class DirectoryReader(object):
     def get_all_records(
         self,
     ):
-        files = []
-        for filename in glob(f"{self.directory}/**", recursive=True):
-            if not os.path.isdir(filename):
-                files.append(filename[len(self.directory) + 1 :])
+        files = [
+            filename[len(self.directory) + 1 :]
+            for filename in glob(f"{self.directory}/**", recursive=True)
+            if not os.path.isdir(filename)
+        ]
         return files
+
+    def serialization_id(
+        self,
+    ):
+        if self.has_record(__serialization_id_record_name__):
+            return self.get_record(__serialization_id_record_name__)
+        else:
+            return ""

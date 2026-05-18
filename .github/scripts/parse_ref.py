@@ -5,6 +5,7 @@ import re
 
 
 def set_output(name: str, val: str) -> None:
+    print(f"Setting output {name}={val}")
     if os.getenv("GITHUB_OUTPUT"):
         with open(str(os.getenv("GITHUB_OUTPUT")), "a") as env:
             print(f"{name}={val}", file=env)
@@ -14,7 +15,7 @@ def set_output(name: str, val: str) -> None:
 
 def main() -> None:
     ref = os.environ["GITHUB_REF"]
-    m = re.match(r'^refs/(\w+)/(.*)$', ref)
+    m = re.match(r"^refs/(\w+)/(.*)$", ref)
     if m:
         category, stripped = m.groups()
         if category == "heads":

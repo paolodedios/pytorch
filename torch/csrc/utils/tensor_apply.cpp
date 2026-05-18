@@ -1,17 +1,14 @@
 #include <torch/csrc/utils/tensor_apply.h>
 
 #include <ATen/ExpandUtils.h>
-#include <ATen/TensorUtils.h>
 #include <c10/util/irange.h>
 
 #include <torch/csrc/Exceptions.h>
-#include <torch/csrc/utils/python_numbers.h>
 #include <torch/csrc/utils/python_scalars.h>
 
 using namespace at;
 
-namespace torch {
-namespace utils {
+namespace torch::utils {
 
 struct StridedData {
   StridedData(const Tensor& tensor)
@@ -35,7 +32,7 @@ static void recursive_apply(
     int64_t dim,
     PyObject* fn,
     std::array<StridedData, N> strided_data) {
-  int64_t ndim = sizes.size();
+  int64_t ndim = static_cast<int64_t>(sizes.size());
   if (dim == ndim) {
     auto args = THPObjectPtr(PyTuple_New(N));
     if (!args)
@@ -54,8 +51,7 @@ static void recursive_apply(
   }
 
   auto n = sizes[dim];
-  for (const auto i : c10::irange(n)) {
-    (void)i; // Suppress unused variable warning
+  for ([[maybe_unused]] const auto i : c10::irange(n)) {
     recursive_apply(sizes, scalarType, dim + 1, fn, strided_data);
     for (auto& td : strided_data) {
       td.step(dim);
@@ -116,7 +112,7 @@ const Tensor& map2_(
     return self; // Just skip
   }
   TORCH_CHECK_TYPE(
-      self.device().is_cpu() && x_.device().is_cpu() && y_.device().is_cpu(),
+      (self.device().is_cpu() && x_.device().is_cpu() && y_.device().is_cpu()),
       "map2_ is only implemented on CPU tensors");
   auto others = expand_inplace(self, x_, y_, "map2_");
   auto scalarType = self.scalar_type();
@@ -129,5 +125,4 @@ const Tensor& map2_(
   return self;
 }
 
-} // namespace utils
-} // namespace torch
+} // namespace torch::utils

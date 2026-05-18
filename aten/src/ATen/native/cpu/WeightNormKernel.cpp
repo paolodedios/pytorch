@@ -4,12 +4,13 @@
 #include <ATen/Dispatch.h>
 #include <ATen/EmptyTensor.h>
 #include <ATen/Parallel.h>
+#include <ATen/OpMathType.h>
 #include <ATen/native/cpu/WeightNormKernel.h>
 #include <ATen/cpu/vec/functional.h>
 #include <ATen/cpu/vec/vec.h>
 #include <c10/util/irange.h>
 
-namespace at { namespace native {
+namespace at::native {
 
 namespace {
 
@@ -47,7 +48,8 @@ void weight_norm_first_dim_kernel(
 }
 
 template <typename scalar_t>
-inline void sum_norm_per_row(
+inline std::enable_if_t<!is_reduced_floating_point_v<scalar_t>, void>
+sum_norm_per_row(
     scalar_t* out_ptr,
     const scalar_t* v_ptr,
     int64_t size) {
@@ -60,17 +62,18 @@ inline void sum_norm_per_row(
       size);
 }
 
-inline void sum_norm_per_row(
+template <typename scalar_t>
+inline std::enable_if_t<is_reduced_floating_point_v<scalar_t>, void>
+sum_norm_per_row(
     float* out_ptr,
-    const BFloat16* v_ptr,
+    const scalar_t* v_ptr,
     int64_t size) {
-  using bVec = vec::Vectorized<BFloat16>;
+  using bVec = vec::Vectorized<scalar_t>;
   using fVec = vec::Vectorized<float>;
   int64_t d = 0;
   for (; d < size - (size % bVec::size()); d += bVec::size()) {
     bVec v_bvec = bVec::loadu(v_ptr + d);
-    fVec v_fvec0, v_fvec1;
-    std::tie(v_fvec0, v_fvec1) = convert_bfloat16_float(v_bvec);
+    auto [v_fvec0, v_fvec1] = vec::convert_to_float<scalar_t>(v_bvec);
 
     fVec out_fvec0 = fVec::loadu(out_ptr + d) + v_fvec0 * v_fvec0;
     fVec out_fvec1 = fVec::loadu(out_ptr + d + fVec::size()) + v_fvec1 * v_fvec1;
@@ -84,7 +87,8 @@ inline void sum_norm_per_row(
 }
 
 template <typename scalar_t>
-inline void apply_norm_per_row(
+inline std::enable_if_t<!is_reduced_floating_point_v<scalar_t>, void>
+apply_norm_per_row(
     scalar_t* w_ptr,
     const scalar_t* v_ptr,
     const scalar_t* a_ptr,
@@ -98,22 +102,23 @@ inline void apply_norm_per_row(
       size);
 }
 
-inline void apply_norm_per_row(
-    BFloat16* w_ptr,
-    const BFloat16* v_ptr,
+template <typename scalar_t>
+inline std::enable_if_t<is_reduced_floating_point_v<scalar_t>, void>
+apply_norm_per_row(
+  scalar_t* w_ptr,
+    const scalar_t* v_ptr,
     const float* a_ptr,
     int64_t size) {
-  using bVec = vec::Vectorized<BFloat16>;
+  using bVec = vec::Vectorized<scalar_t>;
   using fVec = vec::Vectorized<float>;
   int64_t d = 0;
   for (; d < size - (size % bVec::size()); d += bVec::size()) {
     bVec v_bvec = bVec::loadu(v_ptr + d);
-    fVec v_fvec0, v_fvec1;
-    std::tie(v_fvec0, v_fvec1) = convert_bfloat16_float(v_bvec);
+    auto [v_fvec0, v_fvec1] = vec::convert_to_float<scalar_t>(v_bvec);
 
     fVec w_fvec0 = fVec::loadu(a_ptr + d) * v_fvec0;
     fVec w_fvec1 = fVec::loadu(a_ptr + d + fVec::size()) * v_fvec1;
-    bVec w_bvec = convert_float_bfloat16(w_fvec0, w_fvec1);
+    bVec w_bvec = vec::convert_from_float<scalar_t>(w_fvec0, w_fvec1);
     w_bvec.store(w_ptr + d);
   }
   for(; d < size; ++d) {
@@ -183,9 +188,9 @@ void weight_norm_backward_first_dim_kernel(
     const TensorBase& saved_norm,
     int64_t M, int64_t N) {
   const auto grad_w_data = grad_w.data_ptr<scalar_t>();
-  const auto saved_v_data = saved_v.data_ptr<scalar_t>();
-  const auto saved_g_data = saved_g.data_ptr<scalar_t>();
-  const auto saved_norm_data = saved_norm.data_ptr<accscalar_t>();
+  const auto saved_v_data = saved_v.const_data_ptr<scalar_t>();
+  const auto saved_g_data = saved_g.const_data_ptr<scalar_t>();
+  const auto saved_norm_data = saved_norm.const_data_ptr<accscalar_t>();
   auto grad_v_data = grad_v.data_ptr<scalar_t>();
   auto grad_g_data = grad_g.data_ptr<scalar_t>();
 
@@ -223,7 +228,8 @@ void weight_norm_backward_first_dim_kernel(
 }
 
 template <typename scalar_t>
-inline void sum_product_per_row(
+inline std::enable_if_t<!is_reduced_floating_point_v<scalar_t>, void>
+sum_product_per_row(
     scalar_t* out_ptr,
     const scalar_t* grad_w_ptr,
     const scalar_t* v_ptr,
@@ -238,21 +244,21 @@ inline void sum_product_per_row(
       size);
 }
 
-inline void sum_product_per_row(
+template <typename scalar_t>
+inline std::enable_if_t<is_reduced_floating_point_v<scalar_t>, void>
+sum_product_per_row(
     float* out_ptr,
-    const BFloat16* grad_w_ptr,
-    const BFloat16* v_ptr,
+    const scalar_t* grad_w_ptr,
+    const scalar_t* v_ptr,
     int64_t size) {
-  using bVec = vec::Vectorized<BFloat16>;
+  using bVec = vec::Vectorized<scalar_t>;
   using fVec = vec::Vectorized<float>;
   int64_t d = 0;
   for (; d < size - (size % bVec::size()); d += bVec::size()) {
     bVec grad_w_bvec = bVec::loadu(grad_w_ptr + d);
-    fVec grad_w_fvec0, grad_w_fvec1;
-    std::tie(grad_w_fvec0, grad_w_fvec1) = convert_bfloat16_float(grad_w_bvec);
+    auto [grad_w_fvec0, grad_w_fvec1] = vec::convert_to_float<scalar_t>(grad_w_bvec);
     bVec v_bvec = bVec::loadu(v_ptr + d);
-    fVec v_fvec0, v_fvec1;
-    std::tie(v_fvec0, v_fvec1) = convert_bfloat16_float(v_bvec);
+    auto [v_fvec0, v_fvec1] = vec::convert_to_float<scalar_t>(v_bvec);
 
     fVec out_fvec0 = fVec::loadu(out_ptr + d) + grad_w_fvec0 * v_fvec0;
     fVec out_fvec1 = fVec::loadu(out_ptr + d + fVec::size()) + grad_w_fvec1 * v_fvec1;
@@ -267,7 +273,8 @@ inline void sum_product_per_row(
 }
 
 template <typename scalar_t>
-inline void apply_per_row_backward(
+inline std::enable_if_t<!is_reduced_floating_point_v<scalar_t>, void>
+apply_per_row_backward(
     scalar_t* grad_v_ptr,
     const scalar_t* grad_w_ptr,
     const scalar_t* v_ptr,
@@ -285,28 +292,28 @@ inline void apply_per_row_backward(
       size);
 }
 
-inline void apply_per_row_backward(
-    BFloat16* grad_v_ptr,
-    const BFloat16* grad_w_ptr,
-    const BFloat16* v_ptr,
+template <typename scalar_t>
+inline std::enable_if_t<is_reduced_floating_point_v<scalar_t>, void>
+apply_per_row_backward(
+  scalar_t* grad_v_ptr,
+    const scalar_t* grad_w_ptr,
+    const scalar_t* v_ptr,
     const float* a_ptr,
     const float* b_ptr,
     int64_t size) {
-  using bVec = vec::Vectorized<BFloat16>;
+  using bVec = vec::Vectorized<scalar_t>;
   using fVec = vec::Vectorized<float>;
   int64_t d = 0;
   for (; d < size - (size % bVec::size()); d += bVec::size()) {
     bVec grad_w_bvec = bVec::loadu(grad_w_ptr + d);
-    fVec grad_w_fvec0, grad_w_fvec1;
-    std::tie(grad_w_fvec0, grad_w_fvec1) = convert_bfloat16_float(grad_w_bvec);
+    auto [grad_w_fvec0, grad_w_fvec1] = vec::convert_to_float<scalar_t>(grad_w_bvec);
     bVec v_bvec = bVec::loadu(v_ptr + d);
-    fVec v_fvec0, v_fvec1;
-    std::tie(v_fvec0, v_fvec1) = convert_bfloat16_float(v_bvec);
+    auto [v_fvec0, v_fvec1] = vec::convert_to_float<scalar_t>(v_bvec);
 
     fVec grad_v_fvec0 = fVec::loadu(a_ptr + d) * grad_w_fvec0 - fVec::loadu(b_ptr + d) * v_fvec0;
     fVec grad_v_fvec1 = fVec::loadu(a_ptr + d + fVec::size()) * grad_w_fvec1
         - fVec::loadu(b_ptr + d + fVec::size()) * v_fvec1;
-    bVec grad_v_bvec = convert_float_bfloat16(grad_v_fvec0, grad_v_fvec1);
+    bVec grad_v_bvec = vec::convert_from_float<scalar_t>(grad_v_fvec0, grad_v_fvec1);
     grad_v_bvec.store(grad_v_ptr + d);
   }
   for(; d < size; ++d) {
@@ -324,9 +331,9 @@ void weight_norm_backward_last_dim_kernel(
     const TensorBase& saved_norm,
     int64_t M, int64_t N) {
   const auto grad_w_data = grad_w.data_ptr<scalar_t>();
-  const auto saved_v_data = saved_v.data_ptr<scalar_t>();
-  const auto saved_g_data = saved_g.data_ptr<scalar_t>();
-  const auto saved_norm_data = saved_norm.data_ptr<accscalar_t>();
+  const auto saved_v_data = saved_v.const_data_ptr<scalar_t>();
+  const auto saved_g_data = saved_g.const_data_ptr<scalar_t>();
+  const auto saved_norm_data = saved_norm.const_data_ptr<accscalar_t>();
   auto grad_v_data = grad_v.data_ptr<scalar_t>();
   auto grad_g_data = grad_g.data_ptr<scalar_t>();
 
@@ -400,9 +407,9 @@ void weight_norm_kernel(
     int64_t dim) {
   TORCH_INTERNAL_ASSERT(dim == 0 || dim == v.dim() - 1,
       "fused kernels can only be applied for first or last dim");
-  AT_DISPATCH_FLOATING_TYPES_AND(ScalarType::BFloat16, v.scalar_type(),
+  AT_DISPATCH_FLOATING_TYPES_AND2(ScalarType::BFloat16, ScalarType::Half, v.scalar_type(),
       "weight_norm_kernel", [&]() {
-    using accscalar_t = vec::vec_scalar_t<scalar_t>;
+    using accscalar_t = at::opmath_type<scalar_t>;
     if (dim == 0) {
       int64_t M = v.size(0);
       int64_t N = v.numel() / M;
@@ -425,9 +432,9 @@ void weight_norm_backward_kernel(
     int64_t dim) {
   TORCH_INTERNAL_ASSERT(dim == 0 || dim == saved_v.dim() - 1,
       "fused kernels can only be applied for first or last dim");
-  AT_DISPATCH_FLOATING_TYPES_AND(ScalarType::BFloat16, saved_v.scalar_type(),
+  AT_DISPATCH_FLOATING_TYPES_AND2(ScalarType::BFloat16, ScalarType::Half, saved_v.scalar_type(),
       "weight_norm_backward_kernel", [&]() {
-    using accscalar_t = vec::vec_scalar_t<scalar_t>;
+    using accscalar_t = at::opmath_type<scalar_t>;
     if (dim == 0) {
       int64_t M = saved_v.size(0);
       int64_t N = saved_v.numel() / M;
@@ -442,7 +449,7 @@ void weight_norm_backward_kernel(
 
 } // anonymous namespace
 
-REGISTER_DISPATCH(weight_norm_stub, &weight_norm_kernel);
-REGISTER_DISPATCH(weight_norm_backward_stub, &weight_norm_backward_kernel);
+REGISTER_DISPATCH(weight_norm_stub, &weight_norm_kernel)
+REGISTER_DISPATCH(weight_norm_backward_stub, &weight_norm_backward_kernel)
 
-}} // at::native
+} // at::native

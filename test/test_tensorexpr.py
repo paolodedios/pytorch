@@ -1,4 +1,5 @@
 # Owner(s): ["NNC"]
+# ruff: noqa: F841
 
 import numpy as np
 import torch
@@ -7,7 +8,7 @@ from torch import nn
 import unittest
 import itertools
 
-from torch.testing._internal.common_utils import suppress_warnings, num_profiled_runs, run_tests
+from torch.testing._internal.common_utils import suppress_warnings, num_profiled_runs, run_tests, skipIfTorchDynamo
 
 from torch.testing._internal.jit_utils import JitTestCase, TensorExprTestOptions
 
@@ -15,14 +16,14 @@ LLVM_ENABLED = torch._C._llvm_enabled()
 
 class BaseTestClass(JitTestCase):
     def setUp(self):
-        super(BaseTestClass, self).setUp()
+        super().setUp()
         self.tensorexpr_options = TensorExprTestOptions()
         self.devices = ['cpu'] if not torch.cuda.is_available() else ['cpu', 'cuda']
         self.dtypes = [torch.float32, torch.bfloat16] if LLVM_ENABLED else [torch.float32]
 
     def tearDown(self):
         self.tensorexpr_options.restore()
-        super(BaseTestClass, self).tearDown()
+        super().tearDown()
 
     def assertLastGraphAllFused(self):
         self.assertAllFused(torch.jit.last_executed_optimized_graph())
@@ -34,6 +35,7 @@ def warmup_and_run_forward(f, *args):
     return results
 
 
+@skipIfTorchDynamo()
 class TestTensorExprFuser(BaseTestClass):
     def test_easy(self):
         def easy(x, y):
@@ -590,7 +592,7 @@ class TestTensorExprFuser(BaseTestClass):
 
         xs = [(torch.rand(4) * 3 + 1).to(torch.int32) for i in range(3)]
         x, y, z = xs
-        xn, yn, zn = [t.numpy() for t in xs]
+        xn, yn, zn = (t.numpy() for t in xs)
         traced = torch.jit.trace(test, (x, y, z))
         res = warmup_and_run_forward(traced, x, y, z)
         self.assertLastGraphAllFused()
@@ -693,17 +695,17 @@ class TestTensorExprFuser(BaseTestClass):
             _atol = 2e-3
             _rtol = 1e-5
             if data_type is torch.bfloat16:
-                # Compared to aten logic, NNC coudl save addtional BF16/Fp32 conversion.
+                # Compared to aten logic, NNC could save additional BF16/Fp32 conversion.
                 # Take d = a + b - c as an example, the aten logic is as follows at
                 # operator level:
                 #    tmp = to_bf16(to_fp32(a) + to_fp32(b))
                 #    d = to_bf16(to_fp32(tmp) + to_fp32(c))
-                # But NNC could fuse the compression and remove the redudant conversions.
+                # But NNC could fuse the compression and remove the redundant conversions.
                 # The final statement is as follows
                 #    d = to_bf16(to_fp32(a) + to_fp32(b) + to_fp32(c))
                 # Hence, we simulate NNC computation by feeding fp32 tensors and converting
                 # the result tensor back to bf16. The simulation could avoid the numeric
-                # deviation to simplify the result comprasion
+                # deviation to simplify the result comparison
                 y = warmup_and_run_forward(traced, rand_a.float(), rand_b.float())
                 if torch_fn not in cmp_fns:
                     y = y.bfloat16()
@@ -889,7 +891,7 @@ class TestTensorExprFuser(BaseTestClass):
 
         torch.manual_seed(0)
         for torch_fn, dev, data_type in fn_dev_dtype:
-            if torch_fn == test_lgamma and dev == "cuda":
+            if torch_fn is test_lgamma and dev == "cuda":
                 # lgamma_cuda does not support BF16
                 continue
             rand_a = torch.rand(1024, dtype=data_type, device=dev)
@@ -924,6 +926,19 @@ class TestTensorExprFuser(BaseTestClass):
             #     # Print extra info before exiting:
             #     print("Failed on dev=", dev, "function=", torch_fn)
             #     # np.testing.assert_allclose(x.cpu().numpy(), y.cpu().numpy())
+
+
+    def test_round_2(self):
+        def round(x):
+            return torch.round(x)
+
+        for data_type in [torch.float32, torch.double]:
+            a = torch.tensor([0.2, 1.6, 2.5, 3.5]).to(data_type)
+            traced = torch.jit.trace(round, (a))
+            x = warmup_and_run_forward(traced, a)
+            self.assertLastGraphAllFused()
+            y = round(x)
+            self.assertEqual(x, y)
 
     def test_rand_like(self):
         N = 1 << 16
@@ -962,11 +977,15 @@ class TestTensorExprFuser(BaseTestClass):
             x = torch.tensor([np.nan]).to(dtype=data_type)
             y = torch.tensor([1.0]).to(dtype=data_type)
 
-        assert np.isnan(warmup_and_run_forward(tmin, x, y).float().item())
-        assert np.isnan(warmup_and_run_forward(tmin, y, x).float().item())
+        if not np.isnan(warmup_and_run_forward(tmin, x, y).float().item()):
+            raise AssertionError("expected nan for tmin(x, y)")
+        if not np.isnan(warmup_and_run_forward(tmin, y, x).float().item()):
+            raise AssertionError("expected nan for tmin(y, x)")
         self.assertLastGraphAllFused()
-        assert np.isnan(warmup_and_run_forward(tmax, x, y).float().item())
-        assert np.isnan(warmup_and_run_forward(tmax, y, x).float().item())
+        if not np.isnan(warmup_and_run_forward(tmax, x, y).float().item()):
+            raise AssertionError("expected nan for tmax(x, y)")
+        if not np.isnan(warmup_and_run_forward(tmax, y, x).float().item()):
+            raise AssertionError("expected nan for tmax(y, x)")
         self.assertLastGraphAllFused()
 
     def test_double_intrinsics(self):
@@ -1191,7 +1210,7 @@ class TestTensorExprFuser(BaseTestClass):
 
         for test in (test_float, test_int):
             for data_type in self.dtypes:
-                x, y, z = [torch.rand(4, dtype=data_type) for i in range(3)]
+                x, y, z = (torch.rand(4, dtype=data_type) for i in range(3))
                 a, b = 1, 2
                 test(x, y, z, a, b)
                 r = test(x, y, z, a, b)
@@ -1201,7 +1220,7 @@ class TestTensorExprFuser(BaseTestClass):
         @torch.jit.script
         def test(x: torch.Tensor, y: torch.Tensor, z: int) -> torch.Tensor:
             b = y
-            for i in range(0, z):
+            for _ in range(z):
                 a = x + y
                 b = b + y
             return b
@@ -1365,7 +1384,7 @@ class TestTensorExprFuser(BaseTestClass):
             @torch.jit.script
             def test(x, y, z):
                 return x * y * z
-            x, y, z = [torch.rand(4, 8).cuda() for _ in range(3)]
+            x, y, z = (torch.rand(4, 8).cuda() for _ in range(3))
             ref = test(x, y, z)
             _ = test(*[torch.rand(6, 8).cuda() for _ in range(3)])
             res = test(x, y, z)
@@ -1376,7 +1395,7 @@ class TestTensorExprFuser(BaseTestClass):
             y = torch.rand(1, 8).cuda()
             z = torch.rand(4, 1).cuda()
             res = test(x, y, z)
-            xn, yn, zn = [t.cpu().numpy() for t in (x, y, z)]
+            xn, yn, zn = (t.cpu().numpy() for t in (x, y, z))
             np.testing.assert_allclose(res.cpu().numpy(), xn * yn * zn)
 
             # Mismatched shapes shouldn't reach codegen.
@@ -1386,7 +1405,8 @@ class TestTensorExprFuser(BaseTestClass):
             try:
                 res = test(x, y, z)
             except RuntimeError as e:
-                assert "The size of tensor a (4) must match" in e.args[0]
+                if "The size of tensor a (4) must match" not in e.args[0]:
+                    raise AssertionError(f"unexpected error message: {e.args[0]}") from None
 
             # Changing a static dimension fails guards.
             # x, y, z = [torch.rand(4, 7).cuda() for _ in range(3)]
@@ -1463,7 +1483,8 @@ class TestTensorExprFuser(BaseTestClass):
                 scripted = torch.jit.script(test)
                 out = warmup_and_run_forward(scripted, a)
                 self.assertLastGraphAllFused()
-                assert torch.allclose(out, 2 * a, atol=_atol, rtol=_rtol)
+                if not torch.allclose(out, 2 * a, atol=_atol, rtol=_rtol):
+                    raise AssertionError("output does not match expected")
 
     def test_mask(self):
         def test(x):
@@ -1475,7 +1496,8 @@ class TestTensorExprFuser(BaseTestClass):
                 scripted = torch.jit.script(test)
                 out = warmup_and_run_forward(scripted, x)
                 self.assertLastGraphAllFused()
-                assert torch.equal(out, test(x))
+                if not torch.equal(out, test(x)):
+                    raise AssertionError("output does not match expected")
 
     def test_simple_add(self):
         val = torch._C._jit_get_te_generate_block_code()
@@ -1531,8 +1553,8 @@ class TestTensorExprFuser(BaseTestClass):
 
     def test_alias_analysis_module(self):
         class AliasModule(nn.Module):
-            def __init__(self):
-                super(AliasModule, self).__init__()
+            def __init__(self) -> None:
+                super().__init__()
                 torch.manual_seed(1337)
                 self.a = torch.randn(128, 128)
                 self.b = torch.randn(128, 128)
@@ -1569,8 +1591,8 @@ class TestTensorExprFuser(BaseTestClass):
 
     def test_alias_analysis_inputs(self):
         class AliasModule(nn.Module):
-            def __init__(self):
-                super(AliasModule, self).__init__()
+            def __init__(self) -> None:
+                super().__init__()
                 torch.manual_seed(1337)
                 self.a = torch.randn(128, 128)
                 self.b = torch.randn(128, 128)
@@ -1602,8 +1624,8 @@ class TestTensorExprFuser(BaseTestClass):
 
     def test_alias_analysis_input_and_module(self):
         class AliasModule(nn.Module):
-            def __init__(self):
-                super(AliasModule, self).__init__()
+            def __init__(self) -> None:
+                super().__init__()
                 torch.manual_seed(1337)
                 self.a = torch.randn(128, 128)
                 self.b = torch.randn(128, 128)

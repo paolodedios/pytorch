@@ -4,8 +4,6 @@
 #include <torch/csrc/jit/frontend/schema_matching.h>
 #include <torch/csrc/jit/ir/subgraph_matcher.h>
 #include <torch/csrc/jit/jit_log.h>
-#include <torch/csrc/jit/passes/constant_pooling.h>
-#include <torch/csrc/jit/passes/constant_propagation.h>
 #include <torch/csrc/jit/passes/fuse_linear.h>
 #include <torch/csrc/jit/passes/graph_rewrite_helper.h>
 #include <torch/csrc/jit/passes/inline_fork_wait.h>
@@ -13,19 +11,18 @@
 #include <torch/csrc/jit/passes/remove_mutation.h>
 
 #include <memory>
-#include <regex>
 #include <stack>
 #include <string>
+#include <utility>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
-using ModuleQConfigMap = std::unordered_map<ModulePtr, c10::optional<QConfig>>;
+using ModuleQConfigMap = std::unordered_map<ModulePtr, std::optional<QConfig>>;
 
 namespace {
 
 struct OptionalQConfigHash {
-  inline size_t operator()(const c10::optional<QConfig>& qconfig_opt) const {
+  inline size_t operator()(const std::optional<QConfig>& qconfig_opt) const {
     if (qconfig_opt.has_value()) {
       const auto& m1 = std::get<0>(*qconfig_opt);
       const auto& m2 = std::get<1>(*qconfig_opt);
@@ -36,9 +33,9 @@ struct OptionalQConfigHash {
   }
 };
 using QConfigTypePtrMap =
-    std::unordered_map<c10::optional<QConfig>, TypePtr, OptionalQConfigHash>;
+    std::unordered_map<std::optional<QConfig>, TypePtr, OptionalQConfigHash>;
 using NameModuleVector = std::vector<std::pair<std::string, Module>>;
-using OptionalModuleVector = std::vector<c10::optional<Module>>;
+using OptionalModuleVector = std::vector<std::optional<Module>>;
 using ModuleMethodVector = std::vector<std::pair<Module, std::string>>;
 using graph_rewrite_helper::PatternInfo;
 using graph_rewrite_helper::replaceConvolutionWithAtenConv;
@@ -49,8 +46,8 @@ void fillQConfigMap(
     const QConfigDict& qconfig_dict,
     ModuleQConfigMap& map,
     const std::string& key = "",
-    const c10::optional<QConfig>& parent_qconfig = c10::nullopt) {
-  c10::optional<QConfig> qconfig;
+    const std::optional<QConfig>& parent_qconfig = std::nullopt) {
+  std::optional<QConfig> qconfig;
   if (qconfig_dict.find(key) != qconfig_dict.end()) {
     GRAPH_DEBUG("Got module config for key:", key);
     qconfig = qconfig_dict.at(key);
@@ -62,7 +59,7 @@ void fillQConfigMap(
 
   for (const NameModule& s : module.named_children()) {
     std::string child_key;
-    if (key == "") {
+    if (key.empty()) {
       child_key = s.name;
     } else {
       child_key = key + "." + s.name;
@@ -92,8 +89,9 @@ class ModuleCloneHelper {
       const ModuleQConfigMap& module_qconfig_map,
       bool inplace = false) {
     std::unordered_map<TypePtr, QConfigTypePtrMap> type_remap;
-    IValue::HashAliasedIValueMap memo;
-    return clone_impl(module, module_qconfig_map, type_remap, inplace, memo);
+    IValue::HashIdentityIValueMap memo;
+    return clone_impl(
+        module, module_qconfig_map, type_remap, inplace, std::move(memo));
   }
 
  private:
@@ -102,7 +100,7 @@ class ModuleCloneHelper {
       const ModuleQConfigMap& module_qconfig_map,
       std::unordered_map<TypePtr, QConfigTypePtrMap>& type_remap,
       bool inplace,
-      IValue::HashAliasedIValueMap memo) {
+      IValue::HashIdentityIValueMap memo) {
     auto qconfig = module_qconfig_map.at(module._ivalue());
     auto type = module.type();
     // Create a new _ivalue in the same compilation unit.
@@ -174,7 +172,7 @@ class ModuleCloneHelper {
         auto getstate_method = r.find_method("__getstate__");
         TORCH_INTERNAL_ASSERT(getstate_method, "expect __getstate__");
         auto state = (*getstate_method)(Stack{});
-        (*setstate_method)(Stack{state});
+        (*setstate_method)(Stack{std::move(state)});
       }
     }
     return r;
@@ -186,7 +184,7 @@ class ModuleCloneHelper {
       const Module& source,
       Module& target,
       const ModuleQConfigMap& module_qconfig_map,
-      const std::function<TypePtr(TypePtr, c10::optional<QConfig>)>&
+      const std::function<TypePtr(TypePtr, std::optional<QConfig>)>&
           type_remap_fn) {
     // remap of %self will be done outside of the function
     // and we don't support the case when people pass in
@@ -238,7 +236,7 @@ class ModuleCloneHelper {
       const Module& source,
       Module& target,
       const ModuleQConfigMap& module_qconfig_map,
-      const std::function<TypePtr(TypePtr, c10::optional<QConfig>)>&
+      const std::function<TypePtr(TypePtr, std::optional<QConfig>)>&
           type_remap_fn) {
     remapTypes(
         graph->block(),
@@ -256,7 +254,7 @@ class ModuleCloneHelper {
       const ModuleQConfigMap& module_qconfig_map,
       const std::unordered_map<TypePtr, QConfigTypePtrMap>& type_remap) {
     auto type_remap_fn = [&](TypePtr type_ptr,
-                             const c10::optional<QConfig>& qconfig) {
+                             const std::optional<QConfig>& qconfig) {
       if (type_remap.find(type_ptr) != type_remap.end()) {
         const auto& qconfig_map = type_remap.at(type_ptr);
         if (qconfig_map.find(qconfig) != qconfig_map.end()) {
@@ -271,14 +269,15 @@ class ModuleCloneHelper {
     graph->inputs()[0]->setType(target.type());
     // we only support %self being Module in the arguments of function
     auto schema_type_remap_fn = [&](TypePtr type_ptr) {
-      return type_remap_fn(type_ptr, module_qconfig_map.at(source._ivalue()));
+      return type_remap_fn(
+          std::move(type_ptr), module_qconfig_map.at(source._ivalue()));
     };
     auto schema =
         method.getSchema().cloneWithRemappedTypes(schema_type_remap_fn);
     const auto this_method_name =
         c10::QualifiedName(*target.type()->name(), method.name());
     auto copied = target._ivalue()->compilation_unit()->create_function(
-        this_method_name, graph);
+        this_method_name, std::move(graph));
     target.type()->addMethod(copied);
     copied->setSchema(std::move(schema));
   }
@@ -313,7 +312,7 @@ class InsertObserversHelper {
    * observe/quantize a value a not, we don't want to observe a value multiple
    * times.
    *
-   * arguemnt: is_entry_point means whether the current method is the forward
+   * argument: is_entry_point means whether the current method is the forward
    * method of the top level module.
    *
    * Since we want to insert observers in the call site instead of in the called
@@ -399,9 +398,9 @@ class InsertObserversHelper {
 
   // Uses the state created by fillBoundaryValueMap and fillValueObserverMap
   // to return an observer configured for a value, if it is needed.
-  c10::optional<Module> getObserverFor(Value* v);
+  std::optional<Module> getObserverFor(Value* v);
 
-  // Uses the state created by fillPassThroughValueMap to propage observed
+  // Uses the state created by fillPassThroughValueMap to propagage observed
   // property which should pass through from inputs to outputs.
   void propagateObservedProperty(
       Value* output,
@@ -951,9 +950,9 @@ void InsertObserversHelper::insertObserverFor(
   }
   GRAPH_DEBUG("Inserting observer for:", v->debugName());
   Module observer = observer_module.deepcopy();
-  std::string observer_name = "_observer_" + c10::to_string(uid_++);
+  std::string observer_name = "_observer_" + std::to_string(uid_++);
   while (module.hasattr(observer_name)) {
-    observer_name = "_observer_" + c10::to_string(uid_++);
+    observer_name = "_observer_" + std::to_string(uid_++);
   }
   module.register_module(observer_name, observer);
   observer_name_and_modules.emplace_back(observer_name, observer);
@@ -1005,11 +1004,14 @@ void InsertObserversHelper::insertObserverResetMinMax(
         *(module.type()->name()), reset_observer_method_name_);
     auto reset_observer_fn =
         module._ivalue()->compilation_unit()->create_function(
-            method_name, reset_observer_graph);
+            method_name, std::move(reset_observer_graph));
     auto self_arg = c10::Argument("self", module.type());
     auto output_arg = c10::Argument("none", output_node->output()->type());
     auto schema = c10::FunctionSchema(
-        reset_observer_method_name_, "", {self_arg}, {output_arg});
+        reset_observer_method_name_,
+        "",
+        {std::move(self_arg)},
+        {std::move(output_arg)});
     reset_observer_fn->setSchema(std::move(schema));
     module.type()->addMethod(reset_observer_fn);
   }
@@ -1115,8 +1117,7 @@ void InsertObserversHelper::fillBoundaryValueMap(
         // offset of input for the caller node, since the first
         // input of CallFunction is the function node and the graph
         // for CallFunction start with actual input
-        // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-        size_t input_offset;
+        size_t input_offset = 0;
         if (n->kind() == prim::CallMethod) {
           auto m_opt = getInvokedModuleOpt(module, n, self);
           if (!m_opt.has_value()) {
@@ -1307,13 +1308,13 @@ void InsertObserversHelper::fillValueObserverMap(
   }
 }
 
-c10::optional<Module> InsertObserversHelper::getObserverFor(Value* v) {
+std::optional<Module> InsertObserversHelper::getObserverFor(Value* v) {
   if (observer_for_value_.count(v)) {
     auto observer = observer_for_value_.at(v);
     GRAPH_DEBUG("Got observer module config for:", v->debugName());
     return observer;
   }
-  c10::optional<Module> result;
+  std::optional<Module> result;
   if (boundary_value_map_.count(v)) {
     for (Value* next : boundary_value_map_.at(v)) {
       GRAPH_DEBUG(
@@ -1379,9 +1380,9 @@ InsertObserversHelper::insertObserversFor(
   // the graph itself can be shared
   std::unordered_set<Value*> inputs_outputs;
   // list of observer modules for input values
-  std::vector<c10::optional<Module>> block_input_observers;
+  std::vector<std::optional<Module>> block_input_observers;
   // list of observer modules for output values
-  std::vector<c10::optional<Module>> block_output_observers;
+  std::vector<std::optional<Module>> block_output_observers;
 
   // if the current block is the block for entry point graph(the forward graph
   // of the top level module), we can insert observers in the block directly
@@ -1403,13 +1404,13 @@ InsertObserversHelper::insertObserversFor(
     }
 
     for (auto* v : block->outputs()) {
-      // we need explictly skip the values that are already observed
+      // we need explicitly skip the values that are already observed
       // this might happen in subblocks for `if` since
       // these subblock has access to all values before the `if` node
       if (!isObserved(v, block_observed_values)) {
         block_output_observers.emplace_back(getObserverFor(v));
       } else {
-        block_output_observers.emplace_back(c10::nullopt);
+        block_output_observers.emplace_back(std::nullopt);
       }
     }
   }
@@ -1464,8 +1465,7 @@ InsertObserversHelper::insertObserversFor(
       if (n->kind() == prim::CallMethod || userDefinedCallFunction(n)) {
         script::Module m;
         std::shared_ptr<Graph> g;
-        // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-        size_t input_offset;
+        size_t input_offset = 0;
         bool is_udf_for_subblock = is_user_defined_function;
         if (n->kind() == prim::CallMethod) {
           auto m_opt = getInvokedModuleOpt(module, n, self);
@@ -1520,7 +1520,7 @@ InsertObserversHelper::insertObserversFor(
           }
         }
       } else if (n->kind() == prim::If) {
-        // a vector recoding whether each output is observed or not
+        // a vector recording whether each output is observed or not
         std::vector<bool> aggregated_output_observe_state;
         for (Block* subblock : n->blocks()) {
           if (alwaysRaisesException(subblock)) {
@@ -1556,7 +1556,7 @@ InsertObserversHelper::insertObserversFor(
             subblock_output_observe_state.push_back(
                 isObserved(output, block_observed_values));
           }
-          if (aggregated_output_observe_state.size() > 0) {
+          if (!aggregated_output_observe_state.empty()) {
             TORCH_CHECK(
                 aggregated_output_observe_state ==
                     subblock_output_observe_state,
@@ -1700,7 +1700,7 @@ Module InsertObserversForOnDevicePTQ(
   // you will have multiple getattrs for the same attribute and thus potentially
   // multiple observers observing the same value. This will also lead to
   // increased size of the packed param struct. I dont expect this to be a
-  // commong pattern but something to be aware fo Note that current quant
+  // common pattern but something to be aware of Note that current quant
   // workflow does not prevent this anyway since during inset quant dequant
   // things are inlined anyway
   helper.fillBoundaryValueMap(cloned_module, observer_method_name);
@@ -1717,5 +1717,4 @@ Module InsertObserversForOnDevicePTQ(
       cloned_module, observer_method_name, /* is_entry_point */ true);
   return cloned_module;
 }
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

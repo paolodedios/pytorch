@@ -1,37 +1,70 @@
 #include <c10/cuda/CUDADeviceAssertionHost.h>
 #include <c10/cuda/CUDAException.h>
-#include <c10/util/Backtrace.h>
-#include <c10/util/Exception.h>
+#include <c10/cuda/CUDAFunctions.h>
+#include <c10/util/env.h>
 #include <c10/util/irange.h>
-#include <cuda_runtime.h>
 
-#include <algorithm>
-#include <iostream>
 #include <memory>
-#include <sstream>
-#include <stdexcept>
 #include <string>
+#ifdef TORCH_USE_CUDA_DSA
+#include <chrono>
 #include <thread>
+#endif
 
-#define CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS() \
-  c10_cuda_check_implementation(__FILE__, __FUNCTION__, __LINE__, false)
+#define C10_CUDA_CHECK_WO_DSA(EXPR)                                 \
+  do {                                                              \
+    const cudaError_t __err = EXPR;                                 \
+    c10::cuda::c10_cuda_check_implementation(                       \
+        static_cast<int32_t>(__err),                                \
+        __FILE__,                                                   \
+        __func__, /* Line number data type not well-defined between \
+                      compilers, so we perform an explicit cast */  \
+        static_cast<uint32_t>(__LINE__),                            \
+        false);                                                     \
+  } while (0)
 
-namespace c10 {
-namespace cuda {
+namespace c10::cuda {
 
 namespace {
+
+#ifdef TORCH_USE_CUDA_DSA
+/// Get current device id
+/// We need our own implementation of this function to prevent
+/// an infinite initialization loop for CUDAKernelLaunchRegistry
+int dsa_get_device_id() {
+  c10::DeviceIndex device = -1;
+  C10_CUDA_CHECK_WO_DSA(c10::cuda::GetDevice(&device));
+  return device;
+}
+
+/// Get a device's compute capability - note that this dangerously assumes
+/// that if one CUDA GPU supports device-side assertions they all do. This is
+/// probably fine since the latest CUDA GPU that doesn't support UVM is the
+/// K80 released 2014-11-17. Mixing that GPU with a newer one is likely to be
+/// rare enough that the defensive
+/// We need our own implementation of this function to prevent
+/// an infinite initialization loop for CUDAKernelLaunchRegistry
+int dsa_get_device_compute_capability(const int device_num) {
+  int compute_capability = -1;
+  C10_CUDA_CHECK_WO_DSA(cudaDeviceGetAttribute(
+      &compute_capability, cudaDevAttrComputeCapabilityMajor, device_num));
+  return compute_capability;
+}
+#endif
 
 /// Get the number of CUDA devices
 /// We need our own implementation of this function to prevent
 /// an infinite initialization loop for CUDAKernelLaunchRegistry
 int dsa_get_device_count() {
   int device_count = -1;
-  C10_CUDA_ERROR_HANDLED(cudaGetDeviceCount(&device_count));
-  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS();
+  C10_CUDA_CHECK_WO_DSA(c10::cuda::GetDeviceCount(&device_count));
   return device_count;
 }
 
 bool dsa_check_if_all_devices_support_managed_memory() {
+#ifdef USE_ROCM
+  return true;
+#else
 // It looks as though this'll work best on CUDA GPUs with Pascal
 // architectures or newer, per
 // https://developer.nvidia.com/blog/unified-memory-cuda-beginners/
@@ -45,11 +78,12 @@ bool dsa_check_if_all_devices_support_managed_memory() {
 #else
   return false;
 #endif
+#endif
 }
 
 bool env_flag_set(const char* env_var_name) {
-  const char* const env_string = std::getenv(env_var_name);
-  return (env_string == nullptr) ? false : std::strcmp(env_string, "0");
+  const auto env_flag = c10::utils::check_env(env_var_name);
+  return env_flag.has_value() && env_flag.value();
 }
 
 /// Deleter for UVM/managed memory pointers
@@ -60,40 +94,13 @@ void uvm_deleter(DeviceAssertionsData* uvm_assertions_ptr) {
   }
 }
 
-#ifdef TORCH_USE_CUDA_DSA
-/// Get current device id
-/// We need our own implementation of this function to prevent
-/// an infinite initialization loop for CUDAKernelLaunchRegistry
-int dsa_get_device_id() {
-  int device = -1;
-  C10_CUDA_ERROR_HANDLED(cudaGetDevice(&device));
-  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS();
-  return device;
-}
-
-/// Get a device's compute capability - note that this dangerously assumes
-/// that if one CUDA GPU supports device-side assertions they all do. This is
-/// probably fine since the latest CUDA GPU that doesn't support UVM is the
-/// K80 released 2014-11-17. Mixing that GPU with a newer one is likely to be
-/// rare enough that the defensive
-/// We need our own implementation of this function to prevent
-/// an infinite initialization loop for CUDAKernelLaunchRegistry
-int dsa_get_device_compute_capability(const int device_num) {
-  int compute_capability = -1;
-  C10_CUDA_ERROR_HANDLED(cudaDeviceGetAttribute(
-      &compute_capability, cudaDevAttrComputeCapabilityMajor, device_num));
-  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS();
-  return compute_capability;
-}
-#endif
-
 } // namespace
 
 /// Check that kernels ran correctly by checking the message buffer. BLOCKING.
 std::string c10_retrieve_device_side_assertion_info() {
 #ifdef TORCH_USE_CUDA_DSA
   const auto& launch_registry = CUDAKernelLaunchRegistry::get_singleton_ref();
-  if (!launch_registry.enabled) {
+  if (!launch_registry.enabled_at_runtime) {
     return "Device-side assertion tracking was not enabled by user.";
   } else if (!launch_registry.do_all_devices_support_managed_memory) {
     return "Device-side assertions disabled because not all devices support managed memory.";
@@ -115,20 +122,7 @@ std::string c10_retrieve_device_side_assertion_info() {
 
   std::stringstream oss;
 
-  {
-    oss << "This process interacted the following GPUs = {";
-    bool first_gpu_listed = true;
-    for (const auto& x : uvm_assertions) {
-      if (x) {
-        if (!first_gpu_listed) {
-          oss << ","
-        }
-        first_gpu_listed = true;
-        oss << x;
-      }
-    }
-    oss << "}" << std::endl;
-  }
+  oss << "Looking for device-side assertion failure information...\n";
 
   // Loop over each device that could be managed by the process
   for (const auto device_num : c10::irange(assertion_data.size())) {
@@ -145,7 +139,7 @@ std::string c10_retrieve_device_side_assertion_info() {
     // Something failed, let's talk about that
     oss << failures_found
         << " CUDA device-side assertion failures were found on GPU #"
-        << device_num << "!" << std::endl;
+        << device_num << '!' << std::endl;
     if (assertion_data_for_device.assertion_count >
         C10_CUDA_DSA_ASSERTION_COUNT) {
       oss << "But at least " << assertion_data_for_device.assertion_count
@@ -160,17 +154,17 @@ std::string c10_retrieve_device_side_assertion_info() {
       oss << "Assertion failure " << i << std::endl;
       oss << "  GPU assertion failure message = " << self.assertion_msg
           << std::endl;
-      oss << "  File containing assertion = " << self.filename << ":"
+      oss << "  File containing assertion = " << self.filename << ':'
           << self.line_number << std::endl;
       oss << "  Device function containing assertion = " << self.function_name
           << std::endl;
-      oss << "  Thread ID that failed assertion = [" << self.thread_id[0] << ","
-          << self.thread_id[1] << "," << self.thread_id[2] << "]" << std::endl;
-      oss << "  Block ID that failed assertion = [" << self.block_id[0] << ","
-          << self.block_id[1] << "," << self.block_id[2] << "]" << std::endl;
+      oss << "  Thread ID that failed assertion = [" << self.thread_id[0] << ','
+          << self.thread_id[1] << ',' << self.thread_id[2] << ']' << std::endl;
+      oss << "  Block ID that failed assertion = [" << self.block_id[0] << ','
+          << self.block_id[1] << ',' << self.block_id[2] << ']' << std::endl;
       if (launch_info.generation_number == self.caller) {
         oss << "  File containing kernel launch = "
-            << launch_info.launch_filename << ":" << launch_info.launch_linenum
+            << launch_info.launch_filename << ':' << launch_info.launch_linenum
             << std::endl;
         oss << "  Function containing kernel launch = "
             << launch_info.launch_function << std::endl;
@@ -184,7 +178,7 @@ std::string c10_retrieve_device_side_assertion_info() {
         if (launch_registry.gather_launch_stacktrace) {
           oss << "Launch stacktracing disabled." << std::endl;
         } else {
-          oss << "\n" << launch_info.launch_stacktrace << std::endl;
+          oss << '\n' << launch_info.launch_stacktrace << std::endl;
         }
       } else {
         oss << "  CPU launch site info: Unavailable, the circular queue wrapped around. Increase `CUDAKernelLaunchRegistry::max_size`."
@@ -194,7 +188,7 @@ std::string c10_retrieve_device_side_assertion_info() {
   }
   return oss.str();
 #else
-  return "Compile with `TORCH_USE_CUDA_DSA` to enable device-side assertions.\n";
+  return "";
 #endif
 }
 
@@ -202,8 +196,8 @@ CUDAKernelLaunchRegistry::CUDAKernelLaunchRegistry()
     : do_all_devices_support_managed_memory(
           dsa_check_if_all_devices_support_managed_memory()),
       gather_launch_stacktrace(check_env_for_enable_launch_stacktracing()),
-      enabled(check_env_for_dsa_enabled()) {
-  for (C10_UNUSED const auto _ : c10::irange(dsa_get_device_count())) {
+      enabled_at_runtime(check_env_for_dsa_enabled()) {
+  for ([[maybe_unused]] const auto _ : c10::irange(dsa_get_device_count())) {
     uvm_assertions.emplace_back(nullptr, uvm_deleter);
   }
 
@@ -220,13 +214,13 @@ bool CUDAKernelLaunchRegistry::check_env_for_dsa_enabled() const {
 }
 
 uint32_t CUDAKernelLaunchRegistry::insert(
-    const char* launch_filename,
-    const char* launch_function,
-    const uint32_t launch_linenum,
-    const char* kernel_name,
-    const int32_t stream_id) {
+    const char* launch_filename [[maybe_unused]],
+    const char* launch_function [[maybe_unused]],
+    const uint32_t launch_linenum [[maybe_unused]],
+    const char* kernel_name [[maybe_unused]],
+    const int32_t stream_id [[maybe_unused]]) {
 #ifdef TORCH_USE_CUDA_DSA
-  if (!is_enabled()) {
+  if (!enabled_at_runtime) {
     return 0;
   }
 
@@ -274,7 +268,7 @@ CUDAKernelLaunchRegistry::snapshot() const {
 DeviceAssertionsData* CUDAKernelLaunchRegistry::
     get_uvm_assertions_ptr_for_current_device() {
 #ifdef TORCH_USE_CUDA_DSA
-  if (!is_enabled()) {
+  if (!enabled_at_runtime) {
     return nullptr;
   }
 
@@ -301,25 +295,37 @@ DeviceAssertionsData* CUDAKernelLaunchRegistry::
   // system
   DeviceAssertionsData* uvm_assertions_ptr = nullptr;
 
-  C10_CUDA_ERROR_HANDLED(
+  C10_CUDA_CHECK_WO_DSA(
       cudaMallocManaged(&uvm_assertions_ptr, sizeof(DeviceAssertionsData)));
-  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS();
 
-  C10_CUDA_ERROR_HANDLED(cudaMemAdvise(
+#if CUDART_VERSION >= 13000 && !defined(USE_ROCM)
+  cudaMemLocation cpuDevice;
+  cpuDevice.type = cudaMemLocationTypeDevice;
+  cpuDevice.id = cudaCpuDeviceId;
+#ifdef USE_ROCM
+  // hipify replaces cudaMemAdvise -> hipMemAdvise, but we want v2
+#define hipMemAdvise hipMemAdvise_v2
+#endif
+#else
+  // might be a ROCm bug that using hipMemAdvise_v2 fails if
+  // hipMemLocationTypeDevice + hipCpuDeviceId, but using the v1 API sets
+  // hipMemLocationTypeHost + hipCpuDeviceId and passes
+  const auto cpuDevice = cudaCpuDeviceId;
+#endif
+
+  C10_CUDA_CHECK_WO_DSA(cudaMemAdvise(
       uvm_assertions_ptr,
       sizeof(DeviceAssertionsData),
       cudaMemAdviseSetPreferredLocation,
-      cudaCpuDeviceId));
-  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS();
+      cpuDevice));
 
   // GPU will establish direct mapping of data in CPU memory, no page faults
   // will be generated
-  C10_CUDA_ERROR_HANDLED(cudaMemAdvise(
+  C10_CUDA_CHECK_WO_DSA(cudaMemAdvise(
       uvm_assertions_ptr,
       sizeof(DeviceAssertionsData),
       cudaMemAdviseSetAccessedBy,
-      cudaCpuDeviceId));
-  CHECK_CUDA_API_CALL_WITHOUT_CHECKING_DEVICE_ASSERTS();
+      cpuDevice));
 
   // Initialize the memory from the CPU; otherwise, pages may have to be created
   // on demand. We think that UVM documentation indicates that first access may
@@ -352,16 +358,4 @@ bool CUDAKernelLaunchRegistry::has_failed() const {
   return false;
 }
 
-bool CUDAKernelLaunchRegistry::is_enabled() const {
-#ifdef TORCH_USE_CUDA_DSA
-  std::cerr << ""
-#else
-  std::cerr
-      << "TORCH_USE_CUDA_DSA not enabled in CUDAKernelLaunchRegistry::is_enabled"
-      << std::endl;
-  return false;
-#endif
-}
-
-} // namespace cuda
-} // namespace c10
+} // namespace c10::cuda

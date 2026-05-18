@@ -6,6 +6,7 @@
 #include <ATen/native/quantized/AffineQuantizer.h>
 #include <ATen/native/quantized/cpu/QuantizedOps.h>
 #include <ATen/native/cpu/utils.h>
+#include <c10/util/accumulate.h>
 #include <c10/util/irange.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
@@ -18,11 +19,10 @@
 
 #include <cstring>
 
-namespace at {
-namespace native {
+namespace at::native {
 namespace {
 
-// pre calcuate interpolation params on width
+// pre calculate interpolation params on width
 struct UpsampleBilinearParamW {
   int64_t w1, w1p;
   float w0lambda, w1lambda;
@@ -36,7 +36,7 @@ struct UpsampleBilinearParamW {
 
 // at::native functions for the native_functions.yaml
 template <typename scalar_t>
-static void upsample_bilinear2d_out_frame(
+void upsample_bilinear2d_out_frame(
     Tensor& output,
     const Tensor& input,
     int64_t input_height,
@@ -46,16 +46,16 @@ static void upsample_bilinear2d_out_frame(
     int64_t nbatch,
     int64_t channels,
     bool align_corners,
-    c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
-  auto* idata = static_cast<scalar_t*>(input.data_ptr());
+    std::optional<double> scales_h,
+    std::optional<double> scales_w) {
+  auto* idata = static_cast<const scalar_t*>(input.const_data_ptr());
   auto* odata = static_cast<scalar_t*>(output.data_ptr());
 
   channels = channels * nbatch;
   if (channels == 0 || output_height == 0 || output_width == 0) {
     return;
   }
-  auto* i_p = reinterpret_cast<typename scalar_t::underlying*>(idata);
+  auto* i_p = reinterpret_cast<const typename scalar_t::underlying*>(idata);
   auto* o_p = reinterpret_cast<typename scalar_t::underlying*>(odata);
 
   // special case: just copy
@@ -74,8 +74,7 @@ static void upsample_bilinear2d_out_frame(
   const auto rwidth = area_pixel_compute_scale<float>(
       input_width, output_width, align_corners, scales_w);
 
-  // NOLINTNEXTLINE(cppcoreguidelines-narrowing-conversions,bugprone-narrowing-conversions)
-  float output_scale = output.q_scale() / input.q_scale();
+  float output_scale = static_cast<float>(output.q_scale() / input.q_scale());
 
   const int64_t input_q_zero_point = input.q_zero_point();
   const int64_t output_q_zero_point = output.q_zero_point();
@@ -124,7 +123,7 @@ static void upsample_bilinear2d_out_frame(
 
         const auto* pos1 = i_ptr + h1 * input_width + w1;
 
-        float result = h0lambda * (w0lambda * pos1[0] + w1lambda * pos1[w1p]) +
+        const float result = h0lambda * (w0lambda * pos1[0] + w1lambda * pos1[w1p]) +
             h1lambda *
                 (w0lambda * pos1[h1p * input_width] +
                  w1lambda * pos1[h1p * input_width + w1p]) - input_q_zero_point;
@@ -146,26 +145,21 @@ Tensor upsample_bilinear2d_quantized_cpu(
     const Tensor& input,
     IntArrayRef output_size,
     bool align_corners,
-    c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
-  TORCH_CHECK(
-      output_size.size() == 2,
-      "It is expected output_size equals to 2, but got size ",
-      output_size.size());
+    std::optional<double> scales_h,
+    std::optional<double> scales_w) {
+  auto full_output_size = native::upsample_2d_common_check(input.sizes(), output_size);
 
   TORCH_CHECK(
-      input.dim() == 4,
+      input.numel() != 0 || c10::multiply_integers(input.sizes().begin() + 1, input.sizes().end()),
       "Non-empty 4D data tensor expected but got a tensor with sizes ",
       input.sizes());
 
-  int64_t output_height = output_size[0];
-  int64_t output_width = output_size[1];
-
-  int64_t nbatch = input.size(0);
-  int64_t channels = input.size(1);
+  int64_t nbatch = full_output_size[0];
+  int64_t channels = full_output_size[1];
+  int64_t output_height = full_output_size[2];
+  int64_t output_width = full_output_size[3];
   int64_t input_height = input.size(2);
   int64_t input_width = input.size(3);
-  AT_ASSERT(input_width > 0 && output_width > 0);
 
   if (input.is_contiguous(c10::MemoryFormat::ChannelsLast)) {
     Tensor output = at::_empty_affine_quantized(
@@ -173,7 +167,7 @@ Tensor upsample_bilinear2d_quantized_cpu(
         input.options().memory_format(input.suggest_memory_format()),
         input.q_scale(),
         input.q_zero_point(),
-        c10::nullopt);
+        std::nullopt);
 
     qupsample_bilinear2d_nhwc_stub(
         input.device().type(),
@@ -216,20 +210,5 @@ Tensor upsample_bilinear2d_quantized_cpu(
   }
 }
 
-using at::native::upsample::compute_output_size;
-using at::native::upsample::get_scale_value;
-
-Tensor upsample_bilinear2d_quantized_cpu(
-    const Tensor& input,
-    at::OptionalIntArrayRef output_size,
-      bool align_corners,
-    c10::optional<ArrayRef<double>> scale_factors) {
-  auto osize = compute_output_size(input.sizes(), output_size, scale_factors);
-  auto scale_h = get_scale_value(scale_factors, 0);
-  auto scale_w = get_scale_value(scale_factors, 1);
-  return upsample_bilinear2d_quantized_cpu(input, osize, align_corners, scale_h, scale_w);
-}
-
 DEFINE_DISPATCH(qupsample_bilinear2d_nhwc_stub);
-} // namespace native
-} // namespace at
+} // namespace at::native

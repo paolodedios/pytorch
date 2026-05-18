@@ -1,6 +1,7 @@
+# mypy: allow-untyped-defs
 from collections import OrderedDict
 import contextlib
-from typing import Dict, Any
+from typing import Any
 
 from tensorboard.compat.proto.config_pb2 import RunMetadata
 from tensorboard.compat.proto.graph_pb2 import GraphDef
@@ -32,7 +33,7 @@ GETATTR_KIND = "prim::GetAttr"
 CLASSTYPE_KIND = "ClassType"
 
 
-class NodeBase(object):
+class NodeBase:
     def __init__(
         self,
         debugName=None,
@@ -41,7 +42,7 @@ class NodeBase(object):
         tensor_size=None,
         op_type="UnSpecified",
         attributes="",
-    ):
+    ) -> None:
         # TODO; Specify a __slots__ for this class or potentially
         # used namedtuple instead
         self.debugName = debugName
@@ -51,20 +52,20 @@ class NodeBase(object):
         self.attributes = attributes
         self.scope = scope
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         repr = []
         repr.append(str(type(self)))
-        for m in dir(self):
-            if "__" not in m:
-                repr.append(
-                    m + ": " + str(getattr(self, m)) + str(type(getattr(self, m)))
-                )
+        repr.extend(
+            m + ": " + str(getattr(self, m)) + str(type(getattr(self, m)))
+            for m in dir(self)
+            if "__" not in m
+        )
         return "\n".join(repr) + "\n\n"
 
 
 class NodePy(NodeBase):
-    def __init__(self, node_cpp, valid_methods):
-        super(NodePy, self).__init__(node_cpp)
+    def __init__(self, node_cpp, valid_methods) -> None:
+        super().__init__(node_cpp)
         valid_methods = valid_methods[:]
         self.inputs = []
 
@@ -88,8 +89,8 @@ class NodePy(NodeBase):
 
 
 class NodePyIO(NodePy):
-    def __init__(self, node_cpp, input_or_output=None):
-        super(NodePyIO, self).__init__(node_cpp, methods_IO)
+    def __init__(self, node_cpp, input_or_output=None) -> None:
+        super().__init__(node_cpp, methods_IO)
         try:
             tensor_size = node_cpp.type().sizes()
         except RuntimeError:
@@ -108,8 +109,8 @@ class NodePyIO(NodePy):
 
 
 class NodePyOP(NodePy):
-    def __init__(self, node_cpp):
-        super(NodePyOP, self).__init__(node_cpp, methods_OP)
+    def __init__(self, node_cpp) -> None:
+        super().__init__(node_cpp, methods_OP)
         # Replace single quote which causes strange behavior in TensorBoard
         # TODO: See if we can remove this in the future
         self.attributes = str(
@@ -118,9 +119,8 @@ class NodePyOP(NodePy):
         self.kind = node_cpp.kind()
 
 
-class GraphPy(object):
-    """Helper class to convert torch.nn.Module to GraphDef proto and visualization
-    with TensorBoard.
+class GraphPy:
+    """Helper class to convert torch.nn.Module to GraphDef proto and visualization with TensorBoard.
 
     GraphDef generation operates in two passes:
 
@@ -140,34 +140,34 @@ class GraphPy(object):
     and scope_name_appeared.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.nodes_op = []
         self.nodes_io = OrderedDict()
         self.unique_name_to_scoped_name = {}
         self.shallowest_scope_name = "default"
         self.scope_name_appeared = []
 
-    def append(self, x):
+    def append(self, x) -> None:
         if isinstance(x, NodePyIO):
             self.nodes_io[x.debugName] = x
         if isinstance(x, NodePyOP):
             self.nodes_op.append(x)
 
-    def printall(self):
+    def printall(self) -> None:
         print("all nodes")
         for node in self.nodes_op:
             print(node)
         for key in self.nodes_io:
             print(self.nodes_io[key])
 
-    def find_common_root(self):
+    def find_common_root(self) -> None:
         for fullscope in self.scope_name_appeared:
             if fullscope:
                 self.shallowest_scope_name = fullscope.split("/")[0]
 
-    def populate_namespace_from_OP_to_IO(self):
+    def populate_namespace_from_OP_to_IO(self) -> None:
         for node in self.nodes_op:
-            for node_output, outputSize in zip(node.outputs, node.outputstensor_size):
+            for node_output, outputSize in zip(node.outputs, node.outputstensor_size, strict=True):
                 self.scope_name_appeared.append(node.scopeName)
                 self.nodes_io[node_output] = NodeBase(
                     node_output,
@@ -187,7 +187,8 @@ class GraphPy(object):
                 )
 
         for key, node in self.nodes_io.items():
-            if type(node) == NodeBase:
+            if type(node) is NodeBase:
+                # pyrefly: ignore [unsupported-operation]
                 self.unique_name_to_scoped_name[key] = node.scope + "/" + node.debugName
             if hasattr(node, "input_or_output"):
                 self.unique_name_to_scoped_name[key] = (
@@ -198,6 +199,7 @@ class GraphPy(object):
                 self.unique_name_to_scoped_name[key] = node.scope + "/" + node.debugName
                 if node.scope == "" and self.shallowest_scope_name:
                     self.unique_name_to_scoped_name[node.debugName] = (
+
                         self.shallowest_scope_name + "/" + node.debugName
                     )
 
@@ -213,30 +215,26 @@ class GraphPy(object):
                 ]
 
     def to_proto(self):
-        """
-        Converts graph representation of GraphPy object to TensorBoard
-        required format.
-        """
+        """Convert graph representation of GraphPy object to TensorBoard required format."""
         # TODO: compute correct memory usage and CPU time once
         # PyTorch supports it
-        nodes = []
-        for v in self.nodes_io.values():
-            nodes.append(
-                node_proto(
-                    v.debugName,
-                    input=v.inputs,
-                    outputsize=v.tensor_size,
-                    op=v.kind,
-                    attributes=v.attributes,
-                )
+        nodes = [
+            node_proto(
+                v.debugName,
+                input=v.inputs,
+                outputsize=v.tensor_size,
+                op=v.kind,
+                attributes=v.attributes,
             )
+            for v in self.nodes_io.values()
+        ]
         return nodes
 
 
 def parse(graph, trace, args=None, omit_useless_nodes=True):
-    """This method parses an optimized PyTorch model graph and produces
-    a list of nodes and node stats for eventual conversion to TensorBoard
-    protobuf format.
+    """Parse an optimized PyTorch model graph and produces a list of nodes and node stats.
+
+    Useful for eventual conversion to TensorBoard protobuf format.
 
     Args:
       graph (PyTorch module): The model graph to be parsed.
@@ -244,9 +242,6 @@ def parse(graph, trace, args=None, omit_useless_nodes=True):
       args (tuple): input tensor[s] for the model.
       omit_useless_nodes (boolean): Whether to remove nodes from the graph.
     """
-    n_inputs = len(args)
-
-    scope = {}
     nodes_py = GraphPy()
     for node in graph.inputs():
         if omit_useless_nodes:
@@ -258,7 +253,7 @@ def parse(graph, trace, args=None, omit_useless_nodes=True):
         if node.type().kind() != CLASSTYPE_KIND:
             nodes_py.append(NodePyIO(node, "input"))
 
-    attr_to_scope: Dict[Any, str] = {}
+    attr_to_scope: dict[Any, str] = {}
     for node in graph.nodes():
         if node.kind() == GETATTR_KIND:
             attr_name = node.s("name")
@@ -267,15 +262,12 @@ def parse(graph, trace, args=None, omit_useless_nodes=True):
             if (
                 parent.kind() == GETATTR_KIND
             ):  # If the parent node is not the top-level "self" node
-                parent_attr_name = parent.s("name")
                 parent_attr_key = parent.output().debugName()
                 parent_scope = attr_to_scope[parent_attr_key]
                 attr_scope = parent_scope.split("/")[-1]
-                attr_to_scope[attr_key] = "{}/{}.{}".format(
-                    parent_scope, attr_scope, attr_name
-                )
+                attr_to_scope[attr_key] = f"{parent_scope}/{attr_scope}.{attr_name}"
             else:
-                attr_to_scope[attr_key] = "__module.{}".format(attr_name)
+                attr_to_scope[attr_key] = f"__module.{attr_name}"
             # We don't need classtype nodes; scope will provide this information
             if node.output().type().kind() != CLASSTYPE_KIND:
                 node_py = NodePyOP(node)
@@ -286,7 +278,7 @@ def parse(graph, trace, args=None, omit_useless_nodes=True):
 
     for i, node in enumerate(graph.outputs()):  # Create sink nodes for output ops
         node_pyio = NodePyIO(node, "output")
-        node_pyio.debugName = "output.{}".format(i + 1)
+        node_pyio.debugName = f"output.{i + 1}"
         node_pyio.inputs = [node.debugName()]
         nodes_py.append(node_pyio)
 
@@ -302,7 +294,7 @@ def parse(graph, trace, args=None, omit_useless_nodes=True):
     for name, module in trace.named_modules(prefix="__module"):
         mod_name = parse_traced_name(module)
         attr_name = name.split(".")[-1]
-        alias_to_name[name] = "{}[{}]".format(mod_name, attr_name)
+        alias_to_name[name] = f"{mod_name}[{attr_name}]"
 
     for node in nodes_py.nodes_op:
         module_aliases = node.scopeName.split("/")
@@ -320,8 +312,7 @@ def parse(graph, trace, args=None, omit_useless_nodes=True):
 
 def graph(model, args, verbose=False, use_strict_trace=True):
     """
-    This method processes a PyTorch model and produces a `GraphDef` proto
-    that can be logged to TensorBoard.
+    Process a PyTorch model and produces a `GraphDef` proto that can be logged to TensorBoard.
 
     Args:
       model (PyTorch module): The model to be parsed.
@@ -352,7 +343,7 @@ def graph(model, args, verbose=False, use_strict_trace=True):
     # and pass it correctly to TensorBoard.
     #
     # Definition of StepStats and DeviceStepStats can be found at
-    # https://github.com/tensorflow/tensorboard/blob/master/tensorboard/plugins/graph/tf_graph_common/test/graph-test.ts
+    # https://github.com/tensorflow/tensorboard/blob/master/tensorboard/plugins/graph/tf_graph_common/proto.ts
     # and
     # https://github.com/tensorflow/tensorboard/blob/master/tensorboard/compat/proto/step_stats.proto
     stepstats = RunMetadata(
@@ -365,7 +356,7 @@ def graph(model, args, verbose=False, use_strict_trace=True):
 
 @contextlib.contextmanager
 def _set_model_to_eval(model):
-    """A context manager to temporarily set the training mode of ``model`` to eval."""
+    """Context manager to temporarily set the training mode of ``model`` to eval."""
     if not isinstance(model, torch.jit.ScriptFunction):
         originally_training = model.training
         model.train(False)
@@ -382,6 +373,6 @@ def _set_model_to_eval(model):
 
 
 def _node_get(node: torch._C.Node, key: str):
-    """Gets attributes of a node which is polymorphic over return type."""
+    """Get attributes of a node which is polymorphic over return type."""
     sel = node.kindOf(key)
     return getattr(node, sel)(key)

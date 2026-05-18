@@ -8,8 +8,7 @@
 #include <torch/csrc/lazy/core/tensor.h>
 #include <torch/csrc/lazy/core/util.h>
 
-namespace torch {
-namespace lazy {
+namespace torch::lazy {
 
 class TORCH_API LazyGraphExecutor {
  public:
@@ -22,7 +21,7 @@ class TORCH_API LazyGraphExecutor {
   };
 
   // Register a lazy graph executor instance that can be retrieved using Get()
-  static void Register(LazyGraphExecutor*);
+  static void Register(LazyGraphExecutor* /*executor*/);
   static LazyGraphExecutor* Get();
 
   virtual ~LazyGraphExecutor() = default;
@@ -131,6 +130,11 @@ class TORCH_API LazyGraphExecutor {
   ComputationCache* GetComputationCache();
 
   hash_t GetGraphHash(const std::vector<LazyTensorPtr>& tensors);
+
+  // Clear the computation cache.
+  void ClearComputationCache();
+  // Remove a specific computation cache entry from its hash.
+  void RemoveFromComputationCache(const hash_t& hash);
 
  protected:
   // TODO(alanwaketan): Revisit if all of them need to be accessible to
@@ -348,7 +352,7 @@ class TORCH_API LazyGraphExecutor {
     std::vector<BackendDataPtr> parameters_data;
   };
 
-  virtual bool ShouldSyncTensor(const LazyTensorPtr tensor) const;
+  virtual bool ShouldSyncTensor(const LazyTensorPtr& tensor) const;
 
   SyncTensorCollection CollectSyncTensors(
       const std::vector<LazyTensorPtr>& tensors,
@@ -422,5 +426,4 @@ class TORCH_API LazyGraphExecutor {
       c10::ArrayRef<BackendDataPtr> tensors_data);
 };
 
-} // namespace lazy
-} // namespace torch
+} // namespace torch::lazy

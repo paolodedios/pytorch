@@ -49,7 +49,7 @@ __global__ void cuda_always_succeed_assertion_kernel(
  */
 void cuda_device_assertions_from_2_processes() {
   const auto n1 = fork();
-  if (n1 == 0) {
+  if (n1 != 0) {
     // This is the parent process, that will call an assertion failure.
     // This should execute before the child process.
     // We are achieving this by putting the child process to sleep.
@@ -86,20 +86,18 @@ void cuda_device_assertions_from_2_processes() {
         1);
     try {
       c10::cuda::device_synchronize();
-    } catch (const c10::Error& err) {
+    } catch (const c10::Error&) {
       ASSERT_TRUE(false); // This kernel should not have failed, but did.
     }
-    // End the child process
-    exit(0);
   }
 }
 
 TEST(CUDATest, cuda_device_assertions_from_2_processes) {
 #ifdef TORCH_USE_CUDA_DSA
-  c10::cuda::CUDAKernelLaunchRegistry::get_singleton_ref().enabled = true;
+  c10::cuda::CUDAKernelLaunchRegistry::get_singleton_ref().enabled_at_runtime = true;
   cuda_device_assertions_from_2_processes();
 #else
-  GTEST_SKIP() << "CUDA device-side assertions (DSA) was not enabled.";
+  GTEST_SKIP() << "CUDA device-side assertions (DSA) was not enabled at compile time.";
 #endif
 }
 

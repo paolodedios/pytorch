@@ -1,13 +1,12 @@
 #include <ATen/functorch/VmapInterpreter.h>
 #include <ATen/functorch/DynamicLayer.h>
 
-namespace at { namespace functorch {
+namespace at::functorch {
 
 void VmapInterpreterPtr::processImpl(
     const c10::OperatorHandle& op,
     torch::jit::Stack* stack) {
-  DispatchKeySet exclude = keysToExcludeWhenEnteringDynamicLayer(TransformType::Vmap);
-  setup_dispatch_key_tls(exclude, DispatchKeySet(DispatchKey::FuncTorchVmapMode));
+  setup_dispatch_key_tls(TransformType::Vmap, DispatchKeySet(DispatchKey::FuncTorchVmapMode));
   op.callBoxed(stack);
 }
 
@@ -16,10 +15,10 @@ void VmapInterpreterPtr::sendToNextInterpreterImpl(
     torch::jit::Stack* stack,
     bool grad_special_case) {
   // Re-dispatch
-  if (getDynamicLayerStack().size() == 0) {
+  if (getDynamicLayerStack().empty()) {
     sanityCheckStack(op, stack);
   }
   op.callBoxed(stack);
 }
 
-}} // namespace at::functorch
+} // namespace at::functorch

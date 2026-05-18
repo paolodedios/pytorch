@@ -1,16 +1,34 @@
+"""This module contains the core type definitions and protocols used throughout Dynamo.
+
+The types defined here fall into several categories:
+- Guard related types (GuardFn, GuardFail, GuardedCode): Used for tracking and managing guards that protect compiled code
+- Frame and cache types (FrameState, CacheEntry): Used for managing interpreter frame state and caching
+- Callback protocols (DynamoCallbackFn): Define the interface for frame evaluation callbacks
+- Hook protocols (DynamoGuardHook, ProfilerStartHook, ProfilerEndHook, BytecodeHook): Define various hook points for
+  instrumentation and customization
+
+These types provide the foundational interfaces that enable Dynamo's dynamic compilation and optimization system,
+ensuring type safety and clear contracts between different components of the system.
+"""
+
 import dataclasses
-import sys
 import types
-from typing import Callable, Dict, List, NamedTuple, Optional, OrderedDict, Union
+from collections.abc import Callable
+from typing import Any, NamedTuple, Protocol
 
-from typing_extensions import Protocol
+# CacheEntry has a `guard_manager` field for the guard, and a `code` field for the code object.
+from torch._C._dynamo.eval_frame import (
+    _CacheEntry as CacheEntry,
+    _ExtraState as ExtraState,
+    _FrameAction as FrameAction,
+    _FrameExecStrategy as FrameExecStrategy,
+    _PyInterpreterFrame as DynamoFrameType,
+)
+from torch._guards import CompileId, Guard
 
-if sys.version_info >= (3, 11):
-    from torch._C._dynamo import eval_frame
 
-    DynamoFrameType = eval_frame._PyInterpreterFrame
-else:
-    DynamoFrameType = types.FrameType
+# We use a dict to store additional data per frame.
+FrameState = dict[Any, Any]
 
 
 class GuardFail(NamedTuple):
@@ -20,43 +38,104 @@ class GuardFail(NamedTuple):
     orig_code: types.CodeType
 
 
+@dataclasses.dataclass(frozen=True)
+class GuardFilterEntry:
+    name: str
+    has_value: bool
+    value: object
+    guard_type: str
+    derived_guard_types: tuple[str, ...]
+    is_global: bool
+    orig_guard: Guard
+
+
 class GuardFn(Protocol):
-    closure_vars: OrderedDict[str, object]
-    args: List[str]
-    code_parts: List[str]
-    verbose_code_parts: List[str]
-    global_scope: Dict[str, object]
-    guard_fail_fn: Optional[Callable[[GuardFail], None]]
+    closure_vars: dict[str, object]
+    args: list[str]
+    code_parts: list[str]
+    verbose_code_parts: list[str]
+    global_scope: dict[str, object]
+    guard_fail_fn: Callable[[GuardFail], None] | None
+    cache_entry: CacheEntry | None
+    extra_state: ExtraState | None
 
     # maps locals of user function to bool
-    def __call__(self, *maybe_dotzero: object, **f_locals: object) -> bool:
-        ...
+    def __call__(self, f_locals: dict[str, object]) -> bool: ...
 
 
 @dataclasses.dataclass
 class GuardedCode:
     code: types.CodeType
-    check_fn: GuardFn
+    guard_manager: GuardFn
+    compile_id: CompileId
+    trace_annotation: str = "Unknown"
+
+
+@dataclasses.dataclass
+class ConvertFrameReturn:
+    # default return is no compiled code (i.e. `return None`):
+    # strategy is to skip non-recursively, for all future intercepted frames too
+
+    # eval frame execution strategy for this frame
+    frame_exec_strategy: FrameExecStrategy = dataclasses.field(
+        default_factory=lambda: FrameExecStrategy(FrameAction.SKIP, FrameAction.DEFAULT)
+    )
+    # also apply frame_exec strategy to future frames with same code
+    apply_to_code: bool = True
+    guarded_code: GuardedCode | None = None
+    skip_reason: str | None = None
+
+
+def wrap_guarded_code(guarded_code: GuardedCode) -> ConvertFrameReturn:
+    return ConvertFrameReturn(
+        frame_exec_strategy=FrameExecStrategy(FrameAction.DEFAULT, FrameAction.DEFAULT),
+        guarded_code=guarded_code,
+    )
 
 
 class DynamoCallbackFn(Protocol):
     def __call__(
         self,
         frame: DynamoFrameType,
-        cache_size: int,
-    ) -> Optional[GuardedCode]:
-        ...
+        cache_entry: CacheEntry | None,
+        frame_state: FrameState,
+    ) -> ConvertFrameReturn: ...
 
 
-DynamoCallback = Union[DynamoCallbackFn, None, bool]
+DynamoCallback = DynamoCallbackFn | None | bool
 
 
 class DynamoGuardHook(Protocol):
     def __call__(
         self,
-        guard_fn: GuardFn,
+        guard_manager: GuardFn,
         code: types.CodeType,
-        f_locals: Dict[str, object],
+        f_locals: dict[str, object],
+        index: int,
         last: bool,
-    ) -> None:
-        ...
+    ) -> None: ...
+
+
+class DynamoGuardCompleteHook(Protocol):
+    def __call__(
+        self,
+        cache_hit: bool,
+    ) -> bool: ...
+
+
+class ProfilerStartHook(Protocol):
+    def __call__(
+        self,
+        name: str,
+        # TODO(whc) how do I annotate a _RecordFunction here?
+    ) -> Any: ...
+
+
+class ProfilerEndHook(Protocol):
+    def __call__(self, record: Any) -> None: ...
+
+
+class BytecodeHook(Protocol):
+    def __call__(
+        self, code: types.CodeType, new_code: types.CodeType
+    ) -> types.CodeType | None: ...

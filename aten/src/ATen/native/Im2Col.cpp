@@ -16,11 +16,10 @@
 #include <ATen/ops/im2col_native.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 namespace {
 
-static void im2col_out_cpu_template(
+void im2col_out_cpu_template(
     Tensor& output,
     const Tensor& input_,
     IntArrayRef kernel_size,
@@ -95,7 +94,7 @@ static void im2col_out_cpu_template(
 
   output.resize_({batch_size, n_output_plane, output_length});
 
-  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(kBFloat16, kHalf,
+  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND3(kBFloat16, kHalf, kBool,
       input.scalar_type(), "im2col_out_cpu", [&] {
         Tensor input_n;
         Tensor output_n;
@@ -105,7 +104,7 @@ static void im2col_out_cpu_template(
           output_n = output.select(0, elt);
 
           im2col<scalar_t>(
-              input_n.data_ptr<scalar_t>(),
+              input_n.const_data_ptr<scalar_t>(),
               n_input_plane,
               input_height,
               input_width,
@@ -119,7 +118,7 @@ static void im2col_out_cpu_template(
               stride_width,
               dilation_height,
               dilation_width,
-              output_n.data_ptr<scalar_t>());
+              output_n.mutable_data_ptr<scalar_t>());
         }
 
         if (!batched_input) {
@@ -154,5 +153,4 @@ Tensor im2col_cpu(
   return output;
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

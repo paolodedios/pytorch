@@ -3,7 +3,6 @@
 #include <ATen/native/cuda/SortStable.h>
 
 #include <ATen/Dispatch.h>
-#include <ATen/core/Array.h>
 #include <ATen/core/TensorBase.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/KernelUtils.h>
@@ -15,17 +14,22 @@
 #include <c10/core/DeviceArray.h>
 #include <limits>
 
-namespace at {
-namespace native {
+namespace at::native {
 
 namespace {
 
 struct offset_t {
   int stride;
   int begin;
-  __device__ int operator[](int i) {
+  __host__ __device__ int operator[](int i) const {
     return stride * (begin + i);
   }
+#if CCCL_VERSION >= 3001000
+  __host__ __device__ offset_t& operator+=(int i) {
+    begin += i;
+    return *this;
+  }
+#endif
 };
 // Segmented sort by full sort algorithm:.
 // Say we are sorting a (2, 3) tensor. We have in flattened form:
@@ -227,73 +231,61 @@ void launch_stable_sort_kernel(
     return;
   }
 
-  int64_t numel_or_intmax =
-      std::min(numel, static_cast<int64_t>(std::numeric_limits<int>::max()));
+  const int64_t intmax = static_cast<int64_t>(std::numeric_limits<int>::max());
+  // On ROCm, std::min -> ::min did not work as expected on when input values >= 2147483648
+  int64_t numel_or_intmax = numel < intmax ? numel : intmax;
   int64_t nsort = self.size(dim);
   int64_t nbatch = (numel_or_intmax / nsort) * nsort;
   TORCH_CHECK(nbatch > 0, "Cannot sort dimension of length ", nsort);
-  int64_t* indices_ptr = indices.data_ptr<int64_t>();
-
-#if (defined(USE_ROCM) && ROCM_VERSION < 40500)
-  constexpr bool is_rocm_bf16_sort_unsupported = true;
-#else
-  constexpr bool is_rocm_bf16_sort_unsupported = false;
-#endif
+  int64_t* indices_ptr = indices.mutable_data_ptr<int64_t>();
 
   AT_DISPATCH_ALL_TYPES_AND3(
       kBool, kHalf, kBFloat16, self.scalar_type(), "sort", [&] {
-        c10::guts::if_constexpr<!(
-            is_rocm_bf16_sort_unsupported &&
-            std::is_same<scalar_t, c10::BFloat16>::value)>(
-            [&](auto _) {
-              const scalar_t* self_ptr = self.data_ptr<scalar_t>();
-              scalar_t* values_ptr = values.data_ptr<scalar_t>();
-              int64_t remaining = _(numel);
-              while (remaining > 0) {
-                int64_t n = std::min(remaining, nbatch);
-                int64_t nsegments = n / nsort;
+        const scalar_t* self_ptr = self.const_data_ptr<scalar_t>();
+        scalar_t* values_ptr = values.mutable_data_ptr<scalar_t>();
+        int64_t remaining = numel;
+        while (remaining > 0) {
+          // On ROCm, std::min -> ::min did not work as expected on when input values >= 2147483648
+          int64_t n = remaining < nbatch ? remaining : nbatch;
+          int64_t nsegments = n / nsort;
 
-                if (nsegments == 1 ||
-                    nsort >= 1000000) { // rough heuristics where even a single
-                                        // sort occupies GPU
-                  segmented_sort_large_segments(
-                      nsegments,
-                      nsort,
-                      n,
-                      descending,
-                      self_ptr,
-                      values_ptr,
-                      indices_ptr);
-                } else if (nsegments < 128) {
-                  segmented_sort_pairs_by_full_sort(
-                      nsegments,
-                      nsort,
-                      n,
-                      descending,
-                      self_ptr,
-                      values_ptr,
-                      indices_ptr);
-                } else {
-                  segmented_sort_pairs(
-                      nsegments,
-                      nsort,
-                      n,
-                      descending,
-                      self_ptr,
-                      values_ptr,
-                      indices_ptr);
-                }
+          if (nsegments == 1 ||
+              nsort >= 1000000) { // rough heuristics where even a single
+                                  // sort occupies GPU
+            segmented_sort_large_segments(
+                nsegments,
+                nsort,
+                n,
+                descending,
+                self_ptr,
+                values_ptr,
+                indices_ptr);
+          } else if (nsegments < 128) {
+            segmented_sort_pairs_by_full_sort(
+                nsegments,
+                nsort,
+                n,
+                descending,
+                self_ptr,
+                values_ptr,
+                indices_ptr);
+          } else {
+            segmented_sort_pairs(
+                nsegments,
+                nsort,
+                n,
+                descending,
+                self_ptr,
+                values_ptr,
+                indices_ptr);
+          }
 
-                remaining -= n;
-                self_ptr += n;
-                values_ptr += n;
-                indices_ptr += n;
-              }
-            },
-            [&](auto _) {
-              TORCH_CHECK(_(false), "BFloat16 is not supported on ROCm < 4.5");
-            });
+          remaining -= n;
+          self_ptr += n;
+          values_ptr += n;
+          indices_ptr += n;
+        }
       });
 }
-} // namespace native
-} // namespace at
+
+} // namespace at::native

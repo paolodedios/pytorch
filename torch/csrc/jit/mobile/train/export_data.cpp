@@ -2,7 +2,6 @@
 
 #include <torch/csrc/jit/mobile/import_export_common.h>
 #include <torch/csrc/jit/mobile/module.h>
-#include <torch/csrc/jit/runtime/instruction.h>
 #include <torch/csrc/jit/serialization/flatbuffer_serializer.h>
 #include <torch/csrc/jit/serialization/pickler.h>
 #include <torch/csrc/jit/serialization/type_name_uniquer.h>
@@ -15,11 +14,8 @@
 #include <string>
 #include <vector>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 namespace mobile {
-
-char const* toString(OpCode op);
 
 namespace {
 
@@ -61,7 +57,7 @@ class IValuePickler final {
     std::string prefix = archive_name + "/";
     for (const auto& td : data_pickle.tensorData()) {
       WriteableTensorData writable_td = getWriteableTensorData(td);
-      std::string fname = prefix + c10::to_string(i++);
+      std::string fname = prefix + std::to_string(i++);
       writer_.writeRecord(fname, writable_td.data(), writable_td.sizeInBytes());
     }
     std::string fname = archive_name + ".pkl";
@@ -150,5 +146,4 @@ void _save_parameters(
   _save_parameters(map, ifile, use_flatbuffer);
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

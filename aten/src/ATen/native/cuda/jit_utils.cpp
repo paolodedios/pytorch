@@ -2,7 +2,7 @@
 #include <c10/core/ScalarType.h>
 #include <c10/util/irange.h>
 #include <c10/util/hash.h>
-#include <c10/util/Optional.h>
+#include <optional>
 #include <ATen/jit_macros.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/OffsetCalculator.cuh>
@@ -12,7 +12,7 @@
 #include <ATen/native/cuda/jit_utils.h>
 #include <ATen/cuda/llvm_jit_strings.h>
 #include <ATen/native/cuda/reduction_template.cuh>
-
+#include <c10/util/Exception.h>
 #include <sstream>
 #include <fstream>
 #include <cstdio>
@@ -20,7 +20,7 @@
 #include <cstdlib>
 #include <string>
 
-// TODO: C++17 has the fileystem header, which may replace these
+// TODO: C++17 has the filesystem header, which may replace these
 #ifdef _WIN32
   // On Windows, the POSIX implementations are considered deprecated. We simply map to the newer variant.
   #include <process.h>
@@ -38,14 +38,14 @@
 #endif
 
 
-namespace at { namespace cuda { namespace jit {
+namespace at::cuda::jit {
 
 // hiprtc already includes some traits, so this removes duplicate definitions of
 // integral_constant, is_same, is_integral, enable_if, is_floating_point, is_arithmetic.
 // Copied from aten/src/ATen/cuda/llvm_basic.cpp, then modified as above.
 // If not compiling for ROCm, return the original get_traits_string().
 std::string get_traits_string_but_hiprtc_safe() {
-#ifdef USE_ROCM
+#if defined(USE_ROCM) && HIP_VERSION_MAJOR < 7
     return R"ESCAPE(
 namespace std {
 
@@ -177,8 +177,7 @@ const std::string jit_common_types = R"ESCAPE(
   #define __forceinline__ inline __attribute__((always_inline))
   #endif
   #else
-  //TODO use _assert_fail, because assert is disabled in non-debug builds
-  #define ERROR_UNSUPPORTED_CAST assert(false);
+  #define ERROR_UNSUPPORTED_CAST __trap();
   #define CUDA_OR_ROCM_NUM_THREADS 128
   #define MAX_DIMS 25
   #endif
@@ -192,11 +191,13 @@ const std::string jit_common_types = R"ESCAPE(
   typedef signed char int8_t;
   typedef unsigned char uint8_t;  // NOTE: this MUST be "unsigned char"! "char" is equivalent to "signed char"
   typedef short int16_t;
+  typedef unsigned short uint16_t;
+  typedef unsigned long long uint64_t;
   static_assert(sizeof(int64_t) == 8, "expected size does not match");
   static_assert(sizeof(uint32_t) == 4, "expected size does not match");
   static_assert(sizeof(int8_t) == 1, "expected size does not match");
   constexpr int num_threads = CUDA_OR_ROCM_NUM_THREADS;
-  constexpr int thread_work_size = 4; // TODO: make template substitution once we decide where those vars live
+  constexpr int thread_work_size = ${thread_work_size}; // TODO: make template substitution once we decide where those vars live
   constexpr int block_work_size = thread_work_size * num_threads;
 
   ${traits_string}
@@ -222,6 +223,20 @@ const std::string jit_common_types = R"ESCAPE(
   _(void, QUInt8) /* 13 */                        \
   _(void, QInt32) /* 14 */                        \
   _(at::BFloat16, BFloat16) /* 15 */                             \
+  _(void, QUInt4x2) /* 16 */                             \
+  _(void, QUInt2x4) /* 17 */                             \
+  _(void, Bits1x8) /* 18 */                              \
+  _(void, Bits2x4) /* 19 */                              \
+  _(void, Bits4x2) /* 20 */                              \
+  _(void, Bits8) /* 21 */                                \
+  _(void, Bits16) /* 22 */                               \
+  _(void, Float8_e5m2) /* 23 */                          \
+  _(void, Float8_e4m3fn) /* 24 */                        \
+  _(void, Float8_e5m2fnuz) /* 25 */                      \
+  _(void, Float8_e4m3fnuz) /* 26 */                      \
+  _(uint16_t, UInt16) /* 27 */                           \
+  _(uint32_t, UInt32) /* 28 */                           \
+  _(uint64_t, UInt64) /* 29 */
 
   #define AT_FORALL_SCALAR_TYPES_WITH_COMPLEX_EXCEPT_QINT(_)       \
   _(uint8_t, Byte)                                                 \
@@ -236,7 +251,10 @@ const std::string jit_common_types = R"ESCAPE(
   _(std::complex<float>, ComplexFloat)                             \
   _(std::complex<double>, ComplexDouble)                           \
   _(bool, Bool)                                                    \
-  _(at::BFloat16, BFloat16)
+  _(at::BFloat16, BFloat16)                                        \
+  _(uint16_t, UInt16)                                              \
+  _(uint32_t, UInt32)                                              \
+  _(uint64_t, UInt64)
 
 
   enum class ScalarType : int8_t {
@@ -912,25 +930,66 @@ void codegenOutputQuery(
     compile_to_sass = true;
   }
 
-  #if defined(CUDA_VERSION) && CUDA_VERSION < 11010
-    // compile to sass is not allowed prior to CUDA 11.1
-    compile_to_sass = false;
-  #endif
 #endif
 }
 
 // TODO: another copy paste from jit, refactor so it's usable from both
 // TODO: try making the CUcontext thread local to see if that improves performance - why is this slow?
-void __inline__ initializeCudaContext() {
+void initializeCudaContext() {
   // lazily construct context if non-existing yet;
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   CUcontext pctx = nullptr;
   AT_CUDA_DRIVER_CHECK(at::globalContext().getNVRTC().cuCtxGetCurrent(&pctx));
   if (!pctx) {
     std::unique_lock<std::mutex> cudaFreeMutexLock(
         *(c10::cuda::getFreeMutex()));
-    cudaFree(nullptr);
+    AT_CUDA_CHECK(cudaFree(nullptr));
   }
+}
+
+int calc_io_size(
+    const int nInputs,
+    const int nOutputs,
+    const c10::ScalarType& inputs_type,
+    const c10::ScalarType& result_type) {
+    if (nInputs > 0 && nOutputs > 0) {
+        return std::min(c10::elementSize(inputs_type), c10::elementSize(result_type));
+    }
+
+    if (nInputs > 0) {
+        return c10::elementSize(inputs_type);
+    }
+
+    if (nOutputs > 0) {
+        return c10::elementSize(result_type);
+    }
+
+    return 0;
+}
+
+int calc_thread_work_size(
+    const int nInputs,
+    const int nOutputs,
+    const c10::ScalarType& inputs_type,
+    const c10::ScalarType& result_type) {
+#ifdef USE_ROCM
+    auto io_size = at::cuda::jit::calc_io_size(nInputs, nOutputs, inputs_type, result_type);
+    TORCH_INTERNAL_ASSERT(io_size > 0);
+    if (io_size == 1) {
+        return 16;
+    } else if (io_size < 4) {
+        return 8;
+    } else {
+        return 4;
+    }
+#else
+    auto io_size = at::cuda::jit::calc_io_size(nInputs, nOutputs, inputs_type, result_type);
+    TORCH_INTERNAL_ASSERT(io_size > 0);
+    if (io_size == 1) {
+        return 16;
+    } else {
+        return 8;
+    }
+#endif
 }
 
 std::string generate_code(
@@ -938,6 +997,7 @@ std::string generate_code(
     bool contiguous,
     bool dynamic_casting,
     BinaryFuncVariant scalar_pos,
+    int thread_work_size,
     bool vectorized,
     int vec_size,
     bool return_by_ref) {
@@ -958,14 +1018,11 @@ std::string generate_code(
       dynamic_casting,
       scalar_pos,
       extra_args_typenames,
+      thread_work_size,
       vectorized,
       vec_size,
       return_by_ref);
 }
-
-//FIXME - this are defined in Loops.cuh, but including Loops.cuh here would lead to circular includes Loops.cuh -> CUDALoops.cuh -> jit_utils.h -> Loops.cuh
-#define THREAD_WORK_SIZE 4
-constexpr int thread_work_size = THREAD_WORK_SIZE;
 
 std::string generate_code(
     int nInputs,
@@ -979,6 +1036,7 @@ std::string generate_code(
     bool dynamic_casting,
     BinaryFuncVariant scalar_pos,
     c10::SmallVector<std::string>& extra_args_typenames,
+    int thread_work_size,
     bool vectorized,
     int vec_size,
     bool return_by_ref) {
@@ -993,16 +1051,17 @@ std::string generate_code(
   env.s("functor", func);
   env.s("name", name);
   env.s("cmath_string", get_cmath_string());
+  env.s("thread_work_size", std::to_string(thread_work_size));
 
   // Generate `extra_params` for function signature
   // and `extra_args` for computation call if
   // extra arguments to capture runtime state are passed.
   // (look at polygamma for example).
-  std::string extra_params = "";
-  std::string extra_args = "";
+  std::string extra_params;
+  std::string extra_args;
   for (size_t i = 0; i < extra_args_typenames.size(); i++) {
     auto type = std::string(extra_args_typenames[i]);
-    auto name = "extra_arg_" + std::string(to_string(i));
+    auto name = "extra_arg_" + std::to_string(i);
     extra_params += "," + type + " " + name;
     extra_args += ", " + name;
   }
@@ -1014,14 +1073,14 @@ std::string generate_code(
     // TODO these arrays are potentially of the different types, use function
     // traits to determine the types
     declare_load_arrays << f_inputs_type << " arg" << std::to_string(i)
-                        << "[" << std::to_string(thread_work_size) << "];\n";
+                        << '[' << std::to_string(thread_work_size) << "];\n";
   }
   env.s("declare_load_arrays", declare_load_arrays.str());
 
   std::stringstream declare_store_arrays;
   for (int i = 0; i < nOutputs; i++) {
     declare_store_arrays << result_type << " out" << std::to_string(i)
-                        << "[" << std::to_string(thread_work_size) << "];\n";
+                        << '[' << std::to_string(thread_work_size) << "];\n";
   }
   env.s("declare_store_arrays", declare_store_arrays.str());
 
@@ -1174,7 +1233,7 @@ std::string generate_code(
   for (const auto i : c10::irange(nInputs)){
     auto i_string = std::to_string(i);
     vector_inputs << "auto * input" << i_string <<
-        " = reinterpret_cast<const scalar_t*>(data[" << i_string << "+" << nOutputs << "])" <<
+        " = reinterpret_cast<const scalar_t*>(data[" << i_string << '+' << nOutputs << "])" <<
         " + block_work_size * idx;\n";
   }
   env.s("vector_inputs", vector_inputs.str());
@@ -1309,7 +1368,7 @@ std::string generate_reduction_code(
     int vec_size,
     int max_threads_codegen) {
   TORCH_INTERNAL_ASSERT(desc.nInputs == 1);
-  TORCH_INTERNAL_ASSERT(desc.extra_args_types.size() == 0);
+  TORCH_INTERNAL_ASSERT(desc.extra_args_types.empty());
 
   return generate_reduction_code(
       desc.nOutputs,
@@ -1340,6 +1399,7 @@ std::string generate_reduction_code(
     int max_threads_codegen) {
       std::string func = func_;
       at::jit::TemplateEnv env;
+      constexpr int thread_work_size = JIT_THREAD_WORK_SIZE;
       env.s("index_type", "unsigned int");
       env.s("scalar_type", f_inputs_type);
       env.s("result_type", result_type);
@@ -1347,6 +1407,7 @@ std::string generate_reduction_code(
       env.s("vt0", std::to_string(vt0));
       env.s("name", name);
       env.s("max_threads_lb", std::to_string(max_threads_codegen));
+      env.s("thread_work_size", std::to_string(thread_work_size));
       // reductions don't support dynamic casting, so the only way to get nonstandard types
       // is through input
       if (f_inputs_type == "at::Half" || f_inputs_type == "std::complex<at::Half>") {
@@ -1393,7 +1454,7 @@ std::string generate_reduction_code(
 }
 
 // Acquires (possibly creating) the kernel cache directory
-c10::optional<std::string> get_cache_dir() {
+std::optional<std::string> get_cache_dir() {
   // If the environment variable USE_TORCH_KERNEL_CACHE is set to "0" then no persistent cache is used
   const char* uptkc = std::getenv("USE_PYTORCH_KERNEL_CACHE");
   const bool use_kernel_cache = (uptkc == nullptr) ? true : std::strcmp(uptkc, "0");
@@ -1406,7 +1467,7 @@ c10::optional<std::string> get_cache_dir() {
   std::string cache_dir;
   char* ptkcp = std::getenv("PYTORCH_KERNEL_CACHE_PATH");
   // Create kernel_cache_dir if needed as we do not want to create the base directory passed by the user
-  std::string kernels_cache_dir = "";
+  std::string kernels_cache_dir;
   if (ptkcp != nullptr) {
     cache_dir = std::string(ptkcp);
   } else {
@@ -1483,11 +1544,11 @@ NvrtcFunction jit_pwise_function(
   NvrtcFunction compiled_kernel_;
   std::string name = kernel_name + "_kernel";
 
-  static const c10::optional<std::string> cache_dir = get_cache_dir();
+  static const std::optional<std::string> cache_dir = get_cache_dir();
 
   std::string file_path;
   if (cache_dir.has_value()) {
-    // Attemps to read from the cache.
+    // Attempts to read from the cache.
     // Cubin name is <kernel name>_arch<major>.<minor>_nvrtc<major>.<minor>_<ptx or sass>_<program length>_<string hash>
     // Note that the SHA1 hash used in the file name is NOT the SHA1 hash of the file's contents,
     //   because we hash on the CUDA code, but we save the compiled ptx or sass
@@ -1498,28 +1559,32 @@ NvrtcFunction jit_pwise_function(
 
     // Constructs file path by appending constructed cubin name to cache path
     std::stringstream ss;
-    ss << *cache_dir << "/";
+    ss << *cache_dir << '/';
     ss << kernel_name;
-    ss << "_arch" << cuda_major << "." << cuda_minor;
-    ss << "_nvrtc" << nvrtc_major << "." << nvrtc_minor;
+#ifdef USE_ROCM
+    ss << "_arch" << prop->gcnArchName;
+#else
+    ss << "_arch" << cuda_major << '.' << cuda_minor;
+#endif
+    ss << "_nvrtc" << nvrtc_major << '.' << nvrtc_minor;
     ss << (compile_to_sass ? "_sass" : "_ptx");
-    ss << "_" << code.length();
-    ss << "_" << hash_code;
+    ss << '_' << code.length();
+    ss << '_' << hash_code;
     file_path = ss.str();
 
-    std::ifstream readin{file_path, std::ios::in | std::ifstream::binary};
-    if (readin.fail()) {
+    std::ifstream read_stream{file_path, std::ios::in | std::ifstream::binary};
+    if (read_stream.fail()) {
       // NOTE: this does not warn because the file might not exist
-      // TODO: consider if this should explicilty check for the file's existence or not to throw
+      // TODO: consider if this should explicitly check for the file's existence or not to throw
       //   an informative warning
-      readin.close();
+      read_stream.close();
     } else {
       // TODO: try passing the "mapped" file directly to cuModuleLoadCall instead of using an intermediate buffer
-      std::vector<char> buffer(std::istreambuf_iterator<char>(readin), {});
+      std::vector<char> buffer(std::istreambuf_iterator<char>(read_stream), {});
       AT_CUDA_DRIVER_CHECK(nvrtc.cuModuleLoadData(&(compiled_kernel_.module), buffer.data()));
       AT_CUDA_DRIVER_CHECK(
         nvrtc.cuModuleGetFunction(&(compiled_kernel_.function), compiled_kernel_.module, name.c_str()));
-      readin.close();
+      read_stream.close();
       return compiled_kernel_;
     }
   }
@@ -1532,12 +1597,12 @@ NvrtcFunction jit_pwise_function(
       &program, code.c_str(), nullptr, 0, nullptr, nullptr));
 
 #ifdef USE_ROCM
-  std::vector<const char*> args = {"--std=c++17"};
+  std::vector<const char*> args = {"--std=c++20"};
 #else
   // Constructs nvrtc build arguments
   // CUDA 11.1 allows going directly to SASS (sm_) instead of PTX (compute_)
   // which gives better backwards compatibility to work on older driver,
-  // (since older driver doesn't necessrily recognize PTX emitted by new
+  // (since older driver doesn't necessarily recognize PTX emitted by new
   // toolkit);
   // Meanwhile, for forward compatibility (future device with
   // `unsupported_arch==True`), since SASS are not necessarily compatible,
@@ -1545,9 +1610,8 @@ NvrtcFunction jit_pwise_function(
   const std::string compute = std::string("--gpu-architecture=") +
       (compile_to_sass ? "sm_" : "compute_") + std::to_string(cuda_major) +
       std::to_string(cuda_minor);
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   std::vector<const char*> args = {
-      "--std=c++17", compute.c_str(), "-default-device"};
+      "--std=c++20", compute.c_str(), "-default-device"};
 #endif
 
   #ifndef NDEBUG
@@ -1565,16 +1629,14 @@ NvrtcFunction jit_pwise_function(
   if (compilation_result != NVRTC_SUCCESS) {
     size_t logsize;
     AT_CUDA_NVRTC_CHECK(nvrtc.nvrtcGetProgramLogSize(program, &logsize));
-    std::vector<char> log(logsize);
-    AT_CUDA_NVRTC_CHECK(nvrtc.nvrtcGetProgramLog(program, log.data()));
-    std::stringstream cu;
-    cu << log.data();
-    throw std::runtime_error(code + cu.str());
+    std::string log(logsize, '\0');
+    AT_CUDA_NVRTC_CHECK(nvrtc.nvrtcGetProgramLog(program, &log[0]));
+    TORCH_CHECK(false, code + log);
   }
 
   size_t ptx_size = 0;
   std::vector<char> ptx;
-  #if defined(CUDA_VERSION) && CUDA_VERSION >= 11010
+  #if !defined(USE_ROCM)
     // compile_to_sass determines whether we are generating SASS or PTX, hence
     // the different API.
     const auto getSize = compile_to_sass
@@ -1634,7 +1696,7 @@ NvrtcFunction jit_pwise_function(
 // TODO: may need/want to initialize CUDA context here (refactor into nvrtc call)
 void launch_jitted_pwise_function(
     NvrtcFunction function,
-    void* args[],
+    const void* args[],
     const dim3 nBlocks,
     const dim3 kBlockSize,
     const int smem) {
@@ -1652,9 +1714,9 @@ void launch_jitted_pwise_function(
     kBlockSize.z,
     smem,
     stream,
-    args,
+    // NOLINTNEXTLINE(*const-cast*)
+    const_cast<void**>(args),
     nullptr));
 }
 
-
-}}} // at::cuda::jit
+} // at::cuda::jit

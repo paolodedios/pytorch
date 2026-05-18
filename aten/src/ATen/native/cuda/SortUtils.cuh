@@ -1,15 +1,25 @@
 #pragma once
 #include <c10/macros/Macros.h>
-#include <c10/util/Optional.h>
 
 #include <ATen/cuda/cub.cuh>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/DeviceUtils.cuh>
 #include <ATen/native/cuda/SortingCommon.cuh>
 #include <ATen/native/cuda/Sort.h>
 #include <ATen/native/StridedRandomAccessor.h>
 
-namespace at { namespace native {
+#if defined(USE_ROCM)
+// ROCm: WarpMergeSort available and tested on ROCm 7.0+
+// ROCM_VERSION encoding: MAJOR*10000 + MINOR*100 + PATCH
+#define HAS_WARP_MERGE_SORT() (ROCM_VERSION >= 70000)
+#else
+// CUDA: WarpMergeSort available since CUDA 11.6
+#define HAS_WARP_MERGE_SORT() (CUDA_VERSION >= 11060)
+#endif
+
+
+namespace at::native {
 
 template <typename T>
 __device__ inline void swapVars(T& t1, T& t2) {
@@ -153,6 +163,102 @@ bitonicSortKVInPlace(at::cuda::detail::TensorInfo<K, IndexType> keys,
   }
 }
 
+#if HAS_WARP_MERGE_SORT()
+
+// Note [warp merge sort WARP_SIZE template param]
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+// warpMergeSortKVInPlace was written assuming C10_WARP_SIZE is a constexpr.
+// In torch/headeronly/macros/Macros.h, C10_WARP_SIZE is 32 for CUDA, and on
+// ROCm it will be 32 or 64 based on the current compile-time gfx target.
+// Ideally, warpSize should be used instead of C10_WARP_SIZE in device code, but
+// C10_WARP_SIZE within this kernel has been used as a template parameter for
+// some device functions. Therefore, a template param for WARP_SIZE was added.
+template <int KeyDims, int ValueDims, int sort_size, int max_block_dim_y,
+          typename K, typename V, typename Comparator, typename IndexType,
+          int WARP_SIZE>
+C10_LAUNCH_BOUNDS_1(WARP_SIZE * max_block_dim_y)
+__global__ void
+warpMergeSortKVInPlace(
+    at::cuda::detail::TensorInfo<K, IndexType> keys,
+    IndexType keySlices,
+    IndexType keySliceSize,
+    IndexType keySliceStride,
+    at::cuda::detail::TensorInfo<V, IndexType> values,
+    IndexType valueSliceStride,
+    Comparator comp,
+    K invalid_key) {
+  // Find the slice of the tensor that we are sorting
+  // NOTE: blockDim.y may be less max_block_dim_y
+  const IndexType blockIndex = getLinearBlockId<IndexType>();
+  const IndexType linearIndex = blockIndex * blockDim.y + threadIdx.y;
+
+  // If this row is out of bounds exit early
+  if (linearIndex >= keySlices) {
+    return;
+  }
+
+  const IndexType keyStartOffset =
+    at::cuda::detail::IndexToOffset<K, IndexType, KeyDims>::get(linearIndex, keys);
+  const IndexType valueStartOffset =
+    at::cuda::detail::IndexToOffset<V, IndexType, ValueDims>::get(linearIndex, values);
+
+  K *keys_slice = &keys.data[keyStartOffset];
+  V *values_slice = &values.data[valueStartOffset];
+
+  StridedRandomAccessor<K, IndexType> keys_iter(keys_slice, keySliceStride);
+  StridedRandomAccessor<V, IndexType> values_iter(values_slice, valueSliceStride);
+
+  namespace cub = ROCM_HIPCUB(at_cuda_detail::cub);
+
+  CUDA_KERNEL_ASSERT(blockDim.x == WARP_SIZE);
+  CUDA_KERNEL_ASSERT(blockDim.y <= max_block_dim_y);
+  constexpr int items_per_thread = sort_size / WARP_SIZE;
+  static_assert(
+      items_per_thread * WARP_SIZE == sort_size,
+      "sort_size must be a multiple of WARP_SIZE template param");
+
+
+  using LoadKeys = cub::WarpLoad<K, items_per_thread, cub::WARP_LOAD_TRANSPOSE>;
+  using LoadValues = cub::WarpLoad<V, items_per_thread, cub::WARP_LOAD_TRANSPOSE>;
+  using Sort = cub::WarpMergeSort<K, items_per_thread, WARP_SIZE, V>;
+  using StoreKeys = cub::WarpStore<K, items_per_thread, cub::WARP_STORE_TRANSPOSE>;
+  using StoreValues = cub::WarpStore<V, items_per_thread, cub::WARP_STORE_TRANSPOSE>;
+
+  __shared__ union {
+    typename LoadKeys::TempStorage load_keys;
+    typename LoadValues::TempStorage load_values;
+    typename Sort::TempStorage sort;
+    typename StoreKeys::TempStorage store_keys;
+    typename StoreValues::TempStorage store_values;
+  } tmp_storage[max_block_dim_y];
+
+  auto& warp_storage = tmp_storage[threadIdx.y];
+
+  // Load inputs
+  K local_keys[items_per_thread];
+  V local_values[items_per_thread];
+
+  const auto invalid_value = V{};
+  LoadKeys(warp_storage.load_keys).Load(keys_iter, local_keys, keySliceSize, invalid_key);
+  WARP_SYNC();
+  LoadValues(warp_storage.load_values).Load(values_iter, local_values, keySliceSize, invalid_value);
+  WARP_SYNC();
+
+  // Sort! We use stable sort to ensure that invalid values are never
+  // sorted before valid values. In testing it performed the same as
+  // .Sort, so there is no down-side.
+  Sort(warp_storage.sort).StableSort(
+      local_keys, local_values, comp, keySliceSize, invalid_key);
+  WARP_SYNC();
+
+  // Store outputs
+  StoreKeys(warp_storage.store_keys).Store(keys_iter, local_keys, keySliceSize);
+  WARP_SYNC();
+  StoreValues(warp_storage.store_values).Store(values_iter, local_values, keySliceSize);
+}
+
+#endif // HAS_WARP_MERGE_SORT()
+
 template <int KeyDims, int ValueDims,
           int block_size, int items_per_thread,
           typename K, typename V, typename IndexType>
@@ -250,4 +356,4 @@ radixSortKVInPlace(at::cuda::detail::TensorInfo<K, IndexType> keys,
   StoreValues(tmp_storage.store_values).Store(values_iter, local_values, keySliceSize);
 }
 
-}} // at::native
+} // namespace at::native

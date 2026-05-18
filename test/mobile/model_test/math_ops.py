@@ -6,9 +6,6 @@ import torch
 
 
 class PointwiseOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(PointwiseOpsModule, self).__init__()
-
     def forward(self):
         return self.pointwise_ops()
 
@@ -212,9 +209,6 @@ class PointwiseOpsModule(torch.nn.Module):
 
 
 class ReductionOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(ReductionOpsModule, self).__init__()
-
     def forward(self):
         return self.reduction_ops()
 
@@ -265,9 +259,6 @@ class ReductionOpsModule(torch.nn.Module):
 
 
 class ComparisonOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(ComparisonOpsModule, self).__init__()
-
     def forward(self):
         a = torch.tensor(0)
         b = torch.tensor(1)
@@ -313,9 +304,6 @@ class ComparisonOpsModule(torch.nn.Module):
 
 
 class OtherMathOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(OtherMathOpsModule, self).__init__()
-
     def forward(self):
         return self.other_ops()
 
@@ -325,7 +313,6 @@ class OtherMathOpsModule(torch.nn.Module):
         c = torch.randint(0, 8, (5,), dtype=torch.int64)
         e = torch.randn(4, 3)
         f = torch.randn(4, 4, 4)
-        size = [0, 1]
         dims = [0, 1]
         return len(
             torch.atleast_1d(a),
@@ -387,9 +374,6 @@ class OtherMathOpsModule(torch.nn.Module):
 
 
 class SpectralOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(SpectralOpsModule, self).__init__()
-
     def forward(self):
         return self.spectral_ops()
 
@@ -409,9 +393,6 @@ class SpectralOpsModule(torch.nn.Module):
 
 
 class BlasLapackOpsModule(torch.nn.Module):
-    def __init__(self):
-        super(BlasLapackOpsModule, self).__init__()
-
     def forward(self):
         return self.blas_lapack_ops()
 
@@ -427,7 +408,6 @@ class BlasLapackOpsModule(torch.nn.Module):
             torch.addr(torch.zeros(3, 3), v, v),
             torch.baddbmm(m, a, b),
             torch.bmm(a, b),
-            # torch.chain_matmul(torch.randn(3, 3), torch.randn(3, 3), torch.randn(3, 3)),  # deprecated
             # torch.cholesky(a), # deprecated
             # torch.cholesky_inverse(torch.randn(3, 3)), # had some error
             # torch.cholesky_solve(torch.randn(3, 3), torch.randn(3, 3)),

@@ -10,10 +10,7 @@
 
 #include <c10/util/CallOnce.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace onednn {
+namespace torch::jit::fuser::onednn {
 
 using ArgSpec = LlgaTensorDesc;
 using ArgSpecs = std::vector<ArgSpec>;
@@ -49,7 +46,7 @@ class LlgaKernel {
   dnnl::graph::compiled_partition compile(
       const dnnl::graph::partition& partition);
 
-  std::map<size_t, int64_t> initializeTensorIdToOccurence() const;
+  std::map<size_t, int64_t> initializeTensorIdToOccurrence() const;
 
   std::tuple<RunArgs, RunArgs> prepareRunArgs(
       const TensorArgs& inputs,
@@ -89,7 +86,4 @@ class LlgaKernel {
   bool is_initialized_ = false;
 };
 
-} // namespace onednn
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::fuser::onednn

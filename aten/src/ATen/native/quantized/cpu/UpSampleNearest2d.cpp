@@ -14,13 +14,14 @@
 #include <ATen/ops/upsample_nearest2d_native.h>
 #endif
 
+#include <c10/util/accumulate.h>
 #include <c10/util/irange.h>
 
 #include <cstring>
+#include <vector>
 
 
-namespace at {
-namespace native {
+namespace at::native {
 
 // Define a typedef to dispatch to nearest_idx or nearest_exact_idx
 typedef int64_t (*nn_compute_source_index_fn_t)(const float, int64_t, int64_t);
@@ -36,8 +37,8 @@ static void upsample_nearest2d_out_frame(
     int64_t output_width,
     int64_t nbatch,
     int64_t channels,
-    c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
+    std::optional<double> scales_h,
+    std::optional<double> scales_w) {
   float height_scale = compute_scales_value<float>(scales_h, input_height, output_height);
   float width_scale = compute_scales_value<float>(scales_w, input_width, output_width);
 
@@ -54,8 +55,8 @@ static void upsample_nearest2d_out_frame(
     return;
   }
 
-  std::unique_ptr<int64_t []> input_offset_arr(new int64_t[output_width]);
-  int64_t* input_offset = input_offset_arr.get();
+  std::vector<int64_t> input_offset_arr(output_width);
+  int64_t* input_offset = input_offset_arr.data();
 
   for (const auto w2 : c10::irange(output_width)) {
     const int64_t w1 = nn_compute_source_index_fn(width_scale, w2, input_width);
@@ -92,8 +93,8 @@ static void upsample_nearest2d_out_frame_nhwc(
     int64_t output_width,
     int64_t nbatch,
     int64_t channels,
-    c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
+    std::optional<double> scales_h,
+    std::optional<double> scales_w) {
   float height_scale = compute_scales_value<float>(scales_h, input_height, output_height);
   float width_scale = compute_scales_value<float>(scales_w, input_width, output_width);
 
@@ -118,36 +119,33 @@ static void upsample_nearest2d_out_frame_nhwc(
 }
 
 template <nn_compute_source_index_fn_t nn_compute_source_index_fn>
-Tensor _upsample_nearest2d_quantized_cpu(
+static Tensor _upsample_nearest2d_quantized_cpu(
     const Tensor& input,
     IntArrayRef output_size,
-    c10::optional<double> scales_h,
-    c10::optional<double> scales_w) {
-  TORCH_CHECK(
-      output_size.size() == 2,
-      "It is expected output_size equals to 2, but got size ",
-      output_size.size());
+    std::optional<double> scales_h,
+    std::optional<double> scales_w) {
+  auto full_output_size = native::upsample_2d_common_check(input.sizes(), output_size);
 
+  // Allow for empty batch size but not other dimensions
   TORCH_CHECK(
-      input.dim() == 4,
+      input.numel() != 0 || c10::multiply_integers(input.sizes().begin() + 1, input.sizes().end()),
       "Non-empty 4D data tensor expected but got a tensor with sizes ",
       input.sizes());
 
-  int64_t output_height = output_size[0];
-  int64_t output_width = output_size[1];
-
-  int64_t nbatch = input.size(0);
-  int64_t channels = input.size(1);
+  int64_t nbatch = full_output_size[0];
+  int64_t channels = full_output_size[1];
+  int64_t output_height = full_output_size[2];
+  int64_t output_width = full_output_size[3];
   int64_t input_height = input.size(2);
   int64_t input_width = input.size(3);
-    AT_ASSERT(input_width > 0 && output_width > 0);
+
   if (input.is_contiguous(c10::MemoryFormat::ChannelsLast)) {
     Tensor output = at::_empty_affine_quantized(
         {nbatch, channels, output_height, output_width},
         input.options().memory_format(input.suggest_memory_format()),
         input.q_scale(),
         input.q_zero_point(),
-        c10::nullopt);
+        std::nullopt);
 
     // special case: just copy
     if (input_height == output_height && input_width == output_width) {
@@ -205,38 +203,17 @@ using at::native::upsample::get_scale_value;
 Tensor upsample_nearest2d_quantized_cpu(
     const Tensor& input,
     IntArrayRef osize,
-    c10::optional<double> scale_h,
-    c10::optional<double> scale_w) {
+    std::optional<double> scale_h,
+    std::optional<double> scale_w) {
   return _upsample_nearest2d_quantized_cpu<nearest_neighbor_compute_source_index>(input, osize, scale_h, scale_w);
 }
 
 Tensor _upsample_nearest_exact2d_quantized_cpu(
     const Tensor& input,
     IntArrayRef osize,
-    c10::optional<double> scale_h,
-    c10::optional<double> scale_w) {
+    std::optional<double> scale_h,
+    std::optional<double> scale_w) {
   return _upsample_nearest2d_quantized_cpu<nearest_neighbor_exact_compute_source_index>(input, osize, scale_h, scale_w);
 }
 
-Tensor upsample_nearest2d_quantized_cpu(
-    const Tensor& input,
-    at::OptionalIntArrayRef output_size,
-    c10::optional<ArrayRef<double>> scale_factors) {
-  auto osize = compute_output_size(input.sizes(), output_size, scale_factors);
-  auto scale_h = get_scale_value(scale_factors, 0);
-  auto scale_w = get_scale_value(scale_factors, 1);
-  return upsample_nearest2d_quantized_cpu(input, osize, scale_h, scale_w);
-}
-
-Tensor _upsample_nearest_exact2d_quantized_cpu(
-    const Tensor& input,
-    at::OptionalIntArrayRef output_size,
-    c10::optional<ArrayRef<double>> scale_factors) {
-  auto osize = compute_output_size(input.sizes(), output_size, scale_factors);
-  auto scale_h = get_scale_value(scale_factors, 0);
-  auto scale_w = get_scale_value(scale_factors, 1);
-  return _upsample_nearest_exact2d_quantized_cpu(input, osize, scale_h, scale_w);
-}
-
-} // namespace native
-} // namespace at
+} // namespace at::native

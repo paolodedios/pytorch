@@ -1,9 +1,11 @@
 import functools
 import pickle
-from typing import Dict, Callable, Optional, TypeVar, Generic, Iterator
+from collections.abc import Callable, Iterable, Iterator
+from typing import TypeVar
 
-from torch.utils.data.datapipes._typing import _DataPipeMeta, _IterDataPipeMeta
+from torch.utils._import_utils import import_dill
 from torch.utils.data.datapipes._hook_iterator import _SnapshotState
+from torch.utils.data.datapipes._typing import _DataPipeMeta, _IterDataPipeMeta
 from torch.utils.data.datapipes.utils.common import (
     _deprecation_warning,
     _iter_deprecated_functional_names,
@@ -11,16 +13,9 @@ from torch.utils.data.datapipes.utils.common import (
 )
 from torch.utils.data.dataset import Dataset, IterableDataset
 
-try:
-    import dill
-    # XXX: By default, dill writes the Pickler dispatch table to inject its
-    # own logic there. This globally affects the behavior of the standard library
-    # pickler for any user who transitively depends on this module!
-    # Undo this extension to avoid altering the behavior of the pickler globally.
-    dill.extend(use_dill=False)
-    HAS_DILL = True
-except ImportError:
-    HAS_DILL = False
+
+dill = import_dill()
+HAS_DILL = dill is not None
 
 __all__ = [
     "DataChunk",
@@ -29,17 +24,35 @@ __all__ = [
     "MapDataPipe",
 ]
 
-T = TypeVar('T')
-T_co = TypeVar('T_co', covariant=True)
 
-UNTRACABLE_DATAFRAME_PIPES = ['batch',  # As it returns DataChunks
-                              'groupby',   # As it returns DataChunks
-                              '_dataframes_as_tuples',  # As it unpacks DF
-                              'trace_as_dataframe',  # As it used to mark DF for tracing
-                              ]
+_T = TypeVar("_T")
+_T_co = TypeVar("_T_co", covariant=True)
+
+UNTRACABLE_DATAFRAME_PIPES = [
+    "batch",  # As it returns DataChunks
+    "groupby",  # As it returns DataChunks
+    "_dataframes_as_tuples",  # As it unpacks DF
+    "trace_as_dataframe",  # As it used to mark DF for tracing
+]
 
 
-class IterDataPipe(IterableDataset[T_co], metaclass=_IterDataPipeMeta):
+class DataChunk(list[_T]):
+    def __init__(self, items: Iterable[_T]) -> None:
+        items = list(items)
+        super().__init__(items)
+        self.items = items
+
+    def as_str(self, indent: str = "") -> str:
+        return indent + "[" + ", ".join(str(i) for i in iter(self)) + "]"
+
+    def __iter__(self) -> Iterator[_T]:
+        yield from super().__iter__()
+
+    def raw_iterator(self) -> Iterator[_T]:
+        yield from self.items
+
+
+class IterDataPipe(IterableDataset[_T_co], metaclass=_IterDataPipeMeta):
     r"""
     Iterable-style DataPipe.
 
@@ -86,7 +99,9 @@ class IterDataPipe(IterableDataset[T_co], metaclass=_IterDataPipeMeta):
             >>> from torchdata.datapipes.iter import IterableWrapper, Mapper
             >>> dp = IterableWrapper(range(10))
             >>> map_dp_1 = Mapper(dp, lambda x: x + 1)  # Using class constructor
-            >>> map_dp_2 = dp.map(lambda x: x + 1)  # Using functional form (recommended)
+            >>> map_dp_2 = dp.map(
+            ...     lambda x: x + 1
+            ... )  # Using functional form (recommended)
             >>> list(map_dp_1)
             [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
             >>> list(map_dp_2)
@@ -96,44 +111,59 @@ class IterDataPipe(IterableDataset[T_co], metaclass=_IterDataPipeMeta):
             [2, 4, 6, 8, 10]
         Single Iterator Constraint Example:
             >>> from torchdata.datapipes.iter import IterableWrapper, Mapper
-            >>> dp = IterableWrapper(range(10))
+            >>> source_dp = IterableWrapper(range(10))
             >>> it1 = iter(source_dp)
             >>> list(it1)
             [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
             >>> it1 = iter(source_dp)
-            >>> it2 = iter(source_dp)  # The creation of a new iterator invalidates `it1`
+            >>> it2 = iter(
+            ...     source_dp
+            ... )  # The creation of a new iterator invalidates `it1`
             >>> next(it2)
             0
             >>> next(it1)  # Further usage of `it1` will raise a `RunTimeError`
     """
-    functions: Dict[str, Callable] = {}
-    reduce_ex_hook: Optional[Callable] = None
-    getstate_hook: Optional[Callable] = None
-    str_hook: Optional[Callable] = None
-    repr_hook: Optional[Callable] = None
-    _valid_iterator_id: Optional[int] = None
+
+    functions: dict[str, Callable] = {}
+    reduce_ex_hook: Callable | None = None
+    getstate_hook: Callable | None = None
+    str_hook: Callable | None = None
+    repr_hook: Callable | None = None
+    _valid_iterator_id: int | None = None
     _number_of_samples_yielded: int = 0
     _snapshot_state: _SnapshotState = _SnapshotState.NotStarted
-    _fast_forward_iterator: Optional[Iterator] = None
+    _fast_forward_iterator: Iterator | None = None
+
+    def __iter__(self) -> Iterator[_T_co]:
+        # pyrefly: ignore [bad-return]
+        return self
 
     def __getattr__(self, attribute_name):
         if attribute_name in IterDataPipe.functions:
             if attribute_name in _iter_deprecated_functional_names:
                 kwargs = _iter_deprecated_functional_names[attribute_name]
                 _deprecation_warning(**kwargs)
-            function = functools.partial(IterDataPipe.functions[attribute_name], self)
+            f = IterDataPipe.functions[attribute_name]
+            function = functools.partial(f, self)
+            functools.update_wrapper(wrapper=function, wrapped=f, assigned=("__doc__",))
             return function
         else:
-            raise AttributeError("'{0}' object has no attribute '{1}".format(self.__class__.__name__, attribute_name))
+            raise AttributeError(
+                f"'{self.__class__.__name__}' object has no attribute '{attribute_name}"
+            )
 
     @classmethod
-    def register_function(cls, function_name, function):
+    def register_function(cls, function_name, function) -> None:
         cls.functions[function_name] = function
 
     @classmethod
-    def register_datapipe_as_function(cls, function_name, cls_to_register, enable_df_api_tracing=False):
+    def register_datapipe_as_function(
+        cls, function_name, cls_to_register, enable_df_api_tracing=False
+    ) -> None:
         if function_name in cls.functions:
-            raise Exception("Unable to add DataPipe function name {} as it is already taken".format(function_name))
+            raise Exception(  # noqa: TRY002
+                f"Unable to add DataPipe function name {function_name} as it is already taken"
+            )
 
         def class_function(cls, enable_df_api_tracing, source_dp, *args, **kwargs):
             result_pipe = cls(source_dp, *args, **kwargs)
@@ -144,12 +174,18 @@ class IterDataPipe(IterableDataset[T_co], metaclass=_IterDataPipeMeta):
 
             return result_pipe
 
-        function = functools.partial(class_function, cls_to_register, enable_df_api_tracing)
+        function = functools.partial(
+            class_function, cls_to_register, enable_df_api_tracing
+        )
+        functools.update_wrapper(
+            wrapper=function, wrapped=cls_to_register, assigned=("__doc__",)
+        )
         cls.functions[function_name] = function
 
     def __getstate__(self):
         """
-        This contains special logic to serialize `lambda` functions when `dill` is available.
+        Serialize `lambda` functions when `dill` is available.
+
         If this doesn't cover your custom DataPipe's use case, consider writing custom methods for
         `__getstate__` and `__setstate__`, or use `pickle.dumps` for serialization.
         """
@@ -167,24 +203,24 @@ class IterDataPipe(IterableDataset[T_co], metaclass=_IterDataPipeMeta):
         return super().__reduce_ex__(*args, **kwargs)
 
     @classmethod
-    def set_getstate_hook(cls, hook_fn):
+    def set_getstate_hook(cls, hook_fn) -> None:
         if IterDataPipe.getstate_hook is not None and hook_fn is not None:
-            raise Exception("Attempt to override existing getstate_hook")
+            raise RuntimeError("Attempt to override existing getstate_hook")
         IterDataPipe.getstate_hook = hook_fn
 
     @classmethod
-    def set_reduce_ex_hook(cls, hook_fn):
+    def set_reduce_ex_hook(cls, hook_fn) -> None:
         if IterDataPipe.reduce_ex_hook is not None and hook_fn is not None:
-            raise Exception("Attempt to override existing reduce_ex_hook")
+            raise RuntimeError("Attempt to override existing reduce_ex_hook")
         IterDataPipe.reduce_ex_hook = hook_fn
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.repr_hook is not None:
             return self.repr_hook(self)
         # Instead of showing <torch. ... .MapperIterDataPipe object at 0x.....>, return the class name
         return str(self.__class__.__qualname__)
 
-    def __str__(self):
+    def __str__(self) -> str:
         if self.str_hook is not None:
             return self.str_hook(self)
         # Instead of showing <torch. ... .MapperIterDataPipe object at 0x.....>, return the class name
@@ -196,20 +232,21 @@ class IterDataPipe(IterableDataset[T_co], metaclass=_IterDataPipeMeta):
 
     def reset(self) -> None:
         r"""
-        Reset the `IterDataPipe` to the initial state. By default, no-op. For subclasses of `IterDataPipe`,
-        depending on their functionalities, they may want to override this method with implementations that
+        Reset the `IterDataPipe` to the initial state.
+
+        By default, no-op. For subclasses of `IterDataPipe`, depending on their functionalities,
+        they may want to override this method with implementations that
         may clear the buffers and reset pointers of the DataPipe.
         The `reset` method is always called when `__iter__` is called as part of `hook_iterator`.
         """
-        pass
 
 
 class DFIterDataPipe(IterDataPipe):
-    def _is_dfpipe(self):
+    def _is_dfpipe(self) -> bool:
         return True
 
 
-class MapDataPipe(Dataset[T_co], metaclass=_DataPipeMeta):
+class MapDataPipe(Dataset[_T_co], metaclass=_DataPipeMeta):
     r"""
     Map-style DataPipe.
 
@@ -242,41 +279,52 @@ class MapDataPipe(Dataset[T_co], metaclass=_DataPipeMeta):
         >>> list(batch_dp)
         [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10]]
     """
-    functions: Dict[str, Callable] = {}
-    reduce_ex_hook: Optional[Callable] = None
-    getstate_hook: Optional[Callable] = None
-    str_hook: Optional[Callable] = None
-    repr_hook: Optional[Callable] = None
+
+    functions: dict[str, Callable] = {}
+    reduce_ex_hook: Callable | None = None
+    getstate_hook: Callable | None = None
+    str_hook: Callable | None = None
+    repr_hook: Callable | None = None
 
     def __getattr__(self, attribute_name):
         if attribute_name in MapDataPipe.functions:
             if attribute_name in _map_deprecated_functional_names:
                 kwargs = _map_deprecated_functional_names[attribute_name]
                 _deprecation_warning(**kwargs)
-            function = functools.partial(MapDataPipe.functions[attribute_name], self)
+            f = MapDataPipe.functions[attribute_name]
+            function = functools.partial(f, self)
+            functools.update_wrapper(wrapper=function, wrapped=f, assigned=("__doc__",))
             return function
         else:
-            raise AttributeError("'{0}' object has no attribute '{1}".format(self.__class__.__name__, attribute_name))
+            raise AttributeError(
+                f"'{self.__class__.__name__}' object has no attribute '{attribute_name}"
+            )
 
     @classmethod
-    def register_function(cls, function_name, function):
+    def register_function(cls, function_name, function) -> None:
         cls.functions[function_name] = function
 
     @classmethod
-    def register_datapipe_as_function(cls, function_name, cls_to_register):
+    def register_datapipe_as_function(cls, function_name, cls_to_register) -> None:
         if function_name in cls.functions:
-            raise Exception("Unable to add DataPipe function name {} as it is already taken".format(function_name))
+            raise Exception(  # noqa: TRY002
+                f"Unable to add DataPipe function name {function_name} as it is already taken"
+            )
 
         def class_function(cls, source_dp, *args, **kwargs):
             result_pipe = cls(source_dp, *args, **kwargs)
             return result_pipe
 
         function = functools.partial(class_function, cls_to_register)
+        functools.update_wrapper(
+            wrapper=function, wrapped=cls_to_register, assigned=("__doc__",)
+        )
         cls.functions[function_name] = function
 
     def __getstate__(self):
         """
-        This contains special logic to serialize `lambda` functions when `dill` is available.
+        Serialize `lambda` functions when `dill` is available.
+
         If this doesn't cover your custom DataPipe's use case, consider writing custom methods for
         `__getstate__` and `__setstate__`, or use `pickle.dumps` for serialization.
         """
@@ -294,24 +342,24 @@ class MapDataPipe(Dataset[T_co], metaclass=_DataPipeMeta):
         return super().__reduce_ex__(*args, **kwargs)
 
     @classmethod
-    def set_getstate_hook(cls, hook_fn):
+    def set_getstate_hook(cls, hook_fn) -> None:
         if MapDataPipe.getstate_hook is not None and hook_fn is not None:
-            raise Exception("Attempt to override existing getstate_hook")
+            raise RuntimeError("Attempt to override existing getstate_hook")
         MapDataPipe.getstate_hook = hook_fn
 
     @classmethod
-    def set_reduce_ex_hook(cls, hook_fn):
+    def set_reduce_ex_hook(cls, hook_fn) -> None:
         if MapDataPipe.reduce_ex_hook is not None and hook_fn is not None:
-            raise Exception("Attempt to override existing reduce_ex_hook")
+            raise RuntimeError("Attempt to override existing reduce_ex_hook")
         MapDataPipe.reduce_ex_hook = hook_fn
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.repr_hook is not None:
             return self.repr_hook(self)
         # Instead of showing <torch. ... .MapperMapDataPipe object at 0x.....>, return the class name
         return str(self.__class__.__qualname__)
 
-    def __str__(self):
+    def __str__(self) -> str:
         if self.str_hook is not None:
             return self.str_hook(self)
         # Instead of showing <torch. ... .MapperMapDataPipe object at 0x.....>, return the class name
@@ -322,9 +370,8 @@ class MapDataPipe(Dataset[T_co], metaclass=_DataPipeMeta):
         return list(super().__dir__()) + list(self.functions.keys())
 
 
-
 class _DataPipeSerializationWrapper:
-    def __init__(self, datapipe):
+    def __init__(self, datapipe) -> None:
         self._datapipe = datapipe
 
     def __getstate__(self):
@@ -333,6 +380,7 @@ class _DataPipeSerializationWrapper:
             value = pickle.dumps(self._datapipe)
         except Exception:
             if HAS_DILL:
+                # pyrefly: ignore [missing-attribute]
                 value = dill.dumps(self._datapipe)
                 use_dill = True
             else:
@@ -342,51 +390,38 @@ class _DataPipeSerializationWrapper:
     def __setstate__(self, state):
         value, use_dill = state
         if use_dill:
+            # pyrefly: ignore [missing-attribute]
             self._datapipe = dill.loads(value)
         else:
             self._datapipe = pickle.loads(value)
 
-    def __len__(self):
+    def __len__(self) -> int:
         try:
             return len(self._datapipe)
         except Exception as e:
             raise TypeError(
-                "{} instance doesn't have valid length".format(type(self).__name__)
+                f"{type(self).__name__} instance doesn't have valid length"
             ) from e
 
 
 class _IterDataPipeSerializationWrapper(_DataPipeSerializationWrapper, IterDataPipe):
-    def __init__(self, datapipe: IterDataPipe[T_co]):
+    def __init__(self, datapipe: IterDataPipe[_T_co]) -> None:
         super().__init__(datapipe)
-        self._datapipe_iter: Optional[Iterator[T_co]] = None
+        # pyrefly: ignore [invalid-type-var]
+        self._datapipe_iter: Iterator[_T_co] | None = None
 
     def __iter__(self) -> "_IterDataPipeSerializationWrapper":
         self._datapipe_iter = iter(self._datapipe)
         return self
 
-    def __next__(self) -> T_co:
-        assert self._datapipe_iter is not None
+    def __next__(self) -> _T_co:  # type: ignore[type-var]
+        if self._datapipe_iter is None:
+            raise AssertionError(
+                "Iterator has not been initialized; call __iter__() before __next__()"
+            )
         return next(self._datapipe_iter)
 
 
 class _MapDataPipeSerializationWrapper(_DataPipeSerializationWrapper, MapDataPipe):
     def __getitem__(self, idx):
         return self._datapipe[idx]
-
-
-class DataChunk(list, Generic[T]):
-    def __init__(self, items):
-        super().__init__(items)
-        self.items = items
-
-    def as_str(self, indent=''):
-        res = indent + "[" + ", ".join(str(i) for i in iter(self)) + "]"
-        return res
-
-    def __iter__(self) -> Iterator[T]:
-        for i in super().__iter__():
-            yield i
-
-    def raw_iterator(self) -> T:  # type: ignore[misc]
-        for i in self.items:
-            yield i

@@ -1,31 +1,33 @@
 //  Copyright © 2022 Apple Inc.
 
 #pragma once
+#include <ATen/Device.h>
+#include <c10/core/Allocator.h>
 #include <c10/macros/Macros.h>
 #include <c10/util/Exception.h>
-#include <ATen/ATen.h>
-
 
 #ifdef __OBJC__
-#include <Foundation/Foundation.h>
+// Metal.h pulls in Foundation.h, which transitively includes CarbonCore
+// headers that emit a flood of -Wdeprecated-declarations on recent macOS SDKs.
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wdeprecated-declarations")
 #include <Metal/Metal.h>
-#include <MetalPerformanceShaders/MetalPerformanceShaders.h>
+C10_DIAGNOSTIC_POP()
 typedef id<MTLDevice> MTLDevice_t;
-typedef id<MTLLibrary> MTLLibrary_t;
-typedef id<MTLFunction> MTLFunction_t;
-typedef MTLFunctionConstantValues* MTLFunctionConstantValues_t;
 #else
-typedef void* MTLDevice;
 typedef void* MTLDevice_t;
-typedef void* MTLLibrary_t;
-typedef void* MTLFunction_t;
-typedef void* MTLFunctionConstantValues_t;
 #endif
 
-using namespace std;
+namespace at::mps {
 
-namespace at {
-namespace mps {
+// Helper enum to check if a MPSGraph op is supported in a given macOS version
+enum class MacOSVersion : uint32_t {
+  MACOS_VER_14_4_PLUS = 0,
+  MACOS_VER_15_0_PLUS,
+  MACOS_VER_15_1_PLUS,
+  MACOS_VER_15_2_PLUS,
+  MACOS_VER_26_0_PLUS,
+  MACOS_VER_26_4_PLUS,
+};
 
 //-----------------------------------------------------------------
 //  MPSDevice
@@ -56,24 +58,33 @@ class TORCH_API MPSDevice {
   /**
    * Returns whether running on Ventura or newer
    */
-  bool isMacOS13Plus() const;
+  bool isMacOS13Plus(MacOSVersion version) const;
 
-  MTLFunction_t metalIndexingFunction(const std::string &kernel, MTLFunctionConstantValues_t constantValues);
+  /**
+   * Returns device name
+   */
+  std::string getName() const;
+
+  /**
+   * Returns number of GPU cores.
+   * 1 Core = 16 ExecutionUnit x 8 ALU x 24 threads
+   */
+  unsigned getCoreCount() const;
 
   ~MPSDevice();
 
  private:
   static MPSDevice* _device;
   MTLDevice_t _mtl_device;
-  bool _macos13plus;
-  MTLLibrary_t _mtl_indexing_library;
   MPSDevice();
 };
 
 TORCH_API bool is_available();
-TORCH_API bool is_macos_13_or_newer();
+TORCH_API bool is_macos_13_or_newer(MacOSVersion version);
+TORCH_API at::Allocator* GetMPSAllocator();
 
-TORCH_API at::Allocator* GetMPSAllocator(bool useSharedAllocator = false);
+inline Device getDeviceFromPtr(void* ptr) {
+  return {c10::DeviceType::MPS, 0};
+}
 
-} // namespace mps
-} // namespace at
+} // namespace at::mps

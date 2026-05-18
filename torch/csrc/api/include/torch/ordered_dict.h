@@ -36,8 +36,8 @@ class OrderedDict {
   // values. I tried to make this noexcept (conditional on the move constructors
   // of index_ and items_ being noexcept) but the obvious spelling didn't
   // compile on Windows.
-  OrderedDict(OrderedDict&& other) = default;
-  OrderedDict& operator=(OrderedDict&& other) = default;
+  OrderedDict(OrderedDict&& other) noexcept = default;
+  OrderedDict& operator=(OrderedDict&& other) noexcept = default;
 
   ~OrderedDict() = default;
 
@@ -196,16 +196,6 @@ class OrderedDict<Key, Value>::Item {
   /// Constructs a new item.
   Item(Key key, Value value) : pair_(std::move(key), std::move(value)) {}
 
-#if defined(__CUDACC__) && (__CUDACC_VER_MAJOR__ < 11) && defined(_MSC_VER)
-  /// Related issue: https://github.com/pytorch/pytorch/issues/55266
-  /// Needs to define this function for CUDA < 11.0 on Windows,
-  /// although it usually won't be used actually.
-  Item& operator=(const Item& other) {
-    pair_ = other.pair_;
-    return *this;
-  }
-#endif
-
   /// Returns a reference to the value.
   Value& operator*() {
     return value();
@@ -359,7 +349,7 @@ Value& OrderedDict<Key, Value>::operator[](const Key& key) {
   if (auto* value = find(key)) {
     return *value;
   }
-  AT_ERROR(key_description_, " '", key, "' is not defined");
+  TORCH_CHECK(false, key_description_, " '", key, "' is not defined");
 }
 
 template <typename Key, typename Value>
@@ -367,7 +357,7 @@ const Value& OrderedDict<Key, Value>::operator[](const Key& key) const {
   if (auto* value = find(key)) {
     return *value;
   }
-  AT_ERROR(key_description_, " '", key, "' is not defined");
+  TORCH_CHECK(false, key_description_, " '", key, "' is not defined");
 }
 
 template <typename Key, typename Value>
@@ -389,7 +379,7 @@ Value& OrderedDict<Key, Value>::insert(Key key, Value&& value) {
 template <typename Key, typename Value>
 void OrderedDict<Key, Value>::update(OrderedDict&& other) {
   reserve(size() + other.size());
-  for (auto& item : other) {
+  for (auto&& item : std::move(other)) {
     // We want to call `insert()` to prevent duplicate keys.
     insert(std::move(item.key()), std::move(item.value()));
   }

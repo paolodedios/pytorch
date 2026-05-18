@@ -1,8 +1,7 @@
+# mypy: allow-untyped-defs
 import logging
-
 from collections import defaultdict
 from threading import Lock
-from typing import List, Optional
 
 import torch
 import torch.distributed.autograd as dist_autograd
@@ -11,7 +10,9 @@ import torch.jit as jit
 import torch.nn as nn
 from torch import Tensor
 from torch.distributed.rpc import RRef
+
 from .utils import functional_optim_map
+
 
 __all__ = ["DistributedOptimizer"]
 
@@ -29,7 +30,7 @@ logger = logging.getLogger(__name__)
 # TODO (wanchaol): remove this once we added TorchScript
 # class reference semantics
 @jit.interface
-class _ScriptLocalOptimizerInterface(object):
+class _ScriptLocalOptimizerInterface:
     def step(self, autograd_ctx_id: int) -> None:
         pass
 
@@ -49,8 +50,8 @@ class _ScriptLocalOptimizer(nn.Module):
     def step(self, autograd_ctx_id: int):
         all_local_grads = dist_autograd.get_gradients(autograd_ctx_id)
         # apply functional optimizer step with a list of gradients
-        grads: List[Optional[Tensor]] = [
-            all_local_grads[p] if p in all_local_grads else None
+        grads: list[Tensor | None] = [
+            all_local_grads[p] if p in all_local_grads else None  # noqa: SIM401
             for p in self._local_params
         ]
 
@@ -59,7 +60,7 @@ class _ScriptLocalOptimizer(nn.Module):
 
 # TODO (wanchaol): remove/merge this with ScriptLocalOptimizer once
 # we have converted all to functional optimizer in distributed.optim
-class _LocalOptimizer(object):
+class _LocalOptimizer:
     # Ideally we would only need to share a lock for instances of
     # _LocalOptimizer that deal with the same parameters. We are
     # making a simplifying assumption here that if there is more
@@ -198,12 +199,13 @@ class DistributedOptimizer:
         if self.is_functional_optim:
             optimizer_new_func = _new_script_local_optimizer
         else:
-            logger.warn(
-                f"Creating the optimizer {optimizer_class} without TorchScript support, "
+            logger.warning(
+                "Creating the optimizer %s without TorchScript support, "
                 "this might result in slow computation time in multithreading environment"
                 "(i.e. Distributed Model Parallel training on CPU) due to the Python's "
                 "Global Interpreter Lock (GIL). Please file an issue if you need this "
-                "optimizer in TorchScript. "
+                "optimizer in TorchScript. ",
+                optimizer_class,
             )
             optimizer_new_func = _new_local_optimizer
 
@@ -235,18 +237,18 @@ class DistributedOptimizer:
         """
         dist_autograd._is_valid_context(context_id)
 
-        if self.is_functional_optim:
-            optimizer_step_func = _script_local_optimizer_step
-        else:
-            optimizer_step_func = _local_optimizer_step
+        optimizer_step_func = (
+            _script_local_optimizer_step
+            if self.is_functional_optim
+            else _local_optimizer_step
+        )
 
-        rpc_futs = []
-        for optimizer in self.remote_optimizers:
-            rpc_futs.append(
-                rpc.rpc_async(
-                    optimizer.owner(),
-                    optimizer_step_func,
-                    args=(optimizer, context_id),
-                )
+        rpc_futs = [
+            rpc.rpc_async(
+                optimizer.owner(),
+                optimizer_step_func,
+                args=(optimizer, context_id),
             )
+            for optimizer in self.remote_optimizers
+        ]
         _wait_for_all(rpc_futs)

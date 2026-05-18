@@ -1,21 +1,17 @@
 #include <torch/nn/modules/normalization.h>
 
-#include <torch/cuda.h>
 #include <torch/nn/init.h>
-#include <torch/utils.h>
 
 #include <ostream>
 #include <utility>
 
 namespace F = torch::nn::functional;
 
-namespace torch {
-namespace nn {
+namespace torch::nn {
 
-LayerNormImpl::LayerNormImpl(const LayerNormOptions& options_)
-    : options(options_) { // NOLINT(modernize-pass-by-value)
-  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
-  reset();
+LayerNormImpl::LayerNormImpl(LayerNormOptions options_)
+    : options(std::move(options_)) {
+  LayerNormImpl::reset();
 }
 
 void LayerNormImpl::reset() {
@@ -42,7 +38,7 @@ void LayerNormImpl::pretty_print(std::ostream& stream) const {
   stream << std::boolalpha << "torch::nn::LayerNorm("
          << torch::IntArrayRef(options.normalized_shape())
          << ", eps=" << options.eps()
-         << ", elementwise_affine=" << options.elementwise_affine() << ")";
+         << ", elementwise_affine=" << options.elementwise_affine() << ')';
 }
 
 torch::Tensor LayerNormImpl::forward(const Tensor& input) {
@@ -66,7 +62,7 @@ void LocalResponseNormImpl::reset() {}
 void LocalResponseNormImpl::pretty_print(std::ostream& stream) const {
   stream << std::boolalpha << "torch::nn::LocalResponseNorm(" << options.size()
          << ", alpha=" << options.alpha() << ", beta=" << options.beta()
-         << ", k=" << options.k() << ")";
+         << ", k=" << options.k() << ')';
 }
 
 // ============================================================================
@@ -76,7 +72,7 @@ void CrossMapLRN2dImpl::reset() {}
 void CrossMapLRN2dImpl::pretty_print(std::ostream& stream) const {
   stream << std::boolalpha << "torch::nn::CrossMapLRN2d(" << options.size()
          << ", alpha=" << options.alpha() << ", beta=" << options.beta()
-         << ", k=" << options.k() << ")";
+         << ", k=" << options.k() << ')';
 }
 
 torch::Tensor CrossMapLRN2dImpl::forward(const torch::Tensor& input) {
@@ -87,8 +83,7 @@ torch::Tensor CrossMapLRN2dImpl::forward(const torch::Tensor& input) {
 
 GroupNormImpl::GroupNormImpl(const GroupNormOptions& options_)
     : options(options_) { // NOLINT(modernize-pass-by-value)
-  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
-  reset();
+  GroupNormImpl::reset();
 }
 
 void GroupNormImpl::reset() {
@@ -118,8 +113,7 @@ torch::Tensor GroupNormImpl::forward(const Tensor& input) {
 void GroupNormImpl::pretty_print(std::ostream& stream) const {
   stream << std::boolalpha << "torch::nn::GroupNorm(" << options.num_groups()
          << ", " << options.num_channels() << ", eps=" << options.eps()
-         << ", affine=" << options.affine() << ")";
+         << ", affine=" << options.affine() << ')';
 }
 
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn

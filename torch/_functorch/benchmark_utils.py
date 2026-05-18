@@ -1,27 +1,42 @@
-import time
-import os
+from __future__ import annotations
+
+import contextlib
 import json
+import operator
+import os
+import time
+from contextlib import AbstractContextManager
+from typing import Any, TYPE_CHECKING
+from typing_extensions import TypeVar
 
 import torch
 from torch.profiler import profile, ProfilerActivity
 
 
-def synchronize():
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+
+_R = TypeVar("_R")
+
+
+def synchronize() -> None:
     pass
 
 
-class NullContext:
-    def __enter__(self):
-        pass
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        pass
-
-
-def dump_chrome_trace(f, input, trace_filename, optimize_ctx, activities, num_runs=1,
-                      devices=None, kwargs_for_f=None, kwargs_for_profiler=None):
+def dump_chrome_trace(
+    f: Callable[[tuple[Any, ...]], _R],
+    input_: tuple[Any, ...],
+    trace_filename: str,
+    optimize_ctx: AbstractContextManager[Any],
+    activities: Sequence[ProfilerActivity],
+    num_runs: int = 1,
+    devices: list[str] | None = None,
+    kwargs_for_f: dict[str, Any] | None = None,
+    kwargs_for_profiler: dict[str, Any] | None = None,
+) -> float:
     """
-    Output the chrome trace of running f(input, **kwargs_for_f) with [optimize_ctx]
+    Output the chrome trace of running f(input_, **kwargs_for_f) with [optimize_ctx]
     [num_runs] times to [trace_filename].
 
     [activities] are the activities that the profiler will record, e.g. ProfilerActivity.CUDA.
@@ -45,12 +60,12 @@ def dump_chrome_trace(f, input, trace_filename, optimize_ctx, activities, num_ru
     with optimize_ctx:
         torch.manual_seed(1337)
         for _ in range(5):  # warmup runs
-            f(input, **kwargs_for_f)
+            f(input_, **kwargs_for_f)
             synchronize()
         torch.manual_seed(1337)
         t0 = time.perf_counter()
         for _ in range(num_runs):
-            f(input, **kwargs_for_f)
+            f(input_, **kwargs_for_f)
             synchronize()
         t1 = time.perf_counter()
     timing = t1 - t0
@@ -60,35 +75,40 @@ def dump_chrome_trace(f, input, trace_filename, optimize_ctx, activities, num_ru
             synchronize()
             torch.manual_seed(1337)
             for _ in range(num_runs):
-                f(input, **kwargs_for_f)
+                f(input_, **kwargs_for_f)
                 synchronize()
     prof.export_chrome_trace(trace_filename)
 
     return timing
 
 
-def get_chrome_trace_events(filename):
-    f = open(filename)
-    data = json.load(f)
+def get_chrome_trace_events(filename: str) -> list[dict[str, Any]]:
+    with open(filename) as f:
+        data = json.load(f)
     events = data["traceEvents"]
     return events
 
 
-def is_gpu_compute_event(event):
+def is_gpu_compute_event(event: dict[str, Any]) -> bool:
     global gpu_pids
-    return "pid" in event and event["pid"] in gpu_pids and "ph" in event and event["ph"] == "X"
+    return (
+        "pid" in event
+        and event["pid"] in gpu_pids
+        and "ph" in event
+        and event["ph"] == "X"
+    )
 
 
-def get_sorted_gpu_events(events):
-    sorted_gpu_events = []
+def get_sorted_gpu_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sorted_gpu_events: list[dict[str, Any]] = []
     for event in events:
-        if(not is_gpu_compute_event(event)):
+        if not is_gpu_compute_event(event):
             continue
         sorted_gpu_events.append(event)
-    return sorted(sorted_gpu_events, key=lambda x: x["ts"])
+    return sorted(sorted_gpu_events, key=operator.itemgetter("ts"))
 
 
-def get_duration(sorted_gpu_events):
+def get_duration(sorted_gpu_events: list[dict[str, Any]]) -> int:
     if len(sorted_gpu_events) == 0:
         return 0
     event = sorted_gpu_events[0]
@@ -102,26 +122,31 @@ def get_duration(sorted_gpu_events):
     return total_duration
 
 
-def get_sorted_gpu_mm_conv_events(events):
-    def is_mm_conv_event(event):
-        return "name" in event and ("gemm" in event["name"] or "conv" in event["name"]
-                                    or "cutlass" in event["name"] or "wgrad" in event["name"])
+def get_sorted_gpu_mm_conv_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def is_mm_conv_event(event: dict[str, Any]) -> bool:
+        return "name" in event and (
+            "gemm" in event["name"]
+            or "conv" in event["name"]
+            or "cutlass" in event["name"]
+            or "wgrad" in event["name"]
+        )
+
     gpu_events = get_sorted_gpu_events(events)
-    sorted_events = []
+    sorted_events: list[dict[str, Any]] = []
     for event in gpu_events:
-        if(not is_mm_conv_event(event)):
+        if not is_mm_conv_event(event):
             continue
         sorted_events.append(event)
     return sorted_events
 
 
-gpu_pids = []
+gpu_pids: list[Any] = []
 
 
-def compute_utilization(filename: str, total_length: float):
+def compute_utilization(filename: str, total_length: float) -> tuple[float, float]:
     """
     Process the chrome traces outputs by the pytorch profiler to compute GPU Utilization
-    and percent of times spent on matmal and convolution
+    and percent of times spent on matmul and convolution
 
     Args:
         filename(str): Name of chrome traces file produced by pytorch profiler
@@ -129,7 +154,7 @@ def compute_utilization(filename: str, total_length: float):
         total_length(float): total length of the process without profiler in second
 
     Return:
-        tuple: (GPU Utilization, percent of time spent on matmal and convolution)
+        tuple: (GPU Utilization, percent of time spent on matmul and convolution)
     """
     events = get_chrome_trace_events(filename)
 
@@ -139,7 +164,7 @@ def compute_utilization(filename: str, total_length: float):
     for event in events:
         if "name" not in event:
             continue
-        if event["name"] == 'process_labels' and "GPU" in event["args"]["labels"]:
+        if event["name"] == "process_labels" and "GPU" in event["args"]["labels"]:
             gpu_pids.append(event["pid"])
 
     total_length = total_length * 1e6
@@ -152,10 +177,17 @@ def compute_utilization(filename: str, total_length: float):
     return utilization, mm_conv_utilization
 
 
-def benchmark_utilization(f, input, trace_folder, optimize_ctx=None, trace_file_name="tmp_chrome_trace", num_runs=1):
+def benchmark_utilization(
+    f: Callable[[tuple[Any, ...]], _R],
+    input_: tuple[Any, ...],
+    trace_folder: str,
+    optimize_ctx: AbstractContextManager[Any] | None = None,
+    trace_file_name: str = "tmp_chrome_trace",
+    num_runs: int = 1,
+) -> tuple[float, float]:
     """
-    Benchmark the GPU Utilization and percent of time spent on matmal and convolution operations of
-    running f(input, **kwargs_for_f) with [optimize_ctx] [num_runs] times.
+    Benchmark the GPU Utilization and percent of time spent on matmul and convolution operations of
+    running f(input_, **kwargs_for_f) with [optimize_ctx] [num_runs] times.
     It will produce a chrome trace file in trace_folder/trace_file_name.json
 
     Example:
@@ -163,14 +195,18 @@ def benchmark_utilization(f, input, trace_folder, optimize_ctx=None, trace_file_
     ```
     def f(a):
         return a.sum()
+
+
     a = torch.rand(2**20, device="cuda")
-    utilization, mm_conv_utilization = benchmark_utilization(f, a, "tmp", trace_file_name = "tmp_chrome_trace")
+    utilization, mm_conv_utilization = benchmark_utilization(
+        f, a, "tmp", trace_file_name="tmp_chrome_trace"
+    )
     ```
 
     Args:
         f: function to benchmark
 
-        input: input to :attr:`f`
+        input_: input to :attr:`f`
 
         trace_folder: name of the folder to store the chrome trace
 
@@ -181,7 +217,7 @@ def benchmark_utilization(f, input, trace_folder, optimize_ctx=None, trace_file_
         num_runs: number of times to run f, excluding the warm-up runs, default to 1.
 
     Return:
-        tuple: (GPU Utilization, percent of time spent on matmal and convolution)
+        tuple: (GPU Utilization, percent of time spent on matmul and convolution)
 
     """
     isExist = os.path.exists(trace_folder)
@@ -190,11 +226,20 @@ def benchmark_utilization(f, input, trace_folder, optimize_ctx=None, trace_file_
         print("create folder " + trace_folder)
 
     if optimize_ctx is None:
-        optimize_ctx = NullContext()
+        optimize_ctx = contextlib.nullcontext()
 
     chrome_trace_file_name = os.path.join(trace_folder, trace_file_name + ".json")
-    total_length = dump_chrome_trace(f, input, chrome_trace_file_name, optimize_ctx,
-                                     [ProfilerActivity.CUDA], num_runs=num_runs, devices="cuda")
-    utilization, mm_conv_utilization = compute_utilization(chrome_trace_file_name, total_length)
+    total_length = dump_chrome_trace(
+        f,
+        input_,
+        chrome_trace_file_name,
+        optimize_ctx,
+        [ProfilerActivity.CUDA],
+        num_runs=num_runs,
+        devices=["cuda"],
+    )
+    utilization, mm_conv_utilization = compute_utilization(
+        chrome_trace_file_name, total_length
+    )
 
     return utilization, mm_conv_utilization

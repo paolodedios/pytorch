@@ -1,9 +1,12 @@
+# mypy: ignore-errors
+
 from torch.testing._internal.opinfo.core import (
     BinaryUfuncInfo,
     OpInfo,
     ReductionOpInfo,
     UnaryUfuncInfo,
 )
+
 
 # NOTE [Python References]
 # Python References emulate existing PyTorch operations, but can ultimately
@@ -100,22 +103,22 @@ class PythonRefInfo(OpInfo):
         torch_opinfo_name,  # the string name of the corresponding torch opinfo
         torch_opinfo_variant_name="",  # the variant name for corresponding torch opinfo
         validate_view_consistency=True,
-        supports_nvfuser=True,
         **kwargs,
     ):  # additional kwargs override kwargs inherited from the torch opinfo
-
         self.torch_opinfo_name = torch_opinfo_name
         self.torch_opinfo_variant_name = torch_opinfo_variant_name
         self.torch_opinfo = _find_referenced_opinfo(
             torch_opinfo_name, torch_opinfo_variant_name, op_db=op_db
         )
         self.validate_view_consistency = validate_view_consistency
-        self.supports_nvfuser = supports_nvfuser
-        assert isinstance(self.torch_opinfo, OpInfo)
+        if not isinstance(self.torch_opinfo, OpInfo):
+            raise AssertionError(
+                f"Expected torch_opinfo to be OpInfo, got {type(self.torch_opinfo)}"
+            )
 
         inherited = self.torch_opinfo._original_opinfo_args
         ukwargs = _inherit_constructor_args(name, op, inherited, kwargs)
-        super(PythonRefInfo, self).__init__(**ukwargs)
+        super().__init__(**ukwargs)
 
 
 class ReductionPythonRefInfo(ReductionOpInfo):
@@ -131,17 +134,17 @@ class ReductionPythonRefInfo(ReductionOpInfo):
         op_db=None,  # The database of opinfos to search for the parent opinfo
         torch_opinfo_name,  # the string name of the corresponding torch opinfo
         torch_opinfo_variant_name="",  # the variant name for corresponding torch opinfo
-        supports_nvfuser=True,
         **kwargs,
     ):  # additional kwargs override kwargs inherited from the torch opinfo
-
         self.torch_opinfo_name = torch_opinfo_name
         self.torch_opinfo_variant_name = torch_opinfo_variant_name
         self.torch_opinfo = _find_referenced_opinfo(
             torch_opinfo_name, torch_opinfo_variant_name, op_db=op_db
         )
-        self.supports_nvfuser = supports_nvfuser
-        assert isinstance(self.torch_opinfo, ReductionOpInfo)
+        if not isinstance(self.torch_opinfo, ReductionOpInfo):
+            raise AssertionError(
+                f"Expected torch_opinfo to be ReductionOpInfo, got {type(self.torch_opinfo)}"
+            )
 
         inherited = self.torch_opinfo._original_reduction_args
         ukwargs = _inherit_constructor_args(name, op, inherited, kwargs)
@@ -166,23 +169,23 @@ class ElementwiseUnaryPythonRefInfo(UnaryUfuncInfo):
         torch_opinfo_name,  # the string name of the corresponding torch opinfo
         torch_opinfo_variant_name="",  # the variant name for corresponding torch opinfo
         validate_view_consistency=True,
-        supports_nvfuser=True,
         **kwargs,
     ):  # additional kwargs override kwargs inherited from the torch opinfo
-
         self.torch_opinfo_name = torch_opinfo_name
         self.torch_opinfo_variant_name = torch_opinfo_variant_name
         self.torch_opinfo = _find_referenced_opinfo(
             torch_opinfo_name, torch_opinfo_variant_name, op_db=op_db
         )
         self.validate_view_consistency = validate_view_consistency
-        self.supports_nvfuser = supports_nvfuser
-        assert isinstance(self.torch_opinfo, UnaryUfuncInfo)
+        if not isinstance(self.torch_opinfo, UnaryUfuncInfo):
+            raise AssertionError(
+                f"Expected torch_opinfo to be UnaryUfuncInfo, got {type(self.torch_opinfo)}"
+            )
 
         inherited = self.torch_opinfo._original_unary_ufunc_args
         ukwargs = _inherit_constructor_args(name, op, inherited, kwargs)
 
-        super(ElementwiseUnaryPythonRefInfo, self).__init__(**ukwargs)
+        super().__init__(**ukwargs)
 
 
 class ElementwiseBinaryPythonRefInfo(BinaryUfuncInfo):
@@ -198,19 +201,19 @@ class ElementwiseBinaryPythonRefInfo(BinaryUfuncInfo):
         op_db=None,  # The database of opinfos to search for the parent opinfo
         torch_opinfo_name,  # the string name of the corresponding torch opinfo
         torch_opinfo_variant_name="",  # the variant name for corresponding torch opinfo
-        supports_nvfuser=True,
         **kwargs,
     ):  # additional kwargs override kwargs inherited from the torch opinfo
-
         self.torch_opinfo_name = torch_opinfo_name
         self.torch_opinfo_variant_name = torch_opinfo_variant_name
         self.torch_opinfo = _find_referenced_opinfo(
             torch_opinfo_name, torch_opinfo_variant_name, op_db=op_db
         )
-        self.supports_nvfuser = supports_nvfuser
-        assert isinstance(self.torch_opinfo, BinaryUfuncInfo)
+        if not isinstance(self.torch_opinfo, BinaryUfuncInfo):
+            raise AssertionError(
+                f"Expected torch_opinfo to be BinaryUfuncInfo, got {type(self.torch_opinfo)}"
+            )
 
         inherited = self.torch_opinfo._original_binary_ufunc_args
         ukwargs = _inherit_constructor_args(name, op, inherited, kwargs)
 
-        super(ElementwiseBinaryPythonRefInfo, self).__init__(**ukwargs)
+        super().__init__(**ukwargs)

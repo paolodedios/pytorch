@@ -6,15 +6,11 @@
 #include <torch/csrc/jit/frontend/error_report.h>
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/dead_code_elimination.h>
-#include <torch/csrc/jit/passes/onnx/helper.h>
 #include <torch/csrc/jit/passes/onnx/pattern_conversion/pattern_encapsulation.h>
 
 #include <c10/util/irange.h>
 
-#include <limits>
-
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
@@ -70,7 +66,7 @@ struct InplaceConverter {
     // Map from aliases to root value.
     // A single value can have multiple aliases throughout the graph,
     // created by inplace operators, and preserved through loop carried
-    // input/output. For each such value, its first occurance will be set as
+    // input/output. For each such value, its first occurrence will be set as
     // root value.
     std::unordered_map<Value*, Value*> alias_to_value_;
 
@@ -195,8 +191,7 @@ std::pair<Value*, Value*> PrepareCopyForONNX(Node* node) {
   expanded_value->node()->copyMetadata(node);
 
   auto index_put = graph->insert(
-      aten::index_put_,
-      {node->input(0), dummy_list, expanded_value, node->input(2)});
+      aten::index_put_, {node->input(0), dummy_list, expanded_value});
   index_put->node()->copyMetadata(node);
   index_put->copyMetadata(node->output());
   node->output()->replaceAllUsesWith(index_put);
@@ -294,7 +289,7 @@ static std::pair<Value*, Value*> PrepareListDeleteForONNX(Node* n) {
 
 static std::pair<Value*, Value*> PrepareListAppendAndInsertForONNX(Node* n) {
   TORCH_INTERNAL_ASSERT(n->kind() == aten::insert || n->kind() == aten::append);
-  if (n->outputs().size() == 0) {
+  if (n->outputs().empty()) {
     n->addOutput();
     n->output()->setType(n->inputs().at(0)->type());
   }
@@ -306,7 +301,7 @@ static std::pair<Value*, Value*> PrepareSetItemForONNX(Node* n) {
   // It seems the JIT does not always produce an output for _set_item.
   // In particular it seems to for list but not for dict.
   // So we add one if needed.
-  if (n->outputs().size() == 0) {
+  if (n->outputs().empty()) {
     n->addOutput();
     n->output()->setType(n->inputs().at(0)->type());
   }
@@ -346,7 +341,7 @@ static void PrepareForRemoveMutations(MutationRemover& mr, Block* b) {
         auto it =
             std::find(node->inputs().begin(), node->inputs().end(), input);
         if (it != node->inputs().end()) {
-          int index = std::distance(node->inputs().begin(), it);
+          auto index = std::distance(node->inputs().begin(), it);
           TORCH_WARN(
               "ONNX Preprocess - Removing mutation from node ",
               node->kind().toQualString(),
@@ -368,7 +363,7 @@ static void PrepareForRemoveMutations(MutationRemover& mr, Block* b) {
   }
 }
 
-static void PrepareForRemoveMutations(std::shared_ptr<Graph> graph) {
+static void PrepareForRemoveMutations(const std::shared_ptr<Graph>& graph) {
   MutationRemover mr(graph);
   PrepareForRemoveMutations(mr, graph->block());
   GRAPH_DUMP("After PrepareForRemoveMutations: ", graph);
@@ -438,23 +433,23 @@ std::string InplaceConverter::ValueTracker::toString() const {
 
   // ss << "Current graph: " << graph_->toString() << std::endl;
   ss << "Tracking " << value_to_sorted_aliases_.size() << " individual values."
-     << std::endl;
-  ss << "value_to_sorted_aliases_: " << std::endl;
+     << '\n';
+  ss << "value_to_sorted_aliases_: " << '\n';
   size_t idx = 0;
   for (const auto& it : value_to_sorted_aliases_) {
-    ss << "Value[" << idx << "]: " << it.first->debugName() << std::endl;
+    ss << "Value[" << idx << "]: " << it.first->debugName() << '\n';
     ss << "  Mapping to ";
     for (auto v : it.second) {
-      ss << v->debugName() << " ";
+      ss << v->debugName() << ' ';
     }
-    ss << std::endl;
+    ss << '\n';
     idx++;
   }
 
-  ss << "alias_to_value_: " << std::endl;
+  ss << "alias_to_value_: " << '\n';
   for (auto it : alias_to_value_) {
     ss << "  Alias " << it.first->debugName();
-    ss << " map to " << it.second->debugName() << std::endl;
+    ss << " map to " << it.second->debugName() << '\n';
   }
 
   return ss.str();
@@ -515,7 +510,7 @@ void InplaceConverter::ValueTracker::recordSetValue(
   // then the update must be reflected back to outside.
   // Thus it needs to be registered as a subblock output.
   // This step can be skipped if other alias of this value has already been
-  // registered as sublock output.
+  // registered as subblock output.
   if (!registered && from_outer_alias) {
     if (owning_block_nkind == prim::Loop) {
       owning_block->registerOutput(new_v);
@@ -656,7 +651,7 @@ void InplaceConverter::gatherAttrNameInitialValueMap(
     auto moduleNames =
         findSubModuleAttr(n->inputs().at(0), name, attrModule, graph_);
 
-    std::string fullName("");
+    std::string fullName;
     for (auto& name : moduleNames) {
       fullName += name + '.';
     }
@@ -890,5 +885,4 @@ void RemoveInplaceOpsForONNX(
   ic.convertMutationForONNX();
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

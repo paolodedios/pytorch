@@ -3,17 +3,15 @@
 
 #if AT_CUDNN_ENABLED()
 
-#include <ATen/native/cudnn/Macros.h>
 #include <c10/util/ArrayRef.h>
-
-#if HAS_CUDNN_V8()
 
 #include <ATen/ATen.h>
 #include <ATen/cuda/Exceptions.h>
 #include <ATen/cudnn/Handle.h>
-#include <ATen/native/ConvUtils.h>
 #include <ATen/native/cudnn/ConvShared.h>
 #include <ATen/native/quantized/cudnn/utils.h>
+#include <ATen/native/quantized/library.h>
+#include <ATen/native/quantized/ConvUtils.h>
 #include <ATen/native/quantized/PackedParams.h>
 #include <ATen/native/utils/ParamsHash.h>
 #include <ATen/TensorUtils.h>
@@ -28,7 +26,7 @@
 // TODO: there is a table from input dtype and weight dtype to operator qdtype,
 // we can derive the operator dtype based on input dtype
 cudnn_frontend::ConvDesc_v8 getConvDescriptor(cudnnDataType_t dataType, c10::IntArrayRef padding, c10::IntArrayRef stride, c10::IntArrayRef dilation) {
-  uint64_t convDim = stride.size();
+  int64_t convDim = static_cast<int64_t>(stride.size());
   return cudnn_frontend::ConvDescBuilder()
     .setDataType(dataType)
     .setMathMode(CUDNN_CROSS_CORRELATION)
@@ -52,40 +50,11 @@ struct CacheKey {
   bool kReluFused;
 };
 std::unordered_map<CacheKey, cudnn_frontend::ExecutionPlan, at::native::ParamsHash<CacheKey>, at::native::ParamsEqual<CacheKey>> execution_plan_cache;
-}
+} // anonymous namespace
 // TODO: we can use cudnn_frontend::ExecutionPlanCache when it supports caching
 // multiple operators
-// reference: https://github.com/NVIDIA/cudnn-frontend/blob/main/samples/conv_sample.cpp#L293
+// reference: https://github.com/NVIDIA/cudnn-frontend/blob/main/samples/legacy_samples/conv_sample.cpp#L295
 //static cudnn_frontend::ExecutionPlanCache plan_cache("sample_cache");
-
-template <int kSpatialDim>
-at::SmallVector<int64_t, kSpatialDim + 2> MakeConvOutputShape(
-    int N, // mini-batch
-    int M, // output channels
-    const std::array<int64_t, kSpatialDim>& input_image_shape,
-    const std::vector<int64_t>& kernel,
-    const torch::List<int64_t>& stride,
-    const torch::List<int64_t>& padding,
-    const torch::List<int64_t>& dilation);
-
-template <>
-at::SmallVector<int64_t, 4> MakeConvOutputShape<2>(
-    int N, // mini-batch
-    int M, // output channels
-    const std::array<int64_t, 2>& input_image_shape,
-    const std::vector<int64_t>& kernel,
-    const torch::List<int64_t>& stride,
-    const torch::List<int64_t>& padding,
-    const torch::List<int64_t>& dilation) {
-  const int H = input_image_shape[0];
-  const int W = input_image_shape[1];
-  const int64_t Y_H =
-      (H + 2 * padding[0] - dilation[0] * (kernel[0] - 1) - 1) / stride[0] + 1;
-  const int64_t Y_W =
-      (W + 2 * padding[1] - dilation[1] * (kernel[1] - 1) - 1) / stride[1] + 1;
-  return {N, M, Y_H, Y_W};
-}
-
 
 // the parameter quantized_output is a quantized tensor
 template <int kSpatialDim>
@@ -96,12 +65,12 @@ void PackedConvWeightCudnn<kSpatialDim>::apply_impl_helper(const at::Tensor& qua
   auto requantize_multiplier = act_scale * weight_scale / output_scale;
   at::Tensor requantize_multiplier_tensor = cudnn_utils::getRequantMultiplierTensor(requantize_multiplier, kSpatialDim + 2);
 
-  c10::optional<at::Tensor> bias_multiplier_tensor;
-  c10::optional<at::Tensor> broadcasted_bias;
+  std::optional<at::Tensor> bias_multiplier_tensor;
+  std::optional<at::Tensor> broadcasted_bias;
   if (bias_.has_value()) {
     // the input bias is a 1-D tensor whose size is the same as the size of the second dimension of quantized_output.
     // we need to add trailing dimensions in order to properly broadcast bias, otherwise broadcast_to will fail.
-    // the number of trailling dimensions is quantized_output.dim() - 2, so the new size of the broadcast_bias
+    // the number of trailing dimensions is quantized_output.dim() - 2, so the new size of the broadcast_bias
     // becomes quantized_output.dim() - 2 + 1. nothing needs to be done for the leading dimensions
     std::vector<int64_t> new_size(quantized_output.dim() - 1, 1);
     new_size[0] = bias_.value().size(0);
@@ -114,7 +83,7 @@ void PackedConvWeightCudnn<kSpatialDim>::apply_impl_helper(const at::Tensor& qua
   }
 
   cudnnHandle_t handle = at::native::getCudnnHandle();
-  CacheKey key;
+  CacheKey key{};
   // memset is needed here because there is implicit packing added for CacheKey, and this can result in uninitialized padded values that are
   // used for hashing (see how at::native::ParamsHash is defined). without memset, we can potentially come across a situation where two
   // CacheKey objects have the same user defined parameters, but
@@ -134,7 +103,7 @@ void PackedConvWeightCudnn<kSpatialDim>::apply_impl_helper(const at::Tensor& qua
   key.output_alignment = cudnn_utils::getAlignment(quantized_output);
   key.weight_alignment = cudnn_utils::getAlignment(maybe_padded_weight_);
   if (bias_.has_value()) {
-    key.bias_alignment = cudnn_utils::getAlignment(broadcasted_bias.value());
+    key.bias_alignment = static_cast<int8_t>(cudnn_utils::getAlignment(broadcasted_bias.value()));
   } else {
     key.bias_alignment = -1;
   }
@@ -155,8 +124,8 @@ void PackedConvWeightCudnn<kSpatialDim>::apply_impl_helper(const at::Tensor& qua
     }
     auto variantPack = cudnn_frontend::VariantPackBuilder()
       .setWorkspacePointer(workspace_size ? workspace_ptr.get() : nullptr)
-      .setDataPointers(uids.size(), data_ptrs.data())
-      .setUids(uids.size(), uids.data())
+      .setDataPointers(static_cast<int64_t>(uids.size()), data_ptrs.data())
+      .setUids(static_cast<int64_t>(uids.size()), uids.data())
       .build();
     auto variant_pack_desc = variantPack.get_raw_desc();
     AT_CUDNN_CHECK(cudnnBackendExecute(handle, plan_desc.get_raw_desc(), variant_pack_desc));
@@ -180,12 +149,12 @@ void PackedConvWeightCudnn<kSpatialDim>::apply_impl_helper(const at::Tensor& qua
       .build();
   // std::cout << "operator:" << conv_op.describe() << std::endl;
 
-  c10::optional<cudnn_frontend::Operation> bias_mult_op;
-  c10::optional<cudnn_frontend::Operation> sum_conv_bias_op;
+  std::optional<cudnn_frontend::Operation> bias_mult_op;
+  std::optional<cudnn_frontend::Operation> sum_conv_bias_op;
   if (bias_.has_value()) {
-    // we can't directly assign bias_mult_op becauase operator= is deleted for cudnn_frontend::Operation;
+    // we can't directly assign bias_mult_op because operator= is deleted for cudnn_frontend::Operation;
     // alternatively, I think we can use std::unique_ptr and dynamically allocate these builder ops
-    // but here, we chose to do it statically. c10::optional<T>::emplace() enables this approach
+    // but here, we chose to do it statically. std::optional<T>::emplace() enables this approach
 
     // bias_mult_op computes bias_fp32 / (act_scale * w_scale) or bias_fp32 * (1 / (act_scale * w_scale))
     // where bias_multiplier = (1 / (act_scale * w_scale))
@@ -214,7 +183,7 @@ void PackedConvWeightCudnn<kSpatialDim>::apply_impl_helper(const at::Tensor& qua
   // relu_op computes relu(act_int8 * w_int8 + [bias_fp32/(act_scale * w_scale)]
   // or relu(act_int8 * w_int8) if bias is not present.
   // output is a fp32 tensor
-  c10::optional<cudnn_frontend::Operation> relu_op;
+  std::optional<cudnn_frontend::Operation> relu_op;
   std::shared_ptr<cudnn_frontend::OpaqueBackendPointer> tensor2requant_ptr = bias_.has_value() ? sum_conv_bias_op.value().getOutputTensor() : conv_op.getOutputTensor();
   if (kReluFused) {
     // we use inplace operation here where the output is assigned to the input
@@ -249,7 +218,7 @@ void PackedConvWeightCudnn<kSpatialDim>::apply_impl_helper(const at::Tensor& qua
 
   auto opGraph = cudnn_frontend::OperationGraphBuilder()
       .setHandle(handle)
-      .setOperationGraph(ops.size(), ops.data())
+      .setOperationGraph(static_cast<int64_t>(ops.size()), ops.data())
       .build();
   // std::cout << "opGraph: " << opGraph.describe() << std::endl;
 
@@ -278,7 +247,7 @@ void PackedConvWeightCudnn<kSpatialDim>::apply_impl_helper(const at::Tensor& qua
       run(plan);
       execution_plan_cache.emplace(key, plan);
       return;
-    } catch (cudnn_frontend::cudnnException &e) {std::cout << "cudnn error:" << e.what() << std::endl;} catch(c10::CuDNNError &e) { std::cout << "other error" << e.what() << std::endl;}
+    } catch (cudnn_frontend::cudnnException &e) {std::cout << "cudnn error:" << e.what() << '\n';} catch(c10::CuDNNError &e) { std::cout << "other error" << e.what() << '\n';}
   }
 
   TORCH_CHECK(false, "Unable to find an engine to execute this computation in Quantized Conv2D Cudnn");
@@ -314,7 +283,7 @@ at::Tensor PackedConvWeightCudnn<kSpatialDim>::apply_impl(
   const auto W = act.size(kSpatialDim + 1);
   const auto num_output_channels = maybe_padded_weight_.size(0); // output channels
   std::vector<int64_t> kernel_size = {maybe_padded_weight_.size(2), maybe_padded_weight_.size(3)};
-  at::SmallVector<int64_t, kSpatialDim + 2> output_shape = MakeConvOutputShape<kSpatialDim>(batch_size, num_output_channels, {H, W},
+  auto output_shape = at::native::quantized::MakeConvOutputShape<kSpatialDim>(batch_size, num_output_channels, {H, W},
   kernel_size, stride_, padding_, dilation_);
   at::Tensor quantized_output = at::_empty_affine_quantized(
       output_shape,
@@ -369,8 +338,7 @@ template at::Tensor PackedConvWeightCudnn<2>::apply_relu(
     double output_scale,
     int64_t output_zero_point);
 
-namespace at {
-namespace native {
+namespace at:: native {
 namespace {
 
 template <bool kReluFused>
@@ -421,17 +389,17 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCUDA, m) {
   // this is inconsistent with what has been done for conv2d where new variants use packed weights, and
   // old variant does not. we adopt this inconsistency for now to be consistent with QuantizedCPU's conv1d
   // and will eventually deprecate the old variants
+  register_conv_params<2>();
+  register_conv_params<3>();
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv1d"), QConv1dInt8<false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv1d_relu"), QConv1dInt8<true>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d.new"), QConvInt8<2, false>::run);
   m.impl(TORCH_SELECTIVE_NAME("quantized::conv2d_relu.new"), QConvInt8<2, true>::run);
 }
 
-} // namespace
-} // namespace native
-} // namespace at
+} // anonymous namespace
+} // namespace at::native
 
 
-#endif  // HAS_CUDNN_V8
 #endif  // AT_CUDNN_ENABLED
 #endif  // USE_CUDA

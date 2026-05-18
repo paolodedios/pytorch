@@ -1,11 +1,15 @@
-from typing import Dict, List, Optional
+# mypy: allow-untyped-defs
 
 import torch
 import torch.optim._functional as F
-
 from torch import Tensor
+from torch.distributed.optim._deprecation_warning import (
+    _scripted_functional_optimizer_deprecation_warning,
+)
 
-__all__: List[str] = []
+
+__all__: list[str] = []
+
 
 # Define a TorchScript compatible Functional Adagrad Optimizer
 # where we use these optimizer in a functional way.
@@ -17,10 +21,10 @@ __all__: List[str] = []
 # NOTE: This should be only used by distributed optimizer internals
 # and not meant to expose to the user.
 @torch.jit.script
-class _FunctionalAdagrad(object):
+class _FunctionalAdagrad:
     def __init__(
         self,
-        params: List[Tensor],
+        params: list[Tensor],
         lr: float = 1e-2,
         lr_decay: float = 0.0,
         weight_decay: float = 0.0,
@@ -30,9 +34,11 @@ class _FunctionalAdagrad(object):
         eps: float = 1e-10,
         coalesce_grad: bool = True,
         foreach: bool = False,
+        fused: bool = False,
         maximize: bool = False,
         _allow_empty_param_list: bool = False,
     ):
+        _scripted_functional_optimizer_deprecation_warning(stacklevel=2)
         self.defaults = {
             "lr": lr,
             "lr_decay": lr_decay,
@@ -44,8 +50,9 @@ class _FunctionalAdagrad(object):
         }
         self.coalesce_grad = coalesce_grad
         self.foreach = foreach
+        self.fused = fused
         self.maximize = maximize
-        self.state = torch.jit.annotate(Dict[torch.Tensor, Dict[str, torch.Tensor]], {})
+        self.state = torch.jit.annotate(dict[torch.Tensor, dict[str, torch.Tensor]], {})
 
         if len(params) == 0 and not _allow_empty_param_list:
             raise ValueError("optimizer got an empty parameter list")
@@ -62,12 +69,12 @@ class _FunctionalAdagrad(object):
                 "step": torch.tensor(0.0),
             }
 
-    def step(self, gradients: List[Optional[Tensor]]):
+    def step(self, gradients: list[Tensor | None]):
         params = self.param_group["params"]
         params_with_grad = []
         grads = []
         state_sums = []
-        state_steps: List[Tensor] = []
+        state_steps: list[Tensor] = []
 
         if len(params) != len(gradients):
             raise ValueError(
@@ -76,11 +83,11 @@ class _FunctionalAdagrad(object):
                 + f"Gradients length: {len(gradients)}"
             )
 
-        has_sparse_grad = False
+        has_sparse_grad, has_complex = False, False
         for param, gradient in zip(self.param_group["params"], gradients):
             if gradient is not None:
-                if gradient.is_sparse:
-                    has_sparse_grad = True
+                has_sparse_grad |= gradient.is_sparse
+                has_complex |= torch.is_complex(param)
                 params_with_grad.append(param)
                 grads.append(gradient)
                 state = self.state[param]
@@ -100,4 +107,8 @@ class _FunctionalAdagrad(object):
                 has_sparse_grad=has_sparse_grad,
                 foreach=self.foreach,
                 maximize=self.maximize,
+                has_complex=has_complex,
+                fused=self.fused,
+                grad_scale=None,
+                found_inf=None,
             )

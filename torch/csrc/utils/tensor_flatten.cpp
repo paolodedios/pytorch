@@ -3,8 +3,7 @@
 #include <map>
 #include <unordered_map>
 
-namespace torch {
-namespace utils {
+namespace torch::utils {
 
 using namespace at;
 
@@ -29,7 +28,7 @@ std::vector<TensorGroup> take_tensors(
       tensor_size = tensor.numel() * tensor.element_size();
     }
 
-    auto& type_group = groups[type_id(tensor)];
+    auto& type_group = groups[static_cast<int64_t>(type_id(tensor))];
     type_group.tensors.push_back(tensor);
 
     if (fine_grained) {
@@ -104,7 +103,7 @@ std::vector<at::Tensor> unflatten_sparse_tensors(
     const at::Tensor& flat_indices,
     const at::Tensor& flat_values,
     at::TensorList tensors) {
-  if (tensors.size() == 0)
+  if (tensors.empty())
     return {};
 
   auto indices =
@@ -123,5 +122,4 @@ std::vector<at::Tensor> unflatten_sparse_tensors(
   return outputs;
 }
 
-} // namespace utils
-} // namespace torch
+} // namespace torch::utils

@@ -1,14 +1,12 @@
 #pragma once
 
-#include <c10/util/variant.h>
 #include <torch/arg.h>
 #include <torch/csrc/Export.h>
 #include <torch/enum.h>
 #include <torch/expanding_array.h>
 #include <torch/types.h>
 
-namespace torch {
-namespace nn {
+namespace torch::nn {
 
 /// Options for a `D`-dimensional ReflectionPad module.
 template <size_t D>
@@ -95,21 +93,45 @@ using ReplicationPad3dOptions = ReplicationPadOptions<3>;
 
 // ============================================================================
 
-/// Options for the `ZeroPad2d` module.
-///
-/// Example:
-/// ```
-/// ZeroPad2d model(ZeroPad2dOptions({1, 1, 2, 0}));
-/// ```
-struct TORCH_API ZeroPad2dOptions {
-  ZeroPad2dOptions(ExpandingArray<4> padding) : padding_(padding) {}
+template <size_t D>
+struct TORCH_API ZeroPadOptions {
+  ZeroPadOptions(ExpandingArray<D * 2> padding) : padding_(padding) {}
 
   /// The size of the padding.
   /// - If it is `int`, uses the same padding in all boundaries.
+  /// - If it is a 2-`tuple` (for ZeroPad1d), uses (padding_left,
+  /// padding_right).
   /// - If it is a 4-`tuple` (for ZeroPad2d), uses (padding_left, padding_right,
   /// padding_top, padding_bottom).
-  TORCH_ARG(ExpandingArray<4>, padding);
+  /// - If it is a 6-`tuple` (for ZeroPad3d), uses
+  ///   (padding_left, padding_right, padding_top, padding_bottom,
+  ///   padding_front, padding_back).
+  TORCH_ARG(ExpandingArray<D * 2>, padding);
 };
+
+/// `ZeroPadOptions` specialized for the `ZeroPad1d` module.
+///
+/// Example:
+/// ```
+/// ConstantPad1d model(ConstantPad1dOptions({3, 1});
+/// ```
+using ZeroPad1dOptions = ZeroPadOptions<1>;
+
+/// `ZeroPadOptions` specialized for the `ZeroPad2d` module.
+///
+/// Example:
+/// ```
+/// ConstantPad2d model(ConstantPad2dOptions({1, 1, 2, 0});
+/// ```
+using ZeroPad2dOptions = ZeroPadOptions<2>;
+
+/// `ZeroPadOptions` specialized for the `ZeroPad3d` module.
+///
+/// Example:
+/// ```
+/// ConstantPad3d model(ConstantPad3dOptions({1, 2, 1, 2, 1, 2});
+/// ```
+using ZeroPad3dOptions = ZeroPadOptions<3>;
 
 // ============================================================================
 
@@ -171,7 +193,7 @@ namespace functional {
 /// 2}).mode(torch::kReplicate));
 /// ```
 struct TORCH_API PadFuncOptions {
-  typedef c10::variant<
+  typedef std::variant<
       enumtype::kConstant,
       enumtype::kReflect,
       enumtype::kReplicate,
@@ -192,5 +214,4 @@ struct TORCH_API PadFuncOptions {
 
 } // namespace functional
 
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn

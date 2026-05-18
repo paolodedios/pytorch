@@ -13,13 +13,12 @@
 
 #include <algorithm>
 
-namespace at {
-namespace native {
+namespace at::native {
 
 DEFINE_DISPATCH(qthreshold_stub);
 
 // the underlying implementation for quantized threshold kernel
-Tensor quantized_threshold_impl(
+static Tensor quantized_threshold_impl(
     const Tensor& qx,
     const Scalar& threshold,
     const Scalar& value) {
@@ -45,5 +44,4 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::threshold"), TORCH_FN(threshold_quantized_cpu));
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

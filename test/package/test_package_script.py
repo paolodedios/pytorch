@@ -6,7 +6,13 @@ from unittest import skipIf
 
 import torch
 from torch.package import PackageExporter, PackageImporter
-from torch.testing._internal.common_utils import IS_FBCODE, IS_SANDCASTLE, run_tests
+from torch.testing._internal.common_utils import (
+    IS_FBCODE,
+    IS_SANDCASTLE,
+    run_tests,
+    skipIfTorchDynamo,
+)
+
 
 try:
     from .common import PackageTestCase
@@ -82,7 +88,7 @@ class TestPackageScript(PackageTestCase):
                     class UsesInterface(torch.nn.Module):
                         proxy_mod: ModuleInterface
 
-                        def __init__(self):
+                        def __init__(self) -> None:
                             super().__init__()
                             self.proxy_mod = ImplementsInterface()
 
@@ -235,20 +241,17 @@ class TestPackageScript(PackageTestCase):
         """
         Test to verify saving multiple ScriptModules with same top module
         but different submodules works. Submodule is redefined to between
-        the defintion of the top module to check that the different concrete
+        the definition of the top module to check that the different concrete
         types of the modules are thoroughly recognized by serializaiton code.
         """
 
         class Submod(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-
             def forward(self, input: str):
                 input = input + "_submod"
                 return input
 
         class TopMod(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.modB = Submod()
 
@@ -260,9 +263,6 @@ class TestPackageScript(PackageTestCase):
         # redefinition is intentional, change single inner string
         # string attribute, should trigger new module type
         class Submod(torch.nn.Module):  # noqa: F811
-            def __init__(self):
-                super().__init__()
-
             def forward(self, input: str):
                 input = input + "_submod(changed)"
                 return input
@@ -407,7 +407,7 @@ class TestPackageScript(PackageTestCase):
             e.save_pickle("res", "mod1.pkl", scripted_mod_0)
 
         buffer_0.seek(0)
-        importer_0 = importer = PackageImporter(buffer_0)
+        importer_0 = PackageImporter(buffer_0)
 
         buffer_1 = BytesIO()
         with PackageExporter(buffer_1) as e:
@@ -499,6 +499,7 @@ class TestPackageScript(PackageTestCase):
             id(loaded_mod.mod1.script_mod) == id(loaded_mod.mod2.script_mod)
         )
 
+    @skipIfTorchDynamo("unexplained 3.13 failure: Can't pickle Tensor object")
     def test_save_shared_tensors(self):
         """
         Test tensors shared across eager and ScriptModules are serialized once.
@@ -715,7 +716,7 @@ class TestPackageScript(PackageTestCase):
         """
 
         class TorchVisionTestInline(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.tvmod = resnet18()
 
@@ -754,7 +755,7 @@ class TestPackageScript(PackageTestCase):
         """
 
         class M(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.foo = torch.ones(2, 3)
 

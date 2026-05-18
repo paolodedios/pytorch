@@ -1,20 +1,24 @@
+# mypy: allow-untyped-defs
 """
 Collection of conversion functions for linear / conv2d structured pruning
-Also contains utilities for bias propogation
+Also contains utilities for bias propagation
 """
-from typing import cast, Optional, Callable, Tuple
+
+from collections.abc import Callable
+from typing import cast
 
 import torch
 from torch import nn, Tensor
 from torch.nn.utils import parametrize
 from torch.nn.utils.parametrize import ParametrizationList
-from .parametrization import FakeStructuredSparsity, BiasHook
+
+from .parametrization import BiasHook, FakeStructuredSparsity
 
 
-# BIAS PROPOGATION
+# BIAS PROPAGATION
 def _remove_bias_handles(module: nn.Module) -> None:
     if hasattr(module, "_forward_hooks"):
-        bias_hooks = []
+        bias_hooks: list[int] = []
         for key, hook in module._forward_hooks.items():
             if isinstance(hook, BiasHook):
                 bias_hooks.append(key)
@@ -63,11 +67,11 @@ def _get_adjusted_next_layer_bias(
         parametrize.is_parametrized(next_layer)
         and getattr(next_layer, "_bias", None) is not None
     ):  # next_layer is parametrized & has original bias ._bias
-        adjusted_bias = nn.Parameter(scaled_biases + next_layer._bias)
+        adjusted_bias = nn.Parameter(scaled_biases + next_layer._bias)  # type: ignore[operator]
     elif (
         not parametrize.is_parametrized(next_layer) and next_layer.bias is not None
     ):  # next_layer not parametrized & has .bias
-        adjusted_bias = nn.Parameter(scaled_biases + next_layer.bias)
+        adjusted_bias = nn.Parameter(scaled_biases + next_layer.bias)  # type: ignore[operator]
     else:  # next_layer has no bias
         adjusted_bias = nn.Parameter(scaled_biases)
     return adjusted_bias
@@ -85,17 +89,18 @@ def _prune_module_bias(module: nn.Module, mask: Tensor) -> None:
         delattr(module, "_bias")
 
 
-def _propogate_module_bias(module: nn.Module, mask: Tensor) -> Optional[Tensor]:
+def _propagate_module_bias(module: nn.Module, mask: Tensor) -> Tensor | None:
     r"""
-    In the case that we need to propogate biases, this function will return the biases we need
+    In the case that we need to propagate biases, this function will return the biases we need
     """
     # set current module bias
     if module.bias is not None:
         module.bias = nn.Parameter(cast(Tensor, module.bias)[mask])
     elif getattr(module, "_bias", None) is not None:
+        # pyrefly: ignore [bad-assignment]
         module.bias = nn.Parameter(cast(Tensor, module._bias)[mask])
 
-    # get pruned biases to propogate to subsequent layer
+    # get pruned biases to propagate to subsequent layer
     if getattr(module, "_bias", None) is not None:
         pruned_biases = cast(Tensor, module._bias)[~mask]
     else:
@@ -118,10 +123,11 @@ def _prune_linear_helper(linear: nn.Linear) -> Tensor:
 
     with torch.no_grad():
         parametrize.remove_parametrizations(linear, "weight", leave_parametrized=True)
-        linear.weight = nn.Parameter(linear.weight[mask])
+        linear.weight = nn.Parameter(linear.weight[mask])  # type: ignore[possibly-undefined]
     linear.out_features = linear.weight.shape[0]
     _remove_bias_handles(linear)
 
+    # pyrefly: ignore [unbound-name]
     return mask
 
 
@@ -137,14 +143,14 @@ def prune_linear_linear(linear1: nn.Linear, linear2: nn.Linear) -> None:
 
 def prune_linear_activation_linear(
     linear1: nn.Linear,
-    activation: Optional[Callable[[Tensor], Tensor]],
+    activation: Callable[[Tensor], Tensor] | None,
     linear2: nn.Linear,
 ):
     mask = _prune_linear_helper(linear1)
     if getattr(linear1, "prune_bias", False):
         _prune_module_bias(linear1, mask)
     else:
-        pruned_biases = _propogate_module_bias(linear1, mask)
+        pruned_biases = _propagate_module_bias(linear1, mask)
         if pruned_biases is not None:
             if activation:
                 pruned_biases = activation(pruned_biases)
@@ -176,10 +182,11 @@ def _prune_conv2d_helper(conv2d: nn.Conv2d) -> Tensor:
 
     with torch.no_grad():
         parametrize.remove_parametrizations(conv2d, "weight", leave_parametrized=True)
-        conv2d.weight = nn.Parameter(conv2d.weight[mask])
+        conv2d.weight = nn.Parameter(conv2d.weight[mask])  # type: ignore[possibly-undefined]
     conv2d.out_channels = conv2d.weight.shape[0]
 
     _remove_bias_handles(conv2d)
+    # pyrefly: ignore [unbound-name]
     return mask
 
 
@@ -198,8 +205,9 @@ def prune_conv2d_padded(conv2d_1: nn.Conv2d) -> None:
             conv2d_1.bias is not None
         ):  # conv2d_1 has original bias and bias propagated from previous layer
             new_bias = torch.zeros(conv2d_1.bias.shape)
-            new_bias[mask] = conv2d_1.bias[mask]
+            new_bias[mask] = conv2d_1.bias[mask]  # type: ignore[possibly-undefined]
             # adjusted bias that to keep in conv2d_1
+            # pyrefly: ignore [unbound-name]
             new_bias[~mask] = cast(Tensor, conv2d_1._bias)[~mask]
             # pruned biases that are kept instead of propagated
             conv2d_1.bias = nn.Parameter(new_bias)
@@ -210,7 +218,7 @@ def prune_conv2d_padded(conv2d_1: nn.Conv2d) -> None:
         if (
             conv2d_1.bias is not None
         ):  # conv2d_1 has bias propagated from previous layer
-            conv2d_1.bias.data[~mask] = 0
+            conv2d_1.bias.data[~mask] = 0  # type: ignore[possibly-undefined]
 
     if hasattr(conv2d_1, "_bias"):
         delattr(conv2d_1, "_bias")
@@ -228,7 +236,7 @@ def prune_conv2d_conv2d(conv2d_1: nn.Conv2d, conv2d_2: nn.Conv2d) -> None:
 
 def prune_conv2d_activation_conv2d(
     conv2d_1: nn.Conv2d,
-    activation: Optional[Callable[[Tensor], Tensor]],
+    activation: Callable[[Tensor], Tensor] | None,
     conv2d_2: nn.Conv2d,
 ):
     r"""
@@ -243,7 +251,7 @@ def prune_conv2d_activation_conv2d(
     prune_bias = getattr(conv2d_1, "prune_bias", False)
     if (
         hasattr(conv2d_2, "padding")
-        and cast(Tuple[int], conv2d_2.padding) > (0, 0)
+        and cast(tuple[int], conv2d_2.padding) > (0, 0)
         and (conv2d_1.bias is not None or getattr(conv2d_1, "_bias", None) is not None)
     ):
         prune_conv2d_padded(conv2d_1)
@@ -252,7 +260,7 @@ def prune_conv2d_activation_conv2d(
         if prune_bias:
             _prune_module_bias(conv2d_1, mask)
         else:
-            pruned_biases = _propogate_module_bias(conv2d_1, mask)
+            pruned_biases = _propagate_module_bias(conv2d_1, mask)
             if pruned_biases is not None:
                 if activation:
                     pruned_biases = activation(pruned_biases)
@@ -263,7 +271,7 @@ def prune_conv2d_activation_conv2d(
         if (
             not (
                 hasattr(conv2d_2, "padding")
-                and cast(Tuple[int], conv2d_2.padding) > (0, 0)
+                and cast(tuple[int], conv2d_2.padding) > (0, 0)
             )
             or conv2d_1.bias is None
         ):
@@ -287,7 +295,7 @@ def prune_conv2d_activation_conv2d(
 def prune_conv2d_pool_activation_conv2d(
     c1: nn.Conv2d,
     pool: nn.Module,
-    activation: Optional[Callable[[Tensor], Tensor]],
+    activation: Callable[[Tensor], Tensor] | None,
     c2: nn.Conv2d,
 ) -> None:
     prune_conv2d_activation_conv2d(c1, activation, c2)
@@ -295,7 +303,7 @@ def prune_conv2d_pool_activation_conv2d(
 
 def prune_conv2d_activation_pool_conv2d(
     c1: nn.Conv2d,
-    activation: Optional[Callable[[Tensor], Tensor]],
+    activation: Callable[[Tensor], Tensor] | None,
     pool: nn.Module,
     c2: nn.Conv2d,
 ) -> None:
@@ -305,7 +313,7 @@ def prune_conv2d_activation_pool_conv2d(
 def prune_conv2d_pool_flatten_linear(
     conv2d: nn.Conv2d,
     pool: nn.Module,
-    flatten: Optional[Callable[[Tensor], Tensor]],
+    flatten: Callable[[Tensor], Tensor] | None,
     linear: nn.Linear,
 ) -> None:
     mask = _prune_conv2d_helper(conv2d)
@@ -324,9 +332,10 @@ def prune_conv2d_pool_flatten_linear(
         linear_ic = linear.weight.shape[1]
 
     conv2d_oc = len(mask)
-    assert (
-        linear_ic % conv2d_oc == 0
-    ), f"Flattening from dimensions {conv2d_oc} to {linear_ic} not supported"
+    if linear_ic % conv2d_oc != 0:
+        raise AssertionError(
+            f"Flattening from dimensions {conv2d_oc} to {linear_ic} not supported"
+        )
 
     flatten_scale = linear_ic // conv2d_oc
     flattened_mask = torch.tensor(
@@ -336,7 +345,7 @@ def prune_conv2d_pool_flatten_linear(
     if getattr(conv2d, "prune_bias", False):
         _prune_module_bias(conv2d, mask)
     else:
-        pruned_biases = cast(Tensor, _propogate_module_bias(conv2d, mask))
+        pruned_biases = cast(Tensor, _propagate_module_bias(conv2d, mask))
         flattened_pruned_biases = torch.tensor(
             [[bias] * flatten_scale for bias in pruned_biases], device=mask.device
         ).flatten()
@@ -357,3 +366,120 @@ def prune_conv2d_pool_flatten_linear(
         else:
             linear.weight = nn.Parameter(linear.weight[:, flattened_mask])
             linear.in_features = linear.weight.shape[1]
+
+
+def prune_lstm_output_linear(
+    lstm: nn.LSTM, getitem: Callable, linear: nn.Linear
+) -> None:
+    prune_lstm_output_layernorm_linear(lstm, getitem, None, linear)
+
+
+def prune_lstm_output_layernorm_linear(
+    lstm: nn.LSTM,
+    getitem: Callable,
+    layernorm: nn.LayerNorm | None,
+    linear: nn.Linear,
+) -> None:
+    for i in range(lstm.num_layers):
+        if parametrize.is_parametrized(lstm, f"weight_ih_l{i}"):
+            parametrization_dict = cast(nn.ModuleDict, lstm.parametrizations)
+            weight_parameterizations = cast(
+                ParametrizationList, parametrization_dict[f"weight_ih_l{i}"]
+            )
+            mask = weight_parameterizations[0].mask
+
+            with torch.no_grad():
+                parametrize.remove_parametrizations(
+                    lstm, f"weight_ih_l{i}", leave_parametrized=True
+                )
+                setattr(
+                    lstm,
+                    f"weight_ih_l{i}",
+                    nn.Parameter(getattr(lstm, f"weight_ih_l{i}")[mask]),
+                )
+                setattr(
+                    lstm,
+                    f"bias_ih_l{i}",
+                    nn.Parameter(getattr(lstm, f"bias_ih_l{i}")[mask]),
+                )
+
+        if parametrize.is_parametrized(lstm, f"weight_hh_l{i}"):
+            parametrization_dict = cast(nn.ModuleDict, lstm.parametrizations)
+            weight_parameterizations = cast(
+                ParametrizationList, parametrization_dict[f"weight_hh_l{i}"]
+            )
+            mask = weight_parameterizations[0].mask
+
+            with torch.no_grad():
+                parametrize.remove_parametrizations(
+                    lstm, f"weight_hh_l{i}", leave_parametrized=True
+                )
+                # splitting out hidden-hidden masks
+                W_hi, W_hf, W_hg, W_ho = torch.split(
+                    getattr(lstm, f"weight_hh_l{i}"), lstm.hidden_size
+                )
+                M_hi, M_hf, M_hg, M_ho = torch.split(mask, lstm.hidden_size)  # type: ignore[arg-type]
+
+                # resize each individual weight separately
+                W_hi = W_hi[M_hi][:, M_hi]
+                W_hf = W_hf[M_hf][:, M_hf]
+                W_hg = W_hg[M_hg][:, M_hg]
+                W_ho = W_ho[M_ho][:, M_ho]
+
+                # concat, use this as new weight
+                new_weight = torch.cat((W_hi, W_hf, W_hg, W_ho))
+                setattr(lstm, f"weight_hh_l{i}", nn.Parameter(new_weight))
+                setattr(
+                    lstm,
+                    f"bias_hh_l{i}",
+                    nn.Parameter(getattr(lstm, f"bias_hh_l{i}")[mask]),
+                )
+
+            # If this is the final layer, then we need to prune linear layer columns
+            if i + 1 == lstm.num_layers:
+                lstm.hidden_size = int(M_hi.sum())
+                with torch.no_grad():
+                    if parametrize.is_parametrized(linear):
+                        parametrization_dict = cast(
+                            nn.ModuleDict, linear.parametrizations
+                        )
+                        weight_parameterizations = cast(
+                            ParametrizationList, parametrization_dict.weight
+                        )
+
+                        weight_parameterizations.original = nn.Parameter(
+                            weight_parameterizations.original[:, M_ho]
+                        )
+                        linear.in_features = weight_parameterizations.original.shape[1]
+                    else:
+                        linear.weight = nn.Parameter(linear.weight[:, M_ho])
+                        linear.in_features = linear.weight.shape[1]
+
+                    # if layernorm module, prune weight and bias
+                    if layernorm is not None:
+                        layernorm.normalized_shape = (linear.in_features,)
+                        layernorm.weight = nn.Parameter(layernorm.weight[M_ho])
+                        layernorm.bias = nn.Parameter(layernorm.bias[M_ho])
+
+            # otherwise need to prune the columns of the input of the next LSTM layer
+            else:
+                with torch.no_grad():
+                    if parametrize.is_parametrized(lstm, f"weight_ih_l{i + 1}"):
+                        parametrization_dict = cast(
+                            nn.ModuleDict, lstm.parametrizations
+                        )
+                        weight_parameterizations = cast(
+                            ParametrizationList,
+                            getattr(parametrization_dict, f"weight_ih_l{i + 1}"),
+                        )
+
+                        weight_parameterizations.original = nn.Parameter(
+                            weight_parameterizations.original[:, M_ho]
+                        )
+                    else:
+                        next_layer_weight = getattr(lstm, f"weight_ih_l{i + 1}")
+                        setattr(
+                            lstm,
+                            f"weight_ih_l{i + 1}",
+                            nn.Parameter(next_layer_weight[:, M_ho]),
+                        )

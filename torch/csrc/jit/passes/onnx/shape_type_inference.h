@@ -6,8 +6,7 @@
 
 #include <utility>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 // Merges existing_type and inferred_type.
 // Returns {merged type, whether or not inferred_type was used}.
@@ -28,13 +27,13 @@ namespace jit {
 //    ONNX represents list of scalars by 1-d Tensor. Return inferred type since
 //    it is more compatible with ONNX.
 std::pair<TypePtr, bool> MergeInferredType(
-    TypePtr existing_type,
-    TypePtr inferred_type);
+    const TypePtr& existing_type,
+    const TypePtr& inferred_type);
 
 void MergeInferredTypeAndSetMap(
     Value* dest_v,
-    TypePtr existing_type,
-    TypePtr inferred_type);
+    const TypePtr& existing_type,
+    const TypePtr& inferred_type);
 
 // Update graph input types with dynamic axes info.
 // Axes that are marked as dynamic will be assigned as dynamic ShapeSymbol.
@@ -56,7 +55,17 @@ TORCH_API void ONNXAssignOutputShape(
     at::ArrayRef<at::Tensor> outputs,
     const python::IODescriptor& desc,
     bool onnx_shape_inference,
-    bool is_script);
+    bool is_script,
+    int opset_version);
+
+// Replace None in output with Optional node (opset > 15) if it's
+// script model. This helps align the output format in ONNX internal tests
+// when comparing pytorch results with ONNX results, as they have different
+// process for None in output.
+void ReplaceGraphOutputNoneWithOptional(
+    std::shared_ptr<Graph>& graph,
+    size_t outputs_index);
+Node* ONNXOptionalNodeForNone(std::shared_ptr<Graph>& graph);
 
 // Utilize ONNX Shape Inference for node.
 // The node must have ONNX namespace, and is valid ONNX node according to spec.
@@ -76,6 +85,7 @@ TORCH_API void ONNXShapeTypeInference(
     const ParamMap& params_dict,
     int opset_version);
 
+bool AllGraphInputsStatic(const Graph* g);
 std::pair<bool, bool> AreInputsReliableOrStatic(Node* n);
 void UpdateReliable(
     torch::jit::Value* output,
@@ -85,5 +95,4 @@ void UpdateReliable(
 void UpdateReliable(torch::jit::Node* n);
 void UpdateShapeConstantIfReliable(torch::jit::Value* output);
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

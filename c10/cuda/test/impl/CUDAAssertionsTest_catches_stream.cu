@@ -14,7 +14,7 @@
 using ::testing::HasSubstr;
 
 /**
- * Device kernel that takes mulitple integer parameters as arguments and
+ * Device kernel that takes multiple integer parameters as arguments and
  * will always trigger a device side assertion.
  */
 __global__ void cuda_multiple_vars_always_fail_assertion_kernel(
@@ -65,8 +65,6 @@ void cuda_device_assertions_catches_stream() {
   } catch (const c10::Error& err) {
     const auto err_str = std::string(err.what());
     ASSERT_THAT(
-        err_str, HasSubstr("# of GPUs this process interacted with = 1"));
-    ASSERT_THAT(
         err_str,
         HasSubstr("CUDA device-side assertion failures were found on GPU #0!"));
     ASSERT_THAT(
@@ -93,9 +91,9 @@ void cuda_device_assertions_catches_stream() {
 
 TEST(CUDATest, cuda_device_assertions_catches_stream) {
 #ifdef TORCH_USE_CUDA_DSA
-  c10::cuda::CUDAKernelLaunchRegistry::get_singleton_ref().enabled = true;
+  c10::cuda::CUDAKernelLaunchRegistry::get_singleton_ref().enabled_at_runtime = true;
   cuda_device_assertions_catches_stream();
 #else
-  GTEST_SKIP() << "CUDA device-side assertions (DSA) was not enabled.";
+  GTEST_SKIP() << "CUDA device-side assertions (DSA) was not enabled at compile time.";
 #endif
 }

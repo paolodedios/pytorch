@@ -1,12 +1,11 @@
 """
 NOTE: This file must be imported like
 ``import torch.distributed.fsdp._traversal_utils`` and not like
-``from torch.distirbuted.fsdp._traversal_utils import ...`` to avoid circular
+``from torch.distributed.fsdp._traversal_utils import ...`` to avoid circular
 imports. For brevity, we may import the file as ``traversal_utils``.
 """
 
 import collections
-from typing import Deque, List, Set
 
 import torch.nn as nn
 from torch.distributed._composable.contract import _get_registry
@@ -37,37 +36,47 @@ def _composable(module: nn.Module) -> bool:
     Returns if ``module`` can compose with ``fully_shard``.
     """
     # TODO: Add any other composable APIs that are mutually exclusive.
-    return "replicate" not in _get_registry(module)
+    registry = _get_registry(module)
+    if registry is None:
+        return True
+    return "replicate" not in registry
 
 
-def _get_fsdp_states(module: nn.Module) -> List[_FSDPState]:
+# TODO (awgu): We may be able to remove this function if we retired the
+# `use_orig_params=False` code path since so far we only need the module for
+# `FlatParameter` registration, which is not needed for `use_orig_params=True`.
+def _get_fsdp_states_with_modules(
+    module: nn.Module,
+) -> tuple[list[_FSDPState], list[nn.Module]]:
     """
-    Returns all ``_FSDPState`` instances in the module tree rooted at
+    Returns a tuple containing:
+    1. A list of the ``_FSDPState`` instances in the module tree rooted at
     ``module`` without any duplicates and following the ``module.modules()``
-    traversal order (which is assumed to remain as depth-first). However, the
-    traversal does not proceed into any module annotated by an incompatible
-    API (e.g. ``replicate``).
+    traversal order (which is assumed to be depth-first).
+    2. A corresponding list of the modules owning the states in the first list.
 
-    For the wrapper code path, this returns all ``FullyShardedDataParallel``
-    instances. For the non-wrapper code path, this returns composable state
-    instances.
+    For the wrapper code path, both returned lists are the same, each
+    containing all ``FullyShardedDataParallel`` instances. For the composable
+    code path, this returns a list of all composable state instances and a list
+    of the corresponding fully sharded modules. See [Note: Fully Sharded
+    Module].
 
-    NOTE: For now, we must pass an ``nn.Module`` as the argument because
-    ``_FSDPState`` does not support graph traversal.
+    NOTE: The traversal does not proceed into any module annotated by an
+    incompatible API (e.g. ``replicate``).
     """
-    fsdp_states: List[_FSDPState] = []
+    fsdp_states: list[_FSDPState] = []
+    fsdp_modules: list[nn.Module] = []
     # Track the visited FSDP states since multiple modules may share the same
     # one and we want to return a de-duplicated list
-    visited_fsdp_states: Set[_FSDPState] = set()
+    visited_fsdp_states: set[_FSDPState] = set()
     # Track the visited modules in case of shared modules, which implies the
     # module graph is no longer a tree
-    visited_modules: Set[nn.Module] = set()
+    visited_modules: set[nn.Module] = set()
 
     # Perform depth-first search from `module` to ensure that we do not
     # traverse into an incompatible API's subtree (use DFS instead of BFS to
     # match `.modules()` order)
-    deque: Deque[nn.Module] = collections.deque()
-    deque.append(module)
+    deque: collections.deque[nn.Module] = collections.deque([module])
     while deque:
         submodule = deque.popleft()
         visited_modules.add(submodule)
@@ -80,16 +89,24 @@ def _get_fsdp_states(module: nn.Module) -> List[_FSDPState]:
         if optional_state is not None and optional_state not in visited_fsdp_states:
             visited_fsdp_states.add(optional_state)
             fsdp_states.append(optional_state)
+            fsdp_modules.append(submodule)
+    return fsdp_states, fsdp_modules
+
+
+def _get_fsdp_states(module: nn.Module) -> list[_FSDPState]:
+    """See :func:`_get_fsdp_states_with_modules`."""
+    fsdp_states, _ = _get_fsdp_states_with_modules(module)
     return fsdp_states
 
 
-def _get_fsdp_handles(module: nn.Module) -> List:
+def _get_fsdp_handles(module: nn.Module) -> list:
     """
     Returns all ``FlatParamHandle`` s in the module tree rooted at ``module``
     following the rules in :func:`_get_fsdp_state`.
     """
-    return [
-        handle
+    handles = [
+        fsdp_state._handle
         for fsdp_state in _get_fsdp_states(module)
-        for handle in fsdp_state._handles
+        if fsdp_state._handle is not None
     ]
+    return handles

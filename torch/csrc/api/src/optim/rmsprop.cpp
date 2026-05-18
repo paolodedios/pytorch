@@ -1,16 +1,12 @@
 #include <torch/optim/rmsprop.h>
 
-#include <torch/csrc/autograd/variable.h>
-#include <torch/serialize/archive.h>
 #include <torch/utils.h>
 
-#include <ATen/ATen.h>
 #include <c10/util/irange.h>
 
 #include <functional>
 
-namespace torch {
-namespace optim {
+namespace torch::optim {
 
 RMSpropOptions::RMSpropOptions(double lr) : lr_(lr) {}
 
@@ -85,8 +81,7 @@ Tensor RMSprop::step(LossClosure closure) {
       auto grad = p.grad();
       TORCH_CHECK(
           !grad.is_sparse(), "RMSprop does not support sparse gradients");
-      auto param_state =
-          state_.find(c10::guts::to_string(p.unsafeGetTensorImpl()));
+      auto param_state = state_.find(p.unsafeGetTensorImpl());
       auto& options = static_cast<RMSpropOptions&>(group.options());
 
       // State initialization
@@ -100,12 +95,11 @@ Tensor RMSprop::step(LossClosure closure) {
         if (options.centered()) {
           state->grad_avg(torch::zeros_like(p, MemoryFormat::Preserve));
         }
-        state_[c10::guts::to_string(p.unsafeGetTensorImpl())] =
-            std::move(state);
+        state_[p.unsafeGetTensorImpl()] = std::move(state);
       }
 
-      auto& state = static_cast<RMSpropParamState&>(
-          *state_[c10::guts::to_string(p.unsafeGetTensorImpl())]);
+      auto& state =
+          static_cast<RMSpropParamState&>(*state_[p.unsafeGetTensorImpl()]);
       auto& square_avg = state.square_avg();
       auto alpha = options.alpha();
 
@@ -176,10 +170,8 @@ void RMSprop::load(serialize::InputArchive& archive) {
       if (idx < grad_average_buffers.size()) {
         state->grad_avg(grad_average_buffers.at(idx));
       }
-      state_[c10::guts::to_string(params[idx].unsafeGetTensorImpl())] =
-          std::move(state);
+      state_[params[idx].unsafeGetTensorImpl()] = std::move(state);
     }
   }
 }
-} // namespace optim
-} // namespace torch
+} // namespace torch::optim

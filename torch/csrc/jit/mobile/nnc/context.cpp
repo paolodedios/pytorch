@@ -7,10 +7,7 @@
 
 #include <torch/csrc/jit/mobile/nnc/registry.h>
 
-namespace torch {
-namespace jit {
-namespace mobile {
-namespace nnc {
+namespace torch::jit::mobile::nnc {
 
 constexpr int64_t kProducedNNCFileFormatVersion = 0x1L;
 
@@ -45,7 +42,7 @@ bool InputSpec::validate(const at::Tensor& input) const {
     return false;
   }
   auto spec_sizes = sizes_;
-  for (int i = 0; i < spec_sizes.size(); i++) {
+  for (const auto i : c10::irange(spec_sizes.size())) {
     // InputSpec size 0 means that the dimension is dynamic
     if (spec_sizes[i] != 0 && spec_sizes[i] != input.sizes()[i]) {
       return false;
@@ -199,7 +196,7 @@ c10::IValue Function::serialize() const {
 }
 
 void Function::init_execution_state() const {
-  if (execution_state_.get() != nullptr) {
+  if (execution_state_ != nullptr) {
     return;
   }
 
@@ -342,7 +339,4 @@ Function* CompilationUnit::find_function(const c10::QualifiedName& name) const {
   return it->second.get();
 }
 
-} // namespace nnc
-} // namespace mobile
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::mobile::nnc

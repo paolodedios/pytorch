@@ -47,11 +47,28 @@ mobile::Module parse_mobile_module(
   return parse_and_initialize_mobile_module(
       static_cast<char*>(data),
       size,
-      /*device=*/c10::nullopt,
+      /*device=*/std::nullopt,
       /*extra_files=*/nullptr,
       should_copy_tensor_memory);
 }
 } // namespace
+
+TEST(FlatbufferTest, LoadMalformedModule) {
+  // Manually create some data with Flatbuffer header.
+  std::stringstream bad_data;
+  bad_data << "PK\x03\x04PTMF\x00\x00"
+           << "*}NV\xb3\xfa\xdf\x00pa";
+
+  // Loading module from it should throw an exception.
+  // Check guard at parse_and_initialize_mobile_module_for_jit.
+  ASSERT_THROWS_WITH_MESSAGE(
+      torch::jit::load(bad_data), "Malformed Flatbuffer module");
+
+  // Check guard at parse_and_initialize_mobile_module.
+  ASSERT_THROWS_WITH_MESSAGE(
+      parse_mobile_module(bad_data.str().data(), bad_data.str().size()),
+      "Malformed Flatbuffer module");
+}
 
 TEST(FlatbufferTest, UpsampleNearest2d) {
   Module m("m");
@@ -222,16 +239,32 @@ TEST(FlatbufferTest, ExtraFiles) {
   module->_save_for_mobile(ss, extra_files, true, /*use_flatbuffer=*/true);
 
   loaded_extra_files["metadata.json"] = "";
-  auto mobile_module = _load_for_mobile(ss, c10::nullopt, loaded_extra_files);
+  auto mobile_module = _load_for_mobile(ss, std::nullopt, loaded_extra_files);
 
   ASSERT_EQ(loaded_extra_files["metadata.json"], "abc");
   ASSERT_EQ(loaded_extra_files["mobile_info.json"], "{\"key\": 23}");
 
   // load it twice using the same stream
-  auto mobile_module2 = _load_for_mobile(ss, c10::nullopt, loaded_extra_files);
+  auto mobile_module2 = _load_for_mobile(ss, std::nullopt, loaded_extra_files);
 
   ASSERT_EQ(loaded_extra_files["metadata.json"], "abc");
   ASSERT_EQ(loaded_extra_files["mobile_info.json"], "{\"key\": 23}");
+
+  // Test if flatbuffer does not require any explicit key entries mapping in the
+  // extra file map.
+  std::unordered_map<std::string, std::string>
+      loaded_extra_files_without_explicit_entries;
+  auto mobile_module3 = _load_for_mobile(
+      ss,
+      std::nullopt,
+      loaded_extra_files_without_explicit_entries,
+      MobileModuleLoadOptions::PARSE_ALL_EXTRA_FILE_MAPS);
+
+  ASSERT_EQ(
+      loaded_extra_files_without_explicit_entries["metadata.json"], "abc");
+  ASSERT_EQ(
+      loaded_extra_files_without_explicit_entries["mobile_info.json"],
+      "{\"key\": 23}");
 }
 
 TEST(FlatbufferTest, Conv) {
@@ -728,11 +761,11 @@ TEST(FlatbufferTest, FindWrongMethodName) {
   )");
   CompilationOptions options;
   mobile::Module bc = jitModuleToMobile(m, options);
-  ASSERT_TRUE(bc.find_method("forward") == c10::nullopt);
+  ASSERT_TRUE(bc.find_method("forward") == std::nullopt);
 
   auto buff = save_mobile_module_to_bytes(bc);
   mobile::Module bc2 = parse_mobile_module(buff->data(), buff->size());
-  ASSERT_TRUE(bc2.find_method("forward") == c10::nullopt);
+  ASSERT_TRUE(bc2.find_method("forward") == std::nullopt);
 }
 
 TEST(FlatbufferTest, FindAndRunMethod) {
@@ -755,7 +788,7 @@ TEST(FlatbufferTest, FindAndRunMethod) {
   for (int i = 0; i < 3; ++i) {
     auto bcinputs = inputs;
     auto method = bc.find_method("add_it");
-    AT_ASSERT(method != c10::nullopt);
+    AT_ASSERT(method != std::nullopt);
     res = (*method)(std::move(bcinputs));
   }
 
@@ -769,7 +802,7 @@ TEST(FlatbufferTest, FindAndRunMethod) {
   for (int i = 0; i < 3; ++i) {
     auto bcinputs = inputs;
     auto method = bc2.find_method("add_it");
-    AT_ASSERT(method != c10::nullopt);
+    AT_ASSERT(method != std::nullopt);
     res = (*method)(std::move(bcinputs));
   }
 
@@ -1376,9 +1409,8 @@ TEST(TestSourceFlatbuffer,
 #if !defined FB_XPLAT_BUILD
 // The following test run in fbcode only
 TEST(FlatbufferUpgraderTest, DivTensorV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append("upgrader_models/test_versioned_div_tensor_v2.ptl.ff");
+  auto test_model_file = resolveTestDataFile(
+      __FILE__, "upgrader_models/test_versioned_div_tensor_v2.ptl.ff");
   /*
   (('__torch__.MyModule.forward',
     (('instructions',
@@ -1423,10 +1455,8 @@ TEST(FlatbufferUpgraderTest, DivTensorV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivTensorOutV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
-      "upgrader_models/test_versioned_div_tensor_out_v2.ptl.ff");
+  auto test_model_file = resolveTestDataFile(
+      __FILE__, "upgrader_models/test_versioned_div_tensor_out_v2.ptl.ff");
   /*
   (('__torch__.MyModule.forward',
     (('instructions',
@@ -1465,10 +1495,8 @@ TEST(FlatbufferUpgraderTest, DivTensorOutV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivTensorInplaceV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
-      "upgrader_models/test_versioned_div_tensor_inplace_v2.ptl.ff");
+  auto test_model_file = resolveTestDataFile(
+      __FILE__, "upgrader_models/test_versioned_div_tensor_inplace_v2.ptl.ff");
   /*
   (('__torch__.MyModule.forward',
     (('instructions',
@@ -1504,10 +1532,8 @@ TEST(FlatbufferUpgraderTest, DivTensorInplaceV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivScalarFloatV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
-      "upgrader_models/test_versioned_div_scalar_float_v2.ptl.ff");
+  auto test_model_file = resolveTestDataFile(
+      __FILE__, "upgrader_models/test_versioned_div_scalar_float_v2.ptl.ff");
   /*
   (('__torch__.MyModuleFloat.forward',
     (('instructions',
@@ -1544,9 +1570,8 @@ TEST(FlatbufferUpgraderTest, DivScalarFloatV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivScalarReciprocalFloatV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
+  auto test_model_file = resolveTestDataFile(
+      __FILE__,
       "upgrader_models/test_versioned_div_scalar_reciprocal_float_v2.ptl.ff");
   /*
   (('__torch__.MyModuleFloat.forward',
@@ -1583,9 +1608,8 @@ TEST(FlatbufferUpgraderTest, DivScalarReciprocalFloatV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivScalarReciprocalIntV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
+  auto test_model_file = resolveTestDataFile(
+      __FILE__,
       "upgrader_models/test_versioned_div_scalar_reciprocal_int_v2.ptl.ff");
   /*
   (('__torch__.MyModuleInt.forward',
@@ -1623,10 +1647,8 @@ TEST(FlatbufferUpgraderTest, DivScalarReciprocalIntV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivScalarScalarV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
-      "upgrader_models/test_versioned_div_scalar_scalar_v2.ptl.ff");
+  auto test_model_file = resolveTestDataFile(
+      __FILE__, "upgrader_models/test_versioned_div_scalar_scalar_v2.ptl.ff");
   /*
   (('__torch__.MyModule.forward',
     (('instructions',
@@ -1677,10 +1699,8 @@ TEST(FlatbufferUpgraderTest, DivScalarScalarV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivScalarIntV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
-      "upgrader_models/test_versioned_div_scalar_int_v2.ptl.ff");
+  auto test_model_file = resolveTestDataFile(
+      __FILE__, "upgrader_models/test_versioned_div_scalar_int_v2.ptl.ff");
   /*
   (('__torch__.MyModuleInt.forward',
     (('instructions',
@@ -1716,9 +1736,8 @@ TEST(FlatbufferUpgraderTest, DivScalarIntV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivScalarInplaceFloatV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
+  auto test_model_file = resolveTestDataFile(
+      __FILE__,
       "upgrader_models/test_versioned_div_scalar_inplace_float_v2.ptl.ff");
   /*
   (('__torch__.MyModuleFloat.forward',
@@ -1756,9 +1775,8 @@ TEST(FlatbufferUpgraderTest, DivScalarInplaceFloatV2) {
 }
 
 TEST(FlatbufferUpgraderTest, DivScalarInplaceIntV2) {
-  std::string filePath(__FILE__);
-  auto test_model_file = filePath.substr(0, filePath.find_last_of("/\\") + 1);
-  test_model_file.append(
+  auto test_model_file = resolveTestDataFile(
+      __FILE__,
       "upgrader_models/test_versioned_div_scalar_inplace_int_v2.ptl.ff");
   /*
   (('__torch__.MyModuleInt.forward',

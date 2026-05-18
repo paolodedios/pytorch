@@ -1,11 +1,8 @@
 #include <torch/csrc/profiler/standalone/itt_observer.h>
 
 #include <torch/csrc/profiler/stubs/base.h>
-#include <torch/csrc/profiler/util.h>
 
-namespace torch {
-namespace profiler {
-namespace impl {
+namespace torch::profiler::impl {
 
 struct ITTThreadLocalState : ProfilerStateBase {
   explicit ITTThreadLocalState(const ProfilerConfig& config)
@@ -22,8 +19,12 @@ struct ITTThreadLocalState : ProfilerStateBase {
     return ActiveProfilerType::ITT;
   }
 
-  void reportMemoryUsage(void*, int64_t, int64_t, int64_t, c10::Device)
-      override {}
+  void reportMemoryUsage(
+      void* /*ptr*/,
+      int64_t /*alloc_size*/,
+      size_t /*total_allocated*/,
+      size_t /*total_reserved*/,
+      c10::Device /*device*/) override {}
 
   static ITTThreadLocalState* getTLS() {
     auto tls = ProfilerStateBase::get(/*global=*/false);
@@ -34,7 +35,8 @@ struct ITTThreadLocalState : ProfilerStateBase {
 };
 
 template <bool report_input_shapes>
-std::unique_ptr<at::ObserverContext> enterITT(const at::RecordFunction& fn) {
+static std::unique_ptr<at::ObserverContext> enterITT(
+    const at::RecordFunction& fn) {
   if (ITTThreadLocalState::getTLS() != nullptr) {
     torch::profiler::impl::ittStubs()->rangePush(fn.name());
   }
@@ -68,6 +70,4 @@ void pushITTCallbacks(
   state_ptr->setCallbackHandle(handle);
 }
 
-} // namespace impl
-} // namespace profiler
-} // namespace torch
+} // namespace torch::profiler::impl

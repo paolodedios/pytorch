@@ -10,6 +10,8 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <ATen/native/Resize.h>
 
+#include <type_traits>
+
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
@@ -58,19 +60,15 @@ void binary_cross_entropy_backward_out_kernel(Tensor& grad_input, const Tensor& 
 
 } // namespace
 
-namespace at { namespace native {
+namespace at::native {
 
-Tensor binary_cross_entropy_cuda(const Tensor& input, const Tensor& target, const c10::optional<Tensor>& weight_opt, int64_t reduction) {
-  // See [Note: hacky wrapper removal for optional tensor]
-  c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
-  const Tensor& weight = *weight_maybe_owned;
-
+Tensor binary_cross_entropy_cuda(const Tensor& input, const Tensor& target, const std::optional<Tensor>& weight_opt, int64_t reduction) {
     Tensor loss = at::empty_like(input);
     return at::native::binary_cross_entropy_out_cuda(
-        input, target, weight, reduction, loss);
+        input, target, weight_opt, reduction, loss);
 }
 
-Tensor& binary_cross_entropy_out_cuda(const Tensor& input, const Tensor& target, const c10::optional<Tensor>& weight_opt, int64_t reduction, Tensor& loss) {
+Tensor& binary_cross_entropy_out_cuda(const Tensor& input, const Tensor& target, const std::optional<Tensor>& weight_opt, int64_t reduction, Tensor& loss) {
   // See [Note: hacky wrapper removal for optional tensor]
   c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
   const Tensor& weight = *weight_maybe_owned;
@@ -90,9 +88,10 @@ Tensor& binary_cross_entropy_out_cuda(const Tensor& input, const Tensor& target,
         const scalar_t neg_100 = -100;
 
         CUDA_KERNEL_ASSERT(input_val >= zero && input_val <= one);
+        CUDA_KERNEL_ASSERT(target_val >= zero && target_val <= one);
 
         scalar_t log_input_val = std::log(input_val);
-        scalar_t log_1_minus_input_val = std::log(one - input_val);
+        scalar_t log_1_minus_input_val = std::log1p(-input_val);
 
         log_input_val = std::max(log_input_val, neg_100);
         log_1_minus_input_val = std::max(log_1_minus_input_val, neg_100);
@@ -118,17 +117,13 @@ Tensor& binary_cross_entropy_out_cuda(const Tensor& input, const Tensor& target,
   return loss;
 }
 
-Tensor binary_cross_entropy_backward_cuda(const Tensor& grad, const Tensor& input, const Tensor& target, const c10::optional<Tensor>& weight_opt, int64_t reduction) {
-  // See [Note: hacky wrapper removal for optional tensor]
-  c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
-  const Tensor& weight = *weight_maybe_owned;
-
+Tensor binary_cross_entropy_backward_cuda(const Tensor& grad, const Tensor& input, const Tensor& target, const std::optional<Tensor>& weight_opt, int64_t reduction) {
   Tensor grad_input = at::empty_like(input);
   return at::native::binary_cross_entropy_backward_out_cuda(
-      grad, input, target, weight, reduction, grad_input);
+      grad, input, target, weight_opt, reduction, grad_input);
 }
 
-Tensor& binary_cross_entropy_backward_out_cuda(const Tensor& grad, const Tensor& input, const Tensor& target, const c10::optional<Tensor>& weight_opt, int64_t reduction, Tensor& grad_input) {
+Tensor& binary_cross_entropy_backward_out_cuda(const Tensor& grad, const Tensor& input, const Tensor& target, const std::optional<Tensor>& weight_opt, int64_t reduction, Tensor& grad_input) {
   // See [Note: hacky wrapper removal for optional tensor]
   c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
   const Tensor& weight = *weight_maybe_owned;
@@ -150,7 +145,9 @@ Tensor& binary_cross_entropy_backward_out_cuda(const Tensor& grad, const Tensor&
 // -----------------------------------
 namespace {
 
-constexpr int NLL_LOSS_THREADS = 32;
+int nll_loss_threads(int64_t nframe){
+  return std::clamp(1 << static_cast<int64_t>(std::round(std::log2(nframe/16))), 32, 1024);
+}
 
 // NOTE(crcrpar): `Byte` support was added for https://github.com/pytorch/pytorch/issues/59765.
 #define AT_DISPATCH_NLL_LOSS_INDEX_TYPES(TYPE, NAME, ...)                     \
@@ -158,13 +155,20 @@ constexpr int NLL_LOSS_THREADS = 32;
   AT_PRIVATE_CASE_TYPE_USING_HINT(at::ScalarType::Byte, index_t, __VA_ARGS__) \
   AT_PRIVATE_CASE_TYPE_USING_HINT(at::ScalarType::Long, index_t, __VA_ARGS__))
 
+#define CHECK_INDEX_IN_CLASS(INDEX, N_CLASSES)                           \
+  if constexpr(std::is_unsigned_v<decltype(INDEX)>) {                    \
+    CUDA_KERNEL_ASSERT(INDEX < N_CLASSES);                               \
+  } else {                                                               \
+    CUDA_KERNEL_ASSERT(INDEX >= 0 && INDEX < N_CLASSES);                 \
+  }
+
 template <typename scalar_t, typename index_t>
 __global__ void nll_loss_forward_no_reduce_cuda_kernel(
     int64_t batch_size,
     PackedTensorAccessor64<scalar_t, 2> input,
-    index_t* target,
+    const index_t* target,
     scalar_t* output,
-    scalar_t* weights,
+    const scalar_t* weights,
     int64_t n_classes,
     int64_t ignore_index) {
   CUDA_KERNEL_LOOP(index, batch_size) {
@@ -173,7 +177,7 @@ __global__ void nll_loss_forward_no_reduce_cuda_kernel(
       output[index] = static_cast<scalar_t>(0);
       continue;
     }
-    CUDA_KERNEL_ASSERT(cur_target >= 0 && cur_target < n_classes);
+    CHECK_INDEX_IN_CLASS(cur_target, n_classes);
     auto cur_weight =
         weights != nullptr ? weights[cur_target] : static_cast<scalar_t>(1);
     output[index] = -cur_weight * input[index][cur_target];
@@ -184,9 +188,9 @@ template <typename scalar_t, typename index_t>
 __global__ void nll_loss_forward_reduce_cuda_kernel_1d(
     scalar_t* output,
     scalar_t* total_weight,
-    scalar_t* input,
-    index_t* target,
-    scalar_t* weights,
+    const scalar_t* input,
+    const index_t* target,
+    const scalar_t* weights,
     bool size_average,
     int64_t n_classes,
     int64_t ignore_index) {
@@ -194,7 +198,7 @@ __global__ void nll_loss_forward_reduce_cuda_kernel_1d(
 
   const index_t t = *target;
   if (t != ignore_index) {
-    CUDA_KERNEL_ASSERT(t >= 0 && t < n_classes);
+    CHECK_INDEX_IN_CLASS(t, n_classes);
     const auto cur_weight = weights != nullptr ? weights[t] : scalar_t{1};
     *total_weight = cur_weight;
 
@@ -209,7 +213,7 @@ __global__ void nll_loss_forward_reduce_cuda_kernel_1d(
       *output = -cur_weight * input[t];
     }
   } else {
-    // If the only element was omited, we get 0. See the discussion in
+    // If the only element was omitted, we get 0. See the discussion in
     // https://github.com/pytorch/pytorch/pull/64572#issuecomment-926504162
     *output = scalar_t{0};
     *total_weight = scalar_t{0};
@@ -220,24 +224,25 @@ template <typename scalar_t, typename accscalar_t, typename index_t>
 __global__ void nll_loss_forward_reduce_cuda_kernel_2d(
     scalar_t* output,
     scalar_t* total_weight,
-    scalar_t* input,
-    index_t* target,
-    scalar_t* weights,
+    const scalar_t* input,
+    const index_t* target,
+    const scalar_t* weights,
     bool size_average,
     int64_t nframe,
     int64_t ndim,
     int64_t n_classes,
     int64_t ignore_index) {
   // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  __shared__ accscalar_t sh_inputs[NLL_LOSS_THREADS],
-      acc_weight[NLL_LOSS_THREADS];
+  extern __shared__ unsigned char shmem[];
+  accscalar_t* sh_inputs = reinterpret_cast<accscalar_t*>(shmem);
+  accscalar_t* acc_weight = reinterpret_cast<accscalar_t*>(shmem + blockDim.x * sizeof(accscalar_t));
 
   sh_inputs[threadIdx.x] = static_cast<accscalar_t>(0);
   acc_weight[threadIdx.x] = static_cast<accscalar_t>(0);
-  for (int i = threadIdx.x; i < nframe; i += NLL_LOSS_THREADS) {
+  for (int i = threadIdx.x; i < nframe; i += blockDim.x) {
     index_t t = target[i];
     if (t != ignore_index) {
-      CUDA_KERNEL_ASSERT(t >= 0 && t < n_classes);
+      CHECK_INDEX_IN_CLASS(t, n_classes);
       scalar_t cur_weight =
           weights != nullptr ? weights[t] : static_cast<scalar_t>(1);
       sh_inputs[threadIdx.x] -= input[i * ndim + t] * cur_weight;
@@ -247,18 +252,20 @@ __global__ void nll_loss_forward_reduce_cuda_kernel_2d(
 
   __syncthreads();
 
-  if (threadIdx.x == 0) {
-    accscalar_t output_acc = 0;
-    accscalar_t total_weight_acc = 0;
-    for (int i = 0; i < NLL_LOSS_THREADS; ++i) {
-      output_acc += sh_inputs[i];
-      total_weight_acc += acc_weight[i];
+  for (int stride = blockDim.x/2; stride > 0; stride >>= 1) {
+    if (threadIdx.x < stride) {
+      sh_inputs[threadIdx.x] += sh_inputs[threadIdx.x + stride];
+      acc_weight[threadIdx.x] += acc_weight[threadIdx.x + stride];
     }
-    *total_weight = static_cast<scalar_t>(total_weight_acc);
+    __syncthreads();
+  }
+
+  if (threadIdx.x == 0) {
+    *total_weight = static_cast<scalar_t>(acc_weight[0]);
     if (size_average) {
-      *output = static_cast<scalar_t>(output_acc / total_weight_acc);
+      *output = static_cast<scalar_t>(sh_inputs[0] / acc_weight[0]);
     } else {
-      *output = static_cast<scalar_t>(output_acc);
+      *output = static_cast<scalar_t>(sh_inputs[0]);
     }
   }
 }
@@ -279,6 +286,15 @@ void nll_loss_forward_out_cuda_template(
   int64_t batch_size = n_dims == 1 ? 1 : input.size(0);
 
   auto weight_ = weight.defined() ? weight.contiguous() : weight;
+
+  if (weight_.defined()) {
+  TORCH_CHECK(
+      input.scalar_type() == weight_.scalar_type(),
+      "expected scalar type ",
+      input.scalar_type(),
+      " but found ",
+      weight_.scalar_type());
+  }
 
   if (reduction == Reduction::None && n_dims == 2) {
     at::native::resize_output(output, {batch_size});
@@ -306,9 +322,9 @@ void nll_loss_forward_out_cuda_template(
                        at::cuda::getCurrentCUDAStream()>>>(
                         batch_size,
                         input.packed_accessor64<scalar_t, 2>(),
-                        target.data_ptr<index_t>(),
-                        output.data_ptr<scalar_t>(),
-                        weight_.defined() ? weight_.data_ptr<scalar_t>()
+                        target.const_data_ptr<index_t>(),
+                        output.mutable_data_ptr<scalar_t>(),
+                        weight_.defined() ? weight_.const_data_ptr<scalar_t>()
                                           : nullptr,
                         n_classes,
                         ignore_index);
@@ -348,11 +364,11 @@ void nll_loss_forward_out_cuda_template(
               [&] {
                 nll_loss_forward_reduce_cuda_kernel_1d<scalar_t, index_t>
                     <<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(
-                        output.data_ptr<scalar_t>(),
-                        total_weight.data_ptr<scalar_t>(),
-                        input.data_ptr<scalar_t>(),
-                        target.data_ptr<index_t>(),
-                        weight_.defined() ? weight_.data_ptr<scalar_t>()
+                        output.mutable_data_ptr<scalar_t>(),
+                        total_weight.mutable_data_ptr<scalar_t>(),
+                        input.const_data_ptr<scalar_t>(),
+                        target.const_data_ptr<index_t>(),
+                        weight_.defined() ? weight_.const_data_ptr<scalar_t>()
                                           : nullptr,
                         reduction == at::Reduction::Mean,
                         n_classes,
@@ -372,16 +388,17 @@ void nll_loss_forward_out_cuda_template(
               "nll_loss_forward_reduce_cuda_kernel_2d_index",
               [&] {
                 using accscalar_t = at::acc_type<scalar_t, /*is_cuda*/true>;
+                int nthreads = nll_loss_threads(input.size(0));
                 nll_loss_forward_reduce_cuda_kernel_2d<scalar_t, accscalar_t, index_t>
                     <<<1,
-                       NLL_LOSS_THREADS,
-                       0,
+                       nthreads,
+                       nthreads * sizeof(accscalar_t) * 2,
                        at::cuda::getCurrentCUDAStream()>>>(
-                        output.data_ptr<scalar_t>(),
-                        total_weight.data_ptr<scalar_t>(),
-                        input.data_ptr<scalar_t>(),
-                        target.data_ptr<index_t>(),
-                        weight_.defined() ? weight_.data_ptr<scalar_t>()
+                        output.mutable_data_ptr<scalar_t>(),
+                        total_weight.mutable_data_ptr<scalar_t>(),
+                        input.const_data_ptr<scalar_t>(),
+                        target.const_data_ptr<index_t>(),
+                        weight_.defined() ? weight_.const_data_ptr<scalar_t>()
                                           : nullptr,
                         reduction == at::Reduction::Mean,
                         input.size(0),
@@ -397,10 +414,10 @@ void nll_loss_forward_out_cuda_template(
 template <typename scalar_t, typename index_t>
 __global__ void nll_loss_backward_no_reduce_cuda_kernel(
   int batch_size,
-  index_t *target,
-  PackedTensorAccessor64<scalar_t, 1> grad_output,
+  const index_t *target,
+  PackedTensorAccessor64<const scalar_t, 1> grad_output,
   PackedTensorAccessor64<scalar_t, 2> grad_input,
-  scalar_t *weights,
+  const scalar_t *weights,
   int64_t n_classes,
   int64_t ignore_index) {
 
@@ -409,7 +426,7 @@ __global__ void nll_loss_backward_no_reduce_cuda_kernel(
     if (cur_target == ignore_index) {
       continue;
     }
-    CUDA_KERNEL_ASSERT(cur_target >= 0 && cur_target < n_classes);
+    CHECK_INDEX_IN_CLASS(cur_target, n_classes);
     scalar_t weight = weights != nullptr ? weights[cur_target] : static_cast<scalar_t>(1);
     grad_input[index][cur_target] = -weight * grad_output[index];
   }
@@ -418,17 +435,17 @@ __global__ void nll_loss_backward_no_reduce_cuda_kernel(
 template <typename scalar_t, typename index_t>
 __global__ void nll_loss_backward_reduce_cuda_kernel_1d(
   scalar_t *grad_input,
-  scalar_t *grad_output,
-  scalar_t *weights,
-  index_t *target,
-  scalar_t *total_weight,
+  const scalar_t *grad_output,
+  const scalar_t *weights,
+  const index_t *target,
+  const scalar_t *total_weight,
   bool size_average,
   int64_t n_classes,
   int64_t ignore_index
 ) {
   const index_t t = *target;
   if (t != ignore_index) {
-    CUDA_KERNEL_ASSERT(t >= 0 && t < n_classes);
+    CHECK_INDEX_IN_CLASS(t, n_classes);
     const auto grad = -(size_average ? *grad_output / *total_weight : *grad_output);
     grad_input[t] = weights != nullptr ? weights[t] * grad : grad;
   }
@@ -441,10 +458,10 @@ template<> struct bwd_index_type<int64_t> { using type = uint64_t; };
 template <typename scalar_t, typename index_t>
 __global__ void nll_loss_backward_reduce_cuda_kernel_2d(
     scalar_t* grad_input,
-    scalar_t* grad_output,
-    index_t* target,
-    scalar_t* weights,
-    scalar_t* total_weight,
+    const scalar_t* grad_output,
+    const index_t* target,
+    const scalar_t* weights,
+    const scalar_t* total_weight,
     bool size_average,
     int nframe,
     int ndim,
@@ -454,13 +471,15 @@ __global__ void nll_loss_backward_reduce_cuda_kernel_2d(
   const auto grad = -(size_average ? *grad_output / *total_weight
                                    : *grad_output);
 
-  for (int i = threadIdx.x; i < nframe; i += NLL_LOSS_THREADS) {
+  for (int i = threadIdx.x; i < nframe; i += blockDim.x) {
     const index_t t = target[i];
     if (t != ignore_index) {
-      CUDA_KERNEL_ASSERT(t >= 0 && t < n_classes);
+      CHECK_INDEX_IN_CLASS(t, n_classes);
       // NOTE(crcrpar): this index could overflow in int64_t as `t` itself can be close to the max.
       const bwd_index_t index = static_cast<bwd_index_t>(i) * ndim + t;
-      CUDA_KERNEL_ASSERT(index >= 0);
+      if constexpr(!std::is_unsigned_v<decltype(index)>) {
+        CUDA_KERNEL_ASSERT(index >= 0);
+      }
       grad_input[index] = weights != nullptr ? weights[t] * grad : grad;
     }
   }
@@ -507,10 +526,10 @@ void nll_loss_backward_out_cuda_template(
                        0,
                        at::cuda::getCurrentCUDAStream()>>>(
                         batch_size,
-                        target.data_ptr<index_t>(),
-                        grad_output.packed_accessor64<scalar_t, 1>(),
+                        target.const_data_ptr<index_t>(),
+                        grad_output.packed_accessor64<const scalar_t, 1>(),
                         grad_input.packed_accessor64<scalar_t, 2>(),
-                        weight.defined() ? weight_.data_ptr<scalar_t>() : nullptr,
+                        weight.defined() ? weight_.const_data_ptr<scalar_t>() : nullptr,
                         n_classes,
                         ignore_index);
                 C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -532,12 +551,12 @@ void nll_loss_backward_out_cuda_template(
               [&] {
                 nll_loss_backward_reduce_cuda_kernel_1d<scalar_t, index_t>
                     <<<1, 1, 0, at::cuda::getCurrentCUDAStream()>>>(
-                        grad_input.data_ptr<scalar_t>(),
-                        grad_output.data_ptr<scalar_t>(),
-                        weight.defined() ? weight_.data_ptr<scalar_t>()
+                        grad_input.mutable_data_ptr<scalar_t>(),
+                        grad_output.const_data_ptr<scalar_t>(),
+                        weight.defined() ? weight_.const_data_ptr<scalar_t>()
                                          : nullptr,
-                        target.data_ptr<index_t>(),
-                        total_weight.data_ptr<scalar_t>(),
+                        target.const_data_ptr<index_t>(),
+                        total_weight.const_data_ptr<scalar_t>(),
                         reduction == at::Reduction::Mean,
                         n_classes,
                         ignore_index);
@@ -556,12 +575,12 @@ void nll_loss_backward_out_cuda_template(
               "nll_loss_backward_reduce_cuda_kernel_2d_index",
               [&] {
             nll_loss_backward_reduce_cuda_kernel_2d<scalar_t, index_t>
-                <<<1, NLL_LOSS_THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
-                    grad_input.data_ptr<scalar_t>(),
-                    grad_output.data_ptr<scalar_t>(),
-                    target.data_ptr<index_t>(),
-                    weight.defined() ? weight_.data_ptr<scalar_t>() : nullptr,
-                    total_weight.data_ptr<scalar_t>(),
+                <<<1, nll_loss_threads(input.size(0)), 0, at::cuda::getCurrentCUDAStream()>>>(
+                    grad_input.mutable_data_ptr<scalar_t>(),
+                    grad_output.const_data_ptr<scalar_t>(),
+                    target.const_data_ptr<index_t>(),
+                    weight.defined() ? weight_.const_data_ptr<scalar_t>() : nullptr,
+                    total_weight.const_data_ptr<scalar_t>(),
                     reduction == at::Reduction::Mean,
                     input.size(0),
                     input.size(1),
@@ -611,4 +630,4 @@ TORCH_IMPL_FUNC(nll_loss_backward_out_cuda)
       reduction,
       ignore_index);
 }
-}}  // namespace at::native
+}  // namespace at::native

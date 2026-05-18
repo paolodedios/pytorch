@@ -1,4 +1,6 @@
+#include <ATen/native/vulkan/impl/Packing.h>
 #include <ATen/native/vulkan/ops/Common.h>
+#include <ATen/native/vulkan/ops/Utils.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -14,260 +16,9 @@ namespace native {
 namespace vulkan {
 namespace ops {
 
-namespace packing {
-
-static api::ShaderSource get_nchw_to_image_shader(const vTensor& v_dst) {
-  if (v_dst.is_quantized()) {
-    switch (v_dst.storage_type()) {
-      case api::StorageType::TEXTURE_3D:
-        switch (v_dst.dtype()) {
-          case c10::ScalarType::QUInt8:
-            return VK_KERNEL(nchw_to_image_uint8);
-          case c10::ScalarType::QInt8:
-            return VK_KERNEL(nchw_to_image_int8);
-          case c10::ScalarType::QInt32:
-            return VK_KERNEL(nchw_to_image_int32);
-          default:
-            TORCH_CHECK(
-                false,
-                "Vulkan quantization currently not supported for dtype ",
-                v_dst.dtype());
-        }
-      default:
-        TORCH_CHECK(false, "No kernel available!");
-      case api::StorageType::BUFFER:
-      case api::StorageType::UNKNOWN:
-        TORCH_CHECK(false, "Requested storage type must be a texture type.");
-    }
-  }
-
-  switch (v_dst.storage_type()) {
-    case api::StorageType::TEXTURE_3D:
-      return VK_KERNEL(nchw_to_image);
-    case api::StorageType::TEXTURE_2D:
-      return VK_KERNEL(nchw_to_image2d);
-    default:
-      TORCH_CHECK(false, "No kernel available!");
-  }
-}
-
-static api::ShaderSource get_image_to_nchw_shader(const vTensor& v_src) {
-  if (v_src.is_quantized()) {
-    auto plane_size =
-        get_dim<Dim4D::Height>(v_src) * get_dim<Dim4D::Width>(v_src);
-    switch (v_src.storage_type()) {
-      case api::StorageType::TEXTURE_3D:
-        switch (v_src.dtype()) {
-          case c10::ScalarType::QUInt8:
-            return plane_size % 4 == 0 ? VK_KERNEL(image_to_nchw_quantized_mul4)
-                                       : VK_KERNEL(image_to_nchw_quantized);
-          case c10::ScalarType::QInt8:
-            return plane_size % 4 == 0 ? VK_KERNEL(image_to_nchw_quantized_mul4)
-                                       : VK_KERNEL(image_to_nchw_quantized);
-          case c10::ScalarType::QInt32:
-            return VK_KERNEL(image_to_nchw_int32);
-          default:
-            TORCH_CHECK(
-                false,
-                "Vulkan quantization currently not supported for dtype ",
-                v_src.dtype());
-        }
-      default:
-        TORCH_CHECK(false, "No kernel available!");
-      case api::StorageType::BUFFER:
-      case api::StorageType::UNKNOWN:
-        TORCH_CHECK(false, "Requested storage type must be a texture type.");
-    }
-  }
-
-  switch (v_src.storage_type()) {
-    case api::StorageType::TEXTURE_3D:
-      return VK_KERNEL(image_to_nchw);
-    case api::StorageType::TEXTURE_2D:
-      return VK_KERNEL(image2d_to_nchw);
-    default:
-      TORCH_CHECK(false, "No kernel available!");
-  }
-}
-
-struct ToFromTextureParams final {
-  api::utils::ivec3 extents;
-  int32_t plane_size;
-};
-
-void record_nchw_to_image_op(
-    api::Context* const context,
-    api::ShaderSource& compute_shader,
-    api::VulkanBuffer& src_buffer,
-    vTensor& v_dst,
-    api::PipelineBarrier pipeline_barrier,
-    const VkFence fence_handle) {
-  api::utils::uvec3 global_size = v_dst.extents();
-  api::utils::uvec3 local_size = adaptive_work_group_size(global_size);
-
-  int32_t height =
-      api::utils::safe_downcast<int32_t>(get_dim<Dim4D::Height>(v_dst));
-  int32_t width =
-      api::utils::safe_downcast<int32_t>(get_dim<Dim4D::Width>(v_dst));
-  int32_t plane_size = height * width;
-
-  ToFromTextureParams block{
-      api::utils::make_ivec3(v_dst.extents()),
-      plane_size,
-  };
-
-  api::UniformParamsBuffer params(context, block);
-  context->submit_compute_job(
-      // shader descriptor
-      compute_shader,
-      // pipeline barrier
-      pipeline_barrier,
-      // global work group size
-      global_size,
-      // local work group size
-      local_size,
-      // fence handle
-      fence_handle,
-      // shader arguments
-      v_dst.image(
-          pipeline_barrier,
-          api::PipelineStage::COMPUTE,
-          api::MemoryAccessType::WRITE),
-      src_buffer,
-      // params buffer
-      params.buffer());
-}
-
-void record_image_to_nchw_op(
-    api::Context* const context,
-    api::ShaderSource& compute_shader,
-    vTensor& v_src,
-    api::VulkanBuffer& dst_buffer,
-    api::PipelineBarrier pipeline_barrier,
-    const VkFence fence_handle) {
-  api::utils::uvec3 global_size = v_src.extents();
-  api::utils::uvec3 local_size = adaptive_work_group_size(global_size);
-
-  int32_t height =
-      api::utils::safe_downcast<int32_t>(get_dim<Dim4D::Height>(v_src));
-  int32_t width =
-      api::utils::safe_downcast<int32_t>(get_dim<Dim4D::Width>(v_src));
-  int32_t plane_size = height * width;
-
-  ToFromTextureParams block{
-      api::utils::make_ivec3(v_src.extents()),
-      plane_size,
-  };
-
-  if (v_src.dtype() == c10::ScalarType::QUInt8 ||
-      v_src.dtype() == c10::ScalarType::QInt8) {
-    if (plane_size % 4 == 0) {
-      global_size.data[0u] = plane_size / 4;
-      global_size.data[1u] = 1;
-      local_size.data[0u] *= local_size.data[1u];
-      local_size.data[1u] = 1;
-    } else {
-      uint32_t numel = v_src.numel();
-      global_size = {api::utils::div_up(numel, uint32_t(4)), 1u, 1u};
-      local_size = {64u, 1u, 1u};
-    }
-  }
-
-  api::UniformParamsBuffer params(context, block);
-  context->submit_compute_job(
-      // shader descriptor
-      compute_shader,
-      // pipeline barrier
-      pipeline_barrier,
-      // global work group size
-      global_size,
-      // local work group size
-      local_size,
-      // fence handle
-      fence_handle,
-      // shader arguments
-      v_src.image(
-          pipeline_barrier,
-          api::PipelineStage::COMPUTE,
-          api::MemoryAccessType::WRITE),
-      dst_buffer,
-      // params buffer
-      params.buffer());
-}
-
-void record_nchw_to_buffer_op(
-    api::Context* const context,
-    api::VulkanBuffer& src_buffer,
-    vTensor& v_dst,
-    api::PipelineBarrier pipeline_barrier,
-    const VkFence fence_handle) {
-  uint32_t gpu_buf_len = api::utils::safe_downcast<uint32_t>(v_dst.gpu_numel());
-
-  api::utils::uvec3 global_size = {gpu_buf_len, 1u, 1u};
-  api::utils::uvec3 local_size = {32u, 1u, 1u};
-
-  api::UniformParamsBuffer cpu_buffer_metadata(
-      context, v_dst.get_cpu_buffer_metadata());
-
-  context->submit_compute_job(
-      // shader descriptor
-      VK_KERNEL(buffer_to_buffer),
-      // pipeline barrier
-      pipeline_barrier,
-      // global work group size
-      global_size,
-      // local work group size
-      local_size,
-      // fence handle
-      fence_handle,
-      // shader arguments
-      v_dst.buffer(
-          pipeline_barrier,
-          api::PipelineStage::COMPUTE,
-          api::MemoryAccessType::WRITE),
-      v_dst.buffer_metadata(),
-      src_buffer,
-      cpu_buffer_metadata.buffer());
-}
-
-void record_buffer_to_nchw_op(
-    api::Context* const context,
-    vTensor& v_src,
-    api::VulkanBuffer& dst_buffer,
-    api::PipelineBarrier pipeline_barrier,
-    const VkFence fence_handle) {
-  uint32_t buf_len = api::utils::safe_downcast<uint32_t>(v_src.numel());
-
-  api::utils::uvec3 global_size = {buf_len, 1u, 1u};
-  api::utils::uvec3 local_size = {4u, 1u, 1u};
-
-  api::UniformParamsBuffer cpu_buffer_metadata(
-      context, v_src.get_cpu_buffer_metadata());
-
-  context->submit_compute_job(
-      // shader descriptor
-      VK_KERNEL(buffer_to_buffer),
-      // pipeline barrier
-      pipeline_barrier,
-      // global work group size
-      global_size,
-      // local work group size
-      local_size,
-      // fence handle
-      fence_handle,
-      // shader arguments
-      dst_buffer,
-      cpu_buffer_metadata.buffer(),
-      v_src.buffer(
-          pipeline_barrier,
-          api::PipelineStage::COMPUTE,
-          api::MemoryAccessType::WRITE),
-      v_src.buffer_metadata());
-}
-
-} // namespace packing
-
 namespace utils {
+
+using namespace api::utils;
 
 /*
  * This function formats an input tensor in NCHW layout to NC4HW layout such
@@ -300,12 +51,12 @@ Tensor nchw_to_nc4hw(const Tensor& src) {
   uint32_t H = get_dim<Dim4D::Height>(src.sizes());
   uint32_t W = get_dim<Dim4D::Width>(src.sizes());
 
-  uint32_t NC4 = api::utils::div_up(N * C, 4u);
-  uint32_t NC_aligned = api::utils::align_up(N * C, 4u);
+  uint32_t C_aligned = api::utils::align_up(C, 4u);
+  uint32_t NC4 = (N * C_aligned) / 4;
 
-  // Add padding to the tensor so that the batch-channel dim is a multiple of 4
-  Tensor padding = at::zeros({NC_aligned - N * C, H, W}, src.options());
-  Tensor src_padded = at::cat({src.reshape({N * C, H, W}), padding});
+  // Add padding to the tensor so that the channel dim is a multiple of 4
+  Tensor padding = at::zeros({N, C_aligned - C, H, W}, src.options());
+  Tensor src_padded = at::cat({src.reshape({N, C, H, W}), padding}, 1);
   // Reshape to group channels into groups of 4 and permute so that the groups
   // are in the first dimension so that they are contiguous
   Tensor src_NC4HW = src_padded.reshape({NC4, 4, H, W}).permute({0, 2, 3, 1});
@@ -325,14 +76,15 @@ Tensor create_staging_tensor(const vTensor& v_in) {
   uint32_t H = get_dim<Dim4D::Height>(v_in.sizes());
   uint32_t W = get_dim<Dim4D::Width>(v_in.sizes());
 
-  uint32_t NC4 = api::utils::div_up(N * C, 4u);
+  uint32_t NC4 = N * api::utils::div_up(C, 4u);
 
   // Note that the dtype corresponding with the texture format of the vTensor is
   // used instead of options().dtype(). This is to ensure the number of bytes in
   // the staging tensor matches the number of bytes in the image texture. Refer
   // to comments for api::vk_format()
   return at::empty(
-      {NC4, H, W, 4}, at::device(at::kCPU).dtype(v_in.texture_dtype()));
+      {NC4, H, W, 4},
+      at::device(at::kCPU).dtype(convert_dtype(v_in.texture_dtype())));
 }
 
 /*
@@ -350,13 +102,13 @@ Tensor nc4hw_to_nchw(const Tensor& t_in, IntArrayRef sizes) {
   uint32_t H = get_dim<Dim4D::Height>(sizes);
   uint32_t W = get_dim<Dim4D::Width>(sizes);
 
-  uint32_t NC_aligned = api::utils::align_up(N * C, 4u);
+  uint32_t C_aligned = api::utils::align_up(C, 4u);
 
   // Undo the permute step and channel grouping step
-  Tensor t_in_padded = t_in.permute({0, 3, 1, 2}).reshape({NC_aligned, H, W});
+  Tensor t_in_padded = t_in.permute({0, 3, 1, 2}).reshape({N, C_aligned, H, W});
   // Remove the padding channels
   Tensor t_in_shaved =
-      at::narrow(t_in_padded, /*dim=*/0, /*start*/ 0, /*end*/ N * C);
+      at::narrow(t_in_padded, /*dim=*/1, /*start*/ 0, /*end*/ C);
 
   // Reshape to original sizing and dtype and return a contiguous Tensor
   return t_in_shaved.reshape(sizes).contiguous();
@@ -450,8 +202,7 @@ void pack_buffer_to_vtensor(
     packing::record_nchw_to_buffer_op(
         context, buffer, v_self, pipeline_barrier, VK_NULL_HANDLE);
   } else {
-    api::ShaderSource compute_shader =
-        packing::get_nchw_to_image_shader(v_self);
+    api::ShaderInfo compute_shader = packing::get_nchw_to_image_shader(v_self);
     packing::record_nchw_to_image_op(
         context,
         compute_shader,
@@ -467,7 +218,7 @@ void pack_staging_to_vtensor(api::VulkanBuffer& staging, vTensor& v_self) {
   pack_buffer_to_vtensor(staging, v_self, pipeline_barrier);
 }
 
-void pack_vtensor_to_staging(
+bool pack_vtensor_to_staging(
     vTensor& v_self,
     api::VulkanBuffer& staging,
     const VkFence fence_handle) {
@@ -475,12 +226,11 @@ void pack_vtensor_to_staging(
   api::PipelineBarrier pipeline_barrier{};
 
   if (v_self.storage_type() == api::StorageType::BUFFER) {
-    packing::record_buffer_to_nchw_op(
+    return packing::record_buffer_to_nchw_op(
         context, v_self, staging, pipeline_barrier, fence_handle);
   } else {
-    api::ShaderSource compute_shader =
-        packing::get_image_to_nchw_shader(v_self);
-    packing::record_image_to_nchw_op(
+    api::ShaderInfo compute_shader = packing::get_image_to_nchw_shader(v_self);
+    return packing::record_image_to_nchw_op(
         context,
         compute_shader,
         v_self,
@@ -488,6 +238,145 @@ void pack_vtensor_to_staging(
         pipeline_barrier,
         fence_handle);
   }
+}
+
+/*
+ * Broadcasting Utils
+ */
+
+// check if two tensors are broadcastable
+void is_broadcastable(const Tensor& input1, const Tensor& input2) {
+  TORCH_CHECK(
+      input1.dim() <= 4 && input2.dim() <= 4,
+      "Vulkan only supports tensors <= 4 dimensions");
+
+  // check if the shapes of input tensors are broadcastable
+  // see https://pytorch.org/docs/stable/notes/broadcasting.html
+  // for broadcasting semantics
+  const std::string broadcast_error_msg = "Tensors are not broadcastable!";
+
+  if (get_dim<Dim4D::Batch>(input1) != get_dim<Dim4D::Batch>(input2)) {
+    TORCH_CHECK(
+        get_dim<Dim4D::Batch>(input1) == 1 ||
+            get_dim<Dim4D::Batch>(input2) == 1,
+        broadcast_error_msg);
+  }
+  if (get_dim<Dim4D::Channel>(input1) != get_dim<Dim4D::Channel>(input2)) {
+    TORCH_CHECK(
+        get_dim<Dim4D::Channel>(input1) == 1 ||
+            get_dim<Dim4D::Channel>(input2) == 1,
+        broadcast_error_msg);
+  }
+  if (get_dim<Dim4D::Height>(input1) != get_dim<Dim4D::Height>(input2)) {
+    TORCH_CHECK(
+        get_dim<Dim4D::Height>(input1) == 1 ||
+            get_dim<Dim4D::Height>(input2) == 1,
+        broadcast_error_msg);
+  }
+  if (get_dim<Dim4D::Width>(input1) != get_dim<Dim4D::Width>(input2)) {
+    TORCH_CHECK(
+        get_dim<Dim4D::Width>(input1) == 1 ||
+            get_dim<Dim4D::Width>(input2) == 1,
+        broadcast_error_msg);
+  }
+}
+
+// compute the output shape by broadcasting the shapes of t1 and t2
+std::vector<int64_t> broadcast_size(const Tensor& t1, const Tensor& t2) {
+  int64_t t1_size = t1.dim();
+  int64_t t2_size = t2.dim();
+
+  std::vector<int64_t> out;
+  if (t1_size > t2_size) {
+    for (int64_t i = 0; i < t1_size; i++) {
+      out.push_back(t1.sizes()[i]);
+    }
+  } else {
+    for (int64_t i = 0; i < t2_size; i++) {
+      out.push_back(t2.sizes()[i]);
+    }
+  }
+
+  if (!out.empty()) {
+    out[out.size() - 1] =
+        std::max(get_dim<Dim4D::Width>(t1), get_dim<Dim4D::Width>(t2));
+  }
+  if (out.size() > 1) {
+    out[out.size() - 2] =
+        std::max(get_dim<Dim4D::Height>(t1), get_dim<Dim4D::Height>(t2));
+  }
+  if (out.size() > 2) {
+    out[out.size() - 3] =
+        std::max(get_dim<Dim4D::Channel>(t1), get_dim<Dim4D::Channel>(t2));
+  }
+  if (out.size() > 3) {
+    out[out.size() - 4] =
+        std::max(get_dim<Dim4D::Batch>(t1), get_dim<Dim4D::Batch>(t2));
+  }
+
+  return out;
+}
+
+api::utils::vec4 extract_texel(const Tensor& input, const ivec3& pos) {
+  api::Context* const context = api::context();
+
+  TORCH_CHECK(input.is_vulkan());
+  const vTensor& v_input = convert(input);
+
+  api::PipelineBarrier pipeline_barrier{};
+
+  std::vector<int64_t> output_size{1, 1, 1};
+
+  // x, y, z, w all using a single element tensor. We intend to pull
+  // (0, 0, 0).x from each tensor. This allows us to isolate the effect
+  // of most packing mechanism.
+  api::ScalarType dtype = convert_dtype(input.scalar_type());
+  vTensor v_outputs_x{context, output_size, dtype};
+  vTensor v_outputs_y{context, output_size, dtype};
+  vTensor v_outputs_z{context, output_size, dtype};
+  vTensor v_outputs_w{context, output_size, dtype};
+
+  const struct Block final {
+    ivec3 pos;
+  } block{
+      pos,
+  };
+
+  api::UniformParamsBuffer params(context, block);
+
+  context->submit_compute_job(
+      VK_KERNEL(extract_texel),
+      pipeline_barrier,
+      {1, 1, 1},
+      {1, 1, 1},
+      VK_NULL_HANDLE,
+      v_outputs_x.image(
+          pipeline_barrier,
+          api::PipelineStage::COMPUTE,
+          api::MemoryAccessType::WRITE),
+      v_outputs_y.image(
+          pipeline_barrier,
+          api::PipelineStage::COMPUTE,
+          api::MemoryAccessType::WRITE),
+      v_outputs_z.image(
+          pipeline_barrier,
+          api::PipelineStage::COMPUTE,
+          api::MemoryAccessType::WRITE),
+      v_outputs_w.image(
+          pipeline_barrier,
+          api::PipelineStage::COMPUTE,
+          api::MemoryAccessType::WRITE),
+      v_input.image(pipeline_barrier, api::PipelineStage::COMPUTE),
+      params.buffer());
+
+  vec4 rv = {
+      convert(v_outputs_x).cpu().const_data_ptr<float>()[0],
+      convert(v_outputs_y).cpu().const_data_ptr<float>()[0],
+      convert(v_outputs_z).cpu().const_data_ptr<float>()[0],
+      convert(v_outputs_w).cpu().const_data_ptr<float>()[0],
+  };
+
+  return rv;
 }
 
 } // namespace utils

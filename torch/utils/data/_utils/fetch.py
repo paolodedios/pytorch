@@ -1,25 +1,26 @@
-r""""Contains definitions of the methods used by the _BaseDataLoaderIter to fetch
-data from an iterable-style or map-style dataset. This logic is shared in both
-single- and multi-processing data loading.
+# mypy: allow-untyped-defs
+r"""Contains definitions of the methods used by the _BaseDataLoaderIter to fetch data from an iterable-style or map-style dataset.
+
+This logic is shared in both single- and multi-processing data loading.
 """
 
+from typing import NoReturn
 
-class _BaseDatasetFetcher(object):
-    def __init__(self, dataset, auto_collation, collate_fn, drop_last):
+
+class _BaseDatasetFetcher:
+    def __init__(self, dataset, auto_collation, collate_fn, drop_last) -> None:
         self.dataset = dataset
         self.auto_collation = auto_collation
         self.collate_fn = collate_fn
         self.drop_last = drop_last
 
-    def fetch(self, possibly_batched_index):
-        raise NotImplementedError()
+    def fetch(self, possibly_batched_index) -> NoReturn:
+        raise NotImplementedError
 
 
 class _IterableDatasetFetcher(_BaseDatasetFetcher):
-    def __init__(self, dataset, auto_collation, collate_fn, drop_last):
-        super(_IterableDatasetFetcher, self).__init__(
-            dataset, auto_collation, collate_fn, drop_last
-        )
+    def __init__(self, dataset, auto_collation, collate_fn, drop_last) -> None:
+        super().__init__(dataset, auto_collation, collate_fn, drop_last)
         self.dataset_iter = iter(dataset)
         self.ended = False
 
@@ -45,11 +46,6 @@ class _IterableDatasetFetcher(_BaseDatasetFetcher):
 
 
 class _MapDatasetFetcher(_BaseDatasetFetcher):
-    def __init__(self, dataset, auto_collation, collate_fn, drop_last):
-        super(_MapDatasetFetcher, self).__init__(
-            dataset, auto_collation, collate_fn, drop_last
-        )
-
     def fetch(self, possibly_batched_index):
         if self.auto_collation:
             if hasattr(self.dataset, "__getitems__") and self.dataset.__getitems__:

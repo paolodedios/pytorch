@@ -1,25 +1,26 @@
-#include <Python.h>
 
 #include <torch/csrc/utils/tensor_types.h>
 
 #include <ATen/Context.h>
 #include <ATen/Formatting.h>
-#include <torch/csrc/Exceptions.h>
 #include <torch/csrc/autograd/generated/VariableType.h>
 #include <torch/csrc/tensor/python_tensor.h>
 
-#include <c10/util/CallOnce.h>
-
-#include <algorithm>
 #include <sstream>
 #include <unordered_map>
 
 using namespace at;
 
-namespace torch {
-namespace utils {
+namespace torch::utils {
 
-static const char* backend_to_string(const at::Backend& backend) {
+static const char* parse_privateuseone_backend(bool is_sparse = false) {
+  static std::string backend_name = "torch." + get_privateuse1_backend();
+  static std::string sparse_backend_name = backend_name + ".sparse";
+  return is_sparse == false ? backend_name.c_str()
+                            : sparse_backend_name.c_str();
+}
+
+const char* backend_to_string(const at::Backend& backend) {
   switch (backend) {
     case at::Backend::CPU:
       return "torch";
@@ -35,47 +36,60 @@ static const char* backend_to_string(const at::Backend& backend) {
       return "torch.cuda.sparse";
     case at::Backend::SparseXPU:
       return "torch.xpu.sparse";
+    case at::Backend::SparseMPS:
+      return "torch.mps.sparse";
     case at::Backend::QuantizedCPU:
       return "torch.quantized";
     case at::Backend::HPU:
       return "torch.hpu";
     case at::Backend::MPS:
       return "torch.mps";
+    case at::Backend::MTIA:
+      return "torch.mtia";
     case at::Backend::PrivateUse1:
-      return "torch.privateuseone";
+      return parse_privateuseone_backend();
+    case at::Backend::SparsePrivateUse1:
+      return parse_privateuseone_backend(true);
     case at::Backend::Lazy:
       return "torch.lazy";
     case at::Backend::XLA:
       return "torch.xla";
+    case at::Backend::Meta:
+      return "torch.meta";
     default:
-      AT_ERROR("Unimplemented backend ", backend);
+      TORCH_CHECK(false, "Unimplemented backend ", backend);
   }
 }
 
-std::string options_to_string(const at::TensorOptions options) {
+std::string options_to_string(const at::TensorOptions& options) {
   std::ostringstream ss;
-  ss << backend_to_string(options.backend()) << "."
+  ss << backend_to_string(options.backend()) << '.'
      << toString(at::typeMetaToScalarType(options.dtype())) << "Tensor";
   return ss.str();
 }
 
 std::string type_to_string(const at::DeprecatedTypeProperties& type) {
   std::ostringstream ss;
-  ss << backend_to_string(type.backend()) << "." << toString(type.scalarType())
+  ss << backend_to_string(type.backend()) << '.' << toString(type.scalarType())
      << "Tensor";
   return ss.str();
 }
 
-at::TensorOptions options_from_string(const std::string& str) {
-  static std::string cuda_prefix("torch.cuda.");
-  static c10::once_flag cpu_once;
-  static c10::once_flag cuda_once;
-  static std::unordered_map<std::string, at::DeprecatedTypeProperties*> cpu_map;
-  static std::unordered_map<std::string, at::DeprecatedTypeProperties*>
-      cuda_map;
+using TypeMap = std::unordered_map<std::string, at::DeprecatedTypeProperties*>;
 
-  const std::unordered_map<std::string, at::DeprecatedTypeProperties*>* map =
-      nullptr;
+static TypeMap build_type_map(
+    const std::vector<at::DeprecatedTypeProperties*>& types) {
+  TypeMap m;
+  m.reserve(types.size());
+  for (auto type : types)
+    m.emplace(type_to_string(*type), type);
+  return m;
+}
+
+at::TensorOptions options_from_string(const std::string& str) {
+  static const std::string privateUser_prefix =
+      std::string(parse_privateuseone_backend()) + ".";
+  const TypeMap* map = nullptr;
 
   if (str == "torch.Tensor") {
     auto backend =
@@ -84,21 +98,21 @@ at::TensorOptions options_from_string(const std::string& str) {
     return getDeprecatedTypeProperties(backend, scalar_type).options();
   }
 
-  if (std::mismatch(cuda_prefix.begin(), cuda_prefix.end(), str.begin())
-          .first == cuda_prefix.end()) {
-    // torch.cuda. is prefix of str
-    c10::call_once(cuda_once, []() {
-      for (auto type : autograd::VariableType::allCUDATypes()) {
-        cuda_map.emplace(type_to_string(*type), type);
-      }
-    });
+  if (str.starts_with("torch.cuda.")) {
+    static const auto cuda_map =
+        build_type_map(autograd::VariableType::allCUDATypes());
     map = &cuda_map;
+  } else if (str.starts_with("torch.xpu.")) {
+    static const auto xpu_map =
+        build_type_map(autograd::VariableType::allXPUTypes());
+    map = &xpu_map;
+  } else if (str.starts_with(privateUser_prefix)) {
+    static const auto privateUser1_map =
+        build_type_map(autograd::VariableType::allPrivateUser1Types());
+    map = &privateUser1_map;
   } else {
-    c10::call_once(cpu_once, []() {
-      for (auto type : autograd::VariableType::allCPUTypes()) {
-        cpu_map.emplace(type_to_string(*type), type);
-      }
-    });
+    static const auto cpu_map =
+        build_type_map(autograd::VariableType::allCPUTypes());
     map = &cpu_map;
   }
 
@@ -113,9 +127,9 @@ std::vector<std::pair<Backend, ScalarType>> all_declared_types() {
   // NOTE: Do not add more types here. This list controls the creation
   // of legacy tensor types e.g. torch.cuda.FloatTensor which are
   // maintained for backwards-compatibility only.
-  std::vector<Backend> backends = {
+  auto backends = {
       Backend::CPU, Backend::CUDA, Backend::SparseCPU, Backend::SparseCUDA};
-  std::vector<ScalarType> scalar_types = {
+  auto scalar_types = {
       ScalarType::Byte,
       ScalarType::Char,
       ScalarType::Double,
@@ -141,5 +155,4 @@ std::vector<std::pair<Backend, ScalarType>> all_declared_types() {
   return ret;
 }
 
-} // namespace utils
-} // namespace torch
+} // namespace torch::utils

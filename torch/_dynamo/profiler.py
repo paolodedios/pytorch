@@ -1,10 +1,26 @@
+"""
+Dynamo profiling implementation.
+
+This module provides profiling functionality for Dynamo, including:
+- ProfileMetrics: Class for collecting and aggregating performance metrics like
+  execution time, operator counts, and fusion statistics
+- ProfileResult: Class for analyzing and reporting profiling results
+- Utilities for tracking missed/uncaptured operations
+- Functions for instrumenting FX graphs with profiling capabilities
+
+The profiler helps measure and optimize the performance of Dynamo-compiled code
+by tracking both captured and total operations, timing, and graph statistics.
+"""
+
+from __future__ import annotations
+
 import dataclasses
 import os
-from typing import Any, List
+from typing import Any
+from typing_extensions import Self
 
 import torch
 
-from . import config
 from .utils import print_once
 
 
@@ -15,59 +31,64 @@ class ProfileMetrics:
     fusions: int = 0
     graphs: int = 0
 
-    def __iadd__(self, other: "ProfileMetrics"):
+    def __iadd__(self, other: Self) -> Self:
         self.microseconds += other.microseconds
         self.operators += other.operators
         self.fusions += other.fusions
         return self
 
-    def __add__(self, other: "ProfileMetrics"):
-        assert isinstance(other, ProfileMetrics)
+    def __add__(self, other: ProfileMetrics) -> ProfileMetrics:
+        if not isinstance(other, ProfileMetrics):
+            raise AssertionError(f"Expected ProfileMetrics, got {type(other)}")
         return ProfileMetrics(
             self.microseconds + other.microseconds,
             self.operators + other.operators,
             self.fusions + other.fusions,
         )
 
-    def __truediv__(self, other):
+    def __truediv__(self, other: Any) -> ProfileMetrics:
         if isinstance(other, int):
             other = ProfileMetrics(other, other, other)
         return ProfileMetrics(
             self.microseconds / max(1, other.microseconds),
+            # pyrefly: ignore [bad-argument-type]
             self.operators / max(1, other.operators),
+            # pyrefly: ignore [bad-argument-type]
             self.fusions / max(1, other.fusions),
         )
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.operators:4.0%} ops {self.microseconds:4.0%} time"
 
-    def tocsv(self):
+    def tocsv(self) -> list[float]:
         return [self.operators, self.microseconds]
 
 
 class ProfileResult:
-    def __init__(self, captured, total, unique_graphs):
+    def __init__(
+        self, captured: ProfileMetrics, total: ProfileMetrics, unique_graphs: int
+    ) -> None:
         self.captured: ProfileMetrics = captured or ProfileMetrics()
         self.total: ProfileMetrics = total or ProfileMetrics()
         self.unique_graphs: int = unique_graphs
 
-    def __iadd__(self, other: ProfileMetrics):
+    def __iadd__(self, other: Self) -> Self:
         self.captured += other.captured
         self.total += other.total
         self.unique_graphs += other.unique_graphs
         return self
 
-    def percent(self):
+    def percent(self) -> ProfileMetrics:
         return self.captured / self.total
 
-    def __str__(self):
+    def __str__(self) -> str:
         return (
             f"{self.unique_graphs:2} graphs {self.captured.graphs:2} graph calls "
             f"{self.captured.operators:4}/{self.total.operators:4} = "
             + str(self.percent())
         )
 
-    def tocsv(self):
+    def tocsv(self) -> list[Any]:
         return [
             self.unique_graphs,
             self.captured.graphs,
@@ -76,11 +97,11 @@ class ProfileResult:
         ] + self.percent().tocsv()
 
 
-def should_print_missing():
+def should_print_missing() -> bool:
     return os.environ.get("TORCHDYNAMO_PRINT_MISSING") == "1"
 
 
-def print_missing(stack):
+def print_missing(stack: list[str]) -> None:
     if any("/torch/autograd/profiler.py" in x for x in stack):
         return
     stack = [
@@ -90,15 +111,15 @@ def print_missing(stack):
 
 
 class Profiler:
-    unique_graphs = 0
+    unique_graphs: int = 0
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.prof = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU],
             with_stack=should_print_missing(),
         )
 
-    def results(self):
+    def results(self) -> ProfileResult:
         captured_regions = 0
         captured_ops = 0
         captured_microseconds = 0
@@ -107,7 +128,7 @@ class Profiler:
 
         last_op_end_time = -1
         captured_region_end_time = -1
-        events = list(sorted(self.prof.events(), key=lambda x: x.time_range.start))
+        events = sorted(self.prof.events(), key=lambda x: x.time_range.start)
         for e in events:
             if e.name == "TORCHDYNAMO":
                 captured_region_end_time = e.time_range.end
@@ -128,6 +149,8 @@ class Profiler:
 
         unique_graphs = Profiler.unique_graphs
         Profiler.unique_graphs = 0
+        # we counted one extra op that is part of the profiler setup code
+        total_ops -= 1
 
         return ProfileResult(
             captured=ProfileMetrics(
@@ -145,33 +168,10 @@ class Profiler:
         )
 
 
-def shapes_of(it):
-    if it:
-        return [tuple(getattr(x, "shape", [])) for x in it]
-
-
-def fx_insert_profiling(gm: torch.fx.GraphModule, example_inputs: List[Any]):
-    input_shapes = shapes_of(example_inputs)
-    output_shapes = None
-
-    def debug_print(extra):
-        gm.graph.print_tabular()
-        return f"shape mismatch in={input_shapes} out={output_shapes} got={extra}"
-
-    def _wrapped(*args):
-        nonlocal output_shapes
+def fx_insert_profiling(gm: torch.fx.GraphModule, example_inputs: list[Any]) -> Any:
+    def _wrapped(*args: Any) -> Any:
         with torch.profiler.record_function("TORCHDYNAMO"):
-            assert (
-                shapes_of(args) == input_shapes or config.dynamic_shapes
-            ), debug_print(shapes_of(args))
-            result = gm.forward(*args)
-            if output_shapes is None:
-                output_shapes = shapes_of(result)
-            else:
-                assert (
-                    shapes_of(result) == output_shapes or config.dynamic_shapes
-                ), debug_print(shapes_of(result))
-            return result
+            return gm.forward(*args)
 
     Profiler.unique_graphs += 1
     return _wrapped

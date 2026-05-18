@@ -1,19 +1,25 @@
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, Generator, Tuple
+from typing import Any, TYPE_CHECKING
 
 from tools.stats.upload_stats_lib import (
-    download_gha_artifacts,
     download_s3_artifacts,
     is_rerun_disabled_tests,
     unzip,
-    upload_to_s3,
+    upload_workflow_stats_to_s3,
 )
 from tools.stats.upload_test_stats import process_xml_element
+
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+
 
 TESTCASE_TAG = "testcase"
 SEPARATOR = ";"
@@ -21,7 +27,7 @@ SEPARATOR = ";"
 
 def process_report(
     report: Path,
-) -> Dict[str, Dict[str, int]]:
+) -> dict[str, dict[str, int]]:
     """
     Return a list of disabled tests that should be re-enabled and those that are still
     flaky (failed or skipped)
@@ -37,23 +43,28 @@ def process_report(
     # * Skipped tests from unittest
     #
     # We want to keep track of how many times the test fails (num_red) or passes (num_green)
-    all_tests: Dict[str, Dict[str, int]] = {}
-
-    if not is_rerun_disabled_tests(root):
-        return all_tests
+    all_tests: dict[str, dict[str, int]] = {}
 
     for test_case in root.iter(TESTCASE_TAG):
-        parsed_test_case = process_xml_element(test_case)
+        # Parse the test case as string values only.
+        parsed_test_case = process_xml_element(test_case, output_numbers=False)
 
         # Under --rerun-disabled-tests mode, a test is skipped when:
-        # * it's skipped explicitly inside PyToch code
+        # * it's skipped explicitly inside PyTorch code
         # * it's skipped because it's a normal enabled test
         # * or it's falky (num_red > 0 and num_green > 0)
         # * or it's failing (num_red > 0 and num_green == 0)
         #
         # We care only about the latter two here
         skipped = parsed_test_case.get("skipped", None)
-        if skipped and "num_red" not in skipped.get("message", ""):
+
+        # NB: Regular ONNX tests could return a list of subskips here where each item in the
+        # list is a skipped message.  In the context of rerunning disabled tests, we could
+        # ignore this case as returning a list of subskips only happens when tests are run
+        # normally
+        if skipped and (
+            type(skipped) is list or "num_red" not in skipped.get("message", "")
+        ):
             continue
 
         name = parsed_test_case.get("name", "")
@@ -110,17 +121,10 @@ def get_test_reports(
         for path in artifact_paths:
             unzip(path)
 
-        artifact_paths = download_gha_artifacts(
-            "test-report", workflow_run_id, workflow_run_attempt
-        )
-        for path in artifact_paths:
-            unzip(path)
-
-        for report in Path(".").glob("**/*.xml"):
-            yield report
+        yield from Path(".").glob("**/*.xml")
 
 
-def get_disabled_test_name(test_id: str) -> Tuple[str, str, str, str]:
+def get_disabled_test_name(test_id: str) -> tuple[str, str, str, str]:
     """
     Follow flaky bot convention here, if that changes, this will also need to be updated
     """
@@ -137,7 +141,7 @@ def prepare_record(
     flaky: bool,
     num_red: int = 0,
     num_green: int = 0,
-) -> Tuple[Any, Dict[str, Any]]:
+) -> tuple[Any, dict[str, Any]]:
     """
     Prepare the record to save onto S3
     """
@@ -166,10 +170,10 @@ def prepare_record(
 def save_results(
     workflow_id: int,
     workflow_run_attempt: int,
-    all_tests: Dict[str, Dict[str, int]],
+    all_tests: dict[str, dict[str, int]],
 ) -> None:
     """
-    Save the result to S3, so it can go to Rockset
+    Save the result to S3, which then gets put into the HUD backend database
     """
     should_be_enabled_tests = {
         name: stats
@@ -219,7 +223,7 @@ def save_results(
             f"  {disabled_test_name} from {filename}, failing {num_red}/{num_red + num_green}"
         )
 
-    upload_to_s3(
+    upload_workflow_stats_to_s3(
         workflow_id,
         workflow_run_attempt,
         "rerun_disabled_tests",
@@ -232,12 +236,20 @@ def main(repo: str, workflow_run_id: int, workflow_run_attempt: int) -> None:
     Find the list of all disabled tests that should be re-enabled
     """
     # Aggregated across all jobs
-    all_tests: Dict[str, Dict[str, int]] = {}
+    all_tests: dict[str, dict[str, int]] = {}
 
     for report in get_test_reports(
         args.repo, args.workflow_run_id, args.workflow_run_attempt
     ):
         tests = process_report(report)
+
+        # The scheduled workflow has both rerun disabled tests and memory leak check jobs.
+        # We are only interested in the former here
+        if not is_rerun_disabled_tests(
+            report, workflow_run_id, workflow_run_attempt, tests
+        ):
+            continue
+
         for name, stats in tests.items():
             if name not in all_tests:
                 all_tests[name] = stats.copy()

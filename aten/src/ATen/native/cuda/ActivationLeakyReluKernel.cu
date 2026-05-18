@@ -16,8 +16,7 @@
 #include <ATen/cuda/detail/OffsetCalculator.cuh>
 #include <ATen/native/cuda/Loops.cuh>
 
-namespace at {
-namespace native {
+namespace at::native {
 namespace {
 
 void leaky_relu_kernel(TensorIteratorBase& iter, const Scalar& negval_) {
@@ -57,8 +56,7 @@ void leaky_relu_backward_kernel(
 }
 } // namespace
 
-REGISTER_DISPATCH(leaky_relu_stub, &leaky_relu_kernel);
-REGISTER_DISPATCH(leaky_relu_backward_stub, &leaky_relu_backward_kernel);
+REGISTER_DISPATCH(leaky_relu_stub, &leaky_relu_kernel)
+REGISTER_DISPATCH(leaky_relu_backward_stub, &leaky_relu_backward_kernel)
 
-} // namespace native
-} // namespace at
+} // namespace at::native

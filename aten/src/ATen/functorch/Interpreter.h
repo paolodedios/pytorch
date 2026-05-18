@@ -3,11 +3,15 @@
 #include <ATen/functorch/Macros.h>
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <c10/core/impl/LocalDispatchKeySet.h>
-#include <c10/util/Optional.h>
-#include <c10/util/variant.h>
+#include <c10/util/Exception.h>
+#include <optional>
 #include <bitset>
+#include <utility>
+#include <variant>
 
-namespace at { namespace functorch {
+#include <nlohmann/json.hpp>
+
+namespace at::functorch {
 
 // NOTE: [functorch interpreter stack]
 //
@@ -40,7 +44,7 @@ namespace at { namespace functorch {
 // The VmapInterpreter just does this via a call to ophandle.callBoxed(stack)
 // and most Interpreters will implement it this way.
 
-enum RandomnessType {
+enum class RandomnessType {
     Error,      // always errors when calling a random function
     Same,       // randomness appears the same across batches
     Different,  // randomness appears different across batches
@@ -70,7 +74,7 @@ std::ostream& operator<<(std::ostream& os, const TransformType& t);
 //
 // `Interpreter` is the struct for Interpreters. It holds ALL of the
 // relevant information (what type of interpreter it is and the metadata).
-// Metadata for each interpreter is represented as a Union (c10::variant)
+// Metadata for each interpreter is represented as a Union (std::variant)
 // of all possible metadata (VmapInterpreterMeta, GradInterpreterMeta, ...).
 //
 // Given an Interpreter, how do I get a "VmapInterpreter"? You may wish to do this
@@ -84,33 +88,113 @@ std::ostream& operator<<(std::ostream& os, const TransformType& t);
 // >>> VmapInterpreterPtr(&interpreter).batchSize()
 //
 // Finally, Interpreter::process switches on the type of the interpreter
-// and calls one of {Transform}Intepreter::processImpl under the hood.
+// and calls one of {Transform}Interpreter::processImpl under the hood.
 // Same for Interpreter::sendToNextInterpreter :)
 
 struct VmapInterpreterMeta {
-  explicit VmapInterpreterMeta(int64_t batchSize, RandomnessType randomness) :
-    batchSize_(batchSize), randomness_(randomness) {}
-  int64_t batchSize_;
+  explicit VmapInterpreterMeta(c10::SymInt batchSize, RandomnessType randomness) :
+    batchSize_(std::move(batchSize)), randomness_(randomness) {}
+
+  c10::SymInt batchSize_;
   RandomnessType randomness_;
+
+  VmapInterpreterMeta() = default;
+  VmapInterpreterMeta(const VmapInterpreterMeta&) = default;
+  VmapInterpreterMeta(VmapInterpreterMeta&&) = default;
+  VmapInterpreterMeta& operator=(const VmapInterpreterMeta&) = default;
+  VmapInterpreterMeta& operator=(VmapInterpreterMeta&&) = default;
+  ~VmapInterpreterMeta() = default;
+
+  template <typename T>
+  friend void to_json(T& json_j, const VmapInterpreterMeta& json_t) {
+    TORCH_CHECK(
+      !json_t.batchSize_.is_heap_allocated(),
+      "Serialization for heap-allocated SymInt is not implemented yet"
+    );
+    json_j["batchSize"] = json_t.batchSize_.as_int_unchecked();
+    json_j["randomness"] = static_cast<int64_t>(json_t.randomness_);
+  }
+
+  template <typename T>
+  friend void from_json(const T& json_j, VmapInterpreterMeta& json_t) {
+    json_t.batchSize_ = c10::SymInt(SymInt::Unchecked::UNCHECKED, json_j["batchSize"]);
+    json_t.randomness_ = static_cast<RandomnessType>(json_j["randomness"]);
+  }
 };
 
 struct GradInterpreterMeta {
-  explicit GradInterpreterMeta(bool prevGradMode): prevGradMode_(prevGradMode) {}
+  explicit GradInterpreterMeta(bool prevGradMode, bool prevInferenceMode = false)
+    : prevGradMode_(prevGradMode), prevInferenceMode_(prevInferenceMode) {}
+  GradInterpreterMeta() = default;
+  GradInterpreterMeta(const GradInterpreterMeta&) = default;
+  GradInterpreterMeta(GradInterpreterMeta&&) = default;
+  GradInterpreterMeta& operator=(const GradInterpreterMeta&) = default;
+  GradInterpreterMeta& operator=(GradInterpreterMeta&&) = default;
+  ~GradInterpreterMeta() = default;
+
   bool prevGradMode_;
+  bool prevInferenceMode_;
+  template <typename T>
+  friend void to_json(T& json_j, const GradInterpreterMeta& json_t) {
+    json_j["prevGradMode"] = json_t.prevGradMode_;
+    json_j["prevInferenceMode"] = json_t.prevInferenceMode_;
+  }
+
+  template <typename T>
+  friend void from_json(const T& json_j, GradInterpreterMeta& json_t) {
+    json_t.prevGradMode_ = json_j["prevGradMode"];
+    json_t.prevInferenceMode_ = json_j.value("prevInferenceMode", false);
+  }
 };
 
 struct JvpInterpreterMeta {
-  explicit JvpInterpreterMeta(bool prevFwdGradMode) : prevFwdGradMode_(prevFwdGradMode) {}
+  explicit JvpInterpreterMeta(bool prevFwdGradMode, bool prevInferenceMode = false)
+    : prevFwdGradMode_(prevFwdGradMode), prevInferenceMode_(prevInferenceMode) {}
+  JvpInterpreterMeta() = default;
+  JvpInterpreterMeta(const JvpInterpreterMeta&) = default;
+  JvpInterpreterMeta(JvpInterpreterMeta&&) = default;
+  JvpInterpreterMeta& operator=(const JvpInterpreterMeta&) = default;
+  JvpInterpreterMeta& operator=(JvpInterpreterMeta&&) = default;
+  ~JvpInterpreterMeta() = default;
+
   bool prevFwdGradMode_;
+  bool prevInferenceMode_;
+  template <typename T>
+  friend void to_json(T& json_j, const JvpInterpreterMeta& json_t) {
+    json_j["prevFwdGradMode"] = json_t.prevFwdGradMode_;
+    json_j["prevInferenceMode"] = json_t.prevInferenceMode_;
+  }
+
+  template <typename T>
+  friend void from_json(const T& json_j, JvpInterpreterMeta& json_t) {
+    json_t.prevFwdGradMode_ = json_j["prevFwdGradMode"];
+    json_t.prevInferenceMode_ = json_j.value("prevInferenceMode", false);
+  }
 };
 
 struct FunctionalizeInterpreterMeta {
   explicit FunctionalizeInterpreterMeta(bool functionalizeAddBackViews) :
     functionalizeAddBackViews_(functionalizeAddBackViews) {}
+  FunctionalizeInterpreterMeta() = default;
+  FunctionalizeInterpreterMeta(const FunctionalizeInterpreterMeta&) = default;
+  FunctionalizeInterpreterMeta(FunctionalizeInterpreterMeta&&) = default;
+  FunctionalizeInterpreterMeta& operator=(const FunctionalizeInterpreterMeta&) = default;
+  FunctionalizeInterpreterMeta& operator=(FunctionalizeInterpreterMeta&&) = default;
+  ~FunctionalizeInterpreterMeta() = default;
+
   bool functionalizeAddBackViews_;
+  template <typename T>
+  friend void to_json(T& json_j, const FunctionalizeInterpreterMeta& json_t) {
+    json_j["functionalizeAddBackViews"] = json_t.functionalizeAddBackViews_;
+  }
+
+  template <typename T>
+  friend void from_json(const T& json_j, FunctionalizeInterpreterMeta& json_t) {
+    json_t.functionalizeAddBackViews_ = json_j["functionalizeAddBackViews"];
+  }
 };
 
-typedef c10::variant<
+typedef std::variant<
   int64_t,
   GradInterpreterMeta,
   JvpInterpreterMeta,
@@ -121,14 +205,14 @@ typedef c10::variant<
 
 struct Interpreter {
   // factory functions
-  static Interpreter Vmap(int64_t level, int64_t batchSize, RandomnessType randomness) {
-    return Interpreter(TransformType::Vmap, level, VmapInterpreterMeta(batchSize, randomness));
+  static Interpreter Vmap(int64_t level, c10::SymInt batchSize, RandomnessType randomness) {
+    return Interpreter(TransformType::Vmap, level, VmapInterpreterMeta(std::move(batchSize), randomness));
   }
-  static Interpreter Grad(int64_t level, bool prevGradMode) {
-    return Interpreter(TransformType::Grad, level, GradInterpreterMeta(prevGradMode));
+  static Interpreter Grad(int64_t level, bool prevGradMode, bool prevInferenceMode = false) {
+    return Interpreter(TransformType::Grad, level, GradInterpreterMeta(prevGradMode, prevInferenceMode));
   }
-  static Interpreter Jvp(int64_t level, bool prevFwdGradMode) {
-    return Interpreter(TransformType::Jvp, level, JvpInterpreterMeta(prevFwdGradMode));
+  static Interpreter Jvp(int64_t level, bool prevFwdGradMode, bool prevInferenceMode = false) {
+    return Interpreter(TransformType::Jvp, level, JvpInterpreterMeta(prevFwdGradMode, prevInferenceMode));
   }
   static Interpreter Functionalize(int64_t level, bool functionalizeAddBackViews) {
     return Interpreter(TransformType::Functionalize, level, FunctionalizeInterpreterMeta(functionalizeAddBackViews));
@@ -144,11 +228,11 @@ struct Interpreter {
 
   void saveLocalDispatchKeySet(c10::impl::LocalDispatchKeySet keyset) {
     TORCH_INTERNAL_ASSERT(!savedLocalDispatchKeySet_.has_value());
-    savedLocalDispatchKeySet_ = std::move(keyset);
+    savedLocalDispatchKeySet_ = keyset;
   }
   void clearSavedLocalDispatchKeySet() {
     TORCH_INTERNAL_ASSERT(savedLocalDispatchKeySet_.has_value());
-    savedLocalDispatchKeySet_ = c10::nullopt;
+    savedLocalDispatchKeySet_ = std::nullopt;
   }
   c10::impl::LocalDispatchKeySet getSavedLocalDispatchKeySet() const {
     TORCH_INTERNAL_ASSERT(savedLocalDispatchKeySet_.has_value());
@@ -171,14 +255,83 @@ struct Interpreter {
   // Please don't use this
   explicit Interpreter() = default;
 
+  template <typename T>
+  friend void to_json(T& json_j, const Interpreter& json_t) {
+    json_j["type"] = static_cast<int64_t>(json_t.type_);
+    json_j["level"] = json_t.level_;
+    if (json_t.savedLocalDispatchKeySet_) {
+      json_j["savedLocalDispatchKeySet"] = {
+        {"included", json_t.savedLocalDispatchKeySet_->included_.raw_repr()},
+        {"excluded", json_t.savedLocalDispatchKeySet_->excluded_.raw_repr()}
+      };
+    } else {
+      json_j["savedLocalDispatchKeySet"] = nlohmann::json();
+    }
+    json_j["is_alive"] = *json_t.is_alive_;
+    std::visit([&](auto&& arg) {
+        using V = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<V, int64_t>) {
+          json_j["meta"] = {{"Torch", arg}};
+        } else if constexpr (std::is_same_v<V, GradInterpreterMeta>) {
+          json_j["meta"] = {{"Grad", arg}};
+        } else if constexpr (std::is_same_v<V, JvpInterpreterMeta>) {
+          json_j["meta"] = {{"Jvp", arg}};
+        } else if constexpr (std::is_same_v<V, VmapInterpreterMeta>) {
+          json_j["meta"] = {{"Vmap", arg}};
+        } else if constexpr (std::is_same_v<V, FunctionalizeInterpreterMeta>) {
+          json_j["meta"] = {{"Functionalize", arg}};
+        } else {
+          static_assert(false && sizeof(V), "unknown variant case");
+        }
+    }, json_t.meta_);
+  }
+
+  template <typename T>
+  friend void from_json(const T& json_j, Interpreter& json_t) {
+    json_t.type_ = static_cast<TransformType>(json_j["type"]);
+    json_t.level_ = json_j["level"];
+    auto savedLocalDispatchKeySet = json_j["savedLocalDispatchKeySet"];
+    if (savedLocalDispatchKeySet.is_null()) {
+      json_t.savedLocalDispatchKeySet_ = std::nullopt;
+    } else {
+      c10::impl::PODLocalDispatchKeySet pod;
+      pod.set_included(DispatchKeySet::from_raw_repr(savedLocalDispatchKeySet["included"].template get<uint64_t>()));
+      pod.set_excluded(DispatchKeySet::from_raw_repr(savedLocalDispatchKeySet["excluded"].template get<uint64_t>()));
+      json_t.savedLocalDispatchKeySet_ = c10::impl::LocalDispatchKeySet(pod);
+    }
+    json_t.is_alive_ = std::make_shared<bool>(json_j["is_alive"]);
+    auto meta = json_j["meta"];
+    if (meta.contains("Torch")) {
+      json_t.meta_.emplace<int64_t>(meta["Torch"].template get<int64_t>());
+    } else if (meta.contains("Grad")) {
+      json_t.meta_.emplace<GradInterpreterMeta>(meta["Grad"].template get<GradInterpreterMeta>());
+    } else if (meta.contains("Jvp")) {
+      json_t.meta_.emplace<JvpInterpreterMeta>(meta["Jvp"].template get<JvpInterpreterMeta>());
+    } else if (meta.contains("Vmap")) {
+      json_t.meta_.emplace<VmapInterpreterMeta>(meta["Vmap"].template get<VmapInterpreterMeta>());
+    } else if (meta.contains("Functionalize")) {
+      json_t.meta_.emplace<FunctionalizeInterpreterMeta>(meta["Functionalize"].template get<FunctionalizeInterpreterMeta>());
+    } else {
+      TORCH_CHECK(false, "unknown interpreter metadata type");
+    }
+  }
+
+  std::string serialize() const {
+    return nlohmann::json(*this).dump();
+  }
+
+  static Interpreter deserialize(const std::string& serialized) {
+    return nlohmann::json::parse(serialized).get<Interpreter>();
+  }
+
  private:
   explicit Interpreter(TransformType type, int64_t level, InterpreterMeta meta):
-    type_(type), level_(level), is_alive_(std::make_shared<bool>(false)), meta_(meta) {}
+    type_(type), level_(level), is_alive_(std::make_shared<bool>(false)), meta_(std::move(meta)) {}
 
   // fields
-  TransformType type_;
-  int64_t level_;
-  optional<c10::impl::LocalDispatchKeySet> savedLocalDispatchKeySet_;
+  TransformType type_{};
+  int64_t level_{};
+  std::optional<c10::impl::LocalDispatchKeySet> savedLocalDispatchKeySet_;
   std::shared_ptr<bool> is_alive_;
   InterpreterMeta meta_;
 };
@@ -195,14 +348,14 @@ void foreachTensorInplace(std::vector<IValue>& args, int64_t begin, int64_t end,
 //     args[i] = func(args[i], i - begin, true)
 //   args[i] = func(args[i], i - begin)
 void foreachTensorInplaceWithFlag(std::vector<IValue>& args, int64_t begin, int64_t end,
-    const std::bitset<64> use_flag_relative, std::function<Tensor(const Tensor&, bool)> func);
+    const std::bitset<64> use_flag_relative, const std::function<Tensor(const Tensor&, bool)>& func);
 
 std::vector<int64_t> findUnwrappedInputs(std::vector<IValue>& args, int64_t begin, int64_t end);
 
 DispatchKeySet keysToExcludeWhenEnteringDynamicLayer(TransformType key);
 
-void setup_dispatch_key_tls(DispatchKeySet exclude, DispatchKeySet include);
+void setup_dispatch_key_tls(TransformType key, DispatchKeySet include);
 
 void sanityCheckStack(const c10::OperatorHandle& op, torch::jit::Stack* stack);
 
-}} // namespace at::functorch
+} // namespace at::functorch

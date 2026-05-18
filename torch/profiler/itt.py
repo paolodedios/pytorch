@@ -1,15 +1,21 @@
+# mypy: allow-untyped-defs
 from contextlib import contextmanager
+from typing import NoReturn
+
 
 try:
     from torch._C import _itt
 except ImportError:
-    class _ITTStub(object):
+
+    class _ITTStub:
         @staticmethod
-        def _fail(*args, **kwargs):
-            raise RuntimeError("ITT functions not installed. Are you sure you have a ITT build?")
+        def _fail(*args, **kwargs) -> NoReturn:
+            raise RuntimeError(
+                "ITT functions not installed. Are you sure you have a ITT build?"
+            )
 
         @staticmethod
-        def is_available():
+        def is_available() -> bool:
             return False
 
         rangePush = _fail
@@ -19,7 +25,7 @@ except ImportError:
     _itt = _ITTStub()  # type: ignore[assignment]
 
 
-__all__ = ['is_available', 'range_push', 'range_pop', 'mark', 'range']
+__all__ = ["is_available", "range_push", "range_pop", "mark", "range"]
 
 
 def is_available():
@@ -69,5 +75,7 @@ def range(msg, *args, **kwargs):
         msg (str): message to associate with the range
     """
     range_push(msg.format(*args, **kwargs))
-    yield
-    range_pop()
+    try:
+        yield
+    finally:
+        range_pop()

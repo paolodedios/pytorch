@@ -5,12 +5,13 @@ import sys
 import time
 from datetime import timedelta
 
-import torch
-
-import torch._dynamo
 from datasets import load_dataset, load_metric
-from torch.utils.data import DataLoader
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+import torch
+import torch._dynamo
+from torch.utils.data import DataLoader
+
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -95,13 +96,13 @@ def model_training_evaluation(
 
 
 def check_loss(ref_loss, res_loss):
-    assert len(ref_loss) == len(res_loss)
+    if len(ref_loss) != len(res_loss):
+        raise AssertionError(
+            f"Expected loss lists to have equal length, but got {len(ref_loss)} and {len(res_loss)}"
+        )
     length = len(ref_loss)
     x = min(length, 10)
-    if sum(res_loss[-x:]) / 10 <= sum(ref_loss[-x:]) / 10 + 1e-1:
-        return True
-    else:
-        return False
+    return sum(res_loss[-x:]) / 10 <= sum(ref_loss[-x:]) / 10 + 0.1
 
 
 def parse_args():
@@ -128,7 +129,7 @@ def parse_args():
     )
     parser.add_argument(
         "--backend",
-        choices=torch._dynamo.list_backends(),
+        choices=torch._dynamo.list_backends(exclude_tags=None),
         default="inductor",
         help="train/evaluate model with a given backend (default: inductor)",
     )
@@ -155,7 +156,7 @@ def main():
         "bert-base-cased", num_labels=5
     )
     optimizer_cls = getattr(sys.modules["torch.optim"], args.optimizer)
-    if "capturable" in inspect.signature(optimizer_cls).parameters.keys():
+    if "capturable" in inspect.signature(optimizer_cls).parameters:
         optimizer = optimizer_cls(model.parameters(), lr=args.lr, capturable=True)
     else:
         optimizer = optimizer_cls(model.parameters(), lr=args.lr)
@@ -195,9 +196,9 @@ def main():
     print(
         f"Train model on {args.epochs} epochs with backend {args.backend} and optimizer {args.optimizer}:"
     )
-    print(f"PyTorch spent {timedelta(seconds=native_elapsed/args.epochs)} per epoch")
+    print(f"PyTorch spent {timedelta(seconds=native_elapsed / args.epochs)} per epoch")
     print(
-        f"TorchDynamo spent {timedelta(seconds=dynamo_elapsed/args.epochs)} per epoch"
+        f"TorchDynamo spent {timedelta(seconds=dynamo_elapsed / args.epochs)} per epoch"
     )
 
 

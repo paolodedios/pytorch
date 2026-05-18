@@ -2,9 +2,7 @@
 #include <torch/csrc/autograd/profiler_kineto.h>
 #include <torch/csrc/jit/mobile/module.h>
 
-namespace torch {
-namespace jit {
-namespace mobile {
+namespace torch::jit::mobile {
 
 // If we dont have kineto available then edge profiler does not
 // work since it relies on Kineto
@@ -40,7 +38,7 @@ class TORCH_API KinetoEdgeCPUProfiler {
    *
    * Thus, when KinetoEdgeCPUProfiler is used as RAII to do profiling
    * within certain scope. In that scope, the captured reference to
-   * Module will outlive KinetoEdgeCPUProfiler. This is gauranteed because
+   * Module will outlive KinetoEdgeCPUProfiler. This is guaranteed because
    * KinetoEdgeCPUProfiler must be constructed later than Module, on stack.
    *
    * An example of the anti-pattern and wrong usage is:
@@ -75,8 +73,8 @@ class TORCH_API KinetoEdgeCPUProfiler {
   void recordBackendMemoryEvent(
       void* ptr,
       int64_t alloc_size,
-      int64_t total_allocated,
-      int64_t total_reserved,
+      size_t total_allocated,
+      size_t total_reserved,
       c10::Device device);
 
   ~KinetoEdgeCPUProfiler();
@@ -114,6 +112,4 @@ TORCH_API KinetoEdgeCPUProfiler* getCurrentEdgeProfiler();
 #define RECORD_BACKEND_MEMORY_EVENT_TO_EDGE_PROFILER( \
     ptr, alloc_size, total_allocated, total_reserved, device)
 #endif
-} // namespace mobile
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::mobile

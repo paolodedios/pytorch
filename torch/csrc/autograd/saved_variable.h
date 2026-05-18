@@ -1,7 +1,9 @@
 #pragma once
 
+#include <c10/core/SafePyObject.h>
 #include <torch/csrc/Export.h>
 #include <torch/csrc/autograd/forward_grad.h>
+#include <torch/csrc/autograd/node.h>
 #include <torch/csrc/autograd/saved_variable_hooks.h>
 
 #include <ATen/core/Tensor.h>
@@ -9,17 +11,14 @@
 #include <cstdint>
 #include <memory>
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 using Variable = at::Tensor;
-struct Node;
 
 TORCH_API extern const char* ERR_BACKWARD_TWICE;
 
 /// A snapshot of a variable at a certain version. A `SavedVariable` stores
 /// enough information to reconstruct a variable from a certain point in time.
-// NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
 class TORCH_API SavedVariable {
  public:
   SavedVariable() = default;
@@ -28,10 +27,12 @@ class TORCH_API SavedVariable {
       bool is_output,
       bool is_inplace_on_view = false);
   SavedVariable(
-      const c10::optional<Variable>& variable,
+      const std::optional<Variable>& variable,
       bool is_output,
       bool is_inplace_on_view = false);
+  SavedVariable(const SavedVariable&) = delete;
   SavedVariable(SavedVariable&&) = default;
+  SavedVariable& operator=(const SavedVariable&) = delete;
   SavedVariable& operator=(SavedVariable&&) = default;
   ~SavedVariable() {
     if (fw_grad_) {
@@ -43,11 +44,32 @@ class TORCH_API SavedVariable {
   /// Reconstructs the saved variable. Pass `saved_for` as the gradient
   /// function if constructing the `SavedVariable` with it would have caused a
   /// circular reference.
-  Variable unpack(std::shared_ptr<Node> saved_for = nullptr) const;
+  Variable unpack(c10::intrusive_ptr<Node> saved_for = nullptr) const;
 
   void register_hooks(std::unique_ptr<SavedVariableHooks>&& hooks);
 
   void reset_data();
+
+  bool has_hooks() const {
+    return (bool)hooks_;
+  }
+
+  std::optional<at::Tensor> get_raw_data() const {
+    if (hooks_) {
+      return std::nullopt;
+    } else {
+      return data_;
+    }
+  }
+
+  // Used by compiled autograd
+  std::optional<std::pair<c10::SafePyObject, c10::SafePyObject>>
+  retrieve_unpack_hook_data() const {
+    if (!hooks_) {
+      return std::nullopt;
+    }
+    return hooks_->retrieve_unpack_hook_data();
+  }
 
  private:
   // This field contains either:
@@ -57,7 +79,7 @@ class TORCH_API SavedVariable {
   // we fall into the second case and its metadata is also saved separately.
   // In that case, the grad_fn must be passed in to the unpack function when
   // reconstructing the Variable (except when we are doing an inplace operation
-  // on a view, see below). The field saved_orignal_ below reflects the two
+  // on a view, see below). The field saved_original_ below reflects the two
   // cases: its value is true in the first case and false in the second case.
   // The value data_.defined() can be false in three cases:
   // 1. SavedVariable was constructed without a Tensor (the value to save is
@@ -83,8 +105,7 @@ class TORCH_API SavedVariable {
   // is_inplace_on_view = true.
   // In that case, the grad_fn passed in to the unpack function at unwrapping
   // time is unused.
-  std::weak_ptr<Node> weak_grad_fn_;
-  c10::VariableVersion version_counter_;
+  c10::weak_intrusive_ptr<Node> weak_grad_fn_{c10::intrusive_ptr<Node>()};
 
   uint32_t saved_version_ = 0;
   uint32_t output_nr_ = 0;
@@ -102,8 +123,12 @@ class TORCH_API SavedVariable {
   // Fields grad_fn_, grad_accumulator_, and requires_grad_ are only used if
   // hooks are defined. They are set before pack_hook is called and used after
   // unpack_hook is called.
-  std::shared_ptr<Node> grad_fn_;
-  std::weak_ptr<Node> grad_accumulator_;
+  c10::intrusive_ptr<Node> grad_fn_;
+  // For the usual case where leaf tensors are the input, we expect its
+  // grad_acc to be kept alive by the graph. The reason SavedVariable holds
+  // an owning reference is to support the case where a custom autograd Function
+  // saves an intermediate.
+  c10::intrusive_ptr<Node> grad_accumulator_;
   bool requires_grad_ = false;
 
   void save_metadata(const Variable& data);
@@ -112,5 +137,4 @@ class TORCH_API SavedVariable {
       std::unique_ptr<SavedVariableHooks>&& hooks,
       const Variable& data);
 };
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd
