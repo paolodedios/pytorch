@@ -1,6 +1,7 @@
 #pragma once
 
 #include <c10/core/Allocator.h>
+#include <string_view>
 
 namespace at {
 
@@ -22,8 +23,13 @@ TORCH_API std::string NewProcessWideShmHandle();
 
 class TORCH_API MapAllocator {
  public:
-  MapAllocator(std::string filename, int flags, size_t size);
-  MapAllocator(WithFd, std::string filename, int fd, int flags, size_t size);
+  MapAllocator(std::string_view filename, int flags, size_t size);
+  MapAllocator(
+      WithFd /*unused*/,
+      std::string_view filename,
+      int fd,
+      int flags,
+      size_t size);
   MapAllocator(const MapAllocator&) = delete;
   MapAllocator& operator=(const MapAllocator&) = delete;
   MapAllocator(MapAllocator&&) = delete;
@@ -49,14 +55,18 @@ class TORCH_API MapAllocator {
     return base_ptr_;
   }
 
-  static MapAllocator* fromDataPtr(const at::DataPtr&);
+  int flags() const {
+    return flags_;
+  }
+
+  static MapAllocator* fromDataPtr(const at::DataPtr& /*dptr*/);
   static at::DataPtr makeDataPtr(
-      std::string filename,
+      std::string_view filename,
       int flags,
       size_t size,
       size_t* actual_size_out);
   static at::DataPtr makeDataPtr(
-      WithFd,
+      WithFd /*unused*/,
       const char* filename,
       int fd,
       int flags,
@@ -95,20 +105,24 @@ class TORCH_API RefcountedMapAllocator : private RefcountedMapAllocatorArgCheck,
  public:
   RefcountedMapAllocator(const char* filename, int flags, size_t size);
   RefcountedMapAllocator(
-      WithFd,
+      WithFd /*unused*/,
       const char* filename,
       int fd,
       int flags,
       size_t size);
 
-  static RefcountedMapAllocator* fromDataPtr(const at::DataPtr&);
+  static RefcountedMapAllocator* fromDataPtr(const at::DataPtr& /*dptr*/);
+  RefcountedMapAllocator(const RefcountedMapAllocator&) = delete;
+  RefcountedMapAllocator(RefcountedMapAllocator&&) = delete;
+  RefcountedMapAllocator& operator=(const RefcountedMapAllocator&) = delete;
+  RefcountedMapAllocator& operator=(RefcountedMapAllocator&&) = delete;
   static at::DataPtr makeDataPtr(
       const char* filename,
       int flags,
       size_t size,
       size_t* actual_size_out);
   static at::DataPtr makeDataPtr(
-      WithFd,
+      WithFd /*unused*/,
       const char* filename,
       int fd,
       int flags,
@@ -122,7 +136,7 @@ class TORCH_API RefcountedMapAllocator : private RefcountedMapAllocatorArgCheck,
   void close() override;
 
   ~RefcountedMapAllocator() override {
-    close();
+    RefcountedMapAllocator::close();
   }
 
  protected:

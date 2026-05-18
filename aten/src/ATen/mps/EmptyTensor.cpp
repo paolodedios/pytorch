@@ -1,29 +1,30 @@
 //  Copyright © 2022 Apple Inc.
-
-#include <ATen/EmptyTensor.h>
+#include <c10/metal/common.h>
 #include <ATen/ATen.h>
 #include <ATen/Tensor.h>
 #include <ATen/Utils.h>
 #include <torch/library.h>
+#include <ATen/mps/EmptyTensor.h>
 #include <ATen/mps/MPSDevice.h>
 #include <ATen/native/Resize.h>
+#include <ATen/native/TensorFactories.h>
 #include <ATen/native/mps/Copy.h>
 
 #define MPS_ERROR_NOT_COMPILED "PyTorch code is not compiled with MPS enabled"
 #define MPS_ERROR_RUNTIME_TOO_LOW \
-  "The MPS backend is supported on MacOS 12.3+.", \
+  "The MPS backend is supported on macOS 14.0+. ", \
   "Current OS version can be queried using `sw_vers`"
 #define MPS_ERROR_DOUBLE_NOT_SUPPORTED "Cannot convert a MPS Tensor to float64 dtype " \
   "as the MPS framework doesn't support float64. Please use float32 instead."
 
-namespace at { namespace detail {
+namespace at::detail {
 TensorBase empty_mps(
     IntArrayRef size,
-    c10::optional<ScalarType> dtype_opt,
-    c10::optional<Layout> layout_opt,
-    c10::optional<Device> device_opt,
-    c10::optional<bool> pin_memory_opt,
-    c10::optional<c10::MemoryFormat> memory_format_opt) {
+    std::optional<ScalarType> dtype_opt,
+    std::optional<Layout> layout_opt,
+    std::optional<Device> device_opt,
+    std::optional<bool> pin_memory_opt,
+    std::optional<c10::MemoryFormat> memory_format_opt) {
 #if defined(__APPLE__)
 #if __is_target_os(macOS)
   if (at::hasMPS()) {
@@ -32,15 +33,17 @@ TensorBase empty_mps(
 
     TORCH_CHECK_NOT_IMPLEMENTED(
         layout_or_default(layout_opt) == Layout::Strided,
-        "strided tensors not supported yet");
+        "only strided tensors are supported on MPS");
+
+    TORCH_CHECK(size.size() <= c10::metal::max_ndim, "MPS supports tensors with dimensions <= ", c10::metal::max_ndim, ", but got ", size.size(), ".");
+
     check_size_nonnegative(size);
 
     auto* allocator = at::mps::GetMPSAllocator();
     int64_t nelements = c10::multiply_integers(size);
     auto dtype = dtype_or_default(dtype_opt);
-    TORCH_CHECK_TYPE(dtype != ScalarType::Double, MPS_ERROR_DOUBLE_NOT_SUPPORTED);
-    TORCH_CHECK_TYPE(!c10::isComplexType(dtype), "Complex types are unsupported on MPS");
-    TORCH_CHECK_TYPE(dtype != ScalarType::BFloat16, "BFloat16 is not supported on MPS");
+    TORCH_CHECK_TYPE(dtype != kDouble && dtype != kComplexDouble, MPS_ERROR_DOUBLE_NOT_SUPPORTED);
+
 
     auto dtype_meta = scalarTypeToTypeMeta(dtype);
     int64_t size_bytes = nelements * dtype_meta.itemsize();
@@ -60,6 +63,10 @@ TensorBase empty_mps(
 
     auto memory_format = memory_format_opt.value_or(MemoryFormat::Contiguous);
     tensor.unsafeGetTensorImpl()->empty_tensor_restride(memory_format);
+    // See Note [Enabling Deterministic Operations]
+    if (C10_UNLIKELY(at::globalContext().deterministicAlgorithms() && at::globalContext().deterministicFillUninitializedMemory())) {
+      at::native::fill_empty_deterministic_(tensor);
+    }
     return tensor;
   } else {
     TORCH_CHECK(false, MPS_ERROR_RUNTIME_TOO_LOW)
@@ -87,7 +94,7 @@ TensorBase empty_strided_mps(
     IntArrayRef size,
     IntArrayRef stride,
     ScalarType dtype,
-    c10::optional<Device> device_opt) {
+    std::optional<Device> device_opt) {
 #if defined(__APPLE__)
 #if __is_target_os(macOS)
   if (at::hasMPS()) {
@@ -97,8 +104,13 @@ TensorBase empty_strided_mps(
     const DeviceGuard device_guard(device);
     auto* allocator = at::mps::GetMPSAllocator();
     constexpr c10::DispatchKeySet mps_dks(c10::DispatchKey::MPS);
-    return at::detail::empty_strided_generic(
+    Tensor result = at::detail::empty_strided_generic(
         size, stride, allocator, mps_dks, dtype);
+    // See Note [Enabling Deterministic Operations]
+    if (C10_UNLIKELY(at::globalContext().deterministicAlgorithms() && at::globalContext().deterministicFillUninitializedMemory())) {
+      at::native::fill_empty_deterministic_(result);
+    }
+    return result;
   } else {
     TORCH_CHECK(false, MPS_ERROR_RUNTIME_TOO_LOW)
   }
@@ -123,5 +135,4 @@ TensorBase empty_strided_mps(
       options.pinned_memory_opt());
 }
 
-} // namespace detail
-} // namespace at
+} // namespace at::detail

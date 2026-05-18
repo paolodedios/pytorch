@@ -19,6 +19,7 @@
 #include <ATen/ops/addmm.h>
 #include <ATen/ops/resize_as_sparse_native.h>
 #include <ATen/ops/sparse_sampled_addmm_native.h>
+#include <ATen/ops/triangular_solve_native.h>
 #endif
 
 #include <c10/util/MaybeOwned.h>
@@ -64,14 +65,14 @@ Tensor& addmv_out_sparse_compressed(
       return result.zero_();
     } else {
       return at::mul_out(
-          const_cast<Tensor&>(result),
+          result,
           self,
           at::native::scalar_tensor(
               beta,
               self.scalar_type(),
-              c10::nullopt /*layout*/,
+              std::nullopt /*layout*/,
               at::kCPU,
-              c10::nullopt /* pin_memory */));
+              std::nullopt /* pin_memory */));
     }
   }
 

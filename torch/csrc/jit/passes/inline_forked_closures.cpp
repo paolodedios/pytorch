@@ -2,8 +2,7 @@
 
 #include <torch/csrc/jit/frontend/ir_emitter.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 // Closure nodes are emitted as a tuple of (function %, context tuple %)
 // Inside the closure the closure is then unpacked so that all closed over
@@ -16,7 +15,7 @@ namespace jit {
 // subgraph, replace the context unpacking value with the new graph input.
 // fork(foo) ->
 // def foo(a, b):
-void inlineForkedClosure(Node* fork_closure, NodeKind genKind) {
+static void inlineForkedClosure(Node* fork_closure, NodeKind genKind) {
   Node* function_context_node = fork_closure->input()->node();
 
   if (function_context_node->inputs().size() != 2 ||
@@ -58,7 +57,7 @@ void inlineForkedClosure(Node* fork_closure, NodeKind genKind) {
   runCleanupPasses(fork_graph);
 }
 
-void inlineForkedClosures(Block* block) {
+static void inlineForkedClosures(Block* block) {
   for (auto it = block->nodes().begin(); it != block->nodes().end();) {
     Node* n = *it;
     it++;
@@ -82,5 +81,4 @@ void inlineForkedClosures(std::shared_ptr<Graph>& to_clean) {
   inlineForkedClosures(to_clean->block());
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

@@ -1,12 +1,7 @@
+#include <ATen/Context.h>
 #include <torch/mps.h>
 
-#include <ATen/Context.h>
-#include <c10/util/irange.h>
-
-#include <cstddef>
-
-namespace torch {
-namespace mps {
+namespace torch::mps {
 
 bool is_available() {
   return at::detail::getMPSHooks().hasMPS();
@@ -15,7 +10,7 @@ bool is_available() {
 /// Sets the seed for the MPS's default generator.
 void manual_seed(uint64_t seed) {
   if (is_available()) {
-    auto gen = at::detail::getMPSHooks().getDefaultMPSGenerator();
+    auto gen = at::detail::getMPSHooks().getDefaultGenerator();
     {
       // See Note [Acquire lock when using random generators]
       std::lock_guard<std::mutex> lock(gen.mutex());
@@ -25,9 +20,19 @@ void manual_seed(uint64_t seed) {
 }
 
 void synchronize() {
-  TORCH_CHECK(is_available(), "No MPS devices are available");
   at::detail::getMPSHooks().deviceSynchronize();
 }
 
-} // namespace mps
-} // namespace torch
+void commit() {
+  at::detail::getMPSHooks().commitStream();
+}
+
+MTLCommandBuffer_t get_command_buffer() {
+  return at::detail::getMPSHooks().getCommandBuffer();
+}
+
+DispatchQueue_t get_dispatch_queue() {
+  return at::detail::getMPSHooks().getDispatchQueue();
+}
+
+} // namespace torch::mps

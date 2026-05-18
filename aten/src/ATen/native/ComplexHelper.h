@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ATen/core/Tensor.h>
+#include <c10/core/SymBool.h>
 #include <c10/util/irange.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
@@ -15,7 +16,7 @@
 // WARNING: this header contains non-inline functions and should be only
 // included from ONE cpp file
 
-namespace at { namespace native {
+namespace at::native {
 
 // View tensor with new dtype, storage offset, sizes and strides
 inline Tensor view_tensor(
@@ -39,7 +40,7 @@ inline SymDimVector computeStrideForViewAsReal(SymIntArrayRef oldstride) {
   return res;
 }
 
-Tensor _view_as_real_physical(const Tensor& self) {
+inline Tensor _view_as_real_physical(const Tensor& self) {
   TORCH_CHECK(self.is_complex(), "view_as_real is only supported for complex tensors");
   auto old_sizes = self.sym_sizes();
   SymDimVector new_sizes(old_sizes.size() + 1);
@@ -61,13 +62,19 @@ Tensor view_as_real(const Tensor& self) {
   return _view_as_real_physical(self);
 }
 
-inline SymDimVector computeStrideForViewAsComplex(SymIntArrayRef oldstride) {
-  const int64_t dim = oldstride.size();
-  TORCH_CHECK(oldstride[dim-1] == 1, "Tensor must have a last dimension with stride 1");
+inline SymDimVector computeStrideForViewAsComplex(
+    SymIntArrayRef oldstride,
+    SymIntArrayRef oldsizes) {
+  const auto dim = oldstride.size();
+  TORCH_CHECK(dim > 0, "Tensor must have one or more dimensions");
+  TORCH_SYM_CHECK(oldstride[dim - 1].sym_eq(1), "Tensor must have a last dimension with stride 1");
 
   SymDimVector res(dim - 1);
   for (const auto i : c10::irange(res.size())) {
-    TORCH_CHECK(oldstride[i] % 2 == 0, "Tensor must have a stride divisible by 2 for all but last dimension");
+    // Skip divisibility check for singleton dimensions
+    TORCH_SYM_CHECK(
+        oldsizes[i].sym_eq(1) | (oldstride[i] % 2).sym_eq(0),
+        "Tensor must have a stride divisible by 2 for all but last dimension");
     res[i] = oldstride[i] / 2;
   }
   return res;
@@ -82,16 +89,16 @@ Tensor view_as_complex(const Tensor& self) {
 
   auto old_sizes = self.sym_sizes();
   TORCH_CHECK(!old_sizes.empty(), "Input tensor must have one or more dimensions");
-  TORCH_CHECK(old_sizes[old_sizes.size()-1] == 2, "Tensor must have a last dimension of size 2");
+  TORCH_SYM_CHECK(old_sizes[old_sizes.size()-1].sym_eq(2), "Tensor must have a last dimension of size 2");
   SymDimVector new_sizes(old_sizes.begin(), old_sizes.end() - 1);
 
-  const auto new_strides = computeStrideForViewAsComplex(self.sym_strides());
+  const auto new_strides = computeStrideForViewAsComplex(self.sym_strides(), self.sym_sizes());
   const auto complex_type = c10::toComplexType(self.scalar_type());
 
-  TORCH_CHECK(self.sym_storage_offset() % 2 == 0, "Tensor must have a storage_offset divisible by 2");
+  TORCH_SYM_CHECK((self.sym_storage_offset() % 2).sym_eq(0), "Tensor must have a storage_offset divisible by 2");
   const auto new_storage_offset = self.sym_storage_offset() / 2;
 
   return view_tensor(self, complex_type, new_storage_offset, new_sizes, new_strides);
 }
 
-}} // namespace at::native
+} // namespace at::native

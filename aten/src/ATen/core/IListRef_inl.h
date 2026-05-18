@@ -8,8 +8,8 @@ class Tensor;
 class OptionalTensorRef;
 }
 
-namespace c10 {
-namespace detail {
+
+namespace c10::detail {
 
 /*
  * Specializations of `IListRefTagImplBase` that implement the default
@@ -42,7 +42,7 @@ class IListRefTagImplBase<IListRefTag::Unboxed, T, ListElemT> {
   /*
    * We have these function (besides the `unwrap`s above) because the
    * implementation for both `IListRef::operator[]` and `IListRefIterator::operator*`
-   * weren't syntatically equal for the existing tags at the time
+   * weren't syntactically equal for the existing tags at the time
    * (`Unboxed` and `Boxed`).
    */
   static IListRefConstRef<T> front(const list_type& lst) {
@@ -159,7 +159,7 @@ class IListRefTagImpl<IListRefTag::Unboxed, at::OptionalTensorRef>
 
 template <>
 class IListRefTagImpl<IListRefTag::Boxed, at::OptionalTensorRef>
-    : public IListRefTagImplBase<IListRefTag::Boxed, at::OptionalTensorRef, optional<at::Tensor>> {
+    : public IListRefTagImplBase<IListRefTag::Boxed, at::OptionalTensorRef, std::optional<at::Tensor>> {
 
  public:
   /*
@@ -168,7 +168,9 @@ class IListRefTagImpl<IListRefTag::Boxed, at::OptionalTensorRef>
    */
   static IListRefConstRef<at::OptionalTensorRef> iterator_get(
       const typename list_type::const_iterator& it) {
+    C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wdangling-reference")
     const auto& ivalue = (*it).get();
+    C10_DIAGNOSTIC_POP()
     if (!ivalue.isNone()) {
         const auto& tensor = ivalue.toTensor();
         return (tensor.defined()) ? tensor : at::OptionalTensorRef{};
@@ -184,8 +186,8 @@ class IListRefTagImpl<IListRefTag::Materialized, at::OptionalTensorRef>
           at::OptionalTensorRef,
           MaterializedIListRefElem<at::OptionalTensorRef>> {};
 
-} // namespace detail
-} // namespace c10
+} // namespace c10::detail
+
 
 namespace at {
 

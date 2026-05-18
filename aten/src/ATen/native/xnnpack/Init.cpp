@@ -3,9 +3,7 @@
 #include <ATen/native/xnnpack/Common.h>
 #include <c10/util/Exception.h>
 
-namespace at {
-namespace native {
-namespace xnnpack {
+namespace at::native::xnnpack {
 namespace internal {
 namespace {
 
@@ -33,7 +31,7 @@ bool initialize() {
   return is_initialized_;
 }
 
-bool C10_UNUSED deinitialize() {
+[[maybe_unused]] bool deinitialize() {
   using namespace internal;
 
   // This implementation allows for retries.
@@ -57,8 +55,6 @@ bool available() {
   return internal::initialize();
 }
 
-} // namespace xnnpack
-} // namespace native
-} // namespace at
+} // namespace at::native::xnnpack
 
 #endif /* USE_XNNPACK */

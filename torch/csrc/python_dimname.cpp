@@ -1,5 +1,4 @@
 #include <c10/util/flat_hash_map.h>
-#include <torch/csrc/Exceptions.h>
 #include <torch/csrc/python_dimname.h>
 #include <torch/csrc/utils/python_strings.h>
 
@@ -7,13 +6,14 @@ namespace torch {
 
 struct InternedStringsTable {
   InternedStringsTable() = default;
+  // NOLINTNEXTLINE(bugprone-exception-escape)
   ~InternedStringsTable();
   InternedStringsTable(const InternedStringsTable&) = delete;
   InternedStringsTable& operator=(InternedStringsTable const&) = delete;
   InternedStringsTable(InternedStringsTable&&) = delete;
   InternedStringsTable& operator=(InternedStringsTable&&) = delete;
 
-  at::optional<at::Dimname> lookup(PyObject* obj);
+  std::optional<at::Dimname> lookup(PyObject* obj);
   // Precondition: obj is an interned python string.
   void addMapping(PyObject* obj, at::Dimname dimname);
 
@@ -21,21 +21,26 @@ struct InternedStringsTable {
   ska::flat_hash_map<PyObject*, at::Dimname> py_interned_string_to_dimname_;
 };
 
-InternedStringsTable kPyInternedStringToDimname;
+static InternedStringsTable kPyInternedStringToDimname;
 
+// NOLINTNEXTLINE(bugprone-exception-escape)
 InternedStringsTable::~InternedStringsTable() {
-  for (auto it = py_interned_string_to_dimname_.begin();
-       it != py_interned_string_to_dimname_.end();
-       ++it) {
-    // See Note [References to python interned strings]
-    Py_DECREF(it->first);
+  // If python is already dead, leak the wrapped python objects
+  if (Py_IsInitialized()) {
+    pybind11::gil_scoped_acquire gil;
+    for (auto it = py_interned_string_to_dimname_.begin();
+         it != py_interned_string_to_dimname_.end();
+         ++it) {
+      // See Note [References to python interned strings]
+      Py_DECREF(it->first);
+    }
   }
 }
 
-at::optional<at::Dimname> InternedStringsTable::lookup(PyObject* obj) {
+std::optional<at::Dimname> InternedStringsTable::lookup(PyObject* obj) {
   auto it = py_interned_string_to_dimname_.find(obj);
   if (it == py_interned_string_to_dimname_.end()) {
-    return at::nullopt;
+    return std::nullopt;
   }
   return it->second;
 }
@@ -52,7 +57,7 @@ void InternedStringsTable::addMapping(PyObject* obj, at::Dimname dimname) {
 } // namespace torch
 
 bool THPUtils_checkDimname(PyObject* obj) {
-  return obj == Py_None || THPUtils_checkString(obj);
+  return Py_IsNone(obj) || THPUtils_checkString(obj);
 }
 
 // To avoid ambiguity with IntArrayRef, we parse obj as a DimnameList if
@@ -73,15 +78,14 @@ bool THPUtils_checkDimnameList(PyObject* obj) {
 }
 
 at::Dimname THPDimname_parse(PyObject* obj) {
-  if (obj == Py_None) {
+  if (Py_IsNone(obj)) {
     return at::Dimname::wildcard();
   }
 
-  if (!THPUtils_checkString(obj)) {
-    throw torch::TypeError(
-        "expected None or string for Dimname but got %s",
-        Py_TYPE(obj)->tp_name);
-  }
+  TORCH_CHECK_TYPE(
+      THPUtils_checkString(obj),
+      "expected None or string for Dimname but got ",
+      Py_TYPE(obj)->tp_name);
 
   if (!THPUtils_isInterned(obj)) {
     // internStringInPlace decrefs obj and increfs the result. Because we're

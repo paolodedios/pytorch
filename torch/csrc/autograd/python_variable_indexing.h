@@ -6,8 +6,7 @@
 #include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/python_symnode.h>
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 struct UnpackedSlice {
   c10::SymInt start;
@@ -16,7 +15,7 @@ struct UnpackedSlice {
 };
 
 // This mirrors Cpython's PySlice_Unpack method
-static inline UnpackedSlice __PySlice_Unpack(PyObject* _r) {
+inline UnpackedSlice __PySlice_Unpack(PyObject* _r) {
   PySliceObject* r = (PySliceObject*)_r;
   /* this is harder to get right than you might think */
 
@@ -38,14 +37,13 @@ static inline UnpackedSlice __PySlice_Unpack(PyObject* _r) {
     return val;
   };
 
-  if (r->step == Py_None) {
+  if (Py_IsNone(r->step)) {
     step_sym = c10::SymInt(1);
   } else {
     if (torch::is_symint(r->step)) {
-      auto step_sym = py::handle(r->step).cast<c10::SymInt>();
+      step_sym = py::handle(r->step).cast<c10::SymInt>();
     } else {
-      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-      Py_ssize_t step;
+      Py_ssize_t step = 0;
       if (!_PyEval_SliceIndex(r->step, &step)) {
         throw python_error();
       }
@@ -60,11 +58,10 @@ static inline UnpackedSlice __PySlice_Unpack(PyObject* _r) {
 
   if (torch::is_symint(r->start)) {
     start_sym = py::handle(r->start).cast<c10::SymInt>();
-  } else if (r->start == Py_None) {
+  } else if (Py_IsNone(r->start)) {
     start_sym = c10::SymInt(step_sym < 0 ? PY_SSIZE_T_MAX : 0);
   } else {
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    Py_ssize_t start;
+    Py_ssize_t start = 0;
     if (!_PyEval_SliceIndex(r->start, &start)) {
       throw python_error();
     }
@@ -74,12 +71,11 @@ static inline UnpackedSlice __PySlice_Unpack(PyObject* _r) {
 
   if (torch::is_symint(r->stop)) {
     stop_sym = py::handle(r->stop).cast<c10::SymInt>();
-  } else if (r->stop == Py_None) {
+  } else if (Py_IsNone(r->stop)) {
     stop_sym = c10::SymInt(
         step_sym < 0 ? c10::SymInt::min_representable_int() : PY_SSIZE_T_MAX);
   } else {
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    Py_ssize_t stop;
+    Py_ssize_t stop = 0;
     if (!_PyEval_SliceIndex(r->stop, &stop)) {
       throw python_error();
     }
@@ -100,5 +96,4 @@ Variable valueToTensor(
     PyObject* value,
     const at::Device& device);
 
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd

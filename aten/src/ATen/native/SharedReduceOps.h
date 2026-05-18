@@ -7,6 +7,7 @@
 #include <c10/macros/Macros.h>
 #include <ATen/detail/FunctionTraits.h>
 #include <ATen/NumericUtils.h>
+#include <ATen/OpMathType.h>
 #if defined(__CUDACC__)
 #include <ATen/cuda/DeviceUtils.cuh>
 #include <ATen/native/cuda/DeviceSqrt.cuh>
@@ -23,24 +24,12 @@
 #if defined(__CUDACC__) || defined(__HIPCC__)
 template <typename scalar_t>
 inline C10_DEVICE scalar_t max_propagate_nan(scalar_t a, scalar_t b) {
-#if defined(__HIPCC__)
-  // TODO: remove this special case for HIP when issue is fixed:
-  //       https://github.com/ROCm-Developer-Tools/HIP/issues/2209
-  scalar_t max = at::_isnan(a) ? a : (at::_isnan(b) ? b : std::max(a, b));
-#else
   scalar_t max = at::_isnan(b) ? b : std::max(a, b);
-#endif
   return max;
 }
 template <typename scalar_t>
 inline C10_DEVICE scalar_t min_propagate_nan(scalar_t a, scalar_t b) {
-#if defined(__HIPCC__)
-  // TODO: remove this special case for HIP when issue is fixed:
-  //       https://github.com/ROCm-Developer-Tools/HIP/issues/2209
-  scalar_t min = at::_isnan(a) ? a : (at::_isnan(b) ? b : std::min(a, b));
-#else
   scalar_t min = at::_isnan(b) ? b : std::min(a, b);
-#endif
   return min;
 }
 #define MAX(X, Y) max_propagate_nan(X,Y)
@@ -51,18 +40,19 @@ inline C10_DEVICE scalar_t min_propagate_nan(scalar_t a, scalar_t b) {
 #define MIN(X, Y) min_impl(X,Y)
 #endif
 
-// ROCM hcc doesn't work well with using std:: in kernel functions
+// ROCm hip compiler doesn't work well with using std:: in kernel functions
+#if defined(__CUDA_ARCH__) || defined(__HIPCC__)
 #if defined(__CUDA_ARCH__)
 #include <c10/cuda/CUDAMathCompat.h>
-#define compat_pow c10::cuda::compat::pow
 #elif defined(__HIPCC__)
 #include <c10/hip/HIPMathCompat.h>
-#define compat_pow c10::hip::compat::pow
+#endif
+#define compat_pow c10::cuda::compat::pow
 #else
 #define compat_pow std::pow
 #endif
 
-namespace at { namespace native {
+namespace at::native {
 
 namespace detail {
 
@@ -196,7 +186,7 @@ template <typename scalar_t, typename acc_t = scalar_t, typename out_t = acc_t>
 struct AbsMinOps {
 
   inline C10_DEVICE acc_t reduce(acc_t acc, scalar_t data, int64_t /*idx*/) const {
-    return MIN(acc, static_cast<acc_t>(std::abs(data)));
+    return MIN(acc, static_cast<acc_t>(std::abs(at::opmath_type<scalar_t>(data))));
   }
 
   inline C10_DEVICE acc_t combine(acc_t a, acc_t b) const {
@@ -225,7 +215,7 @@ struct AbsMinOps {
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = acc_t>
 struct AbsMaxOps {
   inline C10_DEVICE acc_t reduce(acc_t acc, scalar_t data, int64_t /*idx*/) const {
-    return MAX(acc, static_cast<acc_t>(std::abs(data)));
+    return MAX(acc, static_cast<acc_t>(std::abs(at::opmath_type<scalar_t>(data))));
   }
 
   inline C10_DEVICE acc_t combine(acc_t a, acc_t b) const {
@@ -251,12 +241,14 @@ struct AbsMaxOps {
 // of a set of numbers.
 // `scalar_t` is the type of the input and `acc_t` is the type of the accumulated
 // value. These types differ for complex number input support.
-template <typename scalar_t, typename acc_t = scalar_t, typename out_t = acc_t>
+// `apply_root` controls whether to apply the final root: if true, returns
+// (sum(|x|^p))^(1/p); if false, returns sum(|x|^p) (used by linalg._powsum).
+template <typename scalar_t, typename acc_t = scalar_t, typename out_t = acc_t, bool apply_root = true>
 struct NormOps {
   acc_t norm_;
 
   inline C10_DEVICE acc_t reduce(acc_t acc, scalar_t data, int64_t /*idx*/) const {
-    return acc + compat_pow(static_cast<acc_t>(std::abs(data)), norm_);
+    return acc + compat_pow(static_cast<acc_t>(std::abs(at::opmath_type<scalar_t>(data))), norm_);
   }
 
   inline C10_DEVICE acc_t combine(acc_t a, acc_t b) const {
@@ -264,7 +256,11 @@ struct NormOps {
   }
 
   inline C10_DEVICE out_t project(acc_t a) const {
-    return compat_pow(a, static_cast<acc_t>(1.0) / norm_);
+    if constexpr (apply_root) {
+      return compat_pow(a, static_cast<acc_t>(1.0) / norm_);
+    } else {
+      return a;
+    }
   }
 
   static C10_DEVICE acc_t translate_idx(acc_t acc, int64_t /*base_idx*/) {
@@ -318,7 +314,7 @@ struct NormZeroOps {
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = acc_t>
 struct NormOneOps {
   inline C10_DEVICE acc_t reduce(acc_t acc, scalar_t data, int64_t /*idx*/) const {
-    return acc + static_cast<acc_t>(std::abs(data));
+    return acc + static_cast<acc_t>(std::abs(at::opmath_type<scalar_t>(data)));
   }
 
   inline C10_DEVICE acc_t combine(acc_t a, acc_t b) const {
@@ -345,25 +341,27 @@ template<typename acc_t>
 struct AbsSwitch {};
 
 template<typename scalar_t, typename acc_t>
-inline C10_DEVICE acc_t abs_if_complex(scalar_t data, AbsSwitch<acc_t>) {
+inline C10_DEVICE acc_t abs_if_complex(scalar_t data, AbsSwitch<acc_t> /*unused*/) {
   return static_cast<acc_t>(data);
 }
 
 template<typename scalar_t, typename acc_t>
-inline C10_DEVICE acc_t abs_if_complex(std::complex<scalar_t> data, AbsSwitch<acc_t>) {
+inline C10_DEVICE acc_t abs_if_complex(std::complex<scalar_t> data, AbsSwitch<acc_t> /*unused*/) {
   return static_cast<acc_t>(std::abs(data));
 }
 
 template<typename scalar_t, typename acc_t>
-inline C10_DEVICE acc_t abs_if_complex(c10::complex<scalar_t> data, AbsSwitch<acc_t>) {
-  return static_cast<acc_t>(std::abs(data));
+inline C10_DEVICE acc_t abs_if_complex(c10::complex<scalar_t> data, AbsSwitch<acc_t> /*unused*/) {
+  return static_cast<acc_t>(std::abs(at::opmath_type<c10::complex<scalar_t>>(data)));
 }
 
 // This accumulator template is used to calculate the order two norm of the
 // absolute value of a set of numbers.
 // `scalar_t` is the type of the input and `acc_t` is the type of the accumulated
 // value. These types differ for complex number input support.
-template <typename scalar_t, typename acc_t = scalar_t, typename out_t = acc_t>
+// `apply_root` controls whether to apply the final sqrt: if true, returns
+// sqrt(sum(|x|^2)); if false, returns sum(|x|^2) (used by linalg._powsum).
+template <typename scalar_t, typename acc_t = scalar_t, typename out_t = acc_t, bool apply_root = true>
 struct NormTwoOps {
   inline C10_DEVICE acc_t reduce(acc_t acc, scalar_t data, int64_t /*idx*/) const {
     acc_t data_ = abs_if_complex(data, AbsSwitch<acc_t>());
@@ -375,7 +373,11 @@ struct NormTwoOps {
   }
 
   inline C10_DEVICE out_t project(acc_t a) const {
-    return device_sqrt(a);
+    if constexpr (apply_root) {
+      return device_sqrt(a);
+    } else {
+      return a;
+    }
   }
 
   static C10_DEVICE acc_t translate_idx(acc_t acc, int64_t /*base_idx*/) {
@@ -538,7 +540,7 @@ struct MinMaxOps {
 #endif
 };
 
-}} // namespace at::native
+} // namespace at::native
 
 #undef MAX
 #undef MIN

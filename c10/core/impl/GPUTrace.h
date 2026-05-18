@@ -2,8 +2,7 @@
 
 #include <c10/core/impl/PyInterpreter.h>
 
-namespace c10 {
-namespace impl {
+namespace c10::impl {
 
 struct C10_API GPUTrace {
   // On the x86 architecture the atomic operations are lock-less.
@@ -17,7 +16,7 @@ struct C10_API GPUTrace {
 
   // This function will only register the first interpreter that tries to invoke
   // it. For all of the next ones it will be a no-op.
-  static void set_trace(const PyInterpreter*);
+  static void set_trace(const PyInterpreter* /*trace*/);
 
   static const PyInterpreter* get_trace() {
     if (!haveState)
@@ -26,5 +25,4 @@ struct C10_API GPUTrace {
   }
 };
 
-} // namespace impl
-} // namespace c10
+} // namespace c10::impl

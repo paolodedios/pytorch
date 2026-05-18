@@ -1,9 +1,7 @@
 #include <fmt/format.h>
 #include <torch/csrc/distributed/rpc/agent_utils.h>
 
-namespace torch {
-namespace distributed {
-namespace rpc {
+namespace torch::distributed::rpc {
 
 std::unordered_map<std::string, worker_id_t> collectNames(
     ::c10d::PrefixStore store,
@@ -13,18 +11,20 @@ std::unordered_map<std::string, worker_id_t> collectNames(
   std::vector<uint8_t> selfNameVector(
       (uint8_t*)selfName.c_str(),
       (uint8_t*)selfName.c_str() + selfName.length());
-  store.set(c10::to_string(selfId), selfNameVector);
+  store.set(std::to_string(selfId), selfNameVector);
 
   std::unordered_map<std::string, worker_id_t> nameToId;
   nameToId.reserve(worldSize);
   nameToId.emplace(selfName, selfId);
+  // NOLINTNEXTLINE(*loop*)
   for (worker_id_t workerId = 0; workerId < worldSize; ++workerId) {
     if (workerId == selfId) {
       continue;
     }
-    std::vector<uint8_t> workerNameVector = store.get(c10::to_string(workerId));
+    std::vector<uint8_t> workerNameVector = store.get(std::to_string(workerId));
     std::string workerName(
-        (char*)workerNameVector.data(), workerNameVector.size());
+        reinterpret_cast<char*>(workerNameVector.data()),
+        workerNameVector.size());
 
     TORCH_CHECK(
         nameToId.find(workerName) == nameToId.end(),
@@ -41,13 +41,12 @@ std::unordered_map<std::string, worker_id_t> collectNames(
   return nameToId;
 }
 
-std::vector<std::string> splitString(
+static std::vector<std::string> splitString(
     const std::string& s,
     const std::string& delim) {
   std::vector<std::string> tokens;
   size_t start = 0;
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  size_t end;
+  size_t end = 0;
   // Iterate through each delimiter
   while ((end = s.find(delim, start)) != std::string::npos) {
     tokens.emplace_back(s.substr(start, end - start));
@@ -69,7 +68,7 @@ std::unordered_map<std::string, worker_id_t> collectCurrentNames(
 
   // Check that ID does not already exist and set {ID : NAME}
   std::vector<uint8_t> resultVector = store.compareSet(
-      c10::to_string(selfId), std::vector<uint8_t>(), selfNameVector);
+      std::to_string(selfId), std::vector<uint8_t>(), selfNameVector);
   TORCH_CHECK(
       resultVector == selfNameVector,
       "RPC worker id ",
@@ -80,7 +79,7 @@ std::unordered_map<std::string, worker_id_t> collectCurrentNames(
       selfNameVector,
       " cannot be added.");
 
-  store.set(c10::to_string(selfId), selfNameVector);
+  store.set(std::to_string(selfId), selfNameVector);
 
   std::unordered_map<std::string, worker_id_t> nameToId;
   nameToId.emplace(selfName, selfId);
@@ -93,7 +92,8 @@ std::unordered_map<std::string, worker_id_t> collectCurrentNames(
     // Get the current list of workers
     std::vector<uint8_t> allWorkerInfosKeyVector = store.get(allWorkerInfosKey);
     allWorkerInfos = std::string(
-        (char*)allWorkerInfosKeyVector.data(), allWorkerInfosKeyVector.size());
+        reinterpret_cast<const char*>(allWorkerInfosKeyVector.data()),
+        allWorkerInfosKeyVector.size());
     // workerInfos are comma separated with a comma at the end (e.g.
     // "Name1-Rank1,Name2-Rank2,Name3-Rank2,") parse list of workers.
     if (!allWorkerInfos.empty()) {
@@ -134,11 +134,12 @@ void removeCurrentName(
   // Get current list of names/ranks
   std::vector<uint8_t> allWorkerInfosKeyVector = store.get(allWorkerInfosKey);
   std::string allWorkerInfos = std::string(
-      (char*)allWorkerInfosKeyVector.data(), allWorkerInfosKeyVector.size());
+      reinterpret_cast<const char*>(allWorkerInfosKeyVector.data()),
+      allWorkerInfosKeyVector.size());
 
   // Remove the current name and rank
   std::string str_to_erase = fmt::format("{}-{},", selfName, selfId);
-  int start_position_to_erase = allWorkerInfos.find(str_to_erase);
+  auto start_position_to_erase = allWorkerInfos.find(str_to_erase);
   allWorkerInfos.erase(start_position_to_erase, str_to_erase.length());
 
   // Set the new data
@@ -148,21 +149,25 @@ void removeCurrentName(
   store.set(allWorkerInfosKey, newAllWorkerInfosVector);
 }
 
-const string storeKeyBarrierId = "_ID_";
-const string storeKeyProcessCount = "PROCESS_COUNT";
-const string storeKeyActiveCallCount = "ACTIVE_CALLS";
-const string storeKeyReady = "READY";
+constexpr const auto storeKeyBarrierId = "_ID_";
+constexpr const auto storeKeyProcessCount = "PROCESS_COUNT";
+constexpr const auto storeKeyActiveCallCount = "ACTIVE_CALLS";
+constexpr const auto storeKeyReady = "READY";
 static std::atomic<int> barrierId(0);
 
-std::tuple<std::string, std::string, std::string> getNextKeyIds() {
+static std::tuple<std::string, std::string, std::string> getNextKeyIds() {
   barrierId++;
-  std::string processCountKey =
-      fmt::format("{}{}{}", storeKeyProcessCount, storeKeyBarrierId, barrierId);
+  auto newBarrierId = barrierId.load();
+  std::string processCountKey = fmt::format(
+      "{}{}{}", storeKeyProcessCount, storeKeyBarrierId, newBarrierId);
   std::string activeCallCountKey = fmt::format(
-      "{}{}{}", storeKeyActiveCallCount, storeKeyBarrierId, barrierId);
+      "{}{}{}", storeKeyActiveCallCount, storeKeyBarrierId, newBarrierId);
   std::string barrierKey =
-      fmt::format("{}{}{}", storeKeyReady, storeKeyBarrierId, barrierId);
-  return std::make_tuple(processCountKey, activeCallCountKey, barrierKey);
+      fmt::format("{}{}{}", storeKeyReady, storeKeyBarrierId, newBarrierId);
+  return std::make_tuple(
+      std::move(processCountKey),
+      std::move(activeCallCountKey),
+      std::move(barrierKey));
 }
 
 // Synchronize process with all other agent processes strictly using store
@@ -172,12 +177,11 @@ int syncCallCount(
     ::c10d::PrefixStore store,
     const int worldSize,
     int activeCalls) {
-  std::string processCountKey, activeCallCountKey, readyKey;
-  std::tie(processCountKey, activeCallCountKey, readyKey) = getNextKeyIds();
+  auto [processCountKey, activeCallCountKey, readyKey] = getNextKeyIds();
 
   // Add to keys which will record the number of processes and active calls
   store.add(activeCallCountKey, activeCalls);
-  int totalProcessCount = store.add(processCountKey, 1);
+  auto totalProcessCount = store.add(processCountKey, 1);
 
   // The last worker will need to set the ready key
   if (totalProcessCount == worldSize) {
@@ -194,6 +198,4 @@ int syncCallCount(
   return totalCallCount;
 }
 
-} // namespace rpc
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::rpc

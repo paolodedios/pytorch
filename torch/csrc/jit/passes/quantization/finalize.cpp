@@ -16,8 +16,7 @@
 
 #include <utility>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
@@ -168,7 +167,7 @@ void FoldQuantizedPrepackingOps(Module& module) {
   PrePackingOpsFolder(module, filter_fn, "quantized");
 }
 
-std::unordered_set<std::string> RegisterPrePackingParams(
+static std::unordered_set<std::string> RegisterPrePackingParams(
     Module& module,
     const std::string& method_name) {
   auto filter_fn = [](const Node* n) -> bool {
@@ -275,5 +274,4 @@ Module FinalizeOnDevicePTQ(
   return module;
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

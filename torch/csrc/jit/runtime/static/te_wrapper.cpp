@@ -8,8 +8,9 @@
 #include <torch/csrc/jit/tensorexpr/operators/misc.h>
 #include <torch/csrc/jit/tensorexpr/operators/operators.h>
 
-namespace torch {
-namespace jit {
+#include <utility>
+
+namespace torch::jit {
 
 using namespace torch::jit::tensorexpr;
 
@@ -29,7 +30,7 @@ void TEWrapper::call(const std::vector<void*>& args) {
   cg->call_raw(args);
 }
 
-void optimizePointwise(LoopNest* ln, Tensor target, int width) {
+static void optimizePointwise(LoopNest* ln, Tensor target, int width) {
   std::vector<ForPtr> loops = ln->getLoopStmtsFor(target);
   ForPtr inner, tail;
   TORCH_CHECK(loops.size() > 0, "No loops created for pointwise op");
@@ -37,7 +38,7 @@ void optimizePointwise(LoopNest* ln, Tensor target, int width) {
   ln->vectorize(inner);
 }
 
-std::shared_ptr<TEWrapper> wrapTECompute(
+static std::shared_ptr<TEWrapper> wrapTECompute(
     std::shared_ptr<TEWrapper> wrap,
     Tensor out,
     std::vector<CodeGen::BufferArg> args,
@@ -54,7 +55,7 @@ std::shared_ptr<TEWrapper> wrapTECompute(
   return wrap;
 }
 
-std::shared_ptr<TEWrapper> wrapTECompute(
+static std::shared_ptr<TEWrapper> wrapTECompute(
     std::shared_ptr<TEWrapper> wrap,
     LoopNest* ln,
     std::vector<CodeGen::BufferArg> args) {
@@ -69,18 +70,18 @@ void TEWrapper::call(const std::vector<void*>& args) {
   DCHECK(0 && "Invalid call");
 }
 
-std::shared_ptr<TEWrapper> wrapTECompute(
+static std::shared_ptr<TEWrapper> wrapTECompute(
     std::shared_ptr<TEWrapper> wrap,
-    Tensor out,
-    std::vector<CodeGen::BufferArg> args,
+    const Tensor& out,
+    const std::vector<CodeGen::BufferArg>& args,
     int width = kVectorWidth) {
   return wrap;
 }
 
-std::shared_ptr<TEWrapper> wrapTECompute(
+static std::shared_ptr<TEWrapper> wrapTECompute(
     std::shared_ptr<TEWrapper> wrap,
     LoopNest* ln,
-    std::vector<CodeGen::BufferArg> args) {
+    const std::vector<CodeGen::BufferArg>& args) {
   return wrap;
 }
 
@@ -109,7 +110,7 @@ std::shared_ptr<TEWrapper> lookupNNCCache(NodeKind kind) {
 
 void updateNNCCache(NodeKind kind, std::shared_ptr<TEWrapper> code) {
   std::lock_guard<std::mutex> lock(getNNCCacheMutex());
-  getNNCCache()[kind] = code;
+  getNNCCache()[kind] = std::move(code);
 }
 
 } // namespace
@@ -311,5 +312,4 @@ std::shared_ptr<TEWrapper> createSignedLog1p() {
   return wrap;
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

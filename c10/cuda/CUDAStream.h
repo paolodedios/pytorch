@@ -1,8 +1,5 @@
 #pragma once
 
-#include <cstdint>
-#include <utility>
-
 #include <cuda_runtime_api.h>
 
 #include <c10/core/DeviceGuard.h>
@@ -52,8 +49,9 @@
  * a kernel on the same stream from two different threads.
  */
 
-namespace c10 {
-namespace cuda {
+namespace c10::cuda {
+
+static constexpr int max_compile_time_stream_priorities = 4;
 
 // Value object representing a CUDA stream.  This is just a wrapper
 // around c10::Stream, but it comes with a little extra CUDA-specific
@@ -72,7 +70,7 @@ class C10_CUDA_API CUDAStream {
   /// Construct a CUDAStream from a Stream with no error checking.
   /// This constructor uses the "named" constructor idiom, and can
   /// be invoked as: CUDAStream(CUDAStream::UNCHECKED, stream)
-  explicit CUDAStream(Unchecked, Stream stream) : stream_(stream) {}
+  explicit CUDAStream(Unchecked /*unused*/, Stream stream) : stream_(stream) {}
 
   bool operator==(const CUDAStream& other) const noexcept {
     return unwrap() == other.unwrap();
@@ -114,25 +112,15 @@ class C10_CUDA_API CUDAStream {
     return stream_.id();
   }
 
-  bool query() const {
+  bool query() const;
+
+  void synchronize() const;
+
+  bool is_capturing() const {
     DeviceGuard guard{stream_.device()};
-    cudaError_t err = C10_CUDA_ERROR_HANDLED(cudaStreamQuery(stream()));
-
-    if (err == cudaSuccess) {
-      return true;
-    } else if (err != cudaErrorNotReady) {
-      C10_CUDA_CHECK(err);
-    } else {
-      // ignore and clear the error if not ready
-      (void)cudaGetLastError();
-    }
-
-    return false;
-  }
-
-  void synchronize() const {
-    DeviceGuard guard{stream_.device()};
-    c10::cuda::stream_synchronize(stream());
+    cudaStreamCaptureStatus status{cudaStreamCaptureStatusNone};
+    C10_CUDA_CHECK(cudaStreamIsCapturing(stream(), &status));
+    return status != cudaStreamCaptureStatusNone;
   }
 
   int priority() const {
@@ -174,16 +162,24 @@ class C10_CUDA_API CUDAStream {
   static std::tuple<int, int> priority_range() {
     // Note: this returns the range of priority **supported by PyTorch**, not
     // the range of priority **supported by CUDA**. The former is a subset of
-    // the latter. Currently PyTorch only supports 0 and -1, which are "low" and
-    // "high" priority.
-    int least_priority, greatest_priority;
+    // the latter.
+    int least_priority = 0, greatest_priority = 0;
     C10_CUDA_CHECK(
         cudaDeviceGetStreamPriorityRange(&least_priority, &greatest_priority));
+#ifdef USE_ROCM
+    // See Note [HIP stream priorities]
     TORCH_INTERNAL_ASSERT(
-        least_priority >= 0, "Unexpected CUDA stream priority range");
+        least_priority == 1, "Unexpected HIP stream priority range");
+    least_priority = 0;
+#else
+    TORCH_INTERNAL_ASSERT(
+        least_priority == 0, "Unexpected CUDA stream priority range");
+#endif
     TORCH_INTERNAL_ASSERT(
         greatest_priority <= -1, "Unexpected CUDA stream priority range");
-    return std::make_tuple(0, -1);
+    greatest_priority = std::max(
+        -c10::cuda::max_compile_time_stream_priorities + 1, greatest_priority);
+    return std::make_tuple(least_priority, greatest_priority);
   }
 
   // Deleted for now; use CUDAEvent::block instead
@@ -203,8 +199,11 @@ class C10_CUDA_API CUDAStream {
  * isHighPriority to true, or a stream for a specific device by setting device
  * (defaulting to the current CUDA stream.)
  */
-C10_API CUDAStream
+C10_CUDA_API CUDAStream
 getStreamFromPool(const bool isHighPriority = false, DeviceIndex device = -1);
+// no default priority to disambiguate overloads
+C10_CUDA_API CUDAStream
+getStreamFromPool(const int priority, DeviceIndex device = -1);
 
 /**
  * Get a CUDAStream from a externally allocated one.
@@ -213,7 +212,7 @@ getStreamFromPool(const bool isHighPriority = false, DeviceIndex device = -1);
  * want to operate on a non-torch allocated stream for data exchange or similar
  * purposes
  */
-C10_API CUDAStream
+C10_CUDA_API CUDAStream
 getStreamFromExternal(cudaStream_t ext_stream, DeviceIndex device_index);
 
 /**
@@ -222,7 +221,7 @@ getStreamFromExternal(cudaStream_t ext_stream, DeviceIndex device_index);
  * where most computation occurs when you aren't explicitly using
  * streams.
  */
-C10_API CUDAStream getDefaultCUDAStream(DeviceIndex device_index = -1);
+C10_CUDA_API CUDAStream getDefaultCUDAStream(DeviceIndex device_index = -1);
 
 /**
  * Get the current CUDA stream, for the passed CUDA device, or for the
@@ -231,7 +230,7 @@ C10_API CUDAStream getDefaultCUDAStream(DeviceIndex device_index = -1);
  * be different if someone called 'setCurrentCUDAStream' or used 'StreamGuard'
  * or 'CUDAStreamGuard'.
  */
-C10_API CUDAStream getCurrentCUDAStream(DeviceIndex device_index = -1);
+C10_CUDA_API CUDAStream getCurrentCUDAStream(DeviceIndex device_index = -1);
 
 /**
  * Set the current stream on the device of the passed in stream to be
@@ -243,12 +242,53 @@ C10_API CUDAStream getCurrentCUDAStream(DeviceIndex device_index = -1);
  * (which will switch both your current device and current stream in the way you
  * expect, and reset it back to its original state afterwards).
  */
-C10_API void setCurrentCUDAStream(CUDAStream stream);
+C10_CUDA_API void setCurrentCUDAStream(CUDAStream stream);
 
-C10_API std::ostream& operator<<(std::ostream& stream, const CUDAStream& s);
+C10_CUDA_API std::ostream& operator<<(
+    std::ostream& stream,
+    const CUDAStream& s);
 
-} // namespace cuda
-} // namespace c10
+} // namespace c10::cuda
+
+// hipify v2 backward compat in external projects
+#ifdef USE_ROCM
+namespace c10::hip {
+using c10::cuda::getStreamFromExternal;
+using c10::cuda::getStreamFromPool;
+// must use inline wrappers instead of reference aliases due to default args
+inline c10::cuda::CUDAStream getDefaultHIPStream(
+    DeviceIndex device_index = -1) {
+  return c10::cuda::getDefaultCUDAStream(device_index);
+}
+inline c10::cuda::CUDAStream getCurrentHIPStream(
+    DeviceIndex device_index = -1) {
+  return c10::cuda::getCurrentCUDAStream(device_index);
+}
+inline auto& setCurrentHIPStream = c10::cuda::setCurrentCUDAStream;
+inline c10::cuda::CUDAStream getStreamFromPoolMasqueradingAsCUDA(
+    const bool isHighPriority = false,
+    DeviceIndex device = -1) {
+  return c10::cuda::getStreamFromPool(isHighPriority, device);
+}
+inline c10::cuda::CUDAStream getStreamFromPoolMasqueradingAsCUDA(
+    const int priority,
+    DeviceIndex device = -1) {
+  return c10::cuda::getStreamFromPool(priority, device);
+}
+inline auto& getStreamFromExternalMasqueradingAsCUDA =
+    c10::cuda::getStreamFromExternal;
+inline c10::cuda::CUDAStream getDefaultHIPStreamMasqueradingAsCUDA(
+    DeviceIndex device_index = -1) {
+  return c10::cuda::getDefaultCUDAStream(device_index);
+}
+inline c10::cuda::CUDAStream getCurrentHIPStreamMasqueradingAsCUDA(
+    DeviceIndex device_index = -1) {
+  return c10::cuda::getCurrentCUDAStream(device_index);
+}
+inline auto& setCurrentHIPStreamMasqueradingAsCUDA =
+    c10::cuda::setCurrentCUDAStream;
+} // namespace c10::hip
+#endif
 
 namespace std {
 template <>

@@ -6,7 +6,6 @@
 
 #include <fstream>
 #include <functional>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -28,6 +27,10 @@ namespace flatbuffers = flatbuffers_fbsource;
 #else
 #include <torch/csrc/jit/serialization/mobile_bytecode_generated.h> // NOLINT
 #endif
+
+C10_CLANG_DIAGNOSTIC_PUSH()
+C10_CLANG_DIAGNOSTIC_IGNORE("-Wswitch-default")
+C10_CLANG_DIAGNOSTIC_IGNORE("-Wswitch-enum")
 
 namespace torch::jit {
 
@@ -61,7 +64,7 @@ static TypePtr realType(TypePtr type) {
   }
 }
 
-auto print_type(const c10::Type& t) -> c10::optional<std::string> {
+auto print_type(const c10::Type& t) -> std::optional<std::string> {
   auto namedType = t.cast<c10::NamedType>();
   if (namedType && namedType->name()) {
     return namedType->name().value().qualifiedName();
@@ -69,7 +72,7 @@ auto print_type(const c10::Type& t) -> c10::optional<std::string> {
   if (auto dyn = t.castRaw<c10::DynamicType>()) {
     return dyn->fallback()->annotation_str();
   }
-  return c10::nullopt;
+  return std::nullopt;
 }
 
 class FlatbufferSerializer {
@@ -129,11 +132,11 @@ class FlatbufferSerializer {
       flatbuffers::FlatBufferBuilder& fbb,
       const std::vector<Argument>& args,
       const std::vector<Argument>& returns,
-      c10::TypePrinter type_printer);
+      const c10::TypePrinter& type_printer);
 
   flatbuffers::Offset<mobile::serialization::ObjectType> classTypeToFB(
       flatbuffers::FlatBufferBuilder& fbb,
-      ClassTypePtr class_ptr);
+      const ClassTypePtr& class_ptr);
 
   uint32_t storeIValueAndGetIndex(
       flatbuffers::FlatBufferBuilder& fbb,
@@ -145,7 +148,7 @@ class FlatbufferSerializer {
 
   uint32_t storeClassTypeAndGetIndex(
       flatbuffers::FlatBufferBuilder& fbb,
-      ClassTypePtr class_type);
+      const ClassTypePtr& class_type);
 
   flatbuffers::Offset<flatbuffers::Vector<
       flatbuffers::Offset<mobile::serialization::ExtraFile>>>
@@ -185,18 +188,23 @@ class FlatbufferSerializer {
     // but without relying on aten::nonzero operator being present in the
     // binary.
     bool operator()(const IValue& lhs, const IValue& rhs) const {
+      // The only case we don't return bool is for tensor comparison. Lets do
+      // pointer comparison here.
+      if (lhs.isTensor() || rhs.isTensor()) {
+        if (lhs.isTensor() && rhs.isTensor()) {
+          return (&lhs.toTensor()) == (&rhs.toTensor());
+        }
+        return false;
+      }
       IValue eq = lhs.equals(rhs);
       if (eq.isBool()) {
         return eq.toBool();
       }
-      // The only case we don't return bool is for tensor comparison. Lets do
-      // pointer comparison here.
-      return (&lhs.toTensor()) == (&rhs.toTensor());
+      return false;
     }
   };
 
   std::unordered_map<IValue, uint32_t, IValueHash, IValueEqual> cached_ivalues_;
-
   const mobile::CompilationUnit* mcu_ = nullptr;
 };
 
@@ -205,13 +213,13 @@ flatbuffers::Offset<jit::mobile::serialization::Schema> FlatbufferSerializer::
         flatbuffers::FlatBufferBuilder& fbb,
         const std::vector<Argument>& args,
         const std::vector<Argument>& returns,
-        c10::TypePrinter type_printer) {
+        const c10::TypePrinter& type_printer) {
   std::vector<flatbuffers::Offset<jit::mobile::serialization::Arg>> arg_vec;
   arg_vec.reserve(args.size());
   std::vector<flatbuffers::Offset<jit::mobile::serialization::Arg>> return_vec;
   return_vec.reserve(returns.size());
   for (const auto& arg : args) {
-    int index = storeIValueAndGetIndex(fbb, arg.default_value());
+    auto index = storeIValueAndGetIndex(fbb, arg.default_value());
     arg_vec.emplace_back(CreateArg(
         fbb,
         fbb.CreateSharedString(arg.name()),
@@ -221,7 +229,7 @@ flatbuffers::Offset<jit::mobile::serialization::Schema> FlatbufferSerializer::
   }
 
   for (const auto& ret : returns) {
-    int index = storeIValueAndGetIndex(fbb, ret.default_value());
+    auto index = storeIValueAndGetIndex(fbb, ret.default_value());
     return_vec.emplace_back(CreateArg(
         fbb,
         fbb.CreateSharedString(ret.name()),
@@ -276,7 +284,7 @@ flatbuffers::Offset<mobile::serialization::Function> FlatbufferSerializer::
 
   for (const TypePtr& t : code.types_) {
     auto type_str = realType(t)->annotation_str();
-    if (type_str.find(torch_prefix) == 0) {
+    if (type_str.starts_with(torch_prefix)) {
       TORCH_CHECK(
           type_str.find(class_prefix) == 0,
           "__torch__ types other than custom c++ classes (__torch__.torch.classes)"
@@ -293,7 +301,7 @@ flatbuffers::Offset<mobile::serialization::Function> FlatbufferSerializer::
   auto register_size = static_cast<int>(code.register_size_);
 
   // schema
-  auto type_printer = [&](const c10::Type& t) -> c10::optional<std::string> {
+  auto type_printer = [&](const c10::Type& t) -> std::optional<std::string> {
     auto namedType = t.cast<c10::NamedType>();
     if (namedType && namedType->name()) {
       return namedType->name().value().qualifiedName();
@@ -301,7 +309,7 @@ flatbuffers::Offset<mobile::serialization::Function> FlatbufferSerializer::
     if (auto dyn = t.castRaw<c10::DynamicType>()) {
       return dyn->fallback()->annotation_str();
     }
-    return c10::nullopt;
+    return std::nullopt;
   };
 
   flatbuffers::Offset<mobile::serialization::Schema> schema_offset = 0;
@@ -438,7 +446,7 @@ flatbuffers::DetachedBuffer FlatbufferSerializer::serializeModule(
       functions_offset,
       ivalue_index,
       fbb.CreateVector(ivalue_offsets_),
-      tensor_data_.size(),
+      static_cast<int32_t>(tensor_data_.size()),
       storage_data_offset,
       fbb.CreateVector(obj_types_offset_),
       jit_source_offset,
@@ -479,9 +487,9 @@ flatbuffers::Offset<mobile::serialization::Dict> FlatbufferSerializer::dictToFB(
   keys.reserve(dict.size());
   values.reserve(dict.size());
   for (const auto& entry : dict) {
-    int key_index = storeIValueAndGetIndex(fbb, entry.key());
+    auto key_index = storeIValueAndGetIndex(fbb, entry.key());
     keys.push_back(key_index);
-    int value_index = storeIValueAndGetIndex(fbb, entry.value());
+    auto value_index = storeIValueAndGetIndex(fbb, entry.value());
     values.push_back(value_index);
   }
 
@@ -494,7 +502,7 @@ flatbuffers::Offset<mobile::serialization::Dict> FlatbufferSerializer::dictToFB(
 }
 
 flatbuffers::Offset<mobile::serialization::ObjectType> FlatbufferSerializer::
-    classTypeToFB(FlatBufferBuilder& fbb, ClassTypePtr class_ptr) {
+    classTypeToFB(FlatBufferBuilder& fbb, const ClassTypePtr& class_ptr) {
   mobile::serialization::TypeType typetype =
       mobile::serialization::TypeType::UNSET;
 
@@ -514,7 +522,7 @@ flatbuffers::Offset<mobile::serialization::ObjectType> FlatbufferSerializer::
   } else {
     size_t num_attr = class_ptr->numAttributes();
     std::vector<flatbuffers::Offset<flatbuffers::String>> names;
-    std::vector<uint32_t> type_index;
+    names.reserve(num_attr);
     for (size_t i = 0; i < num_attr; ++i) {
       names.push_back(fbb.CreateSharedString(class_ptr->getAttributeName(i)));
     }
@@ -547,7 +555,7 @@ uint32_t FlatbufferSerializer::storeFunctionAndGetIndex(
 
 uint32_t FlatbufferSerializer::storeClassTypeAndGetIndex(
     FlatBufferBuilder& fbb,
-    ClassTypePtr class_ptr) {
+    const ClassTypePtr& class_ptr) {
   const auto& type_str = class_ptr->name()->qualifiedName();
   auto iter = qn_to_serialized_values_.find(type_str);
   if (iter != qn_to_serialized_values_.end()) {
@@ -585,6 +593,7 @@ flatbuffers::Offset<mobile::serialization::Object> FlatbufferSerializer::
   } else {
     size_t num_attr = type->numAttributes();
     std::vector<uint32_t> tuple_index;
+    tuple_index.reserve(num_attr);
     for (size_t i = 0; i < num_attr; ++i) {
       tuple_index.push_back(storeIValueAndGetIndex(fbb, obj->getSlot(i)));
     }
@@ -607,10 +616,10 @@ flatbuffers::Offset<mobile::serialization::TensorMetadata> FlatbufferSerializer:
       0;
   if (quantized) {
     double scale = 0;
-    int32_t zero_point = 0;
+    int64_t zero_point = 0;
     flatbuffers::Offset<mobile::serialization::TensorMetadata> scales = 0;
     flatbuffers::Offset<mobile::serialization::TensorMetadata> zero_points = 0;
-    int32_t axis = 0;
+    int64_t axis = 0;
 
     switch (tensor.qscheme()) {
       case at::kPerTensorAffine:
@@ -635,10 +644,10 @@ flatbuffers::Offset<mobile::serialization::TensorMetadata> FlatbufferSerializer:
         fbb,
         static_cast<int8_t>(tensor.qscheme()),
         scale,
-        zero_point,
+        static_cast<int32_t>(zero_point),
         scales,
         zero_points,
-        axis);
+        static_cast<int32_t>(axis));
   }
 
   void* addr = storage.unsafeGetStorageImpl();
@@ -659,7 +668,8 @@ flatbuffers::Offset<mobile::serialization::TensorMetadata> FlatbufferSerializer:
       fbb,
       /* storage_location_index */ storage_index,
       /* scalar_type */ static_cast<int8_t>(tensor.scalar_type()),
-      /* int32_t storage_offset */ tensor.storage_offset(),
+      /* int32_t storage_offset */
+      static_cast<int32_t>(tensor.storage_offset()),
       /* sizes */ &sizes,
       /* strides */ &strides,
       /* bool requires_grad */ tensor.requires_grad(),
@@ -678,18 +688,22 @@ uint32_t FlatbufferSerializer::storeIValueAndGetIndex(
     if (iter != cached_ivalues_.end()) {
       return iter->second;
     }
-  } catch (const std::runtime_error&) {
-    // Threw if ivalue is not hashable
-  } catch (const c10::Error&) {
-    // Threw if ivalue is don't have proper operator==
+    // NOLINTNEXTLINE(bugprone-empty-catch)
+  } catch (...) {
+    // Threw if ivalue is not hashable or
+    // if ivalue is don't have proper operator==
+    // we don't care catchall because either case we want to skip hashing
   }
 
   auto offset = iValueToFB(fbb, ivalue);
   uint32_t index = insertIValue(offset);
   try {
     cached_ivalues_[ivalue] = index;
-  } catch (const std::runtime_error&) {
-  } catch (const c10::Error&) {
+    // NOLINTNEXTLINE(bugprone-empty-catch)
+  } catch (...) {
+    // Threw if ivalue is not hashable or
+    // if ivalue is don't have proper operator==
+    // we don't care catchall because either case we want to skip hashing
   }
 
   return index;
@@ -776,7 +790,8 @@ flatbuffers::Offset<mobile::serialization::IValue> FlatbufferSerializer::
                  ival_pos)
                  .Union();
   } else {
-    AT_ERROR("Invalid IValue type for serialization: ", ivalue.tagKind());
+    TORCH_CHECK(
+        false, "Invalid IValue type for serialization: ", ivalue.tagKind());
   }
   return CreateIValue(fbb, ivalue_type, offset);
 }
@@ -847,3 +862,5 @@ bool register_flatbuffer_serializer() {
 }
 
 } // namespace torch::jit
+
+C10_CLANG_DIAGNOSTIC_POP()

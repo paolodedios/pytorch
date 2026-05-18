@@ -1,18 +1,13 @@
-# -*- coding: utf-8 -*-
-# Owner(s): ["module: unknown"]
+# Owner(s): ["module: sparse"]
 
-import logging
-import warnings
-from torch.testing._internal.common_utils import TestCase
-from torch import nn
-import torch
-from typing import Tuple
 import copy
+import warnings
 
-from torch.ao.pruning._experimental.data_sparsifier import DataNormSparsifier
+import torch
+from torch import nn
 from torch.ao.pruning._experimental.data_scheduler import BaseDataScheduler
-
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+from torch.ao.pruning._experimental.data_sparsifier import DataNormSparsifier
+from torch.testing._internal.common_utils import raise_on_run_directly, TestCase
 
 
 class ImplementedDataScheduler(BaseDataScheduler):
@@ -21,27 +16,32 @@ class ImplementedDataScheduler(BaseDataScheduler):
 
     def get_schedule_param(self):
         if self.last_epoch > 0:
-            return {name: config['sparsity_level'] * 0.5
-                    for name, config in self.data_sparsifier.data_groups.items()}
+            return {
+                name: config["sparsity_level"] * 0.5
+                for name, config in self.data_sparsifier.data_groups.items()
+            }
         else:
             return self.base_param
 
 
 class TestBaseDataScheduler(TestCase):
     def _get_data(self):
-        tensor1, param1, emb1 = torch.randn(5, 5), nn.Parameter(torch.randn(10, 10)), nn.Embedding(50, 5)
-        data_list = [
-            ('tensor1', tensor1), ('param1', param1), ('emb1', emb1)
-        ]
+        tensor1, param1, emb1 = (
+            torch.randn(5, 5),
+            nn.Parameter(torch.randn(10, 10)),
+            nn.Embedding(50, 5),
+        )
+        data_list = [("tensor1", tensor1), ("param1", param1), ("emb1", emb1)]
         defaults = {
-            'sparsity_level': 0.7,
-            'sparse_block_shape': (1, 4),
-            'zeros_per_block': 2
+            "sparsity_level": 0.7,
+            "sparse_block_shape": (1, 4),
+            "zeros_per_block": 2,
         }
         data_with_config = [
             {
-                'name': 'tensor2', 'data': torch.randn(4, 4),
-                'config': {'sparsity_level': 0.3}
+                "name": "tensor2",
+                "data": torch.randn(4, 4),
+                "config": {"sparsity_level": 0.3},
             }
         ]
         return data_list, data_with_config, defaults
@@ -49,7 +49,11 @@ class TestBaseDataScheduler(TestCase):
     def _get_sparsifier(self, data_list, data_with_config, defaults):
         sparsifier = DataNormSparsifier(data_list, **defaults)
         for data_config_dict in data_with_config:
-            name, data, config = data_config_dict['name'], data_config_dict['data'], data_config_dict['config']
+            name, data, config = (
+                data_config_dict["name"],
+                data_config_dict["data"],
+                data_config_dict["config"],
+            )
             sparsifier.add_data(name=name, data=data, **config)
         return sparsifier
 
@@ -58,16 +62,20 @@ class TestBaseDataScheduler(TestCase):
         return scheduler
 
     def _get_schedule_param(self):
-        return 'sparsity_level'
+        return "sparsity_level"
 
     def _get_name_data_config(self, some_data, defaults):
         config = copy.deepcopy(defaults)
-        if isinstance(some_data, Tuple):
+        if isinstance(some_data, tuple):
             # dealing with data_list
             name, data = some_data
         else:
             # dealing with data_with_config
-            name, data, new_config = some_data['name'], some_data['data'], some_data['config']
+            name, data, new_config = (
+                some_data["name"],
+                some_data["data"],
+                some_data["config"],
+            )
             config.update(new_config)
         return name, data, config
 
@@ -79,11 +87,16 @@ class TestBaseDataScheduler(TestCase):
         schedule_param = self._get_schedule_param()
         scheduler = self._get_scheduler(sparsifier, schedule_param)
 
-        assert scheduler.data_sparsifier == sparsifier
-        assert scheduler._step_count == 1
+        if scheduler.data_sparsifier != sparsifier:
+            raise AssertionError("scheduler.data_sparsifier should equal sparsifier")
+        if scheduler._step_count != 1:
+            raise AssertionError(f"Expected _step_count=1, got {scheduler._step_count}")
 
         for name, config in sparsifier.data_groups.items():
-            assert scheduler.base_param[name] == config.get(schedule_param, None)
+            if scheduler.base_param[name] != config.get(schedule_param, None):
+                raise AssertionError(
+                    f"base_param[{name}] mismatch: {scheduler.base_param[name]} != {config.get(schedule_param, None)}"
+                )
 
     def test_order_of_steps(self):
         data_list, data_with_config, defaults = self._get_data()
@@ -103,8 +116,12 @@ class TestBaseDataScheduler(TestCase):
             # Make sure there is no warning related to the base_data_scheduler
             for warning in w:
                 fname = warning.filename
-                fname = '/'.join(fname.split('/')[-5:])
-                assert fname != 'torch/ao/sparsity/experimental/scheduler/data_scheduler/base_data_scheduler.py'
+                fname = "/".join(fname.split("/")[-5:])
+                if (
+                    fname
+                    == "torch/ao/sparsity/experimental/scheduler/data_scheduler/base_data_scheduler.py"
+                ):
+                    raise AssertionError("Unexpected warning from base_data_scheduler")
 
     def test_step(self):
         data_list, data_with_config, defaults = self._get_data()
@@ -116,22 +133,37 @@ class TestBaseDataScheduler(TestCase):
 
         for some_data in all_data:
             name, _, config = self._get_name_data_config(some_data, defaults)
-            assert sparsifier.data_groups[name][schedule_param] == config[schedule_param]
+            if sparsifier.data_groups[name][schedule_param] != config[schedule_param]:
+                raise AssertionError(
+                    f"data_groups[{name}][{schedule_param}] mismatch: "
+                    f"{sparsifier.data_groups[name][schedule_param]} != {config[schedule_param]}"
+                )
 
         sparsifier.step()
         scheduler.step()
 
         for some_data in all_data:
             name, _, config = self._get_name_data_config(some_data, defaults)
-            assert sparsifier.data_groups[name][schedule_param] == config[schedule_param] * 0.5
+            expected = config[schedule_param] * 0.5
+            if sparsifier.data_groups[name][schedule_param] != expected:
+                raise AssertionError(
+                    f"data_groups[{name}][{schedule_param}] mismatch: "
+                    f"{sparsifier.data_groups[name][schedule_param]} != {expected}"
+                )
 
         # checking step count
         step_cnt = 5
-        for _ in range(0, step_cnt):
+        for _ in range(step_cnt):
             sparsifier.step()
             scheduler.step()
 
-        assert scheduler._step_count == step_cnt + 2  # step_cnt + step above + 1 step in constructor
+        expected_step_count = (
+            step_cnt + 2
+        )  # step_cnt + step above + 1 step in constructor
+        if scheduler._step_count != expected_step_count:
+            raise AssertionError(
+                f"Expected _step_count={expected_step_count}, got {scheduler._step_count}"
+            )
 
     def test_state_dict(self):
         data_list, data_with_config, defaults = self._get_data()
@@ -146,13 +178,29 @@ class TestBaseDataScheduler(TestCase):
         all_data = data_list + data_with_config
         for some_data in all_data:
             name, _, _ = self._get_name_data_config(some_data, defaults)
-            assert scheduler1.base_param[name] != scheduler2.base_param[name]
-            assert scheduler1._last_param[name] == scheduler2.base_param[name]
+            if scheduler1.base_param[name] == scheduler2.base_param[name]:
+                raise AssertionError(
+                    f"base_param[{name}] should differ between schedulers"
+                )
+            if scheduler1._last_param[name] != scheduler2.base_param[name]:
+                raise AssertionError(
+                    f"scheduler1._last_param[{name}] should equal scheduler2.base_param[{name}]"
+                )
 
         scheduler1_state = scheduler1.state_dict()
         scheduler2.load_state_dict(scheduler1_state)
 
         for some_data in all_data:
             name, _, _ = self._get_name_data_config(some_data, defaults)
-            assert scheduler1.base_param[name] == scheduler2.base_param[name]
-            assert scheduler1._last_param[name] == scheduler2._last_param[name]
+            if scheduler1.base_param[name] != scheduler2.base_param[name]:
+                raise AssertionError(
+                    f"After load_state_dict, base_param[{name}] should match"
+                )
+            if scheduler1._last_param[name] != scheduler2._last_param[name]:
+                raise AssertionError(
+                    f"After load_state_dict, _last_param[{name}] should match"
+                )
+
+
+if __name__ == "__main__":
+    raise_on_run_directly("test/test_ao_sparsity.py")

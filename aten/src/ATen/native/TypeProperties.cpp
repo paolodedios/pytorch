@@ -17,16 +17,11 @@
 #include <ATen/ops/is_neg_native.h>
 #include <ATen/ops/is_signed_native.h>
 #include <ATen/ops/promote_types_native.h>
-#include <ATen/ops/result_type.h>
 #include <ATen/ops/result_type_native.h>
 #include <ATen/ops/type_as_native.h>
 #endif
 
-namespace at { namespace native {
-
-bool is_cuda(const Tensor& self) {
-  return self.is_cuda();
-}
+namespace at::native {
 
 bool is_distributed(const Tensor& self) {
   return false;
@@ -60,20 +55,11 @@ bool is_neg(const Tensor& self) {
   return self.is_neg();
 }
 
-bool is_sparse(const Tensor& self) {
-  return self.is_sparse();
-}
-
-bool is_sparse_csr(const Tensor& self) {
-  return self.is_sparse_csr();
-}
-
-bool is_quantized(const Tensor& self) {
-  return self.is_quantized();
-}
-
-// True if `self` and `from` have compatible tensor type so that `from`'s
-// TensorImpl can be copied to `self`.
+// Returns true if `self` and `from` have compatible tensor types,
+// allowing `from`'s TensorImpl to be copied to `self`.
+// For any backend based on PrivateUse1, since _has_compatible_shallow_copy_type
+// is a standard aten operator, you can override this operator for the Dispatch
+// Key `PrivateUse1`. See OpenRegMinimal.cpp for an example of overriding this operator.
 bool _has_compatible_shallow_copy_type(const Tensor& self, const Tensor& from) {
   return self.unsafeGetTensorImpl()->has_compatible_shallow_copy_type(
       from.key_set());
@@ -123,8 +109,9 @@ ResultTypeState update_result_type_state(const Tensor& tensor, const ResultTypeS
     return in_state;
   }
   ResultTypeState new_state = in_state;
+  const bool is_wrapped_number = tensor.unsafeGetTensorImpl()->is_wrapped_number();
   ScalarType current = tensor.scalar_type();
-  if (tensor.unsafeGetTensorImpl()->is_wrapped_number()) {
+  if (is_wrapped_number) {
     if(isComplexType(current)) {
       current = typeMetaToScalarType(at::get_default_complex_dtype());
     }
@@ -134,7 +121,7 @@ ResultTypeState update_result_type_state(const Tensor& tensor, const ResultTypeS
   }
   if ( tensor.dim() > 0 ) {
     new_state.dimResult = promote_skip_undefined(in_state.dimResult, current);
-  } else if (tensor.unsafeGetTensorImpl()->is_wrapped_number()) {
+  } else if (is_wrapped_number) {
     new_state.wrappedResult = promote_skip_undefined(in_state.wrappedResult, current);
   } else {
     new_state.zeroResult = promote_skip_undefined(in_state.zeroResult, current);
@@ -181,7 +168,7 @@ ScalarType result_type(const Tensor &tensor, const Scalar& other) {
 }
 
 ScalarType result_type(const Scalar& scalar, const Tensor &tensor) {
-  return at::result_type(tensor, scalar);
+  return ::at::native::result_type(tensor, scalar);
 }
 
 ScalarType result_type(const Scalar& scalar1, const Scalar& scalar2) {
@@ -191,8 +178,8 @@ ScalarType result_type(const Scalar& scalar1, const Scalar& scalar2) {
   return result_type(state);
 }
 
-bool can_cast(const at::ScalarType from, const at::ScalarType to) {
-  return at::canCast(from, to);
+bool can_cast(const at::ScalarType from_, const at::ScalarType to) {
+  return at::canCast(from_, to);
 }
 
 ScalarType promote_types(ScalarType type1, ScalarType type2) {
@@ -201,4 +188,4 @@ ScalarType promote_types(ScalarType type1, ScalarType type2) {
   return ret;
 }
 
-}} // namespace at::native
+} // namespace at::native

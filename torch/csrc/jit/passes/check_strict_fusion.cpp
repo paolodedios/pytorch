@@ -1,16 +1,13 @@
 
 #include <torch/csrc/jit/passes/check_strict_fusion.h>
 
-#include <c10/util/Exception.h>
 #include <torch/csrc/jit/frontend/error_report.h>
 #include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/quantization/helper.h>
 #include <torch/csrc/jit/runtime/graph_iterator.h>
-#include <unordered_map>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
@@ -22,12 +19,12 @@ bool isStrictFusion(Value* value) {
 
 } // namespace
 
-bool fusionGuardCheck(Symbol k) {
+static bool fusionGuardCheck(Symbol k) {
   return k == Symbol::prim("TensorExprDynamicGuard") || k == prim::TypeCheck ||
       k == prim::CudaFusionGuard || k == prim::RequiresGradCheck;
 }
 
-std::unordered_set<Node*> collectValuesUsedInGuard(
+static std::unordered_set<Node*> collectValuesUsedInGuard(
     Node* guarding_if,
     Node* enter_node) {
   // DFS to collect
@@ -58,7 +55,7 @@ std::unordered_set<Node*> collectValuesUsedInGuard(
   return visited_nodes;
 }
 
-void checkForUnfusedOps(Node* enter_node) {
+static void checkForUnfusedOps(Node* enter_node) {
   std::vector<Node*> unsupported_nodes;
   std::vector<Node*> guarding_ifs; // if multiple, we will throw
   for (Node* node = enter_node->next(); node->kind() != prim::Exit;
@@ -75,12 +72,12 @@ void checkForUnfusedOps(Node* enter_node) {
     std::stringstream ss;
     ss << "Found multiple fusions: \n";
     for (Node* n : guarding_ifs) {
-      ss << *n << "\n";
+      ss << *n << '\n';
     }
-    throw ErrorReport(enter_node->input()->node()->sourceRange()) << ss.str();
+    throw(ErrorReport(enter_node->input()->node()->sourceRange()) << ss.str());
   }
 
-  // NVFuser/autodiff/nnc all insert a number of guards, see
+  // autodiff/nnc both insert a number of guards, see
   // `CudaFusionViewGuard Example Graph`
   // to check for unfused nodes, look at node's whose outputs
   // are not depended on by the fusion guard
@@ -102,16 +99,15 @@ void checkForUnfusedOps(Node* enter_node) {
     std::stringstream ss;
     ss << "Found unfused operators: \n";
     for (Node* unfused : unfused_nodes_not_used_in_guard) {
-      ss << "\t";
+      ss << '\t';
       if (unfused->maybeSchema()) {
         ss << unfused->schema();
       } else {
         unfused->kind().toDisplayString();
       }
-      ss << "\n";
+      ss << '\n';
     }
-    auto range = enter_node->input()->node()->sourceRange();
-    throw ErrorReport(enter_node->input()->node()->sourceRange()) << ss.str();
+    throw(ErrorReport(enter_node->input()->node()->sourceRange()) << ss.str());
   }
 }
 
@@ -128,5 +124,4 @@ void CheckStrictFusion(std::shared_ptr<Graph>& graph) {
   // TODO: improve control flow not taken, right now always errors
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

@@ -2,63 +2,113 @@
 
 #pragma once
 
+#include <ATen/detail/AcceleratorHooksInterface.h>
+
 #include <c10/core/Allocator.h>
-#include <ATen/core/Generator.h>
 #include <c10/util/Exception.h>
 #include <c10/util/Registry.h>
 
 #include <cstddef>
-#include <functional>
 
-namespace at {
-class Context;
-}
-
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wunused-parameter")
 namespace at {
 
-struct TORCH_API MPSHooksInterface {
-  virtual ~MPSHooksInterface() = default;
+struct TORCH_API MPSHooksInterface : AcceleratorHooksInterface {
+  // this fails the implementation if MPSHooks functions are called, but
+  // MPS backend is not present.
+  #define FAIL_MPSHOOKS_FUNC(func) \
+    TORCH_CHECK(false, "Cannot execute ", func, "() without MPS backend.");
+
+  ~MPSHooksInterface() override = default;
 
   // Initialize the MPS library state
-  virtual void initMPS() const {
-    AT_ERROR("Cannot initialize MPS without MPS backend.");
+  void init() const override {
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
-
   virtual bool hasMPS() const {
     return false;
   }
-
-  virtual bool isOnMacOS13orNewer(unsigned minor = 0) const {
-    AT_ERROR("MPS backend is not available.");
+  virtual bool isOnMacOSorNewer(unsigned major = 13, unsigned minor = 0) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
-
-  virtual const Generator& getDefaultMPSGenerator() const {
-    AT_ERROR("Cannot get default MPS generator without MPS backend.");
+  const Generator& getDefaultGenerator(
+      [[maybe_unused]] DeviceIndex device_index = -1) const override {
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
-
+  Generator getNewGenerator(
+      [[maybe_unused]] DeviceIndex device_index) const override {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
   virtual Allocator* getMPSDeviceAllocator() const {
-    AT_ERROR("MPSDeviceAllocator requires MPS.");
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
-
   virtual void deviceSynchronize() const {
-    AT_ERROR("Cannot synchronize MPS device without MPS backend.");
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
-
+  virtual void commitStream() const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual void* getCommandBuffer() const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual void* getDispatchQueue() const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
   virtual void emptyCache() const {
-    AT_ERROR("Cannot execute emptyCache() without MPS backend.");
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
-
   virtual size_t getCurrentAllocatedMemory() const {
-    AT_ERROR("Cannot execute getCurrentAllocatedMemory() without MPS backend.");
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
-
   virtual size_t getDriverAllocatedMemory() const {
-    AT_ERROR("Cannot execute getDriverAllocatedMemory() without MPS backend.");
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
-
+  virtual size_t getRecommendedMaxMemory() const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
   virtual void setMemoryFraction(double /*ratio*/) const {
-    AT_ERROR("Cannot execute setMemoryFraction() without MPS backend.");
+    FAIL_MPSHOOKS_FUNC(__func__);
   }
+  virtual void profilerStartTrace(const std::string& mode, bool waitUntilCompleted) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual void profilerStopTrace() const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual uint32_t acquireEvent(bool enable_timing) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  Device getDeviceFromPtr(void* data) const override {
+    TORCH_CHECK(false, "Cannot get device of pointer on MPS without ATen_mps library. ");
+  }
+  virtual void releaseEvent(uint32_t event_id) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual void recordEvent(uint32_t event_id) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual void waitForEvent(uint32_t event_id) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual void synchronizeEvent(uint32_t event_id) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual bool queryEvent(uint32_t event_id) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  virtual double elapsedTimeOfEvents(uint32_t start_event_id, uint32_t end_event_id) const {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  bool hasPrimaryContext(DeviceIndex device_index) const override {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  bool isPinnedPtr(const void* data) const override {
+    return false;
+  }
+  Allocator* getPinnedMemoryAllocator() const override {
+    FAIL_MPSHOOKS_FUNC(__func__);
+  }
+  #undef FAIL_MPSHOOKS_FUNC
 };
 
 struct TORCH_API MPSHooksArgs {};
@@ -72,3 +122,4 @@ TORCH_API const MPSHooksInterface& getMPSHooks();
 
 } // namespace detail
 } // namespace at
+C10_DIAGNOSTIC_POP()

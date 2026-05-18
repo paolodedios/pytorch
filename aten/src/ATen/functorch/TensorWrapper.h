@@ -10,8 +10,7 @@
 #include <ATen/Tensor.h>
 #include <ATen/functorch/Interpreter.h>
 
-namespace at {
-namespace functorch {
+namespace at::functorch {
 
 // NOTE: [functorch's TensorWrapper]
 //
@@ -28,7 +27,7 @@ namespace functorch {
 //
 // There are alternative designs we could have chosen (e.g. each grad transform
 // stores a weak map of Tensor -> AutogradMeta); the benefit of the TensorWrapper
-// design is that we can re-use existing VariableType kernels (i.e. Autograd kernels)
+// design is that we can reuse existing VariableType kernels (i.e. Autograd kernels)
 // without much modification. Since a TensorWrapper looks like a regular Tensor,
 // the VariableType kernel can pull out the AutogradMeta struct from where it
 // expects and extend the autograd graph
@@ -42,17 +41,12 @@ struct TORCH_API TensorWrapper : public c10::TensorImpl {
       bool is_immutable = false,  // if true, this came from an operation that aliases an immutable tensor
       bool use_value_sizes_strides = true);
 
-  // Override a bunch of methods inherited from TensorImpl to return error messages
-  void set_size(int64_t dim, int64_t new_size) override;
-  void set_stride(int64_t dim, int64_t new_stride) override;
-  void set_storage_offset(int64_t storage_offset) override;
-
   void refreshMetadata();
 
   const Tensor& value() const {
     return value_;
   }
-  optional<int64_t> level() const {
+  std::optional<int64_t> level() const {
     if (is_alive()) {
       return level_;
     }
@@ -105,5 +99,5 @@ TORCH_API Tensor makeTensorWrapper(const Tensor& tensor, const Interpreter& inte
 TORCH_API TensorWrapper* maybeGetTensorWrapper(const Tensor& tensor);
 TORCH_API void dumpTensor(std::ostream & ss, const Tensor& tensor);
 TORCH_API void dumpTensorCout(const Tensor& tensor);
-}
-} // namespace at
+
+} // namespace at::functorch

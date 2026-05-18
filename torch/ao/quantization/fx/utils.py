@@ -1,48 +1,44 @@
+# mypy: allow-untyped-defs
 import copy
+import functools
+import operator
+import warnings
+from collections import namedtuple
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
 import torch
 import torch.nn as nn
-from torch.ao.quantization import (
-    QConfigAny,
-    QuantType,
-)
-from torch.ao.quantization.backend_config import (
-    DTypeWithConstraints,
-)
+from torch.ao.quantization import QConfigAny, QuantType
+from torch.ao.quantization.backend_config import DTypeWithConstraints
 from torch.ao.quantization.fake_quantize import (
     FakeQuantizeBase,
     FixedQParamsFakeQuantize,
 )
 from torch.ao.quantization.observer import (
+    _is_activation_post_process,
     FixedQParamsObserver,
     ObserverBase,
 )
 from torch.ao.quantization.qconfig import (
-    float16_static_qconfig,
     float16_dynamic_qconfig,
+    float16_static_qconfig,
     qconfig_equals,
 )
+from torch.ao.quantization.qconfig_mapping import QConfigMapping
 from torch.ao.quantization.stubs import DeQuantStub
 from torch.ao.quantization.utils import (
+    _assert_and_get_unique_device,
     activation_is_statically_quantized,
 )
-from torch.ao.quantization.observer import _is_activation_post_process
-from torch.ao.quantization.qconfig_mapping import QConfigMapping
-
 from torch.fx import GraphModule, map_arg
+from torch.fx.graph import Graph, Node
 
-from torch.fx.graph import (
-    Graph,
-    Node,
-)
-from .custom_config import PrepareCustomConfig
 # importing the lib so that the quantized_decomposed ops are registered
 from ._decomposed import quantized_decomposed_lib  # noqa: F401
+from .custom_config import PrepareCustomConfig
 
-from typing import Callable, Optional, List, Dict, Any, Set, Tuple, Union, Type
-from dataclasses import dataclass
-from collections import namedtuple
-import operator
-import warnings
 
 # TODO: revisit this list. Many helper methods shouldn't be public
 __all__ = [
@@ -70,66 +66,81 @@ __all__ = [
     "ObservedGraphModuleAttrs",
 ]
 
-NON_QUANTIZABLE_WEIGHT_OPS = {torch.nn.functional.layer_norm, torch.nn.functional.group_norm, torch.nn.functional.instance_norm}
+NON_QUANTIZABLE_WEIGHT_OPS = {
+    torch.nn.functional.layer_norm,
+    torch.nn.functional.group_norm,
+    torch.nn.functional.instance_norm,
+}
+
 
 @dataclass
 class ObservedGraphModuleAttrs:
-    node_name_to_qconfig: Dict[str, QConfigAny]
-    node_name_to_scope: Dict[str, Tuple[str, type]]
+    node_name_to_qconfig: dict[str, QConfigAny]
+    node_name_to_scope: dict[str, tuple[str, type]]
     prepare_custom_config: PrepareCustomConfig
-    equalization_node_name_to_qconfig: Dict[str, Any]
+    equalization_node_name_to_qconfig: dict[str, Any]
     qconfig_mapping: QConfigMapping
     is_qat: bool
-    observed_node_names: Set[str]
+    observed_node_names: set[str]
     is_observed_standalone_module: bool = False
-    standalone_module_input_quantized_idxs: Optional[List[int]] = None
-    standalone_module_output_quantized_idxs: Optional[List[int]] = None
+    standalone_module_input_quantized_idxs: list[int] | None = None
+    standalone_module_output_quantized_idxs: list[int] | None = None
+
 
 def node_arg_is_weight(node: Node, arg: Any) -> bool:
     """Returns if node arg is weight"""
     weight_index = None
     if "target_dtype_info" in node.meta:
         weight_index = node.meta["target_dtype_info"].get("weight_index", None)
-    if weight_index is not None and weight_index < len(node.args) and node.args[weight_index] is arg:
+    if (
+        weight_index is not None
+        and weight_index < len(node.args)
+        and node.args[weight_index] is arg
+    ):
         return True
     return node.kwargs.get("weight") is arg
+
 
 def node_arg_is_bias(node: Node, arg: Any) -> bool:
     """Returns if node arg is bias"""
     bias_index = None
     if "target_dtype_info" in node.meta:
         bias_index = node.meta["target_dtype_info"].get("bias_index", None)
-    if bias_index is not None and bias_index < len(node.args) and node.args[bias_index] is arg:
+    if (
+        bias_index is not None
+        and bias_index < len(node.args)
+        and node.args[bias_index] is arg
+    ):
         return True
     return node.kwargs.get("bias") is arg
 
-def get_custom_module_class_keys(custom_module_mapping: Dict[QuantType, Dict[Type, Type]]) -> List[Any]:
-    r""" Get all the unique custom module keys in the custom config dict
-    e.g.
-    Input:
-    {
-        QuantType.STATIC: {
-            CustomModule1: ObservedCustomModule
-        },
-        QuantType.DYNAMIC: {
-            CustomModule2: DynamicObservedCustomModule
-        },
-        QuantType.WEIGHT_ONLY: {
-            CustomModule3: WeightOnlyObservedCustomModule
-        },
-    }
 
-    Output:
-    # extract the keys across all inner STATIC, DYNAMIC, and WEIGHT_ONLY dicts
-    [CustomModule1, CustomModule2, CustomModule3]
+def get_custom_module_class_keys(
+    custom_module_mapping: dict[QuantType, dict[type, type]],
+) -> list[Any]:
+    r"""Get all the unique custom module keys in the custom config dict.
+
+    Example input::
+
+        {
+            QuantType.STATIC: {CustomModule1: ObservedCustomModule},
+            QuantType.DYNAMIC: {CustomModule2: DynamicObservedCustomModule},
+            QuantType.WEIGHT_ONLY: {CustomModule3: WeightOnlyObservedCustomModule},
+        }
+
+    Example output::
+
+        # extract the keys across all inner STATIC, DYNAMIC, and WEIGHT_ONLY dicts
+        [CustomModule1, CustomModule2, CustomModule3]
     """
     # using set to dedup
-    float_custom_module_classes : Set[Any] = set()
+    float_custom_module_classes: set[Any] = set()
     for quant_mode in [QuantType.STATIC, QuantType.DYNAMIC, QuantType.WEIGHT_ONLY]:
         quant_mode_custom_module_config = custom_module_mapping.get(quant_mode, {})
         quant_mode_custom_module_classes = set(quant_mode_custom_module_config.keys())
         float_custom_module_classes |= quant_mode_custom_module_classes
     return list(float_custom_module_classes)
+
 
 def get_linear_prepack_op_for_dtype(dtype):
     if dtype == torch.float16:
@@ -137,7 +148,8 @@ def get_linear_prepack_op_for_dtype(dtype):
     elif dtype == torch.qint8:
         return torch.ops.quantized.linear_prepack
     else:
-        raise Exception("can't get linear prepack op for dtype:", dtype)
+        raise Exception("can't get linear prepack op for dtype:", dtype)  # noqa: TRY002
+
 
 def get_qconv_prepack_op(conv_op: Callable) -> Callable:
     prepack_ops = {
@@ -148,9 +160,11 @@ def get_qconv_prepack_op(conv_op: Callable) -> Callable:
         torch.nn.functional.conv_transpose2d: torch.ops.quantized.conv_transpose2d_prepack,
         torch.nn.functional.conv_transpose3d: torch.ops.quantized.conv_transpose3d_prepack,
     }
-    prepack_op = prepack_ops.get(conv_op, None)
-    assert prepack_op, "Didn't find prepack op for {}".format(conv_op)
+    prepack_op = prepack_ops.get(conv_op)
+    if prepack_op is None:
+        raise AssertionError(f"Didn't find prepack op for {conv_op}")
     return prepack_op
+
 
 # Returns a function that can get a new attribute name for module with given
 # prefix, for example,
@@ -163,25 +177,30 @@ def get_new_attr_name_with_prefix(prefix: str) -> Callable:
     def get_new_attr_name(module: torch.nn.Module):
         def get_attr_name(i: int):
             return prefix + str(i)
+
         i = 0
         attr_name = get_attr_name(i)
         while hasattr(module, attr_name):
             i += 1
             attr_name = get_attr_name(i)
         return attr_name
+
     return get_new_attr_name
 
-def collect_producer_nodes(node: Node) -> Optional[List[Node]]:
-    r''' Starting from a target node, trace back until we hit inpu or
+
+def collect_producer_nodes(node: Node) -> list[Node] | None:
+    r"""Starting from a target node, trace back until we hit input or
     getattr node. This is used to extract the chain of operators
-    starting from getattr to the target node, for example
-    def forward(self, x):
-      observed = self.observer(self.weight)
-      return F.linear(x, observed)
+    starting from getattr to the target node, for example::
+
+        def forward(self, x):
+            observed = self.observer(self.weight)
+            return F.linear(x, observed)
+
     collect_producer_nodes(observed) will either return a list of nodes that
     produces the observed node or None if we can't extract a self contained
     graph without free variables(inputs of the forward function).
-    '''
+    """
     nodes = [node]
     frontier = [node]
     while frontier:
@@ -190,68 +209,82 @@ def collect_producer_nodes(node: Node) -> Optional[List[Node]]:
         for arg in all_args:
             if not isinstance(arg, Node):
                 continue
-            if arg.op == 'placeholder':
+            if arg.op == "placeholder":
                 # hit input, can't fold in this case
                 return None
             nodes.append(arg)
-            if not (arg.op == 'call_function' and arg.target == getattr):
+            if not (arg.op == "call_function" and arg.target is getattr):
                 frontier.append(arg)
     return nodes
 
+
 def graph_module_from_producer_nodes(
-        root: GraphModule, producer_nodes: List[Node]) -> GraphModule:
-    r''' Construct a graph module from extracted producer nodes
+    root: GraphModule, producer_nodes: list[Node]
+) -> GraphModule:
+    r"""Construct a graph module from extracted producer nodes
     from `collect_producer_nodes` function
     Args:
       root: the root module for the original graph
       producer_nodes: a list of nodes we use to construct the graph
     Return:
       A graph module constructed from the producer nodes
-    '''
-    assert len(producer_nodes) > 0, 'list of producer nodes can not be empty'
-    # since we traced back from node to getattrr
+    """
+    if len(producer_nodes) == 0:
+        raise AssertionError("list of producer nodes can not be empty")
+    # since we traced back from node to getattr
     producer_nodes.reverse()
     graph = Graph()
-    env: Dict[Any, Any] = {}
+    env: dict[Any, Any] = {}
 
     def load_arg(a):
         return map_arg(a, lambda node: env[node])
+
     for producer_node in producer_nodes:
         env[producer_node] = graph.node_copy(producer_node, load_arg)
     graph.output(load_arg(producer_nodes[-1]))
     graph_module = GraphModule(root, graph)
     return graph_module
 
+
+# TODO: delete
+@functools.cache
 def assert_and_get_unique_device(module: torch.nn.Module) -> Any:
     """
     Returns the unique device for a module, or None if no device is found.
     Throws an error if multiple devices are detected.
     """
-    devices = {p.device for p in module.parameters()} | \
-        {p.device for p in module.buffers()}
-    assert len(devices) <= 1, (
-        "prepare only works with cpu or single-device CUDA modules, "
-        "but got devices {}".format(devices)
-    )
-    device = next(iter(devices)) if len(devices) > 0 else None
-    return device
+    return _assert_and_get_unique_device(module)
 
-def create_getattr_from_value(module: torch.nn.Module, graph: Graph, prefix: str, value: Any) -> Node:
+
+def create_getattr_from_value(
+    module: torch.nn.Module,
+    graph: Graph,
+    prefix: str,
+    value: Any,
+    device: torch.device | None = None,
+) -> Node:
     """
     Given a value of any type, creates a getattr node corresponding to the value and
     registers the value as a buffer to the module.
     """
     get_new_attr_name = get_new_attr_name_with_prefix(prefix)
     attr_name = get_new_attr_name(module)
-    device = assert_and_get_unique_device(module)
-    new_value = value.clone().detach() if isinstance(value, torch.Tensor) \
+    if device is None:
+        device = assert_and_get_unique_device(module)
+    new_value = (
+        value.detach().clone()
+        if isinstance(value, torch.Tensor)
         else torch.tensor(value, device=device)
+    )
     module.register_buffer(attr_name, new_value)
     # Create get_attr with value
     attr_node = graph.create_node("get_attr", attr_name)
     return attr_node
 
-def all_node_args_have_no_tensors(node: Node, modules: Dict[str, torch.nn.Module], cache: Dict[Node, bool]) -> bool:
+
+def all_node_args_have_no_tensors(
+    node: Node, modules: dict[str, torch.nn.Module], cache: dict[Node, bool]
+) -> bool:
     """
     If we know for sure that all of this node's args have no
     tensors (are primitives), return True.  If we either
@@ -264,22 +297,23 @@ def all_node_args_have_no_tensors(node: Node, modules: Dict[str, torch.nn.Module
     result = False  # will be overwritten
     if not isinstance(node, Node):
         result = True
-    elif node.op == 'placeholder':
+    elif node.op == "placeholder":
         result = False
-    elif node.op == 'call_module':
-        assert isinstance(node.target, str)
+    elif node.op == "call_module":
+        if not isinstance(node.target, str):
+            raise AssertionError("node.target must be a string for call_module nodes")
         if _is_activation_post_process(modules[node.target]):
             result = all_node_args_have_no_tensors(node.args[0], modules, cache)  # type: ignore[arg-type]
-    elif node.op == 'call_module':
+    elif node.op == "call_module":
         result = False
-    elif node.op == 'call_function' and node.target is operator.getitem:
+    elif node.op == "call_function" and node.target is operator.getitem:
         result = all_node_args_have_no_tensors(node.args[0], modules, cache)  # type: ignore[arg-type]
-    elif node.op == 'get_attr':
+    elif node.op == "get_attr":
         result = False
-    elif node.target is getattr and node.args[1] in ['ndim', 'shape']:
+    elif node.target is getattr and node.args[1] in ["ndim", "shape"]:
         # x1 = x0.ndim
         result = True
-    elif node.op == 'call_method' and node.target == 'size':
+    elif node.op == "call_method" and node.target == "size":
         # x1 = x0.size(0)
         result = True
     else:
@@ -288,10 +322,12 @@ def all_node_args_have_no_tensors(node: Node, modules: Dict[str, torch.nn.Module
             if isinstance(arg, list):
                 for list_el in arg:
                     if isinstance(list_el, Node):
-                        this_list_el_args_have_no_tensors = \
+                        this_list_el_args_have_no_tensors = (
                             all_node_args_have_no_tensors(list_el, modules, cache)
-                        found_one_tensor = found_one_tensor or \
-                            (not this_list_el_args_have_no_tensors)
+                        )
+                        found_one_tensor = found_one_tensor or (
+                            not this_list_el_args_have_no_tensors
+                        )
                         # If found_one_tensor is True, there is no point in
                         # recursing further as the end result will always
                         # be True.
@@ -306,9 +342,12 @@ def all_node_args_have_no_tensors(node: Node, modules: Dict[str, torch.nn.Module
                 pass
             else:
                 if isinstance(arg, Node):
-                    this_arg_args_have_no_tensors = all_node_args_have_no_tensors(arg, modules, cache)
-                    found_one_tensor = found_one_tensor or \
-                        (not this_arg_args_have_no_tensors)
+                    this_arg_args_have_no_tensors = all_node_args_have_no_tensors(
+                        arg, modules, cache
+                    )
+                    found_one_tensor = found_one_tensor or (
+                        not this_arg_args_have_no_tensors
+                    )
                     # If found_one_tensor is True, there is no point in
                     # recursing further as the end result will always
                     # be True.
@@ -326,20 +365,25 @@ def all_node_args_have_no_tensors(node: Node, modules: Dict[str, torch.nn.Module
         cache[node] = result
     return result
 
-def all_node_args_except_first(node: Node) -> List[int]:
+
+def all_node_args_except_first(node: Node) -> list[int]:
     """
     Returns all node arg indices after first
     """
     return list(range(1, len(node.args)))
 
-def return_arg_list(arg_indices: List[int]) -> Callable[[Node], List[int]]:
+
+def return_arg_list(arg_indices: list[int]) -> Callable[[Node], list[int]]:
     """
     Constructs a function that takes a node as arg and returns the arg_indices
     that are valid for node.args
     """
-    def arg_indices_func(node: Node) -> List[int]:
+
+    def arg_indices_func(node: Node) -> list[int]:
         return [i for i in arg_indices if i < len(node.args)]
+
     return arg_indices_func
+
 
 NodeInfo = namedtuple("NodeInfo", "op target")
 
@@ -347,46 +391,31 @@ NodeInfo = namedtuple("NodeInfo", "op target")
 # so that they can be propagated correctly since inserting observers
 # for them would cause errors
 
-NON_OBSERVABLE_ARG_DICT: Dict[NodeInfo, Dict[Union[type, torch.dtype], Callable[[Node], List[int]]]] = {
-    NodeInfo("call_method", "masked_fill") : {
+NON_OBSERVABLE_ARG_DICT: dict[
+    NodeInfo, dict[type | torch.dtype, Callable[[Node], list[int]]]
+] = {
+    NodeInfo("call_method", "masked_fill"): {
         torch.bool: return_arg_list([1]),
-        float: return_arg_list([2])
+        float: return_arg_list([2]),
     },
-    NodeInfo("call_method", "permute") : {
-        int: all_node_args_except_first
-    },
-    NodeInfo("call_method", "repeat") : {
-        int: all_node_args_except_first
-    },
-    NodeInfo("call_method", "reshape") : {
-        int: all_node_args_except_first
-    },
-    NodeInfo("call_method", "size") : {
-        int: return_arg_list([1])
-    },
-    NodeInfo("call_method", "transpose") : {
-        int: all_node_args_except_first
-    },
-    NodeInfo("call_method", torch.transpose) : {
-        int: all_node_args_except_first
-    },
-    NodeInfo("call_method", "unsqueeze") : {
-        int: return_arg_list([1])
-    },
-    NodeInfo("call_method", "unsqueeze_") : {
-        int: return_arg_list([1])
-    },
-    NodeInfo("call_method", torch.unsqueeze) : {
-        int: return_arg_list([1])
-    },
-    NodeInfo("call_method", "view") : {
-        int: all_node_args_except_first
-    },
+    NodeInfo("call_method", "permute"): {int: all_node_args_except_first},
+    NodeInfo("call_method", "repeat"): {int: all_node_args_except_first},
+    NodeInfo("call_method", "reshape"): {int: all_node_args_except_first},
+    NodeInfo("call_method", "size"): {int: return_arg_list([1])},
+    NodeInfo("call_method", "transpose"): {int: all_node_args_except_first},
+    NodeInfo("call_method", torch.transpose): {int: all_node_args_except_first},
+    NodeInfo("call_method", "unsqueeze"): {int: return_arg_list([1])},
+    NodeInfo("call_method", "unsqueeze_"): {int: return_arg_list([1])},
+    NodeInfo("call_method", torch.unsqueeze): {int: return_arg_list([1])},
+    NodeInfo("call_method", "view"): {int: all_node_args_except_first},
 }
 
-EMPTY_ARG_DICT: Dict[Union[type, torch.dtype], Callable[[Node], List[int]]] = {}
+EMPTY_ARG_DICT: dict[type | torch.dtype, Callable[[Node], list[int]]] = {}
 
-def get_non_observable_arg_indexes_and_types(node: Node) -> Dict[Union[type, torch.dtype], Callable[[Node], List[int]]]:
+
+def get_non_observable_arg_indexes_and_types(
+    node: Node,
+) -> dict[type | torch.dtype, Callable[[Node], list[int]]]:
     """
     Returns a dict with of non float tensor types as keys and values which correspond to a
     function to retrieve the list (which takes the node as an argument)
@@ -395,13 +424,14 @@ def get_non_observable_arg_indexes_and_types(node: Node) -> Dict[Union[type, tor
 
     return NON_OBSERVABLE_ARG_DICT.get(info, EMPTY_ARG_DICT)
 
+
 def maybe_get_next_module(
     node: Node,
-    modules: Dict[str, nn.Module],
-    target_module_type: Optional[Type[nn.Module]] = None,
+    modules: dict[str, nn.Module],
+    target_module_type: type[nn.Module] | None = None,
     target_functional_type: Any = None,
-) -> Optional[Node]:
-    """ Gets the next module that matches what is needed in
+) -> Node | None:
+    """Gets the next module that matches what is needed in
     is_target_module_type if it exists
 
     Args:
@@ -410,19 +440,26 @@ def maybe_get_next_module(
         target_functional_type: Functional type that we want to check
     """
 
-    for user, _ in node.users.items():
-        if user.op == 'call_module' and target_module_type is not None and \
-           isinstance(modules[str(user.target)], target_module_type):
+    for user in node.users:
+        if (
+            user.op == "call_module"
+            and target_module_type is not None
+            and isinstance(modules[str(user.target)], target_module_type)
+        ):
             return user
-        elif (user.op == 'call_function' and target_functional_type is not None and
-              user.target == target_functional_type):
+        elif (
+            user.op == "call_function"
+            and target_functional_type is not None
+            and user.target == target_functional_type
+        ):
             return user
 
     return None
 
+
 def create_node_from_old_node_preserve_meta(
     quantized_graph: Graph,
-    create_node_args: Tuple[Any, ...],
+    create_node_args: tuple[Any, ...],
     old_node: Node,
 ) -> Node:
     """
@@ -432,58 +469,82 @@ def create_node_from_old_node_preserve_meta(
     new_node.stack_trace = old_node.stack_trace
     return new_node
 
+
 def get_skipped_module_name_and_classes(
-        prepare_custom_config: PrepareCustomConfig,
-        is_standalone_module: bool) -> Tuple[List[str], List[Type[Any]]]:
+    prepare_custom_config: PrepareCustomConfig, is_standalone_module: bool
+) -> tuple[list[str], list[type[Any]]]:
     skipped_module_names = copy.copy(prepare_custom_config.non_traceable_module_names)
-    skipped_module_classes = copy.copy(prepare_custom_config.non_traceable_module_classes)
+    skipped_module_classes = copy.copy(
+        prepare_custom_config.non_traceable_module_classes
+    )
     if not is_standalone_module:
         # standalone module and custom module config are applied in top level module
-        skipped_module_names += list(prepare_custom_config.standalone_module_names.keys())
-        skipped_module_classes += list(prepare_custom_config.standalone_module_classes.keys())
-        skipped_module_classes += get_custom_module_class_keys(prepare_custom_config.float_to_observed_mapping)
+        skipped_module_names += list(
+            prepare_custom_config.standalone_module_names.keys()
+        )
+        skipped_module_classes += list(
+            prepare_custom_config.standalone_module_classes.keys()
+        )
+        skipped_module_classes += get_custom_module_class_keys(
+            prepare_custom_config.float_to_observed_mapping
+        )
 
     return skipped_module_names, skipped_module_classes
 
+
 def _is_custom_module_lstm(
-        node: Node,
-        named_modules: Dict[str, torch.nn.Module],
-        qconfig: QConfigAny = None,
-        # QuantizeHandler, but we cannot include the type here due to circular imports
-        qhandler: Optional[Any] = None,
+    node: Node,
+    named_modules: dict[str, torch.nn.Module],
+    qconfig: QConfigAny = None,
+    # QuantizeHandler, but we cannot include the type here due to circular imports
+    qhandler: Any | None = None,
 ) -> bool:
     """
     Return whether this refers to the custom module LSTM flow.
     """
     mod = _get_module(node, named_modules)
     if qconfig is not None and qhandler is not None:
-        assert isinstance(qhandler, torch.ao.quantization.fx.quantize_handler.QuantizeHandler)  # type: ignore[attr-defined]
-        return isinstance(mod, torch.nn.LSTM) and \
-            activation_is_statically_quantized(qconfig) and \
-            qhandler.is_custom_module()
+        if not isinstance(
+            qhandler, torch.ao.quantization.fx.quantize_handler.QuantizeHandler
+        ):  # type: ignore[attr-defined]
+            raise AssertionError("qhandler must be a QuantizeHandler when provided")
+        return (
+            isinstance(mod, torch.nn.LSTM)
+            and activation_is_statically_quantized(qconfig)
+            and qhandler.is_custom_module()
+        )
     else:
         return isinstance(mod, torch.ao.nn.quantizable.LSTM)
 
+
 def _is_custom_module_mha(
-        node: Node,
-        named_modules: Dict[str, torch.nn.Module],
-        qconfig: QConfigAny = None,
-        # QuantizeHandler, but we cannot include the type here due to circular imports
-        qhandler: Optional[Any] = None,
+    node: Node,
+    named_modules: dict[str, torch.nn.Module],
+    qconfig: QConfigAny = None,
+    # QuantizeHandler, but we cannot include the type here due to circular imports
+    qhandler: Any | None = None,
 ) -> bool:
     """
     Return whether this refers to the custom module MultiheadAttention flow.
     """
     mod = _get_module(node, named_modules)
     if qconfig is not None and qhandler is not None:
-        assert isinstance(qhandler, torch.ao.quantization.fx.quantize_handler.QuantizeHandler)  # type: ignore[attr-defined]
-        return isinstance(mod, torch.nn.MultiheadAttention) and \
-            activation_is_statically_quantized(qconfig) and \
-            qhandler.is_custom_module()
+        if not isinstance(
+            qhandler, torch.ao.quantization.fx.quantize_handler.QuantizeHandler
+        ):  # type: ignore[attr-defined]
+            raise AssertionError("qhandler must be a QuantizeHandler when provided")
+        return (
+            isinstance(mod, torch.nn.MultiheadAttention)
+            and activation_is_statically_quantized(qconfig)
+            and qhandler.is_custom_module()
+        )
     else:
         return isinstance(mod, torch.ao.nn.quantizable.MultiheadAttention)
 
-def _get_module(node: Node, named_modules: Dict[str, torch.nn.Module]) -> Optional[torch.nn.Module]:
+
+def _get_module(
+    node: Node, named_modules: dict[str, torch.nn.Module]
+) -> torch.nn.Module | None:
     """
     If `node` refers to a call_module node, return the module, else None.
     """
@@ -492,10 +553,11 @@ def _get_module(node: Node, named_modules: Dict[str, torch.nn.Module]) -> Option
     else:
         return None
 
+
 def _insert_dequant_stub(
     node: Node,
     model: torch.nn.Module,
-    named_modules: Dict[str, torch.nn.Module],
+    named_modules: dict[str, torch.nn.Module],
     graph: Graph,
 ) -> Node:
     """
@@ -511,16 +573,17 @@ def _insert_dequant_stub(
     with graph.inserting_after(node):
         return graph.call_module(dequant_stub_name, (node,))
 
+
 def _insert_dequant_stubs_for_custom_module_lstm_output(
     node: Node,
     model: torch.nn.Module,
-    named_modules: Dict[str, torch.nn.Module],
+    named_modules: dict[str, torch.nn.Module],
     graph: Graph,
 ) -> Node:
     """
     Insert DeQuantStubs after each internal output node of custom module LSTM.
 
-    Custom module LSTM outputs are nested tuples of the sturcture (output, (hidden0, hidden1)),
+    Custom module LSTM outputs are nested tuples of the structure (output, (hidden0, hidden1)),
     Since we cannot dequantize a tuple as a whole, we must first break down the tuple into its
     components through `getitem`. This function transforms the graph as follows:
 
@@ -605,10 +668,11 @@ def _insert_dequant_stubs_for_custom_module_lstm_output(
     _reroute_tuple_getitem_pattern(graph)
     return lstm_output_dq
 
+
 def _maybe_get_custom_module_lstm_from_node_arg(
     arg: Node,
-    named_modules: Dict[str, torch.nn.Module],
-) -> Optional[Node]:
+    named_modules: dict[str, torch.nn.Module],
+) -> Node | None:
     """
     Given an argument of a node, if the argument refers to the path through which the node
     is a consumer of custom module LSTM, return the custom module LSTM node, or None otherwise.
@@ -632,6 +696,7 @@ def _maybe_get_custom_module_lstm_from_node_arg(
     Thus, we must match against the above patterns instead of simply checking the parent node
     to determine whether this node is a consumer of a custom module LSTM.
     """
+
     def match_dq(a):
         return isinstance(_get_module(a, named_modules), DeQuantStub)
 
@@ -639,26 +704,28 @@ def _maybe_get_custom_module_lstm_from_node_arg(
         return _is_custom_module_lstm(a, named_modules)
 
     def match_getitem(a):
-        return a.op == "call_function" and a.target == operator.getitem
+        return a.op == "call_function" and a.target is operator.getitem
 
     def match_tuple(a):
-        return a.op == "call_function" and a.target == tuple
+        return a.op == "call_function" and a.target is tuple
 
-    def _match_pattern(match_pattern: List[Callable]) -> Optional[Node]:
+    def _match_pattern(match_pattern: list[Callable]) -> Node | None:
         """
         Traverse up the graph and match the args one by one.
         If there is a match, return the last matched node, or None otherwise.
         """
         a = arg
+        # pyrefly: ignore [bad-assignment]
         for i, match in enumerate(match_pattern):
             if not match(a):
                 return None
             # Match next arg, for tuple the arg is a tuple of a list, e.g. ([dq_1, other_node],)
             if i < len(match_pattern) - 1:
-                if match == match_tuple:
+                if match is match_tuple:
                     a = a.args[0][0]  # type: ignore[assignment,index]
                 else:
                     a = a.args[0]  # type: ignore[assignment]
+        # pyrefly: ignore [bad-return]
         return a
 
     all_match_patterns = [
@@ -673,6 +740,7 @@ def _maybe_get_custom_module_lstm_from_node_arg(
         if matched_node is not None:
             return matched_node
     return None
+
 
 def _reroute_tuple_getitem_pattern(graph: Graph):
     """
@@ -701,12 +769,14 @@ def _reroute_tuple_getitem_pattern(graph: Graph):
         |
         d
     """
+
     def find_patterns(
-            node: Node,
-            index_stack: List[int],
-            current_pattern: List[Node],
-            matched_patterns: List[List[Node]],
-            seen: Set[Tuple[Node, Tuple[int, ...]]]):
+        node: Node,
+        index_stack: list[int],
+        current_pattern: list[Node],
+        matched_patterns: list[list[Node]],
+        seen: set[tuple[Node, tuple[int, ...]]],
+    ):
         """
         Traverse the graph recursively to match for the N-tuple - N-getitem patterns,
         starting at the given node.
@@ -731,23 +801,27 @@ def _reroute_tuple_getitem_pattern(graph: Graph):
 
         # Iterate through users of this node to find tuple/getitem nodes to match
         for user in node.users:
-            if user.op == "call_function" and user.target == tuple:
+            if user.op == "call_function" and user.target is tuple:
                 for i, user_arg in enumerate(user.args[0]):  # type: ignore[arg-type]
                     if user_arg == node:
                         index_stack.append(i)
                         current_pattern.append(user)
-                        find_patterns(user, index_stack, current_pattern, matched_patterns, seen)
-            elif user.op == "call_function" and user.target == operator.getitem:
+                        find_patterns(
+                            user, index_stack, current_pattern, matched_patterns, seen
+                        )
+            elif user.op == "call_function" and user.target is operator.getitem:
                 if len(index_stack) > 0:
                     if user.args[1] == index_stack[-1]:
                         index_stack.pop()
                         current_pattern.append(user)
-                        find_patterns(user, index_stack, current_pattern, matched_patterns, seen)
+                        find_patterns(
+                            user, index_stack, current_pattern, matched_patterns, seen
+                        )
         return matched_patterns
 
     # Collect all matched patterns
-    matched_patterns: List[List[Node]] = []
-    seen: Set[Tuple[Node, Tuple[int, ...]]] = set()  # (node, index_stack)
+    matched_patterns: list[list[Node]] = []
+    seen: set[tuple[Node, tuple[int, ...]]] = set()  # (node, index_stack)
     for node in graph.nodes:
         find_patterns(node, [], [], matched_patterns, seen)
 
@@ -756,15 +830,25 @@ def _reroute_tuple_getitem_pattern(graph: Graph):
     for pattern in matched_patterns:
         first_tuple = pattern[0]
         last_getitem = pattern[-1]
-        assert first_tuple.op == "call_function" and first_tuple.target == tuple
-        assert last_getitem.op == "call_function" and last_getitem.target == operator.getitem
+        if not (first_tuple.op == "call_function" and first_tuple.target is tuple):
+            raise AssertionError(
+                "first tuple node must be a call_function with target tuple"
+            )
+        if not (
+            last_getitem.op == "call_function"
+            and last_getitem.target is operator.getitem
+        ):
+            raise AssertionError(
+                "last getitem node must be a call_function with target operator.getitem"
+            )
         last_getitem_index = last_getitem.args[1]
         new_input = first_tuple.args[0][last_getitem_index]  # type: ignore[index]
         for user in list(last_getitem.users.keys()):
-            user.replace_input_with(last_getitem, new_input)
+            user.replace_input_with(last_getitem, new_input)  # type: ignore[arg-type]
+
 
 def _get_observer_from_activation_post_process(
-    activation_post_process: Union[ObserverBase, FakeQuantizeBase],
+    activation_post_process: ObserverBase | FakeQuantizeBase,
 ) -> ObserverBase:
     """
     If `activation_post_process` is an observer, return the observer.
@@ -773,13 +857,18 @@ def _get_observer_from_activation_post_process(
     if isinstance(activation_post_process, ObserverBase):
         return activation_post_process
     else:
-        assert isinstance(activation_post_process, FakeQuantizeBase)
+        if not isinstance(activation_post_process, FakeQuantizeBase):
+            raise AssertionError(
+                "activation_post_process must be an ObserverBase or FakeQuantizeBase"
+            )
         return activation_post_process.activation_post_process  # type: ignore[return-value]
 
+
 def _qconfig_satisfies_dtype_config_constraints(
-        qconfig: QConfigAny,
-        dtype_with_constraints: DTypeWithConstraints,
-        is_activation: bool = True) -> bool:
+    qconfig: QConfigAny,
+    dtype_with_constraints: DTypeWithConstraints,
+    is_activation: bool = True,
+) -> bool:
     """
     Return whether `qconfig` satisfies the following constraints from the backend,
     specified through the activation and weight DTypeWithConstraints.
@@ -792,11 +881,13 @@ def _qconfig_satisfies_dtype_config_constraints(
     If `is_activation` is True, we check `qconfig.activation`, else we check `qconfig.weight`.
     If `qconfig` or `dtype_with_constraints.dtype` is None, or the dtypes do not match, return True.
     """
+
     # TODO: log warnings only when the user enabled a debug flag
     def _activation_post_process_satisfies_dtype_config_constraints(
-            activation_post_process: Union[ObserverBase, FakeQuantizeBase],
-            dtype_with_constraints: DTypeWithConstraints,
-            debug_string: str) -> bool:
+        activation_post_process: ObserverBase | FakeQuantizeBase,
+        dtype_with_constraints: DTypeWithConstraints,
+        debug_string: str,
+    ) -> bool:
         observer = _get_observer_from_activation_post_process(activation_post_process)
         app_quant_min = getattr(observer, "quant_min", None)
         app_quant_max = getattr(observer, "quant_max", None)
@@ -811,27 +902,40 @@ def _qconfig_satisfies_dtype_config_constraints(
         # check quantization ranges
         if backend_quant_min is not None and backend_quant_max is not None:
             if app_quant_min is None or app_quant_max is None:
-                warnings.warn("QConfig %s must specify 'quant_min' and 'quant_max', ignoring %s" %
-                              (debug_string, qconfig))
+                warnings.warn(
+                    f"QConfig {debug_string} must specify 'quant_min' and 'quant_max', ignoring {qconfig}",
+                    stacklevel=2,
+                )
                 return False
             elif app_quant_min < backend_quant_min or app_quant_max > backend_quant_max:
-                warnings.warn(("QConfig %s quantization range must fall within the backend's:\n"
-                              "QConfig range = (%s, %s), BackendConfig range = (%s, %s), ignoring %s") %
-                              (debug_string, app_quant_min, app_quant_max,
-                              backend_quant_min, backend_quant_max, qconfig))
+                warnings.warn(
+                    f"QConfig {debug_string} quantization range must fall within the backend's:\n"
+                    f"QConfig range = ({app_quant_min}, {app_quant_max}), "
+                    f"BackendConfig range = ({backend_quant_min}, {backend_quant_max}), "
+                    f"ignoring {qconfig}",
+                    stacklevel=2,
+                )
                 return False
         # check scale min
         if backend_scale_min is not None:
             if app_scale_min is None:
-                warnings.warn("QConfig %s must specify 'eps', ignoring %s" % (debug_string, qconfig))
+                warnings.warn(
+                    f"QConfig {debug_string} must specify 'eps', ignoring {qconfig}",
+                    stacklevel=2,
+                )
                 return False
-            elif app_scale_min < backend_scale_min:
-                warnings.warn(("QConfig %s eps (%s) must be greater than or equal to "
-                              "the backend's min scale value (%s), ignoring %s") %
-                              (debug_string, app_scale_min, backend_scale_min, qconfig))
+            if app_scale_min < backend_scale_min:
+                warnings.warn(
+                    f"QConfig {debug_string} eps ({app_scale_min}) must be greater than or equal to "
+                    f"the backend's min scale value ({backend_scale_min}), ignoring {qconfig}",
+                    stacklevel=2,
+                )
                 return False
         # check fixed scale and zero point
-        if backend_scale_exact_match is not None and backend_zero_point_exact_match is not None:
+        if (
+            backend_scale_exact_match is not None
+            and backend_zero_point_exact_match is not None
+        ):
             # For tests only, accept the following qconfigs for now
             # TODO: handle fp16 qconfigs properly
             for accepted_qconfig in [float16_static_qconfig, float16_dynamic_qconfig]:
@@ -840,34 +944,51 @@ def _qconfig_satisfies_dtype_config_constraints(
             suggestion_str = (
                 "Please use torch.ao.quantization.get_default_qconfig_mapping or "
                 "torch.ao.quantization.get_default_qat_qconfig_mapping. Example:\n"
-                "    qconfig_mapping = get_default_qconfig_mapping(\"fbgemm\")\n"
+                '    qconfig_mapping = get_default_qconfig_mapping("fbgemm")\n'
                 "    model = prepare_fx(model, qconfig_mapping, example_inputs)"
             )
-            if not isinstance(activation_post_process, FixedQParamsObserver) and \
-                    not isinstance(activation_post_process, FixedQParamsFakeQuantize):
-                warnings.warn(("QConfig must specify a FixedQParamsObserver or a FixedQParamsFakeQuantize "
-                              "for fixed qparams ops, ignoring %s.\n%s") % (qconfig, suggestion_str))
+            if not isinstance(
+                activation_post_process, FixedQParamsObserver
+            ) and not isinstance(activation_post_process, FixedQParamsFakeQuantize):
+                warnings.warn(
+                    f"QConfig must specify a FixedQParamsObserver or a FixedQParamsFakeQuantize "
+                    f"for fixed qparams ops, ignoring {qconfig}.\n{suggestion_str}",
+                    stacklevel=2,
+                )
                 return False
-            if observer.scale != backend_scale_exact_match or observer.zero_point != backend_zero_point_exact_match:
-                warnings.warn(("QConfig fixed scale (%s) and zero point (%s) do not match the backend's "
-                              "(%s and %s), ignoring %s.\n%s") %
-                              (observer.scale, observer.zero_point, backend_scale_exact_match,
-                              backend_zero_point_exact_match, qconfig, suggestion_str))
+            if (
+                observer.scale != backend_scale_exact_match
+                or observer.zero_point != backend_zero_point_exact_match
+            ):
+                warnings.warn(
+                    f"QConfig fixed scale ({observer.scale}) and zero point ({observer.zero_point}) "
+                    f"do not match the backend's ({backend_scale_exact_match} and {backend_zero_point_exact_match}), "
+                    f"ignoring {qconfig}.\n{suggestion_str}",
+                    stacklevel=2,
+                )
                 return False
         return True
 
     if qconfig is None or dtype_with_constraints.dtype is None:
         return True
 
-    activation_post_process_ctr = qconfig.activation if is_activation else qconfig.weight
+    activation_post_process_ctr = (
+        qconfig.activation if is_activation else qconfig.weight
+    )
     debug_string = "activation" if is_activation else "weight"
     satisfies_constraints = True
     if activation_post_process_ctr is not None:
         activation_post_process = activation_post_process_ctr()
-        assert _is_activation_post_process(activation_post_process)
+        if not _is_activation_post_process(activation_post_process):
+            raise AssertionError(
+                "activation_post_process must be an activation post process"
+            )
         # If dtypes don't match, don't check the activation_post_process and return True early
         if activation_post_process.dtype != dtype_with_constraints.dtype:
             return True
-        satisfies_constraints = _activation_post_process_satisfies_dtype_config_constraints(
-            activation_post_process, dtype_with_constraints, debug_string)
+        satisfies_constraints = (
+            _activation_post_process_satisfies_dtype_config_constraints(
+                activation_post_process, dtype_with_constraints, debug_string
+            )
+        )
     return satisfies_constraints

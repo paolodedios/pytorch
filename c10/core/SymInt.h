@@ -2,10 +2,18 @@
 
 #include <c10/core/SymBool.h>
 #include <c10/core/SymNodeImpl.h>
+#include <c10/macros/Export.h>
 #include <c10/macros/Macros.h>
 #include <c10/util/Exception.h>
+#include <c10/util/Optional.h>
 
+#include <algorithm>
+#include <cstdint>
+#include <iterator>
 #include <numeric>
+#include <optional>
+#include <ostream>
+#include <type_traits>
 
 namespace c10 {
 
@@ -32,11 +40,11 @@ class C10_API SymInt {
   };
 
   /*implicit*/ SymInt(int64_t d) : data_(d) {
-    // NB: this relies on exception in constructor inhibiting
-    // destructor; otherwise we would attempt to deallocate
-    // the garbage data!
-    TORCH_CHECK(!is_symbolic());
-  };
+    if (is_heap_allocated()) {
+      // Large negative number, heap allocate it
+      promote_to_negative();
+    }
+  }
   SymInt() : data_(0) {}
   SymInt(SymNode n);
 
@@ -44,15 +52,11 @@ class C10_API SymInt {
   // One appropriate use for this is when you are constructing a symint
   // in a situation where you know it is non-negative (or, if it is negative,
   // the negative value is -1; i.e., not user controlled)
-  SymInt(Unchecked, int64_t d) : data_(d) {}
+  SymInt(Unchecked /*unused*/, int64_t d) : data_(d) {}
 
-  // TODO: these implementations are not optimal because they allocate a
-  // temporary and then use the move constructor/assignment
-  SymInt(const SymInt& s) : data_(0) {
-    if (s.is_symbolic()) {
-      *this = SymInt(s.toSymNodeImpl());
-    } else {
-      data_ = s.data_;
+  SymInt(const SymInt& s) : data_(s.data_) {
+    if (s.is_heap_allocated()) {
+      c10::raw::intrusive_ptr::incref(s.toSymNodeImplUnowned());
     }
   }
   SymInt(SymInt&& s) noexcept : data_(s.data_) {
@@ -61,10 +65,10 @@ class C10_API SymInt {
 
   SymInt& operator=(const SymInt& s) {
     if (this != &s) {
-      if (s.is_symbolic()) {
-        *this = SymInt(s.toSymNodeImpl());
-      } else {
-        data_ = s.data_;
+      release_();
+      data_ = s.data_;
+      if (s.is_heap_allocated()) {
+        c10::raw::intrusive_ptr::incref(s.toSymNodeImplUnowned());
       }
     }
     return *this;
@@ -73,38 +77,32 @@ class C10_API SymInt {
     if (this != &s) {
       release_(); // release the current SymNode if any
       data_ = s.data_;
-      if (s.is_symbolic())
+      if (s.is_heap_allocated())
         s.data_ = 0;
     };
     return *this;
   }
 
-  SymInt clone() const {
-    if (is_symbolic()) {
-      return SymInt(toSymNodeImplUnowned()->clone());
-    }
-    return *this;
-  }
-
   SymNodeImpl* toSymNodeImplUnowned() const {
-    TORCH_INTERNAL_ASSERT_DEBUG_ONLY(is_symbolic());
+    TORCH_INTERNAL_ASSERT_DEBUG_ONLY(is_heap_allocated());
     uint64_t unextended_bits = static_cast<uint64_t>(data_) & ~MASK;
     uint64_t sign_bit_mask = 1ULL << (62 - 1);
     // https://stackoverflow.com/questions/42534749/signed-extension-from-24-bit-to-32-bit-in-c
     uint64_t extended_bits = (unextended_bits ^ sign_bit_mask) - sign_bit_mask;
     return static_cast<SymNodeImpl*>(
+        // NOLINTNEXTLINE(performance-no-int-to-ptr, bugprone*)
         reinterpret_cast<void*>(static_cast<uintptr_t>(extended_bits)));
   }
 
   void release_() {
-    if (is_symbolic()) {
+    if (is_heap_allocated()) {
       SymNode::reclaim(toSymNodeImplUnowned()); // steal
     }
   }
 
   SymNodeImpl* release() && {
 #ifndef C10_MOBILE
-    TORCH_INTERNAL_ASSERT(is_symbolic());
+    TORCH_INTERNAL_ASSERT(is_heap_allocated());
     auto* r = toSymNodeImplUnowned();
     data_ = 0; // transfer ownership
     return r;
@@ -113,8 +111,8 @@ class C10_API SymInt {
 #endif
   }
 
-  // Only valid if is_symbolic()
-  SymNode toSymNodeImpl() const;
+  // Only valid if is_heap_allocated()
+  SymNode toSymNode() const;
 
   // Guaranteed to return a SymNode, wrapping using base if necessary
   SymNode wrap_node(const SymNode& base) const;
@@ -128,8 +126,11 @@ class C10_API SymInt {
   // shapes, and you don't have time to fix it immediately, as if we
   // try to trigger the path in C++ you'll appropriately get an error
   int64_t expect_int() const {
-    TORCH_CHECK(!is_symbolic());
-    return data_;
+    if (auto r = maybe_as_int()) {
+      return *r;
+    }
+    TORCH_CHECK_ALWAYS_SHOW_CPP_STACKTRACE(
+        false, "when unpacking SymInt, expected int but got ", *this);
   }
 
   // Test if we have a hint for this int (e.g., guard_int would work).
@@ -148,10 +149,16 @@ class C10_API SymInt {
   // number can be used to diagnose overspecialization.
   int64_t guard_int(const char* file, int64_t line) const;
 
+  // Distinguish actual symbolic values from constants stored on the heap
+  bool is_symbolic() const {
+    return is_heap_allocated() &&
+        !toSymNodeImplUnowned()->constant_int().has_value();
+  }
+
   // N.B. It's important to keep this definition in the header
   // as we expect if checks to be folded for mobile builds
-  // where `is_symbolic` is always false and optimize dead code paths
-  C10_ALWAYS_INLINE bool is_symbolic() const {
+  // where `is_heap_allocated` is always false and optimize dead code paths
+  C10_ALWAYS_INLINE bool is_heap_allocated() const {
 #ifdef C10_MOBILE
     return false;
 #else
@@ -159,21 +166,136 @@ class C10_API SymInt {
 #endif
   }
 
-  SymInt operator+(const SymInt& sci) const;
-  SymInt operator-(const SymInt& sci) const;
-  SymInt operator*(const SymInt& sci) const;
-  SymInt operator/(const SymInt& sci) const;
-  SymInt operator%(const SymInt& sci) const;
-  void operator*=(const SymInt& sci);
-  void operator+=(const SymInt& sci);
-  void operator/=(const SymInt& sci);
+  SymInt operator+(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymInt(*ma + *mb);
+      }
+    }
+    return operator_add_slow_path(sci);
+  }
 
-  SymBool sym_eq(const SymInt&) const;
-  SymBool sym_ne(const SymInt&) const;
-  SymBool sym_lt(const SymInt&) const;
-  SymBool sym_le(const SymInt&) const;
-  SymBool sym_gt(const SymInt&) const;
-  SymBool sym_ge(const SymInt&) const;
+  SymInt operator-(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymInt(*ma - *mb);
+      }
+    }
+    return operator_sub_slow_path(sci);
+  }
+
+  SymInt operator*(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymInt(*ma * *mb);
+      }
+    }
+    return operator_mul_slow_path(sci);
+  }
+
+  SymInt operator/(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymInt(*ma / *mb);
+      }
+    }
+    return operator_div_slow_path(sci);
+  }
+
+  SymInt operator%(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymInt(*ma % *mb);
+      }
+    }
+    return operator_mod_slow_path(sci);
+  }
+
+  void operator*=(const SymInt& sci) {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        *this = SymInt(*ma * *mb);
+        return;
+      }
+    }
+    operator_imul_slow_path(sci);
+  }
+
+  void operator+=(const SymInt& sci) {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        *this = SymInt(*ma + *mb);
+        return;
+      }
+    }
+    operator_iadd_slow_path(sci);
+  }
+
+  void operator/=(const SymInt& sci) {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        *this = SymInt(*ma / *mb);
+        return;
+      }
+    }
+    operator_idiv_slow_path(sci);
+  }
+
+  SymInt clone() const;
+
+  SymBool sym_eq(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymBool(*ma == *mb);
+      }
+    }
+    return sym_eq_slow_path(sci);
+  }
+
+  SymBool sym_ne(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymBool(*ma != *mb);
+      }
+    }
+    return sym_ne_slow_path(sci);
+  }
+
+  SymBool sym_lt(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymBool(*ma < *mb);
+      }
+    }
+    return sym_lt_slow_path(sci);
+  }
+
+  SymBool sym_le(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymBool(*ma <= *mb);
+      }
+    }
+    return sym_le_slow_path(sci);
+  }
+
+  SymBool sym_gt(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymBool(*ma > *mb);
+      }
+    }
+    return sym_gt_slow_path(sci);
+  }
+
+  SymBool sym_ge(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymBool(*ma >= *mb);
+      }
+    }
+    return sym_ge_slow_path(sci);
+  }
 
   bool operator==(const SymInt& o) const {
     return sym_eq(o).guard_bool(__FILE__, __LINE__);
@@ -194,35 +316,87 @@ class C10_API SymInt {
     return sym_ge(o).guard_bool(__FILE__, __LINE__);
   }
 
-  SymInt min(const SymInt& sci) const;
-  SymInt max(const SymInt& sci) const;
+  SymInt min(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymInt(std::min(*ma, *mb));
+      }
+    }
+    return min_slow_path(sci);
+  }
 
-  SymInt operator*(int64_t sci) const;
-  bool operator<(int64_t sci) const;
-  bool operator==(int64_t sci) const;
-  bool operator!=(int64_t sci) const;
-  bool operator<=(int64_t sci) const;
-  bool operator>(int64_t sci) const;
-  bool operator>=(int64_t sci) const;
+  SymInt max(const SymInt& sci) const {
+    if (auto ma = maybe_as_int()) {
+      if (auto mb = sci.maybe_as_int()) {
+        return SymInt(std::max(*ma, *mb));
+      }
+    }
+    return max_slow_path(sci);
+  }
+
+  // If both are symbolic, this checks if
+  // they share the same node.
+  // If both are not symbolic this just checks normal equality.
+  bool is_same(const SymInt& other) const;
 
   operator SymFloat() const;
 
+  void unsafe_set_data(size_t nbytes) {
+    TORCH_INTERNAL_ASSERT_DEBUG_ONLY(!is_heap_allocated());
+    data_ = static_cast<int64_t>(nbytes);
+  }
+
+  // Don't use this.  Prefer maybe_as_int instead
   int64_t as_int_unchecked() const {
-    TORCH_INTERNAL_ASSERT_DEBUG_ONLY(!is_symbolic());
+    TORCH_INTERNAL_ASSERT_DEBUG_ONLY(!is_heap_allocated());
     return data_;
   }
 
-  // Return whether the integer is representable as a SymInt.
+  std::optional<int64_t> maybe_as_int() const {
+    if (!is_heap_allocated()) {
+      return data_;
+    }
+    return maybe_as_int_slow_path();
+  }
+
+  // Return whether the integer is directly coercible to a SymInt
+  // without requiring heap allocation.  You don't need to use this
+  // to check if you can pass an integer to SymInt; this is guaranteed
+  // to work (it just might heap allocate!)
   static bool check_range(int64_t i) {
     return i > MAX_UNREPRESENTABLE_INT;
   }
 
-  // Return the min representable integer as a SymInt
+  // Return the min representable integer as a SymInt without
+  // heap allocation.  For quantities that count bytes (or larger),
+  // this is still much larger than you need, so you may consider
+  // using this as a more efficient version of MIN_INT
   static constexpr int64_t min_representable_int() {
     return MAX_UNREPRESENTABLE_INT + 1;
   }
 
  private:
+  void promote_to_negative();
+  SymInt operator_add_slow_path(const SymInt& sci) const;
+  SymInt operator_sub_slow_path(const SymInt& sci) const;
+  SymInt operator_mul_slow_path(const SymInt& sci) const;
+  SymInt operator_div_slow_path(const SymInt& sci) const;
+  SymInt operator_mod_slow_path(const SymInt& sci) const;
+  void operator_imul_slow_path(const SymInt& sci);
+  void operator_iadd_slow_path(const SymInt& sci);
+  void operator_idiv_slow_path(const SymInt& sci);
+  SymBool sym_eq_slow_path(const SymInt& sci) const;
+  SymBool sym_ne_slow_path(const SymInt& sci) const;
+  SymBool sym_lt_slow_path(const SymInt& sci) const;
+  SymBool sym_le_slow_path(const SymInt& sci) const;
+  SymBool sym_gt_slow_path(const SymInt& sci) const;
+  SymBool sym_ge_slow_path(const SymInt& sci) const;
+
+  SymInt min_slow_path(const SymInt& sci) const;
+  SymInt max_slow_path(const SymInt& sci) const;
+
+  std::optional<int64_t> maybe_as_int_slow_path() const;
+
   // Constraints on the internal representation:
   //
   // - Should represent positive and small negative ints
@@ -231,7 +405,7 @@ class C10_API SymInt {
   // - Is symbolic test should be FAST (two arithmetic instructions is too
   // much).
   //   This code being a hotpath is based on Strobelight profiles of
-  //   is_symbolic().  FB only: https://fburl.com/strobelight/5l50ncxd
+  //   is_heap_allocated().  FB only: https://fburl.com/strobelight/5l50ncxd
   //   (you will need to change the time window).
   //
   // So, the scheme is to reserve large negative numbers (assuming
@@ -256,9 +430,9 @@ class C10_API SymInt {
 /// Sum of a list of SymInt; accumulates into the c10::SymInt expression
 template <
     typename C,
-    typename std::enable_if<
-        std::is_same<typename C::value_type, c10::SymInt>::value,
-        int>::type = 0>
+    typename std::enable_if_t<
+        std::is_same_v<typename C::value_type, c10::SymInt>,
+        int> = 0>
 inline c10::SymInt multiply_integers(const C& container) {
   return std::accumulate(
       container.begin(),
@@ -269,9 +443,9 @@ inline c10::SymInt multiply_integers(const C& container) {
 
 template <
     typename Iter,
-    typename = std::enable_if_t<std::is_same<
+    typename = std::enable_if_t<std::is_same_v<
         typename std::iterator_traits<Iter>::value_type,
-        c10::SymInt>::value>>
+        c10::SymInt>>>
 inline c10::SymInt multiply_integers(Iter begin, Iter end) {
   return std::accumulate(
       begin,
@@ -280,40 +454,124 @@ inline c10::SymInt multiply_integers(Iter begin, Iter end) {
       [](const c10::SymInt& a, const c10::SymInt& b) { return a * b; });
 }
 
-inline SymInt operator+(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) + b;
-}
-inline SymInt operator-(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) - b;
-}
-inline SymInt operator*(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) * b;
-}
-inline SymInt operator/(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) / b;
-}
-inline SymInt operator%(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) % b;
-}
-inline bool operator==(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) == b;
-}
-inline bool operator!=(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) != b;
-}
-inline bool operator<(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) < b;
-}
-inline bool operator<=(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) <= b;
-}
-inline bool operator>(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) > b;
-}
-inline bool operator>=(int64_t a, const SymInt& b) {
-  return c10::SymInt(a) >= b;
-}
+#define DECLARE_SYMINT_OP_INTONLY(scalar_t, RetTy)      \
+  C10_API RetTy operator%(const SymInt& a, scalar_t b); \
+  C10_API RetTy operator%(scalar_t a, const SymInt& b);
+
+#define DECLARE_SYMINT_OP(scalar_t, RetTy)              \
+  C10_API RetTy operator+(const SymInt& a, scalar_t b); \
+  C10_API RetTy operator-(const SymInt& a, scalar_t b); \
+  C10_API RetTy operator*(const SymInt& a, scalar_t b); \
+  C10_API RetTy operator/(const SymInt& a, scalar_t b); \
+  C10_API RetTy operator+(scalar_t a, const SymInt& b); \
+  C10_API RetTy operator-(scalar_t a, const SymInt& b); \
+  C10_API RetTy operator*(scalar_t a, const SymInt& b); \
+  C10_API RetTy operator/(scalar_t a, const SymInt& b); \
+  C10_API bool operator==(const SymInt& a, scalar_t b); \
+  C10_API bool operator!=(const SymInt& a, scalar_t b); \
+  C10_API bool operator<(const SymInt& a, scalar_t b);  \
+  C10_API bool operator<=(const SymInt& a, scalar_t b); \
+  C10_API bool operator>(const SymInt& a, scalar_t b);  \
+  C10_API bool operator>=(const SymInt& a, scalar_t b); \
+  C10_API bool operator==(scalar_t a, const SymInt& b); \
+  C10_API bool operator!=(scalar_t a, const SymInt& b); \
+  C10_API bool operator<(scalar_t a, const SymInt& b);  \
+  C10_API bool operator<=(scalar_t a, const SymInt& b); \
+  C10_API bool operator>(scalar_t a, const SymInt& b);  \
+  C10_API bool operator>=(scalar_t a, const SymInt& b);
+
+DECLARE_SYMINT_OP_INTONLY(int64_t, SymInt)
+DECLARE_SYMINT_OP_INTONLY(int32_t, SymInt)
+DECLARE_SYMINT_OP_INTONLY(uint64_t, SymInt)
+DECLARE_SYMINT_OP_INTONLY(uint32_t, SymInt)
+DECLARE_SYMINT_OP(int64_t, SymInt)
+DECLARE_SYMINT_OP(int32_t, SymInt) // make sure constants work
+DECLARE_SYMINT_OP(uint64_t, SymInt)
+DECLARE_SYMINT_OP(uint32_t, SymInt)
+DECLARE_SYMINT_OP(double, SymFloat)
+DECLARE_SYMINT_OP(float, SymFloat) // just for completeness
+
+// On OSX size_t is different than uint64_t so we have to
+// define it separately
+#if defined(__APPLE__)
+DECLARE_SYMINT_OP_INTONLY(size_t, SymInt)
+DECLARE_SYMINT_OP(size_t, SymInt)
+#endif
+
+#undef DECLARE_SYMINT_OP
 
 C10_API std::ostream& operator<<(std::ostream& os, const SymInt& s);
 C10_API SymInt operator-(const SymInt& s);
+
+inline bool sym_eq(int64_t a, int64_t b) {
+  return a == b;
+}
+
+inline SymBool sym_eq(const SymInt& a, const SymInt& b) {
+  return a.sym_eq(b);
+}
+
+inline bool sym_ne(int64_t a, int64_t b) {
+  return a != b;
+}
+
+inline SymBool sym_ne(const SymInt& a, const SymInt& b) {
+  return a.sym_ne(b);
+}
+
+inline bool sym_lt(int64_t a, int64_t b) {
+  return a < b;
+}
+
+inline SymBool sym_lt(const SymInt& a, const SymInt& b) {
+  return a.sym_lt(b);
+}
+
+inline bool sym_le(int64_t a, int64_t b) {
+  return a <= b;
+}
+
+inline SymBool sym_le(const SymInt& a, const SymInt& b) {
+  return a.sym_le(b);
+}
+
+inline bool sym_gt(int64_t a, int64_t b) {
+  return a > b;
+}
+
+inline SymBool sym_gt(const SymInt& a, const SymInt& b) {
+  return a.sym_gt(b);
+}
+
+inline bool sym_ge(int64_t a, int64_t b) {
+  return a >= b;
+}
+
+inline SymBool sym_ge(const SymInt& a, const SymInt& b) {
+  return a.sym_ge(b);
+}
+
 } // namespace c10
+
+#include <limits>
+
+namespace std {
+
+template <>
+class numeric_limits<c10::SymInt> {
+ public:
+  static constexpr bool is_specialized = true;
+
+  static constexpr int64_t max() noexcept {
+    return std::numeric_limits<int64_t>::max();
+  }
+
+  static constexpr int64_t min() noexcept {
+    return std::numeric_limits<int64_t>::min();
+  }
+
+  static constexpr bool is_signed = true;
+  static constexpr bool is_integer = true;
+};
+
+} // namespace std

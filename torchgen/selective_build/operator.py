@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
 
 
 # This class holds information about a single operator used to determine
@@ -46,12 +47,12 @@ class SelectiveBuildOperator:
     include_all_overloads: bool
 
     # Debug Information at the operator level
-    _debug_info: Optional[Tuple[str, ...]]
+    _debug_info: tuple[str, ...] | None
 
     @staticmethod
     def from_yaml_dict(
-        op_name: str, op_info: Dict[str, object]
-    ) -> "SelectiveBuildOperator":
+        op_name: str, op_info: dict[str, object]
+    ) -> SelectiveBuildOperator:
         allowed_keys = {
             "name",
             "is_root_operator",
@@ -61,29 +62,44 @@ class SelectiveBuildOperator:
         }
 
         if len(set(op_info.keys()) - allowed_keys) > 0:
-            raise Exception(
+            raise Exception(  # noqa: TRY002
                 "Got unexpected top level keys: {}".format(
                     ",".join(set(op_info.keys()) - allowed_keys),
                 )
             )
 
         if "name" in op_info:
-            assert op_name == op_info["name"]
+            if op_name != op_info["name"]:
+                raise AssertionError(
+                    f"op_name mismatch: {op_name} != {op_info['name']}"
+                )
 
         is_root_operator = op_info.get("is_root_operator", True)
-        assert isinstance(is_root_operator, bool)
+        if not isinstance(is_root_operator, bool):
+            raise AssertionError(
+                f"Expected 'is_root_operator' to be bool, got {type(is_root_operator)}"
+            )
 
         is_used_for_training = op_info.get("is_used_for_training", True)
-        assert isinstance(is_used_for_training, bool)
+        if not isinstance(is_used_for_training, bool):
+            raise AssertionError(
+                f"Expected 'is_used_for_training' to be bool, got {type(is_used_for_training)}"
+            )
 
         include_all_overloads = op_info.get("include_all_overloads", True)
-        assert isinstance(include_all_overloads, bool)
+        if not isinstance(include_all_overloads, bool):
+            raise AssertionError(
+                f"Expected 'include_all_overloads' to be bool, got {type(include_all_overloads)}"
+            )
 
-        debug_info: Optional[Tuple[str, ...]] = None
+        debug_info: tuple[str, ...] | None = None
         if "debug_info" in op_info:
             di_list = op_info["debug_info"]
-            assert isinstance(di_list, list)
-            debug_info = tuple((str(x) for x in di_list))
+            if not isinstance(di_list, list):
+                raise AssertionError(
+                    f"Expected 'debug_info' to be list, got {type(di_list)}"
+                )
+            debug_info = tuple(str(x) for x in di_list)
 
         return SelectiveBuildOperator(
             name=op_name,
@@ -96,7 +112,7 @@ class SelectiveBuildOperator:
     @staticmethod
     def from_legacy_operator_name_without_overload(
         name: str,
-    ) -> "SelectiveBuildOperator":
+    ) -> SelectiveBuildOperator:
         return SelectiveBuildOperator(
             name=name,
             is_root_operator=True,
@@ -105,8 +121,8 @@ class SelectiveBuildOperator:
             _debug_info=None,
         )
 
-    def to_dict(self) -> Dict[str, object]:
-        ret: Dict[str, object] = {
+    def to_dict(self) -> dict[str, object]:
+        ret: dict[str, object] = {
             "is_root_operator": self.is_root_operator,
             "is_used_for_training": self.is_used_for_training,
             "include_all_overloads": self.include_all_overloads,
@@ -118,9 +134,9 @@ class SelectiveBuildOperator:
 
 
 def merge_debug_info(
-    lhs: Optional[Tuple[str, ...]],
-    rhs: Optional[Tuple[str, ...]],
-) -> Optional[Tuple[str, ...]]:
+    lhs: tuple[str, ...] | None,
+    rhs: tuple[str, ...] | None,
+) -> tuple[str, ...] | None:
     # Ensure that when merging, each entry shows up just once.
     if lhs is None and rhs is None:
         return None
@@ -129,14 +145,11 @@ def merge_debug_info(
 
 
 def combine_operators(
-    lhs: "SelectiveBuildOperator", rhs: "SelectiveBuildOperator"
-) -> "SelectiveBuildOperator":
+    lhs: SelectiveBuildOperator, rhs: SelectiveBuildOperator
+) -> SelectiveBuildOperator:
     if str(lhs.name) != str(rhs.name):
-        raise Exception(
-            "Expected both arguments to have the same name, but got '{}' and '{}' instead".format(
-                str(lhs.name),
-                str(rhs.name),
-            )
+        raise Exception(  # noqa: TRY002
+            f"Expected both arguments to have the same name, but got '{str(lhs.name)}' and '{str(rhs.name)}' instead"
         )
 
     return SelectiveBuildOperator(
@@ -155,10 +168,10 @@ def combine_operators(
 
 
 def merge_operator_dicts(
-    lhs: Dict[str, SelectiveBuildOperator],
-    rhs: Dict[str, SelectiveBuildOperator],
-) -> Dict[str, SelectiveBuildOperator]:
-    operators: Dict[str, SelectiveBuildOperator] = {}
+    lhs: dict[str, SelectiveBuildOperator],
+    rhs: dict[str, SelectiveBuildOperator],
+) -> dict[str, SelectiveBuildOperator]:
+    operators: dict[str, SelectiveBuildOperator] = {}
     for op_name, op in list(lhs.items()) + list(rhs.items()):
         new_op = op
         if op_name in operators:
@@ -170,4 +183,4 @@ def merge_operator_dicts(
 
 
 def strip_operator_overload_name(op_name: str) -> str:
-    return op_name.split(".")[0]
+    return op_name.split(".", maxsplit=1)[0]

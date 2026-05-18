@@ -15,13 +15,11 @@ from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp.wrap import ModuleWrapPolicy
 
+
 try:
     from .torchbench import setup_torchbench_cwd
 except ImportError:
     from torchbench import setup_torchbench_cwd
-
-from transformers.models.bert.modeling_bert import BertLayer, BertLMPredictionHead
-from transformers.models.t5.modeling_t5 import T5Block
 
 
 def setup(rank, world_size):
@@ -89,14 +87,12 @@ def model_iter_fn(model, example_inputs, collect_outputs=False):
 
 def get_model(args):
     if args.torchbench_model:
-        old_cwd = setup_torchbench_cwd()
+        setup_torchbench_cwd()
         module = importlib.import_module(
             f"torchbenchmark.models.{args.torchbench_model}"
         )
         benchmark_cls = getattr(module, "Model", None)
-        bm = benchmark_cls(
-            test="train", device=args.device, jit=False, batch_size=args.batch_size
-        )
+        bm = benchmark_cls(test="train", device=args.device, batch_size=args.batch_size)
         model, inputs = bm.get_module()
     elif args.toy_model:
         model = ToyModel()
@@ -129,8 +125,6 @@ def fsdp_checkpointing_base(model, blocks):
 
 MODEL_FSDP_WRAP = {
     "toy_model": (MyModule,),
-    "hf_Bert": (BertLayer, BertLMPredictionHead),
-    "hf_T5": (T5Block,),
 }
 
 

@@ -1,7 +1,4 @@
-#include <ATen/ThreadLocalState.h>
-#include <c10/util/ThreadLocalDebugInfo.h>
 #include <torch/csrc/autograd/functions/utils.h>
-#include <torch/csrc/autograd/profiler.h>
 #include <torch/csrc/distributed/autograd/context/container.h>
 #include <torch/csrc/distributed/autograd/functions/recvrpc_backward.h>
 #include <torch/csrc/distributed/autograd/functions/sendrpc_backward.h>
@@ -10,9 +7,7 @@
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 #include <torch/csrc/distributed/rpc/types.h>
 
-namespace torch {
-namespace distributed {
-namespace autograd {
+namespace torch::distributed::autograd {
 
 using torch::distributed::autograd::AutogradMetadata;
 using torch::distributed::autograd::RpcWithAutograd;
@@ -35,7 +30,7 @@ void addSendRpcBackward(
       [](const torch::Tensor& t) { return t.requires_grad(); });
 
   // Attach the appropriate autograd edges.
-  auto grad_fn = std::make_shared<SendRpcBackward>();
+  auto grad_fn = c10::make_intrusive<SendRpcBackward>();
   grad_fn->set_next_edges(
       torch::autograd::collect_next_edges(tensors_with_grad));
 
@@ -60,7 +55,7 @@ ContextPtr addRecvRpcBackward(
 
   if (!tensors.empty() && torch::autograd::compute_requires_grad(tensors)) {
     // Attach the tensors as inputs to the autograd function.
-    auto grad_fn = std::make_shared<RecvRpcBackward>(
+    auto grad_fn = c10::make_intrusive<RecvRpcBackward>(
         autogradMetadata, autogradContext, fromWorkerId, deviceMap);
     for (auto& tensor : tensors) {
       if (tensor.requires_grad()) {
@@ -76,7 +71,7 @@ ContextPtr addRecvRpcBackward(
   return autogradContext;
 }
 
-c10::intrusive_ptr<Message> getMessageWithProfiling(
+static c10::intrusive_ptr<Message> getMessageWithProfiling(
     c10::intrusive_ptr<torch::distributed::rpc::Message> wrappedRpcMessage,
     MessageType msgType,
     torch::autograd::profiler::ProfilerConfig&& profilerConfig) {
@@ -180,6 +175,4 @@ c10::intrusive_ptr<JitFuture> sendMessageWithAutograd(
   ;
 }
 
-} // namespace autograd
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::autograd

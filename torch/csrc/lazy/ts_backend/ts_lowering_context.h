@@ -2,14 +2,14 @@
 
 #include <sstream>
 
+#include <c10/util/Exception.h>
 #include <torch/csrc/api/include/torch/jit.h>
 #include <torch/csrc/jit/runtime/graph_executor.h>
 #include <torch/csrc/lazy/backend/lowering_context.h>
 #include <torch/csrc/lazy/core/ir.h>
 #include <torch/csrc/lazy/ts_backend/ts_node_lowering.h>
 
-namespace torch {
-namespace lazy {
+namespace torch::lazy {
 
 using TSOpVector = std::vector<torch::jit::Value*>;
 
@@ -23,12 +23,12 @@ class TORCH_API TSComputation : public Computation {
   }
 
   int parameters_size() const override {
-    return parameter_names_.size();
+    return static_cast<int>(parameter_names_.size());
   }
 
   const std::vector<Shape>& parameter_shapes() const override {
-    throw std::runtime_error(
-        "TODO(whc) implement TS computation shapes or change interface");
+    TORCH_CHECK(
+        false, "TODO(whc) implement TS computation shapes or change interface");
     return parameter_shapes_;
   }
 
@@ -37,8 +37,8 @@ class TORCH_API TSComputation : public Computation {
   }
 
   const Shape& result_shape() const override {
-    throw std::runtime_error(
-        "TODO(whc) implement TS computation shapes or change interface");
+    TORCH_CHECK(
+        false, "TODO(whc) implement TS computation shapes or change interface");
     return result_shape_;
   }
 
@@ -92,7 +92,7 @@ class TORCH_API TSLoweringContext : public LoweringContext {
     for (torch::jit::Value* output : root_tuple_) {
       graph_->block()->registerOutput(output);
     }
-    return std::shared_ptr<Computation>(new TSComputation(graph_));
+    return std::make_shared<TSComputation>(graph_);
   }
 
   // Retrieves the lowered operation for an output. If the requested output is
@@ -124,7 +124,7 @@ class TORCH_API TSLoweringContext : public LoweringContext {
   // If a parameter associated with data has already been declared, it will be
   // returned. Otherwise a new one will be created, associated with the tensor
   // held in data.
-  torch::jit::Value* GetParameter(BackendDataPtr data);
+  torch::jit::Value* GetParameter(const BackendDataPtr& data);
 
   std::shared_ptr<torch::jit::Graph> graph() const {
     return graph_;
@@ -137,7 +137,7 @@ class TORCH_API TSLoweringContext : public LoweringContext {
   };
 
   size_t AddResult(torch::jit::Value* op) {
-    root_tuple_.push_back(std::move(op));
+    root_tuple_.push_back(op);
     return root_tuple_.size() - 1;
   }
 
@@ -148,5 +148,4 @@ class TORCH_API TSLoweringContext : public LoweringContext {
   OutputMap<torch::jit::Value*> emitted_outputs_;
 };
 
-} // namespace lazy
-} // namespace torch
+} // namespace torch::lazy

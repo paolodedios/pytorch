@@ -1,18 +1,21 @@
 //  Copyright © 2022 Apple Inc.
-
-#include <ATen/ATen.h>
-#include <ATen/Tensor.h>
-#include <ATen/Utils.h>
-
-#include <ATen/mps/MPSStream.h>
+#define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/Dispatch.h>
+#include <ATen/mps/MPSProfiler.h>
 #include <ATen/native/LinearAlgebraUtils.h>
 #include <ATen/native/Repeat.h>
 #include <ATen/native/mps/OperationUtils.h>
+#include <ATen/ops/permute_native.h>
+#include <ATen/ops/repeat_interleave_native.h>
+#include <ATen/ops/repeat_native.h>
 #include <fmt/format.h>
-#include <torch/library.h>
 
-#ifdef __OBJC__
-#include <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/view_as_complex.h>
+#include <ATen/ops/view_as_real.h>
 #endif
 
 namespace at::native {
@@ -42,6 +45,13 @@ Tensor repeat_mps(const Tensor& self, IntArrayRef repeats) {
   TORCH_CHECK(repeats.size() >= (size_t)self.dim(),
               "Number of dimensions of repeat dims can not be smaller than number of dimensions of tensor");
 
+  if (self.is_complex()) {
+    std::vector<int64_t> repeats_real = repeats.vec();
+    repeats_real.push_back(1);
+    auto self_real = at::view_as_real(self);
+    return at::view_as_complex(repeat_mps(self_real, repeats_real));
+  }
+
   // Add new leading dimensions to the tensor if the
   // number of target dimensions is larger than the
   // number of source dimensions.
@@ -59,7 +69,6 @@ Tensor repeat_mps(const Tensor& self, IntArrayRef repeats) {
 
   Tensor expanded_tensor = self.expand(padded_size);
   Tensor result = at::empty(target_size, self.options());
-  MPSGraphCache* cache_ = MPSGraphCache::getInstance();
   if (zero_tensor || result.numel() == 0) {
     return result;
   }
@@ -67,168 +76,76 @@ Tensor repeat_mps(const Tensor& self, IntArrayRef repeats) {
   auto stream = at::mps::getCurrentMPSStream();
   auto inputDataType = getMPSDataType(expanded_tensor);
   auto outputDataType = getMPSDataType(result);
-  if (!is_macos_13_or_newer()) {
-    if (expanded_tensor.scalar_type() == kBool) {
-      inputDataType = MPSDataTypeInt8;
-    }
-    if (result.scalar_type() == kBool) {
-      outputDataType = MPSDataTypeInt8;
-    }
-  }
 
   @autoreleasepool {
-    string key = "repeat_mps:" + getTensorsStringKey(self) + ":" + getArrayRefString(repeats);
-    CachedGraph* cachedGraph = static_cast<CachedGraph*>(cache_->LookUp(key));
+    std::string key = "repeat_mps:" + getTensorsStringKey(self) + ":" + getArrayRefString(repeats);
+    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
+      MPSGraphTensor* inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, inputDataType, getMPSShape(expanded_tensor));
+      MPSGraphTensor* outputTensor = [mpsGraph tileTensor:inputTensor withMultiplier:getMPSShape(repeats) name:nil];
 
-    if (!cachedGraph) {
-      MPSCachedGraph* tmpCachedGraph = cache_->CreateCachedGraph(key, ^MPSCachedGraph*() {
-        CachedGraph* newCachedGraph = nil;
-
-        @autoreleasepool {
-          MPSGraph* mpsGraph = make_mps_graph();
-          newCachedGraph = new CachedGraph(mpsGraph);
-
-          MPSGraphTensor* inputTensor =
-              mpsGraphRankedPlaceHolder(mpsGraph, inputDataType, getMPSShape(expanded_tensor));
-          MPSGraphTensor* outputTensor = [mpsGraph tileTensor:inputTensor withMultiplier:getMPSShape(repeats) name:nil];
-
-          newCachedGraph->inputTensor_ = inputTensor;
-          newCachedGraph->outputTensor_ = outputTensor;
-        }
-        return newCachedGraph;
-      });
-      cachedGraph = static_cast<CachedGraph*>(tmpCachedGraph);
-    }
+      newCachedGraph->inputTensor_ = inputTensor;
+      newCachedGraph->outputTensor_ = outputTensor;
+    });
 
     Placeholder selfPlaceholder = Placeholder(
         cachedGraph->inputTensor_, expanded_tensor, /*mpsShape=*/nil, /*gatherTensorData=*/true, inputDataType);
     Placeholder outputPlaceholder =
         Placeholder(cachedGraph->outputTensor_, result, /*mpsShape=*/nil, /*gatherTensorData*/ false, outputDataType);
 
-    NSDictionary<MPSGraphTensor*, MPSGraphTensorData*>* feeds =
-        @{selfPlaceholder.getMPSGraphTensor() : selfPlaceholder.getMPSGraphTensorData()};
-    NSDictionary<MPSGraphTensor*, MPSGraphTensorData*>* results =
-        @{outputPlaceholder.getMPSGraphTensor() : outputPlaceholder.getMPSGraphTensorData()};
-
-    runMPSGraph(stream, cachedGraph->graph(), feeds, results);
+    auto feeds = dictionaryFromPlaceholders(selfPlaceholder);
+    runMPSGraph(stream, cachedGraph->graph(), feeds, outputPlaceholder);
   }
 
   return result;
 }
 
-static const char* METAL_REPEAT_INTERLEAVE = R"METAL_REPEAT(
-kernel void repeat_interleave(constant {0}     * repeat_ptr                [[buffer(0)]],
-                              constant int64_t * cumsum_ptr                [[buffer(1)]],
-                              device {0}       * result_ptr                [[buffer(2)]],
-                              uint               threads_per_threadgroup   [[threads_per_threadgroup]],
-                              uint               tid                       [[thread_position_in_grid]]) {{
-  int64_t end = cumsum_ptr[tid];
-  {0} repeat = repeat_ptr[tid];
-  int64_t start = end - repeat;
-  for (uint j = start; j < end; j++) {{
-    result_ptr[j] = tid;
-  }}
-}}
-)METAL_REPEAT";
+#ifndef PYTORCH_JIT_COMPILE_SHADERS
+static auto& lib = mps::MetalShaderLibrary::getBundledLibrary();
+#else
+#include <ATen/native/mps/Repeat_metallib.h>
+#endif
 
-static id<MTLLibrary> compileRepeatInterleaveLib(id<MTLDevice> device, const std::string& t1) {
-  auto key = t1;
-  static std::unordered_map<std::string, id<MTLLibrary>> libMap;
-  auto it = libMap.find(key);
-  if (it != libMap.end()) {
-    return it->second;
-  }
-  NSError* error = nil;
-  MTLCompileOptions* options = [[MTLCompileOptions new] autorelease];
-  [options setLanguageVersion:MTLLanguageVersion2_3];
-  auto rc =
-      [device newLibraryWithSource:[NSString stringWithUTF8String:fmt::format(METAL_REPEAT_INTERLEAVE, t1).c_str()]
-                           options:options
-                             error:&error];
-  TORCH_CHECK(rc != nil && error == nil, "Failed to compile library: ", [[error localizedDescription] UTF8String]);
-  libMap[key] = rc;
-  return rc;
-}
-
-static id<MTLComputePipelineState> getPipelineState(id<MTLDevice> device, const std::string& t1) {
-  static std::string kernel = "repeat_interleave";
-  auto key = kernel + t1;
-  static std::unordered_map<std::string, id<MTLComputePipelineState>> cplMap;
-  auto it = cplMap.find(key);
-  if (it != cplMap.end()) {
-    return it->second;
-  }
-  NSError* error = nil;
-  auto library = compileRepeatInterleaveLib(device, t1);
-  id<MTLFunction> func = [library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()]];
-  TORCH_CHECK(func != nil, "Can't get kernel ", kernel);
-  auto rc = [device newComputePipelineStateWithFunction:func error:&error];
-  TORCH_CHECK(
-      rc != nil && error == nil, "Failed to construct pipeline state: ", [[error localizedDescription] UTF8String]);
-  cplMap[key] = rc;
-  return rc;
-}
-
-template <typename index_t>
-void computeRepeatIndices(index_t* repeat_ptr,
-                          int64_t* cumsum_ptr,
-                          index_t* result_ptr,
-                          int64_t size,
-                          int64_t result_size) {
-  id<MTLBuffer> repeatBuffer = reinterpret_cast<id<MTLBuffer>>(repeat_ptr);
-  id<MTLBuffer> cumsumBuffer = reinterpret_cast<id<MTLBuffer>>(cumsum_ptr);
-  id<MTLBuffer> resultBuffer = reinterpret_cast<id<MTLBuffer>>(result_ptr);
-  TORCH_CHECK(repeatBuffer && cumsumBuffer && resultBuffer);
-
+Tensor repeat_interleave_mps(const Tensor& repeat, std::optional<int64_t> output_size) {
+  TORCH_CHECK(repeat.dim() == 1, "repeat_interleave only accept 1D vector as repeat");
   std::string scalar_type;
-  if (typeid(index_t) == typeid(int32_t)) {
+  if (repeat.scalar_type() == kInt) {
     scalar_type = "int32_t";
-  } else if (typeid(index_t) == typeid(int64_t)) {
+  } else if (repeat.scalar_type() == kLong) {
     scalar_type = "int64_t";
   } else {
-    TORCH_CHECK(false, "repeat_interleave: unsupported indexing data type");
+    TORCH_CHECK(false, "repeats has to be Long or Int tensor");
   }
+  if (repeat.size(0) == 0) {
+    return at::empty_like(repeat, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+  }
+  Tensor cumsum = repeat.cumsum(0);
+  int64_t total = 0;
+  if (output_size.has_value()) {
+    total = output_size.value();
+  } else {
+    total = cumsum[-1].item<int64_t>();
+    TORCH_CHECK((repeat >= 0).all().item<uint8_t>(), "repeats can not be negative");
+  }
+
+  auto result = at::empty({total}, repeat.options());
 
   MPSStream* mpsStream = getCurrentMPSStream();
   dispatch_sync(mpsStream->queue(), ^() {
     @autoreleasepool {
-      id<MTLCommandBuffer> commandBuffer = mpsStream->commandBuffer();
-      id<MTLComputeCommandEncoder> computeEncoder = [commandBuffer computeCommandEncoder];
-      id<MTLComputePipelineState> pipelineState = getPipelineState(MPSDevice::getInstance()->device(), scalar_type);
+      auto computeEncoder = mpsStream->commandEncoder();
+      auto pipelineState = lib.getPipelineStateForFunc(fmt::format("repeat_interleave_{}", scalar_type));
+
+      // this function call is a no-op if MPS Profiler is not enabled
+      getMPSProfiler().beginProfileKernel(pipelineState, "repeat_interleave:" + scalar_type, false);
 
       [computeEncoder setComputePipelineState:pipelineState];
-      [computeEncoder setBuffer:repeatBuffer offset:0 atIndex:0];
-      [computeEncoder setBuffer:cumsumBuffer offset:0 atIndex:1];
-      [computeEncoder setBuffer:resultBuffer offset:0 atIndex:2];
-      [computeEncoder setBytes:&size length:sizeof(size) atIndex:3];
-      MTLSize gridSize = MTLSizeMake(size, 1, 1);
-      NSUInteger threadsPerThreadgroup_ = pipelineState.maxTotalThreadsPerThreadgroup;
-      if (threadsPerThreadgroup_ > static_cast<NSUInteger>(size)) {
-        threadsPerThreadgroup_ = size;
-      }
-      MTLSize threadsPerThreadgroup = MTLSizeMake(threadsPerThreadgroup_, 1, 1);
+      mps::mtl_setArgs(computeEncoder, repeat, cumsum, result, repeat.stride(0));
+      mps::mtl_dispatch1DJob(computeEncoder, pipelineState, repeat.size(0));
 
-      [computeEncoder dispatchThreads:gridSize threadsPerThreadgroup:threadsPerThreadgroup];
-      [computeEncoder endEncoding];
-      mpsStream->synchronize(SyncType::COMMIT_AND_CONTINUE);
+      getMPSProfiler().endProfileKernel(pipelineState);
     }
   });
-}
-
-Tensor repeat_interleave_mps(const Tensor& repeat_, c10::optional<int64_t> output_size) {
-  Tensor output;
-  Tensor repeat = repeat_;
-  if (repeat.scalar_type() == kLong && !is_macos_13_or_newer(MacOSVersion::MACOS_VER_13_3_PLUS)) {
-    // #103810551: `repeat_interleave_common` uses cumsum to calculate the final shape of output,
-    // which currently doesn't support int64_t as input. Casting internally the indices to int32_t.
-    TORCH_WARN_ONCE(
-        "MPS: no support for int64 repeats mask, casting it to int32. Support has been added in macOS 13.3");
-    repeat = repeat.to(kInt);
-  }
-  AT_DISPATCH_INDEX_TYPES(repeat.scalar_type(), "repeat_interleave_mps", [&]() {
-    output = repeat_interleave_common<index_t, computeRepeatIndices<index_t>>(repeat, output_size);
-  });
-  return output;
+  return result;
 }
 
 } // namespace at::native

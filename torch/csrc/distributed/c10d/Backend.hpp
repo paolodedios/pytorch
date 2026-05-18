@@ -1,30 +1,37 @@
 #pragma once
 
-#include <condition_variable>
 #include <memory>
-#include <mutex>
-#include <stdexcept>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <ATen/ATen.h>
+#include <c10/core/Allocator.h>
 #include <c10/macros/Macros.h>
 
-#include <torch/csrc/distributed/c10d/Work.hpp>
 #include <torch/csrc/distributed/c10d/Types.hpp>
 #include <torch/csrc/distributed/c10d/Utils.hpp>
+#include <torch/csrc/distributed/c10d/Work.hpp>
 #include <torch/csrc/distributed/c10d/debug.h>
-#include <torch/csrc/distributed/c10d/sequence_num.hpp>
 
 constexpr auto kBackendDefaultTimeout =
     std::chrono::milliseconds(30 * 60 * 1000);
 
 namespace c10d {
 
+enum class ErrorType {
+  SUCCESS = 0,
+  TIMEOUT = 1,
+  // e.g., NCCL error, etc
+  COMM_ERROR = 2,
+  // TODO, do we need to distinguish between remote timeout or remote COMM
+  // errors?
+  REMOTE_ERROR = 3
+};
+
 class TORCH_API Backend : public torch::CustomClassHolder {
  public:
-
   // Backend Options is a base struct that defines the basic options
   // when constructing a Backend. Each Backend subclass should
   // extend this struct and define its options if it wants to provide more
@@ -35,11 +42,24 @@ class TORCH_API Backend : public torch::CustomClassHolder {
         std::chrono::milliseconds timeout = kBackendDefaultTimeout)
         : timeout(timeout), backend(std::move(backend)) {}
     ~Options() override = default;
+    Options(const Options&) = default;
 
     std::chrono::milliseconds timeout;
 
     // backend name
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::string backend;
+    std::string group_name;
+    std::string group_desc;
+    std::vector<uint64_t> global_ranks_in_group;
+
+    // When true, symmetric memory rendezvous exchanges metadata via this
+    // PG's allgather instead of TCPStore, which gets overloaded at large
+    // rank counts. This will lazily create the backend communicator if it
+    // doesn't already exist. If this PG is only used for symmetric memory
+    // (no regular collectives), consider calling abort() after rendezvous
+    // to release the communicator.
+    bool use_pg_for_symm_mem_rendezvous = false;
   };
 
   explicit Backend(int rank, int size);
@@ -53,26 +73,93 @@ class TORCH_API Backend : public torch::CustomClassHolder {
     return size_;
   }
 
-  virtual void startCoalescing() {
-    // no-op for backends that have not implemented startCoalescing
+  // Returns an unique opaque ID of this backend that can be used to correlate
+  // with its collectives.
+  int64_t getID() const {
+    return reinterpret_cast<std::intptr_t>(this);
   }
 
-  virtual void endCoalescing(
-      std::vector<c10::intrusive_ptr<Work>>& /* reqs */) {
-    // no-op for backends that have not implemented endCoalescing
+  bool getUsePgForSymmMemRendezvous() const {
+    return use_pg_for_symm_mem_rendezvous_;
+  }
+
+  void setUsePgForSymmMemRendezvous(bool value) {
+    use_pg_for_symm_mem_rendezvous_ = value;
+  }
+
+  virtual bool supportsSplitting() const {
+    return false;
+  }
+
+  virtual bool supportsCoalescing() const {
+    return false;
+  }
+
+  virtual bool supportsTimeEstimation() const {
+    return false;
+  }
+
+  virtual bool supportsShrinking() const {
+    return false;
+  }
+
+  // Shrink the backend by excluding specified ranks. Backends that support
+  // communicator shrinking should override this and return a new backend
+  // instance representing the shrunken group. Backends may use opts_override
+  // to supply backend-specific options for the new group.
+  virtual c10::intrusive_ptr<Backend> shrink(
+      const std::vector<int64_t>& /*ranks_to_exclude*/,
+      int /*shrink_flags*/ = 0,
+      const c10::intrusive_ptr<Options>& /*opts_override*/ = nullptr) {
+    TORCH_CHECK(
+        false,
+        c10::str("Backend ", getBackendName(), " does not support shrink"));
+  }
+
+  virtual void setTimeout(std::chrono::milliseconds timeout) {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not support setting timeout"));
+  }
+
+  virtual void startCoalescing() {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ",
+            getBackendName(),
+            " does not implement startCoalescing"));
+  }
+
+  virtual c10::intrusive_ptr<Work> endCoalescing() {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not implement endCoalescing"));
   }
 
   // Subclasses must override this method to return the backend name
   virtual const std::string getBackendName() const {
     TORCH_INTERNAL_ASSERT(false, "getBackendName is not implemented.");
-  };
+  }
+
+  // Subclasses must override this method to return the backend name
+  virtual c10::intrusive_ptr<Options> getBackendOptions() {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ",
+            getBackendName(),
+            " does not implement getBackendOptions."));
+  }
 
   virtual c10::intrusive_ptr<Work> broadcast(
       std::vector<at::Tensor>& /* tensors */,
       const BroadcastOptions& /* opts */ = BroadcastOptions()) {
     TORCH_CHECK(
         false,
-        c10::str("Backend ", getBackendName(), "does not support broadcast"));
+        c10::str("Backend ", getBackendName(), " does not support broadcast"));
   }
 
   virtual c10::intrusive_ptr<Work> allreduce(
@@ -80,7 +167,18 @@ class TORCH_API Backend : public torch::CustomClassHolder {
       const AllreduceOptions& /* opts */ = AllreduceOptions()) {
     TORCH_CHECK(
         false,
-        c10::str("Backend ", getBackendName(), "does not support allreduce"));
+        c10::str("Backend ", getBackendName(), " does not support allreduce"));
+  }
+
+  virtual c10::intrusive_ptr<Work> allreduce_sparse(
+      std::vector<at::Tensor>& /* tensors */,
+      const AllreduceOptions& /* opts */ = AllreduceOptions()) {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ",
+            getBackendName(),
+            " does not support allreduce sparse"));
   }
 
   virtual c10::intrusive_ptr<Work> allreduce_coalesced(
@@ -92,7 +190,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
         c10::str(
             "Backend ",
             getBackendName(),
-            "does not support allreduce_coalesced"));
+            " does not support allreduce_coalesced"));
   }
 
   virtual c10::intrusive_ptr<Work> reduce(
@@ -100,7 +198,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
       const ReduceOptions& /* opts */ = ReduceOptions()) {
     TORCH_CHECK(
         false,
-        c10::str("Backend ", getBackendName(), "does not support reduce"));
+        c10::str("Backend ", getBackendName(), " does not support reduce"));
   }
 
   virtual c10::intrusive_ptr<Work> allgather(
@@ -109,7 +207,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
       const AllgatherOptions& /* opts */ = AllgatherOptions()) {
     TORCH_CHECK(
         false,
-        c10::str("Backend ", getBackendName(), "does not support allgather"));
+        c10::str("Backend ", getBackendName(), " does not support allgather"));
   }
 
   // Gathers a single tensor inputBuffer into a single buffer outputBuffer that
@@ -123,7 +221,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
     TORCH_CHECK(
         false,
         c10::str(
-            "Backend ", getBackendName(), "does not support _allgather_base"));
+            "Backend ", getBackendName(), " does not support _allgather_base"));
   }
 
   // This function is deprecated and will be moved out of Backend to comms:
@@ -139,7 +237,22 @@ class TORCH_API Backend : public torch::CustomClassHolder {
         c10::str(
             "Backend ",
             getBackendName(),
-            "does not support allgather_coalesced"));
+            " does not support allgather_coalesced"));
+  }
+
+  // This function is a coalesced version of `allgather_into_tensor` (currently
+  // still named as `_allgather_base`). Each tensor in the vector corresponds to
+  // an input/output of one `allgather_into_tensor` operation.
+  virtual c10::intrusive_ptr<Work> allgather_into_tensor_coalesced(
+      std::vector<at::Tensor>& /* outputs */,
+      std::vector<at::Tensor>& /* inputs */,
+      const AllgatherOptions& /* opts */ = AllgatherOptions()) {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ",
+            getBackendName(),
+            " does not support allgather_into_tensor_coalesced"));
   }
 
   virtual c10::intrusive_ptr<Work> gather(
@@ -148,7 +261,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
       const GatherOptions& /* opts */ = GatherOptions()) {
     TORCH_CHECK(
         false,
-        c10::str("Backend ", getBackendName(), "does not support gather"));
+        c10::str("Backend ", getBackendName(), " does not support gather"));
   }
 
   virtual c10::intrusive_ptr<Work> scatter(
@@ -157,7 +270,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
       const ScatterOptions& /* opts */ = ScatterOptions()) {
     TORCH_CHECK(
         false,
-        c10::str("Backend ", getBackendName(), "does not support scatter"));
+        c10::str("Backend ", getBackendName(), " does not support scatter"));
   }
 
   virtual c10::intrusive_ptr<Work> reduce_scatter(
@@ -167,7 +280,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
     TORCH_CHECK(
         false,
         c10::str(
-            "Backend ", getBackendName(), "does not support reduce_scatter"));
+            "Backend ", getBackendName(), " does not support reduce_scatter"));
   }
 
   virtual c10::intrusive_ptr<Work> _reduce_scatter_base(
@@ -179,7 +292,22 @@ class TORCH_API Backend : public torch::CustomClassHolder {
         c10::str(
             "Backend ",
             getBackendName(),
-            "does not support _reduce_scatter_base"));
+            " does not support _reduce_scatter_base"));
+  }
+
+  // This function is a coalesced version of `reduce_scatter_tensor` (currently
+  // still named as `_reduce_scatter_base`). Each tensor in the vector
+  // corresponds to an input/output of one `reduce_scatter_tensor` operation.
+  virtual c10::intrusive_ptr<Work> reduce_scatter_tensor_coalesced(
+      std::vector<at::Tensor>& /* outputs */,
+      std::vector<at::Tensor>& /* inputs */,
+      const ReduceScatterOptions& /* opts */ = ReduceScatterOptions()) {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ",
+            getBackendName(),
+            " does not support reduce_scatter_tensor_coalesced"));
   }
 
   virtual c10::intrusive_ptr<Work> alltoall_base(
@@ -191,7 +319,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
     TORCH_CHECK(
         false,
         c10::str(
-            "Backend ", getBackendName(), "does not support alltoall_base"));
+            "Backend ", getBackendName(), " does not support alltoall_base"));
   }
 
   virtual c10::intrusive_ptr<Work> alltoall(
@@ -200,7 +328,7 @@ class TORCH_API Backend : public torch::CustomClassHolder {
       const AllToAllOptions& opts = AllToAllOptions()) {
     TORCH_CHECK(
         false,
-        c10::str("Backend ", getBackendName(), "does not support alltoall"));
+        c10::str("Backend ", getBackendName(), " does not support alltoall"));
   }
 
   virtual void monitoredBarrier(
@@ -246,7 +374,8 @@ class TORCH_API Backend : public torch::CustomClassHolder {
       int /* dstRank */,
       int /* tag */) {
     TORCH_CHECK(
-        false, c10::str("Backend ", getBackendName(), "does not support send"));
+        false,
+        c10::str("Backend ", getBackendName(), " does not support send"));
   }
 
   virtual c10::intrusive_ptr<Work> recv(
@@ -254,7 +383,8 @@ class TORCH_API Backend : public torch::CustomClassHolder {
       int /* srcRank */,
       int /* tag */) {
     TORCH_CHECK(
-        false, c10::str("Backend ", getBackendName(), "does not support recv"));
+        false,
+        c10::str("Backend ", getBackendName(), " does not support recv"));
   }
 
   virtual c10::intrusive_ptr<Work> recvAnysource(
@@ -263,14 +393,158 @@ class TORCH_API Backend : public torch::CustomClassHolder {
     TORCH_CHECK(
         false,
         c10::str(
-            "Backend ", getBackendName(), "does not support recvAnysource"));
+            "Backend ", getBackendName(), " does not support recvAnysource"));
   }
 
   virtual c10::intrusive_ptr<Work> barrier(
       const BarrierOptions& /* opts */ = BarrierOptions()) {
     TORCH_CHECK(
         false,
-        c10::str("Backend ", getBackendName(), "does not support barrier"));
+        c10::str("Backend ", getBackendName(), " does not support barrier"));
+  }
+
+  virtual void registerOnCompletionHook(
+      std::function<void(std::shared_ptr<WorkInfo>)>&& hook) {
+    TORCH_CHECK(
+        false,
+        "Only ProcessGrouppNCCL supports onCompletion hook, but got ",
+        getBackendName(),
+        " backend.");
+  }
+
+  virtual void waitForPendingWorks() {
+    TORCH_CHECK(
+        false,
+        "Only ProcessGrouppNCCL supports waitForPendingWorks, but got ",
+        getBackendName(),
+        " backend.");
+  }
+
+  virtual void enableCollectivesTiming() {
+    TORCH_CHECK(
+        false,
+        "Backend ",
+        getBackendName(),
+        " is missing implementation of enableCollectivesTiming.");
+  }
+
+  virtual c10::intrusive_ptr<Backend> split(
+      const c10::intrusive_ptr<Store>& store,
+      const std::vector<int>& ranks,
+      const c10::intrusive_ptr<Options>& opts) {
+    TORCH_CHECK(
+        false,
+        "Backend ",
+        getBackendName(),
+        " is missing implementation of split.");
+  }
+
+  virtual c10::intrusive_ptr<Backend> merge(
+      const c10::intrusive_ptr<Store>& store,
+      const c10::intrusive_ptr<Options>& opts,
+      const int& rank,
+      const int& size) {
+    TORCH_CHECK(
+        false,
+        "Backend ",
+        getBackendName(),
+        " is missing implementation of merge.");
+  }
+
+  bool hasHooks() const {
+    return onCompletionHook_ != nullptr;
+  }
+
+  // Do not call this directly, use ProcessGroup::setGroupName instead.
+  virtual void setGroupUid(const std::string& pg_uid) {
+    pg_uid_ = pg_uid;
+  }
+
+  const std::string& getGroupUid() const {
+    return pg_uid_;
+  }
+
+  void setGroupDesc(const std::string& desc) {
+    pg_desc_ = desc;
+  }
+
+  const std::string& getGroupDesc() const {
+    return pg_desc_;
+  }
+
+  // See similar functions in ProcessGroup.hpp for context.
+  std::optional<at::Device> getBoundDeviceId() const {
+    return bound_device_id_;
+  }
+
+  // Perform an eager connect to the specified device if the backend supports
+  // it.
+  virtual void eagerConnectSingleDevice(at::Device device) {
+    // no-op in the default case; this is an optimization some
+    // backends may perform
+  }
+
+  void setBoundDeviceId(std::optional<at::Device> device) {
+    if (device) {
+      TORCH_CHECK(device->has_index(), "setBoundDeviceId must have an index");
+    }
+    bound_device_id_ = device;
+  }
+
+  virtual ErrorType getError() {
+    TORCH_CHECK(
+        false,
+        c10::str("Backend ", getBackendName(), " does not support getError"));
+  }
+
+  virtual std::shared_ptr<c10::Allocator> getMemAllocator() {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not support getMemAllocator"));
+  }
+
+  // Allocate tensor (aten::empty) from backend's communication-optimized memory
+  // pool
+  virtual at::Tensor allocateTensor(long size, at::TensorOptions options = {}) {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not support allocateTensor"));
+  }
+
+  // Returns true if backend supports tensor allocation
+  virtual bool supportsTensorAlloc(c10::DeviceIndex deviceIdx) {
+    // Change to true in concrete backend if supported
+    return false;
+  }
+
+  // Aborts all pending operations and connections in the backend if the backend
+  // supports it.
+  virtual void abort() {}
+
+  // Shutdown the backend if the backend supports it. This should be used for
+  // normal shutdown.
+  virtual void shutdown() {}
+
+  // APIs related to memory offload
+  virtual void suspend() {
+    TORCH_CHECK(
+        false,
+        c10::str("Backend ", getBackendName(), " does not support suspend"));
+  }
+
+  virtual void resume() {
+    TORCH_CHECK(
+        false,
+        c10::str("Backend ", getBackendName(), " does not support resume"));
+  }
+
+  virtual std::unordered_map<std::string, uint64_t> getMemoryStats() {
+    TORCH_CHECK(
+        false,
+        c10::str(
+            "Backend ", getBackendName(), " does not support getMemoryStats"));
   }
 
  protected:
@@ -278,13 +552,21 @@ class TORCH_API Backend : public torch::CustomClassHolder {
   // appropriate logging etc.
   void init();
 
-  // Optional sequence number structure for matching collectives.
-  c10::optional<c10d::SequenceNum> sequenceNum_ = c10::nullopt;
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   const int rank_;
+  // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   const int size_;
   // Debug level setting. It is parsed once when ProcessGroup is constructed and
   // remains the same across use of this process group.
   DebugLevel dist_debug_level_;
+  std::string pg_uid_;
+  std::string pg_desc_;
+
+  std::function<void(std::shared_ptr<WorkInfo>)> onCompletionHook_;
+
+  std::optional<at::Device> bound_device_id_;
+
+  bool use_pg_for_symm_mem_rendezvous_ = false;
 };
 
 } // namespace c10d

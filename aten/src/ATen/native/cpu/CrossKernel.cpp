@@ -15,14 +15,14 @@ namespace at::native {
 namespace {
 
 template<typename scalar_t>
-static void apply_cross(const Tensor& result, const Tensor& a, const Tensor& b, const int64_t dim) {
+void apply_cross(const Tensor& result, const Tensor& a, const Tensor& b, const int64_t dim) {
   int64_t total = a.numel() / 3;
   int64_t a_stride = a.stride(dim);
   int64_t b_stride = b.stride(dim);
   int64_t r_stride = result.stride(dim);
 
-  scalar_t *a_ptr = a.data_ptr<scalar_t>();
-  scalar_t *b_ptr = b.data_ptr<scalar_t>();
+  const scalar_t *a_ptr = a.const_data_ptr<scalar_t>();
+  const scalar_t *b_ptr = b.const_data_ptr<scalar_t>();
   scalar_t *r_ptr = result.data_ptr<scalar_t>();
 
   parallel_for(0, total, internal::GRAIN_SIZE, [&](int64_t s, int64_t e) {
@@ -68,14 +68,14 @@ static void apply_cross(const Tensor& result, const Tensor& a, const Tensor& b, 
   });
 }
 
-static void cross_kernel_impl(const Tensor& result, const Tensor& a, const Tensor& b, const int64_t dim) {
-  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND(kBFloat16, result.scalar_type(), "cross", [&]() {
+void cross_kernel_impl(const Tensor& result, const Tensor& a, const Tensor& b, const int64_t dim) {
+  AT_DISPATCH_ALL_TYPES_AND_COMPLEX_AND2(kBFloat16, kHalf, result.scalar_type(), "cross", [&]() {
     apply_cross<scalar_t>(result, a, b, dim);
   });
 }
 
 } // anonymous namespace
 
-REGISTER_DISPATCH(cross_stub, &cross_kernel_impl);
+REGISTER_DISPATCH(cross_stub, &cross_kernel_impl)
 
 } // namespace at::native

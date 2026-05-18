@@ -28,7 +28,45 @@ on:
         description: |
           If this is set, our linter will use this to make sure that every other
           job with the same `sync-tag` is identical.
-
+      s3-bucket:
+        description: S3 bucket to download artifact
+        required: false
+        type: string
+        default: "gha-artifacts"
+      aws-role-to-assume:
+        description: role to assume for downloading artifacts
+        required: false
+        type: string
+        default: ""
+      upload-aws-role-to-assume:
+        description: role to assume for downloading artifacts
+        required: false
+        type: string
+        default: ""
+      runner_prefix:
+        description: prefix for runner label
+        type: string
+        default: ""
+      use-arc:
+        required: false
+        type: boolean
+        default: false
+        description: If true, use ARC (OSDC) runner path instead of EC2.
+      python-version:
+        required: false
+        type: string
+        default: ""
+        description: Python version to use for the OSDC build.
+      compiler:
+        required: false
+        type: string
+        default: ""
+        description: Compiler to use for the OSDC build.
+      cuda-version:
+        required: false
+        type: string
+        default: ""
+        description: CUDA version to use for the OSDC build.
     secrets:
       GH_PYTORCHBOT_TOKEN:
         required: false
@@ -37,8 +75,9 @@ on:
 jobs:
   build-docs:
     # Don't run on forked repos.
-    if: github.repository_owner == 'pytorch'
+    if: github.repository_owner == 'pytorch' && !inputs.use-arc
     runs-on: ${{ matrix.runner }}
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.event.ref, 'refs/tags/v')) && 'pytorchbot-env' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -48,20 +87,15 @@ jobs:
             # an OOM issue when running the job, so this upgrades the runner from 4xlarge
             # to the next available tier of 12xlarge. So much memory just to generate cpp
             # doc
-            runner: linux.12xlarge
+            runner: ${{ inputs.runner_prefix }}linux.12xlarge.memory
             # TODO: Nightly cpp docs take longer and longer to finish (more than 3h now)
             # Let's try to figure out how this can be improved
-            timeout-minutes: 240
+            timeout-minutes: 360
           - docs_type: python
-            runner: linux.2xlarge
-            # It takes less than 30m to finish python docs unless there are issues
-            timeout-minutes: 30
-          - docs_type: functorch
-            runner: linux.2xlarge
-            # It takes less than 15m to finish functorch docs unless there are issues
-            timeout-minutes: 15
+            runner: ${{ inputs.runner_prefix }}linux.c7i.2xlarge
+            timeout-minutes: 60
     # Set a fixed name for this job instead of using the current matrix-generated name, i.e. build-docs (cpp, linux.12xlarge, 180)
-    # The current name requires updating the Rockset last docs push query from test-infra every time the matrix is updated
+    # The current name requires updating the database last docs push query from test-infra every time the matrix is updated
     name: build-docs-${{ matrix.docs_type }}-${{ inputs.push }}
     steps:
       - name: Setup SSH (Click me for login details)
@@ -74,22 +108,35 @@ jobs:
             To start Python docs build type:
               cd docs && make html && make coverage
 
-      # [see note: pytorch repo ref]
-      - name: Checkout PyTorch
-        uses: pytorch/pytorch/.github/actions/checkout-pytorch@master
-
       - name: Setup Linux
-        uses: ./.github/actions/setup-linux
+        uses: pytorch/pytorch/.github/actions/setup-linux@main
+        with:
+          # Docs build runs `git log --follow` per page for "Created/Updated"
+          # dates; a treeless clone triggers lazy fetches and makes the build
+          # hang. Use a full checkout for this job.
+          checkout-mode: normal
+
+      - name: Login to ECR
+        uses: ./.github/actions/ecr-login
+        with:
+          aws-role-to-assume: ${{ inputs.aws-role-to-assume }}
+
+      - name: Calculate docker image
+        id: calculate-docker-image
+        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
+        with:
+          docker-image-name: ${{ inputs.docker-image }}
 
       - name: Pull docker image
         uses: pytorch/test-infra/.github/actions/pull-docker-image@main
         with:
-          docker-image: ${{ inputs.docker-image }}
+          docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
 
       - name: Download build artifacts
         uses: ./.github/actions/download-build-artifacts
         with:
           name: ${{ inputs.build-environment }}
+          s3-bucket: ${{ inputs.s3-bucket }}
 
       - name: Generate netrc (only for docs-push)
         if: inputs.push
@@ -121,7 +168,7 @@ jobs:
           if [[ "${GITHUB_REF}" =~ ^refs/tags/v([0-9]+\.[0-9]+)\.* ]]; then
             target="${BASH_REMATCH[1]}"
           else
-            target="master"
+            target="main"
           fi
           # detached container should get cleaned up by teardown_ec2_linux
           container_name=$(docker run \
@@ -133,6 +180,7 @@ jobs:
             -e RUN_DOXYGEN \
             -e WITH_PUSH \
             --env-file="/tmp/github_env_${GITHUB_RUN_ID}" \
+            -e GITHUB_WORKSPACE=/var/lib/jenkins/workspace \
             --security-opt seccomp=unconfined \
             --cap-add=SYS_PTRACE \
             --tty \
@@ -143,76 +191,223 @@ jobs:
             -w /var/lib/jenkins/workspace \
             "${DOCKER_IMAGE}"
           )
-          docker exec -t "${container_name}" bash -c "sudo chown -R jenkins . && pip install $(echo dist/*.whl)[opt-einsum] && ./.circleci/scripts/${DOCS_TYPE}_doc_push_script.sh"
+          docker exec -t "${container_name}" bash -c "sudo chown -R jenkins . && pip install $(echo dist/*.whl)[opt-einsum] && ./.ci/pytorch/${DOCS_TYPE}_doc_push_script.sh"
 
       - name: Chown workspace
         uses: ./.github/actions/chown-workspace
         if: always()
 
-      - name: Upload Python Docs Preview
-        uses: seemethere/upload-artifact-s3@v5
-        if: ${{ github.event_name == 'pull_request' && matrix.docs_type == 'python' && steps.build-docs.outcome == 'success' }}
+      - name: configure aws credentials
+        if : ${{ inputs.upload-aws-role-to-assume != '' }}
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
-          retention-days: 14
-          s3-bucket: doc-previews
-          if-no-files-found: error
-          path: pytorch.github.io/docs/master/
-          s3-prefix: pytorch/${{ github.event.pull_request.number }}
+          role-to-assume: ${{ inputs.upload-aws-role-to-assume }}
+          role-session-name: gha-linux-test
+          aws-region: us-east-1
+
+      - name: Upload Python Docs Preview
+        if: ${{ github.event_name == 'pull_request' && matrix.docs_type == 'python' && steps.build-docs.outcome == 'success' }}
+        run: |
+          aws s3 sync pytorch_docs/main/ s3://doc-previews/pytorch/pytorch/${{ github.event.pull_request.number }} --delete --quiet
 
       - name: Upload C++ Docs Preview
-        uses: seemethere/upload-artifact-s3@v5
         if: ${{ github.event_name == 'pull_request' && matrix.docs_type == 'cpp' && steps.build-docs.outcome == 'success' }}
-        with:
-          retention-days: 14
-          if-no-files-found: error
-          s3-bucket: doc-previews
-          path: cppdocs/
-          s3-prefix: pytorch/${{ github.event.pull_request.number }}/cppdocs
+        run: |
+          aws s3 sync cppdocs/ s3://doc-previews/pytorch/pytorch/${{ github.event.pull_request.number }}/cppdocs --delete --quiet
 
-      - name: Upload functorch Docs Preview
-        uses: seemethere/upload-artifact-s3@v5
-        if: ${{ github.event_name == 'pull_request' && matrix.docs_type == 'functorch' && steps.build-docs.outcome == 'success' }}
-        with:
-          retention-days: 14
-          s3-bucket: doc-previews
-          if-no-files-found: error
-          path: functorch_ghpages/nightly/
-          s3-prefix: pytorch/${{ github.event.pull_request.number }}/functorchdocs
-
-      # The three upload steps below duplicate the upload from above, but to a different path. This is needed since we
-      # are in the process of changing the path, but want to keep the disruption to a minimum.
-      # See https://github.com/pytorch/test-infra/issues/3894
-      # After a grace period the s3-prefix should start with pytorch/pytorch/
-      - name: Upload Python Docs Preview (forward compatibility)
-        uses: seemethere/upload-artifact-s3@v5
-        if: ${{ github.event_name == 'pull_request' && matrix.docs_type == 'python' && steps.build-docs.outcome == 'success' }}
-        with:
-          retention-days: 14
-          s3-bucket: doc-previews
-          if-no-files-found: error
-          path: pytorch.github.io/docs/master/
-          s3-prefix: pytorch/pytorch/pytorch/${{ github.event.pull_request.number }}
-
-      - name: Upload C++ Docs Preview (forward compatibility)
-        uses: seemethere/upload-artifact-s3@v5
+      - name: Post C++ Docs Coverage Comment
         if: ${{ github.event_name == 'pull_request' && matrix.docs_type == 'cpp' && steps.build-docs.outcome == 'success' }}
-        with:
-          retention-days: 14
-          if-no-files-found: error
-          s3-bucket: doc-previews
-          path: cppdocs/
-          s3-prefix: pytorch/pytorch/pytorch/${{ github.event.pull_request.number }}/cppdocs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          MARKER="<!-- cpp-docs-coverage -->"
 
-      - name: Upload functorch Docs Preview (forward compatibility)
-        uses: seemethere/upload-artifact-s3@v5
-        if: ${{ github.event_name == 'pull_request' && matrix.docs_type == 'functorch' && steps.build-docs.outcome == 'success' }}
-        with:
-          retention-days: 14
-          s3-bucket: doc-previews
-          if-no-files-found: error
-          path: functorch_ghpages/nightly/
-          s3-prefix: pytorch/pytorch/pytorch/${{ github.event.pull_request.number }}/functorchdocs
+          # Only post if the PR touches docs/cpp
+          if ! gh pr diff "$PR_NUM" --name-only | grep -q '^docs/cpp/'; then
+            echo "No changes to docs/cpp/, skipping coverage comment."
+            exit 0
+          fi
+
+          # Skip if we already posted
+          if gh pr view "$PR_NUM" --json comments --jq '.comments[].body' | grep -q "$MARKER"; then
+            echo "Coverage comment already posted, skipping."
+            exit 0
+          fi
+
+          body="${MARKER}
+          ## C++ Docs
+
+          - [Doc Preview](https://docs-preview.pytorch.org/pytorch/pytorch/${PR_NUM}/cppdocs/index.html)
+          - [API Coverage Report](https://docs-preview.pytorch.org/pytorch/pytorch/${PR_NUM}/cppdocs/_coverage/cpp_coverage.txt)
+          - [HTML Issues Report](https://docs-preview.pytorch.org/pytorch/pytorch/${PR_NUM}/cppdocs/_coverage/cpp_html_issues.txt)"
+
+          if [ -f cppdocs/_coverage/index.html ]; then
+            body="${body}
+          - [Coverxygen Report (interactive)](https://docs-preview.pytorch.org/pytorch/pytorch/${PR_NUM}/cppdocs/_coverage/index.html)"
+          fi
+
+          gh pr comment "$PR_NUM" --body "$body"
+
+      - name: Upload C++ Docs Preview (nightly dry-run)
+        if: ${{ !inputs.push && github.event_name != 'pull_request' && matrix.docs_type == 'cpp' && steps.build-docs.outcome == 'success' }}
+        run: |
+          # Use aws s3 cp --recursive for fast parallel uploads instead of uploading files one by one
+          aws s3 cp cppdocs/ s3://doc-previews/pytorch/pytorch/nightly-${{ github.sha }}/cppdocs --recursive --quiet
+          echo "C++ docs preview available at:"
+          echo "https://docs-preview.pytorch.org/pytorch/pytorch/nightly-${{ github.sha }}/cppdocs/index.html"
 
       - name: Teardown Linux
         uses: pytorch/test-infra/.github/actions/teardown-linux@main
         if: always()
+
+  build-docs-osdc:
+    if: github.repository_owner == 'pytorch' && inputs.use-arc
+    permissions:
+      id-token: write
+      contents: read
+      actions: read
+    runs-on: ${{ matrix.runner }}
+    environment: ${{ (github.ref == 'refs/heads/main' || startsWith(github.event.ref, 'refs/tags/v')) && 'pytorchbot-env' || '' }}
+    container:
+      image: ${{ inputs.docker-image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - docs_type: cpp
+            runner: ${{ inputs.runner_prefix }}l-x86iavx512-48-384
+            timeout-minutes: 360
+          - docs_type: python
+            runner: ${{ inputs.runner_prefix }}l-x86iavx512-16-128
+            timeout-minutes: 60
+    name: build-docs-${{ matrix.docs_type }}-${{ inputs.push }}
+    steps:
+      - name: Setup Linux
+        id: setup-linux
+        uses: pytorch/pytorch/.github/actions/setup-linux@main
+        with:
+          use-arc: true
+          python-version: ${{ inputs.python-version }}
+          compiler: ${{ inputs.compiler }}
+          cuda-version: ${{ inputs.cuda-version }}
+          submodules: false
+          # See comment in the EC2 build-docs job above.
+          checkout-mode: normal
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials
+        id: aws-creds
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7
+        with:
+          role-to-assume: arn:aws:iam::308535385114:role/arc
+          aws-region: us-east-1
+          role-duration-seconds: 18000
+
+      - name: Download build artifacts
+        uses: pytorch/pytorch/.github/actions/download-build-artifacts@main
+        with:
+          name: ${{ inputs.build-environment }}
+          s3-bucket: ${{ inputs.s3-bucket }}
+          use-gha: ${{ steps.aws-creds.outcome != 'success' }}
+
+      - name: Generate netrc (only for docs-push)
+        if: inputs.push
+        env:
+          GITHUB_PYTORCHBOT_TOKEN: ${{ secrets.GH_PYTORCHBOT_TOKEN }}
+        run: |
+          rm -rf "${HOME}/.netrc"
+          echo "machine github.com" > "${HOME}/.netrc"
+          echo "login pytorchbot" >> "${HOME}/.netrc"
+          echo "password ${GITHUB_PYTORCHBOT_TOKEN}" >> "${HOME}/.netrc"
+
+      - name: Build ${{ matrix.docs_type }} docs
+        timeout-minutes: ${{ matrix.timeout-minutes }}
+        id: build-docs
+        env:
+          WITH_PUSH: ${{ inputs.push }}
+          DOCS_TYPE: ${{ matrix.docs_type }}
+          RUN_DOXYGEN: ${{ inputs.run-doxygen }}
+          BUILD_ENVIRONMENT: ${{ inputs.build-environment }}
+          SHA1: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -ex
+          if [[ "${GITHUB_REF}" =~ ^refs/tags/v([0-9]+\.[0-9]+)\.* ]]; then
+            target="${BASH_REMATCH[1]}"
+          else
+            target="main"
+          fi
+          export DOCS_VERSION="${target}"
+          pip install $(echo dist/*.whl)[opt-einsum]
+          ./.ci/pytorch/${DOCS_TYPE}_doc_push_script.sh
+
+      - name: Install AWS CLI
+        if: ${{ steps.aws-creds.outcome == 'success' && steps.build-docs.outcome == 'success' }}
+        run: pip install awscli==1.29.40
+
+      - name: Upload Python Docs Preview
+        if: ${{ steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request' && matrix.docs_type == 'python' && steps.build-docs.outcome == 'success' }}
+        run: |
+          aws s3 sync pytorch_docs/main/ s3://doc-previews/pytorch/pytorch/${{ github.event.pull_request.number }} --delete --quiet
+
+      - name: Upload C++ Docs Preview
+        if: ${{ steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request' && matrix.docs_type == 'cpp' && steps.build-docs.outcome == 'success' }}
+        run: |
+          aws s3 sync cppdocs/ s3://doc-previews/pytorch/pytorch/${{ github.event.pull_request.number }}/cppdocs --delete --quiet
+
+      - name: Post C++ Docs Coverage Comment
+        if: ${{ steps.aws-creds.outcome == 'success' && github.event_name == 'pull_request' && matrix.docs_type == 'cpp' && steps.build-docs.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          MARKER="<!-- cpp-docs-coverage -->"
+
+          # Only post if the PR touches docs/cpp
+          if ! gh pr diff "$PR_NUM" --name-only | grep -q '^docs/cpp/'; then
+            echo "No changes to docs/cpp/, skipping coverage comment."
+            exit 0
+          fi
+
+          # Skip if we already posted
+          if gh pr view "$PR_NUM" --json comments --jq '.comments[].body' | grep -q "$MARKER"; then
+            echo "Coverage comment already posted, skipping."
+            exit 0
+          fi
+
+          body="${MARKER}
+          ## C++ Docs
+
+          - [Doc Preview](https://docs-preview.pytorch.org/pytorch/pytorch/${PR_NUM}/cppdocs/index.html)
+          - [API Coverage Report](https://docs-preview.pytorch.org/pytorch/pytorch/${PR_NUM}/cppdocs/_coverage/cpp_coverage.txt)
+          - [HTML Issues Report](https://docs-preview.pytorch.org/pytorch/pytorch/${PR_NUM}/cppdocs/_coverage/cpp_html_issues.txt)"
+
+          if [ -f cppdocs/_coverage/index.html ]; then
+            body="${body}
+          - [Coverxygen Report (interactive)](https://docs-preview.pytorch.org/pytorch/pytorch/${PR_NUM}/cppdocs/_coverage/index.html)"
+          fi
+
+          gh pr comment "$PR_NUM" --body "$body"
+
+      - name: Upload C++ Docs Preview (nightly dry-run)
+        if: ${{ steps.aws-creds.outcome == 'success' && !inputs.push && github.event_name != 'pull_request' && matrix.docs_type == 'cpp' && steps.build-docs.outcome == 'success' }}
+        run: |
+          # Unlike EC2 runners, the OSDC container doesn't have aws CLI pre-installed
+          pip install awscli==1.29.40
+          aws s3 cp cppdocs/ s3://doc-previews/pytorch/pytorch/nightly-${{ github.sha }}/cppdocs --recursive --quiet
+          echo "C++ docs preview available at:"
+          echo "https://docs-preview.pytorch.org/pytorch/pytorch/nightly-${{ github.sha }}/cppdocs/index.html"
+
+  memory-viz-tests:
+    # Tests for torch memory visualizer
+    # tag shangdiy for any issue with this test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run MemoryViz JS tests (nonretryable)
+        run: node test/profiler/test_memory_viz.js

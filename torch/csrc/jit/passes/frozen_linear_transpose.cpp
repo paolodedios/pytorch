@@ -1,9 +1,7 @@
 #include <torch/csrc/jit/ir/ir.h>
-#include <torch/csrc/jit/ir/ir_views.h>
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/frozen_linear_transpose.h>
 #include <torch/csrc/jit/passes/utils/optimization_utils.h>
-#include <torch/csrc/jit/runtime/graph_executor.h>
 #include <torch/csrc/jit/runtime/graph_iterator.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
@@ -12,11 +10,9 @@
 #include <ATen/ops/transpose.h>
 #endif
 
-#include <iostream>
 #include <utility>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 namespace {
 
 using Tensor = at::Tensor;
@@ -79,7 +75,7 @@ class TransposeFrozenLinear {
       node->replaceAllUsesWith(bias_result);
     }
     node->destroy();
-  };
+  }
 
   void handleBlockAndSubblocks(Block* block) {}
 
@@ -99,5 +95,4 @@ TORCH_API bool FrozenLinearTranspose(std::shared_ptr<Graph>& graph) {
   return changed;
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

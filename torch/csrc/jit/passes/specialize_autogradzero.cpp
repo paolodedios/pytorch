@@ -3,25 +3,23 @@
 #include <c10/util/Exception.h>
 #include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/jit/jit_log.h>
-#include <torch/csrc/jit/passes/clear_undefinedness.h>
 #include <torch/csrc/jit/runtime/graph_executor.h>
 #include <torch/csrc/jit/runtime/profiling_record.h>
 
 #include <ATen/core/symbol.h>
 #include <c10/util/irange.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 static const auto countsAttribute = Symbol::attr("none_counts");
 
-bool hasGradSumToSizeUses(Value* v) {
+static bool hasGradSumToSizeUses(Value* v) {
   return std::any_of(v->uses().begin(), v->uses().end(), [](const Use& use) {
     return use.user->kind() == aten::_grad_sum_to_size;
   });
 }
 
-void insertProfileNodesForSpecializeAutogradZero(
+static void insertProfileNodesForSpecializeAutogradZero(
     Block* block,
     ProfilingRecord* pr) {
   for (auto it = block->nodes().begin(); it != block->nodes().end(); ++it) {
@@ -478,5 +476,4 @@ void specializeAutogradZero(std::shared_ptr<Graph> g) {
   azs.run();
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

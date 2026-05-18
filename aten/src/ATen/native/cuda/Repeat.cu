@@ -12,13 +12,18 @@
 
 template <typename index_t>
 __global__ static void compute_cuda_kernel(
-    index_t* repeat_ptr,
-    int64_t* cumsum_ptr,
+    const index_t* repeat_ptr,
+    const int64_t* cumsum_ptr,
     index_t* result_ptr,
     int64_t size,
     int64_t result_size) {
-  CUDA_KERNEL_ASSERT(result_size == cumsum_ptr[size - 1]);
-  int64_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+  CUDA_KERNEL_ASSERT_PRINTF(
+      result_size == cumsum_ptr[size - 1],
+      "Invalid input! In `repeat_interleave`, the `output_size` argument (%ld) must be the same as the sum of the elements in the `repeats` tensor (%ld).\n",
+      result_size,
+      cumsum_ptr[size - 1]);
+
+  int64_t idx = ((int64_t) blockIdx.x) * blockDim.x + threadIdx.x;
   int64_t stride = (blockDim.x * gridDim.x) / C10_WARP_SIZE;
   int warp_id = idx / C10_WARP_SIZE;
   int tid_in_warp = idx % C10_WARP_SIZE;
@@ -35,8 +40,8 @@ __global__ static void compute_cuda_kernel(
 
 template <typename index_t>
 static void compute_cuda(
-    index_t* repeat_ptr,
-    int64_t* cumsum_ptr,
+    const index_t* repeat_ptr,
+    const int64_t* cumsum_ptr,
     index_t* result_ptr,
     int64_t size,
     int64_t result_size) {
@@ -54,7 +59,7 @@ namespace at::native {
 
 Tensor repeat_interleave_cuda(
     const Tensor& repeat,
-    c10::optional<int64_t> output_size) {
+    std::optional<int64_t> output_size) {
   Tensor output;
   AT_DISPATCH_INDEX_TYPES(
       repeat.scalar_type(), "repeat_interleave_cuda", [&]() {

@@ -1,11 +1,15 @@
+#include <c10/macros/Macros.h>
+
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wdeprecated-declarations")
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+C10_DIAGNOSTIC_POP()
 
 @interface MPSCNNNeuronOp : NSObject
 
-+ (MPSCNNNeuronHardSigmoid*)hardSigmoid API_AVAILABLE(ios(11.0), macos(10.13));
-+ (MPSCNNNeuronReLU*)relu;
-+ (MPSCNNNeuronSigmoid*)sigmoid;
-+ (MPSCNNNeuronTanH*)tanh;
++ (MPSCNNNeuron*)hardSigmoid API_AVAILABLE(ios(11.0), macos(10.13));
++ (MPSCNNNeuron*)relu;
++ (MPSCNNNeuron*)sigmoid;
++ (MPSCNNNeuron*)tanh;
 
 @end
 

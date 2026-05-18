@@ -1,3 +1,4 @@
+#include <fmt/core.h>
 #include <torch/csrc/DynamicTypes.h>
 #include <torch/csrc/THP.h>
 #include <torch/csrc/autograd/variable.h>
@@ -11,10 +12,10 @@
 
 #include <algorithm>
 #include <cstdarg>
+#include <cstring>
 #include <iterator>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 int THPUtils_getCallable(PyObject* arg, PyObject** result) {
@@ -54,17 +55,17 @@ std::vector<int64_t> THPUtils_unpackLongs(PyObject* arg) {
     for (int i = 0; i != nDim; ++i) {
       PyObject* item =
           tuple ? PyTuple_GET_ITEM(arg, i) : PyList_GET_ITEM(arg, i);
-      if (!THPUtils_checkLong(item)) {
-        std::ostringstream oss;
-        oss << "expected int at position " << i
-            << ", but got: " << THPUtils_typename(item);
-        throw std::runtime_error(oss.str());
-      }
+      TORCH_CHECK(
+          THPUtils_checkLong(item),
+          "expected int at position ",
+          i,
+          ", but got: ",
+          THPUtils_typename(item));
       sizes[i] = THPUtils_unpackLong(item);
     }
     return sizes;
   }
-  throw std::runtime_error("Expected tuple or list");
+  TORCH_CHECK(false, "Expected tuple or list");
 }
 
 bool THPUtils_checkIntTuple(PyObject* arg) {
@@ -80,12 +81,10 @@ bool THPUtils_checkIntTuple(PyObject* arg) {
 }
 
 std::vector<int> THPUtils_unpackIntTuple(PyObject* arg) {
-  if (!THPUtils_checkIntTuple(arg)) {
-    throw std::runtime_error("Couldn't unpack int tuple");
-  }
+  TORCH_CHECK(THPUtils_checkIntTuple(arg), "Couldn't unpack int tuple");
   std::vector<int> values(PyTuple_GET_SIZE(arg));
   for (Py_ssize_t i = 0; i < PyTuple_GET_SIZE(arg); ++i) {
-    values[i] = (int)THPUtils_unpackLong(PyTuple_GET_ITEM(arg, i));
+    values[i] = THPUtils_unpackInt(PyTuple_GET_ITEM(arg, i));
   }
   return values;
 }
@@ -104,7 +103,7 @@ void THPUtils_setError(const char* format, ...) {
 
 void THPUtils_addPyMethodDefs(
     std::vector<PyMethodDef>& vector,
-    PyMethodDef* methods) {
+    const PyMethodDef* methods) {
   if (!vector.empty()) {
     // remove nullptr terminator
     vector.pop_back();
@@ -215,34 +214,61 @@ void THPPointer<THPStorage>::free() {
     Py_DECREF(ptr);
 }
 
-void storage_fill(at::Storage self, uint8_t value) {
+void storage_fill(const at::Storage& self, uint8_t value) {
   auto options = c10::TensorOptions().device(self.device()).dtype(at::kByte);
-  auto self_t = at::empty({0}, {}, options).set_(self);
+  auto self_t = at::empty({0}, options).set_(self);
   self_t.fill_(value);
 }
 
-void storage_set(at::Storage self, ptrdiff_t idx, uint8_t value) {
+void storage_set(const at::Storage& self, ptrdiff_t idx, uint8_t value) {
   TORCH_CHECK(
       (idx >= 0) && (idx < static_cast<ptrdiff_t>(self.nbytes())),
       "out of bounds");
   auto options = c10::TensorOptions().device(self.device()).dtype(at::kByte);
-  auto self_t = at::empty({0}, {}, options).set_(self);
+  auto self_t = at::empty({0}, options).set_(self);
   self_t[idx].fill_(value);
 }
 
-uint8_t storage_get(at::Storage self, ptrdiff_t idx) {
+uint8_t storage_get(const at::Storage& self, ptrdiff_t idx) {
   TORCH_CHECK(
       (idx >= 0) && (idx < static_cast<ptrdiff_t>(self.nbytes())),
       "out of bounds");
   auto options = c10::TensorOptions().device(self.device()).dtype(at::kByte);
-  auto self_t = at::empty({0}, {}, options).set_(self);
+  auto self_t = at::empty({0}, options).set_(self);
   return self_t[idx].item<uint8_t>();
 }
 
-template class THPPointer<THPStorage>;
+std::string uuid_to_string(const char* uuid_bytes) {
+  // UUIDs are a 128-bit label. CUDA/HIP and XPU store this as char[16].
+  // For string representation, the code here expands this to
+  // 8-4-4-4-12 hex format, so each byte becomes 2 hex characters.
+  return fmt::format(
+      "{:02x}{:02x}{:02x}{:02x}-"
+      "{:02x}{:02x}-"
+      "{:02x}{:02x}-"
+      "{:02x}{:02x}-"
+      "{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+      (uint8_t)uuid_bytes[0],
+      (uint8_t)uuid_bytes[1],
+      (uint8_t)uuid_bytes[2],
+      (uint8_t)uuid_bytes[3],
+      (uint8_t)uuid_bytes[4],
+      (uint8_t)uuid_bytes[5],
+      (uint8_t)uuid_bytes[6],
+      (uint8_t)uuid_bytes[7],
+      (uint8_t)uuid_bytes[8],
+      (uint8_t)uuid_bytes[9],
+      (uint8_t)uuid_bytes[10],
+      (uint8_t)uuid_bytes[11],
+      (uint8_t)uuid_bytes[12],
+      (uint8_t)uuid_bytes[13],
+      (uint8_t)uuid_bytes[14],
+      (uint8_t)uuid_bytes[15]);
+}
 
-namespace torch {
-namespace gdb {
+template class THPPointer<THPStorage>;
+// NOLINTBEGIN(misc-use-internal-linkage)
+namespace torch::gdb {
 /* ~~~ misc debugging utilities ~~~
  *
  * torch::gdb::* functions are NOT meant to be called by general pytorch code,
@@ -254,19 +280,25 @@ namespace gdb {
 // Return an human-readable representation of the given Tensor. The resulting
 // string is stored into a malloc()ed buffer. The caller is responsible to
 // free() it. We use malloc() instead of new[] because it's much easier to
-// call free than delete[] from withing gdb.
+// call free than delete[] from within gdb.
 // Currently the code for computing the repr of a tensor is written in Python,
 // so we need to wrap the Tensor into a Python object first.
-char* tensor_repr(at::Tensor tensor) {
+char* tensor_repr(const at::Tensor& tensor) {
   PyGILState_STATE gil = PyGILState_Ensure();
   PyObject* pytensor = nullptr;
   PyObject* repr = nullptr;
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  Py_ssize_t bufsize;
+  Py_ssize_t bufsize = 0;
   const char* buf = nullptr;
   char* result = nullptr;
 
-  pytensor = THPVariable_Wrap(at::Tensor(tensor));
+  // NB: It's important not to move the tensor into THPVariable_Wrap,
+  // because this function is only called from our gdb macros, and
+  // we want to avoid accidentally moving out the tensor.  In principle,
+  // the Tensor signature above should induce a copy, but we've
+  // observed that sometimes gdb passes the outer Tensor address exactly as is
+  // into this function.
+  // See https://github.com/pytorch/pytorch/issues/134762
+  pytensor = THPVariable_Wrap(tensor);
   if (!pytensor)
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
     goto error;
@@ -278,23 +310,23 @@ char* tensor_repr(at::Tensor tensor) {
   if (!buf)
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
     goto error;
+  // account for the trailing \0
   // NOLINTNEXTLINE(cppcoreguidelines-no-malloc)
-  result =
-      static_cast<char*>(malloc(bufsize + 1)); // account for the trailing \0
+  result = static_cast<char*>(malloc(bufsize + 1));
   if (!result) {
-    fprintf(stderr, "cannot allocate memory for the result\n");
+    fmt::print(stderr, "cannot allocate memory for the result\n");
     // NOLINTNEXTLINE(cppcoreguidelines-avoid-goto,hicpp-avoid-goto)
     goto error;
   }
-  // NOLINTNEXTLINE(clang-analyzer-security.insecureAPI.strcpy)
-  strcpy(result, buf);
+  std::strncpy(result, buf, bufsize);
+  result[bufsize] = '\0';
   Py_XDECREF(pytensor);
   Py_XDECREF(repr);
   PyGILState_Release(gil);
   return result;
 
 error:
-  fprintf(stderr, "torch::gdb::tensor_repr: unexpected error\n");
+  fmt::print(stderr, "torch::gdb::tensor_repr: unexpected error\n");
   if (PyErr_Occurred())
     PyErr_Print();
   Py_XDECREF(pytensor);
@@ -317,13 +349,12 @@ std::string dispatch_keyset_string(c10::DispatchKeySet keyset) {
   return ss.str();
 }
 
-} // namespace gdb
-} // namespace torch
+} // namespace torch::gdb
+// NOLINTEND(misc-use-internal-linkage)
 
-namespace pybind11 {
-namespace detail {
+namespace pybind11::detail {
 
-bool type_caster<at::Tensor>::load(handle src, bool) {
+bool type_caster<at::Tensor>::load(handle src, bool /*unused*/) {
   PyObject* obj = src.ptr();
   if (THPVariable_Check(obj)) {
     value = THPVariable_Unpack(obj);
@@ -339,7 +370,7 @@ handle type_caster<at::Tensor>::cast(
   return handle(THPVariable_Wrap(src));
 }
 
-bool type_caster<at::IntArrayRef>::load(handle src, bool) {
+bool type_caster<at::IntArrayRef>::load(handle src, bool /*unused*/) {
   PyObject* source = src.ptr();
   auto tuple = PyTuple_Check(source);
   if (tuple || PyList_Check(source)) {
@@ -372,7 +403,7 @@ handle type_caster<at::IntArrayRef>::cast(
   return handle(THPUtils_packInt64Array(src.size(), src.data()));
 }
 
-bool type_caster<at::SymIntArrayRef>::load(handle src, bool) {
+bool type_caster<at::SymIntArrayRef>::load(handle src, bool /*unused*/) {
   PyObject* source = src.ptr();
 
   auto tuple = PyTuple_Check(source);
@@ -413,7 +444,9 @@ handle type_caster<at::SymIntArrayRef>::cast(
   return t.release();
 }
 
-bool type_caster<at::ArrayRef<c10::SymNode>>::load(handle src, bool) {
+bool type_caster<at::ArrayRef<c10::SymNode>>::load(
+    handle src,
+    bool /*unused*/) {
   TORCH_INTERNAL_ASSERT(0, "NYI");
 }
 handle type_caster<at::ArrayRef<c10::SymNode>>::cast(
@@ -435,5 +468,4 @@ handle type_caster<at::ArrayRef<c10::SymNode>>::cast(
   return t.release();
 }
 
-} // namespace detail
-} // namespace pybind11
+} // namespace pybind11::detail

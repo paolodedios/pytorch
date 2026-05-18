@@ -1,7 +1,7 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/native/IndexingUtils.h>
 
-namespace at { namespace native {
+namespace at::native {
 
 bool canUse32BitIndexMath(const TensorBase& t, int64_t max_elem) {
   auto elements = t.sym_numel();
@@ -16,8 +16,7 @@ bool canUse32BitIndexMath(const TensorBase& t, int64_t max_elem) {
   auto linearId = elements - 1;
 
   // NOTE: Assumes all strides are positive, which is true for now
-  // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
-  for (int i = t.dim() - 1; i >= 0; --i) {
+  for (auto i = t.dim() - 1; i >= 0; --i) {
     auto curDimIndex = linearId % t.sym_size(i);
     auto curDimOffset = curDimIndex * t.sym_stride(i);
     offset += curDimOffset;
@@ -31,4 +30,4 @@ bool canUse32BitIndexMath(const TensorBase& t, int64_t max_elem) {
   return true;
 }
 
-}} // namespace at::native
+} // namespace at::native

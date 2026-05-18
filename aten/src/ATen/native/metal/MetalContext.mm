@@ -64,8 +64,8 @@ C10_CLANG_DIAGNOSTIC_POP()
 #endif
   NSError* error = [self _compileProgram];
   if (error) {
-    std::string compilationError = error.localizedDescription.UTF8String;
-    std::string deviceInfo = self.description.UTF8String;
+    std::string compilationError = error.localizedDescription.UTF8String ?: "<unknown error>";
+    std::string deviceInfo = self.description.UTF8String ?: "<unknown device>";
     TORCH_CHECK(false, compilationError + "\n" + deviceInfo);
   }
   return _device && _library && _commandQueue;
@@ -78,11 +78,11 @@ C10_CLANG_DIAGNOSTIC_POP()
   if (state) {
     return state;
   }
-  id<MTLFunction> func = [_library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()]];
+  id<MTLFunction> func = [_library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()] ?: @""];
   TORCH_CHECK(func, "Failed to load the Metal Shader function: ", kernel);
   NSError* errors = nil;
   state = [_device newComputePipelineStateWithFunction:func error:&errors];
-  TORCH_CHECK(state, errors.localizedDescription.UTF8String);
+  TORCH_CHECK(state, errors.localizedDescription.UTF8String ?: "<unknown error>");
   _pipelineCache[kernel] = state;
   return state;
 }
@@ -93,7 +93,9 @@ C10_CLANG_DIAGNOSTIC_POP()
   TORCH_CHECK(_library, "Failed to load Metal shaders");
   std::string kernelStr = kernel;
   for (NSUInteger i = 0; i < constants.count; ++i) {
-    kernelStr += "_" + std::string([constants[i] stringValue].UTF8String);
+    const char* constantStr = [constants[i] stringValue].UTF8String;
+    NSCAssert(constantStr, @"UTF8String returned nil for constant value");
+    kernelStr += "_" + std::string(constantStr);
   }
   std::lock_guard<std::mutex> g(_pipelineCacheMutex);
   id<MTLComputePipelineState> state = _pipelineCache[kernelStr];
@@ -126,12 +128,12 @@ C10_CLANG_DIAGNOSTIC_POP()
     }
   }
   NSError* errors = nil;
-  id<MTLFunction> func = [_library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()]
+  id<MTLFunction> func = [_library newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()] ?: @""
                                         constantValues:constantValues
                                                  error:&errors];
-  TORCH_CHECK(func, errors.localizedDescription.UTF8String);
+  TORCH_CHECK(func, errors.localizedDescription.UTF8String ?: "<unknown error>");
   state = [_device newComputePipelineStateWithFunction:func error:&errors];
-  TORCH_CHECK(state, errors.localizedDescription.UTF8String);
+  TORCH_CHECK(state, errors.localizedDescription.UTF8String ?: "<unknown error>");
   _pipelineCache[kernelStr] = state;
   return state;
 }
@@ -160,7 +162,7 @@ C10_CLANG_DIAGNOSTIC_POP()
     [options setLanguageVersion:_deviceInfo.languageVersion];
     [options setFastMathEnabled:YES];
     _library = [_device
-        newLibraryWithSource:[NSString stringWithUTF8String:PT_METAL_SHADERS]
+        newLibraryWithSource:[NSString stringWithUTF8String:PT_METAL_SHADERS] ?: @""
                      options:options
                        error:&localError];
     compilationError = localError;

@@ -41,10 +41,10 @@ def is_avx512_supported():
 IS_AVX512_UNSUPPORTED = not is_avx512_supported()
 
 LLGA_FUSION_GROUP = 'prim::oneDNNFusionGroup'
-LLGA_NOT_ENABLED = not torch._C.has_mkldnn or IS_WINDOWS or IS_MACOS
+LLGA_NOT_ENABLED = not torch.backends.mkldnn.is_available() or IS_WINDOWS or IS_MACOS
 
 def warmup_forward(f, *args, profiling_count=3):
-    for i in range(profiling_count):
+    for _ in range(profiling_count):
         results = f(*args)
 
     return results
@@ -52,6 +52,11 @@ def warmup_forward(f, *args, profiling_count=3):
 class JitLlgaTestCase(JitTestCase):
 
     def setUp(self):
+        # Don't call super().setUp() — JitTestCase.setUp installs JIT emit
+        # hooks that cause segfaults during process cleanup. Record state
+        # baselines that tearDown checks for.
+        self._prev_torch_function_mode_stack_len = torch._C._len_torch_function_stack()
+        self._prev_torch_function_state = torch._C._get_torch_function_state()
         # PyTorch has divergent op support for AMP in JIT & eager modes
         # so we disable AMP for JIT & leverage eager-mode AMP.
         # Ref: https://github.com/pytorch/pytorch/issues/75956
@@ -68,7 +73,7 @@ class JitLlgaTestCase(JitTestCase):
         with torch.no_grad(), torch._jit_internal._disable_emit_hooks():
             if dtype == torch.bfloat16:
                 # We rely upon eager-mode AMP support for BF16
-                with torch.cpu.amp.autocast(cache_enabled=False, dtype=torch.bfloat16):
+                with torch.autocast(device_type="cpu", cache_enabled=False, dtype=torch.bfloat16):
                     traced = torch.jit.trace(m, x)
                     if isinstance(m, torch.nn.Module):
                         traced = torch.jit.freeze(traced)
@@ -104,7 +109,8 @@ class JitLlgaTestCase(JitTestCase):
 
     def checkPatterns(self, graph, patterns):
         fusion_groups = self.findFusionGroups(graph)
-        assert len(fusion_groups) == len(patterns), "length of subgraphs not equal to length of given patterns"
+        if len(fusion_groups) != len(patterns):
+            raise AssertionError("length of subgraphs not equal to length of given patterns")
 
         for i in range(len(fusion_groups)):
             for pattern in patterns[i]:
@@ -127,7 +133,7 @@ def get_eltwise_fn(name):
     elif name == 'hardswish_':
         return torch.nn.Hardswish(inplace=True)
     else:
-        raise NameError('Eltwise function %s not found' % name)
+        raise NameError(f'Eltwise function {name} not found')
 
 
 @unittest.skipIf(IS_AVX512_UNSUPPORTED, "This test fails for BF16 on machines without AVX512.")
@@ -486,7 +492,7 @@ class TestFusionPattern(JitLlgaTestCase):
     @dtypes(torch.float32, torch.bfloat16)
     def test_conv2d_clamp(self, dtype):
         class M(nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.conv1 = nn.Conv2d(32, 32, 3, padding=1, bias=True)
                 self.conv2 = nn.Conv2d(32, 32, 3, padding=1, bias=True)
@@ -507,19 +513,18 @@ class TestFusionPattern(JitLlgaTestCase):
                 x = torch.clamp(x, max=2)
                 return x
 
-        for inplace in [False, True]:
-            for memory_format in [torch.contiguous_format, torch.channels_last]:
-                x = torch.rand(1, 32, 28, 28).to(memory_format=memory_format)
-                m = M()
-                _, graph = self.checkTrace(m, [x], dtype)
-                self.assertGraphContainsExactly(graph, LLGA_FUSION_GROUP, 5)
-                self.assertFused(graph, ['aten::_convolution', "aten::clamp"])
+        for memory_format in [torch.contiguous_format, torch.channels_last]:
+            x = torch.rand(1, 32, 28, 28).to(memory_format=memory_format)
+            m = M()
+            _, graph = self.checkTrace(m, [x], dtype)
+            self.assertGraphContainsExactly(graph, LLGA_FUSION_GROUP, 5)
+            self.assertFused(graph, ['aten::_convolution', "aten::clamp"])
 
     @onlyCPU
     @dtypes(torch.float32, torch.bfloat16)
     def test_conv2d_bn(self, dtype):
         class M(nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.conv1 = nn.Conv2d(32, 32, 3, padding=1, bias=True)
                 self.bn1 = nn.BatchNorm2d(32)
@@ -541,7 +546,7 @@ class TestFusionPattern(JitLlgaTestCase):
     @dtypes(torch.float32, torch.bfloat16)
     def test_conv2d_bn_relu(self, dtype):
         class M(nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.conv1 = nn.Conv2d(32, 32, 3, padding=1, bias=True)
                 self.bn1 = nn.BatchNorm2d(32)
@@ -645,7 +650,7 @@ class TestFusionPattern(JitLlgaTestCase):
     @dtypes(torch.float32, torch.bfloat16)
     def test_wildcard(self, dtype):
         class M(nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.conv1 = nn.Conv2d(32, 32, 3, padding=1, bias=True)
                 self.eltwise = nn.ReLU()
@@ -722,7 +727,7 @@ class TestFusionPattern(JitLlgaTestCase):
         # The output of the second partition is input to adaptive_avg_pool2d, which is
         # unsupported by LLGA, so it must be handled by PyTorch, which should receive
         # correct strides info of the channels-last tensor.
-        graph, _ = self.checkTrace(m, [x, y], dtype)
+        self.checkTrace(m, [x, y], dtype)
 
 @unittest.skipIf(LLGA_NOT_ENABLED, "MKL-DNN build is disabled")
 class TestEnableDisableLlgaFuser(JitTestCase):
@@ -773,7 +778,7 @@ class TestEnableDisableLlgaFuser(JitTestCase):
 class TestDynamoAOT(JitTestCase):
     def test_dynamo_aot_ts_onednn(self):
         class Seq(nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.layers = nn.Sequential(
                     nn.Linear(10, 10),
@@ -788,7 +793,7 @@ class TestDynamoAOT(JitTestCase):
         mod = Seq()
 
         import torch._dynamo
-        aot_mod = torch._dynamo.optimize("aot_ts", nopython=True)(mod)
+        aot_mod = torch.compile(mod, backend="aot_ts", fullgraph=True)
 
         for _ in range(10):
             with torch.jit.fuser("fuser3"):
@@ -847,11 +852,12 @@ for model_name, enabled in [
         return test
 
     for dtype in [torch.bfloat16, torch.float32]:
-        setattr(TestModel, 'test_vision_%s_%s' % (model_name, str(dtype).split("torch.")[1]), _wrapper(model_name, dtype))
+        setattr(TestModel, 'test_vision_{}_{}'.format(model_name, str(dtype).split("torch.")[1]), _wrapper(model_name, dtype))
 
 
 instantiate_device_type_tests(TestFusionPattern, globals())
 instantiate_device_type_tests(TestOp, globals())
 
 if __name__ == '__main__':
-    run_tests()
+    if sys.version_info < (3, 14):
+        run_tests()

@@ -1,12 +1,13 @@
 #pragma once
-#include <stdint.h>
-#include <iostream>
+#include <cstdint>
+#include <ostream>
 
 #include <torch/csrc/profiler/unwind/lexer.h>
 #include <torch/csrc/profiler/unwind/unwind_error.h>
 
 // Overview of the format described in
 // https://refspecs.linuxfoundation.org/LSB_1.3.0/gLSB/gLSB/ehframehdr.html
+namespace torch::unwind {
 
 struct EHFrameHdr {
   EHFrameHdr(void* base) : base_(base) {
@@ -39,6 +40,7 @@ struct EHFrameHdr {
           throw UnwindError("unknown table encoding");
       }
     }
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
     eh_frame_ = (void*)L.readEncodedOr(eh_frame_ptr_enc_, 0);
     fde_count_ = L.readEncodedOr(fde_count_enc_, 0);
     table_start_ = L.loc();
@@ -53,6 +55,7 @@ struct EHFrameHdr {
         .readEncoded(table_enc_);
   }
   void* fde(size_t i) const {
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
     return (void*)Lexer(table_start_, base_)
         .skip((2 * i + 1) * table_size_)
         .readEncoded(table_enc_);
@@ -64,7 +67,7 @@ struct EHFrameHdr {
     }
     uint64_t low = 0;
     uint64_t high = nentries();
-    while (low + 1 != high) {
+    while (low + 1 < high) {
       auto mid = (low + high) / 2;
       if (addr < lowpc(mid)) {
         high = mid;
@@ -78,7 +81,7 @@ struct EHFrameHdr {
   friend std::ostream& operator<<(std::ostream& out, const EHFrameHdr& self) {
     out << "EHFrameHeader(version=" << self.version_
         << ",table_size=" << self.table_size_
-        << ",fde_count=" << self.fde_count_ << ")";
+        << ",fde_count=" << self.fde_count_ << ')';
     return out;
   }
 
@@ -93,3 +96,5 @@ struct EHFrameHdr {
   int64_t fde_count_;
   uint32_t table_size_;
 };
+
+} // namespace torch::unwind

@@ -1,4 +1,7 @@
-from typing import List, Optional, Tuple
+# mypy: allow-untyped-defs
+import math
+import sys
+from bisect import bisect_right, insort
 
 from torch.distributed._shard.metadata import ShardMetadata
 
@@ -23,39 +26,56 @@ def _check_shard_metadata_pair_overlap(shard1: ShardMetadata, shard2: ShardMetad
 
 
 def _find_nd_overlapping_shards(
-    shards: List[ShardMetadata], sharded_dims: List[int]
-) -> Optional[Tuple[int, int]]:
-    # Each rank has len(sharded_dims) tuples. Each tuple represent the
-    # [begin, end] (inclusive) pair of that dimension.
-    shard_intervals = [
-        [
-            (s.shard_offsets[dim], s.shard_offsets[dim] + s.shard_sizes[dim] - 1)
-            for dim in sharded_dims
-        ]
-        for s in shards
-    ]
+    shards: list[ShardMetadata], sharded_dims: list[int]
+) -> tuple[int, int] | None:
+    """Find overlapping shards using sweep-line algorithm."""
+    if len(shards) <= 1:
+        return None
 
-    for i in range(len(shards)):
-        shard_i = shard_intervals[i]
-        for j in range(i + 1, len(shards)):
-            shard_j = shard_intervals[j]
-            # For each dim of each shard, check if one shard resides on the other
-            # end of second shard with respect to that dim. As an example for a 2D
-            # shard, we would check if one shard is above or on the left of the
-            # other shard.
-            overlap = True
-            for interval_i, interval_j in zip(shard_i, shard_j):
-                if interval_i[0] > interval_j[1] or interval_j[0] > interval_i[1]:
-                    overlap = False
-                    break
-            if overlap:
-                return (i, j)
+    dims = len(sharded_dims)
+    if dims == 0:
+        return None
+
+    sweep_dim_idx = 0
+    if dims > 1:
+        max_size = 0
+        for i, dim in enumerate(sharded_dims):
+            dim_size = shards[0].shard_offsets[dim] + shards[0].shard_sizes[dim]
+            if dim_size > max_size:
+                max_size = dim_size
+                sweep_dim_idx = i
+    sweep_dim = sharded_dims[sweep_dim_idx]
+
+    sorted_indices = sorted(
+        range(len(shards)),
+        key=lambda idx: (
+            shards[idx].shard_offsets[sweep_dim],
+            *(shards[idx].shard_offsets[d] for d in sharded_dims if d != sweep_dim),
+        ),
+    )
+    active: list[tuple[int, int]] = []
+
+    for idx in sorted_indices:
+        current = shards[idx]
+        start = current.shard_offsets[sweep_dim]
+        end = start + current.shard_sizes[sweep_dim]
+
+        cutoff = bisect_right(active, (start, sys.maxsize))
+        if cutoff:
+            del active[:cutoff]
+
+        for _, other_idx in active:
+            other = shards[other_idx]
+
+            if _check_shard_metadata_pair_overlap(current, other):
+                return (other_idx, idx)
+        insort(active, (end, idx))
     return None
 
 
 def _find_1d_overlapping_shards(
-    shards: List[ShardMetadata], dim: int
-) -> Optional[Tuple[int, int]]:
+    shards: list[ShardMetadata], dim: int
+) -> tuple[int, int] | None:
     # (begin, end, index_in_shards). Begin and end are inclusive.
     intervals = [
         (s.shard_offsets[dim], s.shard_offsets[dim] + s.shard_sizes[dim] - 1, i)
@@ -68,7 +88,7 @@ def _find_1d_overlapping_shards(
     return None
 
 
-def validate_non_overlapping_shards_metadata(shards: List[ShardMetadata]):
+def validate_non_overlapping_shards_metadata(shards: list[ShardMetadata]):
     """
     Ensures none of the shards overlap with each other.
 
@@ -81,18 +101,28 @@ def validate_non_overlapping_shards_metadata(shards: List[ShardMetadata]):
     if not shards or len(shards) == 1:
         return
 
-    sharded_dims: List[int] = []
+    sharded_dims: list[int] = []
     for dim in range(len(shards[0].shard_offsets)):
         for i in range(1, len(shards)):
             if (
-                shards[i].shard_offsets[dim] != shards[0].shard_offsets[dim] or
-                shards[i].shard_sizes[dim] != shards[0].shard_sizes[dim]
+                shards[i].shard_offsets[dim] != shards[0].shard_offsets[dim]
+                or shards[i].shard_sizes[dim] != shards[0].shard_sizes[dim]
             ):
                 sharded_dims.append(dim)
                 break
 
-    pair: Optional[Tuple[int, int]] = None
+    pair: tuple[int, int] | None = None
     if len(sharded_dims) == 0:
+        # if shard is all zeros, we should consider as pass
+        all_zeros: bool = all(
+            # strictly limited all offsets to be 0 to pass
+            # could loose it later on
+            shard.shard_offsets == [0] * len(shards[0].shard_offsets)
+            and math.prod(shard.shard_sizes) == 0  # one dimension is 0
+            for shard in shards
+        )
+        if all_zeros:
+            return
         # All shards are the same, all dims are not partitioned. Choose any 2.
         pair = (0, 1)
     elif len(sharded_dims) == 1:
@@ -100,14 +130,12 @@ def validate_non_overlapping_shards_metadata(shards: List[ShardMetadata]):
         # using a O(nlogn) overlapping interval algorithm.
         pair = _find_1d_overlapping_shards(shards, sharded_dims[0])
     else:
-        # Shards are partitioned over more than one dimension. Fall back to
-        # pair-wise check. Even though O(nlogn) algorithms (line sweep) exist
-        # for 2D overlap, the implementation is not trivial and may not justify
-        # the time saving in most cases.
+        # Shards are partitioned over more than one dimension.
+        # Use sweep-line algorithm for O(n log n) complexity.
         pair = _find_nd_overlapping_shards(shards, sharded_dims)
 
     if pair:
-        raise ValueError(f'Shards {shards[pair[0]]} and {shards[pair[1]]} overlap')
+        raise ValueError(f"Shards {shards[pair[0]]} and {shards[pair[1]]} overlap")
 
 
 def check_tensor(shards_metadata, tensor_dims) -> None:
@@ -129,7 +157,9 @@ def check_tensor(shards_metadata, tensor_dims) -> None:
     tensor_rank = len(tensor_dims)
     shards_rank = len(shards_metadata[0].shard_offsets)
     if tensor_rank != shards_rank:
-        raise ValueError(f'Rank of tensor is {tensor_rank}, but shards rank is {shards_rank}')
+        raise ValueError(
+            f"Rank of tensor is {tensor_rank}, but shards rank is {shards_rank}"
+        )
 
     total_shard_volume = 0
     for shard in shards_metadata:
@@ -138,8 +168,9 @@ def check_tensor(shards_metadata, tensor_dims) -> None:
             shard_volume *= shard_length
             if shard.shard_offsets[i] + shard.shard_sizes[i] > tensor_dims[i]:
                 raise ValueError(
-                    f'Shard offset {shard.shard_offsets[i]} and length '
-                    f'{shard.shard_sizes[i]} exceeds tensor dim: {tensor_dims[i]} for shard {shard}')
+                    f"Shard offset {shard.shard_offsets[i]} and length "
+                    f"{shard.shard_sizes[i]} exceeds tensor dim: {tensor_dims[i]} for shard {shard}"
+                )
         total_shard_volume += shard_volume
 
     tensor_volume = 1
@@ -149,9 +180,11 @@ def check_tensor(shards_metadata, tensor_dims) -> None:
     if total_shard_volume != tensor_volume:
         # TODO: Can we improve this error message to point out the gaps?
         raise ValueError(
-            f'Total volume of shards: {total_shard_volume} '
-            f'does not match tensor volume: {tensor_volume}, in other words '
-            f'all the individual shards do not cover the entire tensor')
+            f"Total volume of shards: {total_shard_volume} "
+            f"does not match tensor volume: {tensor_volume}, in other words "
+            f"all the individual shards do not cover the entire tensor"
+        )
+
 
 def get_split_size(dim_size, chunks):
     """
@@ -165,6 +198,7 @@ def get_split_size(dim_size, chunks):
         An int indicating the split size to use.
     """
     return (dim_size + chunks - 1) // chunks
+
 
 def get_chunked_dim_size(dim_size, split_size, idx):
     """
@@ -180,6 +214,7 @@ def get_chunked_dim_size(dim_size, split_size, idx):
         An int indicating the dim size of the chunk.
     """
     return max(min(dim_size, split_size * (idx + 1)) - split_size * idx, 0)
+
 
 def get_chunk_sharding_params(sharding_dim_size, world_size, spec, rank):
     """
@@ -206,4 +241,4 @@ def get_chunk_sharding_params(sharding_dim_size, world_size, spec, rank):
             start_pos = current_offsets
             break
         current_offsets += chunk_size
-    return start_pos, chunk_size
+    return start_pos, chunk_size  # type: ignore[possibly-undefined]

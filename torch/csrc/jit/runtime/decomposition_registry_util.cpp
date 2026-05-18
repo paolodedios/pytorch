@@ -5,13 +5,9 @@
  * To re-generate, please run:
  * cd ~/pytorch && python torchgen/decompositions/gen_jit_decompositions.py
  */
-#include <torch/csrc/jit/jit_log.h>
-#include <torch/csrc/jit/passes/inliner.h>
 #include <torch/csrc/jit/runtime/decomposition_registry_util.h>
-#include <torch/csrc/jit/runtime/operator.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 const std::string decomp_funcs =
     R"(def var_decomposition(input: Tensor,
@@ -104,5 +100,4 @@ const OperatorMap<std::string>& GetDecompositionMapping() {
   return decomposition_mapping;
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

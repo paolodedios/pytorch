@@ -1,16 +1,11 @@
 #include <torch/csrc/jit/codegen/onednn/decompose_silu.h>
 #include <torch/csrc/jit/codegen/onednn/operator.h>
 
-#include <ATen/code_template.h>
 #include <torch/csrc/jit/passes/dead_code_elimination.h>
-#include <torch/csrc/jit/passes/subgraph_rewrite.h>
 
-namespace torch {
-namespace jit {
-namespace fuser {
-namespace onednn {
+namespace torch::jit::fuser::onednn {
 
-bool shouldDecomposeSilu(Node* node) {
+static bool shouldDecomposeSilu(Node* node) {
   if (node->kind() != aten::silu) {
     return false;
   }
@@ -26,7 +21,7 @@ bool shouldDecomposeSilu(Node* node) {
   return false;
 }
 
-void DecomposeSilu(Node* node) {
+static void DecomposeSilu(Node* node) {
   if (shouldDecomposeSilu(node)) {
     auto dtype = node->input(0)->type()->expect<TensorType>();
 
@@ -59,7 +54,4 @@ void DecomposeSiluForLLGA(std::shared_ptr<Graph>& graph) {
   EliminateDeadCode(graph);
 }
 
-} // namespace onednn
-} // namespace fuser
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit::fuser::onednn

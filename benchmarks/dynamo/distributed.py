@@ -10,6 +10,7 @@ from torch._dynamo.testing import reduce_to_scalar_loss
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.profiler import profile, ProfilerActivity, record_function
 
+
 try:
     from .common import timed
     from .dist_util import apply_fsdp, cleanup, get_model, model_iter_fn, setup
@@ -157,7 +158,7 @@ if __name__ == "__main__":
     model_arg.add_argument(
         "--torchbench-model",
         "--torchbench_model",
-        help="name of torchbench model, e.g. hf_Bert",
+        help="name of torchbench model, e.g. BERT_pytorch",
     )
     model_arg.add_argument(
         "--toy-model", "--toy_model", action="store_true", help="use toy model instead"

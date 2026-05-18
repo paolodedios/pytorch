@@ -6,15 +6,20 @@
 #include <ATen/Parallel.h>
 #include <c10/util/irange.h>
 
-namespace at {
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#else
+#include <ATen/ops/_sparse_coo_tensor_with_dims_and_tensors.h>
+#include <ATen/ops/zeros.h>
+#endif
 
-namespace native {
+namespace at::native {
 
 DEFINE_DISPATCH(flatten_indices_stub);
 
-}
+} // namespace at::native
 
-namespace sparse {
+namespace at::sparse {
 
 // NOTE [ Flatten Sparse Indices ]
 // This helper function flattens a sparse indices tensor (a Tensor) into a 1D
@@ -92,13 +97,11 @@ Tensor coo_to_csr(const int64_t* indices, int64_t dim, int64_t nnz) {
     auto csr_accessor = csr.accessor<int64_t, 1>();
     // Convert the sparse matrix to CSR format
     at::parallel_for(0, nnz, 10000, [&](int64_t start, int64_t end) {
-      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-      int64_t h, hp0, hp1;
       for (const auto i : c10::irange(start, end)) {
-        hp0 = indices[i];
-        hp1 = (i+1 == nnz) ?  dim : indices[i+1];
+        auto hp0 = indices[i];
+        auto hp1 = (i+1 == nnz) ?  dim : indices[i+1];
         if (hp0 != hp1) {
-          for (h = hp0; h < hp1; h++) {
+          for (int64_t h = hp0; h < hp1; h++) {
             csr_accessor[h+1] = i+1;
           }
         }
@@ -108,4 +111,33 @@ Tensor coo_to_csr(const int64_t* indices, int64_t dim, int64_t nnz) {
   return csr;
 }
 
-}} // namespace at::sparse
+Tensor zeros_like_with_indices(const Tensor& t) {
+  TORCH_INTERNAL_ASSERT(t.is_sparse());
+  return at::_sparse_coo_tensor_with_dims_and_tensors(
+      t.sparse_dim(),
+      t.dense_dim(),
+      t.sizes(),
+      t._indices().clone(),
+      at::zeros({1}, t._values().options()).expand_as(t._values()),
+      t.options(),
+      t.is_coalesced());
+}
+
+Tensor full_coo_indices(IntArrayRef sizes, TensorOptions options) {
+  const auto max_size = *std::max_element(sizes.begin(), sizes.end());
+  const auto max_size_arange = at::arange(max_size, options);
+  std::vector<Tensor> stack;
+  stack.reserve(sizes.size());
+  for (size_t i=0; i < sizes.size(); i++) {
+    Tensor a = max_size_arange.narrow(-1, 0, sizes[i]);
+    for (size_t j=0; j < sizes.size(); j++) {
+      if (i != j) {
+        a.unsqueeze_(j);
+      }
+    }
+    stack.push_back(a.expand(sizes));
+  }
+  return at::stack(stack).flatten(1, -1);
+}
+
+} // namespace at::sparse

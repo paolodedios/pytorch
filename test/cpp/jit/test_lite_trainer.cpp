@@ -1,3 +1,5 @@
+#include <test/cpp/jit/test_utils.h>
+
 #include <gtest/gtest.h>
 
 #include <c10/core/TensorOptions.h>
@@ -76,7 +78,7 @@ TEST(LiteTrainerTest, Params) {
   AT_ASSERT(parameters[0].item<float>() == bc_parameters[0].item<float>());
 }
 
-// TODO Renable these tests after parameters are correctly loaded on mobile
+// TODO Re-enable these tests after parameters are correctly loaded on mobile
 /*
 TEST(MobileTest, NamedParameters) {
   Module m("m");
@@ -238,6 +240,17 @@ TEST(MobileTest, LoadParametersEmptyDataShouldThrow) {
   EXPECT_ANY_THROW(_load_parameters(empty));
 }
 
+TEST(MobileTest, LoadParametersMalformedFlatbuffer) {
+  // Manually create some data with Flatbuffer header.
+  std::stringstream bad_data;
+  bad_data << "PK\x03\x04PTMF\x00\x00"
+           << "*}NV\xb3\xfa\xdf\x00pa";
+
+  // Loading parameters from it should throw an exception.
+  ASSERT_THROWS_WITH_MESSAGE(
+      _load_parameters(bad_data), "Malformed Flatbuffer module");
+}
+
 TEST(LiteTrainerTest, SGD) {
   Module m("m");
   m.register_parameter("foo", torch::ones({1}, at::requires_grad()), false);
@@ -304,7 +317,7 @@ struct DummyDataset : torch::data::datasets::Dataset<DummyDataset, int> {
     // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
     return 1 + index;
   }
-  torch::optional<size_t> size() const override {
+  std::optional<size_t> size() const override {
     return size_;
   }
 

@@ -4,13 +4,14 @@ import io
 import itertools
 
 import onnx
+
 import pytorch_test_common
 
 import torch
 import torch.onnx
 from torch.nn import Module
 from torch.onnx import producer_name, producer_version
-from torch.onnx._globals import GLOBALS
+from torch.onnx._internal.torchscript_exporter._globals import GLOBALS
 from torch.testing._internal import common_utils
 
 
@@ -18,11 +19,16 @@ def check_onnx_opset_operator(
     model, ops, opset_version=GLOBALS.export_onnx_opset_version
 ):
     # check_onnx_components
-    assert (
+    if not (
         model.producer_name == producer_name
         and model.producer_version == producer_version
         and model.opset_import[0].version == opset_version
-    )
+    ):
+        raise AssertionError(
+            f"Model metadata mismatch: producer_name={model.producer_name!r} (expected {producer_name!r}), "
+            f"producer_version={model.producer_version!r} (expected {producer_version!r}), "
+            f"opset_version={model.opset_import[0].version} (expected {opset_version})"
+        )
 
     # check the schema with the onnx checker
     onnx.checker.check_model(model)
@@ -34,17 +40,27 @@ def check_onnx_opset_operator(
     # At least the op_name should be specified,
     # but the op's attributes can optionally be
     # specified as well
-    assert len(ops) == len(graph.node)
-    for i in range(0, len(ops)):
-        assert graph.node[i].op_type == ops[i]["op_name"]
+    if len(ops) != len(graph.node):
+        raise AssertionError(f"Expected {len(ops)} ops, got {len(graph.node)}")
+    for i in range(len(ops)):
+        if graph.node[i].op_type != ops[i]["op_name"]:
+            raise AssertionError(
+                f"Expected op {ops[i]['op_name']}, got {graph.node[i].op_type}"
+            )
         if "attributes" in ops[i]:
             attributes = ops[i]["attributes"]
-            assert len(attributes) == len(graph.node[i].attribute)
-            for j in range(0, len(attributes)):
-                for attribute_field in attributes[j].keys():
-                    assert attributes[j][attribute_field] == getattr(
-                        graph.node[i].attribute[j], attribute_field
-                    )
+            if len(attributes) != len(graph.node[i].attribute):
+                raise AssertionError(
+                    f"Expected {len(attributes)} attributes, got {len(graph.node[i].attribute)}"
+                )
+            for j in range(len(attributes)):
+                for attribute_field in attributes[j]:
+                    actual = getattr(graph.node[i].attribute[j], attribute_field)
+                    if attributes[j][attribute_field] != actual:
+                        raise AssertionError(
+                            f"Attribute {attribute_field!r} mismatch on node {i}, attribute {j}: "
+                            f"expected {attributes[j][attribute_field]!r}, got {actual!r}"
+                        )
 
 
 def check_onnx_opsets_operator(
@@ -66,6 +82,7 @@ def check_onnx_opsets_operator(
             training=training,
             input_names=input_names,
             dynamic_axes=dynamic_axes,
+            dynamo=False,
         )
         model = onnx.load(io.BytesIO(f.getvalue()))
         check_onnx_opset_operator(model, ops[opset_version], opset_version)
@@ -139,6 +156,7 @@ class TestONNXOpset(pytorch_test_common.ExportTestCase):
                 "op_name": "MaxPool",
                 "attributes": [
                     {"name": "ceil_mode", "i": 0, "type": 2},
+                    {"name": "dilations", "ints": [1], "type": 7},
                     {"name": "kernel_shape", "ints": [2], "type": 7},
                     {"name": "pads", "ints": [0, 0], "type": 7},
                     {"name": "strides", "ints": [1], "type": 7},
@@ -250,11 +268,11 @@ class TestONNXOpset(pytorch_test_common.ExportTestCase):
             {"op_name": "Constant"},
             {"op_name": "Gather", "attributes": [{"name": "axis", "i": 0, "type": 2}]},
             {"op_name": "Constant"},
+            {"op_name": "Constant"},
             {
                 "op_name": "Unsqueeze",
                 "attributes": [{"name": "axes", "i": 0, "type": 7}],
             },
-            {"op_name": "Constant"},
             {"op_name": "Constant"},
             {"op_name": "Slice", "attributes": []},
         ]
@@ -298,7 +316,7 @@ class TestONNXOpset(pytorch_test_common.ExportTestCase):
 
     def test_dropout(self):
         class MyModule(Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.dropout = torch.nn.Dropout(0.5)
 
@@ -479,42 +497,173 @@ class TestONNXOpset(pytorch_test_common.ExportTestCase):
         x = torch.randn(20, 16, 50)
         check_onnx_opsets_operator(MyDynamicModel(), x, ops, opset_versions=[9, 10])
 
-    def test_grid_sample(self):
-        n, c, h_in, w_in, h_out, w_out = 1, 1, 3, 2, 2, 4
-        ops = {16: [{"op_name": "GridSample"}]}
-
+    def test_affine_grid(self):
         class MyModule(Module):
-            def forward(self, x, grid, mode, padding_mode, align_corers):
-                return torch.nn.functional.grid_sample(
-                    x, grid, mode, padding_mode, align_corners
+            def __init__(self, align_corners):
+                super().__init__()
+                self.align_corners = align_corners
+
+            def forward(self, theta, size):
+                return torch.nn.functional.affine_grid(
+                    theta, size, align_corners=self.align_corners
                 )
 
-        for mode, padding_mode, align_corners in itertools.product(
-            ("bilinear", "nearest", "bicubic"),
-            ("zeros", "border", "reflection"),
+        opset_version = 20
+        ops_2d = {
+            opset_version: [
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Concat"},
+                {"op_name": "AffineGrid"},
+            ]
+        }
+
+        ops_3d = {
+            opset_version: [
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Constant"},
+                {"op_name": "Unsqueeze"},
+                {"op_name": "Concat"},
+                {"op_name": "AffineGrid"},
+            ]
+        }
+        # 2D affine
+        theta_2d = torch.empty(1, 2, 3, dtype=torch.double)
+        size_2d = torch.Size([1, 1, 2, 2])
+        # 3D affine
+        theta_3d = torch.empty(1, 3, 4, dtype=torch.double)
+        size_3d = torch.Size([1, 1, 2, 2, 2])
+
+        for inputs, align_corners in itertools.product(
+            ((theta_2d, size_2d, ops_2d), (theta_3d, size_3d, ops_3d)),
             (True, False),
         ):
+            theta, size, ops = inputs
             args = (
-                torch.randn(n, c, h_in, w_in),  # x
-                torch.randn(n, h_out, w_out, 2),  # grid,
-                mode,
-                padding_mode,
-                align_corners,
+                theta,
+                size,
             )
             check_onnx_opsets_operator(
-                MyModule(),
+                MyModule(align_corners=align_corners),
                 args,
                 ops,
-                opset_versions=[16],
+                opset_versions=[opset_version],
                 training=torch.onnx.TrainingMode.TRAINING,
             )
             check_onnx_opsets_operator(
-                MyModule(),
+                MyModule(align_corners=align_corners),
                 args,
                 ops,
-                opset_versions=[16],
+                opset_versions=[opset_version],
                 training=torch.onnx.TrainingMode.EVAL,
             )
+
+    def test_grid_sample(self):
+        class MyModule(torch.nn.Module):
+            def __init__(self, mode, padding_mode, align_corners):
+                super().__init__()
+                self.mode = mode
+                self.padding_mode = padding_mode
+                self.align_corners = align_corners
+
+            def forward(self, x, grid):
+                return torch.nn.functional.grid_sample(
+                    x,
+                    grid,
+                    mode=self.mode,
+                    padding_mode=self.padding_mode,
+                    align_corners=self.align_corners,
+                )
+
+        for mode, padding_mode, align_corners, opset_version in itertools.product(
+            ("bilinear", "nearest", "bicubic"),
+            ("zeros", "border", "reflection"),
+            (True, False),
+            (16, 20),
+        ):
+
+            def test_eval_and_training(
+                ops, opset_version, mode, padding_mode, align_corners, x_shape, grid
+            ):
+                args = (
+                    torch.randn(*x_shape),  # x
+                    torch.randn(grid),  # grid,
+                )
+                check_onnx_opsets_operator(
+                    MyModule(
+                        mode=mode,
+                        padding_mode=padding_mode,
+                        align_corners=align_corners,
+                    ),
+                    args,
+                    ops,
+                    opset_versions=[opset_version],
+                    training=torch.onnx.TrainingMode.TRAINING,
+                )
+                check_onnx_opsets_operator(
+                    MyModule(
+                        mode=mode,
+                        padding_mode=padding_mode,
+                        align_corners=align_corners,
+                    ),
+                    args,
+                    ops,
+                    opset_versions=[opset_version],
+                    training=torch.onnx.TrainingMode.EVAL,
+                )
+
+            ops = {opset_version: [{"op_name": "GridSample"}]}
+            # mode = convert_grid_sample_mode(mode) if opset_version == 20 else mode
+            n, c, d_in, h_in, w_in, d_out, h_out, w_out = 1, 1, 2, 3, 2, 3, 2, 4
+            test_eval_and_training(
+                ops,
+                opset_version,
+                mode,
+                padding_mode,
+                align_corners,
+                (n, c, h_in, w_in),
+                (n, h_out, w_out, 2),
+            )
+            if opset_version == 20 and mode != "bicubic":
+                test_eval_and_training(
+                    ops,
+                    opset_version,
+                    mode,
+                    padding_mode,
+                    align_corners,
+                    (n, c, d_in, h_in, w_in),
+                    (n, d_out, h_out, w_out, 3),
+                )
+
+    def test_flatten(self):
+        class MyModule(Module):
+            def forward(self, x):
+                return torch.flatten(x)
+
+        module = MyModule()
+
+        ops_0d = [{"op_name": "Constant"}, {"op_name": "Reshape"}]
+        ops_1d = [{"op_name": "Identity"}]
+        for shape in ([], [3]):
+            x = torch.randn(shape)
+            for opset_version in [9, 10]:
+                ops = {opset_version: (ops_0d if len(shape) == 0 else ops_1d)}
+                check_onnx_opsets_operator(
+                    module, x, ops, opset_versions=[opset_version]
+                )
 
 
 if __name__ == "__main__":

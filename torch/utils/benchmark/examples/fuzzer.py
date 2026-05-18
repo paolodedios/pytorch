@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 """Example of the Timer and Fuzzer APIs:
 
 $ python -m examples.fuzzer
@@ -8,7 +9,7 @@ import sys
 import torch.utils.benchmark as benchmark_utils
 
 
-def main():
+def main() -> None:
     add_fuzzer = benchmark_utils.Fuzzer(
         parameters=[
             [

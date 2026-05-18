@@ -1,14 +1,15 @@
+# mypy: allow-untyped-defs
 import copy
+
 import torch
+from torch.distributed._shard.common_op_utils import _register_default_op
 from torch.distributed._shard.sharded_tensor import (
     _sharded_op_impl,
     Shard,
     ShardedTensor,
 )
-from ._common import (
-    _register_sharded_op_on_local_shards,
-)
-from torch.distributed._shard.common_op_utils import _register_default_op
+
+from ._common import _register_sharded_op_on_local_shards
 
 
 # Tensor properties access
@@ -32,12 +33,14 @@ _register_default_op(torch.Tensor.grad.__get__, _sharded_op_impl)  # type: ignor
 _register_default_op(torch.Tensor.grad_fn.__get__, _sharded_op_impl)  # type: ignore[union-attr]
 _register_default_op(torch.Tensor.is_leaf.__get__, _sharded_op_impl)  # type: ignore[attr-defined]
 
+
 # device property is ambiguous as from a global prospective,
 # ShardedTensor.device consists of multiple devices (might even across hosts)
 # We choose to return the current device of the local tensor to represent
 # the device property on each rank
 @_sharded_op_impl(torch.Tensor.device.__get__)
 def tensor_device(types, args=(), kwargs=None, pg=None):
+    # pyrefly: ignore [bad-index]
     self_st = args[0]
     # Validate types
     if not isinstance(self_st, ShardedTensor):
@@ -51,8 +54,10 @@ def tensor_device(types, args=(), kwargs=None, pg=None):
         dev = torch.device(torch.cuda.current_device())
     return dev
 
+
 @_sharded_op_impl(torch.Tensor.is_meta.__get__)  # type: ignore[attr-defined]
 def st_is_meta(types, args=(), kwargs=None, pg=None):
+    # pyrefly: ignore [bad-index]
     return args[0].local_tensor().is_meta
 
 
@@ -96,9 +101,10 @@ def sharded_type_as(args, kwargs, pg):
     tensor = args[1]
     if isinstance(tensor, ShardedTensor):
         tensor = tensor.local_tensor()
-    new_local_shards = []
-    for shard in st.local_shards():
-        new_local_shards.append(Shard(shard.tensor.type_as(tensor), shard.metadata))
+    new_local_shards = [
+        Shard(shard.tensor.type_as(tensor), shard.metadata)
+        for shard in st.local_shards()
+    ]
     st_meta = copy.deepcopy(st._metadata)
     st_meta.tensor_properties.dtype = tensor.dtype
     return new_local_shards, st_meta
@@ -192,6 +198,7 @@ _register_sharded_op_on_local_shards(
 
 @_sharded_op_impl(torch.Tensor.requires_grad_)
 def tensor_requires_grad_set(types, args=(), kwargs=None, pg=None):
+    # pyrefly: ignore [bad-index]
     self_st = args[0]
     # Validate types
     if not isinstance(self_st, ShardedTensor):

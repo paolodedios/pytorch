@@ -1,5 +1,5 @@
 #!/bin/bash
-set -ex
+set -ex -o pipefail
 
 SCRIPT_PARENT_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
 # shellcheck source=./common.sh
@@ -18,12 +18,15 @@ export PYTORCH_FINAL_PACKAGE_DIR="${PYTORCH_FINAL_PACKAGE_DIR:-/c/w/build-result
 PYTORCH_FINAL_PACKAGE_DIR_WIN=$(cygpath -w "${PYTORCH_FINAL_PACKAGE_DIR}")
 export PYTORCH_FINAL_PACKAGE_DIR_WIN
 
+# enable debug asserts in serialization
+export TORCH_SERIALIZATION_DEBUG=1
+
 mkdir -p "$TMP_DIR"/build/torch
 
 export SCRIPT_HELPERS_DIR=$SCRIPT_PARENT_DIR/win-test-helpers
 
-if [[ "$TEST_CONFIG" = "force_on_cpu" ]]; then
-  # run the full test suite for force_on_cpu test
+if [[ "$TEST_CONFIG" = "force_on_cpu" || "$TEST_CONFIG" = "openreg" ]]; then
+  # run the full test suite for force_on_cpu test and openreg test
   export USE_CUDA=0
 fi
 
@@ -34,7 +37,8 @@ if [[ "$BUILD_ENVIRONMENT" == *cuda* ]]; then
   export PYTORCH_TESTING_DEVICE_ONLY_FOR="cuda"
 fi
 
-python -m pip install pytest-rerunfailures==10.3
+# TODO: Move this to .ci/docker/requirements-ci.txt
+python -m pip install "psutil==5.9.1" nvidia-ml-py "pytest-shard==0.1.2"
 
 run_tests() {
     # Run nvidia-smi if available
@@ -44,6 +48,11 @@ run_tests() {
             break
         fi
     done
+
+    if [[ "$TEST_CONFIG" == "openreg" ]]; then
+        "$SCRIPT_HELPERS_DIR"/test_openreg.bat
+        return
+    fi
 
     if [[ $NUM_TEST_SHARDS -eq 1 ]]; then
         "$SCRIPT_HELPERS_DIR"/test_python_shard.bat

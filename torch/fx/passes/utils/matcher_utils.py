@@ -1,21 +1,23 @@
-from dataclasses import dataclass, field
-from collections import defaultdict
 import copy
-import torch
-from torch.fx.graph import Graph
-from torch.fx.node import Node
-from torch.fx._compatibility import compatibility
-from typing import Dict, List, Set, Any, Union, Tuple
 import logging
 import os
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Any
 
-__all__ = ['SubgraphMatcher', 'InternalMatch']
+import torch
+from torch.fx import Graph, Node
+from torch.fx._compatibility import compatibility
+
+
+__all__ = ["SubgraphMatcher", "InternalMatch"]
+
 
 # Set`PYTORCH_MATCHER_LOGLEVEL=INFO` to see debug logs
-def _init_logger():
+def _init_logger() -> logging.Logger:
     logger = logging.getLogger(__name__)
 
-    level = os.environ.get('PYTORCH_MATCHER_LOGLEVEL', 'WARNING').upper()
+    level = os.environ.get("PYTORCH_MATCHER_LOGLEVEL", "WARNING").upper()
     logger.setLevel(level)
     console = logging.StreamHandler()
     formatter = logging.Formatter("%(filename)s > %(message)s")
@@ -26,34 +28,47 @@ def _init_logger():
     logger.propagate = False
     return logger
 
+
 logger = _init_logger()
+
 
 @compatibility(is_backward_compatible=False)
 @dataclass
-class InternalMatch():
+class InternalMatch:
     # Nodes from which the match was found
-    anchors: List[Node]
+    anchors: list[Node]
     # Maps nodes in the pattern subgraph to nodes in the larger graph
-    nodes_map: Dict[Node, Node] = field(default_factory=dict)
+    nodes_map: dict[Node, Node] = field(default_factory=dict)
 
     # nodes in target graph that are matched placeholder in pattern
-    placeholder_nodes: List[Node] = field(default_factory=list)
+    placeholder_nodes: list[Node] = field(default_factory=list)
 
     # nodes in matched subgraph returned by output
-    returning_nodes: List[Node] = field(default_factory=list)
+    returning_nodes: list[Node] = field(default_factory=list)
 
-    def __copy__(self):
-        return InternalMatch(anchors=self.anchors, nodes_map=self.nodes_map.copy(),
-                             placeholder_nodes=self.placeholder_nodes.copy(),
-                             returning_nodes=self.returning_nodes.copy())
+    # map from a string name to a node in the target graph
+    # only available if the matcher is `SubgraphMatcherWithNameNodesMap`
+    name_node_map: dict[str, Node] = field(default_factory=dict)
+
+    def __copy__(self) -> "InternalMatch":
+        return InternalMatch(
+            anchors=self.anchors,
+            nodes_map=self.nodes_map.copy(),
+            placeholder_nodes=self.placeholder_nodes.copy(),
+            returning_nodes=self.returning_nodes.copy(),
+        )
+
 
 @compatibility(is_backward_compatible=False)
 class SubgraphMatcher:
-    def __init__(self, pattern: Graph,
-                 match_output: bool = False,
-                 match_placeholder: bool = False,
-                 remove_overlapping_matches: bool = True,
-                 ignore_literals: bool = False) -> None:
+    def __init__(
+        self,
+        pattern: Graph,
+        match_output: bool = False,
+        match_placeholder: bool = False,
+        remove_overlapping_matches: bool = True,
+        ignore_literals: bool = False,
+    ) -> None:
         """
         Args:
             pattern: the targeted matching pattern, represented in fx.Graph.
@@ -74,35 +89,51 @@ class SubgraphMatcher:
         self.ignore_literals = ignore_literals
 
         if len(pattern.nodes) == 0:
-            raise ValueError("SubgraphMatcher cannot be initialized with an empty pattern")
+            raise ValueError(
+                "SubgraphMatcher cannot be initialized with an empty pattern"
+            )
 
         for node in pattern.nodes:
-            if node.op != "output":
-                assert len(node.users) > 0, \
-                       "SubgraphMatcher cannot be initialized with an pattern with dead code"
+            if node.op != "output" and not node.is_impure():
+                if len(node.users) == 0:
+                    raise AssertionError(
+                        "SubgraphMatcher cannot be initialized with an pattern with dead code"
+                    )
 
         # TODO: assert pattern is a connected graph
 
-        self.pattern_placeholder_nodes = [n for n in pattern.nodes if n.op == "placeholder"]
+        self.pattern_placeholder_nodes = [
+            n for n in pattern.nodes if n.op == "placeholder"
+        ]
         output_node = next(iter(reversed(pattern.nodes)))
         # nodes returned by outputs
-        self.pattern_returning_nodes: List[Node] = output_node.all_input_nodes
+        self.pattern_returning_nodes: list[Node] = output_node.all_input_nodes
 
-        self.pattern_anchors: List[Node] = []
+        self.pattern_anchors: list[Node] = []
         if match_output:
             self.pattern_anchors = [output_node]
         else:
             # If a node has output_node as the ONLY user, then this node is a graph sink,
             # and should be matched against as an anchor
-            self.pattern_anchors = [n for n in output_node.all_input_nodes if len(n.users) == 1]
+            self.pattern_anchors = [
+                n for n in output_node.all_input_nodes if len(n.users) == 1
+            ]
 
     def _match_attributes(self, pn: Node, gn: Node) -> bool:
-        # Attributes matching is compilcated. Right now we only support matching constant tensor
-        assert isinstance(pn.target, str), f"pn.target {pn.target} must be a string."
-        assert isinstance(gn.target, str), f"gn.target {gn.target} must be a string."
-        pn_value = getattr(pn.graph.owning_module, pn.target)
-        gn_value = getattr(gn.graph.owning_module, gn.target)
-        if type(pn_value) != type(gn_value):
+        # Attributes matching is complicated. Right now we only support matching constant tensor
+        if not isinstance(pn.target, str):
+            raise AssertionError(f"pn.target {pn.target} must be a string.")
+        if not isinstance(gn.target, str):
+            raise AssertionError(f"gn.target {gn.target} must be a string.")
+
+        if pn.graph.owning_module is None:
+            raise AssertionError("pn.graph.owning_module must not be None")
+        if gn.graph.owning_module is None:
+            raise AssertionError("gn.graph.owning_module must not be None")
+        pn_value = torch.fx.graph_module._get_attr(pn.graph.owning_module, pn.target)
+        gn_value = torch.fx.graph_module._get_attr(gn.graph.owning_module, gn.target)
+
+        if type(pn_value) is not type(gn_value):
             return False
 
         # Don't require exact match on tensor values.
@@ -110,11 +141,15 @@ class SubgraphMatcher:
             return isinstance(gn_value, torch.Tensor)
         else:
             raise RuntimeError(f"Unsupported type {pn_value} when matching attributes")
+        # pyrefly: ignore [unreachable]
         return False
 
-    def _nodes_are_equal(self, pn: Node, gn: Node) -> bool:
+    def _nodes_are_equal(self, pn: Node, gn: Node, node_name_match: str = "") -> bool:
         # if exact match for placeholder is not required, then use placeholder as a wildcard
         if not self.match_placeholder and pn.op == "placeholder":
+            return True
+
+        if node_name_match and node_name_match in gn.name:
             return True
 
         if pn.op == gn.op:
@@ -125,12 +160,14 @@ class SubgraphMatcher:
             return pn.target == gn.target
         return False
 
-    def _is_contained(self, nodes_map: Dict[Node, Node]) -> bool:
+    def _is_contained(self, nodes_map: dict[Node, Node]) -> bool:
         # `lookup` represents all the nodes in `original_graph`
         # that are part of `pattern`
 
         # Placeholders can be used by other nodes in the graphs
-        lookup: Dict[Node, Node] = {gn : pn for pn, gn in nodes_map.items() if pn.op != "placeholder"}
+        lookup: dict[Node, Node] = {
+            gn: pn for pn, gn in nodes_map.items() if pn.op != "placeholder"
+        }
 
         for gn, pn in lookup.items():
             # nodes returned by output are allowed to be used in other areas of the graph
@@ -144,9 +181,11 @@ class SubgraphMatcher:
                     return False
         return True
 
-    def _remove_overlapping_matches(self, matches: List[InternalMatch]) -> List[InternalMatch]:
-        non_overlapping_matches: List[InternalMatch] = list()
-        nodes_matched: Set[Node] = set()
+    def _remove_overlapping_matches(
+        self, matches: list[InternalMatch]
+    ) -> list[InternalMatch]:
+        non_overlapping_matches: list[InternalMatch] = []
+        nodes_matched: set[Node] = set()
 
         for match in matches:
             found_overlap = False
@@ -163,7 +202,8 @@ class SubgraphMatcher:
         return non_overlapping_matches
 
     def _match_literals(self, pn: Any, gn: Any, match: InternalMatch) -> bool:
-        assert not (isinstance(pn, Node) and isinstance(gn, Node)), "pn and gn cannot both be Node"
+        if isinstance(pn, Node) and isinstance(gn, Node):
+            raise AssertionError("pn and gn cannot both be Node")
 
         if isinstance(pn, Node) and not isinstance(gn, Node):
             if pn.op == "placeholder":
@@ -179,23 +219,26 @@ class SubgraphMatcher:
         elif not isinstance(pn, Node) and isinstance(gn, Node):
             return False
         else:
-            return type(gn) == type(pn) and gn == pn
+            return type(gn) is type(pn) and gn == pn
 
-    def _match_nodes(self, pn: Node, gn: Node, match: InternalMatch) -> bool:
-        logger.info(f"  matching {pn} to {gn}")
+    def _match_nodes(
+        self, pn: Node, gn: Node, match: InternalMatch, node_name_match: str = ""
+    ) -> bool:
+        logger.info("  matching %s to %s", pn, gn)
 
-        assert isinstance(pn, Node) and isinstance(gn, Node), str(f"pn and gn must be Node, pn: {pn}, gn: {gn}")
+        if not (isinstance(pn, Node) and isinstance(gn, Node)):
+            raise AssertionError(f"pn and gn must be Node, pn: {pn}, gn: {gn}")
 
         # Check if we've already matched these nodes in the current
         # traversal
         if pn in match.nodes_map:
             return match.nodes_map[pn] == gn
 
-        # TODO: use a more efficienty way to check if gn is matched before: two-way dict
+        # TODO: use a more efficient way to check if gn is matched before: two-way dict
         if gn in match.nodes_map.values():
             return False
 
-        if not self._nodes_are_equal(pn, gn):
+        if not self._nodes_are_equal(pn, gn, node_name_match):
             return False
 
         # Optimistically mark `pn` as a match for `gn`, and save a local copy of match
@@ -211,7 +254,9 @@ class SubgraphMatcher:
         # match for `gn`
         match_found = True
 
-        def _match_args(args1: Union[List, Tuple], args2: Union[List, Tuple]) -> bool:
+        def _match_args(
+            args1: list[Any] | tuple[Any, ...], args2: list[Any] | tuple[Any, ...]
+        ) -> bool:
             if len(args1) != len(args2):
                 return False
 
@@ -221,25 +266,60 @@ class SubgraphMatcher:
                 elif isinstance(a1, (list, tuple)) and isinstance(a2, (list, tuple)):
                     matched = _match_args(a1, a2)
                 else:
-                    if not self.ignore_literals:
-                        matched = self._match_literals(a1, a2, match)
+                    matched = (
+                        self._match_literals(a1, a2, match) or self.ignore_literals
+                    )
 
                 if not matched:
                     return False
 
             return True
 
-        match_found = match_found and _match_args(pn.args, gn.args)
+        # Flatten all args/kwargs into 1 list of args
+        pn_args: list[Any] | None = None
+        gn_args: list[Any] | None = None
+        if (
+            (
+                len(pn.args) != len(gn.args)
+                or list(pn.kwargs.keys()) != list(gn.kwargs.keys())
+            )
+            and pn.op == "call_function"
+            and isinstance(pn.target, torch._ops.OpOverload)
+        ):
+            args_schema = pn.target._schema.arguments
 
-        pn_kwargs, gn_kwargs = [], []
-        if pn.kwargs.keys() == gn.kwargs.keys():
-            for key in pn.kwargs.keys():
-                pn_kwargs.append(pn.kwargs[key])
-                gn_kwargs.append(gn.kwargs[key])
+            def get_all_arguments(
+                orig_args: tuple[Any, ...], orig_kwargs: dict[str, Any]
+            ) -> list[Any]:
+                all_args = []
+                for i, schema in enumerate(args_schema):
+                    if schema.name in orig_kwargs:
+                        all_args.append(orig_kwargs[schema.name])
+                    elif not schema.kwarg_only and i < len(orig_args):
+                        all_args.append(orig_args[i])
+                    else:
+                        all_args.append(schema.default_value)
+                return all_args
+
+            pn_args = get_all_arguments(pn.args, pn.kwargs)
+            gn_args = get_all_arguments(gn.args, gn.kwargs)
+
+        elif len(pn.args) == len(gn.args) and list(pn.kwargs.keys()) == list(
+            gn.kwargs.keys()
+        ):
+            pn_args = list(pn.args)
+            gn_args = list(gn.args)
+            pn_args.extend(list(pn.kwargs.values()))
+            gn_args.extend(list(gn.kwargs.values()))
         else:
             match_found = False
 
-        match_found = match_found and _match_args(pn_kwargs, gn_kwargs)
+        match_found = (
+            match_found
+            and pn_args is not None
+            and gn_args is not None
+            and _match_args(pn_args, gn_args)
+        )
 
         if not match_found:
             # revert to saved_match before matching with current node
@@ -248,11 +328,11 @@ class SubgraphMatcher:
 
         return True
 
-    def match(self, graph: Graph) -> List[InternalMatch]:
+    def match(self, graph: Graph, node_name_match: str = "") -> list[InternalMatch]:
         """
         Returns:
             The matched subgraphs.
-            Thre returned subgraph would be fully self-contained, meaning the nodes (except placeholder
+            The returned subgraph would be fully self-contained, meaning the nodes (except placeholder
             and nodes returned by output) can only be consumed by nodes within the matched subgraph.
 
         Subgraph pattern matcher is implemented with the backtracking style in the following steps:
@@ -276,8 +356,8 @@ class SubgraphMatcher:
         in order for the match to be valid. This is implemented with backtracking. See `backtracking`
         for more details.
 
-        Notice: graph traversal must be done in the reverser order because a tensor can have multiple
-        consumers, but can only have a single producer. Only with reverser order, we can we jointly
+        Notice: graph traversal must be done in the reverse order because a tensor can have multiple
+        consumers, but can only have a single producer. Only with reverse order can we jointly
         traverse the pattern and target graph in a deterministic path.
 
         Warning: In theory, this backtracking algorithm have an **exponential** time complexity. However,
@@ -287,38 +367,46 @@ class SubgraphMatcher:
         from torch.fx.passes.utils.fuser_utils import validate_partition
 
         # find candidate nodes to match with pattern anchors
-        match_candidates: Dict[Node, List[Node]] = defaultdict(list)
+        match_candidates: dict[Node, list[Node]] = defaultdict(list)
         for pattern_anchor in self.pattern_anchors:
             for node in graph.nodes:
-                if self._nodes_are_equal(pattern_anchor, node):
+                if self._nodes_are_equal(pattern_anchor, node, node_name_match):
                     match_candidates[pattern_anchor].append(node)
         match_candidates_list = list(match_candidates.items())
 
-        logger.info(f"Initial match_candidates_list: {match_candidates_list}\n")
+        logger.info("Initial match_candidates_list: %s\n", match_candidates_list)
 
-        matches: List[InternalMatch] = []
+        matches: list[InternalMatch] = []
 
-        def backtracking(anchor_index, match):
+        def backtracking(anchor_index: int, match: InternalMatch) -> None:
             if anchor_index == len(match_candidates_list):
-                match.placeholder_nodes = [match.nodes_map[pn] for pn in self.pattern_placeholder_nodes]
-                match.returning_nodes = [match.nodes_map[pn] for pn in self.pattern_returning_nodes]
+                match.placeholder_nodes = [
+                    match.nodes_map[pn] for pn in self.pattern_placeholder_nodes
+                ]
+                match.returning_nodes = [
+                    match.nodes_map[pn] for pn in self.pattern_returning_nodes
+                ]
                 matches.append(match)
 
-                logger.info(f"Found a match: {match}\n")
+                logger.info("Found a match: %s\n", match)
                 return
 
             pattern_anchor, candidate_nodes = match_candidates_list[anchor_index]
             saved_match = copy.copy(match)
 
             for node in candidate_nodes:
-                logger.info(f"Trying to match anchor {pattern_anchor} to {node}")
+                logger.info("Trying to match anchor %s to %s", pattern_anchor, node)
 
-                match_found = self._match_nodes(pattern_anchor, node, match)
+                match_found = self._match_nodes(
+                    pattern_anchor, node, match, node_name_match
+                )
                 if match_found:
                     # match next anchor
                     backtracking(anchor_index + 1, match)
                 else:
-                    logger.info(f"Failed to match anchor {pattern_anchor} to {node}\n")
+                    logger.info(
+                        "Failed to match anchor %s to %s\n", pattern_anchor, node
+                    )
 
                 # revert to saved_match before matching with current anchor
                 match = copy.copy(saved_match)
@@ -332,26 +420,38 @@ class SubgraphMatcher:
         matches = [match for match in matches if self._is_contained(match.nodes_map)]
         after = len(matches)
         if before != after:
-            logger.info(f"Filtered out {before - after} matches because they are not fully contained")
+            logger.info(
+                "Filtered out %s matches because they are not fully contained",
+                before - after,
+            )
 
-        # filter out the matches that that forms a cycle if the subgraph is fused
-        valid_matches = []
+        # filter out the matches that form a cycle if the subgraph is fused
+        valid_matches: list[InternalMatch] = []
         for match in matches:
-            matched_compute_nodes = \
-                [gn for pn, gn in match.nodes_map.items() if pn.op not in {"placeholder", "output"}]
+            matched_compute_nodes = [
+                gn
+                for pn, gn in match.nodes_map.items()
+                if pn.op not in {"placeholder", "output"}
+            ]
             if validate_partition(matched_compute_nodes):
                 valid_matches.append(match)
         if len(valid_matches) != len(matches):
-            logger.info(f"Filtered out {len(matches) - len(valid_matches)} matches because \
-                          matched subgraph would form a cycle if fused")
+            logger.info(
+                "Filtered out %s matches because \
+                          matched subgraph would form a cycle if fused",
+                len(matches) - len(valid_matches),
+            )
 
         if self.remove_overlapping_matches:
             before = len(valid_matches)
             matches = self._remove_overlapping_matches(valid_matches)
             after = len(matches)
             if before != after:
-                logger.info(f"Filtered out {before - after} matches because matched subgraphs are overlapping")
+                logger.info(
+                    "Filtered out %s matches because matched subgraphs are overlapping",
+                    before - after,
+                )
 
-        logger.info(f"Matches returned: {matches}")
+        logger.info("Matches returned: %s", matches)
 
         return matches

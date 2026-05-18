@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 # Owner(s): ["oncall: package/deploy"]
 
 import inspect
@@ -12,7 +11,13 @@ from unittest import skipIf
 
 from torch.package import is_from_package, PackageExporter, PackageImporter
 from torch.package.package_exporter import PackagingError
-from torch.testing._internal.common_utils import IS_FBCODE, IS_SANDCASTLE, run_tests, skipIfTorchDynamo
+from torch.testing._internal.common_utils import (
+    IS_FBCODE,
+    IS_SANDCASTLE,
+    run_tests,
+    skipIfTorchDynamo,
+)
+
 
 try:
     from .common import PackageTestCase
@@ -34,42 +39,46 @@ class TestMisc(PackageTestCase):
 
         export_plain = dedent(
             """\
-                ├── .data
-                │   ├── extern_modules
-                │   ├── python_version
-                │   └── version
-                ├── main
-                │   └── main
-                ├── obj
-                │   └── obj.pkl
-                ├── package_a
-                │   ├── __init__.py
-                │   └── subpackage.py
-                └── module_a.py
+                \u251c\u2500\u2500 .data
+                \u2502   \u251c\u2500\u2500 extern_modules
+                \u2502   \u251c\u2500\u2500 python_version
+                \u2502   \u251c\u2500\u2500 serialization_id
+                \u2502   \u2514\u2500\u2500 version
+                \u251c\u2500\u2500 main
+                \u2502   \u2514\u2500\u2500 main
+                \u251c\u2500\u2500 obj
+                \u2502   \u2514\u2500\u2500 obj.pkl
+                \u251c\u2500\u2500 package_a
+                \u2502   \u251c\u2500\u2500 __init__.py
+                \u2502   \u2514\u2500\u2500 subpackage.py
+                \u251c\u2500\u2500 byteorder
+                \u2514\u2500\u2500 module_a.py
             """
         )
         export_include = dedent(
             """\
-                ├── obj
-                │   └── obj.pkl
-                └── package_a
-                    └── subpackage.py
+                \u251c\u2500\u2500 obj
+                \u2502   \u2514\u2500\u2500 obj.pkl
+                \u2514\u2500\u2500 package_a
+                    \u2514\u2500\u2500 subpackage.py
             """
         )
         import_exclude = dedent(
             """\
-                ├── .data
-                │   ├── extern_modules
-                │   ├── python_version
-                │   └── version
-                ├── main
-                │   └── main
-                ├── obj
-                │   └── obj.pkl
-                ├── package_a
-                │   ├── __init__.py
-                │   └── subpackage.py
-                └── module_a.py
+                \u251c\u2500\u2500 .data
+                \u2502   \u251c\u2500\u2500 extern_modules
+                \u2502   \u251c\u2500\u2500 python_version
+                \u2502   \u251c\u2500\u2500 serialization_id
+                \u2502   \u2514\u2500\u2500 version
+                \u251c\u2500\u2500 main
+                \u2502   \u2514\u2500\u2500 main
+                \u251c\u2500\u2500 obj
+                \u2502   \u2514\u2500\u2500 obj.pkl
+                \u251c\u2500\u2500 package_a
+                \u2502   \u251c\u2500\u2500 __init__.py
+                \u2502   \u2514\u2500\u2500 subpackage.py
+                \u251c\u2500\u2500 byteorder
+                \u2514\u2500\u2500 module_a.py
             """
         )
 
@@ -115,7 +124,9 @@ class TestMisc(PackageTestCase):
             def get_filename(self, name):
                 result = super().get_filename(name)
                 if name == "module_a":
-                    return os.path.join(os.path.dirname(result), "module_a_remapped_path.py")
+                    return os.path.join(
+                        os.path.dirname(result), "module_a_remapped_path.py"
+                    )
                 else:
                     return result
 
@@ -135,8 +146,13 @@ class TestMisc(PackageTestCase):
                         spec = spec_from_loader(fullname, finder)
                     if spec is not None:
                         break
-                assert spec is not None and isinstance(spec.loader, SourceFileLoader)
-                spec.loader = LoaderThatRemapsModuleA(spec.loader.name, spec.loader.path)
+                if spec is None or not isinstance(spec.loader, SourceFileLoader):
+                    raise AssertionError(
+                        f"Expected SourceFileLoader, got {type(spec.loader) if spec else None}"
+                    )
+                spec.loader = LoaderThatRemapsModuleA(
+                    spec.loader.name, spec.loader.path
+                )
                 return spec
 
         sys.meta_path.insert(0, FinderThatRemapsModuleA())
@@ -150,7 +166,6 @@ class TestMisc(PackageTestCase):
 
                 he.intern("**")
                 he.save_module(module_a.__name__)
-
 
             buffer.seek(0)
             hi = PackageImporter(buffer)
@@ -184,7 +199,7 @@ class TestMisc(PackageTestCase):
         "Tests that use temporary files are disabled in fbcode",
     )
     def test_load_python_version_from_package(self):
-        """Tests loading a package with a python version embdded"""
+        """Tests loading a package with a python version embedded"""
         importer1 = PackageImporter(
             f"{Path(__file__).parent}/package_e/test_nn_module.pt"
         )
@@ -229,7 +244,7 @@ class TestMisc(PackageTestCase):
             )
             self.assertEqual(he.get_rdeps("package_b.subpackage_2"), ["package_b"])
 
-        with self.assertRaises(PackagingError) as e:
+        with self.assertRaises(PackagingError):
             with PackageExporter(BytesIO()) as he:
                 import package_b
 
@@ -326,10 +341,13 @@ class TestMisc(PackageTestCase):
         causes modules who do this hackery to fail on import. See
         https://github.com/pytorch/pytorch/issues/57490 for more information.
         """
-        import package_a.std_sys_module_hacks
+        if sys.version_info < (3, 13):
+            import package_a.std_sys_module_hacks as std_sys_module_hacks
+        else:
+            import package_a.std_sys_module_hacks_3_13 as std_sys_module_hacks
 
         buffer = BytesIO()
-        mod = package_a.std_sys_module_hacks.Module()
+        mod = std_sys_module_hacks.Module()
 
         with PackageExporter(buffer) as pe:
             pe.intern("**")

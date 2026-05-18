@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import concurrent.futures
 import json
@@ -11,25 +13,29 @@ import time
 from enum import Enum
 from pathlib import Path
 from sysconfig import get_paths as gp
-from typing import Any, List, NamedTuple, Optional, Pattern
+from typing import NamedTuple
+
 
 # PyTorch directory root
-result = subprocess.run(
-    ["git", "rev-parse", "--show-toplevel"],
-    stdout=subprocess.PIPE,
-    check=True,
-)
-PYTORCH_ROOT = result.stdout.decode("utf-8").strip()
-IS_WINDOWS: bool = os.name == "nt"
+def scm_root() -> str:
+    path = os.path.abspath(os.getcwd())
+    while True:
+        if os.path.exists(os.path.join(path, ".git")):
+            return path
+        if os.path.isdir(os.path.join(path, ".hg")):
+            return path
+        n = len(path)
+        path = os.path.dirname(path)
+        if len(path) == n:
+            raise RuntimeError("Unable to find SCM root")
+
+
+PYTORCH_ROOT = scm_root()
 
 
 # Returns '/usr/local/include/python<version number>'
 def get_python_include_dir() -> str:
     return gp()["include"]
-
-
-def eprint(*args: Any, **kwargs: Any) -> None:
-    print(*args, file=sys.stderr, flush=True, **kwargs)
 
 
 class LintSeverity(str, Enum):
@@ -40,23 +46,19 @@ class LintSeverity(str, Enum):
 
 
 class LintMessage(NamedTuple):
-    path: Optional[str]
-    line: Optional[int]
-    char: Optional[int]
+    path: str | None
+    line: int | None
+    char: int | None
     code: str
     severity: LintSeverity
     name: str
-    original: Optional[str]
-    replacement: Optional[str]
-    description: Optional[str]
-
-
-def as_posix(name: str) -> str:
-    return name.replace("\\", "/") if IS_WINDOWS else name
+    original: str | None
+    replacement: str | None
+    description: str | None
 
 
 # c10/core/DispatchKey.cpp:281:26: error: 'k' used after it was moved [bugprone-use-after-move]
-RESULTS_RE: Pattern[str] = re.compile(
+RESULTS_RE: re.Pattern[str] = re.compile(
     r"""(?mx)
     ^
     (?P<file>.*?):
@@ -71,8 +73,8 @@ RESULTS_RE: Pattern[str] = re.compile(
 
 
 def run_command(
-    args: List[str],
-) -> "subprocess.CompletedProcess[bytes]":
+    args: list[str],
+) -> subprocess.CompletedProcess[bytes]:
     logging.debug("$ %s", " ".join(args))
     start_time = time.monotonic()
     try:
@@ -94,7 +96,7 @@ severities = {
 }
 
 
-def clang_search_dirs() -> List[str]:
+def clang_search_dirs() -> list[str]:
     # Compilers are ordered based on fallback preference
     # We pick the first one that is available on the system
     compilers = ["clang", "gcc", "cpp", "cc"]
@@ -134,6 +136,7 @@ include_dir = [
     "/usr/lib/llvm-11/include/openmp",
     get_python_include_dir(),
     os.path.join(PYTORCH_ROOT, "third_party/pybind11/include"),
+    PYTORCH_ROOT,
 ] + clang_search_dirs()
 for dir in include_dir:
     include_args += ["--extra-arg", f"-I{dir}"]
@@ -143,11 +146,22 @@ def check_file(
     filename: str,
     binary: str,
     build_dir: Path,
-) -> List[LintMessage]:
+    std: str | None,
+) -> list[LintMessage]:
+    # Explicitly pass include path for linters that only check headers.
+    build_include_args = include_args + ["--extra-arg", f"-I{build_dir}"]
+    cmd = [
+        binary,
+        f"-p={build_dir}",
+        *build_include_args,
+        filename,
+    ]
+    # Only add -- and -std flag if std is explicitly specified
+    if std is not None:
+        cmd.extend(["--", f"-std={std}"])
+
     try:
-        proc = run_command(
-            [binary, f"-p={build_dir}", *include_args, filename],
-        )
+        proc = run_command(cmd)
     except OSError as err:
         return [
             LintMessage(
@@ -172,6 +186,8 @@ def check_file(
         for match in RESULTS_RE.finditer(proc.stdout.decode()):
             # Convert the reported path to an absolute path.
             abs_path = str(Path(match["file"]).resolve())
+            if not abs_path.startswith(PYTORCH_ROOT):
+                continue
             message = LintMessage(
                 path=abs_path,
                 name=match["code"],
@@ -212,6 +228,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--std",
+        default=None,
+        help=(
+            "C++ standard to use for compilation (e.g., c++17, c++20). "
+            "If not specified, uses the standard from compile_commands.json."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="verbose logging",
@@ -249,7 +273,7 @@ def main() -> None:
             ),
         )
         print(json.dumps(err_msg._asdict()), flush=True)
-        exit(0)
+        sys.exit(0)
 
     abs_build_dir = Path(args.build_dir).resolve()
 
@@ -271,6 +295,7 @@ def main() -> None:
                 filename,
                 binary_path,
                 abs_build_dir,
+                args.std,
             ): filename
             for filename in args.filenames
         }

@@ -8,16 +8,14 @@
 #include <torch/csrc/autograd/functions/basic_ops.h>
 #include <torch/csrc/distributed/autograd/context/context.h>
 
-namespace torch {
-namespace distributed {
-namespace autograd {
+namespace torch::distributed::autograd {
 
 // Forward declaration.
 class BackwardPassCleanupGuard;
 
 // This is a singleton class responsible for running distributed backward
 // passes. This engine relies heavily on the vanilla autograd engine and tries
-// to re-use it as much as possible. This class is mostly responsible for the
+// to reuse it as much as possible. This class is mostly responsible for the
 // distributed aspects of autograd and tries to hook into the autograd engine
 // where convenient.
 
@@ -46,7 +44,7 @@ class TORCH_API DistEngine {
   // The gradients are accumulated in the provided autograd context.
   c10::intrusive_ptr<c10::ivalue::Future> executeSendFunctionAsync(
       const ContextPtr& autogradContext,
-      const std::shared_ptr<SendRpcBackward>& sendFunction,
+      const c10::intrusive_ptr<SendRpcBackward>& sendFunction,
       bool retainGraph);
 
   // Number of backward passes currently running for the Distributed Engine.
@@ -54,7 +52,7 @@ class TORCH_API DistEngine {
 
   // Returns key-value pairs consisting of useful debugging information related
   // to distributed autograd.
-  std::unordered_map<std::string, int> getDebugInfo() const;
+  std::unordered_map<std::string, int64_t> getDebugInfo() const;
 
   DistEngine(const DistEngine&) = delete;
   DistEngine& operator=(const DistEngine&) = delete;
@@ -84,7 +82,7 @@ class TORCH_API DistEngine {
       const ContextPtr& context,
       const torch::autograd::edge_list& rootEdges,
       const torch::autograd::variable_list& grads,
-      const std::shared_ptr<torch::autograd::Node>& graphRoot,
+      const c10::intrusive_ptr<torch::autograd::Node>& graphRoot,
       torch::autograd::edge_list& outputEdges,
       bool retainGraph);
 
@@ -127,7 +125,7 @@ class TORCH_API DistEngine {
   // context.
   c10::intrusive_ptr<c10::ivalue::Future> runEngineAndAccumulateGradients(
       const ContextPtr& autogradContext,
-      const std::shared_ptr<torch::autograd::Node>& graphRoot,
+      const c10::intrusive_ptr<torch::autograd::Node>& graphRoot,
       const torch::autograd::edge_list& outputEdges,
       bool incrementOutStandingTasks = true);
 
@@ -171,6 +169,4 @@ class BackwardPassCleanupGuard {
   ContextPtr autogradContext_;
 };
 
-} // namespace autograd
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::autograd

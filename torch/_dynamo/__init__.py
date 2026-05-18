@@ -1,169 +1,237 @@
-from . import allowed_functions, convert_frame, eval_frame, resume_execution
-from .backends.registry import list_backends, register_backend
+"""
+TorchDynamo is a Python-level JIT compiler designed to make unmodified PyTorch programs faster.
+TorchDynamo hooks into the frame evaluation API in CPython (PEP 523) to dynamically modify Python
+bytecode right before it is executed. It rewrites Python bytecode in order to extract sequences of
+PyTorch operations into an FX Graph which is then just-in-time compiled with a customizable backend.
+It creates this FX Graph through bytecode analysis and is designed to mix Python execution with
+compiled backends to get the best of both worlds: usability and performance. This allows it to
+seamlessly optimize PyTorch programs, including those using modern Python features.
+"""
+
+import torch
+
+from . import (
+    aot_compile,
+    bytecode_debugger,
+    config,
+    convert_frame,
+    eval_frame,
+    functional_export,
+    resume_execution,
+)
+from .backends.registry import list_backends, lookup_backend, register_backend
+from .callback import callback_handler, on_compile_end, on_compile_start
+from .code_context import code_context
 from .convert_frame import replay
-from .eval_frame import (
+from .decorators import (
+    allow_c_hash,
+    allow_in_graph,
     assume_constant_result,
     disable,
+    disable_nested_graph_breaks,
+    disallow_in_graph,
+    dont_skip_tracing,
+    error_on_graph_break,
+    forbid_in_graph,
+    graph_break,
+    is_dynamo_disable_recursive,
+    mark_dynamic,
+    mark_static,
+    mark_static_address,
+    maybe_mark_dynamic,
+    nonstrict_trace,
+    override_cudagraphs,
+    override_optimization_hint,
+    patch_dynamo_config,
+    run,
+    set_stance,
+    skip_frame,
+    step_unsupported,
+    substitute_in_graph,
+)
+from .eval_frame import (
+    _reset_guarded_backend_cache,
     explain,
     export,
     is_dynamo_supported,
+    is_inductor_supported,
     optimize,
     optimize_assert,
     OptimizedModule,
     reset_code,
-    run,
-    skip,
 )
+
+# pyrefly: ignore [deprecated]
 from .external_utils import is_compiling
-from .utils import compilation_metrics, guard_failures, orig_code_map, reset_frame_count
+from .mutation_guard import GenerationTracker
+from .pgo import reset_code_state
+from .symbolic_convert import TensorifyState
+from .utils import (
+    graph_break_reasons,
+    guard_failures,
+    orig_code_map,
+    register_hook_for_recompile_user_context,
+    reset_frame_count,
+    reset_recompile_user_contexts,
+)
+
+
+# Register polyfill functions
+from .polyfills import loader as _  # usort: skip
+
 
 __all__ = [
+    "allow_c_hash",
     "allow_in_graph",
     "assume_constant_result",
+    "bytecode_debugger",
+    "config",
+    "disable",
+    "disable_nested_graph_breaks",
     "disallow_in_graph",
-    "forbid_in_graph",
-    "graph_break",
-    "mark_dynamic",
-    "optimize",
-    "optimize_assert",
+    "dont_skip_tracing",
     "export",
     "explain",
-    "run",
-    "replay",
-    "disable",
-    "reset",
-    "skip",
-    "OptimizedModule",
+    "forbid_in_graph",
+    "graph_break",
     "is_compiling",
-    "register_backend",
+    "is_dynamo_disable_recursive",
     "list_backends",
+    "lookup_backend",
+    "mark_dynamic",
+    "maybe_mark_dynamic",
+    "mark_static",
+    "mark_static_address",
+    "nonstrict_trace",
+    "override_optimization_hint",
+    "optimize",
+    "optimize_assert",
+    "OptimizedModule",
+    "patch_dynamo_config",
+    "register_backend",
+    "replay",
+    "reset",
+    "reset_recompile_user_contexts",
+    "run",
+    "override_cudagraphs",
+    "error_on_graph_break",
+    "set_recursion_limit",
+    "set_stance",
+    "skip_frame",
+    "step_unsupported",
+    "substitute_in_graph",
 ]
 
+# allowlist this for weights_only load of NJTs
+torch.serialization.add_safe_globals([torch._dynamo.decorators._DimRange])
 
-def reset():
-    """Clear all compile caches and restore initial state"""
-    for weak_code in convert_frame.input_codes.seen + convert_frame.output_codes.seen:
-        code = weak_code()
-        if code:
-            reset_code(code)
-    convert_frame.input_codes.clear()
-    convert_frame.output_codes.clear()
-    orig_code_map.clear()
-    guard_failures.clear()
-    resume_execution.ContinueExecutionCache.cache.clear()
-    eval_frame.most_recent_backend = None
-    compilation_metrics.clear()
-    reset_frame_count()
+if torch.manual_seed is torch.random.manual_seed:
+    import torch.jit._builtins
+
+    # Wrap manual_seed with the disable decorator.
+    # Can't do it at its implementation due to dependency issues.
+    torch.manual_seed = torch._disable_dynamo(torch.manual_seed)
+    # Add the new manual_seed to the builtin registry.
+    torch.jit._builtins._register_builtin(torch.manual_seed, "aten::manual_seed")
 
 
-def allow_in_graph(fn):
+def reset() -> None:
     """
-    Customize which functions TorchDynamo will include in the generated
-    graph. Similar to `torch.fx.wrap()`.
-    ::
+    Clear all compile caches and restore initial state.  This function is intended
+    to reset Dynamo's state *as if* you had started a fresh process invocation, which
+    makes it good for testing scenarios where you want to behave as if you started
+    a new process.  It does NOT affect any file system caches.
 
-        torch._dynamo.allow_in_graph(my_custom_function)
-
-        @torch._dynamo.optimize(...)
-        def fn(a):
-            x = torch.add(x, 1)
-            x = my_custom_function(x)
-            x = torch.add(x, 1)
-            return x
-
-        fn(...)
-
-    Will capture a single graph containing `my_custom_function()`.
+    NB: this does NOT reset logging state.  Don't use this to test logging
+    initialization/reinitialization.
     """
-    if isinstance(fn, (list, tuple)):
-        return [allow_in_graph(x) for x in fn]
-    assert callable(fn), "allow_in_graph expects a callable"
-    allowed_functions._allowed_function_ids.add(id(fn))
-    allowed_functions._disallowed_function_ids.remove(id(fn))
-    return fn
+    # TODO: https://github.com/pytorch/pytorch/issues/139200
+    import logging
+
+    log = logging.getLogger(__name__)
+    log.info("torch._dynamo.reset")
+    with convert_frame.compile_lock:
+        reset_code_caches()
+        convert_frame.input_codes.clear()
+        reset_code_state()
+        convert_frame.output_codes.clear()
+        orig_code_map.clear()
+        guard_failures.clear()
+        graph_break_reasons.clear()
+        resume_execution.ContinueExecutionCache.cache.clear()
+        _reset_guarded_backend_cache()
+        reset_frame_count()
+        torch._dynamo.compiled_autograd.reset()
+        convert_frame.FRAME_COUNTER = 0
+        convert_frame.FRAME_COMPILE_COUNTER.clear()
+        callback_handler.clear()
+        GenerationTracker.clear()
+        TensorifyState.clear()
+        torch._dynamo.utils.warn_once_cache.clear()
+        torch._C._autograd._saved_tensors_hooks_set_tracing(False)
+
+        # Reset cudagraph trees unconditionally since they are global state
+        # not tied to a specific backend instance
+        from torch._higher_order_ops.triton_kernel_wrap import kernel_side_table
+        from torch._higher_order_ops.wrap import inductor_code_side_table
+
+        kernel_side_table.reset_table()
+        inductor_code_side_table.reset_table()
+
+        if torch.cuda.is_available():
+            from torch._inductor.cudagraph_trees import reset_cudagraph_trees
+
+            reset_cudagraph_trees()
 
 
-def disallow_in_graph(fn):
+def reset_code_caches() -> None:
     """
-    Customize which functions TorchDynamo will exclude in the generated
-    graph and force a graph break on.
-    ::
-
-        torch._dynamo.disallow_in_graph(torch.sub)
-
-        @torch._dynamo.optimize(...)
-        def fn(a):
-            x = torch.add(x, 1)
-            x = torch.sub(x, 1)
-            x = torch.add(x, 1)
-            return x
-
-        fn(...)
-
-    Will break the graph on `torch.sub`, and give two graphs each with a
-    single `torch.add()` op.
+    Clears in-memory code cache, which is what stores compiled products.  This
+    resets less state than :func:`reset` and is mostly only used for testing
+    purposes.
     """
-    if isinstance(fn, (list, tuple)):
-        return [disallow_in_graph(x) for x in fn]
-    assert callable(fn), "disallow_in_graph expects a callable"
-    allowed_functions._allowed_function_ids.remove(id(fn))
-    allowed_functions._disallowed_function_ids.add(id(fn))
-    return fn
+    # TODO: https://github.com/pytorch/pytorch/issues/139200
+    import logging
+
+    log = logging.getLogger(__name__)
+    log.info("torch._dynamo.reset_code_caches")
+    """Clear compile caches that are keyed by code objects"""
+    with convert_frame.compile_lock:
+        reset_code_state()
+        for weak_code in (
+            convert_frame.input_codes.seen + convert_frame.output_codes.seen
+        ):
+            code = weak_code()
+            if code:
+                reset_code(code)
+        code_context.clear()
 
 
-@disallow_in_graph
-def graph_break():
-    """Force a graph break"""
-    pass
-
-
-def forbid_in_graph(fn):
+def get_recursion_limit() -> int:
     """
-    Customize which functions TorchDynamo will assert are not present while tracing.
+    Returns the internal dynamo recursion limit set by `torch._dynamo.set_recursion_limit`.
 
-    If you want a graph break on this function instead, use disallow_in_graph.
-    TODO(voz): We now have allow_in_graph, disallow_in_graph, forbid_in_graph - some more robust
-    documentation would not be amiss.
+    Returns -1 if no c recursion limit has been set.
     """
-    if isinstance(fn, (list, tuple)):
-        return [forbid_in_graph(x) for x in fn]
-    assert callable(fn), "forbid_in_graph applies only to callables"
-    fn._dynamo_forbidden = True
-    return fn
+    return torch._C._dynamo.eval_frame.get_c_recursion_limit()
 
 
-@forbid_in_graph
-def mark_dynamic(t, index):
+def set_recursion_limit(limit: int) -> None:
     """
-    Mark a tensor as having a dynamic dim.
+    Sets an internal dynamo recursion limit. The limit must be >= 1, or -1 to reset
+    to the default (unset) state.
 
-    [Note - on the state of mark_dynamic]
+    This is possibly needed in Python 3.12-3.13 since there is a separate C recursion limit
+    that is not visible at the Python level. If you are getting RecursionErrors during
+    Dynamo compilation and `sys.setrecursionlimit()` doesn't help, this function may alleviate
+    the issue.
 
-    The behavior of having a dynamic dimension on a tensor is governed by a few factors:
+    NOTE: this function does NOT call `sys.setrecursionlimit()` - the user is expected to manually
+        call this if required. This is because the 2 recursion limits are not sync'd up - e.g. in
+        Python 3.12, functions can be inline-evaluated, which apparently doesn't use up the C stack.
 
-    1) torch._dynamo.config dynamic_shapes True or False.
-        a) dynamic_shapes=True - dynamic_shapes must be True for mark_dynamic to work.
-        a) dynamic_shapes=False - This config will raise an exception when used in conjunction with
-        mark_dyamic. We will eventually support this.
-
-    2) If the dimension is fully constrained - as in, it does not allow more than a single value
-    in both eager (torch.compile, torch._dynamo.optimize) mode and export mode (torch._dynamo.export),
-    we will raise an error
-
-    3) If the dimension is partially constrained - allowing at least 2 values but not the full unbounded
-    range of shapes, in eager we will pass it through, but export will raise an error.
-
-    4) Attempts to trace this function will explicitly raise. As such, all calls to mark_dynamic must be made
-    before torch.compile.
-
+    WARNING: increasing the recursion limit to an arbitrary large value may cause segfaults
+        due to stack overflows! You can try also try to manually increase the stack size, e.g.
+        with `$ ulimit -s ...`
     """
-    if isinstance(index, int):
-        if not hasattr(t, "_dynamo_dynamic_indices"):
-            t._dynamo_dynamic_indices = set()
-        # TODO(voz): Should we bounds check?
-        t._dynamo_dynamic_indices.add(index)
-        return
-
-    assert isinstance(index, (list, tuple))
-    for i in index:
-        mark_dynamic(t, i)
+    torch._C._dynamo.eval_frame.set_c_recursion_limit(limit)

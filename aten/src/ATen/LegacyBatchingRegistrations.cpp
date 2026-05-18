@@ -1,12 +1,9 @@
 #include <torch/library.h>
-#include <ATen/RedispatchFunctions.h>
 #include <ATen/LegacyVmapTransforms.h>
 #include <ATen/LegacyBatchedFallback.h>
+#include <ATen/RedispatchFunctions.h>
 #include <ATen/native/ResizeCommon.h>
-#include <ATen/ATen.h>
-#include <ATen/core/IListRef.h>
 #include <c10/util/irange.h>
-#include <c10/core/SymIntArrayRef.h>
 
 #include <utility>
 
@@ -55,12 +52,14 @@ namespace at {
 // if not use the same mechanism. In order to accomplish that we might have to
 // do some refactoring.
 
+namespace{
+
 // PyTorch allows operations to specify dim 0 and dim -1 on a scalar tensor.
-static bool is_allowed_dim_on_scalar_tensor(int64_t dim) {
+bool is_allowed_dim_on_scalar_tensor(int64_t dim) {
   return dim == 0 || dim == -1;
 }
 
-Tensor sum_batching_rule(const Tensor& self, OptionalIntArrayRef opt_dims, bool keepdim, optional<ScalarType> dtype) {
+Tensor sum_batching_rule(const Tensor& self, OptionalIntArrayRef opt_dims, bool keepdim, std::optional<ScalarType> dtype) {
   if (opt_dims.has_value()) {
     auto dims = opt_dims.value();
     // PyTorch has a special case where sum(scalar_tensor, dim=0) does not fail
@@ -196,7 +195,7 @@ std::vector<Tensor> chunk_batching_rule(const Tensor& self, int64_t chunks, int6
   return result;
 }
 
-Tensor clamp_batching_rule(const Tensor& self, const optional<Scalar>& min, const optional<Scalar>& max) {
+Tensor clamp_batching_rule(const Tensor& self, const std::optional<Scalar>& min, const std::optional<Scalar>& max) {
   auto self_physical = MultiBatchVmapTransform::logicalToPhysical(self);
   auto result = at::clamp(self_physical.tensor(), min, max);
   return self_physical.getPhysicalToLogicalMap().apply(result);
@@ -363,8 +362,8 @@ Tensor select_batching_rule(const Tensor& self, int64_t dim, int64_t index) {
   return self_physical.getPhysicalToLogicalMap().apply(result);
 }
 
-static int64_t getGradInputPhysicalDim(int64_t dim, IntArrayRef input_sizes, int64_t num_batch_dims) {
-  return maybe_wrap_dim(dim, input_sizes.size()) + num_batch_dims;
+int64_t getGradInputPhysicalDim(int64_t dim, IntArrayRef input_sizes, int64_t num_batch_dims) {
+  return maybe_wrap_dim(dim, static_cast<int64_t>(input_sizes.size())) + num_batch_dims;
 }
 
 Tensor select_backward_batching_rule(const Tensor& grad, IntArrayRef input_sizes, int64_t dim, int64_t index) {
@@ -378,8 +377,8 @@ Tensor select_backward_batching_rule(const Tensor& grad, IntArrayRef input_sizes
 Tensor slice_batching_rule(
     const Tensor& self,
     int64_t dim,
-    c10::optional<int64_t> start,
-    c10::optional<int64_t> end,
+    std::optional<int64_t> start,
+    std::optional<int64_t> end,
     int64_t step) {
   auto self_physical = MultiBatchVmapTransform::logicalToPhysical(self);
   auto dim_physical = self_physical.getPhysicalDim(dim);
@@ -486,7 +485,7 @@ Tensor view_as_complex_batching_rule(const Tensor& self) {
 // Checks that the smallest batch stride is greater than the largest example
 // stride. This is something we can support but we choose not to because it's
 // potentially error prone.
-static void checkBatchDimsAtFrontInLayout(IntArrayRef physical_strides, int64_t num_batch_dims) {
+void checkBatchDimsAtFrontInLayout(IntArrayRef physical_strides, int64_t num_batch_dims) {
   auto smallest_batch_stride = std::min_element(
       physical_strides.begin(), physical_strides.begin() + num_batch_dims);
   auto largest_example_stride = std::max_element(
@@ -506,11 +505,11 @@ static void checkBatchDimsAtFrontInLayout(IntArrayRef physical_strides, int64_t 
 // given (sizes, strides, storage_offset) returns the maximum location that
 // can be indexed (or nullopt if such a location doesn't exist, e.g., tensors
 // with zero-size dims).
-static optional<int64_t> maximum_indexable_location(
+std::optional<int64_t> maximum_indexable_location(
     IntArrayRef sizes, IntArrayRef strides, int64_t storage_offset) {
   auto result = native::storage_size_for(sizes, strides);
   if (result == 0) {
-    return nullopt;
+    return std::nullopt;
   }
   return result + storage_offset;
 }
@@ -519,12 +518,12 @@ static optional<int64_t> maximum_indexable_location(
 // This checks that the range of possible memory locations accessible by
 // x.as_strided(sizes, strides, maybe_storage_offset)
 // are within the bounds of possible memory locations accessible by x.
-static void checkBasicAsStridedValidForSlice(
+void checkBasicAsStridedValidForSlice(
     const Tensor& physical_tensor,
     int64_t num_batch_dims,
     IntArrayRef sizes,
     IntArrayRef strides,
-    optional<int64_t> maybe_storage_offset) {
+    std::optional<int64_t> maybe_storage_offset) {
   auto slice_sizes = physical_tensor.sizes().slice(num_batch_dims);
   auto slice_strides = physical_tensor.strides().slice(num_batch_dims);
   auto base_offset = physical_tensor.storage_offset();
@@ -556,7 +555,7 @@ static void checkBasicAsStridedValidForSlice(
       "rewrite the `as_strided` call as a sequence of PyTorch view operations");
 }
 
-Tensor _reshape_alias_batching_rule(const Tensor& self, IntArrayRef sizes, IntArrayRef strides) {
+Tensor _reshape_alias_batching_rule(const Tensor& self, IntArrayRef sizes, IntArrayRef strides [[maybe_unused]]) {
   return reshape_batching_rule(self, sizes);
 }
 
@@ -612,7 +611,7 @@ Tensor as_strided_batching_rule(
     const Tensor& tensor,
     IntArrayRef sizes,
     IntArrayRef strides,
-    optional<int64_t> storage_offset) {
+    std::optional<int64_t> storage_offset) {
   auto physical_view = at::MultiBatchVmapTransform::logicalToPhysical(tensor);
   auto num_batch_dims = physical_view.numBatchDims();
   auto physical_sizes = physical_view.getPhysicalShape(sizes);
@@ -761,7 +760,7 @@ Tensor pow_scalar_Tensor_batching_rule(const Scalar& other, const Tensor& self) 
   return makeBatched(output_physical, BatchDims(old_bdims.begin(), old_bdims.end()));
 }
 
-Tensor clone_batching_rule(const Tensor& self, optional<MemoryFormat> memory_format) {
+Tensor clone_batching_rule(const Tensor& self, std::optional<MemoryFormat> memory_format) {
   // Memory format support is a little tricky because vmap is allowed to move
   // around batch dimensions and some memory formats are rank-dependent.
   // Another weird case is:
@@ -956,12 +955,12 @@ Tensor stack_batching_rule(TensorList tensors, int64_t dim) {
 // unwrap_and_call<..., at::to> because at::to takes TensorOptions& (!!)
 Tensor to_dtype_layout_batching_rule(
     const Tensor& self,
-    optional<ScalarType> dtype,
-    optional<Layout> layout,
-    optional<Device> device,
-    optional<bool> pin_memory,
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory,
     bool non_blocking, bool copy,
-    optional<MemoryFormat> memory_format) {
+    std::optional<MemoryFormat> memory_format) {
   auto options = TensorOptions()
     .dtype(dtype)
     .layout(layout)
@@ -976,10 +975,10 @@ Tensor to_dtype_layout_batching_rule(
 Tensor new_zeros_batching_rule(
     const Tensor& self,
     IntArrayRef size,
-    optional<ScalarType> dtype,
-    optional<Layout> layout,
-    optional<Device> device,
-    optional<bool> pin_memory) {
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory) {
   auto physical_view = MultiBatchVmapTransform::logicalToPhysical(self);
   auto physical_size = physical_view.getPhysicalShape(size);
   auto options = TensorOptions()
@@ -994,10 +993,10 @@ Tensor new_zeros_batching_rule(
 Tensor new_empty_batching_rule(
     const Tensor& self,
     IntArrayRef size,
-    c10::optional<ScalarType> dtype,
-    c10::optional<Layout> layout,
-    c10::optional<Device> device,
-    c10::optional<bool> pin_memory) {
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory) {
   auto physical_view = MultiBatchVmapTransform::logicalToPhysical(self);
   auto physical_size = physical_view.getPhysicalShape(size);
   auto result = physical_view.tensor().new_empty(physical_size, TensorOptions().dtype(dtype).layout(layout).device(device).pinned_memory(pin_memory));
@@ -1008,10 +1007,10 @@ Tensor new_empty_strided_batching_rule(
     const Tensor& self,
     IntArrayRef size,
     IntArrayRef stride,
-    optional<ScalarType> dtype,
-    optional<Layout> layout,
-    optional<Device> device,
-    optional<bool> pin_memory) {
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory) {
   auto physical_view = MultiBatchVmapTransform::logicalToPhysical(self);
   auto physical_size = physical_view.getPhysicalShape(size);
 
@@ -1069,7 +1068,7 @@ Tensor comparison_pointwise_batching_rule(const Tensor& self, const Tensor& othe
   auto result = Func(physical_args[0].tensor(), physical_args[1].tensor());
   return physical_args[0].getPhysicalToLogicalMap().apply(result);
 }
-
+}
 TORCH_LIBRARY_IMPL(_, Batched, m) {
   m.fallback(torch::CppFunction::makeFromBoxedFunction<&batchedTensorForLoopFallback>());
 }
@@ -1179,9 +1178,9 @@ TORCH_LIBRARY_IMPL(aten, Batched, m) {
     m.impl(name, unwrap_and_call_method< \
         to_type, &Tensor::to, __VA_ARGS__>);\
   }
-  TO_BATCHING_RULE("to.device", Device, ScalarType, bool, bool, optional<MemoryFormat>)
-  TO_BATCHING_RULE("to.dtype", ScalarType, bool, bool, optional<MemoryFormat>)
-  TO_BATCHING_RULE("to.other", const Tensor&, bool, bool, optional<MemoryFormat>)
+  TO_BATCHING_RULE("to.device", Device, ScalarType, bool, bool, std::optional<MemoryFormat>)
+  TO_BATCHING_RULE("to.dtype", ScalarType, bool, bool, std::optional<MemoryFormat>)
+  TO_BATCHING_RULE("to.other", const Tensor&, bool, bool, std::optional<MemoryFormat>)
   m.impl("to.dtype_layout", to_dtype_layout_batching_rule);
 #undef TO_BATCHING_RULE
   m.impl("clone", clone_batching_rule);
@@ -1207,10 +1206,10 @@ TORCH_LIBRARY_IMPL(aten, Batched, m) {
   BINARY_POINTWISE(mul);
   BINARY_POINTWISE(div);
   {
-    using Binop = Tensor (*)(const Tensor&, const Tensor&, c10::optional<c10::string_view>);
-    using Unop = Tensor (*)(const Tensor&, const Scalar&, c10::optional<c10::string_view>);
-    m.impl("div.Tensor_mode", binary_pointwise_batching_rule<Binop, at::div, c10::optional<c10::string_view>>);
-    m.impl("div.Scalar_mode", unwrap_and_call<Unop, at::div, const Scalar&, c10::optional<c10::string_view>>);
+    using Binop = Tensor (*)(const Tensor&, const Tensor&, std::optional<std::string_view>);
+    using Unop = Tensor (*)(const Tensor&, const Scalar&, std::optional<std::string_view>);
+    m.impl("div.Tensor_mode", binary_pointwise_batching_rule<Binop, at::div, std::optional<std::string_view>>);
+    m.impl("div.Scalar_mode", unwrap_and_call<Unop, at::div, const Scalar&, std::optional<std::string_view>>);
   }
 
   // at::pow has three out-of-place overloads

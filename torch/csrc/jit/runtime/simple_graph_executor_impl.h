@@ -3,8 +3,7 @@
 #include <torch/csrc/jit/api/module.h>
 #include <torch/csrc/jit/runtime/graph_executor_impl.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 struct TORCH_API SimpleGraphExecutorImpl : public GraphExecutorImplBase {
   SimpleGraphExecutorImpl(
@@ -13,13 +12,15 @@ struct TORCH_API SimpleGraphExecutorImpl : public GraphExecutorImplBase {
 
   const ExecutionPlan& getPlanFor(
       Stack& stack,
-      c10::optional<size_t> remaining_bailout_depth) override;
+      std::optional<size_t> remaining_bailout_depth) override;
+  const ExecutionPlan& getInputIndependentPlan() override;
   GraphExecutorState getDebugState() override;
   ~SimpleGraphExecutorImpl() override = default;
 
  private:
-  c10::optional<ExecutionPlan> execution_plan_;
+  const ExecutionPlan& getInputIndependentPlanImpl();
+
+  std::optional<ExecutionPlan> execution_plan_;
 };
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

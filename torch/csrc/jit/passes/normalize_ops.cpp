@@ -1,9 +1,6 @@
 #include <torch/csrc/jit/passes/normalize_ops.h>
 
-#include <c10/util/Exception.h>
-
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
@@ -167,5 +164,4 @@ void NormalizeOps(const std::shared_ptr<Graph>& graph) {
   NormalizeOps(graph->block());
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

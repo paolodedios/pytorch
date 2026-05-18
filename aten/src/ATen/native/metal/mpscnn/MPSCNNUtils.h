@@ -1,5 +1,9 @@
+#include <c10/macros/Macros.h>
+
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wdeprecated-declarations")
 #import <Metal/Metal.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+C10_DIAGNOSTIC_POP()
 #include <string>
 
 // This is a utility macro that can be used to throw an exception when a Metal
@@ -20,10 +24,7 @@
     }                                                                            \
   } while (false)
 
-namespace at {
-namespace native {
-namespace metal {
-namespace mpscnn {
+namespace at::native::metal::mpscnn {
 
 struct LaunchParams {
   MTLSize threadsPerThreadgroup;
@@ -71,7 +72,4 @@ static inline int computeMPSAlignOffset(int kernel, int pad) {
   return mps_offset - pt_offset;
 }
 
-}
-} // namespace metal
-} // namespace native
-} // namespace at
+} // namespace at::native::metal::mpscnn

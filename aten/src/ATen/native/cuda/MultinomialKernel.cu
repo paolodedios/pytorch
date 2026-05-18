@@ -25,19 +25,22 @@
 #include <curand.h>
 #include <curand_kernel.h>
 #include <curand_philox4x32_x.h>
+#include <type_traits>
 
 namespace at::native {
 
 namespace {
 
-template <typename T>
-inline __device__ bool _isinf(T x) { return ::isinf(x); }
-
-inline __device__ bool _isinf(c10::Half x) {
-  return ::isinf(static_cast<float>(x));
-}
-inline __device__ bool _isinf(c10::BFloat16 x) {
-  return ::isinf(static_cast<float>(x));
+template <
+    typename T,
+    typename = std::enable_if_t<
+        std::is_floating_point_v<T> || std::is_convertible_v<T, float>>>
+inline __device__ bool _isinf(T x) {
+  if constexpr (std::is_floating_point_v<T>) {
+    return ::isinf(x);
+  } else {
+    return ::isinf(static_cast<float>(x));
+  }
 }
 
 #define MAX_NUM_BLOCKS 200
@@ -83,24 +86,24 @@ void renormRows(Tensor& t) {
   TORCH_CHECK(props != nullptr);
   int numSM = props->multiProcessorCount;
   const int64_t maxThreads = std::min(
-      props->maxThreadsPerBlock, cuda_utils::kCUDABlockReduceMaxThreads);
+      props->maxThreadsPerBlock, cuda_utils::kCUDABlockReduceMaxThreads());
 
   int warp_size = at::cuda::warp_size();
   dim3 grid(rows < numSM * 4 ? rows : numSM * 4);
   dim3 block(std::min(maxThreads, warp_size * ceil_div(cols, int64_t{warp_size})));
 
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(t.scalar_type(), "renormRows_cuda", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND2(kHalf, kBFloat16, t.scalar_type(), "renormRows_cuda", [&] {
     renormRowsL1<scalar_t>
         <<<grid, block, (block.x / warp_size) * sizeof(scalar_t),
-        at::cuda::getCurrentCUDAStream()>>>(t.data_ptr<scalar_t>(),
+        at::cuda::getCurrentCUDAStream()>>>(t.mutable_data_ptr<scalar_t>(),
             rows, cols);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
 }
 
 template <typename scalar_t>
-__device__ int binarySearchForMultinomial(scalar_t* cumdist,
-                                          scalar_t* dist,
+__device__ int binarySearchForMultinomial(const scalar_t* cumdist,
+                                          const scalar_t* dist,
                                           int size,
                                           scalar_t val) {
   int start = 0;
@@ -140,8 +143,8 @@ sampleMultinomialWithReplacement(PhiloxCudaState philox_args,
                                  int64_t* dest,
                                  int64_t distributions,
                                  int categories,
-                                 scalar_t* normDistPrefixSum,
-                                 scalar_t* normDist) {
+                                 const scalar_t* normDistPrefixSum,
+                                 const scalar_t* normDist) {
   // At the moment, each warp computes one sample value in the binary
   // search due to divergence. It seems possible to compute multiple
   // values and limit divergence though later on.
@@ -188,8 +191,8 @@ __global__ void sampleMultinomialOnce(
     int64_t* dest,
     int64_t distributions,
     int categories,
-    scalar_t* sampled,
-    scalar_t* dist,
+    const scalar_t* sampled,
+    const scalar_t* dist,
     int stride_dist, // dist->stride(0)
     int stride_categories // dist->stride(1)
 ) {
@@ -306,7 +309,7 @@ __global__ void sampleMultinomialOnce(
       } else {
         // This should address a rare bug where we don't select a valid index. This likely occurs when
         // due to floating point arithmetic rounding errors, our cumulative sum does not add up to 1, but
-        // and our uniform sample is greater than this value. In this case we likely have unitialized memory
+        // and our uniform sample is greater than this value. In this case we likely have uninitialized memory
         // in dest[curDist]. So basically we will loop through the distribution and pick the largest index
         // where the distribution is non-zero. This is obviously terribly inefficient, but due to the
         // rarity in which this occurs, this should not be an issue.
@@ -325,7 +328,7 @@ void multinomial_with_replacement_kernel_impl(
     Tensor& result,
     const Tensor& self,
     const int64_t n_sample,
-    c10::optional<Generator> generator) {
+    std::optional<Generator> generator) {
   auto gen = get_generator_or_default<CUDAGeneratorImpl>(generator, cuda::detail::getDefaultCUDAGenerator());
 
   int inputSize = self.dim();
@@ -339,7 +342,7 @@ void multinomial_with_replacement_kernel_impl(
 
   result.resize_({numDist, n_sample});
 
-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(self_v.scalar_type(), "multinomial_kernel_cuda", [&] {
+  AT_DISPATCH_FLOATING_TYPES_AND2(kHalf, kBFloat16, self_v.scalar_type(), "multinomial_kernel_cuda", [&] {
     using accscalar_t = at::acc_type<scalar_t, true>;
     auto props = at::cuda::getCurrentDeviceProperties();
     TORCH_CHECK(props != nullptr);
@@ -367,11 +370,11 @@ void multinomial_with_replacement_kernel_impl(
           <<<grid, block,
           requiredShared,
           at::cuda::getCurrentCUDAStream()>>>(
-              result.data_ptr<int64_t>(),
+              result.mutable_data_ptr<int64_t>(),
                   numDist,
                   numCategories,
-                  sampled.data_ptr<scalar_t>(),
-                  self_v.data_ptr<scalar_t>(),
+                  sampled.const_data_ptr<scalar_t>(),
+                  self_v.const_data_ptr<scalar_t>(),
                   self_v.stride(0),
                   self_v.stride(1)
           );
@@ -383,27 +386,27 @@ void multinomial_with_replacement_kernel_impl(
       // for subsequent samples in this space
       Tensor origDist = native::empty_like(
           self_v,
-          c10::nullopt /* dtype */,
-          c10::nullopt /* layout */,
-          c10::nullopt /* device */,
-          c10::nullopt /* pin_memory */,
+          std::nullopt /* dtype */,
+          std::nullopt /* layout */,
+          std::nullopt /* device */,
+          std::nullopt /* pin_memory */,
           LEGACY_CONTIGUOUS_MEMORY_FORMAT);
       origDist.copy_(self_v);
 
       Tensor normDist = native::empty_like(
           self_v,
-          c10::nullopt /* dtype */,
-          c10::nullopt /* layout */,
-          c10::nullopt /* device */,
-          c10::nullopt /* pin_memory */,
+          std::nullopt /* dtype */,
+          std::nullopt /* layout */,
+          std::nullopt /* device */,
+          std::nullopt /* pin_memory */,
           LEGACY_CONTIGUOUS_MEMORY_FORMAT);
 
       Tensor prefixSum = native::empty_like(
           self_v,
-          c10::nullopt /* dtype */,
-          c10::nullopt /* layout */,
-          c10::nullopt /* device */,
-          c10::nullopt /* pin_memory */,
+          std::nullopt /* dtype */,
+          std::nullopt /* layout */,
+          std::nullopt /* device */,
+          std::nullopt /* pin_memory */,
           LEGACY_CONTIGUOUS_MEMORY_FORMAT);
 
       // Renorm along rows
@@ -440,10 +443,10 @@ void multinomial_with_replacement_kernel_impl(
             <<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
                 rng_engine_inputs,
                 n_sample,
-                result.data_ptr<int64_t>(),
+                result.mutable_data_ptr<int64_t>(),
                 numDist, numCategories,
-                prefixSum.data_ptr<scalar_t>(),
-                normDist.data_ptr<scalar_t>());
+                prefixSum.const_data_ptr<scalar_t>(),
+                normDist.const_data_ptr<scalar_t>());
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
   });

@@ -20,6 +20,7 @@ def define_targets(rules):
         deps = [
             "//c10/core:base",
             "//c10/util:base",
+            "//c10/core:CPUAllocator",
             "@com_google_googletest//:gtest_main",
         ],
     )
@@ -40,16 +41,35 @@ def define_targets(rules):
         srcs = rules.glob(
             ["util/*.cpp"],
             exclude = [
+                "util/bit_cast_test.cpp",
                 "util/ssize_test.cpp",
                 "util/typeid_test.cpp",
             ],
         ),
-        copts = ["-Wno-deprecated-declarations"],
+        copts = ["-Wno-deprecated-declarations", "-Wno-ctad-maybe-unsupported"],
         deps = [
             ":Macros",
             ":complex_math_test_common",
             ":complex_test_common",
             "//c10/macros",
+            "//c10/util:base",
+            "@com_google_googletest//:gtest_main",
+        ],
+    )
+
+    rules.cc_test(
+        name = "util/bit_cast_test",
+        srcs = ["util/bit_cast_test.cpp"],
+        deps = [
+            "//c10/util:bit_cast",
+            "@com_google_googletest//:gtest_main",
+        ],
+    )
+
+    rules.cc_test(
+        name = "util/nofatal_test",
+        srcs = ["util/nofatal_test.cpp"],
+        deps = [
             "//c10/util:base",
             "@com_google_googletest//:gtest_main",
         ],

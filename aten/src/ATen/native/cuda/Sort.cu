@@ -1,7 +1,6 @@
 #define TORCH_ASSERT_NO_OPERATORS
 #include <ATen/native/cuda/Sort.h>
 #include <ATen/core/TensorBase.h>
-#include <ATen/core/Array.h>
 #include <ATen/Dispatch.h>
 #include <ATen/cuda/cub.cuh>
 #include <ATen/cuda/CUDAContext.h>
@@ -12,14 +11,13 @@
 #include <ATen/native/cuda/SortingCommon.cuh>
 
 #include <limits>
-#include <c10/core/DeviceArray.h>
 
 namespace at::native {
 
 template <typename T>
 static int minimum_grid_for_occupancy(T kernel, int max_block_size) {
-  int minGridSize;
-  int blockSize;
+  int minGridSize = 0;
+  int blockSize = 0;
   C10_CUDA_CHECK(cudaOccupancyMaxPotentialBlockSize(
       &minGridSize,
       &blockSize,
@@ -109,7 +107,7 @@ struct SmallBitonicSort {
 // For small sorts (n <= 128) we use warpMergeSortKVInPlace which
 // sorts one slice per warp and potentially multiple slices in the
 // same block for improved occupancy with large batch sizes.
-template <int sort_size>
+template <int sort_size, int WARP_SIZE>
 struct WarpMergeSort {
 
   template <int A, typename K, typename V, typename IndexType>
@@ -130,7 +128,7 @@ struct WarpMergeSort {
     const auto min_grid = minimum_grid_for_occupancy(
         warpMergeSortKVInPlace<
             A, -1, sort_size, max_block_y,
-            K, V, LTOp<K, true>, IndexType>,
+            K, V, LTOp<K, true>, IndexType, WARP_SIZE>,
         block_x * max_block_y);
     const auto max_batch = std::max(IndexType{1}, keySlices / min_grid);
     const int block_y = std::min(IndexType(max_block_y), max_batch);
@@ -144,7 +142,9 @@ struct WarpMergeSort {
 
     if (descending) {
       const K invalid_key = at::numeric_limits<K>::lower_bound();
-      warpMergeSortKVInPlace<A, -1, sort_size, max_block_y>
+      warpMergeSortKVInPlace<
+          A, -1, sort_size, max_block_y,
+          K, V, GTOp<K, true>, IndexType, WARP_SIZE>
         <<<grid, block, 0, stream>>>(
           keyInfo,
           keySlices,
@@ -163,7 +163,9 @@ struct WarpMergeSort {
         }
         return at::numeric_limits<K>::upper_bound();
       }();
-      warpMergeSortKVInPlace<A, -1, sort_size, max_block_y>
+      warpMergeSortKVInPlace<
+          A, -1, sort_size, max_block_y,
+          K, V, LTOp<K, true>, IndexType, WARP_SIZE>
         <<<grid, block, 0, stream>>>(
           keyInfo,
           keySlices,
@@ -205,17 +207,22 @@ struct MediumRadixSort {
 
     int64_t ceilPowerOf2 = nextHighestPowerOf2(keySliceSize);
     TORCH_INTERNAL_ASSERT(ceilPowerOf2 <= 4096);
+#ifdef USE_ROCM
+    constexpr int default_ipt = 8;
+#else
+    constexpr int default_ipt = 32;
+#endif
     switch (ceilPowerOf2) {
       case 4096:
-        HANDLE_CASE(4096, 32);
+        HANDLE_CASE(4096, default_ipt);
         break;
       case 2048:
-        HANDLE_CASE(2048, 32);
+        HANDLE_CASE(2048, default_ipt);
         break;
       case 1024:
       case 512:
       case 256:
-        HANDLE_CASE(1024, 32);
+        HANDLE_CASE(1024, default_ipt);
         break;
       case 128:
       case 64:
@@ -361,7 +368,7 @@ void sortCommon(Sorter sorter, const TensorBase &key, const TensorBase &value,
 void sortKeyValueInplace(
     const TensorBase& key,
     const TensorBase& value,
-    int dim,
+    int64_t dim,
     bool descending,
     bool stable) {
   const auto sort_size = key.size(dim);
@@ -372,7 +379,16 @@ void sortKeyValueInplace(
     sortCommon(SmallBitonicSort{}, key, value, dim, descending);
 #if HAS_WARP_MERGE_SORT()
   } else if (sort_size <= 128) {
-    sortCommon(WarpMergeSort<128>{}, key, value, dim, descending);
+#ifdef USE_ROCM
+    if (at::cuda::warp_size() == 32) {
+      sortCommon(WarpMergeSort<128, 32>{}, key, value, dim, descending);
+    }
+    else {
+      sortCommon(WarpMergeSort<128, 64>{}, key, value, dim, descending);
+    }
+#else
+    sortCommon(WarpMergeSort<128, C10_WARP_SIZE>{}, key, value, dim, descending);
+#endif
 #endif
   } else {
     sortCommon(MediumRadixSort{}, key, value, dim, descending);

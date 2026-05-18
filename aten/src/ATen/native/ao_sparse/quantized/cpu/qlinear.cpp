@@ -15,10 +15,9 @@
 #include <ATen/ops/empty.h>
 #endif
 
-namespace ao {
-namespace sparse {
+namespace ao::sparse {
 
-int register_linear_params();
+
 
 #ifdef USE_FBGEMM
 
@@ -38,7 +37,7 @@ at::Tensor PackedLinearWeight::apply_impl(
   // TODO: contiguous is called for further jit optimizations.
   auto input_contig = input.contiguous();
   const auto* input_ptr =
-      reinterpret_cast<uint8_t*>(input_contig.data_ptr<c10::quint8>());
+      reinterpret_cast<const uint8_t*>(input_contig.const_data_ptr<c10::quint8>());
 
   TORCH_CHECK(
       input.dim() >= 2,
@@ -101,7 +100,7 @@ at::Tensor PackedLinearWeight::apply_impl(
   // 2. If the input tensor is {x, batch_size, K}, the output tensor is {x,
   // batch_size, out_channels}.
   std::vector<int64_t> out_sizes = input.sizes().vec();
-  out_sizes.back() = out_channels; // NOLINT
+  out_sizes.back() = out_channels;
   // Allocate output Tensor and a buffer for fbgemmPacked to use
   auto output_tr = at::_empty_affine_quantized(
       out_sizes,
@@ -129,7 +128,7 @@ at::Tensor PackedLinearWeight::apply_impl(
   auto* input_tr_ptr =
       reinterpret_cast<uint8_t*>(input_tr.data_ptr<c10::quint8>());
   // TODO: Activation transpose before and after the kernel can be removed if we
-  // keep activation tensor always tranposed.
+  // keep activation tensor always transposed.
   fbgemm::transpose_simd<uint8_t>(
       batch_size, K, input_ptr, K, input_tr_ptr, batch_size);
 
@@ -257,4 +256,4 @@ TORCH_LIBRARY_IMPL(sparse, QuantizedCPU, m) {
 }
 
 } // namespace
-}} // namespace ao::sparse
+} // namespace ao::sparse

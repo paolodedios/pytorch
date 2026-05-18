@@ -1,12 +1,13 @@
 """GitHub Label Utilities."""
 
+from __future__ import annotations
+
 import json
-
 from functools import lru_cache
-from typing import Any, List, Tuple, TYPE_CHECKING, Union
-from urllib.request import Request, urlopen
+from typing import Any, TYPE_CHECKING
 
-from github_utils import gh_fetch_json, GitHubComment
+from github_utils import gh_fetch_url_and_headers, GitHubComment
+
 
 # TODO: this is a temp workaround to avoid circular dependencies,
 #       and should be removed once GitHubPR is refactored out of trymerge script.
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 
 BOT_AUTHORS = ["github-actions", "pytorchmergebot", "pytorch-bot"]
 
-LABEL_ERR_MSG_TITLE = "This PR needs a label"
+LABEL_ERR_MSG_TITLE = "This PR needs a `release notes:` label"
 LABEL_ERR_MSG = f"""# {LABEL_ERR_MSG_TITLE}
 If your changes are user facing and intended to be a part of release notes, please use a label starting with `release notes:`.
 
@@ -29,18 +30,14 @@ https://github.com/pytorch/pytorch/wiki/PyTorch-AutoLabel-Bot#why-categorize-for
 """
 
 
-# Modified from https://github.com/pytorch/pytorch/blob/b00206d4737d1f1e7a442c9f8a1cadccd272a386/torch/hub.py#L129
-def _read_url(url: Request) -> Tuple[Any, Any]:
-    with urlopen(url) as r:
-        return r.headers, r.read().decode(r.headers.get_content_charset("utf-8"))
-
-
-def request_for_labels(url: str) -> Tuple[Any, Any]:
+def request_for_labels(url: str) -> tuple[Any, Any]:
     headers = {"Accept": "application/vnd.github.v3+json"}
-    return _read_url(Request(url, headers=headers))
+    return gh_fetch_url_and_headers(
+        url, headers=headers, reader=lambda x: x.read().decode("utf-8")
+    )
 
 
-def update_labels(labels: List[str], info: str) -> None:
+def update_labels(labels: list[str], info: str) -> None:
     labels_json = json.loads(info)
     labels.extend([x["name"] for x in labels_json])
 
@@ -49,6 +46,10 @@ def get_last_page_num_from_header(header: Any) -> int:
     # Link info looks like: <https://api.github.com/repositories/65600975/labels?per_page=100&page=2>;
     # rel="next", <https://api.github.com/repositories/65600975/labels?per_page=100&page=3>; rel="last"
     link_info = header["link"]
+    # Docs does not specify that it should be present for projects with just few labels
+    # And https://github.com/malfet/deleteme/actions/runs/7334565243/job/19971396887 it's not the case  # @lint-ignore
+    if link_info is None:
+        return 1
     prefix = "&page="
     suffix = ">;"
     return int(
@@ -56,17 +57,18 @@ def get_last_page_num_from_header(header: Any) -> int:
     )
 
 
-@lru_cache()
-def gh_get_labels(org: str, repo: str) -> List[str]:
+@lru_cache
+def gh_get_labels(org: str, repo: str) -> list[str]:
     prefix = f"https://api.github.com/repos/{org}/{repo}/labels?per_page=100"
     header, info = request_for_labels(prefix + "&page=1")
-    labels: List[str] = []
+    labels: list[str] = []
     update_labels(labels, info)
 
     last_page = get_last_page_num_from_header(header)
-    assert (
-        last_page > 0
-    ), "Error reading header info to determine total number of pages of labels"
+    if last_page <= 0:
+        raise AssertionError(
+            f"Error reading header info to determine total number of pages of labels, got last_page={last_page}"
+        )
     for page_number in range(2, last_page + 1):  # skip page 1
         _, info = request_for_labels(prefix + f"&page={page_number}")
         update_labels(labels, info)
@@ -75,15 +77,30 @@ def gh_get_labels(org: str, repo: str) -> List[str]:
 
 
 def gh_add_labels(
-    org: str, repo: str, pr_num: int, labels: Union[str, List[str]]
+    org: str, repo: str, pr_num: int, labels: str | list[str], dry_run: bool
 ) -> None:
-    gh_fetch_json(
-        f"https://api.github.com/repos/{org}/{repo}/issues/{pr_num}/labels",
+    if dry_run:
+        print(f"Dryrun: Adding labels {labels} to PR {pr_num}")
+        return
+    gh_fetch_url_and_headers(
+        url=f"https://api.github.com/repos/{org}/{repo}/issues/{pr_num}/labels",
         data={"labels": labels},
     )
 
 
-def get_release_notes_labels(org: str, repo: str) -> List[str]:
+def gh_remove_label(
+    org: str, repo: str, pr_num: int, label: str, dry_run: bool
+) -> None:
+    if dry_run:
+        print(f"Dryrun: Removing {label} from PR {pr_num}")
+        return
+    gh_fetch_url_and_headers(
+        url=f"https://api.github.com/repos/{org}/{repo}/issues/{pr_num}/labels/{label}",
+        method="DELETE",
+    )
+
+
+def get_release_notes_labels(org: str, repo: str) -> list[str]:
     return [
         label
         for label in gh_get_labels(org, repo)
@@ -91,7 +108,7 @@ def get_release_notes_labels(org: str, repo: str) -> List[str]:
     ]
 
 
-def has_required_labels(pr: "GitHubPR") -> bool:
+def has_required_labels(pr: GitHubPR) -> bool:
     pr_labels = pr.get_labels()
     # Check if PR is not user facing
     is_not_user_facing_pr = any(
@@ -104,7 +121,9 @@ def has_required_labels(pr: "GitHubPR") -> bool:
 
 
 def is_label_err_comment(comment: GitHubComment) -> bool:
+    # comment.body_text returns text without markdown
+    no_format_title = LABEL_ERR_MSG_TITLE.replace("`", "")
     return (
-        comment.body_text.lstrip(" #").startswith(LABEL_ERR_MSG_TITLE)
+        comment.body_text.lstrip(" #").startswith(no_format_title)
         and comment.author_login in BOT_AUTHORS
     )

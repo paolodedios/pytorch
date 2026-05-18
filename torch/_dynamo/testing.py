@@ -1,14 +1,37 @@
+"""Testing utilities and infrastructure for Dynamo.
+
+This module provides a comprehensive set of testing utilities including:
+- Test result collection and validation
+- Graph manipulation and comparison tools
+- Test case management and execution helpers
+- Specialized test decorators for different Python versions and features
+- RNG state management
+- Compilation counting and monitoring
+- Debug utilities for bytecode transformation
+
+The utilities in this module are used across Dynamo's test suite to ensure
+consistent testing patterns and proper test isolation.
+"""
+
 import contextlib
 import dis
 import functools
 import logging
 import os.path
+import random
+import re
+import sys
 import types
 import unittest
+from collections.abc import Callable, Generator, Sequence
+from typing import Any, overload, TypeVar
+from typing_extensions import ParamSpec
 from unittest.mock import patch
 
 import torch
 from torch import fx
+from torch._dynamo.backends.debugging import aot_eager
+from torch._dynamo.output_graph import OutputGraph
 
 from . import config, eval_frame, optimize_assert, reset
 from .bytecode_transformation import (
@@ -17,49 +40,62 @@ from .bytecode_transformation import (
     is_generator,
     transform_code_object,
 )
-from .guards import CheckFunctionManager, GuardedCode
-from .utils import same
+from .guards import CheckFunctionManager, CompileId, GuardedCode
+from .types import ConvertFrameReturn, DynamoFrameType, wrap_guarded_code
+from .utils import CompileCounterInt, same
+
+
+np: types.ModuleType | None = None
+try:
+    import numpy as np
+except ModuleNotFoundError:
+    np = None
+
 
 unsupported = eval_frame.unsupported
 three = 3
 
 log = logging.getLogger(__name__)
 
+_P = ParamSpec("_P")
 
-def clone_me(x):
+
+def clone_me(x: torch.Tensor | None) -> torch.Tensor | None:
     if x is None:
         return None
     return x.detach().clone().requires_grad_(x.requires_grad)
 
 
-def skip_if_pytest(fn):
-    @functools.wraps(fn)
-    def wrapped(*args, **kwargs):
-        if "PYTEST_CURRENT_TEST" in os.environ:
-            raise unittest.SkipTest("does not work under pytest")
-        return fn(*args, **kwargs)
-
-    return wrapped
+def remove_optimized_module_prefix(name: str) -> str:
+    return re.sub(r"^_orig_mod[.]", "", name)
 
 
-def named_parameters_for_optimized_module(mod):
-    assert isinstance(mod, eval_frame.OptimizedModule)
-    return mod._orig_mod.named_parameters
+def extract_graph_and_tracker(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+    from torch._dynamo.symbolic_convert import InstructionTranslator
+
+    gm = None
+    region_tracker = None
+
+    def extract_graph_backend(_gm, *args, **kwargs):  # type: ignore[no-untyped-def]
+        nonlocal gm
+        nonlocal region_tracker
+        gm = _gm
+        region_tracker = InstructionTranslator.current_tx().output.region_tracker
+        return _gm
+
+    torch.compile(backend=extract_graph_backend, fullgraph=True)(fn)(*args, **kwargs)
+    return gm.graph, region_tracker  # type: ignore[union-attr]
 
 
-def named_buffers_for_optimized_module(mod):
-    assert isinstance(mod, eval_frame.OptimizedModule)
-    return mod._orig_mod.named_buffers
+def extract_graph(fn, *args, **kwargs):  # type: ignore[no-untyped-def]
+    backend = AotEagerAndRecordGraphs()
+    result = torch.compile(backend=backend)(fn)(*args, **kwargs)
+    return result, backend.graphs, backend.fw_graphs, backend.bw_graphs
 
 
-def remove_optimized_module_prefix(name):
-    prefix = "_orig_mod."
-    assert name.startswith(prefix)
-    name = name[len(prefix) :]
-    return name
-
-
-def collect_results(model, prediction, loss, example_inputs):
+def collect_results(
+    model: torch.nn.Module, prediction: Any, loss: Any, example_inputs: Any
+) -> list[Any]:
     results = []
     results.append(prediction)
     results.append(loss)
@@ -68,8 +104,8 @@ def collect_results(model, prediction, loss, example_inputs):
     #         f"High loss value alert - {loss:.2f}. Can result in unstable gradients."
     #     )
 
-    grads = dict()
-    params = dict()
+    grads = {}
+    params = {}
     for name, param in model.named_parameters():
         if isinstance(model, eval_frame.OptimizedModule):
             name = remove_optimized_module_prefix(name)
@@ -82,7 +118,7 @@ def collect_results(model, prediction, loss, example_inputs):
         params[name] = param_copy
     results.append(grads)
     results.append(params)
-    buffers = dict()
+    buffers = {}
     for name, buffer in model.named_buffers():
         if isinstance(model, eval_frame.OptimizedModule):
             name = remove_optimized_module_prefix(name)
@@ -90,20 +126,18 @@ def collect_results(model, prediction, loss, example_inputs):
     results.append(buffers)
     for example in example_inputs:
         if isinstance(example, (tuple, list)):
-            for inp in example:
-                if isinstance(inp, torch.Tensor):
-                    results.append(inp.grad)
+            results.extend(inp.grad for inp in example if isinstance(inp, torch.Tensor))
         else:
             if isinstance(example, torch.Tensor):
                 results.append(example.grad)
     return results
 
 
-def requires_bwd_pass(out):
+def requires_bwd_pass(out: Any) -> bool:
     if isinstance(out, torch.Tensor):
         return out.requires_grad
     elif isinstance(out, (list, tuple)):
-        return any([requires_bwd_pass(x) for x in out])
+        return any(requires_bwd_pass(x) for x in out)
     elif out is None:
         return False
     elif isinstance(out, int):
@@ -111,13 +145,23 @@ def requires_bwd_pass(out):
     raise NotImplementedError("Don't know how to reduce", type(out))
 
 
-def reduce_to_scalar_loss(out):
+@overload
+def reduce_to_scalar_loss(out: torch.Tensor) -> torch.Tensor: ...
+
+
+@overload
+def reduce_to_scalar_loss(
+    out: list[Any] | tuple[Any, ...] | dict[Any, Any],
+) -> float: ...
+
+
+def reduce_to_scalar_loss(out: Any) -> torch.Tensor | float:
     """Reduce the output of a model to get scalar loss"""
     if isinstance(out, torch.Tensor):
         # Mean does not work on integer tensors
         return out.sum() / out.numel()
     elif isinstance(out, (list, tuple)):
-        return sum([reduce_to_scalar_loss(x) for x in out]) / len(out)
+        return sum(reduce_to_scalar_loss(x) for x in out) / len(out)
     elif type(out).__name__ in (
         "MaskedLMOutput",
         "Seq2SeqLMOutput",
@@ -127,90 +171,231 @@ def reduce_to_scalar_loss(out):
     elif type(out).__name__ == "SquashedNormal":
         return out.mean.sum()
     elif isinstance(out, dict):
-        return sum([reduce_to_scalar_loss(value) for value in out.values()]) / len(
+        return sum(reduce_to_scalar_loss(value) for value in out.values()) / len(
             out.keys()
         )
     raise NotImplementedError("Don't know how to reduce", type(out))
 
 
-def debug_dir():
+def debug_dir() -> str:
     path = os.path.join(os.path.dirname(__file__), "../debug")
     if not os.path.exists(path):
         os.mkdir(path)
     return path
 
 
-def debug_dump(name, code: types.CodeType, extra=""):
+def debug_dump(name: str, code: types.CodeType, extra: str = "") -> None:
     with open(os.path.join(debug_dir(), name), "w") as fd:
         fd.write(
             f"{dis.Bytecode(code).info()}\n\n{dis.Bytecode(code).dis()}\n\n{extra}\n"
         )
 
 
-def debug_insert_nops(frame, cache_size, hooks):
+def debug_insert_nops(
+    frame: DynamoFrameType, cache_size: int, hooks: Any, _: Any, *, skip: int = 0
+) -> ConvertFrameReturn:
     """used to debug jump updates"""
 
-    def insert_nops(instructions, code_options):
+    def insert_nops(instructions: list[Any], code_options: Any) -> None:
         instructions.insert(0, create_instruction("NOP"))
         instructions.insert(0, create_instruction("NOP"))
 
-    if is_generator(frame.f_code):
-        return None
+    metrics_context = torch._dynamo.utils.get_metrics_context()
+    with torch._dynamo.utils.dynamo_timed("debug_insert_nops"), metrics_context:
+        if is_generator(frame.f_code):
+            return ConvertFrameReturn()
 
-    debug_checks(frame.f_code)
-    code = transform_code_object(frame.f_code, insert_nops)
+        debug_checks(frame.f_code)
+        code, _ = transform_code_object(frame.f_code, insert_nops)
+        graph = OutputGraph(
+            code_options={},
+            compiler_fn=None,
+            root_tx=None,  # type: ignore[arg-type]
+            export=False,
+            export_constraints=[],
+            frame_state={"_id": 0},
+            # TODO: shouldn't this be f_locals/f_globals from frame?
+            local_scope=locals(),
+            global_scope=globals(),
+            f_code=frame.f_code,
+            torch_function_mode_stack=[],
+            package=None,
+        )
 
-    return GuardedCode(code, CheckFunctionManager().check_fn)
+        return wrap_guarded_code(
+            GuardedCode(
+                code,
+                CheckFunctionManager(frame.f_code, graph).guard_manager,  # type: ignore[arg-type]
+                CompileId(frame_id=0, frame_compile_id=0),
+            )
+        )
 
 
 class CompileCounter:
-    def __init__(self):
-        self.frame_count = 0
-        self.op_count = 0
+    def __init__(self) -> None:
+        self.frame_count: int | CompileCounterInt = 0
+        self.clear()
 
-    def __call__(self, gm: torch.fx.GraphModule, example_inputs):
+    def __call__(
+        self, gm: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+    ) -> Callable[..., Any]:
         self.frame_count += 1
         for node in gm.graph.nodes:
             if "call" in node.op:
                 self.op_count += 1
         return gm.forward
 
-    def clear(self):
-        self.frame_count = 0
+    def clear(self) -> None:
+        if config.debug_disable_compile_counter:
+            self.frame_count = CompileCounterInt(0)
+        else:
+            self.frame_count = 0
         self.op_count = 0
 
 
 class CompileCounterWithBackend:
-    def __init__(self, backend):
-        self.frame_count = 0
-        self.op_count = 0
+    def __init__(self, backend: str) -> None:
+        self.frame_count: int | CompileCounterInt = 0
         self.backend = backend
+        self.graphs: list[torch.fx.GraphModule] = []
+        self.clear()
 
-    def __call__(self, gm: torch.fx.GraphModule, example_inputs):
+    def __call__(
+        self, gm: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+    ) -> Callable[..., Any]:
         from .backends.registry import lookup_backend
 
         self.frame_count += 1
         for node in gm.graph.nodes:
             if "call" in node.op:
                 self.op_count += 1
+        self.graphs.append(gm)
         return lookup_backend(self.backend)(gm, example_inputs)
 
+    def clear(self) -> None:
+        if config.debug_disable_compile_counter:
+            self.frame_count = CompileCounterInt(0)
+        else:
+            self.frame_count = 0
+        self.op_count = 0
+        self.graphs = []
 
-def standard_test(self, fn, nargs, expected_ops=None, expected_ops_dynamic=None):
-    if config.dynamic_shapes and expected_ops_dynamic is not None:
+
+# Equivalent to backend="eager", but also records graphs that
+# we can assert on
+class EagerAndRecordGraphs:
+    def __init__(self) -> None:
+        self.graphs: list[torch.fx.GraphModule] = []
+
+    def __call__(
+        self, gm: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+    ) -> Callable[..., Any]:
+        self.graphs.append(gm)
+        return gm.forward
+
+
+class AotEagerAndRecordGraphs:
+    def __init__(self) -> None:
+        self.graphs: list[torch.fx.GraphModule] = []
+        self.fw_graphs: list[torch.fx.GraphModule] = []
+        self.bw_graphs: list[torch.fx.GraphModule] = []
+
+    def __call__(
+        self, gm: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+    ) -> Callable[..., Any]:
+        self.graphs.append(gm)
+
+        def fw_compiler(
+            gm: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+        ) -> Callable[..., Any]:
+            self.fw_graphs.append(gm)
+            return gm.forward
+
+        def bw_compiler(
+            gm: torch.fx.GraphModule, example_inputs: list[torch.Tensor]
+        ) -> Callable[..., Any]:
+            self.bw_graphs.append(gm)
+            return gm.forward
+
+        return aot_eager(
+            gm,
+            example_inputs,
+            fw_compiler=fw_compiler,
+            bw_compiler=bw_compiler,
+        )
+
+
+class InductorAndRecordGraphs:
+    def __init__(self) -> None:
+        self.graphs: list[torch.fx.GraphModule] = []
+        self.inductor_graphs: list[torch.fx.GraphModule] = []
+
+    def __call__(self, gm, example_inputs):  # type: ignore[no-untyped-def]
+        import torch._inductor.compile_fx as compile_fx_mod
+
+        self.graphs.append(gm)
+
+        old_compile_fx_inner = compile_fx_mod._compile_fx_inner
+
+        def patched(*args, **kwargs):  # type: ignore[no-untyped-def]
+            self.inductor_graphs.append(args[0])
+            return old_compile_fx_inner(*args, **kwargs)
+
+        with patch.object(compile_fx_mod, "_compile_fx_inner", new=patched):
+            return compile_fx_mod.compile_fx(gm, example_inputs)
+
+
+def strip_comment(code: str) -> str:
+    return re.sub(r"(?m)^ *#.*\n?", "", code)
+
+
+def remove_trailing_space(code: str) -> str:
+    return "\n".join([line.rstrip() for line in code.split("\n")])
+
+
+def _squash_blank_lines(code: str) -> str:
+    lines = code.split("\n")
+    result: list[str] = []
+    saw_blank = False
+    for line in lines:
+        if line.strip() == "":
+            if saw_blank:
+                continue
+            saw_blank = True
+        else:
+            saw_blank = False
+        result.append(line)
+    return "\n".join(result)
+
+
+def normalize_gm(gm_str: str) -> str:
+    # strip comments as comments have path to files which may differ from
+    # system to system.
+    stripped = strip_comment(gm_str)
+    no_trailing = remove_trailing_space(stripped)
+    return _squash_blank_lines(no_trailing)
+
+
+def empty_line_normalizer(code: str) -> str:
+    """
+    Normalize code: remove empty lines.
+    """
+    normal_code = re.sub(r"[\r\n]+", "\n", code)
+    return normal_code
+
+
+def standard_test(
+    self: Any,
+    fn: Callable[..., Any],
+    nargs: int,
+    expected_ops: int | None = None,
+    expected_ops_dynamic: int | None = None,
+    expected_frame_count: int = 1,
+) -> None:
+    if not config.assume_static_by_default and expected_ops_dynamic is not None:
         expected_ops = expected_ops_dynamic
 
     actual = CompileCounter()
-    if expected_ops is None:
-        expected = CompileCounter()
-        try:
-            gm = torch.fx.symbolic_trace(fn)
-            expected(gm)
-            print("\nfx.symbolic_trace graph:")
-            gm.graph.print_tabular()
-            expected_ops = expected.op_count
-        except Exception:
-            pass  # Silently ignore FX errors (not our issue)
 
     args1 = [torch.randn(10, 10) for _ in range(nargs)]
     args2 = [torch.randn(10, 10) for _ in range(nargs)]
@@ -227,16 +412,23 @@ def standard_test(self, fn, nargs, expected_ops=None, expected_ops_dynamic=None)
     self.assertTrue(same(val1b, correct1))
     self.assertTrue(same(val2a, correct2))
     self.assertTrue(same(val2b, correct2))
-    self.assertEqual(actual.frame_count, 1)
+    self.assertEqual(actual.frame_count, expected_frame_count)
     if expected_ops is not None:
         self.assertEqual(actual.op_count, expected_ops)
 
 
-def dummy_fx_compile(gm: fx.GraphModule, example_inputs):
+def dummy_fx_compile(
+    gm: fx.GraphModule, example_inputs: list[torch.Tensor]
+) -> Callable[..., Any]:
     return gm.forward
 
 
-def format_speedup(speedup, pvalue, is_correct=True, pvalue_threshold=0.1):
+def format_speedup(
+    speedup: float,
+    pvalue: float,
+    is_correct: bool = True,
+    pvalue_threshold: float = 0.1,
+) -> str:
     if not is_correct:
         return "ERROR"
     if pvalue > pvalue_threshold:
@@ -244,32 +436,50 @@ def format_speedup(speedup, pvalue, is_correct=True, pvalue_threshold=0.1):
     return f"{speedup:.3f}x p={pvalue:.2f}"
 
 
-def requires_static_shapes(fn):
-    @functools.wraps(fn)
-    def _fn(*args, **kwargs):
-        if config.dynamic_shapes:
-            raise unittest.SkipTest("requires static shapes")
-        return fn(*args, **kwargs)
-
-    return _fn
-
-
-def rand_strided(size, stride, dtype=torch.float32, device="cpu", extra_size=0):
-    needed_size = (
-        sum((shape - 1) * stride for shape, stride in zip(size, stride))
-        + 1
-        + extra_size
-    )
+def rand_strided(
+    size: Sequence[int],
+    stride: Sequence[int],
+    dtype: torch.dtype = torch.float32,
+    device: str | torch.device = "cpu",
+    extra_size: int = 0,
+) -> torch.Tensor:
+    needed_size = extra_size
+    if all(s > 0 for s in size):
+        # only need to allocate if all sizes are non-zero
+        needed_size += (
+            sum((shape - 1) * stride for shape, stride in zip(size, stride)) + 1
+        )
     if dtype.is_floating_point:
-        buffer = torch.randn(needed_size, dtype=dtype, device=device)
+        if dtype == torch.float4_e2m1fn_x2:
+            buffer = torch.randint(
+                0, 256, (needed_size,), dtype=torch.uint8, device=device
+            ).view(torch.float4_e2m1fn_x2)
+        elif dtype.itemsize == 1:
+            """
+            normal distribution kernel is not implemented for fp8..
+            Workaround that by creating a fp16 tensor and then cast.
+            """
+            buffer = torch.randn(needed_size, dtype=torch.float16, device=device).to(
+                dtype=dtype
+            )
+        else:
+            buffer = torch.randn(needed_size, dtype=dtype, device=device)
     else:
         buffer = torch.zeros(size=[needed_size], dtype=dtype, device=device)
     return torch.as_strided(buffer, size, stride)
 
 
-def _make_fn_with_patches(fn, *patches):
+_T = TypeVar("_T")
+
+
+def check_dynamic_shape_capture() -> bool:
+    # This also mirrors config from `test/dynamo/test_dynamic_shapes.py:make_dynamic_cls`
+    return not config.assume_static_by_default
+
+
+def _make_fn_with_patches(fn: Callable[_P, _T], *patches: Any) -> Callable[_P, _T]:
     @functools.wraps(fn)
-    def _fn(*args, **kwargs):
+    def _fn(*args: _P.args, **kwargs: _P.kwargs) -> _T:
         with contextlib.ExitStack() as stack:
             for module, attr, val in patches:
                 stack.enter_context(patch.object(module, attr, val))
@@ -279,21 +489,124 @@ def _make_fn_with_patches(fn, *patches):
     return _fn
 
 
-def make_test_cls_with_patches(cls, cls_prefix, fn_suffix, *patches):
-    class DummyTestClass(cls):
-        pass
-
-    DummyTestClass.__name__ = f"{cls_prefix}{cls.__name__}"
+def make_test_cls_with_patches(
+    cls: type,
+    cls_prefix: str,
+    fn_suffix: str,
+    *patches: Any,
+    xfail_prop: str | None = None,
+    decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = lambda x: x,
+) -> type:
+    DummyTestClass = type(f"{cls_prefix}{cls.__name__}", cls.__bases__, {})
     DummyTestClass.__qualname__ = DummyTestClass.__name__
 
     for name in dir(cls):
         if name.startswith("test_"):
             fn = getattr(cls, name)
             if not callable(fn):
+                setattr(DummyTestClass, name, getattr(cls, name))
                 continue
             new_name = f"{name}{fn_suffix}"
-            fn = _make_fn_with_patches(fn, *patches)
-            fn.__name__ = new_name
-            setattr(DummyTestClass, new_name, fn)
+            new_fn = _make_fn_with_patches(fn, *patches)
+            new_fn.__name__ = new_name
+            if xfail_prop is not None and hasattr(fn, xfail_prop):
+                new_fn = unittest.expectedFailure(new_fn)
+            setattr(DummyTestClass, new_name, decorator(new_fn))
+        # NB: Doesn't handle slots correctly, but whatever
+        elif not hasattr(DummyTestClass, name):
+            setattr(DummyTestClass, name, getattr(cls, name))
 
     return DummyTestClass
+
+
+# test Python 3.11+ specific features
+def skipIfNotPy311(fn: Callable[_P, _T]) -> Callable[_P, _T]:
+    if sys.version_info >= (3, 11):
+        return fn
+    # pyrefly: ignore [bad-return, bad-argument-type]
+    return unittest.skip(fn)
+
+
+def skipIfNotPy312(fn: Callable[_P, _T]) -> Callable[_P, _T]:
+    if sys.version_info >= (3, 12):
+        return fn
+    return unittest.skip("Requires Python 3.12+")(fn)
+
+
+def skipIfOnlyNotPy312(fn: Callable[_P, _T]) -> Callable[_P, _T]:
+    if sys.version_info >= (3, 13) or sys.version_info < (3, 12):
+        return unittest.skip("Requires Python 3.12")(fn)
+    return fn
+
+
+def xfailIfPy312(fn: Callable[_P, _T]) -> Callable[_P, _T]:
+    if sys.version_info >= (3, 12):
+        return unittest.expectedFailure(fn)
+    return fn
+
+
+def skipIfPy312(fn: Callable[_P, _T]) -> Callable[_P, _T]:
+    if sys.version_info >= (3, 12):
+        return unittest.skip("Not supported in Python 3.12+")(fn)
+    return fn
+
+
+# Controls tests generated in test/inductor/test_torchinductor_dynamic_shapes.py
+# and test/dynamo/test_dynamic_shapes.py
+def expectedFailureDynamic(fn: Callable[_P, _T]) -> Callable[_P, _T]:
+    fn._expected_failure_dynamic = True  # type: ignore[attr-defined]
+    return fn
+
+
+# Controls tests generated in test/inductor/test_torchinductor_codegen_dynamic_shapes.py
+def expectedFailureCodegenDynamic(fn: Callable[_P, _T]) -> Callable[_P, _T]:
+    fn._expected_failure_codegen_dynamic = True  # type: ignore[attr-defined]
+    return fn
+
+
+# Controls test generated in test/inductor/test_cpp_wrapper.py
+def expectedFailureDynamicWrapper(fn: Callable[_P, _T]) -> Callable[_P, _T]:
+    fn._expected_failure_dynamic_wrapper = True  # type: ignore[attr-defined]
+    return fn
+
+
+def reset_rng_state(use_xla: bool = False) -> None:
+    torch.manual_seed(1337)
+    random.seed(1337)
+    if np:
+        np.random.seed(1337)
+    if use_xla:
+        import torch_xla.core.xla_model as xm
+
+        xm.set_rng_state(1337, str(xm.xla_device()))
+
+
+def _skipped_function_for_test_reconstruct(
+    f: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs
+) -> _T:
+    return f(*args, **kwargs)
+
+
+_testing_invoke_subgraph_inductor_compile_captured_gms = None
+
+
+@contextlib.contextmanager
+def _testing_capture_invoke_subgraph_inductor_compile_gms() -> Generator[
+    list[torch.fx.GraphModule]
+]:
+    """
+    Context manager to capture graph modules compiled by invoke_subgraph_inductor_compile.
+
+    Usage:
+        with _testing_capture_invoke_subgraph_inductor_compile_gms() as captured_gms:
+            # code that triggers invoke_subgraph_inductor_compile
+            pass
+        # captured_gms will contain the list of captured graph modules
+    """
+    global _testing_invoke_subgraph_inductor_compile_captured_gms
+    # pyrefly: ignore [implicit-any]
+    _testing_invoke_subgraph_inductor_compile_captured_gms = []
+    try:
+        yield _testing_invoke_subgraph_inductor_compile_captured_gms
+    finally:
+        _testing_invoke_subgraph_inductor_compile_captured_gms = None

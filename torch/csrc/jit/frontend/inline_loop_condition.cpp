@@ -1,8 +1,6 @@
 #include <functional>
 #include <memory>
-#include <string>
 
-#include <torch/csrc/Export.h>
 #include <torch/csrc/jit/frontend/inline_loop_condition.h>
 #include <torch/csrc/jit/ir/ir.h>
 
@@ -30,7 +28,7 @@ void InlineBlockBeforeNode(Node* before_node, Block* block) {
 //      <body>
 //       BlockExit(continue_condition, loop_carried_block*)
 //    }
-void inlineLoopCondition(Node* n) {
+static void inlineLoopCondition(Node* n) {
   Block* body_block = n->blocks().at(0);
 
   auto pre_header = n->blocks().at(1);
@@ -45,7 +43,7 @@ void inlineLoopCondition(Node* n) {
   n->eraseBlock(1);
 }
 
-void inlineLoopCondition(Block* block) {
+static void inlineLoopCondition(Block* block) {
   for (Node* n : block->nodes()) {
     for (Block* b : n->blocks()) {
       inlineLoopCondition(b);

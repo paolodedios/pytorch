@@ -1,123 +1,23 @@
 #pragma once
 
-#include <ATen/core/qualified_name.h>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include <ATen/Utils.h>
 #include <ATen/core/ivalue.h>
 #include <ATen/core/jit_type.h>
+#include <ATen/core/qualified_name.h>
 #include <c10/util/ArrayRef.h>
 #include <c10/util/FbcodeMaps.h>
-#include <c10/util/string_view.h>
+#include <c10/util/intrusive_ptr.h>
 #include <torch/csrc/Export.h>
+#include <torch/csrc/jit/serialization/pickler_helper.h>
 
-namespace torch {
-namespace jit {
-
-// See Python's pickletools.py for a detailed description of each of these codes
-enum class PickleOpCode : char {
-  MARK = '(',
-  STOP = '.',
-  POP = '0',
-  POP_MARK = '1',
-  DUP = '2',
-  FLOAT = 'F',
-  INT = 'I',
-  BININT = 'J',
-  BININT1 = 'K',
-  LONG = 'L',
-  BININT2 = 'M',
-  NONE = 'N',
-  PERSID = 'P',
-  BINPERSID = 'Q',
-  REDUCE = 'R',
-  STRING = 'S',
-  BINSTRING = 'T',
-  SHORT_BINSTRING = 'U',
-  // NB: Avoid using UNICODE as it is a macro in the Windows API
-  UNICODE_ = 'V',
-  BINUNICODE = 'X',
-  APPEND = 'a',
-  BUILD = 'b',
-  GLOBAL = 'c',
-  DICT = 'd',
-  EMPTY_DICT = '}',
-  APPENDS = 'e',
-  GET = 'g',
-  BINGET = 'h',
-  INST = 'i',
-  LONG_BINGET = 'j',
-  LIST = 'l',
-  EMPTY_LIST = ']',
-  OBJ = 'o',
-  PUT = 'p',
-  BINPUT = 'q',
-  LONG_BINPUT = 'r',
-  SETITEM = 's',
-  TUPLE = 't',
-  EMPTY_TUPLE = ')',
-  SETITEMS = 'u',
-  BINFLOAT = 'G',
-
-  // Protocol 2
-  PROTO = char('\x80'),
-  NEWOBJ = '\x81',
-  EXT1 = '\x82',
-  EXT2 = '\x83',
-  EXT4 = '\x84',
-  TUPLE1 = '\x85',
-  TUPLE2 = '\x86',
-  TUPLE3 = '\x87',
-  NEWTRUE = '\x88',
-  NEWFALSE = '\x89',
-  LONG1 = '\x8a',
-  LONG4 = '\x8b',
-
-  // Protocol 3 (Python 3.x)
-  BINBYTES = 'B',
-  SHORT_BINBYTES = 'C',
-
-  // Protocol 4
-  SHORT_BINUNICODE = char('\x8c'),
-  BINUNICODE8 = '\x8d',
-  BINBYTES8 = '\x8e',
-  EMPTY_SET = '\x8f',
-  ADDITEMS = '\x90',
-  FROZENSET = '\x91',
-  NEWOBJ_EX = '\x92',
-  STACK_GLOBAL = '\x93',
-  MEMOIZE = '\x94',
-  FRAME = '\x95'
-};
+namespace torch::jit {
 
 using ::c10::IValue;
-
-// NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
-struct WriteableTensorData {
-  const char* data() const {
-    return static_cast<const char*>(tensor_.storage().data());
-  }
-  size_t sizeInBytes() const {
-    return size_;
-  }
-  size_t nbytes() const {
-    return tensor_.storage().nbytes();
-  }
-  bool storageHasDeleter() const {
-    return tensor_.storage().data_ptr().get_context() != nullptr;
-  }
-
- private:
-  friend TORCH_API WriteableTensorData
-  getWriteableTensorData(const at::Tensor& tensor, bool to_cpu);
-  at::Tensor tensor_;
-  uint64_t size_;
-};
-
-void setTypeTags(bool state);
-bool getTypeTags();
 
 class TORCH_API Pickler {
   AT_DISALLOW_COPY_AND_ASSIGN(Pickler);
@@ -140,7 +40,6 @@ class TORCH_API Pickler {
         memoized_class_types_(memoized_class_types),
         get_tensor_id_(std::move(get_tensor_id)),
         tag_aggregates_(tag_aggregates) {}
-  // NOLINTNEXTLINE(bugprone-exception-escape)
   ~Pickler();
 
   // Push protocol onto the stack
@@ -192,7 +91,7 @@ class TORCH_API Pickler {
       const IValue& ivalue,
       const char* list_name,
       const std::function<void(const IValue&)>& item_pusher);
-  void pushGlobal(c10::string_view module_name, c10::string_view class_name);
+  void pushGlobal(std::string_view module_name, std::string_view class_name);
   // raw string data is appended directly to the byte stream
   void pushBytes(const std::string& string);
   void pushTensorData(const at::Tensor& tensor);
@@ -218,9 +117,9 @@ class TORCH_API Pickler {
   // the left of a '::', its type cannot be deduced by the compiler so one must
   // explicitly instantiate the template, i.e. push<int>(int) works, push(int)
   // does not)
-  static CONSTEXPR_EXCEPT_WIN_CUDA size_t kBufferSize = 256;
+  static constexpr size_t kBufferSize = 256;
   template <typename T>
-  void push(typename std::common_type<T>::type value) {
+  void push(std::common_type_t<T> value) {
     const char* begin = reinterpret_cast<const char*>(&value);
     if (bufferPos_ + sizeof(T) > buffer_.size()) {
       flushNonEmpty();
@@ -231,7 +130,7 @@ class TORCH_API Pickler {
   }
 
   // Stream to write binary data to
-  // Code shouldn't call writer_ directly without first flush()ing.
+  // Code shouldn't call writer_ directly without first flushing.
   std::function<void(const char*, size_t)> writer_;
 
   // Buffer to avoid calling a writer_ on a per-byte basis.
@@ -283,73 +182,4 @@ class TORCH_API Pickler {
   bool tag_aggregates_;
 };
 
-// returns a (tensor, record_size) for a tensor, converting it to a CPU tensor
-// if it was CUDA and to_cpu is True.
-TORCH_API WriteableTensorData
-getWriteableTensorData(const at::Tensor& tensor, bool to_cpu = true);
-
-// return the value of the tensor's storage pointer
-uint64_t getStorageKey(const at::Tensor& tensor);
-
-// if the cls has __getstate__/__setstate__
-// assert they have the right schema and return true,
-// otherwise return false
-bool checkHasValidSetGetState(const std::shared_ptr<c10::ClassType>& cls);
-
-// Return a map of Tensor Metadata for serialization.
-// For now, it only takes care of `conj` and `neg` bit.
-inline std::unordered_map<std::string, bool> getTensorMetadata(
-    const at::Tensor& t) {
-  // We don't support serializing `ZeroTensor` as it is not public
-  // facing yet.
-  TORCH_CHECK(
-      !t._is_zerotensor(),
-      "ZeroTensor is not serializable,",
-      " please file an issue if required.");
-  std::unordered_map<std::string, bool> metadata{};
-
-  // Only add meta-data if the value is not default.
-  if (t.is_conj()) {
-    metadata["conj"] = true;
-  }
-  if (t.is_neg()) {
-    metadata["neg"] = true;
-  }
-  return metadata;
-}
-
-// set Tensor Metadata based on the map.
-// Refer: getTensorMathdata
-inline void setTensorMetadata(
-    const at::Tensor& t,
-    std::unordered_map<std::string, bool> metadata) {
-  for (auto& key_value_pair : metadata) {
-    if (key_value_pair.first == "conj") {
-      t._set_conj(true);
-    } else if (key_value_pair.first == "neg") {
-      t._set_neg(true);
-    } else {
-      TORCH_CHECK(
-          false,
-          "Unexpected key `",
-          key_value_pair.first,
-          "` passed to setTensorMetadata.");
-    }
-  }
-}
-
-// set Tensor metadata based on the map.
-// NOTE: This overload is required by unpickler.cpp
-inline void setTensorMetadata(
-    const at::Tensor& t,
-    c10::Dict<c10::IValue, c10::IValue> metadata_idict) {
-  std::unordered_map<std::string, bool> metadata;
-  for (auto& pair : metadata_idict) {
-    auto key = *pair.key().toString();
-    metadata[key] = pair.value().toBool();
-  }
-  setTensorMetadata(t, std::move(metadata));
-}
-
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

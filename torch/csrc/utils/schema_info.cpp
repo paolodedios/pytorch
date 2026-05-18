@@ -1,27 +1,27 @@
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <torch/csrc/utils/schema_info.h>
 
-namespace torch {
-namespace utils {
+namespace torch::utils {
 void SchemaInfo::addArgumentValue(
     const std::string& name,
     const at::IValue& value) {
-  c10::optional<int> index = schema_.argumentIndexWithName(name);
+  std::optional<int> index = schema_.argumentIndexWithName(name);
   TORCH_INTERNAL_ASSERT(
-      index != c10::nullopt, "Schema has no argument named ", name);
+      index != std::nullopt, "Schema has no argument named ", name);
   value_map_[name] = value;
   alias_maps_current_ = false;
 }
 
 void SchemaInfo::addArgumentValues(
-    const std::vector<c10::optional<at::IValue>>& value_list) {
+    const std::vector<std::optional<at::IValue>>& value_list) {
   TORCH_INTERNAL_ASSERT(
       value_list.size() <= schema_.arguments().size(),
       "Schema does not have enough arguments for value list");
 
   for (size_t i = 0; i < value_list.size(); i++) {
-    if (value_list[i] != c10::nullopt) {
-      value_map_[schema_.arguments()[i].name()] = *(value_list[i]);
+    if (value_list[i].has_value()) {
+      // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+      value_map_[schema_.arguments()[i].name()] = *value_list[i];
       alias_maps_current_ = false;
     }
   }
@@ -100,14 +100,14 @@ bool SchemaInfo::is_mutable(const c10::SchemaArgument& argument) {
       });
 }
 
-bool SchemaInfo::has_argument(c10::string_view name) {
-  return schema_.argumentIndexWithName(name) != c10::nullopt;
+bool SchemaInfo::has_argument(std::string_view name) {
+  return schema_.argumentIndexWithName(name) != std::nullopt;
 }
 
-bool SchemaInfo::is_mutable(c10::string_view name) {
-  c10::optional<int> index = schema_.argumentIndexWithName(name);
+bool SchemaInfo::is_mutable(std::string_view name) {
+  std::optional<int> index = schema_.argumentIndexWithName(name);
   TORCH_INTERNAL_ASSERT(
-      index != c10::nullopt, "Schema has no argument named ", name);
+      index.has_value(), "Schema has no argument named ", name);
 
   return is_mutable({c10::SchemaArgType::input, static_cast<size_t>(*index)});
 }
@@ -143,10 +143,10 @@ bool SchemaInfo::may_alias(
   if (basic_check) {
     return true;
   }
-  c10::optional<c10::AliasTypeSet> lhsAliasTypeSet =
+  std::optional<c10::AliasTypeSet> lhsAliasTypeSet =
       schema_.mapTypeToAliasTypeSet(
           schema_.getCorrectList(lhs.type)[lhs.index].type());
-  c10::optional<c10::AliasTypeSet> rhsAliasTypeSet =
+  std::optional<c10::AliasTypeSet> rhsAliasTypeSet =
       schema_.mapTypeToAliasTypeSet(
           schema_.getCorrectList(rhs.type)[rhs.index].type());
   bool types_can_alias =
@@ -204,10 +204,10 @@ bool SchemaInfo::may_contain_alias(
 bool SchemaInfo::mayContainAliasImpl(
     const c10::SchemaArgument& lhs,
     const c10::SchemaArgument& rhs) {
-  c10::optional<c10::AliasTypeSet> lhsContainedAliasTypeSet =
+  std::optional<c10::AliasTypeSet> lhsContainedAliasTypeSet =
       schema_.getAliasTypeSetContainedTypes(schema_.mapTypeToAliasTypeSet(
           schema_.getCorrectList(lhs.type)[lhs.index].type()));
-  c10::optional<c10::AliasTypeSet> rhsAliasTypeSet =
+  std::optional<c10::AliasTypeSet> rhsAliasTypeSet =
       schema_.mapTypeToAliasTypeSet(
           schema_.getCorrectList(rhs.type)[rhs.index].type());
   bool types_can_alias =
@@ -250,12 +250,18 @@ std::vector<c10::FunctionSchema> SchemaInfo::getNonDeterministicOps() {
       "aten::rrelu_with_noise(Tensor self, Tensor noise, Scalar lower, Scalar upper, bool training, Generator? generator) -> Tensor",
       "aten::rand(int[] size, *, int? dtype, int? layout, Device? device, bool? pin_memory) -> Tensor",
       "aten::rand_like(Tensor self, *, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
+      "aten::rand_like.generator(Tensor self, *, Generator? generator, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
       "aten::randint(int high, int[] size, *, int? dtype, int? layout, Device? device, bool? pin_memory) -> Tensor",
       "aten::randint(int low, int high, int[] size, *, int? dtype, int? layout, Device? device, bool? pin_memory) -> Tensor",
       "aten::randint_like(Tensor self, int high, *, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
-      "aten::randint_like(Tensor self, int low, int high, *, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
+      "aten::randint_like.generator(Tensor self, int high, *, Generator? generator, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
+      "aten::randint_like.Tensor(Tensor self, Tensor high, *, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
+      "aten::randint_like.Tensor_generator(Tensor self, Tensor high, *, Generator? generator, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
+      "aten::randint_like.low_dtype(Tensor self, int low, int high, *, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
+      "aten::randint_like.low_generator_dtype(Tensor self, int low, int high, *, Generator? generator, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
       "aten::randn(int[] size, *, int? dtype, int? layout, Device? device, bool? pin_memory) -> Tensor",
       "aten::randn_like(Tensor self, *, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
+      "aten::randn_like.generator(Tensor self, *, Generator? generator, int? dtype=None, int? layout=None, Device? device=None, bool? pin_memory=None, MemoryFormat? memory_format=None) -> Tensor",
       "aten::randperm(int n, *, int? dtype, int? layout, Device? device, bool? pin_memory) -> Tensor"};
 
   std::vector<c10::FunctionSchema> nondeterministic_ops;
@@ -269,9 +275,9 @@ std::vector<c10::FunctionSchema> SchemaInfo::getNonDeterministicOps() {
 
 std::vector<SchemaSpecialCasePair> SchemaInfo::getTrainingOps() {
   // This is a list of pairs of ops to sets of strings
-  //  where the a boolean variable (either "training",
+  //  where a boolean variable (either "training",
   // "train" or "use_input_stats") affects the mutability
-  // of the unorderered set of strings.
+  // of the unordered set of strings.
   static const std::vector<std::pair<std::string, std::unordered_set<std::string>>> training_op_pairs =
       {{"aten::batch_norm(Tensor input, Tensor? weight, Tensor? bias, Tensor? running_mean, Tensor? running_var, bool training, float momentum, float eps, bool cudnn_enabled) -> Tensor",
         {"running_mean", "running_var"}},
@@ -338,7 +344,7 @@ void SchemaInfo::initSchemaInfo() {
           }
         }
       }
-      c10::optional<c10::AliasTypeSet> contained_types =
+      std::optional<c10::AliasTypeSet> contained_types =
           schema_.getAliasTypeSetContainedTypes(
               schema_.mapTypeToAliasTypeSet(argument.type()));
       if (contained_types && !contained_types->empty()) {
@@ -432,5 +438,4 @@ void SchemaInfo::generateAliasMaps() {
   }
 }
 
-} // namespace utils
-} // namespace torch
+} // namespace torch::utils

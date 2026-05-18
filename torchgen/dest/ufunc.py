@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING
 
 import torchgen.api.ufunc as ufunc
 from torchgen.api.translate import translate
@@ -14,7 +16,6 @@ from torchgen.api.types import (
     StructuredImplSignature,
     VectorizedCType,
 )
-from torchgen.api.ufunc import UfunctorBindings
 from torchgen.context import with_native_function
 from torchgen.model import (
     Argument,
@@ -27,6 +28,13 @@ from torchgen.model import (
 )
 from torchgen.utils import OrderedSet
 
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from torchgen.api.ufunc import UfunctorBindings
+
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 #
 #                                  CUDA STUFF
@@ -34,7 +42,7 @@ from torchgen.utils import OrderedSet
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 
 # NB: not bothering to generate dispatch stub forward declaration in header,
-# we can just paste it whereever necessary
+# we can just paste it wherever necessary
 
 # TODO: use BackendIndex
 # dispatch_key: DispatchKey  # only CPU/CUDA right now
@@ -59,7 +67,7 @@ from torchgen.utils import OrderedSet
 @dataclass(frozen=True)
 class UfunctorSignature:
     g: NativeFunctionsGroup
-    scalar_tensor_idx: Optional[int]
+    scalar_tensor_idx: int | None
     name: str
 
     def arguments(self) -> UfunctorBindings:
@@ -67,7 +75,7 @@ class UfunctorSignature:
             self.g, scalar_tensor_idx=self.scalar_tensor_idx, scalar_t=scalar_t
         )
 
-    def fields(self) -> List[Binding]:
+    def fields(self) -> list[Binding]:
         # fields are renamed to have a trailing underscore, as is conventional
         return [b.rename(f"{b.name}_") for b in self.arguments().ctor]
 
@@ -97,10 +105,10 @@ class UfuncSignature:
     name: str
     compute_t: CType
 
-    def arguments(self) -> List[Binding]:
+    def arguments(self) -> list[Binding]:
         return ufunc.ufunc_arguments(self.g, compute_t=self.compute_t)
 
-    def call(self, ctx: Sequence[Union[Binding, Expr]]) -> str:
+    def call(self, ctx: Sequence[Binding | Expr]) -> str:
         return f"{self.name}({', '.join(a.expr for a in translate(ctx, self.arguments()))})"
 
 
@@ -131,10 +139,10 @@ def eligible_for_binary_scalar_specialization(g: NativeFunctionsGroup) -> bool:
 
 def compute_ufunc_cuda_functors(
     g: NativeFunctionsGroup,
-) -> Tuple[Dict[ScalarType, Dict[UfuncKey, UfunctorSignature]], str]:
+) -> tuple[dict[ScalarType, dict[UfuncKey, UfunctorSignature]], str]:
     # First, build the functors.
-    ufunctor_sigs: Dict[ScalarType, Dict[UfuncKey, UfunctorSignature]] = {}
-    ufunctors: List[str] = []
+    ufunctor_sigs: dict[ScalarType, dict[UfuncKey, UfunctorSignature]] = {}
+    ufunctors: list[str] = []
     loops = g.out.ufunc_inner_loop
     scalar_tensor_idx_lookup = {
         UfuncKey.CUDAFunctorOnSelf: 1,
@@ -150,7 +158,8 @@ def compute_ufunc_cuda_functors(
     else:
         keys = [UfuncKey.CUDAFunctor]
         for k in [UfuncKey.CUDAFunctorOnSelf, UfuncKey.CUDAFunctorOnOther]:
-            assert k not in loops, f"cannot use {k} on non-binary function"
+            if k in loops:
+                raise AssertionError(f"cannot use {k} on non-binary function")
     for k in keys:
         # If the key was directly defined, skip functor codegen; we assume the
         # user already done it for us
@@ -178,11 +187,13 @@ def compute_ufunc_cuda_functors(
                 ufunc_name = loops[lk].name
             else:
                 # See Note [ScalarOnly and Generic must match names for CUDA]
-                assert (
-                    ufunc_name == loops[lk].name
-                ), "ScalarOnly and Generic must have same ufunc name"
+                if ufunc_name != loops[lk].name:
+                    raise AssertionError(
+                        "ScalarOnly and Generic must have same ufunc name"
+                    )
             supported_dtypes |= loops[lk].supported_dtypes
-        assert ufunc_name is not None
+        if ufunc_name is None:
+            raise AssertionError("ufunc_name must be non-None")
 
         name = f"{k}_{ufunc_name}"
         ufunctor_sig = UfunctorSignature(
@@ -236,7 +247,7 @@ BinaryScalarSpecializationConfigs = [
 def compute_ufunc_cuda_dtype_body(
     g: NativeFunctionsGroup,
     dtype: ScalarType,
-    inner_loops: Dict[UfuncKey, UfunctorSignature],
+    inner_loops: dict[UfuncKey, UfunctorSignature],
     parent_ctx: Sequence[Binding],
 ) -> str:
     body = "using opmath_t = at::opmath_type<scalar_t>;"
@@ -248,7 +259,7 @@ def compute_ufunc_cuda_dtype_body(
         scalar_idx = config.scalar_idx + 1
         # Make a copy and at the same time widen the type (not permissible
         # without copy; we don't want to mutate the input argument anyway)
-        ctx: List[Union[Expr, Binding]] = list(parent_ctx)
+        ctx: list[Expr | Binding] = list(parent_ctx)
         ctx.append(
             Expr(
                 expr=f"iter.scalar_value<opmath_t>({scalar_idx})",
@@ -307,14 +318,14 @@ AT_DISPATCH_CASE(at::ScalarType::{dtype},
 {ufunctors}
 
 {stub_sig.type_defn()};
-{stub_sig.dispatch_decl()};
+{stub_sig.dispatch_decl()}
 
 {stub_sig.kernel_defn()} {{
   AT_DISPATCH_SWITCH(iter.common_dtype(), "{sig.name}",
     {dtype_cases_str}
   );
 }}
-REGISTER_DISPATCH({stub_sig.name}, &{stub_sig.kernel_name});
+REGISTER_DISPATCH({stub_sig.name}, &{stub_sig.kernel_name})
 
 {sig.defn()} {{
   {stub_sig.direct_call(sig.arguments())};
@@ -345,7 +356,7 @@ class StubSignature:
     def type_name(self) -> str:
         return f"{str(self.g.functional.func.name.name)}_fn"
 
-    def arguments(self) -> List[Binding]:
+    def arguments(self) -> list[Binding]:
         return ufunc.stub_arguments(self.g)
 
     def type(self) -> str:
@@ -380,7 +391,7 @@ def compute_ufunc_cpu(g: NativeFunctionsGroup) -> str:
 
     return f"""
 {stub_sig.type_defn()};
-{stub_sig.dispatch_decl()};
+{stub_sig.dispatch_decl()}
 {stub_sig.dispatch_defn()};
 
 {sig.defn()} {{
@@ -392,11 +403,15 @@ def compute_ufunc_cpu(g: NativeFunctionsGroup) -> str:
 def compute_ufunc_cpu_dtype_body(
     g: NativeFunctionsGroup,
     dtype: ScalarType,
-    inner_loops: Dict[UfuncKey, UfuncSignature],
+    inner_loops: dict[UfuncKey, UfuncSignature],
     parent_ctx: Sequence[Binding],
 ) -> str:
-    assert UfuncKey.CPUScalar in inner_loops, f"{dtype}, {inner_loops.keys()}"
-    assert inner_loops.keys() <= {UfuncKey.CPUScalar, UfuncKey.CPUVector}
+    if UfuncKey.CPUScalar not in inner_loops:
+        raise AssertionError(f"{dtype}, {inner_loops.keys()}")
+    if not inner_loops.keys() <= {UfuncKey.CPUScalar, UfuncKey.CPUVector}:
+        raise AssertionError(
+            f"inner_loops keys must be subset of CPUScalar/CPUVector, got {inner_loops.keys()}"
+        )
     scalar_loop = inner_loops[UfuncKey.CPUScalar]
     vec_loop = None
     if UfuncKey.CPUVector in inner_loops:
@@ -441,7 +456,8 @@ def compute_ufunc_cpu_dtype_body(
     for a in g.functional.func.arguments.flat_non_out:
         if not a.type.is_tensor_like():
             continue
-        assert a.type == BaseType(BaseTy.Tensor)
+        if a.type != BaseType(BaseTy.Tensor):
+            raise AssertionError(f"Expected Tensor type, got {a.type}")
         scalar_bindings.append(
             Binding(
                 name=a.name,
@@ -458,8 +474,8 @@ def compute_ufunc_cpu_dtype_body(
                 )
             )
 
-    def with_ctx(b: Sequence[Binding]) -> List[Union[Expr, Binding]]:
-        r: List[Union[Expr, Binding]] = []
+    def with_ctx(b: Sequence[Binding]) -> list[Expr | Binding]:
+        r: list[Expr | Binding] = []
         r.extend(ctx)
         r.extend(b)
         return r
@@ -469,15 +485,15 @@ def compute_ufunc_cpu_dtype_body(
         return f"""
 {body_str}
 cpu_kernel_vec(iter,
-  [=]({', '.join(b.decl() for b in scalar_bindings)}) {{ return {scalar_loop.call(with_ctx(scalar_bindings))}; }},
-  [=]({', '.join(b.decl() for b in vec_bindings)}) {{ return {vec_loop.call(with_ctx(vec_bindings))}; }}
+  [=]({", ".join(b.decl() for b in scalar_bindings)}) {{ return {scalar_loop.call(with_ctx(scalar_bindings))}; }},
+  [=]({", ".join(b.decl() for b in vec_bindings)}) {{ return {vec_loop.call(with_ctx(vec_bindings))}; }}
 );
 """
     else:
         return f"""
 {body_str}
 cpu_kernel(iter,
-  [=]({', '.join(b.decl() for b in scalar_bindings)}) {{ return {scalar_loop.call(with_ctx(scalar_bindings))}; }}
+  [=]({", ".join(b.decl() for b in scalar_bindings)}) {{ return {scalar_loop.call(with_ctx(scalar_bindings))}; }}
 );
 """
 
@@ -488,7 +504,7 @@ def compute_ufunc_cpu_kernel(g: NativeFunctionsGroup) -> str:
 
     # Reindex the ufunc by dtypes; processing generic/scalaronly as well
     loops = g.out.ufunc_inner_loop
-    ufunc_sigs: Dict[ScalarType, Dict[UfuncKey, UfuncSignature]] = {}
+    ufunc_sigs: dict[ScalarType, dict[UfuncKey, UfuncSignature]] = {}
     for k in [UfuncKey.CPUScalar, UfuncKey.CPUVector]:
         lks = []
         # ORDER MATTERS: this specifies overriding precedence
@@ -507,7 +523,7 @@ def compute_ufunc_cpu_kernel(g: NativeFunctionsGroup) -> str:
                 elif k is UfuncKey.CPUVector:
                     compute_t = VectorizedCType(BaseCType(scalar_t))
                 else:
-                    raise AssertionError()
+                    raise AssertionError
                 inner_ufunc_sigs = ufunc_sigs.setdefault(dtype, {})
                 if k not in inner_ufunc_sigs:
                     inner_ufunc_sigs[k] = UfuncSignature(
@@ -540,6 +556,6 @@ namespace {{
 }} // anonymous namespace
 
 {stub_sig.type_defn()};
-{stub_sig.dispatch_decl()};
-REGISTER_DISPATCH({stub_sig.name}, &{stub_sig.kernel_name});
+{stub_sig.dispatch_decl()}
+REGISTER_DISPATCH({stub_sig.name}, &{stub_sig.kernel_name})
 """

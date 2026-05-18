@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <iostream>
 #include <random>
 #include <stdexcept>
 #include <typeinfo>
@@ -10,12 +11,13 @@
 #include <torch/csrc/jit/jit_opt_limit.h>
 #include <torch/csrc/jit/tensorexpr/ir_simplifier.h>
 #include <torch/csrc/jit/tensorexpr/loopnest.h>
+#include <torch/csrc/jit/tensorexpr/loopnest_randomization.h>
 
 namespace torch::jit::tensorexpr {
 
 namespace randomization_helper {
 
-int64_t max_transformations(int n_max_transforms) {
+static int64_t max_transformations(int n_max_transforms) {
   // Reuse the env variable PYTORCH_JIT_OPT_LIMIT to control the max number of
   // transformations.  Example - set the env variable
   // PYTORCH_JIT_OPT_LIMIT="loopnest_randomization=10" to set max
@@ -31,7 +33,7 @@ int64_t max_transformations(int n_max_transforms) {
   return max_transforms;
 }
 
-std::vector<std::vector<ForPtr>> GetAllPerfectlyNestedLoopNests(
+static std::vector<std::vector<ForPtr>> GetAllPerfectlyNestedLoopNests(
     std::vector<ForPtr> loops) {
   // Find the first set of loops that can be reordered
   std::vector<std::vector<ForPtr>> all_nested_loops;
@@ -58,7 +60,7 @@ std::vector<std::vector<ForPtr>> GetAllPerfectlyNestedLoopNests(
 }
 
 template <typename T>
-std::tuple<std::vector<T>, std::vector<int>> select_n_randomly(
+static std::tuple<std::vector<T>, std::vector<int>> select_n_randomly(
     std::vector<T>& objects,
     int n,
     std::default_random_engine& random_engine) {
@@ -79,7 +81,7 @@ std::tuple<std::vector<T>, std::vector<int>> select_n_randomly(
   return std::make_tuple(selected_objects, selected_indices);
 }
 
-int find_factor(ForPtr loop) {
+static int find_factor(const ForPtr& loop) {
   // Find valid factors
   ExprPtr loop_stop = loop->stop();
   auto loop_imm = intValue(loop_stop);
@@ -91,30 +93,32 @@ int find_factor(ForPtr loop) {
   return -1;
 }
 
-void printHistory(int index, std::string message) {
+static void printHistory(int index, std::string message) {
   message = "Random Transform Sequence - Transformations[" +
       std::to_string(index) + "] = " + message;
   GRAPH_DEBUG(message);
 }
 
 template <typename T>
-std::string join(std::vector<T> indices, char sep = ',') {
-  std::string s = "";
+static std::string join(std::vector<T> indices, char sep = ',') {
+  std::string s;
   for (const auto& index : indices) {
     s += std::to_string(index) + sep;
   }
   return s;
 }
 
-std::string join(std::vector<std::string> indices, char sep = ',') {
-  std::string s = "";
+static std::string join(
+    const std::vector<std::string>& indices,
+    char sep = ',') {
+  std::string s;
   for (const auto& index : indices) {
     s += index + sep;
   }
   return s;
 }
 template <typename T>
-std::string indexOf(const std::vector<T>& objects, const T& object) {
+static std::string indexOf(const std::vector<T>& objects, const T& object) {
   return std::to_string(std::distance(
       objects.begin(), std::find(objects.begin(), objects.end(), object)));
 }
@@ -137,7 +141,7 @@ void loopnestRandomization(int64_t seed, LoopNest& l) {
   int max_allowed_transformations = 20;
   int n_transforms = randomization_helper::max_transformations(
       std::rand() % max_allowed_transformations);
-  std::string message = "";
+  std::string message;
   // clang-format off
   //   Transformations list:
   //
@@ -286,9 +290,7 @@ void loopnestRandomization(int64_t seed, LoopNest& l) {
             break;
           }
           int n_pivots = (std::rand() % (int)stmts.size()) + 1;
-          std::vector<StmtPtr> pivots;
-          std::vector<int> chosen_indices;
-          std::tie(pivots, chosen_indices) =
+          auto [pivots, chosen_indices] =
               randomization_helper::select_n_randomly<StmtPtr>(
                   stmts, n_pivots, random_engine);
           std::unordered_set<StmtPtr> pivots_set(pivots.begin(), pivots.end());
@@ -367,11 +369,9 @@ void loopnestRandomization(int64_t seed, LoopNest& l) {
 
           // Find a random number of loops to fuse
           int num_loops_to_fuse =
-              std::max(2, (int)(std::rand() % (int)loops.size()));
+              std::max(2, (std::rand() % (int)loops.size()));
 
-          std::vector<ForPtr> loops_to_fuse;
-          std::vector<int> chosen_indices;
-          std::tie(loops_to_fuse, chosen_indices) =
+          auto [loops_to_fuse, chosen_indices] =
               randomization_helper::select_n_randomly<ForPtr>(
                   loops, num_loops_to_fuse, random_engine);
 
@@ -480,7 +480,7 @@ void loopnestRandomization(int64_t seed, LoopNest& l) {
           }
 
           int index = rand() % (int)all_nested_loops.size();
-          auto nested_loops = all_nested_loops.at(index);
+          auto const& nested_loops = all_nested_loops.at(index);
           if (nested_loops.size() < 2) {
             break;
           }
@@ -554,7 +554,7 @@ void loopnestRandomization(int64_t seed, LoopNest& l) {
 
           // Randomly pick a set of consecutive loops to flatten
           int index = rand() % (int)all_nested_loops.size();
-          auto nested_loops = all_nested_loops.at(index);
+          auto const& nested_loops = all_nested_loops.at(index);
 
           // Generate a good history message
           std::vector<std::string> indices;
@@ -733,7 +733,7 @@ void loopnestRandomization(int64_t seed, LoopNest& l) {
     }
   } catch (...) {
     std::cout << "EXCEPTION THROWN!\n";
-    std::cout << "SEED: " << seed << "\n";
+    std::cout << "SEED: " << seed << '\n';
     throw std::runtime_error("Random test failed");
   }
   message = "End of transformations;\n";

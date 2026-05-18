@@ -4,21 +4,19 @@
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/constant_propagation.h>
 #include <torch/csrc/jit/passes/dead_code_elimination.h>
-#include <torch/csrc/jit/passes/graph_rewrite_helper.h>
 #include <torch/csrc/jit/passes/mkldnn_rewrite.h>
 #include <torch/csrc/jit/tensorexpr/kernel.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 #if AT_MKLDNN_ENABLED()
 
-c10::VaryingShape<int64_t> getSizesOf(Node* n, size_t idx) {
+static c10::VaryingShape<int64_t> getSizesOf(Node* n, size_t idx) {
   auto tt = n->input(idx)->type()->cast<TensorType>();
   return tt->sizes();
 }
 
-void insertPrePackedConvOpForNode(Node* n) {
+static void insertPrePackedConvOpForNode(Node* n) {
   constexpr int POS_INPUT = 0;
   constexpr int POS_WEIGHT = 1;
   if (!tensorexpr::isContiguous(
@@ -72,7 +70,7 @@ void insertPrePackedConvOpForNode(Node* n) {
   n->output()->replaceAllUsesWith(prepack_conv->output());
 }
 
-bool isTensorTypeCPU(Node* node) {
+static bool isTensorTypeCPU(Node* node) {
   for (const auto& input : node->inputs()) {
     auto type = input->type()->cast<TensorType>();
     if (!type) {
@@ -89,7 +87,7 @@ bool isTensorTypeCPU(Node* node) {
   return true;
 }
 
-void insertPrePackedConvOp(Block* b) {
+static void insertPrePackedConvOp(Block* b) {
   for (Node* n : b->nodes()) {
     for (Block* b : n->blocks()) {
       insertPrePackedConvOp(b);
@@ -104,25 +102,15 @@ void insertPrePackedConvOp(Block* b) {
   EliminateDeadCode(b);
 }
 
-void insertMkldnnPrePackedConv2dOp(std::shared_ptr<Graph>& graph) {
+static void insertMkldnnPrePackedConv2dOp(std::shared_ptr<Graph>& graph) {
   insertPrePackedConvOp(graph->block());
 }
 
-void insertMkldnnPrePackedOps(std::shared_ptr<Graph>& graph) {
+static void insertMkldnnPrePackedOps(std::shared_ptr<Graph>& graph) {
   insertMkldnnPrePackedConv2dOp(graph);
 }
 
-void insertMkldnnPrePackedOps(script::Module& module) {
-  for (auto& method : module.get_methods()) {
-    auto graph = method.graph();
-    insertMkldnnPrePackedOps(graph);
-  }
-  for (script::Module m : module.children()) {
-    insertMkldnnPrePackedOps(m);
-  }
-}
-
-void FuseReluWithPackedOps(std::shared_ptr<Graph>& graph) {
+static void FuseReluWithPackedOps(std::shared_ptr<Graph>& graph) {
   auto conv_op_rstring = at::jit::CodeTemplate(R"(
     graph(%input, %weight, %bias, %stride:int[], %padding:int[],
           %dilation:int[], %groups:int, %input_size:int[], %dummy_attr:str):
@@ -164,7 +152,7 @@ void FuseReluWithPackedOps(std::shared_ptr<Graph>& graph) {
   }
 }
 
-void PrePackingOpsFolder(Block* b) {
+static void PrePackingOpsFolder(Block* b) {
   auto is_foldable_op = [](const Node* n) -> bool {
     return (
         n->kind() ==
@@ -201,7 +189,7 @@ void PrePackingOpsFolder(Block* b) {
   }
 }
 
-void FoldPrePackingOps(std::shared_ptr<Graph>& graph) {
+static void FoldPrePackingOps(std::shared_ptr<Graph>& graph) {
   PrePackingOpsFolder(graph->block());
 }
 
@@ -227,5 +215,4 @@ void FuseConvWithEltwise(std::shared_ptr<Graph>& graph) {
 
 #endif // AT_MKLDNN_ENABLED()
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

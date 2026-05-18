@@ -1,18 +1,21 @@
+# mypy: allow-untyped-defs
 import builtins
 import importlib
 import importlib.machinery
 import inspect
 import io
 import linecache
-import os.path
+import os
+import sys
 import types
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Any, BinaryIO, Callable, cast, Dict, Iterable, List, Optional, Union
+from typing import Any, cast, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 import torch
 from torch.serialization import _get_restore_location, _maybe_decode_ascii
+from torch.types import FileLike
 
 from ._directory_reader import DirectoryReader
 from ._importlib import (
@@ -25,8 +28,11 @@ from ._importlib import (
 from ._mangling import demangle, PackageMangler
 from ._package_unpickler import PackageUnpickler
 from .file_structure_representation import _create_directory_from_file_list, Directory
-from .glob_group import GlobPattern
 from .importer import Importer
+
+
+if TYPE_CHECKING:
+    from .glob_group import GlobPattern
 
 __all__ = ["PackageImporter"]
 
@@ -34,7 +40,7 @@ __all__ = ["PackageImporter"]
 # This is a list of imports that are implicitly allowed even if they haven't
 # been marked as extern. This is to work around the fact that Torch implicitly
 # depends on numpy and package can't track it.
-# https://github.com/pytorch/MultiPy/issues/46
+# https://github.com/pytorch/multipy/issues/46  # codespell:ignore multipy
 IMPLICIT_IMPORT_ALLOWLIST: Iterable[str] = [
     "numpy",
     "numpy.core",
@@ -43,6 +49,18 @@ IMPLICIT_IMPORT_ALLOWLIST: Iterable[str] = [
     # don't extern builtins. Here we import it here by default.
     "builtins",
 ]
+
+
+# Compatibility name mapping to facilitate upgrade of external modules.
+# The primary motivation is to enable Numpy upgrade that many modules
+# depend on. The latest release of Numpy removed `numpy.str` and
+# `numpy.bool` breaking unpickling for many modules.
+EXTERN_IMPORT_COMPAT_NAME_MAPPING: dict[str, dict[str, Any]] = {
+    "numpy": {
+        "str": str,
+        "bool": bool,
+    },
+}
 
 
 class PackageImporter(Importer):
@@ -63,11 +81,11 @@ class PackageImporter(Importer):
     local to this importer.
     """
 
-    modules: Dict[str, types.ModuleType]
+    modules: dict[str, types.ModuleType]
 
     def __init__(
         self,
-        file_or_buffer: Union[str, torch._C.PyTorchFileReader, Path, BinaryIO],
+        file_or_buffer: FileLike | torch._C.PyTorchFileReader,
         module_allowed: Callable[[str], bool] = lambda module_name: True,
     ):
         """Open ``file_or_buffer`` for importing. This checks that the imported package only requires modules
@@ -89,8 +107,8 @@ class PackageImporter(Importer):
         if isinstance(file_or_buffer, torch._C.PyTorchFileReader):
             self.filename = "<pytorch_file_reader>"
             self.zip_reader = file_or_buffer
-        elif isinstance(file_or_buffer, (Path, str)):
-            self.filename = str(file_or_buffer)
+        elif isinstance(file_or_buffer, (os.PathLike, str)):
+            self.filename = os.fspath(file_or_buffer)
             if not os.path.isdir(self.filename):
                 self.zip_reader = torch._C.PyTorchFileReader(self.filename)
             else:
@@ -98,6 +116,14 @@ class PackageImporter(Importer):
         else:
             self.filename = "<binary>"
             self.zip_reader = torch._C.PyTorchFileReader(file_or_buffer)
+
+        torch._C._log_api_usage_metadata(
+            "torch.package.PackageImporter.metadata",
+            {
+                "serialization_id": self.zip_reader.serialization_id(),
+                "file_name": self.filename,
+            },
+        )
 
         self.root = _PackageNode(None)
         self.modules = {}
@@ -121,13 +147,14 @@ class PackageImporter(Importer):
 
         self._mangler = PackageMangler()
 
-        # used for reduce deserializaiton
+        # used for reduce deserialization
         self.storage_context: Any = None
         self.last_map_location = None
 
         # used for torch.serialization._load
         self.Unpickler = lambda *args, **kwargs: PackageUnpickler(self, *args, **kwargs)
 
+    # pyrefly: ignore [bad-override]
     def import_module(self, name: str, package=None):
         """Load a module from the package if it hasn't already been loaded, and then return
         the module. Modules are loaded locally
@@ -219,13 +246,19 @@ class PackageImporter(Importer):
             loaded_storages[key] = restore_location(storage, location)
 
         def persistent_load(saved_id):
-            assert isinstance(saved_id, tuple)
+            if not isinstance(saved_id, tuple):
+                raise AssertionError(
+                    f"saved_id must be a tuple, got {type(saved_id).__name__}"
+                )
             typename = _maybe_decode_ascii(saved_id[0])
             data = saved_id[1:]
 
             if typename == "storage":
                 storage_type, key, location, size = data
-                dtype = storage_type.dtype
+                if storage_type is torch.UntypedStorage:
+                    dtype = torch.uint8
+                else:
+                    dtype = storage_type.dtype
 
                 if key not in loaded_storages:
                     load_tensor(
@@ -261,7 +294,7 @@ class PackageImporter(Importer):
 
         @contextmanager
         def set_deserialization_context():
-            # to let reduce_package access deserializaiton context
+            # to let reduce_package access deserialization context
             self.storage_context = storage_context
             self.last_map_location = map_location
             try:
@@ -296,11 +329,11 @@ class PackageImporter(Importer):
         """Returns a file structure representation of package's zipfile.
 
         Args:
-            include (Union[List[str], str]): An optional string e.g. ``"my_package.my_subpackage"``, or optional list of strings
+            include (list[str] | str): An optional string e.g. ``"my_package.my_subpackage"``, or optional list of strings
                 for the names of the files to be included in the zipfile representation. This can also be
                 a glob-style pattern, as described in :meth:`PackageExporter.mock`
 
-            exclude (Union[List[str], str]): An optional pattern that excludes files whose name match the pattern.
+            exclude (list[str] | str): An optional pattern that excludes files whose name match the pattern.
 
         Returns:
             :class:`Directory`
@@ -316,7 +349,7 @@ class PackageImporter(Importer):
         file later on.
 
         Returns:
-            :class:`Optional[str]` a python version e.g. 3.8.9 or None if no version was stored with this package
+            :class:`str | None` a python version e.g. 3.8.9 or None if no version was stored with this package
         """
         python_version_path = ".data/python_version"
         return (
@@ -333,7 +366,7 @@ class PackageImporter(Importer):
         )
 
     def _make_module(
-        self, name: str, filename: Optional[str], is_package: bool, parent: str
+        self, name: str, filename: str | None, is_package: bool, parent: str
     ):
         mangled_filename = self._mangler.mangle(filename) if filename else None
         spec = importlib.machinery.ModuleSpec(
@@ -354,18 +387,25 @@ class PackageImporter(Importer):
         ns["__torch_package__"] = True
 
         # Add this module to our private global registry. It should be unique due to mangling.
-        assert module.__name__ not in _package_imported_modules
+        if module.__name__ in _package_imported_modules:
+            raise AssertionError(
+                f"module {module.__name__} already exists in _package_imported_modules"
+            )
         _package_imported_modules[module.__name__] = module
 
-        # pre-emptively install on the parent to prevent IMPORT_FROM from trying to
+        # preemptively install on the parent to prevent IMPORT_FROM from trying to
         # access sys.modules
         self._install_on_parent(parent, name, module)
 
         if filename is not None:
-            assert mangled_filename is not None
-            # pre-emptively install the source in `linecache` so that stack traces,
+            if mangled_filename is None:
+                raise AssertionError(
+                    "mangled_filename must not be None when filename is set"
+                )
+            # preemptively install the source in `linecache` so that stack traces,
             # `inspect`, etc. work.
-            assert filename not in linecache.cache  # type: ignore[attr-defined]
+            if filename in linecache.cache:  # type: ignore[attr-defined]
+                raise AssertionError(f"filename {filename} already in linecache.cache")
             linecache.lazycache(mangled_filename, ns)
 
             code = self._compile_source(filename, mangled_filename)
@@ -388,8 +428,18 @@ class PackageImporter(Importer):
             cur = cur.children[atom]
             if isinstance(cur, _ExternNode):
                 module = self.modules[name] = importlib.import_module(name)
+
+                if compat_mapping := EXTERN_IMPORT_COMPAT_NAME_MAPPING.get(name):
+                    for old_name, new_name in compat_mapping.items():
+                        module.__dict__.setdefault(old_name, new_name)
+
                 return module
-        return self._make_module(name, cur.source_file, isinstance(cur, _PackageNode), parent)  # type: ignore[attr-defined]
+        return self._make_module(
+            name,
+            cur.source_file,  # type: ignore[attr-defined]
+            isinstance(cur, _PackageNode),
+            parent,
+        )
 
     def _compile_source(self, fullpath: str, mangled_filename: str):
         source = self.zip_reader.get_record(fullpath)
@@ -424,7 +474,6 @@ class PackageImporter(Importer):
 
     # note: copied from cpython's import code, with call to create module replaced with _make_module
     def _do_find_and_load(self, name):
-        path = None
         parent = name.rpartition(".")[0]
         module_name_no_parent = name.rpartition(".")[-1]
         if parent:
@@ -436,7 +485,7 @@ class PackageImporter(Importer):
             parent_module = self.modules[parent]
 
             try:
-                path = parent_module.__path__  # type: ignore[attr-defined]
+                parent_module.__path__  # type: ignore[attr-defined]
 
             except AttributeError:
                 # when we attempt to import a package only containing pybinded files,
@@ -479,7 +528,7 @@ class PackageImporter(Importer):
             return self._do_find_and_load(name)
 
         if module is None:
-            message = "import of {} halted; " "None in sys.modules".format(name)
+            message = f"import of {name} halted; None in sys.modules"
             raise ModuleNotFoundError(message, name=name)
 
         # To handle https://github.com/pytorch/pytorch/issues/57490, where std's
@@ -488,8 +537,9 @@ class PackageImporter(Importer):
         if name == "os":
             self.modules["os.path"] = cast(Any, module).path
         elif name == "typing":
-            self.modules["typing.io"] = cast(Any, module).io
-            self.modules["typing.re"] = cast(Any, module).re
+            if sys.version_info < (3, 13):
+                self.modules["typing.io"] = cast(Any, module).io
+                self.modules["typing.re"] = cast(Any, module).re
 
         return module
 
@@ -528,13 +578,13 @@ class PackageImporter(Importer):
                     else:
                         where = "``from list''"
                     raise TypeError(
-                        f"Item in {where} must be str, " f"not {type(x).__name__}"
+                        f"Item in {where} must be str, not {type(x).__name__}"
                     )
                 elif x == "*":
                     if not recursive and hasattr(module, "__all__"):
                         self._handle_fromlist(module, module.__all__, recursive=True)
                 elif not hasattr(module, x):
-                    from_name = "{}.{}".format(module_name, x)
+                    from_name = f"{module_name}.{x}"
                     try:
                         self._gcd_import(from_name)
                     except ModuleNotFoundError as exc:
@@ -582,19 +632,22 @@ class PackageImporter(Importer):
         """
         if hasattr(package, "__spec__"):
             if package.__spec__.submodule_search_locations is None:
-                raise TypeError("{!r} is not a package".format(package.__spec__.name))
+                raise TypeError(f"{package.__spec__.name!r} is not a package")
             else:
                 return package
         else:
             module = self.import_module(package)
             if module.__spec__.submodule_search_locations is None:
-                raise TypeError("{!r} is not a package".format(package))
+                raise TypeError(f"{package!r} is not a package")
             else:
                 return module
 
     def _zipfile_path(self, package, resource=None):
         package = self._get_package(package)
-        assert package.__loader__ is self
+        if package.__loader__ is not self:
+            raise AssertionError(
+                f"package.__loader__ must be self, got {package.__loader__}"
+            )
         name = demangle(package.__name__)
         if resource is not None:
             resource = _normalize_path(resource)
@@ -602,9 +655,7 @@ class PackageImporter(Importer):
         else:
             return f"{name.replace('.', '/')}"
 
-    def _get_or_create_package(
-        self, atoms: List[str]
-    ) -> "Union[_PackageNode, _ExternNode]":
+    def _get_or_create_package(self, atoms: list[str]) -> "_PackageNode | _ExternNode":
         cur = self.root
         for i, atom in enumerate(atoms):
             node = cur.children.get(atom, None)
@@ -617,7 +668,10 @@ class PackageImporter(Importer):
                 raise ImportError(
                     f"inconsistent module structure. module {name} is not a package, but has submodules"
                 )
-            assert isinstance(node, _PackageNode)
+            if not isinstance(node, _PackageNode):
+                raise AssertionError(
+                    f"expected _PackageNode, got {type(node).__name__}"
+                )
             cur = node
         return cur
 
@@ -656,13 +710,13 @@ _ERR_MSG = _ERR_MSG_PREFIX + "{!r}"
 
 
 class _PathNode:
-    pass
+    __slots__ = []
 
 
 class _PackageNode(_PathNode):
-    def __init__(self, source_file: Optional[str]):
+    def __init__(self, source_file: str | None):
         self.source_file = source_file
-        self.children: Dict[str, _PathNode] = {}
+        self.children: dict[str, _PathNode] = {}
 
 
 class _ModuleNode(_PathNode):

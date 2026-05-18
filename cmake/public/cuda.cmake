@@ -28,9 +28,18 @@ endif()
 # Find CUDA.
 find_package(CUDA)
 if(NOT CUDA_FOUND)
+  # If user explicitly set USE_CUDA=1, error out instead of falling back
+  if(_USE_CUDA_EXPLICITLY_SET AND USE_CUDA)
+    message(FATAL_ERROR
+      "PyTorch: CUDA was explicitly requested (USE_CUDA=1) but cannot be found. "
+      "Please check your CUDA installation, ensure CUDA toolkit is installed, "
+      "and that CUDA_HOME or CMAKE_CUDA_COMPILER is set correctly. "
+      "If you want to build without CUDA, please set USE_CUDA=0.")
+  endif()
+
   message(WARNING
-    "Caffe2: CUDA cannot be found. Depending on whether you are building "
-    "Caffe2 or a Caffe2 dependent library, the next warning / error will "
+    "PyTorch: CUDA cannot be found. Depending on whether you are building "
+    "PyTorch or a PyTorch dependent library, the next warning / error will "
     "give you more info.")
   set(CAFFE2_USE_CUDA OFF)
   return()
@@ -42,10 +51,12 @@ set(CUDAToolkit_ROOT "${CUDA_TOOLKIT_ROOT_DIR}")
 # Must be done before CUDA language is enabled, see
 # https://cmake.org/cmake/help/v3.15/variable/CMAKE_CUDA_HOST_COMPILER.html
 if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
-  set(CMAKE_CUDA_HOST_COMPILER "${CMAKE_C_COMPILER}")
+  set(CMAKE_CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}")
 endif()
 enable_language(CUDA)
-set(CMAKE_CUDA_STANDARD ${CMAKE_CXX_STANDARD})
+if("X${CMAKE_CUDA_STANDARD}" STREQUAL "X" )
+  set(CMAKE_CUDA_STANDARD ${CMAKE_CXX_STANDARD})
+endif()
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 # CMP0074 - find_package will respect <PackageName>_ROOT variables
@@ -58,22 +69,17 @@ find_package(CUDAToolkit REQUIRED)
 
 cmake_policy(POP)
 
-if(NOT CMAKE_CUDA_COMPILER_VERSION STREQUAL CUDAToolkit_VERSION OR
-    NOT CUDA_INCLUDE_DIRS STREQUAL CUDAToolkit_INCLUDE_DIR)
-  message(FATAL_ERROR "Found two conflicting CUDA installs:\n"
+if(NOT CMAKE_CUDA_COMPILER_VERSION VERSION_EQUAL CUDAToolkit_VERSION)
+  message(FATAL_ERROR "Found two conflicting CUDA versions:\n"
                       "V${CMAKE_CUDA_COMPILER_VERSION} in '${CUDA_INCLUDE_DIRS}' and\n"
-                      "V${CUDAToolkit_VERSION} in '${CUDAToolkit_INCLUDE_DIR}'")
+                      "V${CUDAToolkit_VERSION} in '${CUDAToolkit_INCLUDE_DIRS}'")
 endif()
 
-if(NOT TARGET CUDA::nvToolsExt)
-  message(FATAL_ERROR "Failed to find nvToolsExt")
-endif()
-
-message(STATUS "Caffe2: CUDA detected: " ${CUDA_VERSION})
-message(STATUS "Caffe2: CUDA nvcc is: " ${CUDA_NVCC_EXECUTABLE})
-message(STATUS "Caffe2: CUDA toolkit directory: " ${CUDA_TOOLKIT_ROOT_DIR})
-if(CUDA_VERSION VERSION_LESS 11.0)
-  message(FATAL_ERROR "PyTorch requires CUDA 11.0 or above.")
+message(STATUS "PyTorch: CUDA detected: " ${CUDA_VERSION})
+message(STATUS "PyTorch: CUDA nvcc is: " ${CUDA_NVCC_EXECUTABLE})
+message(STATUS "PyTorch: CUDA toolkit directory: " ${CUDA_TOOLKIT_ROOT_DIR})
+if(CUDA_VERSION VERSION_LESS 12.1)
+  message(FATAL_ERROR "PyTorch requires CUDA 12.1 or above.")
 endif()
 
 if(CUDA_FOUND)
@@ -106,14 +112,14 @@ if(CUDA_FOUND)
       COMPILE_OUTPUT_VARIABLE output_var
       )
     if(NOT compile_result)
-      message(FATAL_ERROR "Caffe2: Couldn't determine version from header: " ${output_var})
+      message(FATAL_ERROR "PyTorch: Couldn't determine version from header: " ${output_var})
     endif()
-    message(STATUS "Caffe2: Header version is: " ${cuda_version_from_header})
+    message(STATUS "PyTorch: Header version is: " ${cuda_version_from_header})
     if(NOT cuda_version_from_header STREQUAL ${CUDA_VERSION_STRING})
       # Force CUDA to be processed for again next time
       # TODO: I'm not sure if this counts as an implementation detail of
       # FindCUDA
-      set(${cuda_version_from_findcuda} ${CUDA_VERSION_STRING})
+      set(cuda_version_from_findcuda ${CUDA_VERSION_STRING})
       unset(CUDA_TOOLKIT_ROOT_DIR_INTERNAL CACHE)
       # Not strictly necessary, but for good luck.
       unset(CUDA_VERSION CACHE)
@@ -128,54 +134,14 @@ if(CUDA_FOUND)
   endif()
 endif()
 
-# Optionally, find TensorRT
-if(CAFFE2_USE_TENSORRT)
-  find_path(TENSORRT_INCLUDE_DIR NvInfer.h
-    HINTS ${TENSORRT_ROOT} ${CUDA_TOOLKIT_ROOT_DIR}
-    PATH_SUFFIXES include)
-  find_library(TENSORRT_LIBRARY nvinfer
-    HINTS ${TENSORRT_ROOT} ${CUDA_TOOLKIT_ROOT_DIR}
-    PATH_SUFFIXES lib lib64 lib/x64)
-  find_package_handle_standard_args(
-    TENSORRT DEFAULT_MSG TENSORRT_INCLUDE_DIR TENSORRT_LIBRARY)
-  if(TENSORRT_FOUND)
-    execute_process(COMMAND /bin/sh -c "[ -r \"${TENSORRT_INCLUDE_DIR}/NvInferVersion.h\" ] && awk '/^\#define NV_TENSORRT_MAJOR/ {print $3}' \"${TENSORRT_INCLUDE_DIR}/NvInferVersion.h\"" OUTPUT_VARIABLE TENSORRT_VERSION_MAJOR)
-    execute_process(COMMAND /bin/sh -c "[ -r \"${TENSORRT_INCLUDE_DIR}/NvInferVersion.h\" ] && awk '/^\#define NV_TENSORRT_MINOR/ {print $3}' \"${TENSORRT_INCLUDE_DIR}/NvInferVersion.h\"" OUTPUT_VARIABLE TENSORRT_VERSION_MINOR)
-    if(TENSORRT_VERSION_MAJOR)
-      string(STRIP ${TENSORRT_VERSION_MAJOR} TENSORRT_VERSION_MAJOR)
-      string(STRIP ${TENSORRT_VERSION_MINOR} TENSORRT_VERSION_MINOR)
-      set(TENSORRT_VERSION "${TENSORRT_VERSION_MAJOR}.${TENSORRT_VERSION_MINOR}")
-      #CAFFE2_USE_TRT is set in Dependencies
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DTENSORRT_VERSION_MAJOR=${TENSORRT_VERSION_MAJOR}")
-      set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DTENSORRT_VERSION_MINOR=${TENSORRT_VERSION_MINOR}")
-    else()
-      message(WARNING "Caffe2: Cannot find ${TENSORRT_INCLUDE_DIR}/NvInferVersion.h. Assuming TRT 5.0 which is no longer supported. Turning the option off.")
-      set(CAFFE2_USE_TENSORRT OFF)
-    endif()
-  else()
-    message(WARNING
-      "Caffe2: Cannot find TensorRT library. Turning the option off.")
-    set(CAFFE2_USE_TENSORRT OFF)
-  endif()
-endif()
-
 # ---[ CUDA libraries wrapper
 
-# find libcuda.so and lbnvrtc.so
-# For libcuda.so, we will find it under lib, lib64, and then the
-# stubs folder, in case we are building on a system that does not
-# have cuda driver installed. On windows, we also search under the
-# folder lib/x64.
-set(CUDA_CUDA_LIB "${CUDA_cuda_driver_LIBRARY}" CACHE FILEPATH "")
+# find lbnvrtc.so
 set(CUDA_NVRTC_LIB "${CUDA_nvrtc_LIBRARY}" CACHE FILEPATH "")
 if(CUDA_NVRTC_LIB AND NOT CUDA_NVRTC_SHORTHASH)
-  if("${PYTHON_EXECUTABLE}" STREQUAL "")
-    set(_python_exe "python")
-  else()
-    set(_python_exe "${PYTHON_EXECUTABLE}")
-  endif()
+  find_package(Python COMPONENTS Interpreter)
   execute_process(
-    COMMAND "${_python_exe}" -c
+    COMMAND "${Python_EXECUTABLE}" -c
     "import hashlib;hash=hashlib.sha256();hash.update(open('${CUDA_NVRTC_LIB}','rb').read());print(hash.hexdigest()[:8])"
     RESULT_VARIABLE _retval
     OUTPUT_VARIABLE CUDA_NVRTC_SHORTHASH)
@@ -212,11 +178,6 @@ else()
         CUDA::cudart)
 endif()
 
-# nvToolsExt
-add_library(torch::nvtoolsext INTERFACE IMPORTED)
-set_property(
-    TARGET torch::nvtoolsext PROPERTY INTERFACE_LINK_LIBRARIES
-    CUDA::nvToolsExt)
 
 # cublas
 add_library(caffe2::cublas INTERFACE IMPORTED)
@@ -250,8 +211,8 @@ if(CAFFE2_USE_CUDNN)
       "Cannot find cuDNN library. Turning the option off")
     set(CAFFE2_USE_CUDNN OFF)
   else()
-    if(CUDNN_VERSION VERSION_LESS "8.0.0")
-      message(FATAL_ERROR "PyTorch requires cuDNN 8 and above.")
+    if(CUDNN_VERSION VERSION_LESS "8.1.0")
+      message(FATAL_ERROR "PyTorch requires cuDNN 8.1 and above.")
     endif()
   endif()
 
@@ -265,6 +226,54 @@ if(CAFFE2_USE_CUDNN)
   endif()
 else()
   message(STATUS "USE_CUDNN is set to 0. Compiling without cuDNN support")
+endif()
+
+if(CAFFE2_USE_CUSPARSELT)
+  find_package(CUSPARSELT)
+
+  if(NOT CUSPARSELT_FOUND)
+    message(WARNING
+      "Cannot find cuSPARSELt library. Turning the option off")
+    set(CAFFE2_USE_CUSPARSELT OFF)
+  else()
+    add_library(torch::cusparselt INTERFACE IMPORTED)
+    target_include_directories(torch::cusparselt INTERFACE ${CUSPARSELT_INCLUDE_PATH})
+    target_link_libraries(torch::cusparselt INTERFACE ${CUSPARSELT_LIBRARY_PATH})
+  endif()
+else()
+  message(STATUS "USE_CUSPARSELT is set to 0. Compiling without cuSPARSELt support")
+endif()
+
+if(USE_CUDSS)
+  find_package(CUDSS)
+
+  if(NOT CUDSS_FOUND)
+    message(WARNING
+      "Cannot find CUDSS library. Turning the option off")
+    set(USE_CUDSS OFF)
+  else()
+    add_library(torch::cudss INTERFACE IMPORTED)
+    target_include_directories(torch::cudss INTERFACE ${CUDSS_INCLUDE_PATH})
+    target_link_libraries(torch::cudss INTERFACE ${CUDSS_LIBRARY_PATH})
+  endif()
+else()
+  message(STATUS "USE_CUDSS is set to 0. Compiling without cuDSS support")
+endif()
+
+# cufile
+if(CAFFE2_USE_CUFILE)
+  add_library(torch::cufile INTERFACE IMPORTED)
+  if(CAFFE2_STATIC_LINK_CUDA AND NOT WIN32)
+      set_property(
+          TARGET torch::cufile PROPERTY INTERFACE_LINK_LIBRARIES
+          CUDA::cuFile_static)
+  else()
+      set_property(
+          TARGET torch::cufile PROPERTY INTERFACE_LINK_LIBRARIES
+          CUDA::cuFile)
+  endif()
+else()
+  message(STATUS "USE_CUFILE is set to 0. Compiling without cuFile support")
 endif()
 
 # curand
@@ -282,33 +291,36 @@ endif()
 # cufft
 add_library(caffe2::cufft INTERFACE IMPORTED)
 if(CAFFE2_STATIC_LINK_CUDA AND NOT WIN32)
-    set_property(
-        TARGET caffe2::cufft PROPERTY INTERFACE_LINK_LIBRARIES
-        CUDA::cufft_static_nocallback)
+    if(CUDA_VERSION VERSION_LESS_EQUAL 12.9)
+      set_property(
+          TARGET caffe2::cufft PROPERTY INTERFACE_LINK_LIBRARIES
+          CUDA::cufft_static_nocallback)
+    else()
+      set_property(
+          TARGET caffe2::cufft PROPERTY INTERFACE_LINK_LIBRARIES
+          CUDA::cufft_static)
+    endif()
 else()
     set_property(
         TARGET caffe2::cufft PROPERTY INTERFACE_LINK_LIBRARIES
         CUDA::cufft)
 endif()
 
-# TensorRT
-if(CAFFE2_USE_TENSORRT)
-  add_library(caffe2::tensorrt UNKNOWN IMPORTED)
-  set_property(
-      TARGET caffe2::tensorrt PROPERTY IMPORTED_LOCATION
-      ${TENSORRT_LIBRARY})
-  set_property(
-      TARGET caffe2::tensorrt PROPERTY INTERFACE_INCLUDE_DIRECTORIES
-      ${TENSORRT_INCLUDE_DIR})
-endif()
-
 # nvrtc
+# cuDNN frontend needs libnvrtc symbols, but linking through CUDA::nvrtc pulls
+# CUDA::cuda_driver transitively. Keep a driver-free target for cuDNN users and
+# reserve caffe2::nvrtc for the stub library that actually needs the driver API.
+add_library(caffe2::nvrtc_runtime INTERFACE IMPORTED)
+set_property(
+    TARGET caffe2::nvrtc_runtime PROPERTY INTERFACE_LINK_LIBRARIES
+    "${CUDA_NVRTC_LIB}")
+
 add_library(caffe2::nvrtc INTERFACE IMPORTED)
 set_property(
     TARGET caffe2::nvrtc PROPERTY INTERFACE_LINK_LIBRARIES
-    CUDA::nvrtc)
+    CUDA::nvrtc caffe2::cuda)
 
-# Add onnx namepsace definition to nvcc
+# Add onnx namespace definition to nvcc
 if(ONNX_NAMESPACE)
   list(APPEND CUDA_NVCC_FLAGS "-DONNX_NAMESPACE=${ONNX_NAMESPACE}")
 else()
@@ -324,19 +336,22 @@ endif()
 # setting nvcc arch flags
 torch_cuda_get_nvcc_gencode_flag(NVCC_FLAGS_EXTRA)
 # CMake 3.18 adds integrated support for architecture selection, but we can't rely on it
-set(CMAKE_CUDA_ARCHITECTURES OFF)
+if(DEFINED CMAKE_CUDA_ARCHITECTURES)
+  message(WARNING
+          "pytorch is not compatible with `CMAKE_CUDA_ARCHITECTURES` and will ignore its value. "
+          "Please configure `TORCH_CUDA_ARCH_LIST` instead.")
+  set(CMAKE_CUDA_ARCHITECTURES OFF)
+endif()
+
 list(APPEND CUDA_NVCC_FLAGS ${NVCC_FLAGS_EXTRA})
 message(STATUS "Added CUDA NVCC flags for: ${NVCC_FLAGS_EXTRA}")
 
 # disable some nvcc diagnostic that appears in boost, glog, glags, opencv, etc.
-foreach(diag cc_clobber_ignored integer_sign_change useless_using_declaration
-             set_but_not_used field_without_dll_interface
+foreach(diag cc_clobber_ignored
+             field_without_dll_interface
              base_class_has_different_dll_interface
              dll_interface_conflict_none_assumed
              dll_interface_conflict_dllexport_assumed
-             implicit_return_from_non_void_function
-             unsigned_compare_with_zero
-             declared_but_not_referenced
              bad_friend_decl)
   list(APPEND SUPPRESS_WARNING_FLAGS --diag_suppress=${diag})
 endforeach()
@@ -367,6 +382,11 @@ if(MSVC)
   endif()
 elseif(CUDA_DEVICE_DEBUG)
   list(APPEND CUDA_NVCC_FLAGS "-g" "-G")  # -G enables device code debugging symbols
+endif()
+
+# needed for compat with newer versions of clang that use C++20 mangling rules
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 18)
+  list(APPEND CUDA_NVCC_FLAGS "-Xcompiler=-fclang-abi-compat=17")
 endif()
 
 # Set expt-relaxed-constexpr to suppress Eigen warnings

@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 import torch
 from torch import nn
 from torch.nn.utils.parametrize import is_parametrized
@@ -7,10 +8,8 @@ def module_contains_param(module, parametrization):
     if is_parametrized(module):
         # see if any of the module tensors have a parametriztion attached that matches the one passed in
         return any(
-            [
-                any(isinstance(param, parametrization) for param in param_list)
-                for key, param_list in module.parametrizations.items()
-            ]
+            any(isinstance(param, parametrization) for param in param_list)
+            for param_list in module.parametrizations.values()
         )
     return False
 
@@ -29,8 +28,12 @@ class FakeStructuredSparsity(nn.Module):
         self.register_buffer("mask", mask)
 
     def forward(self, x):
-        assert isinstance(self.mask, torch.Tensor)
-        assert self.mask.shape[0] == x.shape[0]
+        if not isinstance(self.mask, torch.Tensor):
+            raise AssertionError("mask must be a torch.Tensor")
+        if self.mask.shape[0] != x.shape[0]:
+            raise AssertionError(
+                f"mask shape[0] ({self.mask.shape[0]}) must match x shape[0] ({x.shape[0]})"
+            )
         shape = [1] * len(x.shape)
         shape[0] = -1
         return self.mask.reshape(shape) * x
@@ -46,7 +49,6 @@ class BiasHook:
         self.prune_bias = prune_bias
 
     def __call__(self, module, input, output):
-
         if getattr(module, "_bias", None) is not None:
             bias = module._bias.data
             if self.prune_bias:

@@ -8,6 +8,7 @@ from gitutils import (
     GitRepo,
     patterns_to_regex,
     PeekableIterator,
+    retries_decorator,
 )
 
 
@@ -49,9 +50,25 @@ class TestPattern(TestCase):
             self.assertTrue(patterns_re.match(filename))
 
 
+class TestRetriesDecorator(TestCase):
+    def test_simple(self) -> None:
+        @retries_decorator()
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        self.assertEqual(foo(3, 4), 7)
+
+    def test_fails(self) -> None:
+        @retries_decorator(rc=0)
+        def foo(x: int, y: int) -> int:
+            return x + y
+
+        self.assertEqual(foo("a", 4), 0)
+
+
 class TestGitRepo(TestCase):
     def setUp(self) -> None:
-        repo_dir = BASE_DIR.parent.parent.absolute()
+        repo_dir = BASE_DIR.absolute().parent.parent
         if not (repo_dir / ".git").is_dir():
             raise SkipTest(
                 "Can't find git directory, make sure to run this test on real repo checkout"

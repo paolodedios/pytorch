@@ -1,14 +1,18 @@
 # Owner(s): ["oncall: fx"]
 
-import torch
-
-from torch.testing._internal.common_utils import (
-    TestCase, parametrize, instantiate_parametrized_tests, run_tests)
-from torch.fx.experimental.proxy_tensor import make_fx
-from torch.fx.passes.dialect.common.cse_pass import CSEPass
-from torch.fx.graph_module import GraphModule
-
 import itertools
+
+import torch
+from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.graph_module import GraphModule
+from torch.fx.passes.dialect.common.cse_pass import CSEPass
+from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    parametrize,
+    raise_on_run_directly,
+    TestCase,
+)
+
 
 def FactoryFunctionCall(x, device):
     y = torch.full(x.shape, 3, device=device)
@@ -62,12 +66,14 @@ def MutationMetadata(x):
 
 
 Passes = [CSEPass]
-Test_Cases = [TakeList,
-              ReturnList,
-              Mutation,
-              MutationInput,
-              MutationMetadata,
-              MutationTorchTensorCall]
+Test_Cases = [
+    TakeList,
+    ReturnList,
+    Mutation,
+    MutationInput,
+    MutationMetadata,
+    MutationTorchTensorCall,
+]
 Factory_Test_Cases = [FactoryFunctionCall, MutationFactory]
 Devices = ["cpu"]
 if torch.cuda.is_available():
@@ -76,12 +82,14 @@ if torch.cuda.is_available():
 
 def name_fn(common_pass, f, device):
     """Names parameterized test cases."""
-    return f'{type(common_pass()).__name__}_{f.__name__}_{device}'
+    return f"{type(common_pass()).__name__}_{f.__name__}_{device}"
+
 
 @instantiate_parametrized_tests
 class TestCommonPass(TestCase):
-
-    @parametrize("common_pass,f,device", itertools.product(Passes, Test_Cases, Devices), name_fn)
+    @parametrize(
+        "common_pass,f,device", itertools.product(Passes, Test_Cases, Devices), name_fn
+    )
     def test_correctness(self, common_pass, f, device):
         inp = torch.randn(10, device=device)
 
@@ -90,7 +98,10 @@ class TestCommonPass(TestCase):
 
         res = P(traced_m)
         modified_m = res.graph_module
-        assert isinstance(modified_m, GraphModule)
+        if not isinstance(modified_m, GraphModule):
+            raise AssertionError(
+                f"Expected modified_m to be GraphModule, got {type(modified_m)}"
+            )
 
         inp_copy = inp.clone()
         expected = f(inp)
@@ -98,8 +109,11 @@ class TestCommonPass(TestCase):
 
         self.assertEqual(result, expected)
 
-
-    @parametrize("common_pass,f,device", itertools.product(Passes, Factory_Test_Cases, Devices), name_fn)
+    @parametrize(
+        "common_pass,f,device",
+        itertools.product(Passes, Factory_Test_Cases, Devices),
+        name_fn,
+    )
     def test_correctness_factory(self, common_pass, f, device):
         inp = torch.randn(10, device=device)
         traced_m = make_fx(f)(inp, device)
@@ -107,7 +121,10 @@ class TestCommonPass(TestCase):
 
         res = P(traced_m)
         modified_m = res.graph_module
-        assert isinstance(modified_m, GraphModule)
+        if not isinstance(modified_m, GraphModule):
+            raise AssertionError(
+                f"Expected modified_m to be GraphModule, got {type(modified_m)}"
+            )
 
         inp_copy = inp.clone()
         expected = f(inp, device)
@@ -116,5 +133,5 @@ class TestCommonPass(TestCase):
         self.assertEqual(result, expected)
 
 
-if __name__ == '__main__':
-    run_tests()
+if __name__ == "__main__":
+    raise_on_run_directly("test/test_fx.py")

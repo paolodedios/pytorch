@@ -1,6 +1,8 @@
-from collections import defaultdict
+from __future__ import annotations
 
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+import string
+from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import torchgen.api.dispatcher as dispatcher
 from torchgen.api.translate import translate
@@ -27,6 +29,11 @@ from torchgen.model import (
 )
 from torchgen.utils import concatMap
 
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
 # See Note: [Out ops with functional variants that don't get grouped properly]
 OUT_OPS_THAT_DONT_GET_GROUPED_PROPERLY = [
     # This has a functional variant, but it's currently marked private.
@@ -49,6 +56,10 @@ MUTABLE_OPS_THAT_CANNOT_GET_AN_OUT_VARIANT = [
 # All of these operators don't have any tensor like returns
 FUNCTIONAL_OPS_THAT_CANNOT_GET_AN_OUT_VARIANT = [
     "_assert_async",  # no return
+    "_assert_async.msg",  # no return
+    "_assert_tensor_metadata",  # no return
+    "_cslt_sparse_mm_search",  # returns an int
+    "_assert_scalar",  # no return
     "_dimI",  # returns an int
     "_dimV",  # returns an int
     "_has_same_storage_numel",  # returns a boolean
@@ -58,6 +69,8 @@ FUNCTIONAL_OPS_THAT_CANNOT_GET_AN_OUT_VARIANT = [
     "_nnz",  # returns an int
     "_use_cudnn_ctc_loss",  # returns a boolean
     "_use_cudnn_ctc_loss.Tensor",  # returns a boolean
+    "_use_miopen_ctc_loss",  # returns a boolean
+    "_use_miopen_ctc_loss.Tensor",  # returns a boolean
     "_validate_compressed_sparse_indices",  # no return
     "allclose",  # returns a boolean
     "dense_dim",  # returns an int
@@ -72,9 +85,14 @@ FUNCTIONAL_OPS_THAT_CANNOT_GET_AN_OUT_VARIANT = [
     "qscheme",  # returns a QScheme
     "record_stream",  # no return
     "sparse_dim",  # returns an int
+    "sym_constrain_range",  # no return
+    "sym_constrain_range_for_size",  # no return
     "_nested_tensor_storage_offsets",  # returns a vector of ints
     "_chunk_grad_outputs_efficient_attention",  # returns a bool
     "_fused_sdp_choice",  # returns an int
+    "_print",  # no return
+    "_sink_tokens",  # no return
+    "_nested_get_ragged_idx",  # returns an int
 ]
 
 INPLACE_OPS_THAT_DONT_GET_GROUPED_PROPERLY = [
@@ -93,19 +111,20 @@ INPLACE_OPS_THAT_DONT_GET_GROUPED_PROPERLY = [
 # But have differing SchemaKinds.
 def pre_group_native_functions(
     native_functions: Sequence[NativeFunction],
-) -> Dict[FunctionSchema, Dict[SchemaKind, NativeFunction]]:
-    pre_grouped_native_functions: Dict[
-        FunctionSchema, Dict[SchemaKind, NativeFunction]
+) -> dict[FunctionSchema, dict[SchemaKind, NativeFunction]]:
+    pre_grouped_native_functions: dict[
+        FunctionSchema, dict[SchemaKind, NativeFunction]
     ] = defaultdict(dict)
     for f in native_functions:
         d = pre_grouped_native_functions[f.func.signature()]
-        assert f.func.kind() not in d
+        if f.func.kind() in d:
+            raise AssertionError(f"Duplicate schema kind {f.func.kind()} for {f.func}")
         d[f.func.kind()] = f
     return pre_grouped_native_functions
 
 
 # Returns the out variant overload name given a base function overload name
-def get_expected_out_variant_overload_name(overload_name: Optional[str]) -> str:
+def get_expected_out_variant_overload_name(overload_name: str | None) -> str:
     return "out" if not overload_name else f"{overload_name}_out"
 
 
@@ -116,8 +135,10 @@ def get_expected_out_variant_overload_name(overload_name: Optional[str]) -> str:
 #   _add_relu.Scalar_out(Tensor self, Scalar other, Scalar alpha=1, *, Tensor(a!) out)
 def self_to_out_signature(func: FunctionSchema) -> FunctionSchema:
     # Generating an out= schema from an inplace schema.
-    assert func.kind() == SchemaKind.inplace
-    assert func.arguments.self_arg is not None
+    if func.kind() != SchemaKind.inplace:
+        raise AssertionError(f"Expected inplace schema, got {func.kind()}")
+    if func.arguments.self_arg is None:
+        raise AssertionError("Expected self_arg to be non-None")
     # The new out= schema has:
     # - a new out argument with the same type as "func" (but with a mutable annotation)
     # - The returns (if any) now alias the out= argument instead of "func"
@@ -149,7 +170,8 @@ def self_to_out_signature(func: FunctionSchema) -> FunctionSchema:
 #       Tensor(a!) out) -> Tensor(a!)
 def functional_to_out_signature(func: FunctionSchema) -> FunctionSchema:
     # Generating an out= schema from a functional schema.
-    assert func.kind() == SchemaKind.functional
+    if func.kind() != SchemaKind.functional:
+        raise AssertionError(f"Expected functional schema, got {func.kind()}")
 
     new_returns, new_out_args = generate_out_args_from_schema(func)
     # The new out= schema has:
@@ -170,31 +192,29 @@ def functional_to_out_signature(func: FunctionSchema) -> FunctionSchema:
 # Helper function: given a function schema, generate corresponding out arguments, also the updated return annotations.
 def generate_out_args_from_schema(
     func: FunctionSchema,
-) -> Tuple[List[Return], List[Argument]]:
+) -> tuple[list[Return], list[Argument]]:
     # More of a sanity check - our existing restrictions on schemas should enforce that
     # mutable schema kinds never return their mutable arguments.
-    assert not any(
-        r.annotation is not None and r.annotation.is_write for r in func.returns
-    )
+    if any(r.annotation is not None and r.annotation.is_write for r in func.returns):
+        raise AssertionError("Mutable schema kinds should not return mutable arguments")
 
     tensorlike_rets = [r for r in func.returns if r.type.is_tensor_like()]
-    assert len(tensorlike_rets) > 0
+    if len(tensorlike_rets) == 0:
+        raise AssertionError("Expected at least one tensor-like return")
 
     used_annotations = concatMap(
         lambda a: [] if a.annotation is None else a.annotation.alias_set,
         func.arguments.flat_all,
     )
-    valid_annotations = [
-        x for x in "abcdefghijklmnopqrstuvwxyz" if x not in used_annotations
-    ]
+    valid_annotations = [x for x in string.ascii_lowercase if x not in used_annotations]
 
     all_rets_are_tensors = all(r.type == BaseType(BaseTy.Tensor) for r in func.returns)
 
-    new_out_args: List[Argument] = []
+    new_out_args: list[Argument] = []
     # The end result of new_returns is that:
     # - If every return is a plain tensor, then the new returns == the old returns, but with the out= alias annotations added.
     # - Otherwise, none of the out arguments show up in the returns (and we're only left with non-tensor-like returns, if any).
-    new_returns: List[Return] = []
+    new_returns: list[Return] = []
     for i, r in enumerate(func.returns):
         if r.type.is_tensor_like():
             new_out = Argument(
@@ -218,12 +238,13 @@ def generate_out_args_from_schema(
 
 # Helper function: given a mutable FunctionSchema, generate its corresponding out= variant
 # Example before:
-#   _fused_moving_avg_obs_fq_helper(Tensor self, Tensor observer_on, Tensor fake_quant_on, Tensor(a!) running_min, Tensor(b!) running_max, Tensor(c!) scale, Tensor(d!) zero_point, float averaging_const, int quant_min, int quant_max, int ch_axis, bool per_row_fake_quant=False, bool symmetric_quant=False) -> (Tensor output, Tensor mask)  # noqa: B950
+#   _fused_moving_avg_obs_fq_helper(Tensor self, Tensor observer_on, Tensor fake_quant_on, Tensor(a!) running_min, Tensor(b!) running_max, Tensor(c!) scale, Tensor(d!) zero_point, float averaging_const, int quant_min, int quant_max, int ch_axis, bool per_row_fake_quant=False, bool symmetric_quant=False) -> (Tensor output, Tensor mask)
 # Example after:
-#   _fused_moving_avg_obs_fq_helper._out(Tensor self, Tensor observer_on, Tensor fake_quant_on, Tensor(a!) running_min, Tensor(b!) running_max, Tensor(c!) scale, Tensor(d!) zero_point, float averaging_const, int quant_min, int quant_max, int ch_axis, bool per_row_fake_quant=False, bool symmetric_quant=False, *, Tensor(e!) out0, Tensor(f!) out1) -> (Tensor(e!), Tensor(f!))  # noqa: B950
+#   _fused_moving_avg_obs_fq_helper._out(Tensor self, Tensor observer_on, Tensor fake_quant_on, Tensor(a!) running_min, Tensor(b!) running_max, Tensor(c!) scale, Tensor(d!) zero_point, float averaging_const, int quant_min, int quant_max, int ch_axis, bool per_row_fake_quant=False, bool symmetric_quant=False, *, Tensor(e!) out0, Tensor(f!) out1) -> (Tensor(e!), Tensor(f!))
 def mutable_to_out_signature(func: FunctionSchema) -> FunctionSchema:
     # Generating an out= schema from a mutable schema.
-    assert func.kind() == SchemaKind.mutable
+    if func.kind() != SchemaKind.mutable:
+        raise AssertionError(f"Expected mutable schema, got {func.kind()}")
     # The new out= schema has:
     # - Any non-aliased tensor-like returns are converted to mutable, aliased out= arguments
     #   (if the argument is a tensor then we also return it for method chaining,
@@ -258,11 +279,12 @@ def mutable_to_out_signature(func: FunctionSchema) -> FunctionSchema:
 #   Details are in the function, but we only generate composite kernels (in some cases) today.
 def generate_function(
     f: NativeFunction, k: SchemaKind
-) -> Tuple[NativeFunction, Dict[DispatchKey, Dict["OperatorName", "BackendMetadata"]]]:
+) -> tuple[NativeFunction, dict[DispatchKey, dict[OperatorName, BackendMetadata]]]:
     from torchgen.api import cpp
 
     if k == SchemaKind.functional:
-        assert f.func.kind() != SchemaKind.functional
+        if f.func.kind() == SchemaKind.functional:
+            raise AssertionError("Cannot generate functional from functional schema")
         # The new "functional" NativeFunction has:
         # - any mutable arguments have been converted into (immutable) returns.
         #   (if a mutable argument was not also a return, it gets converted to one)
@@ -320,7 +342,13 @@ def generate_function(
             )
         }
     }
-    tags = {"generated"} | set(f.tags & {"nondeterministic_seeded", "view_copy"})
+    tags = {"generated"} | set(
+        f.tags & {"nondeterministic_seeded", "view_copy", "pt2_compliant_tag"}
+    )
+    if func.is_out_fn():
+        tags.add("out")
+    if func.name.name.inplace:
+        tags.add("inplace")
 
     return (
         NativeFunction(
@@ -365,18 +393,19 @@ def generate_function(
 # Note: this function *mutates* its two inputs,
 # adding the new NativeFunctions / BackendMetadata to them
 def add_generated_native_functions(
-    rs: List[NativeFunction],
-    indices: Dict[DispatchKey, Dict[OperatorName, BackendMetadata]],
+    rs: list[NativeFunction],
+    indices: dict[DispatchKey, dict[OperatorName, BackendMetadata]],
 ) -> None:
-    # The main code for gnerating new NativeFunctions
-    # First we group of NaitveFunctions by schema kind,
+    # The main code for generating new NativeFunctions
+    # First we group of NativeFunctions by schema kind,
     # then we detect which ones are missing and generate them.
     pre_grouped_native_functions = pre_group_native_functions(rs)
-    for k, d in pre_grouped_native_functions.items():
+    for d in pre_grouped_native_functions.values():
         has_functional = SchemaKind.functional in d
         has_inplace = SchemaKind.inplace in d
         has_mutable = SchemaKind.mutable in d
         has_out = SchemaKind.out in d
+        is_core = any("core" in variant.tags for variant in d.values())
 
         # We automatically generate a few native functions that don't exist in the yaml, for a few reasons:
         # (1) If an operator has an inplace/out= variant but no functional variant, we can generate
@@ -388,15 +417,19 @@ def add_generated_native_functions(
             # Don't bother generating functions trio's for native functions that bypass the dispatcher.
             are_manual = all(f.manual_cpp_binding for f in d.values())
             # Don't bother generating functional + out= variants for view operators
-            has_view_ops = any(f.is_view_op for f in d.values())
-            # Don't generate the other variants for CompositeImplicitAutograd operators.
+            # set_ is technically an inplace_view, but for now it is treated
+            # as a normal inplace op in the codegen
+            has_view_ops = any(
+                f.is_view_op and str(f.func.name.name) != "set_" for f in d.values()
+            )
+            # Don't generate the other variants for non-core CompositeImplicitAutograd operators.
             # We could probably do this, but the main benefit of generating the function triplets
             # is for transforms that need them, and transforms don't need to act directly
             # on CompositeImplicitAutograd operators (since we let them decompose).
             are_composite_implicit = all(
                 f.has_composite_implicit_autograd_kernel for f in d.values()
             )
-            if are_manual or has_view_ops or are_composite_implicit:
+            if are_manual or has_view_ops or are_composite_implicit and not is_core:
                 continue
             if has_out and len(d.values()) == 1:
                 # Note: [Out ops with functional variants that don't get grouped properly]
@@ -427,10 +460,10 @@ def add_generated_native_functions(
                 continue
 
             base_fn = (
-                d[SchemaKind.inplace]
-                if has_inplace
-                else d[SchemaKind.mutable]
+                d[SchemaKind.mutable]
                 if has_mutable
+                else d[SchemaKind.inplace]
+                if has_inplace
                 else d[SchemaKind.out]
                 if has_out
                 else d[SchemaKind.functional]
@@ -483,8 +516,11 @@ out= variant is not needed, please add the function name into FUNCTIONAL_OPS_THA
                 rs.append(fn)
 
 
-def return_str(rets: Tuple[Return, ...], names: List[str]) -> str:
-    assert len(rets) == len(names)
+def return_str(rets: tuple[Return, ...], names: list[str]) -> str:
+    if len(rets) != len(names):
+        raise AssertionError(
+            f"Returns and names length mismatch: {len(rets)} vs {len(names)}"
+        )
     if len(rets) == 0:
         return ""
     elif len(rets) == 1:
@@ -493,9 +529,9 @@ def return_str(rets: Tuple[Return, ...], names: List[str]) -> str:
         return f"return {dispatcher.returns_type(rets).cpp_type()}({', '.join(names)});"
 
 
-# Given a function, and the name of a variable correponding to the output of that function,
+# Given a function, and the name of a variable corresponding to the output of that function,
 # gather up all of the individual returns that are not aliased
-def gather_nonaliased_inner_rets(func: FunctionSchema, out_var: str) -> List[str]:
+def gather_nonaliased_inner_rets(func: FunctionSchema, out_var: str) -> list[str]:
     aliased_rets = func.aliased_return_names()
     non_aliased_names = []
     is_out_var_a_tuple = len(func.returns) > 1
@@ -510,7 +546,7 @@ def gather_nonaliased_inner_rets(func: FunctionSchema, out_var: str) -> List[str
 # Generates functional kernels in terms of their inplace.mutable counterparts.
 # We only do this for "generated" NativeFunctions
 @with_native_function
-def gen_composite_functional_kernel(g: NativeFunctionsGroup) -> Optional[str]:
+def gen_composite_functional_kernel(g: NativeFunctionsGroup) -> str | None:
     # We should only be generating these for code-generated NativeFunctions
     if "generated" not in g.functional.tags:
         return None
@@ -527,7 +563,7 @@ def gen_composite_functional_kernel(g: NativeFunctionsGroup) -> Optional[str]:
     sig = DispatcherSignature(g.functional.func)
     target_sig = DispatcherSignature(target_f.func)
 
-    context: List[Union[Binding, Expr]] = []
+    context: list[Binding | Expr] = []
     clone_mutable_inputs = []
     cloned_return_names = []
     # We can't just directly pass all of the arguments from the functional op into the mutating op.
@@ -573,7 +609,7 @@ def gen_composite_functional_kernel(g: NativeFunctionsGroup) -> Optional[str]:
 # Generates out= kernels in terms of their functional counterparts.
 # We only do this for "generated" NativeFunctions
 @with_native_function
-def gen_composite_out_kernel(g: NativeFunctionsGroup) -> Optional[str]:
+def gen_composite_out_kernel(g: NativeFunctionsGroup) -> str | None:
     # We should only be generating these for code-generated NativeFunctions
     if "generated" not in g.out.tags:
         return None

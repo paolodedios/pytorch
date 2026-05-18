@@ -6,12 +6,14 @@ import csv
 import sys
 from collections import defaultdict
 
-assert len(sys.argv) == 3
+
+if len(sys.argv) != 3:
+    raise AssertionError(f"Expected 2 arguments, but got {len(sys.argv) - 1}")
 
 RESULTS = defaultdict(dict)
 
 for side, f in zip(["static", "dynamic"], sys.argv[1:]):
-    with open(f, "r") as f:
+    with open(f) as f:
         reader = csv.DictReader(f)
         for row in reader:
             RESULTS[(row["bench"], row["name"])][side] = row

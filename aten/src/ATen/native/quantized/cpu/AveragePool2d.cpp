@@ -18,22 +18,20 @@
 #endif
 
 #include <c10/util/irange.h>
-#include <c10/util/math_compat.h>
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <vector>
 
-namespace at {
-namespace native {
+namespace at::native {
 
 DEFINE_DISPATCH(qavg_pool2d_nhwc_stub);
 
 namespace {
 
 template <typename scalar_t>
-static void avg_pool2d_out_frame(
+void avg_pool2d_out_frame(
     const Tensor& input,
     Tensor& output,
     int64_t nInputPlane,
@@ -48,9 +46,9 @@ static void avg_pool2d_out_frame(
     int padW,
     int padH,
     bool count_include_pad,
-    c10::optional<int64_t> divisor_override) {
+    std::optional<int64_t> divisor_override) {
   Tensor input_contig = input.contiguous();
-  auto input_data = input_contig.data_ptr<scalar_t>();
+  auto input_data = input_contig.const_data_ptr<scalar_t>();
   auto output_data = output.data_ptr<scalar_t>();
   const auto scale_factor = input.q_scale() / output.q_scale();
   const auto input_zero_point = input.q_zero_point();
@@ -58,8 +56,6 @@ static void avg_pool2d_out_frame(
 
   at::parallel_for(0, nInputPlane, 0, [&](int64_t start, int64_t end) {
     for (const auto k : c10::irange(start, end)) {
-      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-      int64_t xx, yy;
       /* For all output pixels... */
       scalar_t* ptr_output = output_data + k * outputWidth * outputHeight;
       const scalar_t* ptr_input = input_data + k * inputWidth * inputHeight;
@@ -67,24 +63,23 @@ static void avg_pool2d_out_frame(
           std::numeric_limits<typename scalar_t::underlying>::lowest();
       auto maximum = std::numeric_limits<typename scalar_t::underlying>::max();
 
-      for (yy = 0; yy < outputHeight; yy++) {
-        for (xx = 0; xx < outputWidth; xx++) {
+      for (int64_t yy = 0; yy < outputHeight; yy++) {
+        for (int64_t xx = 0; xx < outputWidth; xx++) {
           /* Compute the mean of the input image... */
           int64_t hstart = yy * dH - padH;
           int64_t wstart = xx * dW - padW;
           int64_t hend = std::min(hstart + kH, inputHeight + padH);
           int64_t wend = std::min(wstart + kW, inputWidth + padW);
           int64_t pool_size = (hend - hstart) * (wend - wstart);
-          hstart = std::max(hstart, (int64_t)0);
-          wstart = std::max(wstart, (int64_t)0);
+          hstart = std::max(hstart, static_cast<int64_t>(0));
+          wstart = std::max(wstart, static_cast<int64_t>(0));
           hend = std::min(hend, inputHeight);
           wend = std::min(wend, inputWidth);
 
           int sum_int = 0;
           ptr_output->val_ = 0;
 
-          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-          int64_t divide_factor;
+          int64_t divide_factor = 0;
           int64_t size = (hend - hstart) * (wend - wstart);
           if (divisor_override.has_value()) {
             divide_factor = divisor_override.value();
@@ -96,10 +91,8 @@ static void avg_pool2d_out_frame(
             }
           }
 
-          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-          int64_t kx, ky;
-          for (ky = hstart; ky < hend; ky++) {
-            for (kx = wstart; kx < wend; kx++)
+          for (int64_t ky = hstart; ky < hend; ky++) {
+            for (int64_t kx = wstart; kx < wend; kx++)
               sum_int += (ptr_input + ky * inputWidth + kx)->val_;
           }
           // NOLINTNEXTLINE(cppcoreguidelines-narrowing-conversions,bugprone-narrowing-conversions)
@@ -127,10 +120,10 @@ inline std::pair<int, int> get_kernel(IntArrayRef kernel_size) {
   TORCH_CHECK(
       kernel_size.size() == 1 || kernel_size.size() == 2,
       "avg_pool2d: kernel_size must either be a single int, or a tuple of two ints");
-  const int kH = safe_downcast<int, int64_t>(kernel_size[0]);
+  const int kH = c10::checked_convert<int>(kernel_size[0], "int");
   const int kW = kernel_size.size() == 1
       ? kH
-      : safe_downcast<int, int64_t>(kernel_size[1]);
+      : c10::checked_convert<int>(kernel_size[1], "int");
   return std::make_pair(kW, kH);
 }
 
@@ -138,10 +131,10 @@ inline std::pair<int, int> get_stride(IntArrayRef stride, int kW, int kH) {
   TORCH_CHECK(
       stride.empty() || stride.size() == 1 || stride.size() == 2,
       "avg_pool2d: stride must either be omitted, a single int, or a tuple of two ints");
-  const int dH = stride.empty() ? kH : safe_downcast<int, int64_t>(stride[0]);
+  const int dH = stride.empty() ? kH : c10::checked_convert<int>(stride[0], "int");
   const int dW = stride.empty()
       ? kW
-      : stride.size() == 1 ? dH : safe_downcast<int, int64_t>(stride[1]);
+      : stride.size() == 1 ? dH : c10::checked_convert<int>(stride[1], "int");
   return std::make_pair(dW, dH);
 }
 
@@ -149,9 +142,9 @@ inline std::pair<int, int> get_padding(IntArrayRef padding) {
   TORCH_CHECK(
       padding.size() == 1 || padding.size() == 2,
       "avg_pool2d: padding must either be a single int, or a tuple of two ints");
-  const int padH = safe_downcast<int, int64_t>(padding[0]);
+  const int padH = c10::checked_convert<int>(padding[0], "int");
   const int padW =
-      padding.size() == 1 ? padH : safe_downcast<int, int64_t>(padding[1]);
+      padding.size() == 1 ? padH : c10::checked_convert<int>(padding[1], "int");
   return std::make_pair(padW, padH);
 }
 
@@ -186,12 +179,10 @@ Tensor q_avg_pool2d(
     IntArrayRef padding,
     bool ceil_mode,
     bool count_include_pad,
-    c10::optional<int64_t> divisor_override) {
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  int kW, kH, dW, dH, padW, padH;
-  std::tie(kW, kH) = get_kernel(kernel_size);
-  std::tie(dW, dH) = get_stride(stride, kW, kH);
-  std::tie(padW, padH) = get_padding(padding);
+    std::optional<int64_t> divisor_override) {
+  auto [kW, kH] = get_kernel(kernel_size);
+  auto [dW, dH] = get_stride(stride, kW, kH);
+  auto [padW, padH] = get_padding(padding);
 
   const int64_t nbatch = input.ndimension() == 4 ? input.size(-4) : 1;
   const int64_t nInputPlane = input.size(-3);
@@ -212,7 +203,7 @@ Tensor q_avg_pool2d(
         input.options().memory_format(input.suggest_memory_format()),
         input.q_scale(),
         input.q_zero_point(),
-        c10::nullopt);
+        std::nullopt);
     // fast path for channel last: qavg_pool_2d_nhwc_stub
     qavg_pool2d_nhwc_stub(
         input.device().type(),
@@ -267,13 +258,10 @@ Tensor qnnpack_avg_pool2d(
     IntArrayRef padding,
     bool ceil_mode,
     bool count_include_pad,
-    c10::optional<int64_t> divisor_override) {
-  Tensor output;
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  int kW, kH, dW, dH, padW, padH;
-  std::tie(kW, kH) = get_kernel(kernel_size);
-  std::tie(dW, dH) = get_stride(stride, kW, kH);
-  std::tie(padW, padH) = get_padding(padding);
+    std::optional<int64_t> divisor_override) {
+  auto [kW, kH] = get_kernel(kernel_size);
+  auto [dW, dH] = get_stride(stride, kW, kH);
+  auto [padW, padH] = get_padding(padding);
   TORCH_CHECK(
       input.ndimension() == 4,
       "qnnpack_avg_pool2d(): Expected input to be 4-dimensional: got ",
@@ -304,7 +292,7 @@ Tensor qnnpack_avg_pool2d(
       oH > 0 && oW > 0,
       "qnnpack_avg_pool2d(): the resulting output Tensor size should be >= 0");
   // NHWC output
-  output = at::_empty_affine_quantized(
+  auto output = at::_empty_affine_quantized(
       output_shape,
       at::device(kCPU).dtype(kQUInt8),
       scale,
@@ -341,7 +329,7 @@ Tensor qnnpack_avg_pool2d(
           batch_size,
           inH,
           inW,
-          (uint8_t*)input_contig.data_ptr<c10::quint8>() /* input data */,
+          reinterpret_cast<const uint8_t*>(input_contig.const_data_ptr<c10::quint8>()) /* input data */,
           inC,
           (uint8_t*)output.data_ptr<c10::quint8>() /* output data */,
           outC,
@@ -367,7 +355,7 @@ Tensor avg_pool2d_quantized_cpu(
     IntArrayRef padding,
     bool ceil_mode,
     bool count_include_pad,
-    c10::optional<int64_t> divisor_override) {
+    std::optional<int64_t> divisor_override) {
   Tensor output;
 #ifdef USE_PYTORCH_QNNPACK
   if (at::globalContext().qEngine() == at::QEngine::QNNPACK &&
@@ -395,5 +383,4 @@ Tensor avg_pool2d_quantized_cpu(
   return output;
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

@@ -4,8 +4,7 @@
 #include <typeinfo>
 #include <unordered_set>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 // instruction look like:
 // op_code X, N
 // meaning of X, N depend on the op:
@@ -84,18 +83,16 @@ enum OpCode : uint8_t {
 
 struct Instruction {
   OpCode op;
-  uint8_t unused;
+  uint8_t unused{0};
   uint16_t N;
   int32_t X;
   // TODO: check for overflow
-  Instruction(OpCode op, int32_t X, uint16_t N)
-      : op(op), unused(0), N(N), X(X) {}
+  Instruction(OpCode op, int32_t X, uint16_t N) : op(op), N(N), X(X) {}
 };
 std::ostream& operator<<(std::ostream& out, Instruction inst);
 
 bool isOpSupportedInMobile(OpCode op);
 char const* toString(OpCode op);
-std::ostream& operator<<(std::ostream& out, Instruction inst);
+OpCode parseOpCode(const char* str);
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

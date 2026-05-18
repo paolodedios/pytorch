@@ -2,19 +2,22 @@
 
 import bisect
 import sys
+from collections.abc import Callable
 from copy import deepcopy
 from enum import auto, Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type
+from typing import Any
 
 import torch
 import torch.nn as nn
 from torch import distributed as dist
+from torch.distributed._shard.sharded_tensor import ShardedTensor
+from torch.distributed._state_dict_utils import _gather_state_dict
 from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
     _CHECKPOINT_WRAPPED_MODULE,
     apply_activation_checkpointing,
 )
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from torch.distributed.fsdp._shard_utils import _gather_state_dict
+from torch.distributed.fsdp.api import ShardingStrategy
 from torch.distributed.fsdp.fully_sharded_data_parallel import (
     FullOptimStateDictConfig,
     FullStateDictConfig,
@@ -27,7 +30,7 @@ from torch.distributed.fsdp.fully_sharded_data_parallel import (
 from torch.distributed.optim import _NamedOptimizer
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
 from torch.testing._internal.common_fsdp import (
-    CUDAInitMode,
+    DEVICEInitMode,
     FSDPInitMode,
     FSDPTest,
     TransformerWithSharedParams,
@@ -38,6 +41,7 @@ from torch.testing._internal.common_utils import (
     run_tests,
     TEST_WITH_DEV_DBG_ASAN,
 )
+
 
 STATE_DICT_TYPES = [StateDictType.FULL_STATE_DICT, StateDictType.SHARDED_STATE_DICT]
 
@@ -74,7 +78,8 @@ class Bias(torch.nn.Module):
 
     def __init__(self, dim: int) -> None:
         super().__init__()
-        assert dim > 0
+        if not (dim > 0):
+            raise AssertionError(f"Expected dim > 0, but got {dim}")
         torch.manual_seed(0)
         self.bias = torch.nn.Parameter(torch.randn((dim,)))
 
@@ -95,7 +100,10 @@ class BlockA(torch.nn.Module):
 
     def __init__(self, in_dim: int, out_dim: int) -> None:
         super().__init__()
-        assert all(v > 0 for v in (in_dim, out_dim))
+        if not all(v > 0 for v in (in_dim, out_dim)):
+            raise AssertionError(
+                f"Expected in_dim > 0 and out_dim > 0, but got in_dim={in_dim}, out_dim={out_dim}"
+            )
         torch.manual_seed(0)
         self.bias_module0 = Bias(out_dim)
         self.weight = torch.nn.Parameter(torch.randn((in_dim, out_dim)))
@@ -123,7 +131,10 @@ class BlockB(torch.nn.Module):
 
     def __init__(self, in_dim: int, out_dim: int) -> None:
         super().__init__()
-        assert all(v > 0 for v in (in_dim, out_dim))
+        if not all(v > 0 for v in (in_dim, out_dim)):
+            raise AssertionError(
+                f"Expected in_dim > 0 and out_dim > 0, but got in_dim={in_dim}, out_dim={out_dim}"
+            )
         torch.manual_seed(0)
         self.weight = torch.nn.Parameter(torch.randn((in_dim, out_dim)))
         self.bias_module0 = Bias(out_dim)
@@ -141,8 +152,8 @@ class BlockB(torch.nn.Module):
 class NestedModel(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.block0 = BlockB(5, 7)
-        self.block1 = BlockB(7, 7)
+        self.block0 = BlockB(5, 3)
+        self.block1 = BlockB(3, 7)
         self.bias = torch.nn.Parameter(torch.randn((5,)))
         self.block2 = torch.nn.Sequential(
             BlockA(7, 9),
@@ -171,9 +182,9 @@ class NestedModel(torch.nn.Module):
     @staticmethod
     def wrap(
         model: torch.nn.Module,
-        group: Optional[dist.ProcessGroup] = None,
+        group: dist.ProcessGroup | None = None,
         ignore_modules: bool = False,
-        fsdp_kwargs: Optional[Dict[str, Any]] = None,
+        fsdp_kwargs: dict[str, Any] | None = None,
     ) -> torch.nn.Module:
         if fsdp_kwargs is None:
             fsdp_kwargs = {}
@@ -209,8 +220,8 @@ class NestedModel(torch.nn.Module):
     @staticmethod
     def wrap_alt(
         model: torch.nn.Module,
-        group: Optional[dist.ProcessGroup] = None,
-        fsdp_kwargs: Optional[Dict[str, Any]] = None,
+        group: dist.ProcessGroup | None = None,
+        fsdp_kwargs: dict[str, Any] | None = None,
     ) -> torch.nn.Module:
         if fsdp_kwargs is None:
             fsdp_kwargs = {}
@@ -227,7 +238,7 @@ class NestedModel(torch.nn.Module):
         model,
         add_to_fsdp_module: bool,
         group=None,
-    ) -> Tuple[torch.nn.Module, List[torch.nn.Parameter]]:
+    ) -> tuple[torch.nn.Module, list[torch.nn.Parameter]]:
         """Registers unmanaged parameters before wrapping with :meth:`wrap`."""
         device = next(model.parameters()).device
         unmanaged_param = torch.nn.Parameter(torch.randn(5, 5, device=device))
@@ -255,12 +266,16 @@ class NestedModel(torch.nn.Module):
         for i in range(1, len(param_ids)):
             diff = param_ids[i] - param_ids[i - 1]
             if diff != 1:
-                assert diff > 1, f"Invalid IDs: {param_ids[i - 1]} {param_ids[i]}"
+                if not (diff > 1):
+                    raise AssertionError(
+                        f"Invalid IDs: {param_ids[i - 1]} {param_ids[i]}"
+                    )
                 unmanaged_param_id = param_ids[i - 1] + 1
                 break
         if unmanaged_param_id == -1:
             unmanaged_param_id = len(param_ids)  # last ID skipped
-        assert unmanaged_param_id >= 0, "One parameter ID should be skipped"
+        if not (unmanaged_param_id >= 0):
+            raise AssertionError("One parameter ID should be skipped")
         # Add a state entry for the unmanaged parameter
         state_device = next(iter(next(iter(osd["state"].values())).values())).device
         osd["state"][unmanaged_param_id] = {
@@ -273,12 +288,12 @@ class NestedModel(torch.nn.Module):
 
     # NOTE: We exclude `self.bias` from either parameter group to test the
     # case where the optimizer input does not include all model parameters
-    def param_group0(self) -> List[torch.nn.Parameter]:
+    def param_group0(self) -> list[torch.nn.Parameter]:
         # Use `block1`'s parameters for the first parameter group to deviate
         # from the `model.parameters()` order
         return list(self.block1.parameters())
 
-    def param_group1(self) -> List[torch.nn.Parameter]:
+    def param_group1(self) -> list[torch.nn.Parameter]:
         # Deviate from the `model.parameters()` order further by rearranging
         # `block2`'s parameters to be before `block0`'s parameters
         return list(self.block2.parameters()) + list(self.block0.parameters())
@@ -287,10 +302,12 @@ class NestedModel(torch.nn.Module):
 # Simple and boring model to test interface and some corner cases that do not
 # require complicated wrapping strategy.
 class TestDummyModel(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, no_grad: bool = False):
         super().__init__()
         torch.manual_seed(0)
         self.net1 = nn.Sequential(nn.Linear(8, 16), nn.ReLU())
+        self.net1[0].weight.requires_grad = not no_grad
+        self.net1[0].bias.requires_grad = not no_grad
         self.net2 = nn.Sequential(nn.Linear(16, 32), nn.ReLU())
         self.net3 = nn.Linear(32, 64)
         self.net4 = nn.Sequential(nn.ReLU(), nn.Linear(64, 8))
@@ -316,10 +333,10 @@ class TestFSDPOptimState(FSDPTest):
         wrap_alt: bool = False,  # ignored if `wrap=False`
         device: torch.device = torch.device("cuda"),
         group=None,
-        optim_class: Type[torch.optim.Optimizer] = torch.optim.Adam,
+        optim_class: type[torch.optim.Optimizer] = torch.optim.Adam,
         use_multiple_param_groups: bool = False,
         use_diff_optim_inputs: bool = False,
-        fsdp_kwargs: Optional[Dict[str, Any]] = None,
+        fsdp_kwargs: dict[str, Any] | None = None,
     ):
         model = NestedModel().to(device)
         if wrap:
@@ -350,7 +367,7 @@ class TestFSDPOptimState(FSDPTest):
         wrap: bool,
         device: torch.device = torch.device("cuda"),
         group=None,
-        optim_class: Type[torch.optim.Optimizer] = torch.optim.Adam,
+        optim_class: type[torch.optim.Optimizer] = torch.optim.Adam,
         use_multiple_param_groups: bool = False,
         use_diff_optim_inputs: bool = False,
     ):
@@ -359,13 +376,13 @@ class TestFSDPOptimState(FSDPTest):
             # these settings are not implemented since the transformer is
             # wrapped with FSDP at the top-level, which means that there is
             # only a single flat parameter, making these booleans vacuous
-            raise NotImplementedError()
+            raise NotImplementedError
         if group is None:
             group = dist.distributed_c10d._get_default_group()
         model = TransformerWithSharedParams.init(
             group,
             FSDPInitMode.RECURSIVE if wrap else FSDPInitMode.NO_FSDP,
-            CUDAInitMode.CUDA_BEFORE,
+            DEVICEInitMode.DEVICE_BEFORE,
             deterministic=True,
         )
         optim = optim_class(model.parameters(), lr=0.01)
@@ -377,12 +394,12 @@ class TestFSDPOptimState(FSDPTest):
         optim: torch.optim.Optimizer,
         device: torch.device = torch.device("cuda"),
         num_iters: int = 1,
-    ) -> List[float]:
+    ) -> list[float]:
         """Performs a forward pass, backward pass, and optimizer step
         ``num_iters``-many times, and returns the per-iteration losses."""
         torch.manual_seed(0)  # set seed for determinism
         losses = []
-        module = model.module if hasattr(model, "module") else model
+        module = getattr(model, "module", model)
         for _ in range(num_iters):
             optim.zero_grad()
             inp = module.get_input(device)
@@ -393,7 +410,7 @@ class TestFSDPOptimState(FSDPTest):
             optim.step()
         return losses
 
-    def _broadcast_full_osd(self, full_osd: Dict[str, Any], group=None):
+    def _broadcast_full_osd(self, full_osd: dict[str, Any], group=None):
         """Broadcasts the full optimizer state dict in place of using
         ``torch.save()`` and ``torch.load()`` so that all ranks can have it."""
         obj_list = [full_osd]
@@ -407,18 +424,19 @@ class TestFSDPOptimState(FSDPTest):
 
     def _are_equal_states(
         self,
-        state1: Dict[str, Any],
-        state2: Dict[str, Any],
+        state1: dict[str, Any],
+        state2: dict[str, Any],
     ) -> bool:
         """Checks if ``state1`` and ``state2`` contain the same mappings."""
         if set(state1.keys()) != set(state2.keys()):
             return False
         for state_name, value1 in state1.items():
             value2 = state2[state_name]
-            if type(value1) != type(value2):
+            if type(value1) is not type(value2):
                 return False
             if torch.is_tensor(value1):  # tensor state
-                assert torch.is_tensor(value2)
+                if not torch.is_tensor(value2):
+                    raise AssertionError("Expected value2 to be a tensor")
                 # Check the values on CPU to be device-agnostic
                 value1 = value1.cpu()
                 value2 = value2.cpu()
@@ -441,7 +459,8 @@ class TestFSDPOptimState(FSDPTest):
         If ``check_same_param_keys=True``, then checks that the parameter keys
         match (e.g. when both should be parameter names), and does not check
         the parameter keys otherwise."""
-        assert "state" in ref_osd
+        if "state" not in ref_osd:
+            raise AssertionError("Expected 'state' in ref_osd")
         self.assertTrue("state" in fsdp_osd)
         ref_osd_state = ref_osd["state"]
         fsdp_osd_state = {
@@ -490,7 +509,8 @@ class TestFSDPOptimState(FSDPTest):
         "param_groups" part. If ``check_same_param_keys=True`, then checks that
         the parameter keys match (e.g. when both should be parameter names),
         and does not check the parameter keys otherwise."""
-        assert "param_groups" in ref_osd
+        if "param_groups" not in ref_osd:
+            raise AssertionError("Expected 'param_groups' in ref_osd")
         self.assertTrue("param_groups" in full_osd)
         ref_osd_param_groups = ref_osd["param_groups"]
         full_osd_param_groups = full_osd["param_groups"]
@@ -507,17 +527,6 @@ class TestFSDPOptimState(FSDPTest):
                 if name == "params" and not check_same_param_keys:
                     continue
                 self.assertEqual(full_osd_value, ref_osd_pg[name])
-
-    def _check_state_device(self, osd: Dict[str, Any], on_gpu: bool):
-        """Checks that all tensors in ``osd["state"]`` are on GPU if
-        ``on_gpu=True`` and on CPU if ``on_gpu=False``."""
-        for param_state in osd["state"].values():
-            for value in param_state.values():
-                if torch.is_tensor(value) and value.dim() > 0:
-                    if on_gpu:
-                        self.assertTrue(value.is_cuda)
-                    else:
-                        self.assertFalse(value.is_cuda)
 
     @skip_if_lt_x_gpu(2)
     @parametrize("state_dict_type", STATE_DICT_TYPES)
@@ -597,7 +606,8 @@ class TestFSDPOptimState(FSDPTest):
         ref_osd = optim2.state_dict()
         # Check the losses to eliminate model drift as a source of error
         for i, (l1, l2) in enumerate(zip(losses1, losses2)):
-            assert l1 == l2, f"Losses differ on iter {i}: {l1:.5f} {l2:.5f}"
+            if l1 != l2:
+                raise AssertionError(f"Losses differ on iter {i}: {l1:.5f} {l2:.5f}")
         # Do not check the parameter keys since the full/sharded optimizer state
         # dict uses parameter names, while the non-wrapped equivalent uses
         # parameter IDs
@@ -921,47 +931,57 @@ class TestFSDPOptimState(FSDPTest):
     @skip_if_lt_x_gpu(2)
     def test_use_orig_params(self) -> None:
         """Tests :meth:`optim_state_dict` for an FSDP-root nested model."""
-        self._test_load_optim_state_with_optim_state_dict(
-            _ModelClass.NESTED,
+        self.run_subtests(
+            {
+                "halve_world_size": [True, False],
+                "wrap_alt": [True, False],
+            },
+            self._test_load_optim_state_with_optim_state_dict,
+            model_class=_ModelClass.NESTED,
             state_dict_settings=StateDictSettings(
                 StateDictType.FULL_STATE_DICT,
                 FullStateDictConfig(),
                 FullOptimStateDictConfig(),
             ),
             use_multiple_param_groups=False,
-            halve_world_size=False,
             use_diff_optim_inputs=False,
-            wrap_alt=True,
             num_iters=3,
             fsdp_kwargs={"use_orig_params": True},
         )
 
-        self._test_load_optim_state_with_optim_state_dict(
-            _ModelClass.NESTED,
+        self.run_subtests(
+            {
+                "halve_world_size": [True, False],
+                "wrap_alt": [True, False],
+            },
+            self._test_load_optim_state_with_optim_state_dict,
+            model_class=_ModelClass.NESTED,
             state_dict_settings=StateDictSettings(
                 StateDictType.FULL_STATE_DICT,
                 FullStateDictConfig(),
                 FullOptimStateDictConfig(rank0_only=True),
             ),
             use_multiple_param_groups=False,
-            halve_world_size=False,
             use_diff_optim_inputs=False,
-            wrap_alt=True,
             num_iters=3,
             fsdp_kwargs={"use_orig_params": True},
         )
 
-        self._test_load_optim_state_with_optim_state_dict(
-            _ModelClass.NESTED,
+        self.run_subtests(
+            {
+                "wrap_alt": [True, False],
+            },
+            self._test_load_optim_state_with_optim_state_dict,
+            model_class=_ModelClass.NESTED,
             state_dict_settings=StateDictSettings(
                 StateDictType.SHARDED_STATE_DICT,
                 ShardedStateDictConfig(),
                 ShardedOptimStateDictConfig(),
             ),
             use_multiple_param_groups=False,
+            # We cannot test halve_world_size with SHARDED_STATE_DICT.
             halve_world_size=False,
             use_diff_optim_inputs=False,
-            wrap_alt=True,
             num_iters=3,
             fsdp_kwargs={"use_orig_params": True},
         )
@@ -1083,8 +1103,6 @@ class TestFSDPOptimState(FSDPTest):
                     group=new_group,
                 )
             )
-            self._check_state_device(sharded_osd1, on_gpu=True)
-            self._check_state_device(sharded_osd2, on_gpu=True)
         elif osd_comm_method == _OSDCommMethod.FLATTEN_SHARDED_OSD:
             sharded_osd1 = FSDP.flatten_sharded_optim_state_dict(
                 fsdp_osd1,
@@ -1435,7 +1453,7 @@ class TestFSDPOptimState(FSDPTest):
         def get_warning_context():
             warning_regex = "`optim_input` argument is deprecated"
             return self.assertWarnsRegex(
-                expected_warning=UserWarning, expected_regex=warning_regex
+                expected_warning=FutureWarning, expected_regex=warning_regex
             )
 
         self._run_on_all_optim_state_apis(
@@ -1446,7 +1464,7 @@ class TestFSDPOptimState(FSDPTest):
         self,
         should_check_method_fn: Callable[[str], bool],
         context_fn: Callable,
-        fsdp_kwargs: Optional[Dict[str, Any]],
+        fsdp_kwargs: dict[str, Any] | None,
     ):
         """
         Runs through all optimizer state checkpointing APIs with a context
@@ -1508,7 +1526,7 @@ class TestFSDPOptimState(FSDPTest):
         ) = self._init_nested_model(wrap=False, use_multiple_param_groups=False)
         if should_check_method_fn("rekey_optim_state_dict"):
             with context_fn():
-                rekeyed_osd = FSDP.rekey_optim_state_dict(
+                FSDP.rekey_optim_state_dict(
                     fsdp_osd,  # from `full_optim_state_dict()`
                     OptimStateKeyType.PARAM_ID,
                     nonwrapped_model,
@@ -1585,7 +1603,7 @@ class TestFSDPOptimState(FSDPTest):
     @skip_if_lt_x_gpu(2)
     def test_compatible_with_trec(self):
         class DenseModel(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 self.net1 = nn.Sequential(nn.Linear(8, 16), nn.ReLU())
                 self.net2 = nn.Sequential(nn.Linear(16, 32), nn.ReLU())
@@ -1596,7 +1614,7 @@ class TestFSDPOptimState(FSDPTest):
                 return self.net4(self.net3(self.net2(self.net1(x))))
 
         class FakeMPModel(torch.nn.Module):
-            def __init__(self):
+            def __init__(self) -> None:
                 super().__init__()
                 torch.manual_seed(0)
                 self.dense = FSDP(DenseModel().cuda(), use_orig_params=True)
@@ -1648,7 +1666,7 @@ class TestFSDPOptimState(FSDPTest):
         )
 
         # Make optim1 has a different state.
-        for i in range(5):
+        for _ in range(5):
             batch = torch.rand(5, 8).cuda()
             loss = models[1](batch).sum()
             loss.backward()
@@ -1667,6 +1685,68 @@ class TestFSDPOptimState(FSDPTest):
         self._check_same_state(
             state_dicts[0], state_dicts[1], check_same_param_keys=True
         )
+
+    @skip_if_lt_x_gpu(2)
+    def test_optim_state_without_param_groups(self):
+        class SimpleModel(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                torch.manual_seed(0)
+                self.net1 = nn.Sequential(nn.Linear(2, 4), nn.ReLU())
+
+            def forward(self, x):
+                return self.net1(x)
+
+        model = FSDP(SimpleModel().cuda())
+        optim = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+        # Train one step to save original optimizer state dict and original optimizer param groups.
+        batch = torch.rand(3, 2, device=torch.device("cuda"))
+        for param in model.parameters():
+            if param.requires_grad:
+                t = torch.zeros_like(param)
+                param.grad = torch.autograd.Variable(t)
+        optim.step()
+        loss = model(batch).sum()
+        loss.backward()
+
+        original_osd = deepcopy(optim.state_dict())
+        original_osd_no_param_groups = deepcopy(original_osd)
+        # manually remove param_groups from optimizer state dict
+        original_param_groups = deepcopy(
+            original_osd_no_param_groups.pop("param_groups")
+        )
+        # passing the osd without param_groups to FSDP
+        original_fsdp_optim_state_dict = deepcopy(
+            FSDP.optim_state_dict(
+                model, optim, optim_state_dict=original_osd_no_param_groups
+            )
+        )
+        # check the state_dict sharded by FSDP does not contain param_groups.
+        self.assertEqual(None, original_fsdp_optim_state_dict.get("param_groups"))
+
+        # train another step to make optim a different state.
+        for param in model.parameters():
+            if param.requires_grad:
+                t = torch.zeros_like(param)
+                param.grad = torch.autograd.Variable(t)
+        optim.step()
+        loss = model(batch).sum()
+        loss.backward()
+
+        state_dict_to_load = FSDP.optim_state_dict_to_load(
+            model, optim, original_fsdp_optim_state_dict
+        )
+        # manually add param_groups to state_dict_to_load before loading the optimizer state
+        state_dict_to_load["param_groups"] = original_param_groups
+        optim.load_state_dict(state_dict_to_load)
+        self.assertEqual(original_osd, optim.state_dict())
+
+        fsdp_optim_state = FSDP.optim_state_dict(model, optim)
+        self._check_same_state(
+            original_fsdp_optim_state_dict, fsdp_optim_state, check_same_param_keys=True
+        )
+        self.assertEqual(original_param_groups, optim.state_dict()["param_groups"])
 
     @skip_if_lt_x_gpu(2)
     def test_with_empty_optimizer_state(self):
@@ -1701,7 +1781,7 @@ class TestFSDPOptimState(FSDPTest):
         initializer = self._model_class[model_class]
 
         # First, run a wrapped model with full world size for a few iterations
-        model1, optim1, optim_input1 = initializer(
+        model1, optim1, _ = initializer(
             wrap=True,
             use_multiple_param_groups=use_multiple_param_groups,
         )
@@ -1724,7 +1804,7 @@ class TestFSDPOptimState(FSDPTest):
             new_group = dist.distributed_c10d._get_default_group()
         # Second, run a wrapped model with (possibly) halved world size and
         # (possibly) differing `optim_input` across ranks
-        model2, optim2, optim_input2 = initializer(
+        model2, optim2, _ = initializer(
             wrap=True,
             group=new_group,
             use_multiple_param_groups=use_multiple_param_groups,
@@ -1742,9 +1822,6 @@ class TestFSDPOptimState(FSDPTest):
         # Compute two sharded optim state dicts: (1) for the first model
         # according to the second model and (2) for the second model according
         # to the second model
-        sharded_osd1 = FSDP.optim_state_dict_to_load(
-            model2, optim2, fsdp_osd1, group=new_group
-        )
         sharded_osd2 = FSDP.optim_state_dict_to_load(
             model2, optim2, fsdp_osd2, group=new_group
         )
@@ -1766,6 +1843,9 @@ class TestFSDPOptimState(FSDPTest):
         # Check that sharding the first model's full/sharded optimizer state dict
         # according to the second model is equivalent to the second model's
         # local optimizer state dict
+        sharded_osd1 = FSDP.optim_state_dict_to_load(
+            model2, optim2, fsdp_osd1, group=new_group
+        )
         self._check_same_param_groups(
             sharded_osd1,
             local_osd2,
@@ -1797,15 +1877,151 @@ class TestFSDPOptimState(FSDPTest):
             FSDP.optim_state_dict(model, optim), osd, check_same_param_keys=True
         )
         step()
-        osd_to_load = FSDP.optim_state_dict_to_load(
-            model, optim, osd, load_directly=True
-        )
+
+        FSDP.optim_state_dict_to_load(model, optim, osd, load_directly=True)
         self._check_same_state(
             optim.state_dict(), original_osd, check_same_param_keys=True
         )
 
-        # TODO: add local/sharded/full state_dict and CPU offloading and rank0
-        # interface test here, https://github.com/pytorch/pytorch/issues/97163
+        # Test the default setting.
+        osd = FSDP.optim_state_dict(model, optim, optim_state_dict=original_osd)
+        for state in osd["state"].values():
+            for s in state.values():
+                self.assertFalse(isinstance(s, ShardedTensor))
+                self.assertFalse(s.is_cuda)
+
+        # Test sharded state_dict without offload_to_cpu
+        with FSDP.state_dict_type(
+            model,
+            StateDictType.SHARDED_STATE_DICT,
+            ShardedStateDictConfig(),
+            ShardedOptimStateDictConfig(offload_to_cpu=False),
+        ):
+            osd = FSDP.optim_state_dict(model, optim, optim_state_dict=original_osd)
+            for state in osd["state"].values():
+                for s in state.values():
+                    if s.dim() == 0:
+                        continue
+                    self.assertTrue(isinstance(s, ShardedTensor))
+                    if s._local_shards[0]:
+                        self.assertTrue(s._local_shards[0].tensor.is_cuda)
+
+        # Test full state_dict with rank0_only
+        with FSDP.state_dict_type(
+            model,
+            StateDictType.FULL_STATE_DICT,
+            FullStateDictConfig(),
+            FullOptimStateDictConfig(
+                offload_to_cpu=True,
+                rank0_only=True,
+            ),
+        ):
+            osd = FSDP.optim_state_dict(model, optim, optim_state_dict=original_osd)
+            if dist.get_rank() > 0:
+                self.assertEqual(osd, {})
+            else:
+                for state in osd["state"].values():
+                    for s in state.values():
+                        if s.dim() == 0:
+                            continue
+                        self.assertFalse(s.is_cuda)
+                        self.assertFalse(isinstance(s, ShardedTensor))
+
+    @skip_if_lt_x_gpu(2)
+    def test_state_dict_with_none_tensor_state(self):
+        def _run_test(use_orig_params, optimizer_has_tensor_state):
+            model = FSDP(TestDummyModel().cuda(), use_orig_params=use_orig_params)
+            optimizer_cls = (
+                torch.optim.Adam if optimizer_has_tensor_state else torch.optim.SGD
+            )
+            optim = optimizer_cls(model.parameters(), lr=1e-2)
+
+            def step():
+                loss = model(model.get_input())
+                loss.backward(loss)
+                optim.step()
+
+            step()
+            original_osd = deepcopy(optim.state_dict())
+            for state in original_osd["state"].values():
+                # Add customized value
+                state["value1"] = 2.74
+                state["value2"] = None
+
+            osd = FSDP.optim_state_dict(model, optim, optim_state_dict=original_osd)
+            osd_to_load = FSDP.optim_state_dict_to_load(model, optim, osd)
+            for state in osd_to_load["state"].values():
+                self.assertEqual(state["value1"], 2.74)
+                self.assertEqual(state["value2"], None)
+
+        self.run_subtests(
+            {
+                "use_orig_params": [False, True],
+                "optimizer_has_tensor_state": [False, True],
+            },
+            _run_test,
+        )
+
+    @skip_if_lt_x_gpu(2)
+    def test_with_no_shard(self):
+        def _run_test(use_orig_params: bool) -> None:
+            model = FSDP(
+                TestDummyModel().cuda(),
+                sharding_strategy=ShardingStrategy.NO_SHARD,
+                use_orig_params=use_orig_params,
+            )
+            optim = torch.optim.Adam(model.parameters(), lr=1e-2)
+
+            def step():
+                loss = model(model.get_input())
+                loss.backward(loss)
+                optim.step()
+
+            step()
+
+            original_osd = deepcopy(optim.state_dict())
+
+            osd = FSDP.optim_state_dict(model, optim)
+            osd_to_load = FSDP.optim_state_dict_to_load(model, optim, osd)
+            optim.load_state_dict(osd_to_load)
+
+            new_osd = optim.state_dict()
+
+            self.assertEqual(original_osd, new_osd)
+
+        self.run_subtests({"use_orig_params": [False, True]}, _run_test)
+
+    @skip_if_lt_x_gpu(2)
+    def test_no_grad(self):
+        model = TestDummyModel(no_grad=True).cuda()
+        fsdp_model = FSDP(deepcopy(model), use_orig_params=True)
+        fsdp_optim = torch.optim.Adam(fsdp_model.parameters(), lr=1e-2)
+
+        for i in range(5):
+            if i % 2 == 1:
+                fsdp_model.net1[0].weight.requires_grad = True
+                fsdp_model.net1[0].bias.requires_grad = True
+            else:
+                fsdp_model.net1[0].weight.requires_grad = False
+                fsdp_model.net1[0].bias.requires_grad = False
+            batch = fsdp_model.get_input()
+            loss = fsdp_model(batch).sum()
+            loss.backward()
+            fsdp_optim.step()
+            orig_state_dict = deepcopy(fsdp_optim.state_dict())
+            FSDP.optim_state_dict(fsdp_model, fsdp_optim)
+            FSDP.optim_state_dict_to_load(
+                fsdp_model,
+                fsdp_optim,
+                FSDP.optim_state_dict(fsdp_model, fsdp_optim),
+                load_directly=True,
+            )
+
+            self._check_same_state(
+                fsdp_optim.state_dict(),
+                orig_state_dict,
+                check_same_param_keys=True,
+            )
 
 
 instantiate_parametrized_tests(TestFSDPOptimState)

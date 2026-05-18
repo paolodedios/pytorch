@@ -1,11 +1,9 @@
-#include <c10/core/TensorImpl.h>
 #include <ATen/ThreadLocalPythonObjects.h>
 #include <c10/util/Exception.h>
 
 #include <utility>
 
-namespace at {
-namespace impl {
+namespace at::impl {
 
 static thread_local ThreadLocalPythonObjects py_objects;
 
@@ -32,5 +30,4 @@ const ThreadLocalPythonObjects& ThreadLocalPythonObjects::get_state() {
 }
 
 
-}
-}
+} // namespace at::impl

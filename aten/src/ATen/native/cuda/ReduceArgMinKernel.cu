@@ -15,6 +15,8 @@
 #include <ATen/NumericUtils.h>
 #include <ATen/cuda/NumericLimits.cuh>
 
+#include <thrust/pair.h>
+
 namespace at::native {
 
 template <typename scalar_t, typename acc_t = scalar_t>
@@ -41,6 +43,6 @@ void argmin_kernel_cuda(TensorIterator& iter) {
   }
 }
 
-REGISTER_DISPATCH(argmin_stub, &argmin_kernel_cuda);
+REGISTER_DISPATCH(argmin_stub, &argmin_kernel_cuda)
 
 } // namespace at::native

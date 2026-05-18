@@ -1,12 +1,10 @@
 #include <c10/core/Device.h>
-#include <c10/macros/Macros.h>
 #include <c10/util/Exception.h>
 
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <exception>
-#include <ostream>
 #include <string>
 #include <vector>
 
@@ -28,7 +26,7 @@ DeviceType parse_type(const std::string& device_string) {
           {"hip", DeviceType::HIP},
           {"ve", DeviceType::VE},
           {"fpga", DeviceType::FPGA},
-          {"ort", DeviceType::ORT},
+          {"maia", DeviceType::MAIA},
           {"xla", DeviceType::XLA},
           {"lazy", DeviceType::Lazy},
           {"vulkan", DeviceType::Vulkan},
@@ -38,6 +36,14 @@ DeviceType parse_type(const std::string& device_string) {
           {"mtia", DeviceType::MTIA},
           {"privateuseone", DeviceType::PrivateUse1},
       }};
+  if (device_string == "mkldnn") {
+    TORCH_WARN_ONCE(
+        "'mkldnn' is no longer used as device type. So torch.device('mkldnn') will be "
+        "deprecated and removed in the future. Please use other valid device types instead.");
+  }
+  if (device_string == get_privateuse1_backend()) {
+    return DeviceType::PrivateUse1;
+  }
   auto device = std::find_if(
       types.begin(),
       types.end(),
@@ -46,9 +52,6 @@ DeviceType parse_type(const std::string& device_string) {
       });
   if (device != types.end()) {
     return device->second;
-  }
-  if (device_string == get_privateuse1_backend()) {
-    return DeviceType::PrivateUse1;
   }
   std::vector<const char*> device_names;
   for (const auto& it : types) {
@@ -80,10 +83,11 @@ Device::Device(const std::string& device_string) : Device(Type::CPU) {
        pstate != DeviceStringParsingState::ERROR && i < device_string.size();
        ++i) {
     const char ch = device_string.at(i);
+    const unsigned char uch = static_cast<unsigned char>(ch);
     switch (pstate) {
       case DeviceStringParsingState::START:
         if (ch != ':') {
-          if (isalpha(ch) || ch == '_') {
+          if (std::isalpha(uch) || ch == '_') {
             device_name.push_back(ch);
           } else {
             pstate = DeviceStringParsingState::ERROR;
@@ -94,7 +98,7 @@ Device::Device(const std::string& device_string) : Device(Type::CPU) {
         break;
 
       case DeviceStringParsingState::INDEX_START:
-        if (isdigit(ch)) {
+        if (std::isdigit(uch)) {
           device_index_str.push_back(ch);
           pstate = DeviceStringParsingState::INDEX_REST;
         } else {
@@ -107,7 +111,7 @@ Device::Device(const std::string& device_string) : Device(Type::CPU) {
           pstate = DeviceStringParsingState::ERROR;
           break;
         }
-        if (isdigit(ch)) {
+        if (std::isdigit(uch)) {
           device_index_str.push_back(ch);
         } else {
           pstate = DeviceStringParsingState::ERROR;
@@ -129,7 +133,7 @@ Device::Device(const std::string& device_string) : Device(Type::CPU) {
 
   try {
     if (!device_index_str.empty()) {
-      index_ = static_cast<c10::DeviceIndex>(c10::stoi(device_index_str));
+      index_ = static_cast<c10::DeviceIndex>(std::stoi(device_index_str));
     }
   } catch (const std::exception&) {
     TORCH_CHECK(
@@ -148,7 +152,7 @@ std::string Device::str() const {
   std::string str = DeviceTypeName(type(), /* lower case */ true);
   if (has_index()) {
     str.push_back(':');
-    str.append(to_string(index()));
+    str.append(std::to_string(index()));
   }
   return str;
 }

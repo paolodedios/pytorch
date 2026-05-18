@@ -2,6 +2,7 @@
 
 #include <ATen/Tensor.h>
 #include <c10/core/TensorImpl.h>
+#include <c10/core/impl/TorchDispatchModeTLS.h>
 #include <c10/util/Exception.h>
 #include <c10/util/irange.h>
 
@@ -45,7 +46,9 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
 
  public:
   // Public for now...
-  explicit SparseTensorImpl(at::DispatchKeySet, const caffe2::TypeMeta);
+  explicit SparseTensorImpl(
+      at::DispatchKeySet /*key_set*/,
+      const caffe2::TypeMeta /*data_type*/);
 
   void release_resources() override;
 
@@ -132,14 +135,14 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
         "resize_ called on tensor with symbolic shape")
     TORCH_CHECK(
         sparse_dim + dense_dim == static_cast<int64_t>(size.size()),
-        "number of dimensions must be sparse_dim (",
+        "'len(size) == sparse_dim + dense_dim' is not satisfied: len(size) = ",
+        size.size(),
+        ", sparse_dim = ",
         sparse_dim,
-        ") + dense_dim (",
-        dense_dim,
-        "), but got ",
-        size.size());
+        ", dense_dim = ",
+        dense_dim);
     if (nnz() > 0) {
-      auto alt_options_msg =
+      [[maybe_unused]] auto constexpr alt_options_msg =
           "You could try the following options:\n\
 1. If you need an empty sparse tensor of this size, call `x = torch.sparse_coo_tensor(size)`.\n\
 2. If you need to resize this tensor, you have the following options:\n\
@@ -228,14 +231,14 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
   }
 
   void resize_(int64_t sparse_dim, int64_t dense_dim, ArrayRef<int64_t> size) {
-    return _resize_(sparse_dim, dense_dim, size);
+    _resize_(sparse_dim, dense_dim, size);
   }
 
   void resize_(
       int64_t sparse_dim,
       int64_t dense_dim,
       ArrayRef<c10::SymInt> size) {
-    return _resize_(sparse_dim, dense_dim, size);
+    _resize_(sparse_dim, dense_dim, size);
   }
 
   // NOTE: this function will resize the sparse tensor and also set `indices`
@@ -253,12 +256,12 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
         "resize_and_clear_ called on tensor with symbolic shape")
     TORCH_CHECK(
         sparse_dim + dense_dim == static_cast<int64_t>(size.size()),
-        "number of dimensions must be sparse_dim (",
+        "'len(size) == sparse_dim + dense_dim' is not satisfied: len(size) = ",
+        size.size(),
+        ", sparse_dim = ",
         sparse_dim,
-        ") + dense_dim (",
-        dense_dim,
-        "), but got ",
-        size.size());
+        ", dense_dim = ",
+        dense_dim);
 
     set_sizes_and_strides(size, std::vector<int64_t>(size.size()));
     sparse_dim_ = sparse_dim;
@@ -306,6 +309,38 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
       const Tensor& indices,
       const Tensor& values);
 
+  template <typename VariableVersion>
+  c10::intrusive_ptr<TensorImpl> shallow_copy_and_detach_core(
+      VariableVersion&& version_counter,
+      bool allow_tensor_metadata_change) const {
+    const auto mode_stack_len = c10::impl::TorchDispatchModeTLS::stack_len();
+    c10::impl::PyInterpreter&& interpreter = nullptr;
+    if (mode_stack_len > 0 &&
+        !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::Python)) {
+      const auto& cur_torch_dispatch_mode_state =
+          c10::impl::TorchDispatchModeTLS::get_stack_at(mode_stack_len - 1);
+      interpreter = cur_torch_dispatch_mode_state->pyinterpreter();
+    } else if (
+        key_set_.has(DispatchKey::Python) &&
+        !c10::impl::tls_is_dispatch_key_excluded(DispatchKey::Python)) {
+      interpreter = *c10::impl::getGlobalPyInterpreter();
+    } else {
+      // otherwise just copy the SparseTensorImpl and not the PyObject.
+      auto impl = c10::make_intrusive<SparseTensorImpl>(key_set(), dtype());
+      copy_tensor_metadata(
+          /*src_sparse_impl=*/this,
+          /*dest_sparse_impl=*/impl.get(),
+          /*version_counter=*/version_counter,
+          /*allow_tensor_metadata_change=*/allow_tensor_metadata_change);
+      impl->refresh_numel();
+      return impl;
+    }
+    auto r = interpreter->detach(this);
+    r->set_version_counter(std::forward<VariableVersion>(version_counter));
+    r->set_allow_tensor_metadata_change(allow_tensor_metadata_change);
+    return r;
+  }
+
   /**
    * Return a TensorImpl that is a shallow-copy of this TensorImpl.
    *
@@ -315,14 +350,8 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
   c10::intrusive_ptr<TensorImpl> shallow_copy_and_detach(
       const c10::VariableVersion& version_counter,
       bool allow_tensor_metadata_change) const override {
-    auto impl = c10::make_intrusive<SparseTensorImpl>(key_set(), dtype());
-    copy_tensor_metadata(
-        /*src_impl=*/this,
-        /*dest_impl=*/impl.get(),
-        /*version_counter=*/version_counter,
-        /*allow_tensor_metadata_change=*/allow_tensor_metadata_change);
-    impl->refresh_numel();
-    return impl;
+    return shallow_copy_and_detach_core(
+        version_counter, allow_tensor_metadata_change);
   }
 
   /**
@@ -334,14 +363,8 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
   c10::intrusive_ptr<TensorImpl> shallow_copy_and_detach(
       c10::VariableVersion&& version_counter,
       bool allow_tensor_metadata_change) const override {
-    auto impl = c10::make_intrusive<SparseTensorImpl>(key_set(), dtype());
-    copy_tensor_metadata(
-        /*src_impl=*/this,
-        /*dest_impl=*/impl.get(),
-        /*version_counter=*/std::move(version_counter),
-        /*allow_tensor_metadata_change=*/allow_tensor_metadata_change);
-    impl->refresh_numel();
-    return impl;
+    return shallow_copy_and_detach_core(
+        std::move(version_counter), allow_tensor_metadata_change);
   }
 
   /**
@@ -354,8 +377,8 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
     AT_ASSERT(has_compatible_shallow_copy_type(impl->key_set()));
     auto sparse_impl = static_cast<const SparseTensorImpl*>(impl.get());
     copy_tensor_metadata(
-        /*src_impl=*/sparse_impl,
-        /*dest_impl=*/this,
+        /*src_sparse_impl=*/sparse_impl,
+        /*dest_sparse_impl=*/this,
         /*version_counter=*/version_counter(),
         /*allow_tensor_metadata_change=*/allow_tensor_metadata_change());
     refresh_numel();
@@ -363,8 +386,8 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
 
  private:
   explicit SparseTensorImpl(
-      at::DispatchKeySet,
-      const caffe2::TypeMeta,
+      at::DispatchKeySet /*key_set*/,
+      const caffe2::TypeMeta /*data_type*/,
       at::Tensor indices,
       at::Tensor values);
 
@@ -378,12 +401,12 @@ struct TORCH_API SparseTensorImpl : public TensorImpl {
   static void copy_tensor_metadata(
       const SparseTensorImpl* src_sparse_impl,
       SparseTensorImpl* dest_sparse_impl,
-      const c10::VariableVersion& version_counter,
+      c10::VariableVersion version_counter,
       bool allow_tensor_metadata_change) {
     TensorImpl::copy_tensor_metadata(
         src_sparse_impl,
         dest_sparse_impl,
-        version_counter,
+        std::move(version_counter),
         allow_tensor_metadata_change);
 
     // Sparse-specific fields

@@ -149,7 +149,7 @@
  *    First, keep in mind that we assume that boxed containers will
  *    have to deal with `IValue` (e.g. `c10::List`). In this context,
  *    what may be happening is that `IValue` doesn't store internally
- *    your type `T`. Instead, it constructs a type new `T` everytime
+ *    your type `T`. Instead, it constructs a type new `T` every time
  *    you try to get `T` for it (see `IListRef<at::OptinalTensorRef>`).
  */
 
@@ -186,16 +186,18 @@ class IListRef;
  * This macro is useful because it allows us to handle different
  * types (that correspond to different tags) to be implemented
  * only once. We can do it even when the implementation of the
- * different tags aren't syntatically the same, by dispatching
+ * different tags aren't syntactically the same, by dispatching
  * it to a function (e.g. `ImplT::<dispatch-function>(this_)`).
  */
 #define TORCH_ILISTREF_UNWRAP(TAG, BODY)                         \
+  C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wswitch-enum")    \
   switch (TAG) {                                                 \
     TORCH_ILISTREF_FORALL_TAGS(TORCH_ILISTREF_UNWRAP_CASE, BODY) \
     break;                                                       \
     default:                                                     \
       TORCH_INTERNAL_ASSERT(false, "invalid IListRef tag.");     \
-  }
+  } \
+  C10_DIAGNOSTIC_POP()
 
 enum class IListRefTag {
 #define DEFINE_TAG(tag, ...) tag,
@@ -307,10 +309,10 @@ class IListRefTagImplBase {};
  * reference type, then it's left unchanged.
  */
 template <typename T>
-using _MaterializedIListRefElem = typename std::conditional<
-    std::is_reference<T>::value,
-    typename std::reference_wrapper<typename std::remove_reference<T>::type>,
-    T>::type;
+using _MaterializedIListRefElem = std::conditional_t<
+    std::is_reference_v<T>,
+    typename std::reference_wrapper<std::remove_reference_t<T>>,
+    T>;
 
 template <typename T>
 using MaterializedIListRefElem = _MaterializedIListRefElem<IListRefConstRef<T>>;
@@ -540,7 +542,7 @@ class IListRef {
   template <
       typename... UnboxedConstructorArgs,
       typename = std::enable_if_t<
-          std::is_constructible<unboxed_type, UnboxedConstructorArgs...>::value>>
+          std::is_constructible_v<unboxed_type, UnboxedConstructorArgs...>>>
   IListRef(UnboxedConstructorArgs&&... args) : tag_(IListRefTag::Unboxed) {
     payload_.unboxed = unboxed_type(std::forward<UnboxedConstructorArgs>(args)...);
   }
@@ -598,7 +600,7 @@ class IListRef {
   bool is##TAG() const {          \
     return tag_ == IListRefTag::TAG; \
   }
-  TORCH_ILISTREF_FORALL_TAGS(DEFINE_CHECK);
+  TORCH_ILISTREF_FORALL_TAGS(DEFINE_CHECK)
 #undef DEFINE_CHECK
 
   bool isNone() const {
@@ -611,7 +613,7 @@ class IListRef {
     TORCH_INTERNAL_ASSERT(is##TAG());                                     \
     return detail::IListRefTagImpl<IListRefTag::TAG, T>::unwrap(*this);   \
   }
-  TORCH_ILISTREF_FORALL_TAGS(DEFINE_CASTING);
+  TORCH_ILISTREF_FORALL_TAGS(DEFINE_CASTING)
 #undef DEFINE_CASTING
 
  private:
@@ -620,7 +622,6 @@ class IListRef {
     unboxed_type unboxed;
     const materialized_type* materialized;
     Payload() : boxed(nullptr) {}
-    ~Payload() {}
   };
 
   Payload payload_;

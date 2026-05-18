@@ -2,16 +2,9 @@
 
 #include <ATen/core/interned_strings.h>
 #include <torch/csrc/jit/api/function_impl.h>
-#include <torch/csrc/jit/api/module.h>
-#include <torch/csrc/jit/frontend/error_report.h>
 #include <torch/csrc/jit/jit_log.h>
 
-namespace torch {
-namespace jit {
-
-namespace prim {
-using namespace ::c10::prim;
-}
+namespace torch::jit {
 
 GraphFunction* tryToGraphFunction(Node* n) {
   if (n->kind() == prim::CallFunction) {
@@ -30,7 +23,7 @@ GraphFunction* tryToGraphFunction(Node* n) {
   return nullptr;
 }
 
-void inlineCalls(Block* block) {
+static void inlineCalls(Block* block) {
   for (auto it = block->nodes().begin(), end = block->nodes().end();
        it != end;) {
     Node* cur = *it++;
@@ -62,7 +55,7 @@ void inlineCalls(Block* block) {
               // optimized_graph() calls Inline, so we only need to explicitly
               // invoke inlining on the jit optimized graph with recursive
               // fallback function calls
-              Inline(*g.get());
+              Inline(*g);
             }
           }
           if (g == nullptr) {
@@ -95,5 +88,4 @@ void Inline(Graph& graph) {
   GRAPH_DUMP("After Inlining: ", &graph);
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

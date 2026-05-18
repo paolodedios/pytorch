@@ -1,9 +1,7 @@
 #include <torch/csrc/jit/passes/onnx.h>
 
-#include <ATen/core/functional.h>
 #include <c10/util/Exception.h>
 #include <c10/util/irange.h>
-#include <torch/csrc/autograd/function.h>
 #include <torch/csrc/autograd/symbolic.h>
 #include <torch/csrc/jit/ir/constants.h>
 #include <torch/csrc/jit/jit_log.h>
@@ -13,13 +11,11 @@
 #include <torch/csrc/jit/passes/onnx/onnx_log.h>
 #include <torch/csrc/jit/passes/onnx/shape_type_inference.h>
 #include <torch/csrc/jit/python/python_ir.h>
-#include <torch/csrc/utils/pybind.h>
 #include <sstream>
-#include <unordered_map>
-namespace torch {
-namespace jit {
 
-void removePrintOps(Block* block) {
+namespace torch::jit {
+
+static void removePrintOps(Block* block) {
   for (auto it = block->nodes().begin(), end = block->nodes().end(); it != end;
        ++it) {
     for (auto b : it->blocks()) {
@@ -47,7 +43,7 @@ void RemovePrintOps(std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("After RemovePrintOps: ", graph);
 }
 
-void checkONNXCompatibility(const c10::FunctionSchema& schema) {
+static void checkONNXCompatibility(const c10::FunctionSchema& schema) {
   // in ONNX, all inputs are tensors, no support for tensor list
   // so at most one input tensor list is supported
   bool has_tensor_list = false;
@@ -75,7 +71,7 @@ void checkONNXCompatibility(const c10::FunctionSchema& schema) {
   }
 }
 
-void preprocessCaffe2Ops(Block* block) {
+static void preprocessCaffe2Ops(Block* block) {
   for (auto it = block->nodes().begin(), end = block->nodes().end(); it != end;
        ++it) {
     for (auto b : it->blocks()) {
@@ -165,13 +161,19 @@ void PreprocessCaffe2Ops(std::shared_ptr<Graph>& graph) {
 std::shared_ptr<Graph> ToONNX(
     std::shared_ptr<Graph>& graph,
     ::torch::onnx::OperatorExportTypes operator_export_type) {
-  auto constant_value_map = ConstantValueMap::getInstance();
   ConstantValueMap::ClearMaps();
   auto new_graph = std::make_shared<Graph>(graph->current_scope());
-  std::unordered_map<Value*, Value*> env;
+  py::dict env;
+  // Kept identical to values in env. Used for constant-time existence check.
+  py::set values_in_env;
   try {
-    BlockToONNX(graph->block(), new_graph->block(), operator_export_type, env);
-  } catch (std::runtime_error& ex) {
+    BlockToONNX(
+        graph->block(),
+        new_graph->block(),
+        operator_export_type,
+        env,
+        values_in_env);
+  } catch (std::runtime_error&) {
     ONNX_LOG(
         "ONNX graph being constructed during exception:\n",
         new_graph->toString());
@@ -187,11 +189,12 @@ std::shared_ptr<Graph> ToONNX(
 // (e.g., if sub block), and we want to convert it into its parent block in onnx
 // graph. In this case, we don't register the input/output or eliminate the dead
 // code.
-std::unordered_map<Value*, Value*> BlockToONNX(
+py::dict BlockToONNX(
     Block* old_block,
     Block* new_block,
     ::torch::onnx::OperatorExportTypes operator_export_type,
-    std::unordered_map<Value*, Value*>& env,
+    py::dict& env,
+    py::set& values_in_env,
     bool is_sub_block) {
   torch::autograd::SymbolicContext ctx{};
   ctx.block = new_block;
@@ -204,13 +207,22 @@ std::unordered_map<Value*, Value*> BlockToONNX(
   if (!is_sub_block) {
     for (auto input : old_block->inputs()) {
       auto n = ctx.block->addInput()->copyMetadata(input);
-      env[input] = n;
+      auto py_n = py::cast(n);
+      env[py::cast(input)] = py_n;
+      values_in_env.add(py_n);
     }
+  }
+
+  // Determine if all inputs are static. This is used for each node to
+  // determine whether or not to propagate shapes.
+  if (!is_sub_block) {
+    bool static_input_shape = AllGraphInputsStatic(ctx.block->owningGraph());
+    ConstantValueMap::SetAllGraphInputsStatic(static_input_shape);
   }
 
   // Finally, visit all nodes in the graph
   for (auto node : old_block->nodes()) {
-    NodeToONNX(node, ctx.block, operator_export_type, env);
+    NodeToONNX(node, ctx.block, operator_export_type, env, values_in_env);
   }
 
   if (is_sub_block) {
@@ -218,7 +230,9 @@ std::unordered_map<Value*, Value*> BlockToONNX(
   }
 
   for (auto output : old_block->outputs()) {
-    ctx.block->registerOutput(env.at(output));
+    auto py_value = env[py::cast(output)];
+    Value* value = py_value.cast<Value*>();
+    ctx.block->registerOutput(value);
   }
   // Run dce to clean-up unused functional and inplace ops.
   EliminateDeadCode(
@@ -226,10 +240,10 @@ std::unordered_map<Value*, Value*> BlockToONNX(
       true,
       DCESideEffectPolicy::ALLOW_DELETING_NODES_WITH_SIDE_EFFECTS);
 
-  return {};
+  return py::dict();
 }
 
-bool ConstantFoldCondition(torch::jit::Value* output) {
+static bool ConstantFoldCondition(torch::jit::Value* output) {
   auto fold_condition = output->node()->kind() != c10::onnx::Constant &&
       ConstantValueMap::HasValue(output->debugName());
   auto reliable_value =
@@ -241,20 +255,25 @@ void NodeToONNX(
     Node* old_node,
     Block* new_block,
     ::torch::onnx::OperatorExportTypes operator_export_type,
-    std::unordered_map<Value*, Value*>& env) {
-  py::object onnx = py::module::import("torch.onnx");
-  py::object onnx_globals = py::module::import("torch.onnx._globals");
-  py::object onnx_registration =
-      py::module::import("torch.onnx._internal.registration");
+    py::dict& env,
+    py::set& values_in_env) {
+  py::object onnx_utils =
+      py::module::import("torch.onnx._internal.torchscript_exporter.utils");
+  py::object onnx_globals =
+      py::module::import("torch.onnx._internal.torchscript_exporter._globals");
+  py::object onnx_registration = py::module::import(
+      "torch.onnx._internal.torchscript_exporter.registration");
 
   // Setup all the lambda helper functions.
 
   // Returns a node that n maps to in the new graph
   auto envFn = [&env](Value* n) -> Value* {
-    auto it = env.find(n);
-    TORCH_CHECK(it != env.end(), "Dangling node reference");
-    TORCH_CHECK(it->second, "Unused node was subsequently used");
-    return it->second;
+    auto py_n = py::cast(n);
+    TORCH_CHECK(env.contains(py_n), "Dangling node reference");
+    auto py_value = env[py_n];
+    TORCH_CHECK(!py_value.is_none(), "Unused node was subsequently used");
+    Value* value = py_value.cast<Value*>();
+    return value;
   };
 
   // Put the new outputs in our environment map, and copy the type from the
@@ -270,7 +289,7 @@ void NodeToONNX(
       std::ostringstream ss;
       ss << "symbolic for " << op_name
          << " produced an incorrect number of outputs (expected ";
-      ss << num_old_outputs << ", but got " << outputs.size() << ")";
+      ss << num_old_outputs << ", but got " << outputs.size() << ')';
       throw std::runtime_error(ss.str());
     }
     // For const node, it does not need params_dict info, so set it to {}.
@@ -280,12 +299,7 @@ void NodeToONNX(
     for (const auto i : c10::irange(num_old_outputs)) {
       auto old = old_outputs[i];
       if (outputs[i]) {
-        bool exist_in_env =
-            (env.end() !=
-             std::find_if(
-                 env.begin(), env.end(), [&outputs, i](const auto& vt) {
-                   return vt.second == outputs[i];
-                 }));
+        bool exist_in_env = values_in_env.contains(py::cast(outputs[i]));
         // Update ONNX value debug name with ATen value debug name if existed.
         // Skip if ONNX value already exist in environment.
         // This implies the op is a noop, and the value is owned by
@@ -293,14 +307,25 @@ void NodeToONNX(
         if (old->hasDebugName() && !exist_in_env) {
           auto old_name = outputs[i]->debugName();
           auto new_name = old->debugNameBase();
-          auto debug_names = new_block->owningGraph()->debugNames();
-          auto exist_name = debug_names.find(new_name);
+          Value* found_value = nullptr;
+          bool exists = false;
+          // In this scope, we fetch debug_names as a const reference and then
+          // construct an iterator exist_name based on it. This iterator will
+          // be corrupted if the underlying map of debug_names changes. This
+          // will happen as a side-effect of setDebugName. For these reasons,
+          // we make an explicit scope for exist_name and make sure that
+          // setDebugName is never called with this scope.
+          {
+            const auto& debug_names = new_block->owningGraph()->debugNames();
+            auto exist_name = debug_names.find(new_name);
+            exists = exist_name != debug_names.end();
+            if (exists) {
+              found_value = exist_name->second;
+            }
+          }
           outputs[i]->setDebugName(new_name);
-          if (exist_name != debug_names.end()) {
-            // setDebugName changes name of existing value with same name.
-            // Set again to revert the changes, but update name for new value
-            // with suffix.
-            exist_name->second->setDebugName(new_name);
+          if (exists) {
+            found_value->setDebugName(new_name);
           }
           ConstantValueMap::UpdateValueName(old_name, outputs[i]->debugName());
         }
@@ -325,7 +350,9 @@ void NodeToONNX(
           const_node->copyMetadata(node);
           new_block->appendNode(const_node);
           ONNXShapeTypeInference(const_node, empty_params_dict, opset_version);
-          env[old] = const_node->output();
+          auto py_output = py::cast(const_node->output());
+          env[py::cast(old)] = py_output;
+          values_in_env.add(py_output);
         } else {
           // An update in ConstantValueMap is also needed here, since
           // the user setType can be only accessed in this step, and it
@@ -348,12 +375,14 @@ void NodeToONNX(
           if (!exist_in_env) {
             outputs[i]->node()->copyMetadata(node);
           }
-          env[old] = outputs[i];
+          auto py_output = py::cast(outputs[i]);
+          env[py::cast(old)] = py_output;
+          values_in_env.add(py_output);
         }
       } else {
         // Null output means that the ONNX op doesn't have outputs corresponding
         // to certain PyTorch outputs
-        env[old] = nullptr;
+        env[py::cast(old)] = py::none();
         if (!old->uses().empty()) {
           std::ostringstream ss;
           ss << "symbolic for " << op_name << " returned None for the output "
@@ -373,7 +402,9 @@ void NodeToONNX(
         new_block->owningGraph()->createClone(node, envFn));
     for (const auto i : c10::irange(node->outputs().size())) {
       // n_->outputs()[i]->setType(node->outputs()[i]->type());
-      env[node->output(i)] = n_->output(i);
+      auto py_output = py::cast(n_->output(i));
+      env[py::cast(node->output(i))] = py_output;
+      values_in_env.add(py_output);
     }
   };
 
@@ -381,13 +412,17 @@ void NodeToONNX(
   auto inlineAutograd = [&](Node* PythonOpNode) {
     for (auto subblock : PythonOpNode->blocks()) {
       for (const auto i : c10::irange(PythonOpNode->inputs().size())) {
-        env[subblock->inputs()[i]] = env[PythonOpNode->inputs()[i]];
+        auto py_value = env[py::cast(PythonOpNode->inputs()[i])];
+        env[py::cast(subblock->inputs()[i])] = py_value;
+        values_in_env.add(py_value);
       }
       for (auto* node : subblock->nodes()) {
-        NodeToONNX(node, new_block, operator_export_type, env);
+        NodeToONNX(node, new_block, operator_export_type, env, values_in_env);
       }
       for (const auto i : c10::irange(PythonOpNode->outputs().size())) {
-        env[PythonOpNode->outputs()[i]] = env[subblock->outputs()[i]];
+        auto py_value = env[py::cast(subblock->outputs()[i])];
+        env[py::cast(PythonOpNode->outputs()[i])] = py_value;
+        values_in_env.add(py_value);
       }
     }
   };
@@ -396,7 +431,7 @@ void NodeToONNX(
   auto processSymbolicOutput = [&](const std::string& op_name,
                                    Node* n,
                                    const py::object& raw_output) {
-    if (raw_output.ptr() == Py_None) {
+    if (Py_IsNone(raw_output.ptr())) {
       cloneNode(n);
       return;
     }
@@ -408,11 +443,12 @@ void NodeToONNX(
       } else {
         outputs = py::cast<std::vector<Value*>>(raw_output);
       }
-    } catch (const std::exception& ex) {
+    } catch (const std::exception&) {
       std::ostringstream ss;
       ss << "Error casting results of symbolic for " << op_name
          << ": expected to return list of op nodes, instead received type ''"
-         << py::str(raw_output.get_type()) << "': " << py::str(raw_output);
+         << py::str(py::type::handle_of(raw_output))
+         << "': " << py::str(raw_output);
       throw std::runtime_error(ss.str());
     }
 
@@ -430,30 +466,28 @@ void NodeToONNX(
     }
 
     Graph* g = new_block->owningGraph();
-    std::unordered_set<Node*> nodes_before;
-    for (auto node : g->nodes()) {
-      nodes_before.emplace(node);
-    }
 
     WithInsertPoint insert_point_guard(new_block);
     WithCurrentScope scope_guard(*g, n->scope());
 
     // IMPORTANT: NEVER pass raw pointer of smart pointer managed objects to
     // Python. Check #87343 for details.
-    py::object raw_output = onnx.attr("_run_symbolic_function")(
+    py::list new_nodes = py::list();
+    py::object raw_output = onnx_utils.attr("_run_symbolic_function")(
         g->shared_from_this(),
         new_block,
         n,
         py_inputs,
         env,
+        values_in_env,
+        new_nodes,
         operator_export_type);
 
     // Find new nodes that have been created by _run_symbolic_function and
     // propagate metadata
-    for (auto node : g->nodes()) {
-      if (nodes_before.find(node) == nodes_before.end()) {
-        node->copyMetadata(n);
-      }
+    for (py::handle py_node : new_nodes) {
+      Node* node = py_node.cast<Node*>();
+      node->copyMetadata(n);
     }
 
     // TODO: Assert it's an ATen identifier???
@@ -478,15 +512,18 @@ void NodeToONNX(
         onnx_registration.attr("registry")
             .attr("is_registered_op")("prim::PythonOp", opset_version)
             .cast<bool>();
+    py::bool_ is_autograd_inlining_enabled =
+        py::cast<bool>(onnx_globals.attr("GLOBALS").attr("autograd_inlining"));
     if (!py::hasattr(pyobj, "symbolic") && !is_registered_op) {
       // Inline the subgraph within the prim::PythonOp unless
       // either of these conditions are satisfied
       // 1. The torch.autograd.Function class of this node object has `symbolic`
       // method defined.
       // 2. Custom export symbolic is registered for prim::PythonOp.
-      if (operator_export_type == ::torch::onnx::OperatorExportTypes::ONNX ||
-          operator_export_type ==
-              ::torch::onnx::OperatorExportTypes::ONNX_ATEN_FALLBACK) {
+      if ((operator_export_type == ::torch::onnx::OperatorExportTypes::ONNX ||
+           operator_export_type ==
+               ::torch::onnx::OperatorExportTypes::ONNX_ATEN_FALLBACK) &&
+          (py::cast<bool>(is_autograd_inlining_enabled))) {
         try {
           inlineAutograd(op);
         } catch (const std::exception& ex) {
@@ -552,7 +589,7 @@ void NodeToONNX(
 
       // IMPORTANT: NEVER pass raw pointer of smart pointer managed objects to
       // Python. Check #87343 for details.
-      py::object raw_output = onnx.attr("_run_symbolic_method")(
+      py::object raw_output = onnx_utils.attr("_run_symbolic_method")(
           new_block->owningGraph()->shared_from_this(),
           op->name(),
           pyobj.attr("symbolic"),
@@ -566,12 +603,15 @@ void NodeToONNX(
       // Call symbolic function
       // IMPORTANT: NEVER pass raw pointer of smart pointer managed objects to
       // Python. Check #87343 for details.
-      py::object raw_output = onnx.attr("_run_symbolic_function")(
+      py::list new_nodes = py::list();
+      py::object raw_output = onnx_utils.attr("_run_symbolic_function")(
           new_block->owningGraph()->shared_from_this(),
           new_block,
           n,
           py_symbolic_args,
           env,
+          values_in_env,
+          new_nodes,
           operator_export_type);
 
       processSymbolicOutput(op->kind().toUnqualString(), n, raw_output);
@@ -589,5 +629,4 @@ void NodeToONNX(
   }
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

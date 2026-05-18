@@ -15,26 +15,18 @@
 #include <torch/csrc/autograd/saved_variable_hooks.h>
 #include <torch/csrc/autograd/utils/warnings.h>
 
-#include <c10/util/CallOnce.h>
-
-#include <deque>
 #include <exception>
 #include <functional>
 #include <memory>
 #include <queue>
-#include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 struct ReadyQueue;
 }
-} // namespace torch
 
-namespace torch {
-namespace autograd {
+namespace torch::autograd {
 
 // Maximum reentrant backward depth before switching to a new thread
 // This limit is based on the TSAN's deadlock detector, where it will
@@ -45,14 +37,20 @@ namespace autograd {
 static constexpr int MAX_DEPTH = 60;
 
 void set_device(int device);
-void validate_outputs(
+TORCH_API void validate_outputs(
     const edge_list& edges,
     variable_list& grads,
     const std::function<std::string(const std::string&)>& format_error);
+TORCH_API void validate_outputs(
+    const std::vector<std::optional<InputMetadata>>& input_metadata,
+    variable_list& grads,
+    const std::function<std::string(const std::string&)>& format_error);
+TORCH_API std::vector<std::optional<InputMetadata>> collect_input_metadata(
+    const edge_list& edges);
 
 struct NodeTask {
   std::weak_ptr<GraphTask> base_;
-  std::shared_ptr<Node> fn_;
+  c10::intrusive_ptr<Node> fn_;
   // This buffer serves as an implicit "addition" node for all of the
   // gradients flowing here.  Once all the dependencies are finished, we
   // use the contents of this buffer to run the function.
@@ -65,7 +63,7 @@ struct NodeTask {
 
   NodeTask(
       std::weak_ptr<GraphTask> base,
-      std::shared_ptr<Node> fn,
+      c10::intrusive_ptr<Node> fn,
       InputBuffer inputs,
       bool isShutdownTask = false)
       : base_(std::move(base)),
@@ -135,6 +133,16 @@ struct TORCH_API Engine {
 
   static Engine& get_base_engine();
 
+  // compiled_autograd needs to live in a different .so file so that it
+  // can have python symbols, so we add a layer of indirection
+  // see [Note: Compiled Autograd]
+  typedef variable_list (*compiled_autograd_fn)(
+      const c10::intrusive_ptr<Node>& graph_root,
+      const GraphTask& graph_task,
+      bool accumulate_grad,
+      const edge_list& outputs);
+  static void set_compiled_autograd(compiled_autograd_fn fn);
+
   Engine(const Engine&) = delete;
   Engine(Engine&&) = delete;
   virtual ~Engine();
@@ -156,7 +164,7 @@ struct TORCH_API Engine {
   // machinery and shouldn't be exposed to users in anyway.
   virtual c10::intrusive_ptr<at::ivalue::Future> execute_with_graph_task(
       const std::shared_ptr<GraphTask>& graph_task,
-      std::shared_ptr<Node> graph_root,
+      c10::intrusive_ptr<Node> graph_root,
       InputBuffer&& input_buffer);
 
   virtual std::unique_ptr<AnomalyMetadata> make_anomaly_metadata() {
@@ -177,8 +185,8 @@ struct TORCH_API Engine {
 
   void initialize_device_threads_pool();
   virtual void thread_on_exception(
-      std::shared_ptr<GraphTask> graph_task,
-      const std::shared_ptr<Node>& fn,
+      const std::shared_ptr<GraphTask>& graph_task,
+      const c10::intrusive_ptr<Node>& fn,
       std::exception& e);
 
   void queue_callback(std::function<void()> callback);
@@ -222,9 +230,6 @@ struct TORCH_API Engine {
   void reentrant_thread_init();
   void add_thread_pool_task(const std::weak_ptr<GraphTask>& graph_task);
 
-  // Ensures device_ready_queues_ are initialized only once
-  // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
-  c10::once_flag start_device_threads_flag_;
   // Safe to read device_ready_queues_ without synchronization after
   // initialization
   // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
@@ -238,7 +243,7 @@ struct TORCH_API Engine {
 
   // How many nested reentrant calls are allowed until a new thread is used
   // NOLINTNEXTLINE(cppcoreguidelines-non-private-member-variables-in-classes)
-  int max_recursion_depth_;
+  int max_recursion_depth_{MAX_DEPTH};
 
   struct ThreadPoolShared {
     // Data structures used by the threads for executing reentrant backwards
@@ -281,5 +286,4 @@ struct TORCH_API Engine {
 using EngineStub = Engine& (*)();
 TORCH_API void set_default_engine_stub(EngineStub stub);
 
-} // namespace autograd
-} // namespace torch
+} // namespace torch::autograd

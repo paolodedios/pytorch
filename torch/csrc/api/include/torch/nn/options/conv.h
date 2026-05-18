@@ -6,12 +6,11 @@
 #include <torch/expanding_array.h>
 #include <torch/types.h>
 
-namespace torch {
-namespace nn {
+namespace torch::nn {
 
 namespace detail {
 
-typedef c10::variant<
+typedef std::variant<
     enumtype::kZeros,
     enumtype::kReflect,
     enumtype::kReplicate,
@@ -20,7 +19,7 @@ typedef c10::variant<
 
 template <size_t D>
 using conv_padding_t =
-    c10::variant<ExpandingArray<D>, enumtype::kValid, enumtype::kSame>;
+    std::variant<ExpandingArray<D>, enumtype::kValid, enumtype::kSame>;
 
 /// Options for a `D`-dimensional convolution or convolution transpose module.
 template <size_t D>
@@ -61,7 +60,7 @@ struct ConvNdOptions {
   TORCH_ARG(padding_t, padding) = 0;
 
  public:
-  decltype(auto) padding(std::initializer_list<int64_t> il) {
+  auto padding(std::initializer_list<int64_t> il) {
     return padding(IntArrayRef{il});
   }
 
@@ -140,7 +139,7 @@ struct ConvOptions {
   TORCH_ARG(padding_t, padding) = 0;
 
  public:
-  decltype(auto) padding(std::initializer_list<int64_t> il) {
+  auto padding(std::initializer_list<int64_t> il) {
     return padding(IntArrayRef{il});
   }
 
@@ -197,7 +196,7 @@ struct ConvFuncOptions {
   using padding_t = torch::nn::detail::conv_padding_t<D>;
 
   /// optional bias of shape `(out_channels)`. Default: ``None``
-  TORCH_ARG(torch::Tensor, bias) = Tensor();
+  TORCH_ARG(torch::Tensor, bias);
 
   /// The stride of the convolving kernel.
   /// For a `D`-dim convolution, must be a single number or a list of `D`
@@ -210,7 +209,7 @@ struct ConvFuncOptions {
   TORCH_ARG(padding_t, padding) = 0;
 
  public:
-  decltype(auto) padding(std::initializer_list<int64_t> il) {
+  auto padding(std::initializer_list<int64_t> il) {
     return padding(IntArrayRef{il});
   }
 
@@ -353,7 +352,7 @@ namespace functional {
 template <size_t D>
 struct ConvTransposeFuncOptions {
   /// optional bias of shape `(out_channels)`. Default: ``None``
-  TORCH_ARG(torch::Tensor, bias) = Tensor();
+  TORCH_ARG(torch::Tensor, bias);
 
   /// The stride of the convolving kernel.
   /// For a `D`-dim convolution, must be a single number or a list of `D`
@@ -411,5 +410,4 @@ using ConvTranspose3dFuncOptions = ConvTransposeFuncOptions<3>;
 
 } // namespace functional
 
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn

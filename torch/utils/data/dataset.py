@@ -1,39 +1,42 @@
+# mypy: allow-untyped-defs
 import bisect
-import warnings
+import itertools
 import math
-from typing import (
-    Generic,
-    Iterable,
-    Iterator,
-    List,
-    Optional,
-    Sequence,
-    Tuple,
-    TypeVar,
-    Union
-)
+import warnings
+from collections.abc import Sequence
+
+# UP006 wants 'Iterable' to be imported from collections.abc but it needs to
+# stay from typing for now due to BC concerns. In particular several internal
+# targets fail to typecheck with:
+#     TypeError: Cannot create a consistent method resolution order (MRO) for
+#     bases Iterable, Generic
+from typing import cast, Generic, Iterable, TypeVar  # noqa: UP035
+from typing_extensions import deprecated
 
 # No 'default_generator' in torch/__init__.pyi
-from torch import default_generator, randperm
-from torch._utils import _accumulate
+from torch import default_generator, Generator, randperm, Tensor
 
-from ... import Generator, Tensor
 
 __all__ = [
     "Dataset",
     "IterableDataset",
     "TensorDataset",
+    "StackDataset",
     "ConcatDataset",
     "ChainDataset",
     "Subset",
     "random_split",
 ]
 
-T_co = TypeVar('T_co', covariant=True)
-T = TypeVar('T')
+
+_T = TypeVar("_T")
+_T_co = TypeVar("_T_co", covariant=True)
+_T_dict = dict[str, _T_co]
+_T_tuple = tuple[_T_co, ...]
+_T_stack = TypeVar("_T_stack", _T_tuple, _T_dict)
 
 
-class Dataset(Generic[T_co]):
+class Dataset(Generic[_T_co]):
     r"""An abstract class representing a :class:`Dataset`.
 
     All datasets that represent a map from keys to data samples should subclass
@@ -41,18 +44,25 @@ class Dataset(Generic[T_co]):
     data sample for a given key. Subclasses could also optionally overwrite
     :meth:`__len__`, which is expected to return the size of the dataset by many
     :class:`~torch.utils.data.Sampler` implementations and the default options
-    of :class:`~torch.utils.data.DataLoader`.
+    of :class:`~torch.utils.data.DataLoader`. Subclasses could also
+    optionally implement :meth:`__getitems__`, for speedup batched samples
+    loading. This method accepts list of indices of samples of batch and returns
+    list of samples.
 
     .. note::
-      :class:`~torch.utils.data.DataLoader` by default constructs a index
+      :class:`~torch.utils.data.DataLoader` by default constructs an index
       sampler that yields integral indices.  To make it work with a map-style
       dataset with non-integral indices/keys, a custom sampler must be provided.
     """
 
-    def __getitem__(self, index) -> T_co:
-        raise NotImplementedError
+    def __getitem__(self, index) -> _T_co:
+        raise NotImplementedError("Subclasses of Dataset should implement __getitem__.")
 
-    def __add__(self, other: 'Dataset[T_co]') -> 'ConcatDataset[T_co]':
+    # def __getitems__(self, indices: List) -> List[_T_co]:
+    # Not implemented to prevent false-positives in fetcher check in
+    # torch.utils.data._utils.fetch._MapDatasetFetcher
+
+    def __add__(self, other: "Dataset[_T_co]") -> "ConcatDataset[_T_co]":
         return ConcatDataset([self, other])
 
     # No `def __len__(self)` default?
@@ -60,7 +70,7 @@ class Dataset(Generic[T_co]):
     # in pytorch/torch/utils/data/sampler.py
 
 
-class IterableDataset(Dataset[T_co]):
+class IterableDataset(Dataset[_T_co], Iterable[_T_co]):
     r"""An iterable Dataset.
 
     All datasets that represent an iterable of data samples should subclass it.
@@ -86,7 +96,7 @@ class IterableDataset(Dataset[T_co]):
         >>> class MyIterableDataset(torch.utils.data.IterableDataset):
         ...     def __init__(self, start, end):
         ...         super(MyIterableDataset).__init__()
-        ...         assert end > start, "this example code only works with end >= start"
+        ...         assert end > start, "this example only works with end >= start"
         ...         self.start = start
         ...         self.end = end
         ...
@@ -111,7 +121,7 @@ class IterableDataset(Dataset[T_co]):
         [tensor([3]), tensor([4]), tensor([5]), tensor([6])]
 
         >>> # xdoctest: +REQUIRES(POSIX)
-        >>> # Mult-process loading with two worker processes
+        >>> # Multi-process loading with two worker processes
         >>> # Worker 0 fetched [3, 4].  Worker 1 fetched [5, 6].
         >>> # xdoctest: +IGNORE_WANT("non deterministic")
         >>> print(list(torch.utils.data.DataLoader(ds, num_workers=2)))
@@ -128,7 +138,7 @@ class IterableDataset(Dataset[T_co]):
         >>> class MyIterableDataset(torch.utils.data.IterableDataset):
         ...     def __init__(self, start, end):
         ...         super(MyIterableDataset).__init__()
-        ...         assert end > start, "this example code only works with end >= start"
+        ...         assert end > start, "this example only works with end >= start"
         ...         self.start = start
         ...         self.end = end
         ...
@@ -168,17 +178,15 @@ class IterableDataset(Dataset[T_co]):
         >>> print(list(torch.utils.data.DataLoader(ds, num_workers=12, worker_init_fn=worker_init_fn)))
         [3, 4, 5, 6]
     """
-    def __iter__(self) -> Iterator[T_co]:
-        raise NotImplementedError
 
-    def __add__(self, other: Dataset[T_co]):
+    def __add__(self, other: Dataset[_T_co]):
         return ChainDataset([self, other])
 
     # No `def __len__(self)` default? Subclasses raise `TypeError` when needed.
     # See NOTE [ Lack of Default `__len__` in Python Abstract Base Classes ]
 
 
-class TensorDataset(Dataset[Tuple[Tensor, ...]]):
+class TensorDataset(Dataset[tuple[Tensor, ...]]):
     r"""Dataset wrapping tensors.
 
     Each sample will be retrieved by indexing tensors along the first dimension.
@@ -186,20 +194,109 @@ class TensorDataset(Dataset[Tuple[Tensor, ...]]):
     Args:
         *tensors (Tensor): tensors that have the same size of the first dimension.
     """
-    tensors: Tuple[Tensor, ...]
+
+    tensors: tuple[Tensor, ...]
 
     def __init__(self, *tensors: Tensor) -> None:
-        assert all(tensors[0].size(0) == tensor.size(0) for tensor in tensors), "Size mismatch between tensors"
+        if any(tensors[0].size(0) != tensor.size(0) for tensor in tensors):
+            raise AssertionError("Size mismatch between tensors")
         self.tensors = tensors
 
     def __getitem__(self, index):
         return tuple(tensor[index] for tensor in self.tensors)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.tensors[0].size(0)
 
 
-class ConcatDataset(Dataset[T_co]):
+class StackDataset(Dataset[_T_stack]):
+    r"""Dataset as a stacking of multiple datasets.
+
+    This class is useful to assemble different parts of complex input data, given as datasets.
+
+    Example:
+        >>> # xdoctest: +SKIP
+        >>> images = ImageDataset()
+        >>> texts = TextDataset()
+        >>> tuple_stack = StackDataset(images, texts)
+        >>> tuple_stack[0] == (images[0], texts[0])
+        >>> dict_stack = StackDataset(image=images, text=texts)
+        >>> dict_stack[0] == {"image": images[0], "text": texts[0]}
+
+    Args:
+        *args (Dataset): Datasets for stacking returned as tuple.
+        **kwargs (Dataset): Datasets for stacking returned as dict.
+    """
+
+    datasets: tuple | dict
+
+    def __init__(self, *args: Dataset[_T_co], **kwargs: Dataset[_T_co]) -> None:
+        if args:
+            if kwargs:
+                raise ValueError(
+                    "Supported either ``tuple``- (via ``args``) or"
+                    "``dict``- (via ``kwargs``) like input/output, but both types are given."
+                )
+            self._length = len(args[0])  # type: ignore[arg-type]
+            if any(self._length != len(dataset) for dataset in args):  # type: ignore[arg-type]
+                raise ValueError("Size mismatch between datasets")
+            self.datasets = args
+        elif kwargs:
+            tmp = list(kwargs.values())
+            self._length = len(tmp[0])  # type: ignore[arg-type]
+            if any(self._length != len(dataset) for dataset in tmp):  # type: ignore[arg-type]
+                raise ValueError("Size mismatch between datasets")
+            self.datasets = kwargs
+        else:
+            raise ValueError("At least one dataset should be passed")
+
+    def __getitem__(self, index):
+        if isinstance(self.datasets, dict):
+            return {k: dataset[index] for k, dataset in self.datasets.items()}
+        return tuple(dataset[index] for dataset in self.datasets)
+
+    def __getitems__(self, indices: list):
+        # add batched sampling support when parent datasets supports it.
+        if isinstance(self.datasets, dict):
+            dict_batch: list[_T_dict] = [{} for _ in indices]
+            for k, dataset in self.datasets.items():
+                if callable(getattr(dataset, "__getitems__", None)):
+                    items = dataset.__getitems__(indices)  # type: ignore[attr-defined]
+                    if len(items) != len(indices):
+                        raise ValueError(
+                            "Nested dataset's output size mismatch."
+                            f" Expected {len(indices)}, got {len(items)}"
+                        )
+                    for data, d_sample in zip(items, dict_batch, strict=True):
+                        d_sample[k] = data
+                else:
+                    for idx, d_sample in zip(indices, dict_batch, strict=True):
+                        d_sample[k] = dataset[idx]
+            return dict_batch
+
+        # tuple data
+        list_batch: list[list] = [[] for _ in indices]
+        for dataset in self.datasets:
+            if callable(getattr(dataset, "__getitems__", None)):
+                items = dataset.__getitems__(indices)  # type: ignore[attr-defined]
+                if len(items) != len(indices):
+                    raise ValueError(
+                        "Nested dataset's output size mismatch."
+                        f" Expected {len(indices)}, got {len(items)}"
+                    )
+                for data, t_sample in zip(items, list_batch, strict=True):
+                    t_sample.append(data)
+            else:
+                for idx, t_sample in zip(indices, list_batch, strict=True):
+                    t_sample.append(dataset[idx])
+        tuple_batch: list[_T_tuple] = [tuple(sample) for sample in list_batch]
+        return tuple_batch
+
+    def __len__(self) -> int:
+        return self._length
+
+
+class ConcatDataset(Dataset[_T_co]):
     r"""Dataset as a concatenation of multiple datasets.
 
     This class is useful to assemble different existing datasets.
@@ -207,8 +304,9 @@ class ConcatDataset(Dataset[T_co]):
     Args:
         datasets (sequence): List of datasets to be concatenated
     """
-    datasets: List[Dataset[T_co]]
-    cumulative_sizes: List[int]
+
+    datasets: list[Dataset[_T_co]]
+    cumulative_sizes: list[int]
 
     @staticmethod
     def cumsum(sequence):
@@ -222,18 +320,22 @@ class ConcatDataset(Dataset[T_co]):
     def __init__(self, datasets: Iterable[Dataset]) -> None:
         super().__init__()
         self.datasets = list(datasets)
-        assert len(self.datasets) > 0, 'datasets should not be an empty iterable'  # type: ignore[arg-type]
+        if len(self.datasets) == 0:
+            raise AssertionError("datasets should not be an empty iterable")
         for d in self.datasets:
-            assert not isinstance(d, IterableDataset), "ConcatDataset does not support IterableDataset"
+            if isinstance(d, IterableDataset):
+                raise AssertionError("ConcatDataset does not support IterableDataset")
         self.cumulative_sizes = self.cumsum(self.datasets)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.cumulative_sizes[-1]
 
     def __getitem__(self, idx):
         if idx < 0:
             if -idx > len(self):
-                raise ValueError("absolute value of index should not exceed dataset length")
+                raise ValueError(
+                    "absolute value of index should not exceed dataset length"
+                )
             idx = len(self) + idx
         dataset_idx = bisect.bisect_right(self.cumulative_sizes, idx)
         if dataset_idx == 0:
@@ -243,9 +345,11 @@ class ConcatDataset(Dataset[T_co]):
         return self.datasets[dataset_idx][sample_idx]
 
     @property
+    @deprecated(
+        "`cummulative_sizes` attribute is renamed to `cumulative_sizes`",
+        category=FutureWarning,
+    )
     def cummulative_sizes(self):
-        warnings.warn("cummulative_sizes attribute is renamed to "
-                      "cumulative_sizes", DeprecationWarning, stacklevel=2)
         return self.cumulative_sizes
 
 
@@ -259,49 +363,94 @@ class ChainDataset(IterableDataset):
     Args:
         datasets (iterable of IterableDataset): datasets to be chained together
     """
+
     def __init__(self, datasets: Iterable[Dataset]) -> None:
         super().__init__()
         self.datasets = datasets
 
     def __iter__(self):
         for d in self.datasets:
-            assert isinstance(d, IterableDataset), "ChainDataset only supports IterableDataset"
+            if not isinstance(d, IterableDataset):
+                raise AssertionError("ChainDataset only supports IterableDataset")
             yield from d
 
-    def __len__(self):
+    def __len__(self) -> int:
         total = 0
         for d in self.datasets:
-            assert isinstance(d, IterableDataset), "ChainDataset only supports IterableDataset"
+            if not isinstance(d, IterableDataset):
+                raise AssertionError("ChainDataset only supports IterableDataset")
             total += len(d)  # type: ignore[arg-type]
         return total
 
 
-class Subset(Dataset[T_co]):
+class Subset(Dataset[_T_co]):
     r"""
     Subset of a dataset at specified indices.
+
+    .. note::
+        When subclassing `Subset` and overriding `__getitem__`, you **must** also
+        override `__getitems__` to ensure `DataLoader` works correctly with your
+        custom logic. If you override only `__getitem__`, a `NotImplementedError`
+        will be raised when using `DataLoader`.
+
+        A simple implementation of `__getitems__` can delegate to `__getitem__`:
+
+        .. code-block:: python
+
+            def __getitems__(self, indices):
+                return [self.__getitem__(idx) for idx in indices]
+
+        For better performance, consider implementing batch-aware logic in
+        `__getitems__` instead of calling `__getitem__` multiple times.
 
     Args:
         dataset (Dataset): The whole Dataset
         indices (sequence): Indices in the whole set selected for subset
     """
-    dataset: Dataset[T_co]
+
+    dataset: Dataset[_T_co]
     indices: Sequence[int]
 
-    def __init__(self, dataset: Dataset[T_co], indices: Sequence[int]) -> None:
+    def __init__(self, dataset: Dataset[_T_co], indices: Sequence[int]) -> None:
         self.dataset = dataset
         self.indices = indices
+
+        # Check if __getitem__ is overridden but __getitems__ is not
+        if (
+            type(self).__getitem__ is not Subset.__getitem__
+            and type(self).__getitems__ is Subset.__getitems__
+        ):
+            raise NotImplementedError(
+                f"{type(self).__name__} overrides __getitem__ but not __getitems__. "
+                "When subclassing Subset and overriding __getitem__, you must also override "
+                "__getitems__ to ensure DataLoader works correctly with your custom logic. "
+                "A simple implementation:\n\n"
+                "def __getitems__(self, indices):\n"
+                "    return [self.__getitem__(idx) for idx in indices]"
+            )
 
     def __getitem__(self, idx):
         if isinstance(idx, list):
             return self.dataset[[self.indices[i] for i in idx]]
         return self.dataset[self.indices[idx]]
 
-    def __len__(self):
+    def __getitems__(self, indices: list[int]) -> list[_T_co]:
+        # add batched sampling support when parent dataset supports it.
+        # see torch.utils.data._utils.fetch._MapDatasetFetcher
+        if callable(getattr(self.dataset, "__getitems__", None)):
+            return self.dataset.__getitems__([self.indices[idx] for idx in indices])  # type: ignore[attr-defined]
+        else:
+            return [self.dataset[self.indices[idx]] for idx in indices]
+
+    def __len__(self) -> int:
         return len(self.indices)
 
 
-def random_split(dataset: Dataset[T], lengths: Sequence[Union[int, float]],
-                 generator: Optional[Generator] = default_generator) -> List[Subset[T]]:
+def random_split(
+    dataset: Dataset[_T],
+    lengths: Sequence[int | float],
+    generator: Generator | None = default_generator,
+) -> list[Subset[_T]]:
     r"""
     Randomly split a dataset into non-overlapping new datasets of given lengths.
 
@@ -328,13 +477,11 @@ def random_split(dataset: Dataset[T], lengths: Sequence[Union[int, float]],
         generator (Generator): Generator used for the random permutation.
     """
     if math.isclose(sum(lengths), 1) and sum(lengths) <= 1:
-        subset_lengths: List[int] = []
+        subset_lengths: list[int] = []
         for i, frac in enumerate(lengths):
             if frac < 0 or frac > 1:
                 raise ValueError(f"Fraction at index {i} is not between 0 and 1")
-            n_items_in_split = int(
-                math.floor(len(dataset) * frac)  # type: ignore[arg-type]
-            )
+            n_items_in_split = math.floor(len(dataset) * frac)  # type: ignore[arg-type]
             subset_lengths.append(n_items_in_split)
         remainder = len(dataset) - sum(subset_lengths)  # type: ignore[arg-type]
         # add 1 to all the lengths in round-robin fashion until the remainder is 0
@@ -344,12 +491,21 @@ def random_split(dataset: Dataset[T], lengths: Sequence[Union[int, float]],
         lengths = subset_lengths
         for i, length in enumerate(lengths):
             if length == 0:
-                warnings.warn(f"Length of split at index {i} is 0. "
-                              f"This might result in an empty dataset.")
+                warnings.warn(
+                    f"Length of split at index {i} is 0. "
+                    f"This might result in an empty dataset.",
+                    stacklevel=2,
+                )
 
     # Cannot verify that dataset is Sized
-    if sum(lengths) != len(dataset):    # type: ignore[arg-type]
-        raise ValueError("Sum of input lengths does not equal the length of the input dataset!")
+    if sum(lengths) != len(dataset):  # type: ignore[arg-type]
+        raise ValueError(
+            "Sum of input lengths does not equal the length of the input dataset!"
+        )
 
-    indices = randperm(sum(lengths), generator=generator).tolist()  # type: ignore[call-overload]
-    return [Subset(dataset, indices[offset - length : offset]) for offset, length in zip(_accumulate(lengths), lengths)]
+    indices = randperm(sum(lengths), generator=generator).tolist()  # type: ignore[arg-type, call-overload]
+    lengths = cast(Sequence[int], lengths)
+    return [
+        Subset(dataset, indices[offset - length : offset])
+        for offset, length in zip(itertools.accumulate(lengths), lengths, strict=True)
+    ]

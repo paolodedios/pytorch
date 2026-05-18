@@ -1,5 +1,5 @@
 # FX Graph Mode Quantization Design Doc
-High Level FX Graph Mode Quantization Flow
+<!---
 ```
 float_model            QConfigMapping           BackendConfig
     \                          |                        /
@@ -21,8 +21,29 @@ float_model            QConfigMapping           BackendConfig
 —--------------------------------------------------------
                               |
                        Quantized Model
-
 ```
+-->
+
+```mermaid
+---
+title: High Level FX Graph Mode Quantization Flow
+---
+flowchart TD
+    classDef nofs fill:none,stroke:none
+    classDef sub fill:#D6EAF8,stroke:none
+    float_model:::nofs --> prepare_fx:::sub
+    QConfigMapping:::nofs --> prepare_fx
+    BackendConfig:::nofs --> prepare_fx
+    subgraph prepare_fx["`_(prepare_fx/prepare_qat_fx)_`"]
+    Fuse:::nofs --> swap[QAT Module Swap]:::nofs --> obs[Insert Observers]:::nofs
+    end
+    prepare_fx --> Calibrate/Train:::nofs --> convert_fx:::sub
+    subgraph convert_fx["`_(convert_fx)_`"]
+    Convert:::nofs --> Lowering:::nofs
+    end
+    convert_fx --> qm[Quantized Model]:::nofs
+```
+
 Please refer to [TODO: link] for definitions of terminologies.
 
 ## Overview
@@ -49,7 +70,7 @@ In the following, I’ll first have a detailed description for each step, and th
 
 ```
 class LinearReLUModule(torch.nn.Module):
-   def __init__(self):
+   def __init__(self) -> None:
        super().__init__()
        self.linear = torch.nn.Linear(5, 10).float()
        self.relu = torch.nn.ReLU()
@@ -202,10 +223,10 @@ The overall logic to insert QDQStub1 and QDQStub2 inplace is the following:
 # node_name_to_target_dtype_info =
 # {
 #     # this is placeholder node in FX Graph
-#     “input” : {“input_activation”: torch.float32, “output_activation”: torch.float32},
-#     “qat_linear_relu”: {“input_activation”: torch.quint8, “output_activation”: torch.quint8, “weight”: ...}
+#     "input" : {"input_activation": torch.float32, "output_activation": torch.float32},
+#     "qat_linear_relu": {"input_activation": torch.quint8, "output_activation": torch.quint8, "weight": ...}
 #     # this is the return node in FX Graph
-#     “output”: {“input_activation”: torch.float32, “output_activation”: torch.float32}
+#     "output": {"input_activation": torch.float32, "output_activation": torch.float32}
 # }
 ```
 Note: this map is generated before we insert qdqstub to graph1, and will not change in the process.
@@ -259,7 +280,7 @@ Let’s say the output of `qat_linear_relu` Node is configured as float32, both 
 }
 ```
 
-What we’ll do here is when we are trying to insert output QDQStub for `qat_linear_relu`, we look at the target output dtype for this node (node_name_to_target_dtype_info[“qat_linear_relu”][“output_activation”], and find that it is float, which is not a quantized dtype, so
+What we’ll do here is when we are trying to insert output QDQStub for `qat_linear_relu`, we look at the target output dtype for this node (node_name_to_target_dtype_info["qat_linear_relu"]["output_activation"], and find that it is float, which is not a quantized dtype, so
 will do nothing here.
 Note that this does not prevent other operators following `qat_linear_relu` to insert a QDQStub at the output of `qat_linear_relu`, since we are dealing with an `edge` of the graph here, and an `edge` is connected to two nodes, which means
 the output of `qat_linear_relu` will also be the input of a node following `qat_linear_relu`.
@@ -275,7 +296,7 @@ BackendConfig(nniqat.LinearReLU)
 
 Pattern in this case is the same as before, it defines the pattern for the subgraph we are dealing with
 
-`set_observation_type`: sets the observation type for the patter, currently only two types:
+`set_observation_type`: sets the observation type for the pattern, currently only two types:
 
 `OUTPUT_USE_DIFFERENT_OBSERVER_AS_INPUT` means the output observer instance will be different from the input, which is the most common type of observer placement.
 
@@ -425,4 +446,4 @@ However, for some operator based backends, like the current pytorch native backe
 
 ## Extensibility
 
-FX graph mode quantization can be extended to work with different backends, which may have different sets of supported quantized operator patterns and different requirements for each pattern. For more detail, please refer to the [BackendConfig README](/torch/ao/quantization/backend_config/README.md).
+FX graph mode quantization can be extended to work with different backends, which may have different sets of supported quantized operator patterns and different requirements for each pattern. For more detail, please refer to the [BackendConfig README](../backend_config/README.md).

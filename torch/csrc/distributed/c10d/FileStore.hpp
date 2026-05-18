@@ -11,7 +11,9 @@ namespace c10d {
 
 class TORCH_API FileStore : public Store {
  public:
-  explicit FileStore(std::string  path, int numWorkers);
+  explicit FileStore(std::string path, int numWorkers);
+
+  c10::intrusive_ptr<Store> clone() override;
 
   ~FileStore() override;
 
@@ -42,6 +44,8 @@ class TORCH_API FileStore : public Store {
   const std::string& getPath() const noexcept {
     return path_;
   }
+
+  std::vector<std::string> listKeys() override;
 
  protected:
   int64_t addHelper(const std::string& key, int64_t i);

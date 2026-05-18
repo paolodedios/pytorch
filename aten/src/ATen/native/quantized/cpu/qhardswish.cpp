@@ -13,10 +13,8 @@
 #include <ATen/ops/_empty_affine_quantized.h>
 #endif
 
-#include <algorithm>
 
-namespace at {
-namespace native {
+namespace at::native {
 
 DEFINE_DISPATCH(qhardswish_stub);
 
@@ -59,7 +57,7 @@ Tensor qnnpack_hardswish(const Tensor& qx, Tensor& qy) {
   const pytorch_qnnp_status setupStatus = pytorch_qnnp_setup_hardswish_nc_q8(
     hardswish_op,
     qx.size(0), // batch size
-    (uint8_t*)qx.data_ptr<c10::quint8>(), // input data
+    reinterpret_cast<const uint8_t*>(qx.const_data_ptr<c10::quint8>()), // input data
     num_elems, // input stride
     (uint8_t*)qy.data_ptr<c10::quint8>(), // output data
     num_elems); // output stride
@@ -80,7 +78,7 @@ Tensor qnnpack_hardswish(const Tensor& qx, Tensor& qy) {
 
 } // namespace
 
-Tensor quantized_hardswish(const Tensor& qx, double output_scale, int64_t output_zero_point) {
+static Tensor quantized_hardswish(const Tensor& qx, double output_scale, int64_t output_zero_point) {
   Tensor qy = at::_empty_affine_quantized(
       qx.sizes(),
       at::device(kCPU).dtype(qx.scalar_type()),
@@ -103,4 +101,4 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::hardswish"), TORCH_FN(quantized_hardswish));
 }
 
-}}  // namespace at::native
+}  // namespace at::native

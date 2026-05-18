@@ -2,14 +2,10 @@
 
 #include <torch/csrc/jit/ir/alias_analysis.h>
 #include <torch/csrc/jit/jit_log.h>
-#include <torch/csrc/jit/passes/constant_propagation.h>
-#include <torch/csrc/jit/passes/peephole.h>
-#include <torch/csrc/jit/runtime/graph_executor.h>
 #include <memory>
 #include <unordered_set>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 struct GuardElimination {
   GuardElimination(std::shared_ptr<Graph> graph)
@@ -463,5 +459,4 @@ void EliminateRedundantGuards(std::shared_ptr<Graph> graph) {
   ge.run();
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

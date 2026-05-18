@@ -5,18 +5,19 @@
 #include <ATen/NestedTensorImpl.h>
 #include <ATen/native/nested/NestedTensorUtils.h>
 
-#include <c10/util/string_view.h>
 #include <c10/util/Exception.h>
-#include <c10/util/Optional.h>
+#include <cmath>
+#include <limits>
+#include <optional>
+#include <string_view>
 
-namespace at {
-namespace native {
+namespace at::native {
 namespace {
 
 inline void check_nested_tensor_matrix_constraints(
     const Tensor& nested_tensor,
     const Tensor& dense_matrix,
-    c10::string_view caller) {
+    std::string_view caller) {
   auto* nt_input = get_nested_tensor_impl(nested_tensor);
   TORCH_INTERNAL_ASSERT(nt_input != nullptr);
   TORCH_CHECK(
@@ -59,8 +60,8 @@ inline void check_nested_tensor_matrix_constraints(
 Tensor nested_linear(
     const Tensor& input,
     const Tensor& weight,
-    const c10::optional<Tensor>& bias_opt) {
-  check_nested_tensor_matrix_constraints(input, weight, c10::string_view{"Linear"});
+    const std::optional<Tensor>& bias_opt) {
+  check_nested_tensor_matrix_constraints(input, weight, std::string_view{"Linear"});
   auto* nt_input = get_nested_tensor_impl(input);
   const Tensor& input_buffer = nt_input->get_buffer();
   Tensor result_buffer =
@@ -74,7 +75,7 @@ Tensor nested_linear(
 }
 
 Tensor NestedTensor_matmul(const Tensor& self, const Tensor& other) {
-  check_nested_tensor_matrix_constraints(self, other, c10::string_view{"Matmul"});
+  check_nested_tensor_matrix_constraints(self, other, std::string_view{"Matmul"});
   auto* nt_self = get_nested_tensor_impl_or_null(self);
   const Tensor& self_buffer = nt_self->get_buffer();
   Tensor result_buffer =
@@ -93,7 +94,7 @@ Tensor NestedTensor_times_Tensor_plus_Tensor_addmm(
     const Tensor& mat2,
     const c10::Scalar& beta,
     const c10::Scalar& alpha,
-    c10::optional<bool> use_gelu) {
+    std::optional<bool> use_gelu) {
   // Interesting case: alpha * NT * T + beta * T
   const auto* nt_mat1 = get_nested_tensor_impl_or_null(mat1);
   TORCH_INTERNAL_ASSERT(nt_mat1 != nullptr);
@@ -184,7 +185,7 @@ Tensor NestedTensor_softmax_dropout(const Tensor& self, const Tensor& query) {
 }
 
 Tensor NestedTensor_softmax_dropout_cuda(const Tensor& self, const Tensor& query) {
-  c10::optional<Tensor> attn_mask;
+  std::optional<Tensor> attn_mask;
 
   attn_mask = NestedTensor_to_mask(query, 2, self.size(2));
   attn_mask = attn_mask->to(query.device(), /*non-blocking=*/true);
@@ -194,9 +195,9 @@ Tensor NestedTensor_softmax_dropout_cuda(const Tensor& self, const Tensor& query
 Tensor NestedTensor_batch_offsets_from_size_tensor(
     const Tensor& sizes,
     int64_t extra_elements) {
-  int64_t* const sizes_ptr = sizes.data_ptr<int64_t>();
+  const int64_t* const sizes_ptr = sizes.const_data_ptr<int64_t>();
   Tensor offsets = at::empty({1 + sizes.size(0) + extra_elements}, at::kInt);
-  int32_t* const offsets_ptr = offsets.data_ptr<int32_t>();
+  int32_t* const offsets_ptr = offsets.mutable_data_ptr<int32_t>();
   offsets_ptr[0] = 0;
   const auto sizes_size_1 = sizes.size(1);
   const auto sizes_size_0 = sizes.size(0);
@@ -205,13 +206,13 @@ Tensor NestedTensor_batch_offsets_from_size_tensor(
     for (const auto j : c10::irange(sizes_size_1)) {
       prod *= sizes_ptr[i * sizes_size_1 + j];
     }
-    offsets_ptr[i + 1] = offsets_ptr[i] + prod;
+    offsets_ptr[i + 1] = offsets_ptr[i] + static_cast<int32_t>(prod);
   }
   return offsets;
 }
 
 
-Tensor NestedTensor_to_mask(const Tensor& nt, c10::optional<int64_t> mask_dim, c10::optional<int64_t> mask_dim_length) {
+Tensor NestedTensor_to_mask(const Tensor& nt, std::optional<int64_t> mask_dim, std::optional<int64_t> mask_dim_length) {
   auto* nt_impl = get_nested_tensor_impl(nt);
   TORCH_CHECK(nested_tensor_impl_is_contiguous(nt_impl), "to_mask only works on contiguous NestedTensors.");
   TORCH_CHECK(
@@ -235,7 +236,7 @@ Tensor NestedTensor_to_mask(const Tensor& nt, c10::optional<int64_t> mask_dim, c
   auto result = at::ones({sizes.sizes()[0], result_size_1}, at::kBool);
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(sizes.dim() == 2);
   auto* result_data = result.data_ptr<bool>();
-  auto* sizes_ptr = sizes.data_ptr<int64_t>();
+  const auto* sizes_ptr = sizes.const_data_ptr<int64_t>();
   const auto sizes_size_1 = sizes.sizes()[1];
   for (const auto ii : c10::irange(sizes.sizes()[0])) {
     auto length = sizes_ptr[ii * sizes_size_1];
@@ -246,5 +247,115 @@ Tensor NestedTensor_to_mask(const Tensor& nt, c10::optional<int64_t> mask_dim, c
   return result;
 }
 
-} // namespace native
-} // namespace at
+Tensor _jagged_to_padded_dense_forward_cpu(
+    const Tensor& values,
+    TensorList offsets_list,
+    c10::IntArrayRef max_lengths,
+    const double padding_value) {
+  // TODO: Make this kernel more efficient using TensorIterator or something.
+  TORCH_INTERNAL_ASSERT(
+      offsets_list.size() == 1 && max_lengths.size() == 1,
+      "_jagged_to_padded_dense_forward(): only a single jagged dim is supported for now");
+
+  // allocate appropriately-sized padded tensor
+  const auto& offsets = offsets_list[0];
+  TORCH_CHECK(
+      offsets.dim() == 1,
+      "_jagged_to_padded_dense_forward(): expected 1D offsets, but got offsets.dim() == ",
+      offsets.dim());
+
+  auto batch_size = offsets.size(0) - 1;
+  auto max_length = max_lengths[0];
+  auto values_shape = values.sizes().vec();
+  std::vector<int64_t> padded_shape;
+  padded_shape.reserve(values.dim() + 1);
+  padded_shape.push_back(batch_size);
+  padded_shape.push_back(max_length);
+  padded_shape.insert(padded_shape.end(), values_shape.begin() + 1, values_shape.end());
+
+  // We must clamp infinite sentinels to dtype min/max and use the typed value
+  // directly to avoid double->int overflow (e.g., int64_max as double overflows).
+  Tensor padded;
+  AT_DISPATCH_V2(
+      values.scalar_type(),
+      "_jagged_to_padded_dense_forward_cpu",
+      AT_WRAP([&] {
+        scalar_t fill_value = _get_padding_value<scalar_t>(padding_value, values.is_floating_point());
+        padded = values.new_full(padded_shape, fill_value);
+      }),
+      AT_EXPAND(AT_ALL_TYPES),
+      kBool, kHalf, kBFloat16);
+
+  // copy data to padded tensor
+  for (auto i : c10::irange(batch_size)) {
+    auto start_offset = offsets[i].item<int64_t>();
+    auto end_offset = offsets[i + 1].item<int64_t>();
+    auto length = end_offset - start_offset;
+    // NB: truncate to max length to match CUDA kernel behavior.
+    length = std::min(length, max_length);
+    auto source = values.slice(0, start_offset, start_offset + length);
+    auto dst = padded.select(0, i).slice(0, 0, length);
+    dst.copy_(source);
+  }
+
+  return padded;
+}
+
+Tensor _padded_dense_to_jagged_forward_cpu(
+    const Tensor& padded,
+    TensorList offsets_list,
+    std::optional<int64_t> total_L) {
+  // TODO: Make this kernel more efficient using TensorIterator or something.
+  TORCH_INTERNAL_ASSERT(
+      offsets_list.size() == 1,
+      "_padded_dense_to_jagged_forward(): only a single jagged dim is supported for now");
+
+  // allocate appropriately-sized values tensor
+  const auto& offsets = offsets_list[0];
+  TORCH_CHECK(
+      offsets.dim() == 1,
+      "_padded_dense_to_jagged_forward(): expected 1D offsets, but got offsets.dim() == ",
+      offsets.dim());
+
+  auto final_offset = offsets[-1].item<int64_t>();
+  int64_t total_L_val = total_L.has_value() ? (*total_L) : final_offset;
+  if (total_L.has_value()) {
+    // error if the offsets try to index past the end of the packed dimension
+    TORCH_CHECK(
+        final_offset == total_L_val,
+        "_padded_dense_to_jagged_forward(): final offset should match total_L value");
+  }
+
+  TORCH_CHECK(
+      padded.dim() >= 2,
+      "_padded_dense_to_jagged_forward(): expected padded dim >= 2, but padded.dim() == ",
+      padded.dim());
+
+  std::vector<int64_t> values_shape;
+  values_shape.reserve(padded.dim() - 1);
+  values_shape.push_back(total_L_val);
+  auto padded_shape = padded.sizes();
+  values_shape.insert(values_shape.end(), padded_shape.begin() + 2, padded_shape.end());
+  Tensor values = padded.new_empty(values_shape);
+
+  // copy data to values tensor
+  auto batch_size = offsets.size(0) - 1;
+  for (auto i : c10::irange(batch_size)) {
+    auto start_offset = offsets[i].item<int64_t>();
+    auto end_offset = offsets[i + 1].item<int64_t>();
+    auto length = end_offset - start_offset;
+
+    TORCH_CHECK(
+        length <= padded_shape[1],
+        "_padded_dense_to_jagged_forward(): found batch item of length ", length,
+        " when max length specified by padded input is ", padded_shape[1]);
+
+    auto dst = values.slice(0, start_offset, end_offset);
+    auto source = padded.select(0, i).slice(0, 0, length);
+    dst.copy_(source);
+  }
+
+  return values;
+}
+
+} // namespace at::native

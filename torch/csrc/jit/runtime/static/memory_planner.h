@@ -2,8 +2,7 @@
 
 #include <torch/csrc/jit/runtime/static/impl.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 // A StorageGroup represents a collection of tensors that share backing storage.
 class StorageGroup {
@@ -36,7 +35,7 @@ class StorageGroup {
   // allocated for all tensors in this storage group. Initially it
   // is zero, eventually it gets updated by the MemoryPlanner.
   size_t max_tensor_size_ = 0;
-  std::vector<at::Tensor*> group_{};
+  std::vector<at::Tensor*> group_;
 };
 
 // A contiguous buffer of `StorageImpl`s
@@ -82,13 +81,13 @@ class ManagedStorages {
 
  private:
   // We will use placement-new to add new storages to this buffer
-  at::StorageImpl* storages_;
+  at::StorageImpl* storages_{nullptr};
 
   // Current number of storages that have been placed into the storage buffer
-  size_t size_;
+  size_t size_{0};
 
   // Total allocated capacity of the storage buffer
-  size_t capacity_;
+  size_t capacity_{0};
 };
 
 TORCH_API std::vector<StorageGroup> assignStorageToManagedTensors(
@@ -173,15 +172,15 @@ class MemoryPlanner {
     return managed_output_tensors_.size();
   }
 
-  C10_NODISCARD size_t total_num_unmanaged() const {
+  [[nodiscard]] size_t total_num_unmanaged() const {
     return num_unmanaged_non_scalars() + num_unmanaged_scalars();
   }
 
-  C10_NODISCARD size_t num_unmanaged_non_scalars() const {
+  [[nodiscard]] size_t num_unmanaged_non_scalars() const {
     return unmanaged_ivalues_.size() + unmanaged_borrowed_ivalues_.size();
   }
 
-  C10_NODISCARD size_t num_unmanaged_scalars() const {
+  [[nodiscard]] size_t num_unmanaged_scalars() const {
     return num_unmanaged_scalar_ivalues_;
   }
 
@@ -264,7 +263,7 @@ class MemoryPlanner {
   // to an ordinary "strong reference" state.
   std::vector<IValue*> borrowed_ivalues_needing_incref_;
 
-  std::vector<std::pair<size_t, at::Tensor*>> managed_output_tensors_{};
+  std::vector<std::pair<size_t, at::Tensor*>> managed_output_tensors_;
   at::DataPtr buffer_; // allocated each time we call Run()
   uint8_t* buffer_start_{nullptr};
   uint8_t* buffer_end_{nullptr};
@@ -293,8 +292,7 @@ class StandardMemoryPlanner : public MemoryPlanner {
   void allocateManagedTensors() override;
   void deallocateManagedTensors() override;
 
-  std::vector<StorageGroup> managed_tensors_{};
+  std::vector<StorageGroup> managed_tensors_;
 };
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

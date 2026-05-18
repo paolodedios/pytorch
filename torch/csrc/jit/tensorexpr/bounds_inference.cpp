@@ -5,17 +5,18 @@
 #include <torch/csrc/jit/tensorexpr/ir.h>
 #include <torch/csrc/jit/tensorexpr/ir_printer.h>
 #include <torch/csrc/jit/tensorexpr/ir_simplifier.h>
-#include <torch/csrc/jit/tensorexpr/ir_visitor.h>
-#include <torch/csrc/jit/tensorexpr/stmt.h>
 
 #include <c10/util/irange.h>
+
+#include <iostream>
+#include <utility>
 
 namespace torch::jit::tensorexpr {
 
 using namespace analysis;
 
 template <typename Container>
-BoundsInfo mergeTensorAccesses(
+static BoundsInfo mergeTensorAccesses(
     const Container& accesses,
     const std::unordered_map<VarPtr, BufPtr>& varToBuf,
     bool distinctAccessKinds) {
@@ -70,7 +71,7 @@ BoundsInfo mergeTensorAccesses(
   return ret;
 }
 
-std::unordered_map<VarPtr, BufPtr> getAllBufs(StmtPtr s) {
+static std::unordered_map<VarPtr, BufPtr> getAllBufs(const StmtPtr& s) {
   std::unordered_map<VarPtr, BufPtr> varToBuf;
 
   auto bufs = NodeFinder<Buf>::find(s);
@@ -80,7 +81,7 @@ std::unordered_map<VarPtr, BufPtr> getAllBufs(StmtPtr s) {
   return varToBuf;
 }
 
-std::unordered_map<VarPtr, BufPtr> getAllBufs(ExprPtr e) {
+static std::unordered_map<VarPtr, BufPtr> getAllBufs(const ExprPtr& e) {
   std::unordered_map<VarPtr, BufPtr> varToBuf;
 
   auto bufs = NodeFinder<Buf>::find(e);
@@ -90,7 +91,7 @@ std::unordered_map<VarPtr, BufPtr> getAllBufs(ExprPtr e) {
   return varToBuf;
 }
 
-BoundsInfo inferBounds(StmtPtr s, bool distinctAccessKinds) {
+BoundsInfo inferBounds(const StmtPtr& s, bool distinctAccessKinds) {
   auto varToBuf = getAllBufs(s);
 
   MemDependencyChecker checker;
@@ -102,7 +103,7 @@ BoundsInfo inferBounds(StmtPtr s, bool distinctAccessKinds) {
 
 BoundsInfo getInferredBounds(
     MemDependencyChecker& analyzer,
-    StmtPtr s,
+    const StmtPtr& s,
     bool distinctAccessKinds) {
   return mergeTensorAccesses(
       analyzer.accessesWithin(s), getAllBufs(s), distinctAccessKinds);
@@ -110,7 +111,7 @@ BoundsInfo getInferredBounds(
 
 BoundsInfo getInferredBounds(
     MemDependencyChecker& analyzer,
-    ExprPtr e,
+    const ExprPtr& e,
     bool distinctAccessKinds) {
   return mergeTensorAccesses(
       analyzer.accessesWithin(e), getAllBufs(e), distinctAccessKinds);
@@ -125,10 +126,10 @@ void printBoundsInfo(const BoundsInfo& v) {
       if (!first) {
         std::cerr << ", ";
       }
-      std::cerr << ((b.kind == kLoad) ? "LOAD" : "STORE") << "(";
+      std::cerr << ((b.kind == kLoad) ? "LOAD" : "STORE") << '(';
       int i = 0;
       if (b.start.empty()) {
-        std::cerr << "0";
+        std::cerr << '0';
       }
       for (auto& s : b.start) {
         if (i != 0) {
@@ -140,7 +141,7 @@ void printBoundsInfo(const BoundsInfo& v) {
       std::cerr << "; ";
       i = 0;
       if (b.stop.empty()) {
-        std::cerr << "0";
+        std::cerr << '0';
       }
       for (auto& s : b.stop) {
         if (i != 0) {
@@ -149,7 +150,7 @@ void printBoundsInfo(const BoundsInfo& v) {
         std::cerr << *s;
         i++;
       }
-      std::cerr << ")";
+      std::cerr << ')';
       first = false;
     }
     std::cerr << "]\n";
@@ -195,7 +196,7 @@ std::vector<ExprPtr> getBoundExtents(
 
 using BoundSet = std::unordered_set<Bound, BoundHash>;
 
-BoundSet convertBounds(
+static BoundSet convertBounds(
     const std::vector<TensorAccessBoundsInfo>& bounds,
     TensorAccessKind filter = kMutate) {
   BoundSet ret;
@@ -209,9 +210,9 @@ BoundSet convertBounds(
   return ret;
 }
 
-BoundSet convertBounds(
+static BoundSet convertBounds(
     BoundsInfo& bounds,
-    BufPtr buf,
+    const BufPtr& buf,
     TensorAccessKind filter = kMutate) {
   auto it = bounds.find(buf);
   if (it == bounds.end()) {
@@ -223,8 +224,8 @@ BoundSet convertBounds(
 
 HazardKind getPotentialHazards(
     MemDependencyChecker& analyzer,
-    StmtPtr A,
-    StmtPtr B) {
+    const StmtPtr& A,
+    const StmtPtr& B) {
   BoundsInfo aBounds = getInferredBounds(analyzer, A, true);
   BoundsInfo bBounds = getInferredBounds(analyzer, B, true);
 
@@ -271,7 +272,7 @@ HazardKind getPotentialHazards(
   return HazardKind::NoDependency;
 }
 
-IndexBounds getIndexBounds(const TensorAccessBoundsInfo& tabi) {
+static IndexBounds getIndexBounds(const TensorAccessBoundsInfo& tabi) {
   TORCH_INTERNAL_ASSERT(
       tabi.start.size() == tabi.stop.size(), buildErrorMessage());
   IndexBounds ret(tabi.start.size());
@@ -284,7 +285,7 @@ IndexBounds getIndexBounds(const TensorAccessBoundsInfo& tabi) {
   return ret;
 }
 
-std::vector<IndexBounds> getIndexBounds(
+static std::vector<IndexBounds> getIndexBounds(
     const std::vector<TensorAccessBoundsInfo>& vTABI,
     TensorAccessKind filter = kMutate) {
   std::vector<IndexBounds> bounds;
@@ -296,7 +297,7 @@ std::vector<IndexBounds> getIndexBounds(
   return bounds;
 }
 
-bool hasConflictingOverlap(
+static bool hasConflictingOverlap(
     const BoundsInfo& aBounds,
     const BoundsInfo& bBounds,
     TensorAccessKind aFilter = kMutate,
@@ -339,8 +340,8 @@ bool hasConflictingOverlap(
 
 bool hasConflictingOverlap(
     analysis::MemDependencyChecker& analyzer,
-    StmtPtr A,
-    StmtPtr B) {
+    const StmtPtr& A,
+    const StmtPtr& B) {
   BoundsInfo aBounds = getInferredBounds(analyzer, A, true);
   BoundsInfo bBounds = getInferredBounds(analyzer, B, true);
   return hasConflictingOverlap(aBounds, bBounds);
@@ -348,8 +349,8 @@ bool hasConflictingOverlap(
 
 bool isOverlapping(
     analysis::MemDependencyChecker& analyzer,
-    StorePtr S1,
-    StorePtr S2) {
+    const StorePtr& S1,
+    const StorePtr& S2) {
   BoundsInfo s1Bounds = getInferredBounds(analyzer, S1, true);
   BoundsInfo s2Bounds = getInferredBounds(analyzer, S2, true);
   return hasConflictingOverlap(s1Bounds, s2Bounds, kStore, kStore);
@@ -357,8 +358,8 @@ bool isOverlapping(
 
 bool isOverlapping(
     analysis::MemDependencyChecker& analyzer,
-    StorePtr S,
-    LoadPtr L) {
+    const StorePtr& S,
+    const LoadPtr& L) {
   BoundsInfo sBounds = getInferredBounds(analyzer, S, true);
   BoundsInfo lBounds = getInferredBounds(analyzer, L, true);
   return hasConflictingOverlap(sBounds, lBounds, kStore, kLoad);

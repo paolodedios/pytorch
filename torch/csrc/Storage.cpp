@@ -6,6 +6,7 @@
 
 #include <ATen/mps/MPSDevice.h>
 #include <c10/core/CPUAllocator.h>
+#include <c10/core/RefcountedDeleter.h>
 #include <libshm.h>
 #include <torch/csrc/CudaIPCTypes.h>
 #include <torch/csrc/Device.h>
@@ -15,10 +16,14 @@
 #include <torch/csrc/THP.h>
 #include <torch/csrc/autograd/utils/wrap_outputs.h>
 #include <torch/csrc/copy_utils.h>
+#include <torch/csrc/utils/device_lazy_init.h>
+#include <torch/csrc/utils/pyobject_preservation.h>
 #include <torch/csrc/utils/python_arg_parser.h>
 
 #include <c10/util/intrusive_ptr.h>
 #include <fmt/format.h>
+
+using torch::utils::PyObjectPreservation;
 
 template <>
 void THPPointer<c10::StorageImpl>::free() {
@@ -27,27 +32,50 @@ void THPPointer<c10::StorageImpl>::free() {
   }
 }
 
-PyObject* THPStorageClass = nullptr;
+PyTypeObject* THPStorageClass = nullptr;
 
-PyObject* THPStorage_New(c10::Storage storage) {
-  PyTypeObject* type = (PyTypeObject*)THPStorageClass;
+// Create a new Python Storage object, but don't set the pyobj slot on the
+// c10::Storage object.
+static PyObject* THPStorage_New(PyTypeObject* type, c10::Storage _storage) {
   PyObject* obj = type->tp_alloc(type, 0);
-  if (obj) {
-    ((THPStorage*)obj)->cdata =
-        c10::MaybeOwned<c10::Storage>::owned(std::move(storage));
-  }
+  TORCH_CHECK(obj, "Failed to allocate a ", type->tp_name, " object");
+  auto s = (THPStorage*)obj;
+  new (&s->cdata) c10::Storage(std::move(_storage));
   return obj;
 }
 
-static void THPStorage_subclass_dealloc(PyObject* self) {
-  THPStorage* _self = (THPStorage*)self;
-  // Some subclass of StorageBase are GC-tracked objects even
-  // though the base class is not.
-  auto* type = Py_TYPE(self);
-  if (PyType_HasFeature(type, Py_TPFLAGS_HAVE_GC) != 0) {
-    PyObject_GC_UnTrack(self);
+// Create a new Python Storage object for a new c10::Storage, and set the
+// pyobj slot. The c10::Storage must not already have a pyobj set.
+PyObject* THPStorage_NewWithStorage(PyTypeObject* type, c10::Storage _storage) {
+  TORCH_CHECK(
+      type == THPStorageClass || PyType_IsSubtype(type, &THPStorageType),
+      "Creating a Storage subclass from a class that does not inherit from ",
+      "Storage is not possible. Make sure your class inherits from Storage.");
+  TORCH_INTERNAL_ASSERT(_storage.use_count() == 1);
+
+  c10::StorageImpl* storage_impl = _storage.unsafeGetStorageImpl();
+  PyObject* obj = THPStorage_New(type, std::move(_storage));
+  PyObjectPreservation::init_fresh_nonatomic(*storage_impl, obj);
+  return obj;
+}
+
+// Returns a PyObject wrapper for the c10::Storage object. The existing
+// wrapper is returned if it already exists.
+PyObject* THPStorage_Wrap(c10::Storage storage) {
+  c10::StorageImpl* storage_impl = storage.unsafeGetStorageImpl();
+  return PyObjectPreservation::get_or_init(*storage_impl, [&]() {
+    return THPStorage_New(THPStorageClass, std::move(storage));
+  });
+}
+
+static void THPStorage_dealloc(PyObject* self) {
+  THPStorage* _self = reinterpret_cast<THPStorage*>(self);
+  auto pyobj_slot = _self->cdata.unsafeGetStorageImpl()->pyobj_slot();
+  if (pyobj_slot->load_pyobj() == self) {
+    TORCH_INTERNAL_ASSERT(_self->cdata.use_count() == 1);
+    pyobj_slot->clear();
   }
-  _self->cdata.~MaybeOwned<c10::Storage>();
+  _self->cdata.~Storage();
   Py_TYPE(_self)->tp_free(self);
 }
 
@@ -69,16 +97,16 @@ static PyObject* THPStorage_pynew(
   torch::ParsedArgs<3> parsed_args;
   auto r = parser.parse(args, kwargs, parsed_args);
 
-  int64_t allocator_arg_idx = 0;
-  int64_t device_arg_idx = 1;
+  int allocator_arg_idx = 0;
+  int device_arg_idx = 1;
 
   if (r.idx > 0) {
     allocator_arg_idx = 1;
     device_arg_idx = 2;
   }
 
-  c10::optional<int64_t> allocator_opt = r.toInt64Optional(allocator_arg_idx);
-  c10::optional<at::Device> device_opt = r.deviceOptional(device_arg_idx);
+  std::optional<int64_t> allocator_opt = r.toInt64Optional(allocator_arg_idx);
+  std::optional<at::Device> device_opt = r.deviceOptional(device_arg_idx);
 
   TORCH_CHECK(
       !allocator_opt.has_value() || !device_opt.has_value(),
@@ -86,37 +114,48 @@ static PyObject* THPStorage_pynew(
       "(): only one or neither of 'allocator' or 'device' can ",
       "be given, but not both");
 
-  THPStoragePtr self((THPStorage*)type->tp_alloc(type, 0));
-  THPUtils_assert(self, "failed to allocate a " THPStorageStr " object");
+  PyObject* self = nullptr;
   c10::Allocator* allocator = nullptr;
   at::OptionalDeviceGuard device_guard;
 
   if (allocator_opt.has_value()) {
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
     allocator = reinterpret_cast<c10::Allocator*>(allocator_opt.value());
   } else if (device_opt.has_value()) {
     at::Device device = device_opt.value();
-    if (device.type() == at::kCPU) {
-      allocator = c10::GetDefaultCPUAllocator();
+    torch::utils::maybe_initialize_device(device);
+
+    switch (device.type()) {
+      case at::kCPU:
+        allocator = c10::GetDefaultCPUAllocator();
+        break;
 #ifdef USE_CUDA
-    } else if (device.type() == at::kCUDA) {
-      at::globalContext().lazyInitCUDA();
-      allocator = c10::cuda::CUDACachingAllocator::get();
+      case at::kCUDA:
+        allocator = c10::cuda::CUDACachingAllocator::get();
+        break;
 #endif
 #ifdef USE_MPS
-    } else if (device.type() == at::kMPS) {
-      allocator = at::mps::GetMPSAllocator();
+      case at::kMPS:
+        allocator = at::mps::GetMPSAllocator();
+        break;
 #endif
-    } else if (device.type() == at::DeviceType::XPU) {
-      allocator = c10::GetAllocator(device.type());
-    } else if (device.type() == at::DeviceType::Meta) {
-      allocator = c10::GetAllocator(device.type());
-    } else {
-      TORCH_CHECK(
-          false,
-          THPStorageStr,
-          "(): Storage device not recognized: ",
-          device.type());
+      case at::DeviceType::XPU:
+      case at::DeviceType::HPU:
+      case at::DeviceType::Meta:
+      case at::DeviceType::PrivateUse1:
+      case at::DeviceType::MAIA:
+      case at::DeviceType::MTIA:
+        allocator = c10::GetAllocator(device.type());
+        break;
+      default:
+        // NOLINTEND(bugprone-branch-clone)
+        TORCH_CHECK(
+            false,
+            THPStorageStr,
+            "(): Storage device not recognized: ",
+            device.type());
     }
+
     device_guard.reset_device(device);
   } else {
     allocator = c10::GetDefaultCPUAllocator();
@@ -124,24 +163,28 @@ static PyObject* THPStorage_pynew(
 
   // torch.Storage(*, ...)
   if (r.idx == 0) {
-    self->cdata = c10::MaybeOwned<c10::Storage>::owned(
-        c10::make_intrusive<c10::StorageImpl>(
+    self = THPStorage_NewWithStorage(
+        type,
+        make_storage_impl(
             c10::StorageImpl::use_byte_size_t(),
             0,
+            at::DataPtr(),
             allocator,
-            /*resizable=*/true));
-    return (PyObject*)self.release();
+            /*resizable=*/true,
+            device_opt));
 
     // torch.Storage(size, *, ...)
   } else if (r.idx == 1) {
     int64_t size = r.toInt64(0);
-    self->cdata = c10::MaybeOwned<c10::Storage>::owned(
-        c10::make_intrusive<c10::StorageImpl>(
+    self = THPStorage_NewWithStorage(
+        type,
+        make_storage_impl(
             c10::StorageImpl::use_byte_size_t(),
             size,
+            at::DataPtr(),
             allocator,
-            /*resizable=*/true));
-    return (PyObject*)self.release();
+            /*resizable=*/true,
+            device_opt));
 
     // torch.Storage(sequence, *, ...)
   } else if (r.idx == 2) {
@@ -157,88 +200,93 @@ static PyObject* THPStorage_pynew(
         THPStorageStr,
         "(): Could not obtain the length of sequence of type ",
         THPUtils_typename(sequence));
-    self->cdata = c10::MaybeOwned<c10::Storage>::owned(
-        c10::make_intrusive<c10::StorageImpl>(
+    self = THPStorage_NewWithStorage(
+        type,
+        make_storage_impl(
             c10::StorageImpl::use_byte_size_t(),
             length,
+            at::DataPtr(),
             allocator,
-            /*resizable=*/true));
+            /*resizable=*/true,
+            device_opt));
     THPObjectPtr item;
     try {
+      const auto& storage = THPStorage_Unpack(self);
       for (Py_ssize_t i = 0; i < length; i++) {
         item = PySequence_GetItem(sequence, i);
-        // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
         uint8_t value = THPByteUtils_unpackReal(item.get());
-        const auto& storage = THPStorage_Unpack(self);
         if (allocator == c10::GetDefaultCPUAllocator()) {
-          storage.unsafe_data<uint8_t>()[i] = value;
+          static_cast<uint8_t*>(storage.mutable_data())[i] = value;
         } else {
           // TODO: this might be slow - consider batched updates?
           storage_set(storage, i, value);
         }
       }
-    } catch (const std::exception& e) {
-      THPUtils_setError(
-          THPStorageStr
-          "(): tried to construct a storage from a sequence (%s), "
-          "but one of the items was of type %s instead of int",
+    } catch (const std::exception&) {
+      TORCH_CHECK(
+          false,
+          THPStorageStr "(): tried to construct a storage from a sequence (",
           THPUtils_typename(sequence),
-          THPUtils_typename(item.get()));
-      return nullptr;
+          "), ",
+          "but one of the items was of type ",
+          THPUtils_typename(item.get()),
+          " instead of int");
     }
-    return (PyObject*)self.release();
   }
+  return self;
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
 
 static Py_ssize_t THPStorage_length(THPStorage* self) {
   HANDLE_TH_ERRORS
-  return THPStorage_Unpack(self).nbytes();
+  THPStorage_assertNotNull(self);
+  return static_cast<Py_ssize_t>(THPStorage_Unpack(self).nbytes());
   END_HANDLE_TH_ERRORS_RET(-1)
 }
 
 static PyObject* THPStorage_get(THPStorage* self, PyObject* index) {
   HANDLE_TH_ERRORS
+  THPStorage_assertNotNull(self);
   const auto& storage = THPStorage_Unpack(self);
+  int64_t len = static_cast<int64_t>(storage.nbytes());
   /* Integer index */
   if (THPUtils_checkLong(index)) {
     int64_t nindex = THPUtils_unpackLong(index);
     if (nindex < 0)
-      nindex += storage.nbytes();
-    if (nindex < 0 || nindex >= static_cast<int64_t>(storage.nbytes())) {
+      nindex += len;
+    if (nindex < 0 || nindex >= len) {
       PyErr_SetString(
           PyExc_IndexError,
           fmt::format(
-              "index {} out of range for storage of size {}",
-              nindex,
-              storage.nbytes()));
+              "index {} out of range for storage of size {}", nindex, len));
       return nullptr;
     }
     uint8_t value = storage_get(storage, nindex);
-    return THPByteUtils_newReal(value);
+    return THPUtils_packUInt32(value);
     /* Slice index */
   } else if (PySlice_Check(index)) {
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    Py_ssize_t start, stop, slicelength, step;
-    int64_t len = storage.nbytes();
-    if (PySlice_GetIndicesEx(index, len, &start, &stop, &step, &slicelength) !=
-        0)
+    Py_ssize_t start = 0, stop = 0, slicelength = 0, step = 0;
+    if (PySlice_Unpack(index, &start, &stop, &step) < 0) {
       return nullptr;
+    }
+    slicelength = PySlice_AdjustIndices(len, &start, &stop, step);
     if (step != 1) {
-      THPUtils_setError(
-          "Trying to slice with a step of %lld, but only a step of "
-          "1 is supported",
-          (long long)step);
-      return nullptr;
+      TORCH_CHECK(
+          false,
+          "Trying to slice with a step of ",
+          step,
+          ", but only a step of "
+          "1 is supported");
     }
 
     const auto& storage = THPStorage_Unpack(self);
-    uint8_t* data = storage.data<uint8_t>();
+    auto data = static_cast<uint8_t*>(storage.mutable_data());
 
     at::StorageImpl* old_storage_impl = storage.unsafeGetStorageImpl();
     c10::raw::intrusive_ptr::incref(old_storage_impl);
-    auto new_storage_impl = c10::make_intrusive<at::StorageImpl>(
+    std::optional<at::Device> device_opt = old_storage_impl->device();
+    auto new_storage_impl = make_storage_impl(
         c10::StorageImpl::use_byte_size_t(),
 #ifdef THQUANTIZED
         slicelength * sizeof(quantized_t),
@@ -253,9 +301,12 @@ static PyObject* THPStorage_get(THPStorage* self, PyObject* index) {
             },
             old_storage_impl->device()),
         old_storage_impl->allocator(),
-        /* resizable */ false);
+        /* resizable */ false,
+        device_opt);
 
-    PyObject* _ret = THPStorage_New(std::move(new_storage_impl));
+    PyObject* _ret =
+        THPStorage_NewWithStorage(Py_TYPE(self), std::move(new_storage_impl));
+
     return _ret;
   }
   PyErr_Format(
@@ -268,12 +319,13 @@ static PyObject* THPStorage_get(THPStorage* self, PyObject* index) {
 
 static int THPStorage_set(THPStorage* self, PyObject* index, PyObject* value) {
   HANDLE_TH_ERRORS
+  THPStorage_assertNotNull(self);
   if (!THPByteUtils_checkReal(value)) {
-    THPUtils_setError(
-        "can only set storage content with a int types, but got "
-        "%s instead",
-        THPUtils_typename(value));
-    return -1;
+    TORCH_CHECK(
+        false,
+        "can only set storage content with a int types, but got ",
+        THPUtils_typename(value),
+        " instead");
   }
 
   uint8_t rvalue = THPByteUtils_unpackReal(value);
@@ -283,18 +335,19 @@ static int THPStorage_set(THPStorage* self, PyObject* index, PyObject* value) {
     storage_set(storage, nindex, rvalue);
     return 0;
   } else if (PySlice_Check(index)) {
-    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-    Py_ssize_t start, stop, slicelength, step;
-    int64_t len = storage.nbytes();
-    if (PySlice_GetIndicesEx(index, len, &start, &stop, &step, &slicelength) !=
-        0)
+    Py_ssize_t start = 0, stop = 0, step = 0;
+    Py_ssize_t len = static_cast<Py_ssize_t>(storage.nbytes());
+    if (PySlice_Unpack(index, &start, &stop, &step) < 0) {
       return -1;
+    }
+    PySlice_AdjustIndices(len, &start, &stop, step);
     if (step != 1) {
-      THPUtils_setError(
-          "Trying to slice with a step of %lld, but only a step of "
-          "1 is supported",
-          (long long)step);
-      return 0;
+      TORCH_CHECK(
+          false,
+          "Trying to slice with a step of ",
+          step,
+          ", but only a step of "
+          "1 is supported");
     }
     // TODO: check the bounds only once
     // TODO: fill?
@@ -302,73 +355,23 @@ static int THPStorage_set(THPStorage* self, PyObject* index, PyObject* value) {
       storage_set(storage, start, rvalue);
     return 0;
   }
-  THPUtils_setError(
-      "can't index a " THPStorageStr " with %s", THPUtils_typename(index));
-  return -1;
+  TORCH_CHECK(
+      false, "can't index a " THPStorageStr " with ", THPUtils_typename(index));
   END_HANDLE_TH_ERRORS_RET(-1)
 }
 
 static PyMappingMethods THPStorage_mappingmethods = {
-    (lenfunc)THPStorage_length,
-    (binaryfunc)THPStorage_get,
-    (objobjargproc)THPStorage_set};
-
-struct THPStorageMeta {
-  PyHeapTypeObject base;
-};
-
-int THPStorageMetaType_init(PyObject* cls, PyObject* args, PyObject* kwargs);
-
-PyTypeObject THPStorageMetaType = {
-    PyVarObject_HEAD_INIT(
-        DEFERRED_ADDRESS(&PyType_Type),
-        0) "torch._C._StorageMeta", /* tp_name */
-    sizeof(THPStorageMeta), /* tp_basicsize */
-    0, /* tp_itemsize */
-    nullptr, /* tp_dealloc */
-    0, /* tp_vectorcall_offset */
-    nullptr, /* tp_getattr */
-    nullptr, /* tp_setattr */
-    nullptr, /* tp_reserved */
-    nullptr, /* tp_repr */
-    nullptr, /* tp_as_number */
-    nullptr, /* tp_as_sequence */
-    nullptr, /* tp_as_mapping */
-    nullptr, /* tp_hash  */
-    nullptr, /* tp_call */
-    nullptr, /* tp_str */
-    nullptr, /* tp_getattro */
-    nullptr, /* tp_setattro */
-    nullptr, /* tp_as_buffer */
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /* tp_flags */
-    nullptr, /* tp_doc */
-    nullptr, /* tp_traverse */
-    nullptr, /* tp_clear */
-    nullptr, /* tp_richcompare */
-    0, /* tp_weaklistoffset */
-    nullptr, /* tp_iter */
-    nullptr, /* tp_iternext */
-    nullptr, /* tp_methods */
-    nullptr, /* tp_members */
-    nullptr, /* tp_getset */
-    DEFERRED_ADDRESS(&PyType_Type), /* tp_base */
-    nullptr, /* tp_dict */
-    nullptr, /* tp_descr_get */
-    nullptr, /* tp_descr_set */
-    0, /* tp_dictoffset */
-    THPStorageMetaType_init, /* tp_init */
-    nullptr, /* tp_alloc */
-    nullptr, /* tp_new */
-};
+    reinterpret_cast<lenfunc>(THPStorage_length),
+    reinterpret_cast<binaryfunc>(THPStorage_get),
+    reinterpret_cast<objobjargproc>(THPStorage_set)};
 
 // TODO: implement equality
 PyTypeObject THPStorageType = {
-    PyVarObject_HEAD_INIT(
-        &THPStorageMetaType,
-        0) "torch._C.StorageBase", /* tp_name */
+    PyVarObject_HEAD_INIT(DEFERRED_ADDRESS(&PyType_Type), 0)
+    "torch._C.StorageBase", /* tp_name */
     sizeof(THPStorage), /* tp_basicsize */
     0, /* tp_itemsize */
-    nullptr, /* tp_dealloc */
+    THPStorage_dealloc, /* tp_dealloc */
     0, /* tp_vectorcall_offset */
     nullptr, /* tp_getattr */
     nullptr, /* tp_setattr */
@@ -383,6 +386,7 @@ PyTypeObject THPStorageType = {
     nullptr, /* tp_getattro */
     nullptr, /* tp_setattro */
     nullptr, /* tp_as_buffer */
+    // NOLINTNEXTLINE(misc-redundant-expression)
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /* tp_flags */
     nullptr, /* tp_doc */
     nullptr, /* tp_traverse */
@@ -406,21 +410,14 @@ PyTypeObject THPStorageType = {
     THPStorage_pynew, /* tp_new */
 };
 
-int THPStorageMetaType_init(PyObject* cls, PyObject* args, PyObject* kwargs) {
-  if (PyType_Type.tp_init(cls, args, kwargs) < 0) {
-    return -1;
-  }
-  ((PyTypeObject*)cls)->tp_dealloc = (destructor)THPStorage_subclass_dealloc;
-  return 0;
-}
-
 static PyObject* THPStorage_device(THPStorage* self, void* unused) {
   HANDLE_TH_ERRORS
+  THPStorage_assertNotNull(self);
   return THPDevice_New(THPStorage_Unpack(self).device());
   END_HANDLE_TH_ERRORS
 }
 
-PyObject* THPStorage_get_cdata(THPStorage* self, void* unused) {
+static PyObject* THPStorage_get_cdata(THPStorage* self, void* unused) {
   HANDLE_TH_ERRORS
   return PyLong_FromVoidPtr(THPStorage_Unpack(self).unsafeGetStorageImpl());
   END_HANDLE_TH_ERRORS
@@ -430,8 +427,16 @@ typedef PyObject* (*getter)(PyObject*, void*);
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays,cppcoreguidelines-avoid-non-const-global-variables)
 static struct PyGetSetDef THPStorage_properties[] = {
-    {"device", (getter)THPStorage_device, nullptr, nullptr, nullptr},
-    {"_cdata", (getter)THPStorage_get_cdata, nullptr, nullptr, nullptr},
+    {"device",
+     reinterpret_cast<getter>(THPStorage_device),
+     nullptr,
+     nullptr,
+     nullptr},
+    {"_cdata",
+     reinterpret_cast<getter>(THPStorage_get_cdata),
+     nullptr,
+     nullptr,
+     nullptr},
     {nullptr}};
 
 bool THPStorage_init(PyObject* module) {
@@ -439,23 +444,25 @@ bool THPStorage_init(PyObject* module) {
   THPUtils_addPyMethodDefs(methods, THPStorage_getMethods());
   THPUtils_addPyMethodDefs(methods, THPStorage_getSharingMethods());
 
-  THPStorageMetaType.tp_base = &PyType_Type;
-  if (PyType_Ready(&THPStorageMetaType) < 0)
-    return false;
-  Py_INCREF(&THPStorageMetaType);
-  PyModule_AddObject(module, "_StorageMeta", (PyObject*)&THPStorageMetaType);
-
   THPStorageType.tp_methods = methods.data();
   THPStorageType.tp_getset = THPStorage_properties;
-  if (PyType_Ready(&THPStorageType) < 0)
+  if (PyModule_AddType(module, &THPStorageType) < 0)
     return false;
-  Py_INCREF(&THPStorageType);
-  PyModule_AddObject(module, "StorageBase", (PyObject*)&THPStorageType);
   return true;
 }
 
 void THPStorage_postInit(PyObject* module) {
-  THPStorageClass = PyObject_GetAttrString(module, "UntypedStorage");
+  THPStorageClass = reinterpret_cast<PyTypeObject*>(
+      PyObject_GetAttrString(module, "UntypedStorage"));
   if (!THPStorageClass)
     throw python_error();
+}
+
+void THPStorage_assertNotNull(THPStorage* storage) {
+  TORCH_CHECK(
+      THPStorage_Unpack(storage).unsafeGetStorageImpl(), "Got a null Storage");
+}
+
+void THPStorage_assertNotNull(PyObject* obj) {
+  THPStorage_assertNotNull(reinterpret_cast<THPStorage*>(obj));
 }

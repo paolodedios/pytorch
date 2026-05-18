@@ -14,12 +14,13 @@ import time
 import torch.distributed.elastic.timer as timer
 import torch.multiprocessing as torch_mp
 from torch.testing._internal.common_utils import (
-    TEST_WITH_DEV_DBG_ASAN,
-    run_tests,
-    IS_WINDOWS,
+    IS_ARM64,
     IS_MACOS,
+    IS_WINDOWS,
+    run_tests,
     skip_but_pass_in_sandcastle_if,
-    TestCase
+    TEST_WITH_DEV_DBG_ASAN,
+    TestCase,
 )
 
 
@@ -40,8 +41,9 @@ def _stuck_function(rank, mp_queue):
         time.sleep(5)
 
 
-# timer is not supported on macos or windowns
-if not (IS_WINDOWS or IS_MACOS):
+# timer is not supported on these platforms
+if not (IS_WINDOWS or IS_MACOS or IS_ARM64):
+
     class LocalTimerExample(TestCase):
         """
         Demonstrates how to use LocalTimerServer and LocalTimerClient
@@ -55,7 +57,9 @@ if not (IS_WINDOWS or IS_MACOS):
         unittest. As of now this will SIGSEGV.
         """
 
-        @skip_but_pass_in_sandcastle_if(TEST_WITH_DEV_DBG_ASAN, "test is asan incompatible")
+        @skip_but_pass_in_sandcastle_if(
+            TEST_WITH_DEV_DBG_ASAN, "test is asan incompatible"
+        )
         def test_torch_mp_example(self):
             # in practice set the max_interval to a larger value (e.g. 60 seconds)
             mp_queue = mp.get_context("spawn").Queue()
@@ -80,7 +84,9 @@ if not (IS_WINDOWS or IS_MACOS):
 
             server.stop()
 
-        @skip_but_pass_in_sandcastle_if(TEST_WITH_DEV_DBG_ASAN, "test is asan incompatible")
+        @skip_but_pass_in_sandcastle_if(
+            TEST_WITH_DEV_DBG_ASAN, "test is asan incompatible"
+        )
         def test_example_start_method_spawn(self):
             self._run_example_with(start_method="spawn")
 
@@ -96,7 +102,7 @@ if not (IS_WINDOWS or IS_MACOS):
 
             world_size = 8
             processes = []
-            for i in range(0, world_size):
+            for i in range(world_size):
                 if i % 2 == 0:
                     p = spawn_ctx.Process(target=_stuck_function, args=(i, mp_queue))
                 else:
@@ -104,7 +110,7 @@ if not (IS_WINDOWS or IS_MACOS):
                 p.start()
                 processes.append(p)
 
-            for i in range(0, world_size):
+            for i in range(world_size):
                 p = processes[i]
                 p.join()
                 if i % 2 == 0:

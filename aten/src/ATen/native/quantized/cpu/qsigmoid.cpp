@@ -20,13 +20,12 @@
 #include <algorithm>
 #include <utility>
 
-namespace at {
-namespace native {
+namespace at::native {
 
 DEFINE_DISPATCH(qsigmoid_stub);
 
 #ifdef USE_PYTORCH_QNNPACK
-Tensor qnnpack_sigmoid(
+static Tensor qnnpack_sigmoid(
     Tensor input, double output_scale, int64_t output_zero_point) {
   TORCH_CHECK(input.ndimension() > 0, "qnnpack_sigmoid(): Got empty input tensor");
   TORCH_CHECK(input.scalar_type() == c10::kQUInt8,
@@ -75,7 +74,7 @@ Tensor qnnpack_sigmoid(
   const pytorch_qnnp_status setupStatus = pytorch_qnnp_setup_sigmoid_nc_q8(
     sigmoid_op,
     input_contig.size(0) /* batch size */,
-    (uint8_t*)input_contig.data_ptr<c10::quint8>() /* input data */,
+    (uint8_t*)input_contig.const_data_ptr<c10::quint8>() /* input data */,
     num_elems /* input stride */,
     (uint8_t*)qy.data_ptr<c10::quint8>() /* output data */,
     num_elems /* output stride */);
@@ -108,7 +107,7 @@ Tensor sigmoid_quantized_cpu(const Tensor& qx) {
 #endif  // USE_PYTORCH_QNNPACK
   Tensor qy;
   AT_DISPATCH_QINT_TYPES(qx.scalar_type(), "qsigmoid", [&]() {
-    // Naive implemenentation: uses dequantize/execute/quantize routine
+    // Naive implementation: uses dequantize/execute/quantize routine
     // - Output scale is set to 1.0 / 2^(BIT_NUM)
     // - For signed types output zero point is set to 0
     // - For unsigned types output zero point is set to (qmax + qmin) / 2.0
@@ -116,7 +115,6 @@ Tensor sigmoid_quantized_cpu(const Tensor& qx) {
     // optimizations
     double output_scale = 0.00390625;  // 1.0 / 2^8
     int64_t output_zero_point = 0;
-    // NOLINTNEXTLINE(clang-analyzer-core.NullDereference)
     if (SCALAR_TYPE == at::kQInt32) {
       output_scale = 2.3283064365386963e-10;  // 1.0 / 2^32
     } else if (SCALAR_TYPE == at::kQInt8) {
@@ -149,4 +147,4 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
 }
 } // namespace
 
-}}  // namespace at::native
+}  // namespace at::native

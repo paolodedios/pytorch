@@ -14,8 +14,7 @@
 #include <utility>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 // This fallback should only be used for operations that are self inverse and have a corresponding tensor
 // bit (internally implemented using DispatchKey) to maintain the state on tensor using tensor bit.
 // Currently there are two tensor bits that trigger this fallback: conjugate bit and negative bit.
@@ -23,7 +22,7 @@ namespace native {
 
 // NOTE: To use this fallback, `clone` and `copy_` should fully understand and be able to correctly handle the semantic of your math bit.
 struct MathOpFallback {
-  MathOpFallback(DispatchKey key_, string op_name_) : key(key_), op_name(std::move(op_name_)) {}
+  MathOpFallback(DispatchKey key_, std::string op_name_) : key(key_), op_name(std::move(op_name_)) {}
   virtual bool is_bit_set(const Tensor&) = 0;
   void fallback_impl(const c10::OperatorHandle& op, DispatchKeySet dispatch_keys, torch::jit::Stack* stack) {
     /*
@@ -57,7 +56,7 @@ struct MathOpFallback {
     const auto num_arguments = arguments.size();
     const auto stack_start = stack->size() - num_arguments;
 
-    c10::optional<bool> is_write;
+    std::optional<bool> is_write;
     for (const auto i : c10::irange(num_arguments)) {
       // Three possible states:
       // 1. alias_info has no value --> out-of-place operation
@@ -152,7 +151,7 @@ struct MathOpFallback {
   virtual ~MathOpFallback() = default;
 
   DispatchKey key;
-  string op_name;
+  std::string op_name;
 };
-}
-}// namespace at
+
+} // namespace at::native

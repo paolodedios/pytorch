@@ -15,6 +15,8 @@
 #include <ATen/NumericUtils.h>
 #include <ATen/cuda/NumericLimits.cuh>
 
+#include <thrust/pair.h>
+
 namespace at::native {
 
 template <typename acc_t>
@@ -56,6 +58,6 @@ void max_all_launch_kernel(TensorIterator &iter) {
   });
 }
 
-REGISTER_DISPATCH(max_values_stub, &max_values_kernel_cuda);
+REGISTER_DISPATCH(max_values_stub, &max_values_kernel_cuda)
 
 } // namespace at::native

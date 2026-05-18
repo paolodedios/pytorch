@@ -5,8 +5,7 @@
 #include <torch/nn/options/batchnorm.h>
 #include <torch/types.h>
 
-namespace torch {
-namespace nn {
+namespace torch::nn {
 
 /// Options for the `InstanceNorm` module.
 struct TORCH_API InstanceNormOptions {
@@ -68,13 +67,13 @@ namespace functional {
 /// F::InstanceNormFuncOptions().running_mean(mean).running_var(variance).weight(weight).bias(bias).momentum(0.1).eps(1e-5));
 /// ```
 struct TORCH_API InstanceNormFuncOptions {
-  TORCH_ARG(Tensor, running_mean) = Tensor();
+  TORCH_ARG(Tensor, running_mean);
 
-  TORCH_ARG(Tensor, running_var) = Tensor();
+  TORCH_ARG(Tensor, running_var);
 
-  TORCH_ARG(Tensor, weight) = Tensor();
+  TORCH_ARG(Tensor, weight);
 
-  TORCH_ARG(Tensor, bias) = Tensor();
+  TORCH_ARG(Tensor, bias);
 
   TORCH_ARG(bool, use_input_stats) = true;
 
@@ -85,5 +84,4 @@ struct TORCH_API InstanceNormFuncOptions {
 
 } // namespace functional
 
-} // namespace nn
-} // namespace torch
+} // namespace torch::nn

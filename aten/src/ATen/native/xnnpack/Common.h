@@ -8,9 +8,7 @@
 #include <limits>
 #include <memory>
 
-namespace at {
-namespace native {
-namespace xnnpack {
+namespace at::native::xnnpack {
 
 struct Deleter final {
   void operator()(const xnn_operator_t op) const {
@@ -66,8 +64,6 @@ struct ContextConv2D final {
 };
 
 
-bool available();
-
 namespace internal {
 
 struct Layout final {
@@ -97,7 +93,7 @@ struct Layout final {
       }
 
       return batch;
-    };
+    }
 
     static int64_t channel(const IntArrayRef tensor) {
       if (C10_UNLIKELY(tensor.empty())) {
@@ -105,7 +101,7 @@ struct Layout final {
       }
 
       return tensor.back();
-    };
+    }
   };
 
   // Convolution Filters
@@ -123,8 +119,10 @@ struct Layout final {
   };
 };
 } // namespace internal
-} // namespace xnnpack
-} // namespace native
-} // namespace at
+} // namespace at::native::xnnpack
 
 #endif /* USE_XNNPACK */
+
+namespace at::native::xnnpack {
+bool available();
+} // namespace at::native::xnnpack

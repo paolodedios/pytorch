@@ -1,4 +1,3 @@
-#include <ATen/Utils.h>
 #include <c10/core/ScalarType.h>
 #include <c10/util/Exception.h>
 #include <c10/util/accumulate.h>
@@ -11,7 +10,6 @@
 #include <torch/csrc/jit/passes/fold_conv_bn.h>
 #include <torch/csrc/jit/passes/frozen_conv_folding.h>
 #include <torch/csrc/jit/passes/utils/optimization_utils.h>
-#include <torch/csrc/jit/tensorexpr/types.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -21,8 +19,7 @@
 #include <ATen/ops/zeros_like.h>
 #endif
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
@@ -328,8 +325,8 @@ bool FoldFrozenConvMulOrDiv(Block* b) {
       // channels-out resize it to the shape that will broadcast to
       // weight_tensor when the op is run so we dont change weight size
       std::vector<int64_t> weight_compatible_size = {out_channels};
-      for (const auto i : c10::irange(1, weight_tensor.ndimension())) {
-        (void)i; // Suppress unused variable warning
+      for ([[maybe_unused]] const auto i :
+           c10::irange(1, weight_tensor.ndimension())) {
         weight_compatible_size.push_back(1);
       }
 
@@ -408,5 +405,4 @@ bool FoldFrozenConvMulOrDiv(std::shared_ptr<Graph>& graph) {
   return graph_modified;
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

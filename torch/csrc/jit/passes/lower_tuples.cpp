@@ -1,6 +1,5 @@
 #include <torch/csrc/jit/passes/lower_tuples.h>
 
-#include <ATen/core/functional.h>
 #include <c10/util/Exception.h>
 #include <c10/util/irange.h>
 #include <torch/csrc/jit/ir/constants.h>
@@ -9,8 +8,7 @@
 
 #include <utility>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 namespace {
 
@@ -29,7 +27,6 @@ std::unordered_set<Symbol> supported_ops = {
     prim::Return,
     prim::PythonOp,
     aten::format,
-    prim::Uninitialized,
     aten::__getitem__};
 
 // Flatten block inputs and insert a tuple construct in the block
@@ -41,7 +38,6 @@ static void flattenTupleInLoopParams(Node* n, size_t index) {
   Block* block = n->blocks().at(0);
   Node* block_node = n;
 
-  std::vector<Value*> new_node_inputs = {};
   auto new_construct_node =
       block->prependNode(block->owningGraph()->create(prim::TupleConstruct));
   for (size_t j = 0; j < tt->elements().size(); ++j) {
@@ -109,7 +105,8 @@ void removeTupleNodes(Node* n, bool must_remove_tuples) {
   auto construct_node = n->inputs().at(0)->node();
   if (construct_node->kind() != prim::TupleConstruct) {
     if (must_remove_tuples) {
-      AT_ERROR(n->kind().toQualString(), " not matched to tuple construct");
+      TORCH_CHECK(
+          false, n->kind().toQualString(), " not matched to tuple construct");
     }
     return;
   }
@@ -122,7 +119,8 @@ void removeTupleNodes(Node* n, bool must_remove_tuples) {
     auto maybe_int = constant_as<int64_t>(idx);
     if (!maybe_int) {
       if (must_remove_tuples) {
-        AT_ERROR(n->sourceRange(), "tuple index with non-constant index");
+        TORCH_CHECK(
+            false, n->sourceRange(), "tuple index with non-constant index");
       }
       return;
     }
@@ -338,5 +336,4 @@ void LowerSimpleTuples(const std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("After LowerSimpleTuples: ", graph);
   EliminateDeadCode(graph);
 }
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

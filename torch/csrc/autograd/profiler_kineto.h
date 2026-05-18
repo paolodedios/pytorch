@@ -9,21 +9,21 @@
 #include <torch/csrc/profiler/util.h>
 
 namespace torch {
-namespace profiler {
-namespace impl {
+
+namespace profiler::impl {
 struct Result;
 namespace kineto {
 struct ActivityTraceWrapper;
 } // namespace kineto
-} // namespace impl
-} // namespace profiler
-namespace autograd {
-namespace profiler {
+} // namespace profiler::impl
+
+namespace autograd::profiler {
 using experimental_event_t = std::shared_ptr<torch::profiler::impl::Result>;
+using extra_meta_t = std::unordered_map<std::string, std::string>;
 
 struct TORCH_API KinetoEvent {
   KinetoEvent(
-      std::shared_ptr<const torch::profiler::impl::Result>,
+      const std::shared_ptr<const torch::profiler::impl::Result>& /*result*/,
       const bool verbose);
 
   uint64_t startThreadId() const;
@@ -34,6 +34,11 @@ struct TORCH_API KinetoEvent {
   const c10::ArrayRef<std::vector<int64_t>> shapes() const;
   bool hasTypes() const;
   const c10::ArrayRef<std::string> dtypes() const;
+  bool hasConcreteInputs() const;
+  const c10::ArrayRef<c10::IValue> concreteInputs() const;
+  bool hasKwinputs() const;
+  bool isHiddenEvent() const;
+  const std::unordered_map<std::string, c10::IValue> kwinputs() const;
   uint64_t flops() const;
   int64_t sequenceNr() const;
   bool hasStack() const;
@@ -43,23 +48,40 @@ struct TORCH_API KinetoEvent {
   const c10::ArrayRef<std::string> moduleHierarchy() const;
   int64_t debugHandle() const;
   std::string name() const;
+  std::string overload_name() const;
   c10::DeviceType deviceType() const;
-  uint8_t deviceIndex() const;
+  int deviceIndex() const;
   int64_t nBytes() const;
-  uint64_t startUs() const;
-  uint64_t durationUs() const;
+  uint64_t startNs() const;
+  uint64_t endNs() const;
+  uint64_t durationNs() const;
   bool isAsync() const;
   uint64_t correlationId() const;
   uint64_t linkedCorrelationId() const;
+  uint32_t flowId() const;
+  uint32_t flowType() const;
+  bool flowStart() const;
+  int64_t externalId() const;
   int64_t deviceResourceId() const;
   std::string backend() const;
   bool isPythonFunction() const;
   int64_t cudaElapsedUs() const;
-  void getPerfEventCounters(torch::profiler::perf_counters_t&) const;
+  int64_t privateuse1ElapsedUs() const;
+  void getPerfEventCounters(torch::profiler::perf_counters_t& /*in*/) const;
+  extra_meta_t extraMeta() const;
+  std::string metadataJson() const;
+
+  const c10::ArrayRef<torch::profiler::impl::shape> structuredInputShapes()
+      const;
+  const c10::ArrayRef<torch::profiler::impl::shape> structuredInputStrides()
+      const;
+  int64_t pythonId() const;
+  int64_t pythonParentId() const;
+  int64_t pythonModuleId() const;
 
  private:
-  torch::profiler::impl::ProfilerEventStub fallbackStart() const;
-  torch::profiler::impl::ProfilerEventStub fallbackEnd() const;
+  torch::profiler::impl::ProfilerVoidEventStub fallbackStart() const;
+  torch::profiler::impl::ProfilerVoidEventStub fallbackEnd() const;
 
   std::shared_ptr<const torch::profiler::impl::Result> result_;
   std::vector<std::string> python_stack_;
@@ -67,6 +89,10 @@ struct TORCH_API KinetoEvent {
   // Copy fields from result so we can return ArrayRefs.
   std::vector<std::vector<int64_t>> shapes_;
   std::vector<std::string> dtypes_;
+  std::vector<c10::IValue> concrete_inputs_;
+  std::unordered_map<std::string, c10::IValue> kwinputs_;
+  std::vector<torch::profiler::impl::shape> structured_input_shapes_;
+  std::vector<torch::profiler::impl::shape> structured_input_strides_;
 };
 
 // Consolidating events returned directly from Kineto
@@ -82,8 +108,8 @@ struct TORCH_API ProfilerResult {
       std::vector<experimental_event_t>&& event_tree);
   ~ProfilerResult();
 
-  uint64_t trace_start_us() const {
-    return trace_start_us_;
+  uint64_t trace_start_ns() const {
+    return trace_start_ns_;
   }
 
   const std::vector<KinetoEvent>& events() const {
@@ -97,7 +123,7 @@ struct TORCH_API ProfilerResult {
   void save(const std::string& path);
 
  private:
-  uint64_t trace_start_us_ = 0;
+  uint64_t trace_start_ns_ = 0;
   std::vector<KinetoEvent> events_;
   std::unique_ptr<torch::profiler::impl::kineto::ActivityTraceWrapper> trace_;
   std::vector<experimental_event_t> event_tree_;
@@ -167,20 +193,51 @@ TORCH_API void enableProfilerWithEventPostProcess(
 
 TORCH_API std::unique_ptr<ProfilerResult> disableProfiler();
 
+using ActivityFilter = std::unordered_map<
+    torch::profiler::impl::ActivityType,
+    std::unordered_set<std::string>>;
 TORCH_API void prepareProfiler(
     const torch::profiler::impl::ProfilerConfig& config,
+    const std::set<torch::profiler::impl::ActivityType>& activities,
+    const ActivityFilter& activity_filter = {});
+
+TORCH_API void toggleCollectionDynamic(
+    const bool enable,
     const std::set<torch::profiler::impl::ActivityType>& activities);
 
-} // namespace profiler
-} // namespace autograd
+TORCH_API void startMemoryProfile();
+TORCH_API void stopMemoryProfile();
+TORCH_API void exportMemoryProfile(const std::string& path);
 
-namespace profiler {
-namespace impl {
+/**
+ * When a C++ thread really has no control over how the profiler was enabled,
+ * for example, by some unreachable Python code, it can call these functions
+ * to test/join/unjoin itself into the collection set of a profiler, if any.
+ * Without calling these functions, the symptom may be "not seeing GPU events
+ * from some child C++ threads". This is an example on how to use them,
+ *
+ *    using namespace torch::autograd::profiler;
+ *    bool enabled = isProfilerEnabledInMainThread();
+ *    if (enabled != saved_enabled_state) {
+ *      if (enabled) {
+ *        enableProfilerInChildThread();
+ *      } else {
+ *        disableProfilerInChildThread();
+ *      }
+ *      saved_enabled_state = enabled;
+ *    }
+ */
+TORCH_API bool isProfilerEnabledInMainThread();
+TORCH_API void enableProfilerInChildThread();
+TORCH_API void disableProfilerInChildThread();
+
+} // namespace autograd::profiler
+
+namespace profiler::impl {
 
 // Experimental.
 TORCH_API void _reportVulkanEventToProfiler(vulkan_id_t id);
 
-} // namespace impl
-} // namespace profiler
+} // namespace profiler::impl
 
 } // namespace torch

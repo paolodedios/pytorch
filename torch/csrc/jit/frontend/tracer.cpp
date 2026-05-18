@@ -1,25 +1,17 @@
 #include <torch/csrc/jit/frontend/tracer.h>
 
-#include <ATen/Backtrace.h>
 #include <ATen/ScalarOps.h>
 #include <ATen/TracerMode.h>
 #include <ATen/core/Dict.h>
-#include <ATen/core/functional.h>
 #include <c10/util/Exception.h>
 #include <c10/util/irange.h>
-#include <torch/csrc/autograd/engine.h>
-#include <torch/csrc/autograd/function.h>
 #include <torch/csrc/autograd/variable.h>
 #include <torch/csrc/jit/api/module.h>
 #include <torch/csrc/jit/ir/constants.h>
 #include <torch/csrc/jit/ir/ir.h>
-#include <torch/csrc/jit/passes/dead_code_elimination.h>
 #include <torch/csrc/jit/passes/fixup_trace_scope_blocks.h>
 #include <torch/csrc/jit/passes/inliner.h>
-#include <torch/csrc/jit/passes/lower_tuples.h>
 #include <torch/csrc/jit/passes/normalize_ops.h>
-#include <torch/csrc/jit/passes/remove_expands.h>
-#include <torch/csrc/utils/variadic.h>
 #include <torch/custom_class.h>
 
 #include <memory>
@@ -34,17 +26,17 @@ namespace torch::jit::tracer {
 namespace detail {
 
 template <typename T>
-void genericAddInput(Node* n, T value) {
+static void genericAddInput(Node* n, T value) {
   Value* v = n->owningGraph()->insertConstant(value);
   recordSourceLocation(v->node());
   n->addInput(v);
 }
 
 template <typename T>
-void genericAddOptionalInput(
+static void genericAddOptionalInput(
     Node* n,
     const char* name,
-    const c10::optional<T>& value) {
+    const std::optional<T>& value) {
   if (value) {
     jit::tracer::addInputs(n, name, *value);
   } else {
@@ -55,14 +47,15 @@ void genericAddOptionalInput(
 }
 
 template <typename T>
-void badArgType(const T& v) {
-  AT_ERROR(
+static void badArgType(const T& v) {
+  TORCH_CHECK(
+      false,
       "Found an unsupported argument type in the JIT tracer: ",
       c10::demangle_type<T>(),
       ". File a bug report.");
 }
 
-thread_local std::shared_ptr<TracingState> tracing_state;
+static thread_local std::shared_ptr<TracingState> tracing_state;
 } // namespace detail
 
 static std::atomic<bool> tracer_state_warn_mode{true};
@@ -72,7 +65,6 @@ std::atomic<bool>& getTracerStateWarnMode() {
 }
 
 std::function<void()> pauseTracing() {
-  // NOLINTNEXTLINE
   std::shared_ptr<tracer::TracingState> state = getTracingState();
   tracer::setTracingState(nullptr);
 
@@ -110,7 +102,7 @@ void TracingState::delValue(const IValue& var) {
 Value* getValueTrace(const IValue& var) {
   return getTracingState()->getValue(var);
 }
-Value* getOptTensorValueTrace(const c10::optional<at::Tensor>& var) {
+static Value* getOptTensorValueTrace(const std::optional<at::Tensor>& var) {
   return getValueTrace(IValue(var));
 }
 Value* TracingState::getValue(const IValue& var) {
@@ -167,12 +159,12 @@ Value* TracingState::getValue(const IValue& var) {
     // Didn't find it. Bake in a constant
     if (ten.requires_grad()) {
       pauseTracing();
-      std::ostringstream oss;
-      oss << "Cannot insert a Tensor that requires grad as a constant. "
-          << "Consider making it a parameter or input, or detaching the gradient\n"
-          << "Tensor:\n"
-          << ten;
-      throw std::runtime_error(oss.str());
+      TORCH_CHECK(
+          false,
+          "Cannot insert a Tensor that requires grad as a constant. ",
+          "Consider making it a parameter or input, or detaching the gradient\n",
+          "Tensor:\n",
+          ten);
     }
 
     Value* constant = graph->insertConstant(ten);
@@ -208,15 +200,19 @@ Value* TracingState::getValue(const IValue& var) {
       }
     }
 
-    std::ostringstream oss;
     if (var.isFuture()) {
-      oss << "Tried to trace Future or Object that the tracer was not aware of.";
+      TORCH_CHECK(
+          false,
+          "Tried to trace Future or Object that the tracer was not aware of.");
     } else {
-      oss << "Tried to trace " << var
-          << " but it is not part of the active trace. Modules that are called during a trace"
-          << " must be registered as submodules of the thing being traced.";
+      TORCH_CHECK(
+          false,
+          "Tried to trace ",
+          var,
+          " but it is not part of the active trace. Modules that are called during a trace",
+          " must be registered as submodules of the thing being traced.");
     }
-    throw std::runtime_error(oss.str());
+
   } else {
     // If the values are non-tensors, we try to create constants
     // and bake those constants into the traced graph
@@ -225,11 +221,12 @@ Value* TracingState::getValue(const IValue& var) {
       recordSourceLocation(constant.value()->node());
       return *constant;
     }
-    std::ostringstream os;
-    os << "Tracer cannot get value trace for type " << var.tagKind() << ". "
-       << "The below value could not be materialized as a constant:\n"
-       << var;
-    throw std::runtime_error(os.str());
+    TORCH_CHECK(
+        false,
+        "Tracer cannot get value trace for type ",
+        var.tagKind(),
+        ". The below value could not be materialized as a constant:\n",
+        var);
   }
 }
 bool TracingState::hasValue(const IValue& var) const {
@@ -252,15 +249,14 @@ Value* TracingState::getOutput(const IValue& iv, size_t i) {
 
     auto& value_map = getTracingState()->env_stack.back();
     auto it = value_map.find(iv);
-    if (it == value_map.end()) {
-      std::ostringstream os;
-      os << "output " << i << " (" << var
-         << ") of traced region did not have observable "
-         << "data dependence with trace inputs; this probably indicates your "
-            "program "
-         << "cannot be understood by the tracer.";
-      throw std::runtime_error(os.str());
-    }
+    TORCH_CHECK(
+        it != value_map.end(),
+        "output ",
+        i,
+        " (",
+        var,
+        ") of traced region did not have observable data dependence with trace inputs; ",
+        "this probably indicates your program cannot be understood by the tracer.");
     return it->second;
   } else if (iv.isTensorList()) {
     if (tracing_mode_strict) {
@@ -281,11 +277,10 @@ Value* TracingState::getOutput(const IValue& iv, size_t i) {
     graph->insertNode(tuple_node);
     return tuple_node->output();
   } else if (iv.isGenericDict()) {
-    if (tracing_mode_strict) {
-      throw std::runtime_error(
-          "Encountering a dict at the output of the tracer" +
-          std::string(STRICT_TRACER_MSG));
-    }
+    TORCH_CHECK(
+        !tracing_mode_strict,
+        "Encountering a dict at the output of the tracer",
+        STRICT_TRACER_MSG);
     auto dict = iv.toGenericDict();
     TypePtr key_type = dict.keyType();
     TypePtr value_type = dict.valueType();
@@ -304,15 +299,15 @@ Value* TracingState::getOutput(const IValue& iv, size_t i) {
         }
       }
     }
-
-    if (!key_type_valid || !value_type_valid) {
-      std::ostringstream os;
-      os << "output " << i << " (" << dict << ") of traced region "
-         << "cannot be understood by the tracer, only outputs matching"
-         << "dict[Union[str, Tensor], Union[Tensor, Tuple[Tensor, ...]]] "
-         << "can be a dictionary output of a traced function";
-      throw std::runtime_error(os.str());
-    }
+    TORCH_CHECK(
+        key_type_valid && value_type_valid,
+        "output ",
+        i,
+        " (",
+        dict,
+        ") of traced region cannot be understood by the tracer, only outputs matching ",
+        "dict[Union[str, Tensor], Union[Tensor, Tuple[Tensor, ...]]] ",
+        "can be a dictionary output of a traced function");
     std::vector<Value*> keys;
     std::vector<Value*> values;
     for (const auto& entry : dict) {
@@ -323,7 +318,8 @@ Value* TracingState::getOutput(const IValue& iv, size_t i) {
     graph->insertNode(dict_node);
     return dict_node->output();
   } else {
-    AT_ERROR(
+    TORCH_CHECK(
+        false,
         "Only tensors, lists, tuples of tensors, or dictionary of tensors can be output from traced functions");
   }
 }
@@ -345,7 +341,7 @@ static IValue addInput(
   value->setType(type);
   if (type->isSubtypeOf(*TensorType::get())) {
     auto input_tensor = input.toTensor();
-    auto name = Variable(input_tensor).name();
+    auto const& name = input_tensor.name();
     if (state->hasValue(input)) {
       input_tensor = input_tensor.view(input_tensor.sizes());
     }
@@ -416,7 +412,8 @@ static IValue addInput(
       return elems;
     }
   } else {
-    AT_ERROR(
+    TORCH_CHECK(
+        false,
         "Only tensors or (possibly nested) dict or tuples of tensors can be "
         "inputs to traced functions. Got ",
         type->repr_str());
@@ -472,7 +469,7 @@ std::pair<std::shared_ptr<TracingState>, Stack> trace(
     // varied on subsequent invocations of the trace.  Any other variables
     // will be treated as constants.
     if (isTracing()) {
-      AT_ERROR("Tracing can't be nested");
+      TORCH_CHECK(false, "Tracing can't be nested");
     }
     auto state = std::make_shared<TracingState>();
     setTracingState(state);
@@ -555,7 +552,7 @@ void TracingState::setValue(const IValue& v, Value* value) {
 
     // If the value comes from a CallFunction or CallMethod, it may not have
     // shape information attached. For debuggability, we enhance the type
-    // information by assigning the concrete value's tupe to the jit::Value.
+    // information by assigning the concrete value's type to the jit::Value.
     if (auto tensor_type = value->type()->cast<TensorType>()) {
       if (!tensor_type->isComplete()) {
         value->inferTypeFrom(var);
@@ -596,10 +593,11 @@ void TracingState::setValue(const IValue& v, Value* value) {
       setValue(entry.value(), static_value);
     }
   } else {
-    std::ostringstream os;
-    os << "Tracer cannot set value trace for type " << v.tagKind() << ". "
-       << "Supported types are tensor, tensor list, and tuple of tensors.";
-    throw std::runtime_error(os.str());
+    TORCH_CHECK(
+        false,
+        "Tracer cannot set value trace for type ",
+        v.tagKind(),
+        ". Supported types are tensor, tensor list, and tuple of tensors.");
   }
 }
 
@@ -613,11 +611,11 @@ void addInputs(Node* n, const char* name, int64_t value) {
   }
 }
 
-void addInputs(Node* n, const char* name, c10::SymInt value) {
-  addInputs(n, name, value.expect_int());
+void addInputs(Node* n, const char* name, const c10::SymInt& value) {
+  addInputs(n, name, value.guard_int(__FILE__, __LINE__));
 }
 
-void addInputs(Node* n, const char* name, c10::optional<int64_t> value) {
+void addInputs(Node* n, const char* name, std::optional<int64_t> value) {
   using ArgumentStash = jit::tracer::ArgumentStash;
   if (ArgumentStash::hasValue(name)) {
     Value* v = ArgumentStash::popValue(name);
@@ -633,13 +631,13 @@ void addInputs(Node* n, const char* name, c10::optional<int64_t> value) {
 void addInputs(Node* n, const char* name, bool value) {
   detail::genericAddInput(n, value);
 }
-void addInputs(Node* n, const char* name, const c10::optional<bool>& value) {
+void addInputs(Node* n, const char* name, const std::optional<bool>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(Node* n, const char* name, double value) {
   detail::genericAddInput(n, value);
 }
-void addInputs(Node* n, const char* name, const c10::optional<double>& value) {
+void addInputs(Node* n, const char* name, const std::optional<double>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(Node* n, const char* name, const at::Scalar& value) {
@@ -654,16 +652,16 @@ void addInputs(Node* n, const char* name, const at::Scalar& value) {
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<at::Scalar>& value) {
+    const std::optional<at::Scalar>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
-void addInputs(Node* n, const char* name, const c10::string_view value) {
+void addInputs(Node* n, const char* name, const std::string_view value) {
   detail::genericAddInput(n, std::string(value));
 }
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<c10::string_view>& value) {
+    const std::optional<std::string_view>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(Node* n, const char* name, const at::Tensor& value) {
@@ -672,19 +670,21 @@ void addInputs(Node* n, const char* name, const at::Tensor& value) {
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<at::Tensor>& value) {
+    const std::optional<at::Tensor>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<at::Generator>& value) {
-  if (value.has_value() && value->defined()) {
-    detail::badArgType(*value);
-  }
+    const std::optional<at::Generator>& value) {
   Graph* g = n->owningGraph();
-  Value* undef_gen = g->insertNode(g->createNone())->output();
-  n->addInput(undef_gen);
+
+  if (value.has_value() && value->defined()) {
+    detail::genericAddInput(n, *value);
+  } else {
+    Value* undef_gen = g->insertNode(g->createNone())->output();
+    n->addInput(undef_gen);
+  }
 }
 void addInputs(Node* n, const char* name, at::Device value) {
   detail::genericAddInput(n, value);
@@ -704,31 +704,31 @@ void addInputs(Node* n, const char* name, at::MemoryFormat value) {
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<at::MemoryFormat>& value) {
+    const std::optional<at::MemoryFormat>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<at::Layout>& value) {
+    const std::optional<at::Layout>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<at::Device>& value) {
+    const std::optional<at::Device>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(
     Node* n,
     const char* name,
-    c10::optional<at::DimnameList> value) {
+    std::optional<at::DimnameList> value) {
   TORCH_CHECK(false, "NYI: Named tensors are not supported with the tracer");
 }
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<at::ScalarType>& value) {
+    const std::optional<at::ScalarType>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(
@@ -741,7 +741,7 @@ void addInputs(
 void addInputs(
     Node* n,
     const char* name,
-    std::vector<at::Tensor> value,
+    const std::vector<at::Tensor>& value,
     bool allow_undefined) {
   addInputs(n, name, at::ITensorListRef(value), allow_undefined);
 }
@@ -765,7 +765,7 @@ void addInputs(
 TORCH_API void addInputs(
     Node* n,
     const char* name,
-    const List<c10::optional<at::Tensor>>& value) {
+    const List<std::optional<at::Tensor>>& value) {
   Graph* g = n->owningGraph();
   Node* list_node = nullptr;
   list_node = g->insertNode(g->createList(
@@ -783,19 +783,6 @@ void addInputs(
   n->addInput(list_node->output());
 }
 
-void addInputs(
-    Node* n,
-    const char* name,
-    c10::optional<caffe2::TypeMeta> opt_dtype) {
-  if (opt_dtype.has_value()) {
-    return addInputs(n, name, at::typeMetaToScalarType(*opt_dtype));
-  } else {
-    Graph* g = n->owningGraph();
-    Value* none = g->insertNode(g->createNone())->output();
-    n->addInput(none);
-  }
-}
-
 void addInputs(Node* n, const char* name, at::IntArrayRef value) {
   using ArgumentStash = jit::tracer::ArgumentStash;
   std::vector<Value*> info = ArgumentStash::hasIntArrayRef(name)
@@ -810,11 +797,10 @@ void addInputs(Node* n, const char* name, at::IntArrayRef value) {
     recordSourceLocation(info[i]->node());
   }
   for (jit::Value* v : info) {
-    if (*v->type() != *jit::IntType::get()) {
-      throw std::runtime_error(
-          "Type mismatch in setposattr for IntArrayRef. Check that your program "
-          "is valid without tracing, and please file a bug report if it is.");
-    }
+    TORCH_CHECK(
+        *v->type() == *jit::IntType::get(),
+        "Type mismatch in setposattr for IntArrayRef. Check that your program "
+        "is valid without tracing, and please file a bug report if it is.");
   }
   n->addInput(
       g->insertNode(g->createList(jit::IntType::get(), info))->output());
@@ -824,18 +810,19 @@ void addInputs(Node* n, const char* name, c10::SymIntArrayRef value) {
   addInputs(n, name, C10_AS_INTARRAYREF_SLOW(value));
 }
 
-void addInputs(Node* n, const char* name, c10::optional<c10::SymInt> value) {
+void addInputs(Node* n, const char* name, std::optional<c10::SymInt> value) {
   addInputs(
       n,
       name,
-      value.has_value() ? c10::make_optional(value->expect_int())
-                        : c10::nullopt);
+      value.has_value()
+          ? std::make_optional(value->guard_int(__FILE__, __LINE__))
+          : std::nullopt);
 }
 
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<at::IntArrayRef>& opt_value) {
+    const std::optional<at::IntArrayRef>& opt_value) {
   detail::genericAddOptionalInput(n, name, opt_value);
 }
 
@@ -879,7 +866,7 @@ void addInputs(Node* n, const char* name, ArrayRef<double> value) {
 void addInputs(
     Node* n,
     const char* name,
-    const c10::optional<c10::ArrayRef<double>>& opt_value) {
+    const std::optional<c10::ArrayRef<double>>& opt_value) {
   detail::genericAddOptionalInput(n, name, opt_value);
 }
 
@@ -1005,7 +992,7 @@ void ensureUniqueIfOutOfPlaced(const char* name, const at::Tensor& tensor) {
 }
 void ensureUniqueIfOutOfPlaced(
     const char* name,
-    const c10::optional<at::Tensor>& tensor) {
+    const std::optional<at::Tensor>& tensor) {
   ensureUniqueIfOutOfPlaced(name, tensor.has_value() ? *tensor : at::Tensor());
 }
 
@@ -1062,9 +1049,9 @@ void ArgumentStash::stashValue(
 // Stack trace recording
 ////////////////////////////////////////////////////////////////////////////////
 // no python present so we just do not record source information
-void defaultRecordSourceLocation(Node* n) {}
-std::atomic<decltype(&defaultRecordSourceLocation)> record_source_location(
-    defaultRecordSourceLocation);
+static void defaultRecordSourceLocation(Node* n) {}
+static std::atomic<decltype(&defaultRecordSourceLocation)>
+    record_source_location(defaultRecordSourceLocation);
 void recordSourceLocation(Node* n) {
   return record_source_location.load()(n);
 }
@@ -1072,10 +1059,10 @@ void setRecordSourceLocation(void (*v)(Node*)) {
   record_source_location.store(v);
 }
 
-std::vector<StackEntry> defaultPythonCallstack() {
+static std::vector<StackEntry> defaultPythonCallstack() {
   return std::vector<StackEntry>();
 }
-std::atomic<decltype(&defaultPythonCallstack)> python_callstack_fn(
+static std::atomic<decltype(&defaultPythonCallstack)> python_callstack_fn(
     defaultPythonCallstack);
 std::vector<StackEntry> pythonCallstack() {
   return python_callstack_fn.load()();
@@ -1084,10 +1071,10 @@ void setPythonCallstack(std::vector<StackEntry> (*v)()) {
   python_callstack_fn.store(v);
 }
 
-void defaultWarn(const std::string& str) {
+static void defaultWarn(const std::string& str) {
   TORCH_WARN(str);
 }
-std::atomic<warn_fn_type> warn_callback{defaultWarn};
+static std::atomic<warn_fn_type> warn_callback{defaultWarn};
 
 const char* WARN_PYTHON_DATAFLOW =
     " might cause the trace to be incorrect. We can't record the data flow of "

@@ -1,6 +1,9 @@
+# mypy: allow-untyped-defs
 # Copyright (c) Meta Platforms, Inc. and affiliates
 
 import warnings
+from typing import Any
+from typing_extensions import TypeIs
 
 import torch
 from torch.overrides import get_default_nowrap_functions
@@ -12,8 +15,8 @@ __all__ = [
 ]
 
 
-def is_masked_tensor(a):
-    r""" Returns True if the input is a MaskedTensor, else False
+def is_masked_tensor(obj: Any, /) -> TypeIs["MaskedTensor"]:
+    r"""Returns True if the input is a MaskedTensor, else False
 
     Args:
         a: any input
@@ -22,20 +25,22 @@ def is_masked_tensor(a):
 
         >>> # xdoctest: +SKIP
         >>> from torch.masked import MaskedTensor
-        >>> data = torch.arange(6).reshape(2,3)
+        >>> data = torch.arange(6).reshape(2, 3)
         >>> mask = torch.tensor([[True, False, False], [True, True, False]])
         >>> mt = MaskedTensor(data, mask)
         >>> is_masked_tensor(mt)
         True
     """
-    return isinstance(a, MaskedTensor)
+    return isinstance(obj, MaskedTensor)
 
 
 def _tensors_match(a, b, exact=True, rtol=1e-05, atol=1e-08):
     if is_masked_tensor(a) or is_masked_tensor(b):
         raise ValueError("Neither `a` nor `b` can be a MaskedTensor.")
     if a.layout != b.layout:
-        raise ValueError(f"`a` and `b` must have the same layout. Got {a.layout} and {b.layout}")
+        raise ValueError(
+            f"`a` and `b` must have the same layout. Got {a.layout} and {b.layout}"
+        )
 
     if a.dtype != b.dtype:
         b = b.type(a.dtype)
@@ -83,7 +88,7 @@ def _map_mt_args_kwargs(args, kwargs, map_fn):
     for a in args:
         impl_args.append(_helper(a, map_fn))
     impl_kwargs = {}
-    for k, v in kwargs.items():
+    for k in kwargs:
         impl_kwargs[k] = _helper(a, map_fn)
     return impl_args, impl_kwargs
 
@@ -108,9 +113,7 @@ def _masked_tensor_str(data, mask, formatter):
             formatter.format(d.item()) if isinstance(d.item(), float) else str(d.item())
             for d in data
         ]
-        max_len = max(
-            (8 if x[1] else len(x[0]) for x in zip(formatted_elements, ~mask))
-        )
+        max_len = max(8 if x[1] else len(x[0]) for x in zip(formatted_elements, ~mask))
         return (
             "["
             + ", ".join(
@@ -146,21 +149,33 @@ class MaskedTensor(torch.Tensor):
         if is_masked_tensor(mask) or not torch.is_tensor(mask):
             raise TypeError("mask must be a Tensor")
         # Use a Tensor that of the give size for the wrapper.
-        kwargs = {}
-        kwargs["device"] = data.device
-        kwargs["dtype"] = data.dtype
-        kwargs["layout"] = data.layout
-        kwargs["requires_grad"] = requires_grad
-        kwargs["dispatch_sizes_strides_policy"] = "strides"
-        kwargs["dispatch_layout"] = True
-        warnings.warn(("The PyTorch API of MaskedTensors is in prototype stage "
-                       "and will change in the near future. Please open a Github issue "
-                       "for features requests and see our documentation on the torch.masked "
-                       "module for further information about the project."), UserWarning)
+        kwargs = {
+            "device": data.device,
+            "dtype": data.dtype,
+            "layout": data.layout,
+            "requires_grad": requires_grad,
+            "dispatch_sizes_strides_policy": "strides",
+            "dispatch_layout": True,
+        }
+        warnings.warn(
+            (
+                "The PyTorch API of MaskedTensors is in prototype stage "
+                "and will change in the near future. Please open a Github issue "
+                "for features requests and see our documentation on the torch.masked "
+                "module for further information about the project."
+            ),
+            UserWarning,
+            stacklevel=2,
+        )
         if data.requires_grad:
-            warnings.warn("It is not recommended to create a MaskedTensor with a tensor that requires_grad. "
-                          "To avoid this, you can use data.clone().detach()", UserWarning)
-        return torch.Tensor._make_wrapper_subclass(cls, data.size(), **kwargs)  # type: ignore[attr-defined]
+            warnings.warn(
+                "It is not recommended to create a MaskedTensor with a tensor that requires_grad. "
+                "To avoid this, you can use data.detach().clone()",
+                UserWarning,
+                stacklevel=2,
+            )
+        # pyrefly: ignore [bad-argument-type]
+        return torch.Tensor._make_wrapper_subclass(cls, data.size(), **kwargs)
 
     def _preprocess_data(self, data, mask):
         from .._ops import _sparse_coo_where, _sparse_csr_where
@@ -183,18 +198,24 @@ class MaskedTensor(torch.Tensor):
     def _validate_members(self):
         data = self._masked_data
         mask = self.get_mask()
-        if type(data) != type(mask):
-            raise TypeError(f"data and mask must have the same type. Got {type(data)} and {type(mask)}")
+        if type(data) is not type(mask):
+            raise TypeError(
+                f"data and mask must have the same type. Got {type(data)} and {type(mask)}"
+            )
         if data.layout not in {torch.strided, torch.sparse_coo, torch.sparse_csr}:
             raise TypeError(f"data layout of {data.layout} is not supported.")
         if data.layout == torch.sparse_coo:
             if not _tensors_match(data.indices(), mask.indices(), exact=True):
-                raise ValueError("data and mask are both sparse COO tensors but do not have the same indices.")
+                raise ValueError(
+                    "data and mask are both sparse COO tensors but do not have the same indices."
+                )
         elif data.layout == torch.sparse_csr:
             if not _tensors_match(
                 data.crow_indices(), mask.crow_indices(), exact=True
             ) or not _tensors_match(data.col_indices(), mask.col_indices(), exact=True):
-                raise ValueError("data and mask are both sparse CSR tensors but do not share either crow or col indices.")
+                raise ValueError(
+                    "data and mask are both sparse CSR tensors but do not share either crow or col indices."
+                )
         if mask.dtype != torch.bool:
             raise TypeError("mask must have dtype bool.")
         if not (
@@ -219,13 +240,16 @@ class MaskedTensor(torch.Tensor):
 
     @staticmethod
     def _from_values(data, mask):
-        """ Differentiable constructor for MaskedTensor """
+        """Differentiable constructor for MaskedTensor"""
+
         class Constructor(torch.autograd.Function):
             @staticmethod
+            # pyrefly: ignore [bad-override]
             def forward(ctx, data, mask):
                 return MaskedTensor(data, mask)
 
             @staticmethod
+            # pyrefly: ignore [bad-override]
             def backward(ctx, grad_output):
                 return grad_output, None
 
@@ -237,7 +261,7 @@ class MaskedTensor(torch.Tensor):
         self._masked_mask = mask
         self._validate_members()
 
-    def __repr__(self):
+    def __repr__(self):  # type: ignore[override]
         formatter = "{0:8.4f}"
         if self.dim() == 0:
             scalar_data = self.get_data().item()
@@ -265,6 +289,7 @@ class MaskedTensor(torch.Tensor):
         kwargs = kwargs or {}
 
         from ._ops_refs import _MASKEDTENSOR_FUNCTION_TABLE
+
         if func in _MASKEDTENSOR_FUNCTION_TABLE:
             return _MASKEDTENSOR_FUNCTION_TABLE[func](*args, **kwargs)
 
@@ -282,10 +307,11 @@ class MaskedTensor(torch.Tensor):
         return MaskedTensor(fn(data), mask)
 
     @classmethod
-    def __torch_dispatch__(cls, func, types, args, kwargs):
+    def __torch_dispatch__(cls, func, types, args, kwargs):  # type: ignore[override]
         func = func.overloadpacket
 
         from ._ops_refs import _MASKEDTENSOR_DISPATCH_TABLE
+
         if func in _MASKEDTENSOR_DISPATCH_TABLE:
             return _MASKEDTENSOR_DISPATCH_TABLE[func](*args, **kwargs)
 
@@ -296,7 +322,7 @@ class MaskedTensor(torch.Tensor):
             "In the case that the semantics for the operator are not trivial, it would be appreciated "
             "to also include a proposal for the semantics."
         )
-        warnings.warn(msg)
+        warnings.warn(msg, stacklevel=2)
         return NotImplemented
 
     def __lt__(self, other):
@@ -310,10 +336,12 @@ class MaskedTensor(torch.Tensor):
     def get_data(self):
         class GetData(torch.autograd.Function):
             @staticmethod
+            # pyrefly: ignore [bad-override]
             def forward(ctx, self):
-                return self._masked_data
+                return self._masked_data.detach()
 
             @staticmethod
+            # pyrefly: ignore [bad-override]
             def backward(ctx, grad_output):
                 if is_masked_tensor(grad_output):
                     return grad_output
@@ -327,9 +355,10 @@ class MaskedTensor(torch.Tensor):
     def is_sparse_coo(self):
         return self.layout == torch.sparse_coo
 
-    def is_sparse_csr(self):
+    def is_sparse_csr(self):  # type: ignore[override]
         return self.layout == torch.sparse_csr
 
     # Update later to support more sparse layouts
-    def is_sparse(self):
+    @property
+    def is_sparse(self):  # type: ignore[override]
         return self.is_sparse_coo() or self.is_sparse_csr()

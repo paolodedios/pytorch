@@ -13,8 +13,7 @@
 #include <ATen/ops/zeros_like.h>
 #endif
 
-namespace at {
-namespace native {
+namespace at::native {
 
 Tensor conv_tbc(const Tensor& self, const Tensor& weight, const Tensor& bias, int64_t pad) {
   TORCH_CHECK(self.dim() == 3, "Input must have 3 dims: time, batch, "
@@ -53,8 +52,7 @@ Tensor conv_tbc(const Tensor& self, const Tensor& weight, const Tensor& bias, in
   for (const auto k : c10::irange(kw)) {
     int iShift = std::max(0, static_cast<int>(k - real_pad));
     int oShift = std::max(0, static_cast<int>(real_pad - k));
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions,cppcoreguidelines-narrowing-conversions)
-    int t = std::min(ilen + real_pad - k, olen) - oShift;
+    long t = std::min(ilen + real_pad - k, olen) - oShift;
     // Note: gemm assumes column-major matrices
     // input    is l*m (row-major)
     // weight   is m*r (row-major)
@@ -118,5 +116,4 @@ std::tuple<Tensor, Tensor, Tensor> conv_tbc_backward(const Tensor& dOutput, cons
   return std::make_tuple(dInput, dWeight, dBias);
 }
 
-}
-}
+} // namespace at::native

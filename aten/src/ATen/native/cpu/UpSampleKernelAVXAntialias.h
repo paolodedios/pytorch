@@ -35,7 +35,7 @@ Like PIL, Pillow is licensed under the open source HPND License
 
 namespace {
 
-static inline __m128i mm_cvtsi32_si128(const uint8_t* C10_RESTRICT ptr, bool i32_aligned) {
+inline __m128i mm_cvtsi32_si128(const uint8_t* C10_RESTRICT ptr, bool i32_aligned) {
   int32_t v;
   if (i32_aligned) {
     v = *(const int32_t*)ptr;
@@ -45,11 +45,11 @@ static inline __m128i mm_cvtsi32_si128(const uint8_t* C10_RESTRICT ptr, bool i32
   return _mm_cvtsi32_si128(v);
 }
 
-static inline __m128i mm_cvtepu8_epi32(const uint8_t* C10_RESTRICT ptr, bool i32_aligned) {
+inline __m128i mm_cvtepu8_epi32(const uint8_t* C10_RESTRICT ptr, bool i32_aligned) {
   return _mm_cvtepu8_epi32(mm_cvtsi32_si128(ptr, i32_aligned));
 }
 
-static inline void _write_endline_rgb_as_uint32(
+inline void _write_endline_rgb_as_uint32(
     uint8_t* C10_RESTRICT output,
     uint32_t data
 ) {
@@ -66,7 +66,7 @@ at::Tensor unpack_rgb(const at::Tensor& packed_tensor) {
   // into as 32 bits. This generalizes to num_channels <= 4 and also works for
   // non-channels_last tensors.
 
-  const uint8_t* packed = (const uint8_t*)packed_tensor.data_ptr<uint8_t>();
+  const uint8_t* packed = (const uint8_t*)packed_tensor.const_data_ptr<uint8_t>();
   auto num_pixels = packed_tensor.size(1) * packed_tensor.size(2);
   auto num_channels = packed_tensor.size(0);
 
@@ -89,22 +89,24 @@ void pack_rgb(
     const at::Tensor& unpacked_tensor, // IN
     const at::Tensor& packed_tensor // OUT
 ) {
-  // Convert from unpacked channels last 4-channels tensor into original data layout.
+  // Convert from unpacked channels last 3-channels or 4-channels tensor into original data layout.
 
-  constexpr int rgba_size = 4;
   uint8_t* unpacked = (uint8_t*)unpacked_tensor.data_ptr<uint8_t>();
   uint8_t* packed = (uint8_t*)packed_tensor.data_ptr<uint8_t>();
   auto num_pixels = packed_tensor.size(1) * packed_tensor.size(2);
   auto num_channels = packed_tensor.size(0);
 
+  auto unpacked_increment = unpacked_tensor.size(0);
   auto packed_increment = packed_tensor.stride(2);
   auto packed_stride = packed_tensor.stride(0);
 
-  for (const auto i C10_UNUSED : c10::irange(num_pixels)) {
+  TORCH_INTERNAL_ASSERT(unpacked_increment == 3 || unpacked_increment == 4);
+
+  for ([[maybe_unused]] const auto i : c10::irange(num_pixels)) {
     for (const auto j : c10::irange(num_channels)) {
       packed[j * packed_stride] = unpacked[j];
     }
-    unpacked += rgba_size;
+    unpacked += unpacked_increment;
     packed += packed_increment;
   }
 }
@@ -174,22 +176,22 @@ void ImagingResampleHorizontal(
   //
 
   // TODO: we may want to merge that into the fallback code (currently called
-  // basic_loop_aa_horizontal<uint8_t>)
+  // basic_loop_separable_1d_horizontal<uint8_t>)
   // Although this may not be needed if / when we port all this code to use
   // Vec.h since this would potentially give us another fall-back implem
 
-  const int16_t* kk = (int16_t*)(horiz_indices_weights[3].data_ptr<double>());
+  const int16_t* kk = (int16_t*)(horiz_indices_weights[3].const_data_ptr<double>());
 
   auto xout = unpacked_output.size(2);
   auto yout = unpacked_output.size(1);
   auto xin = unpacked_input.size(2);
   TORCH_INTERNAL_ASSERT(num_channels == unpacked_input.size(0));
 
-  const int64_t* idx_ptr_xmin = horiz_indices_weights[0].data_ptr<int64_t>();
-  const int64_t* idx_ptr_size = horiz_indices_weights[1].data_ptr<int64_t>();
+  const int64_t* idx_ptr_xmin = horiz_indices_weights[0].const_data_ptr<int64_t>();
+  const int64_t* idx_ptr_size = horiz_indices_weights[1].const_data_ptr<int64_t>();
 
   uint8_t* unpacked_output_p = unpacked_output.data_ptr<uint8_t>();
-  const uint8_t* unpacked_input_p = unpacked_input.data_ptr<uint8_t>();
+  const uint8_t* unpacked_input_p = unpacked_input.const_data_ptr<uint8_t>();
 
   int64_t yy = 0;
   auto xout_stride = xout * num_channels;
@@ -250,20 +252,21 @@ void ImagingResampleVertical(
   //   oB[xoffset + i] = b[xoffset + ymin[i]] * w[i, 0] + ... + b[xoffset + ymin[i] + (K-1) * xsize] * w[i, K-1]
 
   // TODO: we may want to merge that into the fallback code (currently called
-  // basic_loop_aa_vertical<uint8_t>)
+  // basic_loop_separable_1d_vertical<uint8_t>)
   // Although this may not be needed if / when we port all this code to use
   // Vec.h since this would potentially give us another fall-back implem
-  const int16_t* kk = (int16_t*)(vert_indices_weights[3].data_ptr<double>());
+  const int16_t* kk = (int16_t*)(vert_indices_weights[3].const_data_ptr<double>());
 
-  const int64_t* idx_ptr_xmin = vert_indices_weights[0].data_ptr<int64_t>();
-  const int64_t* idx_ptr_size = vert_indices_weights[1].data_ptr<int64_t>();
+  const int64_t* idx_ptr_xmin = vert_indices_weights[0].const_data_ptr<int64_t>();
+  const int64_t* idx_ptr_size = vert_indices_weights[1].const_data_ptr<int64_t>();
 
   uint8_t* unpacked_output_p = unpacked_output.data_ptr<uint8_t>();
-  const uint8_t* unpacked_input_p = unpacked_input.data_ptr<uint8_t>();
+  const uint8_t* unpacked_input_p = unpacked_input.const_data_ptr<uint8_t>();
 
   auto xout = unpacked_output.size(2);
   auto yout = unpacked_output.size(1);
   const auto num_channels = unpacked_input.size(0);
+  TORCH_INTERNAL_ASSERT(num_channels == unpacked_output.size(0));
 
   auto xout_stride = xout * num_channels;
   for (const auto yy : c10::irange(yout)) {
@@ -282,38 +285,49 @@ void ImagingResampleVertical(
   }
 }
 
-// This is the only public entry point in this file.  It supports bilinear
+// This is the only public entry point in this file.  It supports bilinear or bicubic
 // mode for uint8 dtype when C <= 4, with or without antialias. The
 // implem is based on PIL-SIMD.
 // Its equivalent implementation (fallback) for when AVX isn't supported or when
-// C > 4 is separable_upsample_generic_Nd_kernel_impl()  There are a bunch of
+// C > 4 is upsample_separable_Nd_kernel_impl()  There are a bunch of
 // future improvement that can be done: look for the TODOs in this file.
 // For details on how the weights are computed and how the multiplications are
 // run on int (instead of float weights), see
 // [ Weights computation for uint8_t and multiplication trick ]
 // For details on how the AVX kernels are implemented, see
 // https://gist.github.com/NicolasHug/47c97d731f05eaad5694c173849b86f5
-// See also [ Support for antialias=False as a subcase of antilias=True ] to
+// See also [ Support for antialias=False as a subcase of antialias=True ] to
 // learn more about how the antialias=False case is computed. The same holds
 // here: all these kernels are general enough to handle an arbitrary number of
 // weights, but when aa=False they could be optimized further.
 template <typename scale_type, class F>
-void upsample_avx_bilinear_uint8(
-    const at::Tensor& input,
+void upsample_avx_bilinear_bicubic_uint8(
+    const at::Tensor& input_,
     const at::Tensor& output,
     bool align_corners,
     const scale_type& scales,
     bool antialias) {
-  auto batch_size = input.size(0);
-  auto num_channels = input.size(1);
-  auto xin = input.size(3);
-  auto yin = input.size(2);
+  auto batch_size = input_.size(0);
+  auto num_channels = input_.size(1);
+  auto xin = input_.size(3);
+  auto yin = input_.size(2);
   auto xout = output.size(3);
   auto yout = output.size(2);
 
   if (xin == xout && yin == yout) {
-    output.copy_(input);
+    output.copy_(input_);
     return;
+  }
+
+  at::Tensor input = input_;
+  if (!(input.is_contiguous() || input.is_contiguous(at::MemoryFormat::ChannelsLast))) {
+    // If input is not contiguous with memory format channels first or channels last,
+    // we explicitly convert the input to contiguous channels last memory format.
+    // This simplifies the rest of the code and let us assume that the format is only contiguous channels first or channels last,
+    // Most tensors going through this `if` block won't need to go through unpacking, but those having C < 3 may
+    // have to (this means 2 copies are made). We could avoid the extra copy by handling non-contiguous input
+    // directly within unpack_rgb() and pack_rgb(), but initial attempts showed that this is fairly complex.
+    input = input.contiguous(at::MemoryFormat::ChannelsLast);
   }
 
   auto need_horizontal = xout != xin;
@@ -323,13 +337,14 @@ void upsample_avx_bilinear_uint8(
   std::vector<at::Tensor> horiz_indices_weights, vert_indices_weights;
   unsigned int horiz_weights_precision, vert_weights_precision;
 
-  bool needs_unpacking = (num_channels == 3 || num_channels == 4) && input.is_contiguous(at::MemoryFormat::ChannelsLast);
+  bool skip_unpacking = (num_channels == 3 || num_channels == 4) && input.is_contiguous(at::MemoryFormat::ChannelsLast);
+  bool skip_packing = (num_channels == 3 || num_channels == 4) && output.is_contiguous(at::MemoryFormat::ChannelsLast);
 
   if (need_horizontal) {
     int interp_dim = 3;
-    auto stride = (needs_unpacking) ? num_channels : 4;
+    auto stride = skip_unpacking ? num_channels : 4;
     std::tie(horiz_indices_weights, ksize_horiz, horiz_weights_precision) =
-        F::compute_indices_int16_weights_aa(
+        F::compute_index_ranges_int16_weights(
             /*input_size=*/xin,
             /*output_size=*/xout,
             /*stride=*/stride,
@@ -343,9 +358,9 @@ void upsample_avx_bilinear_uint8(
 
   if (need_vertical) {
     int interp_dim = 2;
-    auto stride = (needs_unpacking) ? num_channels * xout : 4 * xout;
+    auto stride = skip_unpacking ? num_channels * xout : 4 * xout;
     std::tie(vert_indices_weights, ksize_vert, vert_weights_precision) =
-        F::compute_indices_int16_weights_aa(
+        F::compute_index_ranges_int16_weights(
             /*input_size=*/yin,
             /*output_size=*/yout,
             /*stride=*/stride,
@@ -360,25 +375,25 @@ void upsample_avx_bilinear_uint8(
   at::Tensor buffer_horiz, buffer_vert;
   // Minor optimization: we can avoid allocating an extra buffer if we're performing
   // horizontal-only or vertical-only interpolation, and if the tensor doesn't
-  // need unpacking
-  if (need_horizontal && !(needs_unpacking && !need_vertical)) {
-    auto c = (needs_unpacking) ? num_channels : 4;
+  // need repacking
+  if (need_horizontal && (need_vertical || !skip_packing)) {
+    auto c = skip_unpacking ? num_channels : 4;
     buffer_horiz = at::empty({c, yin, xout}, input.options());
   }
-  if (need_vertical && !needs_unpacking) {
-    auto c = (needs_unpacking) ? num_channels : 4;
+  if (need_vertical && !skip_packing) {
+    auto c = skip_unpacking ? num_channels : 4;
     buffer_vert = at::empty({c, yout, xout}, input.options());
   }
 
   for (const auto i : c10::irange(batch_size)) {
 
-    at::Tensor unpacked_input = (needs_unpacking) ? input[i] : unpack_rgb(input[i]);
+    at::Tensor unpacked_input = skip_unpacking ? input[i] : unpack_rgb(input[i]);
     at::Tensor unpacked_output;
 
     if (need_horizontal) {
-      at::Tensor unpacked_output_temp = (needs_unpacking && !need_vertical) ? output[i] : buffer_horiz;
+      at::Tensor unpacked_output_temp = (need_vertical || !skip_packing) ? buffer_horiz : output[i];
 
-      if (needs_unpacking && num_channels == 3) {
+      if (skip_unpacking && num_channels == 3) {
         ImagingResampleHorizontal<3>(
           unpacked_output_temp,
           unpacked_input,
@@ -396,7 +411,7 @@ void upsample_avx_bilinear_uint8(
       unpacked_output = unpacked_input = unpacked_output_temp;
     }
     if (need_vertical) {
-      unpacked_output = (needs_unpacking) ? output[i] : buffer_vert;
+      unpacked_output = skip_packing ? output[i] : buffer_vert;
 
       ImagingResampleVertical(
           unpacked_output,
@@ -409,7 +424,7 @@ void upsample_avx_bilinear_uint8(
 
     TORCH_INTERNAL_ASSERT(unpacked_output.defined());
 
-    if (!needs_unpacking) {
+    if (!skip_packing) {
       pack_rgb(unpacked_output, output[i]);
     }
   }
@@ -487,7 +502,7 @@ void ImagingResampleHorizontalConvolution8u4x(
   // RGBA: b4_delta = b4_delta_soft = 3
   // RGB : b4_delta = 5
   // RGB : b4_delta_soft = 4
-  const auto b4_delta = (stride == 4) ? 3 : ((is_last_line) ? 5 : 4);
+  const auto b4_delta = (stride == 4) ? 3 : (is_last_line ? 5 : 4);
 
   // In block 2 (2 means we process 2 weights values together), we read input data
   // with _mm_loadl_epi64, i.e. 8 bytes, per one line:
@@ -500,7 +515,7 @@ void ImagingResampleHorizontalConvolution8u4x(
   // RGBA: b2_delta = b2_delta_soft = 1
   // RGB : b2_delta = 2
   // RGB : b2_delta_soft = 1
-  const auto b2_delta = (stride == 4) ? 1 : ((is_last_line) ? 2 : 1);
+  const auto b2_delta = (stride == 4) ? 1 : (is_last_line ? 2 : 1);
 
   const auto max_out_x_strided = out_xsize * stride;
   const auto max_in_x_strided = in_xsize * stride;
@@ -640,7 +655,7 @@ void ImagingResampleHorizontalConvolution8u4x(
       // last element
       auto mmk = _mm256_set1_epi32(k[i]);
       // For num_channels == 3 (3 bytes = one pixel) we tolerate to read 4 bytes
-      // lines 0, 1 and 2 wont go out of allocated memory bounds
+      // lines 0, 1 and 2 won't go out of allocated memory bounds
       auto pix = _mm256_inserti128_si256(_mm256_castsi128_si256(
           mm_cvtepu8_epi32(lineIn0_min + stride * i, i32_aligned)),
           mm_cvtepu8_epi32(lineIn1_min + stride * i, i32_aligned), 1);
@@ -684,7 +699,7 @@ void ImagingResampleHorizontalConvolution8u4x(
       // Memcpy 4-bytes is faster than 3-bytes and this is a boundary case when we want to write
       // 4 bytes (R G B | X) to the output buffer (X1 X2 X3 | R1).
       // The 4th byte in the register (X) has a garbage value and 4th byte in the output buffer (R1) has a correct
-      // value which was preveiously computed by another line. In other words, it means that we can not overwrite
+      // value which was previously computed by another line. In other words, it means that we can not overwrite
       // it by simply writing 4 bytes from the register to the output. We'll do the following:
       //               v----------|
       // Output = [... X1 X2 X3 | R1 G1 B1 R2 ...]
@@ -804,7 +819,7 @@ void ImagingResampleHorizontalConvolution8u(
   // RGBA: b8_delta = b8_delta_soft = 7
   // RGB : b8_delta = 10
   // RGB : b8_delta_soft = 9
-  const auto b8_delta = (stride == 4) ? 7 : ((is_last_line) ? 10 : 9);
+  const auto b8_delta = (stride == 4) ? 7 : (is_last_line ? 10 : 9);
 
   // In block 4 (4 means we process 4 weight values together), we read
   // 16 bytes of input data.
@@ -817,7 +832,7 @@ void ImagingResampleHorizontalConvolution8u(
   // RGBA: b4_delta = b4_delta_soft = 3
   // RGB : b4_delta = 5
   // RGB : b4_delta_soft = 4
-  const auto b4_delta = (stride == 4) ? 3 : ((is_last_line) ? 5 : 4);
+  const auto b4_delta = (stride == 4) ? 3 : (is_last_line ? 5 : 4);
 
   // In block 2 (2 means we process 2 weight values together), we read
   // 8 bytes of input data.
@@ -830,7 +845,7 @@ void ImagingResampleHorizontalConvolution8u(
   // RGBA: b2_delta = b2_delta_soft = 1
   // RGB : b2_delta = 2
   // RGB : b2_delta_soft = 1
-  const auto b2_delta = (stride == 4) ? 1 : ((is_last_line) ? 2 : 1);
+  const auto b2_delta = (stride == 4) ? 1 : (is_last_line ? 2 : 1);
 
   const auto max_out_x_strided = out_xsize * stride;
   const auto max_in_x_strided = in_xsize * stride;
@@ -874,7 +889,7 @@ void ImagingResampleHorizontalConvolution8u(
             _mm_loadu_si128((__m128i *) (lineIn_min + stride * i))),
             _mm_loadu_si128((__m128i *) (lineIn_min + stride * (i + 4))), 1);
 
-        // Extract lower part of each lane, cast to epi16 and reoder RGBARGBA -> RRGGBBAA
+        // Extract lower part of each lane, cast to epi16 and reorder RGBARGBA -> RRGGBBAA
         // RGBA: pix1 = [
         //   r0 0 r1 0  g0 0 g1 0  b0 0 b1 0  a0 0 a1 0
         //   r4 0 r5 0  g4 0 g5 0  b4 0 b5 0  a4 0 a5 0
@@ -1025,7 +1040,7 @@ void ImagingResampleHorizontalConvolution8u(
         // Memcpy 4-bytes is faster than 3-bytes and this is a boundary case when we want to write
         // 4 bytes (R G B | X) to the output buffer (X1 X2 X3 | R1).
         // The 4th byte in the register (X) has a garbage value and 4th byte in the output buffer (R1) has a correct
-        // value which was preveiously computed by another line. In other words, it means that we can not overwrite
+        // value which was previously computed by another line. In other words, it means that we can not overwrite
         // it by simply writing 4 bytes from the register to the output. We'll do the following:
         //               v----------|
         // Output = [... X1 X2 X3 | R1 G1 B1 R2 ...]
@@ -1297,7 +1312,7 @@ void ImagingResampleVerticalConvolution8u(
 
     // Here we write 4 bytes to the output even if num_channels < 4, e.g o = {r,g,b,X} for num_channels=3
     // It is OK to write 4th byte (e.g. X) as on the next step we will overwrite it with new data.
-    // We also wont go out of bounds of lineOut memory allocation
+    // We also won't go out of bounds of lineOut memory allocation
     std::memcpy(lineOut + j, (uint8_t *) &o, 4);
   }
 

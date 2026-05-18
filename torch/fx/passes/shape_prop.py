@@ -1,60 +1,78 @@
+import traceback
+from typing import Any, NamedTuple
+
 import torch
 import torch.fx
-import traceback
-
-from torch.fx.node import Node, map_aggregate
-from typing import Any, Tuple, NamedTuple, Optional, Dict
+from torch._dispatch.python import enable_python_dispatcher
+from torch._guards import detect_fake_mode
+from torch._prims_common import is_contiguous_for_memory_format_or_false
+from torch._subclasses.meta_utils import is_sparse_any
 from torch.fx._compatibility import compatibility
+from torch.fx.node import map_aggregate, Node
 
-__all__ = ['TensorMetadata', 'ShapeProp']
+
+__all__ = ["TensorMetadata", "ShapeProp"]
+
 
 @compatibility(is_backward_compatible=True)
 class TensorMetadata(NamedTuple):
-    # TensorMetadata is a structure containing pertinent information
-    # about a tensor within a PyTorch program.
+    """A structure containing pertinent information about a tensor within a PyTorch program."""
 
     # General Tensor metadata
-    shape : torch.Size
-    dtype : torch.dtype
-    requires_grad : bool
-    stride : Tuple[int, ...]
-    memory_format : Optional[torch.memory_format]
+    shape: torch.Size
+    dtype: torch.dtype
+    requires_grad: bool
+    stride: tuple[int, ...]
+    memory_format: torch.memory_format | None
 
     # Quantization metadata
-    is_quantized : bool
-    qparams: Dict[str, Any]
+    is_quantized: bool
+    qparams: dict[str, Any]
 
-def _extract_tensor_metadata(result : torch.Tensor) -> TensorMetadata:
+
+# When include_contiguity is True, we will set contiguity when its always true for the tensor.
+# Some tensors can represent both contiguous and non-contiguous tensors. e.g: (u0, u1) with (u2, u3).
+# In such situation contiguity is not set. We could also make it a tri-state i.e: (def_contiguous,
+# def_not_contiguous and unknown).
+def _extract_tensor_metadata(
+    result: torch.Tensor, include_contiguity: bool = True
+) -> TensorMetadata:
     """
     Extract a TensorMetadata NamedTuple describing `result`.
     """
     shape = result.shape
     dtype = result.dtype
     requires_grad = result.requires_grad
-    stride = result.stride()
-
-    memory_formats = {
-        torch.contiguous_format,
-        torch.channels_last,
-        torch.channels_last_3d,
-    }
+    stride = result.stride() if not is_sparse_any(result) else ()
 
     memory_format = None
 
-    for query_format in memory_formats:
-        if result.is_contiguous(memory_format=query_format):
-            memory_format = query_format
-            break
+    if include_contiguity and not is_sparse_any(result):
+        memory_formats = (
+            torch.contiguous_format,
+            torch.channels_last,
+            torch.channels_last_3d,
+        )
+        for query_format in memory_formats:
+            if is_contiguous_for_memory_format_or_false(
+                result, memory_format=query_format
+            ):
+                memory_format = query_format
+                break
 
     is_quantized = result.is_quantized
-    qparams: Dict[str, Any] = {}
+    qparams: dict[str, Any] = {}
     if is_quantized:
         qscheme = result.qscheme()
         qparams["qscheme"] = qscheme
-        if qscheme in {torch.per_tensor_affine, torch.per_tensor_symmetric}:
+        if qscheme in (torch.per_tensor_affine, torch.per_tensor_symmetric):
             qparams["scale"] = result.q_scale()  # type: ignore[assignment]
             qparams["zero_point"] = result.q_zero_point()  # type: ignore[assignment]
-        elif qscheme in {torch.per_channel_affine, torch.per_channel_affine_float_qparams, torch.per_channel_symmetric}:
+        elif qscheme in (
+            torch.per_channel_affine,
+            torch.per_channel_affine_float_qparams,
+            torch.per_channel_symmetric,
+        ):
             # In this branch, scale and zero_point are expected to be tensors,
             # we store the values as immutable_list in TensorMetadata for
             # easier serialization downstream
@@ -63,7 +81,9 @@ def _extract_tensor_metadata(result : torch.Tensor) -> TensorMetadata:
             qparams["axis"] = result.q_per_channel_axis()  # type: ignore[assignment]
 
     return TensorMetadata(
-        shape, dtype, requires_grad, stride, memory_format, is_quantized, qparams)
+        shape, dtype, requires_grad, stride, memory_format, is_quantized, qparams
+    )
+
 
 @compatibility(is_backward_compatible=True)
 class ShapeProp(torch.fx.Interpreter):
@@ -112,10 +132,14 @@ class ShapeProp(torch.fx.Interpreter):
          fake_mode (FakeTensorMode): A fake mode for copying the gm
 
     """
-    def __init__(self, gm, fake_mode=None):
+
+    def __init__(self, gm: torch.fx.GraphModule, fake_mode: Any = None) -> None:
         super().__init__(gm)
+        if fake_mode is None:
+            fake_mode = detect_fake_mode()
         if fake_mode is not None:
             from torch._dynamo.utils import deepcopy_to_fake_tensor
+
             # Note:
             # We need fake execution cause the inputs are fake, however, we cannot fakify the module
             # - because we need to write to the tensor_meta of the real module. So we fakify to
@@ -133,7 +157,12 @@ class ShapeProp(torch.fx.Interpreter):
 
         self.real_module = self.module
 
-    def run_node(self, n : Node) -> Any:
+    def run_node(self, n: Node) -> Any:
+        from torch.fx.experimental.symbolic_shapes import (
+            compute_unbacked_bindings,
+            rebind_unbacked,
+        )
+
         try:
             if self.fake_module is not None:
                 # Hacky swap. Alternatively, we could do this with overriding
@@ -141,8 +170,9 @@ class ShapeProp(torch.fx.Interpreter):
                 self.module = self.fake_module
             try:
                 if self.fake_mode is not None:
-                    with self.fake_mode:
+                    with self.fake_mode, enable_python_dispatcher():
                         result = super().run_node(n)
+                        rebind_unbacked(self.fake_mode.shape_env, n, result)
                 else:
                     result = super().run_node(n)
             finally:
@@ -150,13 +180,12 @@ class ShapeProp(torch.fx.Interpreter):
         except Exception as e:
             traceback.print_exc()
             raise RuntimeError(
-                f"ShapeProp error for: node={n.format_node()} with "
-                f"meta={n.meta}"
+                f"ShapeProp error for: node={n.format_node()} with meta={n.meta}"
             ) from e
 
         found_tensor = False
 
-        def extract_tensor_meta(obj):
+        def extract_tensor_meta(obj: Any) -> Any:
             if isinstance(obj, torch.Tensor):
                 nonlocal found_tensor
                 found_tensor = True
@@ -166,12 +195,18 @@ class ShapeProp(torch.fx.Interpreter):
 
         meta = map_aggregate(result, extract_tensor_meta)
         if found_tensor:
-            n.meta['tensor_meta'] = meta
+            n.meta["tensor_meta"] = meta
 
-        n.meta['type'] = type(result)
+        if self.fake_mode:
+            if (shape_env := self.fake_mode.shape_env) and (
+                symbol_to_path := compute_unbacked_bindings(shape_env, result)
+            ):
+                n.meta["unbacked_bindings"] = symbol_to_path
+
+        n.meta["type"] = type(result)
         return result
 
-    def propagate(self, *args):
+    def propagate(self, *args: Any) -> Any:
         """
         Run `module` via interpretation and return the result and
         record the shape and type of each node.
@@ -182,4 +217,11 @@ class ShapeProp(torch.fx.Interpreter):
         Returns:
             Any: The value returned from executing the Module
         """
-        return super().run(*args)
+        if self.fake_mode is not None:
+            fake_args = [
+                self.fake_mode.from_tensor(t) if isinstance(t, torch.Tensor) else t
+                for t in args
+            ]
+        else:
+            fake_args = args
+        return super().run(*fake_args)

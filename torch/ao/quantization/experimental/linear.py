@@ -1,9 +1,12 @@
-import torch
+# mypy: allow-untyped-defs
 import numpy as np
+import numpy.typing as npt
 
+import torch
 from torch.ao.nn.quantized.modules.utils import WeightedQuantizedModule
 from torch.ao.quantization.experimental.observer import APoTObserver
 from torch.ao.quantization.experimental.quantizer import quantize_APoT
+
 
 class LinearAPoT(WeightedQuantizedModule):
     r"""
@@ -25,8 +28,12 @@ class LinearAPoT(WeightedQuantizedModule):
     """
 
     def __init__(self, weight2quantize: torch.Tensor, b: int, k: int):
-        assert weight2quantize.dim() == 2
-        assert b % k == 0
+        if weight2quantize.dim() != 2:
+            raise AssertionError(
+                f"weight2quantize must be a 2-D tensor, got dim={weight2quantize.dim()}"
+            )
+        if b % k != 0:
+            raise AssertionError(f"b must be divisible by k, got b={b}, k={k}")
 
         super().__init__()
 
@@ -38,9 +45,20 @@ class LinearAPoT(WeightedQuantizedModule):
 
         observer(weight2quantize)
 
-        self.alpha, self.gamma, self.quantization_levels, self.level_indices = observer.calculate_qparams(signed=False)
+        (
+            self.alpha,
+            self.gamma,
+            self.quantization_levels,
+            self.level_indices,
+        ) = observer.calculate_qparams(signed=False)
 
-        quantized_weight = quantize_APoT(weight2quantize, self.alpha, self.gamma, self.quantization_levels, self.level_indices)
+        quantized_weight = quantize_APoT(
+            weight2quantize,
+            self.alpha,
+            self.gamma,
+            self.quantization_levels,
+            self.level_indices,
+        )
         self.weight = quantized_weight.data
         self.weight_transposed = torch.transpose(self.weight, 0, 1)
 
@@ -57,8 +75,8 @@ class LinearAPoT(WeightedQuantizedModule):
         blocks = []
 
         while x:
-            blocks.append(x[0:self.k])
-            x = x[self.k:]
+            blocks.append(x[0 : self.k])
+            x = x[self.k :]
 
         return blocks
 
@@ -93,7 +111,6 @@ class LinearAPoT(WeightedQuantizedModule):
 
         return product
 
-
     def matmul(self, decomposed_weight, activation):
         r"""
         Perform matrix multiplication between decomposed_weight and
@@ -103,8 +120,6 @@ class LinearAPoT(WeightedQuantizedModule):
             activation (Tensor): uniformly quantized activation
         """
         rows1 = activation.size(dim=0)
-        cols1 = activation.size(dim=1)
-
         rows2 = decomposed_weight.shape[0]
         cols2 = decomposed_weight.shape[1]
 
@@ -131,25 +146,34 @@ class LinearAPoT(WeightedQuantizedModule):
         Args:
             activation (Tensor): uniformly quantized activation tensor
         """
-        assert activation.dim() == 2
+        if activation.dim() != 2:
+            raise AssertionError(
+                f"activation must be a 2-D tensor, got dim={activation.dim()}"
+            )
 
         weight_rows = self.weight_transposed.size()[0]
         weight_cols = self.weight_transposed.size()[1]
 
-        decomposed_weight = np.empty(shape=(weight_rows, weight_cols), dtype=object)
+        decomposed_weight: npt.NDArray = np.empty(
+            shape=(weight_rows, weight_cols), dtype=object
+        )
         for row in range(weight_rows):
             for col in range(weight_cols):
-                decomposed_weight[row][col] = self.decompose_APoT(bin(self.weight_transposed[row][col]))
+                decomposed_weight[row][col] = self.decompose_APoT(
+                    bin(self.weight_transposed[row][col])
+                )
 
         result = self.matmul(decomposed_weight, activation).type(torch.FloatTensor)
 
         return result
 
     @classmethod
-    def from_reference(cls,  # type: ignore[override]
-                       ref_qlinear,
-                       alpha: torch.Tensor,
-                       gamma: torch.Tensor,
-                       quantization_levels: torch.Tensor,
-                       level_indices: torch.Tensor):
+    def from_reference(  # type: ignore[override]
+        cls,
+        ref_qlinear,
+        alpha: torch.Tensor,
+        gamma: torch.Tensor,
+        quantization_levels: torch.Tensor,
+        level_indices: torch.Tensor,
+    ):
         raise NotImplementedError

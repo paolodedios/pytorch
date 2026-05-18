@@ -1,4 +1,4 @@
-r"""nn.quantized.functional
+r"""nn.quantized.functional.
 
 Quantized equivalents of the `nn.functional`.
 
@@ -7,4 +7,4 @@ Note::
     Please, use the `torch.ao.nn.quantized.functional` instead.
 """
 
-from torch.ao.nn.quantized.functional import *  # noqa: F401,F403
+from torch.ao.nn.quantized.functional import *  # noqa: F403

@@ -13,15 +13,24 @@ namespace at::native {
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = scalar_t>
 struct sum_functor {
   void operator()(TensorIterator& iter) {
-    gpu_reduce_kernel<scalar_t, out_t>(
-        iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
-          return a + b;
-        }));
+    const auto sum_combine = [] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
+      return a + b;
+    };
+    constexpr bool is_16_bits = sizeof(scalar_t) == 2;
+    if constexpr (is_16_bits) {
+      gpu_reduce_kernel<scalar_t, out_t, /*vt0=*/4, /*input_vec_size=*/8>(
+        iter, func_wrapper<out_t>(sum_combine)
+      );
+    } else {
+      gpu_reduce_kernel<scalar_t, out_t>(
+        iter, func_wrapper<out_t>(sum_combine)
+      );
+    }
   }
 };
 
 // jiterated specialization for `complex<Half>`
-CONSTEXPR_EXCEPT_WIN_CUDA char sum_name[] = "sum";
+constexpr char sum_name[] = "sum";
 template <>
 struct sum_functor<c10::complex<at::Half>> {
 // jiterator reduction fails on windows
@@ -57,14 +66,14 @@ struct nansum_functor {
   }
 };
 
-CONSTEXPR_EXCEPT_WIN_CUDA char nansum_name[] = "nansum";
+constexpr char nansum_name[] = "nansum";
 template <typename scalar_t>
 struct nansum_functor_complex {
 #if AT_USE_JITERATOR()
   void operator()(TensorIterator& iter) {
     std::string func = jiterator_stringify(
-        arg_t combine(arg_t a, scalar_t b) {
-          return a + (std::isnan(b) ? arg_t{0.} : arg_t{b});
+        arg_t combine(arg_t a, arg_t b) {
+          return a + (std::isnan(b) ? arg_t{0.} : b);
         }
     );
     jitted_gpu_reduce_kernel<nansum_name, scalar_t, scalar_t>(
@@ -73,13 +82,13 @@ struct nansum_functor_complex {
 #else
   void operator()(TensorIterator& iter) {
     using acc_t = at::opmath_type<scalar_t>;
-    gpu_reduce_kernel<scalar_t, acc_t>(
+    gpu_reduce_kernel<scalar_t, scalar_t>(
         iter, NanSumOps<acc_t, acc_t>{});
   }
 #endif
 };
 
-CONSTEXPR_EXCEPT_WIN_CUDA char prod_name[] = "prod";
+constexpr char prod_name[] = "prod";
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = scalar_t>
 struct prod_functor {
   // jiterator reduction fails on windows
@@ -138,6 +147,51 @@ struct prod_functor<c10::complex<at::Half>> {
         acc_t{1.});
   }
 #endif
+};
+
+template <typename scalar_t, typename enable = void>
+struct xor_sum_functor {
+  void operator()(TensorIterator& iter) {
+    gpu_reduce_kernel<scalar_t, uint64_t>(
+        iter,
+        func_wrapper<uint64_t>(
+            [] GPU_LAMBDA(uint64_t a, uint64_t b) -> uint64_t {
+              return a ^ b;
+            }));
+  }
+};
+
+template <typename scalar_t>
+struct xor_sum_functor<scalar_t, std::enable_if_t<!std::is_integral_v<scalar_t>>> {
+  void operator()(TensorIterator& iter) {
+    gpu_reduce_kernel<scalar_t, double>(
+        iter,
+        // implicitly upcast scalar_t to double
+        func_wrapper<double>([] GPU_LAMBDA(double a, double b) -> double {
+          union {
+            double d;
+            uint64_t u;
+          } a_converter, b_converter, result_converter;
+
+          a_converter.d = a;
+          b_converter.d = b;
+          result_converter.u = a_converter.u ^ b_converter.u;
+          // return a double, otherwise uint64_t will be cast to double
+          // when accumulating and the result will be wrong
+          return result_converter.d;
+        }));
+  }
+};
+
+template <typename scalar_t>
+struct xor_sum_functor<scalar_t, std::enable_if_t<std::is_same_v<scalar_t, bool>>>  {
+  void operator()(TensorIterator& iter) {
+    gpu_reduce_kernel<bool, uint64_t>(
+        iter, func_wrapper<uint64_t>([] GPU_LAMBDA(bool a, bool b) -> uint64_t {
+          // Bitcast to uint64_t after the XOR operation (using != for booleans)
+          return static_cast<uint64_t>(a != b);
+        }));
+  }
 };
 
 // The function `reduce_dispatch` below dispatches to the kernel based
@@ -208,8 +262,17 @@ static void prod_kernel_cuda(TensorIterator& iter) {
   reduce_dispatch<prod_functor>(iter, general_dispatcher);
 }
 
-REGISTER_DISPATCH(sum_stub, &sum_kernel_cuda);
-REGISTER_DISPATCH(nansum_stub, &nansum_kernel_cuda);
-REGISTER_DISPATCH(prod_stub, &prod_kernel_cuda);
+static void xor_sum_kernel_cuda(TensorIterator& iter) {
+  // Use iter.dtype(1) to dispatch based on the type of the input tensor
+  AT_DISPATCH_ALL_TYPES_AND3(
+      kHalf, kBFloat16, kBool, iter.dtype(1), "xor_sum_cuda", [&]() {
+        xor_sum_functor<scalar_t>{}(iter);
+      });
+}
+
+REGISTER_DISPATCH(sum_stub, &sum_kernel_cuda)
+REGISTER_DISPATCH(nansum_stub, &nansum_kernel_cuda)
+REGISTER_DISPATCH(prod_stub, &prod_kernel_cuda)
+REGISTER_DISPATCH(xor_sum_stub, &xor_sum_kernel_cuda)
 
 } // namespace at::native

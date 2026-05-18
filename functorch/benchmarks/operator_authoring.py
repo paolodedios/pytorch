@@ -1,9 +1,12 @@
+import timeit
 from functools import partial
+
 import numpy as np
 import pandas as pd
-import timeit
+
 import torch
 from functorch.compile import pointwise_operator
+
 
 WRITE_CSV = False
 CUDA = False
@@ -63,7 +66,8 @@ def benchmark_loop(setup):
             result[r, s, 1] = timeit.timeit(aten, number=NUMBER[s])
 
     result = np.median(result, axis=0)
-    assert result.shape == (len(SIZES), 2)
+    if result.shape != (len(SIZES), 2):
+        raise AssertionError(f"Expected shape {(len(SIZES), 2)}, got {result.shape}")
     result = result[:, 1] / result[:, 0]
     print(result)
     return result
@@ -74,9 +78,18 @@ def test(make_args, nnc=nnc_add, aten=torch.add):
         args = make_args(n)
         result_aten = aten(*args)
         result_nnc = nnc(*args)
-        assert result_nnc.dtype == result_aten.dtype
-        assert result_nnc.size() == result_aten.size()
-        assert result_nnc.stride() == result_aten.stride()
+        if result_nnc.dtype != result_aten.dtype:
+            raise AssertionError(
+                f"dtype mismatch: {result_nnc.dtype} != {result_aten.dtype}"
+            )
+        if result_nnc.size() != result_aten.size():
+            raise AssertionError(
+                f"size mismatch: {result_nnc.size()} != {result_aten.size()}"
+            )
+        if result_nnc.stride() != result_aten.stride():
+            raise AssertionError(
+                f"stride mismatch: {result_nnc.stride()} != {result_aten.stride()}"
+            )
         torch.testing.assert_close(result_aten, result_nnc)
         return (lambda: nnc(*args), lambda: aten(*args))
 
@@ -113,7 +126,7 @@ def test_out(make_args, out, nnc=nnc_add, aten=torch.add):
 def test_backwards(make_args, nnc=nnc_add, aten=torch.add):
     def backwards_setup(n):
         args = make_args(n)
-        (grad_var,) = [a for a in args if a.requires_grad]
+        (grad_var,) = (a for a in args if a.requires_grad)
         aten(*args).sum().backward()
         correct = grad_var.grad.clone()
         grad_var.grad.zero_()

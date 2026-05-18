@@ -2,6 +2,8 @@ import csv
 import os
 import re
 import sys
+from pathlib import Path
+
 
 # This script takes the logs produced by the benchmark scripts (e.g.,
 # torchbench.py) and parses it into a CSV file that summarizes what
@@ -13,9 +15,9 @@ import sys
 #
 # This script is not very well written, feel free to rewrite it as necessary
 
-assert len(sys.argv) == 2
-
-full_log = open(sys.argv[1], "r").read()
+if len(sys.argv) != 2:
+    raise AssertionError(f"Expected 1 argument, but got {len(sys.argv) - 1}")
+full_log = Path(sys.argv[1]).read_text()
 
 # If the log contains a gist URL, extract it so we can include it in the CSV
 gist_url = ""
@@ -191,7 +193,7 @@ for name, name2, log in chunker(entries, 3):
             "unique_graph_breaks": unique_graph_breaks,
         }
     )
-    i += 1
+    i += 1  # noqa: SIM113
 
 if c:
     print(f"failed to classify {c} entries", file=sys.stderr)

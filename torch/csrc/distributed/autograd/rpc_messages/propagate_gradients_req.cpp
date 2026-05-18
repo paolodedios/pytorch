@@ -4,9 +4,7 @@
 
 #include <c10/util/irange.h>
 
-namespace torch {
-namespace distributed {
-namespace autograd {
+namespace torch::distributed::autograd {
 
 using rpc::Message;
 using rpc::MessageType;
@@ -49,7 +47,7 @@ c10::intrusive_ptr<Message> PropagateGradientsReq::toMessageImpl() && {
 std::unique_ptr<PropagateGradientsReq> PropagateGradientsReq::fromMessage(
     const Message& message) {
   // Unpickle the message and retrieve tupleElements.
-  auto payload = static_cast<const char*>(message.payload().data());
+  auto payload = message.payload().data();
   auto payload_size = message.payload().size();
   IValue tuple = jit::unpickle(
       payload,
@@ -65,10 +63,8 @@ std::unique_ptr<PropagateGradientsReq> PropagateGradientsReq::fromMessage(
   bool retainGraph = tupleElements.back().toBool();
 
   // Build AutogradMetadata.
-  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
-  int64_t autogradContextId, autogradMessageId;
-  autogradMessageId = tupleElements[tupleElements.size() - 2].toInt();
-  autogradContextId = tupleElements[tupleElements.size() - 3].toInt();
+  int64_t autogradMessageId = tupleElements[tupleElements.size() - 2].toInt();
+  int64_t autogradContextId = tupleElements[tupleElements.size() - 3].toInt();
 
   AutogradMetadata autogradMetadata(autogradContextId, autogradMessageId);
 
@@ -95,6 +91,4 @@ bool PropagateGradientsReq::retainGraph() {
   return retainGraph_;
 }
 
-} // namespace autograd
-} // namespace distributed
-} // namespace torch
+} // namespace torch::distributed::autograd

@@ -2,10 +2,64 @@
 from unittest.mock import patch
 
 import torch
-
 import torch._dynamo
 import torch._dynamo.test_case
 from torch._dynamo.testing import CompileCounter
+
+
+_variable = 0
+_variable_2 = 0
+
+
+def user_function():
+    return torch.compiler.is_compiling()
+
+
+def user_generator():
+    for _ in range(1):
+        yield torch.compiler.is_compiling()
+    return
+
+
+class MyModule(torch.nn.Module):
+    def __init__(self, mode: int):
+        super().__init__()
+        self.mode = mode
+        self.register_forward_pre_hook(self.pre_forward, with_kwargs=True)
+
+    def pre_forward(self, module, args, kwargs):
+        if self.mode == 5:
+            if user_function():
+                global _variable
+                _variable += 1
+        return args, kwargs
+
+    def forward(self, x):
+        global _variable, _variable_2
+
+        if self.mode == 1:
+            if torch.compiler.is_compiling():
+                _variable += 1
+            else:
+                _variable_2 += 1
+        elif self.mode == 2:
+            if user_function():
+                _variable += 1
+        elif self.mode == 3:
+            lambda_f = lambda: torch.compiler.is_compiling()  # noqa: E731
+            if lambda_f():
+                _variable += 1
+        elif self.mode == 4:
+            for cond in user_generator():
+                if cond:
+                    _variable += 1
+        elif self.mode == 5:
+            x += 1
+        elif self.mode == 6:
+            if user_function():
+                torch._dynamo.graph_break()
+                _variable += 1
+        return x
 
 
 class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
@@ -19,7 +73,8 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         opt_fn = torch._dynamo.optimize_assert(counter)(fn)
         opt_fn(x, y)
 
-        assert counter.op_count == 1
+        if counter.op_count != 1:
+            raise AssertionError(f"Expected op_count 1, got {counter.op_count}")
 
     def test_add_tensor2(self):
         def fn(a, b):
@@ -32,7 +87,8 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         opt_fn = torch._dynamo.optimize_assert(counter)(fn)
         opt_fn(x, y)
 
-        assert counter.op_count == 1
+        if counter.op_count != 1:
+            raise AssertionError(f"Expected op_count 1, got {counter.op_count}")
 
     def test_add_tensor_list(self):
         def fn(lst):
@@ -44,7 +100,8 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         opt_fn = torch._dynamo.optimize_assert(counter)(fn)
         opt_fn([x, y])
 
-        assert counter.op_count == 1
+        if counter.op_count != 1:
+            raise AssertionError(f"Expected op_count 1, got {counter.op_count}")
 
     def test_add_tensor_dict(self):
         def fn(dt):
@@ -56,7 +113,8 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         opt_fn = torch._dynamo.optimize_assert(counter)(fn)
         opt_fn({"a": x, "b": y})
 
-        assert counter.op_count == 1
+        if counter.op_count != 1:
+            raise AssertionError(f"Expected op_count 1, got {counter.op_count}")
 
     def test_add_skip(self):
         def fn(a, b):
@@ -68,7 +126,8 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         y = 5
         opt_fn(x, y)
 
-        assert counter.op_count == 0
+        if counter.op_count != 0:
+            raise AssertionError(f"Expected op_count 0, got {counter.op_count}")
 
     @patch.object(torch._dynamo.config, "raise_on_ctx_manager_usage", False)
     def test_recursive_list(self):
@@ -82,7 +141,8 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         with torch._dynamo.optimize_assert(counter):
             fn(x)
 
-        assert counter.op_count == 0
+        if counter.op_count != 0:
+            raise AssertionError(f"Expected op_count 0, got {counter.op_count}")
 
     @patch.object(torch._dynamo.config, "raise_on_ctx_manager_usage", False)
     def test_custom_list(self):
@@ -93,10 +153,10 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
 
         class Foo(list):
             def __iter__(self):
-                raise Exception()
+                raise Exception  # noqa: TRY002
 
             def __len__(self):
-                raise Exception()
+                raise Exception  # noqa: TRY002
 
         x = Foo()
         x.append(torch.randn(4))
@@ -104,7 +164,42 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         with torch._dynamo.optimize_assert(counter):
             fn(x)
 
-        assert counter.op_count == 0
+        if counter.op_count != 0:
+            raise AssertionError(f"Expected op_count 0, got {counter.op_count}")
+
+    def test_do_not_skip_side_effects(self):
+        # https://github.com/pytorch/pytorch/issues/110765
+
+        # By invoking torch.compiler.is_compiling(),
+        # there may be side-effects inconsistent with eager when
+        # compiling. Thus we force dynamo to commit the graph,
+        # even if it does not perform any tensor operation
+        global _variable, _variable_2
+
+        for mode in range(1, 7):
+            torch._dynamo.reset()
+
+            _variable = 0
+            _variable_2 = 0
+
+            mod = MyModule(mode=mode)
+            model = torch.compile(mod, backend="eager", fullgraph=mode != 6)
+            if _variable != 0:
+                raise AssertionError(f"Expected _variable 0, got {_variable}")
+            if _variable_2 != 0:
+                raise AssertionError(f"Expected _variable_2 0, got {_variable_2}")
+
+            model(torch.tensor([1]))
+            if _variable != 1:
+                raise AssertionError(f"Expected _variable 1, got {_variable}")
+            if _variable_2 != 0:
+                raise AssertionError(f"Expected _variable_2 0, got {_variable_2}")
+
+            model(torch.tensor([1]))
+            if _variable != 2:
+                raise AssertionError(f"Expected _variable 2, got {_variable}")
+            if _variable_2 != 0:
+                raise AssertionError(f"Expected _variable_2 0, got {_variable_2}")
 
 
 if __name__ == "__main__":

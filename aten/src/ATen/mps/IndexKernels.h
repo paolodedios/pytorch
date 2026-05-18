@@ -1,221 +1,65 @@
 #pragma once
 
-namespace at {
-namespace mps {
+namespace at::mps {
 
-static const char * indexing_metal_shaders = R"INDEX_METAL(
-#include <metal_stdlib>
-#include <metal_atomic>
+static const char* SCATTER_OPS_TEMPLATE = R"METAL_SCATTER(
+template<typename Y, typename X>
+Y cast(const X x);
 
-using namespace metal;
+template<>
+{1} cast<{1}, {0}>(const {0} x) {{
+ return {2};
+}}
 
-constant uint32_t num_indices            [[function_constant(0)]];
-
-struct IndexAB {
-    // Allow up to 16 indices
-    metal::array<constant void *, 16>  indexArray [[ id(0) ]];
-};
-
-template<typename T>
-kernel void index_select(
-    constant IndexAB  & indexAB           [[buffer(0)]],
-    constant void     * indexSizes        [[buffer(1)]],
-    constant void     * indexStrides      [[buffer(2)]],
-    constant uint3    * offsets           [[buffer(3)]],
-    constant void     * inputData         [[buffer(4)]],
-    device   void     * outputData        [[buffer(5)]],
-    uint thread_index [[thread_position_in_grid]]) {
-    constant int64_t * index_sizes   = (constant int64_t *)indexSizes;
-    constant int64_t * index_strides = (constant int64_t *)indexStrides;
-    int64_t offset = 0;
-    for (uint32_t i = 0; i < num_indices; i++) {
-        int64_t index = ((constant int64_t*)(indexAB.indexArray[i]))[offsets[thread_index].z / sizeof(int64_t)];
-        if (index < 0) {
-            index += index_sizes[i];
-        }
-        offset += index * index_strides[i];
-     }
-    device T * out = (device T*)((device char*)outputData + offsets[thread_index].x);
-    constant T * in  = (constant T*)((constant char*)inputData  + offsets[thread_index].y + offset);
-    *out = *in;
-}
-
-template<typename T>
-kernel void index_put(
-    constant IndexAB  & indexAB           [[buffer(0)]],
-    constant void     * indexSizes        [[buffer(1)]],
-    constant void     * indexStrides      [[buffer(2)]],
-    constant uint3    * offsets           [[buffer(3)]],
-    constant void     * inputData         [[buffer(4)]],
-    device   void     * outputData        [[buffer(5)]],
-    uint thread_index [[thread_position_in_grid]]) {
-
-    constant int64_t * index_sizes   = (constant int64_t *)indexSizes;
-    constant int64_t * index_strides = (constant int64_t *)indexStrides;
-    int64_t offset = 0;
-    for (uint32_t i = 0; i < num_indices; i++) {
-        int64_t index = ((constant int64_t*)(indexAB.indexArray[i]))[offsets[thread_index].z / sizeof(int64_t)];
-        if (index < 0) {
-            index += index_sizes[i];
-        }
-        offset += index * index_strides[i];
-     }
-    device T * out = (device T*)((device char*)outputData + offsets[thread_index].x + offset);
-    constant T * in  = (constant T*)((constant char*)inputData  + offsets[thread_index].y);
-    *out = *in;
-}
-
-#define REGISTER_INDEX_OP(DTYPE_SIZE, DTYPE, INDEX_OP_TYPE)     \
-template                                                        \
-[[host_name("index_" #INDEX_OP_TYPE "_" #DTYPE_SIZE)]]          \
-kernel void index_ ## INDEX_OP_TYPE<DTYPE>(                     \
-    constant IndexAB & indexAB           [[buffer(0)]],         \
-    constant void    * indexSizes        [[buffer(1)]],         \
-    constant void    * indexStrides      [[buffer(2)]],         \
-    constant uint3   * offsets           [[buffer(3)]],         \
-    constant void    * inputData         [[buffer(4)]],         \
-    device   void    * outputData        [[buffer(5)]],         \
-    uint thread_index [[thread_position_in_grid]]);
-
-#define REGISTER_INDEX_OP_ALL_DTYPES(INDEX_OP_TYPE)     \
-    REGISTER_INDEX_OP(8bit,  char,  INDEX_OP_TYPE);     \
-    REGISTER_INDEX_OP(16bit, short, INDEX_OP_TYPE);     \
-    REGISTER_INDEX_OP(32bit, int,   INDEX_OP_TYPE);     \
-    REGISTER_INDEX_OP(64bit, long,  INDEX_OP_TYPE);
-
-REGISTER_INDEX_OP_ALL_DTYPES(select);
-REGISTER_INDEX_OP_ALL_DTYPES(put);
-
-kernel void kernel_index_offsets(constant packed_uint3 * strides         [[buffer(0)]],
-                                 device uint3          * data_offsets    [[buffer(1)]],
-                                 constant uint         * iter_shape      [[buffer(2)]],
-                                 constant uint         & num_dimensions  [[buffer(3)]],
-                                 constant uint         & num_offsets     [[buffer(4)]],
-                                 uint thread_index [[thread_position_in_grid]]) {
-    uint32_t idx = thread_index;
-    for (uint32_t dim = 0; dim < num_dimensions; dim++) {
-        uint32_t remainder = idx % iter_shape[dim];
-        idx /= iter_shape[dim];
-
-        for (uint32_t offset = 0; offset < num_offsets; offset++)
-            data_offsets[thread_index][offset] += remainder * strides[dim][offset];
-    }
-}
-
-template<typename T, typename E>
-kernel void index_put_accumulate_native_dtypes(constant IndexAB & indexAB      [[buffer(0)]],
-                                               constant void    * indexSizes   [[buffer(1)]],
-                                               constant void    * indexStrides [[buffer(2)]],
-                                               constant uint3   * offsets      [[buffer(3)]],
-                                               constant void    * inputData    [[buffer(4)]],
-                                               device       void    * outputData   [[buffer(5)]],
-                                               uint thread_index [[thread_position_in_grid]]) {
-    constant int64_t * index_sizes   = (constant int64_t *)indexSizes;
-    constant int64_t * index_strides = (constant int64_t *)indexStrides;
-    int64_t offset = 0;
-    for (uint32_t i = 0; i < num_indices; i++) {
-        int64_t index = ((constant int64_t*)(indexAB.indexArray[i]))[offsets[thread_index].z / sizeof(int64_t)];
-        if (index < 0) {
-            index += index_sizes[i];
-        }
-        offset += index * index_strides[i];
-    }
-    device T * out = (device T*)((device char*)outputData + offsets[thread_index].x + offset);
-    constant E * in  = (constant E*)((constant char*)inputData  + offsets[thread_index].y);
-    atomic_fetch_add_explicit(out, *in, memory_order_relaxed);
-}
-
-template<typename T>
-__attribute__((__always_inline__)) void atomic_fetch_add_relaxed(device void * addr, T value) {
-    device atomic_uint* uintAddr = (device atomic_uint*)addr;
-    uint expected = atomic_load_explicit(uintAddr, memory_order_relaxed);
-    T updated = as_type<T>(expected) + value;
-    while (!atomic_compare_exchange_weak_explicit(uintAddr, &expected, as_type<uint>(updated), memory_order_relaxed, memory_order_relaxed)) {
-        updated = as_type<T>(expected) + value;
-    }
-}
-
-template<typename T>
-kernel void atomic_index_put_accumulate(constant IndexAB & indexAB           [[buffer(0)]],
-                                        constant void    * indexSizes        [[buffer(1)]],
-                                        constant void    * indexStrides      [[buffer(2)]],
-                                        constant uint3   * offsets           [[buffer(3)]],
-                                        constant void    * inputData         [[buffer(4)]],
-                                        device   void    * outputData        [[buffer(5)]],
-                                        uint thread_index [[thread_position_in_grid]]) {
-    constant int64_t * index_sizes   = (constant int64_t *)indexSizes;
-    constant int64_t * index_strides = (constant int64_t *)indexStrides;
-    int64_t offset = 0;
-    for (uint32_t i = 0; i < num_indices; i++) {
-        int64_t index = ((constant int64_t*)(indexAB.indexArray[i]))[offsets[thread_index].z / sizeof(int64_t)];
-        if (index < 0) {
-            index += index_sizes[i];
-        }
-        offset += index * index_strides[i];
-    }
-    device void * out = (device void*)((device char*)outputData + offsets[thread_index].x + offset);
-    constant T  * in  = (constant T*)((constant char*)inputData + offsets[thread_index].y);
-    atomic_fetch_add_relaxed<T>(out, *in);
-}
-
-template
-[[host_name("index_put_accumulate_32bit_float")]]
-kernel void atomic_index_put_accumulate<float>(constant IndexAB & indexAB      [[buffer(0)]],
-                                               constant void    * indexSizes   [[buffer(1)]],
-                                               constant void    * indexStrides [[buffer(2)]],
-                                               constant uint3   * offsets      [[buffer(3)]],
-                                               constant void    * inputData    [[buffer(4)]],
-                                               device   void    * outputData   [[buffer(5)]],
-                                               uint thread_index [[thread_position_in_grid]]);
-template
-[[host_name("index_put_accumulate_32bit_int")]]
-kernel void index_put_accumulate_native_dtypes<atomic_int, int>(constant IndexAB & indexAB      [[buffer(0)]],
-                                                                constant void    * indexSizes   [[buffer(1)]],
-                                                                constant void    * indexStrides [[buffer(2)]],
-                                                                constant uint3   * offsets      [[buffer(3)]],
-                                                                constant void    * inputData    [[buffer(4)]],
-                                                                device   void    * outputData   [[buffer(5)]],
-                                                                uint thread_index [[thread_position_in_grid]]);
-)INDEX_METAL";
-
-static const char *SCATTER_OPS_TEMPLATE = R"METAL_SCATTER(
-struct __attribute__ ((packed)) packed_uint5{{
-  uint32_t x; uint32_t y; uint32_t z; uint32_t w; uint32_t u;
-}};
-
-kernel void scatter_kernel_5(uint linear_index              [[thread_position_in_grid]],
-                             constant void * src_           [[buffer(0)]],
-                             device void * dst_             [[buffer(1)]],
-                             constant packed_uint5 & size   [[buffer(2)]],
-                             constant packed_uint5 & stride [[buffer(3)]],
-                             constant uint32_t & numel      [[buffer(4)]]) {{
+template <typename OffsetT>
+kernel void scatter_kernel_n(uint linear_index          [[thread_position_in_grid]],
+                             constant void * src_       [[buffer(0)]],
+                             device void * dst_         [[buffer(1)]],
+                             constant uint32_t * size   [[buffer(2)]],
+                             constant OffsetT * stride  [[buffer(3)]],
+                            constant uint32_t & numel   [[buffer(4)]],
+                            constant int32_t & ndim     [[buffer(5)]]) {{
     if (linear_index >= numel) return;
 
     constant {0} * src = (constant {0} *)src_;
     device {1} * dst = (device {1} *)dst_;
 
-    packed_uint5 local_index;
-    local_index.x = linear_index / (size.u * size.w * size.z * size.y) % size.x;
-    local_index.y = linear_index / (size.u * size.w * size.z) % size.y;
-    local_index.z = linear_index / (size.u * size.w) % size.z;
-    local_index.w = linear_index / size.u % size.w;
-    local_index.u = linear_index % size.u;
+    OffsetT dst_offs = 0;
+    auto dst_idx = linear_index;
+    for(int dim = ndim - 1; dim >= 0; --dim) {{
+      dst_offs += stride[dim] * (dst_idx % size[dim]);
+      dst_idx /= size[dim];
+    }}
 
-    packed_uint5 strided_index;
-    strided_index.x = local_index.x * stride.x;
-    strided_index.y = local_index.y * stride.y;
-    strided_index.z = local_index.z * stride.z;
-    strided_index.w = local_index.w * stride.w;
-    strided_index.u = local_index.u * stride.u;
-
-    dst[strided_index.x + strided_index.y + strided_index.z + strided_index.w + strided_index.u] = src[linear_index];
+    dst[dst_offs] = cast<{1}>(src[linear_index]);
 }}
 
+template [[host_name("scatter_kernel_n_u32")]]
+kernel void scatter_kernel_n<uint>(
+    uint linear_index          [[thread_position_in_grid]],
+    constant void * src_       [[buffer(0)]],
+    device void * dst_         [[buffer(1)]],
+    constant uint32_t * size   [[buffer(2)]],
+    constant uint * stride     [[buffer(3)]],
+    constant uint32_t & numel  [[buffer(4)]],
+    constant int32_t & ndim    [[buffer(5)]]);
+
+template [[host_name("scatter_kernel_n_u64")]]
+kernel void scatter_kernel_n<ulong>(
+    uint linear_index          [[thread_position_in_grid]],
+    constant void * src_       [[buffer(0)]],
+    device void * dst_         [[buffer(1)]],
+    constant uint32_t * size   [[buffer(2)]],
+    constant ulong * stride    [[buffer(3)]],
+    constant uint32_t & numel  [[buffer(4)]],
+    constant int32_t & ndim    [[buffer(5)]]);
+
+template <typename PackedT, typename VecT>
 kernel void scatter_kernel_4(uint linear_index              [[thread_position_in_grid]],
                              constant void * src_           [[buffer(0)]],
                              device void * dst_             [[buffer(1)]],
                              constant packed_uint4 & size   [[buffer(2)]],
-                             constant packed_uint4 & stride [[buffer(3)]],
+                             constant PackedT & stride      [[buffer(3)]],
                              constant uint32_t & numel      [[buffer(4)]]) {{
     if (linear_index >= numel) return;
 
@@ -228,15 +72,34 @@ kernel void scatter_kernel_4(uint linear_index              [[thread_position_in
     local_index.z = linear_index / size[3] % size[2];
     local_index.w = linear_index % size[3];
 
-    const packed_uint4 strided_index = local_index * stride;
-    dst[strided_index.x + strided_index.y + strided_index.z + strided_index.w] = src[linear_index];
+    const PackedT strided_index = VecT(local_index) * stride;
+    dst[strided_index.x + strided_index.y + strided_index.z + strided_index.w] = cast<{1}>(src[linear_index]);
 }}
 
+template [[host_name("scatter_kernel_4_u32")]]
+kernel void scatter_kernel_4<packed_uint4, uint4>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant packed_uint4 & size   [[buffer(2)]],
+    constant packed_uint4 & stride [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
+
+template [[host_name("scatter_kernel_4_u64")]]
+kernel void scatter_kernel_4<packed_ulong4, ulong4>(
+    uint linear_index               [[thread_position_in_grid]],
+    constant void * src_            [[buffer(0)]],
+    device void * dst_              [[buffer(1)]],
+    constant packed_uint4 & size    [[buffer(2)]],
+    constant packed_ulong4 & stride [[buffer(3)]],
+    constant uint32_t & numel       [[buffer(4)]]);
+
+template <typename PackedT, typename VecT>
 kernel void scatter_kernel_3(uint linear_index              [[thread_position_in_grid]],
                              constant void * src_           [[buffer(0)]],
                              device void * dst_             [[buffer(1)]],
                              constant packed_uint3 & size   [[buffer(2)]],
-                             constant packed_uint3 & stride [[buffer(3)]],
+                             constant PackedT & stride      [[buffer(3)]],
                              constant uint32_t & numel      [[buffer(4)]]) {{
     if (linear_index >= numel) return;
 
@@ -248,15 +111,34 @@ kernel void scatter_kernel_3(uint linear_index              [[thread_position_in
     local_index.y = linear_index / size[2] % size[1];
     local_index.z = linear_index % size[2];
 
-    const packed_uint3 strided_index = local_index * stride;
-    dst[strided_index.x + strided_index.y + strided_index.z] = src[linear_index];
+    const PackedT strided_index = VecT(local_index) * stride;
+    dst[strided_index.x + strided_index.y + strided_index.z] = cast<{1}>(src[linear_index]);
 }}
 
+template [[host_name("scatter_kernel_3_u32")]]
+kernel void scatter_kernel_3<packed_uint3, uint3>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant packed_uint3 & size   [[buffer(2)]],
+    constant packed_uint3 & stride [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
+
+template [[host_name("scatter_kernel_3_u64")]]
+kernel void scatter_kernel_3<packed_ulong3, ulong3>(
+    uint linear_index               [[thread_position_in_grid]],
+    constant void * src_            [[buffer(0)]],
+    device void * dst_              [[buffer(1)]],
+    constant packed_uint3 & size    [[buffer(2)]],
+    constant packed_ulong3 & stride [[buffer(3)]],
+    constant uint32_t & numel       [[buffer(4)]]);
+
+template <typename PackedT, typename VecT>
 kernel void scatter_kernel_2(uint linear_index              [[thread_position_in_grid]],
                              constant void * src_           [[buffer(0)]],
                              device void * dst_             [[buffer(1)]],
                              constant packed_uint2 & size   [[buffer(2)]],
-                             constant packed_uint2 & stride [[buffer(3)]],
+                             constant PackedT & stride      [[buffer(3)]],
                              constant uint32_t & numel      [[buffer(4)]]) {{
     if (linear_index >= numel) return;
 
@@ -267,66 +149,122 @@ kernel void scatter_kernel_2(uint linear_index              [[thread_position_in
     local_index.x = linear_index / size[1] % size[0];
     local_index.y = linear_index % size[1];
 
-    const packed_uint2 strided_index = local_index * stride;
-    dst[strided_index.x + strided_index.y] = src[linear_index];
+    const PackedT strided_index = VecT(local_index) * stride;
+    dst[strided_index.x + strided_index.y] = cast<{1}>(src[linear_index]);
 }}
 
+template [[host_name("scatter_kernel_2_u32")]]
+kernel void scatter_kernel_2<packed_uint2, uint2>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant packed_uint2 & size   [[buffer(2)]],
+    constant packed_uint2 & stride [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
+
+template [[host_name("scatter_kernel_2_u64")]]
+kernel void scatter_kernel_2<packed_ulong2, ulong2>(
+    uint linear_index               [[thread_position_in_grid]],
+    constant void * src_            [[buffer(0)]],
+    device void * dst_              [[buffer(1)]],
+    constant packed_uint2 & size    [[buffer(2)]],
+    constant packed_ulong2 & stride [[buffer(3)]],
+    constant uint32_t & numel       [[buffer(4)]]);
+
+template <typename OffsetT>
 kernel void scatter_kernel_1(uint linear_index              [[thread_position_in_grid]],
                              constant void * src_           [[buffer(0)]],
                              device void * dst_             [[buffer(1)]],
                              constant int & size            [[buffer(2)]],
-                             constant int & stride          [[buffer(3)]],
+                             constant OffsetT & stride      [[buffer(3)]],
                              constant uint32_t & numel      [[buffer(4)]]) {{
     if (linear_index >= numel) return;
 
     constant {0} * src = (constant {0} *)src_;
     device {1} * dst = (device {1} *)dst_;
 
-    const int local_index = linear_index % size;
-    const int strided_index = local_index * stride;
-    dst[strided_index] = src[linear_index];
+    const uint local_index = linear_index % size;
+    const OffsetT strided_index = local_index * stride;
+    dst[strided_index] = cast<{1}>(src[linear_index]);
 }}
+
+template [[host_name("scatter_kernel_1_u32")]]
+kernel void scatter_kernel_1<uint>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant int & size            [[buffer(2)]],
+    constant uint & stride         [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
+
+template [[host_name("scatter_kernel_1_u64")]]
+kernel void scatter_kernel_1<ulong>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant int & size            [[buffer(2)]],
+    constant ulong & stride        [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
 )METAL_SCATTER";
 
-static const char *GATHER_OPS_TEMPLATE = R"METAL_GATHER(
-struct __attribute__ ((packed)) packed_uint5{{
-  uint32_t x; uint32_t y; uint32_t z; uint32_t w; uint32_t u;
-}};
+static const char* GATHER_OPS_TEMPLATE = R"METAL_GATHER(
+template<typename Y, typename X>
+Y cast(const X x);
 
-kernel void gather_kernel_5(uint linear_index               [[thread_position_in_grid]],
-                            constant void * src_            [[buffer(0)]],
-                            device void * dst_              [[buffer(1)]],
-                            constant packed_uint5 & size    [[buffer(2)]],
-                            constant packed_uint5 & stride  [[buffer(3)]],
-                            constant uint32_t & numel       [[buffer(4)]]) {{
+template<>
+{1} cast<{1}, {0}>(const {0} x) {{
+ return {2};
+}}
+
+template <typename OffsetT>
+kernel void gather_kernel_n(uint linear_index           [[thread_position_in_grid]],
+                            constant void * src_        [[buffer(0)]],
+                            device void * dst_          [[buffer(1)]],
+                            constant uint32_t * size    [[buffer(2)]],
+                            constant OffsetT * stride   [[buffer(3)]],
+                            constant uint32_t & numel   [[buffer(4)]],
+                            constant int32_t & ndim     [[buffer(5)]]) {{
     if (linear_index >= numel) return;
 
     constant {0} * src = (constant {0} *)src_;
     device {1} * dst = (device {1} *)dst_;
 
+    OffsetT src_offs = 0;
+    auto src_idx = linear_index;
+    for(int dim = ndim - 1; dim >= 0; --dim) {{
+      src_offs += stride[dim] * (src_idx % size[dim]);
+      src_idx /= size[dim];
+    }}
 
-    packed_uint5 local_index;
-    local_index.x = linear_index / (size.u * size.w * size.z * size.y) % size.x;
-    local_index.y = linear_index / (size.u * size.w * size.z) % size.y;
-    local_index.z = linear_index / (size.u * size.w) % size.z;
-    local_index.w = linear_index / size.u % size.w;
-    local_index.u = linear_index % size.u;
-
-    packed_uint5 strided_index;
-    strided_index.x = local_index.x * stride.x;
-    strided_index.y = local_index.y * stride.y;
-    strided_index.z = local_index.z * stride.z;
-    strided_index.w = local_index.w * stride.w;
-    strided_index.u = local_index.u * stride.u;
-
-    dst[linear_index] = src[strided_index.x + strided_index.y + strided_index.z + strided_index.w + strided_index.u];
+    dst[linear_index] = cast<{1}>(src[src_offs]);
 }}
 
+template [[host_name("gather_kernel_n_u32")]]
+kernel void gather_kernel_n<uint>(
+    uint linear_index           [[thread_position_in_grid]],
+    constant void * src_        [[buffer(0)]],
+    device void * dst_          [[buffer(1)]],
+    constant uint32_t * size    [[buffer(2)]],
+    constant uint * stride      [[buffer(3)]],
+    constant uint32_t & numel   [[buffer(4)]],
+    constant int32_t & ndim     [[buffer(5)]]);
+
+template [[host_name("gather_kernel_n_u64")]]
+kernel void gather_kernel_n<ulong>(
+    uint linear_index           [[thread_position_in_grid]],
+    constant void * src_        [[buffer(0)]],
+    device void * dst_          [[buffer(1)]],
+    constant uint32_t * size    [[buffer(2)]],
+    constant ulong * stride     [[buffer(3)]],
+    constant uint32_t & numel   [[buffer(4)]],
+    constant int32_t & ndim     [[buffer(5)]]);
+
+template <typename PackedT, typename VecT>
 kernel void gather_kernel_4(uint linear_index               [[thread_position_in_grid]],
                             constant void * src_            [[buffer(0)]],
                             device void * dst_              [[buffer(1)]],
                             constant packed_uint4 & size    [[buffer(2)]],
-                            constant packed_uint4 & stride  [[buffer(3)]],
+                            constant PackedT & stride       [[buffer(3)]],
                             constant uint32_t & numel       [[buffer(4)]]) {{
     if (linear_index >= numel) return;
 
@@ -339,15 +277,34 @@ kernel void gather_kernel_4(uint linear_index               [[thread_position_in
     local_index.z = linear_index / size[3] % size[2];
     local_index.w = linear_index % size[3];
 
-    const packed_uint4 strided_index = local_index * stride;
-    dst[linear_index] = src[strided_index.x + strided_index.y + strided_index.z + strided_index.w];
+    const PackedT strided_index = VecT(local_index) * stride;
+    dst[linear_index] = cast<{1}>(src[strided_index.x + strided_index.y + strided_index.z + strided_index.w]);
 }}
 
+template [[host_name("gather_kernel_4_u32")]]
+kernel void gather_kernel_4<packed_uint4, uint4>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant packed_uint4 & size   [[buffer(2)]],
+    constant packed_uint4 & stride [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
+
+template [[host_name("gather_kernel_4_u64")]]
+kernel void gather_kernel_4<packed_ulong4, ulong4>(
+    uint linear_index               [[thread_position_in_grid]],
+    constant void * src_            [[buffer(0)]],
+    device void * dst_              [[buffer(1)]],
+    constant packed_uint4 & size    [[buffer(2)]],
+    constant packed_ulong4 & stride [[buffer(3)]],
+    constant uint32_t & numel       [[buffer(4)]]);
+
+template <typename PackedT, typename VecT>
 kernel void gather_kernel_3(uint linear_index               [[thread_position_in_grid]],
                             constant void * src_            [[buffer(0)]],
                             device void * dst_              [[buffer(1)]],
                             constant packed_uint3 & size    [[buffer(2)]],
-                            constant packed_uint3 & stride  [[buffer(3)]],
+                            constant PackedT & stride       [[buffer(3)]],
                             constant uint32_t & numel       [[buffer(4)]]) {{
     if (linear_index >= numel) return;
 
@@ -359,15 +316,34 @@ kernel void gather_kernel_3(uint linear_index               [[thread_position_in
     local_index.y = linear_index / size[2] % size[1];
     local_index.z = linear_index % size[2];
 
-    const packed_uint3 strided_index = local_index * stride;
-    dst[linear_index] = src[strided_index.x + strided_index.y + strided_index.z];
+    const PackedT strided_index = VecT(local_index) * stride;
+    dst[linear_index] = cast<{1}>(src[strided_index.x + strided_index.y + strided_index.z]);
 }}
 
+template [[host_name("gather_kernel_3_u32")]]
+kernel void gather_kernel_3<packed_uint3, uint3>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant packed_uint3 & size   [[buffer(2)]],
+    constant packed_uint3 & stride [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
+
+template [[host_name("gather_kernel_3_u64")]]
+kernel void gather_kernel_3<packed_ulong3, ulong3>(
+    uint linear_index               [[thread_position_in_grid]],
+    constant void * src_            [[buffer(0)]],
+    device void * dst_              [[buffer(1)]],
+    constant packed_uint3 & size    [[buffer(2)]],
+    constant packed_ulong3 & stride [[buffer(3)]],
+    constant uint32_t & numel       [[buffer(4)]]);
+
+template <typename PackedT, typename VecT>
 kernel void gather_kernel_2(uint linear_index               [[thread_position_in_grid]],
                             constant void * src_            [[buffer(0)]],
                             device void * dst_              [[buffer(1)]],
                             constant packed_uint2 & size    [[buffer(2)]],
-                            constant packed_uint2 & stride  [[buffer(3)]],
+                            constant PackedT & stride       [[buffer(3)]],
                             constant uint32_t & numel       [[buffer(4)]]) {{
     if (linear_index >= numel) return;
 
@@ -378,25 +354,61 @@ kernel void gather_kernel_2(uint linear_index               [[thread_position_in
     local_index.x = linear_index / size[1] % size[0];
     local_index.y = linear_index % size[1];
 
-    const packed_uint2 strided_index = local_index * stride;
-    dst[linear_index] = src[strided_index.x + strided_index.y];
+    const PackedT strided_index = VecT(local_index) * stride;
+    dst[linear_index] = cast<{1}>(src[strided_index.x + strided_index.y]);
 }}
 
+template [[host_name("gather_kernel_2_u32")]]
+kernel void gather_kernel_2<packed_uint2, uint2>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant packed_uint2 & size   [[buffer(2)]],
+    constant packed_uint2 & stride [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
+
+template [[host_name("gather_kernel_2_u64")]]
+kernel void gather_kernel_2<packed_ulong2, ulong2>(
+    uint linear_index               [[thread_position_in_grid]],
+    constant void * src_            [[buffer(0)]],
+    device void * dst_              [[buffer(1)]],
+    constant packed_uint2 & size    [[buffer(2)]],
+    constant packed_ulong2 & stride [[buffer(3)]],
+    constant uint32_t & numel       [[buffer(4)]]);
+
+template <typename OffsetT>
 kernel void gather_kernel_1(uint linear_index               [[thread_position_in_grid]],
                             constant void * src_            [[buffer(0)]],
                             device void * dst_              [[buffer(1)]],
                             constant int & size             [[buffer(2)]],
-                            constant int & stride           [[buffer(3)]],
+                            constant OffsetT & stride       [[buffer(3)]],
                             constant uint32_t & numel       [[buffer(4)]]) {{
     if (linear_index >= numel) return;
 
     constant {0} * src = (constant {0} *)src_;
     device {1} * dst = (device {1} *)dst_;
 
-    const int local_index = linear_index % size;
-    const int strided_index = local_index * stride;
-    dst[linear_index] = src[strided_index];
+    const uint local_index = linear_index % size;
+    const OffsetT strided_index = local_index * stride;
+    dst[linear_index] = cast<{1}>(src[strided_index]);
 }}
+
+template [[host_name("gather_kernel_1_u32")]]
+kernel void gather_kernel_1<uint>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant int & size            [[buffer(2)]],
+    constant uint & stride         [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
+
+template [[host_name("gather_kernel_1_u64")]]
+kernel void gather_kernel_1<ulong>(
+    uint linear_index              [[thread_position_in_grid]],
+    constant void * src_           [[buffer(0)]],
+    device void * dst_             [[buffer(1)]],
+    constant int & size            [[buffer(2)]],
+    constant ulong & stride        [[buffer(3)]],
+    constant uint32_t & numel      [[buffer(4)]]);
 )METAL_GATHER";
-}
-}
+} // namespace at::mps

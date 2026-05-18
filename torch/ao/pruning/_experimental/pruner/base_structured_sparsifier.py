@@ -1,27 +1,29 @@
+# mypy: allow-untyped-defs
+from collections.abc import Callable
 from itertools import chain
 from operator import getitem
+
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.ao.pruning.sparsifier.base_sparsifier import BaseSparsifier
 from torch.fx import symbolic_trace
 from torch.nn.utils import parametrize
-from typing import Type, Set, Dict, Callable, Tuple, Optional, Union
 
-from torch.ao.pruning import BaseSparsifier
-from .parametrization import FakeStructuredSparsity, BiasHook, module_contains_param
 from .match_utils import apply_match, MatchAllNode
+from .parametrization import BiasHook, FakeStructuredSparsity, module_contains_param
 from .prune_functions import (
-    prune_linear,
-    prune_linear_linear,
-    prune_linear_activation_linear,
     prune_conv2d,
-    prune_conv2d_conv2d,
     prune_conv2d_activation_conv2d,
     prune_conv2d_activation_pool_conv2d,
+    prune_conv2d_conv2d,
     prune_conv2d_pool_activation_conv2d,
     prune_conv2d_pool_flatten_linear,
-    prune_lstm_output_linear,
+    prune_linear,
+    prune_linear_activation_linear,
+    prune_linear_linear,
     prune_lstm_output_layernorm_linear,
+    prune_lstm_output_linear,
 )
 
 
@@ -88,15 +90,15 @@ def _get_supported_activation_modules():
     return SUPPORTED_ACTIVATION_MODULES
 
 
-def _get_default_structured_pruning_patterns() -> Dict[
-    Tuple[Union[Type[nn.Module], Callable, MatchAllNode, str], ...],
+def _get_default_structured_pruning_patterns() -> dict[
+    tuple[type[nn.Module] | Callable | MatchAllNode | str, ...],
     Callable[..., None],
 ]:
     """
     Returns the patterns for conv2d / linear conversion for each element in the activation functions/modules defined above.
     """
-    patterns: Dict[
-        Tuple[Union[Type[nn.Module], Callable, MatchAllNode, str], ...],
+    patterns: dict[
+        tuple[type[nn.Module] | Callable | MatchAllNode | str, ...],
         Callable[..., None],
     ] = {
         # linear -> linear
@@ -225,7 +227,7 @@ class BaseStructuredSparsifier(BaseSparsifier):
     def make_config_from_model(
         self,
         model: nn.Module,
-        SUPPORTED_MODULES: Optional[Set[Type]] = None,
+        SUPPORTED_MODULES: set[type] | None = None,
     ) -> None:
         if SUPPORTED_MODULES is None:
             SUPPORTED_MODULES = _get_supported_structured_pruning_modules()
@@ -257,11 +259,12 @@ class BaseStructuredSparsifier(BaseSparsifier):
                     module.register_parameter(
                         "_bias", nn.Parameter(module.bias.detach())
                     )
+                    # pyrefly: ignore [bad-assignment]
                     module.bias = None
                     module.prune_bias = prune_bias
 
                 module.register_forward_hook(
-                    BiasHook(module.parametrizations.weight[0], prune_bias)
+                    BiasHook(module.parametrizations.weight[0], prune_bias)  # type: ignore[union-attr, index]
                 )
 
     def prune(self) -> None:
@@ -284,8 +287,9 @@ class BaseStructuredSparsifier(BaseSparsifier):
                 if matched is None:
                     continue
 
+                # pyrefly: ignore [no-matching-overload]
                 first_module = modules.get(node.target)
-                # check if first module exists and has apropriate parameterization, otherwise skip
+                # check if first module exists and has appropriate parameterization, otherwise skip
                 if (
                     first_module is not None
                     and parametrize.is_parametrized(first_module)
@@ -301,10 +305,10 @@ class BaseStructuredSparsifier(BaseSparsifier):
 
         for module in self.traced.modules():
             if module_contains_param(module, FakeStructuredSparsity):
-                raise Exception(
+                raise Exception(  # noqa: TRY002
                     f"Error: {module} still contains FakeStructuredSparsity parametrizations!"
                 )
 
         self.traced.graph.lint()
         self.traced.recompile()
-        return self.traced
+        return self.traced  # type: ignore[return-value]

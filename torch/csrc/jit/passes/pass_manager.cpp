@@ -1,7 +1,6 @@
 #include <torch/csrc/jit/passes/pass_manager.h>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 // Start UUID at 1
 static GraphPassNameType graphPassID = 1;
@@ -21,7 +20,7 @@ GraphPassNameType registerPostPass(GraphPass p) {
   return graphPassID++;
 }
 
-GraphPassNameType registerPass(GraphPass p) {
+static GraphPassNameType registerPass(GraphPass p) {
   return registerPostPass(std::move(p));
 }
 
@@ -67,5 +66,4 @@ RegisterPostPass::RegisterPostPass(GraphPass p) {
   registerPass(std::move(p));
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

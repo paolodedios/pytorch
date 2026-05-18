@@ -10,14 +10,13 @@
 #include <unordered_map>
 #include <utility>
 
-namespace torch {
-namespace jit {
+namespace torch::jit {
 
 struct QuantFusionInfo {
   std::string quantized_op_name;
   std::string pattern;
   std::string replacement;
-  std::vector<MatchFilter> filters = {};
+  std::vector<MatchFilter> filters;
 };
 
 namespace {
@@ -26,7 +25,9 @@ std::string getExtraArgList(std::vector<std::string> extra_args) {
       extra_args.begin(),
       extra_args.end(),
       std::string(),
-      [](std::string acc, const std::string& arg) { return acc + ", " + arg; });
+      [](const std::string& acc, const std::string& arg) {
+        return acc + ", " + arg;
+      });
 }
 
 // Get the pattern we want to replace the match with
@@ -75,8 +76,7 @@ std::string getQuantizeForScalar(const std::string& value) {
           )" +
       value + "_tensor : Tensor = aten::scalar_tensor(" + value + ", " + value +
       "_float_scalar_type";
-  for (const auto i : c10::irange(3)) {
-    (void)i; // Suppress unused variable warning
+  for ([[maybe_unused]] const auto i : c10::irange(3)) {
     quantize_pattern += ", " + value + "_none";
   }
   quantize_pattern += ")";
@@ -206,7 +206,7 @@ QuantFusionInfo getFixedQParamOpFusionInfo(
           %r = )";
   op_pattern += op_name + "(" + "%a_dequant" + extra_op_arg_list + ")";
   // IR pattern common to all ops with fixed quantization parameters for
-  // asymetric quantization
+  // asymmetric quantization
   std::string asym_fixed_qparam_op_suffix = R"(
           %r_scale : float = prim::Constant[value=0.00390625]()
           %r_zero_point : int = prim::Constant[value=0]()
@@ -282,7 +282,7 @@ QuantFusionInfo getObservedQParamOpFusionInfo(
 
 } // namespace
 
-std::vector<QuantFusionInfo> quant_fusion_pattern_and_replacements() {
+static std::vector<QuantFusionInfo> quant_fusion_pattern_and_replacements() {
   // aten::conv1d
   std::string conv1d = R"(
 graph(%a_quant, %packed_params, %r_scale, %r_zero_point, %r_dtype, %stride, %padding, %dilation, %groups):
@@ -808,13 +808,6 @@ graph(%a_quant, %alpha, %scale, %input_scale, %r_scale, %r_zero_point, %r_dtype)
        "%count_include_pad",
        "%divisor_override"});
 
-  std::string common_general_value_op = R"(
-          %r_scale : float = aten::q_scale(%a_quant)
-          %r_zero_point : int = aten::q_zero_point(%a_quant)
-          %r_dtype : int = prim::dtype(%a_quant)
-          %r_quant = aten::quantize_per_tensor(%r, %r_scale, %r_zero_point, %r_dtype)
-          return (%r_quant) )";
-
   auto avg_pool3d = getInputTensorQParamOpFusionInfo(
       "aten::avg_pool3d",
       {"%kernel_size",
@@ -1105,7 +1098,8 @@ graph(%packed_params, %a):
   };
 }
 
-std::vector<QuantFusionInfo> dynamic_quant_fusion_pattern_and_replacements() {
+static std::vector<QuantFusionInfo>
+dynamic_quant_fusion_pattern_and_replacements() {
   std::string linear_dynamic = R"(
 graph(%packed_params, %a, %reduce_range, %a_dtype):
         %a_scale : float, %a_zero_point : int = aten::_choose_qparams_per_tensor(%a, %reduce_range)
@@ -1142,7 +1136,7 @@ graph(%packed_params, %a):
   };
 }
 
-std::vector<QuantFusionInfo> linear_prepack_unpack_patterns() {
+static std::vector<QuantFusionInfo> linear_prepack_unpack_patterns() {
   std::string linear_with_quant = R"(
 graph(%a_dequant, %w_quant, %b):
         %w_dequant = aten::dequantize(%w_quant)
@@ -1178,7 +1172,7 @@ graph(%w, %a_dq, %b):
   };
 }
 
-std::vector<QuantFusionInfo> conv_prepack_unpack_patterns() {
+static std::vector<QuantFusionInfo> conv_prepack_unpack_patterns() {
   std::string conv1d_with_quant = R"(
 graph(%a_dequant, %w_quant, %b, %stride, %padding, %dilation, %groups):
         %w_dequant = aten::dequantize(%w_quant)
@@ -1267,5 +1261,4 @@ graph(%a_dequant, %w_quant, %b, %stride, %padding, %output_padding, %groups, %di
        std::move(conv_transpose2d_with_quant_prepack)}};
 }
 
-} // namespace jit
-} // namespace torch
+} // namespace torch::jit

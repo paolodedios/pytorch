@@ -13,10 +13,8 @@ def define_targets(rules):
         name = "gen",
         srcs = [":torchgen"],
         visibility = ["//visibility:public"],
-    )
-
-    rules.py_binary(
-        name = "gen_executorch",
-        srcs = [":torchgen"],
-        visibility = ["//visibility:public"],
+        deps = [
+            rules.requirement("PyYAML"),
+            rules.requirement("typing-extensions"),
+        ],
     )

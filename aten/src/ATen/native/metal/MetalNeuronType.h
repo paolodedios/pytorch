@@ -1,14 +1,16 @@
 #ifndef MetalNeuronType_h
 #define MetalNeuronType_h
 
+#include <c10/macros/Macros.h>
+
 #import <ATen/native/metal/mpscnn/MPSCNNNeuronOp.h>
+C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wdeprecated-declarations")
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+C10_DIAGNOSTIC_POP()
 
 #include <ATen/ATen.h>
 
-namespace at {
-namespace native {
-namespace metal {
+namespace at::native::metal {
 
 enum class NeuronType {
   None,
@@ -20,8 +22,8 @@ enum class NeuronType {
 };
 
 static inline NeuronType neuronType(
-    c10::optional<c10::Scalar> output_min,
-    c10::optional<c10::Scalar> output_max) {
+    std::optional<c10::Scalar> output_min,
+    std::optional<c10::Scalar> output_max) {
   float inf_max = std::numeric_limits<float>::infinity();
   float inf_min = -std::numeric_limits<float>::infinity();
   float output_max_ =
@@ -66,8 +68,6 @@ static inline MPSNNNeuronDescriptor* neuronDescriptor(NeuronType type) {
   }
 }
 
-}
-}
-}
+} // namespace at::native::metal
 
 #endif /* MetalNeuronType_h */

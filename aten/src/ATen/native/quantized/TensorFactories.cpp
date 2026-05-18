@@ -5,8 +5,8 @@
 
 #include <utility>
 
-namespace at {
-namespace native {
+
+namespace at::native {
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ empty ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 // We explicitly pass in scale and zero_point because we don't have the infra
@@ -14,13 +14,13 @@ namespace native {
 // change to use quantizer
 Tensor empty_affine_quantized(
     IntArrayRef size,
-    c10::optional<ScalarType> dtype,
-    c10::optional<Layout> layout,
-    c10::optional<Device> device,
-    c10::optional<bool> pin_memory,
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory,
     double scale,
     int64_t zero_point,
-    c10::optional<c10::MemoryFormat> optional_memory_format) {
+    std::optional<c10::MemoryFormat> optional_memory_format) {
   // See [Note: hacky wrapper removal for TensorOptions]
   TensorOptions options_ = TensorOptions().dtype(dtype).layout(layout).device(device).pinned_memory(pin_memory);
 
@@ -44,11 +44,11 @@ Tensor empty_per_channel_affine_quantized(
     const Tensor& scales,
     const Tensor& zero_points,
     int64_t axis,
-    c10::optional<ScalarType> dtype,
-    c10::optional<Layout> layout,
-    c10::optional<Device> device,
-    c10::optional<bool> pin_memory,
-    c10::optional<c10::MemoryFormat> optional_memory_format) {
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory,
+    std::optional<c10::MemoryFormat> optional_memory_format) {
   // See [Note: hacky wrapper removal for TensorOptions]
   TensorOptions options_ = TensorOptions().dtype(dtype).layout(layout).device(device).pinned_memory(pin_memory);
 
@@ -70,11 +70,11 @@ Tensor empty_per_channel_affine_quantized(
 
 Tensor empty_unknown_quantized(
     IntArrayRef size,
-    c10::optional<ScalarType> dtype,
-    c10::optional<Layout> layout,
-    c10::optional<Device> device,
-    c10::optional<bool> pin_memory,
-    c10::optional<c10::MemoryFormat> optional_memory_format) {
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory,
+    std::optional<c10::MemoryFormat> optional_memory_format) {
   // See [Note: hacky wrapper removal for TensorOptions]
   TensorOptions options_ = TensorOptions().dtype(dtype).layout(layout).device(device).pinned_memory(pin_memory);
 
@@ -93,10 +93,10 @@ Tensor empty_unknown_quantized(
 Tensor empty_strided_unknown_quantized(
     IntArrayRef size,
     IntArrayRef strided,
-    c10::optional<ScalarType> dtype,
-    c10::optional<Layout> layout,
-    c10::optional<Device> device,
-    c10::optional<bool> pin_memory) {
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory) {
 
   TORCH_CHECK(false, "empty_strided not supported on quantized tensors yet see https://github.com/pytorch/pytorch/issues/74540")
 
@@ -104,27 +104,27 @@ Tensor empty_strided_unknown_quantized(
 
 // Provide better error message if dtype is wrong
 Tensor empty_affine_quantized_other_backends_stub(
-    IntArrayRef,
-    c10::optional<ScalarType>,
-    c10::optional<Layout>,
-    c10::optional<Device>,
-    c10::optional<bool>,
-    double,
-    int64_t,
-    c10::optional<c10::MemoryFormat>) {
+    IntArrayRef /*unused*/,
+    std::optional<ScalarType> /*unused*/,
+    std::optional<Layout> /*unused*/,
+    std::optional<Device> /*unused*/,
+    std::optional<bool> /*unused*/,
+    double /*unused*/,
+    int64_t /*unused*/,
+    std::optional<c10::MemoryFormat> /*unused*/) {
   TORCH_CHECK(false, "Creation of quantized tensor requires quantized dtype like torch.quint8");
 }
 
 Tensor empty_per_channel_affine_quantized_other_backends_stub(
-    IntArrayRef,
-    const Tensor&,
-    const Tensor&,
-    int64_t,
-    c10::optional<ScalarType>,
-    c10::optional<Layout>,
-    c10::optional<Device>,
-    c10::optional<bool>,
-    c10::optional<c10::MemoryFormat>) {
+    IntArrayRef /*unused*/,
+    const Tensor& /*unused*/,
+    const Tensor& /*unused*/,
+    int64_t /*unused*/,
+    std::optional<ScalarType> /*unused*/,
+    std::optional<Layout> /*unused*/,
+    std::optional<Device> /*unused*/,
+    std::optional<bool> /*unused*/,
+    std::optional<c10::MemoryFormat> /*unused*/) {
   TORCH_CHECK(false, "Creation of quantized tensor requires quantized dtype like torch.quint8");
 }
 
@@ -133,11 +133,11 @@ Tensor empty_per_channel_affine_quantized_other_backends_stub(
 Tensor empty_quantized(
     IntArrayRef size,
     const Tensor& qtensor,
-    c10::optional<ScalarType> dtype,
-    c10::optional<Layout> layout,
-    c10::optional<Device> device,
-    c10::optional<bool> pin_memory,
-    c10::optional<c10::MemoryFormat> memory_format) {
+    std::optional<ScalarType> dtype,
+    std::optional<Layout> layout,
+    std::optional<Device> device,
+    std::optional<bool> pin_memory,
+    std::optional<c10::MemoryFormat> memory_format) {
   TensorOptions specified_options =
       TensorOptions().dtype(dtype).layout(layout).device(device).pinned_memory(pin_memory);
 
@@ -172,5 +172,4 @@ Tensor empty_quantized(
   return output;
 }
 
-} // namespace native
-} // namespace at
+} // namespace at::native

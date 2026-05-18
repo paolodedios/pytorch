@@ -1,3 +1,4 @@
+# mypy: allow-untyped-defs
 import math
 from typing import Optional, Union
 
@@ -5,7 +6,6 @@ import torch
 import torch._prims as prims
 import torch._prims_common as utils
 import torch._refs as refs
-
 from torch import Tensor
 from torch._decomp import register_decomposition
 from torch._prims_common import (
@@ -17,6 +17,7 @@ from torch._prims_common import (
 )
 from torch._prims_common.wrappers import elementwise_type_promotion_wrapper, out_wrapper
 from torch._refs import (
+    _make_alias,
     _make_elementwise_binary_reference,
     _make_elementwise_unary_reference,
 )
@@ -84,7 +85,7 @@ def erfcx(a: TensorLikeType) -> TensorLikeType:
 
 
 # alias for sigmoid
-expit = torch.sigmoid
+expit = _make_alias(torch.sigmoid, "expit")
 
 
 @_make_elementwise_unary_reference(
@@ -115,13 +116,13 @@ def i1e(a: TensorLikeType) -> TensorLikeType:
     type_promotion_kind=utils.ELEMENTWISE_TYPE_PROMOTION_KIND.INT_TO_FLOAT,
 )
 def log_ndtr(a: TensorLikeType) -> TensorLikeType:
-    # Note: M_SQRT1_2 is the value of 1 / √2
+    # Note: M_SQRT1_2 is the value of 1 / sqrt(2)
     M_SQRT1_2 = 0.707106781186547524400844362104849039
     t = a * M_SQRT1_2
     return torch.where(
         a < 1.0,
         torch.log(torch.special.erfcx(-t) / 2) - t * t,
-        torch.log1p(-refs.erfc(t) / 2),
+        torch.log1p(-torch.erfc(t) / 2),
     )
 
 
@@ -131,12 +132,12 @@ def log_ndtr(a: TensorLikeType) -> TensorLikeType:
     type_promoting_args=("self",),
     type_promotion_kind=utils.ELEMENTWISE_TYPE_PROMOTION_KIND.INT_TO_FLOAT,
 )
-def logit(self: TensorLikeType, eps: Optional[float] = None) -> TensorLikeType:
+def logit(self: TensorLikeType, eps: float | None = None) -> TensorLikeType:
     if eps is None:
         eps = -1.0
     lo = eps
     hi = 1 - eps
-    self = torch.clamp(self, lo, hi)
+    self = torch.where(self < lo, lo, torch.where(self > hi, hi, self))
     return torch.log(torch.true_divide(self, torch.sub(1, self)))
 
 
@@ -146,22 +147,26 @@ def logit(self: TensorLikeType, eps: Optional[float] = None) -> TensorLikeType:
     type_promoting_args=("a", "b"),
     type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.INT_TO_FLOAT,
 )
-def xlog1py(a: Union[TensorLikeType, NumberType], b: Union[TensorLikeType, NumberType]):
-    utils.check(
+def xlog1py(a: TensorLikeType | NumberType, b: TensorLikeType | NumberType):
+    torch._check(
         isinstance(a, TensorLike) or isinstance(b, TensorLike),
         lambda: 'Expected either argument a or b to be a Tensor"',
     )
 
     # Operations like eq and log do not handle scalar values, so we convert them to scalar_tensors.
     if isinstance(a, TensorLike) and isinstance(b, Number):
+        # pyrefly: ignore [bad-argument-type]
         b = refs.scalar_tensor(b, dtype=a.dtype, device=a.device)
     elif isinstance(b, TensorLike) and isinstance(a, Number):
+        # pyrefly: ignore [bad-argument-type]
         a = refs.scalar_tensor(a, dtype=b.dtype, device=b.device)
 
     # mypy: expected "Tensor"
-    assert isinstance(a, TensorLike)
-    assert isinstance(b, TensorLike)
-    rhs = torch.where(torch.eq(a, 0), 0, torch.mul(a, refs.log1p(b)))
+    if not isinstance(a, TensorLike):
+        raise AssertionError(f"a must be TensorLike, got {type(a)}")
+    if not isinstance(b, TensorLike):
+        raise AssertionError(f"b must be TensorLike, got {type(b)}")
+    rhs = torch.where(torch.eq(a, 0), 0, torch.mul(a, torch.log1p(b)))
     return torch.where(torch.isnan(b), float("nan"), rhs)
 
 
@@ -184,7 +189,7 @@ def multigammaln(a: TensorLikeType, p: int) -> TensorLikeType:
     type_promotion_kind=utils.ELEMENTWISE_TYPE_PROMOTION_KIND.INT_TO_FLOAT,
 )
 def ndtr(a: TensorLikeType) -> TensorLikeType:
-    # Note: M_SQRT1_2 is the value of 1 / √2
+    # Note: M_SQRT1_2 is the value of 1 / sqrt(2)
     M_SQRT1_2 = 0.707106781186547524400844362104849039
     a_sqrt_2 = a * M_SQRT1_2
     return (1 + torch.erf(a_sqrt_2)) * 0.5
@@ -205,7 +210,7 @@ def ndtri(a: TensorLikeType) -> TensorLikeType:
 def log_softmax(
     a: TensorLikeType,
     dim: int,
-    dtype: Optional[torch.dtype] = None,
+    dtype: torch.dtype | None = None,
 ) -> TensorLikeType:
     return torch.log_softmax(a=a, dim=dim, dtype=dtype)  # type: ignore[call-overload]
 
@@ -215,7 +220,7 @@ def log_softmax(
 def softmax(
     a: TensorLikeType,
     dim: int,
-    dtype: Optional[torch.dtype] = None,
+    dtype: torch.dtype | None = None,
 ) -> TensorLikeType:
     return torch.softmax(a=a, dim=dim, dtype=dtype)  # type: ignore[call-overload]
 
