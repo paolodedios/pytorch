@@ -73,6 +73,7 @@ from torch._inductor.output_code import MockFXGraphCacheOutput
 from torch._subclasses.fake_tensor import DynamicOutputShapeException, FakeTensorMode
 from torch.fx.experimental.proxy_tensor import is_sym_node
 from torch.fx.experimental.symbolic_shapes import GuardOnDataDependentSymNode, ShapeEnv
+from torch.multiprocessing.reductions import StorageWeakRef
 from torch.nn.attention.flex_attention import flex_attention
 from torch.nn.utils.rnn import PackedSequence
 from torch.testing import FileCheck
@@ -9733,6 +9734,64 @@ metadata incorrectly.
         self.assertEqual(a_ref.grad.b, a_test.grad.b)
         self.assertEqual(b_ref.grad.a, b_test.grad.a)
         self.assertEqual(b_ref.grad.b, b_test.grad.b)
+
+    def test_output_alias_of_intermediate_wrapper_subclass_aot_eager(self):
+        def f(x):
+            y = x + 1
+            aux = y[:, :1]
+            return y, aux
+
+        x_ref = WrapperSubclass(torch.randn(3, 3, requires_grad=True))
+        y_ref, aux_ref = f(x_ref)
+
+        x = WrapperSubclass(x_ref.a.detach().clone().requires_grad_(True))
+        y, aux = torch.compile(f, backend="aot_eager", fullgraph=True)(x)
+
+        self.assertIsInstance(y, WrapperSubclass)
+        self.assertIsInstance(aux, WrapperSubclass)
+        self.assertEqual(y_ref.a, y.a)
+        self.assertEqual(aux_ref.a, aux.a)
+
+        self.assertTrue(aux.a._is_view())
+        self.assertEqual(
+            StorageWeakRef(y.a.untyped_storage()),
+            StorageWeakRef(aux.a.untyped_storage()),
+        )
+
+        (y_ref.sum() + aux_ref.sum()).backward()
+        (y.sum() + aux.sum()).backward()
+        self.assertIsNotNone(x_ref.grad)
+        self.assertIsNotNone(x.grad)
+        self.assertEqual(x_ref.grad.shape, x.grad.shape)
+
+    def test_output_alias_of_intermediate_wrapper_subclass_inductor(self):
+        def f(x):
+            y = x + 1
+            aux = y[:, :1]
+            return y, aux
+
+        x_ref = WrapperSubclass(torch.randn(3, 3, requires_grad=True))
+        y_ref, aux_ref = f(x_ref)
+
+        x = WrapperSubclass(x_ref.a.detach().clone().requires_grad_(True))
+        y, aux = torch.compile(f, backend="inductor", fullgraph=True)(x)
+
+        self.assertIsInstance(y, WrapperSubclass)
+        self.assertIsInstance(aux, WrapperSubclass)
+        self.assertEqual(y_ref.a, y.a)
+        self.assertEqual(aux_ref.a, aux.a)
+
+        self.assertTrue(aux.a._is_view())
+        self.assertEqual(
+            StorageWeakRef(y.a.untyped_storage()),
+            StorageWeakRef(aux.a.untyped_storage()),
+        )
+
+        (y_ref.sum() + aux_ref.sum()).backward()
+        (y.sum() + aux.sum()).backward()
+        self.assertIsNotNone(x_ref.grad)
+        self.assertIsNotNone(x.grad)
+        self.assertEqual(x_ref.grad.shape, x.grad.shape)
 
     @torch._functorch.config.patch(
         {

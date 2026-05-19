@@ -45,6 +45,7 @@ from .functional_utils import (
     from_fun,
     has_data_mutation,
     has_metadata_mutation,
+    maybe_get_output_view_meta_sequence,
     MetadataKey,
     to_fun,
     ViewMetaSequence,
@@ -655,32 +656,26 @@ from a multi-output view call"
             # The FunctionalTensor will be saved if one of the 2 conditions below
             # is true:
             view_meta_sequence = None
-            if (
-                # 1. If the output_type is either of:
-                #    (i) alias_of_intermediate;
-                #    (ii) alias_of_intermediate_save_as_output; or
-                #    (iii) alias_of_intermediate_base_is_user_output.
-                #
+            if output_type in (
+                OutputType.alias_of_intermediate,
+                OutputType.alias_of_intermediate_save_as_output,
+                OutputType.alias_of_intermediate_base_is_user_output,
+            ):
                 # No need to worry about in-place view operations here, since
-                # this functionalization step elimitates mutations.
+                # this functionalization step eliminates mutations.
                 #
                 # i.e. we have access to the actual base tensor, before the
                 # in-place operation was applied.
-                output_type
-                in (
-                    OutputType.alias_of_intermediate,
-                    OutputType.alias_of_intermediate_save_as_output,
-                    OutputType.alias_of_intermediate_base_is_user_output,
-                )
-            ) or (
-                # 2. If the output_type is alias_of_input, and no in-place view
-                #    operation was run on the input (base tensor).
+                if isinstance(o, Tensor):
+                    view_meta_sequence = maybe_get_output_view_meta_sequence(o)
+            elif (
+                # If the output_type is alias_of_input, and no in-place view
+                # operation was run on the input (base tensor), then we can
+                # replay dense-tensor views from the saved FunctionalTensor.
                 #
-                # In this case, we need to check for metadata mutation because
-                # the runtime explicitly reconstructs the inputs, before actually
-                # reconstructing the outputs. Due to in-place view operations, the
-                # fully reconstructed input may not be this output base tensor
-                # anymore.
+                # Subclass alias-of-input replay keeps the existing runtime path
+                # because those outputs already work through outer autograd view
+                # metadata today.
                 output_type == OutputType.alias_of_input
                 and base_idx is not None
                 and not input_info[base_idx].mutates_metadata
