@@ -2150,6 +2150,30 @@ class CommonTemplate:
         for n in (8, 64):
             self.common(fn, (torch.randn(n, 64, device=self.device),))
 
+    def test_randperm_index_with_slice(self):
+        def fn(x, slice_shape):
+            idx = torch.randperm(x.shape[0], device=x.device)[:slice_shape]
+            return x[idx]
+
+        for n, s in ((64, 42), (64, 8), (128, 64)):
+            self.common(fn, (torch.randn(n, 64, device=self.device), s))
+
+    def test_randperm_index_slice_range(self):
+        def fn(x):
+            idx = torch.randperm(x.shape[0], device=x.device)
+            return x[idx[2:6]]
+
+        for n in (8, 64):
+            self.common(fn, (torch.randn(n, 64, device=self.device),))
+
+    def test_randperm_index_2d(self):
+        def fn(x):
+            idx = torch.randperm(x.shape[0], device=x.device)
+            return x[idx, :]
+
+        for n in (8, 64):
+            self.common(fn, (torch.randn(n, 64, device=self.device),))
+
     def test__unsafe_masked_index(self):
         def fn(a, mask, idx):
             return aten._unsafe_masked_index(a, mask, idx, 1)

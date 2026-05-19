@@ -1517,18 +1517,6 @@ def register_replacement(
             f"example_inputs must be a list or tuple, got {type(example_inputs)}"
         )
 
-    scalar_workaround = scalar_workaround or {}
-
-    def resolve_match_kwarg(match_kwargs: dict[str, Any], name: str) -> Any:
-        if name in match_kwargs:
-            return match_kwargs[name]
-        if name in scalar_workaround:
-            return scalar_workaround[name]
-        raise RuntimeError(
-            f"Not all inputs to pattern found in match.kwargs. Perhaps one "
-            f"of the inputs is unused? argnames={argnames_static}, match.kwargs={match_kwargs}"
-        )
-
     def check_fn(match: Match) -> bool:
         """
         Often shapes get burned into the pattern, so our initial match ran with
@@ -1537,11 +1525,16 @@ def register_replacement(
         Recheck the match with the correct shapes.
         """
         argnames = list(argnames_static)
+        for name in argnames:
+            if name not in match.kwargs:
+                raise RuntimeError(
+                    f"Not all inputs to pattern found in match.kwargs. Perhaps one "
+                    f"of the inputs is unused? argnames={argnames}, match.kwargs={match.kwargs}"
+                )
 
         args = list(
             torch.fx.map_arg(
-                [resolve_match_kwarg(match.kwargs, name) for name in argnames],
-                lambda n: n.meta["val"],
+                [match.kwargs[name] for name in argnames], lambda n: n.meta["val"]
             )
         )
 
@@ -1664,10 +1657,7 @@ def register_replacement(
             return False
 
     def normalize_args(**kwargs: Any) -> list[Any]:
-        args = [
-            kwargs.pop(name) if name in kwargs else resolve_match_kwarg(kwargs, name)
-            for name in argnames_static
-        ]
+        args = [kwargs.pop(name) for name in argnames_static]
         for i in range(1, len(kwargs) + 1):
             if f"tangents_{i}" not in kwargs:
                 break
