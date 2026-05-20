@@ -306,7 +306,7 @@ WHEEL_CONTAINER_IMAGES = {
 RELEASE = "release"
 DEBUG = "debug"
 
-FULL_PYTHON_VERSIONS = ["3.10", "3.11", "3.12", "3.13", "3.14", "3.14t"]
+FULL_PYTHON_VERSIONS = ["3.15", "3.15t"]
 
 
 def translate_desired_cuda(gpu_arch_type: str, gpu_arch_version: str) -> str:
@@ -418,6 +418,12 @@ def generate_wheels_matrix(
                 "macos-arm64",
                 "windows",
             ] and (python_version == "3.14" or python_version == "3.14t"):
+                continue
+
+            # TODO: Enable python 3.15 on non linux OSes
+            if os != "linux" and (
+                python_version == "3.15" or python_version == "3.15t"
+            ):
                 continue
 
             # cuda linux wheels require PYTORCH_EXTRA_INSTALL_REQUIREMENTS to install
