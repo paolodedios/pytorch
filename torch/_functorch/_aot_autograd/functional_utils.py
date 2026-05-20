@@ -515,13 +515,18 @@ class SubclassViewMetaSequence:
         return any(attr_meta.has_symbolic_inputs() for attr_meta in self.attrs.values())
 
     def make_runtime_safe(self) -> SubclassViewMetaSequence | None:
-        cleaned_attrs = {
-            attr: cleaned_meta
-            for attr, attr_meta in self.attrs.items()
-            if (cleaned_meta := attr_meta.make_runtime_safe()) is not None
-        }
-        if not cleaned_attrs:
-            return None
+        cleaned_attrs: dict[str, ViewMetaSequence | SubclassViewMetaSequence] = {}
+        changed = False
+        for attr, attr_meta in self.attrs.items():
+            cleaned_meta = attr_meta.make_runtime_safe()
+            # Keep subclass replay all-or-nothing at runtime: if any attr has
+            # symbolic view metadata, disable replay for the whole wrapper.
+            if cleaned_meta is None:
+                return None
+            cleaned_attrs[attr] = cleaned_meta
+            changed = changed or cleaned_meta is not attr_meta
+        if not changed:
+            return self
         return SubclassViewMetaSequence(cleaned_attrs, self.metadata)
 
 
@@ -534,7 +539,12 @@ def maybe_get_output_view_meta_sequence(
     if not is_traceable_wrapper_subclass(tensor):
         return None
 
-    attrs, _ = tensor.__tensor_flatten__()
+    attrs, ctx = tensor.__tensor_flatten__()
+    # Subclasses that reconstruct with no flatten metadata rely on the existing
+    # outer view/autograd replay path today. Replaying only the inner tensor
+    # views loses that outer autograd metadata, so keep using the old path.
+    if ctx is None:
+        return None
     attr_metas: dict[str, ViewMetaSequence | SubclassViewMetaSequence] = {}
     for attr in attrs:
         match getattr(tensor, attr):
@@ -582,12 +592,23 @@ def _replay_view_meta_sequence(
         )
 
     target_attrs = target_view_meta_sequence.attrs
+    base_wrapper_attrs, _ = aliased_base_tensor.__tensor_flatten__()
+    target_wrapper_attrs, _ = target_meta_tensor.__tensor_flatten__()
+    if base_wrapper_attrs != target_wrapper_attrs:
+        raise AssertionError(
+            "expected matching wrapper attrs when replaying subclass view metadata, "
+            f"got {base_wrapper_attrs} and {target_wrapper_attrs}"
+        )
 
-    def replay_inner(attr: str, inner_t: Tensor) -> Tensor:
+    def replay_inner(attr: str, inner_t: Tensor | OpaqueBase) -> Tensor | OpaqueBase:
         attr_meta = target_attrs.get(attr)
         if attr_meta is None:
             return inner_t
 
+        if not isinstance(inner_t, Tensor):
+            raise AssertionError(
+                f"expected Tensor for base attr {attr}, got {type(inner_t)}"
+            )
         target_inner = getattr(target_meta_tensor, attr)
         if not isinstance(target_inner, Tensor):
             raise AssertionError(
@@ -596,8 +617,8 @@ def _replay_view_meta_sequence(
         return _replay_view_meta_sequence(inner_t, target_inner, attr_meta)
 
     return transform_subclass(
-        aliased_base_tensor,
-        replay_inner,
+        target_meta_tensor,
+        lambda attr, _: replay_inner(attr, getattr(aliased_base_tensor, attr)),
         outer_size=target_meta_tensor.size(),
         outer_stride=target_meta_tensor.stride(),
     )

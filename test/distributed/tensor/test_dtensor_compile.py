@@ -2744,6 +2744,35 @@ class TestDTensorCompileE2E(DTensorTestBase):
         )
 
     @with_comms
+    def test_compile_dtensor_output_alias_replay_placement_changing_view(self):
+        mesh = self.build_device_mesh()
+
+        def fn(x: DTensor) -> tuple[DTensor, DTensor]:
+            y = x + 1
+            aux = y.transpose(0, 1)
+            return y, aux
+
+        x_local_ref = torch.randn(2, 4, device=self.device_type, requires_grad=True)
+        x_ref = DTensor.from_local(x_local_ref, mesh, [Shard(0)], run_check=False)
+        y_ref, aux_ref = fn(x_ref)
+
+        x_local = x_local_ref.detach().clone().requires_grad_(True)
+        x = DTensor.from_local(x_local, mesh, [Shard(0)], run_check=False)
+        y, aux = torch.compile(fn, backend="inductor", fullgraph=True)(x)
+
+        # transpose changes Shard(0) to Shard(1), so replay must preserve the
+        # target wrapper metadata rather than reusing the base output metadata.
+        self.assertEqual(aux.placements, aux_ref.placements)
+        self.assertEqual(y.to_local(), y_ref.to_local())
+        self.assertEqual(aux.to_local(), aux_ref.to_local())
+        self.assertEqual(aux.full_tensor(), aux_ref.full_tensor())
+        self.assertTrue(aux.to_local()._is_view())
+        self.assertEqual(
+            StorageWeakRef(y.to_local().untyped_storage()),
+            StorageWeakRef(aux.to_local().untyped_storage()),
+        )
+
+    @with_comms
     def test_unbacked_illegal_views(self):
         """Test that views with unbacked shapes match eager behavior"""
         device_mesh = self.build_device_mesh()

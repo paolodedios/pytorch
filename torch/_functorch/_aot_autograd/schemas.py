@@ -750,7 +750,12 @@ class ViewAndMutationMeta:
                 if out_info.view_meta_sequence is None
                 else out_info.view_meta_sequence.make_runtime_safe()
             )
-            if runtime_safe_view_meta_sequence != out_info.view_meta_sequence:
+            # ViewMetaSequence.__eq__(None) intentionally returns True, so use
+            # explicit checks here to avoid keeping unpicklable symbolic metadata.
+            if (
+                runtime_safe_view_meta_sequence is None
+                and out_info.view_meta_sequence is not None
+            ) or runtime_safe_view_meta_sequence is not out_info.view_meta_sequence:
                 self.output_info[i] = replace(
                     out_info, view_meta_sequence=runtime_safe_view_meta_sequence
                 )
