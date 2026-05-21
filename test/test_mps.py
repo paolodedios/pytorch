@@ -4522,6 +4522,16 @@ class TestMPS(TestCaseMPS):
         big_out = torch.ones(10, dtype=torch.int8, device=device).bincount()
         self.assertEqual(big_exp, big_out)
 
+        # Regression: highly-skewed input where most elements share a single bin.
+        # The previous MPSGraph scatter path serialised hard on this pattern
+        # (~18s for a 2M-element input). Workload shape mirrors per-frame
+        # connected-component labels for 1080p video.
+        skewed = torch.zeros(1080 * 1920, dtype=torch.int64, device=device)
+        skewed[100_000:157_600] = 193_501
+        skewed_cpu = skewed.cpu()
+        self.assertEqual(skewed.bincount(minlength=skewed.numel() + 1).cpu(),
+                         skewed_cpu.bincount(minlength=skewed_cpu.numel() + 1))
+
     def test_bincount(self):
         device = "mps"
         input_size = (5000,)
