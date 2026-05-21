@@ -51,6 +51,7 @@ from .user_defined import UserDefinedObjectVariable
 
 
 if TYPE_CHECKING:
+    from torch._dynamo.codegen import PyCodegen
     from torch._dynamo.symbolic_convert import InstructionTranslator
 
 
@@ -107,6 +108,7 @@ class OptimizerVariable(UserDefinedObjectVariable):
         self.grad_to_source = grad_to_source or {}
         self.tensor_to_source = tensor_to_source or {}
         self.static_tensor_names = static_tensor_names or set()
+        self.saved_capturables: dict[int, bool] | None = None
 
     def call_method(
         self,
@@ -208,17 +210,33 @@ class OptimizerVariable(UserDefinedObjectVariable):
         # track indices to not set so we don't need to
         # in the variable tracker realize the whole state
         # we handle guarding the state specially
-        for group in self.value.param_groups:
+        if self.saved_capturables is None:
+            self.saved_capturables = {}
+            tx.output.add_cleanup_hook(self._restore_capturables)
+        for i, group in enumerate(self.value.param_groups):
             if safe_to_set_capturable(group):
+                self.saved_capturables[i] = group["capturable"]
                 group["capturable"] = True
+
 
         source = self.source and AttrSource(self.source, "param_groups")
         param_groups_vt = LazyVariableTracker.realize_all(
             VariableTracker.build(tx, self.value.param_groups, source)
         )
-        for param_group_vt in param_groups_vt.items:
-            key = HashableTracker(ConstantVariable.create("capturable"))
-            param_group_vt.items[key] = ConstantVariable.create(True)
+        for i, param_group_vt in enumerate(param_groups_vt.items):
+            if i in self.saved_capturables:
+                key = HashableTracker(ConstantVariable.create("capturable"))
+                param_group_vt.items[key] = OptimizerCapturableVariable.create(
+                    True, self.saved_capturables[i]
+                )
+
+    # Register cleanup hook to restore the capturables
+    def _restore_capturables(self: "OptimizerVariable") -> None:
+        if self.saved_capturables is None or len(self.saved_capturables) == 0:
+            return
+        for i, group in enumerate(self.value.param_groups):
+            if i in self.saved_capturables:
+                group["capturable"] = self.saved_capturables[i]
 
     def get_python_args(
         self, *args: Any, **kwargs: Any
@@ -429,3 +447,25 @@ class OptimizerVariable(UserDefinedObjectVariable):
             weakref.finalize(value, clear_static_tensor_refs)
 
         tx.output.add_graph_finalizer(init_finalizer)
+
+
+class OptimizerCapturableVariable(VariableTracker):
+    _nonvar_fields = {"value", "orig_value", *VariableTracker._nonvar_fields}
+
+    def __init__(self, value: bool, orig_value: bool, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.value = value
+        self.orig_value = orig_value
+
+    @staticmethod
+    def create(value: bool, orig_value: bool) -> "OptimizerCapturableVariable":
+        return OptimizerCapturableVariable(value, orig_value=orig_value)
+
+    def as_proxy(self) -> Any:
+        return self.value
+
+    def as_python_constant(self) -> bool:
+        return self.value
+
+    def reconstruct(self, codegen: "PyCodegen") -> None:
+        codegen(ConstantVariable.create(self.orig_value))
