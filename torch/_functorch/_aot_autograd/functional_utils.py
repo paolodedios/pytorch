@@ -328,23 +328,35 @@ def gen_alias_from_base(
     # functions applied to itself (collected during functionalization) so as
     # to replay them (view functions) on the aliased_base_tensor.
     #
-    # For subclass outputs, only use the recursive inner-tensor replay path when
-    # the outer wrapper no longer has a usable _base relationship. If the outer
-    # wrapper still tracks its alias through _base/_view_func, keep the existing
-    # outer-level replay below.
     if (
         replay_views
         and target_view_meta_sequence is not None
         and not target_view_meta_sequence.has_symbolic_inputs()
-        and (
-            isinstance(target_view_meta_sequence, ViewMetaSequence)
-            or target_meta_tensor._base is None
-        )
     ):
-        out = _replay_view_meta_sequence(
-            aliased_base_tensor, target_meta_tensor, target_view_meta_sequence
-        )
-        return patch_requires_grad(out)
+        if isinstance(target_view_meta_sequence, SubclassViewMetaSequence):
+            # if compile dropped the outer _base link, replay the saved view on
+            # the wrapper so autograd rebuilds the outer view edge
+            if target_meta_tensor._base is None:
+                out = _try_replay_subclass_outer_view_meta_sequence(
+                    aliased_base_tensor, target_view_meta_sequence
+                )
+                if out is not None:
+                    out = patch_requires_grad(out)
+                    if _view_meta_matches_tensor(
+                        out, target_meta_tensor, target_view_meta_sequence
+                    ):
+                        return out
+
+                # Fall back to inner replay if outer replay misses wrapper metadata.
+                out = _replay_view_meta_sequence(
+                    aliased_base_tensor, target_meta_tensor, target_view_meta_sequence
+                )
+                return patch_requires_grad(out)
+        else:
+            out = _replay_view_meta_sequence(
+                aliased_base_tensor, target_meta_tensor, target_view_meta_sequence
+            )
+            return patch_requires_grad(out)
 
     # Try to do view-replay if possible.
     # fall back to .as_strided() if we can't.
@@ -491,7 +503,19 @@ class ViewMetaSequence:
         return self
 
 
-@dataclass(frozen=True)
+def _view_meta_signature(
+    view_meta_sequence: ViewMetaSequence,
+) -> tuple[tuple[type[object], tuple[object, ...]], ...]:
+    def _as_tuple(view_meta: Any) -> tuple[object, ...]:
+        return view_meta.as_tuple()
+
+    return tuple(
+        (type(view_meta), _as_tuple(view_meta))
+        for view_meta in view_meta_sequence.sequence
+    )
+
+
+@dataclass
 class SubclassViewMetaSequence:
     attrs: dict[str, ViewMetaSequence | SubclassViewMetaSequence]
     metadata: MetadataKey
@@ -528,6 +552,94 @@ class SubclassViewMetaSequence:
         if not changed:
             return self
         return SubclassViewMetaSequence(cleaned_attrs, self.metadata)
+
+    def representative_outer_view_meta_sequence(self) -> ViewMetaSequence | None:
+        representative = None
+        representative_signature = None
+        for attr_meta in self.attrs.values():
+            candidate = (
+                attr_meta
+                if isinstance(attr_meta, ViewMetaSequence)
+                else attr_meta.representative_outer_view_meta_sequence()
+            )
+            if candidate is None:
+                continue
+
+            candidate_signature = _view_meta_signature(candidate)
+            if representative is None:
+                representative = candidate
+                representative_signature = candidate_signature
+            elif candidate_signature != representative_signature:
+                return None
+        return representative
+
+
+def _view_meta_matches_tensor(
+    out: Tensor,
+    target_meta_tensor: Tensor,
+    target_view_meta_sequence: ViewMetaSequence | SubclassViewMetaSequence,
+) -> bool:
+    if MetadataKey.make(out) != target_view_meta_sequence.metadata:
+        return False
+
+    if isinstance(target_view_meta_sequence, ViewMetaSequence):
+        return True
+
+    if not (
+        is_traceable_wrapper_subclass(out)
+        and is_traceable_wrapper_subclass(target_meta_tensor)
+    ):
+        return False
+
+    out_wrapper_attrs, out_ctx = out.__tensor_flatten__()
+    target_wrapper_attrs, target_ctx = target_meta_tensor.__tensor_flatten__()
+    if out_wrapper_attrs != target_wrapper_attrs or out_ctx != target_ctx:
+        return False
+
+    for attr in target_wrapper_attrs:
+        out_inner = getattr(out, attr)
+        target_inner = getattr(target_meta_tensor, attr)
+        attr_meta = target_view_meta_sequence.attrs.get(attr)
+
+        if attr_meta is None:
+            match target_inner:
+                case Tensor():
+                    if not isinstance(out_inner, Tensor) or not has_same_metadata(
+                        out_inner, target_inner
+                    ):
+                        return False
+                case OpaqueBase():
+                    if out_inner != target_inner:
+                        return False
+                case unexpected:
+                    raise AssertionError(
+                        f"expected Tensor or OpaqueBase, got {type(unexpected)}"
+                    )
+            continue
+
+        if not isinstance(out_inner, Tensor):
+            raise AssertionError(f"expected Tensor for output attr {attr}")
+        if not isinstance(target_inner, Tensor):
+            raise AssertionError(f"expected Tensor for target attr {attr}")
+        if not _view_meta_matches_tensor(out_inner, target_inner, attr_meta):
+            return False
+
+    return True
+
+
+def _try_replay_subclass_outer_view_meta_sequence(
+    aliased_base_tensor: Tensor,
+    target_view_meta_sequence: SubclassViewMetaSequence,
+) -> Tensor | None:
+    representative_view_meta_sequence = (
+        target_view_meta_sequence.representative_outer_view_meta_sequence()
+    )
+    if representative_view_meta_sequence is None:
+        return None
+
+    return _functionalization.apply_view_meta_sequence(
+        aliased_base_tensor, representative_view_meta_sequence.sequence
+    )
 
 
 def maybe_get_output_view_meta_sequence(
@@ -595,6 +707,7 @@ def _replay_view_meta_sequence(
     base_wrapper_attrs, _ = aliased_base_tensor.__tensor_flatten__()
     target_wrapper_attrs, _ = target_meta_tensor.__tensor_flatten__()
     if base_wrapper_attrs != target_wrapper_attrs:
+        # purely defensive: some wrappers vary flatten attrs per instance
         raise AssertionError(
             "expected matching wrapper attrs when replaying subclass view metadata, "
             f"got {base_wrapper_attrs} and {target_wrapper_attrs}"

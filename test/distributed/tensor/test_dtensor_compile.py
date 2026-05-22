@@ -2737,11 +2737,16 @@ class TestDTensorCompileE2E(DTensorTestBase):
 
         self.assertEqual(y.full_tensor(), y_ref.full_tensor())
         self.assertEqual(aux.full_tensor(), aux_ref.full_tensor())
+        self.assertIsNotNone(aux.grad_fn)
         self.assertTrue(aux.to_local()._is_view())
         self.assertEqual(
             StorageWeakRef(y.to_local().untyped_storage()),
             StorageWeakRef(aux.to_local().untyped_storage()),
         )
+
+        (y_ref.full_tensor().sum() + aux_ref.full_tensor().sum()).backward()
+        (y.full_tensor().sum() + aux.full_tensor().sum()).backward()
+        self.assertEqual(x_local_ref.grad, x_local.grad)
 
     @with_comms
     def test_compile_dtensor_output_alias_replay_placement_changing_view(self):
@@ -2766,11 +2771,16 @@ class TestDTensorCompileE2E(DTensorTestBase):
         self.assertEqual(y.to_local(), y_ref.to_local())
         self.assertEqual(aux.to_local(), aux_ref.to_local())
         self.assertEqual(aux.full_tensor(), aux_ref.full_tensor())
+        self.assertIsNotNone(aux.grad_fn)
         self.assertTrue(aux.to_local()._is_view())
         self.assertEqual(
             StorageWeakRef(y.to_local().untyped_storage()),
             StorageWeakRef(aux.to_local().untyped_storage()),
         )
+
+        (y_ref.full_tensor().sum() + aux_ref.full_tensor().sum()).backward()
+        (y.full_tensor().sum() + aux.full_tensor().sum()).backward()
+        self.assertEqual(x_local_ref.grad, x_local.grad)
 
     @with_comms
     def test_unbacked_illegal_views(self):

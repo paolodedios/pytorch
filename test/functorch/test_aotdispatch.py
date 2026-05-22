@@ -9791,6 +9791,42 @@ metadata incorrectly.
         self.assertIsNotNone(x.grad)
         self.assertEqual(x_ref.grad.a, x.grad.a)
 
+    def test_output_alias_of_intermediate_wrapper_subclass_with_metadata(self):
+        def f(x):
+            y = x + 1
+            aux = y[:, :1]
+            return y, aux
+
+        for backend in ("aot_eager", "inductor"):
+            with self.subTest(backend=backend):
+                x_ref = ConstantExtraMetadataTensor(
+                    torch.randn(3, 3, requires_grad=True)
+                )
+                y_ref, aux_ref = f(x_ref)
+
+                x = ConstantExtraMetadataTensor(
+                    x_ref.elem.detach().clone().requires_grad_(True)
+                )
+                y, aux = torch.compile(f, backend=backend, fullgraph=True)(x)
+
+                self.assertIsInstance(y, ConstantExtraMetadataTensor)
+                self.assertIsInstance(aux, ConstantExtraMetadataTensor)
+                self.assertEqual(y_ref.elem, y.elem)
+                self.assertEqual(aux_ref.elem, aux.elem)
+                self.assertIsNotNone(aux.grad_fn)
+                self.assertIsNotNone(aux._base)
+
+                self.assertEqual(
+                    StorageWeakRef(y.untyped_storage()),
+                    StorageWeakRef(aux.untyped_storage()),
+                )
+
+                (y_ref.sum() + aux_ref.sum()).backward()
+                (y.sum() + aux.sum()).backward()
+                self.assertIsNotNone(x_ref.grad)
+                self.assertIsNotNone(x.grad)
+                self.assertEqual(x_ref.grad.elem, x.grad.elem)
+
     @torch._functorch.config.patch(
         {
             "disable_guess_zero_tangent_for_mutated_input_subclass": True,
