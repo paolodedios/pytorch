@@ -22,7 +22,7 @@ import torch
 import torch.fx
 from torch._dispatch.python import enable_python_dispatcher
 from torch._inductor.fx_passes.control_dependencies import control_deps
-from torch._inductor.utils import maybe_cpp_fake_mode_ctx
+from torch._inductor.utils import fake_mode_context
 from torch._subclasses.fake_tensor import FakeTensorMode
 
 
@@ -787,7 +787,7 @@ class FakeTensorUpdater:
                 if not any_output_updated and "val" in node.meta:
                     continue
 
-            with maybe_cpp_fake_mode_ctx(V.fake_mode), enable_python_dispatcher():
+            with fake_mode_context(V.fake_mode), enable_python_dispatcher():
                 new_fake_tensor = node.target(*args, **kwargs)
 
             if update_node_fake_tensor(node, new_fake_tensor):
