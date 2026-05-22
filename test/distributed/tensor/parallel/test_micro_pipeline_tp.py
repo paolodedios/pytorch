@@ -89,18 +89,36 @@ class MicroPipelineTPTest(TestCase):
 
         def func(
             inp: torch.Tensor,
-        ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        ) -> tuple[
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+            torch.Tensor,
+        ]:
             a = all_gather_tensor(inp, gather_dim=0, group=group.group_name)
             b = all_gather_tensor(inp, gather_dim=1, group=group.group_name)
             c = _fp8_all_gather(inp, gather_dim=0, group_name=group.group_name)
             d = _fp8_all_gather(inp, gather_dim=1, group_name=group.group_name)
-            return a, b, c, d
+            e_full = all_gather_tensor(inp, gather_dim=0, group=group.group_name)
+            e = torch.cat(
+                [e_full.narrow(0, 0, 64), e_full.narrow(0, 64, 64)],
+                dim=1,
+            )
+            f_full = all_gather_tensor(inp, gather_dim=0, group=group.group_name)
+            f_cat = torch.cat(
+                [f_full.narrow(0, 0, 64), f_full.narrow(0, 64, 64)],
+                dim=1,
+            )
+            f = f_cat.narrow(1, 0, 32)
+            return a, b, c, d, e, f
 
         inp = torch.rand(64, 32, device="cuda")
 
         gm = _make_post_grad_fx(func, inp)
         all_gathers = find_all_gather_patterns(gm.graph)
-        self.assertEqual(len(all_gathers), 4)
+        self.assertEqual(len(all_gathers), 6)
 
         # If this test fails, please update find_all_gather_patterns instead of
         # modifying the following assertions.
@@ -135,6 +153,18 @@ class MicroPipelineTPTest(TestCase):
             torch.ops.aten.view.dtype,
         )
 
+        self.assertEqual(all_gathers[4].gather_dim, 1)
+        self.assertEqual(
+            all_gathers[4].res_node.target,
+            torch.ops.aten.cat.default,
+        )
+
+        self.assertEqual(all_gathers[5].gather_dim, 1)
+        self.assertEqual(
+            all_gathers[5].res_node.target,
+            torch.ops.aten.slice.Tensor,
+        )
+
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     @fresh_cache()
     def test_find_reduce_scatter_patterns(self):
@@ -143,13 +173,20 @@ class MicroPipelineTPTest(TestCase):
         def func(inp: torch.Tensor) -> torch.Tensor:
             a = reduce_scatter_tensor(inp, "sum", scatter_dim=0, group=group.group_name)
             b = reduce_scatter_tensor(inp, "avg", scatter_dim=1, group=group.group_name)
-            return a, b
+            c_inp = torch.cat(
+                [inp.narrow(1, 0, 16), inp.narrow(1, 16, 16)],
+                dim=0,
+            )
+            c = reduce_scatter_tensor(
+                c_inp, "avg", scatter_dim=0, group=group.group_name
+            )
+            return a, b, c
 
         inp = torch.rand(64, 32, device="cuda")
 
         gm = make_fx(func)(inp)
         reduce_scatters = find_reduce_scatter_patterns(gm.graph)
-        self.assertEqual(len(reduce_scatters), 2)
+        self.assertEqual(len(reduce_scatters), 3)
 
         # If this test fails, please update find_reduce_scatter_patterns
         # instead of modifying the following assertions.
@@ -170,6 +207,8 @@ class MicroPipelineTPTest(TestCase):
 
         self.assertEqual(reduce_scatters[0].reduce_op, "sum")
         self.assertEqual(reduce_scatters[0].scatter_dim, 0)
+        self.assertEqual(reduce_scatters[2].reduce_op, "avg")
+        self.assertEqual(reduce_scatters[2].scatter_dim, 1)
 
         self.assertEqual(reduce_scatters[1].reduce_op, "avg")
         self.assertEqual(reduce_scatters[1].scatter_dim, 1)
@@ -267,6 +306,66 @@ class MicroPipelineTPTest(TestCase):
             code = run_and_get_triton_code(compiled, A_shard, B)
 
         self.assertNotIn("fused_all_gather_matmul", code)
+
+    @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+    @fresh_cache()
+    def test_fuse_all_gather_matmul_slice_cat(self):
+        group = dist.group.WORLD
+
+        def func(A_shard: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+            A_full = all_gather_tensor(A_shard, gather_dim=0, group=group)
+            chunk = A_shard.shape[0]
+            A = torch.cat(
+                [
+                    A_full.narrow(0, 0, chunk),
+                    A_full.narrow(0, chunk, chunk),
+                ],
+                dim=1,
+            )
+            return A @ B
+
+        A_shard = torch.rand(64, 2048, device="cuda")
+        torch._dynamo.decorators.mark_unbacked(
+            A_shard, 0, hint_override=A_shard.shape[0]
+        )
+        B = torch.rand(4096, 16, device="cuda")
+
+        gm = _make_post_grad_fx(func, A_shard, B)
+        with _test_mode():
+            micro_pipeline_tp_pass(gm.graph)
+
+        self.assertIn("fused_all_gather_matmul", str(gm.graph))
+        self.assertNotIn("all_gather_into_tensor", str(gm.graph))
+
+    @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+    @fresh_cache()
+    def test_fuse_all_gather_matmul_slice_cat_trim(self):
+        group = dist.group.WORLD
+
+        def func(A_shard: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+            A_full = all_gather_tensor(A_shard, gather_dim=0, group=group)
+            chunk = A_shard.shape[0]
+            A = torch.cat(
+                [
+                    A_full.narrow(0, 0, chunk),
+                    A_full.narrow(0, chunk, chunk),
+                ],
+                dim=1,
+            )
+            return A.narrow(1, 0, 4096) @ B
+
+        A_shard = torch.rand(64, 2048, device="cuda")
+        torch._dynamo.decorators.mark_unbacked(
+            A_shard, 0, hint_override=A_shard.shape[0]
+        )
+        B = torch.rand(4096, 16, device="cuda")
+
+        gm = _make_post_grad_fx(func, A_shard, B)
+        with _test_mode():
+            micro_pipeline_tp_pass(gm.graph)
+
+        self.assertIn("fused_all_gather_matmul", str(gm.graph))
+        self.assertNotIn("all_gather_into_tensor", str(gm.graph))
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, "Test requires FP8 support")
@@ -367,6 +466,34 @@ class MicroPipelineTPTest(TestCase):
 
         self.assertIn("fused_matmul_reduce_scatter", code)
         self.assertNotIn("reduce_scatter_tensor", code)
+
+    @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+    @fresh_cache()
+    def test_fuse_matmul_reduce_scatter_slice_cat(self):
+        group = dist.group.WORLD
+
+        def func(A: torch.Tensor, B: torch.Tensor) -> torch.Tensor:
+            C = A @ B
+            half_out = B.shape[1] // 2
+            C = torch.cat(
+                [
+                    C.narrow(1, 0, half_out),
+                    C.narrow(1, half_out, half_out),
+                ],
+                dim=0,
+            )
+            return reduce_scatter_tensor(C, "avg", 0, group)
+
+        A = torch.rand(64, 32, device="cuda")
+        B = torch.rand(32, 16, device="cuda")
+        torch._dynamo.decorators.mark_unbacked(B, 1, hint_override=B.shape[1])
+
+        gm = _make_post_grad_fx(func, A, B)
+        with _test_mode():
+            micro_pipeline_tp_pass(gm.graph)
+
+        self.assertIn("fused_matmul_reduce_scatter", str(gm.graph))
+        self.assertNotIn("reduce_scatter_tensor", str(gm.graph))
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, "Test requires FP8 support")
