@@ -6784,6 +6784,7 @@ class UserTritonStore:
 @dataclasses.dataclass
 class UserTritonStores:
     stores: list[UserTritonStore]
+    func_def: ast.FunctionDef | None = None
 
 
 @functools.cache
@@ -6799,6 +6800,7 @@ def identify_triton_stores(source_code: str) -> UserTritonStores:
 
 def identify_triton_stores_from_ast(tree: ast.Module) -> UserTritonStores:
     stores = []
+    func_def = None
 
     def _extract_arg(node, arg_name, positional_index):
         """
@@ -6817,6 +6819,8 @@ def identify_triton_stores_from_ast(tree: ast.Module) -> UserTritonStores:
         return None
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            func_def = node
         if isinstance(node, ast.Call):
             # Check if this is a tl.store call
             if (
@@ -6834,7 +6838,7 @@ def identify_triton_stores_from_ast(tree: ast.Module) -> UserTritonStores:
 
                 stores.append(UserTritonStore(node, pointer_node, value_node))
 
-    return UserTritonStores(stores=stores)
+    return UserTritonStores(stores=stores, func_def=func_def)
 
 
 class FusedUserTritonKernel(TritonKernel):
@@ -6846,6 +6850,9 @@ class FusedUserTritonKernel(TritonKernel):
     in the scheduler.
     """
 
+    # TODO(jjvraw): indent buffer should respect the user's indent level.
+    # TODO(jjvraw): handle non-unary epilogues.
+    # TODO(jjvraw): handle reduction ops.
     def __init__(
         self,
         tiling: dict[str, sympy.Expr],
@@ -6878,6 +6885,7 @@ class FusedUserTritonKernel(TritonKernel):
         self.original_stored_expr = ast.unparse(
             self.kernel_stores.stores[0].store_value_node
         ).replace("\n", "")
+        self.func_def = self.kernel_stores.func_def
 
         self.new_store_cse_var: CSEVariable | None = None
         self.new_store_buf = IndentedBuffer()
@@ -6940,7 +6948,7 @@ class FusedUserTritonKernel(TritonKernel):
                The user must have annotated tile dimensions via torch.library.wrap_triton.
                New index/load/compute/store lines are injected into the kernel body.
             2. The epilogue is strictly unary. Only the stored value is replaced via AST rewriting,
-               preserving the original index expression. 
+               preserving the original index expression.
         """
         with self:
             index_vars = self.split_and_set_ranges(
@@ -6952,7 +6960,7 @@ class FusedUserTritonKernel(TritonKernel):
         load_lines = [indentations + l for l in self.loads.get_lines_ref()]
         compute_lines = [indentations + l for l in self.compute.get_lines_ref()]
 
-        # TODO(JJVRAW): Should we gate on pid_remap as well?
+        # TODO(jjvraw): Should we gate on pid_remap as well?
         if self.introduce_new_store:
             src_lines = ast.unparse(self.kernel_ast).splitlines()
             store_line_index = self.kernel_stores.stores[0].store_node.lineno - 1
@@ -6964,10 +6972,7 @@ class FusedUserTritonKernel(TritonKernel):
             indexing_lines = [
                 indentations + l for l in self.indexing_code.get_lines_ref()
             ]
-            # TODO(JJVRAW) CLEAN THIS UP, again, we should use AST parsing for this.
-            def_line_index = next(
-                i for i, line in enumerate(src_lines) if line.strip().startswith("def ")
-            )
+            def_line_index = self.func_def.lineno - 1
             new_src_lines = (
                 src_lines[: def_line_index + 1]
                 + self.codegen_aliases()
