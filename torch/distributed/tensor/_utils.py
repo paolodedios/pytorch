@@ -164,6 +164,11 @@ def _get_shard_size_and_offsets(
     }
     if isinstance(placement, _StridedShard):
         kwargs["return_first_offset"] = False
+        # _StridedShard.local_shard_size_and_offset materializes the offsets list
+        # via .tolist() on a (potentially fake) index tensor; under FakeTensorMode
+        # that allocates one unbacked SymInt per element. Skip when the caller
+        # discards the offsets anyway.
+        kwargs["skip_offset"] = skip_offset
     shard_size, shard_offsets = placement._local_shard_size_and_offset(**kwargs)
     if skip_offset:
         return shard_size, None

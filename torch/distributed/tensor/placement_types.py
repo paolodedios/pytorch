@@ -1119,9 +1119,10 @@ class _StridedShard(torch._C._distributed.StridedShard):
         num_chunks: int,
         rank: RankType,
         return_first_offset: bool = True,
-    ) -> tuple[int, int | list[int]]:
+        skip_offset: bool = False,
+    ) -> tuple[int, int | list[int] | None]:
         return self.local_shard_size_and_offset(
-            curr_local_size, num_chunks, rank, return_first_offset
+            curr_local_size, num_chunks, rank, return_first_offset, skip_offset
         )
 
     @maybe_run_for_local_tensor
@@ -1131,7 +1132,8 @@ class _StridedShard(torch._C._distributed.StridedShard):
         num_chunks: int,
         rank: RankType,
         return_first_offset: bool = True,
-    ) -> tuple[int, list[int] | int]:
+        skip_offset: bool = False,
+    ) -> tuple[int, list[int] | int | None]:
         """
         Compute the local shard size and offset(s) for a _StridedShard placement.
 
@@ -1172,6 +1174,13 @@ class _StridedShard(torch._C._distributed.StridedShard):
         sharded_indices = [shard.view(-1) for shard in sharded_indices]
 
         local_shard_size = _StridedShard._local_shard_size(sharded_indices, rank)
+        if skip_offset:
+            # Callers that only need the shard size (e.g. the sharding propagator's
+            # local-shape adjustment for view ops) pass skip_offset=True. Under
+            # FakeTensorMode the .tolist() below allocates one unbacked SymInt per
+            # element, leaving thousands of pending fresh symbols that the
+            # PendingUnbackedSymbolNotFound check later trips on.
+            return local_shard_size, None
         if local_shard_size > 0:
             offsets = sharded_indices[rank].tolist()
         else:
