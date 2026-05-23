@@ -5878,6 +5878,7 @@ class QuackGemmEpilogueTemplateBuffer(TemplateBuffer):
         local_reduce_source_from_epilogue: bool = False,
         main_output_transform: str | None = None,
         main_output_transform_group: int | None = None,
+        concat_layout: Sequence[str] = (),
         mutated_inputs: Iterable[IRNode] | None = None,
         tuned: bool = True,
     ) -> None:
@@ -5901,6 +5902,7 @@ class QuackGemmEpilogueTemplateBuffer(TemplateBuffer):
         self.local_reduce_source_from_epilogue = local_reduce_source_from_epilogue
         self.main_output_transform = main_output_transform
         self.main_output_transform_group = main_output_transform_group
+        self.concat_layout = tuple(concat_layout)
         self.tuned = tuned
 
     def should_allocate(self) -> bool:
