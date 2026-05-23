@@ -2195,21 +2195,39 @@ class CommonTemplate:
         actual = _run_and_assert_no_indirect_indexing(self, flip_opt, x)
         self.assertEqual(expect, actual)
 
+    @config.patch(debug_index_asserts=False)
     def test_randperm_index(self):
         def fn(x):
             idx = torch.randperm(x.shape[0], device=x.device)
             return x[idx]
 
         for n in (8, 64):
-            self.common(fn, (torch.randn(n, 64, device=self.device),))
+            x = torch.randn(n, 64, device=self.device)
+            rand_opt = torch.compile(fn, backend="inductor")
 
+            torch.manual_seed(42)
+            expect = fn(x)
+
+            torch.manual_seed(42)
+            actual = _run_and_assert_no_indirect_indexing(self, rand_opt, x)
+            self.assertEqual(expect, actual)
+
+    @config.patch(debug_index_asserts=False)
     def test_randperm_index_with_slice(self):
         def fn(x, slice_shape):
             idx = torch.randperm(x.shape[0], device=x.device)[:slice_shape]
             return x[idx]
 
         for n, s in ((64, 42), (64, 8), (128, 64)):
-            self.common(fn, (torch.randn(n, 64, device=self.device), s))
+            x = torch.randn(n, 64, device=self.device)
+            rand_opt = torch.compile(fn, backend="inductor")
+
+            torch.manual_seed(42)
+            expect = fn(x, s)
+
+            torch.manual_seed(42)
+            actual = _run_and_assert_no_indirect_indexing(self, rand_opt, x, s)
+            self.assertEqual(expect, actual)
 
     def test_randperm_index_slice_range(self):
         def fn(x):
@@ -2219,13 +2237,22 @@ class CommonTemplate:
         for n in (8, 64):
             self.common(fn, (torch.randn(n, 64, device=self.device),))
 
+    @config.patch(debug_index_asserts=False)
     def test_randperm_index_2d(self):
         def fn(x):
             idx = torch.randperm(x.shape[0], device=x.device)
             return x[idx, :]
 
         for n in (8, 64):
-            self.common(fn, (torch.randn(n, 64, device=self.device),))
+            x = torch.randn(n, 64, device=self.device)
+            rand_opt = torch.compile(fn, backend="inductor")
+
+            torch.manual_seed(42)
+            expect = fn(x)
+
+            torch.manual_seed(42)
+            actual = _run_and_assert_no_indirect_indexing(self, rand_opt, x)
+            self.assertEqual(expect, actual)
 
     def test__unsafe_masked_index(self):
         def fn(a, mask, idx):

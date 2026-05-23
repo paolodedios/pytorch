@@ -72,7 +72,9 @@ def _misc_patterns_init(input_device: torch.device | None = None):
         randperm_index_pattern,
         # pyrefly: ignore [bad-argument-type]
         randperm_index_replacement,
-        # x.shape[0] must exceed "slice_shape" to preserve the slice in the traced graph
+        # x.shape[0] must exceed scalar_workaround['slice_shape'] (42)
+        # so applySlice's length<=stop fast path doesn't elide
+        # the slice during pattern tracing
         [torch.empty(64, 8, device=device)],
         # pyrefly: ignore [bad-argument-type]
         fwd_only,
