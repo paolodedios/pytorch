@@ -316,6 +316,23 @@ def pre_grad_passes(
             numpy_compat_normalization(gm.graph)
             if example_inputs is not None:
                 gm = fuse_fx(gm, example_inputs)
+            # Auto-enable batch_linear_lhs fusion for XPU.
+            # Fusing parallel linears (e.g., gate_proj + up_proj in Llama MLP) into a
+            # single wide GEMM gives 7-15% inference speedup by reducing kernel
+            # launches and improving GPU occupancy.
+            if (
+                example_inputs is not None
+                and "batch_linear_lhs" not in config.pre_grad_fusion_options
+                and any(
+                    getattr(t, "device", None) is not None
+                    and t.device.type == "xpu"
+                    for t in example_inputs
+                    if isinstance(t, torch.Tensor)
+                )
+            ):
+                config.pre_grad_fusion_options["batch_linear_lhs"] = {
+                    "min_fuse_set_size": 2
+                }
             # We should always do the normalization_pass first
             if "normalization_pass" in config.pre_grad_fusion_options:
                 pattern_matcher_pass = PRE_GRAD_PATTERNS["normalization_pass"]
