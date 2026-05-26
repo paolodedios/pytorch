@@ -324,8 +324,7 @@ def pre_grad_passes(
                 example_inputs is not None
                 and "batch_linear_lhs" not in config.pre_grad_fusion_options
                 and any(
-                    getattr(t, "device", None) is not None
-                    and t.device.type == "xpu"
+                    getattr(t, "device", None) is not None and t.device.type == "xpu"
                     for t in example_inputs
                     if isinstance(t, torch.Tensor)
                 )
