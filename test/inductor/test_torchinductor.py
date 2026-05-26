@@ -874,7 +874,13 @@ check_model_cuda = check_model_gpu
 
 
 def _run_and_assert_no_indirect_indexing(
-    test_case, func, *args, has_wrapping=None, has_assert=False, **kwargs
+    test_case,
+    func,
+    *args,
+    has_wrapping=None,
+    has_assert=False,
+    allow_indirect_indexing=False,
+    **kwargs,
 ):
     result, source_codes = run_and_get_code(func, *args, **kwargs)
 
@@ -906,11 +912,13 @@ def _run_and_assert_no_indirect_indexing(
             if stmt is None:
                 continue
 
-            # indirect indexing involves a `tmp` variable
-            test_case.assertTrue(
-                "tmp" not in stmt,
-                msg=f"Found indirect indexing in statement '{stmt}' from code:\n{code}",
-            )
+            if not allow_indirect_indexing:
+                # indirect indexing involves a `tmp` variable
+                test_case.assertTrue(
+                    "tmp" not in stmt,
+                    msg=f"Found indirect indexing in statement '{stmt}' from code:\n{code}",
+                )
+
         if has_wrapping is not None:
             test_case.assertTrue(
                 ("where" in code or ") ? (" in code) is has_wrapping,
@@ -2195,7 +2203,6 @@ class CommonTemplate:
         actual = _run_and_assert_no_indirect_indexing(self, flip_opt, x)
         self.assertEqual(expect, actual)
 
-    @config.patch(debug_index_asserts=False)
     def test_randperm_index(self):
         def fn(x):
             idx = torch.randperm(x.shape[0], device=x.device)
@@ -2209,10 +2216,11 @@ class CommonTemplate:
             expect = fn(x)
 
             torch.manual_seed(42)
-            actual = _run_and_assert_no_indirect_indexing(self, rand_opt, x)
+            actual = _run_and_assert_no_indirect_indexing(
+                self, rand_opt, x, has_assert=True, allow_indirect_indexing=True
+            )
             self.assertEqual(expect, actual)
 
-    @config.patch(debug_index_asserts=False)
     def test_randperm_index_with_slice(self):
         def fn(x, slice_shape):
             idx = torch.randperm(x.shape[0], device=x.device)[:slice_shape]
@@ -2226,7 +2234,9 @@ class CommonTemplate:
             expect = fn(x, s)
 
             torch.manual_seed(42)
-            actual = _run_and_assert_no_indirect_indexing(self, rand_opt, x, s)
+            actual = _run_and_assert_no_indirect_indexing(
+                self, rand_opt, x, s, has_assert=True, allow_indirect_indexing=True
+            )
             self.assertEqual(expect, actual)
 
     def test_randperm_index_slice_range(self):
@@ -2237,7 +2247,6 @@ class CommonTemplate:
         for n in (8, 64):
             self.common(fn, (torch.randn(n, 64, device=self.device),))
 
-    @config.patch(debug_index_asserts=False)
     def test_randperm_index_2d(self):
         def fn(x):
             idx = torch.randperm(x.shape[0], device=x.device)
@@ -2251,7 +2260,9 @@ class CommonTemplate:
             expect = fn(x)
 
             torch.manual_seed(42)
-            actual = _run_and_assert_no_indirect_indexing(self, rand_opt, x)
+            actual = _run_and_assert_no_indirect_indexing(
+                self, rand_opt, x, has_assert=True, allow_indirect_indexing=True
+            )
             self.assertEqual(expect, actual)
 
     def test__unsafe_masked_index(self):
