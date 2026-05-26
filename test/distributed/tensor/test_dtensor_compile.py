@@ -406,7 +406,7 @@ def forward(self, arg0_1, arg1_1, arg2_1):
         # The bug lives in pure sharding-propagation arithmetic on rank 0
         # alone (no collectives are issued during fake-tensor view tracing),
         # so the FakeStore + world_size=2 setup used by this test class is
-        # equivalent to the multi-rank scenario for the skip_offset path
+        # equivalent to the multi-rank scenario for the no-offset path
         # being exercised here. This matches how the surrounding
         # test_placement_compile tests _StridedShard semantics.
         mesh = DeviceMesh(self.device_type, torch.arange(self.world_size))
