@@ -165,9 +165,7 @@ def _get_shard_size_and_offsets(
     }
     if isinstance(placement, _StridedShard):
         kwargs["offset_mode"] = (
-            _StridedShardOffsetMode.NONE
-            if skip_offset
-            else _StridedShardOffsetMode.ALL
+            _StridedShardOffsetMode.NONE if skip_offset else _StridedShardOffsetMode.ALL
         )
         # _StridedShard.local_shard_size_and_offset materializes the offsets list
         # via .tolist() on a (potentially fake) index tensor; under FakeTensorMode
