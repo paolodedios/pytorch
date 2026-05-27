@@ -2209,6 +2209,7 @@ class CommonTemplate:
         actual = _run_and_assert_no_indirect_indexing(self, flip_opt, x)
         self.assertEqual(expect, actual)
 
+    @config.patch(debug_index_asserts=False)
     def test_randperm_index(self):
         def fn(x):
             idx = torch.randperm(x.shape[0], device=x.device)
@@ -2223,10 +2224,11 @@ class CommonTemplate:
 
             torch.manual_seed(42)
             actual = _run_and_assert_no_indirect_indexing(
-                self, rand_opt, x, has_assert=True, allow_indirect_indexing=True
+                self, rand_opt, x, allow_indirect_indexing=True
             )
             self.assertEqual(expect, actual)
 
+    @config.patch(debug_index_asserts=False)
     def test_randperm_index_with_slice(self):
         def fn(x, slice_shape):
             idx = torch.randperm(x.shape[0], device=x.device)[:slice_shape]
@@ -2241,7 +2243,7 @@ class CommonTemplate:
 
             torch.manual_seed(42)
             actual = _run_and_assert_no_indirect_indexing(
-                self, rand_opt, x, s, has_assert=True, allow_indirect_indexing=True
+                self, rand_opt, x, s, allow_indirect_indexing=True
             )
             self.assertEqual(expect, actual)
 
@@ -2253,6 +2255,7 @@ class CommonTemplate:
         for n in (8, 64):
             self.common(fn, (torch.randn(n, 64, device=self.device),))
 
+    @config.patch(debug_index_asserts=False)
     def test_randperm_index_2d(self):
         def fn(x):
             idx = torch.randperm(x.shape[0], device=x.device)
@@ -2267,7 +2270,7 @@ class CommonTemplate:
 
             torch.manual_seed(42)
             actual = _run_and_assert_no_indirect_indexing(
-                self, rand_opt, x, has_assert=True, allow_indirect_indexing=True
+                self, rand_opt, x, allow_indirect_indexing=True
             )
             self.assertEqual(expect, actual)
 
