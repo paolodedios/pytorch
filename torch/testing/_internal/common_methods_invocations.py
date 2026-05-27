@@ -5306,7 +5306,7 @@ def error_inputs_avg_pool2d(op_info, device, **kwargs):
     # error inputs for zero divisor
     x = torch.zeros(3, 3, 3)
     yield ErrorInput(SampleInput(x, kwargs={'kernel_size': (2, 2), 'divisor_override': 0}),
-                     error_regex='divisor must be not zero')
+                     error_regex='divisor must be greater than zero')
 
 def error_inputs_avg_pool3d(op_info, device, **kwargs):
     # error inputs when pad is negative
@@ -5327,7 +5327,7 @@ def error_inputs_avg_pool3d(op_info, device, **kwargs):
     # error inputs for zero divisor
     x = torch.zeros(3, 3, 3, 3)
     yield ErrorInput(SampleInput(x, kwargs={'kernel_size': (2, 2, 2), 'divisor_override': 0}),
-                     error_regex='divisor must be not zero')
+                     error_regex='divisor must be greater than zero')
 
     # error inputs for invalid input dimension
     x = torch.rand([0, 1, 49], dtype=torch.float32)
