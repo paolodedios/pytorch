@@ -1525,10 +1525,9 @@ def get_default_backend_for_device(device: str | torch.device) -> str:
 def _get_process_group_uid(pg: ProcessGroup) -> int:
     backend = None
     try:
-        device_type = (
-            acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
+        backend = pg._get_backend(
+            torch.accelerator.current_accelerator() or torch.device("cpu")
         )
-        backend = pg._get_backend(torch.device(device_type))
     except RuntimeError:
         pass
     if is_nccl_available() and isinstance(backend, ProcessGroupNCCL):
@@ -1615,11 +1614,9 @@ def _add_ephemeral_timeout_for_all_pgs(timeout: timedelta) -> None:
     """
     for pg in _world.pg_map:
         devices = pg._device_types
-        device_type = (
-            acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
-        )
-        if torch.device(device_type) in devices:
-            backend = pg._get_backend(torch.device(device_type))
+        cur_device = torch.accelerator.current_accelerator() or torch.device("cpu")
+        if cur_device in devices:
+            backend = pg._get_backend(cur_device)
             if is_nccl_available() and isinstance(backend, ProcessGroupNCCL):
                 backend._add_ephemeral_timeout(timeout)
 
@@ -1995,10 +1992,9 @@ def _get_split_source(pg: ProcessGroup):
         split_from = pg._get_backend(pg.bound_device_id)
     elif pg is _world.default_pg:
         try:
-            device_type = (
-                acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
+            split_from = pg._get_backend(
+                torch.accelerator.current_accelerator() or torch.device("cpu")
             )
-            split_from = pg._get_backend(torch.device(device_type))
         except RuntimeError:
             # no cuda device associated with this backend
             pass
@@ -2519,10 +2515,9 @@ def _abort_process_group(group: ProcessGroup | None = None):
         raise ValueError("Invalid process group specified or has been destroyed.")
 
     try:
-        device_type = (
-            acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
+        backend = pg._get_backend(
+            torch.accelerator.current_accelerator() or torch.device("cpu")
         )
-        backend = pg._get_backend(torch.device(device_type))
     except RuntimeError:
         backend = None
 
@@ -6535,12 +6530,9 @@ def _validate_shrink_backend_requirements(group_info: dict) -> Any:
         else:
             # Try CUDA first if available, else CPU
             try:
-                device_type = (
-                    acc.type
-                    if (acc := torch.accelerator.current_accelerator())
-                    else "cpu"
+                backend_impl = target_pg._get_backend(
+                    torch.accelerator.current_accelerator() or torch.device("cpu")
                 )
-                backend_impl = target_pg._get_backend(torch.device(device_type))
             except Exception:
                 backend_impl = target_pg._get_backend(torch.device("cpu"))
     except RuntimeError as e:
