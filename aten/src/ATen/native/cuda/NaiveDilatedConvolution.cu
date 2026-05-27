@@ -532,6 +532,7 @@ Tensor slow_conv_dilated3d_cuda(
   const Tensor weight_ = weight.contiguous();
   const Tensor bias_ = (bias.defined() ? bias.contiguous() : undefined);
   Tensor output = at::empty(output_size, options);
+  Tensor output_ = (is_batch ? output : output.unsqueeze(0));
 
   slow_conv_dilated_all_cuda_template<3>(
       output_,

@@ -75,6 +75,7 @@ readability-string-compare,
 HeaderFilterRegex: '^(aten/|c10/|torch/).*$'
 WarningsAsErrors: '*'
 CheckOptions:
+  bugprone-unused-local-non-trivial-variable.IncludeTypes: '::at::Tensor;::at::TensorBase;::c10::Scalar;::c10::IValue'
   cppcoreguidelines-special-member-functions.AllowSoleDefaultDtor: true
   cppcoreguidelines-special-member-functions.AllowImplicitlyDeletedCopyOrMove: true
   misc-header-include-cycle.IgnoredFilesList: 'format.h;ivalue.h;custom_class.h;Dict.h;List.h;IListRef.h'
