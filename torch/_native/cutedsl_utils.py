@@ -3,6 +3,7 @@ import logging
 import sys
 from typing import cast
 
+import torch
 from torch._vendor.packaging.version import Version
 
 from ..backends import cuda as _cuda
@@ -42,6 +43,12 @@ def _check_runtime_available() -> tuple[bool, Version | None]:
     """
     # Skip all checks if running on CPU-only binary
     if not _cuda.is_built():
+        return (False, None)
+
+    # CuTeDSL kernels require genuine NVIDIA GPUs; on ROCm/HIP builds the
+    # CUDA compatibility layer reports is_built()=True but cuInit() will fail
+    # because no NVIDIA driver is present.
+    if torch.version.hip is not None:
         return (False, None)
 
     deps = [
