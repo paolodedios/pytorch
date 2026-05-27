@@ -4824,7 +4824,6 @@ class TestLinalg(TestCase):
     @slowTest
     @unittest.skipIf(IS_FBCODE or IS_SANDCASTLE, "Test fails for float64 on GPU (P100, V100) on Meta infra")
     @onlyCUDA
-    @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
     @dtypes(*floating_and_complex_types())
     @precisionOverride({torch.float32: 1e-2, torch.complex64: 1e-2,
                         torch.float64: 1e-8, torch.complex128: 1e-8})
@@ -4884,7 +4883,6 @@ class TestLinalg(TestCase):
             A_triangular.diagonal(dim1=-2, dim2=-1).fill_(1.)
         return b, A_triangular
 
-    @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
     @skipCPUIfNoLapack
     @skipIfTorchDynamo("flaky, needs investigation")
     @dtypes(*floating_and_complex_types())
@@ -4904,7 +4902,6 @@ class TestLinalg(TestCase):
                 self.assertEqual(b, np.matmul(A.cpu(), x.cpu()))
 
     @skipCPUIfNoLapack
-    @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
     @dtypes(*floating_and_complex_types())
     @precisionOverride({torch.float32: 1e-3, torch.complex64: 1e-3,
                         torch.float64: 1e-8, torch.complex128: 1e-8})
@@ -4953,7 +4950,6 @@ class TestLinalg(TestCase):
                                                upper, unitriangular, transpose)
 
     @slowTest
-    @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
     @skipCPUIfNoLapack
     @dtypes(*floating_and_complex_types())
     @precisionOverride({torch.float32: 1e-3, torch.complex64: 1e-3,
@@ -4983,7 +4979,6 @@ class TestLinalg(TestCase):
 
             self.assertEqual(torch.matmul(A, x), b)
 
-    @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
     @skipCPUIfNoLapack
     @unittest.skipIf(not TEST_SCIPY, "SciPy not found")
     @skipIfTorchDynamo("flaky, needs investigation")
@@ -5029,7 +5024,6 @@ class TestLinalg(TestCase):
         X = torch.linalg.solve_triangular(A, B, upper=False)
         self.assertEqual(A @ X, B)
 
-    @unittest.skipIf(TEST_WITH_ROCM and not torch.cuda.has_magma, "MAGMA required for ROCm")
     @skipCPUIfNoLapack
     @dtypes(*floating_and_complex_types())
     def test_triangular_solve_out_errors_and_warnings(self, device, dtype):
