@@ -669,13 +669,15 @@ from a multi-output view call"
                 if isinstance(o, Tensor):
                     view_meta_sequence = maybe_get_output_view_meta_sequence(o)
             elif (
-                # If the output_type is alias_of_input, and no in-place view
+                # 2. If the output_type is alias_of_input, and no in-place view
                 # operation was run on the input (base tensor), then we can
                 # replay dense-tensor views from the saved FunctionalTensor.
                 #
-                # Subclass alias-of-input replay keeps the existing runtime path
-                # because those outputs already work through outer autograd view
-                # metadata today.
+                # For subclass programs, metadata collection runs on the dense
+                # desugared graph, so `o` is a FunctionalTensor here. At
+                # runtime, AliasOfInputHandler replays this dense view sequence
+                # on orig_inputs[base_idx], which RuntimeWrapper captures
+                # before AOTDispatchSubclassWrapper unwraps subclass inputs.
                 output_type == OutputType.alias_of_input
                 and base_idx is not None
                 and not input_info[base_idx].mutates_metadata

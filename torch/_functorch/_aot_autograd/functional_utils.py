@@ -327,31 +327,36 @@ def gen_alias_from_base(
     # In summary, we use the fact that FunctionalTensorWrapper saves the view
     # functions applied to itself (collected during functionalization) so as
     # to replay them (view functions) on the aliased_base_tensor.
-    #
     if (
         replay_views
         and target_view_meta_sequence is not None
         and not target_view_meta_sequence.has_symbolic_inputs()
     ):
         if isinstance(target_view_meta_sequence, SubclassViewMetaSequence):
-            # if compile dropped the outer _base link, replay the saved view on
-            # the wrapper so autograd rebuilds the outer view edge
-            if target_meta_tensor._base is None:
-                out = _try_replay_subclass_outer_view_meta_sequence(
-                    aliased_base_tensor, target_view_meta_sequence
+            representative_view_meta_sequence = (
+                target_view_meta_sequence.representative_outer_view_meta_sequence()
+            )
+            if representative_view_meta_sequence is None:
+                raise NotImplementedError(
+                    "AOTAutograd cannot replay aliased subclass views when wrapper "
+                    "attrs have different outer view signatures."
                 )
-                if out is not None:
-                    out = patch_requires_grad(out)
-                    if _view_meta_matches_tensor(
-                        out, target_meta_tensor, target_view_meta_sequence
-                    ):
-                        return out
 
-                # Fall back to inner replay if outer replay misses wrapper metadata.
-                out = _replay_view_meta_sequence(
-                    aliased_base_tensor, target_meta_tensor, target_view_meta_sequence
-                )
-                return patch_requires_grad(out)
+            # Only validated outer replay is supported for subclass view
+            # reconstruction. Rebuilding the wrapper from inner views would lose
+            # wrapper-level autograd metadata like the outer view edge.
+            out = _functionalization.apply_view_meta_sequence(
+                aliased_base_tensor, representative_view_meta_sequence.sequence
+            )
+            out = patch_requires_grad(out)
+            if _view_meta_matches_tensor(
+                out, target_meta_tensor, target_view_meta_sequence
+            ):
+                return out
+            raise NotImplementedError(
+                "AOTAutograd cannot replay aliased subclass views when outer "
+                "replay does not reconstruct wrapper metadata."
+            )
         else:
             out = _replay_view_meta_sequence(
                 aliased_base_tensor, target_meta_tensor, target_view_meta_sequence
@@ -627,21 +632,6 @@ def _view_meta_matches_tensor(
     return True
 
 
-def _try_replay_subclass_outer_view_meta_sequence(
-    aliased_base_tensor: Tensor,
-    target_view_meta_sequence: SubclassViewMetaSequence,
-) -> Tensor | None:
-    representative_view_meta_sequence = (
-        target_view_meta_sequence.representative_outer_view_meta_sequence()
-    )
-    if representative_view_meta_sequence is None:
-        return None
-
-    return _functionalization.apply_view_meta_sequence(
-        aliased_base_tensor, representative_view_meta_sequence.sequence
-    )
-
-
 def maybe_get_output_view_meta_sequence(
     tensor: Tensor,
 ) -> ViewMetaSequence | SubclassViewMetaSequence | None:
@@ -680,61 +670,18 @@ def maybe_get_output_view_meta_sequence(
 def _replay_view_meta_sequence(
     aliased_base_tensor: Tensor,
     target_meta_tensor: Tensor,
-    target_view_meta_sequence: ViewMetaSequence | SubclassViewMetaSequence,
+    target_view_meta_sequence: ViewMetaSequence,
 ) -> Tensor:
-    if isinstance(target_view_meta_sequence, ViewMetaSequence):
-        out = _functionalization.apply_view_meta_sequence(
-            aliased_base_tensor, target_view_meta_sequence.sequence
-        )
-        if out.shape != target_meta_tensor.shape:
-            raise AssertionError(
-                "incorrect out shape after application of ViewMeta sequence: "
-                f"{tuple(out.shape)} (actual) vs {tuple(target_meta_tensor.shape)} "
-                "(expected)"
-            )
-        return out
-
-    if not (
-        is_traceable_wrapper_subclass(aliased_base_tensor)
-        and is_traceable_wrapper_subclass(target_meta_tensor)
-    ):
-        raise AssertionError(
-            "expected traceable wrapper subclasses when replaying subclass view "
-            f"metadata, got {type(aliased_base_tensor)} and {type(target_meta_tensor)}"
-        )
-
-    target_attrs = target_view_meta_sequence.attrs
-    base_wrapper_attrs, _ = aliased_base_tensor.__tensor_flatten__()
-    target_wrapper_attrs, _ = target_meta_tensor.__tensor_flatten__()
-    if base_wrapper_attrs != target_wrapper_attrs:
-        # purely defensive: some wrappers vary flatten attrs per instance
-        raise AssertionError(
-            "expected matching wrapper attrs when replaying subclass view metadata, "
-            f"got {base_wrapper_attrs} and {target_wrapper_attrs}"
-        )
-
-    def replay_inner(attr: str, inner_t: Tensor | OpaqueBase) -> Tensor | OpaqueBase:
-        attr_meta = target_attrs.get(attr)
-        if attr_meta is None:
-            return inner_t
-
-        if not isinstance(inner_t, Tensor):
-            raise AssertionError(
-                f"expected Tensor for base attr {attr}, got {type(inner_t)}"
-            )
-        target_inner = getattr(target_meta_tensor, attr)
-        if not isinstance(target_inner, Tensor):
-            raise AssertionError(
-                f"expected Tensor for target attr {attr}, got {type(target_inner)}"
-            )
-        return _replay_view_meta_sequence(inner_t, target_inner, attr_meta)
-
-    return transform_subclass(
-        target_meta_tensor,
-        lambda attr, _: replay_inner(attr, getattr(aliased_base_tensor, attr)),
-        outer_size=target_meta_tensor.size(),
-        outer_stride=target_meta_tensor.stride(),
+    out = _functionalization.apply_view_meta_sequence(
+        aliased_base_tensor, target_view_meta_sequence.sequence
     )
+    if out.shape != target_meta_tensor.shape:
+        raise AssertionError(
+            "incorrect out shape after application of ViewMeta sequence: "
+            f"{tuple(out.shape)} (actual) vs {tuple(target_meta_tensor.shape)} "
+            "(expected)"
+        )
+    return out
 
 
 # new_arg and arg here are either:
