@@ -231,7 +231,6 @@ std::tuple<at::Tensor,at::Tensor,at::Tensor> batch_norm_backward_plumbing(
 
   auto [grad_out_value, grad_out_bdim] = unwrapTensorAtLevel(grad_out, cur_level);
   auto [input_value, input_bdim] = unwrapTensorAtLevel(input, cur_level);
-  Tensor mean_value;
   std::optional<Tensor> weight_value;
   std::optional<int64_t> weight_bdim;
   if (weight.defined()) {
