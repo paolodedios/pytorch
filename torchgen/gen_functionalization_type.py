@@ -522,6 +522,12 @@ def emit_view_functionalization_body(
 def maybe_create_output(f: NativeFunction, var_name: str) -> str:
     if len(f.func.returns) == 0:
         return ""
+    # If every return is aliased to an input, the return statement uses the
+    # aliased names directly and never reads var_name; skip the capture to
+    # avoid emitting a dead local.
+    _, non_aliased = get_mutable_redispatch_return_names(f, var_name)
+    if not non_aliased:
+        return ""
     return_type = dispatcher.returns_type(f.func.returns).remove_const_ref().cpp_type()
     return f"{return_type} {var_name} = "
 
