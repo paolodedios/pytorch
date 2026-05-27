@@ -316,10 +316,14 @@ def pre_grad_passes(
             numpy_compat_normalization(gm.graph)
             if example_inputs is not None:
                 gm = fuse_fx(gm, example_inputs)
-            # Auto-enable batch_linear_lhs fusion for XPU.
+            # Auto-enable batch_linear_lhs fusion for XPU as a device-class default.
             # Fusing parallel linears (e.g., gate_proj + up_proj in Llama MLP) into a
             # single wide GEMM gives 7-15% inference speedup by reducing kernel
             # launches and improving GPU occupancy.
+            # NOTE: This intentionally persists in the global config. The guard
+            # ensures it's idempotent and never overrides user-explicit settings.
+            # batch_linear_lhs is device-agnostic (operates at FX graph level),
+            # so persistence is safe even in mixed-device processes.
             if (
                 example_inputs is not None
                 and "batch_linear_lhs" not in config.pre_grad_fusion_options
