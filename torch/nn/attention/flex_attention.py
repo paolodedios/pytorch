@@ -852,6 +852,7 @@ class BlockMask:
     full_q_indices: Tensor | None
     BLOCK_SIZE: tuple[int, int]
     mask_mod: _mask_mod_signature
+    _blocks_are_contiguous: bool
 
     # Attribute lists for pytree flatten/unflatten
     _TENSOR_ATTRS = [
@@ -869,6 +870,7 @@ class BlockMask:
         "seq_lengths",
         "BLOCK_SIZE",
         "mask_mod",
+        "_blocks_are_contiguous",
     ]
 
     def __init__(
@@ -884,6 +886,7 @@ class BlockMask:
         full_q_indices: Tensor | None,
         BLOCK_SIZE: tuple[int, int],
         mask_mod: _mask_mod_signature,
+        _blocks_are_contiguous: bool = False,
     ) -> None:
         if kv_indices.dim() < 2:
             raise RuntimeError("BlockMask must have at least 2 dimensions")
@@ -911,6 +914,7 @@ class BlockMask:
         self.full_q_indices = full_q_indices
         self.BLOCK_SIZE = BLOCK_SIZE
         self.mask_mod = mask_mod
+        self._blocks_are_contiguous = _blocks_are_contiguous
 
     @classmethod
     def from_kv_blocks(
@@ -1312,7 +1316,9 @@ class BlockMask:
             lambda x: x.to(device),
             self.as_tuple(flatten=False),
         )
-        return BlockMask(*mapped_attributes)
+        result = BlockMask(*mapped_attributes)
+        result._blocks_are_contiguous = self._blocks_are_contiguous
+        return result
 
     @staticmethod
     def _wrap_context_value(attr: str, value: Any) -> Any:
@@ -1582,6 +1588,46 @@ def create_mask(
             raise AssertionError
 
 
+def _are_blocks_contiguous(block_mask: "BlockMask") -> bool:
+    """Check if block indices form contiguous ranges in each row.
+
+    When True, the kernel can compute block pointers by incrementing rather
+    than loading from the index array, eliminating indirect memory accesses.
+    Checks both KV-side and Q-side indices (partial and full).
+    """
+
+    def _check_indices(indices: Tensor, num_blocks: Tensor) -> bool:
+        max_blocks = indices.shape[-1]
+        arange = torch.arange(max_blocks, device=indices.device)
+        valid = arange < num_blocks.unsqueeze(-1)
+        expected = indices[..., :1] + arange
+        return bool(((indices == expected) | ~valid).all())
+
+    if not _check_indices(block_mask.kv_indices, block_mask.kv_num_blocks):
+        return False
+    if (
+        block_mask.full_kv_indices is not None
+        and block_mask.full_kv_num_blocks is not None
+    ):
+        if not _check_indices(
+            block_mask.full_kv_indices, block_mask.full_kv_num_blocks
+        ):
+            return False
+
+    if block_mask.q_indices is not None and block_mask.q_num_blocks is not None:
+        if not _check_indices(block_mask.q_indices, block_mask.q_num_blocks):
+            return False
+    if (
+        block_mask.full_q_indices is not None
+        and block_mask.full_q_num_blocks is not None
+    ):
+        if not _check_indices(
+            block_mask.full_q_indices, block_mask.full_q_num_blocks
+        ):
+            return False
+    return True
+
+
 def create_block_mask(
     mask_mod: _mask_mod_signature,
     B: int | None,
@@ -1677,6 +1723,9 @@ def create_block_mask(
         Q_BLOCK_SIZE,
         KV_BLOCK_SIZE,
     )
+
+    block_mask._blocks_are_contiguous = _are_blocks_contiguous(block_mask)
+
     return block_mask
 
 
@@ -1701,6 +1750,7 @@ def _apply_kernel_options(
     value: Tensor,
     return_lse: bool,
     kernel_options: FlexKernelOptions | None,
+    block_mask: BlockMask | None = None,
     return_aux: AuxRequest | None = None,
 ) -> _KernelOptionsWithInternals:
     kernel_options = cast(
@@ -1729,7 +1779,17 @@ def _apply_kernel_options(
     kernel_options.setdefault("BACKEND", "AUTO")
     kernel_options.setdefault("PRESCALE_QK", False)
     kernel_options.setdefault("ROWS_GUARANTEED_SAFE", False)
-    kernel_options.setdefault("BLOCKS_ARE_CONTIGUOUS", False)
+
+    blocks_are_contiguous = (
+        block_mask._blocks_are_contiguous
+        if block_mask is not None
+        and hasattr(block_mask, "_blocks_are_contiguous")
+        else False
+    )
+    is_rocm = torch.version.hip is not None
+    kernel_options.setdefault(
+        "BLOCKS_ARE_CONTIGUOUS", blocks_are_contiguous and is_rocm
+    )
     # This forces all biases grad scatters to be done in the DQ iteration loop of the backwards
     kernel_options.setdefault("WRITE_DQ", True)
 
@@ -2127,7 +2187,8 @@ def flex_attention(
         value,
         return_lse,
         kernel_options,
-        return_aux,
+        block_mask=block_mask,
+        return_aux=return_aux,
     )
 
     def _finalize_outputs(
