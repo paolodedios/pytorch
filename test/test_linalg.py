@@ -32,7 +32,7 @@ from torch.testing._internal.common_utils import \
 from torch.testing._internal.common_device_type import \
     (instantiate_device_type_tests, dtypes, has_cusolver, onlyCPU, skipIf, skipCPUIfNoLapack, precisionOverride,
      skipCUDAIf,
-     skipCUDAIfNoCusolver, skipCUDAIfNoMagmaAndNoLinalgsolver, skipCUDAIfRocm, onlyNativeDeviceTypes, dtypesIfCUDA,
+     skipCUDAIfNoCusolver, skipCUDAIfNoMagmaAndNoLinalgsolver, onlyNativeDeviceTypes, dtypesIfCUDA,
      onlyCUDA, skipMeta, skipCUDAIfNotRocm, dtypesIfMPS, largeTensorTest,
      e4m3_type, e5m2_type)
 from torch.testing import make_tensor
