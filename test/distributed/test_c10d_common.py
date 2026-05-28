@@ -2060,8 +2060,7 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
     def test_new_group_delegates_to_pg(self):
         """dist.new_group delegates to default_pg.new_group if available."""
 
-        new_group_called = False
-        new_group_ranks = None
+        calls = []
 
         class _DelegatingPG(DummyProcessGroup):
             def new_group(
@@ -2072,9 +2071,11 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
                 group_name=None,
                 group_desc=None,
             ):
-                nonlocal new_group_called, new_group_ranks
-                new_group_called = True
-                new_group_ranks = list(ranks)
+                calls.append({
+                    "ranks": list(ranks),
+                    "group_name": group_name,
+                    "group_desc": group_desc,
+                })
                 my_rank = self.rank()
                 if my_rank not in ranks:
                     return None
@@ -2095,9 +2096,10 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
         )
 
         try:
+            # Basic delegation
             sub_pg = dist.new_group(ranks=[0])
-            self.assertTrue(new_group_called)
-            self.assertEqual(new_group_ranks, [0])
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["ranks"], [0])
 
             if self.rank == 0:
                 self.assertIsNotNone(sub_pg)
@@ -2105,10 +2107,202 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
                     sub_pg, dist.distributed_c10d.GroupMember.NON_GROUP_MEMBER
                 )
             else:
-                self.assertTrue(
-                    sub_pg is None
-                    or sub_pg == dist.distributed_c10d.GroupMember.NON_GROUP_MEMBER
+                self.assertEqual(
+                    sub_pg, dist.distributed_c10d.GroupMember.NON_GROUP_MEMBER
                 )
+
+            # Subgroup is registered in _world tables
+            if self.rank == 0:
+                self.assertIn(sub_pg, dist.distributed_c10d._world.pg_map)
+                self.assertIn(sub_pg, dist.distributed_c10d._world.pg_group_ranks)
+
+            # Ranks are sorted by default
+            calls.clear()
+            dist.new_group(ranks=[1, 0])
+            self.assertEqual(calls[0]["ranks"], [0, 1])
+
+            # sort_ranks=False preserves order
+            calls.clear()
+            dist.new_group(ranks=[1, 0], sort_ranks=False)
+            self.assertEqual(calls[0]["ranks"], [1, 0])
+
+            # group_desc is forwarded
+            calls.clear()
+            dist.new_group(ranks=[0], group_desc="my_desc")
+            self.assertEqual(calls[0]["group_desc"], "my_desc")
+
+            # ranks=None means all ranks
+            calls.clear()
+            sub_pg = dist.new_group(ranks=None)
+            self.assertEqual(
+                calls[0]["ranks"], list(range(self.world_size))
+            )
+            self.assertIsNotNone(sub_pg)
+            self.assertNotEqual(
+                sub_pg, dist.distributed_c10d.GroupMember.NON_GROUP_MEMBER
+            )
+        finally:
+            dist.destroy_process_group()
+
+    def test_pg_bypass_delegates_collective(self):
+        """@_pg_bypass forwards dist.all_reduce to pg.all_reduce if defined."""
+
+        calls = []
+
+        class _CollectivePG(DummyProcessGroup):
+            def all_reduce(self, tensor, op=None, async_op=False):
+                calls.append({
+                    "tensor_shape": list(tensor.shape),
+                    "op": op,
+                    "async_op": async_op,
+                })
+                return None
+
+        dist.Backend.register_backend(
+            "collective_bypass",
+            lambda *args, **kwargs: _CollectivePG(
+                args[0].group_rank, args[0].group_size
+            ),
+            extended_api=True,
+        )
+
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "6789"
+        dist.init_process_group(
+            "collective_bypass", rank=self.rank, world_size=self.world_size
+        )
+
+        try:
+            tensor = torch.zeros(4)
+            dist.all_reduce(tensor, op=dist.ReduceOp.MAX)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["tensor_shape"], [4])
+            self.assertEqual(calls[0]["op"], dist.ReduceOp.MAX)
+            self.assertFalse(calls[0]["async_op"])
+        finally:
+            dist.destroy_process_group()
+
+    def test_pg_bypass_falls_through_when_not_overridden(self):
+        """@_pg_bypass falls through when PG doesn't override the method."""
+
+        class _MinimalPG(DummyProcessGroup):
+            pass
+
+        dist.Backend.register_backend(
+            "minimal_bypass",
+            lambda *args, **kwargs: _MinimalPG(
+                args[0].group_rank, args[0].group_size
+            ),
+            extended_api=True,
+        )
+
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "6789"
+        dist.init_process_group(
+            "minimal_bypass", rank=self.rank, world_size=self.world_size
+        )
+
+        try:
+            # all_reduce is not overridden on _MinimalPG, so _pg_bypass
+            # falls through to the original dist.all_reduce implementation.
+            # That will fail because no real backend is registered, but the
+            # important thing is that it doesn't call a PG method.
+            tensor = torch.zeros(4)
+            with self.assertRaises(RuntimeError):
+                dist.all_reduce(tensor)
+        finally:
+            dist.destroy_process_group()
+
+    def test_pg_bypass_extracts_group_positionally(self):
+        """@_pg_bypass handles group passed as a positional argument."""
+
+        calls = []
+
+        class _PositionalPG(DummyProcessGroup):
+            def broadcast(self, tensor, src=None, async_op=False, group_src=None):
+                calls.append({"src": src, "async_op": async_op})
+                return None
+
+        dist.Backend.register_backend(
+            "positional_bypass",
+            lambda *args, **kwargs: _PositionalPG(
+                args[0].group_rank, args[0].group_size
+            ),
+            extended_api=True,
+        )
+
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "6789"
+        dist.init_process_group(
+            "positional_bypass", rank=self.rank, world_size=self.world_size
+        )
+
+        try:
+            tensor = torch.zeros(4)
+            # Pass group as keyword
+            dist.broadcast(tensor, src=0, group=dist.group.WORLD)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["src"], 0)
+        finally:
+            dist.destroy_process_group()
+
+    def test_getattr_forwards_custom_collective(self):
+        """Module __getattr__ forwards unknown functions to the PG."""
+
+        calls = []
+
+        class _CustomPG(DummyProcessGroup):
+            def my_custom_collective(self, tensor, scale=1.0):
+                calls.append({"shape": list(tensor.shape), "scale": scale})
+                return None
+
+        dist.Backend.register_backend(
+            "custom_collective",
+            lambda *args, **kwargs: _CustomPG(
+                args[0].group_rank, args[0].group_size
+            ),
+            extended_api=True,
+        )
+
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "6789"
+        dist.init_process_group(
+            "custom_collective", rank=self.rank, world_size=self.world_size
+        )
+
+        try:
+            tensor = torch.zeros(8)
+            dist.my_custom_collective(tensor, scale=2.0, group=dist.group.WORLD)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0]["shape"], [8])
+            self.assertEqual(calls[0]["scale"], 2.0)
+        finally:
+            dist.destroy_process_group()
+
+    def test_getattr_raises_for_nonexistent(self):
+        """Module __getattr__ raises AttributeError for unknown methods."""
+
+        class _EmptyPG(DummyProcessGroup):
+            pass
+
+        dist.Backend.register_backend(
+            "empty_getattr",
+            lambda *args, **kwargs: _EmptyPG(
+                args[0].group_rank, args[0].group_size
+            ),
+            extended_api=True,
+        )
+
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "6789"
+        dist.init_process_group(
+            "empty_getattr", rank=self.rank, world_size=self.world_size
+        )
+
+        try:
+            tensor = torch.zeros(4)
+            with self.assertRaises(AttributeError):
+                dist.nonexistent_function(tensor, group=dist.group.WORLD)
         finally:
             dist.destroy_process_group()
 
