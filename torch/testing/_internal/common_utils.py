@@ -5802,7 +5802,7 @@ def get_cycles_per_ms(device: str = "cuda") -> float:
                 cycles_per_ms = test_cycles / start.elapsed_time(end)
                 return cycles_per_ms
             else:
-                cycles_per_ms = 1000000 / 1000000.0
+                cycles_per_ms = 1000000.0
                 return cycles_per_ms
 
     # Get 10 values and remove the 2 max and 2 min and return the avg.
