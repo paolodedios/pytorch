@@ -136,7 +136,6 @@ sycl::event convolution(
       pattr);
 
   dnnl::memory src_m, weight_m, dst_m, bia_m;
-  at::Tensor src_blocked, weight_blocked, dst_blocked = dst;
 
   src_m = make_onednn_memory(src_md, engine, src.data_ptr());
   weight_m = make_onednn_memory(weight_md, engine, weight.data_ptr());
@@ -244,7 +243,6 @@ sycl::event convolution_backward_weights(
       pattr);
 
   // create bwd memory
-  at::Tensor expected_src, expected_diff_dst, expected_diff_weight;
   dnnl::memory src_m, diff_dst_m, diff_weight_m;
 
   src_m = make_onednn_memory(src_md, engine, src.data_ptr());
@@ -351,7 +349,6 @@ sycl::event convolution_backward_data(
       pattr);
 
   // create memory
-  at::Tensor expected_src, expected_wei, expected_dst;
   dnnl::memory diff_dst_m, wei_m, diff_src_m;
 
   diff_src_m = make_onednn_memory(src_md, engine, diff_src.data_ptr());

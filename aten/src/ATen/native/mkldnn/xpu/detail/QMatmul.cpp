@@ -226,14 +226,12 @@ void quantized_matmul(
   pattr.set_post_ops(po);
   pattr.set_scratchpad_mode(dnnl::scratchpad_mode::user);
 
-  at::Tensor m2_sc;
   if (!wgh_is_per_channel) {
     pattr.set_scales_mask(DNNL_ARG_WEIGHTS, 0);
   } else {
     pattr.set_scales_mask(DNNL_ARG_WEIGHTS, 1 << 1);
   }
 
-  at::Tensor m1_sc;
   dnnl::memory::desc m1_sc_md = dnnl::memory::desc(
       {1}, dnnl::memory::data_type::f32, dnnl::memory::format_tag::x);
   int mask_ac = 0;
@@ -270,7 +268,6 @@ void quantized_matmul(
   auto expected_dst_md = matmul_pd.dst_desc();
 
   dnnl::memory m1_m = m1_usr_m, m2_m = m2_usr_m, dst_m = dst_usr_m;
-  at::Tensor m1_, m2_, dst_;
 
   int scratchpad_size = matmul_pd.scratchpad_desc().get_size();
   at::Tensor scratchpad_tensor =

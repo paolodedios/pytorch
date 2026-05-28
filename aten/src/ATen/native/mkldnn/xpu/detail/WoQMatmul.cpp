@@ -152,7 +152,6 @@ void woq_matmul_int4_impl(
 
   dnnl::memory m1_m = m1_usr_m, m2_m = m2_u4_m, dst_m = dst_usr_m;
   dnnl::memory scale_m = scale_usr_m; // zp_m = zp_u4_m;
-  Tensor m1_, m2_, zp_new, dst_;
 
   int scratchpad_size = matmul_pd.scratchpad_desc().get_size();
   Tensor scratchpad_tensor =

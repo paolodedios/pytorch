@@ -285,7 +285,6 @@ Tensor& baddbmm_out(
   onednn::Attr attr;
   float beta_ = beta.to<float>();
   float alpha_ = beta_ == 0.f ? alpha.to<float>() : alpha.to<float>() / beta_;
-  Tensor binary;
   if (beta_ == 0.f) {
     attr.append_post_eltwise(1.f, alpha_, 0.f, attr.kind_with_linear);
   } else {

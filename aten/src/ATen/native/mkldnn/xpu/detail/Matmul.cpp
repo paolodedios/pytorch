@@ -232,7 +232,6 @@ sycl::event matmul(
   auto expected_dst_md = matmul_pd.dst_desc();
 
   dnnl::memory m1_m = m1_usr_m, m2_m = m2_usr_m, dst_m = dst_usr_m;
-  at::Tensor m1_, m2_, dst_;
 
   if (attr.with_binary())
     attr.construct_post_binary(matmul_pd, args);

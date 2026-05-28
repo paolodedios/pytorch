@@ -206,7 +206,6 @@ sycl::event deconvolution(
       pattr);
 
   dnnl::memory src_m, weight_m, dst_m, bia_m;
-  at::Tensor src_blocked, weight_blocked, dst_blocked = dst;
 
   src_m = make_onednn_memory(src_md, engine, src.data_ptr());
   weight_m = make_onednn_memory(weight_md, engine, weight.data_ptr());
