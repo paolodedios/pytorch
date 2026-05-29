@@ -751,7 +751,7 @@ def generic_abs(
 
 
 def generic_invert(
-    tx: "InstructionTranslator", obj: VariableTracker
+    tx: "InstructionTranslatorBase", obj: VariableTracker
 ) -> VariableTracker:
     """Mirrors PyNumber_Invert.
 

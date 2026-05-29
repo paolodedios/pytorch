@@ -2576,7 +2576,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         return generic_neg(tx, a)
 
     def call_invert(
-        self, tx: "InstructionTranslator", a: VariableTracker
+        self, tx: "InstructionTranslatorBase", a: VariableTracker
     ) -> VariableTracker:
         return generic_invert(tx, a)
 

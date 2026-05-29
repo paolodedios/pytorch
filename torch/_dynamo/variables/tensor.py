@@ -1721,7 +1721,7 @@ class TensorVariable(VariableTracker):
 
     def nb_invert_impl(
         self,
-        tx: "InstructionTranslator",
+        tx: "InstructionTranslatorBase",
     ) -> VariableTracker:
         from .builder import wrap_fx_proxy
 
@@ -1735,7 +1735,7 @@ class TensorVariable(VariableTracker):
             ),
         )
 
-    def method___invert__(self, tx: "InstructionTranslator") -> VariableTracker:
+    def method___invert__(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         return self.nb_invert_impl(tx)
 
     def method___getitem__(
