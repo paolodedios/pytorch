@@ -4474,6 +4474,14 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
 
         do_upcast = pytree.tree_any(lambda v: should_upcast(v.dtype), value)
         original_dtype = dtype
+
+        # Look up per-load identity padding
+        identity_padding = (
+            self._identity_padding_values.get(str(value))
+            if isinstance(value, CSEVariable)
+            else None
+        )
+
         if do_upcast:
             # Only promote FB16/BF16; do not promote other integer/boolean dtypes
             value = pytree.tree_map(maybe_upcast, value)
@@ -4481,6 +4489,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             dtype = torch.float32 if should_upcast(dtype) else dtype
 
         assert self.inside_reduction
+
         masks = OrderedSet(tree.mask_name() for tree in self.range_trees)
         self.filter_masks(masks)
         masks = sorted(masks)
@@ -4602,8 +4611,20 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         )
         cond = " & ".join(masks)
 
+        # The masked accumulator update is redundant when OOB elements
+        # in the loaded data equal the reduction identity. Only skip when
+        # no reduction mask is present (i.e. the reduction tiles evenly).
+        acc_default = ir.Reduction.default_accumulator(reduction_type, src_dtype)
+        has_reduction_mask = any(prefix_is_reduction(m[0]) for m in masks)
+        skip_accumulator_masking = (
+            not isinstance(acc_default, tuple)
+            and identity_padding is not None
+            and acc_default == identity_padding
+            and not has_reduction_mask
+        )
+
         def where_cond(tval, fval):
-            if not cond:
+            if not cond or skip_accumulator_masking:
                 return tval
             return TritonKernelOverrides.where(cond, tval, fval)
 
