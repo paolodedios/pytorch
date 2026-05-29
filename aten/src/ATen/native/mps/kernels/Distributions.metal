@@ -1,4 +1,7 @@
+#include <c10/metal/atomic.h>
+#include <c10/metal/error.h>
 #include <c10/metal/random.h>
+#include <c10/metal/reduction_utils.h>
 #include <c10/metal/special_math.h>
 #include <c10/metal/utils.h>
 #include <metal_stdlib>
@@ -99,6 +102,96 @@ kernel void exponential(
   }
 }
 
+// Uniform[from, to). One Philox round per 4 outputs.
+template <typename T>
+kernel void uniform_dist(
+    device T* output [[buffer(0)]],
+    constant float2& params [[buffer(1)]],
+    constant long2& seed_base_offset [[buffer(2)]],
+    constant uint& numel [[buffer(3)]],
+    uint tid [[thread_position_in_grid]]) {
+  uint base = tid * 4;
+  uint4 raw =
+      c10::metal::philox4::rand(seed_base_offset.x, seed_base_offset.y + tid);
+  float from = params.x;
+  float scale = params.y - params.x;
+  uint count = min(4u, numel - base);
+  for (uint i = 0; i < count; ++i) {
+    float u = c10::metal::detail::uint32_to_uniform_float(raw[i]);
+    output[base + i] = static_cast<T>(from + scale * u);
+  }
+}
+
+// Normal(mean, std) via Box-Muller. One Philox round yields two (u1, u2)
+// pairs and 4 standard normals; we then apply the affine `mean + std * z`.
+template <typename T>
+kernel void normal(
+    device T* output [[buffer(0)]],
+    constant float2& params [[buffer(1)]],
+    constant long2& seed_base_offset [[buffer(2)]],
+    constant uint& numel [[buffer(3)]],
+    uint tid [[thread_position_in_grid]]) {
+  uint base = tid * 4;
+  uint4 raw =
+      c10::metal::philox4::rand(seed_base_offset.x, seed_base_offset.y + tid);
+  float2 za = c10::metal::box_muller_from_philox(raw.xy);
+  float2 zb = c10::metal::box_muller_from_philox(raw.zw);
+  float z[4] = {za.x, za.y, zb.x, zb.y};
+  uint count = min(4u, numel - base);
+  for (uint i = 0; i < count; ++i) {
+    output[base + i] = static_cast<T>(params.x + params.y * z[i]);
+  }
+}
+
+// Random integer in `[base, base + range)`. `params.x` is `base`, `params.y` is
+// the range. `range == 0` is the sentinel for "full T-bit-width range" which
+// we use both for the int64 `[int64_min, int64_max]` case (range = 2^64
+// doesn't fit in any signed type) and for `random_(self)` on any integer dtype
+// when the caller wants the full uniform output domain.
+//
+// Per Salmon, Moraes, Dror, Shaw, "Parallel Random Numbers: As Easy as 1, 2, 3"
+// (Random123, SC '11), the 128 bits a single Philox-4x32-10 round emits can be
+// consumed as 4 x uint32 or 2 x uint64 with full per-bit uniformity at either
+// projection. We deliberately keep the layout dtype-stable for narrow types: 4
+// outputs per thread for `sizeof(T) <= 4`, 2 outputs for `sizeof(T) == 8`. Each
+// narrow output takes one full `uint32` (low bits cast to T or `% range`),
+// which costs some throughput vs. byte/short packing but keeps `randint_like`
+// values identical across float/half/int dtypes - inductor's `fallback_random`
+// equivalence tests upcast to float for the reference and compare against the
+// half compiled output, and any dtype-dependent Philox stride breaks them.
+template <typename T>
+kernel void random_int(
+    device T* output [[buffer(0)]],
+    constant long2& params [[buffer(1)]],
+    constant long2& seed_base_offset [[buffer(2)]],
+    constant uint& numel [[buffer(3)]],
+    uint tid [[thread_position_in_grid]]) {
+  constexpr uint kBytes = sizeof(T);
+  constexpr uint kElts = (kBytes == 8) ? 2u : 4u;
+
+  uint base_idx = tid * kElts;
+  uint4 raw =
+      c10::metal::philox4::rand(seed_base_offset.x, seed_base_offset.y + tid);
+  long add = params.x;
+  long range = params.y;
+  uint count = min(kElts, numel - base_idx);
+
+  for (uint i = 0; i < count; ++i) {
+    long out;
+    if IF_CONSTEXPR (kBytes == 8) {
+      ulong v = (static_cast<ulong>(raw[2 * i]) << 32) |
+          static_cast<ulong>(raw[2 * i + 1]);
+      out = (range == 0) ? static_cast<long>(v)
+                         : static_cast<long>(v % static_cast<ulong>(range));
+    } else {
+      uint v = raw[i];
+      out = (range == 0) ? static_cast<long>(static_cast<int>(v))
+                         : static_cast<long>(v % static_cast<uint>(range));
+    }
+    output[base_idx + i] = static_cast<T>(out + add);
+  }
+}
+
 #define REGISTER_OP(NAME, DTYPE)                                    \
   template [[host_name(#NAME "_" #DTYPE)]] kernel void NAME<DTYPE>( \
       device DTYPE*, constant float2&, constant long2&, constant uint&, uint)
@@ -119,6 +212,33 @@ REGISTER_OP(geometric, long);
 REGISTER_OP(geometric, short);
 REGISTER_OP(geometric, char);
 REGISTER_OP(geometric, uchar);
+
+REGISTER_OP(uniform_dist, float);
+REGISTER_OP(uniform_dist, half);
+REGISTER_OP(uniform_dist, bfloat);
+
+REGISTER_OP(normal, float);
+REGISTER_OP(normal, half);
+REGISTER_OP(normal, bfloat);
+
+// `random_int` takes `long2` params (different buffer layout from the float-
+// param distributions above), so it can't go through `REGISTER_OP`.
+#define REGISTER_RANDOM_INT(DTYPE)                                            \
+  template [[host_name("random_int_" #DTYPE)]] kernel void random_int<DTYPE>( \
+      device DTYPE*, constant long2&, constant long2&, constant uint&, uint)
+
+REGISTER_RANDOM_INT(int);
+REGISTER_RANDOM_INT(long);
+REGISTER_RANDOM_INT(short);
+REGISTER_RANDOM_INT(char);
+REGISTER_RANDOM_INT(uchar);
+REGISTER_RANDOM_INT(ushort);
+REGISTER_RANDOM_INT(uint);
+REGISTER_RANDOM_INT(ulong);
+REGISTER_RANDOM_INT(bool);
+REGISTER_RANDOM_INT(float);
+REGISTER_RANDOM_INT(half);
+REGISTER_RANDOM_INT(bfloat);
 
 #define REGISTER_EXPONENTIAL(DTYPE)                         \
   template [[host_name("exponential_" #DTYPE)]] kernel void \
@@ -163,6 +283,7 @@ kernel void bernoulli_tensor(
     device const float* probs [[buffer(1)]],
     constant long2& seed_base_offset [[buffer(2)]],
     constant uint& numel [[buffer(3)]],
+    device c10::metal::ErrorMessages* error_buf [[buffer(4)]],
     uint tid [[thread_position_in_grid]]) {
   uint base = tid * 4;
   uint4 raw =
@@ -171,6 +292,10 @@ kernel void bernoulli_tensor(
   for (uint i = 0; i < count; ++i) {
     float u = c10::metal::detail::uint32_to_uniform_float(raw[i]);
     float p = probs[base + i];
+    if (!(p >= 0.0f && p <= 1.0f)) {
+      TORCH_REPORT_ERROR(error_buf, "bernoulli_mps_ expects p to be in [0, 1]");
+      return;
+    }
     output[base + i] = c10::metal::cast_to<T>(u < p ? 1u : 0u);
   }
 }
@@ -185,6 +310,7 @@ kernel void bernoulli_tensor(
       device const float*,                                                     \
       constant long2&,                                                         \
       constant uint&,                                                          \
+      device c10::metal::ErrorMessages*,                                       \
       uint)
 
 REGISTER_BERNOULLI(float);
@@ -206,24 +332,20 @@ REGISTER_BERNOULLI(half2);
 // rejection loops without colliding with other threads' random streams.
 constant constexpr int GAMMA_RANDOMS_STRIDE = 32;
 
-template <typename T>
-kernel void standard_gamma(
-    device T* output [[buffer(0)]],
-    device const T* alpha_in [[buffer(1)]],
-    constant long2& seed_base_offset [[buffer(2)]],
-    uint tid [[thread_position_in_grid]]) {
-  float alpha = static_cast<float>(alpha_in[tid]);
+static float gen_gamma(
+    float alpha,
+    constant long2& seed_base_offset,
+    uint32_t elem_idx) {
   float scale = 1.0f;
   long base =
-      seed_base_offset.y + static_cast<long>(tid) * GAMMA_RANDOMS_STRIDE;
+      seed_base_offset.y + static_cast<long>(elem_idx) * GAMMA_RANDOMS_STRIDE;
   long seed = seed_base_offset.x;
   int rng_idx = 0;
 
   // Boost alpha < 1 for higher acceptance probability
   if (alpha < 1.0f) {
     if (alpha == 0.0f) {
-      output[tid] = static_cast<T>(0.0f);
-      return;
+      return 0.0f;
     }
     float u = c10::metal::rand(seed, base + rng_idx++);
     scale = ::metal::precise::pow(1.0f - u, 1.0f / alpha);
@@ -244,16 +366,24 @@ kernel void standard_gamma(
     float xx = x * x;
     if (u < 1.0f - 0.0331f * xx * xx) {
       float result = scale * d * v;
-      output[tid] = static_cast<T>(max(result, FLT_MIN));
-      return;
+      return max(result, FLT_MIN);
     }
     if (::metal::precise::log(u) <
         0.5f * xx + d * (1.0f - v + ::metal::precise::log(v))) {
       float result = scale * d * v;
-      output[tid] = static_cast<T>(max(result, FLT_MIN));
-      return;
+      return max(result, FLT_MIN);
     }
   }
+}
+
+template <typename T>
+kernel void standard_gamma(
+    device T* output [[buffer(0)]],
+    device const T* alpha_in [[buffer(1)]],
+    constant long2& seed_base_offset [[buffer(2)]],
+    uint tid [[thread_position_in_grid]]) {
+  float alpha = static_cast<float>(alpha_in[tid]);
+  output[tid] = static_cast<T>(gen_gamma(alpha, seed_base_offset, tid));
 }
 
 #define REGISTER_GAMMA(DTYPE)                      \
@@ -264,6 +394,57 @@ kernel void standard_gamma(
 REGISTER_GAMMA(float);
 REGISTER_GAMMA(half);
 REGISTER_GAMMA(bfloat);
+
+template <typename T>
+kernel void standard_dirichlet(
+    device T* output [[buffer(0)]],
+    device const T* alpha_in [[buffer(1)]],
+    constant long2& seed_base_offset [[buffer(2)]],
+    constant uint& num_alpha [[buffer(3)]],
+    uint tgid [[threadgroup_position_in_grid]],
+    uint lane [[thread_position_in_threadgroup]],
+    uint tptg [[threads_per_threadgroup]]) {
+  threadgroup float smem[1024];
+  uint32_t batch_offset = tgid * num_alpha;
+  float gamma_partial_sum = 0;
+
+  // Generate a gamma value for each output element
+  for (uint32_t alpha_idx = lane; alpha_idx < num_alpha; alpha_idx += tptg) {
+    uint32_t elem_idx = batch_offset + alpha_idx;
+    float alpha = static_cast<float>(alpha_in[elem_idx]);
+    float gamma_val = gen_gamma(alpha, seed_base_offset, elem_idx);
+    gamma_partial_sum += gamma_val;
+    output[elem_idx] = T(gamma_val);
+  }
+
+  ::metal::threadgroup_barrier(::metal::mem_flags::mem_threadgroup);
+
+  // Sum all the gamma values in each batch
+  auto gamma_sum = threadgroup_sum(smem, gamma_partial_sum, lane, tptg);
+
+  // Divide the gamma values by their sum
+  for (uint32_t alpha_idx = lane; alpha_idx < num_alpha; alpha_idx += tptg) {
+    uint32_t elem_idx = batch_offset + alpha_idx;
+    auto gamma_val = float(output[elem_idx]);
+    auto out_val = gamma_val / gamma_sum;
+    output[elem_idx] = T(::metal::clamp(out_val, FLT_MIN, 1.0f - eps));
+  }
+}
+
+#define REGISTER_DIRICHLET(DTYPE)                                  \
+  template [[host_name("standard_dirichlet_" #DTYPE)]] kernel void \
+  standard_dirichlet<DTYPE>(                                       \
+      device DTYPE*,                                               \
+      device const DTYPE*,                                         \
+      constant long2&,                                             \
+      constant uint&,                                              \
+      uint,                                                        \
+      uint,                                                        \
+      uint)
+
+REGISTER_DIRICHLET(float);
+REGISTER_DIRICHLET(half);
+REGISTER_DIRICHLET(bfloat);
 
 // Reparameterized gradient for Gamma distribution.
 // Computes -(d/dalpha cdf(x;alpha)) / pdf(x;alpha).

@@ -4,15 +4,27 @@
 #include <torch/csrc/inductor/aoti_runtime/model_container.h>
 
 #include <iostream>
+#include <string>
+#include <unordered_map>
 #include <vector>
+
+// Stores the last error message from a failed AOTI runtime call so that
+// callers on the other side of the C ABI boundary can retrieve it via
+// AOTInductorGetLastError(). Without this, exception messages (e.g.
+// "CUDA error: an illegal memory access was encountered") are lost when
+// CONVERT_EXCEPTION_TO_ERROR_CODE catches them and returns an error code.
+static thread_local std::string g_aoti_last_error;
 
 #define CONVERT_EXCEPTION_TO_ERROR_CODE(...)      \
   try {                                           \
+    g_aoti_last_error.clear();                    \
     __VA_ARGS__                                   \
   } catch (const std::exception& e) {             \
+    g_aoti_last_error = e.what();                 \
     std::cerr << "Error: " << e.what() << '\n';   \
     return AOTI_RUNTIME_FAILURE;                  \
   } catch (...) {                                 \
+    g_aoti_last_error = "Unknown exception";      \
     std::cerr << "Unknown exception occurred.\n"; \
     return AOTI_RUNTIME_FAILURE;                  \
   }                                               \
@@ -46,6 +58,21 @@ struct AOTINoGradGuard {
   AOTINoGradGuard& operator=(AOTINoGradGuard&&) noexcept = delete;
   bool prev_mode{aoti_torch_grad_mode_is_enabled()};
 };
+
+namespace {
+
+std::unordered_map<std::string, AtenTensorHandle> constant_map_from_pairs(
+    const AOTInductorConstantMapEntry* pairs,
+    size_t num_pairs) {
+  std::unordered_map<std::string, AtenTensorHandle> input_map;
+  input_map.reserve(num_pairs);
+  for (size_t i = 0; i < num_pairs; ++i) {
+    input_map.emplace(pairs[i].name, pairs[i].handle);
+  }
+  return input_map;
+}
+
+} // namespace
 
 extern "C" {
 
@@ -236,6 +263,25 @@ AOTIRuntimeError AOTInductorModelContainerExtractConstantsMap(
     })
 }
 
+AOTIRuntimeError AOTInductorModelContainerExtractConstantsMapEntries(
+    AOTInductorModelContainerHandle container_handle,
+    const AOTInductorConstantMapEntry** entries,
+    size_t* num_entries,
+    bool use_inactive) {
+  if (!entries || !num_entries) {
+    return AOTI_RUNTIME_FAILURE;
+  }
+  auto* container =
+      reinterpret_cast<torch::aot_inductor::AOTInductorModelContainer*>(
+          container_handle);
+  CONVERT_EXCEPTION_TO_ERROR_CODE({
+    const auto& extracted =
+        container->extract_constants_map_entries(use_inactive);
+    *entries = extracted.empty() ? nullptr : extracted.data();
+    *num_entries = extracted.size();
+  })
+}
+
 AOTIRuntimeError AOTInductorModelContainerUpdateUserManagedConstantBuffer(
     AOTInductorModelContainerHandle container_handle,
     AOTInductorConstantMapHandle constant_map_handle,
@@ -286,6 +332,22 @@ AOTIRuntimeError AOTInductorModelContainerUpdateConstantBuffer(
   })
 }
 
+AOTIRuntimeError AOTInductorModelContainerUpdateConstantBufferPairs(
+    AOTInductorModelContainerHandle container_handle,
+    const AOTInductorConstantMapEntry* pairs,
+    size_t num_pairs,
+    bool use_inactive,
+    bool validate_full_update) {
+  auto* container =
+      reinterpret_cast<torch::aot_inductor::AOTInductorModelContainer*>(
+          container_handle);
+  auto input_map = constant_map_from_pairs(pairs, num_pairs);
+  CONVERT_EXCEPTION_TO_ERROR_CODE({
+    container->update_constant_buffer(
+        input_map, use_inactive, validate_full_update);
+  })
+}
+
 AOTIRuntimeError AOTInductorModelContainerUpdateConstantBufferFromCpu(
     AOTInductorModelContainerHandle container_handle,
     AOTInductorConstantMapHandle constant_map_handle,
@@ -298,6 +360,26 @@ AOTIRuntimeError AOTInductorModelContainerUpdateConstantBufferFromCpu(
   CONVERT_EXCEPTION_TO_ERROR_CODE({
     container->update_constant_buffer(
         *input_map,
+        use_inactive,
+        validate_full_update,
+        /*user_managed=*/false,
+        /*allow_h2d_copy=*/true);
+  })
+}
+
+AOTIRuntimeError AOTInductorModelContainerUpdateConstantBufferFromCpuPairs(
+    AOTInductorModelContainerHandle container_handle,
+    const AOTInductorConstantMapEntry* pairs,
+    size_t num_pairs,
+    bool use_inactive,
+    bool validate_full_update) {
+  auto* container =
+      reinterpret_cast<torch::aot_inductor::AOTInductorModelContainer*>(
+          container_handle);
+  auto input_map = constant_map_from_pairs(pairs, num_pairs);
+  CONVERT_EXCEPTION_TO_ERROR_CODE({
+    container->update_constant_buffer(
+        input_map,
         use_inactive,
         validate_full_update,
         /*user_managed=*/false,
@@ -481,6 +563,25 @@ AOTIRuntimeError AOTInductorModelUpdateConstantsMap(
   })
 }
 
+// C-ABI-safe variant: uses an array of (name, handle) pairs instead of an
+// opaque pointer to std::unordered_map, so the host and DSO can use
+// different C++ standard libraries without ABI conflicts.
+AOTIRuntimeError AOTInductorModelUpdateConstantsMapV2(
+    AOTInductorModelHandle model_handle,
+    const AOTInductorConstantMapEntry* pairs,
+    int32_t num_pairs) {
+  auto model =
+      reinterpret_cast<torch::aot_inductor::AOTInductorModel*>(model_handle);
+  CONVERT_EXCEPTION_TO_ERROR_CODE({
+    auto constant_map = std::make_shared<torch::aot_inductor::ConstantMap>();
+    constant_map->reserve(num_pairs);
+    for (int32_t i = 0; i < num_pairs; ++i) {
+      constant_map->emplace(pairs[i].name, pairs[i].handle);
+    }
+    model->update_constants_map(std::move(constant_map));
+  })
+}
+
 AOTIRuntimeError AOTInductorModelContainerGetConstantsBlobSize(
     AOTInductorModelContainerHandle container_handle,
     uint64_t* ret_size) {
@@ -503,5 +604,11 @@ AOTIRuntimeError AOTInductorModelUpdateConstantsFromBlob(
       {container->update_constants_from_blob(weight_blob_ptr); })
     }
 
+
+AOTIRuntimeError AOTInductorGetLastError(
+    const char** error_msg) {
+  *error_msg = g_aoti_last_error.c_str();
+  return AOTI_RUNTIME_SUCCESS;
+}
 
 } // extern "C"
