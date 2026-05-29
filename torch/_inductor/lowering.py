@@ -2780,11 +2780,15 @@ make_fallback(aten.randn_like, override_decomp=True)
 make_fallback(aten.randint_like, override_decomp=True)
 make_fallback(aten.rrelu_with_noise_functional)
 
-# TODO: mlazos reevaluate if we want to codegen something different
+# Registered as fallbacks so the cpp_wrapper / AOTI codegen path sees these
+# non-aten custom ops. ``CppWrapperGpu`` intercepts them and either emits
+# inline CUDA/HIP runtime calls or raises a compile-time unsupported-op error.
 make_fallback(torch.ops.streams.record_event.default)
 make_fallback(torch.ops.streams.wait_event.default)
 make_fallback(torch.ops.streams.synchronize_event.default)
 make_fallback(torch.ops.streams.synchronize_device.default)
+make_fallback(torch.ops.streams.synchronize_stream.default)
+make_fallback(torch.ops.streams.wait_stream.default)
 
 
 @register_lowering(aten.rand)
