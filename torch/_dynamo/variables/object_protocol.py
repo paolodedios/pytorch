@@ -215,6 +215,12 @@ def type_implements_nb_absolute(obj_type: type) -> bool:
     return has_slot(number_slots, PyNumberSlots.NB_ABSOLUTE)
 
 
+def type_implements_nb_invert(obj_type: type) -> bool:
+    """Check whether obj_type implements the nb_invert slot."""
+    _, _, number_slots, _ = _get_cached_slots(obj_type)
+    return has_slot(number_slots, PyNumberSlots.NB_INVERT)
+
+
 def type_implements_tp_iter(obj_type: type) -> bool:
     _, _, _, type_slot = _get_cached_slots(obj_type)
     return has_slot(type_slot, PyTypeSlots.TP_ITER)
@@ -741,6 +747,28 @@ def generic_abs(
     raise_type_error(
         tx,
         f"bad operand type for abs(): '{obj.python_type_name()}'",
+    )
+
+
+def generic_invert(
+    tx: "InstructionTranslator", obj: VariableTracker
+) -> VariableTracker:
+    """Mirrors PyNumber_Invert.
+
+    https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1375-L1394
+
+    Algorithm:
+    1. If type has nb_invert slot, call obj.nb_invert_impl(tx)
+    2. Otherwise, raise TypeError
+    """
+    obj_type = maybe_get_python_type(obj)
+
+    if type_implements_nb_invert(obj_type):
+        return obj.nb_invert_impl(tx)
+
+    raise_type_error(
+        tx,
+        f"bad operand type for unary ~: '{obj.python_type_name()}'",
     )
 
 
