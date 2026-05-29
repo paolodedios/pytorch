@@ -4127,7 +4127,7 @@ class InstructionTranslatorBase(
             )
 
             value = LazyVariableTracker.create(
-                LazySymNodeFormatString(value, fmt_spec), source=value.source
+                LazySymNodeFormatString(value, fmt_spec), source=value.source, tx=self
             )
             self.push(value)
             return
@@ -5365,6 +5365,7 @@ class InstructionTranslator(InstructionTranslatorBase):
                             is_varargs=(name == varargs_name),
                             is_varkw=(name == varkw_name),
                         ),
+                        tx=self,
                     )
                     self.symbolic_locals[name] = var
 
@@ -5401,7 +5402,7 @@ class InstructionTranslator(InstructionTranslatorBase):
                         is_derefed_cell_contents=True,
                     )
                     contents_var: VariableTracker = LazyVariableTracker.create(
-                        value, contents_source
+                        value, contents_source, tx=self
                     )
                     cell_var = side_effects.track_cell_new()
                     side_effects.store_cell(cell_var, contents_var)
@@ -5419,7 +5420,7 @@ class InstructionTranslator(InstructionTranslatorBase):
                 contents_source = LocalSource(name, is_derefed_cell_contents=True)
                 try:
                     contents_var = LazyVariableTracker.create(
-                        cell.cell_contents, contents_source
+                        cell.cell_contents, contents_source, tx=self
                     )
                 except ValueError:
                     # Cell has not yet been assigned
@@ -6112,7 +6113,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
                 )  # type: ignore[assignment]
             else:
                 fglobals_value = _import_module(module_name)
-            # Dont use lazy vt because we will do a setattr afterwards
+            # Don't use lazy vt because we will do a setattr afterwards
             # TODO: fix InstructionTranslator -> InstructionTranslatorBase
             # pyrefly: ignore[bad-argument-type]
             fglobals_vt = VariableBuilder(self, module_source)(fglobals_value)
@@ -6123,7 +6124,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
             )
             globals_source = GlobalSource(globals_name)
             fglobals_value = self.f_globals  # type: ignore[assignment]
-            # Dont use lazy vt because we will do a setattr afterwards
+            # Don't use lazy vt because we will do a setattr afterwards
             # pyrefly: ignore[bad-argument-type]
             fglobals_vt = VariableBuilder(self, globals_source)(fglobals_value)
             global_source = DictGetItemSource(globals_source, name)  # type: ignore[assignment]
