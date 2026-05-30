@@ -232,7 +232,6 @@ dtensor_compiled_fails = {
     xfail("cartesian_prod"),
     xfail("flatten"),
     xfail("kron"),
-    xfail("linalg.tensorsolve"),
     xfail("ravel"),
     xfail("reshape_as"),
     xfail("take_along_dim"),
