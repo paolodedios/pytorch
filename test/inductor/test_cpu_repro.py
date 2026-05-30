@@ -2176,10 +2176,6 @@ class CPUReproTests(TestCase):
                 detected = "ZeroDivisionError" in str(e)
                 self.assertTrue(detected)
 
-        x1 = torch.randn(3, 4)
-        y1 = torch.tensor(0.0, dtype=torch.float16)
-        run_division(x1, y1)
-
         x2 = torch.randint(0, 10, size=(3, 4))
         y2 = torch.tensor(0, dtype=torch.int32)
         run_division(x2, y2, rounding_mode="trunc")
