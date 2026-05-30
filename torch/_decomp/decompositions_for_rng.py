@@ -266,8 +266,7 @@ def bernoulli_(self, p=0.5):
     else:
         torch._check(
             0 <= p <= 1,
-            lambda: "bernoulli_ expects p to be in [0, 1],"
-            f" but got p={p}",
+            lambda: f"bernoulli_ expects p to be in [0, 1], but got p={p}",
         )
     return self.copy_(torch.rand_like(self, dtype=torch.float32) < p)
 
@@ -287,8 +286,7 @@ def bernoulli_p(self, p=0.5, *, generator=None):
     else:
         torch._check(
             0 <= p <= 1,
-            lambda: "bernoulli expects p to be in [0, 1],"
-            f" but got p={p}",
+            lambda: f"bernoulli expects p to be in [0, 1], but got p={p}",
         )
     return torch.rand_like(self, dtype=torch.float32) < p
 
