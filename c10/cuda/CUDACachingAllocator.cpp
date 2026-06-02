@@ -1383,9 +1383,9 @@ static std::string reportProcessMemoryInfo(const cudaDeviceProp& prop) {
   }();
   if (!nvml_init) {
     TORCH_WARN_ONCE(
-      "nvmlInit_v2 failed; omitting per-process memory info from CUDA "
-      "out-of-memory messages. This is expected on platforms with partial "
-      "NVML support such as Tegra/Jetson.");
+        "nvmlInit_v2 failed; omitting per-process memory info from CUDA "
+        "out-of-memory messages. This is expected on platforms with partial "
+        "NVML support such as Tegra/Jetson.");
     return "";
   }
 
@@ -1400,12 +1400,12 @@ static std::string reportProcessMemoryInfo(const cudaDeviceProp& prop) {
       prop.pciDeviceID);
 
   nvmlDevice_t nvml_device = nullptr;
-  if(NVML_SUCCESS !=
+  if (NVML_SUCCESS !=
       DriverAPI::get()->nvmlDeviceGetHandleByPciBusId_v2_(
           pci_id, &nvml_device)) {
     TORCH_WARN_ONCE(
-      "nvmlDeviceGetHandleByPciBusId failed; omitting per-process memory "
-      "info from CUDA out-of-memory messages.");
+        "nvmlDeviceGetHandleByPciBusId failed; omitting per-process memory "
+        "info from CUDA out-of-memory messages.");
     return "";
   }
 
@@ -1419,9 +1419,9 @@ static std::string reportProcessMemoryInfo(const cudaDeviceProp& prop) {
   }
   if (NVML_SUCCESS != r) {
     TORCH_WARN_ONCE(
-      "nvmlDeviceGetComputeRunningProcesses failed; omitting per-process "
-      "memory info from CUDA out-of-memory messages. This is expected on "
-      "platforms with partial NVML support such as Tegra/Jetson.");
+        "nvmlDeviceGetComputeRunningProcesses failed; omitting per-process "
+        "memory info from CUDA out-of-memory messages. This is expected on "
+        "platforms with partial NVML support such as Tegra/Jetson.");
     return "";
   }
   unsigned int self_pid = getpid();
