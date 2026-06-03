@@ -42,6 +42,10 @@ echo "install wheel package"
 
 call "internal\install_python.bat"
 
+if "%DESIRED_PYTHON%" == "3.15t" %PYTHON_EXEC% -m pip install --pre numpy==2.5.1 protobuf
+if "%DESIRED_PYTHON%" == "3.15" %PYTHON_EXEC% -m pip install --pre numpy==2.5.1 protobuf
+if "%DESIRED_PYTHON%" == "3.14t" %PYTHON_EXEC% -m pip install --pre numpy==2.3.2 protobuf
+if "%DESIRED_PYTHON%" == "3.14" %PYTHON_EXEC% -m pip install --pre numpy==2.3.2 protobuf
 if "%DESIRED_PYTHON%" == "3.13" %PYTHON_EXEC% -m pip install --pre numpy==2.1.2 protobuf
 if "%DESIRED_PYTHON%" == "3.12" %PYTHON_EXEC% -m pip install --pre numpy==2.0.2 protobuf
 if "%DESIRED_PYTHON%" == "3.11" %PYTHON_EXEC% -m pip install --pre numpy==2.0.2 protobuf

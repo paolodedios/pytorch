@@ -53,6 +53,7 @@ case "$PYTHON_BASE" in
     3.12) PYTHON_FULL="3.12.10" ;;
     3.13) PYTHON_FULL="3.13.14" ;;
     3.14) PYTHON_FULL="3.14.6" ;;
+    3.15) PYTHON_FULL="3.15.0b3"; PYTHON_DIR_VERSION="3.15.0" ;;
     *)
         echo "No patch pin for Python ${PYTHON_BASE}; add one to set_desired_python.sh" >&2
         exit 1
@@ -60,7 +61,10 @@ case "$PYTHON_BASE" in
 esac
 echo "Resolved ${DESIRED_PYTHON} to ${PYTHON_FULL}"
 # shellcheck disable=SC2034  # consumed below in the install loop
-PYTHON_INSTALLER_URL="https://www.python.org/ftp/python/${PYTHON_FULL}/python-${PYTHON_FULL}-amd64.exe"
+# For pre-release versions, the FTP directory uses the base version (e.g. 3.15.0)
+# while the installer filename uses the full tag (e.g. 3.15.0b3).
+PYTHON_DIR_VERSION="${PYTHON_DIR_VERSION:-$PYTHON_FULL}"
+PYTHON_INSTALLER_URL="https://www.python.org/ftp/python/${PYTHON_DIR_VERSION}/python-${PYTHON_FULL}-amd64.exe"
 
 INSTALLER="$WIN_CI_DIR/python-amd64.exe"
 INSTALLER_W="$(cygpath -w "$INSTALLER")"
