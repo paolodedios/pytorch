@@ -1173,7 +1173,11 @@ def load_pt2(
                 model_name = file_end.split("/")[
                     0
                 ]  # split "model_name/...cpp" into "model_name"
-                aoti_model_names.add(model_name)
+                
+                # Security: do not load compiled AOTI models if weights_only is True
+                if not weights_only:
+                    aoti_model_names.add(model_name)
+                    
                 if load_weights_from_disk and file.endswith("weights_config.json"):
                     weight_map = json.loads(archive_reader.read_string(file))
                     weight_maps[model_name] = weight_map
