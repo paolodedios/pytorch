@@ -1024,6 +1024,7 @@ def _load_exported_programs(
             state_dict,
             constants,
             serialized_sample_inputs,
+            weights_only=weights_only,
         )
 
         exported_programs[model_name] = ep
