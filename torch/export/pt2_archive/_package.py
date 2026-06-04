@@ -790,6 +790,33 @@ class PT2ArchiveContents:
     extra_files: dict[str, Any]
 
 
+def _create_flat_tensor_from_bytes(
+    tensor_bytes: bytes,
+    tensor_meta: schema.TensorMeta,
+) -> torch.Tensor:
+    """
+    Create a flat tensor from raw bytes with dtype, device and requires_grad.
+    It will be re-strided based on size, stride, and storage_offset later.
+    """
+    dtype = deserialize_scalar_type(tensor_meta.dtype)
+    size = deserialize_size(tensor_meta.sizes)
+    device = deserialize_device(tensor_meta.device)
+
+    if len(tensor_bytes) != 0:
+        tensor = torch.frombuffer(
+            tensor_bytes, dtype=dtype, requires_grad=tensor_meta.requires_grad
+        ).to(device)
+    else:
+        # cannot call torch.frombuffer() on empty bytes
+        logger.warning(
+            "Cannot call torch.frombuffer() on empty bytes. "
+            "Creating a tensor with zeros as workaround."
+        )
+        tensor = torch.zeros(size, dtype=dtype, device=device)
+
+    return tensor
+
+
 def _build_file_map(
     archive_reader: PT2ArchiveReader,
     config: schema.PayloadConfig,
@@ -807,40 +834,12 @@ def _build_file_map(
         if payload_meta.path_name in file_map:
             continue
 
+        tensor_bytes = archive_reader.read_bytes(
+            os.path.join(base_dir, payload_meta.path_name)
+        )
         if payload_meta.tensor_meta is None:
             raise AssertionError("payload_meta.tensor_meta cannot be None")
-
-        tensor_meta = payload_meta.tensor_meta
-        dtype = deserialize_scalar_type(tensor_meta.dtype)
-        device = deserialize_device(tensor_meta.device)
-        record_name = os.path.join(base_dir, payload_meta.path_name)
-        nbytes = archive_reader.archive_file.get_record_size(record_name)
-
-        if nbytes == 0:
-            size = deserialize_size(tensor_meta.sizes)
-            tensor = torch.zeros(size, dtype=dtype, device=device)
-            if tensor_meta.requires_grad:
-                tensor.requires_grad_(True)
-        else:
-            element_size = torch._utils._element_size(dtype)
-            if nbytes % element_size != 0:
-                raise ValueError(
-                    f"Record {record_name}: size {nbytes} is not a multiple of "
-                    f"element size {element_size} for dtype {dtype}"
-                )
-            numel = nbytes // element_size
-            raw = archive_reader.archive_file.get_storage_from_record(
-                record_name, numel, dtype
-            )
-            # get_storage_from_record returns a tensor with empty DispatchKeySet,
-            # so we wrap the storage in a proper CPU tensor via set_().
-            tensor = torch.empty(0, dtype=dtype)
-            tensor.set_(raw.untyped_storage(), 0, (numel,), (1,))
-            if tensor_meta.requires_grad:
-                tensor.requires_grad_(True)
-            if device != torch.device("cpu"):
-                tensor = tensor.to(device)
-
+        tensor = _create_flat_tensor_from_bytes(tensor_bytes, payload_meta.tensor_meta)
         file_map[payload_meta.path_name] = tensor
 
     return file_map
@@ -969,7 +968,9 @@ def _load_constants(
 
             elif path_name.startswith(CUSTOM_OBJ_FILENAME_PREFIX):
                 if weights_only:
-                    raise ValueError(f"Cannot load custom object {path_name} with weights_only=True")
+                    raise ValueError(
+                        f"Cannot load custom object {path_name} with weights_only=True"
+                    )
                 constant_bytes = archive_reader.read_bytes(
                     os.path.join(CONSTANTS_DIR, path_name)
                 )
@@ -977,7 +978,9 @@ def _load_constants(
 
             elif path_name.startswith(OPAQUE_OBJ_FILENAME_PREFIX):
                 if weights_only:
-                    raise ValueError(f"Cannot load opaque object {path_name} with weights_only=True")
+                    raise ValueError(
+                        f"Cannot load opaque object {path_name} with weights_only=True"
+                    )
                 constant_bytes = archive_reader.read_bytes(
                     os.path.join(CONSTANTS_DIR, path_name)
                 )
@@ -1016,8 +1019,12 @@ def _load_exported_programs(
         serialized_exported_program = _bytes_to_dataclass(
             schema.ExportedProgram, exported_program_bytes
         )
-        state_dict = _load_state_dict(archive_reader, model_name, weights_only=weights_only)
-        constants = _load_constants(archive_reader, model_name, weights_only=weights_only)
+        state_dict = _load_state_dict(
+            archive_reader, model_name, weights_only=weights_only
+        )
+        constants = _load_constants(
+            archive_reader, model_name, weights_only=weights_only
+        )
 
         ep = ExportedProgramDeserializer(expected_opset_version).deserialize(
             serialized_exported_program,
@@ -1115,9 +1122,9 @@ def load_pt2(
             to be loaded. By default, `device_index=-1` is used, which corresponds
             to the device `cuda` when using CUDA. Passing `device_index=1` would
             load the package to `cuda:1`, for example.
-            
+
         load_weights_from_disk (bool): Whether to load weights from disk.
-        
+
         weights_only (bool): If True, only weights will be loaded and no complex
             pickled objects. Recommended for untrusted sources. See `torch.load`
             for more details. Default: False.
@@ -1156,7 +1163,10 @@ def load_pt2(
         file_names = archive_reader.get_file_names()
 
         exported_programs = _load_exported_programs(
-            archive_reader, file_names, expected_opset_version, weights_only=weights_only
+            archive_reader,
+            file_names,
+            expected_opset_version,
+            weights_only=weights_only,
         )
         extra_files = _load_extra_files(archive_reader, file_names)
 
@@ -1177,7 +1187,7 @@ def load_pt2(
                 # Security: do not load compiled AOTI models if weights_only is True
                 if not weights_only:
                     aoti_model_names.add(model_name)
-                    
+
                 if load_weights_from_disk and file.endswith("weights_config.json"):
                     weight_map = json.loads(archive_reader.read_string(file))
                     weight_maps[model_name] = weight_map
@@ -1186,7 +1196,9 @@ def load_pt2(
                     len(WEIGHTS_DIR) :
                 ]  # remove data/weights/ prefix
                 weight_bytes = archive_reader.read_bytes(file)
-                loaded_weight = torch.load(io.BytesIO(weight_bytes), weights_only=weights_only)
+                loaded_weight = torch.load(
+                    io.BytesIO(weight_bytes), weights_only=weights_only
+                )
                 weights[weight_file_name] = loaded_weight
 
     if isinstance(f, (io.IOBase, IO)):
