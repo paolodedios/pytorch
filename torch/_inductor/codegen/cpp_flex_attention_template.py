@@ -1522,6 +1522,7 @@ class CppFlexAttentionTemplate(CppTemplate):
         use_blas_gemm = torch.backends.cpu.get_cpu_capability() in ("SVE128", "SVE256")
         emit_transpose_b_micro_gemm = not use_blas_gemm
 
+        micro_gemm_trans: CppMicroGemmFP32Vec | None = None
         code_trans = ""
         if emit_transpose_b_micro_gemm:
             micro_gemm_trans = CppMicroGemmFP32Vec(
@@ -1550,7 +1551,7 @@ class CppFlexAttentionTemplate(CppTemplate):
 
         with V.set_graph_handler(V.graph):
             kernel = CppTemplateKernel("cpp_micro_gemm", parallel_num_threads())
-            if emit_transpose_b_micro_gemm:
+            if micro_gemm_trans is not None:
                 code_trans = micro_gemm_trans.codegen_define(kernel)
             code = micro_gemm.codegen_define(kernel)
         return code + code_trans
