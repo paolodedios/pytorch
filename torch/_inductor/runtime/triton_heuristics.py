@@ -2956,8 +2956,12 @@ class TritonCompileResult(CompileResult[CompiledKernel]):
                     continue
                 if isinstance(desc_info, dict):
                     block_shape_vals = [_eval_dim(s) for s in desc_info["block_shape"]]
-                    shape_vals = [_eval_dim(s) for s in desc_info["shape"]]
-                    stride_vals = [_eval_dim(s) for s in desc_info["strides"]]
+                    shape_vals = desc_info.get("shape")
+                    stride_vals = desc_info.get("strides")
+                    if shape_vals:
+                        shape_vals = [_eval_dim(s) for s in shape_vals]
+                    if stride_vals:
+                        stride_vals = [_eval_dim(s) for s in stride_vals]
                 else:
                     block_shape_vals = [cfg_kwargs.get(s, s) for s in desc_info]
                     shape_vals = None
