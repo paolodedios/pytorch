@@ -38,6 +38,12 @@ from torch.testing._internal.two_tensor import TwoTensor
 from torch.utils._python_dispatch import return_and_correct_aliasing
 
 
+skipIfCppFakeTensor = unittest.skipIf(
+    torch._dynamo.config.use_cpp_fake_tensor,
+    "NestedTensor unsupported with C++ FakeTensor (TORCHDYNAMO_CPP_FAKE_TENSOR=1)",
+)
+
+
 def nontraceable_subclass(c):
     return torch._dynamo.config.patch("nontraceable_tensor_subclasses", {c})
 
@@ -3664,9 +3670,19 @@ class TestIssubclass(torch._dynamo.test_case.TestCase):
 
     # --- PEP 604 Union (X | Y) ---
 
+<<<<<<< HEAD
     @make_dynamo_test
     def test_union_hit(self):
         self.assertTrue(issubclass(int, int | str))
+=======
+    @skipIfCppFakeTensor
+    def test_njt_subclass_from_cat(self):
+        # create from an existing NJT
+        def f(nt):
+            y = nt.clone()
+            z = torch.cat([y, y], dim=-1)
+            return z
+>>>>>>> a988c463ee3 (skip nestedtensor tests)
 
     @make_dynamo_test
     def test_union_miss(self):
@@ -3678,8 +3694,161 @@ class TestIssubclass(torch._dynamo.test_case.TestCase):
 
     # --- Metaclass with __subclasscheck__ ---
 
+<<<<<<< HEAD
     def test_custom_metaclass_subclasscheck(self):
         _issubclass_metacheck_calls.clear()
+=======
+        cat: "f64[s64, 2*s55]" = torch.ops.aten.cat.default([clone, clone], 1);  clone = None
+        add_2: "Sym(2*s55)" = primals_10 + primals_10
+        return (
+            cat,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_values')
+            primals_5,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_offsets')
+            primals_6,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_min_seqlen_tensor')
+            primals_7,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_max_seqlen_tensor')
+            primals_8,  # SubclassSizeAOTOutput(base=PlainAOTOutput(idx=0), idx=0)
+            add_2,  # SubclassSizeAOTOutput(base=PlainAOTOutput(idx=0), idx=2)
+            add_2,  # SubclassStrideAOTOutput(base=PlainAOTOutput(idx=0), idx=1)
+            primals_8,  # SavedForBackwardsAOTOutput(idx=0)
+            primals_10,  # SavedForBackwardsAOTOutput(idx=1)
+            add_2,  # SavedForBackwardsAOTOutput(idx=2)
+        )
+""",
+        )
+
+        self.assertExpectedInline(
+            normalize_gm(bw[0].print_readable(print_output=False, expanded_def=True)),
+            """\
+class GraphModule(torch.nn.Module):
+    def forward(
+        self,
+        primals_8: "Sym(s51)",  # SubclassSizeAOTInput(base=PlainAOTInput(idx=3), idx=0)
+        primals_10: "Sym(s55)",  # SubclassStrideAOTInput(base=PlainAOTInput(idx=3), idx=1)
+        add_2: "Sym(2*s55)",
+        tangents_1: "f64[s64, 2*s55]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_values')
+        tangents_2: "i64[s51 + 1]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_offsets')
+        tangents_3: "f32[s0, 0]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_min_seqlen_tensor')
+        tangents_4: "f32[s83, 0]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_max_seqlen_tensor')
+    ):
+        slice_1: "f64[s64, s55]" = torch.ops.aten.slice.Tensor(tangents_1, 1, 0, primals_10)
+        slice_2: "f64[s64, s55]" = torch.ops.aten.slice.Tensor(tangents_1, 1, primals_10, add_2);  tangents_1 = add_2 = None
+        add_4: "f64[s64, s55]" = torch.ops.aten.add.Tensor(slice_1, slice_2);  slice_1 = slice_2 = None
+        return (
+            None,  # None
+            None,  # None
+            None,  # None
+            add_4,  # SubclassGetAttrAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=3)), attr='_values')
+            tangents_2,  # SubclassGetAttrAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=3)), attr='_offsets')
+            tangents_3,  # SubclassGetAttrAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=3)), attr='_min_seqlen_tensor')
+            tangents_4,  # SubclassGetAttrAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=3)), attr='_max_seqlen_tensor')
+            primals_8,  # SubclassSizeAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=3)), idx=0)
+            primals_10,  # SubclassSizeAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=3)), idx=2)
+            primals_10,  # SubclassStrideAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=3)), idx=1)
+        )
+""",
+        )
+
+    @skipIfCppFakeTensor
+    def test_njt_subclass_from_buffer(self):
+        # create the NJT from a buffer(?)
+        def f(nt):
+            nested_size = ((2, 3, 4), 5)
+            offsets = None
+            nt2, _ = get_jagged_tensor(nested_size, offsets, requires_grad=False)
+            nt3 = torch.cat([nt2, nt], dim=-1)
+            return nt3.sin() * nt3.size(0)
+
+        nested_size = ((2, 3, 4), 5)
+        offsets = None
+        nt, _ = get_jagged_tensor(nested_size, offsets, requires_grad=False)
+
+        fw, _ = self._compile_check(
+            f,
+            [(nt,)],
+            dynamic=True,
+            call_backward=False,  # we cannot set requires_grad=True inside a compile region
+        )
+
+        self.assertExpectedInline(
+            normalize_gm(fw[0].print_readable(print_output=False, expanded_def=True)),
+            """\
+class <lambda>(torch.nn.Module):
+    def forward(
+        self,
+        arg0_1: "Sym(s51)",  # PlainAOTInput(idx=0)
+        arg1_1: "Sym(s71)",  # PlainAOTInput(idx=1)
+        arg2_1: "Sym(s55)",  # PlainAOTInput(idx=2)
+        arg3_1: "f64[9, s55]",  # SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_values')
+        arg4_1: "i64[s51 + 1]",  # SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_offsets')
+        arg5_1: "f32[s0, 0]",  # SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_min_seqlen_tensor')
+        arg6_1: "f32[s83, 0]",  # SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_max_seqlen_tensor')
+        arg7_1: "Sym(s51)",  # SubclassSizeAOTInput(base=PlainAOTInput(idx=3), idx=0)
+        arg8_1: "Sym(s55)",  # SubclassSizeAOTInput(base=PlainAOTInput(idx=3), idx=2)
+        arg9_1: "Sym(s55)",  # SubclassStrideAOTInput(base=PlainAOTInput(idx=3), idx=1)
+    ):
+        randn: "f64[2, 5]" = torch.ops.aten.randn.default([2, 5], dtype = torch.float64, device = device(type='cpu'), pin_memory = False)
+        randn_1: "f64[3, 5]" = torch.ops.aten.randn.default([3, 5], dtype = torch.float64, device = device(type='cpu'), pin_memory = False)
+        randn_2: "f64[4, 5]" = torch.ops.aten.randn.default([4, 5], dtype = torch.float64, device = device(type='cpu'), pin_memory = False)
+
+        cat: "f64[9, 5]" = torch.ops.aten.cat.default([randn, randn_1, randn_2]);  randn = randn_1 = randn_2 = None
+        zeros: "i64[1]" = torch.ops.aten.zeros.default([1], dtype = torch.int64, device = device(type='cpu'), pin_memory = False)
+        _tensor_constant0: "i64[3]" = self._tensor_constant0
+        lift_fresh_copy: "i64[3]" = torch.ops.aten.lift_fresh_copy.default(_tensor_constant0);  _tensor_constant0 = None
+        cumsum: "i64[3]" = torch.ops.aten.cumsum.default(lift_fresh_copy, 0);  lift_fresh_copy = None
+        cat_1: "i64[4]" = torch.ops.aten.cat.default([zeros, cumsum]);  zeros = cumsum = None
+        zeros_1: "f32[2, 0]" = torch.ops.aten.zeros.default([2, 0], device = device(type='cpu'), pin_memory = False)
+        zeros_2: "f32[4, 0]" = torch.ops.aten.zeros.default([4, 0], device = device(type='cpu'), pin_memory = False)
+
+        cat_2: "f64[9, s55 + 5]" = torch.ops.aten.cat.default([cat, arg3_1], 1);  cat = arg3_1 = None
+
+        sin: "f64[9, s55 + 5]" = torch.ops.aten.sin.default(cat_2)
+        mul: "f64[9, s55 + 5]" = torch.ops.aten.mul.Tensor(sin, 3);  sin = None
+
+        sym_size_int: "Sym(s55 + 5)" = torch.ops.aten.sym_size.int(cat_2, 1);  cat_2 = None
+        sym_stride_int: "Sym(s55 + 5)" = torch.ops.aten.sym_stride.int(mul, 0)
+        return (
+            mul,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_values')
+            cat_1,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_offsets')
+            zeros_1,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_min_seqlen_tensor')
+            zeros_2,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_max_seqlen_tensor')
+            sym_size_int,  # SubclassSizeAOTOutput(base=PlainAOTOutput(idx=0), idx=2)
+            sym_stride_int,  # SubclassStrideAOTOutput(base=PlainAOTOutput(idx=0), idx=1)
+        )
+""",
+        )
+
+    def test_deferred_init_subclass_init_not_traced(self):
+        """
+        Tracing a function that constructs a DeferredInitSubclass must not crash.
+
+        The bug: when Dynamo's frame hook intercepts __init__ as a root frame,
+        self is partially initialised (attributes not yet set by __init__).
+        Previously, wrap_tensor would call __tensor_flatten__ on this
+        partially-initialised self and raise AttributeError.
+
+        The fix skips tracing __init__ of traceable wrapper subclasses at the
+        frame level (convert_frame.py), so __init__ runs eagerly like
+        @torch._disable_dynamo would.
+        """
+        # Compile __init__ directly, simulating the root-frame interception
+        # scenario that occurs in practice (e.g. Diffusers + TorchAO + Dynamo).
+        compiled_init = torch.compile(
+            DeferredInitSubclass.__init__, backend="eager", fullgraph=False
+        )
+        data = torch.randn(4, 4)
+        shell = DeferredInitSubclass.__new__(DeferredInitSubclass, data, 2.0)
+
+        # Should not raise AttributeError from __tensor_flatten__ on partial self
+        compiled_init(shell, data, 2.0)
+
+        self.assertEqual(shell._data, data)
+        self.assertEqual(shell._scale, 2.0)
+
+    def test_tensor_subclass_super_new(self):
+        # super().__new__(cls, tensor) should be traceable in Tensor subclasses
+        class MyTensor(torch.Tensor):
+            def __new__(cls, x):
+                return super().__new__(cls, x)
+>>>>>>> a988c463ee3 (skip nestedtensor tests)
 
         @torch.compile(backend="eager", fullgraph=True)
         def fn():
@@ -3826,11 +3995,19 @@ class TestIssubclass(torch._dynamo.test_case.TestCase):
         self.assertEqual(result_eager, result_compiled)
 
 
+<<<<<<< HEAD
 class TestNestedTensor(
     _SubclassCompileCheckMixin,
     torch._dynamo.test_case.TestCase,
     NestedTensorTestCase,
 ):
+=======
+instantiate_parametrized_tests(SubclassTests)
+
+
+@skipIfCppFakeTensor
+class TestNestedTensor(torch._dynamo.test_case.TestCase, NestedTensorTestCase):
+>>>>>>> a988c463ee3 (skip nestedtensor tests)
     def _get_jagged_tensor(self, nested_size, offsets, requires_grad=True):
         return get_jagged_tensor(nested_size, offsets, requires_grad)
 
