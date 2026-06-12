@@ -1,6 +1,7 @@
 # Owner(s): ["module: functorch"]
 
 import logging
+import unittest
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -177,6 +178,7 @@ def inner_fn(args):
     return (_out_19,)""",
         )
 
+    @unittest.skipIf(not torch.distributed.is_available(), "requires distributed")
     def test_act_wait_top_level_codegen(self):
         """ACT paths on plain inputs emit waits during input unwrapping."""
         source, _ = _codegen_subclass_wrapper_source(
@@ -198,6 +200,7 @@ def inner_fn(args):
     return (unwrapped_outs[0],)""",
         )
 
+    @unittest.skipIf(not torch.distributed.is_available(), "requires distributed")
     def test_act_wait_nested_codegen(self):
         """ACT paths inside subclasses emit waits at the matching leaf."""
         source, _ = _codegen_subclass_wrapper_source(
