@@ -978,6 +978,54 @@ class FlexGemmTests(TestCase):
         ).run("\n".join(codes))
 
     @requires_cuda_and_triton
+    def test_cuda_inductor_quack_epilogue_reads_closure_tensor_dynamic_shapes(self):
+        try:
+            import quack  # noqa: F401
+        except ImportError:
+            self.skipTest("QuACK is not available")
+        if torch.cuda.get_device_capability() < (10, 0):
+            self.skipTest("QUACK GEMM epilogue requires SM100+")
+
+        def fn(a, b, scale):
+            return mm_epilogue(
+                a,
+                b,
+                lambda acc: (acc.float() * scale).relu(),
+                kernel_options={"backend": "QUACK"},
+            )
+
+        cases = (
+            ("tile", lambda m, n: (m, n)),
+            ("row", lambda m, n: (1, n)),
+            ("col", lambda m, n: (m, 1)),
+        )
+        k, n = 32, 48
+        for kind, shape_fn in cases:
+            torch._dynamo.reset()
+            compiled = torch.compile(
+                fn, backend="inductor", fullgraph=True, dynamic=True
+            )
+            for index, m in enumerate((64, 128)):
+                with self.subTest(kind=kind, m=m):
+                    a = torch.randn(m, k, device="cuda", dtype=torch.float16)
+                    b = torch.randn(k, n, device="cuda", dtype=torch.float16)
+                    scale = torch.randn(
+                        *shape_fn(m, n), device="cuda", dtype=torch.float16
+                    )
+                    if index == 0:
+                        actual, codes = run_and_get_code(compiled, a, b, scale)
+                        FileCheck().check("@cute.jit").check("aux0").check(
+                            "epilogue_args=("
+                        ).check(f"epilogue_arg_kinds=('{kind}',)").run(
+                            "\n".join(codes)
+                        )
+                    else:
+                        actual = compiled(a, b, scale)
+                    torch.testing.assert_close(
+                        actual, fn(a, b, scale), atol=1e-2, rtol=1e-2
+                    )
+
+    @requires_cuda_and_triton
     def test_cuda_inductor_quack_epilogue_contiguous_gated_concat_layout(self):
         try:
             import quack  # noqa: F401

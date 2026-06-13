@@ -8469,8 +8469,13 @@ def hints_wrapper_lowering(subgraph, args, kwargs, hints):
 
 
 def _infer_quack_epilogue_arg_kinds(
-    gemm_op, quack_args, epilogue_arg_indices, output_size
+    gemm_op, input_nodes, epilogue_arg_indices, output_size
 ):
+    """Classify realized captured epilogue tensors for static wrapper kwargs.
+
+    ``input_nodes`` must be the realized template inputs so size/kind inference
+    matches what the generated wrapper indexes, including under dynamic shapes.
+    """
     if not epilogue_arg_indices:
         return ()
     nonbatched_ops = (
@@ -8485,7 +8490,7 @@ def _infer_quack_epilogue_arg_kinds(
     *_, m, n = output_size
     epilogue_arg_kinds = []
     for epilogue_arg_index in epilogue_arg_indices:
-        epilogue_arg_size = quack_args[epilogue_arg_index].get_size()
+        epilogue_arg_size = input_nodes[epilogue_arg_index].get_size()
         if epilogue_arg_size == output_size:
             epilogue_arg_kinds.append("tile")
         elif gemm_op in nonbatched_ops and epilogue_arg_size == [1, n]:
@@ -9080,9 +9085,6 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
         _validate_quack_aux_outputs(
             gemm_op, epilogue_arg_indices, local_reduce, aux_output
         )
-        epilogue_arg_kinds = _infer_quack_epilogue_arg_kinds(
-            gemm_op, quack_args, epilogue_arg_indices, size
-        )
         local_reduce_out = _allocate_quack_local_reduce_out(local_reduce, size, mat1)
         aux_out = _allocate_quack_aux_out(aux_output, mat1)
         (
@@ -9091,6 +9093,9 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
             local_reduce_out_index,
             aux_out_index,
         ) = _realize_quack_inputs(quack_args, local_reduce_out, aux_out)
+        epilogue_arg_kinds = _infer_quack_epilogue_arg_kinds(
+            gemm_op, input_nodes, epilogue_arg_indices, size
+        )
         use_config_choices = _use_inductor_quack_config_choices(
             gemm_op,
             epilogue_arg_indices,
