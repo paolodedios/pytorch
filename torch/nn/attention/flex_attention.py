@@ -2366,28 +2366,58 @@ def flex_attention(
         # This corresponds to the case where we essentially have a "no-op" block mask.
         pass
     else:
+        from torch.fx.experimental.symbolic_shapes import statically_known_true
+
         block_mask_q_len = block_mask.shape[-2]
         block_mask_kv_len = block_mask.shape[-1]
-        if query.size(-2) > block_mask_q_len or key.size(-2) > block_mask_kv_len:
+        q_len = query.size(-2)
+        kv_len = key.size(-2)
+        # Length validation has two distinct roles, handled separately:
+        #
+        #   1. Advisory diagnostics (the ValueError branches below): preserve the
+        #      eager error messages, including the "create a new block mask" /
+        #      block_mask._adjust(...) guidance. These are gated by
+        #      statically_known_true so they fire ONLY when the mismatch is
+        #      statically provable. statically_known_true never installs a guard
+        #      and never consults an example/hint value, so a symbolic-but-valid
+        #      length is never forced into the error path and is never specialized
+        #      just to render a diagnostic. guard_or_false is intentionally NOT
+        #      used here: it would evaluate the hint and could raise on a symbolic
+        #      length whose real runtime value is actually valid.
+        #   2. Contract enforcement (the torch._check calls after the branches):
+        #      the real invariant q_len == block_mask_q_len and
+        #      kv_len == block_mask_kv_len, expressed symbolically so unbacked
+        #      lengths are carried as deferred runtime asserts instead of eager
+        #      Python branches. This is what actually guarantees correctness; the
+        #      diagnostics above are advisory and safe to skip for symbolic shapes.
+        if statically_known_true(q_len > block_mask_q_len) or statically_known_true(
+            kv_len > block_mask_kv_len
+        ):
             raise ValueError(
-                f"block_mask was created for block_mask.shape={block_mask.shape} but got q_len={query.size(-2)} and kv_len={key.size(-2)}. "
+                f"block_mask was created for block_mask.shape={block_mask.shape} but got q_len={q_len} and kv_len={kv_len}. "
                 "As the block mask was created for a smaller length than you're using it for, you likely need to create a new block mask."
             )
         elif (
-            query.size(-2) < block_mask_q_len and key.size(-2) <= block_mask_kv_len
-        ) or (query.size(-2) <= block_mask_q_len and key.size(-2) < block_mask_kv_len):
+            statically_known_true(q_len < block_mask_q_len)
+            and statically_known_true(kv_len <= block_mask_kv_len)
+        ) or (
+            statically_known_true(q_len <= block_mask_q_len)
+            and statically_known_true(kv_len < block_mask_kv_len)
+        ):
             raise ValueError(
-                f"block_mask was created for block_mask.shape={block_mask.shape} but got q_len={query.size(-2)} and kv_len={key.size(-2)}. "
+                f"block_mask was created for block_mask.shape={block_mask.shape} but got q_len={q_len} and kv_len={kv_len}. "
                 "As the block mask was created for a larger length than you're using it for, you can either 1. create a new block mask with the correct length, or 2. 'adjust' the existing block mask to the correct length by calling block_mask._adjust(q_len, kv_len). This essentially 'crops' the block mask to the upper left corner, which does not work for all mask_mods!"
             )
-        if query.size(-2) != block_mask_q_len:
-            raise AssertionError(
-                f"query.size(-2) ({query.size(-2)}) != block_mask_q_len ({block_mask_q_len})"
-            )
-        if key.size(-2) != block_mask_kv_len:
-            raise AssertionError(
-                f"key.size(-2) ({key.size(-2)}) != block_mask_kv_len ({block_mask_kv_len})"
-            )
+        # Enforce the actual length contract symbolically; for unbacked q/kv
+        # lengths these defer to runtime assertions instead of guarding.
+        torch._check(
+            q_len == block_mask_q_len,
+            lambda: "block_mask was created for a different length than the query.",
+        )
+        torch._check(
+            kv_len == block_mask_kv_len,
+            lambda: "block_mask was created for a different length than the key.",
+        )
 
     if scale is None:
         scale = 1.0 / math.sqrt(query.size(-1))

@@ -1467,10 +1467,37 @@ def flex_attention_backward_fake_tensor_mode(
     broadcasted_grad_value = value.new_empty((Bq, Hkv, seq_len_kv, v_head_dim))
     broadcasted_grad_value = _permute_strides(broadcasted_grad_value, value.stride())
 
-    if Bq > 1 and Bkv == 1:
+    from torch.fx.experimental.symbolic_shapes import guard_or_false, guard_or_true
+
+    # A fake/meta implementation has to commit to a single output shape at trace
+    # time, so the batch-broadcast decision cannot be deferred to a torch._check.
+    # grad_key/grad_value must match key/value's batch (Bkv): we reduce the
+    # per-query-batch gradient back to batch 1 exactly when key/value is
+    # batch-broadcast. The two helpers encode that selection conservatively:
+    #
+    #   guard_or_false(Bkv == 1): only take the broadcast (reduce) path when Bkv
+    #     is *provably* 1 (e.g. statically 1 via 0/1 specialization). An unknown
+    #     Bkv falls through to the non-broadcast branch and records the required
+    #     relation, instead of guessing the broadcast case from an example hint.
+    #   guard_or_true(Bq != 1): once Bkv == 1 is known the output batch must be 1
+    #     regardless of Bq, so an unknown Bq is treated optimistically as "reduce".
+    #     This keeps the common static-Bkv==1 + dynamic-Bq broadcast case correct;
+    #     only a *provably* Bq == 1 stays in the else branch (matching the eager
+    #     no-reduce path and preserving its stride metadata).
+    #
+    # For every concrete input this selects the same branch as the original
+    # `Bq > 1 and Bkv == 1`, so eager semantics are unchanged.
+    if guard_or_false(Bkv == 1) and guard_or_true(Bq != 1):
         grad_key = torch.sum(broadcasted_grad_key, dim=0, keepdim=True)
         grad_value = torch.sum(broadcasted_grad_value, dim=0, keepdim=True)
     else:
+        # The unreduced metadata (batch Bq) is only valid when Bq == Bkv. Record
+        # that as a symbolic runtime assertion so unbacked batches stay traceable
+        # and the invariant is enforced at runtime rather than silently assumed.
+        torch._check(
+            Bq == Bkv,
+            lambda: "grad_key/grad_value batch must match key/value batch.",
+        )
         grad_key = broadcasted_grad_key
         grad_value = broadcasted_grad_value
 

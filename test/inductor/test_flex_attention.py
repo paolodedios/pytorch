@@ -4695,6 +4695,189 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
 
     @supported_platform
     @skip_on_cpu
+    @skip_on_mps
+    def test_chunked_unbacked_flex_attention_symbolic_batch_and_seq(self, device):
+        import torch.fx.traceback as fx_traceback
+        from torch._dynamo.backends.common import aot_autograd
+        from torch._dynamo.decorators import mark_unbacked
+        from torch._inductor.kernel.flex import flex_attention as flex_kernel_mod
+        from torch.fx.passes.regional_inductor import regional_inductor
+
+        B, H, S, D, MAX_S = 4, 2, 64, 64, 128
+        dtype = torch.float16
+        stride = (H * MAX_S * D, MAX_S * D, D, 1)
+
+        def make_pair():
+            base = torch.empty_strided((B, H, S, D), stride, device=device, dtype=dtype)
+            base.normal_()
+            ref = base.detach().clone().requires_grad_(True)
+            traced = base.detach().clone().requires_grad_(True)
+            mark_unbacked(traced, 0, hint_override=B, shape_id="batch", min=2, max=B)
+            mark_unbacked(traced, 2, hint_override=S, shape_id="seq", min=1, max=MAX_S)
+            return ref, traced
+
+        def causal_mask(_b, _h, q_idx, kv_idx):
+            return q_idx >= kv_idx
+
+        block_mask = create_block_mask(
+            causal_mask, B=None, H=None, Q_LEN=S, KV_LEN=S, device=device
+        )
+
+        def chunked_attention(q, k, v):
+            mid = q.shape[0] // 2
+            with fx_traceback.annotate({"compile_with_inductor": 0}):
+                left = flex_attention(
+                    q[:mid], k[:mid], v[:mid], block_mask=block_mask
+                ).sum()
+                right = flex_attention(
+                    q[mid:], k[mid:], v[mid:], block_mask=block_mask
+                ).sum()
+            return left + right
+
+        def regional_backend():
+            def compiler(gm, *example_inputs, **kwargs):
+                return regional_inductor(gm, *example_inputs, **kwargs)
+
+            return aot_autograd(fw_compiler=compiler, bw_compiler=compiler)
+
+        q_ref, q = make_pair()
+        k_ref, k = make_pair()
+        v_ref, v = make_pair()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)
+            ref_loss = chunked_attention(q_ref, k_ref, v_ref)
+        ref_loss.backward()
+
+        compiled_chunked_attention = torch.compile(
+            chunked_attention,
+            backend=regional_backend(),
+            dynamic=True,
+            fullgraph=True,
+        )
+        with mock.patch.object(
+            flex_kernel_mod,
+            "create_flex_decoding_kernel",
+            wraps=flex_kernel_mod.create_flex_decoding_kernel,
+        ) as decode_kernel:
+            compiled_loss = compiled_chunked_attention(q, k, v)
+            self.assertFalse(
+                decode_kernel.called,
+                "Unproved unbacked decode eligibility should fall back.",
+            )
+        compiled_loss.backward()
+
+        self.assertEqual(compiled_loss, ref_loss, atol=1e-1, rtol=1e-2)
+        self.assertEqual(q.grad, q_ref.grad, atol=5e-3, rtol=5e-2)
+        self.assertEqual(k.grad, k_ref.grad, atol=5e-3, rtol=5e-2)
+        self.assertEqual(v.grad, v_ref.grad, atol=5e-3, rtol=5e-2)
+
+    def test_backward_fake_symbolic_query_batch_kv_broadcast(self, device):
+        from torch._dynamo.source import LocalSource
+        from torch._higher_order_ops.flex_attention import (
+            flex_attention_backward_fake_tensor_mode,
+        )
+        from torch._subclasses.fake_tensor import FakeTensorMode
+        from torch.fx.experimental.symbolic_shapes import (
+            DimDynamic,
+            ShapeEnv,
+            StatelessSymbolicContext,
+        )
+
+        shape_env = ShapeEnv()
+        fake_mode = FakeTensorMode(allow_non_fake_inputs=True, shape_env=shape_env)
+
+        def fakeify(t, name, dynamic_sizes=None):
+            source = LocalSource(name, is_input=True)
+            if dynamic_sizes is None:
+                return fake_mode.from_tensor(t, source=source, static_shapes=True)
+            return fake_mode.from_tensor(
+                t,
+                source=source,
+                symbolic_context=StatelessSymbolicContext(
+                    dynamic_sizes=dynamic_sizes,
+                ),
+            )
+
+        Bq, Bkv, H, S, D = 4, 1, 2, 8, 16
+        q_dynamic_sizes = [
+            DimDynamic.UNBACKED,
+            DimDynamic.STATIC,
+            DimDynamic.STATIC,
+            DimDynamic.STATIC,
+        ]
+        query = fakeify(
+            torch.empty(Bq, H, S, D, device=device), "query", q_dynamic_sizes
+        )
+        key = fakeify(torch.empty(Bkv, H, S, D, device=device), "key")
+        value = fakeify(torch.empty(Bkv, H, S, D, device=device), "value")
+        out = fakeify(torch.empty(Bq, H, S, D, device=device), "out")
+        logsumexp = fakeify(torch.empty(Bq, H, S, device=device), "logsumexp")
+        grad_out = fakeify(torch.empty(Bq, H, S, D, device=device), "grad_out")
+        grad_logsumexp = fakeify(torch.empty(Bq, H, S, device=device), "grad_logsumexp")
+
+        self.assertIsInstance(query.shape[0], torch.SymInt)
+
+        with fake_mode:
+            _, grad_key, grad_value, _ = flex_attention_backward_fake_tensor_mode(
+                query,
+                key,
+                value,
+                out,
+                logsumexp,
+                grad_out,
+                grad_logsumexp,
+                None,
+                None,
+                (),
+                1.0,
+                {},
+            )
+
+        self.assertEqual(grad_key.shape, key.shape)
+        self.assertEqual(grad_value.shape, value.shape)
+
+    @supported_platform
+    @skip_on_cpu
+    @skip_on_mps
+    def test_unbacked_flex_attention_static_block_mask_exact_lengths(self, device):
+        from torch._dynamo.decorators import mark_unbacked
+
+        B, H, S, D, MAX_S = 2, 2, 64, 64, 128
+        dtype = torch.float16
+        stride = (H * MAX_S * D, MAX_S * D, D, 1)
+
+        def make_pair():
+            base = torch.empty_strided((B, H, S, D), stride, device=device, dtype=dtype)
+            base.normal_()
+            ref = base.detach().clone()
+            traced = base.detach().clone()
+            mark_unbacked(traced, 2, hint_override=S, shape_id="seq", min=1, max=MAX_S)
+            return ref, traced
+
+        def causal_mask(_b, _h, q_idx, kv_idx):
+            return q_idx >= kv_idx
+
+        block_mask = create_block_mask(
+            causal_mask, B=None, H=None, Q_LEN=S, KV_LEN=S, device=device
+        )
+
+        def attention(q, k, v):
+            return flex_attention(q, k, v, block_mask=block_mask).sum()
+
+        q_ref, q = make_pair()
+        k_ref, k = make_pair()
+        v_ref, v = make_pair()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=UserWarning)
+            ref_loss = attention(q_ref, k_ref, v_ref)
+
+        compiled_loss = torch.compile(attention, dynamic=True, fullgraph=True)(q, k, v)
+        self.assertEqual(compiled_loss, ref_loss, atol=1e-1, rtol=1e-2)
+
+    @supported_platform
+    @skip_on_cpu
     @skip_on_mps  # asserts Triton-specific BACKEND='TRITON_DECODE' error
     def test_backend_triton_decode_errors_when_not_supported(self, device):
         """Requesting decode on unsupported shapes should raise a helpful error."""
@@ -7324,12 +7507,34 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
 
         block_mask = create_block_mask(mask_mod, None, None, 1024, 1024, device=device)
         flex_attention_call(*create_inputs(1024), block_mask=block_mask)
-        with self.assertRaisesRegex(ValueError, "block_mask was created for"):
-            flex_attention_call(*create_inputs(2048), block_mask=block_mask)
+        if compile:
+            with self.assertRaisesRegex(
+                RuntimeError, "block_mask was created for a different length"
+            ):
+                flex_attention_call(*create_inputs(2048), block_mask=block_mask)
+            with self.assertRaisesRegex(
+                RuntimeError, "block_mask was created for a different length"
+            ):
+                flex_attention_call(*create_inputs(512), block_mask=block_mask)
+        else:
+            with self.assertRaisesRegex(
+                ValueError, "created for a smaller length.*new block mask"
+            ):
+                flex_attention_call(*create_inputs(2048), block_mask=block_mask)
+            with self.assertRaisesRegex(ValueError, "larger length.*_adjust"):
+                flex_attention_call(*create_inputs(512), block_mask=block_mask)
 
         block_mask = create_block_mask(mask_mod, None, None, 1023, 1023, device=device)
-        with self.assertRaisesRegex(ValueError, "block_mask was created for"):
-            flex_attention_call(*create_inputs(1024), block_mask=block_mask)
+        if compile:
+            with self.assertRaisesRegex(
+                RuntimeError, "block_mask was created for a different length"
+            ):
+                flex_attention_call(*create_inputs(1024), block_mask=block_mask)
+        else:
+            with self.assertRaisesRegex(
+                ValueError, "created for a smaller length.*new block mask"
+            ):
+                flex_attention_call(*create_inputs(1024), block_mask=block_mask)
 
     @supported_platform
     @common_utils.parametrize("full_indices", [False, True])
