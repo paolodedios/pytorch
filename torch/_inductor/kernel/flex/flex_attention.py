@@ -185,7 +185,6 @@ def flex_attention(
             f"NYI: embedding dimension of the query, key, and value must be "
             f"at least 16 but got E={query.get_size()[-1]} and Ev={value.get_size()[-1]}"
         )
-
     (
         _,  # q_length
         _,  # kv_length
@@ -768,7 +767,6 @@ def flex_attention_backward(*args, **kwargs):
     dtype = query.get_dtype()
     Bq, Hq, seq_len_q, qk_head_dim = query.get_size()
     Bkv, Hkv, seq_len_kv, v_head_dim = value.get_size()
-
     if not V.graph.sizevars.evaluate_expr(sympy.Eq(Bq, Bkv) | sympy.Eq(Bkv, 1)):
         raise AssertionError(
             f"Bq and Bkv must broadcastable. Got Bq={Bq} and Bkv={Bkv}"
