@@ -15407,7 +15407,7 @@ op_db: list[OpInfo] = [
     OpInfo('median',
            dtypes=all_types_and(torch.bfloat16, torch.float16),
            dtypesIfHpu=custom_types(torch.float32, torch.bfloat16, torch.int32),
-           dtypesIfMPS=all_types_and(torch.bfloat16, torch.float16, torch.bool),
+           dtypesIfMPS=all_types_and(torch.bfloat16, torch.float16),
            # TODO: some signatures of median do support out
            supports_out=False,
            supports_forward_ad=True,
@@ -15416,7 +15416,7 @@ op_db: list[OpInfo] = [
            sample_inputs_func=partial(sample_inputs_reduction, supports_multiple_dims=False)),
     OpInfo('nanmedian',
            dtypes=all_types_and(torch.bfloat16, torch.float16),
-           dtypesIfMPS=all_types_and(torch.bfloat16, torch.float16, torch.bool),
+           dtypesIfMPS=all_types_and(torch.bfloat16, torch.float16),
            # TODO: some signatures of nanmedian do support out
            supports_out=False,
            supports_forward_ad=True,
@@ -17492,7 +17492,6 @@ op_db: list[OpInfo] = [
         "nn.functional.multilabel_soft_margin_loss",
         supports_out=False,
         dtypes=floating_types_and(torch.half, torch.bfloat16),
-        dtypesIfMPS=floating_types_and(torch.half, torch.bfloat16, torch.int8, torch.uint8, torch.int32, torch.int16),
         sample_inputs_func=sample_inputs_multilabel_soft_margin_loss,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
@@ -18297,9 +18296,6 @@ op_db: list[OpInfo] = [
         aten_backward_name='log_sigmoid_backward',
         ref=reference_logsigmoid,
         dtypes=floating_types_and(torch.half, torch.bfloat16),
-        dtypesIfMPS=floating_types_and(
-            torch.half, torch.bfloat16, torch.int16, torch.int32, torch.uint8, torch.bool, torch.int8
-        ),
         supports_autograd=True,
         assert_autodiffed=False,
         supports_forward_ad=True,
@@ -27661,7 +27657,6 @@ python_ref_db = [
         skips=(
             # no _refs support for Tensor.__setitem__
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_errors'),
         ),
     ),
     PythonRefInfo(
