@@ -1300,14 +1300,6 @@ class TestMPS(TestCaseMPS):
         result_cpu = torch.addmm(bias.cpu().conj(), a.cpu(), b.cpu())
         self.assertEqual(result_cpu, result_mps)
 
-    def _noncontig_out(self, M, N, layout, dtype):
-        # transposed: column-major out; outer: unit inner stride but row-gapped.
-        if layout == "transposed":
-            return torch.empty(N, M, device="mps", dtype=dtype).t()
-        if layout == "outer":
-            return torch.empty(2 * M, N, device="mps", dtype=dtype)[::2]
-        return torch.empty(M, N, 2, device="mps", dtype=dtype)[..., 0]
-
     @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
     @parametrize("case", [
         ((1, 64, 12), "inner"),
@@ -1324,7 +1316,12 @@ class TestMPS(TestCaseMPS):
         (M, K, N), layout = case
         a = torch.randn(M, K, device="mps", dtype=dtype)
         b = torch.randn(K, N, device="mps", dtype=dtype)
-        out = self._noncontig_out(M, N, layout, dtype)
+        if layout == "transposed":
+            out = torch.empty(N, M, device="mps", dtype=dtype).t()
+        elif layout == "outer":
+            out = torch.empty(2 * M, N, device="mps", dtype=dtype)[::2]
+        else:
+            out = torch.empty(M, N, 2, device="mps", dtype=dtype)[..., 0]
         self.assertFalse(out.is_contiguous())
         torch.mm(a, b, out=out)
         ref = torch.mm(a.cpu(), b.cpu())
@@ -1348,7 +1345,12 @@ class TestMPS(TestCaseMPS):
         bias = torch.randn(M, N, device="mps", dtype=dtype)
         a = torch.randn(M, K, device="mps", dtype=dtype)
         b = torch.randn(K, N, device="mps", dtype=dtype)
-        out = self._noncontig_out(M, N, layout, dtype)
+        if layout == "transposed":
+            out = torch.empty(N, M, device="mps", dtype=dtype).t()
+        elif layout == "outer":
+            out = torch.empty(2 * M, N, device="mps", dtype=dtype)[::2]
+        else:
+            out = torch.empty(M, N, 2, device="mps", dtype=dtype)[..., 0]
         self.assertFalse(out.is_contiguous())
         torch.addmm(bias, a, b, out=out)
         ref = torch.addmm(bias.cpu(), a.cpu(), b.cpu())
