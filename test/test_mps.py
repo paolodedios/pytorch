@@ -1310,8 +1310,14 @@ class TestMPS(TestCaseMPS):
 
     @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
     @parametrize("case", [
-        ((33, 17, 49), "transposed"),
+        ((1, 64, 12), "inner"),
+        ((12, 64, 1), "inner"),
+        ((8, 64, 12), "inner"),
         ((8, 64, 12), "transposed"),
+        ((8, 64, 12), "outer"),
+        ((33, 17, 49), "inner"),
+        ((33, 17, 49), "transposed"),
+        ((33, 17, 49), "outer"),
     ])
     def test_mm_strided_output(self, case, dtype):
         # Non-contiguous out= is mis-written by the MPSGraph matmul before macOS 26.4.
@@ -1327,8 +1333,14 @@ class TestMPS(TestCaseMPS):
 
     @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
     @parametrize("case", [
-        ((33, 17, 49), "transposed"),
+        ((1, 64, 12), "inner"),
+        ((12, 64, 1), "inner"),
+        ((8, 64, 12), "inner"),
         ((8, 64, 12), "transposed"),
+        ((8, 64, 12), "outer"),
+        ((33, 17, 49), "inner"),
+        ((33, 17, 49), "transposed"),
+        ((33, 17, 49), "outer"),
     ])
     def test_addmm_strided_output(self, case, dtype):
         # addmm shares mm's strided-output fallback; same contract.
