@@ -4,11 +4,12 @@
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import cast, TypeVar
+from typing import Any, cast, TypeVar
 
 import torch
 from torch import sym_min
 from torch.distributed import RankType
+from torch.types import IntLikeType
 from torch.distributed._local_tensor import maybe_run_for_local_tensor
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor._collective_utils import (
@@ -19,6 +20,73 @@ from torch.distributed.tensor._collective_utils import (
 
 
 _RankTypeT = TypeVar("_RankTypeT", bound=RankType)
+
+
+# NOTE: The following symbolic-shape helpers are replicated verbatim from
+# ``torch.distributed.tensor.placement_types`` (``_explicit_or_backed_hint``,
+# ``_sym_mod``, ``_hint_proves_even_shard``). They cannot be imported from there
+# because ``placement_types`` imports this module (circular import), so we keep
+# identical copies here. Keep these in sync with placement_types.py.
+def _explicit_or_backed_hint(value: IntLikeType) -> int | None:
+    from torch.fx.experimental.symbolic_shapes import (
+        free_unbacked_symbols,
+        optimization_hint,
+    )
+
+    if isinstance(value, int):
+        return int(value)
+    if not isinstance(value, torch.SymInt):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    shape_env = getattr(value.node, "shape_env", None)
+    if shape_env is None:
+        return None
+    unbacked_symbols = free_unbacked_symbols(value.node.expr)
+    if unbacked_symbols and not unbacked_symbols.issubset(
+        shape_env.var_to_hint_override.keys()
+    ):
+        return None
+    return int(optimization_hint(value, fallback=None))
+
+
+def _sym_mod(left: IntLikeType, right: IntLikeType) -> Any:
+    return cast(Any, left) % cast(Any, right)
+
+
+def _hint_proves_even_shard(size: IntLikeType, num_chunks: IntLikeType) -> bool:
+    from torch.fx.experimental.symbolic_shapes import guard_or_false
+
+    if guard_or_false(_sym_mod(size, num_chunks) == 0):
+        return True
+    size_hint = _explicit_or_backed_hint(size)
+    chunk_hint = _explicit_or_backed_hint(num_chunks)
+    if (
+        size_hint is None
+        or chunk_hint is None
+        or chunk_hint == 0
+        or size_hint % chunk_hint != 0
+    ):
+        return False
+
+    # Padding decisions require a Python branch. Only explicit hint overrides
+    # can justify skipping padding for otherwise data-dependent sharding.
+    torch._check(_sym_mod(size, num_chunks) == 0)
+    return True
+
+
+def _needs_padding(size_on_dim: IntLikeType, num_chunks: IntLikeType) -> bool:
+    """
+    Decide whether ``size_on_dim`` needs padding to be evenly split into
+    ``num_chunks``.  Assume padding (uneven sharding) as the general case for
+    unbacked sizes, unless an optimization hint can prove the even-shard branch.
+    """
+    from torch.fx.experimental.symbolic_shapes import guard_or_true
+
+    return not _hint_proves_even_shard(size_on_dim, num_chunks) and guard_or_true(
+        _sym_mod(size_on_dim, num_chunks) != 0
+    )
 
 
 class PadType(Enum):
@@ -64,7 +132,10 @@ def _shard_compute_padding_info(
     Returns:
         A tuple of (needs_padding, max_chunk_size).
     """
-    dim_padding = logical_size_on_dim % num_chunks != 0
+    # Use the guarded even-shard decision so unbacked symints don't force a
+    # data-dependent guard; default to padding unless an optimization hint
+    # proves the shard is even.
+    dim_padding = _needs_padding(logical_size_on_dim, num_chunks)
     dim_full_chunk_size = (logical_size_on_dim + num_chunks - 1) // num_chunks
     return dim_padding, dim_full_chunk_size
 
@@ -86,8 +157,11 @@ def _shard_local_size_and_offset(
     Returns (new local shard size, offset)
 
     """
-    # Compute the chunk size inline with ``torch.chunk``
-    if curr_local_size % num_chunks == 0:
+    from torch.fx.experimental.symbolic_shapes import guard_or_false
+
+    # Compute the chunk size inline with ``torch.chunk``.
+    # Assume uneven sharding as general case for unbacked sizes.
+    if guard_or_false(_sym_mod(curr_local_size, num_chunks) == 0):
         full_chunk_size = curr_local_size // num_chunks
         # pyrefly: ignore[bad-assignment] # pyrefly bug?
         shard_starting_idx: _RankTypeT = full_chunk_size * rank
@@ -96,16 +170,11 @@ def _shard_local_size_and_offset(
     # uneven sharding case
     full_chunk_size = (curr_local_size + num_chunks - 1) // num_chunks
     # pyrefly: ignore[bad-assignment] # pyrefly bug?
-    shard_starting_idx: _RankTypeT = full_chunk_size * rank
+    shard_starting_idx = full_chunk_size * rank
 
-    if curr_local_size < shard_starting_idx:
-        return 0, cast(_RankTypeT, curr_local_size)
-    else:
-        local_shard_size = (
-            sym_min(curr_local_size, shard_starting_idx + full_chunk_size)
-            - shard_starting_idx
-        )
-        return local_shard_size, shard_starting_idx
+    shard_end_idx = sym_min(curr_local_size, shard_starting_idx + full_chunk_size)
+    local_shard_size = torch.sym_max(0, shard_end_idx - shard_starting_idx)
+    return local_shard_size, sym_min(curr_local_size, shard_starting_idx)
 
 
 @maybe_run_for_local_tensor
@@ -212,12 +281,37 @@ def _unpad_for_old_shard_dim(
     Returns:
         The tensor with padding removed, having size logical_dim_size on shard_dim.
     """
+    from torch.fx.experimental.symbolic_shapes import guard_or_false
+
     dim_padding, max_chunk_size = _shard_compute_padding_info(
         logical_dim_size, num_chunks
     )
     if dim_padding:
         dim_unpad_size = max_chunk_size * num_chunks - logical_dim_size
         local_tensor = unpad_tensor(local_tensor, shard_dim, dim_unpad_size)
+
+    # Bind derived symbolic sizes (e.g. 2*(s//2)) back to the original symbol -
+    # needed for correct shape propagation and dynamo generation.
+    if local_tensor.size(shard_dim) is not logical_dim_size:
+        orig_size = local_tensor.size(shard_dim)
+        torch._check(orig_size >= logical_dim_size)
+        local_tensor = local_tensor.narrow(shard_dim, 0, logical_dim_size)
+
+        # Safety check: the narrow should never change the concrete size. Use
+        # guard_or_false so we don't trigger data-dependent guards on unbacked
+        # symints.
+        if guard_or_false(local_tensor.size(shard_dim) != orig_size):
+            raise RuntimeError(
+                f"narrow unexpectedly changed concrete size on dim {shard_dim}: "
+                f"{orig_size} -> {local_tensor.size(shard_dim)}"
+            )
+
+    # narrow/unpad on a non-leading dim leaves the tensor non-contiguous, which
+    # leaks out to callers that expect a Replicate() result to have a contiguous
+    # local tensor (e.g. downstream view ops in TP linear). Use unconditional
+    # .contiguous() to avoid guarding on symbolic strides under torch.compile
+    # with unbacked symints.
+    local_tensor = local_tensor.contiguous()
     return local_tensor
 
 
@@ -321,7 +415,8 @@ def _strided_compute_padding_info(
 
     else:
         # Compute padding info for normal shard, no split_factor impact.
-        needs_padding_on_dim = logical_size_on_dim % num_chunks != 0
+        # Use the guarded even-shard decision for unbacked-symint safety.
+        needs_padding_on_dim = _needs_padding(logical_size_on_dim, num_chunks)
         max_chunk_size = _ceil_div(logical_size_on_dim, num_chunks)
 
     return needs_padding_on_dim, max_chunk_size
@@ -706,7 +801,13 @@ class CollectivePaddingContext:
     def __post_init__(self):
         self.num_chunks = self.mesh.size(mesh_dim=self.mesh_dim)
         coord = self.mesh.get_coordinate()
-        self.current_rank = coord[self.mesh_dim] if coord else 0
+        # Preserve the symbolic coordinate (used by unpad-new-shard paths) when
+        # this rank is part of the mesh, mirroring the symbolic-coordinate usage
+        # in placement_types' reduce_scatter / alltoall unpad logic.
+        if coord is not None:
+            self.current_rank = self.mesh._sym_get_coordinate(self.mesh_dim)
+        else:
+            self.current_rank = 0
 
     def pad_old_shard(
         self, shard_dim: int, dim_logical_size: int
