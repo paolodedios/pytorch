@@ -32,7 +32,14 @@ import sys
 import threading
 import traceback
 from collections import Counter, defaultdict
-from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from contextlib import _GeneratorContextManager, contextmanager
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -4819,6 +4826,58 @@ class ShapeEnv:
             symbolic_context=symbolic_context,
         )
 
+    @staticmethod
+    def _foreign_shape_env_key(value: SymInt) -> tuple[int, sympy.Expr]:
+        return (id(value.node.shape_env), value.node.expr)
+
+    @staticmethod
+    def _foreign_unbacked_symint_hint(value: SymInt) -> int | None:
+        src_shape_env = value.node.shape_env
+        if src_shape_env is None:
+            return None
+        hint_expr = value.node.expr.xreplace(src_shape_env.backed_var_to_val).xreplace(
+            src_shape_env.var_to_hint_override
+        )
+        if not getattr(hint_expr, "free_symbols", ()):
+            return int(hint_expr)
+        return None
+
+    @staticmethod
+    def _foreign_unbacked_symint_range(
+        value: SymInt,
+    ) -> ValueRanges[sympy.Expr] | None:
+        src_shape_env = value.node.shape_env
+        if src_shape_env is None:
+            return None
+        return src_shape_env.bound_sympy(value.node.expr)
+
+    def transfer_unbacked_symint_from_foreign_shape_env(
+        self,
+        value: SymInt,
+        source: Source | None = None,
+        *,
+        cache: MutableMapping[tuple[int, sympy.Expr], SymInt] | None = None,
+    ) -> SymInt:
+        """Lift a raw foreign unbacked SymInt as an input in this ShapeEnv."""
+        cache_key = self._foreign_shape_env_key(value)
+        if cache is not None and cache_key in cache:
+            symint = cache[cache_key]
+            self._register_unbacked_symint_input(symint, source=source)
+            return symint
+
+        with self.ignore_fresh_unbacked_symbols():
+            symint = self.create_unbacked_symint(source)
+
+        self._register_unbacked_symint_input(
+            symint,
+            source=source,
+            value_range=self._foreign_unbacked_symint_range(value),
+            hint=self._foreign_unbacked_symint_hint(value),
+        )
+        if cache is not None:
+            cache[cache_key] = symint
+        return symint
+
     def transfer_symbols_from_foreign_shape_env(
         self,
         sizes: Sequence[IntLikeType],
@@ -4878,11 +4937,9 @@ class ShapeEnv:
             hint_overrides = {}
         for i, sz in enumerate(sizes):
             if dynamic_sizes[i] is DimDynamic.UNBACKED and is_symbolic(sz):
-                foreign_env = sz.node.shape_env  # type: ignore[union-attr]
-                if foreign_env is not None:
-                    opt_hint = foreign_env.var_to_hint_override.get(sz.node.expr)  # type: ignore[union-attr]
-                    if opt_hint is not None:
-                        hint_overrides[i] = opt_hint
+                opt_hint = self._foreign_unbacked_symint_hint(cast(SymInt, sz))
+                if opt_hint is not None:
+                    hint_overrides[i] = opt_hint
 
         import sympy
 
@@ -4980,7 +5037,9 @@ class ShapeEnv:
                 and hint_overrides
                 and i in hint_overrides
             ):
-                self.var_to_hint_override[sym_sizes[-1].node.expr] = hint_overrides[i]
+                self._set_unbacked_var_to_hint_override(
+                    sym_sizes[-1], hint_overrides[i]
+                )
 
         sym_strides = []
         for i, stride_expr in enumerate(new_stride_exprs):
@@ -5409,6 +5468,40 @@ class ShapeEnv:
             "create_unbacked_symint", symbol, vr, source, sym_node=sym_node
         )
         return SymInt(sym_node)
+
+    @record_shapeenv_event()
+    def _register_unbacked_symint_input(
+        self,
+        symint: SymInt,
+        source: Source | None = None,
+        value_range: ValueRanges[sympy.Expr] | None = None,
+        hint: int | None = None,
+    ) -> None:
+        """Record metadata for a raw unbacked SymInt lifted as graph input."""
+        expr = symint.node.expr
+        if not isinstance(expr, sympy.Symbol):
+            raise AssertionError(f"{expr} is not a basic Symbol.")
+
+        self.unbacked_inputs.add(expr)
+        if value_range is not None:
+            self.var_to_range[expr] = value_range
+        if hint is not None:
+            self.var_to_hint_override[expr] = hint
+
+        if source is not None:
+            self.source_to_var[source.name] = expr
+            var_sources = self.var_to_sources.setdefault(expr, [])
+            if source not in var_sources:
+                var_sources.append(source)
+
+    @record_shapeenv_event()
+    def _set_unbacked_var_to_hint_override(self, symint: SymInt, hint: int) -> None:
+        expr = symint.node.expr
+        if not isinstance(expr, sympy.Symbol):
+            raise AssertionError(f"{expr} is not a basic Symbol.")
+        if not self.is_unbacked_symint(expr):
+            raise AssertionError(f"{expr} is not an unbacked SymInt.")
+        self.var_to_hint_override[expr] = hint
 
     def is_unbacked_symint(self, symbol: sympy.Symbol) -> bool:
         """Check if a sympy symbol matches the naming convention for unbacked symbols"""
