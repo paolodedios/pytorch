@@ -9,7 +9,6 @@ from typing import Any, cast, TypeVar
 import torch
 from torch import sym_min
 from torch.distributed import RankType
-from torch.types import IntLikeType
 from torch.distributed._local_tensor import maybe_run_for_local_tensor
 from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.tensor._collective_utils import (
@@ -17,6 +16,7 @@ from torch.distributed.tensor._collective_utils import (
     pad_tensor,
     unpad_tensor,
 )
+from torch.types import IntLikeType
 
 
 _RankTypeT = TypeVar("_RankTypeT", bound=RankType)
@@ -111,7 +111,7 @@ class PaddingOp:
 
     pad_type: PadType
     shard_dim: int
-    dim_logical_size: int
+    dim_logical_size: IntLikeType
     split_factor: int = 1  # Only used for strided shard types
 
 
@@ -119,9 +119,9 @@ class PaddingOp:
 
 
 def _shard_compute_padding_info(
-    logical_size_on_dim: int,
+    logical_size_on_dim: IntLikeType,
     num_chunks: int,
-) -> tuple[bool, int]:
+) -> tuple[bool, IntLikeType]:
     """
     Compute padding information for regular Shard placement.
 
@@ -142,7 +142,7 @@ def _shard_compute_padding_info(
 
 @maybe_run_for_local_tensor
 def _shard_local_size_and_offset(
-    curr_local_size: int,
+    curr_local_size: IntLikeType,
     num_chunks: int,
     rank: _RankTypeT,
 ) -> tuple[int, _RankTypeT]:
@@ -181,7 +181,7 @@ def _shard_local_size_and_offset(
 def _pad_for_old_shard_dim(
     local_tensor: torch.Tensor,
     shard_dim: int,
-    logical_dim_size: int,
+    logical_dim_size: IntLikeType,
     num_chunks: int,
 ) -> torch.Tensor:
     """
@@ -220,7 +220,7 @@ def _pad_for_old_shard_dim(
 def _pad_for_new_shard_dim(
     local_tensor: torch.Tensor,
     shard_dim: int,
-    logical_dim_size: int,
+    logical_dim_size: IntLikeType,
     num_chunks: int,
 ) -> torch.Tensor:
     """
@@ -259,7 +259,7 @@ def _pad_for_new_shard_dim(
 def _unpad_for_old_shard_dim(
     local_tensor: torch.Tensor,
     shard_dim: int,
-    logical_dim_size: int,
+    logical_dim_size: IntLikeType,
     num_chunks: int,
 ) -> torch.Tensor:
     """
@@ -319,9 +319,9 @@ def _unpad_for_old_shard_dim(
 def _unpad_for_new_shard_dim(
     local_tensor: torch.Tensor,
     shard_dim: int,
-    logical_dim_size: int,
+    logical_dim_size: IntLikeType,
     num_chunks: int,
-    current_rank: int,
+    current_rank: IntLikeType,
 ) -> torch.Tensor:
     """
     Remove padding from the new shard dimension after a collective operation.
@@ -357,10 +357,10 @@ def _unpad_for_new_shard_dim(
 
 
 def _strided_compute_padding_info(
-    logical_size_on_dim: int,
+    logical_size_on_dim: IntLikeType,
     num_chunks: int,
     split_factor: int = 1,
-) -> tuple[bool, int]:
+) -> tuple[bool, IntLikeType]:
     """
     Compute padding information for _StridedShard collective operations.
 
@@ -389,7 +389,7 @@ def _strided_compute_padding_info(
             - max_chunk_size: The maximum chunk size per rank after both levels of splitting.
     """
 
-    def _ceil_div(a: int, b: int) -> int:
+    def _ceil_div(a: IntLikeType, b: IntLikeType) -> IntLikeType:
         return (a + b - 1) // b
 
     if split_factor != 1:
@@ -488,7 +488,7 @@ def _strided_split_tensor(
 def _strided_local_size_and_offset(
     shard_dim,
     split_factor,
-    curr_local_size: int,
+    curr_local_size: IntLikeType,
     num_chunks: int,
     rank: RankType,
     return_first_offset: bool = True,
@@ -518,7 +518,7 @@ def _strided_local_size_and_offset(
     # indices_tensor is 1D torch.arange(logical_dim_size) unsqueezed
     # so that we can reuse self._split_tensor which splits on self.dim
     shape = [1] * shard_dim + [curr_local_size]
-    indices_tensor = torch.arange(
+    indices_tensor = torch.arange(  # pyrefly: ignore[no-matching-overload]
         curr_local_size,
     ).view(shape)
 
@@ -552,7 +552,7 @@ def _pad_for_old_strided_shard_dim(
     local_tensor: torch.Tensor,
     shard_dim: int,
     split_factor: int,
-    logical_dim_size: int,
+    logical_dim_size: IntLikeType,
     num_chunks: int,
 ) -> torch.Tensor:
     """
@@ -593,7 +593,7 @@ def _pad_for_new_strided_shard_dim(
     local_tensor: torch.Tensor,
     shard_dim: int,
     split_factor: int,
-    logical_dim_size: int,
+    logical_dim_size: IntLikeType,
     num_chunks: int,
 ) -> torch.Tensor:
     """
@@ -638,7 +638,7 @@ def _unpad_for_old_strided_shard_dim(
     local_tensor: torch.Tensor,
     old_strided_shard_dim: int,
     split_factor: int,
-    logical_dim_size: int,
+    logical_dim_size: IntLikeType,
     num_chunks: int,
 ) -> torch.Tensor:
     """
@@ -666,9 +666,9 @@ def _unpad_for_old_strided_shard_dim(
     """
     # Build sharded indices to understand the strided pattern
     shape = [1] * old_strided_shard_dim + [logical_dim_size]
-    indices_tensor = torch.arange(logical_dim_size, device=local_tensor.device).view(
-        shape
-    )
+    indices_tensor = torch.arange(  # pyrefly: ignore[no-matching-overload]
+        logical_dim_size, device=local_tensor.device
+    ).view(shape)
     sharded_indices, _ = _strided_split_tensor(
         indices_tensor,
         old_strided_shard_dim,
@@ -712,9 +712,9 @@ def _unpad_for_new_strided_shard_dim(
     local_tensor: torch.Tensor,
     shard_dim: int,
     split_factor: int,
-    logical_dim_size: int,
+    logical_dim_size: IntLikeType,
     num_chunks: int,
-    current_rank: int,
+    current_rank: IntLikeType,
 ) -> torch.Tensor:
     """
     Remove padding from the new _StridedShard dimension after alltoall.
@@ -810,7 +810,7 @@ class CollectivePaddingContext:
             self.current_rank = 0
 
     def pad_old_shard(
-        self, shard_dim: int, dim_logical_size: int
+        self, shard_dim: int, dim_logical_size: IntLikeType
     ) -> "CollectivePaddingContext":
         """
         Pad the source Shard dimension before a collective.
@@ -822,7 +822,7 @@ class CollectivePaddingContext:
         return self
 
     def pad_new_shard(
-        self, shard_dim: int, dim_logical_size: int
+        self, shard_dim: int, dim_logical_size: IntLikeType
     ) -> "CollectivePaddingContext":
         """
         Pad the target Shard dimension before a collective.
@@ -834,7 +834,7 @@ class CollectivePaddingContext:
         return self
 
     def pad_old_strided(
-        self, shard_dim: int, dim_logical_size: int, split_factor: int
+        self, shard_dim: int, dim_logical_size: IntLikeType, split_factor: int
     ) -> "CollectivePaddingContext":
         """
         Pad the source _StridedShard dimension before a collective.
@@ -848,7 +848,7 @@ class CollectivePaddingContext:
         return self
 
     def pad_new_strided(
-        self, shard_dim: int, dim_logical_size: int, split_factor: int
+        self, shard_dim: int, dim_logical_size: IntLikeType, split_factor: int
     ) -> "CollectivePaddingContext":
         """
         Pad the target _StridedShard dimension before a collective.
