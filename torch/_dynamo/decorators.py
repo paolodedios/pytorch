@@ -1111,6 +1111,14 @@ def _apply_func_to_inner_tensors_of_same_dim(
                 )
 
 
+def _get_loaded_dtensor_type() -> Any:
+    dtensor_api = sys.modules.get("torch.distributed.tensor._api")
+    if dtensor_api is not None:
+        return getattr(dtensor_api, "DTensor", None)
+    dtensor_mod = sys.modules.get("torch.distributed.tensor")
+    return getattr(dtensor_mod, "DTensor", None)
+
+
 @dataclass(frozen=True, slots=True)
 class _DimRange:
     """
@@ -1165,8 +1173,11 @@ def mark_unbacked(
         max (Optional[int], default=None): Maximum value constraint for this dimension.
             If provided, a runtime check will be added to ensure the dimension is <= max.
     """
-    if torch.distributed.is_available() and isinstance(
-        t, torch.distributed.tensor.DTensor
+    dtensor_type = _get_loaded_dtensor_type()
+    if (
+        torch.distributed.is_available()
+        and dtensor_type is not None
+        and isinstance(t, dtensor_type)
     ):
         # apply on inner tensor sizes/strides
         mark_unbacked(t._local_tensor, index, shape_id=shape_id)

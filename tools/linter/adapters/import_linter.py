@@ -212,6 +212,8 @@ class ImportTimeVisitor(ast.NodeVisitor):
 
 def check_import_time_imports(filepath: str) -> list[LintMessage]:
     path = Path(filepath)
+    if path.suffix != ".py":
+        return []
     try:
         path = path.resolve().relative_to(_linter.ROOT)
     except ValueError:
@@ -227,6 +229,8 @@ def check_import_time_imports(filepath: str) -> list[LintMessage]:
 
 def check_file(filepath: str) -> list[LintMessage]:
     path = Path(filepath)
+    if path.suffix != ".py":
+        return []
     file = _linter.PythonFile("import_linter", path=path)
     lint_messages = check_import_time_imports(filepath)
     for line_of_tokens in file.token_lines:

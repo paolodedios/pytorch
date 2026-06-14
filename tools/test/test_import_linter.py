@@ -15,6 +15,12 @@ class TestImportLinter(unittest.TestCase):
             path.write_text(textwrap.dedent(contents))
             return check_file(str(path))
 
+    def test_ignores_non_python_files(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as tmpdir:
+            path = Path(tmpdir) / "CLAUDE.md"
+            path.write_text("This is not Python: import triton")
+            self.assertEqual(check_file(str(path)), [])
+
     def test_disallows_unknown_import(self) -> None:
         messages = self.check_contents(
             """
