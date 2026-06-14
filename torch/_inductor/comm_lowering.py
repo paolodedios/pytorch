@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 # within these allocations.
 #
 # To support all different mechanisms with optimal results, we aim to satisfy
-# the strictest requirement for this family of optimizations - we ensures that
+# the strictest requirement for this family of optimizations - we ensure that
 # every collective op invocation is guaranteed to operate on the same
 # allocation, at the same offset, in every iteration.
 #
@@ -95,7 +95,8 @@ def realize_as_comm_buffer(
     """
     x.realize()
     buffer = _get_data(x)
-    assert isinstance(buffer, ir.Buffer)
+    if not isinstance(buffer, ir.Buffer):
+        raise AssertionError(f"expected an `ir.Buffer`, got {type(buffer)}")
 
     layout = buffer.get_output_spec()
     if isinstance(layout, ir.CommBufferLayout):
@@ -126,7 +127,10 @@ def _get_data(x: ir.TensorBox) -> ir.IRNode:
     if isinstance(x.data, ir.BaseView):
         # TensorBox -> *View -> StorageBox -> IRNode
         node = x.data.unwrap_view()
-        assert isinstance(node, (ir.BaseView, ir.MutableBox))
+        if not isinstance(node, (ir.BaseView, ir.MutableBox)):
+            raise AssertionError(
+                f"expected an `ir.BaseView` or `ir.MutableBox`, got {type(node)}"
+            )
         return node.data
     elif isinstance(x.data, ir.StorageBox):
         # TensorBox -> StorageBox -> IRNode
@@ -181,6 +185,13 @@ def _one_shot_all_reduce(inp: ir.TensorBox, reduce_op, group_name):
             group_name,
         ),
     )
+
+
+def _create_out_of_place(kernel, inputs, *args) -> ir.IRNode:
+    node = ir._CollectiveKernel.create_out_of_place(kernel, inputs, *args)
+    if not isinstance(node, ir.IRNode):
+        raise AssertionError(f"expected an `ir.IRNode`, got {type(node)}")
+    return ir.TensorBox.create(node)
 
 
 def register_comm_lowerings():
@@ -286,11 +297,6 @@ def register_comm_lowerings():
             group_name,
         )
         return inputs
-
-    def _create_out_of_place(kernel, inputs, *args) -> ir.IRNode:
-        node = ir._CollectiveKernel.create_out_of_place(kernel, inputs, *args)
-        assert isinstance(node, ir.IRNode)
-        return ir.TensorBox.create(node)
 
     @register_comm_lowering(c10d.all_gather_into_tensor)
     def _all_gather_into_tensor(inp, group_size, group_name):
@@ -434,7 +440,8 @@ def register_comm_lowerings():
                 tensors,
                 group_name,
             )
-        assert not unbacked_bindings, f"{kernel} {unbacked_bindings}"
+        if unbacked_bindings:
+            raise AssertionError(f"{kernel} {unbacked_bindings}")
         for op, tensor_arg in zip(op_list, tensor_args):
             tensor_arg.realize()
             if op == "irecv":
@@ -864,3 +871,35 @@ def register_symm_mem_lowerings():
             reduce_op,
         )
         return None
+
+    @register_lowering(symm_mem._low_contention_all_gather)
+    def _symm_mem_low_contention_all_gather(
+        inp: ir.TensorBox,
+        group_name: str,
+    ):
+        # Use _CollectiveKernel so that _WaitKernel.get_volatile_reads()
+        # can track the input's lifetime through wait_tensor, preventing
+        # the memory planner from reusing the input buffer while the
+        # backend stream is still reading it.
+        return _create_out_of_place(
+            symm_mem._low_contention_all_gather.default,
+            inp,
+            group_name,
+        )
+
+    @register_lowering(symm_mem._low_contention_reduce_scatter)
+    def _symm_mem_low_contention_reduce_scatter(
+        inp: ir.TensorBox,
+        reduce_op: str,
+        group_name: str,
+    ):
+        # Use _CollectiveKernel so that _WaitKernel.get_volatile_reads()
+        # can track the input's lifetime through wait_tensor, preventing
+        # the memory planner from reusing the input buffer while the
+        # backend stream is still reading it.
+        return _create_out_of_place(
+            symm_mem._low_contention_reduce_scatter.default,
+            inp,
+            reduce_op,
+            group_name,
+        )
