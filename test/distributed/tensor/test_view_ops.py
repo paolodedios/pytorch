@@ -18,6 +18,7 @@ from torch.distributed.tensor import (
     Replicate,
     Shard,
 )
+from torch.distributed.tensor._dtensor_spec import DTensorSpec
 from torch.distributed.tensor._ops._view_ops import (
     _ViewShardingPropagator,
     Broadcast,
@@ -224,6 +225,11 @@ class TestViewOps(DTensorContinuousTestBase):
                     device_mesh,
                     in_shard,
                 )
+                # These are literal _StridedShard placements (simulating
+                # flatten output), not shard-order encodings.  Override the
+                # auto-detection which may incorrectly set the flag to True
+                # when split_factor happens to match a mesh dim size.
+                in_dt._spec.use_strided_shard_as_shard_order = False
             else:
                 in_dt = distribute_tensor(args[0], device_mesh, in_shard)
 
@@ -273,6 +279,18 @@ class TestViewOps(DTensorContinuousTestBase):
         shard = dtensor.redistribute(device_mesh=device_mesh, placements=[Shard(dim=1)])
         with self.assertRaisesRegex(RuntimeError, "Sharding propagation failed"):
             shard.view(8, 2, -1)
+
+    def test_split_flatten_non_first_shard_falls_back_to_replicate(self):
+        rule = view_groups((32, 4), (4, 32))
+        input_tgt, output = propagate_shape_and_sharding(
+            [Shard(1)],
+            (32, 4),
+            rule,
+            (4,),
+            strict_view=True,
+        )
+        self.assertEqual(input_tgt, [Replicate()])
+        self.assertEqual(output, [Replicate()])
 
     def test_double_shard_split_validation(self):
         """[Shard(0), Shard(0)] through Split correctly validates divisibility."""
@@ -729,6 +747,119 @@ class TestViewOps(DTensorContinuousTestBase):
         if len(trailing_dims) > 0:
             view_shapes.extend(trailing_dims)
         return tuple(view_shapes)
+
+    def _split_flatten_replicate_fallback_mesh_dims(self, rules, placements):
+        fallback_mesh_dims = []
+        for mesh_dim, placement in enumerate(placements):
+            if not isinstance(placement, Shard):
+                continue
+
+            for rule in rules:
+                if not (
+                    isinstance(rule, Split) and isinstance(rule.input_dim, Flatten)
+                ):
+                    continue
+
+                input_dims = rule.input_dim.input_dims
+                if not all(isinstance(input_dim, InputDim) for input_dim in input_dims):
+                    raise AssertionError(f"Expected InputDim list, got {input_dims}")
+                flattened_dims = cast(list[InputDim], input_dims)
+                if any(
+                    input_dim.input_dim == placement.dim for input_dim in flattened_dims
+                ):
+                    first_dim = flattened_dims[0].input_dim
+                    if placement.dim != first_dim:
+                        fallback_mesh_dims.append(mesh_dim)
+                    break
+        return fallback_mesh_dims
+
+    def _test_dtensor_flatten_split_case(self, in_shape, out_shape, placements, mesh):
+        """Test a single Split(Flatten) view case.
+
+        Representable cases must produce zero communication and correct output. Cases
+        that require sharding a non-first flattened input dim fall back to Replicate
+        with communication, because the plain Shard is not exactly representable.
+        Other unrepresentable cases must raise RuntimeError with a specific message.
+        """
+        rules = view_groups(list(in_shape), list(out_shape))
+        fallback_mesh_dims = self._split_flatten_replicate_fallback_mesh_dims(
+            rules, placements
+        )
+        nelem = math.prod(in_shape)
+        global_tensor = torch.arange(nelem).view(in_shape)
+        in_dt = distribute_tensor(global_tensor, mesh, placements, src_data_rank=None)
+        comm_mode = CommDebugMode()
+        try:
+            with comm_mode:
+                out_dt = in_dt.view(list(out_shape))
+        except RuntimeError as e:
+            self.assertRegex(
+                str(e),
+                r"is not supported yet"
+                r"|is not evenly divisible by mesh dimension",
+            )
+            return
+        expected = global_tensor.view(list(out_shape))
+        self.assertEqual(out_dt.full_tensor(), expected)
+        if fallback_mesh_dims:
+            self.assertGreater(comm_mode.get_total_counts(), 0)
+            for mesh_dim in fallback_mesh_dims:
+                self.assertIsInstance(out_dt.placements[mesh_dim], Replicate)
+        else:
+            self.assertEqual(comm_mode.get_total_counts(), 0)
+
+    def test_dtensor_flatten_split_multi_mesh(self):
+        """Test views producing Split(Flatten) rules.
+
+        Complements test_dtensor_flatten_multi_mesh (pure Flatten rules) and
+        test_dtensor_unflatten_multi_mesh (pure Split(InputDim) rules) by
+        covering the hybrid case: an input dim crosses two output groups,
+        so view_groups produces Split(Flatten(...)) rules.
+
+        Uses {2*M-1, 2*M, 2*M+1} dim values (M = mesh size for the shard
+        mesh dim) to cover even/uneven divisibility, following the same
+        pattern as _run_flatten_single_shard.
+        """
+        for mesh_shape in [(self.world_size,), (3, 2)]:
+            if self.world_size < math.prod(mesh_shape):
+                continue
+            mesh = init_device_mesh(self.device_type, mesh_shape)
+            for shard_mesh_dim in range(mesh.ndim):
+                M = mesh.size(shard_mesh_dim)
+                dim_vals = [2 * M - 1, 2 * M, 2 * M + 1]
+                for a, b in itertools.product(dim_vals, repeat=2):
+                    in_shape = (a, b)
+                    total = a * b
+                    all_factors = self._get_all_factorizations(total)
+                    for out_shape in all_factors:
+                        if in_shape == out_shape:
+                            continue
+                        rules = view_groups(list(in_shape), list(out_shape))
+                        if not any(
+                            isinstance(r, Split) and isinstance(r.input_dim, Flatten)
+                            for r in rules
+                        ):
+                            continue
+                        for shard_dim in range(len(in_shape)):
+                            if in_shape[shard_dim] % M != 0:
+                                continue
+                            placements = tuple(
+                                Shard(shard_dim) if i == shard_mesh_dim else Replicate()
+                                for i in range(mesh.ndim)
+                            )
+                            with self.subTest(
+                                in_shape=in_shape,
+                                out_shape=out_shape,
+                                shard=shard_dim,
+                                mesh_dim=shard_mesh_dim,
+                                mesh_shape=mesh_shape,
+                            ):
+                                self._test_dtensor_flatten_split_case(
+                                    in_shape,
+                                    out_shape,
+                                    placements,
+                                    mesh,
+                                )
 
     def test_dtensor_flatten_multi_mesh(self):
         """Test flatten operations across 1D and 2D meshes with all placement patterns.
@@ -1557,7 +1688,8 @@ class TestViewOps(DTensorContinuousTestBase):
                             if expect_error:
                                 with self.assertRaisesRegex(
                                     RuntimeError,
-                                    "is not evenly divisible by mesh dimension",
+                                    "is not evenly divisible by mesh dimension|"
+                                    "do not support inputs with use_strided_shard_as_shard_order",
                                 ):
                                     self._test_dtensor_unflatten_factors(
                                         factors,
@@ -1618,6 +1750,12 @@ class TestViewOps(DTensorContinuousTestBase):
         nelem = math.prod(tensor_dims_flatten)
         global_inps = torch.arange(nelem).view(tensor_dims_flatten)
         inps = distribute_tensor(global_inps, mesh, placements, src_data_rank=None)
+        # These _StridedShard placements represent literal strided layout
+        # (as produced by flatten), not shard-order encoding.
+        inps._spec.use_strided_shard_as_shard_order = False
+        inps._spec.shard_order = DTensorSpec.compute_default_shard_order(
+            inps._spec.placements
+        )
 
         comm_mode = CommDebugMode()
         with comm_mode:
@@ -1826,8 +1964,8 @@ class TestViewOps(DTensorContinuousTestBase):
         """Verify _StridedShard correctness through transpose.
 
         aten.transpose.int goes through view op propagation which handles
-        _StridedShard. aten.t uses transpose_strategy in _matrix_ops.py which
-        swaps the dim for both Shard and _StridedShard.
+        _StridedShard. aten.t uses a single-dim strategy in _matrix_ops.py
+        which swaps the dim for both Shard and _StridedShard.
         """
         mesh = init_device_mesh(self.device_type, (self.world_size,))
         shape = (4, self.world_size * 2, 6)
@@ -1842,7 +1980,7 @@ class TestViewOps(DTensorContinuousTestBase):
         result = dt_flat.transpose(0, 1)
         self.assertEqual(result.full_tensor(), flat_full.transpose(0, 1))
 
-        # t() on 2D tensor (aten.t via transpose_strategy in _matrix_ops.py)
+        # t() on 2D tensor (aten.t via single-dim strategy in _matrix_ops.py)
         # _StridedShard(dim=0) → _StridedShard(dim=1), split_factor preserved
         result = dt_flat.t()
         self.assertIsInstance(result.placements[0], _StridedShard)
@@ -2530,14 +2668,70 @@ class TestViewOps(DTensorContinuousTestBase):
             self.assertEqual(result.placements, (Shard(0),))
             self.assertEqual(result.full_tensor(), x.squeeze((0, 2)))
 
-        # S(0) on globally-singleton dim becomes R after squeeze (#174136)
-        with self.subTest("singleton_shard_becomes_replicate"):
+        # Squeezing a sharded singleton dim requires redistribution and
+        # must error rather than silently allgathering (#174136).
+        with self.subTest("squeeze_sharded_dim_errors"):
             x = torch.randn(1, 4, device=self.device_type)
             dt = distribute_tensor(x, mesh, [Shard(0)])
-            result = dt.squeeze()
-            self.assertEqual(result.shape, torch.Size([4]))
-            self.assertEqual(result.placements, (Replicate(),))
-            self.assertEqual(result.full_tensor(), x.squeeze())
+            # All 6 squeeze ATen ops must error:
+            for op, args in [
+                (dt.squeeze, ()),  # squeeze.default
+                (dt.squeeze, (0,)),  # squeeze.dim
+                (dt.squeeze, ((0,),)),  # squeeze.dims
+                (dt.squeeze_, ()),  # squeeze_.default
+                (dt.squeeze_, (0,)),  # squeeze_.dim
+                (dt.squeeze_, ((0,),)),  # squeeze_.dims
+            ]:
+                with self.assertRaisesRegex(RuntimeError, "requires redistribution"):
+                    op(*args)
+
+    def test_squeeze_comm_free_cases(self):
+        """Squeeze is comm-free when no sharded dim is removed."""
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+
+        # Non-sharded singleton removed (out-of-place), shard dim reindexes
+        x = torch.randn(1, self.world_size, device=self.device_type)
+        dt = distribute_tensor(x, mesh, [Shard(1)])
+        with CommDebugMode() as comm_mode:
+            result = dt.squeeze(0)
+        self.assertEqual(comm_mode.get_total_counts(), 0)
+        self.assertEqual(result.shape, torch.Size([self.world_size]))
+        self.assertEqual(result.placements, (Shard(0),))
+        self.assertEqual(result.full_tensor(), x.squeeze(0))
+
+        # Same but inplace — exercises the dispatch reindex path
+        x_inp = torch.randn(1, self.world_size, device=self.device_type)
+        dt_inp = distribute_tensor(x_inp, mesh, [Shard(1)])
+        with CommDebugMode() as comm_mode:
+            dt_inp.squeeze_(0)
+        self.assertEqual(comm_mode.get_total_counts(), 0)
+        self.assertEqual(dt_inp.shape, torch.Size([self.world_size]))
+        self.assertEqual(dt_inp.placements, (Shard(0),))
+        self.assertEqual(dt_inp.full_tensor(), x_inp.squeeze(0))
+
+        # Explicit redistribute first, then squeeze
+        x2 = torch.randn(1, 4, device=self.device_type)
+        dt2 = distribute_tensor(x2, mesh, [Shard(0)])
+        dt2_rep = dt2.redistribute(mesh, [Replicate()])
+        with CommDebugMode() as comm_mode:
+            result2 = dt2_rep.squeeze(0)
+        self.assertEqual(comm_mode.get_total_counts(), 0)
+        self.assertEqual(result2.shape, torch.Size([4]))
+        self.assertEqual(result2.placements, (Replicate(),))
+        self.assertEqual(result2.full_tensor(), x2.squeeze(0))
+
+        # 2D mesh: both shard dims reindex
+        mesh_2d = init_device_mesh(
+            self.device_type, (2, self.world_size // 2), mesh_dim_names=("dp", "tp")
+        )
+        x3 = torch.randn(1, 2, self.world_size // 2, device=self.device_type)
+        dt3 = distribute_tensor(x3, mesh_2d, [Shard(1), Shard(2)])
+        with CommDebugMode() as comm_mode:
+            result3 = dt3.squeeze(0)
+        self.assertEqual(comm_mode.get_total_counts(), 0)
+        self.assertEqual(result3.shape, torch.Size([2, self.world_size // 2]))
+        self.assertEqual(result3.placements, (Shard(0), Shard(1)))
+        self.assertEqual(result3.full_tensor(), x3.squeeze(0))
 
     def test_storage_offset_slice(self):
         """
@@ -2706,9 +2900,25 @@ class TestViewOps(DTensorContinuousTestBase):
         result = view_groups([4, u9], [4, u10])
         self.assertEqual(result, (InputDim(0), InputDim(1)))
 
+        # Splitting a product by a concrete prefix should not guard on
+        # unbacked divisibility such as ``8 % (8 * u0) == 0``.
+        u11 = fresh_sym()
+        self.assertEqual(
+            view_groups([8 * u11, 256], [8, u11, 256]),
+            (
+                Split(InputDim(0), (8, u11), 0),
+                Split(InputDim(0), (8, u11), 1),
+                InputDim(1),
+            ),
+        )
+
     def test_view_groups_unbacked_sharding_propagation(self):
         """Test that sharding is correctly propagated through view_groups with symbolic shapes."""
-        from torch.fx.experimental.symbolic_shapes import ShapeEnv
+        from torch.fx.experimental.symbolic_shapes import (
+            free_symbols,
+            optimization_hint,
+            ShapeEnv,
+        )
 
         shape_env = ShapeEnv()
 
@@ -2763,6 +2973,48 @@ class TestViewOps(DTensorContinuousTestBase):
         )
         self.assertEqual(out_plc, [Shard(0), Replicate()])
 
+        # Strict view with a non-leftmost shard needs _StridedShard. Preserve
+        # the symbolic split_factor as semantic placement metadata; list-based
+        # lowering can still use the explicit hint as a guarded unroll count.
+        u4_hint = fresh_sym()
+        torch._dynamo.override_optimization_hint(u4_hint, 4)
+        from_shape = (u4_hint, 16, 8)
+        to_shape = (u4_hint * 16, 8)
+        rule = view_groups(from_shape, to_shape)
+        input_placements = [Shard(1), Replicate()]
+        inp_tgt, out_plc = propagate_shape_and_sharding(
+            input_placements, from_shape, rule, mesh_sizes, strict_view=True
+        )
+        self.assertIsInstance(out_plc[0], _StridedShard)
+        self.assertEqual(out_plc[0].dim, 0)
+        self.assertEqual(out_plc[1], Replicate())
+        self.assertEqual(free_symbols(out_plc[0].split_factor), free_symbols(u4_hint))
+        self.assertEqual(optimization_hint(out_plc[0].split_factor), 4)
+        self.assertTrue(free_symbols(u4_hint))
+
+        u4_unhinted = fresh_sym()
+        from_shape = (u4_unhinted, 16, 8)
+        to_shape = (u4_unhinted * 16, 8)
+        rule = view_groups(from_shape, to_shape)
+        with self.assertRaisesRegex(RuntimeError, "symbolic _StridedShard"):
+            propagate_shape_and_sharding(
+                input_placements, from_shape, rule, mesh_sizes, strict_view=True
+            )
+
+        # Unflattening a symbolic _StridedShard should match the Split prefix
+        # factor by guarded hint without specializing the symbol.
+        u5_hint = fresh_sym()
+        torch._dynamo.override_optimization_hint(u5_hint, 8)
+        from_shape = (u5_hint * 2048, 256)
+        to_shape = (u5_hint, 2048, 256)
+        rule = view_groups(from_shape, to_shape)
+        input_placements = [_StridedShard(0, split_factor=u5_hint), Replicate()]
+        inp_tgt, out_plc = propagate_shape_and_sharding(
+            input_placements, from_shape, rule, mesh_sizes, strict_view=True
+        )
+        self.assertEqual(out_plc, [Shard(1), Replicate()])
+        self.assertTrue(free_symbols(u5_hint))
+
         # Flatten [16, u] -> [16*u] with Shard(1) on unbacked dim (non-leftmost):
         # should force replicate since non-leftmost dims can't propagate through flatten
         u4 = fresh_sym()
@@ -2796,6 +3048,104 @@ class TestViewOps(DTensorContinuousTestBase):
         with self.assertRaisesRegex(TypeError, "Did you mean to use .input_dim"):
             _ = 0 == dim
 
+    def _assert_strided_shard_flag(self, dt, expected_flag):
+        """Assert use_strided_shard_as_shard_order matches expected_flag."""
+        self.assertEqual(dt._spec.use_strided_shard_as_shard_order, expected_flag)
+
+    def test_strided_shard_propagates_through_chained_ops(self):
+        """Verify use_strided_shard_as_shard_order=False propagates through
+        chained pointwise ops after flatten produces _StridedShard."""
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        torch.manual_seed(42)
+        B, num_heads, S, head_dim = 2, 6, 4, 8
+        full = torch.randn(B, num_heads, S, head_dim, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+
+        # flatten(0,1): Shard(1) on non-first flatten dim -> _StridedShard(0)
+        flat = dt.flatten(0, 1)
+        self.assertIsInstance(flat.placements[0], _StridedShard)
+        self._assert_strided_shard_flag(flat, False)
+
+        # Chain several pointwise ops and verify flag propagates
+        activated = flat.relu()
+        self._assert_strided_shard_flag(activated, False)
+
+        added = activated + 1.0
+        self._assert_strided_shard_flag(added, False)
+
+        scaled = added * 0.5
+        self._assert_strided_shard_flag(scaled, False)
+
+        result = scaled.abs()
+        self._assert_strided_shard_flag(result, False)
+
+        # full_tensor triggers _StridedShard -> Replicate redistribution
+        expected = full.flatten(0, 1).relu().add(1.0).mul(0.5).abs()
+        self.assertEqual(result.full_tensor(), expected)
+
+    def test_strided_shard_propagates_through_reduction(self):
+        """Verify use_strided_shard_as_shard_order=False propagates through
+        reduction ops that don't reduce the _StridedShard dim."""
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        torch.manual_seed(42)
+        # shape: (2, 6, 4, 8), shard on dim 1
+        B, num_heads, S, head_dim = 2, 6, 4, 8
+        full = torch.randn(B, num_heads, S, head_dim, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+
+        # flatten(0,1) -> (12, 4, 8) with _StridedShard(0)
+        flat = dt.flatten(0, 1)
+        self.assertIsInstance(flat.placements[0], _StridedShard)
+        self._assert_strided_shard_flag(flat, False)
+
+        # sum over dim -1 (head_dim), which is not the strided shard dim
+        reduced = flat.sum(dim=-1)
+        self._assert_strided_shard_flag(reduced, False)
+
+        expected = full.flatten(0, 1).sum(dim=-1)
+        self.assertEqual(reduced.full_tensor(), expected)
+
+    def test_strided_shard_propagates_through_matmul(self):
+        """Verify use_strided_shard_as_shard_order=False propagates when a
+        _StridedShard tensor participates in matmul."""
+        mesh = init_device_mesh(self.device_type, (self.world_size,))
+        torch.manual_seed(42)
+        B, num_heads, S, head_dim = 2, 6, 4, 8
+        full = torch.randn(B, num_heads, S, head_dim, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(1)])
+
+        # flatten(0,1) -> (12, 4, 8) with _StridedShard(0)
+        flat = dt.flatten(0, 1)
+        self.assertIsInstance(flat.placements[0], _StridedShard)
+        self._assert_strided_shard_flag(flat, False)
+
+        # matmul with a replicated weight: (12, 4, 8) @ (8, 16) -> (12, 4, 16)
+        weight = torch.randn(head_dim, 16, device=self.device_type)
+        weight_dt = distribute_tensor(weight, mesh, [Replicate()])
+        result = torch.matmul(flat, weight_dt)
+        self._assert_strided_shard_flag(result, False)
+
+        expected = torch.matmul(full.flatten(0, 1), weight)
+        self.assertEqual(result.full_tensor(), expected)
+
+    def test_strided_shard_propagates_2d_mesh(self):
+        """Verify use_strided_shard_as_shard_order=False propagates on a 2D mesh."""
+        mesh = init_device_mesh(self.device_type, (self.world_size // 2, 2))
+        torch.manual_seed(42)
+        # shape: (3, 4, 8), shard dim 0 on mesh dim 0, replicate on mesh dim 1
+        full = torch.randn(3, 4, 8, device=self.device_type)
+        dt = distribute_tensor(full, mesh, [Shard(0), Replicate()])
+
+        # flatten(0,1) -> (12, 8); Shard(0) stays Shard(0), Replicate stays
+        flat = dt.flatten(0, 1)
+        self._assert_strided_shard_flag(flat, False)
+
+        result = flat.relu()
+        self._assert_strided_shard_flag(result, False)
+
+        expected = full.flatten(0, 1).relu()
+        self.assertEqual(result.full_tensor(), expected)
+
 
 TestViewOpsWithLocalTensor = create_local_tensor_test_class(
     TestViewOps,
@@ -2809,6 +3159,7 @@ TestViewOpsWithLocalTensor = create_local_tensor_test_class(
         "test_dtensor_flatten_1d",
         "test_dtensor_flatten_2d",
         "test_dtensor_flatten_multi_mesh",
+        "test_dtensor_flatten_split_multi_mesh",
     ],
     base_class=LocalDTensorContinuousTestBase,
 )
