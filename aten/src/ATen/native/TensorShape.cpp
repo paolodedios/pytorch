@@ -4141,30 +4141,15 @@ Tensor flatten(const Tensor& self, int64_t start_dim, int64_t end_dim) {
     shape.push_back(self.sym_sizes()[i]);
   }
 
-  // Flattening a range with only one non-size-one dimension is always a view,
-  // even when the non-size-one dimension is symbolic. Handle this directly so
-  // reshape viewability does not need to specialize on size-like symbols.
-  int64_t non_size_one_dim = -1;
-  bool has_direct_view = true;
-  for (const auto i : c10::irange(start_dim, end_dim + 1)) {
-    if (TORCH_STATICALLY_KNOWN_TRUE(self.sym_sizes()[i].sym_eq(1))) {
-      continue;
-    }
-    if (non_size_one_dim != -1) {
-      has_direct_view = false;
-      break;
-    }
-    non_size_one_dim = i;
-  }
-  if (has_direct_view) {
+  // Flattening a statically size-one leading dimension into a single symbolic
+  // dimension is always a view. Handle this directly so reshape viewability
+  // does not specialize on whether the symbolic dimension is size one.
+  if (start_dim == 0 && end_dim == 1 &&
+      TORCH_STATICALLY_KNOWN_TRUE(self.sym_sizes()[0].sym_eq(1)) &&
+      !TORCH_STATICALLY_KNOWN_TRUE(self.sym_sizes()[1].sym_eq(1))) {
     c10::SymDimVector strides;
     strides.reserve(shape.size());
-    for (const auto i : c10::irange(start_dim)) {
-      strides.push_back(self.sym_strides()[i]);
-    }
-    strides.push_back(
-        non_size_one_dim == -1 ? c10::SymInt(1)
-                               : self.sym_strides()[non_size_one_dim]);
+    strides.push_back(self.sym_strides()[1]);
     for (const auto i : c10::irange(end_dim + 1, self.dim())) {
       strides.push_back(self.sym_strides()[i]);
     }
