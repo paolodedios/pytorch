@@ -836,7 +836,6 @@ ops_unbacked_dtensor_dde = {
     xfail("nn.functional.logsigmoid"),
     xfail("nn.functional.multilabel_soft_margin_loss"),
     xfail("nn.functional.pad", "constant"),
-    xfail("nn.functional.poisson_nll_loss"),
     xfail("nn.functional.soft_margin_loss"),
     xfail("nn.functional.triplet_margin_loss"),
     xfail("nn.functional.triplet_margin_with_distance_loss"),
