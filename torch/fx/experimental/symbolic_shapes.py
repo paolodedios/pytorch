@@ -94,7 +94,7 @@ from torch.utils._sympy.numbers import int_oo
 from torch.utils._sympy.printers import CppPrinter, PythonPrinter
 from torch.utils._sympy.singleton_int import SingletonInt
 from torch.utils._sympy.solve import try_solve
-from torch.utils._sympy.symbol import make_symbol, symbol_is_type, SymT
+from torch.utils._sympy.symbol import make_symbol, prefix_str, symbol_is_type, SymT
 from torch.utils._sympy.value_ranges import (
     bound_sympy,
     SymPyValueRangeAnalysis,
@@ -1109,8 +1109,9 @@ def is_symbol_binding_fx_node(node: torch.fx.Node) -> sympy.Symbol | None:
     """
     Check if a given FX node is a symbol binding node.
 
-    A symbol binding node is one that has a SymInt value in its meta that contains
-    a sympy Symbol expression, and is either a placeholder node or contains unbacked symbols.
+    A symbol binding node is one that has a SymInt value in its meta whose
+    placeholder expression is a sympy Symbol, and is either a placeholder node or
+    records that it binds the unbacked symbol in node.meta["unbacked_bindings"].
 
     Args:
         node (torch.fx.Node): The FX node to check
@@ -1118,16 +1119,21 @@ def is_symbol_binding_fx_node(node: torch.fx.Node) -> sympy.Symbol | None:
     Returns:
         Optional[sympy.Symbol]: The sympy Symbol if the node is a symbol binding node, None otherwise
     """
-    if (
-        "val" in node.meta
-        and isinstance(node.meta["val"], torch.SymInt)
-        and isinstance(node.meta["val"].node.expr, sympy.Symbol)
-        and (
-            node.op == "placeholder"
-            or free_unbacked_symbols(node.meta["val"].node.expr)
-        )
+    if "val" not in node.meta or not isinstance(node.meta["val"], torch.SymInt):
+        return None
+
+    expr = _get_placeholder_expr(node.meta["val"].node)
+    if not isinstance(expr, sympy.Symbol):
+        return None
+
+    if node.op == "placeholder":
+        return expr
+
+    if unbacked_bindings := resolve_unbacked_bindings(
+        node.meta["val"].node.shape_env, node.meta.get("unbacked_bindings")
     ):
-        return node.meta["val"].node.expr
+        if expr in unbacked_bindings:
+            return expr
     return None
 
 
@@ -8744,13 +8750,27 @@ class ShapeEnv:
             stack = CapturedTraceback.extract(skip=1)
             ra = RuntimeAssert(expr, msg, stack)
 
-            # TODO: Do this in a way that is less janky than int(s.name[1:])
+            # TODO: Do this in a way that avoids recovering the symbol's
+            # creation index from its name.
+            def unbacked_symbol_sort_key(s: sympy.Symbol) -> tuple[int, str]:
+                for symbol_type in (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT):
+                    if symbol_is_type(s, symbol_type):
+                        return (
+                            int(s.name[len(prefix_str[symbol_type]) :]),
+                            prefix_str[symbol_type],
+                        )
+                raise AssertionError(f"expected unbacked symbol, got {s}")
+
             cands = sorted(
-                (s for s in expr.free_symbols if symbol_is_type(s, SymT.UNBACKED_INT)),
-                key=lambda s: int(s.name[1:]),
+                (
+                    s
+                    for s in expr.free_symbols
+                    if symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
+                ),
+                key=unbacked_symbol_sort_key,
             )
             # Is None when prefer_deferred_runtime_asserts_over_guards=True
-            # and the guard in question has no unbacked SymInts in front
+            # and the guard in question has no unbacked symbols in front
             ix = cands[-1] if cands else None
             self.deferred_runtime_asserts.setdefault(ix, []).append(ra)
             self.axioms.update(dict(self.get_implications(self.simplify(expr))))

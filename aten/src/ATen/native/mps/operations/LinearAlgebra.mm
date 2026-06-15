@@ -25,7 +25,6 @@
 #include <ATen/ops/addr_native.h>
 #include <ATen/ops/baddbmm_native.h>
 #include <ATen/ops/bmm_native.h>
-#include <ATen/ops/cholesky_native.h>
 #include <ATen/ops/eye.h>
 #include <ATen/ops/eye_native.h>
 #include <ATen/ops/linalg_cholesky_ex_native.h>
@@ -449,6 +448,12 @@ bool use_metal_mm(const Tensor& self, const Tensor& other, const Tensor& output)
   constexpr auto max_complex_inner_size = 2048;
   static bool is_macos_14_4_or_newer = is_macos_13_or_newer(MacOSVersion::MACOS_VER_14_4_PLUS);
   if (always_use_metal || c10::isIntegralType(self.scalar_type(), true)) {
+    return true;
+  }
+  // MPSGraph mis-writes a non-contiguous output before macOS 26; the metal
+  // kernels honor the output strides.
+  static const bool is_macos_26_0_or_newer = is_macos_13_or_newer(MacOSVersion::MACOS_VER_26_0_PLUS);
+  if (!output.is_contiguous() && !is_macos_26_0_or_newer) {
     return true;
   }
   // multiplicationWithPrimaryTensor: returns incorrect results if inner size exceeds 2048
@@ -1280,6 +1285,13 @@ static Tensor& bmm_out_mps_impl(const Tensor& batch1, const Tensor& batch2, Tens
     return do_metal_bmm(batch1, batch2, result);
   }
 
+  // MPSGraph mis-writes a non-contiguous output before macOS 26; the metal
+  // kernel honors the output strides.
+  static const bool is_macos_26_0_or_newer = is_macos_13_or_newer(MacOSVersion::MACOS_VER_26_0_PLUS);
+  if (!result.is_contiguous() && !is_macos_26_0_or_newer) {
+    return do_metal_bmm(batch1, batch2, result);
+  }
+
   static const bool is_macOS_15_0_or_newer = is_macos_13_or_newer(MacOSVersion::MACOS_VER_15_0_PLUS);
   MPSShape* shape = nil;
   bool doTranspose = false;
@@ -1486,6 +1498,45 @@ static void unpack_pivots_stub_impl(TensorIterator& iter, const int64_t dim_size
   });
 }
 
+static void cholesky_panel_impl(const Tensor& out, const Tensor& info_, int64_t N, int64_t B, bool upper) {
+  auto stream = getCurrentMPSStream();
+
+  constexpr auto NB = 96;
+  auto diagPanelPSO = lib.getPipelineStateForFunc(upper ? "factorDiagonalPanelU" : "factorDiagonalPanelL");
+  auto trsmPSO = lib.getPipelineStateForFunc(upper ? "applyPanelTRSMU" : "applyPanelTRSML");
+  const auto big = N - NB >= 1024;
+  const auto BM = big ? 64 : 32;
+  constexpr auto BN = 64;
+  const auto NSG = big ? 4 : 2;
+  auto syrkPSO =
+      lib.getPipelineStateForFunc(fmt::format("applySYRKTrailing{}_{}_{}_{}", upper ? "U" : "L", BM, BN, NSG));
+
+  auto numPanels = (N + NB - 1) / NB;
+
+  @autoreleasepool {
+    dispatch_sync_with_rethrow(stream->queue(), ^() {
+      auto computeEncoder = stream->commandEncoder();
+      mtl_setArgs(computeEncoder, out, info_, N, NB);
+      for (auto k = 0; k < numPanels; k++) {
+        mtl_setArgs<4>(computeEncoder, k);
+        [computeEncoder setComputePipelineState:diagPanelPSO];
+        [computeEncoder dispatchThreadgroups:MTLSizeMake(B, 1, 1) threadsPerThreadgroup:MTLSizeMake(96, 1, 1)];
+
+        auto T = N - (k + 1) * NB;
+        if (T > 0) {
+          [computeEncoder setComputePipelineState:trsmPSO];
+          [computeEncoder dispatchThreadgroups:MTLSizeMake(B, (T + 31) / 32, 1)
+                         threadsPerThreadgroup:MTLSizeMake(128, 1, 1)];
+
+          [computeEncoder setComputePipelineState:syrkPSO];
+          [computeEncoder dispatchThreadgroups:MTLSizeMake((T + BN - 1) / BN, (T + BM - 1) / BM, B)
+                         threadsPerThreadgroup:MTLSizeMake(NSG * 32, 1, 1)];
+        }
+      }
+    });
+  }
+}
+
 static void cholesky_stub_impl(const Tensor& out, const Tensor& info, bool upper) {
   auto input_sizes = out.sizes();
 
@@ -1495,6 +1546,12 @@ static void cholesky_stub_impl(const Tensor& out, const Tensor& info, bool upper
 
   auto stream = getCurrentMPSStream();
   auto device = MPSDevice::getInstance()->device();
+  auto info_ = info.dim() >= 2 ? info.view({B}) : info;
+  auto info_sizes = info.sizes();
+  if (is_macos_13_or_newer(MacOSVersion::MACOS_VER_26_2_PLUS)) {
+    return cholesky_panel_impl(out, info_, N, B, upper);
+  }
+  info_.fill_(0);
 
   auto factorDiagonalPSO = lib.getPipelineStateForFunc(upper ? "factorDiagonalBlockU" : "factorDiagonalBlockL");
   auto applyTRSMPSO = lib.getPipelineStateForFunc(upper ? "applyTRSMU" : "applyTRSML");
@@ -1502,10 +1559,6 @@ static void cholesky_stub_impl(const Tensor& out, const Tensor& info, bool upper
 
   int64_t NB = std::min<int64_t>(32, N);
   int64_t numBlocks = (N + NB - 1) / NB;
-
-  auto info_ = info.dim() >= 2 ? info.view({B}) : info;
-  auto info_sizes = info.sizes();
-  info_.fill_(0);
 
   MTLSize threadGroupSize = MTLSizeMake(32, 8, 1);
 
