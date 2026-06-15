@@ -1,4 +1,4 @@
-#include <ATen/native/mkldnn/xpu/FusionUtils.h>
+#include <ATen/native/onednn/xpu/FusionUtils.h>
 
 #include <unordered_set>
 
