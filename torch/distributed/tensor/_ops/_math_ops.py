@@ -430,6 +430,7 @@ LINEAR_REDUCTION_OPS = [
     LINEAR_REDUCTION_OPS,
     schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )
 def linear_reduction_single_dim_strategy(
     op: torch._ops.OpOverload,
@@ -462,6 +463,7 @@ register_single_dim_strategy(
     [aten._foreach_max.default],
     schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )(linear_reduction_single_dim_strategy)
 
 
@@ -809,6 +811,7 @@ _STD_VAR_OPS = [
     _STD_VAR_OPS,
     schema_info=RuntimeSchemaInfo(1, ["keepdim"]),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )
 def std_var_single_dim_strategy(
     op: torch._ops.OpOverload,
@@ -873,6 +876,7 @@ def _get_norm_reduction_op(norm_type: int | float | str) -> ReductionOpType:
     [aten.linalg_vector_norm.default, aten.norm.Scalar],
     schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )
 def vector_norm_single_dim_strategy(
     op: torch._ops.OpOverload,
@@ -911,6 +915,7 @@ register_single_dim_strategy(
     [aten._foreach_norm.Scalar],
     schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )(vector_norm_single_dim_strategy)
 
 
@@ -918,6 +923,7 @@ register_single_dim_strategy(
     [aten.linalg__powsum.default],
     schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )
 def powsum_single_dim_strategy(
     op: torch._ops.OpOverload,
@@ -947,6 +953,7 @@ register_single_dim_strategy(
     [aten._foreach_powsum.Scalar],
     schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )(powsum_single_dim_strategy)
 
 
