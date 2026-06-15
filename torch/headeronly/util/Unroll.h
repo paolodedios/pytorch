@@ -8,7 +8,7 @@
 
 // Example: c10::ForcedUnroll<4>{}(f); is equivalent to f(0); f(1); f(2); f(3);
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 template <int n>
 struct ForcedUnroll {
@@ -27,7 +27,7 @@ struct ForcedUnroll<1> {
   }
 };
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::ForcedUnroll;
