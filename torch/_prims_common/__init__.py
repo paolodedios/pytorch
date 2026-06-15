@@ -309,7 +309,10 @@ def is_contiguous(a: TensorLikeType, false_if_dde=False) -> bool:
     Tensors are contiguous when they have no elements,
     one element, or when they have "nested" strides.
     """
-    from torch.fx.experimental.symbolic_shapes import guard_or_false
+    from torch.fx.experimental.symbolic_shapes import (
+        guard_or_false,
+        guard_size_oblivious,
+    )
 
     def eval_eager(x):
         return bool(x)
@@ -2035,9 +2038,12 @@ def check(
 # May return False when input sizes are data-dependent and the property is not
 # determined.
 def are_strides_like_channels_last_or_false(
-    shape: Sequence[int | torch.SymInt], strides: Sequence[int | torch.SymInt]
+    shape: Sequence[int], strides: Sequence[int]
 ) -> bool:
-    from torch.fx.experimental.symbolic_shapes import guard_or_true
+    from torch.fx.experimental.symbolic_shapes import (
+        guard_or_true,
+        statically_known_true,
+    )
 
     ndim = len(shape)
 
