@@ -337,7 +337,7 @@ TORCH_PRECOMPUTE_META_FUNC(index_copy)
        << dim;
     ss << " and source slice shape: " << sourceSlicedSizes
        << " at dimension 0.";
-    TORCH_CHECK(false, ss.str());
+    TORCH_CHECK(false, std::move(ss).str());
   }
   TORCH_CHECK_INDEX(
       source.dim() == 0 || numIndices == source.size(dim),
@@ -1861,7 +1861,8 @@ Tensor& index_select_out_cpu_(
           ScalarType::Half,
           ScalarType::Bool,
           ScalarType::BFloat16,
-          AT_EXPAND(AT_FLOAT8_TYPES));
+          AT_EXPAND(AT_FLOAT8_TYPES),
+          AT_EXPAND(AT_BAREBONES_UNSIGNED_TYPES));
     }
   }
 
@@ -2011,7 +2012,10 @@ static bool can_use_expanded_index_path(
     return false;
   }
 #else
+// On non-FBGEMM platforms, allow fast path only if OpenMP is available
+#ifndef _OPENMP
   return false;
+#endif
 #endif
 
   if (!self.device().is_cpu()) {
