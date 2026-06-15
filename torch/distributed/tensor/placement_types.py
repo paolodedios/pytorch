@@ -652,7 +652,11 @@ class Shard(torch._C._distributed.Shard):
         num_chunks: int,
         shard_dim: int,
     ) -> tuple[bool, int]:
-        dim_padding = logical_size_on_dim % num_chunks != 0
+        # Use guard_or_true so unbacked symints don't trigger a data-dependent
+        # guard; assume padding (uneven) when evenness can't be proven.
+        from torch.fx.experimental.symbolic_shapes import guard_or_true
+
+        dim_padding = guard_or_true(logical_size_on_dim % num_chunks != 0)
         dim_full_chunk_size = (logical_size_on_dim + num_chunks - 1) // num_chunks
         return dim_padding, dim_full_chunk_size
 
