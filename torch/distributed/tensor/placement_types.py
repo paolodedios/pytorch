@@ -189,7 +189,7 @@ class Shard(torch._C._distributed.Shard):
         *,
         with_padding: bool = True,
         contiguous: bool = True,
-    ) -> tuple[list[torch.Tensor], list[int]]:
+    ) -> tuple[list[torch.Tensor], list[IntLikeType]]:
         """
         This function uses torch.chunk to split a tensor into num_chunks shards along
         the Shard placement dimension, and return a list of shards with their pad sizes.
@@ -210,7 +210,7 @@ class Shard(torch._C._distributed.Shard):
         with_padding: bool,
         contiguous: bool,
         dim: int,
-    ) -> tuple[list[torch.Tensor], list[int]]:
+    ) -> tuple[list[torch.Tensor], list[IntLikeType]]:
         if dim > tensor.ndim:
             raise AssertionError(
                 f"Sharding dim {dim} greater than tensor ndim {tensor.ndim}"
@@ -223,7 +223,7 @@ class Shard(torch._C._distributed.Shard):
         full_chunk_size = (tensor.size(dim) + num_chunks - 1) // num_chunks
 
         shard_list: list[torch.Tensor] = []
-        pad_sizes: list[int] = []
+        pad_sizes: list[IntLikeType] = []
         for shard in tensor_list:
             if with_padding:
                 pad_size = Shard._get_shard_pad_size(full_chunk_size, shard, dim)
