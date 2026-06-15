@@ -6,7 +6,7 @@
 #include <c10/core/Allocator.h>
 // needs to be included only once in library.
 #include <ideep_pin_singletons.hpp>
-#include <ATen/native/mkldnn/IDeepRegistration.h>
+#include <ATen/native/onednn/IDeepRegistration.h>
 
 using namespace ideep;
 
