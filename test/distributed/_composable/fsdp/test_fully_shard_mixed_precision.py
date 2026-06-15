@@ -256,7 +256,6 @@ class TestFullyShardMixedPrecisionTraining(FSDPTest):
 
     @skipIfRocmVersionLessThan((7, 0))
     @skip_if_lt_x_gpu(2)
-    @requires_nccl_version((2, 10), "Need NCCL 2.10+ for bf16 collectives")
     def test_reduce_dtype_after_frozen_first_forward(self):
         class Model(nn.Module):
             def __init__(self):
