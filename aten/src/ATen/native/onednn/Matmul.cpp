@@ -224,7 +224,7 @@ mkldnn_gemm(
     float* c_data, int64_t ldc) {
 // introduce heuristic to validate dispatch to MKLDNN
 // (m * n * k <= 16 * 16 * 16)
-  bool bf16_usable = use_mkldnn_bf16_matmul();
+  bool bf16_usable = use_onednn_bf16_matmul();
   if (!bf16_usable) {
     return false;
   }
@@ -285,7 +285,7 @@ bool onednn_bf16f32_gemm(
     const c10::BFloat16 *b, int64_t ldb,
     float beta,
     float *c, int64_t ldc) {
-  return onednn_gemm<c10::BFloat16>(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+  return mkldnn_gemm<c10::BFloat16>(transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 bool onednn_fp16_gemm(
