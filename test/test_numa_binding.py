@@ -40,7 +40,9 @@ class MockDeviceProperties:
 _real_open = open
 
 
-@skipIfTorchDynamo("Dynamo tracing bypasses unittest.mock patches used by NUMA binding tests")
+@skipIfTorchDynamo(
+    "Dynamo tracing bypasses unittest.mock patches used by NUMA binding tests"
+)
 @skipUnless(sys.platform == "linux", "Only linux currently supported")
 @skipUnless(
     torch.distributed.is_available(), "Need access to some distributed submodules"
