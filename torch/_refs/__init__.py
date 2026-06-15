@@ -6525,8 +6525,9 @@ def normal(
             std >= 0, lambda: f"normal expects std >= 0.0, but found std {std}"
         )
     else:
-        torch._check_tensor_all(
-            std >= 0, lambda: "normal expects all elements of std >= 0.0"
+        torch.ops.aten._assert_async.msg(
+            torch.all(std >= 0),
+            "normal expects all elements of std >= 0.0",
         )
 
     if size is None:

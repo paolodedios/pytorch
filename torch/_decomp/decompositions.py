@@ -5936,9 +5936,9 @@ def bernoulli(
     *,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
-    torch._check_tensor_all(
-        (self >= 0) & (self <= 1),
-        lambda: "Expected p_in >= 0 && p_in <= 1 to be true, but got false.",
+    torch.ops.aten._assert_async.msg(
+        torch.all((self >= 0) & (self <= 1)),
+        "Expected p_in >= 0 && p_in <= 1 to be true, but got false.",
     )
     if generator is None:
         raw_p = torch.rand(self.size(), dtype=torch.float32, device=self.device)
