@@ -5,7 +5,6 @@ and this includes tensor subclasses that implement __torch_dispatch__.
 """
 
 import collections
-import typing
 from collections.abc import Callable, Iterable, Sequence
 from typing import Any, TypeGuard, TypeVar
 
@@ -16,8 +15,12 @@ from torch._library.fake_class_registry import maybe_unwrap_fake_script_object
 from torch._library.opaque_object import is_opaque_reference_type
 from torch._opaque_base import OpaqueBase
 from torch._subclasses.fake_tensor import get_plain_tensors
+from torch.fx.experimental.symbolic_shapes import guard_or_false, sym_eq
 from torch.types import IntLikeType
-from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+from torch.utils._python_dispatch import (
+    is_traceable_wrapper_subclass,
+    TraceableWrapperSubclass,
+)
 
 from .descriptors import (
     AOTInput,
@@ -77,12 +80,40 @@ def maybe_suggest_memory_format(
     return MemoryFormatMeta.from_tensor(t)
 
 
+def _safe_metadata_eq(
+    outer: Iterable[IntLikeType],
+    inner: Iterable[IntLikeType],
+) -> bool:
+    return guard_or_false(sym_eq(tuple(outer), tuple(inner)))
+
+
+def _find_attr_matching_outer_metadata(
+    a: Tensor,
+    inner_keys: Sequence[str],
+    *,
+    metadata_fn: Callable[[Tensor], Iterable[IntLikeType]],
+) -> str | None:
+    tensor_attrs = [key for key in inner_keys if isinstance(getattr(a, key), Tensor)]
+    if not tensor_attrs:
+        return None
+
+    outer_metadata = tuple(metadata_fn(a))
+    # Only use an attr as the runtime source when every tensor attr agrees
+    # with the wrapper metadata; otherwise there is no single attr to trust.
+    if all(
+        _safe_metadata_eq(outer_metadata, metadata_fn(getattr(a, key)))
+        for key in tensor_attrs
+    ):
+        return tensor_attrs[0]
+    return None
+
+
 def get_subclass_typing_container(
     tensor_subclass: torch.Tensor,
 ) -> dict[type[torch.Tensor], list[type[torch.Tensor]]]:
     """
     Given a subclass, returns a recursive dictionary mapping each
-    inner tensors to its' subclass types.
+    inner tensors to its subclass types.
     """
 
     def _get_types_for_subclass(tensor_subclass: torch.Tensor) -> None:
@@ -176,6 +207,12 @@ def create_subclass_metadata(
             outer_stride=a.stride(),  # type: ignore[arg-type]
             original_subclass=a,
             memory_format=maybe_suggest_memory_format(a, with_memory_format),
+            outer_size_from_attr=_find_attr_matching_outer_metadata(
+                a, inner_keys, metadata_fn=lambda t: t.size()
+            ),
+            outer_stride_from_attr=_find_attr_matching_outer_metadata(
+                a, inner_keys, metadata_fn=lambda t: t.stride()
+            ),
         ),
         new_start_idx,
     )
@@ -328,7 +365,7 @@ def runtime_unwrap_tensor_subclasses(
     subclass_metas: list[PlainTensorMeta | SubclassCreationMeta] | None = None,
 ) -> list[int | Tensor | SymInt | OpaqueBase]:
     def flatten_subclass(
-        x: Tensor,
+        x: Tensor | TraceableWrapperSubclass,
         subclass_meta: PlainTensorMeta | SubclassCreationMeta | OpaqueMeta | None,
         *,
         out: list[OpaqueBase | SymInt | Tensor | int],
@@ -397,14 +434,14 @@ def runtime_unwrap_tensor_subclasses(
             continue
 
         if subclass_metas is None:
-            get_plain_tensors(typing.cast(Tensor, x), out=xs_inner)
+            get_plain_tensors(x, out=xs_inner)
         else:
             subclass_meta = subclass_metas[idx]
             if not isinstance(subclass_meta, SubclassCreationMeta):
                 raise AssertionError(
                     f"expected SubclassCreationMeta, got {type(subclass_meta)}"
                 )
-            flatten_subclass(typing.cast(Tensor, x), subclass_meta, out=xs_inner)
+            flatten_subclass(x, subclass_meta, out=xs_inner)
 
     return xs_inner
 
@@ -435,7 +472,7 @@ def remap_unwrapped_subclass_arg_indices(
         num_indices = 1
         if is_traceable_wrapper_subclass(arg):
             num_indices = (
-                len(get_plain_tensors(typing.cast(Tensor, arg), out=[]))
+                len(get_plain_tensors(arg, out=[]))
                 + len(enumerate_filter_symints(arg.size()))
                 + len(enumerate_filter_symints(arg.stride()))
             )
