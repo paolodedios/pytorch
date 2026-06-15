@@ -25,7 +25,7 @@ void listConstruct(Stack& stack, const c10::Type& list_type, size_t num_inputs);
 
 void dictConstruct(Stack& stack, const c10::Type& type, size_t num_inputs);
 
-// as weak_ref will create a Object with a non-owning CompilationUnit reference,
+// as weak_ref will create an Object with a non-owning CompilationUnit reference,
 // for use as a constant in the Graph to avoid a reference cycle
 void createObject(
     Stack& stack,
