@@ -3056,12 +3056,19 @@ class _MakefxTracer:
                 raise
 
         if (
-            self.is_hop_subgraph_tracer()
+            (self.is_hop_subgraph_tracer() or self.dynamic_shapes is not None)
             and (fake_mode := torch._guards.detect_fake_mode(args))
             and fake_mode.shape_env is not None
         ):
             from torch.fx.passes.runtime_assert import insert_deferred_runtime_asserts
 
+            if self.dynamic_shapes is not None:
+                # Attach ``unbacked_bindings`` to input placeholders so the
+                # runtime-assert pass can resolve deferred asserts keyed by
+                # spec-introduced unbacked symbols.
+                from torch.export._trace import _add_input_unbacked_bindings
+
+                _add_input_unbacked_bindings(t)
             insert_deferred_runtime_asserts(t, fake_mode.shape_env, "reenter_make_fx")
             t.recompile()
         # TODO: kind of a bad way to do it, should maybe figure out a better way
