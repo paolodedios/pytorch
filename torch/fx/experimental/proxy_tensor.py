@@ -525,6 +525,19 @@ def _get_proxies(t: torch.Tensor | TraceableWrapperSubclass) -> list[Proxy]:
     return proxies
 
 
+# sympy Max/Min are n-ary (they flatten, e.g. Max(a, Max(b, c)) -> Max(a, b, c)),
+# but torch.sym_max/sym_min are binary. Reduce so _build_proxy_for_sym_expr can
+# rebuild flattened expressions as nested binary ops. These are module-level
+# (not lambdas) so they have a qualified name and survive FX codegen/pickling
+# when used as a graph node target.
+def _nary_sym_max(*args: Any) -> Any:
+    return functools.reduce(torch.sym_max, args)
+
+
+def _nary_sym_min(*args: Any) -> Any:
+    return functools.reduce(torch.sym_min, args)
+
+
 @functools.cache
 def _sympy_handlers() -> dict[type[sympy.Expr], Callable[..., Any]]:
     """
@@ -540,6 +553,15 @@ def _sympy_handlers() -> dict[type[sympy.Expr], Callable[..., Any]]:
         op = getattr(operator, v, None)
         if op is not None:
             handlers[k] = op
+        # sympy Max/Min have no operator.* equivalent. Map them to n-ary-safe
+        # wrappers over torch.sym_max/sym_min. Without this,
+        # _build_proxy_for_sym_expr cannot rebuild expressions like Max(1, u2)
+        # that escape a disable_proxy_modes_tracing region (e.g. DTensor shard
+        # propagation size inference).
+        elif v == "maximum":
+            handlers[k] = _nary_sym_max
+        elif v == "minimum":
+            handlers[k] = _nary_sym_min
 
     # sympy.Add is n-ary (e.g. Add(a, b, c)) but operator.add is binary.
     # torch.sym_sum handles n-ary integer addition and accepts both
@@ -582,7 +604,7 @@ def _build_proxy_for_sym_expr(
     To handle this we decompose the sympy.Expr and look for the pieces as
     inputs. But there are problems with this approach:
 
-    - We lose operation provanance: We end up figuring out where to get the
+    - We lose operation provenance: We end up figuring out where to get the
       inputs - but those may not actually be correct. If we have "s1" coming in
       from both tensor1 and tensor2 and we pick the wrong one we could end up
       keeping a tensor alive longer than intended.
@@ -1848,7 +1870,6 @@ class PreDispatchTorchFunctionMode(TorchFunctionMode):
                 # pyrefly: ignore [bad-argument-type]
                 func(*args, **kwargs)
             return node
-
         # We need more complicated handling here because the inputs
         # to these functions are sometimes tensors or symints where
         # we need to fetch the proxies properly.
@@ -2355,7 +2376,7 @@ class _ModuleStackTracer(PythonKeyTracer):
             self.module_id_cache[id(mod)].append(name)
 
         # Build a wrapper around _AttrProxy to provide the tracer. We can't
-        # store it on _AttrProxy itself beceause we mimic the underlying class
+        # store it on _AttrProxy itself because we mimic the underlying class
         # (including its attributes).
         tracer = self
 
@@ -3029,7 +3050,7 @@ def make_fx(
         _allow_fake_constant,
         _error_on_data_dependent_ops,
         record_stack_traces=record_stack_traces
-        or config.trace.provenance_tracking_level == 1,
+        or config.effective_provenance_tracking_level() == 1,
         proxy_module_inputs=proxy_module_inputs,
         _disable_torch_fn_metadata_mode=_disable_torch_fn_metadata_mode,
     )
