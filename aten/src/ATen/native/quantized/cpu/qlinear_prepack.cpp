@@ -282,12 +282,12 @@ c10::intrusive_ptr<LinearPackedParamsBase> PackedLinearWeightsOnednn::prepack(
     packed_bias.init(bias_desc, b.data_ptr());
     onednn_bias = std::optional<ideep::tensor>(packed_bias);
   }
-#if AT_MKLDNN_ACL_ENABLED()
+#if AT_ONEDNN_ACL_ENABLED()
   if (qtype == c10::kPerTensorAffine) {
     return c10::make_intrusive<PackedLinearWeightsACL>(PackedLinearWeightsACL{
         std::move(weight_ptr), onednn_bias, weight, bias});
   }
-#endif // #if AT_MKLDNN_ACL_ENABLED()
+#endif // #if AT_ONEDNN_ACL_ENABLED()
   auto ret_ptr =
       c10::make_intrusive<PackedLinearWeightsOnednn>(PackedLinearWeightsOnednn{
           std::move(weight_ptr), onednn_bias, weight, bias});

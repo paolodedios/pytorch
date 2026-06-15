@@ -10,7 +10,7 @@
 #include <mkl.h>
 #endif
 
-#if AT_MKLDNN_ENABLED()
+#if AT_ONEDNN_ENABLED()
 #include <ATen/native/onednn/IDeepRegistration.h>
 #endif
 

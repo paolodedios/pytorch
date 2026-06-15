@@ -1,7 +1,7 @@
 #include <ATen/OpMathType.h>
-#include <ATen/native/mkldnn/xpu/detail/Attr.h>
-#include <ATen/native/mkldnn/xpu/detail/Utils.h>
-#include <ATen/native/mkldnn/xpu/detail/oneDNN.h>
+#include <ATen/native/onednn/xpu/detail/Attr.h>
+#include <ATen/native/onednn/xpu/detail/Utils.h>
+#include <ATen/native/onednn/xpu/detail/oneDNN.h>
 #include <oneapi/dnnl/dnnl.hpp>
 
 namespace {
