@@ -4,7 +4,7 @@
 
 #include <mutex>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 /**
  * A very simple Synchronization class for error-free use of data
@@ -62,7 +62,7 @@ class Synchronized final {
   }
 };
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::Synchronized;
