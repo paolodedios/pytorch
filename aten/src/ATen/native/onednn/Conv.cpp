@@ -160,7 +160,7 @@ static void check_shape_forward(const Tensor& input,
 
 static bool onednn_conv_enabled_fpmath_mode_bf16(){
   return at::globalContext().float32Precision(at::Float32Backend::MKLDNN, at::Float32Op::CONV) == at::Float32Precision::BF16 &&
-      mkldnn_bf16_device_check();
+      onednn_bf16_device_check();
 }
 
 static bool onednn_conv_enabled_fpmath_mode_tf32(){
@@ -278,11 +278,11 @@ static Tensor _mkldnn_convolution(
     output.resize_(output_sizes, memory_format);
     y = itensor_from_tensor(output);
   }
-  if (mkldnn_conv_enabled_fpmath_mode_bf16() &&
+  if (onednn_conv_enabled_fpmath_mode_bf16() &&
       input_t.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16);
   }
-  if (mkldnn_conv_enabled_fpmath_mode_tf32() &&
+  if (onednn_conv_enabled_fpmath_mode_tf32() &&
       input_t.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_tf32);
   }
@@ -472,10 +472,10 @@ Tensor mkldnn_convolution_pointwise_binary(
     op_attr.set_post_ops(po);
     auto aprop_kind = ideep::prop_kind::forward_inference;
 
-    if (mkldnn_conv_enabled_fpmath_mode_bf16() && input_t.scalar_type() ==at::kFloat){
+    if (onednn_conv_enabled_fpmath_mode_bf16() && input_t.scalar_type() ==at::kFloat){
       op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16);
     }
-    if (mkldnn_conv_enabled_fpmath_mode_tf32() && input_t.scalar_type() ==at::kFloat){
+    if (onednn_conv_enabled_fpmath_mode_tf32() && input_t.scalar_type() ==at::kFloat){
       op_attr.set_fpmath_mode(dnnl_fpmath_mode_tf32);
     }
 
@@ -616,11 +616,11 @@ Tensor& mkldnn_convolution_pointwise_binary_(
       op_attr = ideep::attr_t::fuse_sum();
     }
     auto aprop_kind = ideep::prop_kind::forward_inference;
-    if (mkldnn_conv_enabled_fpmath_mode_bf16() &&
+    if (onednn_conv_enabled_fpmath_mode_bf16() &&
         input_t.scalar_type() == at::kFloat) {
       op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16);
     }
-    if (mkldnn_conv_enabled_fpmath_mode_tf32() &&
+    if (onednn_conv_enabled_fpmath_mode_tf32() &&
         input_t.scalar_type() == at::kFloat) {
       op_attr.set_fpmath_mode(dnnl_fpmath_mode_tf32);
     }
@@ -742,10 +742,10 @@ Tensor _mkldnn_convolution_transpose(
     y = itensor_from_tensor(output);
   }
 
-  if (mkldnn_conv_enabled_fpmath_mode_bf16() && input_t.scalar_type() ==at::kFloat){
+  if (onednn_conv_enabled_fpmath_mode_bf16() && input_t.scalar_type() ==at::kFloat){
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16);
   }
-  if (mkldnn_conv_enabled_fpmath_mode_tf32() && input_t.scalar_type() ==at::kFloat){
+  if (onednn_conv_enabled_fpmath_mode_tf32() && input_t.scalar_type() ==at::kFloat){
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_tf32);
   }
 
@@ -834,11 +834,11 @@ Tensor mkldnn_convolution_backward_input(
     grad_x = itensor_from_tensor(grad_input);
   }
   ideep::attr_t op_attr = ideep::attr_t();
-  if (mkldnn_conv_enabled_fpmath_mode_bf16() &&
+  if (onednn_conv_enabled_fpmath_mode_bf16() &&
       weight.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16);
   }
-  if (mkldnn_conv_enabled_fpmath_mode_tf32() &&
+  if (onednn_conv_enabled_fpmath_mode_tf32() &&
       weight.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_tf32);
   }
@@ -857,12 +857,12 @@ Tensor mkldnn_convolution_backward_input(
       op_attr);
 #else
       is_channels_last);
-  if (mkldnn_conv_enabled_fpmath_mode_bf16() &&
+  if (onednn_conv_enabled_fpmath_mode_bf16() &&
       weight.scalar_type() == at::kFloat) {
     TORCH_WARN_ONCE(
         "Unexpected oneDNN version to support fpmath_mode_bf16, please update oneDNN version to align with pytorch main branch");
       }
-  if (mkldnn_conv_enabled_fpmath_mode_tf32() &&
+  if (onednn_conv_enabled_fpmath_mode_tf32() &&
       weight.scalar_type() == at::kFloat) {
     TORCH_WARN_ONCE(
         "Unexpected oneDNN version to support fpmath_mode_tf32, please update oneDNN version to align with pytorch main branch");
@@ -893,11 +893,11 @@ std::tuple<Tensor, Tensor> mkldnn_convolution_backward_weights(
 
   ideep::tensor grad_w, grad_b;
   ideep::attr_t op_attr = ideep::attr_t();
-  if (mkldnn_conv_enabled_fpmath_mode_bf16() &&
+  if (onednn_conv_enabled_fpmath_mode_bf16() &&
       input.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16);
   }
-  if (mkldnn_conv_enabled_fpmath_mode_tf32() &&
+  if (onednn_conv_enabled_fpmath_mode_tf32() &&
       input.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_tf32);
   }
@@ -1051,11 +1051,11 @@ Tensor mkldnn_convolution_transpose_backward_input(
     grad_x = itensor_from_tensor(grad_input);
   }
   ideep::attr_t op_attr = ideep::attr_t();
-  if (mkldnn_conv_enabled_fpmath_mode_bf16() &&
+  if (onednn_conv_enabled_fpmath_mode_bf16() &&
       weight.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16);
   }
-  if (mkldnn_conv_enabled_fpmath_mode_tf32() &&
+  if (onednn_conv_enabled_fpmath_mode_tf32() &&
       weight.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_tf32);
   }
@@ -1097,11 +1097,11 @@ std::tuple<Tensor,Tensor> mkldnn_convolution_transpose_backward_weights(
 
   ideep::tensor grad_w, grad_b;
   ideep::attr_t op_attr = ideep::attr_t();
-  if (mkldnn_conv_enabled_fpmath_mode_bf16() &&
+  if (onednn_conv_enabled_fpmath_mode_bf16() &&
       input.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_bf16);
   }
-  if (mkldnn_conv_enabled_fpmath_mode_tf32() &&
+  if (onednn_conv_enabled_fpmath_mode_tf32() &&
       input.scalar_type() == at::kFloat) {
     op_attr.set_fpmath_mode(dnnl_fpmath_mode_tf32);
   }
