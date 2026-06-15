@@ -188,7 +188,7 @@ class Shard(torch._C._distributed.Shard):
         *,
         with_padding: bool = True,
         contiguous: bool = True,
-    ) -> tuple[list[torch.Tensor], list[int]]:
+    ) -> tuple[list[torch.Tensor], list[IntLikeType]]:
         """
         This function uses torch.chunk to split a tensor into num_chunks shards along
         the Shard placement dimension, and return a list of shards with their pad sizes.
@@ -209,7 +209,7 @@ class Shard(torch._C._distributed.Shard):
         with_padding: bool,
         contiguous: bool,
         dim: int,
-    ) -> tuple[list[torch.Tensor], list[int]]:
+    ) -> tuple[list[torch.Tensor], list[IntLikeType]]:
         if dim > tensor.ndim:
             raise AssertionError(
                 f"Sharding dim {dim} greater than tensor ndim {tensor.ndim}"
@@ -222,7 +222,7 @@ class Shard(torch._C._distributed.Shard):
         full_chunk_size = (tensor.size(dim) + num_chunks - 1) // num_chunks
 
         shard_list: list[torch.Tensor] = []
-        pad_sizes: list[int] = []
+        pad_sizes: list[IntLikeType] = []
         for shard in tensor_list:
             if with_padding:
                 pad_size = Shard._get_shard_pad_size(full_chunk_size, shard, dim)
@@ -639,8 +639,8 @@ class Shard(torch._C._distributed.Shard):
     @staticmethod
     @maybe_run_for_local_tensor
     def _get_shard_pad_size(
-        full_size: int, local_tensor: torch.Tensor, dim: int
-    ) -> int:
+        full_size: IntLikeType, local_tensor: torch.Tensor, dim: int
+    ) -> IntLikeType:
         """
         Get the padding size of the local tensor on the shard dimension.
         """
@@ -648,10 +648,10 @@ class Shard(torch._C._distributed.Shard):
 
     @staticmethod
     def _compute_padding_info(
-        logical_size_on_dim: int,
+        logical_size_on_dim: IntLikeType,
         num_chunks: int,
         shard_dim: int,
-    ) -> tuple[bool, int]:
+    ) -> tuple[bool, IntLikeType]:
         # Use guard_or_true so unbacked symints don't trigger a data-dependent
         # guard; assume padding (uneven) when evenness can't be proven.
         from torch.fx.experimental.symbolic_shapes import guard_or_true
@@ -1167,7 +1167,7 @@ class _StridedShard(torch._C._distributed.StridedShard):
         *,
         with_padding: bool = True,
         contiguous: bool = True,
-    ) -> tuple[list[torch.Tensor], list[int]]:
+    ) -> tuple[list[torch.Tensor], list[IntLikeType]]:
         if self.dim > tensor.ndim:
             raise AssertionError(
                 f"Sharding dim {self.dim} greater than tensor ndim {tensor.ndim}"
@@ -1198,7 +1198,7 @@ class _StridedShard(torch._C._distributed.StridedShard):
                 shard = shard.contiguous()
             shard_list.append(shard)
 
-        pad_sizes: list[int] = []
+        pad_sizes: list[IntLikeType] = []
         if with_padding:
             # The amount of padding is determined by the local chunk with the
             # largest size. Avoid this Python max when padding is disabled so
