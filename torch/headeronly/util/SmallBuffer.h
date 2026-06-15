@@ -16,7 +16,7 @@
  * - No non-trivial types
  */
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 template <typename T, size_t N>
 class SmallBuffer {
@@ -86,7 +86,7 @@ class SmallBuffer {
   }
 };
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::SmallBuffer;

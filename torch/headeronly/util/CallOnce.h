@@ -7,7 +7,7 @@
 #include <mutex>
 #include <utility>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 // custom c10 call_once implementation to avoid the deadlock in std::call_once.
 // The implementation here is a simplified version from folly and likely much
@@ -66,7 +66,7 @@ class once_flag {
   std::atomic<bool> init_{false};
 };
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::call_once;

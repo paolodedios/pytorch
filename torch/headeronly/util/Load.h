@@ -2,7 +2,7 @@
 #include <torch/headeronly/macros/Macros.h>
 #include <cstring>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 namespace detail {
 
 template <typename T>
@@ -35,7 +35,7 @@ C10_HOST_DEVICE constexpr scalar_t load(const scalar_t* src) {
   return detail::LoadImpl<scalar_t>::apply(src);
 }
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::load;
