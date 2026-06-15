@@ -7188,6 +7188,8 @@ def sample_inputs_logit(op_info, device, dtype, requires_grad, **kwargs):
     yield SampleInput(make_arg((S, S, S)), 0.2)
     yield SampleInput(make_arg(()))
     yield SampleInput(make_arg(()), 0.2)
+    # eps > 0.5 exercises the branch where lo > hi; see issue #177839.
+    yield SampleInput(make_arg((S, S, S)), 0.6)
 
 def sample_inputs_isin(op_info, device, dtype, requires_grad, **kwargs):
     make_arg = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
@@ -16283,8 +16285,6 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.expectedFailure, "TestCommon", "test_noncontiguous_samples", device_type="mps"),
             # likely due to dispatching through infinitely_differentiable_native_group_norm_backward
             DecorateInfo(unittest.expectedFailure, "TestConsistency", "test_output_grad_match", device_type="mps", dtypes=(torch.float32,)),
-            # lazy dispatch failure
-            DecorateInfo(unittest.expectedFailure, "TestLazyOpInfo", "test_dispatched_to_lazy"),
             # native_group_norm expects contiguous inputs on CUDA
             DecorateInfo(unittest.expectedFailure, "TestMeta", "test_dispatch_symbolic_meta_outplace_all_strides", device_type="cuda"),
         ),
@@ -17503,7 +17503,6 @@ op_db: list[OpInfo] = [
         "nn.functional.multilabel_soft_margin_loss",
         supports_out=False,
         dtypes=floating_types_and(torch.half, torch.bfloat16),
-        dtypesIfMPS=floating_types_and(torch.half, torch.bfloat16, torch.int8, torch.uint8, torch.int32, torch.int16),
         sample_inputs_func=sample_inputs_multilabel_soft_margin_loss,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
@@ -18308,9 +18307,6 @@ op_db: list[OpInfo] = [
         aten_backward_name='log_sigmoid_backward',
         ref=reference_logsigmoid,
         dtypes=floating_types_and(torch.half, torch.bfloat16),
-        dtypesIfMPS=floating_types_and(
-            torch.half, torch.bfloat16, torch.int16, torch.int32, torch.uint8, torch.bool, torch.int8
-        ),
         supports_autograd=True,
         assert_autodiffed=False,
         supports_forward_ad=True,
@@ -18475,13 +18471,7 @@ op_db: list[OpInfo] = [
     OpInfo(
         "to",
         op=lambda x, *args, **kwargs: x.to(*args, **kwargs),
-        dtypes=all_types_and_complex_and(
-            torch.bfloat16,
-            torch.float16,
-            torch.bool,
-            torch.complex32,
-            torch.bcomplex32,
-        ),
+        dtypes=all_types_and_complex_and(torch.bfloat16, torch.float16, torch.bool),
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         supports_out=False,
@@ -27672,7 +27662,6 @@ python_ref_db = [
         skips=(
             # no _refs support for Tensor.__setitem__
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_errors'),
         ),
     ),
     PythonRefInfo(
