@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import torch
-from torch.distributed.distributed_c10d import ProcessGroup  # noqa: TC001
+
+
+if TYPE_CHECKING:
+    from torch.distributed.distributed_c10d import ProcessGroup
 
 
 @dataclass(frozen=True, slots=True)
