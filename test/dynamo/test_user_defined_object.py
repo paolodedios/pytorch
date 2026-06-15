@@ -1,5 +1,6 @@
 # Owner(s): ["module: dynamo"]
 
+import collections
 import dataclasses
 import types
 import unittest
@@ -345,6 +346,203 @@ class TestUserDefinedObjectConstruction(TestCase):
         def fn():
             values = []
             MySet.__init__(values, iterable=[1])
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_dict_init_with_wrong_receiver_not_supported(self):
+        class MyDict(dict):
+            pass
+
+        def fn():
+            values = []
+            MyDict.__init__(values, a=1)
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_list_init_with_wrong_receiver_not_supported(self):
+        class MyList(list):
+            pass
+
+        def fn():
+            values = {}
+            MyList.__init__(values, [1])
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_ordered_dict_init_with_wrong_receiver_not_supported(self):
+        def fn():
+            values = {}
+            collections.OrderedDict.__init__(values, a=1)
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_ordered_dict_subclass_init_with_wrong_receiver_not_supported(
+        self,
+    ):
+        class MyOrderedDict(collections.OrderedDict):
+            pass
+
+        def fn():
+            values = {}
+            MyOrderedDict.__init__(values, a=1)
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_ordered_dict_init_ignores_update_override(self):
+        class MyOrderedDict(collections.OrderedDict):
+            def update(self, *args, **kwargs):
+                self["sentinel"] = 1
+                return super().update(*args, **kwargs)
+
+        def fn():
+            values = MyOrderedDict()
+            collections.OrderedDict.__init__(values, {"a": 1})
+            return list(values.items())
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(), fn())
+
+    def test_explicit_ordered_dict_init_uses_setitem_override(self):
+        class MyOrderedDict(collections.OrderedDict):
+            def __setitem__(self, key, value):
+                super().__setitem__("sentinel", 1)
+                return super().__setitem__(key, value)
+
+        def fn():
+            values = MyOrderedDict()
+            collections.OrderedDict.__init__(values, {"a": 1})
+            return list(values.items())
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(), fn())
+
+    def test_explicit_defaultdict_init_with_wrong_receiver_not_supported(self):
+        def fn():
+            values = {}
+            collections.defaultdict.__init__(values)
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_defaultdict_init_resets_default_factory(self):
+        def fn():
+            values = collections.defaultdict(list)
+            collections.defaultdict.__init__(values)
+            return values.default_factory is None
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(), fn())
+
+    def test_explicit_frozenset_init_noop(self):
+        class MyFrozenSet(frozenset):
+            pass
+
+        def fn(t):
+            s = MyFrozenSet([1])
+            MyFrozenSet.__init__(s, [2])
+            return t.sin() + len(s) + (1 if 1 in s else 0)
+
+        x = torch.randn(2)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(x), fn(x))
+
+    def test_explicit_frozenset_init_with_kwargs_noop(self):
+        class MyFrozenSet(frozenset):
+            pass
+
+        def fn():
+            s = MyFrozenSet([1])
+            MyFrozenSet.__init__(s, iterable=[1])
+            return len(s)
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(), fn())
+
+    def test_explicit_frozenset_init_with_immutable_receiver_noop(self):
+        class MyFrozenSet(frozenset):
+            pass
+
+        def fn(t):
+            receiver = tuple()
+            MyFrozenSet.__init__(receiver, [1])
+            return t.sin()
+
+        x = torch.randn(2)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(x), fn(x))
+
+    def test_explicit_frozenset_init_with_wrong_receiver_not_supported(self):
+        class MyFrozenSet(frozenset):
+            pass
+
+        def fn():
+            values = []
+            MyFrozenSet.__init__(values, [1])
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_exact_frozenset_init_with_wrong_receiver_not_supported(self):
+        def fn():
+            values = []
+            frozenset.__init__(values, [1])
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_exact_set_init_with_wrong_receiver_not_supported(self):
+        def fn():
+            values = []
+            set.__init__(values, [1])
+            return values
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported, "Observed exception"
+        ):
+            opt_fn()
+
+    def test_explicit_exact_tuple_init_with_wrong_receiver_not_supported(self):
+        def fn():
+            values = []
+            tuple.__init__(values, [1])
             return values
 
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)

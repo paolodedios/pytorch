@@ -734,7 +734,10 @@ class UserDefinedClassVariable(UserDefinedVariable):
             isinstance(cls_attr, types.WrapperDescriptorType)
             and (
                 not is_torch_class(self.value)
-                or (name == "__init__" and issubclass(self.value, (dict, list, set)))
+                or (
+                    name == "__init__"
+                    and issubclass(self.value, (dict, list, set, frozenset))
+                )
             )
             and name not in ("__get__", "__set__", "__delete__")
         ):
@@ -1028,32 +1031,75 @@ class UserDefinedClassVariable(UserDefinedVariable):
             # instance as the sole argument; dispatch to the instance so the
             # default_factory and contents are preserved.
             return args[0].call_method(tx, name, [], kwargs)
-        elif self.value is collections.OrderedDict and name == "__init__" and args:
+        elif (
+            issubclass(self.value, collections.OrderedDict)
+            and name == "__init__"
+            and args
+        ):
+            receiver = args[0]
+            if not issubclass(receiver.python_type(), collections.OrderedDict):
+                raise_type_error(
+                    tx,
+                    f"descriptor '__init__' requires a 'collections.OrderedDict' object but received a '{receiver.python_type_name()}'",
+                )
             if len(args) > 1 or kwargs:
-                args[0].call_method(tx, "update", [*args[1:]], kwargs)
+                temp_dict_vt = variables.DictBuiltinVariable.call_custom_dict(
+                    tx, dict, *args[1:], **kwargs
+                )
+                if not isinstance(temp_dict_vt, ConstDictVariable):
+                    raise AssertionError(
+                        f"Expected ConstDictVariable, got {type(temp_dict_vt)}"
+                    )
+                for key, value in temp_dict_vt.items.items():
+                    receiver.call_method(tx, "__setitem__", [key.vt, value], {})
+            return variables.ConstantVariable.create(None)
+        elif (
+            issubclass(self.value, collections.defaultdict)
+            and name == "__init__"
+            and args
+        ):
+            receiver = args[0]
+            if not issubclass(receiver.python_type(), collections.defaultdict):
+                raise_type_error(
+                    tx,
+                    f"descriptor '__init__' requires a 'collections.defaultdict' object but received a '{receiver.python_type_name()}'",
+                )
+            receiver.call_method(tx, "__init__", args[1:], kwargs)
             return variables.ConstantVariable.create(None)
         elif issubclass(self.value, dict) and name == "__init__" and args:
+            receiver = args[0]
+            if not issubclass(receiver.python_type(), dict):
+                raise_type_error(
+                    tx,
+                    f"descriptor '__init__' requires a 'dict' object but received a '{receiver.python_type_name()}'",
+                )
             if len(args) > 1 or kwargs:
-                if isinstance(args[0], variables.UserDefinedObjectVariable):
-                    if args[0]._base_vt is None:
+                if isinstance(receiver, variables.UserDefinedObjectVariable):
+                    if receiver._base_vt is None:
                         raise AssertionError(
                             "UserDefinedObjectVariable._base_vt must not be None"
                         )
-                    args[0]._base_vt.call_method(tx, "__init__", args[1:], kwargs)
+                    receiver._base_vt.call_method(tx, "__init__", args[1:], kwargs)
                 else:
-                    args[0].call_method(tx, "__init__", args[1:], kwargs)
+                    receiver.call_method(tx, "__init__", args[1:], kwargs)
             return variables.ConstantVariable.create(None)
-        elif (
-            issubclass(self.value, list) and name == "__init__" and args and not kwargs
-        ):
-            if isinstance(args[0], variables.UserDefinedObjectVariable):
-                if args[0]._base_vt is None:
+        elif issubclass(self.value, list) and name == "__init__" and args:
+            receiver = args[0]
+            if not issubclass(receiver.python_type(), list):
+                raise_type_error(
+                    tx,
+                    f"descriptor '__init__' requires a 'list' object but received a '{receiver.python_type_name()}'",
+                )
+            if kwargs:
+                raise_type_error(tx, "list() takes no keyword arguments")
+            if isinstance(receiver, variables.UserDefinedObjectVariable):
+                if receiver._base_vt is None:
                     raise AssertionError(
                         "UserDefinedObjectVariable._base_vt must not be None"
                     )
-                args[0]._base_vt.call_method(tx, "__init__", args[1:], {})
+                receiver._base_vt.call_method(tx, "__init__", args[1:], {})
             else:
-                args[0].call_method(tx, "__init__", args[1:], {})
+                receiver.call_method(tx, "__init__", args[1:], {})
             return variables.ConstantVariable.create(None)
         elif issubclass(self.value, set) and name == "__init__" and args:
             receiver = args[0]
@@ -1072,6 +1118,23 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 receiver._base_vt.call_method(tx, "__init__", args[1:], {})
             else:
                 receiver.call_method(tx, "__init__", args[1:], {})
+            return variables.ConstantVariable.create(None)
+        elif issubclass(self.value, frozenset) and name == "__init__" and args:
+            receiver = args[0]
+            receiver_type = receiver.python_type()
+            if not (
+                (len(args) == 1 and not kwargs)
+                or (
+                    inspect.getattr_static(receiver_type, "__init__", None)
+                    is object.__init__
+                    and inspect.getattr_static(receiver_type, "__new__", None)
+                    is not object.__new__
+                )
+            ):
+                raise_type_error(
+                    tx,
+                    "object.__init__() takes exactly one argument (the instance to initialize)",
+                )
             return variables.ConstantVariable.create(None)
         elif issubclass(self.value, BaseException) and name == "__init__" and args:
             receiver = args[0]
@@ -1094,13 +1157,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             return generic_len(tx, args[0])
         elif name == "__init__" and not kwargs:
             init = self.lookup_cls_mro_attr("__init__")
-            if len(args) == 1 and (
-                init is object.__init__
-                or (
-                    issubclass(self.value, BaseException)
-                    and init in (BaseException.__init__, Exception.__init__)
-                )
-            ):
+            if len(args) == 1 and init is object.__init__:
                 return variables.ConstantVariable.create(None)
         elif issubclass(self.value, dict) and name != "__new__":
             # __new__ is handled below
@@ -2759,8 +2816,17 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         method = self._maybe_get_baseclass_method(name)
         if method is not None:
             if method is object.__init__:
-                if not args and not kwargs:
+                if (not args and not kwargs) or (
+                    inspect.getattr_static(type(self.value), "__init__", None)
+                    is object.__init__
+                    and inspect.getattr_static(type(self.value), "__new__", None)
+                    is not object.__new__
+                ):
                     return ConstantVariable.create(None)
+                raise_type_error(
+                    tx,
+                    "object.__init__() takes exactly one argument (the instance to initialize)",
+                )
 
             if is_standard_setattr(method) or issubclass(
                 type(self.value), threading.local
@@ -5013,14 +5079,10 @@ class DefaultDictVariable(UserDefinedDictVariable):
             # defaultdict.__init__(self, default_factory=None, *args, **kwargs)
             # https://github.com/python/cpython/blob/v3.13.3/Modules/_collectionsmodule.c#L2072
             # Extract default_factory, delegate rest to dict.__init__
+            default_factory = ConstantVariable.create(None)
             if len(args) >= 1:
                 if self.is_supported_factory(args[0]):
-                    self.default_factory = args[0]
-                    tx.output.side_effects.store_attr(
-                        self,
-                        "default_factory",
-                        self.default_factory,
-                    )
+                    default_factory = args[0]
                     args = list(args[1:])
                 else:
                     # CPython raises TypeError for non-callable first arg
@@ -5029,6 +5091,12 @@ class DefaultDictVariable(UserDefinedDictVariable):
                         tx,
                         args=["first argument must be callable or None"],
                     )
+            self.default_factory = default_factory
+            tx.output.side_effects.store_attr(
+                self,
+                "default_factory",
+                self.default_factory,
+            )
             if self._base_vt is None:
                 raise AssertionError("_base_vt must not be None in __init__")
             return self._base_vt.call_method(tx, "__init__", args, kwargs)

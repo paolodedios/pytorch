@@ -1095,7 +1095,10 @@ class BuiltinVariable(BaseBuiltinVariable):
 
         if obj.can_insert_in_graph() and not (
             fn is operator.getitem
-            and not issubclass(arg_types[0], variables.TensorVariable)
+            and (
+                len(arg_types) != 2
+                or not issubclass(arg_types[0], variables.TensorVariable)
+            )
         ):
             if obj.tensor_args_type(arg_types):
                 return obj._handle_insert_op_in_graph
@@ -1359,11 +1362,18 @@ class BuiltinVariable(BaseBuiltinVariable):
 
         return self._constant_eval_result(tx, tree, "<torch._dynamo.eval>")
 
-    def call_vars(self, tx: "InstructionTranslatorBase", *args: Any) -> VariableTracker:
+    def call_vars(
+        self,
+        tx: "InstructionTranslatorBase",
+        *args: VariableTracker,
+        **kwargs: VariableTracker,
+    ) -> VariableTracker:
+        if kwargs:
+            raise_type_error(tx, "vars() takes no keyword arguments")
         if len(args) == 0:
             return self._call_frame_locals_snapshot(tx)
         if len(args) != 1:
-            raise AssertionError(f"vars() expected 1 argument, got {len(args)}")
+            raise_type_error(tx, f"vars expected at most 1 argument, got {len(args)}")
         # vars(obj) is obj.__dict__ if __dict__ is present else TypeError
         try:
             return args[0].var_getattr(tx, "__dict__")
@@ -1463,16 +1473,25 @@ class BuiltinVariable(BaseBuiltinVariable):
                 fn = IN_PLACE_DESUGARING_MAP[fn]
                 args = [args[0], args[1]]  # type: ignore[assignment]
 
-            if fn is operator.getitem and isinstance(args[1], SymNodeVariable):
-                # Standard indexing will force specialization due to
-                # __index__.  Rewrite as a regular torch op which will
-                # trace fine
-                fn = torch.select
-                args = [
-                    args[0],
-                    variables.VariableTracker.build(tx, 0),
-                    args[1],
-                ]  # type: ignore[assignment]
+            if fn is operator.getitem:
+                if kwargs:
+                    raise_type_error(
+                        tx, "_operator.getitem() takes no keyword arguments"
+                    )
+                if len(args) != 2:
+                    raise_type_error(
+                        tx, f"getitem expected 2 arguments, got {len(args)}"
+                    )
+                if isinstance(args[1], SymNodeVariable):
+                    # Standard indexing will force specialization due to
+                    # __index__.  Rewrite as a regular torch op which will
+                    # trace fine
+                    fn = torch.select
+                    args = [
+                        args[0],
+                        variables.VariableTracker.build(tx, 0),
+                        args[1],
+                    ]  # type: ignore[assignment]
 
             # Interaction between ndarray and tensors:
             #   We prefer the tensor op whenever there are tensors involved
@@ -1658,9 +1677,19 @@ class BuiltinVariable(BaseBuiltinVariable):
                         args=list(e.args),
                     )
 
-        if self.fn is object and name == "__init__" and len(args) == 1 and not kwargs:
-            # object.__init__ is a no-op
-            return variables.ConstantVariable.create(None)
+        if self.fn is object and name == "__init__" and args:
+            receiver_type = args[0].python_type()
+            if (len(args) == 1 and not kwargs) or (
+                inspect.getattr_static(receiver_type, "__init__", None)
+                is object.__init__
+                and inspect.getattr_static(receiver_type, "__new__", None)
+                is not object.__new__
+            ):
+                return variables.ConstantVariable.create(None)
+            raise_type_error(
+                tx,
+                "object.__init__() takes exactly one argument (the instance to initialize)",
+            )
 
         if self.fn in (BaseException, Exception) and name == "__init__" and args:
             receiver = args[0]
@@ -1676,15 +1705,35 @@ class BuiltinVariable(BaseBuiltinVariable):
             if isinstance(receiver, variables.ExceptionVariable):
                 return receiver.call_method(tx, "__init__", args[1:], kwargs)
 
+        if self.fn in (frozenset, tuple) and name == "__init__" and args:
+            receiver_type = args[0].python_type()
+            if (len(args) == 1 and not kwargs) or (
+                inspect.getattr_static(receiver_type, "__init__", None)
+                is object.__init__
+                and inspect.getattr_static(receiver_type, "__new__", None)
+                is not object.__new__
+            ):
+                return variables.ConstantVariable.create(None)
+            raise_type_error(
+                tx,
+                "object.__init__() takes exactly one argument (the instance to initialize)",
+            )
+
         if self.fn in (set, frozenset, list, tuple):
-            if isinstance(args[0], variables.UserDefinedObjectVariable):
-                if args[0]._base_vt is None:
+            receiver = args[0]
+            if not issubclass(receiver.python_type(), self.fn):
+                raise_type_error(
+                    tx,
+                    f"descriptor '__init__' requires a '{self.fn.__name__}' object but received a '{receiver.python_type_name()}'",
+                )
+            if isinstance(receiver, variables.UserDefinedObjectVariable):
+                if receiver._base_vt is None:
                     raise AssertionError(
                         "UserDefinedObjectVariable._base_vt must not be None"
                     )
-                return args[0]._base_vt.call_method(tx, name, args[1:], kwargs)
+                return receiver._base_vt.call_method(tx, name, args[1:], kwargs)
             else:
-                return args[0].call_method(tx, name, args[1:], kwargs)
+                return receiver.call_method(tx, name, args[1:], kwargs)
 
         if self.fn is str and len(args) >= 1:
             resolved_fn = getattr(self.fn, name, None)
@@ -2027,8 +2076,17 @@ class BuiltinVariable(BaseBuiltinVariable):
         return round_method.call_function(tx, list(args), kwargs)
 
     def call_range(
-        self, tx: "InstructionTranslatorBase", *args: VariableTracker
+        self,
+        tx: "InstructionTranslatorBase",
+        *args: VariableTracker,
+        **kwargs: VariableTracker,
     ) -> VariableTracker | None:
+        if kwargs:
+            raise_type_error(tx, "range() takes no keyword arguments")
+        if len(args) == 0:
+            raise_type_error(tx, "range expected at least 1 argument, got 0")
+        if len(args) > 3:
+            raise_type_error(tx, f"range expected at most 3 arguments, got {len(args)}")
         if check_unspec_or_constant_args(args, {}):
             return variables.RangeVariable(list(args))
         elif self._dynamic_args(*args):
@@ -2230,6 +2288,12 @@ class BuiltinVariable(BaseBuiltinVariable):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
+        if kwargs:
+            raise_type_error(tx, "len() takes no keyword arguments")
+        if len(args) != 1:
+            raise_type_error(
+                tx, f"len() takes exactly one argument ({len(args)} given)"
+            )
         return generic_len(tx, args[0])
 
     def call_getitem(
@@ -2238,6 +2302,10 @@ class BuiltinVariable(BaseBuiltinVariable):
         *args: VariableTracker,
         **kwargs: VariableTracker,
     ) -> VariableTracker:
+        if kwargs:
+            raise_type_error(tx, "_operator.getitem() takes no keyword arguments")
+        if len(args) != 2:
+            raise_type_error(tx, f"getitem expected 2 arguments, got {len(args)}")
         return vt_getitem(tx, args[0], args[1])
 
     def call_isinstance(
@@ -2363,8 +2431,17 @@ class BuiltinVariable(BaseBuiltinVariable):
         return variables.SuperVariable(a, b)
 
     def call_next(
-        self, tx: "InstructionTranslatorBase", *args: VariableTracker
+        self,
+        tx: "InstructionTranslatorBase",
+        *args: VariableTracker,
+        **kwargs: VariableTracker,
     ) -> VariableTracker:
+        if kwargs:
+            raise_type_error(tx, "next() takes no keyword arguments")
+        if len(args) == 0:
+            raise_type_error(tx, "next expected at least 1 argument, got 0")
+        if len(args) > 2:
+            raise_type_error(tx, f"next expected at most 2 arguments, got {len(args)}")
         arg = args[0]
         try:
             return arg.next_variable(tx)

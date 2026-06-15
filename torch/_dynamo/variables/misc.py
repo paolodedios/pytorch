@@ -224,8 +224,19 @@ class SuperVariable(VariableTracker):
         # applied if it has one. We currently don't have polyfills for all the
         # relevant `tp_descr_get`, so we explicitly handle the cases we care
         # about here (e.g., note the staticmethod, classmethod cases).
-        if inner_fn is object.__init__ and not args and not kwargs:
-            return variables.ConstantVariable.create(None)
+        if inner_fn is object.__init__:
+            receiver_type = self.objvar.python_type()
+            if (not args and not kwargs) or (
+                inspect.getattr_static(receiver_type, "__init__", None)
+                is object.__init__
+                and inspect.getattr_static(receiver_type, "__new__", None)
+                is not object.__new__
+            ):
+                return variables.ConstantVariable.create(None)
+            raise_type_error(
+                tx,
+                "object.__init__() takes exactly one argument (the instance to initialize)",
+            )
         elif inner_fn is torch.nn.Module.__init__:
             objvar = self.objvar
             from ..side_effects import AttributeMutationNew

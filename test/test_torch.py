@@ -225,11 +225,7 @@ class TestTorchDeviceType(TestCase):
     @decorateIf(
         unittest.expectedFailure,
         lambda params: TEST_WITH_TORCHDYNAMO
-        and not (
-            sys.version_info >= (3, 14)
-            and params["device"] == "cpu"
-            and params["dtype"] is torch.bfloat16
-        ),
+        and not (sys.version_info >= (3, 14) and params["device"] == "cpu"),
     )
     @onlyNativeDeviceTypes
     @dtypes(*all_types_and_complex_and(torch.half, torch.bool, torch.bfloat16))
