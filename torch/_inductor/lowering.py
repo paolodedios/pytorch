@@ -28,6 +28,11 @@ from torch._functorch._aot_autograd.descriptors import (
     SavedForBackwardsNoVcCheckAOTOutput,
 )
 from torch._higher_order_ops.associative_scan import associative_scan_op
+from torch._higher_order_ops.flex_gemm import (
+    _SUPPORTED_FLEX_GEMM_OP_NAMES,
+    flex_gemm_hop,
+    FLEX_GEMM_OP_INPUT_INDICES,
+)
 from torch._higher_order_ops.triton_kernel_wrap import triton_kernel_wrapper_mutation
 from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.opaque_object import is_opaque_value
@@ -3753,6 +3758,44 @@ make_fallback(aten._sparse_coo_tensor_with_dims_and_tensors)
 make_fallback(aten.to_sparse)
 make_fallback(aten._to_sparse)
 
+
+@register_lowering(aten._to_dense.default, type_promotion_kind=None)
+def _to_dense(x, dtype=None, masked_grad=None):
+    x = ir.ExternKernel.realize_input(x)
+    size = x.get_size()
+    device = x.get_device()
+    if device is None:
+        raise AssertionError("realized _to_dense input must have a device")
+    output_dtype = dtype if dtype is not None else x.get_dtype()
+
+    def unflatten_args(tensor_args, non_tensor_args):
+        return [tensor_args[0], *non_tensor_args], {}
+
+    # cpp_wrapper has no direct AOTI C shim for _to_dense, so route through the
+    # proxy-executor fallback while still describing the single dense output.
+    # MultiOutput lets this single-output op force a contiguous strided output
+    # layout instead of inheriting anything from the opaque MKLDNN input.
+    packed = ir.FallbackKernel(
+        ir.MultiOutputLayout(device=device),
+        aten._to_dense.default,
+        [x],
+        [dtype, masked_grad],
+        unflatten_args,
+    )
+    out = ir.MultiOutput(
+        ir.FixedLayout(
+            device,
+            output_dtype,
+            size,
+            ir.FlexibleLayout.contiguous_strides(size),
+        ),
+        packed,
+        [],
+    )
+    packed.outputs = [out]
+    return TensorBox.create(out)
+
+
 # 6) Pattern-matched
 make_fallback(
     aten._scaled_dot_product_efficient_attention.default,
@@ -7132,13 +7175,11 @@ def make_reduction(
 ) -> Callable[..., TensorBox]:
     def inner(x, axis=None, keepdims=False, *, dtype=None) -> TensorBox:
         # For argmax/argmin on boolean tensors, cast to int32 first to ensure
-        # correct comparison in Triton. See https://github.com/pytorch/pytorch/issues/174069
-        # Only apply on Triton backend; MPS handles bool comparisons natively.
-        if (
-            reduction_type in ("argmax", "argmin")
-            and x.get_dtype() == torch.bool
-            and is_triton(x)
-        ):
+        # correct comparison. Boolean comparisons can produce incorrect indices
+        # on multiple backends (Triton, CPU, etc.).
+        # See https://github.com/pytorch/pytorch/issues/174069
+        # and https://github.com/pytorch/pytorch/issues/184893
+        if reduction_type in ("argmax", "argmin") and x.get_dtype() == torch.bool:
             x = to_dtype(x, torch.int32)
         kwargs = _make_reduction_inner(
             x,
@@ -8873,6 +8914,93 @@ def process_subgraph_nodes(graph_module: torch.fx.GraphModule, args: list[Any]):
         raise RuntimeError("No output node found in graph")
 
     return output
+
+
+@register_lowering(flex_gemm_hop, type_promotion_kind=None)
+def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
+    """Lower FlexGEMM to the regular subgraph path or the QUACK template."""
+    if kernel_options.get("backend", "TRITON") != "QUACK":
+        return process_subgraph_nodes(subgraph.graph_module, list(args))
+    if gemm_op not in FLEX_GEMM_OP_INPUT_INDICES:
+        raise NotImplementedError(
+            f"FlexGEMM QUACK backend currently supports only aten.{_SUPPORTED_FLEX_GEMM_OP_NAMES}"
+        )
+    tuned = kernel_options.get("tuned", False)
+    if tuned:
+        raise NotImplementedError(
+            "FlexGEMM generated epilogues do not support tuned=True yet"
+        )
+    unsupported_options = OrderedSet(kernel_options) - OrderedSet(["backend", "tuned"])
+    if unsupported_options:
+        raise NotImplementedError(
+            f"unsupported FlexGEMM kernel options: {sorted(unsupported_options)}"
+        )
+
+    from torch._inductor.kernel.flex_gemm.epilogue import (
+        gemm_node as flex_gemm_node,
+        materialize_flex_gemm_epilogue,
+        output_node as flex_gemm_output_node,
+    )
+    from torch._inductor.kernel.flex_gemm.template import flex_gemm_epilogue_template
+    from torch._inductor.select_algorithm import autotune_select_algorithm
+
+    mat1_index, _ = FLEX_GEMM_OP_INPUT_INDICES[gemm_op]
+    unsupported_gemm_kwargs = OrderedSet(gemm_kwargs) - OrderedSet(["alpha", "beta"])
+    if unsupported_gemm_kwargs:
+        raise NotImplementedError(
+            f"unsupported FlexGEMM GEMM kwargs: {sorted(unsupported_gemm_kwargs)}"
+        )
+    gemm_fx_node = flex_gemm_node(subgraph.graph_module, gemm_op)
+    placeholders = [
+        node for node in subgraph.graph_module.graph.nodes if node.op == "placeholder"
+    ]
+    placeholder_args = dict(zip(placeholders, args, strict=True))
+    gemm_args: list[TensorBox] = []
+    for arg in gemm_fx_node.args:
+        gemm_arg = placeholder_args[arg] if isinstance(arg, torch.fx.Node) else arg
+        if not isinstance(gemm_arg, TensorBox):
+            raise NotImplementedError("FlexGEMM lowering expects tensor GEMM operands")
+        gemm_args.append(gemm_arg)
+    alpha = gemm_fx_node.kwargs.get("alpha", gemm_kwargs.get("alpha", 1.0))
+    beta = gemm_fx_node.kwargs.get("beta", gemm_kwargs.get("beta", 1.0))
+    if not isinstance(alpha, (int, float)) or not isinstance(beta, (int, float)):
+        raise NotImplementedError("FlexGEMM alpha/beta must be static scalars")
+    output_meta = flex_gemm_output_node(subgraph.graph_module).meta.get("val")
+    if output_meta is None:
+        raise NotImplementedError(
+            "FlexGEMM generated epilogues require output metadata"
+        )
+    layout = ir.FixedLayout(
+        gemm_args[mat1_index].get_device_or_error(),
+        output_meta.dtype,
+        ir.convert_shape_to_inductor(output_meta.shape),
+        ir.convert_shape_to_inductor(output_meta.stride()),
+    )
+    epilogue_name, epilogue_source = materialize_flex_gemm_epilogue(
+        subgraph.graph_module, gemm_op
+    )
+    input_nodes = [ir.TemplateBuffer.realize_template_input(arg) for arg in gemm_args]
+    choices: list[Any] = []
+    error = flex_gemm_epilogue_template.maybe_append_choice(
+        choices,
+        input_nodes=input_nodes,
+        layout=layout,
+        config=ir.FlexGemmEpilogueConfig(
+            epilogue_name=epilogue_name,
+            epilogue_source=epilogue_source,
+            gemm_op=gemm_op.name().removeprefix("aten::"),
+            alpha=float(alpha),
+            beta=float(beta),
+            tuned=tuned,
+            out_dtype=output_meta.dtype,
+        ),
+    )
+    if error is not None:
+        raise error
+    result, _ = autotune_select_algorithm(
+        "flex_gemm_epilogue", choices, input_nodes, layout
+    )
+    return (result,)
 
 
 # Import the control_deps_op HOP for lowering
