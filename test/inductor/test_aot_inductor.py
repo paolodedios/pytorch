@@ -3356,11 +3356,11 @@ class AOTInductorTestsTemplate:
         Original PR: https://github.com/pytorch/pytorch/pull/139054
         """
         from torch.testing._internal.common_quantization import (
-            _static_reference_quantized_linear_module,
+            _static_quantized_linear_module,
         )
 
         example_inputs = (torch.randn(32, 16),)
-        model = _static_reference_quantized_linear_module(
+        model = _static_quantized_linear_module(
             N=15, K=16, bias=True, example_input=example_inputs[0]
         )
         model = torch.export.export(model, example_inputs, strict=True).module()
@@ -8114,6 +8114,30 @@ class AOTInductorTestsTemplate:
             "x": {0: dim_even},
         }
         self.check_model(Model(), example_inputs, dynamic_shapes=dynamic_shapes)
+
+    def test_composed_dynamic_size_integer_symbol_recovery(self):
+        class Model(torch.nn.Module):
+            def forward(self, x):
+                return x.unflatten(0, (-1, 1496)).sum(dim=1)
+
+        model = Model().to(self.device)
+        dynamic_shapes = {
+            "x": {0: 1496 * Dim("batch", min=1, max=8)},
+        }
+        compile_inputs = (torch.ones(4 * 1496, 2, device=self.device),)
+        package_path, code = run_and_get_cpp_code(
+            AOTIRunnerUtil.compile,
+            model,
+            compile_inputs,
+            dynamic_shapes=dynamic_shapes,
+        )
+        self.assertIn("c10::div_floor_integer", code)
+        self.assertNotIn("(1.0/1496.0)", code)
+
+        optimized = torch._inductor.aoti_load_package(package_path)
+        for batch in (1, 2, 3, 4, 8):
+            inputs = (torch.ones(batch * 1496, 2, device=self.device),)
+            self.assertEqual(optimized(*inputs), model(*inputs))
 
     def test_boolean_indexing(self):
         class Model(torch.nn.Module):
