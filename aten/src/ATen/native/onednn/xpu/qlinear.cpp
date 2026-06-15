@@ -1,7 +1,7 @@
 #include <torch/library.h>
 
-#include <ATen/native/mkldnn/xpu/detail/oneDNN.h>
-#include <ATen/native/mkldnn/xpu/qlinear.h>
+#include <ATen/native/onednn/xpu/detail/oneDNN.h>
+#include <ATen/native/onednn/xpu/qlinear.h>
 #include <c10/core/ScalarType.h>
 
 using namespace at::native::onednn;
