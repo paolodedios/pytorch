@@ -1232,6 +1232,7 @@ class TestOpSchemaMetaProperties(TestCase):
                 [8],  # normalized_shape
                 stat_meta,  # rstd
                 weight_meta,  # weight
+                [True, True],  # output_mask
             ),
             {},
         )
@@ -1246,7 +1247,7 @@ class TestOpSchemaMetaProperties(TestCase):
         # Without weight: d_weight=None
         strategies = rms_norm_bwd_single_dim_strategy(
             torch.ops.aten._fused_rms_norm_backward.default,
-            (input_meta, input_meta, [8], stat_meta, None),
+            (input_meta, input_meta, [8], stat_meta, None, [True, False]),
             {},
         )
         self.assertEqual(len(strategies), 1)
@@ -1254,6 +1255,16 @@ class TestOpSchemaMetaProperties(TestCase):
         # outputs: [d_input, None] + inputs: [grad_out, input, rstd]
         self.assertEqual(len(rule), 5)
         self.assertIsNone(rule[1])  # d_weight
+
+        strategies = rms_norm_bwd_single_dim_strategy(
+            torch.ops.aten._fused_rms_norm_backward.default,
+            (input_meta, input_meta, [8], stat_meta, weight_meta, [False, True]),
+            {},
+        )
+        self.assertEqual(len(strategies), 1)
+        rule = strategies[0]
+        self.assertIsNone(rule[0])  # d_input
+        self.assertIsInstance(rule[1], Partial)  # d_weight
 
     def test_constant_pad_nd_allows_shard_on_non_padded_dim(self):
         """constant_pad_nd should allow sharding on non-padded dims."""

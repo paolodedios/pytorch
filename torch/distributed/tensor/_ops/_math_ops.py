@@ -413,6 +413,7 @@ LINEAR_REDUCTION_OPS = [
     LINEAR_REDUCTION_OPS,
     schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )
 def linear_reduction_single_dim_strategy(
     op: torch._ops.OpOverload,
@@ -443,6 +444,7 @@ register_single_dim_strategy(
     [aten._foreach_max.default],
     schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )(linear_reduction_single_dim_strategy)
 
 
@@ -790,6 +792,7 @@ _STD_VAR_OPS = [
     _STD_VAR_OPS,
     schema_info=RuntimeSchemaInfo(1, ["keepdim"]),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )
 def std_var_single_dim_strategy(
     op: torch._ops.OpOverload,
@@ -854,6 +857,7 @@ def _get_norm_reduction_op(norm_type: int | float | str) -> ReductionOpType:
     [aten.linalg_vector_norm.default, aten.norm.Scalar],
     schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )
 def vector_norm_single_dim_strategy(
     op: torch._ops.OpOverload,
@@ -888,37 +892,19 @@ def vector_norm_single_dim_strategy(
     )
 
 
-@register_op_strategy(
-    [aten._foreach_norm.Scalar], schema_info=RuntimeSchemaInfo(1, needs_pytree=True)
-)
-def foreach_norm_strategy(op_schema: OpSchema) -> TupleStrategy:
-    args_schema = op_schema.args_schema
-    input_tuple_strategy = args_schema[0]
-    if not isinstance(input_tuple_strategy, TupleStrategy):
-        raise AssertionError(
-            f"Expected TupleStrategy, got {type(input_tuple_strategy)}"
-        )
-    norm_type = args_schema[1] if len(args_schema) > 1 else 2
-    if not isinstance(norm_type, (int, float, str)):
-        raise AssertionError(f"Expected int, float, or str, got {type(norm_type)}")
-    output_tuple_strategy_children: list[OpStrategy] = []
-    for op_strategy in input_tuple_strategy.children:
-        if not isinstance(op_strategy, OpStrategy):
-            raise AssertionError(f"Expected OpStrategy, got {type(op_strategy)}")
-        reduce_dims = list(range(op_strategy.ndim))
-        output_strategy = common_reduction_strategy(
-            op_strategy,
-            reduce_dims,
-            reduction_op=_get_norm_reduction_op(norm_type),
-        )
-        output_tuple_strategy_children.append(output_strategy)
-    return TupleStrategy(output_tuple_strategy_children)
+register_single_dim_strategy(
+    [aten._foreach_norm.Scalar],
+    schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
+    allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
+)(vector_norm_single_dim_strategy)
 
 
 @register_single_dim_strategy(
     [aten.linalg__powsum.default],
     schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
 )
 def powsum_single_dim_strategy(
     op: torch._ops.OpOverload,
@@ -944,54 +930,12 @@ def powsum_single_dim_strategy(
     )
 
 
-@register_op_strategy(
-    [aten._foreach_powsum.Scalar], schema_info=RuntimeSchemaInfo(1, needs_pytree=True)
-)
-def foreach_powsum_strategy(op_schema: OpSchema) -> TupleStrategy:
-    args_schema = op_schema.args_schema
-    input_tuple_strategy = args_schema[0]
-    if not isinstance(input_tuple_strategy, TupleStrategy):
-        raise AssertionError(
-            f"Expected TupleStrategy, got {type(input_tuple_strategy)}"
-        )
-    output_tuple_strategy_children: list[OpStrategy] = []
-    for op_strategy in input_tuple_strategy.children:
-        if not isinstance(op_strategy, OpStrategy):
-            raise AssertionError(f"Expected OpStrategy, got {type(op_strategy)}")
-        reduce_dims = list(range(op_strategy.ndim))
-        output_strategy = common_reduction_strategy(
-            op_strategy,
-            reduce_dims,
-            reduction_linear=True,
-            reduction_op="sum",
-        )
-        output_tuple_strategy_children.append(output_strategy)
-    return TupleStrategy(output_tuple_strategy_children)
-
-
-@register_op_strategy(
-    [aten._foreach_max.default], schema_info=RuntimeSchemaInfo(1, needs_pytree=True)
-)
-def foreach_max_strategy(op_schema: OpSchema) -> TupleStrategy:
-    args_schema = op_schema.args_schema
-    input_tuple_strategy = args_schema[0]
-    if not isinstance(input_tuple_strategy, TupleStrategy):
-        raise AssertionError(
-            f"Expected TupleStrategy, got {type(input_tuple_strategy)}"
-        )
-    output_tuple_strategy_children: list[OpStrategy] = []
-    for op_strategy in input_tuple_strategy.children:
-        if not isinstance(op_strategy, OpStrategy):
-            raise AssertionError(f"Expected OpStrategy, got {type(op_strategy)}")
-        reduce_dims = list(range(op_strategy.ndim))
-        output_strategy = common_reduction_strategy(
-            op_strategy,
-            reduce_dims,
-            reduction_linear=True,
-            reduction_op="max",
-        )
-        output_tuple_strategy_children.append(output_strategy)
-    return TupleStrategy(output_tuple_strategy_children)
+register_single_dim_strategy(
+    [aten._foreach_powsum.Scalar],
+    schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
+    allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
+)(powsum_single_dim_strategy)
 
 
 _REPLICATE_ONLY_OPS = [
@@ -1491,14 +1435,29 @@ def layer_norm_single_dim_strategy(
     return strategies
 
 
+@register_single_dim_strategy(
+    [aten._fused_rms_norm.default],
+    schema_info=RuntimeSchemaInfo(1),
+    allow_uneven_sharding=True,
+)
 def rms_norm_single_dim_strategy(
     op: torch._ops.OpOverload,
     args_schema: tuple[Any, ...],
     kwargs_schema: dict[str, Any],
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    if len(args_schema) != 4:
+        raise AssertionError(f"Expected 4 args, got {len(args_schema)}")
     input_meta = args_schema[0]
     normalized_shape = args_schema[1]
     weight_meta = args_schema[2]
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+    if not isinstance(normalized_shape, (int, Sequence, torch.Size)):
+        raise AssertionError(
+            f"Expected int, Sequence, or torch.Size, got {type(normalized_shape)}"
+        )
+    if weight_meta is not None and not isinstance(weight_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(weight_meta)}")
 
     axis = len(input_meta.shape) - len(normalize_to_torch_size(normalized_shape))
 
@@ -1513,14 +1472,6 @@ def rms_norm_single_dim_strategy(
             rule.append(Replicate())
         strategies.append(rule)
     return strategies
-
-
-@register_op_strategy(
-    [aten._fused_rms_norm.default],
-    schema_info=RuntimeSchemaInfo(1),
-)
-def fused_rms_norm_strategy(op_schema: OpSchema) -> OpStrategy:
-    return _common_norm_forward_strategy(op_schema, rms_norm=True)
 
 
 def _common_norm_backward_strategy(
@@ -1779,26 +1730,52 @@ def layer_norm_bwd_single_dim_strategy(
     return _norm_backward_single_dim_strategy(op, args_schema, kwargs_schema)
 
 
+@register_single_dim_strategy(
+    [aten._fused_rms_norm_backward.default],
+    schema_info=RuntimeSchemaInfo(2),
+)
 def rms_norm_bwd_single_dim_strategy(
     op: torch._ops.OpOverload,
     args_schema: tuple[Any, ...],
     kwargs_schema: dict[str, Any],
-) -> list[list[Placement | _ShardingPlaceholder | None]]:
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    if len(args_schema) != 6:
+        raise AssertionError(f"Expected 6 args, got {len(args_schema)}")
+    grad_out_meta = args_schema[0]
     input_meta = args_schema[1]
     normalized_shape = args_schema[2]
-    # rstd = args_schema[3]
+    rstd_meta = args_schema[3]
     weight_meta = args_schema[4]
+    output_mask = args_schema[5]
+
+    if not isinstance(grad_out_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(grad_out_meta)}")
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+    if not isinstance(normalized_shape, (int, Sequence, torch.Size)):
+        raise AssertionError(
+            f"Expected int, Sequence, or torch.Size, got {type(normalized_shape)}"
+        )
+    if not isinstance(rstd_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(rstd_meta)}")
+    if weight_meta is not None and not isinstance(weight_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(weight_meta)}")
+    if not isinstance(output_mask, list) or len(output_mask) != 2:
+        raise AssertionError(
+            f"Expected output_mask to be list of length 2, got {type(output_mask)}"
+        )
+    if weight_meta is None and output_mask[1] is not False:
+        raise AssertionError(
+            "output_mask[1] should not be `True` while weight argument is `None`."
+        )
 
     axis = len(input_meta.shape) - len(normalize_to_torch_size(normalized_shape))
 
     strategies: list[list[Placement | _ShardingPlaceholder | None]] = []
     for dim in range(axis):
-        # outputs: [d_input, d_weight] — always 2 per schema
-        # d_weight uses None when weight is None
-        # inputs: [grad_out, input, rstd, weight?]
         rule: list[Placement | _ShardingPlaceholder | None] = [
-            _ShardingPlaceholder(dim),  # d_input
-            Partial("sum") if weight_meta is not None else None,  # d_weight
+            _ShardingPlaceholder(dim) if output_mask[0] else None,  # d_input
+            Partial("sum") if output_mask[1] else None,  # d_weight
             _ShardingPlaceholder(dim),  # grad_out
             _ShardingPlaceholder(dim),  # input
             _ShardingPlaceholder(dim),  # rstd
@@ -1807,15 +1784,7 @@ def rms_norm_bwd_single_dim_strategy(
             rule.append(Replicate())
         strategies.append(rule)
 
-    return strategies
-
-
-@register_op_strategy(
-    [aten._fused_rms_norm_backward.default],
-    schema_info=RuntimeSchemaInfo(2),
-)
-def fused_rms_norm_bwd_strategy(op_schema: OpSchema) -> OpStrategy:
-    return _common_norm_backward_strategy(op_schema, rms_norm=True)
+    return cast(list[list[Placement | _ShardingPlaceholder]], strategies)
 
 
 @register_single_dim_strategy(
