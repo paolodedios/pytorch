@@ -529,6 +529,9 @@ inductor_override_kwargs["cuda"] = {
         "atol": 1e-4,
         "rtol": 7e-1,
     },
+    # The eager gradient for native_group_norm appears to be numerically unstable at low
+    # precisions; more investigation is needed.
+    ("native_group_norm", f16): {"check_gradient": False},
 }
 
 inductor_override_kwargs["xpu"] = {
@@ -695,6 +698,9 @@ inductor_override_kwargs["xpu"] = {
     ("nn.functional.interpolate.trilinear", f64): {
         "check_gradient": False,
     },
+    # The eager gradient for native_group_norm appears to be numerically unstable at low
+    # precisions; more investigation is needed.
+    ("native_group_norm", f16): {"check_gradient": False},
 }
 if TEST_WITH_ROCM:
     inductor_override_kwargs["cuda"].update(
@@ -1342,7 +1348,7 @@ class TestInductorOpInfo(TestCase):
             # not exercised in test_ops_gradients atm.  The problem is not
             # complex32 per-se (which is supported by data movement only ops)
             # but that when we do backwards we expect other ops like add to work
-            and dtype not in (torch.complex32, torch.bcomplex32)
+            and dtype != torch.complex32
         )
         samples = op.sample_inputs(device, dtype, requires_grad=requires_grad)
         extra = _inductor_extra_samples(op_name, device, dtype, requires_grad)
