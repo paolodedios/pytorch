@@ -4083,6 +4083,14 @@ def module_error_inputs_torch_nn_LogSoftmax(module_info, device, dtype, requires
             error_type=TypeError,
             error_regex=r"dim must be an int or None",
         ),
+        ErrorModuleInput(
+            ModuleInput(
+                constructor_input=FunctionInput(dim=True),
+            ),
+            error_on=ModuleErrorEnum.CONSTRUCTION_ERROR,
+            error_type=TypeError,
+            error_regex=r"dim must be an int or None",
+        ),
     ]
 
 
