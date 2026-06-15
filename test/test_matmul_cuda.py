@@ -24,7 +24,6 @@ from torch.testing._internal.common_cuda import (
     blas_library_context,
     IS_SM90,
     PLATFORM_SUPPORTS_BF16,
-    SM80OrLater,
     SM90OrLater,
     SM100OrLater,
 )
