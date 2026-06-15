@@ -197,6 +197,9 @@ def inner_fn(args):
     unwrapped_args.extend(args[1:])
     args.clear()
     unwrapped_outs = compiled_fn(unwrapped_args)
+    _out_idx = 0
+    _has_subclass_symint_outputs = len(unwrapped_outs) == 1
+    _out_idx = max(_out_idx, 1)
     return (unwrapped_outs[0],)""",
         )
 
@@ -223,6 +226,9 @@ def inner_fn(args):
     unwrapped_args.extend(args[1:])
     args.clear()
     unwrapped_outs = compiled_fn(unwrapped_args)
+    _out_idx = 0
+    _has_subclass_symint_outputs = len(unwrapped_outs) == 1
+    _out_idx = max(_out_idx, 1)
     return (unwrapped_outs[0],)""",
         )
 
