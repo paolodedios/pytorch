@@ -21,7 +21,7 @@
 #include <list>
 #include <ostream>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 /// SparseBitVector is an implementation of a bitvector that is sparse by only
 /// storing the elements that have non-zero bits set.  In order to make this
@@ -890,7 +890,7 @@ std::ostream& operator<<(
   return stream;
 }
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::operator<<;

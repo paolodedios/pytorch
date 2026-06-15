@@ -2,6 +2,8 @@
 
 #include <torch/headeronly/util/sparse_bitset.h>
 
+#include <sstream>
+
 TEST(TestSparseBitset, TestSparseBitset) {
   torch::headeronly::SparseBitVector<> bv;
   bv.set(5);
@@ -13,6 +15,11 @@ TEST(TestSparseBitset, TestSparseBitset) {
   // exercise the element type name as a standalone token
   using Elt = torch::headeronly::SparseBitVectorElement<>;
   (void)sizeof(Elt);
+
+  // operator<< (indirect coverage)
+  std::ostringstream os;
+  os << bv;
+  EXPECT_FALSE(os.str().empty());
 
   // c10 alias
   c10::SparseBitVector<> bv2;
