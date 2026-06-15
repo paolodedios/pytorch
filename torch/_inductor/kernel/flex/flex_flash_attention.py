@@ -111,12 +111,12 @@ def get_flex_flash_fwd_configs(
 
     if (
         has_score_mod
-        and score_mod_vec_size is None
-        and not aux_scalar_symbols
+        and not has_aux_tensors
         and torch._inductor.config.max_autotune
     ):
-        # No captured score_mod tensors or scalars means any kernel-supported
-        # power-of-two vector width is legal, so autotune the full CuTe score_mod range.
+        # Without captured score_mod tensors, there are no aux-load alignment or
+        # contiguity constraints. Scalar captures are lane-uniform aux_scalars,
+        # so any kernel-supported power-of-two vector width is legal.
         score_mod_vec_sizes = (1, 2, 4, 8, 16, 32, 64, 128)
     else:
         score_mod_vec_sizes = (score_mod_vec_size,)

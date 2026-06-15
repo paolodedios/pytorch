@@ -317,7 +317,8 @@ function install_spmd_types() {
 
 function install_flash_attn_cute() {
   echo "Installing FlashAttention 4 from PyPI..."
-  if [[ "${DESIRED_CUDA:-}" == cu13* || "${CUDA_VERSION:-}" == 13.* || "${BUILD_ENVIRONMENT:-}" == *cuda13* ]]; then
+  # b17 adds aux_scalars; CUDA 13 wheels are behind the cu13 extra.
+  if [[ "${DESIRED_CUDA:-}" == 13.* || "${CUDA_VERSION:-}" == 13.* || "${BUILD_ENVIRONMENT:-}" == *cuda13* ]]; then
     pip_install "flash-attn-4[cu13]==4.0.0b17"
   else
     pip_install flash-attn-4==4.0.0b17

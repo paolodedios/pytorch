@@ -27,6 +27,8 @@
     dv_out_transposed = DV.transpose(1, 2)
     aux_scalars = {{ define_aux_scalars(AUX_SCALAR_SYMBOLS) }}
 
+    {# FA4 omits aux_scalars when it is None for compatibility with older callables. #}
+    {# Keep the default so generated mods accept both FA4 call forms. #}
     {% if HAS_SCORE_MOD %}
     @cute.jit
     def score_mod(

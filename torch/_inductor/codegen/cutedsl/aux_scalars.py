@@ -12,9 +12,10 @@ class CuteDSLAuxScalarBindings:
     """Render symbolic shape captures through FA4's runtime aux_scalars tuple.
 
     Inductor represents captured dynamic ints/floats as SymPy expressions in the
-    other-buffer list. CuTe kernels receive those values as ordinary kernel
-    scalar arguments, wrap them for FA4, and rewrite matching symbols in
-    generated score_mod/mask_mod expressions to tuple lookups.
+    other-buffer list, while tensor captures remain TensorBox-backed aux_tensors.
+    CuTe kernels receive those scalar values as ordinary kernel arguments, wrap
+    them for FA4, and rewrite matching symbols in generated score_mod/mask_mod
+    expressions to tuple lookups.
     """
 
     symbols: tuple[sympy.Symbol, ...] = ()
