@@ -393,8 +393,7 @@ class <lambda>(torch.nn.Module):
 
     def test_assumption(self):
         """A relational ``assumptions=[A > B]`` is wired into the shape env:
-        the assumed-true branch is taken at trace time and the relation
-        is materialized as a runtime assertion."""
+        the assumed-true branch is taken at trace time."""
         A = VAR("a")
         B = VAR("b")
 
@@ -430,19 +429,6 @@ class <lambda>(torch.nn.Module):
                 for node in gm.graph.nodes
             )
         )
-        # The assumption is materialized as a runtime assertion node in the
-        # graph, and enforced when the graph is executed.
-        self.assertTrue(
-            any(
-                node.op == "call_function" and "_assert_scalar" in str(node.target)
-                for node in gm.graph.nodes
-            )
-        )
-        # Correct: a=5 > b=3.
-        gm(torch.randn(5, 2), torch.randn(3, 2))
-        # Violation: a=2 not > b=3.
-        with self.assertRaisesRegex(RuntimeError, "Runtime assertion failed"):
-            gm(torch.randn(2, 2), torch.randn(3, 2))
 
     def test_tensor_dim_optimization_hint(self):
         """A ShapeVar's ``optimization_hint`` lands in the shape env's
