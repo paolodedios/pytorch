@@ -1055,7 +1055,10 @@ class CachingAutotuner(KernelInterface):
             if backend_options:
                 # Stash backend-only options separately so they do not get mixed into
                 # `constants`, which are interpreted as signature-bound constexpr args.
-                compile_meta["backend_options"] = backend_options
+                compile_meta["backend_options"] = {
+                    **compile_meta.get("backend_options", {}),
+                    **backend_options,
+                }
         compile_meta["constants"].update(cfg_kwargs)
 
         for i in get_constexprs(self.fn):
@@ -1120,10 +1123,9 @@ class CachingAutotuner(KernelInterface):
             for k in tlx_only_cuda_options():
                 if v := getattr(cfg, k, None):
                     options[k] = v
-        if self.device_props.type == "hip":
-            # HIP backend options are consumed by Triton out-of-band from the kernel
-            # signature. They are intentionally *not* present in `constants`.
-            options.update(compile_meta.get("backend_options", {}))
+        # Backend options are consumed by Triton out-of-band from the kernel
+        # signature. They are intentionally *not* present in `constants`.
+        options.update(compile_meta.get("backend_options", {}))
 
         if self.device_props.type == "xpu" and XPU_KERNEL_FORMAT == "zebin":
             options["generate_native_code"] = True
@@ -1945,7 +1947,7 @@ class CachingAutotuner(KernelInterface):
         E.g., assuming regular autotune only get one config C1; while max-autotune get 4 configs C1, C2, C3, C4
         and max-autotune figure out C3 is the best.
 
-        Then if coordinate desecnt tuning is run with max-autotune disabled, it will start from C1;
+        Then if coordinate descent tuning is run with max-autotune disabled, it will start from C1;
         while if coordinate descent tuning is run with max-autotune enabled, it will start from C3.
         """
         if not self._should_coordesc_tune:
