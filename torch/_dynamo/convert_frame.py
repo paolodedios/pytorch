@@ -456,6 +456,8 @@ def _has_condition_dependent_skip_guards(
             continue
         name = guard.name
         if not name.startswith(("L[", "G[")):
+            if _is_condition_dependent_embedded_guard(name, output):
+                return True
             continue
         if name.startswith(("L['___", "L['__nested_", "G['___", "G['__nested_")):
             continue
@@ -467,6 +469,34 @@ def _has_condition_dependent_skip_guards(
     return False
 
 
+def _is_condition_dependent_embedded_guard(
+    name: str, output: OutputGraphCommon
+) -> bool:
+    for prefix, scope in (("G[", output.global_scope), ("L[", output.local_scope)):
+        scope_start = name.find(prefix)
+        if scope_start == -1:
+            continue
+        key_start = scope_start + len(prefix) + 1
+        key_end = name.find("']", key_start)
+        if key_end == -1:
+            continue
+        obj = scope.get(name[key_start:key_end])
+
+        attr_start = name.rfind("['")
+        if attr_start <= key_end:
+            return _is_condition_dependent_guard_value(obj)
+        attr_end = name.find("']", attr_start + len("['"))
+        if attr_end == -1:
+            return False
+        try:
+            obj = _resolve_static_attr_chain(obj, name[key_end + 2 : attr_start])
+            obj = inspect.getattr_static(obj, name[attr_start + len("['") : attr_end])
+        except AttributeError:
+            return False
+        return _is_condition_dependent_guard_value(obj)
+    return False
+
+
 def _is_condition_dependent_global_guard(name: str, output: OutputGraphCommon) -> bool:
     key_start = len("G[") + 1
     key_end = name.find("']", key_start)
@@ -475,16 +505,30 @@ def _is_condition_dependent_global_guard(name: str, output: OutputGraphCommon) -
 
     obj = output.global_scope.get(name[key_start:key_end])
     rest = name[key_end + 2 :]
-    if rest.startswith("."):
-        for attr in rest[1:].split("."):
-            try:
-                attrs = vars(obj)
-            except TypeError:
-                return False
-            if attr not in attrs:
-                return False
-            obj = attrs[attr]
+    try:
+        obj = _resolve_static_attr_chain(obj, rest)
+    except AttributeError:
+        return False
 
+    return _is_condition_dependent_guard_value(obj)
+
+
+def _resolve_static_attr_chain(obj: object, rest: str) -> object:
+    while rest.startswith("."):
+        attr_end = 1
+        while attr_end < len(rest) and (
+            rest[attr_end] == "_" or rest[attr_end].isalnum()
+        ):
+            attr_end += 1
+        attr = rest[1:attr_end]
+        if not attr:
+            break
+        obj = inspect.getattr_static(obj, attr)
+        rest = rest[attr_end:]
+    return obj
+
+
+def _is_condition_dependent_guard_value(obj: object) -> bool:
     return not (
         isinstance(obj, ModuleType)
         or callable(obj)
@@ -2484,8 +2528,8 @@ def _compile(
                 if isinstance(e, Unsupported) and e.category == "graph_break":
                     if guarded_code.guarded_code is not None:
                         e.remove_from_stats()
-                    elif counters[e.category][e.msg] > 1:
-                        e.remove_from_stats()
+                    else:
+                        guarded_code.skip_reason = None
                 return guarded_code
             if (
                 isinstance(e, (Unsupported, UserError))

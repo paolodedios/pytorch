@@ -27,6 +27,24 @@ class _ConditionDependentSkipGate:
     flag = False
 
 
+class _ConditionDependentSkipInheritedGate(_ConditionDependentSkipGate):
+    pass
+
+
+class _ConditionDependentSkipCallableInheritedGate(_ConditionDependentSkipGate):
+    def __call__(self):
+        return None
+
+
+_condition_dependent_skip_inherited_gate = _ConditionDependentSkipInheritedGate()
+_condition_dependent_skip_callable_inherited_gate = (
+    _ConditionDependentSkipCallableInheritedGate()
+)
+_condition_dependent_skip_nested_gate = SimpleNamespace(
+    gate=_ConditionDependentSkipInheritedGate()
+)
+
+
 def user_function():
     return torch.compiler.is_compiling()
 
@@ -466,9 +484,11 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         with AlwaysWarnTypedStorageRemoval(True):
             with warnings.catch_warnings(record=True) as w:
                 warnings.resetwarnings()
+                counters.clear()
                 opt_fn(0)
                 self.assertEqual(len(w), 1, msg=str([str(a) for a in w]))
                 self.assertIn("TypedStorage is deprecated", str(w[0].message))
+                self.assertEqual(sum(counters["unimplemented"].values()), 1)
 
     def test_condition_dependent_skip_with_sequence_length_guard(self):
         def fn(xs):
@@ -568,6 +588,138 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
 
             _ConditionDependentSkipGate.flag = False
             self.assertEqual(opt_fn(x), x + 1)
+            self.assertEqual(counter.frame_count, 1)
+        finally:
+            _ConditionDependentSkipGate.flag = False
+
+    def test_condition_dependent_skip_with_inherited_attr_global_guard(self):
+        def fn(x):
+            if _condition_dependent_skip_inherited_gate.flag:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return x + 1
+            return x - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, dynamic=False)
+        x = torch.ones(3)
+
+        try:
+            _ConditionDependentSkipGate.flag = True
+            self.assertEqual(opt_fn(x), x - 1)
+            self.assertEqual(counter.frame_count, 0)
+
+            _ConditionDependentSkipGate.flag = False
+            self.assertEqual(opt_fn(x), x + 1)
+            self.assertEqual(counter.frame_count, 1)
+        finally:
+            _ConditionDependentSkipGate.flag = False
+
+    def test_condition_dependent_skip_with_callable_inherited_attr_global_guard(self):
+        def fn(x):
+            if _condition_dependent_skip_callable_inherited_gate.flag:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return x + 1
+            return x - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, dynamic=False)
+        x = torch.ones(3)
+
+        try:
+            _ConditionDependentSkipGate.flag = True
+            self.assertEqual(opt_fn(x), x - 1)
+            self.assertEqual(counter.frame_count, 0)
+
+            _ConditionDependentSkipGate.flag = False
+            self.assertEqual(opt_fn(x), x + 1)
+            self.assertEqual(counter.frame_count, 1)
+        finally:
+            _ConditionDependentSkipGate.flag = False
+
+    def test_condition_dependent_skip_with_inherited_attr_local_guard(self):
+        def fn(x, gate):
+            if gate.flag:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return x + 1
+            return x - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, dynamic=False)
+        x = torch.ones(3)
+        gate = _ConditionDependentSkipInheritedGate()
+
+        try:
+            _ConditionDependentSkipGate.flag = True
+            self.assertEqual(opt_fn(x, gate), x - 1)
+            self.assertEqual(counter.frame_count, 0)
+
+            _ConditionDependentSkipGate.flag = False
+            self.assertEqual(opt_fn(x, gate), x + 1)
+            self.assertEqual(counter.frame_count, 1)
+        finally:
+            _ConditionDependentSkipGate.flag = False
+
+    def test_condition_dependent_skip_with_nested_inherited_attr_global_guard(self):
+        def fn(x):
+            if _condition_dependent_skip_nested_gate.gate.flag:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return x + 1
+            return x - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, dynamic=False)
+        x = torch.ones(3)
+
+        try:
+            _ConditionDependentSkipGate.flag = True
+            self.assertEqual(opt_fn(x), x - 1)
+            self.assertEqual(counter.frame_count, 0)
+
+            _ConditionDependentSkipGate.flag = False
+            self.assertEqual(opt_fn(x), x + 1)
+            self.assertEqual(counter.frame_count, 1)
+        finally:
+            _ConditionDependentSkipGate.flag = False
+
+    def test_condition_dependent_skip_with_nested_inherited_attr_local_guard(self):
+        def fn(x, outer):
+            if outer.gate.flag:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return x + 1
+            return x - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, dynamic=False)
+        x = torch.ones(3)
+        outer = SimpleNamespace(gate=_ConditionDependentSkipInheritedGate())
+
+        try:
+            _ConditionDependentSkipGate.flag = True
+            self.assertEqual(opt_fn(x, outer), x - 1)
+            self.assertEqual(counter.frame_count, 0)
+
+            _ConditionDependentSkipGate.flag = False
+            self.assertEqual(opt_fn(x, outer), x + 1)
             self.assertEqual(counter.frame_count, 1)
         finally:
             _ConditionDependentSkipGate.flag = False
