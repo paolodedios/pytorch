@@ -4,7 +4,7 @@
 #include <ATen/ceil_div.h>
 #include <ATen/native/Resize.h>
 #include <ATen/native/ScaledBlasUtils.h>
-#include <ATen/native/mkldnn/xpu/detail/oneDNN.h>
+#include <ATen/native/onednn/xpu/detail/oneDNN.h>
 #include <ATen/native/xpu/Blas.h>
 #include <ATen/xpu/XPUScaledBlas.h>
 #include <torch/library.h>
