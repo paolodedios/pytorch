@@ -230,11 +230,9 @@ class DeadCodeEliminator {
   // value sets.
   // Returns true iff this marked something we haven't marked before.
   bool mark(Node* node) {
-    if (marked_.count(node)) {
+    if (!marked_.insert(node).second) {
       return false;
     }
-
-    marked_.insert(node);
 
     // Mark all nodes in this node's blockchain (since owning nodes are
     // considered live if they contain a live node)
