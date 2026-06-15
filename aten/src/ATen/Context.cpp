@@ -155,7 +155,7 @@ bool Context::deterministicOnednn() const {
   return deterministic_onednn;
 }
 
-void Context::setdeterministicOnednn(bool b) {
+void Context::setDeterministicOnednn(bool b) {
   deterministic_onednn = b;
 }
 
