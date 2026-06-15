@@ -3168,7 +3168,7 @@ class InstructionTranslatorBase(
     def _load_attr(self, attr: Any) -> None:
         from torch._dynamo.variables.object_protocol import generic_getattr
 
-        obj = self.pop()
+        obj = self.pop().realize()
         try:
             result = generic_getattr(self, obj, attr)
         except Unsupported:
