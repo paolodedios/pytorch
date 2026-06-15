@@ -367,6 +367,12 @@ if IS_LINUX and IS_ARM64:
         i32: "ZeroDivisionError",
         i64: "ZeroDivisionError",
     }
+    inductor_expected_failures_single_sample["cpu"].update(
+        {
+            "polygamma.polygamma_n_0": {f16},
+            "special.polygamma.special_polygamma_n_0": {f16},
+        }
+    )
 
 
 def get_skips_and_xfails(from_dict, xfails=True):
@@ -1395,7 +1401,7 @@ class TestInductorOpInfo(TestCase):
             # not exercised in test_ops_gradients atm.  The problem is not
             # complex32 per-se (which is supported by data movement only ops)
             # but that when we do backwards we expect other ops like add to work
-            and dtype not in (torch.complex32, torch.bcomplex32)
+            and dtype != torch.complex32
         )
         samples = op.sample_inputs(device, dtype, requires_grad=requires_grad)
         extra = _inductor_extra_samples(op_name, device, dtype, requires_grad)
