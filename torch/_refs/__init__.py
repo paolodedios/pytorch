@@ -3377,7 +3377,7 @@ def native_group_norm(
     torch._check(
         num_channels % num_groups == 0,
         lambda: "Expected number of channels in input to be divisible by num_groups, "
-        f"but got input of shape {input.shape} and num_groups = {num_groups}",
+        + f"but got input of shape {input.shape} and num_groups = {num_groups}",
     )
 
     # Match eager-mode contiguous behavior, for test_meta.
@@ -3407,42 +3407,33 @@ def native_group_norm(
         input_acc,
         (batch_size, num_groups, num_channels // num_groups, flattened_inner_size),
     )
-    biased_var, mean = torch.var_mean(
-        input_reshaped, dim=reduction_dims, correction=0, keepdim=True
-    )
+    biased_var, mean = torch.var_mean(input_reshaped, dim=reduction_dims, correction=0)
     rstd = torch.rsqrt(biased_var + eps)
 
-    w = rstd
+    w = _unsqueeze_multiple(rstd, reduction_dims)
     if weight_acc is not None:
         weight_reshaped = torch.reshape(
             weight_acc, (1, num_groups, num_channels // num_groups, 1)
         )
         w = w * weight_reshaped
-    else:
-        w = w.broadcast_to((batch_size, num_groups, num_channels // num_groups, 1))
 
-    b = -mean * w
+    b = -_unsqueeze_multiple(mean, reduction_dims) * w
     if bias_acc is not None:
         bias_reshaped = torch.reshape(
             bias_acc, (1, num_groups, num_channels // num_groups, 1)
         )
         b = b + bias_reshaped
 
-    broadcast_dims = list(range(2, input.ndim))
-    w = _unsqueeze_multiple(
-        w.contiguous().as_strided((batch_size, num_channels), (num_channels, 1)),
-        broadcast_dims,
-    )
-    b = _unsqueeze_multiple(
-        b.contiguous().as_strided((batch_size, num_channels), (num_channels, 1)),
-        broadcast_dims,
-    )
-    out = input_acc * w + b
+    w = w.contiguous()
+    b = b.contiguous()
+
+    out = w * input_reshaped + b
+    out = out.reshape(input.shape)
 
     return (
         _maybe_convert_to_dtype(out, input.dtype),
-        _maybe_convert_to_dtype(mean.squeeze(reduction_dims), input.dtype),
-        _maybe_convert_to_dtype(rstd.squeeze(reduction_dims), input.dtype),
+        _maybe_convert_to_dtype(mean, input.dtype),
+        _maybe_convert_to_dtype(rstd, input.dtype),
     )
 
 
