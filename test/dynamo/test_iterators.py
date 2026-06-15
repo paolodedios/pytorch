@@ -5,6 +5,7 @@ import types
 
 import torch
 import torch._dynamo.test_case
+from torch._dynamo.testing import CompileCounter
 from torch.testing._internal.common_utils import make_dynamo_test
 
 
@@ -1204,6 +1205,63 @@ class TestIterators(torch._dynamo.test_case.TestCase):
             self.assertEqual(d, {"foo": 1})
         finally:
             d.clear()
+
+    def test_dict_view_liveness_scan_does_not_guard_scalar_locals(self):
+        class Holder:
+            def __init__(self):
+                self.global_var = None
+                self.compiling = False
+
+            def set(self, value):
+                self.global_var = value
+                self.compiling = True
+                return None
+
+            def reset(self, token):
+                if self.compiling or token is None:
+                    self.global_var = None
+                    self.compiling = False
+
+        holder = Holder()
+
+        def fn(t, collect_outputs):
+            token = holder.set({})
+            try:
+                y = t + 1
+            finally:
+                holder.reset(token)
+            torch._dynamo.graph_break()
+            if collect_outputs:
+                return y + 1
+            return y
+
+        cnt = CompileCounter()
+        compiled = torch.compile(fn, backend=cnt)
+
+        self.assertEqual(compiled(torch.tensor([0.0]), False), torch.tensor([1.0]))
+        self.assertEqual(compiled(torch.tensor([0.0]), True), torch.tensor([2.0]))
+        self.assertEqual(cnt.frame_count, 1)
+
+    def test_nullified_attribute_mutation_does_not_stale_dict_view(self):
+        class Holder:
+            def __init__(self):
+                self.flag = 0
+
+        holder = Holder()
+
+        def fn(t):
+            holder.flag = 1
+            holder.flag = 0
+            torch._dynamo.graph_break()
+            keys = holder.__dict__.keys()
+            return t + len(keys)
+
+        cnt = CompileCounter()
+        compiled = torch.compile(fn, backend=cnt)
+
+        self.assertEqual(compiled(torch.tensor([0.0])), torch.tensor([1.0]))
+        self.assertEqual(holder.__dict__, {"flag": 0})
+        self.assertEqual(cnt.frame_count, 1)
 
     def test_pending_attribute_dict_keys_view_blocks_dict_mutation(self):
         class Holder:

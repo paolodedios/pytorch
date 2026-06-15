@@ -480,7 +480,7 @@ class SideEffects:
         item_source = getattr(item, "source", None)
         if item_source is not None:
             self.mutated_sources.add(AttrSource(item_source, name))
-        if backing_id is not None:
+        if backing_id is not None and not deferred:
             self._mark_dict_backing_id_mutated(backing_id)
 
     def store_instance_dict_attr(
@@ -1209,6 +1209,8 @@ class SideEffects:
 
             for name, value in tx.f_locals.items():
                 if name in tx.cell_and_freevars() or name not in live_locals:
+                    continue
+                if isinstance(value, (str, bytes, int, float, bool, type(None))):
                     continue
                 if name in tx.symbolic_locals and vt_matches_real_value(
                     tx.symbolic_locals[name].unwrap(), value
