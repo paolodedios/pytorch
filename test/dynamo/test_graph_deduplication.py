@@ -504,9 +504,9 @@ class <lambda>(torch.nn.Module):
     def forward(self, arg0_1: "f32[10, 10]", arg1_1: "f32[10, 20]"):
         sin: "f32[10, 10]" = torch.ops.aten.sin.default(arg0_1);  arg0_1 = None
 
-        add: "f32[10, 10]" = torch.ops.aten.add.Tensor(sin, 1)
+        add: "f32[10, 10]" = torch.ops.aten.add.Scalar(sin, 1)
 
-        add_1: "f32[10, 20]" = torch.ops.aten.add.Tensor(arg1_1, 1)
+        add_1: "f32[10, 20]" = torch.ops.aten.add.Scalar(arg1_1, 1)
 
         add_2: "f32[10, 10]" = torch.ops.aten.add.Tensor(sin, add);  sin = add = None
 
@@ -515,9 +515,9 @@ class <lambda>(torch.nn.Module):
         clone: "f32[10, 10]" = torch.ops.aten.clone.default(add_2)
         clone_1: "f32[10, 20]" = torch.ops.aten.clone.default(add_3)
 
-        add_4: "f32[10, 10]" = torch.ops.aten.add.Tensor(clone, 1)
+        add_4: "f32[10, 10]" = torch.ops.aten.add.Scalar(clone, 1)
 
-        add_5: "f32[10, 20]" = torch.ops.aten.add.Tensor(clone_1, 1)
+        add_5: "f32[10, 20]" = torch.ops.aten.add.Scalar(clone_1, 1)
 
         add_6: "f32[10, 10]" = torch.ops.aten.add.Tensor(clone, add_4);  clone = add_4 = None
 

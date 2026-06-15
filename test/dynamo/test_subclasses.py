@@ -378,6 +378,55 @@ class CtxSubclassTensor(torch.Tensor):
         return return_and_correct_aliasing(func, args, kwargs, out)
 
 
+class TensorMetadataSubclass(torch.Tensor):
+    @staticmethod
+    def __new__(cls, data, weights):
+        return torch.Tensor._make_wrapper_subclass(
+            cls,
+            data.shape,
+            dtype=data.dtype,
+            device=data.device,
+            requires_grad=data.requires_grad,
+        )
+
+    def __init__(self, data, weights):
+        self._data = data
+        self._weights = weights
+
+    def __tensor_flatten__(self):
+        return ["_data"], {"weights": self._weights}
+
+    @classmethod
+    def __tensor_unflatten__(cls, inner_tensors, meta, outer_size, outer_stride):
+        return cls(inner_tensors["_data"], meta["weights"])
+
+    @classmethod
+    def __torch_dispatch__(cls, func, types, args=(), kwargs=None):
+        if kwargs is None:
+            kwargs = {}
+
+        def unwrap(t):
+            return t._data if isinstance(t, TensorMetadataSubclass) else t
+
+        unwrapped_args = pytree.tree_map(unwrap, args)
+        unwrapped_kwargs = pytree.tree_map(unwrap, kwargs)
+        out = func(*unwrapped_args, **unwrapped_kwargs)
+
+        if not isinstance(out, torch.Tensor):
+            return out
+
+        first_subclass_arg = next(
+            t for t in pytree.tree_leaves(args) if isinstance(t, TensorMetadataSubclass)
+        )
+        return cls(out, first_subclass_arg._weights)
+
+
+class TensorMetadataSubclassWithCustomGuard(TensorMetadataSubclass):
+    @classmethod
+    def __metadata_guard__(cls, original_metadata, current_metadata):
+        return torch.equal(original_metadata["weights"], current_metadata["weights"])
+
+
 class DeferredInitSubclass(torch.Tensor):
     """
     A traceable wrapper subclass that calls super().__init__() BEFORE
@@ -2136,6 +2185,67 @@ s50 > 3""",
             lambda: torch.compile(lambda x: x * x, backend="eager")(x),
         )
 
+    def test_tensor_subclass_tensor_metadata_requires_custom_guard(self):
+        import torch._dynamo.exc
+
+        x = TensorMetadataSubclass(torch.randn(4), torch.randn(5))
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.InternalTorchDynamoError,
+            "returned Tensor metadata.*does not define __metadata_guard__",
+        ) as cm:
+            torch.compile(lambda x: x * 2, backend="eager")(x)
+
+        self.assertNotIn("Guard failed on the same frame", str(cm.exception))
+
+    def test_tensor_subclass_tensor_metadata_custom_guard(self):
+        x = TensorMetadataSubclassWithCustomGuard(torch.randn(4), torch.randn(5))
+        same_metadata = TensorMetadataSubclassWithCustomGuard(
+            torch.randn(4), x._weights.clone()
+        )
+        different_metadata = TensorMetadataSubclassWithCustomGuard(
+            torch.randn(4), torch.randn(5)
+        )
+
+        def fn(x):
+            return x * 2
+
+        _check_recompiles(self, fn, (x,), (same_metadata,), False)
+        _check_recompiles(self, fn, (x,), (different_metadata,), True)
+
+    def test_tensor_subclass_registered_pytree_metadata_without_key_flatten(self):
+        class MetadataWithoutKeyFlatten:
+            def __init__(self, value):
+                self.value = value
+
+            def __eq__(self, other):
+                return (
+                    isinstance(other, MetadataWithoutKeyFlatten)
+                    and self.value == other.value
+                )
+
+        pytree.register_pytree_node(
+            MetadataWithoutKeyFlatten,
+            lambda x: ([x.value], None),
+            lambda values, _: MetadataWithoutKeyFlatten(values[0]),
+        )
+
+        try:
+            x = TensorMetadataSubclass(torch.randn(4), MetadataWithoutKeyFlatten(5))
+            same_metadata = TensorMetadataSubclass(
+                torch.randn(4), MetadataWithoutKeyFlatten(5)
+            )
+            different_metadata = TensorMetadataSubclass(
+                torch.randn(4), MetadataWithoutKeyFlatten(6)
+            )
+
+            def fn(x):
+                return x * 2
+
+            _check_recompiles(self, fn, (x,), (same_metadata,), False)
+            _check_recompiles(self, fn, (x,), (different_metadata,), True)
+        finally:
+            pytree._deregister_pytree_node(MetadataWithoutKeyFlatten)
+
     def test_tensor_subclass_metadata_with_symint(self):
         # TENSOR_SUBCLASS_METADATA_MATCH replaces SymInts in metadata with
         # _AnyCompare sentinels so that (a) deepcopy doesn't pull in the
@@ -2655,8 +2765,8 @@ class GraphModule(torch.nn.Module):
         primals_6: "Sym(s16)",  # SubclassSizeAOTInput(base=PlainAOTInput(idx=2), idx=1)
         primals_7: "Sym(s16)",  # SubclassStrideAOTInput(base=PlainAOTInput(idx=2), idx=0)
     ):
-        mul: "f32[s47, s16]" = torch.ops.aten.mul.Tensor(primals_3, primals_1);  primals_3 = None
-        mul_3: "f32[s47, s16]" = torch.ops.aten.mul.Tensor(primals_4, primals_1);  primals_4 = None
+        mul: "f32[s47, s16]" = torch.ops.aten.mul.Scalar(primals_3, primals_1);  primals_3 = None
+        mul_3: "f32[s47, s16]" = torch.ops.aten.mul.Scalar(primals_4, primals_1);  primals_4 = None
         return (
             mul,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='a')
             mul_3,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='b')
@@ -2682,8 +2792,8 @@ class GraphModule(torch.nn.Module):
         tangents_1: "f32[s47, s16]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='a')
         tangents_2: "f32[s47, s16]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='b')
     ):
-        mul_8: "f32[s47, s16]" = torch.ops.aten.mul.Tensor(tangents_1, primals_1);  tangents_1 = None
-        mul_9: "f32[s47, s16]" = torch.ops.aten.mul.Tensor(tangents_2, primals_1);  tangents_2 = primals_1 = None
+        mul_8: "f32[s47, s16]" = torch.ops.aten.mul.Scalar(tangents_1, primals_1);  tangents_1 = None
+        mul_9: "f32[s47, s16]" = torch.ops.aten.mul.Scalar(tangents_2, primals_1);  tangents_2 = primals_1 = None
         return (
             None,  # None
             None,  # None

@@ -855,7 +855,7 @@ class <lambda>(torch.nn.Module):
             gt: "b8[8]" = torch.ops.aten.gt.Scalar(inductor_random_default, 0.5);  inductor_random_default = None
             sin: "f32[8]" = torch.ops.aten.sin.default(arg0_1);  arg0_1 = None
             mul: "f32[8]" = torch.ops.aten.mul.Tensor(gt, sin);  gt = sin = None
-            mul_1: "f32[8]" = torch.ops.aten.mul.Tensor(mul, 2.0);  mul = None
+            mul_1: "f32[8]" = torch.ops.aten.mul.Scalar(mul, 2.0);  mul = None
             return (mul_1,)
 """,
                 ignore_empty_lines=True,
@@ -2569,7 +2569,7 @@ class GraphModule(torch.nn.Module):
         def forward(self, x: "f32[5]", y: "f32[5]"):
             o: "f32[5]" = torch.zeros_like(x)
 
-            triton_kernel_wrapper_mutation = torch.ops.higher_order.triton_kernel_wrapper_mutation(kernel_idx = 0, constant_args_idx = 0, grid = [(5, 1, 1)], tma_descriptor_metadata = {}, kwargs = {'in_ptr0': x, 'in_ptr1': y, 'out_ptr': o});  x = y = triton_kernel_wrapper_mutation = None
+            triton_kernel_wrapper_mutation = torch.ops.higher_order.triton_kernel_wrapper_mutation(kernel_idx = 0, constant_args_idx = 0, grid = [(5, 1, 1)], tma_descriptor_metadata = {}, kwargs = {'in_ptr0': x, 'in_ptr1': y, 'out_ptr': o}, launch_kwargs = ('BLOCK_SIZE',));  x = y = triton_kernel_wrapper_mutation = None
 
             sin: "f32[5]" = o.sin();  o = None
             return (sin,)
