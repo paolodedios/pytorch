@@ -145,7 +145,12 @@ def _create_graph(
 
         # Restore FakeTensor devices on args and placeholder nodes that
         # may have been mutated by in-graph shallow_copy_data_().
-        if original_fake_devices:
+        has_shallow_copy = any(
+            n.op == "call_function"
+            and n.target is torch.ops.aten.shallow_copy_data_.default
+            for n in fx_g.graph.nodes
+        )
+        if has_shallow_copy and original_fake_devices:
             for i, device in original_fake_devices.items():
                 if args[i].fake_device != device:  # pyrefly: ignore[missing-attribute]
                     args[i].fake_device = device  # pyrefly: ignore[missing-attribute]
