@@ -1553,7 +1553,7 @@ std::tuple<Tensor, Tensor, Tensor> lstm(
 
   // If packed sequence has uniform batch size, unwrap to regular tensor
   // and dispatch to the standard lstm (enables oneDNN path for CPU/XPU)
-  if (!has_projections && use_mkldnn(data, _params, hx) && batch_sizes.size(0) > 0) {
+  if (!has_projections && use_onednn(data, _params, hx) && batch_sizes.size(0) > 0) {
     const int64_t* bs_ptr = batch_sizes.const_data_ptr<int64_t>();
     int64_t first_batch = bs_ptr[0];
     bool uniform = true;

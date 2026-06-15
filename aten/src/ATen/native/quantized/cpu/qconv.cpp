@@ -1729,7 +1729,7 @@ static at::Tensor _quantized_convolution_onednn(
                                    c10::MemoryFormat::ChannelsLast :
                                    c10::MemoryFormat::ChannelsLast3d);
   auto src_dims = act_contig.sizes().vec();
-  auto src_data_type = at::native::get_mkldnn_dtype(act.scalar_type());
+  auto src_data_type = at::native::get_onednn_dtype(act.scalar_type());
   auto src_desc = ideep::tensor::desc(src_dims, src_data_type,
       kSpatialDim == 2 ? ideep::format_tag::nhwc : ideep::format_tag::ndhwc);
   ideep::tensor src;
