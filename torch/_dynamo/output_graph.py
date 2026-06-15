@@ -784,7 +784,7 @@ class OutputGraph(OutputGraphCommon):
         # We thought of rolling this in variable_tracker_cache but here
         # different sources point to the same object, we also don't want it to
         # go through the side effects cache because even though these objects
-        # are same, we dont want OBJECT_ALIASING guards on them. For these
+        # are same, we don't want OBJECT_ALIASING guards on them. For these
         # objects, we have DICT_CONTAINS absent guards on the mro walk, so there
         # is no need of the OBJECT_ALIASING guards.
         self.mro_source_cache: dict[tuple[int, str], DictGetItemSource] = {}
@@ -2901,6 +2901,13 @@ class OutputGraph(OutputGraphCommon):
                 if not isinstance(compiled_fn, _LazyGraphModule):
                     # replace compiled_fn with the real forward method
                     compiled_fn = lazy_gm.forward
+
+            if not self.export:
+                # Run after every non-export backend compile, not only the
+                # registered backends covered by convert_frame weakref cleanup.
+                # Backends have already consumed the graph, so non-CPU Dynamo
+                # tracing constants no longer need to keep real tensors alive.
+                old_fake_mode.fake_tensor_converter.clear_non_cpu_constants()
 
             if self.package is not None:
                 self.package.add_backend_id(name, compiled_fn)

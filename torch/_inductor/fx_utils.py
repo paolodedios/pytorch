@@ -232,6 +232,17 @@ def _extract_subgraphs_and_args(
 
     If the second yielded value is None, this function was unable to determine what args
     to pass to the subgraph."""
+
+    def get_subgraph_args(
+        subgraph: torch.fx.GraphModule,
+    ) -> tuple[torch.Tensor, ...]:
+        return tuple(
+            get_fake(n, subgraph) for n in subgraph.graph.find_nodes(op="placeholder")
+        )
+
+    def is_integer(d: torch.dtype) -> bool:
+        return not d.is_floating_point and not d.is_complex
+
     if node.target is torch.ops.higher_order.associative_scan:
         # Associative scan operates on slices of xs (see: scan), but multiple slices.
         # Use the same slice twice to account for cases where only a single slice is
@@ -251,17 +262,6 @@ def _extract_subgraphs_and_args(
         # the only inputs we may need to update are the optional additional tensors. See
         # torch._higher_order_ops.flex_attention._math_attention_inner for more details.
 
-        def get_subgraph_args(
-            subgraph: torch.fx.GraphModule,
-        ) -> tuple[torch.Tensor, ...]:
-            return tuple(
-                get_fake(n, subgraph)
-                for n in subgraph.graph.find_nodes(op="placeholder")
-            )
-
-        def is_integer(d: torch.dtype) -> bool:
-            return not d.is_floating_point and not d.is_complex
-
         score_subgraph: torch.fx.GraphModule = args[3]
         score_subgraph_args = get_subgraph_args(score_subgraph)
         mask_subgraph = args[4][-1]
@@ -270,7 +270,7 @@ def _extract_subgraphs_and_args(
         integer_arg_dtypes = OrderedSet[torch.dtype](
             a.dtype for a in chain(score_subgraph_args[1:5], mask_subgraph_args[:4])
         )
-        assert (
+        if not (
             score_subgraph_args[0].dtype == args[0].dtype
             and len(integer_arg_dtypes) == 1
             and is_integer(integer_arg_dtypes.pop())
@@ -278,10 +278,51 @@ def _extract_subgraphs_and_args(
                 len(a.size()) == 0
                 for a in chain(score_subgraph_args[:5], mask_subgraph_args[:4])
             )
-        ), "flex_attention subgraph arg format has changed!"
+        ):
+            raise AssertionError("flex_attention subgraph arg format has changed!")
 
         yield score_subgraph, (*score_subgraph_args[:5], *args[7])
         yield args[4][-1], (*mask_subgraph_args[:4], *args[8])
+    elif node.target is torch.ops.higher_order.flex_attention_backward:
+        fw_subgraph = args[7]
+        fw_subgraph_args = get_subgraph_args(fw_subgraph)
+        joint_subgraph = args[8]
+        joint_subgraph_args = get_subgraph_args(joint_subgraph)
+        mask_subgraph = args[9][-1]
+        mask_subgraph_args = get_subgraph_args(mask_subgraph)
+
+        integer_arg_dtypes = OrderedSet[torch.dtype](
+            a.dtype
+            for a in chain(
+                fw_subgraph_args[1:5],
+                joint_subgraph_args[1:5],
+                mask_subgraph_args[:4],
+            )
+        )
+        if not (
+            fw_subgraph_args[0].dtype == args[0].dtype
+            and joint_subgraph_args[0].dtype == args[0].dtype
+            and len(integer_arg_dtypes) == 1
+            and is_integer(integer_arg_dtypes.pop())
+            and all(
+                len(a.size()) == 0
+                for a in chain(
+                    fw_subgraph_args[:5],
+                    joint_subgraph_args[:6],
+                    mask_subgraph_args[:4],
+                )
+            )
+        ):
+            raise AssertionError(
+                "flex_attention_backward subgraph arg format has changed!"
+            )
+
+        if fw_subgraph in valid_subgraphs:
+            yield fw_subgraph, (*fw_subgraph_args[:5], *args[12])
+        if joint_subgraph in valid_subgraphs:
+            yield joint_subgraph, (*joint_subgraph_args[:6], *args[12])
+        if mask_subgraph in valid_subgraphs:
+            yield mask_subgraph, (*mask_subgraph_args[:4], *args[13])
     elif node.target in (
         torch.ops.higher_order.foreach_map,
         torch.ops.higher_order.invoke_quant_packed,
@@ -305,11 +346,52 @@ def _extract_subgraphs_and_args(
         yield args[0], subgraph_args
         yield args[1], subgraph_args
     elif node.target is control_deps:
-        assert not kwargs, (
-            "Subgraph arguments can be renamed, so we cannot consistently "
-            "handle kwargs at this point in the stack."
-        )
-        yield args[1], tuple(args[2:])
+        if kwargs:
+            raise AssertionError(
+                "Subgraph arguments can be renamed, so we cannot consistently "
+                "handle kwargs at this point in the stack."
+            )
+        control_deps_subgraph = args[1]
+        control_deps_args = tuple(args[2:])
+        if control_deps_subgraph in valid_subgraphs:
+            yield control_deps_subgraph, control_deps_args
+        if isinstance(
+            control_deps_subgraph, torch.fx.GraphModule
+        ) and pytree.tree_any_only(
+            torch.fx.GraphModule,
+            lambda subgraph: subgraph in valid_subgraphs,
+            control_deps_args,
+        ):
+            placeholder_to_arg = dict(
+                zip(
+                    control_deps_subgraph.graph.find_nodes(op="placeholder"),
+                    control_deps_args,
+                    strict=True,
+                )
+            )
+            wrapped_nodes = [
+                n for n in control_deps_subgraph.graph.nodes if n.op == "call_function"
+            ]
+            if len(wrapped_nodes) != 1:
+                raise AssertionError(
+                    f"expected exactly 1 wrapped call_function node, got {len(wrapped_nodes)}"
+                )
+            wrapped_node = wrapped_nodes[0]
+
+            def replace_placeholder(item: Any) -> Any:
+                if isinstance(item, torch.fx.Node):
+                    return placeholder_to_arg.get(item, item)
+                return item
+
+            wrapped_args, wrapped_kwargs = pytree.tree_map(
+                replace_placeholder,
+                (wrapped_node.args, wrapped_node.kwargs),
+            )
+            yield from _extract_subgraphs_and_args(
+                wrapped_node, valid_subgraphs, *wrapped_args, **wrapped_kwargs
+            )
+    elif node.target is torch.ops.higher_order.flex_gemm:
+        yield args[1], tuple(args[2])
     else:
         warnings.warn(
             f"Please add support for subgraph args to function {node.target}!"
@@ -494,22 +576,24 @@ class FakeTensorUpdater:
                                 existing_storages,
                                 check_storage=False,
                             ):
-                                assert update_subgraph, (
-                                    "subgraph args must have consistent values!"
-                                )
+                                if not update_subgraph:
+                                    raise AssertionError(
+                                        "subgraph args must have consistent values!"
+                                    )
                                 # Check that only the stride has changed.  Other changes
                                 # cannot be handled without manual intervention.
-                                assert _is_fake_tensor_same(
+                                if not _is_fake_tensor_same(
                                     a,
                                     p_fake,
                                     existing_storages,
                                     check_strides=False,
                                     check_storage=False,
-                                ), (
-                                    "A subgraph argument other than striding has been "
-                                    "modified; FakeTensorUpdater cannot update this "
-                                    "argument!"
-                                )
+                                ):
+                                    raise AssertionError(
+                                        "A subgraph argument other than striding has been "
+                                        "modified; FakeTensorUpdater cannot update this "
+                                        "argument!"
+                                    )
 
                                 p.meta["val"] = a
                                 nodes_updated += 1
@@ -544,9 +628,8 @@ class FakeTensorUpdater:
                 if not any_output_updated and "val" in node.meta:
                     continue
 
-            args, kwargs = maybe_fake_layout_constraints(node, args, kwargs)
-
             with V.fake_mode, enable_python_dispatcher():
+                args, kwargs = maybe_fake_layout_constraints(node, args, kwargs)
                 new_fake_tensor = node.target(*args, **kwargs)
 
             if "val" in node.meta and _is_fake_tensor_same(
@@ -634,26 +717,132 @@ def maybe_fake_layout_constraints(
 
     # Import locally to avoid a circular dependency during Inductor startup.
     from torch._inductor.lowering import (
+        constrain_to_fake_tensors,
+        constrain_to_fx_strides,
+        constrain_to_fx_strides_if_fallback_random,
         maybe_layout_constraints,
         require_contiguous,
         require_contiguous_strides,
     )
 
     layout_constraint = maybe_layout_constraints(node.target)
-    if layout_constraint not in (require_contiguous, require_contiguous_strides):
+    if layout_constraint is None:
+        return args, kwargs
+    if layout_constraint is constrain_to_fx_strides_if_fallback_random:
+        from torch._inductor import config
+
+        if not config.fallback_random:
+            return args, kwargs
+
+    if not isinstance(node.target, torch._ops.OpOverload):
+        raise AssertionError(f"Expected torch._ops.OpOverload, got {type(node.target)}")
+
+    def normalize(args: Any, kwargs: Any) -> tuple[Any, Any]:
+        result = torch.fx.operator_schemas.normalize_function(node.target, args, kwargs)
+        if result is None:
+            raise AssertionError(f"normalize_function returned None for {node.target}")
+        return result[0], result[1]
+
+    def fake_with_stride(
+        t: torch.Tensor, fake_t: Any, *, exact_strides: bool
+    ) -> torch.Tensor:
+        if isinstance(fake_t, torch.fx.Node):
+            fake_t = fake_t.meta.get("val")
+        if (
+            not isinstance(fake_t, torch.Tensor)
+            or t.layout != torch.strided
+            or fake_t.layout != torch.strided
+        ):
+            return t
+        if exact_strides:
+            if t.stride() == fake_t.stride():
+                return t
+            if len(t.size()) == len(t.stride()) == len(fake_t.stride()) and all(
+                dim <= 1 or stride == fake_stride
+                for dim, stride, fake_stride in zip(
+                    t.size(), t.stride(), fake_t.stride(), strict=True
+                )
+            ):
+                return torch.as_strided(t, t.size(), fake_t.stride())
+        else:
+            from torch._inductor.ir import get_stride_order
+
+            if t.numel() in (0, 1):
+                return t
+            significant_dims = [i for i, dim in enumerate(t.size()) if dim != 1]
+            t_stride = [t.stride()[i] for i in significant_dims]
+            fake_t_stride = [fake_t.stride()[i] for i in significant_dims]
+            if get_stride_order(t_stride) == get_stride_order(fake_t_stride):
+                return t
+        return torch.empty_strided(
+            t.size(),
+            fake_t.stride(),
+            dtype=t.dtype,
+            device=t.device,
+            requires_grad=t.requires_grad,
+        )
+
+    def constrain_to_fake(
+        args: Any,
+        kwargs: Any,
+        fake_args: Any,
+        fake_kwargs: Any,
+        *,
+        exact_strides: bool,
+    ):
+        def apply_constraint(arg: Any, fake_arg: Any) -> Any:
+            if isinstance(arg, torch.Tensor):
+                return fake_with_stride(arg, fake_arg, exact_strides=exact_strides)
+            if isinstance(arg, dict) and isinstance(fake_arg, dict):
+                return {key: apply_constraint(arg[key], fake_arg[key]) for key in arg}
+            if isinstance(arg, (tuple, list)) and isinstance(fake_arg, (tuple, list)):
+                return type(arg)(
+                    apply_constraint(a, f_a) for a, f_a in zip(arg, fake_arg)
+                )
+            return arg
+
+        args = tuple(
+            apply_constraint(arg, fake_arg)
+            for arg, fake_arg in zip(args, fake_args, strict=True)
+        )
+        kwargs = {k: apply_constraint(v, fake_kwargs[k]) for k, v in kwargs.items()}
         return args, kwargs
 
-    # Lowering will materialize these constraints with copy_input/clone-like
-    # nodes. Fake execution needs the same input metadata, without mutating FX.
-    def maybe_contiguous(t: torch.Tensor) -> torch.Tensor:
-        if t.layout != torch.strided:
-            return t
-        return t.contiguous()
+    if layout_constraint is constrain_to_fake_tensors:
+        if "eager_input_vals" not in node.meta:
+            return args, kwargs
+        fake_args, fake_kwargs = node.meta["eager_input_vals"]
+        args, kwargs = normalize(args, kwargs)
+        fake_args, fake_kwargs = normalize(fake_args, fake_kwargs)
+        return constrain_to_fake(
+            args, kwargs, fake_args, fake_kwargs, exact_strides=True
+        )
 
-    new_args, new_kwargs = pytree.tree_map_only(
-        torch.Tensor, maybe_contiguous, (args, kwargs)
-    )
-    return new_args, new_kwargs
+    if layout_constraint in (
+        constrain_to_fx_strides,
+        constrain_to_fx_strides_if_fallback_random,
+    ):
+        fake_args, fake_kwargs = normalize(node.args, node.kwargs)
+        args, kwargs = normalize(args, kwargs)
+        return constrain_to_fake(
+            args, kwargs, fake_args, fake_kwargs, exact_strides=False
+        )
+
+    if layout_constraint in (require_contiguous, require_contiguous_strides):
+        # require_contiguous also preserves MKLDNN tensors in lowering.  Fake
+        # execution skips all non-strided tensors here, so the fake metadata
+        # equivalent is contiguous for both constraint variants.
+        def maybe_contiguous(t: torch.Tensor) -> torch.Tensor:
+            if t.layout != torch.strided:
+                return t
+            return t.contiguous()
+
+        new_args, new_kwargs = pytree.tree_map_only(
+            torch.Tensor, maybe_contiguous, (args, kwargs)
+        )
+        return new_args, new_kwargs
+
+    return args, kwargs
 
 
 def is_node_realized(node: torch.fx.Node) -> bool:
@@ -719,7 +908,8 @@ def countable_fx(node: torch.fx.Node) -> bool:
     """
     Whether or not we can count the flops of an FX node.
     """
-    assert isinstance(node, torch.fx.Node)
+    if not isinstance(node, torch.fx.Node):
+        raise AssertionError(f"expected torch.fx.Node, got {type(node)}")
     if not hasattr(node, "target"):
         return False
     target = node.target
