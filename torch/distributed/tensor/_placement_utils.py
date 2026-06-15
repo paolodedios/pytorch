@@ -401,7 +401,11 @@ def _strided_compute_padding_info(
 
         # Determine if padding is needed:
         # - remainder > 0 means one chunk has partial size
-        has_partial_chunk = remainder > 0
+        # guard_or_true: assume a partial chunk when it can't be proven even, so
+        # unbacked symints don't trigger a data-dependent guard.
+        from torch.fx.experimental.symbolic_shapes import guard_or_true
+
+        has_partial_chunk = guard_or_true(remainder > 0)
 
         # Second level: each first-level chunk is split into num_chunks pieces
         # Calculate the per-rank chunk size after both levels of splitting
@@ -409,9 +413,9 @@ def _strided_compute_padding_info(
         if has_partial_chunk:
             max_chunk_size += _ceil_div(remainder, num_chunks)
 
-        needs_padding_on_dim = (logical_size_on_dim % split_factor) != 0 or (
-            (logical_size_on_dim // split_factor) % num_chunks
-        ) != 0
+        needs_padding_on_dim = not _hint_proves_even_shard(
+            logical_size_on_dim, split_factor
+        ) or not _hint_proves_even_shard(logical_size_on_dim // split_factor, num_chunks)
 
     else:
         # Compute padding info for normal shard, no split_factor impact.
