@@ -1563,9 +1563,7 @@ class MethodTrampolineVariable(VariableTracker):
     def as_python_constant(self) -> Any:
         return getattr(self.obj.as_python_constant(), self.method_name)
 
-    def hash_impl(
-        self, tx: "InstructionTranslatorBase"
-    ) -> tuple[int, bool]:
+    def hash_impl(self, tx: "InstructionTranslatorBase") -> tuple[int, bool]:
         from .base import AsPythonConstantNotImplementedError
 
         try:
