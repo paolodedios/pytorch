@@ -126,9 +126,8 @@ non-contiguous layout, received stride: {stride} and shape: {shape}"
         **kwargs: dict[str, Any],
     ) -> tuple[str, str, str, EVTArgRenames]:
         arch = int(cutlass_arch(device_type))
-        assert device_type != "cuda" or arch >= 90, (
-            "For CUDA, only SM90+ is supported for EVT"
-        )
+        if device_type == "cuda" and arch < 90:
+            raise AssertionError("For CUDA, only SM90+ is supported for EVT")
         epilogue_functor = _trace(fn_src, example_tensors, arch, **kwargs)
         visitor = EpilogueFunctorVisitor(arch, epilogue_functor)
         fusion_callbacks = FusionCallbacks(visitor.graph, arch, emit_CD=False)
@@ -329,8 +328,13 @@ non-contiguous layout, received stride: {stride} and shape: {shape}"
                     "Immediate constants do not use tuple argument types"
                 )
             DEFAULT_STRIDE_LEN = 3
-            assert node is not None
-            assert len(node.get_layout().stride) <= DEFAULT_STRIDE_LEN
+            if node is None:
+                raise AssertionError("node must not be None for tuple argument types")
+            if len(node.get_layout().stride) > DEFAULT_STRIDE_LEN:
+                raise AssertionError(
+                    f"expected stride length <= {DEFAULT_STRIDE_LEN}, "
+                    f"got {len(node.get_layout().stride)}"
+                )
             stride = [size_hint_fn(x) for x in node.get_layout().stride]
             for _ in range(DEFAULT_STRIDE_LEN - len(stride)):
                 stride.append(0)
@@ -349,7 +353,8 @@ non-contiguous layout, received stride: {stride} and shape: {shape}"
         elif issubclass(arg_ty, ctypes.c_void_p):
             if constant_value is not None:
                 return "nullptr"
-            assert node is not None
+            if node is None:
+                raise AssertionError("node must not be None for pointer argument")
             name = arg_renames.new_name(node.get_name())
             return f"({CUTLASSTemplate._DTYPE_TO_CUTLASS[node.get_layout().dtype]}*) ({name} + {name}_offset)"
         elif (
@@ -357,7 +362,8 @@ non-contiguous layout, received stride: {stride} and shape: {shape}"
         ):  # Assumption: this is the element dtype, this holds for all cutlass ir nodes currently
             if constant_value is not None:
                 return str(constant_value)
-            assert node is not None
+            if node is None:
+                raise AssertionError("node must not be None for dtype argument")
             return f"{CUTLASSTemplate._DTYPE_TO_CUTLASS[node.get_layout().dtype]}(0)"
         elif issubclass(arg_ty, EmptyByte):
             return "{}"
