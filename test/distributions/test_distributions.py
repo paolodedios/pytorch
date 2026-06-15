@@ -3228,7 +3228,6 @@ class TestDistributions(DistributionsTestCase):
         self.assertEqual(d.variance, empirical_var, atol=0.05, rtol=0)
 
     # We applied same tests in Multivariate Normal distribution for Wishart distribution
-    @expectedFailureMPS
     @set_default_dtype_if_supported(torch.double)
     def test_wishart_shape(self):
         set_rng_seed(0)  # see Note [Randomized statistical tests]
