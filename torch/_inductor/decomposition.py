@@ -707,6 +707,15 @@ def _get_shape_permutation_like(
     return (shape, permutation)
 
 
+def _same_stride(
+    stride1: tuple[int | torch.SymInt, ...],
+    stride2: tuple[int | torch.SymInt, ...],
+) -> bool:
+    return len(stride1) == len(stride2) and all(
+        guard_or_false(s1 == s2) for s1, s2 in zip(stride1, stride2)
+    )
+
+
 @register_decomposition(aten.full_like)
 def full_like(
     self: torch.Tensor,
@@ -748,7 +757,7 @@ def full_like(
                 pin_memory=pin_memory,
                 requires_grad=False,
             )
-            if result.stride() != self.stride():
+            if not _same_stride(result.stride(), self.stride()):
                 empty = torch.empty_strided(
                     self.shape,
                     self.stride(),
@@ -796,6 +805,24 @@ def _rand_like(
             device=device,
             **kwargs,
         ).to(memory_format=memory_format)
+
+    if utils.is_non_overlapping_and_dense_or_false(self):
+        result = rand_fn(
+            self.shape,
+            dtype=dtype,
+            device=device,
+            **kwargs,
+        )
+        if not _same_stride(result.stride(), self.stride()):
+            empty = torch.empty_strided(
+                self.shape,
+                self.stride(),
+                dtype=dtype,
+                device=device,
+                pin_memory=kwargs.get("pin_memory", False),
+            )
+            result = torch.ops.aten.copy.default(empty, result)
+        return result
 
     shape, permutation = _get_shape_permutation_like(self)
     result = rand_fn(
