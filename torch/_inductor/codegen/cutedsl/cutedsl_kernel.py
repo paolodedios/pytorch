@@ -452,7 +452,11 @@ class CuteDSLTemplateKernel(Kernel):
 
     def define_aux_scalars(self, symbols):
         """Return the runtime scalar tuple for captured symbolic scalars."""
-        assert tuple(symbols) == self.aux_scalar_bindings.symbols
+        if tuple(symbols) != self.aux_scalar_bindings.symbols:
+            raise AssertionError(
+                f"Expected aux scalar symbols {self.aux_scalar_bindings.symbols}, "
+                f"got {tuple(symbols)}"
+            )
         return self.aux_scalar_bindings.tuple_expr(self.rename_indexing, cutedsl_pexpr)
 
     def unpack_buffers(self, buffer_list_name: str, *, indent_width: int = 4):
