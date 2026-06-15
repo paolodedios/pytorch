@@ -572,13 +572,8 @@ mkldnn_rnn_layer_backward(
 // I. Memory Formats
 //   a. onednn will use plain formats for input, hx/cx, output, hy/cy
 //      and possibly use blocked formats for weights depending shape info.
-<<<<<<< HEAD
 //   b. All onednn memories are created (in plain format) as views on ATen tensor,
 //      the weight reorder(if any) is handed automatically inside ideep (onednn bridge)
-=======
-//   b. All onednn memorys are created (in plain format) as views on ATen tensor,
-//      the weight reorder(if any) is handed automatically inside ideep (onednn bridge)
->>>>>>> fae2aa0014d (Update non user APIs - 2)
 //
 // II. ONEDNN Primitive Mapping
 //   a. onednn rnn primitive doesn't support training with dropout or padded input sequence.
