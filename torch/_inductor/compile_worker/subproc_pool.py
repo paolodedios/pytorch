@@ -51,6 +51,11 @@ class MsgHeader(IntEnum):
     JOB = 4
 
 
+class _DrainResult(Enum):
+    DRAINED = 0
+    SHUTDOWN_REQUESTED = 1
+
+
 def _pack_msg(msg_header: MsgHeader, job_id: int, length: int) -> bytes:
     return struct.pack("nnn", int(msg_header), job_id, length)
 
@@ -399,7 +404,7 @@ class SubprocMain:
             elif msg_header == MsgHeader.WAKEUP:
                 self._start_pool()
             elif msg_header == MsgHeader.QUIESCE:
-                if not self._quiesce():
+                if self._quiesce() == _DrainResult.SHUTDOWN_REQUESTED:
                     return
             else:
                 return self._shutdown()
@@ -409,19 +414,20 @@ class SubprocMain:
             return self.deferred_messages.popleft()
         return _recv_msg(self.read_pipe)
 
-    def _quiesce(self) -> bool:
+    def _quiesce(self) -> _DrainResult:
         if self.pool is None:
-            return True
-        if not self._drain_futures_until_shutdown():
-            return False
+            return _DrainResult.DRAINED
+        drain_result = self._drain_futures_until_shutdown()
+        if drain_result == _DrainResult.SHUTDOWN_REQUESTED:
+            return drain_result
         self._shutdown_pool(terminate_workers=False)
-        return True
+        return _DrainResult.DRAINED
 
-    def _drain_futures_until_shutdown(self) -> bool:
+    def _drain_futures_until_shutdown(self) -> _DrainResult:
         while True:
             with self.pending_futures_lock:
                 if not self.pending_futures:
-                    return True
+                    return _DrainResult.DRAINED
 
             # Preserve quiesce ordering, but allow final shutdown to preempt
             # long-running compiler work instead of waiting behind QUIESCE.
@@ -432,7 +438,7 @@ class SubprocMain:
             msg_header, job_id, data = _recv_msg(self.read_pipe)
             if msg_header in (MsgHeader.SHUTDOWN, MsgHeader.ERROR):
                 self._shutdown()
-                return False
+                return _DrainResult.SHUTDOWN_REQUESTED
             self.deferred_messages.append((msg_header, job_id, data))
 
     def _shutdown(self) -> None:
@@ -485,7 +491,8 @@ class SubprocMain:
                 except Exception as e:
                     log.exception("Error in subprocess")
                     result = self.pickler.dumps(e)
-                assert isinstance(result, bytes)
+                if not isinstance(result, bytes):
+                    raise AssertionError(f"Expected bytes result, got {type(result)}")
                 with self.write_lock:
                     if self.running:
                         _send_msg(self.write_pipe, MsgHeader.JOB, job_id, result)
@@ -494,7 +501,8 @@ class SubprocMain:
                     self.pending_futures.discard(fut)
 
         self._start_pool()
-        assert self.pool is not None
+        if self.pool is None:
+            raise AssertionError("pool must be initialized before submitting jobs")
 
         future = self.pool.submit(
             functools.partial(SubprocMain.do_job, self.pickler, data)
