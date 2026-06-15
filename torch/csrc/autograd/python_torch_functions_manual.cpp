@@ -802,7 +802,12 @@ void initTorchFunctions(PyObject* module) {
               dst.sym_strides(),
               /*check_offset_in_bounds=*/false);
         } else {
-          // checkSetStorage rejects cross-device; handle it directly.
+          TORCH_CHECK(
+              dst.sym_sizes() == src.sym_sizes() &&
+                  dst.sym_strides() == src.sym_strides() &&
+                  dst.dtype() == src.dtype(),
+              "cross-device .data requires matching dtype, sizes, "
+              "and strides");
           dst.unsafeGetTensorImpl()->_change_backend_component_keys(
               src.device());
           dst.unsafeGetTensorImpl()->set_storage_keep_dtype(src.storage());
