@@ -136,7 +136,9 @@ def _plain_int_schema_arg_types(schema: str) -> dict[str, str]:
     for declaration in _schema_argument_declarations(schema):
         if declaration in {"*", "..."}:
             continue
-        arg = next(parsed_args)
+        arg = next(parsed_args, None)
+        if arg is None:
+            break
         declaration = _strip_schema_arg_default(declaration)
         type_and_name = declaration.rsplit(None, 1)
         if len(type_and_name) != 2:

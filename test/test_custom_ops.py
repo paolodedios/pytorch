@@ -697,6 +697,16 @@ class TestCustomOp(CustomOpTestCaseBase):
         finally:
             torch._C._unregister_opaque_type(type_name)
 
+        with patch.object(
+            torch.library,
+            "_schema_argument_declarations",
+            return_value=["Tensor x", "int y"],
+        ):
+            self.assertEqual(
+                torch.library._plain_int_schema_arg_types("foo(Tensor x) -> Tensor"),
+                {},
+            )
+
     def test_invalid_qualname(self):
         with self.assertRaisesRegex(ValueError, "overload"):
             custom_ops.custom_op(f"{TestCustomOp.test_ns}::foo.Tensor", "() -> ()")
