@@ -3,7 +3,7 @@
 #include <torch/headeronly/util/TypeTraits.h>
 #include <type_traits>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 /**
  * Represent a function pointer as a C++ type.
@@ -48,7 +48,7 @@ template <class FuncType, FuncType* func_ptr>
 struct is_compile_time_function_pointer<
     CompileTimeFunctionPointer<FuncType, func_ptr>> : std::true_type {};
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::CompileTimeFunctionPointer;

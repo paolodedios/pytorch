@@ -7,7 +7,7 @@
 #include <intrin.h>
 #endif
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly, utils)
+namespace torch::headeronly::utils {
 
 /**
  * This is a simple bitset class with sizeof(long long int) bits.
@@ -117,7 +117,7 @@ inline bool operator!=(bitset lhs, bitset rhs) noexcept {
   return !(lhs == rhs);
 }
 
-HIDDEN_NAMESPACE_END(torch, headeronly, utils)
+} // namespace torch::headeronly::utils
 
 namespace c10::utils {
 using torch::headeronly::utils::bitset;
