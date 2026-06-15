@@ -1618,23 +1618,43 @@ def _add_ephemeral_timeout_for_all_pgs(timeout: timedelta) -> None:
 
 def set_timeout(timeout: timedelta, group: ProcessGroup | None = None) -> None:
     """
-    Set the timeout for the given process group when users want to use a different timeout instead of
-    default values.
+    Set the default timeout for all future operations on a process group.
+
+    This overrides the timeout configured when the group was created (via
+    :func:`init_process_group` or :func:`new_group`). The new timeout is
+    forwarded to every backend registered with :attr:`group` -- for example both
+    the Gloo and NCCL backends of a group spanning CPU and CUDA devices. Backends
+    that do not support changing their timeout (such as MPI and UCC) raise a
+    ``RuntimeError``.
 
     Args:
-        timeout (timedelta): Timeout for operations executed against the process group which
-            users want to set. Default value is 10 minutes for NCCL and 30 minutes for other backends.
-            This is the duration after which collectives will be aborted asynchronously and the process will crash.
-            This is done since CUDA execution is async and it is no longer safe to continue executing user code since
-            failed async NCCL operations might result in subsequent CUDA operations running on corrupted data.
-            When TORCH_NCCL_BLOCKING_WAIT is set, the process will block and wait for this timeout.
+        timeout (timedelta): Timeout to set for operations executed against the
+            process group. The default configured at initialization time is 10
+            minutes for NCCL and 30 minutes for other backends. For NCCL this is
+            the duration after which collectives are aborted asynchronously and
+            the process crashes; this is necessary because CUDA execution is
+            async, so it is not safe to keep running user code once an async NCCL
+            operation has failed (subsequent CUDA operations might run on
+            corrupted data). When ``TORCH_NCCL_BLOCKING_WAIT`` is set, the process
+            blocks and waits for this timeout instead.
+        group (ProcessGroup, optional): The process group to work on. The default
+            is the general main process group. If another specific group is
+            specified, the calling process must be part of :attr:`group`.
 
-        group (ProcessGroup, optional): The process group to work on. The
-            default is the general main process group. If another specific group
-            is specified, the calling process must be part of :attr:`group`.
+    Raises:
+        ValueError: If the calling process is not part of :attr:`group`.
+        RuntimeError: If a backend of :attr:`group` does not support changing its
+            timeout (for example MPI or UCC).
 
     Returns:
         None
+
+    Example::
+        >>> # xdoctest: +SKIP("need process group init")
+        >>> import torch.distributed as dist
+        >>> from datetime import timedelta
+        >>> # Shorten the timeout of the default process group to 30 seconds.
+        >>> dist.set_timeout(timedelta(seconds=30))
     """
     if group is None:
         group = _get_default_group()
