@@ -91,6 +91,7 @@ register_op_strategy(
         aten.clone.default,
         aten.contiguous.default,
         aten.detach.default,
+        aten.detach_.default,
         aten.alias.default,
         aten.fill_.Scalar,
         aten.view.dtype,
@@ -282,7 +283,18 @@ def new_factory_strategy(op_schema: OpSchema) -> StrategyType:
             )
         )
 
-        if tuple(input_shape) == tuple(output_shape) and input_spec.is_sharded():
+        # Sharded inputs always propagate. Uninitialized factories (new_empty*)
+        # also propagate Partial — the memory is about to be overwritten, so the
+        # placement just needs to match the source of the subsequent write
+        # (e.g., autograd's clone_obey_contract: new_empty_strided + copy_).
+        # Initialized factories (new_zeros/ones/full) keep Replicate to avoid
+        # incorrect values after Partial reduction (e.g. ones * world_size).
+        is_uninitialized_factory = op_schema.op in (
+            aten.new_empty.default,
+            aten.new_empty_strided.default,
+        )
+        can_propagate_placement = input_spec.is_sharded() or is_uninitialized_factory
+        if tuple(input_shape) == tuple(output_shape) and can_propagate_placement:
             new_factory_strategy.strategies.append(
                 OpSpec(
                     output_specs=input_spec,
@@ -598,6 +610,70 @@ def gen_slice_scatter_strategy(op_schema: OpSchema) -> StrategyType:
     return slice_scatter_strategy
 
 
+@register_single_dim_strategy(
+    [aten.select_scatter.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def select_scatter_single_dim_strategy(
+    op: OpOverload,
+    args_schema: ArgsType,
+    kwargs_schema: KwargsType,
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    input_meta = args_schema[0]
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+    ndim = len(input_meta.shape)
+    dim = normalize_dim(cast(int, args_schema[2]), ndim)
+    # [output, self, src] — src has the select dim removed
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for d in range(ndim):
+        if d == dim:
+            continue
+        strategies.append(
+            [
+                _ShardingPlaceholder(d),
+                _ShardingPlaceholder(d),
+                _ShardingPlaceholder(d if d < dim else d - 1),
+            ]
+        )
+    return strategies
+
+
+@register_single_dim_strategy(
+    [aten.diagonal_scatter.default],
+    schema_info=RuntimeSchemaInfo(1),
+)
+def diagonal_scatter_single_dim_strategy(
+    op: OpOverload,
+    args_schema: ArgsType,
+    kwargs_schema: KwargsType,
+) -> list[list[Placement | _ShardingPlaceholder]]:
+    input_meta = args_schema[0]
+    if not isinstance(input_meta, TensorMeta):
+        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
+    ndim = len(input_meta.shape)
+    # schema: (self, src, offset=0, dim1=0, dim2=1)
+    dim1 = cast(int, args_schema[3]) if len(args_schema) > 3 else 0
+    dim2 = cast(int, args_schema[4]) if len(args_schema) > 4 else 1
+    dim1 = normalize_dim(dim1, ndim)
+    dim2 = normalize_dim(dim2, ndim)
+    min_d, max_d = min(dim1, dim2), max(dim1, dim2)
+    # [output, self, src] — src has dim1/dim2 removed and diagonal appended
+    strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    for d in range(ndim):
+        if d in (dim1, dim2):
+            continue
+        removed = (1 if d > min_d else 0) + (1 if d > max_d else 0)
+        strategies.append(
+            [
+                _ShardingPlaceholder(d),
+                _ShardingPlaceholder(d),
+                _ShardingPlaceholder(d - removed),
+            ]
+        )
+    return strategies
+
+
 @register_op_strategy(aten._local_scalar_dense.default)
 def replica_only_strategy(op_schema: OpSchema) -> StrategyType:
     """Only allow replication on the input/output."""
@@ -619,19 +695,89 @@ def replica_only_strategy(op_schema: OpSchema) -> StrategyType:
     schema_info=RuntimeSchemaInfo(1),
 )
 def scatter_strategy(op_schema: OpSchema) -> StrategyType:
+    """Sharding strategy for scatter/scatter_ (``.value`` and ``.src`` overloads).
+
+    scatter writes along the ``dim`` argument, so that tensor axis must stay
+    replicated. Any *other* axis can be sharded, but only if every operand has
+    the same size on it -- then the scatter runs locally with no communication.
+    We always also offer a fully-replicated strategy as the universal fallback
+    (valid for any input layout, at the cost of redistributing to replicate).
+
+    Each strategy is a placement list ``[output, input, index, src]`` (``src``
+    is dropped for the scalar-value overloads, giving a 3-element list). Tensor
+    args below are written as ``name(shape)``; "axis N" is a tensor axis,
+    distinct from the scatter ``dim`` argument. Strategies offered per mesh axis:
+
+    - ``scatter(input(8, 5), dim=1, index(8, 3), src(8, 3))``::
+
+          [Replicate(), Replicate(), Replicate(), Replicate()]  # fallback
+          [Shard(0), Shard(0), Shard(0), Shard(0)]  # local, no comm
+          # axis 1 is the scatter dim -> never sharded
+          # axis 0 sizes all match (8) -> shardable
+
+    - ``scatter(input(8, 5), dim=0, index(8, 3), value=True)`` (scalar, no src)::
+
+          [Replicate(), Replicate(), Replicate()]  # fallback only
+          # axis 0 is the scatter dim -> never sharded
+          # axis 1 sizes differ (input 5 != index 3) -> not shardable
+
+    - ``scatter(input(8, 5), dim=1, index(8, 3), src(10, 3))`` (src larger)::
+
+          [Replicate(), Replicate(), Replicate(), Replicate()]  # fallback only
+          # axis 1 is the scatter dim -> never sharded
+          # axis 0 sizes differ (src 10 != index 8) -> sharding would misalign
+          #   the src/index shards, so it is not offered
+    """
     mesh = op_schema.get_mesh_from_args()
+
+    input_strategy, dim, index_strategy = op_schema.args_schema[:3]
+    if not isinstance(input_strategy, OpStrategy):
+        raise AssertionError(f"Expected OpStrategy, got {type(input_strategy)}")
+    if not isinstance(index_strategy, OpStrategy):
+        raise AssertionError(f"Expected OpStrategy, got {type(index_strategy)}")
+    if not isinstance(dim, int):
+        raise AssertionError(f"Expected int, got {type(dim)}")
+    dim = normalize_dim(dim, input_strategy.ndim)
+    input_shape = input_strategy.shape
+    index_shape = index_strategy.shape
+
+    # Placement lists are [output, input, index, src]. The scalar `.value`
+    # overloads (and `.src` with a python-number src) carry no src tensor,
+    # giving a 3-element list; otherwise capture src's shape for the guard below.
+    if len(op_schema.args_strategy) < 3:
+        num_specs = 3
+        src_shape = None
+    else:
+        num_specs = 4
+        src_strategy = op_schema.args_schema[3]
+        if not isinstance(src_strategy, OpStrategy):
+            raise AssertionError(f"Expected OpStrategy, got {type(src_strategy)}")
+        src_shape = src_strategy.shape
+
     single_mesh_dim_strategies = []
 
-    # placement list stores placements of [output, input, index, src]
-    # first we always have replicate all for inputs and output
-    if len(op_schema.args_strategy) < 3:
-        # scatter_.src/scatter.src with src be float number instead of tensor
-        all_replicate: PlacementList = [Replicate()] * 3
-    else:
-        all_replicate = [Replicate()] * 4
+    # The fully-replicated strategy is always valid; it is the fallback used
+    # when no sharded strategy matches the input placements.
+    all_replicate: PlacementList = [Replicate()] * num_specs
     single_mesh_dim_strategies.append(all_replicate)
 
-    # TODO: see if we can support input sharding pattern
+    # Shard any non-scatter axis on which all operands agree in size: each rank
+    # then scatters its own slice as a purely local op (mirrors scatter_add).
+    #   - the scatter axis (`dim`) stays replicated, since indices address its
+    #     full extent;
+    #   - input/index must match in size so each output row and the writes into
+    #     it co-locate on the same rank;
+    #   - src may legally be larger than index, so only shard where they match
+    #     too, else the src/index shards would misalign.
+    if len(input_shape) == len(index_shape):
+        for d in range(len(input_shape)):
+            if d == dim or input_shape[d] != index_shape[d]:
+                continue
+            if src_shape is not None and src_shape[d] != index_shape[d]:
+                continue
+            sharding: PlacementList = [Shard(d)] * num_specs
+            single_mesh_dim_strategies.append(sharding)
+
     op_strategy = expand_to_full_mesh_op_strategy(
         mesh,
         op_schema,
