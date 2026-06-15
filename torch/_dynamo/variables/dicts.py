@@ -19,7 +19,6 @@ in sets.py.
 
 import collections
 import functools
-import threading
 import types
 from collections.abc import Callable, Iterator
 from typing import Any, TYPE_CHECKING, Union
@@ -79,12 +78,6 @@ if TYPE_CHECKING:
 # - Implement is_python_equal() for key equality
 
 
-# Re-entrancy guard for ConstDictVariable.is_python_constant against
-# self-referential dicts (d[k] = d, directly or via an OrderedDict/defaultdict
-# _base_vt cycle). Keyed by id() so it never mutates the VT instances.
-_is_python_constant_tls = threading.local()
-
-
 def pydict_check(obj: VariableTracker) -> bool:
     # This is a simplified version of the CPython's PyDict_Check function:
     return issubclass(obj.python_type(), dict)
@@ -108,6 +101,7 @@ class ConstDictVariable(VariableTracker):
 
     _nonvar_fields = {
         "user_cls",
+        "_checking_python_constant",
         *VariableTracker._nonvar_fields,
     }
 
@@ -123,6 +117,8 @@ class ConstDictVariable(VariableTracker):
             kwargs.pop("original_items")
         if "should_reconstruct_all" in kwargs:
             kwargs.pop("should_reconstruct_all")
+        if "_checking_python_constant" in kwargs:
+            kwargs.pop("_checking_python_constant")
 
         super().__init__(**kwargs)
 
@@ -153,6 +149,11 @@ class ConstDictVariable(VariableTracker):
         )
         self.original_items = items.copy()
         self.user_cls = user_cls
+        # Re-entrancy guard for is_python_constant against self-referential
+        # dicts (d[k] = d, directly or via an OrderedDict/defaultdict wrapper
+        # whose _base_vt is this instance). Both forms re-enter this same
+        # instance's is_python_constant, so a per-instance flag suffices.
+        self._checking_python_constant = False
 
     def _get_dict_cls_from_user_cls(self, user_cls: type) -> type:
         accepted_dict_types = (dict, collections.OrderedDict, collections.defaultdict)
@@ -193,19 +194,16 @@ class ConstDictVariable(VariableTracker):
         # an OrderedDict/defaultdict wrapper delegating to this _base_vt) would
         # otherwise recurse forever. A cyclic dict is not a flat python
         # constant; return False so reconstruct handles the cycle.
-        seen = getattr(_is_python_constant_tls, "ids", None)
-        if seen is None:
-            seen = _is_python_constant_tls.ids = set()
-        if id(self) in seen:
+        if self._checking_python_constant:
             return False
-        seen.add(id(self))
+        self._checking_python_constant = True
         try:
             return all(
                 k.vt.is_python_constant() and v.is_python_constant()
                 for k, v in self.items.items()
             )
         finally:
-            seen.discard(id(self))
+            self._checking_python_constant = False
 
     def as_python_constant(self) -> dict[Any, Any]:
         return {
