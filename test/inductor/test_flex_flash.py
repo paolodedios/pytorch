@@ -2563,6 +2563,7 @@ class TestFlexFlashDynamicShapes(InductorTestCase):
                 q, k, v, score_mod=score_mod, kernel_options={"BACKEND": "FLASH"}
             )
 
+    @xfailIfSM120OrLater
     def test_captured_int_works_with_dynamic(self):
         """Captured Python int should work with dynamic=True."""
         val = 2
@@ -2762,10 +2763,7 @@ class TestFlexFlashDynamicShapes(InductorTestCase):
 
         self.assertEqual(len(backend.graphs), 1, "Expected a single dynamic graph")
 
-    def test_dynamic_multiple_scalar_closures_in_score_mod_codegen(self):
-        if SM120OrLater:
-            self.skipTest("score_mod is not supported on SM120")
-
+    def _dynamic_multiple_scalar_closures_fn(self):
         def fn(q, k, v):
             batch = q.size(0)
             seq_len = q.size(2)
@@ -2781,6 +2779,13 @@ class TestFlexFlashDynamicShapes(InductorTestCase):
                 kernel_options={"BACKEND": "FLASH"},
             )
 
+        return fn
+
+    def test_dynamic_multiple_scalar_closures_in_score_mod_codegen(self):
+        if SM120OrLater:
+            self.skipTest("score_mod is not supported on SM120")
+
+        fn = self._dynamic_multiple_scalar_closures_fn()
         q, k, v = create_test_tensors(seq_len=128, device="cuda", dtype=torch.float16)
         expected = fn(q, k, v)
         actual, code = run_and_get_code(
@@ -2795,6 +2800,24 @@ class TestFlexFlashDynamicShapes(InductorTestCase):
         )
         self.assertIn("aux_scalars[0]", src)
         self.assertIn("aux_scalars[1]", src)
+
+    @xfailIfSM120OrLater
+    @decorateIf(
+        unittest.expectedFailure,
+        lambda params: IS_SM90,
+    )
+    def test_dynamic_multiple_scalar_closures_with_max_autotune(self):
+        fn = self._dynamic_multiple_scalar_closures_fn()
+        q, k, v = create_test_tensors(seq_len=128, device="cuda", dtype=torch.float16)
+        expected = fn(q, k, v)
+        actual = torch.compile(
+            fn,
+            dynamic=True,
+            fullgraph=True,
+            mode="max-autotune-no-cudagraphs",
+        )(q, k, v)
+
+        self.assertEqual(actual, expected, atol=3e-2, rtol=3e-2)
 
     def _offset_block_mask(self, offset, q_len=128, kv_len=128):
         def mask_mod(_b, _h, q_idx, kv_idx):
@@ -2910,12 +2933,14 @@ class TestFlexFlashDynamicShapes(InductorTestCase):
         for actual, expected in zip(grads_flash, grads_triton):
             self.assertEqual(actual, expected, atol=3e-2, rtol=3e-2)
 
+    @xfailIfSM120OrLater
     def test_dynamic_symbol_closure_in_score_mod_backward(self):
         """Captured SymInt in score_mod should propagate through FLASH backward."""
         self._compare_flash_triton_backward(
             lambda batch: lambda score, _b, _h, _q, _kv: score * (batch + 1)
         )
 
+    @xfailIfSM120OrLater
     def test_dynamic_symfloat_closure_in_score_mod_backward(self):
         """SymFloat expressions in score_mod should lower inside FLASH backward."""
         self._compare_flash_triton_backward(

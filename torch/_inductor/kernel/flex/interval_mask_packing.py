@@ -567,7 +567,7 @@ class PackedMaskAnalyzer:
 
 @dataclasses.dataclass(frozen=True)
 class PackedMaskAuxPlaceholderMap:
-    """Maps mask_mod aux placeholders to aux_scalars or dense aux_tensors slots."""
+    """Maps mask_mod aux placeholders to runtime scalar expressions or tensors."""
 
     codes: Mapping[torch.fx.Node, str]
     exprs: Mapping[torch.fx.Node, sympy.Expr]
@@ -579,6 +579,7 @@ class PackedMaskAuxPlaceholderMap:
         other_buffers: Sequence[object],
         symbol_codes: Mapping[sympy.Symbol, str],
     ) -> "PackedMaskAuxPlaceholderMap | None":
+        """Render lane-uniform mask_mod captures for packed interval analysis."""
         codes: dict[torch.fx.Node, str] = {}
         exprs: dict[torch.fx.Node, sympy.Expr] = {}
         tensor_idx = 0

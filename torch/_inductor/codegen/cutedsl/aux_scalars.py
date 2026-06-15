@@ -9,12 +9,21 @@ import sympy
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class CuteDSLAuxScalarBindings:
+    """Render symbolic shape captures through FA4's runtime aux_scalars tuple.
+
+    Inductor represents captured dynamic ints/floats as SymPy expressions in the
+    other-buffer list. CuTe kernels receive those values as ordinary kernel
+    scalar arguments, wrap them for FA4, and rewrite matching symbols in
+    generated score_mod/mask_mod expressions to tuple lookups.
+    """
+
     symbols: tuple[sympy.Symbol, ...] = ()
     tuple_name: ClassVar[str] = "aux_scalars"
 
     def symbol_codes(
         self, *, cast_integer_to_int32: bool = False
     ) -> dict[sympy.Symbol, str]:
+        """Render symbols as tuple lookups for CuTe expressions."""
         codes: dict[sympy.Symbol, str] = {}
         for index, symbol in enumerate(self.symbols):
             code = f"{self.tuple_name}[{index}]"
@@ -26,6 +35,7 @@ class CuteDSLAuxScalarBindings:
     def symbol_codes_with_renames(
         self, rename: Callable[[sympy.Symbol], sympy.Expr]
     ) -> dict[sympy.Symbol, str]:
+        """Include Inductor-renamed symbols used in generated kernel signatures."""
         codes = self.symbol_codes()
         for symbol, code in list(codes.items()):
             renamed = rename(symbol)
@@ -38,6 +48,7 @@ class CuteDSLAuxScalarBindings:
         rename: Callable[[sympy.Symbol], sympy.Expr],
         print_expr: Callable[[sympy.Expr], str],
     ) -> str:
+        """Render runtime scalar values with FA4-compatible scalar wrapper types."""
         if not self.symbols:
             return "None"
         scalar_values = []

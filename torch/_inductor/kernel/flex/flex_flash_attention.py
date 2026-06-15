@@ -4,6 +4,7 @@
 import dataclasses
 import functools
 import importlib
+import inspect
 import warnings
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
@@ -103,9 +104,7 @@ def get_flex_flash_fwd_configs(
         mask_mod_packed_intervals = select_packed_mask_intervals(
             mask_mod_graph_module,
             mask_mod_other_buffers,
-            CuteDSLAuxScalarBindings(tuple(aux_scalar_symbols)).symbol_codes(
-                cast_integer_to_int32=True
-            ),
+            CuteDSLAuxScalarBindings(tuple(aux_scalar_symbols)).symbol_codes(),
         )
     if mask_mod_packed_intervals is not None:
         mask_mod_vec_size = DEFAULT_MASK_MOD_VEC_SIZE
@@ -113,10 +112,11 @@ def get_flex_flash_fwd_configs(
     if (
         has_score_mod
         and score_mod_vec_size is None
+        and not aux_scalar_symbols
         and torch._inductor.config.max_autotune
     ):
-        # No captured score_mod tensors means any kernel-supported power-of-two
-        # vector width is legal, so autotune the full CuTe score_mod range.
+        # No captured score_mod tensors or scalars means any kernel-supported
+        # power-of-two vector width is legal, so autotune the full CuTe score_mod range.
         score_mod_vec_sizes = (1, 2, 4, 8, 16, 32, 64, 128)
     else:
         score_mod_vec_sizes = (score_mod_vec_size,)
@@ -167,6 +167,19 @@ def ensure_flash_available() -> bool:
         return importlib.util.find_spec("flash_attn.cute") is not None  # type: ignore[attr-defined]
     except ImportError:
         return False
+
+
+@functools.lru_cache(maxsize=1)
+def flash_supports_aux_scalars() -> bool:
+    """Check whether the installed FA4 package supports scalar captures."""
+    try:
+        interface = importlib.import_module("flash_attn.cute.interface")
+    except ImportError:
+        return False
+    return (
+        "aux_scalars" in inspect.signature(interface._flash_attn_fwd).parameters
+        and "aux_scalars" in inspect.signature(interface._flash_attn_bwd).parameters
+    )
 
 
 from ...codegen.cutedsl.cutedsl_template import CuteDSLTemplate
@@ -487,21 +500,28 @@ def create_flex_flash_attention_kernel(
     aux_scalar_symbols = collect_aux_scalar_symbols(
         score_mod_other_buffers, mask_mod_other_buffers
     )
+    if aux_scalar_symbols and not flash_supports_aux_scalars():
+        raise RuntimeError(
+            "CUTE flash attention scalar captures require flash-attn-4>=4.0.0b17. "
+            f"{FLASH_ATTENTION_INSTALL_MESSAGE}"
+        )
+    has_score_aux_tensors = any(
+        not isinstance(buffer, sympy.Expr) for buffer in score_mod_other_buffers
+    )
+    has_mask_aux_tensors = any(
+        not isinstance(buffer, sympy.Expr) for buffer in mask_mod_other_buffers
+    )
 
     configs = get_flex_flash_fwd_configs(
         has_score_mod=has_score_mod,
-        has_aux_tensors=any(
-            not isinstance(buffer, sympy.Expr) for buffer in score_mod_other_buffers
-        ),
+        has_aux_tensors=has_score_aux_tensors,
         device=device,
         score_mod_graph_module=(
             subgraph.graph_module if has_score_mod and subgraph is not None else None
         ),
         score_mod_other_buffers=score_mod_other_buffers,
         has_mask_mod=needs_block_mask,
-        has_mask_aux_tensors=any(
-            not isinstance(buffer, sympy.Expr) for buffer in mask_mod_other_buffers
-        ),
+        has_mask_aux_tensors=has_mask_aux_tensors,
         mask_mod_graph_module=mask_graph.graph_module,
         mask_mod_other_buffers=mask_mod_other_buffers,
         aux_scalar_symbols=aux_scalar_symbols,
@@ -823,6 +843,11 @@ def create_flex_flash_attention_backward_kernel(
     aux_scalar_symbols = collect_aux_scalar_symbols(
         score_mod_other_buffers or (), mask_mod_other_buffers or ()
     )
+    if aux_scalar_symbols and not flash_supports_aux_scalars():
+        raise RuntimeError(
+            "CUTE flash attention scalar captures require flash-attn-4>=4.0.0b17. "
+            f"{FLASH_ATTENTION_INSTALL_MESSAGE}"
+        )
     configs = _get_flex_flash_bwd_configs()
 
     error: NotImplementedError | None = None
