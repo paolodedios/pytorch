@@ -5,7 +5,7 @@
 #include <type_traits>
 #include <utility>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 /**
  * Mostly copied from https://llvm.org/doxygen/ScopeExit_8h_source.html
@@ -49,7 +49,7 @@ scope_exit<std::decay_t<Callable>> make_scope_exit(Callable&& F) {
   return scope_exit<std::decay_t<Callable>>(std::forward<Callable>(F));
 }
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::make_scope_exit;

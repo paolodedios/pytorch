@@ -24,7 +24,7 @@
 #include <type_traits>
 #include <utility>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 /// An efficient, type-erasing, non-owning reference to a callable. This is
 /// intended for use as the type of a function parameter that is not used
@@ -74,7 +74,7 @@ class function_ref<Ret(Params...)> {
   }
 };
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::function_ref;
