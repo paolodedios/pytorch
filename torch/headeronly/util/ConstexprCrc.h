@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <string_view>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly, util)
+namespace torch::headeronly::util {
 
 namespace detail {
 // NOLINTNEXTLINE(*c-arrays*)
@@ -127,7 +127,7 @@ inline constexpr crc64_t crc64(std::string_view str) {
   return crc64(str.data(), str.size());
 }
 
-HIDDEN_NAMESPACE_END(torch, headeronly, util)
+} // namespace torch::headeronly::util
 
 namespace c10::util {
 using torch::headeronly::util::crc64;

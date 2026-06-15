@@ -9,7 +9,7 @@
 #include <iterator>
 #include <type_traits>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 namespace detail {
 
@@ -122,7 +122,7 @@ constexpr integer_range<Integer, true> irange(Integer end) {
   return {Integer(), end};
 }
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::integer_range;
