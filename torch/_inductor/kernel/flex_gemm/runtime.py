@@ -315,10 +315,6 @@ def gemm_epilogue(
             raise NotImplementedError(
                 "FlexGEMM generic aux tuple epilogues cannot be combined with C/alpha/beta yet"
             )
-        if epilogue_args:
-            raise NotImplementedError(
-                "FlexGEMM generic aux tuple epilogues do not support captured tensor reads yet"
-            )
         check_matrix("aux_out", aux_out)
         check_matrix_major_layout("aux_out", aux_out)
         if tuple(aux_out.shape) != expected_shape:
