@@ -4,7 +4,6 @@
 
 #include <ATen/ATen.h>
 #include <ATen/SequenceNumber.h>
-#include <ATen/ThreadLocalPythonObjects.h>
 #include <c10/util/irange.h>
 #include <pybind11/pybind11.h>
 #include <structmember.h>
@@ -23,6 +22,7 @@
 #include <torch/csrc/autograd/grad_mode.h>
 #include <torch/csrc/autograd/graph_task.h>
 #include <torch/csrc/autograd/python_anomaly_mode.h>
+#include <torch/csrc/autograd/python_context.h>
 #include <torch/csrc/autograd/python_cpp_function.h>
 #include <torch/csrc/autograd/python_hook.h>
 #include <torch/csrc/autograd/saved_variable.h>
@@ -66,48 +66,6 @@ PyObject* THPGradientEdgeClass = nullptr;
 namespace {
 
 void throw_python_error();
-
-THPObjectPtr call_with_context(PyObject* callable, PyObject* args) {
-  if (!at::impl::ThreadLocalPythonObjects::contains("context")) {
-    return THPObjectPtr(PyObject_CallObject(callable, args));
-  }
-
-  auto context = at::impl::ThreadLocalPythonObjects::get("context");
-  auto* py_context = context->ptr(getPyInterpreter());
-  if (Py_IsNone(py_context)) {
-    return THPObjectPtr(PyObject_CallObject(callable, args));
-  }
-
-  // Context objects cannot be entered concurrently, so give each Python node
-  // invocation its own copy of the backward-launch context.
-  THPObjectPtr copy_fn(PyObject_GetAttrString(py_context, "copy"));
-  if (!copy_fn) {
-    throw_python_error();
-  }
-  THPObjectPtr py_context_copy(PyObject_CallNoArgs(copy_fn));
-  if (!py_context_copy) {
-    throw_python_error();
-  }
-  THPObjectPtr run_fn(PyObject_GetAttrString(py_context_copy, "run"));
-  if (!run_fn) {
-    throw_python_error();
-  }
-
-  auto num_args = PyTuple_GET_SIZE(args);
-  THPObjectPtr context_args(PyTuple_New(num_args + 1));
-  if (!context_args) {
-    throw_python_error();
-  }
-  Py_INCREF(callable);
-  PyTuple_SET_ITEM(context_args.get(), 0, callable);
-  for (Py_ssize_t i = 0; i < num_args; i++) {
-    PyObject* item = PyTuple_GET_ITEM(args, i);
-    Py_INCREF(item);
-    PyTuple_SET_ITEM(context_args.get(), i + 1, item);
-  }
-
-  return THPObjectPtr(PyObject_CallObject(run_fn, context_args.get()));
-}
 
 inline void check_legacy_fn_attr_access(
     const c10::intrusive_ptr<torch::autograd::Node>& cdata,
