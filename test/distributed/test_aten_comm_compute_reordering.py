@@ -1941,6 +1941,159 @@ class TestManualOverlapBucketing(TestComputeCommReorderingMultiProc):
 
     @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
     @torch._inductor.config.patch(
+        {"aten_distributed_optimizations.bucket_mode": "custom_ops"}
+    )
+    def test_manual_bucketing_ag_convert_inputs_before_consumers(self):
+        module_path_key = "module_path"
+
+        def module_stack_fn(node):
+            module_stack = node.meta.get("custom", {}).get(module_path_key, "")
+            return [(module_stack, torch.nn.Module)]
+
+        def func(a, b, *, ranks):
+            with torch.fx.traceback.annotate({module_path_key: "mod"}):
+                ag1 = _functional_collectives.all_gather_tensor(
+                    a.to(torch.bfloat16), 0, ranks
+                )
+            use_ag1 = ag1.float().sum()
+            late = b + 1.0
+            with torch.fx.traceback.annotate({module_path_key: "mod"}):
+                ag2 = _functional_collectives.all_gather_tensor(
+                    late.to(torch.bfloat16), 0, ranks
+                )
+            return use_ag1 + ag2.float().sum()
+
+        with _dynamo_dist_per_rank_init(
+            self.rank,
+            self.world_size,
+            self.backend(device_type),
+            fake_pg=not at_least_x_gpu(2),
+        ):
+            a = torch.ones(8, 8, dtype=torch.float, device=device_type)
+            b = torch.ones(8, 8, dtype=torch.float, device=device_type) * 2
+            ranks = list(range(self.world_size))
+
+            compiled = torch.compile(functools.partial(func, ranks=ranks))
+            out, aten_graph = run_and_get_manual_aten_graph(
+                compiled,
+                [["mod"]],
+                a,
+                b,
+                custom_module_stack_fn=module_stack_fn,
+            )
+
+            FileCheck().check("_pre_bucket_all_gather").check("wait_tensor").run(
+                str(aten_graph)
+            )
+            self.assertTrue(same(out, func(a, b, ranks=ranks)))
+
+    @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+    @torch._inductor.config.patch(
+        {"aten_distributed_optimizations.bucket_mode": "custom_ops"}
+    )
+    def test_manual_bucket_insertion_uses_graph_order(self):
+        def func(a, b, *, ranks):
+            ag1 = _functional_collectives.all_gather_tensor(a, 0, ranks)
+            ag2 = _functional_collectives.all_gather_tensor(b, 0, ranks)
+            return ag1[:8, :8].sum() + ag2[:8, :8].sum()
+
+        def reverse_bucket_order(graph, out_li):
+            gm = graph.owning_module
+            from torch._inductor.fx_passes.overlap_manual_scheduling import (
+                ManualOverlapScheduler,
+            )
+
+            scheduler = ManualOverlapScheduler(
+                gm,
+                module_bucket_plans=[],
+                insert_overlap_deps=False,
+            )
+            ag_nodes = [
+                n
+                for n in scheduler.nodes
+                if n.name in ("all_gather_into_tensor", "all_gather_into_tensor_1")
+            ]
+            self.assertEqual(len(ag_nodes), 2)
+            scheduler.bucketer._bucket_group(list(reversed(ag_nodes)))
+            scheduler.graph.lint()
+            out_li.append(scheduler.graph)
+
+        with _dynamo_dist_per_rank_init(
+            self.rank,
+            self.world_size,
+            self.backend(device_type),
+            fake_pg=not at_least_x_gpu(2),
+        ):
+            a = torch.ones(8, 8, dtype=torch.float, device=device_type)
+            b = torch.ones(8, 8, dtype=torch.float, device=device_type) * 2
+            ranks = list(range(self.world_size))
+
+            li = []
+            apply = functools.partial(reverse_bucket_order, out_li=li)
+            with torch._inductor.config.patch(post_grad_custom_post_pass=apply):
+                compiled = torch.compile(functools.partial(func, ranks=ranks))
+                out = compiled(a, b)
+
+            FileCheck().check("_pre_bucket_all_gather").check("wait_tensor").run(
+                str(li[0])
+            )
+            self.assertTrue(same(out, func(a, b, ranks=ranks)))
+
+    @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+    @torch._inductor.config.patch(
+        {"aten_distributed_optimizations.bucket_mode": "custom_ops"}
+    )
+    def test_manual_reduce_scatter_bucket_wait_stays_after_inputs(self):
+        def func(a, b):
+            rs1 = _functional_collectives.reduce_scatter_tensor(a, "sum", 0, "0")
+            b = b + 1
+            rs2 = _functional_collectives.reduce_scatter_tensor(b, "sum", 0, "0")
+            return rs1, rs2
+
+        def bucket_reduce_scatters(graph, out_li):
+            gm = graph.owning_module
+            from torch._inductor.fx_passes.overlap_manual_scheduling import (
+                ManualOverlapScheduler,
+            )
+
+            scheduler = ManualOverlapScheduler(
+                gm,
+                module_bucket_plans=[],
+                insert_overlap_deps=False,
+            )
+            rs_nodes = list(
+                scheduler.graph.find_nodes(
+                    op="call_function",
+                    target=torch.ops._c10d_functional.reduce_scatter_tensor.default,
+                )
+            )
+            self.assertEqual(len(rs_nodes), 2)
+            scheduler.bucketer._bucket_group(rs_nodes)
+            scheduler.graph.lint()
+            out_li.append(scheduler.graph)
+
+        with _dynamo_dist_per_rank_init(
+            self.rank,
+            self.world_size,
+            self.backend(device_type),
+            fake_pg=not at_least_x_gpu(2),
+        ):
+            a = torch.ones(8, 8, dtype=torch.float, device=device_type)
+            b = torch.ones(8, 8, dtype=torch.float, device=device_type) * 2
+
+            li = []
+            apply = functools.partial(bucket_reduce_scatters, out_li=li)
+            with torch._inductor.config.patch(post_grad_custom_post_pass=apply):
+                compiled = torch.compile(func)
+                out = compiled(a, b)
+
+            FileCheck().check("add").check("_pre_bucket_reduce_scatter").check(
+                "wait_tensor"
+            ).run(str(li[0]))
+            self.assertTrue(same(out, func(a, b)))
+
+    @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
+    @torch._inductor.config.patch(
         {"aten_distributed_optimizations.bucket_mode": "default"}
     )
     def test_manual_bucketing_ag_with_intermediate_deps(self):

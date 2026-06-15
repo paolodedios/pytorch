@@ -4,12 +4,13 @@ import heapq
 from collections import Counter, defaultdict
 from typing import Any, TYPE_CHECKING
 
-import torch  # noqa: TC001
-import torch.fx as fx  # noqa: TC001
+import torch
+import torch.fx as fx
 from torch._inductor.fx_passes.bucketing import (
     _get_collective_node_from_wait,
     _schedulable_wait_node,
     BucketMode,
+    has_mergeable_all_gather_convert_dtype,
     is_all_gather_into_tensor as is_all_gather,
     is_fsdp_all_gather,
     is_fsdp_reduce_scatter,
@@ -69,6 +70,30 @@ def _collect_nodes_must_be_before(
         visited.add(cur)
         queue.extend(cur.all_input_nodes)
     return sorted(visited, key=lambda n: node_positions[n])
+
+
+def _bucket_trace_inputs(coll_node: fx.Node) -> list[fx.Node]:
+    node_in = coll_node.args[0]
+    if has_mergeable_all_gather_convert_dtype(coll_node):
+        if not isinstance(node_in, fx.Node):
+            raise AssertionError(
+                f"expected node input to be a Node, got {type(node_in)}"
+            )
+        node_in = node_in.args[0]
+    if not isinstance(node_in, fx.Node):
+        raise AssertionError(f"expected node input to be a Node, got {type(node_in)}")
+    inputs = [node_in]
+
+    if is_all_gather(coll_node):
+        group_name_arg = 2
+    elif is_reduce_scatter(coll_node):
+        group_name_arg = 3
+    else:
+        raise AssertionError(f"expected collective node, got {coll_node}")
+    group_name = coll_node.args[group_name_arg]
+    if isinstance(group_name, fx.Node):
+        inputs.append(group_name)
+    return inputs
 
 
 def _move_overlap_nodes(
@@ -134,30 +159,38 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
         if len(coll_nodes) <= 0:
             raise AssertionError("bucketed coll_nodes should have nonzero node")
 
+        node_positions = {n: i for i, n in enumerate(self.graph.nodes)}
         waits = [self.collective_info[n].wait_node for n in coll_nodes]
-        first_wait = min(waits, key=lambda w: self.node_idx[w])
-        first = min(coll_nodes, key=lambda n: self.node_idx[n])
-        last = max(coll_nodes, key=lambda n: self.node_idx[n])
+        first_wait = min(waits, key=lambda w: node_positions[w])
+        first = min(coll_nodes, key=lambda n: node_positions[n])
+        # coll_nodes order is used for tensor packing and may differ from
+        # graph order. Insert the bucketed collective after its latest input.
+        bucket_inputs = [inp for n in coll_nodes for inp in _bucket_trace_inputs(n)]
+        anchor = max([first, *bucket_inputs], key=lambda n: node_positions[n])
+        next_node = anchor.next
+        coll_node_set = OrderedSet(coll_nodes)
+        while next_node in coll_node_set:
+            next_node = next_node.next
+        # Use the earliest old wait unless it precedes the bucket insertion
+        # point; otherwise keep wait/output nodes with the traced bucket.
+        wait_insertion_point = max(
+            (first_wait, next_node), key=lambda n: node_positions[n]
+        )
 
         if is_all_gather(first):
-            # AG: insert early (right after first AG) to start prefetch ASAP.
-            # Move wait+consumers to the earliest original wait position.
             new_nodes, replacements = merge_all_gather_bucket(
                 self.graph,
                 coll_nodes,
-                wait_insertion_point=first_wait,
-                insert_before=first.next,
+                wait_insertion_point=wait_insertion_point,
+                insert_before=next_node,
                 mode=self.bucket_mode,
             )
         elif is_reduce_scatter(first):
-            # RS: pre_bucket_reduce_scatter needs all individual RS inputs,
-            # which are only available after the last RS fires.  Insert
-            # after the last coll_node (by graph position) and leave the
-            # wait in place -- it naturally follows the bucketed RS.
             new_nodes, replacements = merge_reduce_scatter_bucket(
                 self.graph,
                 coll_nodes,
-                insert_before=last.next,
+                wait_insertion_point=wait_insertion_point,
+                insert_before=next_node,
                 mode=self.bucket_mode,
             )
         else:
