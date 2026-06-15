@@ -6844,15 +6844,66 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         )
 
     def test_existing_list_tensor_removal_graph_breaks(self):
-        def fn(x, cache):
+        def assign_none_fn(x, cache):
             cache[0] = None
             return x + 1
 
+        def delitem_fn(x, cache):
+            del cache[0]
+            return x + 1
+
+        def pop_fn(x, cache):
+            cache.pop(0)
+            return x + 1
+
+        def remove_fn(x, cache):
+            cache.remove(cache[0])
+            return x + 1
+
+        def clear_fn(x, cache):
+            cache.clear()
+            return x + 1
+
+        def init_no_args_fn(x, cache):
+            cache.__init__()
+            return x + 1
+
+        def init_empty_fn(x, cache):
+            cache.__init__([])
+            return x + 1
+
+        def init_refill_fn(x, cache):
+            cache.__init__([x + 1])
+            return cache[0] + 1
+
+        def inplace_repeat_zero_fn(x, cache):
+            cache *= 0
+            return x + 1
+
+        def inplace_repeat_negative_fn(x, cache):
+            cache *= -1
+            return x + 1
+
         x = torch.randn(3)
-        with self.assertRaisesRegex(
-            Unsupported, "Tensor displacement from existing Python list"
+        for fn in (
+            assign_none_fn,
+            delitem_fn,
+            pop_fn,
+            remove_fn,
+            clear_fn,
+            init_no_args_fn,
+            init_empty_fn,
+            init_refill_fn,
+            inplace_repeat_zero_fn,
+            inplace_repeat_negative_fn,
         ):
-            torch.compile(fn, backend="eager", fullgraph=True)(x, [torch.zeros(3)])
+            with self.subTest(fn=fn.__name__):
+                with self.assertRaisesRegex(
+                    Unsupported, "Tensor displacement from existing Python list"
+                ):
+                    torch.compile(fn, backend="eager", fullgraph=True)(
+                        x, [torch.zeros(3)]
+                    )
 
     @unittest.skipIf(not TEST_CUDA, "cuda needed")
     def test_existing_list_tensor_setitem_peak_memory(self):
