@@ -3887,7 +3887,7 @@ class GuardManager {
 
     // failed_on_first is just an optimization to avoid sorting if we are
     // failing on the first accessor itself. This is helpful when we have
-    // already sorted the guards once, and dont need to sort again.
+    // already sorted the guards once, and don't need to sort again.
     if (!result && !failed_on_first) {
       // Inplace sort the child guards by fail count. This moves the guard
       // with higher fail count earlier in the queue, and enables fail fast
@@ -8687,6 +8687,7 @@ PyObject* torch_c_dynamo_guards_init() {
       [](const std::vector<Tensor> tensors, bool symbolic) {
         // Pick the correct Meta class, depending on whether we are
         // dealing with symbolic values or not.
+        // NOLINTNEXTLINE(bugprone-branch-clone)
         if (symbolic) {
           return compute_overlapping_tensors<DynamicMeta>(tensors);
         } else {
