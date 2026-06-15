@@ -10,7 +10,6 @@
 #include <c10/util/irange.h>
 #include <algorithm>
 #include <numeric>
-#include <vector>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -840,7 +839,7 @@ static void reduction_dispatch_mps(TensorIterator& iter, const ReductionDispatch
   TORCH_INTERNAL_ASSERT(input_orig.numel() > 0 && output.numel() > 0);
   TORCH_INTERNAL_ASSERT(output.dim() == input_orig.dim());
   if (!input_orig.is_contiguous()) {
-    std::vector<int64_t> perm(input_orig.dim());
+    c10::DimVector perm(input_orig.dim());
     std::iota(perm.begin(), perm.end(), 0);
     std::stable_sort(
         perm.begin(), perm.end(), [&](int64_t a, int64_t b) { return input_orig.stride(a) > input_orig.stride(b); });
