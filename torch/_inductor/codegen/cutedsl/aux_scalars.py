@@ -20,17 +20,12 @@ class CuteDSLAuxScalarBindings:
     symbols: tuple[sympy.Symbol, ...] = ()
     tuple_name: ClassVar[str] = "aux_scalars"
 
-    def symbol_codes(
-        self, *, cast_integer_to_int32: bool = False
-    ) -> dict[sympy.Symbol, str]:
+    def symbol_codes(self) -> dict[sympy.Symbol, str]:
         """Render symbols as tuple lookups for CuTe expressions."""
-        codes: dict[sympy.Symbol, str] = {}
-        for index, symbol in enumerate(self.symbols):
-            code = f"{self.tuple_name}[{index}]"
-            if cast_integer_to_int32 and symbol.is_integer:
-                code = f"cutlass.Int32({code})"
-            codes[symbol] = code
-        return codes
+        return {
+            symbol: f"{self.tuple_name}[{index}]"
+            for index, symbol in enumerate(self.symbols)
+        }
 
     def symbol_codes_with_renames(
         self, rename: Callable[[sympy.Symbol], sympy.Expr]
