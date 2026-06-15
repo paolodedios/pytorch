@@ -1065,11 +1065,50 @@ def extract_tensor_metadata(t: torch.Tensor) -> tuple[Any, ...]:
     return (t.shape, t.stride(), t.dtype, t.device, t.requires_grad)
 
 
+def _subclass_metadata_contains_tensor(metadata: Any) -> bool:
+    if isinstance(metadata, torch.Tensor):
+        return True
+
+    node_type = pytree._get_node_type(metadata)
+    if node_type not in pytree.SUPPORTED_NODES:
+        return False
+
+    if isinstance(metadata, collections.abc.Mapping):
+        for key in metadata:
+            if _subclass_metadata_contains_tensor(key):
+                return True
+
+    children, _ = pytree.SUPPORTED_NODES[node_type].flatten_fn(metadata)
+    for child in children:
+        if _subclass_metadata_contains_tensor(child):
+            return True
+    return False
+
+
+def _validate_default_subclass_metadata_guard(metadata: Any, cls: type[Any]) -> None:
+    if not _subclass_metadata_contains_tensor(metadata):
+        return
+
+    raise exc.InternalTorchDynamoError(
+        f"Tensor subclass {cls.__module__}.{cls.__qualname__} returned Tensor "
+        "metadata from __tensor_flatten__() but does not define "
+        "__metadata_guard__. Dynamo's default tensor subclass metadata guard "
+        "uses Python equality, which is not valid for Tensor metadata. Move "
+        "tensor values to the inner tensor names returned by "
+        "__tensor_flatten__(), or define a classmethod __metadata_guard__"
+        "(original_metadata, current_metadata) to compare tensor metadata "
+        "explicitly."
+    )
+
+
 # Used by TENSOR_SUBCLASS_METADATA_MATCH guard check spec
 def extract_subclass_metadata(guard: Any, value: Any) -> tuple[Any, ...]:
-    metadata = deepcopy(value.__tensor_flatten__()[1])
     cls = type(value)
     has_custom_guard = hasattr(value, "__metadata_guard__")
+    metadata = value.__tensor_flatten__()[1]
+    if not has_custom_guard:
+        _validate_default_subclass_metadata_guard(metadata, cls)
+    metadata = deepcopy(metadata)
     return (metadata, cls, has_custom_guard)
 
 
@@ -2566,12 +2605,17 @@ class GuardBuilder(GuardBuilderBase):
                 return False
 
         metadata = value.__tensor_flatten__()[1]
+        has_custom_guard = hasattr(value, "__metadata_guard__")
+        if has_custom_guard:
+            verify_guard_fn_signature(value)
+            cls = type(value)
+        else:
+            _validate_default_subclass_metadata_guard(metadata, type(value))
+
         original_metadata = deepcopy(
             pytree.tree_map_only(torch.SymInt, lambda _: _AnyCompare(), metadata)
         )
-        if hasattr(value, "__metadata_guard__"):
-            verify_guard_fn_signature(value)
-            cls = type(value)
+        if has_custom_guard:
 
             def metadata_checker(x: Any) -> bool:
                 return cls.__metadata_guard__(
@@ -3714,6 +3758,39 @@ class GuardBuilder(GuardBuilderBase):
         code = [
             f"{ref}.is_contiguous(memory_format={memory_format_names.get(memory_format, repr(memory_format))}) == {expected}",
             f"({ref}._base is None) == {expected_base_is_none}",
+        ]
+        self._set_guard_export_info(guard, code)
+        self.get_guard_manager(guard).add_lambda_guard(
+            guard_fn, get_verbose_code_parts(code, guard), guard.user_stack
+        )
+
+    @register_guard_check_spec(
+        get_metadata_fn=lambda guard, value: (
+            tuple(value.size()),
+            tuple(value.stride()),
+        ),
+        eval_fn=lambda value, metadata: (
+            isinstance(value, torch.Tensor)
+            and tuple(value.size()) == metadata[0]
+            and tuple(value.stride()) == metadata[1]
+        ),
+    )
+    def TENSOR_METADATA_MATCH(self, guard: Guard) -> None:
+        ref = self.arg_ref(guard)
+        value = self.get(guard)
+        expected_size = tuple(value.size())
+        expected_stride = tuple(value.stride())
+
+        def guard_fn(x: Any) -> bool:
+            return (
+                isinstance(x, torch.Tensor)
+                and tuple(x.size()) == expected_size
+                and tuple(x.stride()) == expected_stride
+            )
+
+        code = [
+            f"tuple({ref}.size()) == {expected_size}",
+            f"tuple({ref}.stride()) == {expected_stride}",
         ]
         self._set_guard_export_info(guard, code)
         self.get_guard_manager(guard).add_lambda_guard(

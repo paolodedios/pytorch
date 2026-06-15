@@ -4591,7 +4591,7 @@ def _automatic_dynamic(
         marked_unbacked = bool(getattr(e, "_dynamo_unbacked_indices", ())) or any(
             is_unbacked_source(name, i) for i in range(e.dim())
         )
-        if marked_unbacked:
+        if marked_unbacked and config.mark_unbacked_strides:
             # The fake base is only used to replay the view. Avoid binding
             # guards to x._base unless user code actually observes x._base.
             view_base_context = StatefulSymbolicContext(
@@ -4903,7 +4903,7 @@ def _automatic_dynamic(
                 )
             dynamic_size = DimDynamic.DUCK
 
-        if marked_unbacked or marked_unbacked_source:
+        if config.mark_unbacked_strides and (marked_unbacked or marked_unbacked_source):
             if marked_unbacked_preserve_contiguous_strides is None:
                 marked_unbacked_preserve_contiguous_strides = (
                     should_preserve_contiguous_strides_for_marked_unbacked()

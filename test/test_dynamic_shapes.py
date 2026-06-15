@@ -4251,22 +4251,20 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
         self.assertEqual(cnt.frame_count, 1)
 
         # Pass in a contiguous tensor. The unbacked stride keeps this on the
-        # non-contiguous graph instead of specializing on stride 1.
+        # same value-only graph instead of specializing on stride 1.
         x = torch.arange(100)
         torch._dynamo.decorators.mark_unbacked(x, 0)
 
         compiled_result = compiled_func(x, torch.tensor([10]))
         eager_result = func(x, torch.tensor([10]))
         self.assertEqual(compiled_result, eager_result)
-        # reshape aliases contiguous inputs but copies non-contiguous
-        # inputs, so switching to a contiguous input must recompile.
-        self.assertEqual(cnt.frame_count, 2)
+        self.assertEqual(cnt.frame_count, 1)
 
         x = torch.arange(25)
         compiled_result = compiled_func(x, torch.tensor([5]))
         eager_result = func(x, torch.tensor([5]))
         self.assertEqual(compiled_result, eager_result)
-        self.assertEqual(cnt.frame_count, 2)
+        self.assertEqual(cnt.frame_count, 1)
 
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
@@ -4348,8 +4346,8 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
         self.assertEqual(result_compiled, result_eager)
         self.assertEqual(cnt.frame_count, 1)
 
-        # Pass a contiguous tensor. reshape aliases contiguous inputs but
-        # copies non-contiguous inputs, so switching layouts must recompile.
+        # Pass a contiguous tensor. The alias/copy branch is not observable
+        # here, so this can keep using the same value-only graph.
         x = torch.randn(10, 10)
         torch._dynamo.decorators.mark_unbacked(x, 0)
         torch._dynamo.decorators.mark_unbacked(x, 1)
@@ -4358,14 +4356,14 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
         result_eager = func(x, torch.tensor([2, 50]))
 
         self.assertEqual(result_compiled, result_eager)
-        self.assertEqual(cnt.frame_count, 2)
+        self.assertEqual(cnt.frame_count, 1)
 
         x = torch.randn(4, 4)
 
         result_eager = func(x, torch.tensor([2, 8]))
         result_compiled = compiled_func(x, torch.tensor([2, 8]))
         self.assertEqual(result_compiled, result_eager)
-        self.assertEqual(cnt.frame_count, 2)
+        self.assertEqual(cnt.frame_count, 1)
 
     @fresh_cache()
     @skipIfTorchDynamo("test inspects inner torch.compile/AOT backend graph")
@@ -6621,10 +6619,250 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
         self.assertEqual(compiled_fn(y), fn(y))
         self.assertEqual(cnt.frame_count, 2)
 
+        base = torch.zeros(3, 3)
+        z = base.t()
+        torch._dynamo.decorators.mark_unbacked(z, 0)
+        torch._dynamo.decorators.mark_unbacked(z, 1)
+        self.assertEqual(compiled_fn(z), fn(z))
+        base.resize_(5, 5)
+        self.assertEqual(compiled_fn(z), fn(z))
+        self.assertEqual(cnt.frame_count, 4)
+
+    @fresh_cache()
+    def test_view_base_identity_observation_no_duplicate_guard(self):
+        cnt = CompileCounterWithBackend("eager")
+
+        def fn(base, view):
+            return torch.tensor(1) if view._base is base else torch.tensor(0)
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend=cnt,
+        )
+
+        base = torch.zeros(3, 3)
+        view = base.t()
+        torch._dynamo.decorators.mark_unbacked(view, 0)
+        torch._dynamo.decorators.mark_unbacked(view, 1)
+        self.assertEqual(compiled_fn(base, view), fn(base, view))
+
+        other_base = torch.zeros(3, 3)
+        other_view = other_base.t()
+        torch._dynamo.decorators.mark_unbacked(other_view, 0)
+        torch._dynamo.decorators.mark_unbacked(other_view, 1)
+        self.assertEqual(compiled_fn(other_base, view), fn(other_base, view))
+        self.assertEqual(compiled_fn(base, other_view), fn(base, other_view))
+        self.assertEqual(
+            compiled_fn(other_base, other_view), fn(other_base, other_view)
+        )
+        self.assertEqual(cnt.frame_count, 4)
+
+    @fresh_cache()
+    def test_unmarked_view_base_observed_recompiles(self):
+        cnt = CompileCounterWithBackend("eager")
+
+        def fn(x):
+            return x + (1 if x._base is None else 2)
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend=cnt,
+        )
+
+        x = torch.zeros(3)
+        self.assertEqual(compiled_fn(x), fn(x))
+
+        y = torch.zeros(3)[:]
+        self.assertEqual(compiled_fn(y), fn(y))
+        self.assertEqual(cnt.frame_count, 2)
+
     @fresh_cache()
     @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_mark_unbacked_intermediate_base_observed(self):
+    def test_mark_unbacked_1d_view_base_observed_recompiles(self):
         cnt = CompileCounterWithBackend("eager")
+
+        def fn(x):
+            return x + (1 if x._base is None else 2)
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend=cnt,
+        )
+
+        x = torch.zeros(3)[:]
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        self.assertEqual(compiled_fn(x), fn(x))
+
+        y = torch.zeros(3)
+        torch._dynamo.decorators.mark_unbacked(y, 0)
+        self.assertEqual(compiled_fn(y), fn(y))
+        self.assertEqual(cnt.frame_count, 2)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_mark_unbacked_is_contiguous_observed_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
+        def fn(x):
+            return x + (1 if x.is_contiguous() else 2)
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="eager",
+        )
+
+        x = torch.zeros(3, 3).t()
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        with self.assertRaisesRegex(Unsupported, "is_contiguous"):
+            compiled_fn(x)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_mark_unbacked_channels_last_is_contiguous_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
+        def fn(x):
+            return x + (1 if x.is_contiguous(memory_format=torch.channels_last) else 2)
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="eager",
+        )
+
+        x = torch.zeros(2, 1, 4, 5)
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        torch._dynamo.decorators.mark_unbacked(x, 2)
+        torch._dynamo.decorators.mark_unbacked(x, 3)
+        with self.assertRaisesRegex(Unsupported, "is_contiguous"):
+            compiled_fn(x)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    @torch._dynamo.config.patch("mark_unbacked_strides", False)
+    def test_mark_unbacked_strides_config_disable(self):
+        cnt = CompileCounterWithBackend("eager")
+
+        def fn(x):
+            return x.contiguous() + 1
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend=cnt,
+        )
+
+        x = torch.zeros(3, 3).t()
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        self.assertEqual(compiled_fn(x), fn(x))
+
+        y = torch.zeros(3, 3)
+        torch._dynamo.decorators.mark_unbacked(y, 0)
+        torch._dynamo.decorators.mark_unbacked(y, 1)
+        self.assertEqual(compiled_fn(y), fn(y))
+        self.assertEqual(cnt.frame_count, 2)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_to_memory_format_mutation_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
+        def fn(x):
+            y = x.to(memory_format=torch.channels_last)
+            y.add_(1)
+            return x.sum()
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="eager",
+        )
+
+        x = torch.zeros(2, 3, 4, 5)
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        torch._dynamo.decorators.mark_unbacked(x, 2)
+        torch._dynamo.decorators.mark_unbacked(x, 3)
+        with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
+            compiled_fn(x)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_to_contiguous_memory_format_mutation_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
+        def fn(x):
+            y = x.to(memory_format=torch.contiguous_format)
+            y.add_(1)
+            return x.sum()
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="eager",
+        )
+
+        x = torch.zeros(2, 3, 4, 5).transpose(2, 3)
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        torch._dynamo.decorators.mark_unbacked(x, 2)
+        torch._dynamo.decorators.mark_unbacked(x, 3)
+        with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
+            compiled_fn(x)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_unbacked_to_memory_format_with_dtype_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
+        def fn(x):
+            return x.to(dtype=torch.float64, memory_format=torch.channels_last)
+
+        def positional_dtype_fn(x):
+            return x.to(torch.float64, memory_format=torch.channels_last)
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="eager",
+        )
+        compiled_positional_dtype_fn = torch.compile(
+            positional_dtype_fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="eager",
+        )
+
+        x = torch.zeros(2, 3, 4, 5)
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        torch._dynamo.decorators.mark_unbacked(x, 2)
+        torch._dynamo.decorators.mark_unbacked(x, 3)
+        with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
+            compiled_fn(x)
+        with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
+            compiled_positional_dtype_fn(x)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_mark_unbacked_intermediate_base_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
 
         def fn(x):
             y = x.contiguous()
@@ -6634,31 +6872,35 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
             fn,
             fullgraph=True,
             dynamic=True,
-            backend=cnt,
+            backend="eager",
         )
 
         x = torch.arange(12.0)[::2]
         torch._dynamo.decorators.mark_unbacked(x, 0)
-        self.assertEqual(compiled_fn(x), fn(x))
+        with self.assertRaisesRegex(Unsupported, "sourceless tensor"):
+            compiled_fn(x)
 
-        cnt = CompileCounterWithBackend("eager")
+    @fresh_cache()
+    @skipIfTorchDynamo("mark_unbacked is not traceable")
+    def test_mark_unbacked_intermediate_base_identity_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
+        def fn(x, base):
+            y = x.contiguous()
+            return torch.tensor(1) if y._base is base else torch.tensor(0)
+
         compiled_fn = torch.compile(
             fn,
             fullgraph=True,
             dynamic=True,
-            backend=cnt,
+            backend="eager",
         )
 
-        x = torch.rand(10, 10)
+        base = torch.arange(12.0)
+        x = base[::2]
         torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        self.assertEqual(compiled_fn(x), fn(x))
-
-        y = torch.rand(10, 10)[:]
-        torch._dynamo.decorators.mark_unbacked(y, 0)
-        torch._dynamo.decorators.mark_unbacked(y, 1)
-        self.assertEqual(compiled_fn(y), fn(y))
-        self.assertEqual(cnt.frame_count, 2)
+        with self.assertRaisesRegex(Unsupported, "sourceless tensor"):
+            compiled_fn(x, base)
 
     @fresh_cache()
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
@@ -6690,6 +6932,38 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
     @fresh_cache()
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     def test_unbacked_alias_or_copy_mutation_recompiles(self):
+        def iadd_fn(x):
+            y = x.contiguous()
+            x += 1
+            return y + 1
+
+        cnt = CompileCounterWithBackend("eager")
+        compiled_fn = torch.compile(
+            iadd_fn,
+            fullgraph=True,
+            dynamic=True,
+            backend=cnt,
+        )
+
+        x = torch.zeros(3, 3).t()
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        self.assertEqual(compiled_fn(x), iadd_fn(torch.zeros(3, 3).t()))
+        self.assertEqual(cnt.frame_count, 1)
+
+        y = torch.zeros(3, 3)
+        torch._dynamo.decorators.mark_unbacked(y, 0)
+        torch._dynamo.decorators.mark_unbacked(y, 1)
+        eager_y = torch.zeros(3, 3)
+        self.assertEqual(compiled_fn(y), iadd_fn(eager_y))
+        self.assertEqual(y, eager_y)
+        self.assertEqual(cnt.frame_count, 2)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
+    def test_unbacked_alias_or_copy_observable_mutation_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
         def reshape_fn(x):
             y = x.reshape(-1)
             y.add_(1)
@@ -6700,39 +6974,47 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
             y.add_(1)
             return x.sum()
 
-        def iadd_fn(x):
-            y = x.contiguous()
-            x += 1
-            return y + 1
-
         for name, fn in (
             ("reshape", reshape_fn),
             ("flatten", flatten_fn),
-            ("iadd", iadd_fn),
         ):
             with self.subTest(name=name):
                 torch._dynamo.reset()
-                cnt = CompileCounterWithBackend("eager")
                 compiled_fn = torch.compile(
                     fn,
                     fullgraph=True,
                     dynamic=True,
-                    backend=cnt,
+                    backend="inductor",
                 )
 
                 x = torch.zeros(3, 3).t()
                 torch._dynamo.decorators.mark_unbacked(x, 0)
                 torch._dynamo.decorators.mark_unbacked(x, 1)
-                self.assertEqual(compiled_fn(x), fn(torch.zeros(3, 3).t()))
-                self.assertEqual(cnt.frame_count, 1)
+                with self.assertRaisesRegex(Unsupported, "observable aliasing"):
+                    compiled_fn(x)
 
-                y = torch.zeros(3, 3)
-                torch._dynamo.decorators.mark_unbacked(y, 0)
-                torch._dynamo.decorators.mark_unbacked(y, 1)
-                eager_y = torch.zeros(3, 3)
-                self.assertEqual(compiled_fn(y), fn(eager_y))
-                self.assertEqual(y, eager_y)
-                self.assertEqual(cnt.frame_count, 2)
+    @fresh_cache()
+    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
+    def test_unbacked_reshape_viewability_mutation_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
+        def fn(x):
+            y = x.reshape(-1)
+            y.add_(1)
+            return x.sum()
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="inductor",
+        )
+
+        x = torch.zeros(20).as_strided((2, 3), (10, 1))
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        with self.assertRaisesRegex(Unsupported, "observable aliasing"):
+            compiled_fn(x)
 
     @fresh_cache()
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
@@ -6757,6 +7039,43 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
         torch._dynamo.decorators.mark_unbacked(x, 1)
         with self.assertRaisesRegex(Unsupported, "sourceless tensor"):
             compiled_fn(x)
+
+    @fresh_cache()
+    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
+    def test_unbacked_sourceless_is_contiguous_fails_closed(self):
+        from torch._dynamo.exc import Unsupported
+
+        def fn(x):
+            z = x[0]
+            return x + (1 if z.is_contiguous() else 2)
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="eager",
+        )
+
+        x = torch.zeros(3, 3).t()
+        torch._dynamo.decorators.mark_unbacked(x, 0)
+        torch._dynamo.decorators.mark_unbacked(x, 1)
+        with self.assertRaisesRegex(Unsupported, "sourceless tensor"):
+            compiled_fn(x)
+
+    @fresh_cache()
+    def test_fresh_unbacked_sourceless_flatten_allowed(self):
+        def fn(sentinel):
+            return torch.nonzero(sentinel).flatten() + 1
+
+        compiled_fn = torch.compile(
+            fn,
+            fullgraph=True,
+            dynamic=True,
+            backend="eager",
+        )
+
+        sentinel = torch.ones(4, dtype=torch.int64)
+        self.assertEqual(compiled_fn(sentinel), fn(sentinel))
 
     @fresh_cache()
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
