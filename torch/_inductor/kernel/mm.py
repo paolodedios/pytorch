@@ -544,7 +544,7 @@ def tuned_mm(mat1, mat2, out_dtype=None, *, layout=None):
 
     # Safety net: fall back to ATEN when configured backends produce no choices
     # (e.g., CUTLASS-only config on XPU where CUTLASS XPU ops aren't available).
-    # Only trigger when max_autotune_gemm_backends is non-empty — an empty
+    # Only trigger when max_autotune_gemm_backends is non-empty -- an empty
     # backends string (deliberately set by test_no_valid_choices) should still
     # raise NoValidChoicesError upstream.
     if len(choices) == 0 and inductor_config.max_autotune_gemm_backends:
