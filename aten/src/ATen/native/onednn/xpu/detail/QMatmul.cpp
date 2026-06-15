@@ -2,8 +2,8 @@
 #include <ATen/Tensor.h>
 #include <ATen/ceil_div.h>
 #include <ATen/core/Tensor.h>
-#include <ATen/native/mkldnn/xpu/detail/Attr.h>
-#include <ATen/native/mkldnn/xpu/detail/oneDNNContext.h>
+#include <ATen/native/onednn/xpu/detail/Attr.h>
+#include <ATen/native/onednn/xpu/detail/oneDNNContext.h>
 #include <c10/core/ScalarType.h>
 
 #include <oneapi/dnnl/dnnl.hpp>
