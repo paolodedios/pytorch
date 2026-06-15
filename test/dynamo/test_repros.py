@@ -1155,7 +1155,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
             ) as collect,
         ):
             self.assertEqual(f(x), torch.bfloat16)
-        collect.assert_called_once_with(0)
+        collect.assert_called_once_with(1)
 
     def test_swap_module_params_on_conversion_after_custom_backend_graph_break(self):
         def backend(gm, example_inputs):
