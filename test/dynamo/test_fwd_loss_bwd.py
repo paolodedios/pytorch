@@ -511,6 +511,7 @@ class GraphModule(torch.nn.Module):
         loss: "f32[]" = res.sum();  res = None
 
         grad = torch.autograd.grad(loss, (l_mod_parameters_weight_, l_mod_parameters_bias_), materialize_grads = False, allow_unused = True);  loss = l_mod_parameters_weight_ = l_mod_parameters_bias_ = None
+
         weight_grad: "f32[4, 4]" = grad[0]
         bias_grad: "f32[4]" = grad[1];  grad = None
 
