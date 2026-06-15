@@ -583,7 +583,9 @@ _efficient_attention_backward(
     at::Tensor dk_t = grad_k.permute({0,2,1,3});
     at::Tensor dv_t = grad_v.permute({0,2,1,3});
     at::Tensor dout_t = grad_out.permute({0,2,1,3});
-    at::Tensor softmax_lse = logsumexp.view({B * nH, max_seqlen_q});
+    const auto lse_batch_size =
+        cu_seqlens_q.has_value() ? cu_seqlens_q->size(0) - 1 : B;
+    at::Tensor softmax_lse = logsumexp.view({lse_batch_size * nH, max_seqlen_q});
     hipError_t err;
     using sdp::aotriton_adapter::mk_aotensor;
     using sdp::aotriton_adapter::mk_aoscalartensor;

@@ -1572,16 +1572,14 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, c10::SymInt, c10::SymInt> _efficient_
     // compute_logsumexp is false
     constexpr int kAlignLSE = 1;
     res = at::empty({B, M, num_heads, Kv}, query.options());
-    // TODO: Use Compact Varlen LSE
-    //       The current memory allocation is strictly larger than necessary
-    //       (total_q <= max_seqlen_q * B)
-    //       The problem is total_q is not available here.
+    const auto lse_batch_size =
+        seqstart_q.has_value() ? seqstart_q->size(0) - 1 : B;
     at::Tensor softmax_lse;
     logsumexp = at::empty(
-      { B, num_heads, compute_logsumexp ? max_seqlen_q : 0},
+      {lse_batch_size, num_heads, compute_logsumexp ? max_seqlen_q : 0},
       query.options().dtype(at::ScalarType::Float));
     if (compute_logsumexp) {
-      softmax_lse = logsumexp.view({B * num_heads, max_seqlen_q});
+      softmax_lse = logsumexp.view({lse_batch_size * num_heads, max_seqlen_q});
     }
     at::Tensor q_t = query.transpose(1, 2);
     at::Tensor k_t = key.transpose(1, 2);
@@ -1619,14 +1617,10 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, c10::SymInt, c10::SymInt> _efficient_
     const auto aotriton_offset_t =
         use_dropout ? offset_t : at::zeros({}, at::dtype(at::kLong));
     const bool use_philox_state = use_dropout && in_capture_stream;
-    auto seed = use_dropout
-        ? (use_philox_state ? mk_philoxtensor(philox_state.seed_.ptr)
-                            : mk_aoscalartensor(aotriton_seed_t))
-        : mk_aoscalartensor(aotriton_seed_t);
-    auto offset1 = use_dropout
-        ? (use_philox_state ? mk_philoxtensor(philox_state.offset_.ptr)
-                            : mk_aoscalartensor(aotriton_offset_t))
-        : mk_aoscalartensor(aotriton_offset_t);
+    auto seed = use_philox_state ? mk_philoxtensor(philox_state.seed_.ptr)
+                                 : mk_aoscalartensor(aotriton_seed_t);
+    auto offset1 = use_philox_state ? mk_philoxtensor(philox_state.offset_.ptr)
+                                    : mk_aoscalartensor(aotriton_offset_t);
     auto offset2 = use_philox_state ? philox_state.offset_intragraph_ : 0;
     auto seed_output = mk_philoxtensor(use_philox_state ? seed_t.data_ptr<int64_t>() : nullptr);
     auto offset_output = mk_philoxtensor(use_philox_state ? offset_t.data_ptr<int64_t>() : nullptr);
