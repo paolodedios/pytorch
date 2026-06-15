@@ -192,7 +192,7 @@ _BACKEND_KEYS_TO_OVERRIDE = [
 def _override_composite_implicit_decomp(cia_ops_to_callable):
     # This function overrides CompositeImplicitAutograd decomp for
     # functional composite ops that user specified. Ideally we want to not-decompose
-    # ALL composite ops but today's C++ functinalization relies on
+    # ALL composite ops but today's C++ functionalization relies on
     # the fact that it is working with the opset after decomp is run.
     # Hence we can only do it for functional ops. One caveat is that
     # there are some composite ops that lie about their schema (claimed to be
@@ -505,7 +505,7 @@ def _decompose_and_get_gm_with_new_signature_constants(
                 new_graph_signature = aten_export_artifact.sig
 
                 # In the previous step, we assume constants as buffers for AOTDispatcher to
-                # functianalize properly, so undo that here
+                # functionalize properly, so undo that here
                 new_graph_signature = (
                     _override_graph_signature_for_temp_registered_constants(
                         new_graph_signature, temp_registered_constants
@@ -1212,11 +1212,24 @@ class ExportedProgram:
         both the name of the buffer as well as the buffer itself.
         """
         non_persistent_buffers = set(self.graph_signature.non_persistent_buffers)
+        # Lazily computed on first use to avoid calling graph_module.state_dict()
+        # unless at least one buffer is absent from state_dict and constants.
+        gm_state_dict = None
         for buffer_name in self.graph_signature.buffers:
             if buffer_name in non_persistent_buffers:
                 yield buffer_name, self.constants[buffer_name]
-            else:
+            elif buffer_name in self.state_dict:
                 yield buffer_name, self.state_dict[buffer_name]
+            elif buffer_name in self.constants:
+                yield buffer_name, self.constants[buffer_name]
+            else:
+                # Nested invoke_subgraph tracing can surface lifted tensor
+                # constants owned by an inner subgraph as persistent buffers
+                # in the top-level graph signature; the tensor lives in the
+                # subgraph submodule rather than state_dict or constants.
+                if gm_state_dict is None:
+                    gm_state_dict = self.graph_module.state_dict()
+                yield buffer_name, gm_state_dict[buffer_name]
 
     @property
     @compatibility(is_backward_compatible=False)
@@ -1396,6 +1409,7 @@ class ExportedProgram:
             )
 
         additional_inputs = []
+        gm_state_dict = None
         for input_ in self.graph_signature.input_specs:
             if input_.kind == InputKind.USER_INPUT:
                 continue
@@ -1407,8 +1421,17 @@ class ExportedProgram:
                     # This is a non-persistent buffer, grab it from our
                     # constants instead of the state dict.
                     additional_inputs.append(self.constants[input_.target])
-                else:
+                elif input_.target in self.state_dict:
                     additional_inputs.append(self.state_dict[input_.target])
+                elif input_.target in self.constants:
+                    additional_inputs.append(self.constants[input_.target])
+                else:
+                    # Nested invoke_subgraph tracing can leave a lifted tensor
+                    # constant in the subgraph submodule's state rather than
+                    # the top-level state_dict or constants.
+                    if gm_state_dict is None:
+                        gm_state_dict = self.graph_module.state_dict()
+                    additional_inputs.append(gm_state_dict[input_.target])
             elif input_.kind in (
                 InputKind.CONSTANT_TENSOR,
                 InputKind.CUSTOM_OBJ,
@@ -1431,10 +1454,12 @@ class ExportedProgram:
             print_output=False, colored=False
         ).replace("\n", "\n    ")
         graph_signature = str(self.graph_signature).replace("\n", "\n    ")
+        # No space after "Graph signature:" — graph_signature starts with
+        # a newline; trailing whitespace breaks expecttest snapshots.
         string = (
             "ExportedProgram:\n"
             f"    {graph_module}\n"
-            f"Graph signature: {graph_signature}\n"
+            f"Graph signature:{graph_signature}\n"
             f"Range constraints: {self.range_constraints}\n"
         )
         return string
