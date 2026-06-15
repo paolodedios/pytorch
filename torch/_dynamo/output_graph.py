@@ -2875,6 +2875,23 @@ class OutputGraph(OutputGraphCommon):
                 # a lot of fake_tensor ownership assumptions and runs afoul of detect_fake_mode
                 self.tracing_context.fake_mode = backend_fake_mode
 
+            # Fix placeholder device annotations that were corrupted
+            # by in-graph shallow_copy_data_() mutations. During
+            # tracing the live FakeTensor must stay mutated, but
+            # the placeholder should reflect the original input
+            # device.
+            for node in gm.graph.nodes:
+                if node.op != "placeholder":
+                    break
+                orig_dev = node.meta.get("pre_shallow_copy_device")
+                if orig_dev is not None:
+                    ev = node.meta.get("example_value")
+                    if ev is not None and hasattr(ev, "fake_device"):
+                        from torch._subclasses.fake_impls import fast_detach
+
+                        node.meta["example_value"] = fast_detach(ev.fake_mode, ev)
+                        node.meta["example_value"].fake_device = orig_dev
+
             gm.graph.lint()
             with self.restore_global_state():
                 compiled_fn = self.call_user_compiler(gm, self.example_inputs())

@@ -3458,6 +3458,16 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                     for tf in to_remove:
                         tx.output.tracked_fakes.remove(tf)
 
+                    # Save the placeholder's original device before
+                    # shallow_copy_data_ mutates it. We tag the node
+                    # so compile_subgraph can restore the correct
+                    # device annotation after tracing completes.
+                    input_node = obj.as_proxy().node
+                    if input_node.op == "placeholder":
+                        ev = input_node.meta.get("example_value")
+                        if ev is not None and hasattr(ev, "fake_device"):
+                            input_node.meta["pre_shallow_copy_device"] = ev.fake_device
+
                     with dynamo_disable_grad(tx), torch.no_grad():
                         out = wrap_fx_proxy(
                             tx,

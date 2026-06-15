@@ -4731,6 +4731,16 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(x_eager.device, x_compiled.device)
 
+    @requires_cuda
+    def test_tensor_set_data_cross_device_shape_mismatch_graphbreaks(self):
+        def func(x):
+            x.data = torch.randn(8, device="cuda")
+            return x + 1
+
+        x = torch.randn(4, device="cpu")
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(func, backend="eager", fullgraph=True)(x)
+
     def test_user_ctor_ctx_manager(self):
         class UserCtxManager:
             def __enter__(self):
