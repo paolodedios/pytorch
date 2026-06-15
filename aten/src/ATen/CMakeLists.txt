@@ -291,6 +291,7 @@ if(USE_FLASH_ATTENTION)
         CK_USE_FNUZ_FP8
         CK_USE_GFX94
         CK_USE_XDL
+        ENABLE_CK
         __HIP_PLATFORM_AMD__=1
         __HIP_PLATFORM_HCC__=1
         CK_TILE_FMHA_FWD_FAST_EXP2=1
@@ -945,18 +946,11 @@ if(USE_MPS)
         add_custom_target(metallibs DEPENDS ${METALLIB_DEPS} metallib_dummy.cpp)
     else()
         file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native/mps")
-        set(METALLIB_HEADERS)
         foreach(SHADER ${native_mps_metal} ${native_mps_sparse_metal})
             cmake_path(GET SHADER STEM TGT_STEM)
             string(CONCAT SHADER_HDR_NAME  "${CMAKE_CURRENT_BINARY_DIR}" /native/mps/ ${TGT_STEM} "_metallib.h")
-            add_custom_command(OUTPUT ${SHADER_HDR_NAME}
-                               COMMAND ${Python_EXECUTABLE} torch/utils/_write_metallib_headers.py ${SHADER} ${SHADER_HDR_NAME}
-                               DEPENDS ${SHADER}
-                               WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                               VERBATIM)
-            list(APPEND METALLIB_HEADERS ${SHADER_HDR_NAME})
+            metal_to_metallib_h(${SHADER} ${SHADER_HDR_NAME})
         endforeach()
-        add_custom_target(metallibs DEPENDS ${METALLIB_HEADERS})
     endif()
 endif()
 
@@ -1009,6 +1003,12 @@ foreach(HEADER ${generated_headers} ${cuda_generated_headers})
   # NB: Assumed to be flat
   install(FILES ${HEADER} DESTINATION ${AT_INSTALL_INCLUDE_DIR}/ATen)
 endforeach()
+
+if(USE_XPU)
+  foreach(HEADER ${xpu_generated_headers})
+    install(FILES ${HEADER} DESTINATION ${AT_INSTALL_INCLUDE_DIR}/ATen)
+  endforeach()
+endif()
 
 message("AT_INSTALL_INCLUDE_DIR ${AT_INSTALL_INCLUDE_DIR}/ATen/core")
 foreach(HEADER ${core_generated_headers})
