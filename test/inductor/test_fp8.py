@@ -1611,6 +1611,7 @@ class TestFP8Lowering(TestCase):
         self.assertEqual(out_no_swizzle, out_explicit)
 
     @onlyCUDA
+    @skipIfRocm  # ROCm MX gemm requires NO_SWIZZLE; swizzle is NVIDIA-only
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM, "Not supported on non B200")
     def test_scaled_mm_v2_swizzle_compile(self, device):
         """Swizzled scales (MX recipes on NVIDIA require SWIZZLE_32_4_4) are
