@@ -2586,6 +2586,26 @@ graph():
         # For non-functional graph module, out_copy is not mutated
         self.assertEqual(out_copy2, out_copy3)
 
+    @requires_cuda_and_triton
+    def test_export_raw_triton_kernel_non_strict_error(self):
+        from torch.testing._internal.triton_utils import add_kernel
+
+        class M(torch.nn.Module):
+            def forward(self, x, y):
+                out = torch.empty_like(x)
+                add_kernel[(1,)](x, y, out, x.numel(), BLOCK_SIZE=16)
+                return out
+
+        args = (
+            torch.randn(3, device="cuda"),
+            torch.randn(3, device="cuda"),
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "Raw Triton kernel calls are not supported by non-strict torch.export",
+        ):
+            export(M(), args, strict=False)
+
     def test_masked_select_dynamic(self):
         class M(torch.nn.Module):
             def __init__(self) -> None:
@@ -10805,7 +10825,7 @@ def forward(self, b_a_buffer, x):
         ep = export(f, (torch.tensor(6),))
         ep.module()(torch.tensor(6))
         with self.assertRaisesRegex(
-            RuntimeError, r"Runtime assertion failed for .* u.* 6"
+            RuntimeError, r"Runtime assertion failed for .*(u.* 6|6 .* u)"
         ):
             ep.module()(torch.tensor(5))
 
