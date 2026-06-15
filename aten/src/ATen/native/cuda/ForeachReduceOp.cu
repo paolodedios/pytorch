@@ -136,17 +136,19 @@ __global__ void lpmax_cleanup(
 
 std::vector<Tensor> foreach_tensor_max_cuda(TensorList tensors) {
   check_foreach_api_restrictions(tensors);
-  if (!can_use_fast_route(tensors)) {
-    return foreach_tensor_max_slow(tensors);
-  }
 
-  // for parity with max in ReduceAllOps.cpp, as max(empty) is ???
+  // for parity with max in ReduceAllOps.cpp, as max(empty) is undefined
+  // Check this early before routing to slow path
   TORCH_CHECK(
       std::all_of(
           tensors.begin(),
           tensors.end(),
           [](const auto& t) { return t.numel() > 0; }),
-      "max(): Expected reduction dim to be specified for input.numel() == 0. Specify the reduction dim with the 'dim' argument.");
+      "_foreach_max cannot compute the maximum of an empty tensor; max over zero elements is undefined.");
+
+  if (!can_use_fast_route(tensors)) {
+    return foreach_tensor_max_slow(tensors);
+  }
 
   const size_t ntensors = tensors.size();
   int max_chunks_per_tensor = -1;
@@ -165,7 +167,7 @@ std::vector<Tensor> foreach_tensor_max_cuda(TensorList tensors) {
 
   std::vector<at::Tensor> vec_res;
   vec_res.reserve(ntensors);
-  for (const auto i : c10::irange(ntensors)) {
+  for ([[maybe_unused]] const auto i : c10::irange(ntensors)) {
     vec_res.push_back(at::native::empty_cuda(
         {},
         optTypeMetaToScalarType(options.dtype_opt()),
@@ -230,7 +232,7 @@ std::vector<Tensor> foreach_tensor_max_cuda(TensorList tensors) {
   int i = 0;
   for (const auto& t : tensors) {
     if (t.numel() != 0) {
-      result.emplace_back(vec_res[i]);
+      result.emplace_back(std::move(vec_res[i]));
       i++;
     } else {
       result.emplace_back(at::native::empty_cuda(
@@ -465,7 +467,7 @@ std::vector<Tensor> foreach_tensor_norm_cuda_internal(
   std::vector<at::Tensor> vec_res;
   vec_res.reserve(ntensors);
   const auto res_option = options.dtype(output_dtype);
-  for (const auto i : c10::irange(ntensors)) {
+  for ([[maybe_unused]] const auto i : c10::irange(ntensors)) {
     vec_res.push_back(at::native::empty_cuda(
         {},
         optTypeMetaToScalarType(res_option.dtype_opt()),
@@ -586,7 +588,7 @@ std::vector<Tensor> foreach_tensor_norm_cuda_internal(
   int i = 0;
   for (const auto& t : tensors) {
     if (t.numel() != 0) {
-      result.emplace_back(vec_res[i]);
+      result.emplace_back(std::move(vec_res[i]));
       i++;
     } else {
       result.emplace_back(at::zeros({}, res_option));
