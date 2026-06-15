@@ -355,7 +355,7 @@ def _make_prim(
         tags_intersection = set(overload_tags[0])
         tags_intersection.intersection_update(*overload_tags[1:])
 
-        # dont inadvertently add to prim ops
+        # don't inadvertently add to prim ops
         tags_intersection.discard(torch.Tag.core)
         # causes errors with python ref executor tests, none of the
         # data dependent pytorch ops actually decompose to prims
@@ -1352,7 +1352,6 @@ def _broadcast_in_dim_meta(
             original_idx = original_idx + 1
         else:
             if guard_or_true(shape[idx] != 1):
-                # consistent with previous use of guard_size_oblivious
                 new_strides.append(0)
             elif original_idx == a.ndim:
                 new_strides.append(1)
@@ -2388,7 +2387,7 @@ def _prod_aten(
             inp = torch.prod(inp, d, dtype=dtype)
         return inp
     else:
-        return torch.prod(inp, dims, dtype=dtype)
+        return torch.prod(inp, dtype=dtype)
 
 
 prod = _make_reduction_prim(
