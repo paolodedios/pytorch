@@ -978,19 +978,12 @@ _REPLICATE_ONLY_OPS = [
     aten.tril.default,
     aten.triu.default,
     aten._linalg_eigh.default,
-    aten.upsample_bicubic2d.default,
-    aten.upsample_bilinear2d.default,
-    aten.upsample_linear1d.default,
-    aten.upsample_nearest2d.default,
-    aten.upsample_trilinear3d.default,
-    # TODO: support the full F.interpolate set of options.
 ]
 
 
 @register_single_dim_strategy(
     _REPLICATE_ONLY_OPS,
     schema_info=RuntimeSchemaInfo(1),
-    allow_uneven_sharding=True,
 )
 def linalg_replicate_single_dim_strategy(
     op: torch._ops.OpOverload,
