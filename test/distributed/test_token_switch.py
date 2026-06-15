@@ -1,6 +1,8 @@
 # Owner(s): ["oncall: distributed"]
 
 
+import logging
+
 import torch
 import torch.distributed as dist
 from torch.distributed._token_switch import _import_nccl_ep, TokenSwitchNCCL
@@ -14,6 +16,9 @@ from torch.testing._internal.common_utils import (
 )
 
 
+log = logging.getLogger(__name__)
+
+
 def _nccl_ep_available() -> bool:
     # The torch._nccl_ep extension is built only with USE_NCCL_EP, and a
     # USE_SYSTEM_NCCL=ON build additionally needs the nccl4py wheel at runtime.
@@ -24,6 +29,7 @@ def _nccl_ep_available() -> bool:
     try:
         _import_nccl_ep()
     except Exception:
+        log.debug("torch._nccl_ep unavailable; skipping EP tests", exc_info=True)
         return False
     return True
 
