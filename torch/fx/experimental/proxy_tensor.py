@@ -1185,7 +1185,8 @@ def _coor_current_device() -> torch.device:
     device rather than relying on index-None resolution.
     """
     cur = _coor_current_accelerator()
-    assert cur is not None, "compile-on-one-rank requires an accelerator"
+    if cur is None:
+        raise RuntimeError("compile-on-one-rank requires an accelerator")
     return cur
 
 
