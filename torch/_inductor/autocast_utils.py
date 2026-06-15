@@ -26,4 +26,8 @@ def low_precision_autocast_enabled() -> bool:
 
 
 def needs_low_precision_pointwise_barrier(func: object) -> bool:
-    return func not in LOW_PRECISION_POINTWISE_BARRIER_EXEMPT_OPS
+    return (
+        isinstance(func, torch._ops.OpOverload)
+        and torch.Tag.pointwise in func.tags
+        and func not in LOW_PRECISION_POINTWISE_BARRIER_EXEMPT_OPS
+    )

@@ -1091,9 +1091,6 @@ def _maybe_record_pointwise_barrier(
         if not low_precision_autocast_enabled():
             return
 
-    if not isinstance(func, torch._ops.OpOverload):
-        return
-
     from torch._inductor.autocast_utils import needs_low_precision_pointwise_barrier
 
     if not needs_low_precision_pointwise_barrier(func):
@@ -3066,7 +3063,7 @@ def make_fx(
         _allow_fake_constant,
         _error_on_data_dependent_ops,
         record_stack_traces=record_stack_traces
-        or config.trace.provenance_tracking_level == 1,
+        or config.effective_provenance_tracking_level() == 1,
         proxy_module_inputs=proxy_module_inputs,
         _disable_torch_fn_metadata_mode=_disable_torch_fn_metadata_mode,
     )
