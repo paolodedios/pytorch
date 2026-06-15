@@ -131,6 +131,17 @@ class RecompileTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(cnt.frame_count, 1)
         self.assertEqual(cnt.op_count, 1)
 
+    def test_dynamic_true_singleton_broadcast_inductor_correctness(self):
+        def foo(x):
+            y = torch.full((9, 1, 8), 0.17877664640931384, dtype=torch.float64)
+            z = torch.nn.functional.rms_norm(x.to(torch.float64), (1,))
+            return z * y
+
+        x = torch.as_strided(torch.randn(9, dtype=torch.float64), (9, 1, 1), (1, 1, 1))
+        opt = torch.compile(foo, dynamic=True, fullgraph=True)
+
+        self.assertTrue(torch.allclose(opt(x), foo(x), rtol=1e-5, atol=1e-5))
+
     def test_dynamic_true_singleton_nonstandard_stride_to_preserves_stride(self):
         def foo(x):
             return x.to(torch.float64).stride()
