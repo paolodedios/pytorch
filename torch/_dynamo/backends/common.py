@@ -42,22 +42,30 @@ R = TypeVar("R")
 
 
 def _output_nodes(gm: torch.fx.GraphModule) -> list[torch.fx.Node]:
-    output_node = next(node for node in gm.graph.nodes if node.op == "output")
+    output_node = next((node for node in gm.graph.nodes if node.op == "output"), None)
+    if output_node is None:
+        return []
     leaves, _ = torch.utils._pytree.tree_flatten(output_node.args[0])
     return [leaf for leaf in leaves if isinstance(leaf, torch.fx.Node)]
 
 
+def _node_meta_value(node: torch.fx.Node) -> Any:
+    if "example_value" in node.meta:
+        return node.meta["example_value"]
+    return node.meta.get("val")
+
+
 def _node_requires_grad(node: torch.fx.Node) -> bool:
-    example_value = node.meta.get("example_value")
-    if isinstance(example_value, torch.Tensor):
-        return example_value.requires_grad
+    meta_value = _node_meta_value(node)
+    if isinstance(meta_value, torch.Tensor):
+        return meta_value.requires_grad
     return True
 
 
 def _node_is_view(node: torch.fx.Node) -> bool:
-    example_value = node.meta.get("example_value")
-    if isinstance(example_value, torch.Tensor):
-        return example_value._is_view()
+    meta_value = _node_meta_value(node)
+    if isinstance(meta_value, torch.Tensor):
+        return meta_value._is_view()
     return False
 
 
@@ -134,6 +142,7 @@ class AotAutograd:
         if fallback_reason is not None:
             log.debug("Unable to use AOT Autograd because %s", fallback_reason)
             counters["aot_autograd"]["not_ok"] += 1
+            counters["aot_autograd"][fallback_reason.replace(" ", "_")] += 1
             return _make_aot_autograd_fallback(gm)
 
         if any(isinstance(x, (list, tuple, dict)) for x in example_inputs):

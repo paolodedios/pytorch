@@ -592,6 +592,31 @@ def forward(self, L_x_ : torch.Tensor):
 
         self.assertEqual(result, expected)
 
+    def test_output_hook_on_dependent_output_after_return_inductor(self):
+        from torch._dynamo.utils import counters
+
+        def fn(x):
+            y = x * x
+            z = y * x * x * x
+            return y, z
+
+        x0 = torch.tensor(1.0, requires_grad=True)
+        y0, z0 = fn(x0)
+        y0.register_hook(lambda grad: 3.14 * grad)
+        (expected,) = torch.autograd.grad(z0, x0)
+
+        torch._dynamo.reset()
+        counters.clear()
+        x1 = torch.tensor(1.0, requires_grad=True)
+        y1, z1 = torch.compile(fn, backend="inductor")(x1)
+        y1.register_hook(lambda grad: 3.14 * grad)
+        (result,) = torch.autograd.grad(z1, x1)
+
+        self.assertEqual(result, expected)
+        self.assertEqual(
+            counters["aot_autograd"].get("graph_has_dependent_outputs", 0), 1
+        )
+
     def test_output_hook_on_dependent_view_output_after_return_aot_eager(self):
         def fn(x):
             y = x.view(2, 2)
