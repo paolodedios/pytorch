@@ -1001,9 +1001,30 @@ class TestOpaqueObject(TestCase):
         self.assertIsInstance(constructing.fake_peer, FakeScriptObject)
         self.assertEqual(constructing.fake_peer.value, 5)
 
+    def test_opaque_base_constructing_guard_preserves_initialized_members(self):
+        class ConstructingOpaque(OpaqueBase):
+            def __init__(self, value, fake_mode):
+                self.value = value
+                with fake_mode:
+                    self.fake_self = maybe_to_fake_obj(fake_mode, self)
+                self.late = value + 1
+
+        register_opaque_type(
+            ConstructingOpaque,
+            typ="reference",
+            members={"value": MemberType.USE_REAL, "late": MemberType.USE_REAL},
+        )
+
+        fake_mode = FakeTensorMode(shape_env=ShapeEnv())
+        obj = ConstructingOpaque(5, fake_mode)
+
+        self.assertIsInstance(obj.fake_self, FakeScriptObject)
+        self.assertEqual(obj.fake_self.value, 5)
+        self.assertFalse(hasattr(obj.fake_self, "late"))
+
     def test_isinstance_opaque_base_covers_all_opaque_types(self):
-        # isinstance(x, OpaqueBase) should match all registered opaque types,
-        # not just classes that directly subclass OpaqueBase.
+        # isinstance(x, OpaqueBase) should match registered opaque values and
+        # physical OpaqueBase subclasses.
 
         # Value-type opaque (Enum) — registered but doesn't subclass OpaqueBase
         class MyEnum(enum.Enum):
@@ -1014,6 +1035,11 @@ class TestOpaqueObject(TestCase):
         # Reference-type opaque (subclasses OpaqueBase) — sanity check
         queue = OpaqueQueue([], torch.zeros(3))
         self.assertIsInstance(queue, OpaqueBase)
+
+        class UnregisteredOpaque(OpaqueBase):
+            pass
+
+        self.assertIsInstance(UnregisteredOpaque(), OpaqueBase)
 
         # FakeScriptObject wrapping a reference-type opaque
         fake_mode = FakeTensorMode(shape_env=ShapeEnv())

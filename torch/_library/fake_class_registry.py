@@ -261,11 +261,11 @@ def maybe_to_fake_obj(
         except AttributeError:
             instance_dict = {}
         opaque_base_constructing = instance_dict.get("_opaque_base_constructing", False)
-        if opaque_base_constructing:
-            return fake_x_wrapped
         for attr_name in opaque_info.members:
             with _disable_current_modes():
                 if not hasattr(x, attr_name):
+                    if opaque_base_constructing:
+                        continue
                     raise TypeError(
                         f"Opaque object of type '{type_name}' was specified to have member "
                         f"'{attr_name}', but this doesn't actually exist in the object."
