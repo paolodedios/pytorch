@@ -951,6 +951,21 @@ class FunctionTests(torch._dynamo.test_case.TestCase):
             return copy.copy(x) + 1
 
         x = torch.randn(2, 3)
+
+        torch._dynamo.reset()
+        counters.clear()
+        opt_fn = torch.compile(fn, backend="eager")
+        self.assertTrue(same(opt_fn(x), fn(x)))
+        self.assertEqual(
+            [
+                count
+                for msg, count in counters["graph_break"].items()
+                if "copy.copy() on Tensor" in msg
+            ],
+            [1],
+        )
+
+        torch._dynamo.reset()
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
 
         with self.assertRaisesRegex(Unsupported, "copy.copy"):
