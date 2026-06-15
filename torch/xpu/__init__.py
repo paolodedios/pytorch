@@ -768,7 +768,7 @@ def _get_rng_state_offset(device: int | str | torch.device = "xpu") -> int:
 
 
 def _import_pyzes():
-    """Import pyzes, translating failures into actionable errors for query APIs."""
+    """Return the imported pyzes module; raise ImportError if missing, RuntimeError if the GPU driver is unavailable."""
     try:
         import pyzes  # type: ignore[import]
     except ImportError:
