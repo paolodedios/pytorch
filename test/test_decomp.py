@@ -683,6 +683,17 @@ class TestDecomp(TestCase):
 
         self.assertEqual(xs, xs_two)
 
+    def test_index_add_decomp_source_shape_mismatch(self, device):
+        x = torch.zeros([10, 5], device=device)
+        index = torch.arange(5, device=device)
+        source = torch.ones([5], device=device)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source tensor shape must match self tensor shape",
+        ):
+            torch._decomp.decompositions.index_add(x, 0, index, source)
+
     def test_cat_single_input(self, device):
         decomp_table = torch._inductor.decomposition.select_decomp_table()
         cat_inductor = decomp_table[torch.ops.aten.cat.default]
@@ -1237,6 +1248,59 @@ class DecompOneOffTests(TestCase):
             torch.ops.aten._weight_norm_interface(inp, inp2),
             torch._decomp.decompositions._weight_norm_interface(inp, inp2),
         )
+
+    @onlyCUDA
+    @skipIfCrossRef
+    def test_fused_dropout_decomposition_extreme_p(self, device):
+        input_tensor = torch.randn(10, 10, dtype=torch.float32, device=device)
+
+        ref_out, ref_mask = torch.ops.aten._fused_dropout(input_tensor, 0.0, None)
+        decomp_out, decomp_mask = (
+            torch._decomp.decompositions._fused_dropout_decomposition(
+                input_tensor, 0.0, None
+            )
+        )
+        self.assertTrue(torch.isnan(ref_out).all().item())
+        self.assertFalse(ref_mask.bool().any().item())
+        self.assertEqual(decomp_out.dtype, ref_out.dtype)
+        self.assertEqual(decomp_mask.dtype, torch.uint8)
+        self.assertEqual(decomp_out, ref_out, equal_nan=True)
+        self.assertEqual(decomp_mask, ref_mask)
+
+        ref_out, ref_mask = torch.ops.aten._fused_dropout(input_tensor, 1.0, None)
+        decomp_out, decomp_mask = (
+            torch._decomp.decompositions._fused_dropout_decomposition(
+                input_tensor, 1.0, None
+            )
+        )
+        self.assertEqual(ref_out, input_tensor)
+        self.assertTrue(ref_mask.bool().all().item())
+        self.assertEqual(decomp_out.dtype, ref_out.dtype)
+        self.assertEqual(decomp_mask.dtype, torch.uint8)
+        self.assertEqual(decomp_out, ref_out)
+        self.assertEqual(decomp_mask, ref_mask)
+
+    @onlyCUDA
+    @skipIfCrossRef
+    def test_fused_dropout_compile_extreme_p(self, device):
+        def fn(input_tensor, p, generator):
+            return torch.ops.aten._fused_dropout(input_tensor, p, generator)
+
+        def mask_dtype(input_tensor, p):
+            return torch.ops.aten._fused_dropout(input_tensor, p, None)[1].dtype
+
+        input_tensor = torch.randn(10, 10, dtype=torch.float32, device=device)
+        compiled_fn = torch.compile(fn, backend="eager")
+        compiled_mask_dtype = torch.compile(mask_dtype, backend="eager")
+
+        for p in (0.0, 1.0):
+            ref_out, ref_mask = fn(input_tensor, p, None)
+            res_out, res_mask = compiled_fn(input_tensor, p, None)
+            self.assertEqual(res_out.dtype, ref_out.dtype)
+            self.assertEqual(res_mask.dtype, ref_mask.dtype)
+            self.assertEqual(compiled_mask_dtype(input_tensor, p), ref_mask.dtype)
+            self.assertEqual(res_out, ref_out, equal_nan=True)
+            self.assertEqual(res_mask, ref_mask)
 
     @onlyCPU
     @skipIfCrossRef
