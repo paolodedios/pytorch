@@ -2701,6 +2701,27 @@ class OutputGraph(OutputGraphCommon):
                         restart_reason="source-less requires_grad_() intermediate leaked as output"
                     )
 
+    @staticmethod
+    def _fix_shallow_copy_data_placeholder_devices(
+        gm: torch.fx.GraphModule,
+    ) -> None:
+        """Fix placeholder device annotations corrupted by shallow_copy_data_.
+
+        During tracing the live FakeTensor must stay mutated, but
+        the placeholder should reflect the original input device.
+        """
+        from torch._subclasses.fake_impls import fast_detach
+
+        for node in gm.graph.nodes:
+            if node.op != "placeholder":
+                continue
+            orig_dev = node.meta.get("pre_shallow_copy_device")
+            if orig_dev is not None:
+                ev = node.meta.get("example_value")
+                if ev is not None and hasattr(ev, "fake_device"):
+                    node.meta["example_value"] = fast_detach(ev.fake_mode, ev)
+                    node.meta["example_value"].fake_device = orig_dev
+
     def compile_and_call_fx_graph(
         self,
         tx: "InstructionTranslatorBase",
@@ -2875,22 +2896,7 @@ class OutputGraph(OutputGraphCommon):
                 # a lot of fake_tensor ownership assumptions and runs afoul of detect_fake_mode
                 self.tracing_context.fake_mode = backend_fake_mode
 
-            # Fix placeholder device annotations that were corrupted
-            # by in-graph shallow_copy_data_() mutations. During
-            # tracing the live FakeTensor must stay mutated, but
-            # the placeholder should reflect the original input
-            # device.
-            for node in gm.graph.nodes:
-                if node.op != "placeholder":
-                    break
-                orig_dev = node.meta.get("pre_shallow_copy_device")
-                if orig_dev is not None:
-                    ev = node.meta.get("example_value")
-                    if ev is not None and hasattr(ev, "fake_device"):
-                        from torch._subclasses.fake_impls import fast_detach
-
-                        node.meta["example_value"] = fast_detach(ev.fake_mode, ev)
-                        node.meta["example_value"].fake_device = orig_dev
+            self._fix_shallow_copy_data_placeholder_devices(gm)
 
             gm.graph.lint()
             with self.restore_global_state():
