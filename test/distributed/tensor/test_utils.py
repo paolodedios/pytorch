@@ -1808,7 +1808,7 @@ class TestStridedShardAlltoAll(TestStridedShardCollectiveOpUtils, LocalTensorTes
         split_factor: int,
     ) -> torch.Tensor:
         """Perform alltoall redistribution to a new shard dimension."""
-        assert isinstance(shard_spec, Shard)
+        assert isinstance(shard_spec, Shard)  # noqa: S101
         return shard_spec._to_new_strided_shard_dim(
             local_tensor, mesh, mesh_dim, logical_shape, target_tensor_dim, split_factor
         )
@@ -1971,7 +1971,7 @@ class TestStridedShardAlltoAll(TestStridedShardCollectiveOpUtils, LocalTensorTes
                     operate_mesh_dim,
                     tensor.shape,
                 )
-                assert isinstance(tgt_p[operate_mesh_dim], _StridedShard)
+                assert isinstance(tgt_p[operate_mesh_dim], _StridedShard)  # noqa: S101
                 dt_after_a2a = self._do_alltoall_from_Shard_to_StridedShard(
                     dt.to_local(),
                     src_p[operate_mesh_dim],
