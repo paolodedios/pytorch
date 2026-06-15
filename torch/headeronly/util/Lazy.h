@@ -5,7 +5,7 @@
 #include <atomic>
 #include <utility>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 /**
  * Thread-safe lazy value with opportunistic concurrency: on concurrent first
@@ -119,7 +119,7 @@ class PrecomputedLazyValue : public LazyValue<T> {
   T value_;
 };
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::LazyValue;

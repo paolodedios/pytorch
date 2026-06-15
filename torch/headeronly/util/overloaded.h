@@ -4,7 +4,7 @@
 
 #include <memory>
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 namespace detail {
 
 template <class... Ts>
@@ -31,7 +31,7 @@ detail::overloaded_t<Ts...> overloaded(Ts... ts) {
   return {std::move(ts)...};
 }
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::overloaded;
