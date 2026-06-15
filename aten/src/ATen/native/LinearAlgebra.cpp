@@ -1762,7 +1762,7 @@ static inline void bmm_out_or_baddbmm_(const Tensor& self_or_result_, const Tens
         (strides[1] == 1 && (sizes[2] == 1 || strides[2] >= sizes[1]));
   };
 #if !defined(__aarch64__) || AT_ONEDNN_ACL_ENABLED()
-  // Always apply onednn heuristic on x86 platform, but on ARM only if compiled with ACL
+  // Always apply mkldnn heuristic on x86 platform, but on ARM only if compiled with ACL
   bool apply_heur = apply_onednn_matmul_heur(batch1.sizes()[1], batch1.sizes()[2], batch2.sizes()[2]);
   if (apply_heur && use_onednn_matmul(batch1, batch2, self_or_result)) {
     try {
@@ -1770,7 +1770,7 @@ static inline void bmm_out_or_baddbmm_(const Tensor& self_or_result_, const Tens
       return;
     } catch ([[maybe_unused]]const std::exception& e) {
       TORCH_WARN("onednn_matmul failed, switching to baddbmm:", e.what());
-      at::globalContext().setUserEnabledOnednn(false);
+      at::globalContext().setuserEnabledOnednn(false);
     }
   }
 #endif

@@ -1,8 +1,8 @@
 #include <c10/xpu/XPUFunctions.h>
 
-#include <ATen/native/mkldnn/xpu/detail/Attr.h>
-#include <ATen/native/mkldnn/xpu/detail/DnnlExt.h>
-#include <ATen/native/mkldnn/xpu/detail/Utils.h>
+#include <ATen/native/onednn/xpu/detail/Attr.h>
+#include <ATen/native/onednn/xpu/detail/DnnlExt.h>
+#include <ATen/native/onednn/xpu/detail/Utils.h>
 
 #include <oneapi/dnnl/dnnl.hpp>
 #include <cstdint>

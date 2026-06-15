@@ -3168,6 +3168,16 @@ static PyObject* THPVariable_is_onednn(THPVariable* self, void* unused) {
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* THPVariable_is_mkldnn(THPVariable* self, void* unused) {
+  HANDLE_TH_ERRORS
+  if (has_torch_function((PyObject*)self)) {
+    return handle_torch_function_getter(self, "is_mkldnn");
+  }
+  auto& self_ = THPVariable_Unpack(self);
+  return torch::autograd::utils::wrap(self_.is_mkldnn());
+  END_HANDLE_TH_ERRORS
+}
+
 static PyObject* THPVariable_is_mps(THPVariable* self, void* unused) {
   HANDLE_TH_ERRORS
   if (has_torch_function((PyObject*)self)) {
