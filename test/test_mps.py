@@ -1256,10 +1256,6 @@ class TestMPS(TestCaseMPS):
         with self.assertRaisesRegex(RuntimeError, "not implemented for 'Bool'"):
             torch.linalg.cross(x, y, dim=1)
 
-        xf = torch.randn(4, 3, device="mps")
-        yf = torch.randn(4, 3, device="mps")
-        torch.linalg.cross(xf, yf, dim=1)
-
     def test_cross(self):
         a = torch.randn(4, 3, device="mps")
         b = torch.randn(4, 3, device="mps")
