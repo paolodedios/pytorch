@@ -1092,7 +1092,7 @@ static PyObject* THPModule_setUserEnabledOnednn(
       "set_enabled_onednn expects a bool, "
       "but got ",
       THPUtils_typename(arg));
-  at::globalContext().setUserEnabledOnednn(Py_IsTrue(arg));
+  at::globalContext().setuserEnabledOnednn(Py_IsTrue(arg));
   Py_RETURN_NONE;
   END_HANDLE_TH_ERRORS
 }
@@ -3081,7 +3081,7 @@ Call this whenever a new thread is created in order to propagate values from
   ASSERT_TRUE(
       set_module_attr("_has_mkldnn", at::hasONEDNN() ? Py_True : Py_False));
   ASSERT_TRUE(set_module_attr(
-      "_has_mkldnn_acl", AT_MKLDNN_ACL_ENABLED() ? Py_True : Py_False));
+      "_has_mkldnn_acl", AT_ONEDNN_ACL_ENABLED() ? Py_True : Py_False));
 
   ASSERT_TRUE(set_module_attr("_GLIBCXX_USE_CXX11_ABI", Py_True));
 
