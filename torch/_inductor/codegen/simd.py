@@ -1435,18 +1435,6 @@ class _IterationSpace:
 RemappedRangeValue = CSEVariable | tuple[CSEVariable, ...]
 
 
-@dataclasses.dataclass(frozen=True)
-class _HalfResolutionSplit:
-    # Lazy split placeholder. The lane variable is only valid after the
-    # pointwise remap handler materializes the parent split before use.
-    parent: CSEVariable
-    lane: int
-    factor: int
-    reshape_shape: tuple[str, ...]
-    part_shape: tuple[str, ...]
-    part_names: tuple[str, ...]
-
-
 def _resolve_remapped_value(
     value: RemappedRangeValue,
     index: sympy.Expr,
@@ -1480,9 +1468,6 @@ class _DerivedIterationFamily:
     index_subs: dict[sympy.Symbol, sympy.Expr] = dataclasses.field(default_factory=dict)
     # Pre-materialized values readable by name.
     remapped_values: dict[str, RemappedRangeValue] = dataclasses.field(
-        default_factory=dict
-    )
-    half_resolution_splits: dict[str, _HalfResolutionSplit] = dataclasses.field(
         default_factory=dict
     )
     flat_index_derived_tree: DerivedIterationRangesRoot | None = None
@@ -1945,21 +1930,13 @@ class _GroupedReductionLayout:
             reshape_shape = (child_block, factor_dim)
             part_shape = (child_block,)
         part_names = [f"_rm_{name}_{i}" for i in range(factor)]
-        parts = tuple(
-            kernel.cse.namedvar(part_name, dtype=value.dtype, shape=part_shape)
+        kernel.emit_split_via_reshape(value, reshape_shape, part_names)
+        family.remapped_values[name] = tuple(
+            kernel.cse.generate(
+                kernel.compute, part_name, dtype=value.dtype, shape=part_shape
+            )
             for part_name in part_names
         )
-        part_names_tuple = tuple(part_names)
-        for lane, part in enumerate(parts):
-            family.half_resolution_splits[part.name] = _HalfResolutionSplit(
-                parent=value,
-                lane=lane,
-                factor=factor,
-                reshape_shape=reshape_shape,
-                part_shape=part_shape,
-                part_names=part_names_tuple,
-            )
-        family.remapped_values[name] = parts
         return True
 
     def _broadcast_value_to_axis_resolution(
@@ -2203,98 +2180,9 @@ class _ParentHalfPointwiseRemapHandler(_PointwiseRemapHandler):
         parent_half_source_names: OrderedSet[str] | None = None,
     ):
         super().__init__(inner, kernel=kernel, family=family)
-        self._kernel: TritonKernel = kernel
         self._layout = layout
         self._must_materialize_names = must_materialize_names or OrderedSet()
         self._parent_half_source_names = parent_half_source_names
-        self._half_resolution_div_cache: dict[
-            tuple[str, str, int], tuple[CSEVariable, ...]
-        ] = {}
-        self._half_resolution_cast_cache: dict[
-            tuple[str, torch.dtype, torch.dtype | None, bool], tuple[CSEVariable, ...]
-        ] = {}
-        self._half_resolution_binary_cache: dict[
-            tuple[str, str, str, int], tuple[CSEVariable, ...]
-        ] = {}
-        self._materialized_half_resolution_splits: OrderedSet[tuple[str, int]] = (
-            OrderedSet()
-        )
-
-    def _register_lazy_half_resolution_split(
-        self,
-        parent: CSEVariable,
-        split: _HalfResolutionSplit,
-        part_names: list[str],
-    ) -> tuple[CSEVariable, ...]:
-        parts = tuple(
-            self._kernel.cse.namedvar(
-                part_name,
-                dtype=parent.dtype,
-                shape=split.part_shape,
-            )
-            for part_name in part_names
-        )
-        part_names_tuple = tuple(part_names)
-        for lane, part in enumerate(parts):
-            self._family.half_resolution_splits[part.name] = _HalfResolutionSplit(
-                parent=parent,
-                lane=lane,
-                factor=split.factor,
-                reshape_shape=split.reshape_shape,
-                part_shape=split.part_shape,
-                part_names=part_names_tuple,
-            )
-        return parts
-
-    def _materialize_half_resolution_split(self, split: _HalfResolutionSplit) -> None:
-        cache_key = (split.parent.name, split.factor)
-        if cache_key in self._materialized_half_resolution_splits:
-            return
-        self._kernel.emit_split_via_reshape(
-            split.parent, split.reshape_shape, split.part_names
-        )
-        self._materialized_half_resolution_splits.add(cache_key)
-
-    def _materialize_half_resolution_args(self, obj: Any) -> None:
-        if isinstance(obj, CSEVariable):
-            if split := self._family.half_resolution_splits.get(obj.name):
-                self._materialize_half_resolution_split(split)
-            return
-        if isinstance(obj, (list, tuple)):
-            for value in obj:
-                self._materialize_half_resolution_args(value)
-            return
-        if isinstance(obj, dict):
-            for value in obj.values():
-                self._materialize_half_resolution_args(value)
-
-    def _is_parent_broadcastable(self, value: CSEVariable, parent: CSEVariable) -> bool:
-        if value.name in self._family.half_resolution_splits:
-            return False
-        if value.shape is None or parent.shape is None:
-            return False
-        if len(value.shape) != len(parent.shape):
-            return False
-        return all(
-            str(value_dim) == "1" or str(value_dim) == str(parent_dim)
-            for value_dim, parent_dim in zip(value.shape, parent.shape)
-        )
-
-    def _broadcast_parent_shape(
-        self,
-        x0: CSEVariable,
-        x1: CSEVariable,
-    ) -> tuple[Any, ...] | None:
-        if x0.shape is None or x1.shape is None or len(x0.shape) != len(x1.shape):
-            return None
-        return tuple(
-            dim1 if str(dim0) == "1" else dim0 for dim0, dim1 in zip(x0.shape, x1.shape)
-        )
-
-    def _default(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
-        self._materialize_half_resolution_args(args)
-        self._materialize_half_resolution_args(kwargs)
-        return getattr(self._inner, name)(*args, **kwargs)
 
     def _raise_missing_half_resolution_value(self, name: str) -> None:
         if name in V.graph.removed_buffers or name in self._kernel.removed_buffers:
@@ -2325,7 +2213,7 @@ class _ParentHalfPointwiseRemapHandler(_PointwiseRemapHandler):
             self._raise_missing_half_resolution_value(name)
             return
         if not self._layout.materialize_value_at_half_resolution(
-            self._kernel,
+            cast("TritonKernel", self._kernel),
             self._family,
             2,
             name,
@@ -2349,127 +2237,6 @@ class _ParentHalfPointwiseRemapHandler(_PointwiseRemapHandler):
     def load(self, name: str, index: sympy.Expr) -> CSEVariable:
         self._materialize_half_resolution_load(name)
         return super().load(name, index)
-
-    def truediv(self, x0: CSEVariable, x1: CSEVariable) -> CSEVariable:
-        split = self._family.half_resolution_splits.get(x0.name)
-        if split is None:
-            self._materialize_half_resolution_args((x0, x1))
-            return self._inner.truediv(x0, x1)
-
-        parent = split.parent
-        if not self._is_parent_broadcastable(x1, parent):
-            self._materialize_half_resolution_args((x0, x1))
-            return self._inner.truediv(x0, x1)
-
-        factor = split.factor
-        cache_key = (parent.name, x1.name, factor)
-        parts = self._half_resolution_div_cache.get(cache_key)
-        if parts is None:
-            full_div = self._inner.truediv(parent, x1)
-            # Deferred split materialization needs the parent tile shape.
-            full_div.shape = parent.shape
-            part_names = [f"_rm_div_{parent.name}_{x1.name}_{i}" for i in range(factor)]
-            parts = self._register_lazy_half_resolution_split(
-                full_div, split, part_names
-            )
-            self._half_resolution_div_cache[cache_key] = parts
-        return parts[split.lane]
-
-    def _binary_with_half_resolution_split(
-        self, name: str, x0: CSEVariable, x1: CSEVariable
-    ) -> CSEVariable | None:
-        split0 = self._family.half_resolution_splits.get(x0.name)
-        split1 = self._family.half_resolution_splits.get(x1.name)
-        if split0 is None and split1 is None:
-            return None
-        if split0 is not None and split1 is not None:
-            if split0.lane != split1.lane or split0.factor != split1.factor:
-                return None
-            split = split0
-            parent0, parent1 = split0.parent, split1.parent
-            parent_shape = self._broadcast_parent_shape(parent0, parent1)
-            if parent_shape is None:
-                return None
-        elif split0 is not None:
-            split = split0
-            parent0, parent1 = split0.parent, x1
-            if not self._is_parent_broadcastable(parent1, parent0):
-                return None
-            parent_shape = parent0.shape
-        else:
-            assert split1 is not None
-            split = split1
-            parent0, parent1 = x0, split1.parent
-            if not self._is_parent_broadcastable(parent0, parent1):
-                return None
-            parent_shape = parent1.shape
-
-        factor = split.factor
-        cache_key = (name, parent0.name, parent1.name, factor)
-        parts = self._half_resolution_binary_cache.get(cache_key)
-        if parts is None:
-            parent_value = getattr(self._inner, name)(parent0, parent1)
-            parent_value.shape = parent_shape
-            part_names = [
-                f"_rm_{name}_{parent0.name}_{parent1.name}_{i}" for i in range(factor)
-            ]
-            parts = self._register_lazy_half_resolution_split(
-                parent_value, split, part_names
-            )
-            self._half_resolution_binary_cache[cache_key] = parts
-        return parts[split.lane]
-
-    def mul(self, x0: CSEVariable, x1: CSEVariable) -> CSEVariable:
-        result = self._binary_with_half_resolution_split("mul", x0, x1)
-        if result is not None:
-            return result
-        self._materialize_half_resolution_args((x0, x1))
-        return self._inner.mul(x0, x1)
-
-    def to_dtype(
-        self,
-        x: CSEVariable,
-        dtype: torch.dtype,
-        src_dtype: torch.dtype | None = None,
-        use_compute_types: bool = True,
-    ) -> CSEVariable:
-        split = self._family.half_resolution_splits.get(x.name)
-        if split is None:
-            return self._inner.to_dtype(
-                x,
-                dtype,
-                src_dtype=src_dtype,
-                use_compute_types=use_compute_types,
-            )
-        if x.dtype == dtype:
-            return x
-        cache_key = (split.parent.name, dtype, src_dtype, use_compute_types)
-        parts = self._half_resolution_cast_cache.get(cache_key)
-        if parts is None:
-            parent_cast = self._inner.to_dtype(
-                split.parent,
-                dtype,
-                src_dtype=src_dtype,
-                use_compute_types=use_compute_types,
-            )
-            # Deferred split materialization needs the parent tile shape.
-            parent_cast.shape = split.parent.shape
-            part_names = [f"_rm_to_{parent_cast.name}_{i}" for i in range(split.factor)]
-            parts = self._register_lazy_half_resolution_split(
-                parent_cast, split, part_names
-            )
-            self._half_resolution_cast_cache[cache_key] = parts
-        return parts[split.lane]
-
-    def store(
-        self,
-        name: str,
-        index: sympy.Expr,
-        value: CSEVariable,
-        mode: Any = None,
-    ) -> None:
-        self._materialize_half_resolution_args(value)
-        super().store(name, index, value, mode=mode)
 
 
 class _ParentHalfSourceLoadMaterializer(WrapperHandler):  # type: ignore[type-arg]
@@ -2699,11 +2466,9 @@ class SIMDScheduling(BaseScheduling):
         _, (numel, rnumel) = reduction_node.group
         nodes = [*reduction_node.get_nodes(), *consumer_node.get_nodes()]
         plan = self._persistent_half_resolution_epilogue_plan(nodes, numel, rnumel)
-        if plan is None or not all(
+        return plan is not None and all(
             node in plan.half_nodes for node in consumer_node.get_nodes()
-        ):
-            return False
-        return True
+        )
 
     def _persistent_half_resolution_epilogue_plan(
         self,
@@ -3630,15 +3395,6 @@ class SIMDScheduling(BaseScheduling):
             reduction_schedule,
             half_epilogue_nodes,
         )
-        if not self._should_use_persistent_half_resolution_epilogue(
-            half_epilogue_plan.reduction_nodes,
-            numel,
-            rnumel,
-        ):
-            raise AssertionError(
-                "half-resolution reduction epilogue requires persistent reduction"
-            )
-
         combined_schedule = cast(
             list[NodeScheduleEntry],
             [*reduction_schedule, *half_epilogue_nodes],
