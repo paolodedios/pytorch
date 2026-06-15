@@ -186,25 +186,6 @@ class BaseListVariable(VariableTracker):
         """Sequence length for lists, tuples, and range objects."""
         return VariableTracker.build(tx, len(self.items))
 
-    def tp_iteritem_impl(
-        self, tx: "InstructionTranslatorBase", index: VariableTracker
-    ) -> tuple[VariableTracker, VariableTracker]:
-        # 3.15 _tp_iteritem slot.  list/tuple (and tuple subclasses like
-        # torch.Size) all share the same algorithm: index into self.items,
-        # bump the index, signal exhaustion with StopIteration.  Subclasses
-        # whose Python type does NOT install _tp_iteritem (range, deque)
-        # override this to fall back to the base "missing" behavior.
-        # ref: https://github.com/python/cpython/blob/f31a89bb9010/Objects/listobject.c#L3916-L3921 (list_iteritem)
-        # ref: https://github.com/python/cpython/blob/f31a89bb9010/Objects/tupleobject.c#L876-L885 (tuple_iteritem)
-        if not isinstance(self, (ListVariable, TupleVariable)):
-            return super().tp_iteritem_impl(tx, index)
-        i = index.as_python_constant()
-        if i < 0:
-            raise AssertionError(f"Invalid index {i}")
-        if i >= len(self.items):
-            raise_observed_exception(IndexError, tx)
-        return self.items[i], ConstantVariable.create(i + 1)
-
     def sq_contains(
         self, tx: "InstructionTranslatorBase", item: VariableTracker
     ) -> VariableTracker:
@@ -212,50 +193,6 @@ class BaseListVariable(VariableTracker):
         # TODO(dynamo-team): Replace iter_contains by a proper impl. once we
         # implement PyObject_RichCompare
         return iter_contains(unpack_iterable(tx, self), item, tx)
-
-    def call_tree_map_branch(
-        self,
-        tx: "InstructionTranslatorBase",
-        tree_map_fn: UserFunctionVariable,
-        map_fn: VariableTracker,
-        rest: list[VariableTracker],
-        tree_map_kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        if not isinstance(self, (ListVariable, TupleVariable)):
-            return self._tree_map_fallback(
-                tx, tree_map_fn, map_fn, rest, tree_map_kwargs
-            )
-
-        other_lists: list[BaseListVariable] = []
-        for candidate in rest:
-            if (
-                not isinstance(candidate, BaseListVariable)
-                or len(candidate.items) != len(self.items)
-                or self.python_type() != candidate.python_type()
-            ):
-                return self._tree_map_fallback(
-                    tx, tree_map_fn, map_fn, rest, tree_map_kwargs
-                )
-            other_lists.append(candidate)
-
-        new_items: list[VariableTracker] = []
-        for idx, item in enumerate(self.items):
-            sibling_leaves = [candidate.items[idx] for candidate in other_lists]
-            new_items.append(
-                item.call_tree_map(
-                    tx,
-                    tree_map_fn,
-                    map_fn,
-                    sibling_leaves,
-                    tree_map_kwargs,
-                )
-            )
-
-        return self.clone(
-            items=new_items,
-            source=None,
-            mutation_type=ValueMutationNew(),
-        )
 
     def call_tree_map_with_path_branch(
         self,
@@ -266,42 +203,14 @@ class BaseListVariable(VariableTracker):
         tree_map_kwargs: dict[str, VariableTracker],
         keypath: tuple[Any, ...],
     ) -> VariableTracker:
-        if not isinstance(self, (ListVariable, TupleVariable)):
-            return self._tree_map_with_path_fallback(
-                tx, tree_map_fn, map_fn, rest, tree_map_kwargs, keypath
-            )
-
-        other_lists: list[BaseListVariable] = []
-        for candidate in rest:
-            if (
-                not isinstance(candidate, BaseListVariable)
-                or len(candidate.items) != len(self.items)
-                or self.python_type() != candidate.python_type()
-            ):
-                return self._tree_map_with_path_fallback(
-                    tx, tree_map_fn, map_fn, rest, tree_map_kwargs, keypath
-                )
-            other_lists.append(candidate)
-
-        new_items: list[VariableTracker] = []
-        for idx, item in enumerate(self.items):
-            sibling_leaves = [candidate.items[idx] for candidate in other_lists]
-            child_keypath = keypath + (SequenceKey(idx),)
-            new_items.append(
-                item.call_tree_map_with_path(
-                    tx,
-                    tree_map_fn,
-                    map_fn,
-                    sibling_leaves,
-                    tree_map_kwargs,
-                    child_keypath,
-                )
-            )
-
-        return self.clone(
-            items=new_items,
-            source=None,
-            mutation_type=ValueMutationNew(),
+        # list/tuple override this with element-wise recursion (see
+        # _listtuple_tree_map_with_path_branch).  Other list-likes (range,
+        # deque) trace through the fallback rather than being treated as a
+        # single leaf (VariableTracker's default).  call_tree_map_branch is
+        # not overridden here because VariableTracker's default already routes
+        # to _tree_map_fallback.
+        return self._tree_map_with_path_fallback(
+            tx, tree_map_fn, map_fn, rest, tree_map_kwargs, keypath
         )
 
     def mp_subscript_impl(
@@ -525,6 +434,112 @@ class BaseListVariable(VariableTracker):
                 mutation_type=ValueMutationNew(),
             )
         return super().call_method(tx, name, args, kwargs)
+
+
+# list/tuple-specific sequence behaviors.  These are assigned onto
+# ListVariable and TupleVariable (torch.Size inherits them via TupleVariable)
+# rather than living on BaseListVariable, because range/deque must NOT inherit
+# them: range/deque do not install the 3.15 _tp_iteritem slot, and their
+# tree_map must trace through the fallback instead of recursing element-wise.
+def _listtuple_tp_iteritem_impl(
+    self: "BaseListVariable",
+    tx: "InstructionTranslatorBase",
+    index: VariableTracker,
+) -> tuple[VariableTracker, VariableTracker]:
+    # 3.15 _tp_iteritem slot.  list/tuple (and tuple subclasses like
+    # torch.Size) share one algorithm: index into self.items, bump the index,
+    # signal exhaustion with StopIteration.
+    # ref: https://github.com/python/cpython/blob/f31a89bb9010/Objects/listobject.c#L3916-L3921 (list_iteritem)
+    # ref: https://github.com/python/cpython/blob/f31a89bb9010/Objects/tupleobject.c#L876-L885 (tuple_iteritem)
+    i = index.as_python_constant()
+    if i < 0:
+        raise AssertionError(f"Invalid index {i}")
+    if i >= len(self.items):
+        raise_observed_exception(IndexError, tx)
+    return self.items[i], ConstantVariable.create(i + 1)
+
+
+def _listtuple_tree_map_branch(
+    self: "BaseListVariable",
+    tx: "InstructionTranslatorBase",
+    tree_map_fn: UserFunctionVariable,
+    map_fn: VariableTracker,
+    rest: list[VariableTracker],
+    tree_map_kwargs: dict[str, VariableTracker],
+) -> VariableTracker:
+    other_lists: list[BaseListVariable] = []
+    for candidate in rest:
+        if (
+            not isinstance(candidate, BaseListVariable)
+            or len(candidate.items) != len(self.items)
+            or self.python_type() != candidate.python_type()
+        ):
+            return self._tree_map_fallback(
+                tx, tree_map_fn, map_fn, rest, tree_map_kwargs
+            )
+        other_lists.append(candidate)
+
+    new_items: list[VariableTracker] = []
+    for idx, item in enumerate(self.items):
+        sibling_leaves = [candidate.items[idx] for candidate in other_lists]
+        new_items.append(
+            item.call_tree_map(
+                tx,
+                tree_map_fn,
+                map_fn,
+                sibling_leaves,
+                tree_map_kwargs,
+            )
+        )
+
+    return self.clone(
+        items=new_items,
+        source=None,
+        mutation_type=ValueMutationNew(),
+    )
+
+
+def _listtuple_tree_map_with_path_branch(
+    self: "BaseListVariable",
+    tx: "InstructionTranslatorBase",
+    tree_map_fn: UserFunctionVariable,
+    map_fn: VariableTracker,
+    rest: list[VariableTracker],
+    tree_map_kwargs: dict[str, VariableTracker],
+    keypath: tuple[Any, ...],
+) -> VariableTracker:
+    other_lists: list[BaseListVariable] = []
+    for candidate in rest:
+        if (
+            not isinstance(candidate, BaseListVariable)
+            or len(candidate.items) != len(self.items)
+            or self.python_type() != candidate.python_type()
+        ):
+            return self._tree_map_with_path_fallback(
+                tx, tree_map_fn, map_fn, rest, tree_map_kwargs, keypath
+            )
+        other_lists.append(candidate)
+
+    new_items: list[VariableTracker] = []
+    for idx, item in enumerate(self.items):
+        sibling_leaves = [candidate.items[idx] for candidate in other_lists]
+        child_keypath = keypath + (SequenceKey(idx),)
+        new_items.append(
+            item.call_tree_map_with_path(
+                tx,
+                tree_map_fn,
+                map_fn,
+                sibling_leaves,
+                tree_map_kwargs,
+                child_keypath,
+            )
+        )
+
+    return self.clone(
+        items=new_items,
+        source=None,
+        mutation_type=ValueMutationNew(),
+    )
 
 
 class RangeVariable(BaseListVariable):
@@ -1050,6 +1065,10 @@ class ListVariable(CommonListMethodsVariable):
     # PyList_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/listobject.c#L3776
     _cpython_type = list
     _has_instance_dict = False
+
+    tp_iteritem_impl = _listtuple_tp_iteritem_impl
+    call_tree_map_branch = _listtuple_tree_map_branch
+    call_tree_map_with_path_branch = _listtuple_tree_map_with_path_branch
 
     def richcompare_impl(
         self,
@@ -1597,6 +1616,10 @@ class DequeVariable(CommonListMethodsVariable):
 class TupleVariable(BaseListVariable):
     # PyTuple_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/tupleobject.c#L846
     _cpython_type = tuple
+
+    tp_iteritem_impl = _listtuple_tp_iteritem_impl
+    call_tree_map_branch = _listtuple_tree_map_branch
+    call_tree_map_with_path_branch = _listtuple_tree_map_with_path_branch
 
     def richcompare_impl(
         self,
