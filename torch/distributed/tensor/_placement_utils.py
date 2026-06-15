@@ -415,7 +415,9 @@ def _strided_compute_padding_info(
 
         needs_padding_on_dim = not _hint_proves_even_shard(
             logical_size_on_dim, split_factor
-        ) or not _hint_proves_even_shard(logical_size_on_dim // split_factor, num_chunks)
+        ) or not _hint_proves_even_shard(
+            logical_size_on_dim // split_factor, num_chunks
+        )
 
     else:
         # Compute padding info for normal shard, no split_factor impact.
