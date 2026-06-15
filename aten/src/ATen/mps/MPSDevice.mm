@@ -126,8 +126,7 @@ bool is_macos_13_or_newer(MacOSVersion version) {
 AppleGPUFamily get_apple_gpu_family() {
   static const auto family = [] {
     const auto device = MPSDevice::getInstance()->device();
-    for (int f = static_cast<int>(AppleGPUFamily::APPLE_10_PLUS);
-         f >= static_cast<int>(AppleGPUFamily::APPLE_7_PLUS);
+    for (int f = static_cast<int>(AppleGPUFamily::APPLE_10_PLUS); f >= static_cast<int>(AppleGPUFamily::APPLE_7_PLUS);
          --f) {
       if ([device supportsFamily:static_cast<MTLGPUFamily>(f)]) {
         return static_cast<AppleGPUFamily>(f);
