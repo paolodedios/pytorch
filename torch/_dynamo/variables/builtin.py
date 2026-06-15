@@ -3458,10 +3458,7 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                     for tf in to_remove:
                         tx.output.tracked_fakes.remove(tf)
 
-                    # Step 1 - disable grads
                     with dynamo_disable_grad(tx), torch.no_grad():
-                        # Step 2 - call shallow_copy_data_
-                        # (shallow_copy_from, matching eager .data = behavior)
                         out = wrap_fx_proxy(
                             tx,
                             tx.output.create_proxy(
@@ -3471,14 +3468,6 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                             ),
                         )
 
-                    # Note: shallow_copy_data_ mutates the input
-                    # FakeTensor's device in-place. For cross-device
-                    # mutations this corrupts the placeholder's device
-                    # annotation since the placeholder and output share
-                    # the same FakeTensor. This is cosmetic; AOTAutograd
-                    # and Inductor handle it via device save/restore
-                    # workarounds in graph_capture.py and compile_fx.py.
-                    # TODO(#186860): fix in ProxyTensor dispatch.
                     return out
                 elif name in ("_grad", "grad"):
                     # NOTE: [Tensor "grad" and "_grad" attr]

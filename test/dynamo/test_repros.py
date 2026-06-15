@@ -4708,7 +4708,7 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         x_compiled = x_eager.clone()
 
         out_eager = func(x_eager)
-        out_compiled = torch.compile(func, backend="eager")(x_compiled)
+        out_compiled = torch.compile(func, backend="eager", fullgraph=True)(x_compiled)
 
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(x_eager.device, x_compiled.device)
@@ -4724,7 +4724,9 @@ class ReproTests(torch._dynamo.test_case.TestCase):
 
         out_eager = func(x_eager)
         torch._dynamo.reset()
-        out_compiled = torch.compile(func, backend="inductor")(x_compiled)
+        out_compiled = torch.compile(func, backend="inductor", fullgraph=True)(
+            x_compiled
+        )
 
         self.assertEqual(out_eager, out_compiled)
         self.assertEqual(x_eager.device, x_compiled.device)
