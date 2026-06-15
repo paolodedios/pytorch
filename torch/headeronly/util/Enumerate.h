@@ -45,7 +45,7 @@ using ssize_t = SSIZE_T;
  * As before, const auto&& it can also be used.
  */
 
-HIDDEN_NAMESPACE_BEGIN(torch, headeronly)
+namespace torch::headeronly {
 
 namespace detail {
 
@@ -156,7 +156,7 @@ constexpr detail::RangeEnumerator<Range> enumerate(Range&& r) {
   return detail::RangeEnumerator<Range>(std::forward<Range>(r));
 }
 
-HIDDEN_NAMESPACE_END(torch, headeronly)
+} // namespace torch::headeronly
 
 namespace c10 {
 using torch::headeronly::enumerate;
