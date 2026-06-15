@@ -1410,6 +1410,7 @@ class TestMPS(TestCaseMPS):
         out = torch.nn.functional.linear(x, w, bias)
         out_cpu = torch.nn.functional.linear(x.cpu(), w.cpu(), bias.cpu())
         self.assertEqual(out_cpu, out.cpu(), **tol)
+
     @parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
     @parametrize("case", [
         ((1, 64, 12), "inner"),
