@@ -1,7 +1,7 @@
 #include <ATen/ATen.h>
 #include <ATen/native/RNN.h>
-#include <ATen/native/mkldnn/xpu/detail/Utils.h>
-#include <ATen/native/mkldnn/xpu/detail/oneDNNContext.h>
+#include <ATen/native/onednn/xpu/detail/Utils.h>
+#include <ATen/native/onednn/xpu/detail/oneDNNContext.h>
 #include <oneapi/dnnl/dnnl.hpp>
 #include <oneapi/dnnl/dnnl_sycl.hpp>
 

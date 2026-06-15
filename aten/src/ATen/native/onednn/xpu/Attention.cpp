@@ -1,5 +1,5 @@
 #include <ATen/Context.h>
-#include <ATen/native/mkldnn/xpu/detail/oneDNN.h>
+#include <ATen/native/onednn/xpu/detail/oneDNN.h>
 #include <ATen/native/transformers/attention.h>
 #include <ATen/native/transformers/sdp_utils.h>
 #include <ATen/native/transformers/sdp_utils_cpp.h>
