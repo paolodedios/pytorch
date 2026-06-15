@@ -99,7 +99,7 @@ namespace at::native {
 
 static bool use_mkldnn_bf32_linear() {
   return at::globalContext().float32Precision(at::Float32Backend::MKLDNN, at::Float32Op::MATMUL) == at::Float32Precision::BF16 &&
-      mkldnn_bf16_device_check();
+      onednn_bf16_device_check();
 }
 
 static bool use_mkldnn_tf32_linear() {
@@ -604,15 +604,15 @@ mkldnn_scaled_mm(const Tensor& mat1, const Tensor& mat2,
   ideep::tensor dst = at::native::itensor_view_from_dense(out);
   auto src_desc = ideep::tensor::desc(
       src_dims,
-      get_mkldnn_dtype(mat1.scalar_type()),
+      get_onednn_dtype(mat1.scalar_type()),
       ideep::format_tag::any);
   auto weights_desc = ideep::tensor::desc(
       weight_dims,
-      get_mkldnn_dtype(mat2.scalar_type()),
+      get_onednn_dtype(mat2.scalar_type()),
       ideep::format_tag::any);
   auto dst_desc = ideep::tensor::desc(
       dst_dims,
-      get_mkldnn_dtype(out.scalar_type()),
+      get_onednn_dtype(out.scalar_type()),
       ideep::format_tag::any);
   ideep::tensor onednn_bias;
   if (with_bias) {
@@ -627,7 +627,7 @@ mkldnn_scaled_mm(const Tensor& mat1, const Tensor& mat2,
   auto bias_desc = ideep::tensor::desc();
   if (with_bias) {
     bias_desc = ideep::tensor::desc(onednn_bias.get_dims(),
-                        get_mkldnn_dtype(bias.value().scalar_type()),
+                        get_onednn_dtype(bias.value().scalar_type()),
                         ideep::format_tag::any);
   }
   auto op_attr = ideep::attr_t();
