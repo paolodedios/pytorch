@@ -2247,6 +2247,41 @@ class CUDACtxManagerTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(pool.use_count(), 1)
 
     @requires_cuda_and_triton
+    def test_cuda_use_mem_pool_stream_order_inductor(self):
+        from torch._inductor.utils import run_and_get_code
+
+        torch.cuda.empty_cache()
+
+        def pool_outer(pool, stream, inp):
+            with torch.cuda.use_mem_pool(pool):
+                with torch.cuda.stream(stream):
+                    return inp + 1
+
+        def stream_outer(pool, stream, inp):
+            with torch.cuda.stream(stream):
+                with torch.cuda.use_mem_pool(pool):
+                    return inp + 2
+
+        inp = torch.ones(16, device="cuda")
+        stream = torch.cuda.Stream()
+        for fn in (pool_outer, stream_outer):
+            with self.subTest(fn=fn.__name__):
+                pool = torch.cuda.MemPool()
+                expected = fn(pool, stream, inp)
+                actual, source_codes = run_and_get_code(
+                    torch.compile(fn, fullgraph=True), pool, stream, inp
+                )
+                torch.cuda.synchronize()
+                self.assertEqual(actual, expected)
+                self.assertGreater(len(torch.cuda.memory.memory_snapshot(pool.id)), 0)
+                self.assertEqual(pool.use_count(), 1)
+
+                source = "\n".join(source_codes)
+                mempool_enter = source.index("with torch.cuda.use_mem_pool(")
+                stream_enter = source.index("with stream")
+                self.assertLess(mempool_enter, stream_enter)
+
+    @requires_cuda_and_triton
     @unittest.skipIf(torch.cuda.device_count() < 2, "requires multiple cuda devices")
     def test_cuda_use_mem_pool_device_none_resolves_at_entry_inductor(self):
         torch.cuda.empty_cache()

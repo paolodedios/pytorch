@@ -160,7 +160,7 @@ def _transfer_meta(
 
     # Transfer metadata after pattern matching occurs.
     # Copies _COPY_META_FIELDS, stack_trace, and (if missing) val/tensor_meta.
-    if config.trace.provenance_tracking_level == 1:
+    if config.effective_provenance_tracking_level() == 1:
         new_from_node = new_meta.get("from_node", []).copy()
         new_from_node.append(NodeSource(old_node, pass_name, NodeSourceAction.REPLACE))
         new_meta.update(
@@ -216,6 +216,9 @@ def _common_custom_context(nodes: Sequence[torch.fx.Node]) -> dict[str, Any]:
 def _merge_custom_context(
     new_meta: dict[str, Any], custom_context: dict[str, Any]
 ) -> None:
+    # Replacement nodes inherit user stream/mempool context only at explicit
+    # graph transform hooks. Other transforms must preserve meta["custom"] or
+    # avoid moving context-tagged values across boundaries.
     if not custom_context:
         return
     custom = new_meta.setdefault("custom", {})
