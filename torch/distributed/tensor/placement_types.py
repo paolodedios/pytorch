@@ -1316,13 +1316,22 @@ class _StridedShard(torch._C._distributed.StridedShard):
             # - first_chunk_size % num_chunks != 0 means uneven second-level split
             #   (e.g., 6 rows, sf=2, 8 ranks: first_chunk=3, but only 3 of 8 ranks
             #   get data per first-level chunk, so ranks 3-7 have size-0 tensors)
-            has_partial_chunk = remainder > 0
+            # Resolve data-dependent predicates conservatively (assume padding
+            # when evenness can't be proven) so unbacked symints don't trigger
+            # data-dependent guards.
+            from torch.fx.experimental.symbolic_shapes import guard_or_true
+
+            has_partial_chunk = guard_or_true(remainder > 0)
             num_empty_chunks = (
                 split_factor - num_full_first_chunks - (1 if has_partial_chunk else 0)
             )
-            has_uneven_second_level = first_chunk_size % num_chunks != 0
+            has_uneven_second_level = not _hint_proves_even_shard(
+                first_chunk_size, num_chunks
+            )
             needs_padding_on_dim = (
-                has_partial_chunk or num_empty_chunks > 0 or has_uneven_second_level
+                has_partial_chunk
+                or guard_or_true(num_empty_chunks > 0)
+                or has_uneven_second_level
             )
 
             # Second level: each first-level chunk is split into num_chunks pieces
@@ -1334,7 +1343,9 @@ class _StridedShard(torch._C._distributed.StridedShard):
                 max_chunk_size += _ceil_div(remainder, num_chunks)
         else:
             # Compute padding info for normal shard, no split_factor impact.
-            needs_padding_on_dim = logical_size_on_dim % num_chunks != 0
+            needs_padding_on_dim = not _hint_proves_even_shard(
+                logical_size_on_dim, num_chunks
+            )
             max_chunk_size = _ceil_div(logical_size_on_dim, num_chunks)
 
         return (
