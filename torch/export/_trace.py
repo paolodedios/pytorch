@@ -500,7 +500,7 @@ def _restore_get_attr_targets_from_dynamo_metadata(
         original_fqn = flat_name_to_original_fqn[node.target]
         try:
             torch.fx.graph_module._get_attr(gm, original_fqn)
-        except AttributeError:
+        except (AttributeError, AssertionError):
             continue
         node.target = original_fqn
         changed = True
@@ -583,9 +583,19 @@ def _remove_extra_duplicate_user_inputs(
             continue
 
         if user_input_index >= len(flat_fake_args):
+            node_source = getattr(node, "_dynamo_source", None)
             for base_node in reversed(prior_user_placeholders):
+                base_source = getattr(base_node, "_dynamo_source", None)
                 if _compatible_tensor_values(
                     base_node.meta.get("val"), node.meta.get("val")
+                ) and (
+                    node_source is None
+                    or node_source == base_source
+                    or _same_tensor_value_or_source(
+                        base_node.meta.get("val"),
+                        node.meta.get("val"),
+                        node_source,
+                    )
                 ):
                     node.replace_all_uses_with(base_node)
                     gm.graph.erase_node(node)
@@ -753,19 +763,24 @@ def _tracked_fake_source_for_value(value: Any) -> Source | None:
     return None
 
 
+def _source_key(source: Source | None) -> str | None:
+    if source is None:
+        return None
+    # Equivalent Source objects can be rebuilt through different export paths
+    # and fail object equality; the rendered source name is stable for matching.
+    return source.name
+
+
 def _same_tensor_value_or_source(
     lhs: Any,
     rhs: Any,
     source: Source | None,
 ) -> bool:
-    if lhs is rhs:
-        return True
     if source is None:
         return False
-    return (
-        _tracked_fake_source_for_value(lhs) == source
-        and _tracked_fake_source_for_value(rhs) == source
-    )
+    return _source_key(_tracked_fake_source_for_value(lhs)) == _source_key(
+        source
+    ) and _source_key(_tracked_fake_source_for_value(rhs)) == _source_key(source)
 
 
 def _source_from_public_input_path(path) -> Source | None:
@@ -823,7 +838,7 @@ def _tracked_fake_for_source(symint: torch.SymInt, source: Source) -> Any | None
 
 def _tracked_fake_for_source_in_shape_env(shape_env: Any, source: Source) -> Any | None:
     for tracked_fake in getattr(shape_env, "tracked_fakes", None) or ():
-        if tracked_fake.source == source:
+        if _source_key(tracked_fake.source) == _source_key(source):
             return tracked_fake.fake
     return None
 
@@ -855,6 +870,7 @@ def _module_attr_fqn_from_source(source: Source) -> tuple[str, str] | None:
         path = module_path(source.base.base)
         if path is not None:
             return source.base.member, ".".join((*path, source.index))
+        log.debug("Could not recover module attribute FQN from source %s", source)
     return None
 
 
@@ -884,9 +900,13 @@ def _unlift_symbolic_placeholders(
     placeholders_by_name = {node.name: node for node in placeholders}
     input_name_to_source = dict(zip(graph_signature.user_inputs, aot_input_sources))
     source_to_input_name = {
-        source: name
+        _source_key(source): name
         for name, source in input_name_to_source.items()
         if source is not None
+    }
+    source_key_to_public_input_value = {
+        _source_key(source): value
+        for source, value in source_to_public_input_value.items()
     }
     module_attr_input_names: set[str] = set()
 
@@ -940,15 +960,16 @@ def _unlift_symbolic_placeholders(
         node._dynamo_source = source  # type: ignore[attr-defined]
         placeholders_by_name[node.name] = node
         input_name_to_source[node.name] = source
-        source_to_input_name[source] = node.name
+        source_to_input_name[_source_key(source)] = node.name
         if not record_module_attr_input(node.name, source):
             reintroduced_user_inputs.append(node.name)
 
     for source in public_input_sources:
-        if source in source_to_input_name:
+        if _source_key(source) in source_to_input_name:
             continue
-        if source in source_to_public_input_value:
-            reintroduce_user_input(source, source_to_public_input_value[source])
+        source_key = _source_key(source)
+        if source_key in source_key_to_public_input_value:
+            reintroduce_user_input(source, source_key_to_public_input_value[source_key])
 
     for node_name, source in list(input_name_to_source.items()):
         if not isinstance(source, TensorPropertySource):
@@ -958,7 +979,7 @@ def _unlift_symbolic_placeholders(
         if node is None or not isinstance(node.meta.get("val"), torch.SymInt):
             continue
 
-        base_node_name = source_to_input_name.get(source.base)
+        base_node_name = source_to_input_name.get(_source_key(source.base))
         base_node = (
             placeholders_by_name.get(base_node_name)
             if base_node_name is not None
@@ -967,13 +988,17 @@ def _unlift_symbolic_placeholders(
         if base_node is None:
             base_value = _tracked_fake_for_source(node.meta["val"], source.base)
             if base_value is None:
-                base_value = source_to_public_input_value.get(source.base)
+                base_value = source_key_to_public_input_value.get(
+                    _source_key(source.base)
+                )
             if not isinstance(base_value, torch.Tensor):
                 raise AssertionError(
                     f"Could not find tensor input for lifted source {source.name}"
                 )
             reintroduce_user_input(source.base, base_value)
-            base_node = placeholders_by_name[source_to_input_name[source.base]]
+            base_node = placeholders_by_name[
+                source_to_input_name[_source_key(source.base)]
+            ]
 
         if node.users:
             if source.prop is TensorProperty.SIZE:
@@ -1009,13 +1034,13 @@ def _unlift_symbolic_placeholders(
     # inputs with source metadata remain distinct even if their static tensor
     # metadata matches.
     for source in public_input_sources:
-        base_node_name = source_to_input_name.get(source)
+        base_node_name = source_to_input_name.get(_source_key(source))
         if base_node_name is None:
             continue
         base_node = placeholders_by_name.get(base_node_name)
         if base_node is None or base_node.users:
             continue
-        public_value = source_to_public_input_value.get(source)
+        public_value = source_key_to_public_input_value.get(_source_key(source))
         for node in list(gm.graph.find_nodes(op="placeholder")):
             node_value = node.meta.get("val")
             if (
@@ -1032,11 +1057,11 @@ def _unlift_symbolic_placeholders(
             removed_placeholders.add(node.name)
             break
 
-    public_input_source_set = set(public_input_sources)
+    public_input_source_set = {_source_key(source) for source in public_input_sources}
     preceding_public_placeholders: list[torch.fx.Node] = []
     for node in list(gm.graph.find_nodes(op="placeholder")):
         source = input_name_to_source.get(node.name)
-        if source in public_input_source_set:
+        if _source_key(source) in public_input_source_set:
             preceding_public_placeholders.append(node)
             continue
         if (
@@ -1065,14 +1090,18 @@ def _unlift_symbolic_placeholders(
         ]
         remaining_user_inputs.extend(reintroduced_user_inputs)
         if public_input_sources:
-            source_to_user_input_names: dict[Source, list[str]] = {}
+            source_to_user_input_names: dict[str | None, list[str]] = {}
             for name in remaining_user_inputs:
                 source = input_name_to_source[name]
-                source_to_user_input_names.setdefault(source, []).append(name)
+                source_to_user_input_names.setdefault(_source_key(source), []).append(
+                    name
+                )
 
             ordered_user_inputs = []
             for source in public_input_sources:
-                ordered_user_inputs.extend(source_to_user_input_names.pop(source, []))
+                ordered_user_inputs.extend(
+                    source_to_user_input_names.pop(_source_key(source), [])
+                )
             for name in remaining_user_inputs:
                 if name not in ordered_user_inputs:
                     ordered_user_inputs.append(name)

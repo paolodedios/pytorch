@@ -551,7 +551,7 @@ def restore_get_attr_targets(graph_module: torch.fx.GraphModule) -> None:
         original_fqn = flat_name_to_original_fqn[node.target]
         try:
             torch.fx.graph_module._get_attr(graph_module, original_fqn)
-        except AttributeError:
+        except (AttributeError, AssertionError):
             continue
         node.target = original_fqn
         changed = True
