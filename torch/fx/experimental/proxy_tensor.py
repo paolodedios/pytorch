@@ -1175,6 +1175,41 @@ def _coor_current_accelerator() -> torch.device | None:
     return torch.device(acc.type, torch.accelerator.current_device_index())
 
 
+def _coor_current_device() -> torch.device:
+    """The current accelerator as a fully-specialized indexed device (e.g. cuda:0).
+
+    Runtime target of the compile-on-one-rank device node: each rank resolves it to its
+    own current device when the graph runs (cuda:0 on rank 0, cuda:3 on rank 3). Unlike
+    ``torch.accelerator.current_accelerator()`` (type only, index None) it carries the
+    concrete index, so consuming factory/cast ops -- and inductor -- get a fully specified
+    device rather than relying on index-None resolution.
+    """
+    cur = _coor_current_accelerator()
+    assert cur is not None, "compile-on-one-rank requires an accelerator"
+    return cur
+
+
+# The compile-on-one-rank device node is a registered op (an OpOverload) rather than a bare
+# function, so it is a standard, serializable call_function target: precompile/export
+# serialize ops by schema, and the strip pass / consumers match a stable op identity. It
+# only reads torch.accelerator, so it lives here in core fx (no torch.distributed coupling).
+torch.library.define(
+    "coor::current_device",
+    "() -> Device",
+    tags=torch.Tag.pt2_compliant_tag,
+)
+
+
+@torch.library.impl("coor::current_device", "CompositeExplicitAutograd")
+def _coor_current_device_impl() -> torch.device:
+    return _coor_current_device()
+
+
+@torch.library.register_fake("coor::current_device")
+def _coor_current_device_fake() -> torch.device:
+    return _coor_current_device()
+
+
 def _coor_match_current_accelerator(
     device: torch.device, cur: torch.device | None
 ) -> bool:
@@ -1205,32 +1240,32 @@ def _coor_match_current_accelerator(
 
 
 def _current_accelerator_edge(tracer: _ProxyTracer, device: torch.device) -> Proxy:
-    """Return a per-graph ``torch.accelerator.current_accelerator()`` proxy for CooR.
+    """Return a per-graph ``coor::current_device`` proxy for CooR.
 
     Under compile-on-one-rank we replace a baked accelerator device operand (e.g.
     ``device(type='cuda', index=0)`` or a bare ``device(type='cuda')``) with a reference
-    to a single ``current_accelerator()`` node. At runtime that node yields the running
-    process's accelerator device (index None) and factory/cast ops resolve the concrete
-    index from the current device -- so the graph follows each rank's current accelerator
-    rather than a baked, rank-specific device. Cached once per graph.
+    to a single ``torch.ops.coor.current_device`` node. At runtime that node yields the
+    running process's fully-specialized accelerator device (cuda:0 on rank 0, cuda:3 on
+    rank 3) -- so the graph follows each rank's current accelerator rather than a baked,
+    rank-specific device. Cached once per graph.
 
-    Device-agnosticism is a property of this *operand* only. ``node.meta["val"]`` is set
-    to the node's faithful trace-time return (the accelerator type, index None); like
-    every fake-tensor val in the graph it is inherently trace-machine-relative (a
-    ``torch.device`` always carries a type), so a graph fingerprint must ignore device
-    identities in ``meta`` rather than rely on them.
+    The node *call* is identical across ranks (a rank-agnostic operand); only its runtime
+    return -- and ``node.meta["val"]``, the trace machine's specialized device -- varies,
+    so ``.code`` matches across ranks. Like every fake-tensor val, ``meta``/print_readable
+    carry a concrete device, so a graph fingerprint must ignore device identities in
+    ``meta`` rather than rely on them.
 
     Assumes each rank has set its current device (the standard CooR runtime contract).
-    NOTE: ``current_accelerator()`` as an FX node target is novel; a consumer that lowers
-    this graph (e.g. inductor) must handle a device-returning ``call_function`` node.
+    NOTE: a consumer that lowers this graph (e.g. inductor) cannot represent a
+    device-returning op, so it must strip this node before lowering.
     """
     cached = tracer._current_accelerator_node
     if cached is not None:
         return cached
     edge = tracer.create_proxy(
-        "call_function", torch.accelerator.current_accelerator, (), {}
+        "call_function", torch.ops.coor.current_device.default, (), {}
     )
-    edge.node.meta["val"] = torch.device(device.type)
+    edge.node.meta["val"] = _coor_current_device()
     tracer._current_accelerator_node = edge
     return edge
 

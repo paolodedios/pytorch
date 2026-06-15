@@ -259,11 +259,10 @@ def _indexed_cuda_device_nodes(gm):
 
 def _current_accelerator_nodes(gm):
     """Nodes that fetch the current accelerator device in-graph."""
-    return [
-        n
-        for n in gm.graph.nodes
-        if n.op == "call_function" and n.target is torch.accelerator.current_accelerator
-    ]
+    import torch.fx.experimental.proxy_tensor
+
+    target = torch.ops.coor.current_device.default
+    return [n for n in gm.graph.nodes if n.op == "call_function" and n.target is target]
 
 
 class TestCompileOnOneRankDeviceAsParameter(TestCase):
@@ -393,6 +392,23 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
                 RuntimeError, "index differs from the current accelerator"
             ):
                 make_fx(f, tracing_mode="fake")(torch.randn(2, device="cuda:0"))
+
+    @unittest.skipIf(torch.cuda.device_count() < 2, "requires >= 2 GPUs")
+    @dist_config.patch(compile_on_one_rank=True)
+    def test_graph_code_identical_across_devices(self):
+        # The functional FX graph text (.code) must be byte-identical across ranks: the
+        # device operand is the current_accelerator() node, never a baked cuda:N. (.code
+        # carries no per-tensor device annotations, so it stays clean while the tensor meta
+        # remains on its real cuda:N device.)
+        def code_on(dev):
+            with torch.cuda.device(dev):
+                return make_fx(_factory_from_input_device, tracing_mode="fake")(
+                    torch.randn(2, 8, device=f"cuda:{dev}")
+                ).code
+
+        code0, code1 = code_on(0), code_on(1)
+        self.assertEqual(code0, code1)
+        self.assertNotIn("cuda:", code0)
 
 
 if __name__ == "__main__":
