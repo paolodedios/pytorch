@@ -65,6 +65,12 @@ _PARTIAL_PASS_THROUGH_REDUCE_OPS = ("sum", "avg", "min", "max")
 def propagate_single_input_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Propagate placements for ops with one tensor input.
+
+    This is the single-dim form of the old one-to-one OpStrategy: a sharded
+    input dim produces the same sharded output dim. Supported Partial
+    placements are also forwarded with the same pending reduction.
+    """
     input_meta = cast(TensorMeta, args_schema[0])
     strategies: list[list[Placement | _ShardingPlaceholder]] = [
         [_ShardingPlaceholder(dim), _ShardingPlaceholder(dim)]
@@ -123,6 +129,14 @@ def _to_copy_single_dim_strategy(
 def equal_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Require both tensor operands to use the same non-partial layout.
+
+    equal/is_same_size compare corresponding local shards, so mismatched
+    shardings would compare different global elements. Partial inputs must use
+    the implicit Replicate fallback because comparing unreduced partial values
+    would be invalid. If either operand is scalar, no sharded rows are
+    produced and the implicit Replicate rule is used.
+    """
     self_meta = cast(TensorMeta, args_schema[0])
     other_meta = cast(TensorMeta, args_schema[1])
     return [
@@ -169,6 +183,10 @@ register_single_dim_strategy(
 def create_like_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    # These factory-like ops create tensors with the input shape but with
+    # content independent of the input. Sharding can follow the input, but a
+    # Partial input maps to a Replicate output so generated values are not
+    # reduced as if they were accumulated partials.
     input_meta = cast(TensorMeta, args_schema[0])
     kw_names = [k for k, v in kwargs_schema.items() if isinstance(v, TensorMeta)]
     strategies: list[list[Placement | _ShardingPlaceholder]] = []
@@ -200,6 +218,9 @@ def create_like_single_dim_strategy(
 def new_factory_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    # Replicated output is always legal and is inserted by the single-dim
+    # infra. If input and output have the same shape, sharded inputs can also
+    # propagate to the new tensor.
     input_meta = cast(TensorMeta, args_schema[0])
     output_shape = cast(Sequence[object], args_schema[1])
     same_shape = tuple(input_meta.shape) == tuple(output_shape)
@@ -212,6 +233,10 @@ def new_factory_single_dim_strategy(
         else:
             strategies.append([Replicate(), placement])
 
+    # Uninitialized factories (new_empty*) can propagate Partial when the shape
+    # matches because the storage is expected to be overwritten later, e.g.
+    # autograd's new_empty_strided + copy_ path. Initialized factories keep a
+    # Replicate output for Partial inputs to avoid reducing generated constants.
     if op in (aten.new_empty.default, aten.new_empty_strided.default):
         for reduce_op in _PARTIAL_PASS_THROUGH_REDUCE_OPS:
             if same_shape:
@@ -264,6 +289,12 @@ def bucketize_single_dim_strategy(
 def select_int_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Forward all shardings except the selected dimension.
+
+    select removes selected_dim. A shard before that dim keeps its output dim;
+    a shard after it shifts left by one. If selected_dim is sharded, the
+    strategy search must pick a replicated/resharded fallback.
+    """
     input_meta = cast(TensorMeta, args_schema[0])
     selected_dim = normalize_dim(cast(int, args_schema[1]), len(input_meta.shape))
 
@@ -287,6 +318,7 @@ def select_int_single_dim_strategy(
 def select_backward_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Inverse of select: insert the selected dimension into the output layout."""
     grad_meta = cast(TensorMeta, args_schema[0])
     input_sizes = cast(Sequence[object], args_schema[1])
     dim = normalize_dim(cast(int, args_schema[2]), len(input_sizes))
@@ -311,6 +343,12 @@ def select_backward_single_dim_strategy(
 def slice_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Forward shardings except on the sliced dimension.
+
+    A nontrivial slice changes offsets along slice_dim, so a local shard on
+    that dimension cannot be forwarded without extra global index handling. A
+    statically full slice is just a view and can keep that sharding.
+    """
     defaults = (None, 0, None, None, 1)
     input_meta, dim, start, end, step = args_schema + defaults[len(args_schema) :]
     if not isinstance(input_meta, TensorMeta):
@@ -358,6 +396,7 @@ def slice_single_dim_strategy(
 def slice_backward_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Forward grad shardings except along the original sliced dimension."""
     grad_output_meta = args_schema[0]
     input_sizes = args_schema[1]
     dim = args_schema[2]
@@ -387,6 +426,13 @@ def slice_backward_single_dim_strategy(
 def slice_scatter_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Let input, src, and output follow each other off the scatter dimension.
+
+    slice_scatter replaces a slice of self with src. Non-slice dimensions have
+    matching extents and can be sharded locally; the slice dimension stays
+    replicated via fallback because local slice coordinates would otherwise
+    depend on global offsets.
+    """
     defaults = (None, None, 0)
     input_meta, src_meta, dim = args_schema[:3] + defaults[len(args_schema[:3]) :]
     if not isinstance(input_meta, TensorMeta):
@@ -407,6 +453,8 @@ def slice_scatter_single_dim_strategy(
                     _ShardingPlaceholder(dim),
                 ]
             )
+    # Replacement is pointwise by position, so matching Partial placements pass
+    # through for the supported reductions.
     for reduce_op in _PARTIAL_PASS_THROUGH_REDUCE_OPS:
         strategies.append(
             [
@@ -486,6 +534,7 @@ def diagonal_scatter_single_dim_strategy(
 def local_scalar_dense_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Only allow replication on the input; the output is a local scalar."""
     return []
 
 
@@ -501,6 +550,17 @@ def local_scalar_dense_single_dim_strategy(
 def scatter_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Sharding strategy for scatter/scatter_ value and src overloads.
+
+    scatter writes along the dim argument, so that tensor axis must stay
+    replicated. Any other axis can be sharded only if every tensor operand has
+    the same size on it; then each rank scatters into its local slice with no
+    communication.
+
+    Rows are [output, input, index] for scalar value overloads and
+    [output, input, index, src] when src is a tensor. The all-Replicate
+    fallback is inserted by the single-dim strategy infra.
+    """
     input_meta, dim, index_meta = args_schema[:3]
     if not isinstance(input_meta, TensorMeta):
         raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
@@ -513,6 +573,8 @@ def scatter_single_dim_strategy(
     index_shape = index_meta.shape
     scatter_dim = normalize_dim(dim, len(input_shape))
 
+    # The scalar value overloads carry no src tensor. scatter.src can also
+    # receive a Python number, so only TensorMeta creates a src placement slot.
     src_meta = args_schema[3] if len(args_schema) > 3 else None
     has_tensor_src = isinstance(src_meta, TensorMeta)
     src_shape = src_meta.shape if has_tensor_src else None
@@ -521,6 +583,7 @@ def scatter_single_dim_strategy(
     strategies: list[list[Placement | _ShardingPlaceholder]] = []
     if len(input_shape) == len(index_shape):
         for d in range(len(input_shape)):
+            # Shard a non-scatter axis only when input/index/src shards align.
             if d == scatter_dim or input_shape[d] != index_shape[d]:
                 continue
             if src_shape is not None and (
@@ -538,6 +601,11 @@ def scatter_single_dim_strategy(
 def scatter_add_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Shard scatter_add only on non-scatter axes with aligned sizes.
+
+    Placement rows are [output, input, index, src]. The scatter axis stays
+    replicated because indices address the full extent of that dimension.
+    """
     input_meta, dim, index_meta = args_schema[:3]
     if not isinstance(input_meta, TensorMeta):
         raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
@@ -562,6 +630,7 @@ def scatter_add_single_dim_strategy(
 def gather_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Sharding strategy for gather with rows [output, input, index]."""
     input_meta, dim, index_meta = args_schema[:3]
     if not isinstance(input_meta, TensorMeta):
         raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
@@ -574,6 +643,9 @@ def gather_single_dim_strategy(
     gather_dim = normalize_dim(dim, len(input_shape))
 
     strategies: list[list[Placement | _ShardingPlaceholder]] = []
+    # Input sharded on gather_dim: only valid when index has size 1 on that
+    # dim. Index/output use a mask partial so reducing combines the local
+    # gather results into the requested global value.
     if (
         len(input_shape) > 0
         and gather_dim < len(index_shape)
@@ -582,9 +654,12 @@ def gather_single_dim_strategy(
         mask_partial = _MaskPartial(offset_shape=input_shape, offset_dim=gather_dim)
         strategies.append([mask_partial, Shard(gather_dim), mask_partial])
 
+    # Index sharded on gather_dim: input must be replicated because each rank
+    # may request values from the full input; output follows index.
     if len(input_shape) > 0 and gather_dim < len(index_shape):
         strategies.append([Shard(gather_dim), Replicate(), Shard(gather_dim)])
 
+    # Any non-gather dimension can be sharded across all tensors.
     if len(input_shape) == len(index_shape):
         for d in range(len(input_shape)):
             if d != gather_dim:
@@ -731,8 +806,16 @@ def stack_strategy(op_schema: OpSchema) -> StrategyType:
 def cat_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Forward cat input placements except along the concatenation dimension.
+
+    Concatenation changes only cat_dim; sharding there needs redistribution, so
+    this rule offers non-cat dims and leaves the replicate fallback to the
+    single-dim infra. Legacy 1-D empty tensors have no real cat layout, so they
+    stay Replicate while non-empty tensors follow the output placement.
+    """
     input_list = args_schema[0]
-    # unfortunate naming, but yes it's a TensorList input, and we represent it as a tuple of TensorMeta
+    # Unfortunate naming, but yes it's a TensorList input, and we represent it
+    # as a tuple of TensorMeta.
     if not isinstance(input_list, (tuple, list)):
         raise AssertionError(type(input_list))
     if not all(isinstance(tm, TensorMeta) for tm in input_list):
@@ -1110,6 +1193,12 @@ def index_reduce_single_dim_strategy(
 def split_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Forward all shardings except the split dimension.
+
+    Splitting a sharded split_dim would require each output chunk to know
+    global chunk boundaries, so the single-dim rule excludes that dim and
+    relies on the redistribute-to-replicate fallback.
+    """
     input_meta = args_schema[0]
     split_size_or_sections = args_schema[1]
     if not isinstance(input_meta, TensorMeta):
@@ -1170,6 +1259,7 @@ def gen_unbind_strategy(op_schema: OpSchema) -> StrategyType:
                 "It cannot be performed without redistribution, which is disallowed "
                 "by the current operator.",
             )
+        # Only add the strategy if the unbind dim is not sharded.
         output_placements = shift_shard_dims_after_remove(
             arg_spec.placements, unbind_dim
         )
@@ -1196,6 +1286,11 @@ def gen_unbind_strategy(op_schema: OpSchema) -> StrategyType:
 def eye_out_single_dim_strategy(
     op: OpOverload, args_schema: ArgsType, kwargs_schema: KwargsType
 ) -> list[list[Placement | _ShardingPlaceholder]]:
+    """Strategy for torch.eye(..., out=...).
+
+    The out kwarg is both an input and output tensor, so the result placement
+    is determined by the out tensor placement.
+    """
     out_meta = kwargs_schema["out"]
     if not isinstance(out_meta, TensorMeta):
         raise AssertionError(f"Expected TensorMeta for out, got {type(out_meta)}")
