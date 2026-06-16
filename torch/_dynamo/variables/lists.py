@@ -61,8 +61,8 @@ from .object_protocol import (
     pyindex_check,
     type_implements_nb_index,
     validate_sequence_index,
-    vt_is_iterable,
     vt_as_ssize_t,
+    vt_is_iterable,
 )
 
 
