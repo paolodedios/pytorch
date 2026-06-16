@@ -69,6 +69,18 @@ py::dict ExtraState::get_guard_lookup_stats() const {
       this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->actual_partial_shadow_passes;
+  stats["actual_partial_hit"] =
+      this->last_success_receipt == nullptr
+      ? 0
+      : this->last_success_receipt->actual_partial_hit;
+  stats["actual_partial_miss"] =
+      this->last_success_receipt == nullptr
+      ? 0
+      : this->last_success_receipt->actual_partial_miss;
+  stats["slow_guard_fallback"] =
+      this->last_success_receipt == nullptr
+      ? 0
+      : this->last_success_receipt->slow_guard_fallback;
   return stats;
 }
 
@@ -79,6 +91,9 @@ void ExtraState::reset_guard_lookup_stats() {
     return;
   }
   this->last_success_receipt->actual_partial_shadow_passes = 0;
+  this->last_success_receipt->actual_partial_hit = 0;
+  this->last_success_receipt->actual_partial_miss = 0;
+  this->last_success_receipt->slow_guard_fallback = 0;
   this->last_success_receipt->actual_partial_state =
       torch::dynamo::GuardPartialMemoState::Training;
   this->last_success_receipt->actual_partial_stability_tokens.clear();

@@ -575,6 +575,9 @@ num_guards_executed=0)
         self.assertEqual(stats["actual_partial_shadow_passes"], 0)
         self.assertEqual(stats["actual_partial_candidate"], 0)
         self.assertEqual(stats["actual_partial_token_count"], 0)
+        self.assertEqual(stats["actual_partial_hit"], 0)
+        self.assertEqual(stats["actual_partial_miss"], 0)
+        self.assertEqual(stats["slow_guard_fallback"], 0)
 
     def test_guard_lookup_stats_reject_stale_extra_state(self):
         def fn(x):
@@ -739,6 +742,83 @@ num_guards_executed=0)
             stats["actual_partial_token_count"],
             stats["actual_partial_candidate"],
         )
+
+    def test_token_plan_fast_hit_skips_self_modules_subtree(self):
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {"block": {}},
+            default_mgr_enum,
+        ).dict_getitem_manager(
+            "block",
+            "L['self']._modules['block']",
+            {},
+            default_mgr_enum,
+        ).add_dict_length_check_guard(
+            {}, ["len(block) == 0"]
+        )
+
+        stats = guards._debug_check_guard_lookup_receipt(
+            guard_manager, {"mods": {"block": {}}}, 4
+        )
+
+        self.assertTrue(stats["result"])
+        self.assertGreater(stats["actual_partial_hit"], 0)
+        self.assertEqual(stats["actual_partial_miss"], 0)
+        self.assertEqual(stats["slow_guard_fallback"], 0)
+        self.assertGreater(stats["actual_partial_enabled"], 0)
+
+    def test_token_plan_miss_falls_back_to_slow_guard(self):
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {},
+            default_mgr_enum,
+        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+
+        stats = guards._debug_check_guard_lookup_receipt_sequence(
+            guard_manager,
+            [
+                {"mods": {}},
+                {"mods": {}},
+                {"mods": {}},
+                {"mods": {"extra": object()}},
+            ],
+        )
+
+        self.assertFalse(stats["result"])
+        self.assertGreater(stats["actual_partial_miss"], 0)
+        self.assertGreater(stats["slow_guard_fallback"], 0)
+
+    def test_token_plan_fast_hit_preserves_other_guards(self):
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {},
+            default_mgr_enum,
+        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+        guard_manager.dict_getitem_manager(
+            "x",
+            "L['x']",
+            1,
+            default_mgr_enum,
+        ).add_equals_match_guard(1, ["x == 1"])
+
+        stats = guards._debug_check_guard_lookup_receipt_sequence(
+            guard_manager,
+            [
+                {"mods": {}, "x": 1},
+                {"mods": {}, "x": 1},
+                {"mods": {}, "x": 1},
+                {"mods": {}, "x": 2},
+            ],
+        )
+
+        self.assertFalse(stats["result"])
+        self.assertGreater(stats["actual_partial_hit"], 0)
 
     def test_dict_getitem_accessor(self):
         foo = {

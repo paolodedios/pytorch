@@ -58,6 +58,9 @@ struct GuardLastSuccessReceipt {
   PyObject* actual_partial_self_object = nullptr;
   PyTypeObject* actual_partial_self_type = nullptr;
   uint64_t actual_partial_shadow_passes = 0;
+  uint64_t actual_partial_hit = 0;
+  uint64_t actual_partial_miss = 0;
+  uint64_t slow_guard_fallback = 0;
   GuardPartialMemoState actual_partial_state =
       GuardPartialMemoState::Training;
   std::vector<GuardSubtreeEntryToken> actual_partial_stability_tokens;
