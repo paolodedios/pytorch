@@ -44,6 +44,14 @@ struct GuardSubtreeEntryToken {
   int64_t size = -1;
 };
 
+inline bool operator==(
+    const GuardSubtreeEntryToken& lhs,
+    const GuardSubtreeEntryToken& rhs) {
+  return lhs.kind == rhs.kind && lhs.object_id == rhs.object_id &&
+      lhs.type_id == rhs.type_id && lhs.version == rhs.version &&
+      lhs.size == rhs.size;
+}
+
 struct GuardLastSuccessReceipt {
   void* actual_partial_entry_key = nullptr;
   void* actual_partial_root_key = nullptr;

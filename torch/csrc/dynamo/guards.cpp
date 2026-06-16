@@ -765,6 +765,7 @@ static PyObject* dict_version(PyObject* dummy, PyObject* args) {
 struct ActiveGuardReceiptScope;
 static thread_local ActiveGuardReceiptScope* active_actual_partial_scope =
     nullptr;
+constexpr uint64_t kActualPartialShadowPassThreshold = 2;
 
 static bool is_self_modules_candidate(const std::string& source) {
   if (source == "L['self']._modules") {
@@ -809,8 +810,30 @@ struct ActiveGuardReceiptScope {
     if (receipt == nullptr || committed) {
       return;
     }
-    receipt->actual_partial_stability_tokens = pending_stability_tokens;
-    receipt->actual_partial_tokens = pending_tokens;
+    if (pending_stability_tokens.empty()) {
+      receipt->actual_partial_shadow_passes = 0;
+      receipt->actual_partial_state = GuardPartialMemoState::Training;
+      receipt->actual_partial_stability_tokens.clear();
+      receipt->actual_partial_tokens.clear();
+      committed = true;
+      return;
+    }
+
+    if (receipt->actual_partial_stability_tokens == pending_stability_tokens) {
+      ++receipt->actual_partial_shadow_passes;
+    } else {
+      receipt->actual_partial_shadow_passes = 0;
+      receipt->actual_partial_state = GuardPartialMemoState::Training;
+      receipt->actual_partial_stability_tokens = pending_stability_tokens;
+    }
+
+    if (receipt->actual_partial_shadow_passes >=
+        kActualPartialShadowPassThreshold) {
+      receipt->actual_partial_state = GuardPartialMemoState::Enabled;
+      receipt->actual_partial_tokens = receipt->actual_partial_stability_tokens;
+    } else {
+      receipt->actual_partial_tokens = pending_tokens;
+    }
     committed = true;
   }
 
@@ -5335,6 +5358,10 @@ py::dict debug_check_guard_lookup_receipt(
   stats["actual_partial_candidate"] =
       receipt->actual_partial_stability_tokens.size();
   stats["actual_partial_token_count"] = receipt->actual_partial_tokens.size();
+  stats["actual_partial_shadow_passes"] =
+      receipt->actual_partial_shadow_passes;
+  stats["actual_partial_enabled"] =
+      receipt->actual_partial_state == GuardPartialMemoState::Enabled ? 1 : 0;
   return stats;
 }
 

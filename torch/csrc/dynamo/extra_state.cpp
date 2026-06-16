@@ -65,6 +65,10 @@ py::dict ExtraState::get_guard_lookup_stats() const {
       this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->actual_partial_tokens.size();
+  stats["actual_partial_shadow_passes"] =
+      this->last_success_receipt == nullptr
+      ? 0
+      : this->last_success_receipt->actual_partial_shadow_passes;
   return stats;
 }
 
