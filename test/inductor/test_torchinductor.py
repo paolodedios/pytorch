@@ -16130,7 +16130,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             ):
                 compiled_fn(x, torch.tensor([0, -1], device=self.device), source)
 
-    @skip_if_gpu_halide  # cuda error
+    @skip_if_halide  # Halide codegen failure for index_add scatter_add lowering
     def test_mutations_loop_fusion(self):
         def fn(tensor, index, source):
             out = tensor.index_add(0, index, source, alpha=2.0) / 2

@@ -3393,19 +3393,15 @@ def _index_add(
         sym_eq(x_shape, tensor_shape),
         lambda: (
             "source tensor shape must match self tensor shape, excluding the "
-            f"specified dimension. Got self.shape = {x.shape} "
-            f"source.shape = {tensor.shape}"
+            f"specified dimension. Got self.shape = {list(x.shape)} "
+            f"source.shape = {list(tensor.shape)}"
         ),
     )
-    has_dtensor_spec = any(
-        getattr(arg, "_spec", None) is not None for arg in (x, index, tensor)
-    )
     index_bound = 1 if x.ndim == 0 else x.size(dim)
-    if not has_dtensor_spec:
-        aten._assert_async.msg(
-            torch.all((index >= 0) & (index < index_bound)),
-            "index_add(): index out of bounds",
-        )
+    aten._assert_async.msg(
+        torch.all((index >= 0) & (index < index_bound)),
+        "index_add(): index out of bounds",
+    )
     if alpha != 1:
         python_type = utils.dtype_to_type(x.dtype)
         torch._check(
@@ -3418,14 +3414,9 @@ def _index_add(
     zero_dim = x.ndim == 0
     x1 = x.unsqueeze(0) if zero_dim else x
     scatter_dim = 0 if zero_dim else dim
-    # DTensor sharding propagation traces decompositions on meta tensors tagged
-    # with _spec. Keep the old index_put lowering for that trace because its
-    # placement rules support the index_add cases covered by DTensor today.
-    # CPU low-precision dtypes also keep the old path to match eager numerics.
-    use_index_put = (
-        x.dtype == torch.complex32
-        or has_dtensor_spec
-        or (x.device.type == "cpu" and x.dtype in (torch.float16, torch.bfloat16))
+    # CPU low-precision dtypes keep the old path to match eager numerics.
+    use_index_put = x.dtype == torch.complex32 or (
+        x.device.type == "cpu" and x.dtype in (torch.float16, torch.bfloat16)
     )
     if use_index_put:
         idx = (None,) * scatter_dim + (index,)
