@@ -820,6 +820,45 @@ num_guards_executed=0)
         self.assertFalse(stats["result"])
         self.assertGreater(stats["actual_partial_hit"], 0)
 
+    def test_token_plan_unsupported_inner_leaf_falls_back(self):
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {"block": {"training": True}},
+            default_mgr_enum,
+        ).dict_getitem_manager(
+            "block",
+            "L['self']._modules['block']",
+            {"training": True},
+            default_mgr_enum,
+        ).dict_getitem_manager(
+            "training",
+            "L['self']._modules['block']['training']",
+            True,
+            default_mgr_enum,
+        ).add_equals_match_guard(
+            True, ["training == True"]
+        )
+
+        frame = {"mods": {"block": {"training": True}}}
+
+        def values():
+            yield frame
+            yield frame
+            yield frame
+            frame["mods"]["block"]["training"] = False
+            yield frame
+
+        stats = guards._debug_check_guard_lookup_receipt_sequence(
+            guard_manager, values()
+        )
+
+        self.assertFalse(stats["result"])
+        self.assertGreater(stats["actual_partial_miss"], 0)
+        self.assertGreater(stats["slow_guard_fallback"], 0)
+        self.assertEqual(stats["actual_partial_hit"], 0)
+
     def test_dict_getitem_accessor(self):
         foo = {
             "a": 1,
