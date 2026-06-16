@@ -43,7 +43,7 @@
             vector_load_index="kv_idx",
             vector_load_dim=-1
         ) | indent_except_first(2) }}
-        return tSrS_ssa
+        return tSrS_ssa.to(cutlass.Float32)
     {{ set_cute_hash("score_mod", "score") }}
     {% if SCORE_MOD_VEC_SIZE %}
     score_mod.__vec_size__ = {{SCORE_MOD_VEC_SIZE}}
