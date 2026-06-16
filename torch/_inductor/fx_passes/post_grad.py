@@ -141,15 +141,14 @@ def _chain_random_ops_for_ordering(graph: torch.fx.Graph) -> None:
     preserve_node_ordering(graph, additional_deps_map)
 
 
-def remove_current_accelerator_nodes(graph: torch.fx.Graph) -> None:
+def reject_current_device_nodes(graph: torch.fx.Graph) -> None:
     """[device-as-parameter] Reject CooR coor::current_device() nodes in inductor.
 
     Under compile_on_one_rank, make_fx rewrites a baked accelerator device operand to a
     ``coor::current_device()`` node so the FX graph is rank-agnostic. Inductor has no
     device-valued IR and cannot lower a device-returning op, so raise a clear, actionable
-    error when one reaches inductor instead of failing later with a cryptic lowering
-    assertion. A follow-up adds real support by stripping the node before lowering (this
-    function's body becomes a strip rather than a raise).
+    error instead of failing later with a cryptic lowering assertion. A follow-up adds
+    real support by stripping the node before lowering.
     """
     import torch.fx.experimental.proxy_tensor
 
@@ -219,8 +218,8 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
     )
 
     # [device-as-parameter] Reject CooR device nodes inductor can't lower (clear error).
-    GraphTransformObserver(gm, "remove_current_accelerator").apply_graph_pass(
-        remove_current_accelerator_nodes
+    GraphTransformObserver(gm, "reject_current_device").apply_graph_pass(
+        reject_current_device_nodes
     )
 
     if config.pattern_matcher:

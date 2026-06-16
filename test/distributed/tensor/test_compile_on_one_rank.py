@@ -241,7 +241,7 @@ def _indexed_cuda_device_nodes(gm):
 
     These are the rank-specific constants that make a make_fx graph non
     device-agnostic. A device-agnostic graph fetches the device in-graph (via the
-    current_accelerator() node) and so has none of these.
+    current_device() node) and so has none of these.
     """
     found = []
     for node in gm.graph.nodes:
@@ -257,10 +257,8 @@ def _indexed_cuda_device_nodes(gm):
     return found
 
 
-def _current_accelerator_nodes(gm):
-    """Nodes that fetch the current accelerator device in-graph."""
-    import torch.fx.experimental.proxy_tensor
-
+def _current_device_nodes(gm):
+    """Nodes that fetch the current device in-graph."""
     target = torch.ops.coor.current_device.default
     return [n for n in gm.graph.nodes if n.op == "call_function" and n.target is target]
 
@@ -270,7 +268,7 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
 
     Under compile_on_one_rank, a factory/cast op whose device matches the current
     accelerator (e.g. cuda:0, or a bare cuda) traces with its device= fed by a single
-    in-graph current_accelerator() node, instead of baking the concrete device. At
+    in-graph current_device() node, instead of baking the concrete device. At
     runtime the device follows each rank's current accelerator device (not any input),
     so one compiled artifact runs on each rank's real GPU without --virtual-local-rank.
     A device that is a different accelerator, or a different index of the current
@@ -279,15 +277,15 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
     @dist_config.patch(compile_on_one_rank=True)
-    def test_factory_device_replaced_with_current_accelerator(self):
+    def test_factory_device_replaced_with_current_device(self):
         gm = make_fx(_factory_from_input_device, tracing_mode="fake")(
             torch.randn(2, 8, device="cuda:0")
         )
-        ca = _current_accelerator_nodes(gm)
+        ca = _current_device_nodes(gm)
         self.assertEqual(
             len(ca), 1, "device should be fetched in-graph via a single node"
         )
-        self.assertTrue(ca[0].users, "the current_accelerator() node must be consumed")
+        self.assertTrue(ca[0].users, "the current_device() node must be consumed")
         baked = _indexed_cuda_device_nodes(gm)
         self.assertEqual(
             baked,
@@ -319,7 +317,7 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
         gm = make_fx(_factory_from_input_device, tracing_mode="fake")(
             torch.randn(2, 8, device="cuda:0")
         )
-        self.assertEqual(_current_accelerator_nodes(gm), [])
+        self.assertEqual(_current_device_nodes(gm), [])
         self.assertTrue(_indexed_cuda_device_nodes(gm))
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
@@ -327,24 +325,24 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
     def test_to_copy_explicit_device_replaced(self):
         # An explicit-device dtype cast (the SimpleFSDP mixed-precision pattern,
         # aten._to_copy with a device= kwarg) also gets its baked device rewired to
-        # the current_accelerator() node, alongside the factory-op path.
+        # the current_device() node, alongside the factory-op path.
         def f(x):
             return x.to(device="cuda:0", dtype=torch.bfloat16)
 
         gm = make_fx(f, tracing_mode="fake")(torch.randn(2, 8, device="cuda:0"))
-        self.assertEqual(len(_current_accelerator_nodes(gm)), 1)
+        self.assertEqual(len(_current_device_nodes(gm)), 1)
         self.assertEqual(_indexed_cuda_device_nodes(gm), [])
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
     @dist_config.patch(compile_on_one_rank=True)
     def test_unindexed_accelerator_device_replaced(self):
         # A bare device="cuda" (index None) matching the current accelerator is also
-        # replaced by the current_accelerator() node.
+        # replaced by the current_device() node.
         def f(x):
             return torch.zeros(4, x.shape[1], device="cuda", dtype=x.dtype)
 
         gm = make_fx(f, tracing_mode="fake")(torch.randn(2, 8, device="cuda:0"))
-        self.assertEqual(len(_current_accelerator_nodes(gm)), 1)
+        self.assertEqual(len(_current_device_nodes(gm)), 1)
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
     @dist_config.patch(compile_on_one_rank=True)
@@ -354,7 +352,7 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
             return torch.zeros(4, x.shape[1], device="cpu")
 
         gm = make_fx(f, tracing_mode="fake")(torch.randn(2, 8, device="cuda:0"))
-        self.assertEqual(_current_accelerator_nodes(gm), [])
+        self.assertEqual(_current_device_nodes(gm), [])
         cpu_ops = [
             n
             for n in gm.graph.nodes
@@ -375,7 +373,7 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
             return torch.zeros(x.shape[0], device="cuda:0")
 
         gm = make_fx(f, tracing_mode="fake")(torch.randn(2, device="cpu"))
-        self.assertEqual(len(_current_accelerator_nodes(gm)), 1)
+        self.assertEqual(len(_current_device_nodes(gm)), 1)
         self.assertEqual(_indexed_cuda_device_nodes(gm), [])
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
@@ -397,7 +395,7 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
     @dist_config.patch(compile_on_one_rank=True)
     def test_graph_code_identical_across_devices(self):
         # The functional FX graph text (.code) must be byte-identical across ranks: the
-        # device operand is the current_accelerator() node, never a baked cuda:N. (.code
+        # device operand is the current_device() node, never a baked cuda:N. (.code
         # carries no per-tensor device annotations, so it stays clean while the tensor meta
         # remains on its real cuda:N device.)
         def code_on(dev):
