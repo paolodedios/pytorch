@@ -224,6 +224,8 @@ manual_torch_name_rule_map: dict[
     "torch.manual_seed": SkipFunctionVariable,
     # https://github.com/pytorch/pytorch/issues/93501
     "torch.nn.utils.rnn.pack_padded_sequence": SkipFunctionVariable,
+    # https://github.com/pytorch/pytorch/issues/162374
+    "torch.nn.utils.rnn.pad_packed_sequence": SkipFunctionVariable,
     "torch.nn.Parameter": TorchInGraphFunctionVariable,
     "torch.nn.Buffer": TorchInGraphFunctionVariable,
     "torch._nested_tensor_from_mask": SkipFunctionVariable,
@@ -419,6 +421,9 @@ manual_torch_name_rule_map: dict[
     f"torch/testing/_internal/common_distributed.py#{TORCH_DYNAMO_RESUME_IN_PREFIX}": UserFunctionVariable,
     "torch.utils._pytree._get_node_type": PyTreeGetNodeTypeFunctionVariable,
     "torch.utils._pytree.tree_is_leaf": PyTreeTreeIsLeafFunctionVariable,
+    # torch.utils._python_dispatch is in MOD_INLINELIST; override so the handler
+    # in variables/torch.py fires instead of graph-breaking on _len_torch_dispatch_stack.
+    "torch.utils._python_dispatch._get_current_dispatch_mode_stack": TorchInGraphFunctionVariable,
     "torch._utils_internal.justknobs_check": UserFunctionVariable,
     "inspect.signature": InspectSignatureVariable,
 }
@@ -1658,7 +1663,6 @@ torch_c_binding_in_graph_functions = dict.fromkeys(
         "torch._index_put_impl_",
         "torch._indices_copy",
         "torch._int_mm",
-        "torch._int_mm.dtype",
         "torch._is_all_true",
         "torch._is_any_true",
         "torch._is_functional_tensor",
@@ -1873,7 +1877,6 @@ torch_c_binding_in_graph_functions = dict.fromkeys(
         "torch.channel_shuffle",
         "torch.cholesky_inverse",
         "torch.cholesky_solve",
-        "torch.cholesky",
         "torch.choose_qparams_optimized",
         "torch.chunk",
         "torch.clamp_",
@@ -3110,6 +3113,19 @@ def get_tensor_method() -> frozenset[Any]:
     s = set()
     for name in dir(torch.Tensor):
         method = getattr(torch.Tensor, name)
+        if (
+            isinstance(
+                method,
+                (
+                    types.MethodDescriptorType,
+                    types.WrapperDescriptorType,
+                    types.BuiltinFunctionType,
+                ),
+            )
+            and name not in disallowed_tensor_methods
+        ):
+            s.add(method)
+    for name, method in torch._C.TensorBase.__dict__.items():
         if (
             isinstance(
                 method,

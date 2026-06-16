@@ -2431,15 +2431,19 @@ def _batch_norm_no_update(
 
 @register_decomposition(aten._fused_dropout)
 @out_wrapper("out0", "out1")
-@pw_cast_for_opmath
 def _fused_dropout_decomposition(input, p, generator=None):
     if generator is not None:
         raise AssertionError(
             f"generator must be None for _fused_dropout decomposition, got {generator}"
         )
-    mask = (torch.rand_like(input) < p).to(dtype=torch.uint8)
-    res = mask.type_as(input) * input * (1.0 / p)
-    return (res, mask)
+    computation_dtype, result_dtype = utils.elementwise_dtypes(
+        input, type_promotion_kind=utils.ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
+    )
+    input_acc = input.to(computation_dtype)
+    mask = (torch.rand_like(input_acc) < p).to(dtype=torch.uint8)
+    scale = torch.scalar_tensor(1.0, dtype=computation_dtype, device=input.device) / p
+    res = mask.to(computation_dtype) * input_acc * scale
+    return (res.to(result_dtype), mask)
 
 
 @register_decomposition(aten._to_copy)
@@ -3354,12 +3358,32 @@ def _index_add(
         index.ndim <= 1,
         lambda: f"Index should have dimension 1 or 0 (got {index.ndim})",
     )
+    torch._check(
+        dim == 0 or dim < tensor.ndim,
+        lambda: (
+            f"index_add_(): Indexing dim {dim} is out of bounds of the source tensor "
+            f"with dim {tensor.ndim}"
+        ),
+    )
     index_size = index.size(0) if index.ndim == 1 else 1
     tensor_size = tensor.size(dim) if tensor.ndim > 0 else 1
     torch._check(
         tensor_size == index_size,
         lambda: f"Number of indices ({index_size}) should be equal to tensor.size(dim) ({tensor_size}), for {dim=}",
     )
+
+    def source_shape_error() -> str:
+        return (
+            "source tensor shape must match self tensor shape, excluding the specified "
+            f"dimension. Got self.shape = {list(x.shape)} source.shape = {list(tensor.shape)}"
+        )
+
+    torch._check(x.ndim == tensor.ndim, source_shape_error)
+    if x.ndim != 0:
+        for i in range(x.ndim):
+            if i != dim:
+                torch._check(x.size(i) == tensor.size(i), source_shape_error)
+
     if alpha != 1:
         python_type = utils.dtype_to_type(x.dtype)
         torch._check(
