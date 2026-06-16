@@ -13,7 +13,7 @@ from torch.testing._internal.common_distributed import (
     requires_gloo,
     skip_if_lt_x_gpu,
 )
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import IS_LINUX, run_tests, TestCase
 
 
 device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
@@ -206,7 +206,7 @@ class Dist2MultiProcessTestCase(MultiProcessTestCase):
             dtype=torch.float32,
         )
         split_sizes = [10 for _ in range(self.world_size)]
-        pg.alltoall_base(
+        pg.all_to_all_single(
             out, inp, split_sizes, split_sizes, timeout=timedelta(seconds=30)
         ).wait()
 
@@ -231,6 +231,7 @@ class Dist2MultiProcessTestCase(MultiProcessTestCase):
         else:
             self.assertEqual(subgroup, None)
 
+    @unittest.skipIf(IS_LINUX, "https://github.com/pytorch/pytorch/issues/162250")
     def test_remote_group_merge(self) -> None:
         group = self.new_group()
         subgroup_1 = group.split_group([0], timeout=timedelta(seconds=30))
