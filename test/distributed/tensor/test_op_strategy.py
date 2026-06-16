@@ -852,6 +852,26 @@ class TestOpSchemaMetaProperties(TestCase):
         self.assertEqual(indices_plc.dim, 0)
         self.assertEqual(input_plc.dim, 1)
 
+    def test_foreach_max_single_dim_strategy(self):
+        from torch.distributed.tensor._ops._math_ops import (
+            linear_reduction_single_dim_strategy,
+        )
+
+        input_meta = TensorMeta(
+            shape=torch.Size([8, 4]), stride=(4, 1), dtype=torch.float32
+        )
+
+        strategies = linear_reduction_single_dim_strategy(
+            torch.ops.aten._foreach_max.default, (input_meta,), {}
+        )
+
+        self.assertEqual(len(strategies), 3)
+        self.assertEqual(strategies[0][0], Partial("max"))
+        self.assertEqual(strategies[0][1].dim, 0)
+        self.assertEqual(strategies[1][0], Partial("max"))
+        self.assertEqual(strategies[1][1].dim, 1)
+        self.assertEqual(strategies[2], [Partial("max"), Partial("max")])
+
     def test_var_mean_single_dim_strategy(self):
         from torch.distributed.tensor._ops._math_ops import std_var_single_dim_strategy
 
