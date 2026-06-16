@@ -365,8 +365,8 @@ class Backend(str):  # noqa: SLOT000
                                            will get an instance of ``c10d::DistributedBackendOptions``, and
                                            a process group options object as defined by the backend implementation.
             device (str or list of str, optional): device type this backend
-                supports, e.g. "cpu", "cuda", etc. If `None`,
-                assuming "cpu", "cuda", and "xpu"
+                            supports, e.g. "cpu", "cuda", etc. If `None`,
+                            assuming "cpu" and the current accelerator
 
         .. note:: This support of 3rd party backend is experimental and subject to change.
 
@@ -389,15 +389,17 @@ class Backend(str):  # noqa: SLOT000
 
         # Update device capability matrix in Backend class
         if devices is None:
-            # This is more of a backward support for groups like `threaded`:
-            # assume default devices "cpu" and "cuda", but warn
             warnings.warn(
                 f"Device capability of {name} unspecified, assuming `cpu` and "
-                "`cuda` or `xpu`. Please specify it via the `devices` argument of "
+                "the current accelerator. Please specify it via the `devices` argument of "
                 "`register_backend`.",
                 stacklevel=2,
             )
-            Backend.backend_capability[name.lower()] = ["cpu", "cuda", "xpu"]
+            acc = torch.accelerator.current_accelerator()
+            if acc is not None:
+                Backend.backend_capability[name.lower()] = ["cpu", acc.type]
+            else:
+                Backend.backend_capability[name.lower()] = ["cpu", "cuda"]
         elif isinstance(devices, str):
             # Single device string specified. Simply convert to list.
             Backend.backend_capability[name.lower()] = [devices]
