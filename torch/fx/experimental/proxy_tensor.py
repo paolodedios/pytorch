@@ -604,7 +604,7 @@ def _build_proxy_for_sym_expr(
     To handle this we decompose the sympy.Expr and look for the pieces as
     inputs. But there are problems with this approach:
 
-    - We lose operation provanance: We end up figuring out where to get the
+    - We lose operation provenance: We end up figuring out where to get the
       inputs - but those may not actually be correct. If we have "s1" coming in
       from both tensor1 and tensor2 and we pick the wrong one we could end up
       keeping a tensor alive longer than intended.
@@ -2376,7 +2376,7 @@ class _ModuleStackTracer(PythonKeyTracer):
             self.module_id_cache[id(mod)].append(name)
 
         # Build a wrapper around _AttrProxy to provide the tracer. We can't
-        # store it on _AttrProxy itself beceause we mimic the underlying class
+        # store it on _AttrProxy itself because we mimic the underlying class
         # (including its attributes).
         tracer = self
 
@@ -3084,7 +3084,7 @@ def get_proxy_mode() -> ProxyTorchDispatchMode | None:
     mode = torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.PROXY)
     if not (pre_dispatch_mode is None or mode is None):
         raise AssertionError(f"pre_dispatch_mode={pre_dispatch_mode}, mode={mode}")
-    return typing.cast(ProxyTorchDispatchMode | None, pre_dispatch_mode or mode)
+    return pre_dispatch_mode or mode
 
 
 def handle_sym_dispatch(
@@ -3171,9 +3171,8 @@ def _set_unbacked_bindings(out: object, out_proxy: _NestedProxys) -> None:
     # will fail.  Very strange, it probably isn't right for them to be using
     # two fake modes there...
     fake_mode = torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FAKE)
-    if isinstance(fake_mode, FakeTensorMode) and fake_mode.shape_env:
-        symbol_to_path = compute_unbacked_bindings(fake_mode.shape_env, out)
-        if symbol_to_path:
+    if fake_mode and fake_mode.shape_env:
+        if symbol_to_path := compute_unbacked_bindings(fake_mode.shape_env, out):
             if not isinstance(out_proxy, Proxy):
                 raise AssertionError(f"Expected Proxy, got {out_proxy}")
             out_proxy.node.meta["unbacked_bindings"] = symbol_to_path
