@@ -4741,6 +4741,23 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         with self.assertRaises(torch._dynamo.exc.Unsupported):
             torch.compile(func, backend="eager", fullgraph=True)(x)
 
+    @requires_cuda
+    def test_tensor_set_data_cross_device_placeholder_metadata(self):
+        backend = torch._dynamo.testing.EagerAndRecordGraphs()
+
+        def func(x):
+            x.data = x.data.to("cuda")
+            return x + 1
+
+        x = torch.randn(4, device="cpu")
+        torch.compile(func, backend=backend, fullgraph=True)(x)
+
+        gm = backend.graphs[0]
+        for node in gm.graph.nodes:
+            if node.op == "placeholder":
+                ev = node.meta.get("example_value")
+                self.assertEqual(ev.device.type, "cpu")
+
     def test_user_ctor_ctx_manager(self):
         class UserCtxManager:
             def __enter__(self):
