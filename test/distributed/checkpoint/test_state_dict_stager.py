@@ -28,7 +28,6 @@ from torch.distributed.checkpoint.state_dict_saver import async_save
 from torch.distributed.tensor import DeviceMesh, distribute_tensor
 from torch.testing._internal.common_distributed import (
     HAS_ACCELERATOR,
-    requires_accelerator_dist_backend,
     skip_if_lt_x_gpu,
 )
 from torch.testing._internal.common_utils import run_tests, TestCase
@@ -39,7 +38,6 @@ from torch.testing._internal.distributed._tensor.common_dtensor import (
 
 
 device_type = acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
-backend = dist.get_default_backend_for_device(device_type)
 
 
 def create_cpu_state_dict(state_dict):
@@ -954,7 +952,10 @@ class TestReplicationStager(DTensorTestBase):
 
     @property
     def backend(self) -> str:
-        return f"cpu:gloo,{device_type}:{backend}"
+        if self.device_type == "cpu":
+            return "gloo"
+        curr_backend = dist.get_default_backend_for_device(self.device_type)
+        return f"cpu:gloo,{self.device_type}:{curr_backend}"
 
     def _create_simple_state_dict(self, rank: int) -> dict:
         """
@@ -1251,7 +1252,6 @@ class TestReplicationStager(DTensorTestBase):
             )
 
     @with_comms
-    @requires_accelerator_dist_backend()
     @skip_if_lt_x_gpu(4)
     def test_replication_basic(self):
         """Test basic replication functionality with world_size=16"""
