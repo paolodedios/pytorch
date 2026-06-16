@@ -736,6 +736,12 @@ def create_fw_bw_graph(
             args = [score, b, h, m, n] + list(other_buffers)
             optional_grad = [example_grad] if example_grad.requires_grad else []
             _, grads = joint(args, optional_grad)
+            if grads[0] is None:
+                raise RuntimeError(
+                    "flex_attention backward requires the output of score_mod to "
+                    "depend on score. Got a score_mod whose output does not "
+                    "require gradients with respect to score."
+                )
 
             return grads
 
@@ -835,6 +841,10 @@ class FlexAttentionAutogradOp(torch.autograd.Function):
             q_indices,
             full_q_num_blocks,
             full_q_indices,
+            dq_write_order,
+            dq_write_order_full,
+            dq_kv_order,
+            dq_kv_order_spt,
             Q_BLOCK_SIZE,
             KV_BLOCK_SIZE,
             *other_buffers,
@@ -885,6 +895,10 @@ class FlexAttentionAutogradOp(torch.autograd.Function):
                     q_indices,
                     full_q_num_blocks,
                     full_q_indices,
+                    dq_write_order,
+                    dq_write_order_full,
+                    dq_kv_order,
+                    dq_kv_order_spt,
                     Q_BLOCK_SIZE,
                     KV_BLOCK_SIZE,
                     mask_graph,
