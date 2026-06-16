@@ -162,16 +162,7 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         return 0
 
     # Invert per-job results to per-test: which platforms added / removed each test.
-    job_names = list(res["per_job"])
-    added: dict[str, set[str]] = {}
-    removed: dict[str, set[str]] = {}
-    for job_name, jr in res["per_job"].items():
-        for f, v in jr["per_file"].items():
-            for t in v["added"]:
-                added.setdefault(f"{f}::{t}", set()).add(job_name)
-            for t in v["removed"]:
-                removed.setdefault(f"{f}::{t}", set()).add(job_name)
-
+    added, removed, job_names = diff_mod.invert_per_job(res)
     all_jobs = set(job_names)
 
     def _plats(s: set[str]) -> str:
@@ -185,13 +176,7 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         if not m:
             return
         print(f"\n{title}:")
-        # Group tests by the set of platforms they apply to.
-        groups: dict[frozenset, list[str]] = {}
-        for test, plats in m.items():
-            groups.setdefault(frozenset(plats), []).append(test)
-        # All-platforms group first, then by platform list.
-        for fs in sorted(groups, key=lambda fs: (fs != all_jobs, sorted(fs))):
-            tests = sorted(groups[fs])
+        for fs, tests in diff_mod.group_by_platform_set(m, all_jobs):
             for t in tests[:cap]:
                 print(f"{sign} {t}")
             if cap and len(tests) > cap:

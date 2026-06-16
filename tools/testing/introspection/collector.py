@@ -5,8 +5,8 @@ test bodies gutted), and either enumerate concrete tests or observe run/skip sta
 Parent helpers spawn the worker in a subprocess (descriptor globals are import-time
 single-shot, so one process per (file, platform)).
 
-Run directly as a worker:
-    python -m tools.testing.introspection.collector <platform/config> <select|enumerate|status> [relpath]
+Run directly as a worker (by path, so the wheel torch isn't shadowed by repo/torch):
+    python tools/testing/introspection/collector.py <platform/config> <select|enumerate|status> [relpath]
 """
 
 from __future__ import annotations
@@ -24,10 +24,19 @@ import unittest
 from pathlib import Path
 from types import ModuleType
 
+
+# This file is also executed directly as a worker subprocess (see _run_worker). When
+# run by path, the package root is not importable, so append it -- appending (not
+# prepending) keeps the wheel-installed torch in site-packages ahead of any torch/
+# source tree in the repo, which is essential for a wheel-installed torch in CI.
+if not __package__:
+    sys.path.append(str(Path(__file__).resolve().parents[3]))
+
 from tools.testing.introspection.platforms import get_job, Job, Platform
 
 
 REPO = Path(__file__).resolve().parents[3]
+_COLLECTOR = str(Path(__file__).resolve())
 _SENTINEL = "__INTROSPECT_JSON__"
 
 
@@ -473,7 +482,9 @@ def _run_worker(
     job: Job, op: str, relpath: str | None = None, timeout: int = 1800
 ) -> dict:
     """Single-payload ops: select / enumerate / status (one file, isolated)."""
-    cmd = [sys.executable, "-m", "tools.testing.introspection.collector", job.name, op]
+    # Run by path, not `-m`: `-m` puts cwd (REPO) on sys.path[0], so `import torch`
+    # would load the repo's torch/ source instead of the installed wheel.
+    cmd = [sys.executable, _COLLECTOR, job.name, op]
     if relpath is not None:
         cmd.append(relpath)
     proc = subprocess.run(
@@ -573,7 +584,7 @@ def _run_batch_worker(
     """One warm worker (torch + op_db imported once) over `files` in order. Returns
     {relpath: payload} for every file that completed before the process exited -- a
     prefix, since the worker is sequential, so a hard crash leaves a clean boundary."""
-    tf = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+    tf = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)  # noqa: SIM115
     json.dump(files, tf)
     tf.close()
     out: dict[str, dict] = {}
@@ -581,8 +592,7 @@ def _run_batch_worker(
         proc = subprocess.Popen(
             [
                 sys.executable,
-                "-m",
-                "tools.testing.introspection.collector",
+                _COLLECTOR,  # by path, not -m (avoid REPO/torch shadowing the wheel)
                 job.name,
                 "batch",
                 inner_op,
@@ -618,11 +628,11 @@ def _warm_chunk(job: Job, inner_op: str, files: list[str], on_done=None) -> dict
             out[f] = got[f]
         if len(done) == len(remaining):
             break
-        crasher = remaining[len(done)]  # first file with no emitted result
+        culprit = remaining[len(done)]  # first file with no emitted result
         try:
-            out[crasher] = _run_worker(job, inner_op, crasher)
+            out[culprit] = _run_worker(job, inner_op, culprit)
         except Exception as e:
-            out[crasher] = {"error": str(e).splitlines()[0]}
+            out[culprit] = {"error": str(e).splitlines()[0]}
         if on_done:
             on_done()  # count the isolated file
         remaining = remaining[len(done) + 1 :]

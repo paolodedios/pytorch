@@ -19,9 +19,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import TYPE_CHECKING
 
 from tools.testing.introspection import collector
-from tools.testing.introspection.platforms import Job
+
+
+if TYPE_CHECKING:
+    from tools.testing.introspection.platforms import Job
 
 
 def _git(*args: str) -> str:
@@ -264,7 +268,7 @@ def _collect_phase(
 
 
 def diff(
-    jobs: list[Job] | Job,
+    jobs: list[Job],
     a: str,
     b: str,
     files_filter: str | None = None,
@@ -274,8 +278,6 @@ def diff(
     materialized once as git worktrees and reused across all jobs. Selection (varies
     only by config+rocm) and the import graph (content-only) are computed once and
     reused; collection fans out across jobs in parallel per ref."""
-    if isinstance(jobs, Job):
-        jobs = [jobs]
     changed = _changed_files(a, b)
     changed_tests = [f for f in changed if _is_test_py(f)]
     broad = full or any(_is_broad(f) for f in changed)
@@ -345,3 +347,36 @@ def diff(
         _remove_worktree(wt_b)
 
     return {"from": a, "to": b, "per_job": per_job}
+
+
+# --------------------------------------------------------------------------- #
+# Result shaping shared by the CLI text view and the PR-comment renderer
+# --------------------------------------------------------------------------- #
+def invert_per_job(
+    res: dict,
+) -> tuple[dict[str, set[str]], dict[str, set[str]], list[str]]:
+    """From a diff() result, return (added, removed, job_names) where added/removed map
+    a concrete test id "file::Class::method" -> the set of jobs it was added/removed on."""
+    job_names = list(res["per_job"])
+    added: dict[str, set[str]] = {}
+    removed: dict[str, set[str]] = {}
+    for job_name, jr in res["per_job"].items():
+        for f, v in jr["per_file"].items():
+            for t in v["added"]:
+                added.setdefault(f"{f}::{t}", set()).add(job_name)
+            for t in v["removed"]:
+                removed.setdefault(f"{f}::{t}", set()).add(job_name)
+    return added, removed, job_names
+
+
+def group_by_platform_set(
+    m: dict[str, set[str]], all_jobs: set[str]
+) -> list[tuple[frozenset[str], list[str]]]:
+    """Group test ids by the set of jobs they apply to; all-platforms group first."""
+    groups: dict[frozenset[str], list[str]] = {}
+    for test, plats in m.items():
+        groups.setdefault(frozenset(plats), []).append(test)
+    return [
+        (fs, sorted(groups[fs]))
+        for fs in sorted(groups, key=lambda fs: (fs != all_jobs, sorted(fs)))
+    ]
