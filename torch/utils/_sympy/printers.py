@@ -272,6 +272,7 @@ class PythonPrinter(ExprPrinter):
         return self._fold_binary_call("torch.sym_min", expr.args)
 
     def _fold_binary_call(self, fn: str, args: Sequence[sympy.Expr]) -> str:
+        # pyrefly: ignore [missing-attribute]
         printed = [self._print(a) for a in args]
         result = printed[-1]
         for arg in reversed(printed[:-1]):

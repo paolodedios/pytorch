@@ -4025,14 +4025,13 @@ class ShapeEnv:
         # want them to always be stored here, since this dict is used as
         # part of the FxGraphCache key.
         self.var_to_hint_override: dict[sympy.Symbol, int] = {}
-        # Foreign ShapeEnv transfer can see the same unbacked symbol through
-        # multiple values, e.g. a tensor size and a raw SymInt closure capture.
-        # Cache by the foreign base symbol so every transferred expression is
-        # rebuilt from one local symbol and provenance stays coherent.
-        # Cached mapping from (foreign ShapeEnv id, foreign expression) to the
-        # local unbacked symbol that represents it.  Keyed by sympy.Expr because
-        # we cache both single-symbol entries (e.g. u0) and whole-expression
-        # entries (e.g. u3+u4) so that recurring expressions share symbols.
+        # When the compiler input is a fake tensor with unbacked symints, we
+        # create new unbacked symints internally in the traced graph.
+        # While doing so, we try to preserve the relations from the original
+        # shape env by avoiding re-emitting new symbols for foreign expressions
+        # that already got bound symbols here. This cache does that by mapping
+        # (foreign_shape_env_id, foreign_expr) -> the local symbol we
+        # already minted for it.
         self.foreign_unbacked_symbol_cache: dict[
             tuple[int, sympy.Expr], sympy.Symbol
         ] = {}
@@ -4918,7 +4917,7 @@ class ShapeEnv:
                 cached,
                 source=source,
                 value_range=src_shape_env.bound_sympy(expr),
-                hint=self._foreign_unbacked_hint(src_shape_env, expr),
+                optimization_hint=self._foreign_unbacked_hint(src_shape_env, expr),
             )
             if is_size:
                 self._constrain_range_for_size(cached)
@@ -4951,7 +4950,6 @@ class ShapeEnv:
         source: Source,
         *,
         symbolic_context: SymbolicContext | None = None,
-        hint_overrides: dict[int, int] | None = None,
     ) -> tuple[
         tuple[IntLikeType, ...],
         tuple[IntLikeType, ...],
@@ -4965,10 +4963,9 @@ class ShapeEnv:
         a guarding hint.  If symbolic_context is provided (e.g. from
         _automatic_dynamic), its classification is used instead.
 
-        For unbacked dims, strides are derived by substituting old foreign
-        symbols with the newly created symbols, preserving stride-size
-        relationships.  Hint overrides are read from the foreign ShapeEnv
-        and transferred to the new one."""
+        For unbacked dims, the underlying foreign unbacked symbols (and any
+        user-provided optimization hints registered on the foreign ShapeEnv)
+        are transferred into this env via _transfer_foreign_expr."""
 
         def _classify(s: IntLikeType) -> DimDynamic:
             if not is_symbolic(s):
@@ -4995,23 +4992,6 @@ class ShapeEnv:
         else:
             dynamic_sizes = symbolic_context.dynamic_sizes  # type: ignore[attr-defined]
 
-        # For unbacked dims, read the optimization hint from the foreign
-        # ShapeEnv and set it as a hint override so the new unbacked symbol
-        # gets a useful hint value.
-        if hint_overrides is None:
-            hint_overrides = {}
-        for i, sz in enumerate(sizes):
-            if dynamic_sizes[i] is DimDynamic.UNBACKED and is_symbolic(sz):
-                old_symint = cast(SymInt, sz)
-                src_shape_env = old_symint.node.shape_env
-                opt_hint = (
-                    self._foreign_unbacked_hint(src_shape_env, old_symint.node.expr)
-                    if src_shape_env is not None
-                    else None
-                )
-                if opt_hint is not None:
-                    hint_overrides[i] = opt_hint
-
         import sympy
 
         from torch._dynamo.source import TensorProperty, TensorPropertySource
@@ -5031,7 +5011,6 @@ class ShapeEnv:
                 [False] * len(sizes),
                 source,
                 symbolic_context=symbolic_context,
-                hint_overrides=hint_overrides,
             )
 
         # Transfer unbacked base symbols once, then rebuild every tensor
@@ -5069,9 +5048,7 @@ class ShapeEnv:
         new_stride_exprs: list[sympy.Expr] = []
         for i, sd in enumerate(strides):
             if is_symbolic(sd):
-                stride_source = TensorPropertySource(
-                    source, TensorProperty.STRIDE, i
-                )
+                stride_source = TensorPropertySource(source, TensorProperty.STRIDE, i)
                 new_expr = self._transfer_foreign_expr(
                     cast(SymInt, sd), source=stride_source
                 )
@@ -5081,9 +5058,7 @@ class ShapeEnv:
 
         # 4. Storage offset.
         if is_symbolic(storage_offset):
-            offset_source = TensorPropertySource(
-                source, TensorProperty.STORAGE_OFFSET
-            )
+            offset_source = TensorPropertySource(source, TensorProperty.STORAGE_OFFSET)
             new_offset_expr = self._transfer_foreign_expr(
                 cast(SymInt, storage_offset), source=offset_source
             )
@@ -5101,16 +5076,6 @@ class ShapeEnv:
                     source=TensorPropertySource(source, TensorProperty.SIZE, i),
                 )
             )
-            if (
-                isinstance(sym_sizes[-1], torch.SymInt)
-                and hint_overrides
-                and i in hint_overrides
-                and isinstance(sym_sizes[-1].node.expr, sympy.Symbol)
-            ):
-                self._set_unbacked_var_to_hint_override(
-                    sym_sizes[-1], hint_overrides[i]
-                )
-
         sym_strides = []
         for i, stride_expr in enumerate(new_stride_exprs):
             hint_stride = ex_stride[i]
@@ -5545,7 +5510,7 @@ class ShapeEnv:
         expr: sympy.Symbol,
         source: Source | None = None,
         value_range: ValueRanges[sympy.Expr] | None = None,
-        hint: int | None = None,
+        optimization_hint: int | None = None,
     ) -> None:
         """Mark ``expr`` (a local unbacked Symbol) as an unbacked graph input
         and seed its metadata.  Used when lifting a symbol minted from a
@@ -5553,8 +5518,8 @@ class ShapeEnv:
         self.unbacked_inputs.add(expr)
         if value_range is not None:
             self.var_to_range[expr] = value_range
-        if hint is not None:
-            self.var_to_hint_override[expr] = hint
+        if optimization_hint is not None:
+            self.var_to_hint_override[expr] = optimization_hint
 
         if source is not None:
             # Guard diagnostics treat multiple sources for the same symbol as
