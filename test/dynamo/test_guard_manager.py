@@ -769,6 +769,28 @@ num_guards_executed=0)
         self.assertEqual(stats["slow_guard_fallback"], 0)
         self.assertGreater(stats["actual_partial_enabled"], 0)
 
+    def test_token_plan_fast_hit_allows_token_covered_leaf_guard(self):
+        modules = {"block": {}}
+        guard_manager = RootGuardManager()
+        modules_manager = guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            modules,
+            default_mgr_enum,
+        )
+        modules_manager.add_dict_version_guard(
+            modules, ["dict version matches modules"]
+        )
+
+        stats = guards._debug_check_guard_lookup_receipt(
+            guard_manager, {"mods": modules}, 4
+        )
+
+        self.assertTrue(stats["result"])
+        self.assertGreater(stats["actual_partial_hit"], 0)
+        self.assertEqual(stats["actual_partial_miss"], 0)
+        self.assertEqual(stats["slow_guard_fallback"], 0)
+
     def test_token_plan_miss_falls_back_to_slow_guard(self):
         guard_manager = RootGuardManager()
         guard_manager.dict_getitem_manager(

@@ -1556,6 +1556,10 @@ class LeafGuard {
     return check_nopybind((PyObject*)map->to_dict());
   }
 
+  virtual bool is_actual_partial_token_covered() const {
+    return false;
+  }
+
   virtual ~LeafGuard() = default;
 
  protected:
@@ -1636,6 +1640,10 @@ class TYPE_MATCH : public LeafGuard {
     return Py_TYPE(value) == (void*)_expected;
   }
 
+  bool is_actual_partial_token_covered() const override {
+    return true;
+  }
+
  private:
   // id of the type of the original object.
   intptr_t _expected;
@@ -1651,6 +1659,10 @@ class ID_MATCH : public LeafGuard {
   bool check_nopybind(PyObject* value) override { // borrowed ref
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     return value == (void*)_expected;
+  }
+
+  bool is_actual_partial_token_covered() const override {
+    return true;
   }
 
  private:
@@ -1795,6 +1807,10 @@ class DICT_LENGTH : public LeafGuard {
 
   bool check_nopybind(PyObject* value) override { // borrowed ref
     return PyDict_Check(value) && PyDict_Size(value) == _length;
+  }
+
+  bool is_actual_partial_token_covered() const override {
+    return true;
   }
 
  private:
@@ -2270,6 +2286,10 @@ class DICT_VERSION : public LeafGuard {
     return PyDict_Check(value) && get_dict_version_unchecked(value) == _tag;
   }
 
+  bool is_actual_partial_token_covered() const override {
+    return true;
+  }
+
   // Saved dict version.
   uint64_t _tag;
 };
@@ -2581,7 +2601,7 @@ class GuardManager {
   virtual bool replay_actual_partial_tokens(
       PyObject* value,
       std::vector<GuardSubtreeEntryToken>& tokens) {
-    if (has_leaf_guards()) {
+    if (has_unsupported_actual_partial_leaf_guards()) {
       return false;
     }
     for (const auto& accessor : _accessors) {
@@ -2724,6 +2744,21 @@ class GuardManager {
 
   bool has_leaf_guards() const {
     return !_leaf_guards.empty();
+  }
+
+  bool has_unsupported_actual_partial_leaf_guards() const {
+    if (_leaf_guards.empty()) {
+      return false;
+    }
+    if (!is_self_modules_candidate(_source)) {
+      return true;
+    }
+    for (const auto& guard : _leaf_guards) {
+      if (!guard->is_actual_partial_token_covered()) {
+        return true;
+      }
+    }
+    return false;
   }
 
   int64_t fail_count() const {
@@ -3272,10 +3307,14 @@ class DictGuardManager : public GuardManager {
   bool replay_actual_partial_tokens(
       PyObject* obj,
       std::vector<GuardSubtreeEntryToken>& tokens) override {
-    if (has_leaf_guards()) {
+    if (has_unsupported_actual_partial_leaf_guards()) {
       return false;
     }
-    if (!PyDict_Check(obj)) {
+    if (Py_TYPE(obj) != _expected_type) {
+      return false;
+    }
+
+    if (PyDict_Size(obj) != _size) {
       return false;
     }
 
