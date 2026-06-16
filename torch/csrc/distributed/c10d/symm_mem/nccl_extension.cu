@@ -409,6 +409,7 @@ TORCH_LIBRARY_IMPL(symm_mem, CUDA, m) {
   m.impl("nccl_put_signal",
       torch::CppFunction::makeFromBoxedFunction<&nccl_put_signal_boxed>());
   m.impl("nccl_reduce_scatter_offset", c10d::nccl_extension::nccl_reduce_scatter_offset);
+  m.impl("nccl_reshard", c10d::nccl_extension::nccl_reshard);
 }
 
 // Use CompositeExplicitAutograd as key since ops do not accept tensor as input
@@ -416,4 +417,6 @@ TORCH_LIBRARY_IMPL(symm_mem, CompositeExplicitAutograd, m) {
   // API that uses internal signal mechanism and accepts handle
   m.impl("nccl_wait_signal",
       torch::CppFunction::makeFromBoxedFunction<&nccl_wait_signal_boxed>());
+  m.impl("nccl_m2n_init", c10d::nccl_extension::nccl_m2n_init);
+  m.impl("nccl_m2n_finalize", c10d::nccl_extension::nccl_m2n_finalize);
 }
