@@ -79,7 +79,28 @@ BufferPool& MPSHeapAllocatorImpl::get_pool(size_t requested_size, size_t aligned
 
 size_t MPSHeapAllocatorImpl::get_allocation_size(size_t size, uint32_t usage) const {
   MTLSizeAndAlign sizeAlign = [m_device heapBufferSizeAndAlignWithLength:size options:HeapBlock::getOptions(usage)];
-  return BufferBlock::alignUp(sizeAlign.size, sizeAlign.align);
+  const size_t aligned = BufferBlock::alignUp(sizeAlign.size, sizeAlign.align);
+
+  // Round large allocations up into coarse buckets so a slowly growing allocation
+  // (e.g. a KV cache reallocated at size+epsilon each decode step) reuses the
+  // previous step's freed buffer instead of stranding a new heap.
+  if ((usage & UsageFlags::SCALAR) || aligned <= kMaxSmallAlloc) {
+    return aligned;
+  }
+  constexpr int kLargeBucketShift = 5; // 32 buckets per power-of-two magnitude
+  size_t granule = (size_t(1) << (63 - __builtin_clzll(aligned))) >> kLargeBucketShift;
+  if (granule < vm_page_size) {
+    granule = vm_page_size;
+  }
+  const size_t bucketed = BufferBlock::alignUp(aligned, granule);
+  // Keep the request in its original heap-size class (see createHeapBlock): never
+  // let rounding push it over kMinLargeAlloc or kXLargeHeap/2, which would reserve
+  // a much larger backing heap, nor past Metal's per-buffer limit.
+  auto heap_class = [](size_t s) -> int { return s < kMinLargeAlloc ? 0 : (s < kXLargeHeap / 2 ? 1 : 2); };
+  if (bucketed >= m_max_buffer_size || heap_class(bucketed) != heap_class(aligned)) {
+    return aligned;
+  }
+  return bucketed;
 }
 
 void MPSHeapAllocatorImpl::setHighWatermarkRatio(double ratio) {
@@ -181,6 +202,9 @@ bool MPSHeapAllocatorImpl::get_free_buffer(AllocParams& params) {
     }
   }
   auto it = pool.available_buffers.lower_bound(&params.search_key);
+  // No cached buffer is >= the request size when this is true; used below to
+  // detect a buffer that grows by a small amount on every step.
+  const bool no_larger_buffer = (it == pool.available_buffers.end());
   if (it != pool.available_buffers.end()) {
     BufferBlock* buffer_block = *it;
 
@@ -213,6 +237,15 @@ bool MPSHeapAllocatorImpl::get_free_buffer(AllocParams& params) {
   }
 
   if (!params.buffer_block) {
+    // When a bucketed allocation (see get_allocation_size) crosses into a larger
+    // bucket, the cached buffers are one bucket smaller and can never be reused
+    // again. Release the stranded near-fit, freeing its heap, to reclaim them.
+    if (no_larger_buffer && !(pool.usage & UsageFlags::SMALL) && !pool.available_buffers.empty()) {
+      BufferBlock* nearest = *pool.available_buffers.rbegin();
+      if (nearest->size >= params.size() - params.size() / 8 && nearest->retainCount() <= 1) {
+        release_buffer(nearest, /*remove_empty_heap=*/true);
+      }
+    }
     return false; // this will make allocator to allocate a new buffer
   }
   pool.available_buffers.erase(params.buffer_block);
