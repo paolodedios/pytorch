@@ -1736,7 +1736,7 @@ class PythonWrapperCodegen(CodeGen):
 
         with self.prefix.indent(prefix_indent):
             if config.triton.debug_sync_graph:
-                self.prefix.writeline(V.graph.device_ops.synchronize())
+                self.generate_debug_sync(self.prefix)
             phase = V.graph.get_training_phase()
             if config.annotate_training:
                 self.prefix.writeline(
@@ -2285,7 +2285,7 @@ class PythonWrapperCodegen(CodeGen):
             output_refs = self.get_output_refs()
             self.mark_output_type()
             if config.triton.debug_sync_graph:
-                self.wrapper_call.writeline(V.graph.device_ops.synchronize())
+                self.generate_debug_sync(self.wrapper_call)
 
             if config.profile_bandwidth:
                 self.generate_end_graph()
@@ -2456,24 +2456,38 @@ class PythonWrapperCodegen(CodeGen):
         sym: sympy.Symbol,
         bound_vars: OrderedSet[sympy.Symbol],
     ) -> None:
-        # Deferred runtime asserts reference pre-replacement backed
-        # symbols (e.g. s77) that were replaced to this canonical
-        # symbol (s31) during constraint solving. Emit aliases so
-        # the asserts compile. Skip unbacked symbols — they are
-        # defined separately by the unbacked symbol codegen path.
+        # Deferred runtime asserts and graph input metadata can reference
+        # either side of a backed-symbol replacement. Emit aliases so both
+        # the pre-replacement and canonical names are defined. Skip unbacked
+        # symbols - they are defined separately by the unbacked symbol
+        # codegen path.
         sizevars = getattr(V.graph, "sizevars", None)
         shape_env = getattr(sizevars, "shape_env", None)
         if shape_env is None:
             return
+
+        def is_backed_symbol(s: sympy.Symbol) -> bool:
+            return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
+
         for src, tgt in shape_env.replacements.items():
             if (
                 tgt == sym
                 and isinstance(src, sympy.Symbol)
                 and src not in bound_vars
-                and not symbol_is_type(src, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
+                and is_backed_symbol(src)
+                and is_backed_symbol(sym)
             ):
                 self.prefix.writeline(f"{src} = {sym}")
                 bound_vars.add(src)
+            elif (
+                src == sym
+                and isinstance(tgt, sympy.Symbol)
+                and tgt not in bound_vars
+                and is_backed_symbol(sym)
+                and is_backed_symbol(tgt)
+            ):
+                self.prefix.writeline(f"{tgt} = {sym}")
+                bound_vars.add(tgt)
 
     def codegen_input_symbol_assignment(
         self,
@@ -3446,6 +3460,9 @@ class PythonWrapperCodegen(CodeGen):
 
     def wrap_kernel_call(self, name, call_args):
         return f"{name}({', '.join(call_args)}){self.ending}"
+
+    def generate_debug_sync(self, buffer):
+        buffer.writeline(V.graph.device_ops.synchronize())
 
     def generate_profiler_mark_wrapper_call(self, stack):
         self.wrapper_call.writeline("from torch.profiler import record_function")
