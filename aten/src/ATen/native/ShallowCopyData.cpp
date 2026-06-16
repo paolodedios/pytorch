@@ -11,7 +11,8 @@ static at::Tensor& shallow_copy_data_(
   // (torch/csrc/autograd/variable.cpp) so that calling this op
   // directly enforces the same invariants as eager .data = .
   TORCH_CHECK(
-      _has_compatible_shallow_copy_type(self, source),
+      _has_compatible_shallow_copy_type(
+          static_cast<const at::Tensor&>(self), source),
       "shallow_copy_data_: self and source have incompatible tensor type");
 
   TORCH_CHECK(
