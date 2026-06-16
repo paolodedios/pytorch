@@ -139,11 +139,7 @@ class TritonBundler:
         if not TritonBundler.is_enabled():
             return
         log.debug("TritonBundler.begin_compile is called")
-        if cls._entries is not None:
-            raise AssertionError(
-                "TritonBundler.begin_compile called with active entries; "
-                "expected cls._entries to be None"
-            )
+        assert cls._entries is None
         cls._entries = []
         cls._static_autotuners = []
         cls._winners = OrderedSet()
@@ -185,8 +181,7 @@ class TritonBundler:
     def put_static_autotuner(cls, key: str, kernel: "CachingAutotuner") -> None:  # type: ignore[name-defined] # noqa: F821
         from torch._inductor import config
 
-        if not config.use_static_triton_launcher:
-            raise AssertionError("expected config.use_static_triton_launcher to be set")
+        assert config.use_static_triton_launcher
         if (entries := cls._static_autotuners) is not None:
             # Clear a bunch of unpicklable values and make a copy to save
             # for FXGraphCache
@@ -300,10 +295,7 @@ class TritonBundler:
                     for filename in os.listdir(path):
                         filepath = os.path.join(path, filename)
                         try:
-                            if not os.path.isfile(filepath):
-                                raise AssertionError(
-                                    f"expected a regular file, got {filepath}"
-                                )
+                            assert os.path.isfile(filepath)
                             with open(filepath, "rb") as file:
                                 payload = file.read()
                                 if filepath.endswith(".json"):

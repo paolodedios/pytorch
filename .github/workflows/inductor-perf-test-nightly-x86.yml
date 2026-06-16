@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: pt2"]
 name: inductor-perf-nightly-x86
 
 on:

@@ -126,20 +126,6 @@ def _get_flex_flash_bwd_configs() -> list[FlexFlashConfig]:
 aten = torch.ops.aten
 prims = torch.ops.prims
 
-FLASH_ATTENTION_INSTALL_MESSAGE = (
-    "Install a compatible Flash Attention package, for example "
-    '`pip install --pre flash-attn-4` (`pip install --pre "flash-attn-4[cu13]"` '
-    "for CUDA 13), and see https://pypi.org/project/flash-attn-4/ "
-    "for PyPI packaging details."
-)
-
-
-def _flash_attention_unavailable_message() -> str:
-    return (
-        "CUTE flash attention library is not available. "
-        f"{FLASH_ATTENTION_INSTALL_MESSAGE}"
-    )
-
 
 @functools.lru_cache(maxsize=1)
 def ensure_flash_available() -> bool:
@@ -197,12 +183,10 @@ def _hierarchical_indexer_cute(
     """Return an indexer that preserves multi-dimensional indices for CuteDSL."""
 
     def indexer(indices: Sequence[Expr]) -> Expr:
-        if offset != Integer(0):
-            raise AssertionError("Offset not supported for hierarchical indexing")
-        if len(indices) != len(size):
-            raise AssertionError(
-                f"Rank mismatch: got {len(indices)} indices for tensor of rank {len(size)}"
-            )
+        assert offset == Integer(0), "Offset not supported for hierarchical indexing"
+        assert len(indices) == len(size), (
+            f"Rank mismatch: got {len(indices)} indices for tensor of rank {len(size)}"
+        )
         if not indices:
             return Integer(0)
         if len(indices) == 1:
@@ -278,8 +262,7 @@ def is_trivial_score_graph(graph_module: GraphModule) -> bool:
     nodes = list(graph.nodes)
     placeholders = [n for n in nodes if n.op == "placeholder"]
     output = [n for n in nodes if n.op == "output"]
-    if len(output) != 1:
-        raise AssertionError("Got graph w/ multiple outputs")
+    assert len(output) == 1, "Got graph w/ multiple outputs"
     output_val = output[0].args[0]
     # The identity graph just sends the score straight through
     return output_val == placeholders[0]
@@ -291,8 +274,7 @@ def is_trivial_mask_graph(graph_module: GraphModule) -> bool:
     nodes = list(graph.nodes)
     placeholders = [n for n in nodes if n.op == "placeholder"]
     output = [n for n in nodes if n.op == "output"]
-    if len(output) != 1:
-        raise AssertionError("Got graph w/ multiple outputs")
+    assert len(output) == 1, "Got graph w/ multiple outputs"
     output_val = output[0].args[0]
 
     # mask mod graph is empty if we have 4 inputs and full_default output
@@ -345,7 +327,7 @@ def _can_use_flex_flash_attention(
         tuple: (can_use, reason) where reason explains why it can't be used if can_use is False
     """
     if not ensure_flash_available():
-        return False, _flash_attention_unavailable_message()
+        return False, "CUTE flash attention library is not available"
 
     if input_buffers_require_grads(subgraph.graph_module, num_score_mod_placeholders):
         return (
@@ -421,15 +403,14 @@ def create_flex_flash_attention_kernel(
             f"and value.dtype: {value.dtype}."
         )
     if not ensure_flash_available():
-        raise RuntimeError(_flash_attention_unavailable_message())
+        raise RuntimeError("CUTE flash attention not available")
 
     # Get dimensions
     batch_size, num_heads, seq_len_q, head_dim = query.get_size()
     v_head_dim = value.get_size()[-1]
     device = query.get_device()
     dtype = query.get_dtype()
-    if device is None:
-        raise AssertionError("Device must be specified")
+    assert device is not None, "Device must be specified"
 
     # Match stride pattern from query tensor
     q_strides = query.get_stride()
@@ -471,8 +452,7 @@ def create_flex_flash_attention_kernel(
     has_full_blocks = full_kv_num_blocks is not None
 
     choices: list[Any] = []
-    if flash_attention_cutedsl_template is None:
-        raise AssertionError("flash_attention_cutedsl_template must not be None")
+    assert flash_attention_cutedsl_template is not None
 
     input_nodes = [query, key, value, lse]
     if has_full_blocks:
@@ -560,7 +540,7 @@ def _can_use_flex_flash_attention_backward(
     num_score_mod_placeholders: int = 5,
 ) -> tuple[bool, str]:
     if not ensure_flash_available():
-        return False, _flash_attention_unavailable_message()
+        return False, "CUTE flash attention is not available"
 
     if input_buffers_require_grads(
         fw_subgraph.graph_module, num_score_mod_placeholders
@@ -649,14 +629,13 @@ def create_flex_flash_attention_backward_kernel(
 ) -> tuple[TensorBox | ShapeAsConstantBuffer, TensorBox, TensorBox, tuple]:
     """Create a CuteDSL flash attention backward kernel for the default mod path."""
     if not ensure_flash_available():
-        raise RuntimeError(_flash_attention_unavailable_message())
+        raise RuntimeError("CUTE flash attention not available")
 
     batch_size, num_heads, seq_len_q, head_dim = query.get_size()
     _, num_heads_kv, seq_len_kv, v_head_dim = value.get_size()
     device = query.get_device()
     dtype = query.get_dtype()
-    if device is None:
-        raise AssertionError("Device must not be None")
+    assert device is not None
 
     grad_query_strides = infer_dense_strides(
         [batch_size, num_heads, seq_len_q, head_dim], query.get_stride()
@@ -714,14 +693,9 @@ def create_flex_flash_attention_backward_kernel(
 
     has_block_mask = mask_graph_buffer is not None
     if has_block_mask:
-        if q_indices is None:
-            raise AssertionError("q_indices required when block mask is present")
-        if full_q_num_blocks is None:
-            raise AssertionError(
-                "full_q_num_blocks required when block mask is present"
-            )
-        if full_q_indices is None:
-            raise AssertionError("full_q_indices required when block mask is present")
+        assert q_indices is not None
+        assert full_q_num_blocks is not None
+        assert full_q_indices is not None
         input_nodes.extend(
             [
                 cast(TensorBox, q_num_blocks),

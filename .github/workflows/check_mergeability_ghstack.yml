@@ -1,4 +1,3 @@
-# Owner(s): ["module: ci"]
 name: Check mergeability of ghstack PR
 
 on:

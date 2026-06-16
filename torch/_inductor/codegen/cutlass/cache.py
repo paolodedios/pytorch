@@ -94,10 +94,9 @@ def maybe_fetch_ops(device_type: str) -> list[Any] | None:
             with open(filepath) as f:
                 serialized_ops = json.load(f)
 
-            if not isinstance(serialized_ops, list):
-                raise AssertionError(
-                    f"Expected serialized ops is a list, got {type(serialized_ops)}"
-                )
+            assert isinstance(serialized_ops, list), (
+                f"Expected serialized ops is a list, got {type(serialized_ops)}"
+            )
         except Exception:
             log.warning(
                 "Failed to load CUTLASS config %s from local cache",

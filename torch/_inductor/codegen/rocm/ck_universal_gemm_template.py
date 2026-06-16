@@ -616,8 +616,7 @@ class CKGemmTemplate(CKTemplate):
         The primary entry point for the code rendering process used in this template.
         """
         epilogue_nodes = kwargs.get("epilogue_nodes")
-        if not (epilogue_nodes is None or 0 == len(epilogue_nodes)):
-            raise AssertionError("expected no epilogue nodes for CK GEMM template")
+        assert epilogue_nodes is None or 0 == len(epilogue_nodes)
         template_buffer_node = kwargs.get("template_buffer_node")
         if template_buffer_node is not None:
             self.output_node = template_buffer_node
@@ -739,8 +738,7 @@ class CKGemmTemplate(CKTemplate):
         elif op.c_elementwise_op == "PassThrough":
             epilogue = "PassThrough {}"
 
-        if epilogue is None:
-            raise AssertionError("CK GEMM epilogue is not set")
+        assert epilogue is not None, "CK GEMM epilogue is not set"
 
         size_arg_strs = ["M", "N", "K", "LDA", "LDB", "LDC", "LDD"]
         if self.is_batched:
@@ -935,8 +933,7 @@ class CKGemmTemplate(CKTemplate):
         if config.rocm.use_preselected_instances and self._is_rcr_f16():
             generator = gen_gemm_ops_preselected
 
-        if generator is None:
-            raise AssertionError("expected a non-None CK GEMM ops generator")
+        assert generator is not None
 
         rops = generator()
         ops = []

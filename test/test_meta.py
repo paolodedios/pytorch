@@ -1014,7 +1014,8 @@ class MetaCrossRefDispatchMode(torch.utils._python_dispatch.TorchDispatchMode):
             return (None, None, None)
 
         candidate_ols = []
-        for candidate_ol in olp.op_overloads():
+        for candidate_ol_name in olp.overloads():
+            candidate_ol = getattr(olp, candidate_ol_name)
             if any(arg.is_out for arg in candidate_ol._schema.arguments):
                 candidate_ols.append(candidate_ol)
 

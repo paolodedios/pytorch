@@ -889,6 +889,7 @@ False
     baddbmm
     bmm
     chain_matmul
+    cholesky
     cholesky_inverse
     cholesky_solve
     dot

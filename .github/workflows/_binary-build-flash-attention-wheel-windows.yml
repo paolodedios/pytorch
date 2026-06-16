@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng", "module: windows"]
 name: Build Flash Attention 3 wheels (Windows)
 
 on:

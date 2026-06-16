@@ -145,8 +145,7 @@ class LoopBody:
         self.indexing = None
 
     def get_original_num_rdims(self) -> int:
-        if not self.has_partial_accumulate:
-            raise AssertionError("Expected has_partial_accumulate to be set")
+        assert self.has_partial_accumulate
         node = self.root_block.graph.find_nodes(
             op="call_method", target="partial_accumulate"
         )[0]
@@ -278,11 +277,7 @@ class LoopBody:
 
         def new_body(*indices: Sequence[sympy.Expr]) -> Any:
             index = [*itertools.chain.from_iterable(indices)]
-            if not len(index) == len(iter_size) + len(reduce_size):
-                raise AssertionError(
-                    f"Expected index length {len(index)} to equal "
-                    f"iter_size + reduce_size ({len(iter_size)} + {len(reduce_size)})"
-                )
+            assert len(index) == len(iter_size) + len(reduce_size)
             iter_idx = index[: len(iter_size)]
             reduce_idx = index[len(iter_size) :]
 
@@ -356,11 +351,7 @@ class LoopBody:
 
         old_body = self
         old_sizes = self.sizes
-        if not len(old_sizes[0]) == len(new_order):
-            raise AssertionError(
-                f"Expected old_sizes[0] length {len(old_sizes[0])} to equal "
-                f"new_order length {len(new_order)}"
-            )
+        assert len(old_sizes[0]) == len(new_order)
         reorder_fn = same_reorder(new_order)
 
         iter_size, reduce_size = old_sizes
@@ -378,11 +369,7 @@ class LoopBody:
 
         def new_body(*indices: Sequence[sympy.Expr]) -> Any:
             index = [*itertools.chain.from_iterable(indices)]
-            if not len(index) == len(iter_size) + len(reduce_size):
-                raise AssertionError(
-                    f"Expected index length {len(index)} to equal "
-                    f"iter_size + reduce_size ({len(iter_size)} + {len(reduce_size)})"
-                )
+            assert len(index) == len(iter_size) + len(reduce_size)
             iter_idx = index[: len(iter_size)]
             reduce_idx = index[len(iter_size) :]
             iter_idx = [iter_idx[i] for i in inverse_order]
@@ -398,10 +385,8 @@ class LoopBody:
 
     @property
     def vars(self):
-        if self.iter_vars is None:
-            raise AssertionError("iter_vars is None")
-        if self.reduce_vars is None:
-            raise AssertionError("reduce_vars is None")
+        assert self.iter_vars is not None
+        assert self.reduce_vars is not None
         return self.iter_vars, self.reduce_vars
 
     @cache_on_self
@@ -522,8 +507,7 @@ class LoopBody:
 
     def add_indirect(self, size):
         var = sympy_index_symbol_with_prefix(SymT.INDIRECT, len(self.indirect_vars))
-        if var in self.indirect_var_ranges:
-            raise AssertionError(f"Indirect var {var} already in indirect_var_ranges")
+        assert var not in self.indirect_var_ranges
         self.indirect_vars.append(var)
         self.indirect_var_ranges[var] = size
         return var
@@ -532,26 +516,20 @@ class LoopBody:
         """Swap in a variable used in indirect indexing"""
         if str(old) == str(new):
             return
-        if self.indexing is None:
-            raise AssertionError("indexing must be set before replace_indirect")
+        assert self.indexing is not None
         # pyrefly: ignore [bad-assignment]
         self.indexing = {k: sympy_subs(v, {old: new}) for k, v in self.indexing.items()}
 
     def get_index(self, name):
-        if self.indexing is None:
-            raise AssertionError("indexing must be set before get_index")
+        assert self.indexing is not None
         return self.indexing[name]
 
     def indexing_from_args(self, indices, allow_same_symbol_in_index=False):
         index = [*itertools.chain.from_iterable(indices)]
-        if not len(index) == len(self.var_ranges):
-            raise AssertionError(f"Index length mismatch: {index} vs {self.var_ranges}")
-        if not allow_same_symbol_in_index and not all(
+        assert len(index) == len(self.var_ranges), (index, self.var_ranges)
+        assert allow_same_symbol_in_index or all(
             v not in self.var_ranges for v in index
-        ):
-            raise AssertionError(
-                f"Same symbol found in index: {self.var_ranges=}, {indices=}"
-            )
+        ), f"{self.var_ranges=}, {indices=}"
 
         replacements = dict(zip(self.var_ranges.keys(), index))
         return {
@@ -636,17 +614,13 @@ class LoopBodyBlock:
         store = None
         for node in self.graph.nodes:
             if node.target == "reduction":
-                if red:
-                    raise AssertionError("Found multiple reduction nodes")
+                assert not red
                 red = node
             if node.target == "store_reduction":
-                if store:
-                    raise AssertionError("Found multiple store_reduction nodes")
+                assert not store
                 store = node
-        if not red:
-            raise AssertionError("No reduction node found in graph")
-        if not store:
-            raise AssertionError("No store_reduction node found in graph")
+        assert red
+        assert store
         reduction_type = red.args[-2]
         red_arg = red.args[-1]
         buf = store.args[1]
@@ -731,8 +705,7 @@ class CaptureIndexing(WrapperHandler):
         return self._inner.load(name, index)
 
     def load_seed(self, name: str, index: int):
-        if not isinstance(index, int):
-            raise AssertionError(f"Expected int, got {type(index)}")
+        assert isinstance(index, int)
         self.body.add_index_expr(
             sympy.Integer(index), MemoryUsageType.LOAD_SEED, buffer_name=name
         )

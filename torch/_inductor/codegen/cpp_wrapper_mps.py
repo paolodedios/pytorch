@@ -78,11 +78,9 @@ class CppWrapperMps(CppWrapperGpu):
                 inductor_meta=inductor_meta,
             )
 
-        if device.type != "mps":
-            raise AssertionError(f"expected device.type == 'mps', got {device.type}")
+        assert device.type == "mps"
 
-        if arg_types is None:
-            raise AssertionError("expected arg_types to not be None")
+        assert arg_types is not None
 
         new_args = []
         for idx, (arg, arg_type) in enumerate(zip(call_args[:-2], arg_types[:-2])):

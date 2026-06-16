@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng"]
 name: linux-binary-test
 
 # Reusable test workflow for linux binary (manywheel/libtorch).

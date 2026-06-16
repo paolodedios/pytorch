@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng", "module: windows"]
 # @generated DO NOT EDIT MANUALLY
 
 # Template is at:    .github/templates/windows_binary_build_workflow.yml.j2

@@ -72,14 +72,10 @@ def promote_types(
     dtype_prop_candidates = []
 
     for arg in args:
-        if isinstance(arg, str):
-            raise AssertionError(f"expected non-str arg, got {type(arg)}")
+        assert not isinstance(arg, str)
         if isinstance(arg, OpsValue):
             arg = arg.value
-            if not (
-                isinstance(arg, torch._prims_common.Number) or hasattr(arg, "dtype")
-            ):
-                raise AssertionError("expected a Number or an object with a dtype")
+            assert isinstance(arg, torch._prims_common.Number) or hasattr(arg, "dtype")
 
         if isinstance(arg, torch._prims_common.Number):
             dtype_prop_candidates.append((type_to_dtype(type(arg)), True))
@@ -230,8 +226,7 @@ class DtypePropagationOpsHandler:
     ) -> torch.dtype:
         from .loop_body import LoopBodyBlock
 
-        if not isinstance(body, LoopBodyBlock):
-            raise AssertionError("body must be a LoopBodyBlock")
+        assert isinstance(body, LoopBodyBlock), "body must be a LoopBodyBlock"
         # TODO - we avoid calling this in codegen, needs work for non codegen use cases
         loads = body.graph.find_nodes(op="call_method", target="load")
         if len(loads) <= 1:

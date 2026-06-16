@@ -40,10 +40,8 @@ class TritonSplitScanKernel(TritonKernel):
         fixed_config=None,
         **kwargs,
     ) -> None:
-        if pid_cache is not None:
-            raise AssertionError("not supported")
-        if fixed_config is not None:
-            raise AssertionError("not supported")
+        assert pid_cache is None, "not supported"
+        assert fixed_config is None, "not supported"
         super().__init__(
             tiling,
             **kwargs,
@@ -58,8 +56,9 @@ class TritonSplitScanKernel(TritonKernel):
 
     def initialize_range_tree(self, pid_cache):
         prefixes = ["y", "x", "r0_"]
-        if len(self.numels) > len(prefixes):
-            raise AssertionError("z dimension not supported for split scan")
+        assert len(self.numels) <= len(prefixes), (
+            "z dimension not supported for split scan"
+        )
         active_prefixes = prefixes[len(prefixes) - len(self.numels) :]
 
         grid_dims = {"r0_": 0, "x": 1, "y": 2}
@@ -109,8 +108,7 @@ class TritonSplitScanKernel(TritonKernel):
 
         cse_compute = functools.partial(self.cse.generate, self.compute)
 
-        if len(self.numels) != 2:
-            raise AssertionError("Unexpected tiling")
+        assert len(self.numels) == 2, "Unexpected tiling"
         min_rblock = config.triton.min_split_scan_rblock
         reduction_numel = sympy_product(
             numel
@@ -136,8 +134,7 @@ class TritonSplitScanKernel(TritonKernel):
 
         masks = OrderedSet(f"{tree.prefix}mask" for tree in self.range_trees)
         self.filter_masks(masks)
-        if self._load_mask:
-            raise AssertionError("ops.scan not supported inside ops.masked")
+        assert not self._load_mask, "ops.scan not supported inside ops.masked"
 
         value = cse_compute(
             f"{value}.to({compute_type})",
@@ -152,11 +149,9 @@ class TritonSplitScanKernel(TritonKernel):
 
         combine_helper_fn = self._lift_helper(combine_fn, (value,), (dtype,))
         dim = self.triton_tensor_ndim() - 1
-        if dim != 0:
-            raise AssertionError(f"expected scan dim == 0, got {dim}")
+        assert dim == 0, ""
         scan_shape = value.shape
-        if scan_shape is None:
-            raise AssertionError("expected value.shape to be set")
+        assert scan_shape is not None
         reduced_shape = list(scan_shape)
         del reduced_shape[dim]
 
@@ -183,10 +178,7 @@ class TritonSplitScanKernel(TritonKernel):
             )
 
         else:
-            if element_nbits > 32:
-                raise AssertionError(
-                    f"expected element_nbits <= 32, got {element_nbits}"
-                )
+            assert element_nbits <= 32
             value_as_uint_dtype = f"tl.uint{element_nbits}"
 
             self.compute.splice(

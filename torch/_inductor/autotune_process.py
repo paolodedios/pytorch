@@ -69,21 +69,6 @@ from .virtualized import V
 
 CUDA_VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
 
-
-_visible_device_env_var_maps = {
-    "cuda": "CUDA_VISIBLE_DEVICES",
-    "xpu": "ZE_AFFINITY_MASK",
-}
-
-
-def get_visible_devices_env_var(gpu_type: str | None = None) -> str:
-    if gpu_type is None:
-        gpu_type = get_gpu_type()
-    if gpu_type not in _visible_device_env_var_maps:
-        raise ValueError(f"Unsupported gpu_type: {gpu_type}")
-    return _visible_device_env_var_maps[gpu_type]
-
-
 autotuning_log = getArtifactLogger(__name__, "autotuning")
 
 
@@ -104,7 +89,7 @@ class TuningProcess:
         autotuning_log.debug(
             "Started autotune subprocess %s. Visible devices: %s",
             os.getpid(),
-            os.environ.get(get_visible_devices_env_var()),
+            os.environ.get(CUDA_VISIBLE_DEVICES),
         )
 
         def workloop():
@@ -176,7 +161,7 @@ class TuningProcess:
             else "0",
         }
         if self.device is not None:
-            env[get_visible_devices_env_var()] = str(self.device)
+            env[CUDA_VISIBLE_DEVICES] = str(self.device)
         self.process = subprocess.Popen(
             cmd,
             env=env,
@@ -312,16 +297,11 @@ class TuningProcessPool:
         gpu_type = get_gpu_type()
         device_interface = get_interface_for_device(gpu_type)
         count = device_interface.device_count()
-        visible_devices_env_var = get_visible_devices_env_var(gpu_type)
 
         # If the user specified the visible devices in the env, use those.
-        if visible_devices_env_var in os.environ:
-            devices = [int(d) for d in os.environ[visible_devices_env_var].split(",")]
-            if not len(devices) <= count:
-                raise AssertionError(
-                    f"{visible_devices_env_var} specifies {len(devices)} devices, "
-                    f"but only {count} devices are available"
-                )
+        if CUDA_VISIBLE_DEVICES in os.environ:
+            devices = [int(d) for d in os.environ[CUDA_VISIBLE_DEVICES].split(",")]
+            assert len(devices) <= count
             return devices
 
         return list(range(count))
@@ -343,10 +323,7 @@ class TuningProcessPool:
         remove it from the queue, execute the benchmark in that subprocess, and return
         the TuningProcess to the queue.
         """
-        if choice.bmreq is None:
-            raise AssertionError(
-                f"Expected choice.bmreq to be set, but got None for choice '{choice}'"
-            )
+        assert choice.bmreq is not None
 
         env_vars = ["TORCHINDUCTOR_CACHE_DIR", "TRITON_CACHE_DIR"]
         extra_env = {v: os.environ[v] for v in env_vars if v in os.environ}
@@ -416,11 +393,7 @@ class TensorMeta:
 
         if isinstance(irnodes, Sequence):
             result: list[Any] = [cls.from_irnodes(x) for x in irnodes]
-            if not all(isinstance(x, TensorMeta) for x in result):
-                raise AssertionError(
-                    f"Expected all elements to be TensorMeta, got types: "
-                    f"{[type(x) for x in result if not isinstance(x, TensorMeta)]}"
-                )
+            assert all(isinstance(x, TensorMeta) for x in result)
             return result
 
         node = irnodes
@@ -428,15 +401,9 @@ class TensorMeta:
             node = ir.Buffer(name="fake", layout=node)
 
         dtype = node.get_dtype()
-        if dtype is None:
-            raise AssertionError(
-                f"Expected node to have a dtype, but get_dtype() returned None for node '{node}'"
-            )
+        assert dtype is not None
         device = node.get_device()
-        if device is None:
-            raise AssertionError(
-                f"Expected node to have a device, but get_device() returned None for node '{node}'"
-            )
+        assert device is not None
 
         return TensorMeta(
             device=device,
@@ -487,15 +454,11 @@ class BenchmarkRequest:
         if output_tensor_meta and isinstance(output_tensor_meta, (tuple, list)):
             if len(output_tensor_meta) > 1:
                 # Each output with same meta for Grouped GEMM
-                if not all(
+                assert all(
                     getattr(output_tensor_meta[0], attr) == getattr(x, attr)
                     for x in output_tensor_meta
                     for attr in ["device", "dtype", "sizes", "strides", "offset"]
-                ):
-                    raise AssertionError(
-                        "All output tensor metas in a Grouped GEMM must have matching "
-                        "device, dtype, sizes, strides, and offset"
-                    )
+                )
             self.output_tensor_meta = output_tensor_meta[0]
         else:
             # pyrefly: ignore [bad-assignment]
@@ -531,14 +494,10 @@ class BenchmarkRequest:
 
         # create args and out tensor
         if out is None:
-            if not (self.input_tensor_meta and self.output_tensor_meta):
-                raise AssertionError(
-                    "Input and output tensor meta must be populated when input_tensors is empty"
-                )
-            if not len(input_tensors) == 0:
-                raise AssertionError(
-                    f"Expected no input_tensors when out is None, but got {len(input_tensors)}"
-                )
+            assert self.input_tensor_meta and self.output_tensor_meta, (
+                "Input and output tensor meta must be populated when input_tensors is empty"
+            )
+            assert len(input_tensors) == 0
             input_tensors = tuple(x.to_tensor() for x in self.input_tensor_meta)
             out = self.output_tensor_meta.to_tensor()
 
@@ -600,12 +559,7 @@ class _TestBenchmarkRequest(BenchmarkRequest):
         self, *input_tensors: torch.Tensor, out: torch.Tensor | None = None
     ) -> float:
         if self.device is not None:
-            visible_devices_env_var = get_visible_devices_env_var()
-            if os.environ.get(visible_devices_env_var, None) != str(self.device):
-                raise AssertionError(
-                    f"Expected {visible_devices_env_var}='{self.device}', "
-                    f"but got '{os.environ.get(visible_devices_env_var, None)}'"
-                )
+            assert os.environ.get(CUDA_VISIBLE_DEVICES, None) == str(self.device)
         if self.sleep:
             time.sleep(self.sleep)
         if self.exc:
@@ -629,8 +583,7 @@ class GPUDeviceBenchmarkMixin:
             and is_gpu(tensor.device.type)
             and tensor.device.index is not None
         )
-        if not len(device_idx_set) <= 1:
-            raise AssertionError(f"Can not mix devices {device_idx_set}")
+        assert len(device_idx_set) <= 1, f"Can not mix devices {device_idx_set}"
         device_type = next(
             (
                 tensor.device.type
@@ -1191,11 +1144,7 @@ class CppBenchmarkRequest(CPUDeviceBenchmarkMixin, BenchmarkRequest):
         )
         run_method = getattr(self.DLL, self.kernel_name)
         # Assume only size with type ctypes.c_ulonglong in extra_args
-        if not all(isinstance(arg, ctypes.c_ulonglong) for arg in self.extra_args):
-            raise AssertionError(
-                f"Expected all extra_args to be ctypes.c_ulonglong, got types: "
-                f"{[type(arg) for arg in self.extra_args if not isinstance(arg, ctypes.c_ulonglong)]}"
-            )
+        assert all(isinstance(arg, ctypes.c_ulonglong) for arg in self.extra_args)
         run_method.argtypes = [ctypes.c_ulonglong] * (
             len(args) + len(list(self.extra_args))
         )
@@ -1306,10 +1255,9 @@ class AutotuneProcessPool:
     @property
     def pool(self):
         """Get the process pool."""
-        if not config.pipeline_max_autotune_gemm:
-            raise AssertionError(
-                "To use AutotuneProcessPool, pipeline_max_autotune_gemm must be enabled"
-            )
+        assert config.pipeline_max_autotune_gemm, (
+            "To use AutotuneProcessPool, pipeline_max_autotune_gemm must be enabled"
+        )
         if self._pool is None:
             self._pool = self._init_pool()
             self._timer = self._init_timer()
@@ -1562,8 +1510,9 @@ class AsyncAutotuner:
             if choice_hash in AsyncAutotuner.choice_hash_to_future:
                 continue
 
-            if not getattr(choice, "bmreq", None) is not None:
-                raise AssertionError("bmreq is None for choice")
+            assert getattr(choice, "bmreq", None) is not None, (
+                "bmreq is None for choice"
+            )
 
             autotune_future = AutotuneProcessPool.get_instance().submit(
                 run_autotune_in_subprocess,

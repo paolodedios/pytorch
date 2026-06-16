@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng"]
 name: Build almalinux docker images
 
 on:

@@ -287,8 +287,7 @@ def _adapt_user_input_gen_fns(
 
         def internal_input_gen_fn(ir_buffer: Any) -> torch.Tensor:
             fake_tensor = ir_node_to_tensor(ir_buffer, replace_symbols_with_hints=True)
-            if fake_tensor is None:
-                raise AssertionError("ir_node_to_tensor returned None")
+            assert fake_tensor is not None, "ir_node_to_tensor returned None"
             return user_function(fake_tensor)
 
         return internal_input_gen_fn
@@ -655,8 +654,7 @@ def _prepare_configs_and_decompositions(
             tensor_inputs, config_generator, op_overload, name
         )
     else:
-        if processed_configs is None:
-            raise AssertionError("processed_configs must not be None")
+        assert processed_configs is not None
         configs_to_use = processed_configs
 
     # Prepare decompositions and kwargs for autotuning

@@ -297,18 +297,13 @@ def move_code_under_inner_loop(
         )
         stack.enter_context(transformed_code.indent())
         for _, line in enumerate(code._lines):
-            if not (
-                isinstance(
-                    line,
-                    (
-                        str,
-                        DeferredLine,
-                    ),
-                )
-            ):
-                raise AssertionError(
-                    "expected isinstance( line, ( str, DeferredLine, ), )"
-                )
+            assert isinstance(
+                line,
+                (
+                    str,
+                    DeferredLine,
+                ),
+            )
             deferred_name = None
             if isinstance(line, DeferredLine):
                 deferred_name = line.name
@@ -355,16 +350,13 @@ def reduction_prefix_array(
 
 def replace_acc_name(buffer: IndentedBuffer, name: str, new_name: str):
     for i, line in enumerate(buffer._lines):
-        if not (
-            isinstance(
-                line,
-                (
-                    str,
-                    DeferredLine,
-                ),
-            )
-        ):
-            raise AssertionError("expected isinstance( line, ( str, DeferredLine, ), )")
+        assert isinstance(
+            line,
+            (
+                str,
+                DeferredLine,
+            ),
+        )
         if isinstance(line, DeferredLine):
             line.line = re.sub(r"\b" + f"{name}" + r"\b", f"{new_name}", line.line)
         else:
@@ -378,16 +370,13 @@ def replace_cascade_sum_with_add(buffer: IndentedBuffer):
 
     pattern = r"(.*?)\s*=\s*cascade_sum_combine\(([^,]+),.*?\);"
     for i, line in enumerate(buffer._lines):
-        if not (
-            isinstance(
-                line,
-                (
-                    str,
-                    DeferredLine,
-                ),
-            )
-        ):
-            raise AssertionError("expected isinstance( line, ( str, DeferredLine, ), )")
+        assert isinstance(
+            line,
+            (
+                str,
+                DeferredLine,
+            ),
+        )
         content = line.line if isinstance(line, DeferredLine) else line
         match = re.search(pattern, content)
         if match:
@@ -415,23 +404,16 @@ class OuterLoopFusedSchedulerNode(FusedSchedulerNode):
     def fuse(  # type: ignore[override]
         cls, node1: BaseSchedulerNode, node2: BaseSchedulerNode, outer_loop_fusion_depth
     ):
-        if node1.scheduler is not node2.scheduler:
-            raise AssertionError("expected node1.scheduler is node2.scheduler")
-        if not (
-            all(
-                type(node)
-                in (
-                    OuterLoopFusedSchedulerNode,
-                    SchedulerNode,
-                    FusedSchedulerNode,
-                )
-                for node in (node1, node2)
+        assert node1.scheduler is node2.scheduler
+        assert all(
+            type(node)
+            in (
+                OuterLoopFusedSchedulerNode,
+                SchedulerNode,
+                FusedSchedulerNode,
             )
-        ):
-            raise AssertionError(
-                "expected all nodes to be OuterLoopFusedSchedulerNode, "
-                "SchedulerNode, or FusedSchedulerNode"
-            )
+            for node in (node1, node2)
+        )
         if any(type(node) is OuterLoopFusedSchedulerNode for node in (node1, node2)):
             return cls(
                 node1.scheduler,
@@ -467,10 +449,7 @@ class OuterLoopFusedSchedulerNode(FusedSchedulerNode):
         self.outer_loop_fusion_depth = outer_loop_fusion_depth
         flatten_snodes = []
         for _node in self.outer_fused_nodes:
-            if not isinstance(_node, (SchedulerNode, FusedSchedulerNode)):
-                raise AssertionError(
-                    "expected isinstance(_node, (SchedulerNode, FusedSchedulerNode))"
-                )
+            assert isinstance(_node, (SchedulerNode, FusedSchedulerNode))
             flatten_snodes.extend(list(_node.get_nodes()))
         super().__init__(scheduler, flatten_snodes)  # type: ignore[arg-type]
 
@@ -492,10 +471,8 @@ class OuterLoopFusedSchedulerNode(FusedSchedulerNode):
             loop_fusion_depth: int,
             current_checking_depth: int,
         ) -> bool:
-            if not left_loop_nest.loops:
-                raise AssertionError("expected left_loop_nest.loops")
-            if not right_loop_nest.loops:
-                raise AssertionError("expected right_loop_nest.loops")
+            assert left_loop_nest.loops
+            assert right_loop_nest.loops
             left_loop_level = left_loop_nest.loops[current_checking_depth]
             right_loop_level = right_loop_nest.loops[current_checking_depth]
             # Check if same loop level attr
@@ -514,19 +491,12 @@ class OuterLoopFusedSchedulerNode(FusedSchedulerNode):
             ):
                 return False
 
-            if loop_fusion_depth < 1:
-                raise AssertionError("expected loop_fusion_depth >= 1")
+            assert loop_fusion_depth >= 1
             if (loop_fusion_depth := loop_fusion_depth - 1) > 0:
                 # Check next loop level attr
                 current_checking_depth = current_checking_depth + 1
-                if current_checking_depth >= len(left_loop_nest.loops):
-                    raise AssertionError(
-                        "expected current_checking_depth < len(left_loop_nest.loops)"
-                    )
-                if current_checking_depth >= len(right_loop_nest.loops):
-                    raise AssertionError(
-                        "expected current_checking_depth < len(right_loop_nest.loops)"
-                    )
+                assert current_checking_depth < len(left_loop_nest.loops)
+                assert current_checking_depth < len(right_loop_nest.loops)
                 if not _inner(
                     left_loop_nest,
                     right_loop_nest,
@@ -597,42 +567,36 @@ class RecordOptimizationContext:
         self.opt_ctx: OptimizationContext | None = None
 
     def __enter__(self):
-        if not V.interpreter:
-            raise AssertionError("expected V.interpreter")
-        if not V.interpreter.current_node:
-            raise AssertionError("expected V.interpreter.current_node")
+        assert V.interpreter
+        assert V.interpreter.current_node
 
         self.current_node = V.interpreter.current_node
-        if self.current_node is None:
-            raise AssertionError("expected self.current_node is not None")
+        assert self.current_node is not None
         if OptimizationContext.key in self.current_node.meta:
             self.opt_ctx = self.current_node.meta[OptimizationContext.key]
         else:
             self.opt_ctx = OptimizationContext()
-        if self.opt_ctx is None:
-            raise AssertionError("expected self.opt_ctx is not None")
+        assert self.opt_ctx is not None
         self.opt_ctx.ops_name = self.func_name
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if not self.current_node:
-            raise AssertionError("expected self.current_node")
-        if not self.opt_ctx:
-            raise AssertionError("expected self.opt_ctx")
+        assert self.current_node
+        assert self.opt_ctx
         self.current_node.meta[OptimizationContext.key] = self.opt_ctx
 
     def get_opt_ctx(self):
         return self.opt_ctx
 
     def get_fx_node(self):
-        if not self.current_node:
-            raise AssertionError("expected self.current_node")
+        assert self.current_node
         return self.current_node
 
 
 def decltype_promoted(*args):
-    if any(isinstance(arg, CppCSEVariable) and arg.is_vec for arg in args):
-        raise AssertionError("Promotion of vector types is not supported")
+    assert not any(isinstance(arg, CppCSEVariable) and arg.is_vec for arg in args), (
+        "Promotion of vector types is not supported"
+    )
 
     if (dt := get_promote_dtype(args)) is not None:
         return DTYPE_TO_CPP[dt]
@@ -657,8 +621,7 @@ class CppOverrides(OpOverrides):
 
     @staticmethod
     def to_dtype(x, dtype, src_dtype=None, use_compute_types=True):
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
+        assert isinstance(x, CppCSEVariable)
         if src_dtype is None:
             src_dtype = x.dtype
         expr = V.kernel.get_to_dtype_expr(x, dtype, src_dtype)
@@ -711,8 +674,7 @@ class CppOverrides(OpOverrides):
     @staticmethod
     # pyrefly: ignore [bad-override]
     def round_to_int(x, dtype, src_dtype=None, use_compute_types=True):
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
+        assert isinstance(x, CppCSEVariable)
         if src_dtype is None:
             src_dtype = x.dtype
         expr = V.kernel.get_to_dtype_expr(x, dtype, src_dtype, rounding=True)
@@ -728,22 +690,12 @@ class CppOverrides(OpOverrides):
 
     @staticmethod
     def to_dtype_bitcast(x, dtype, src_dtype):
-        if dtype not in DTYPE_TO_CPP:
-            raise AssertionError(f"{dtype} missing from {__name__}.DTYPE_TO_CPP")
+        assert dtype in DTYPE_TO_CPP, f"{dtype} missing from {__name__}.DTYPE_TO_CPP"
         return f"c10::bit_cast<{DTYPE_TO_CPP[dtype]}>({x})"
 
     @staticmethod
     # pyrefly: ignore [bad-override]
     def abs(x):
-        if isinstance(x, CppCSEVariable) and x.dtype in (
-            torch.uint8,
-            torch.uint16,
-            torch.uint32,
-            torch.uint64,
-        ):
-            # abs(x) == x for unsigned types; return identity to avoid
-            # -Wtautological-compare and unsigned unary minus warnings.
-            return f"{x}"
         return f"std::abs({x})"
 
     @staticmethod
@@ -1240,10 +1192,7 @@ class CppVecOverrides(CppOverrides):
 
                 # Broadcast scalar args to vector
                 if scalars and vectors:
-                    if not isinstance(V.kernel, CppVecKernel):
-                        raise AssertionError(
-                            "expected isinstance(V.kernel, CppVecKernel)"
-                        )
+                    assert isinstance(V.kernel, CppVecKernel)
                     new_args = [
                         (
                             V.kernel.broadcast(new_arg)
@@ -1268,8 +1217,7 @@ class CppVecOverrides(CppOverrides):
                     # fallback to scalar ops
                     scalar_ops = super(CppVecOverrides, self)
                     scalar_func = getattr(scalar_ops, func.__name__)
-                    if scalar_func is None:
-                        raise AssertionError("expected scalar_func is not None")
+                    assert scalar_func is not None
                     return scalar_func(*args, **kwargs)
 
             return wrapper
@@ -1302,14 +1250,6 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def abs(x):
-        if isinstance(x, CppCSEVariable) and x.dtype in (
-            torch.uint8,
-            torch.uint16,
-            torch.uint32,
-            torch.uint64,
-        ):
-            # Unsigned identity bypass for vectorized path
-            return f"{x}"
         return f"{x}.abs()"
 
     @staticmethod
@@ -1352,68 +1292,49 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def eq(x, y):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
-        if x.dtype is None:
-            raise AssertionError("expected x.dtype is not None")
+        assert isinstance(V.kernel, CppVecKernel)
+        assert isinstance(x, CppCSEVariable)
+        assert x.dtype is not None
         return f"{V.kernel._get_mask_type(x.dtype)}({x} == {y})"
 
     @staticmethod
     def ne(x, y):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
+        assert isinstance(V.kernel, CppVecKernel)
+        assert isinstance(x, CppCSEVariable)
         if x.dtype == torch.bool:
-            if y.dtype != torch.bool:
-                raise AssertionError("expected y.dtype == torch.bool")
+            assert y.dtype == torch.bool
             x_cast, y_cast = unify_mask_base_type(V.kernel.compute, (x, y))
             return f"{x_cast} != {y_cast}"
         else:
-            if x.dtype is None:
-                raise AssertionError("expected x.dtype is not None")
+            assert x.dtype is not None
             return f"{V.kernel._get_mask_type(x.dtype)}({x} != {y})"
 
     @staticmethod
     def lt(x, y):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
-        if x.dtype is None:
-            raise AssertionError("expected x.dtype is not None")
+        assert isinstance(V.kernel, CppVecKernel)
+        assert isinstance(x, CppCSEVariable)
+        assert x.dtype is not None
         return f"{V.kernel._get_mask_type(x.dtype)}({x} < {y})"
 
     @staticmethod
     def gt(x, y):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
-        if x.dtype is None:
-            raise AssertionError("expected x.dtype is not None")
+        assert isinstance(V.kernel, CppVecKernel)
+        assert isinstance(x, CppCSEVariable)
+        assert x.dtype is not None
         return f"{V.kernel._get_mask_type(x.dtype)}({x} > {y})"
 
     @staticmethod
     def le(x, y):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
-        if x.dtype is None:
-            raise AssertionError("expected x.dtype is not None")
+        assert isinstance(V.kernel, CppVecKernel)
+        assert isinstance(x, CppCSEVariable)
+        assert x.dtype is not None
         return f"{V.kernel._get_mask_type(x.dtype)}({x} <= {y})"
 
     @staticmethod
     def ge(x, y):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
-        if x.dtype is None:
-            raise AssertionError("expected x.dtype is not None")
+        assert isinstance(V.kernel, CppVecKernel)
+        assert isinstance(x, CppCSEVariable)
+        assert x.dtype is not None
         return f"{V.kernel._get_mask_type(x.dtype)}({x} >= {y})"
 
     @staticmethod
@@ -1504,14 +1425,12 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def load_seed(name, offset):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
+        assert isinstance(V.kernel, CppVecKernel)
         return f"{V.kernel.load(name, offset)}"
 
     @staticmethod
     def rand(seed, offset):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
+        assert isinstance(V.kernel, CppVecKernel)
         code = BracesBuffer()
         rand_function = (
             f"result[offset_idx] = normalized_rand_cpu({seed}, offset[offset_idx]);"
@@ -1520,26 +1439,23 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def randn(seed, offset):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
+        assert isinstance(V.kernel, CppVecKernel)
         code = BracesBuffer()
         rand_function = f"result[offset_idx] = randn_cpu({seed}, offset[offset_idx]);"
         return codegen_rand(offset, code, rand_function)
 
     @staticmethod
     def randint64(seed, offset, low, high):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
+        assert isinstance(V.kernel, CppVecKernel)
         code = BracesBuffer()
         rand_function = f"result[offset_idx] = randint64_cpu({seed}, offset[offset_idx], {low}, {high});"
         return codegen_rand(offset, code, rand_function, torch.int64)
 
     @staticmethod
     def remainder(a, b):
-        if a.dtype != b.dtype:
-            raise AssertionError(
-                "remainder vec implementation expect the same inputs' dtype."
-            )
+        assert a.dtype == b.dtype, (
+            "remainder vec implementation expect the same inputs' dtype."
+        )
         if is_integer_dtype(a.dtype):
             # Doing blend to set the remaining bits of b to non-zero
             _t = f"decltype({a})"
@@ -1674,16 +1590,12 @@ class CppVecOverrides(CppOverrides):
     @staticmethod
     def floordiv(a, b):
         if is_float_dtype(a.dtype):
-            if a.dtype != b.dtype:
-                raise AssertionError(
-                    "div_floor_floating_vec implementation expect the same inputs' dtype."
-                )
+            assert a.dtype == b.dtype, (
+                "div_floor_floating_vec implementation expect the same inputs' dtype."
+            )
             return f"div_floor_floating_vec({a}, {b})"
         else:
-            if not (all(is_integer_dtype(item.dtype) for item in [a, b])):
-                raise AssertionError(
-                    "expected all(is_integer_dtype(item.dtype) for item in [a, b])"
-                )
+            assert all(is_integer_dtype(item.dtype) for item in [a, b])
             # a and b are integer type
             _t = f"decltype({b})"
             b = f"{_t}::set({_t}(1), {b}, {cexpr_index(V.kernel.num_elems)})"
@@ -1699,8 +1611,7 @@ class CppVecOverrides(CppOverrides):
     @staticmethod
     def minimum(a, b):
         if a.dtype == torch.bool:
-            if b.dtype != torch.bool:
-                raise AssertionError("expected b.dtype == torch.bool")
+            assert b.dtype == torch.bool
             a_cast, b_cast = unify_mask_base_type(V.kernel.compute, (a, b))
             return f"{a_cast} & {b_cast}"
         else:
@@ -1709,8 +1620,7 @@ class CppVecOverrides(CppOverrides):
     @staticmethod
     def maximum(a, b):
         if a.dtype == torch.bool:
-            if b.dtype != torch.bool:
-                raise AssertionError("expected b.dtype == torch.bool")
+            assert b.dtype == torch.bool
             a_cast, b_cast = unify_mask_base_type(V.kernel.compute, (a, b))
             return f"{a_cast} | {b_cast}"
         else:
@@ -1722,11 +1632,9 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def where(a, b, c):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
+        assert isinstance(V.kernel, CppVecKernel)
         if b.dtype == torch.bool:
-            if c.dtype != torch.bool:
-                raise AssertionError("expected c.dtype == torch.bool")
+            assert c.dtype == torch.bool
             blendv_a, blendv_b, blendv_c = unify_mask_base_type(
                 V.kernel.compute, (a, b, c)
             )
@@ -1751,7 +1659,7 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def to_dtype(x, dtype, src_dtype=None, use_compute_types=True):
-        if dtype not in [
+        assert dtype in [
             torch.bool,
             torch.float64,
             torch.float,
@@ -1763,10 +1671,8 @@ class CppVecOverrides(CppOverrides):
             torch.int64,
             torch.float8_e4m3fn,
             torch.float8_e5m2,
-        ]:
-            raise AssertionError(f"{__name__} does not support {dtype}")
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
+        ], f"{__name__} does not support {dtype}"
+        assert isinstance(x, CppCSEVariable)
         src_dtype = x.dtype
         expr = V.kernel.get_to_dtype_expr(x, dtype, src_dtype)
         csevar = V.kernel.cse.generate(V.kernel.compute, expr)
@@ -1782,14 +1688,12 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def round_to_int(x, dtype, src_dtype=None, use_compute_types=True):
-        if dtype not in [
+        assert dtype in [
             torch.uint8,
             torch.int8,
             torch.int32,
-        ]:
-            raise AssertionError(f"{__name__} does not support {dtype}")
-        if not isinstance(x, CppCSEVariable):
-            raise AssertionError("expected isinstance(x, CppCSEVariable)")
+        ], f"{__name__} does not support {dtype}"
+        assert isinstance(x, CppCSEVariable)
         src_dtype = x.dtype
         expr = V.kernel.get_to_dtype_expr(x, dtype, src_dtype, rounding=True)
         csevar = V.kernel.cse.generate(V.kernel.compute, expr)
@@ -1816,8 +1720,7 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def masked(mask, body, other):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
+        assert isinstance(V.kernel, CppVecKernel)
         code = BracesBuffer()
         var = V.kernel.cse.newvar()
         with V.kernel.masked(mask) as new_mask:
@@ -1845,8 +1748,7 @@ class CppVecOverrides(CppOverrides):
         other_code = value_to_cpp(other, DTYPE_TO_CPP[dtype])
         # loading bool as VecMask<float, N>
         other_code_vec = maskify_or_vecify(other_code)
-        if not isinstance(new_mask, CppCSEVariable):
-            raise AssertionError(new_mask)
+        assert isinstance(new_mask, CppCSEVariable), new_mask
         if new_mask.is_vec:
             code = BracesBuffer()
             code.writeline("[&]")
@@ -1865,10 +1767,8 @@ class CppVecOverrides(CppOverrides):
                         V.kernel.compute,
                         other_code_vec,
                     )
-                    if not isinstance(body_vec_var, CppCSEVariable):
-                        raise AssertionError(body_vec_var)
-                    if not isinstance(other_vec_var, CppCSEVariable):
-                        raise AssertionError(other_vec_var)
+                    assert isinstance(body_vec_var, CppCSEVariable), body_vec_var
+                    assert isinstance(other_vec_var, CppCSEVariable), other_vec_var
                     body_vec_var.dtype = dtype
                     other_vec_var.dtype = dtype
                     overrides: type[CppOverrides | CppVecOverrides] = (
@@ -1883,8 +1783,7 @@ class CppVecOverrides(CppOverrides):
                 V.kernel.compute,
                 code,
             )
-            if not isinstance(csevar, CppCSEVariable):
-                raise AssertionError("expected isinstance(csevar, CppCSEVariable)")
+            assert isinstance(csevar, CppCSEVariable)
             csevar.is_vec = True
         elif result.is_vec:
             csevar = V.kernel.cse.generate(
@@ -1901,8 +1800,7 @@ class CppVecOverrides(CppOverrides):
 
     @staticmethod
     def index_expr(expr, dtype):
-        if not isinstance(V.kernel, CppVecKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppVecKernel)")
+        assert isinstance(V.kernel, CppVecKernel)
         index = V.kernel.rename_indexing(expr)
         tiling_var = V.kernel.itervars[V.kernel.tiling_idx]
         stride = V.kernel._try_get_const_stride(index, tiling_var)
@@ -1990,11 +1888,9 @@ class CppVecOverrides(CppOverrides):
     @classmethod
     def _scalarize(cls, scalar_func):
         def inner(*args, **kwargs):
-            if kwargs:
-                raise AssertionError("expected not kwargs")
+            assert not kwargs
             kernel = V.kernel
-            if not isinstance(kernel, CppVecKernel):
-                raise AssertionError("expected isinstance(kernel, CppVecKernel)")
+            assert isinstance(kernel, CppVecKernel)
             code = BracesBuffer()
             code.writeline("[&]()")
             vec_dtype = args[0].dtype
@@ -2016,10 +1912,8 @@ class CppVecOverrides(CppOverrides):
             with code.indent():
                 for argidx, arg in enumerate(args):
                     if isinstance(arg, CppCSEVariable):
-                        if not arg.is_vec:
-                            raise AssertionError("expected arg.is_vec")
-                        if arg.dtype != vec_dtype:
-                            raise AssertionError("expected arg.dtype == vec_dtype")
+                        assert arg.is_vec
+                        assert arg.dtype == vec_dtype
                         code.writeline(
                             f"__at_align__ std::array<{cdtype}, {kernel.tiling_factor}> tmpbuf{argidx};"
                         )
@@ -2066,8 +1960,7 @@ CppVecOverrides._initialize_scalarize()
 class CppTile2DOverrides(CppVecOverrides):
     @staticmethod
     def index_expr(expr, dtype):
-        if not isinstance(V.kernel, CppTile2DKernel):
-            raise AssertionError("expected isinstance(V.kernel, CppTile2DKernel)")
+        assert isinstance(V.kernel, CppTile2DKernel)
         expr = V.kernel.transform_indexing(expr)
         return CppVecOverrides.index_expr(expr, dtype)
 
@@ -2180,8 +2073,7 @@ class CppKernel(Kernel):
             replace_acc_name(self.stores, var_name, f"{var_name}_local")
 
     def gen_body(self, code: BracesBuffer | None = None):
-        if code is not None:
-            raise AssertionError("expected code is None")
+        assert code is None
         code = BracesBuffer()
         with contextlib.ExitStack() as stack:
             if hasattr(self, "codegen_inner_loops"):
@@ -2208,8 +2100,7 @@ class CppKernel(Kernel):
             mask = ops.and_(mask, prior)
             if isinstance(mask, OpsValue):
                 mask = mask.value
-                if not isinstance(mask, CppCSEVariable):
-                    raise AssertionError("expected isinstance(mask, CppCSEVariable)")
+                assert isinstance(mask, CppCSEVariable)
                 # see NOTE [dtype of CppCSEVariable]
                 # mask's dtype should be bool
                 mask.dtype = torch.bool
@@ -2305,8 +2196,7 @@ class CppKernel(Kernel):
         return csevar
 
     def store(self, name, index, value, mode=None):
-        if "buf" not in name:
-            raise AssertionError('expected "buf" in name')
+        assert "buf" in name
         var = self.args.output(name)
         index = self.rename_indexing(index)
         if mode is None:
@@ -2372,8 +2262,7 @@ class CppKernel(Kernel):
 
         # TODO add supports for more data types when needed
         if reduction_type == "sum" and dtype == torch.float:
-            if self.call_ranges is None:
-                raise AssertionError("expected self.call_ranges is not None")
+            assert self.call_ranges is not None
             reduction_size = functools.reduce(
                 operator.mul, self.call_ranges[self.reduction_depth :]
             )
@@ -2397,8 +2286,7 @@ class CppKernel(Kernel):
             CeilDiv(helper_range, num_threads) if num_threads else helper_range
         )
         num_range_thread_expr = cexpr_index(num_range_thread)
-        if reduction_type not in ["welford_reduce", "sum"]:
-            raise AssertionError('expected reduction_type in ["welford_reduce", "sum"]')
+        assert reduction_type in ["welford_reduce", "sum"]
         chunk_size = 4096
         num_chunks = CeilDiv(num_range_thread, chunk_size)
         helper_type = (
@@ -2519,8 +2407,7 @@ class CppKernel(Kernel):
             if logical_index is not None:
                 index = logical_index
             else:
-                if self.reduction_depth is None:
-                    raise AssertionError("expected self.reduction_depth is not None")
+                assert self.reduction_depth is not None
                 index = self.itervars[self.reduction_depth]
                 for i in range(self.reduction_depth + 1, len(self.itervars)):
                     index = index * self.ranges[i] + self.itervars[i]
@@ -2542,12 +2429,10 @@ class CppKernel(Kernel):
 
     def set_ranges(self, lengths, reduction_lengths):
         if self.call_ranges:
-            if self.call_ranges != tuple(lengths) + tuple(reduction_lengths):
-                raise AssertionError(
-                    f"{self.call_ranges} == {tuple(lengths)} + {tuple(reduction_lengths)}"
-                )
-            if self.reduction_depth != len(lengths):
-                raise AssertionError("expected self.reduction_depth == len(lengths)")
+            assert self.call_ranges == tuple(lengths) + tuple(reduction_lengths), (
+                f"{self.call_ranges} == {tuple(lengths)} + {tuple(reduction_lengths)}"
+            )
+            assert self.reduction_depth == len(lengths)
         else:
             self.call_ranges = tuple(lengths) + tuple(reduction_lengths)
             self.ranges = [self.rename_indexing(x) for x in self.call_ranges]
@@ -2563,17 +2448,14 @@ class CppKernel(Kernel):
         )
 
     def size_hint(self):
-        if self.call_ranges is None:
-            raise AssertionError("expected self.call_ranges is not None")
+        assert self.call_ranges is not None
         expr = sympy_product(self.call_ranges)
         return V.graph.sizevars.optimization_hint(expr)
 
     def codegen_loops_impl(self, loop_nest, code, worksharing):
-        if not isinstance(self, CppKernelProxy):
-            raise AssertionError("expected isinstance(self, CppKernelProxy)")
+        assert isinstance(self, CppKernelProxy)
         threads = parallel_num_threads()
-        if self.call_ranges is None:
-            raise AssertionError("expected self.call_ranges is not None")
+        assert self.call_ranges is not None
         if isinstance(loop_nest.kernel, OuterLoopFusedKernel):
             par_depth = loop_nest.kernel.decide_parallel_depth(
                 loop_nest.max_parallel_depth(), threads
@@ -2601,8 +2483,7 @@ class CppKernel(Kernel):
 
             def gen_kernel(_loop_nest: LoopNest):
                 def is_parallel_reduction():
-                    if not _loop_nest.loops:
-                        raise AssertionError("expected _loop_nest.loops")
+                    assert _loop_nest.loops
                     root = _loop_nest.loops[par_depth.start_depth]
                     return root.is_reduction and root.parallel
 
@@ -2611,10 +2492,7 @@ class CppKernel(Kernel):
                     for _loop_nest in kernel.inner:
                         gen_loop_nest(_loop_nest)
                 else:
-                    if not isinstance(kernel, CppKernelProxy):
-                        raise AssertionError(
-                            "expected isinstance(kernel, CppKernelProxy)"
-                        )
+                    assert isinstance(kernel, CppKernelProxy)
                     if _loop_nest.loops is not None and is_parallel_reduction():
                         kernel.update_stores_with_parallel_reduction()
                     with contextlib.ExitStack() as stack:
@@ -2641,8 +2519,7 @@ class CppKernel(Kernel):
                 _loop_nest: LoopNest, depth: int = 0, in_reduction=False
             ):
                 kernel = _loop_nest.get_kernel()
-                if not _loop_nest.loops:
-                    raise AssertionError("expected _loop_nest.loops")
+                assert _loop_nest.loops
                 loop = _loop_nest.loops[depth]
                 with contextlib.ExitStack() as stack_outer:
                     if loop.is_reduction and not in_reduction:
@@ -2655,10 +2532,7 @@ class CppKernel(Kernel):
                     if is_reduction_loop and loop.parallel:
                         worksharing.parallel(threads)
                         if kernel.local_reduction_init:
-                            if not kernel.local_reduction_stores:
-                                raise AssertionError(
-                                    "expected kernel.local_reduction_stores"
-                                )
+                            assert kernel.local_reduction_stores
                             code.splice(kernel.local_reduction_init)
 
                     gen_loop_at(_loop_nest, depth)
@@ -2676,8 +2550,7 @@ class CppKernel(Kernel):
 
             def gen_loop_at(_loop_nest: LoopNest, depth: int = 0):
                 with contextlib.ExitStack() as stack:
-                    if not _loop_nest.loops:
-                        raise AssertionError("expected _loop_nest.loops")
+                    assert _loop_nest.loops
                     loop = _loop_nest.loops[depth]
                     loop_lines = loop.lines()
                     if loop_lines is None:
@@ -2736,8 +2609,7 @@ class CppKernel(Kernel):
             return "TORCH_CHECK"
 
     def decide_parallel_depth(self, max_parallel_depth, threads):
-        if self.call_ranges is None:
-            raise AssertionError("expected self.call_ranges is not None")
+        assert self.call_ranges is not None
         ranges = self.call_ranges[
             max_parallel_depth.start_depth : (
                 max_parallel_depth.start_depth + max_parallel_depth.parallel_depth
@@ -2828,8 +2700,7 @@ class CppKernel(Kernel):
             return True
 
         if var is not None:
-            if var not in self.active_ranges:
-                raise AssertionError("expected var in self.active_ranges")
+            assert var in self.active_ranges
             start, end = self.active_ranges[var]
             if not gen(start, end, var):
                 return False
@@ -2859,10 +2730,8 @@ class CppVecKernel(CppKernel):
     ):
         super().__init__(args, num_threads)
         self.vec_isa = cpu_vec_isa.pick_vec_isa()
-        if not self.vec_isa:
-            raise AssertionError("expected self.vec_isa")
-        if tiling_factor <= 0:
-            raise AssertionError("Expect pass in Non-Zero tiling_factor explicitly")
+        assert self.vec_isa
+        assert tiling_factor > 0, "Expect pass in Non-Zero tiling_factor explicitly"
         self.tiling_factor = tiling_factor
         self.tiling_idx = tiling_idx
         self.tail_size = tail_size
@@ -2876,10 +2745,7 @@ class CppVecKernel(CppKernel):
             for s in index.free_symbols
             if symbol_is_type(s, SymT.TMP)
         ):
-            if not isinstance(indirect_var, CppCSEVariable):
-                raise AssertionError(
-                    "expected isinstance(indirect_var, CppCSEVariable)"
-                )
+            assert isinstance(indirect_var, CppCSEVariable)
             if indirect_var.is_vec:
                 return None
         stride = stride_at_vec_range(index, itervar, self.tiling_factor)
@@ -2889,8 +2755,7 @@ class CppVecKernel(CppKernel):
         num_vectors = math.ceil(
             self.tiling_factor * dtype.itemsize * 8 / self.vec_isa.bit_width()
         )
-        if num_vectors < 1:
-            raise AssertionError("expected num_vectors >= 1")
+        assert num_vectors >= 1
         return num_vectors
 
     def _get_raw_num_vectors(self, dtype: torch.dtype) -> float:
@@ -2912,8 +2777,7 @@ class CppVecKernel(CppKernel):
         return f"at::vec::VecMask<{DTYPE_TO_CPP[dtype]},{num_vectors}>"
 
     def _get_mask_cast(self, mask: CppCSEVariable, dtype: torch.dtype) -> str:
-        if mask.dtype != torch.bool:
-            raise AssertionError(repr(mask))
+        assert mask.dtype == torch.bool, repr(mask)
         num_vectors = self._get_num_vectors(dtype)
         return f"{mask}.template cast<{DTYPE_TO_CPP[dtype]},{num_vectors}>()"
 
@@ -2979,11 +2843,9 @@ class CppVecKernel(CppKernel):
         :param accu_store: whether accumulate the store_value to store_ptr. If True, a store_value should be provided
         :return: a CppCSEVariable that represents the loaded vector or None if it is a store.
         """
-        if store_value and var is None:
-            raise AssertionError("store var must be provided")
+        assert not store_value or var is not None, "store var must be provided"
         if accu_store:
-            if not store_value:
-                raise AssertionError("expected store_value")
+            assert store_value
         if buffer is None:
             buffer = self.loads
 
@@ -3000,14 +2862,12 @@ class CppVecKernel(CppKernel):
                 return self.tiling_factor
 
         def vec_to_array(vec_var: CppCSEVariable) -> CppCSEVariable:
-            if not vec_var.is_vec:
-                raise AssertionError("expected vec_var.is_vec")
+            assert vec_var.is_vec
             code = BracesBuffer()
             code.writeline("[&]")
             with code.indent():
                 vec_dtype = vec_var.dtype
-                if vec_dtype is None:
-                    raise AssertionError("expected vec_dtype is not None")
+                assert vec_dtype is not None
                 if vec_dtype == torch.bool:
                     vec_dtype = torch.float
                 result_size = get_result_size(vec_dtype)
@@ -3020,8 +2880,7 @@ class CppVecKernel(CppKernel):
                 code.writeline("return tmpbuf;")
             code.writeline("()")
             csevar = self.cse.generate(buffer, code)
-            if not isinstance(csevar, CppCSEVariable):
-                raise AssertionError("expected isinstance(csevar, CppCSEVariable)")
+            assert isinstance(csevar, CppCSEVariable)
             return csevar
 
         code = BracesBuffer()
@@ -3046,10 +2905,7 @@ class CppVecKernel(CppKernel):
                 for s in index.free_symbols
                 if symbol_is_type(s, SymT.TMP)
             ):
-                if not isinstance(indirect_var, CppCSEVariable):
-                    raise AssertionError(
-                        "expected isinstance(indirect_var, CppCSEVariable)"
-                    )
+                assert isinstance(indirect_var, CppCSEVariable)
                 if indirect_var.is_vec:
                     array_var = vec_to_array(indirect_var)
                     replacements[indirect_var] = f"{array_var}[{itervar_inner}]"
@@ -3058,10 +2914,8 @@ class CppVecKernel(CppKernel):
             )
             load_mask = None
             if self._load_mask is not None:
-                if store_value:
-                    raise AssertionError("unexpected store with load mask")
-                if not isinstance(self._load_mask, CppCSEVariable):
-                    raise AssertionError(self._load_mask)
+                assert not store_value, "unexpected store with load mask"
+                assert isinstance(self._load_mask, CppCSEVariable), self._load_mask
                 if self._load_mask.is_vec:
                     load_mask = f"{self._load_mask}.is_masked({itervar_inner})"
                 else:
@@ -3103,8 +2957,7 @@ class CppVecKernel(CppKernel):
             return None
         else:
             csevar = self.cse.generate(buffer, code, dtype=dtype)
-            if not isinstance(csevar, CppCSEVariable):
-                raise AssertionError("expected isinstance(csevar, CppCSEVariable)")
+            assert isinstance(csevar, CppCSEVariable)
             csevar.is_vec = True
             return csevar
 
@@ -3123,8 +2976,7 @@ class CppVecKernel(CppKernel):
             csevar = self.cse.generate(self.loads, line, dtype=dtype)  # type: ignore[assignment]
         else:
             csevar = self._load_or_store_non_contiguous(var, index, dtype)  # type: ignore[assignment]
-        if not isinstance(csevar, CppCSEVariable):
-            raise AssertionError("expected isinstance(csevar, CppCSEVariable)")
+        assert isinstance(csevar, CppCSEVariable)
         csevar.update_on_args("load", (self, name, index), {})
         csevar.is_vec = True
         return csevar
@@ -3146,11 +2998,9 @@ class CppVecKernel(CppKernel):
         """
         # when value's type is str (e.g., welford reduction), caller should make sure
         # it is a vector
-        if not (
-            isinstance(value, str)
-            or (isinstance(value, CppCSEVariable) and value.is_vec)
-        ):
-            raise AssertionError(value)
+        assert isinstance(value, str) or (
+            isinstance(value, CppCSEVariable) and value.is_vec
+        ), value
         tiling_var = self.itervars[self.tiling_idx]
         var_expr = f"{var} + {cexpr_index(index)}"
         stride = self._try_get_const_stride(index, tiling_var)
@@ -3176,10 +3026,8 @@ class CppVecKernel(CppKernel):
         return code
 
     def store(self, name, index, value, mode=None):
-        if "buf" not in name:
-            raise AssertionError('expected "buf" in name')
-        if not isinstance(value, CppCSEVariable):
-            raise AssertionError(value)
+        assert "buf" in name
+        assert isinstance(value, CppCSEVariable), value
         if not value.is_vec:
             # this happens when we store a scalar into a vectorized buffer like "fill"
             value = self.broadcast(value)
@@ -3204,10 +3052,7 @@ class CppVecKernel(CppKernel):
                 n_idx = self._get_num_vectors(torch.int64)
                 cdtype = DTYPE_TO_CPP[dtype]
                 index = ops.index_expr(index, torch.int64).value
-                if not (isinstance(index, CppCSEVariable) and index.is_vec):
-                    raise AssertionError(
-                        "expected isinstance(index, CppCSEVariable) and index.is_vec"
-                    )
+                assert isinstance(index, CppCSEVariable) and index.is_vec
                 if self.tail_size:
                     line = f"atomic_add_vec<{cdtype}, {n_idx}, {n_src}>({var}, {index}, {value}, {cexpr_index(self.tail_size)});"
                 else:
@@ -3238,8 +3083,7 @@ class CppVecKernel(CppKernel):
         """
         # Note: For argmax and argmin on bool type, we always convert bool to float.
         # Fix issue: https://github.com/pytorch/pytorch/issues/143568
-        if reduction_type not in VECTORIZABLE_RTYPES:
-            raise AssertionError("expected reduction_type in VECTORIZABLE_RTYPES")
+        assert reduction_type in VECTORIZABLE_RTYPES
         argmax_or_argmin = reduction_type in ("argmax", "argmin")
         logical_index = None
         if argmax_or_argmin and isinstance(value, tuple):
@@ -3247,10 +3091,8 @@ class CppVecKernel(CppKernel):
 
         horizontal_reduction = self.tiling_idx >= self.reduction_depth
         init_dtype = src_dtype if argmax_or_argmin else dtype
-        if not isinstance(value, CppCSEVariable):
-            raise AssertionError(value)
-        if not isinstance(logical_index, (CppCSEVariable, type(None))):
-            raise AssertionError(logical_index)
+        assert isinstance(value, CppCSEVariable), value
+        assert isinstance(logical_index, (CppCSEVariable, type(None))), logical_index
 
         if not value.is_vec:
             value = self.broadcast(value)
@@ -3271,8 +3113,7 @@ class CppVecKernel(CppKernel):
         acc = self.reduction_cse.generate(
             self.loads, f"reduction {reduction_key}", write=False
         )
-        if not isinstance(acc, CppCSEVariable):
-            raise AssertionError("expected isinstance(acc, CppCSEVariable)")
+        assert isinstance(acc, CppCSEVariable)
         acc_vec = f"{acc}_vec"
         masked_acc = f"masked_{acc}"
         masked_acc_vec = f"masked_{acc_vec}"
@@ -3295,8 +3136,7 @@ class CppVecKernel(CppKernel):
 
         use_acc_helper = self.need_use_acc_helper(reduction_type, dtype, False)
         if use_acc_helper:
-            if logical_index is not None:
-                raise AssertionError(logical_index)
+            assert logical_index is None, logical_index
             # use masked acc_vec for tail vec kernel
             self.reduction_prefix_generators.append(
                 self._gen_reduction_prefix(
@@ -3309,8 +3149,7 @@ class CppVecKernel(CppKernel):
             )
 
             # use welford_helper/cascade_helper for vec kernel
-            if self.reduction_depth is None:
-                raise AssertionError("expected self.reduction_depth is not None")
+            assert self.reduction_depth is not None
             reduction_size = functools.reduce(
                 operator.mul, self.ranges[self.reduction_depth :]
             )
@@ -3379,8 +3218,7 @@ class CppVecKernel(CppKernel):
                 index = logical_index
                 index_horizontal_reduction = False
             else:
-                if self.reduction_depth is None:
-                    raise AssertionError("expected self.reduction_depth is not None")
+                assert self.reduction_depth is not None
                 index = self.itervars[self.reduction_depth]
                 for i in range(self.reduction_depth + 1, len(self.itervars)):
                     index = index * self.ranges[i] + self.itervars[i]
@@ -3425,13 +3263,10 @@ class CppVecKernel(CppKernel):
         if horizontal_reduction:
             # Horizontal reduction
             if is_welford_reduction(reduction_type):
-                if self._get_num_vectors(dtype) not in [
+                assert self._get_num_vectors(dtype) in [
                     1,
                     2,
-                ]:
-                    raise AssertionError(
-                        "Welford reduction does not support VectorizedN (N>2)"
-                    )
+                ], "Welford reduction does not support VectorizedN (N>2)"
                 next_value = f"welford_vec_reduce_all({acc_vec})"
                 masked_next_value = f"welford_vec_reduce_all({masked_acc_vec})"
                 self.reduction_suffix.writeline(
@@ -3447,8 +3282,7 @@ class CppVecKernel(CppKernel):
                 ):
                     next_value = f"!{acc_vec}.all_zero()"
                 else:
-                    if reduction_type != "min":
-                        raise AssertionError('expected reduction_type == "min"')
+                    assert reduction_type == "min"
                     next_value = f"{acc_vec}.all_masked()"
             else:
                 reduce_all_body = (
@@ -3463,8 +3297,7 @@ class CppVecKernel(CppKernel):
                 vec_reduce_all_func = f"at::vec::vec_reduce_all<{DTYPE_TO_CPP[vec_dtype]}, {self._get_num_vectors(vec_dtype)}>"
                 result_vec = f"{acc_vec}"
                 if use_acc_helper:
-                    if reduction_type != "sum":
-                        raise AssertionError('expected reduction_type == "sum"')
+                    assert reduction_type == "sum"
                     result_vec = f"{acc_vec} + {masked_acc_vec}"
                 next_value = f"{vec_reduce_all_func}([]({vec}& x, {vec}& y) {reduce_all_body}, {result_vec})"
 
@@ -3480,8 +3313,7 @@ class CppVecKernel(CppKernel):
                     f"{tmpvar} = {reduction_combine(reduction_type, tmpvar, masked_tmpvar)};"
                 )
             elif use_acc_helper:
-                if reduction_type != "sum":
-                    raise AssertionError('expected reduction_type == "sum"')
+                assert reduction_type == "sum"
                 masked_tmpvar = f"masked_{tmpvar}"
                 self.reduction_suffix.writeline(
                     f"{tmpvar} = {tmpvar} + {masked_tmpvar};"
@@ -3531,37 +3363,31 @@ class CppVecKernel(CppKernel):
         self.reduction_suffix.splice(code.map(lambda x: DeferredLine(name, x)))
 
     def broadcast(self, scalar_var: CppCSEVariable) -> CppCSEVariable:
-        if scalar_var.is_vec:
-            raise AssertionError("expected not scalar_var.is_vec")
+        assert not scalar_var.is_vec
         if scalar_var.dtype == torch.bool:
             vec_var = self.cse.generate(
                 self.compute, f"{self._get_mask_type()}::from({scalar_var.name})"
             )
         else:
-            if scalar_var.dtype is None:
-                raise AssertionError("expected scalar_var.dtype is not None")
+            assert scalar_var.dtype is not None
             vec_var = self.cse.generate(
                 self.compute,
                 f"{self._get_vec_type(scalar_var.dtype)}({scalar_var.name})",
             )
-        if not isinstance(vec_var, CppCSEVariable):
-            raise AssertionError("expected isinstance(vec_var, CppCSEVariable)")
+        assert isinstance(vec_var, CppCSEVariable)
         vec_var.dtype = scalar_var.dtype
         vec_var.dependent_itervars = scalar_var.dependent_itervars
         vec_var.is_vec = True
         return vec_var
 
     def arange(self, index: CppCSEVariable, stride: sympy.Symbol) -> CppCSEVariable:
-        if index.is_vec:
-            raise AssertionError("expected not index.is_vec")
-        if index.dtype is None:
-            raise AssertionError("expected index.dtype is not None")
+        assert not index.is_vec
+        assert index.dtype is not None
         csevar = self.cse.generate(
             self.compute,
             f"{self._get_vec_type(index.dtype)}::arange({index}, {stride})",
         )
-        if not isinstance(csevar, CppCSEVariable):
-            raise AssertionError("expected isinstance(csevar, CppCSEVariable)")
+        assert isinstance(csevar, CppCSEVariable)
         csevar.dtype = index.dtype
         csevar.is_vec = True
         return csevar
@@ -3598,8 +3424,7 @@ class CppVecKernel(CppKernel):
         scalar_init = reduction_init(reduction_type, dtype)
         vec_init = f"{vec_type}({scalar_init})"
         if dtype == torch.bool:
-            if reduction_type not in ("min", "max", "sum"):
-                raise AssertionError('expected reduction_type in ("min", "max", "sum")')
+            assert reduction_type in ("min", "max", "sum")
             return f"{self._get_mask_type()}::from({scalar_init})"
         return vec_init
 
@@ -3618,10 +3443,7 @@ class CppVecKernel(CppKernel):
             n_src = self._get_num_vectors(scalar_type)
             return f"IndexValueVec<{DTYPE_TO_CPP[scalar_type]}, {n_src}, {n_idx}>"
         if dtype == torch.bool:
-            if reduction_type not in ("min", "max", "any", "sum"):
-                raise AssertionError(
-                    'expected reduction_type in ("min", "max", "any", "sum")'
-                )
+            assert reduction_type in ("min", "max", "any", "sum")
             return f"{self._get_mask_type()}"
         return vec_type
 
@@ -3700,8 +3522,7 @@ class CppVecKernel(CppKernel):
             else:
                 return f"welford_combine({var}, {{{mean}, {m2}, {weight}}})"
         elif reduction_type in ("argmin", "argmax"):
-            if src_dtype is None:
-                raise AssertionError("expected src_dtype is not None")
+            assert src_dtype is not None
             cdtype = DTYPE_TO_CPP[src_dtype]
             compute_dtype = src_dtype
             if src_dtype == torch.bool:
@@ -3723,10 +3544,7 @@ class CppVecKernel(CppKernel):
                         t_extra = ", false"
                         arg_extra = f", {index}"
                 else:
-                    if horizontal_reduction is None:
-                        raise AssertionError(
-                            "expected horizontal_reduction is not None"
-                        )
+                    assert horizontal_reduction is not None
                     t_extra = f", {str(horizontal_reduction).lower()}"
                     arg_extra = f", {self._adjust_argreduce_index(index)}"
             if self.tail_size:
@@ -3738,8 +3556,7 @@ class CppVecKernel(CppKernel):
                 return f"{reduction_type}_combine_vec<{cdtype}, {n_src}, {n_idx}{t_extra}>({var}, {next_value}{arg_extra})"
         elif reduction_type == "any":
             if isinstance(next_value, CppCSEVariable):
-                if next_value.dtype != torch.bool:
-                    raise AssertionError("expected next_value.dtype == torch.bool")
+                assert next_value.dtype == torch.bool
                 (next_value,) = unify_mask_base_type(V.kernel.compute, (next_value,))
             if self.tail_size:
                 return f"any_masked_reduce({var}, {next_value}, {cexpr_index(self.tail_size)})"
@@ -3749,10 +3566,8 @@ class CppVecKernel(CppKernel):
             raise NotImplementedError
 
     def indirect_assert(self, var, lower, upper, mask=None):
-        if not isinstance(var, CppCSEVariable):
-            raise AssertionError("expected isinstance(var, CppCSEVariable)")
-        if var.dtype is None:
-            raise AssertionError("expected var.dtype is not None")
+        assert isinstance(var, CppCSEVariable)
+        assert var.dtype is not None
         if not var.is_vec:
             if isinstance(mask, CppCSEVariable) and mask.is_vec:
                 mask = f"({mask}).all_masked()"
@@ -3770,8 +3585,7 @@ class CppVecKernel(CppKernel):
             cond = f"{lower} <= {var}"
             cond_print = f"{lower_scalar} <= {var}"
         else:
-            if not upper:
-                raise AssertionError("expected upper")
+            assert upper
             cond = f"{var} < {upper}"
             cond_print = f"{var} < {upper_scalar}"
         cond = f"{self._get_mask_type(var.dtype)}({cond})"
@@ -3789,8 +3603,7 @@ class CppVecKernel(CppKernel):
         return f'{self.assert_function}({cond}, "index out of bounds: {cond_print}")'
 
     def get_to_dtype_expr(self, src, dtype, src_dtype, rounding=False):
-        if not isinstance(src, CppCSEVariable):
-            raise AssertionError("expected isinstance(src, CppCSEVariable)")
+        assert isinstance(src, CppCSEVariable)
         if not src.is_vec:
             return super().get_to_dtype_expr(src, dtype, src_dtype, rounding)
         src_cpp_type = DTYPE_TO_CPP[src_dtype]
@@ -3973,8 +3786,7 @@ class CppTile2DKernel(CppVecKernel):
             line = self._get_vec_load_line(loadbuf, 0, dtype)  # type: ignore[arg-type]
             csevar = self.cse.generate(self.loads, line, dtype=dtype)
             csevar.update_on_args("load", (self, name, index), {})
-            if not isinstance(csevar, CppCSEVariable):
-                raise AssertionError("expected isinstance(csevar, CppCSEVariable)")
+            assert isinstance(csevar, CppCSEVariable)
             csevar.is_vec = True
             return csevar
         else:
@@ -3982,10 +3794,8 @@ class CppTile2DKernel(CppVecKernel):
             return super().load(name, new_index)
 
     def store(self, name, index, value, mode=None):
-        if "buf" not in name:
-            raise AssertionError('expected "buf" in name')
-        if not isinstance(value, CppCSEVariable):
-            raise AssertionError(value)
+        assert "buf" in name
+        assert isinstance(value, CppCSEVariable), value
         if not value.is_vec:
             # this happens when we store a scalar into a vectorized buffer like "fill"
             value = self.broadcast(value)
@@ -4084,10 +3894,7 @@ def get_loop_body_lowp_fp(_body: LoopBody) -> tuple[torch.dtype | None, bool]:
                 _use_fp32 = True
 
             if hasattr(_node, "meta") and _node.meta:
-                if OptimizationContext.key not in _node.meta:
-                    raise AssertionError(
-                        "expected OptimizationContext.key in _node.meta"
-                    )
+                assert OptimizationContext.key in _node.meta
                 opt_ctx: OptimizationContext = _node.meta[OptimizationContext.key]
                 if not opt_ctx.dtype or opt_ctx.dtype not in DTYPE_LOWP_FP:
                     _use_fp32 = True
@@ -4132,8 +3939,7 @@ class TilingSelect:
         # TODO(jgong5): support alternative tiling factors and data types
         loop_bodies = _get_loop_body(fn_list)
         all_dtypes = _get_dtype_from_loopbodies(loop_bodies)
-        if not all_dtypes:
-            raise AssertionError("expected all_dtypes")
+        assert all_dtypes
         if any(dtype not in VECTORIZABLE_DTYPES for dtype in all_dtypes):
             return [], [], KernelOpStats()
         dtype = torch.float
@@ -4378,8 +4184,7 @@ class CppKernelProxy(CppKernel):
 
     def data_type_propagation(self, nodes):
         for _node in nodes:
-            if not isinstance(_node, SchedulerNode):
-                raise AssertionError("expected isinstance(_node, SchedulerNode)")
+            assert isinstance(_node, SchedulerNode)
             DataTypePropagation.propagate_scheduler_node(_node)
 
     # Check if all the nodes of a given fx graph can support BF16/FP16
@@ -4412,8 +4217,7 @@ class CppKernelProxy(CppKernel):
             def get_output_dtype(node: torch.fx.Node) -> torch.dtype | None:
                 """Get output dtype for nodes that may produce lowp fp dt"""
                 if node.target == "load":
-                    if len(node.args) != 3:
-                        raise AssertionError("expected len(node.args) == 3")
+                    assert len(node.args) == 3
                     return V.graph.get_dtype(node.args[1])  # type: ignore[arg-type]
                 elif node.target in [
                     "to_dtype",
@@ -4429,14 +4233,12 @@ class CppKernelProxy(CppKernel):
 
             def is_lowp_fp_source(node: torch.fx.Node, dt: torch.dtype):
                 """Check if the given node produces output with expected low precision floating point data type."""
-                if dt not in DTYPE_LOWP_FP:
-                    raise AssertionError("expected dt in DTYPE_LOWP_FP")
+                assert dt in DTYPE_LOWP_FP
                 return get_output_dtype(node) == dt
 
             def is_lowp_fp_sink(node: torch.fx.Node, dt: torch.dtype):
                 """Check if the given node accept input with expected low precision floating point data type."""
-                if dt not in DTYPE_LOWP_FP:
-                    raise AssertionError("expected dt in DTYPE_LOWP_FP")
+                assert dt in DTYPE_LOWP_FP
                 if input_dtype := get_input_dtype(node):
                     return input_dtype == dt
                 elif node.target == "to_dtype":
@@ -4504,15 +4306,12 @@ class CppKernelProxy(CppKernel):
                         # the bfloat16/float16 reduction by
                         #     1) updating the src_dtype to float
                         # and 2) updating the dtype to float if it is bfloat16/float16.
-                        if dtype not in [
+                        assert dtype in [
                             torch.float,
                             torch.bfloat16,
                             torch.float16,
                             torch.int64,
-                        ]:
-                            raise AssertionError(
-                                "expected dtype in [ torch.float, torch.bfloat16, torch.float16, to..."
-                            )
+                        ]
                         _node.args = (
                             ops,
                             torch.float if dtype in DTYPE_LOWP_FP else dtype,
@@ -4646,36 +4445,26 @@ class CppKernelProxy(CppKernel):
                 for sub_block in sub_blocks:
                     for fx_node in sub_block.graph.nodes:
                         if fx_node.target in ["load", "store"]:
-                            if not fx_node.meta:
-                                raise AssertionError("expected fx_node.meta")
-                            if OptimizationContext.key not in fx_node.meta:
-                                raise AssertionError(
-                                    "expected OptimizationContext.key in fx_node.meta"
-                                )
+                            assert fx_node.meta
+                            assert OptimizationContext.key in fx_node.meta
                             opt_ctx: OptimizationContext = fx_node.meta[
                                 OptimizationContext.key
                             ]
-                            if opt_ctx.dtype not in DTYPE_LOWP_FP:
-                                raise AssertionError(
-                                    "expected opt_ctx.dtype in DTYPE_LOWP_FP"
-                                )
+                            assert opt_ctx.dtype in DTYPE_LOWP_FP
 
             # Bypass the legalization as the kernel can run with bf16/fp16 directly
             return
 
         for _node in nodes:
-            if not isinstance(_node, SchedulerNode):
-                raise AssertionError("expected isinstance(_node, SchedulerNode)")
-            if not isinstance(_node._body, LoopBody):
-                raise AssertionError("expected isinstance(_node._body, LoopBody)")
+            assert isinstance(_node, SchedulerNode)
+            assert isinstance(_node._body, LoopBody)
             body: LoopBody = _node._body
             if not body.is_memory_copy():
                 self.legalize_lowp_fp_dtype_loopbody(body)
 
     def codegen_functions(self, fn_list, var_sizes_list):
         """Generate scalar and vectorized C++ kernels with tiling for the given functions."""
-        if len(fn_list) != len(var_sizes_list):
-            raise AssertionError("expected len(fn_list) == len(var_sizes_list)")
+        assert len(fn_list) == len(var_sizes_list)
         kernel_group = self.kernel_group
         group, reduction_group = max(var_sizes_list, key=lambda sizes: len(sizes[1]))
 
@@ -4699,21 +4488,14 @@ class CppKernelProxy(CppKernel):
                     (group, reduction_group),
                     (tuple(itertools.chain(group, reduction_group)), ()),
                 ]:
-                    if in_suffix:
-                        raise AssertionError("expected not in_suffix")
+                    assert not in_suffix
                     fn(vars, reduction_vars)
                 else:
                     in_suffix = True
-                    if not (
-                        var_sizes
-                        == (
-                            group,
-                            (),
-                        )
-                    ):
-                        raise AssertionError(
-                            f"unexpected group: {var_sizes} != {group}, {reduction_group}"
-                        )
+                    assert var_sizes == (
+                        group,
+                        (),
+                    ), f"unexpected group: {var_sizes} != {group}, {reduction_group}"
                     # we can fuse in some extra pointwise into the suffix
                     with kernel.write_to_suffix():
                         fn(vars, ())
@@ -4756,10 +4538,7 @@ class CppKernelProxy(CppKernel):
                     return 2 * hint_tail_size > tiling_factor
                 return True
 
-            if len(tiling_factors) != len(tiling_indices):
-                raise AssertionError(
-                    "expected len(tiling_factors) == len(tiling_indices)"
-                )
+            assert len(tiling_factors) == len(tiling_indices)
             _inner_loop_reduction_outer_not = False
             _tiled_loop_reduction_descendant = False
             _outer_loop = None
@@ -4807,13 +4586,10 @@ class CppKernelProxy(CppKernel):
                 self.kernels = [vec_kernel, tail_kernel]
                 _outer_loop = loop
             elif len(tiling_indices) == 2:
-                if not (
+                assert (
                     tiling_indices[1] == len(self.itervars) - 1
                     and tiling_factors[0] == tiling_factors[1]
-                ):
-                    raise AssertionError(
-                        "expected tiling_indices[1] == len(self.itervars) - 1 and tiling_fa..."
-                    )
+                )
 
                 # pyrefly: ignore [bad-assignment]
                 metrics.generated_cpp_vec_kernel_count += 2
@@ -4908,8 +4684,7 @@ class CppKernelProxy(CppKernel):
         # Legalize BF16 node by adding to_dtype explicitly
         self.legalize_lowp_fp_dtype(nodes)
         self.data_type_propagation(nodes)
-        if len(nodes) < 1:
-            raise AssertionError("expected len(nodes) >= 1")
+        assert len(nodes) >= 1
 
         def fn(node, *index_vars):
             node.decide_inplace_update()
@@ -4946,8 +4721,7 @@ class CppKernelProxy(CppKernel):
             kernel.update_stores_with_parallel_reduction()
 
     def gen_body(self, code: BracesBuffer | None = None):
-        if code is None:
-            raise AssertionError("expected code is not None")
+        assert code is not None
         if_prefix = "C10_LIKELY"
         for kernel in self.kernels:
             with contextlib.ExitStack() as stack:
@@ -4966,14 +4740,10 @@ class CppKernelProxy(CppKernel):
         """
 
         def aggregate_reduction_prefix_suffix(outer_loop: "LoopLevel"):
-            if len(self.kernels) < 2:
-                raise AssertionError("expected len(self.kernels) >= 2")
+            assert len(self.kernels) >= 2
             main_loop_kernel = self.kernels[0]
             tail_loop_kernel = self.kernels[-1]
-            if not isinstance(main_loop_kernel, self.vec_kernel_cls):
-                raise AssertionError(
-                    "expected isinstance(main_loop_kernel, self.vec_kernel_cls)"
-                )
+            assert isinstance(main_loop_kernel, self.vec_kernel_cls)
 
             # Prefix
             if type(tail_loop_kernel) is self.kernel_cls:
@@ -5030,8 +4800,7 @@ class CppKernelProxy(CppKernel):
 
         main_kernel = self.kernels[0]
         if inner_loop_reduction_outer_not:
-            if not outer_loop:
-                raise AssertionError("expected outer_loop")
+            assert outer_loop
             aggregate_reduction_prefix_suffix(outer_loop)
         else:
             main_kernel.finalize_reduction_prefix()
@@ -5064,8 +4833,7 @@ class OuterLoopFusedKernel(CppKernel):
             # For any ScalarKernel, VecKernel, or Tile2DKernel,
             # they should all have the same call_ranges
             call_ranges = kernel.call_ranges
-            if call_ranges is None:
-                raise AssertionError("expected call_ranges is not None")
+            assert call_ranges is not None
             kernels_parallel_depth.append(
                 kernel.decide_parallel_depth(
                     ParallelDepth(
@@ -5128,24 +4896,20 @@ class CppScheduling(BaseScheduling):
 
     def _get_indexing_ranges_exprs(self, node):
         if isinstance(node, FusedSchedulerNode):
-            if len(node.snodes) <= 0:
-                raise AssertionError(node.snodes)
+            assert len(node.snodes) > 0, node.snodes
             var_ranges = None
             indexing_exprs = OrderedSet[Any]()
             for snode in node.snodes:
                 v, exprs = self._get_indexing_ranges_exprs(snode)
                 if var_ranges is None:
                     var_ranges = v
-                if var_ranges != v:
-                    raise AssertionError((var_ranges, v, node.snodes))
+                assert var_ranges == v, (var_ranges, v, node.snodes)
                 indexing_exprs.update(exprs)
             return var_ranges, list(indexing_exprs)
 
-        if not isinstance(node, SchedulerNode):
-            raise AssertionError("expected isinstance(node, SchedulerNode)")
+        assert isinstance(node, SchedulerNode)
         comp_buffer = node.node
-        if not isinstance(comp_buffer, ir.ComputedBuffer):
-            raise AssertionError("expected isinstance(comp_buffer, ir.ComputedBuffer)")
+        assert isinstance(comp_buffer, ir.ComputedBuffer)
         _, body, _ = comp_buffer.get_default_sizes_body()
         return body.var_ranges, list(body.indexing_exprs.values())
 
@@ -5153,34 +4917,24 @@ class CppScheduling(BaseScheduling):
         if isinstance(node, SchedulerNode):
             return [(node, node.snapshot_loop_state())]
 
-        if not isinstance(node, FusedSchedulerNode):
-            raise AssertionError("expected isinstance(node, FusedSchedulerNode)")
+        assert isinstance(node, FusedSchedulerNode)
         snapshots = []
         for snode in node.snodes:
-            if not isinstance(snode, SchedulerNode):
-                raise AssertionError("expected isinstance(snode, SchedulerNode)")
+            assert isinstance(snode, SchedulerNode)
             snapshots.append((snode, snode.snapshot_loop_state()))
         return snapshots
 
     def _align_compatible_range_nodes(self, node1, node2):
-        if not isinstance(node1, (SchedulerNode, FusedSchedulerNode)):
-            raise AssertionError(
-                "expected isinstance(node1, (SchedulerNode, FusedSchedulerNode))"
-            )
-        if not isinstance(node2, (SchedulerNode, FusedSchedulerNode)):
-            raise AssertionError(
-                "expected isinstance(node2, (SchedulerNode, FusedSchedulerNode))"
-            )
+        assert isinstance(node1, (SchedulerNode, FusedSchedulerNode))
+        assert isinstance(node2, (SchedulerNode, FusedSchedulerNode))
 
         _, (vars1, reduce1) = node1.group
         _, (vars2, reduce2) = node2.group
-        if not (reduce1 == () and reduce2 == ()):
-            raise AssertionError((reduce1, reduce2))
+        assert reduce1 == () and reduce2 == (), (reduce1, reduce2)
 
         node_to_recomp = node1 if len(vars1) < len(vars2) else node2
         ref_node = node2 if len(vars1) < len(vars2) else node1
-        if not isinstance(node_to_recomp, SchedulerNode):
-            raise AssertionError("expected isinstance(node_to_recomp, SchedulerNode)")
+        assert isinstance(node_to_recomp, SchedulerNode)
 
         ref_indexing_constraints = self._get_indexing_ranges_exprs(ref_node)
         node_to_recomp.recompute_size_and_body(
@@ -5200,13 +4954,9 @@ class CppScheduling(BaseScheduling):
                 extra_indexing_constraints=node_to_recomp_indexing_constraints
             )
         else:
-            if not isinstance(ref_node, FusedSchedulerNode):
-                raise AssertionError(
-                    "expected isinstance(ref_node, FusedSchedulerNode)"
-                )
+            assert isinstance(ref_node, FusedSchedulerNode)
             for snode in ref_node.snodes:
-                if not isinstance(snode, SchedulerNode):
-                    raise AssertionError("expected isinstance(snode, SchedulerNode)")
+                assert isinstance(snode, SchedulerNode)
                 snode.recompute_size_and_body(
                     extra_indexing_constraints=node_to_recomp_indexing_constraints
                 )
@@ -5219,21 +4969,17 @@ class CppScheduling(BaseScheduling):
         if node1.is_foreach() or node2.is_foreach():
             return ForeachKernelSchedulerNode.fuse(node1, node2)
         elif node1.is_template():
-            if node2.is_template():
-                raise AssertionError("expected not node2.is_template()")
+            assert not node2.is_template()
             return FusedSchedulerNode.fuse(node1, node2)
         else:
             if (
                 self._why_fuse_nodes(node1, node2)
                 == ReasonFusedNodes.COMPATIBLE_RANGES_NO_REDUCTION
             ):
-                if not (self._align_compatible_range_nodes(node1, node2)):
-                    raise AssertionError(
-                        (
-                            node1.group,
-                            node2.group,
-                        )
-                    )
+                assert self._align_compatible_range_nodes(node1, node2), (
+                    node1.group,
+                    node2.group,
+                )
                 return FusedSchedulerNode.fuse(node1, node2)
             elif self.can_fuse_vertical_outer_loop(node1, node2):
                 return OuterLoopFusedSchedulerNode.fuse(
@@ -5281,14 +5027,10 @@ class CppScheduling(BaseScheduling):
         # See https://github.com/pytorch/pytorch/pull/120077/files#r1500427848 for more details
         # TODO: we can fix if it allows us to CSE at least one of the variables
 
-        if not isinstance(node_to_recomp, SchedulerNode):
-            raise AssertionError("expected isinstance(node_to_recomp, SchedulerNode)")
+        assert isinstance(node_to_recomp, SchedulerNode)
         if isinstance(node_to_recomp.node, ir.TemplateBuffer):
             return False
-        if not isinstance(node_to_recomp.node, ir.ComputedBuffer):
-            raise AssertionError(
-                "expected isinstance(node_to_recomp.node, ir.ComputedBuffer)"
-            )
+        assert isinstance(node_to_recomp.node, ir.ComputedBuffer)
         # node.data.get_size() is a cheaper version of node.get_read_writes().var_ranges
         # but without variable name
         ranges2 = node_to_recomp.node.data.get_size()
@@ -5296,14 +5038,10 @@ class CppScheduling(BaseScheduling):
         if isinstance(ref_node, FusedSchedulerNode):
             ranges_set = OrderedSet[tuple[Any, ...]]()
             for snode in ref_node.snodes:
-                if not isinstance(snode, SchedulerNode):
-                    raise AssertionError("expected isinstance(snode, SchedulerNode)")
+                assert isinstance(snode, SchedulerNode)
                 if isinstance(snode.node, ir.TemplateBuffer):
                     break
-                if not isinstance(snode.node, ir.ComputedBuffer):
-                    raise AssertionError(
-                        "expected isinstance(snode.node, ir.ComputedBuffer)"
-                    )
+                assert isinstance(snode.node, ir.ComputedBuffer)
                 ranges_set.add(tuple(snode.node.data.get_size()))
 
             if len(ranges_set) != 1:
@@ -5311,12 +5049,8 @@ class CppScheduling(BaseScheduling):
 
             ranges1 = list(next(iter(ranges_set)))
         else:
-            if not isinstance(ref_node, SchedulerNode):
-                raise AssertionError("expected isinstance(ref_node, SchedulerNode)")
-            if not isinstance(ref_node.node, ir.ComputedBuffer):
-                raise AssertionError(
-                    "expected isinstance(ref_node.node, ir.ComputedBuffer)"
-                )
+            assert isinstance(ref_node, SchedulerNode)
+            assert isinstance(ref_node.node, ir.ComputedBuffer)
             ranges1 = ref_node.node.data.get_size()  # type: ignore[assignment]
 
         if ranges1 != ranges2:
@@ -5331,18 +5065,10 @@ class CppScheduling(BaseScheduling):
                 node.restore_loop_state(state)
 
     def _can_fuse_horizontal_impl(self, node1, node2):
-        if not (
-            isinstance(
-                node1, (FusedSchedulerNode, SchedulerNode, ExternKernelSchedulerNode)
-            )
-        ):
-            raise AssertionError(
-                "expected isinstance( node1, (FusedSchedulerNode, SchedulerNode, Ex..."
-            )
-        if not isinstance(node2, (FusedSchedulerNode, SchedulerNode)):
-            raise AssertionError(
-                "expected isinstance(node2, (FusedSchedulerNode, SchedulerNode))"
-            )
+        assert isinstance(
+            node1, (FusedSchedulerNode, SchedulerNode, ExternKernelSchedulerNode)
+        )
+        assert isinstance(node2, (FusedSchedulerNode, SchedulerNode))
         if any(
             isinstance(node, (OuterLoopFusedSchedulerNode, ExternKernelSchedulerNode))
             for node in (node1, node2)
@@ -5387,19 +5113,13 @@ class CppScheduling(BaseScheduling):
             if isinstance(node1, OuterLoopFusedSchedulerNode)
             else node1
         )
-        if not isinstance(_node1, (FusedSchedulerNode, SchedulerNode)):
-            raise AssertionError(
-                "expected isinstance(_node1, (FusedSchedulerNode, SchedulerNode))"
-            )
+        assert isinstance(_node1, (FusedSchedulerNode, SchedulerNode))
         _node2 = (
             node2.get_outer_nodes()[0]
             if isinstance(node2, OuterLoopFusedSchedulerNode)
             else node2
         )
-        if not isinstance(_node2, (FusedSchedulerNode, SchedulerNode)):
-            raise AssertionError(
-                "expected isinstance(_node2, (FusedSchedulerNode, SchedulerNode))"
-            )
+        assert isinstance(_node2, (FusedSchedulerNode, SchedulerNode))
 
         _, (vars1, reduce1) = _node1.group
         _, (vars2, reduce2) = _node2.group
@@ -5504,10 +5224,7 @@ class CppScheduling(BaseScheduling):
         node_bodies: list[tuple[Any, Any]] = []
 
         for node in nodes:
-            if not isinstance(node.node, ir.ComputedBuffer):
-                raise AssertionError(
-                    "expected isinstance(node.node, ir.ComputedBuffer)"
-                )
+            assert isinstance(node.node, ir.ComputedBuffer)
             sizes_body = node.node.get_default_sizes_body()
             node_bodies.append((node, sizes_body))
             (index_size, _), original_body, _ = sizes_body
@@ -5547,8 +5264,7 @@ class CppScheduling(BaseScheduling):
         # (same number of index dimensions). If not, bail out to avoid incompatible
         # var_ranges after loop split which would cause assertion failures in
         # simplify_and_reorder or codegen_functions.
-        if matched_index_size is None:
-            raise AssertionError("expected matched_index_size is not None")
+        assert matched_index_size is not None
         matched_num_dims = len(matched_index_size)
 
         for node, ((index_size, _), original_body, _) in node_bodies:
@@ -5585,17 +5301,13 @@ class CppScheduling(BaseScheduling):
             _, split_body, _ = loop_split(*sizes_body)
             if extra_indexing_ranges is None:
                 extra_indexing_ranges = split_body.var_ranges
-            if extra_indexing_ranges != split_body.var_ranges:
-                raise AssertionError(
-                    (
-                        extra_indexing_ranges,
-                        split_body.var_ranges,
-                    )
-                )
+            assert extra_indexing_ranges == split_body.var_ranges, (
+                extra_indexing_ranges,
+                split_body.var_ranges,
+            )
             extra_indexing_exprs.update(split_body.indexing_exprs.values())
 
-        if extra_indexing_ranges is None:
-            raise AssertionError("extra_indexing_ranges is None")
+        assert extra_indexing_ranges is not None
         extra_indexing_constraints = (
             extra_indexing_ranges,
             list(extra_indexing_exprs),
@@ -5632,27 +5344,18 @@ class CppScheduling(BaseScheduling):
         generated_cpp_vec_kernel_count = metrics.generated_cpp_vec_kernel_count
         cpp_kernel_proxy_list: list[self.kernel_proxy_cls] = []  # type: ignore[name-defined]
         nodes_list: list[list[SchedulerNode]] = []
-        if not isinstance(node, OuterLoopFusedSchedulerNode):
-            raise AssertionError(
-                "expected isinstance(node, OuterLoopFusedSchedulerNode)"
-            )
+        assert isinstance(node, OuterLoopFusedSchedulerNode)
 
         def try_outer_loop_fusion_with_local_buf(node: OuterLoopFusedSchedulerNode):
             """
             Codegen code with fused outer loop and local Buffer.
             """
-            if not isinstance(node, OuterLoopFusedSchedulerNode):
-                raise AssertionError(
-                    "expected isinstance(node, OuterLoopFusedSchedulerNode)"
-                )
+            assert isinstance(node, OuterLoopFusedSchedulerNode)
             cpp_kernel_proxy_list.clear()
             nodes_list.clear()
 
             def get_call_ranges(node: BaseSchedulerNode):
-                if not isinstance(node, (SchedulerNode, FusedSchedulerNode)):
-                    raise AssertionError(
-                        "expected isinstance(node, (SchedulerNode, FusedSchedulerNode))"
-                    )
+                assert isinstance(node, (SchedulerNode, FusedSchedulerNode))
                 nodes: list[SchedulerNode] = node.get_nodes()  # type: ignore[assignment]
                 _, (group, reduction_group) = max(
                     nodes, key=lambda x: int(x.is_reduction())
@@ -5674,10 +5377,7 @@ class CppScheduling(BaseScheduling):
                 visited_scheduler_nodes: OrderedSet[str] = OrderedSet()
                 for scheduler_node in node.get_nodes():
                     # all users inside same OuterLoopFusedSchedulerNode
-                    if not isinstance(scheduler_node, SchedulerNode):
-                        raise AssertionError(
-                            "expected isinstance(scheduler_node, SchedulerNode)"
-                        )
+                    assert isinstance(scheduler_node, SchedulerNode)
                     visited_scheduler_nodes.add(scheduler_node.get_name())
                     if (
                         scheduler_node.is_reduction()
@@ -5690,10 +5390,7 @@ class CppScheduling(BaseScheduling):
                         user.node in node.get_nodes() for user in scheduler_buffer.users
                     ):
                         global_buffer = scheduler_buffer.node
-                        if not isinstance(global_buffer, ir.ComputedBuffer):
-                            raise AssertionError(
-                                "expected isinstance(global_buffer, ir.ComputedBuffer)"
-                            )
+                        assert isinstance(global_buffer, ir.ComputedBuffer)
                         global_buffer_layout = global_buffer.get_layout()
                         size_offset = node.outer_loop_fusion_depth - len(
                             get_call_ranges(scheduler_node)
@@ -5785,18 +5482,12 @@ class CppScheduling(BaseScheduling):
             with LocalBufferContext(kernel_group.args) as scope:
                 if len(local_buffers) > 0:
                     for local_buffer in local_buffers:
-                        if local_buffer.name is None:
-                            raise AssertionError(
-                                "expected local_buffer.name is not None"
-                            )
+                        assert local_buffer.name is not None
                         scope.add_local_buffer(
                             local_buffer, local_to_global_buffers[local_buffer.name]
                         )
                 for _node in node.get_outer_nodes():
-                    if not isinstance(_node, (FusedSchedulerNode, SchedulerNode)):
-                        raise AssertionError(
-                            "expected isinstance(_node, (FusedSchedulerNode, SchedulerNode))"
-                        )
+                    assert isinstance(_node, (FusedSchedulerNode, SchedulerNode))
                     cpp_kernel_proxy = self.kernel_proxy_cls(kernel_group)
                     cpp_kernel_proxy.codegen_nodes(_node.get_nodes())  # type: ignore[arg-type]
                     cpp_kernel_proxy_list.append(cpp_kernel_proxy)
@@ -5836,10 +5527,7 @@ class CppScheduling(BaseScheduling):
             # Kernels share the same global contexts like V.graph.wrapper_code, V.kernel.args.
             with torch._inductor.config.patch(inplace_buffers=False):
                 for _node in node.get_outer_nodes():
-                    if not isinstance(_node, (FusedSchedulerNode, SchedulerNode)):
-                        raise AssertionError(
-                            "expected isinstance(_node, (FusedSchedulerNode, SchedulerNode))"
-                        )
+                    assert isinstance(_node, (FusedSchedulerNode, SchedulerNode))
                     _nodes: list[SchedulerNode] = _node.get_nodes()  # type: ignore[assignment]
                     cpp_kernel_proxy = self.kernel_proxy_cls(kernel_group)
                     cpp_kernel_proxy.codegen_nodes(_nodes)
@@ -5881,8 +5569,7 @@ class CppScheduling(BaseScheduling):
         """
         Codegen a CPP template, possibly with fused epilogues
         """
-        if prologue_nodes:
-            raise AssertionError("expected not prologue_nodes")
+        assert not prologue_nodes
 
         # remove MultiOutput from epilogue_nodes
         epilogue_nodes = [
@@ -5894,20 +5581,17 @@ class CppScheduling(BaseScheduling):
         # a templated kernel was successfully compiled in a UT
         counters["inductor"]["cpp_templated_kernel_counter"] += 1
         counters["inductor"]["cpp_epilogue_fusion_counter"] += len(epilogue_nodes)
-        if not (self.is_cpp_template(template_node)):
-            raise AssertionError(
-                "Template node passed to CppScheduler.codegen_template must be a SchedulerNode that wraps a CppTemplateBuffer"
-            )
+        assert self.is_cpp_template(template_node), (
+            "Template node passed to CppScheduler.codegen_template must be a SchedulerNode that wraps a CppTemplateBuffer"
+        )
         template_node = cast(SchedulerNode, template_node)
         _, (_, rnumel) = template_node.group
-        if rnumel != ():
-            raise AssertionError("expected rnumel == ()")
+        assert rnumel == ()
         ctb: ir.CppTemplateBuffer = cast(ir.CppTemplateBuffer, template_node.node)
         epilogue_ir_nodes: list[ir.Operation | None] = [n.node for n in epilogue_nodes]
-        if not (all(isinstance(n, ir.ComputedBuffer) for n in epilogue_ir_nodes)):
-            raise AssertionError(
-                "Epilogue nodes must all be instances of ir.ComputedBuffer"
-            )
+        assert all(isinstance(n, ir.ComputedBuffer) for n in epilogue_ir_nodes), (
+            "Epilogue nodes must all be instances of ir.ComputedBuffer"
+        )
 
         def template_buffer_has_other_users(
             template_buffer, outputs_by_name, epilogue_nodes
@@ -5915,10 +5599,7 @@ class CppScheduling(BaseScheduling):
             if not epilogue_nodes:
                 return False
 
-            if template_buffer.get_name() not in outputs_by_name:
-                raise AssertionError(
-                    "expected template_buffer.get_name() in outputs_by_name"
-                )
+            assert template_buffer.get_name() in outputs_by_name
             users = outputs_by_name[template_buffer.get_name()].users
             return not all(
                 isinstance(user.node, BaseSchedulerNode)
@@ -5948,19 +5629,16 @@ class CppScheduling(BaseScheduling):
         if is_multi_outputs_template(template_node.node):
             # For multi outputs template, allocate buffers for each output after the epilogue
             # codegen to which determines if the buffer has been removed.
-            if len(template_node.outputs) != 1:
-                raise AssertionError(
-                    "Multi outputs template should be with 1 output template buffer of MultiOutputLayout"
-                )
+            assert len(template_node.outputs) == 1, (
+                "Multi outputs template should be with 1 output template buffer of MultiOutputLayout"
+            )
             for user in template_node.outputs[0].users:
-                if not isinstance(user.node, ExternKernelSchedulerNode):
-                    raise AssertionError(
-                        "Multi outputs template should be with ExternKernelSchedulerNode"
-                    )
-                if not isinstance(user.node.node, ir.MultiOutput):
-                    raise AssertionError(
-                        "Multi outputs template has multi users with MultiOutput"
-                    )
+                assert isinstance(user.node, ExternKernelSchedulerNode), (
+                    "Multi outputs template should be with ExternKernelSchedulerNode"
+                )
+                assert isinstance(user.node.node, ir.MultiOutput), (
+                    "Multi outputs template has multi users with MultiOutput"
+                )
                 user.node.mark_run()
 
         self.codegen_comment(node_schedule, kernel_name)
@@ -6032,10 +5710,6 @@ class CppScheduling(BaseScheduling):
             self.codegen_comment(self.kernel_group.scheduled_nodes, kernel_name)
             if config.cpp.enable_kernel_profile:
                 V.graph.wrapper_code.write_kernel_context_guard_begin()
-            if (
-                config.cpp.enable_kernel_profile
-                and config.cpp.enable_kernel_context_guard
-            ):
                 V.graph.wrapper_code.write_kernel_context_guard(
                     kernel_name,
                     self.kernel_group.scheduled_nodes,  # type: ignore[arg-type]
@@ -6304,8 +5978,7 @@ class LoopNest:
         itervars = kernel.itervars
         ranges = kernel.ranges
         reduction_depth = kernel.reduction_depth
-        if reduction_depth is None:
-            raise AssertionError("expected reduction_depth is not None")
+        assert reduction_depth is not None
 
         loops: list[LoopLevel] | None = None
         for loop_idx, (var, size) in enumerate(zip(itervars, ranges)):
@@ -6355,10 +6028,7 @@ class LoopNest:
         simd_vec_depth = get_simd_vec_depth(self.loops)
 
         def has_scalar_kernel(loop_nest: LoopNest):
-            if not isinstance(loop_nest.kernel, CppKernelProxy):
-                raise AssertionError(
-                    "expected isinstance(loop_nest.kernel, CppKernelProxy)"
-                )
+            assert isinstance(loop_nest.kernel, CppKernelProxy)
             return any(
                 not isinstance(kernel, CppVecKernel)
                 for kernel in loop_nest.kernel.kernels
@@ -6390,14 +6060,11 @@ class LoopNest:
         return ParallelDepth(parallel_depth=max_depth, start_depth=start_depth)
 
     def mark_parallel(self, par_depth):
-        if par_depth.parallel_depth > self.max_parallel_depth().parallel_depth:
-            raise AssertionError(
-                "Parallel depth cannot exceed the maximal allowed parallel depth"
-            )
-        if self.loops is None:
-            raise AssertionError("expected self.loops is not None")
-        if len(self.loops) < par_depth.parallel_depth:
-            raise AssertionError("expected len(self.loops) >= par_depth.parallel_depth")
+        assert par_depth.parallel_depth <= self.max_parallel_depth().parallel_depth, (
+            "Parallel depth cannot exceed the maximal allowed parallel depth"
+        )
+        assert self.loops is not None
+        assert len(self.loops) >= par_depth.parallel_depth
         loop = self.loops[par_depth.start_depth]
         loop.parallel = par_depth.parallel_depth
         if loop.is_reduction:
@@ -6414,23 +6081,19 @@ class LoopNest:
             for (x0 = 0; x0 < x0_end; x0 += factor)
         See details in Note [tiled_size].
         """
-        if not self.loops:
-            raise AssertionError("expected self.loops")
+        assert self.loops
         self.loops[depth] = self.loops[depth].tile(factor)
         return self.loops[depth]
 
     def get_kernel(self) -> CppKernel:
-        if not self.kernel:
-            raise AssertionError("expected self.kernel")
+        assert self.kernel
         return self.kernel
 
     def set_kernel(self, kernel):
         self.kernel = kernel
 
     def from_loop_level(self, level: int):
-        if not self.loops:
-            raise AssertionError("expected self.loops")
-        if len(self.loops) < level:
-            raise AssertionError("expected len(self.loops) >= level")
+        assert self.loops
+        assert len(self.loops) >= level
         loops = None if level == len(self.loops) else self.loops[level:]
         return LoopNest(loops, self.kernel)

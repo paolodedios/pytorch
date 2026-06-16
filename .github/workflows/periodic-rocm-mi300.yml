@@ -1,4 +1,3 @@
-# Owner(s): ["module: rocm"]
 name: periodic-rocm-mi300
 
 on:

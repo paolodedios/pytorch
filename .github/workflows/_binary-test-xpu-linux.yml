@@ -1,4 +1,3 @@
-# Owner(s): ["module: xpu"]
 name: linux-binary-test-xpu
 
 # Reusable workflow that runs the XPU binary test (setup-xpu, ECR login,

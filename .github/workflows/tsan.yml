@@ -1,4 +1,3 @@
-# Owner(s): ["module: sanitizers"]
 name: TSan
 
 on:

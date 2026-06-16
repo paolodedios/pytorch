@@ -1,4 +1,3 @@
-# Owner(s): ["module: risc-v"]
 name: riscv64
 
 on:

@@ -1,4 +1,3 @@
-# Owner(s): ["module: windows"]
 name: windows-build
 
 on:

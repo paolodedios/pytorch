@@ -1,4 +1,3 @@
-# Owner(s): ["module: windows", "module: arm"]
 name: windows-arm64-build-test
 
 on:

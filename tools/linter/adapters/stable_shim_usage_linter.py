@@ -20,7 +20,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
 
 from tools.linter.adapters._stable_shim_utils import (
-    DYNAMIC_VERSION_CALL_IDENTIFIER_MATCHER,
     IdentifierMatcher,
     LintMessage,
     LintSeverity,
@@ -149,24 +148,18 @@ def check_file(
         lines = f.readlines()
 
     # Generate the matchers from the provided function names.
-    matchers = [DYNAMIC_VERSION_CALL_IDENTIFIER_MATCHER] + [
+    matchers = [
         IdentifierMatcher.word(function_name) for function_name in shim_functions
     ]
 
     tracker = PreprocessorTracker(matchers)
 
     for line_num, line in enumerate(lines, 1):
-        if tracker.process_line(line):
-            # Not regular code, no need to analyse it.
-            continue
-
+        tracker.process_line(line)
         for identifier_version in tracker.identifiers_used():
             version_of_block = identifier_version.version
             func_name = identifier_version.identifier
-            required_version = shim_functions.get(func_name)
-            if required_version is None:
-                # Shim function has no version specified, so must always be available.
-                continue
+            required_version = shim_functions[func_name]
 
             major, minor, patch = required_version
             required_macro = f"TORCH_VERSION_{major}_{minor}_{patch}"

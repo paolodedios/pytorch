@@ -1708,18 +1708,11 @@ class sample_skips_and_xfails:
         self.rules = rules
 
     def __call__(self, fn):
-        if not isinstance(self.rules, list):
-            raise TypeError(
-                "The rules for sample_skips_and_xfails must be defined as a list"
-            )
+        rules = getattr(fn, "sample_skips_and_xfails", None)
+        if rules is not None:
+            raise RuntimeError("Multiple sets of sample_skips_and_xfails defined")
 
-        if hasattr(fn, "sample_skips_and_xfails"):
-            for rule in self.rules:
-                if rule not in fn.sample_skips_and_xfails:
-                    fn.sample_skips_and_xfails.append(rule)
-        else:
-            fn.sample_skips_and_xfails = self.rules
-
+        fn.sample_skips_and_xfails = self.rules
         return fn
 
 

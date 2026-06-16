@@ -142,7 +142,7 @@ def get_param_groups(
 
 def _autograd_grad_for_inputs(
     outputs: Sequence[torch.Tensor],
-    inputs: Sequence[Any],
+    inputs: Sequence[torch.Tensor],
     grad_outputs: Sequence[torch.Tensor | None] | None = None,
     retain_graph: bool = False,
     allow_unused: bool = False,
@@ -177,7 +177,7 @@ def _autograd_grad_for_inputs(
 def stage_backward_input(
     stage_outputs_or_loss: list[torch.Tensor],
     output_grads: list[torch.Tensor] | None,
-    input_values: list[Any],
+    input_values: list[torch.Tensor],
     weights: Iterator[Parameter],
 ) -> tuple[tuple[torch.Tensor | None, ...], list[dict[str, Any]]]:
     """
@@ -190,28 +190,11 @@ def stage_backward_input(
     Detaching the stage_outputs_or_loss at the end of this function is important as
     it frees up the memory that the autograd graph is anticipating to be used later (but doesn't actually need).
     """
-    valid_outputs: list[torch.Tensor] = []
-    valid_output_grads: list[torch.Tensor | None] = []
-    for i, stage_output in enumerate(stage_outputs_or_loss):
-        if not stage_output.requires_grad and stage_output.grad_fn is None:
-            continue
-        valid_outputs.append(stage_output)
-        valid_output_grads.append(
-            torch.ones_like(stage_output) if output_grads is None else output_grads[i]
-        )
-
     stage_output_grad_fns: list[Node] = list(
-        filter(None, map(_get_grad_fn_or_grad_acc, valid_outputs))
+        filter(None, map(_get_grad_fn_or_grad_acc, stage_outputs_or_loss))
     )
     stage_input_grad_fns: list[Node] = list(
-        filter(
-            None,
-            (
-                _get_grad_fn_or_grad_acc(inp)
-                for inp in input_values
-                if isinstance(inp, torch.Tensor)
-            ),
-        )
+        filter(None, map(_get_grad_fn_or_grad_acc, input_values))
     )
     weight_grad_fns: list[Node] = list(
         filter(None, map(_get_grad_fn_or_grad_acc, weights))
@@ -242,16 +225,17 @@ def stage_backward_input(
                 handle = intermediate.register_prehook(get_hook(param_group, i))
                 handles.append(handle)
 
-        if valid_outputs:
-            dinputs = _autograd_grad_for_inputs(
-                valid_outputs,
-                input_values,
-                valid_output_grads,
-                retain_graph=True,
-                allow_unused=True,
-            )
-        else:
-            dinputs = tuple(None for _ in input_values)
+        if output_grads is None:
+            output_grads = [
+                torch.ones_like(stage_output) for stage_output in stage_outputs_or_loss
+            ]
+
+        dinputs = _autograd_grad_for_inputs(
+            stage_outputs_or_loss,
+            input_values,
+            output_grads,
+            retain_graph=True,
+        )
 
         for inp, dinput in zip(input_values, dinputs):
             if isinstance(inp, torch.Tensor) and dinput is not None:

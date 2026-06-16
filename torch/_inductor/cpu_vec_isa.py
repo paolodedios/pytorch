@@ -244,8 +244,7 @@ class VecSVE(VecISA):
     )
 
     def __post_init__(self) -> None:
-        if self._bit_width not in (128, 256):
-            raise AssertionError(f"unsupported SVE bit width: {self._bit_width}")
+        assert self._bit_width in (128, 256)
         nelements = self._bit_width // 32
         self._macro = [
             "CPU_CAPABILITY_SVE",

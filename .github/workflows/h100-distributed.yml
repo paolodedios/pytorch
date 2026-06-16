@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: distributed"]
 name: Limited CI for distributed tests on H100
 
 on:

@@ -96,11 +96,7 @@ class ROCmTemplateKernel(ROCmKernel):
             input_reorder = [4, 0, 1, 2, 3]
 
         if input_reorder is not None:
-            if len(inputs) != len(input_reorder):
-                raise AssertionError(
-                    f"expected len(inputs) == len(input_reorder), "
-                    f"got {len(inputs)} and {len(input_reorder)}"
-                )
+            assert len(inputs) == len(input_reorder)
         else:
             input_reorder = list(range(len(inputs)))
 
@@ -143,10 +139,7 @@ class ROCmTemplateKernel(ROCmKernel):
         if V.graph.cpp_wrapper:
             # Make sure we initialize these kernels since they're exported as
             # C-style symbol names.
-            if not isinstance(wrapper, CppWrapperCpu):
-                raise AssertionError(
-                    f"expected wrapper to be CppWrapperCpu, got {type(wrapper)}"
-                )
+            assert isinstance(wrapper, CppWrapperCpu)
             wrapper.initialized_kernels[name] = self
             # Kinda hacky because we always originally initialize name with "KERNEL_NAME"
             # So, we replace with the real kernel name passed as an arg to this function.
@@ -249,13 +242,11 @@ class ROCmTemplateCaller(ChoiceCaller):
         self.info_kwargs = info_kwargs
 
     def precompile(self) -> None:
-        if self.bmreq is None:
-            raise AssertionError("expected self.bmreq to be set")
+        assert self.bmreq is not None
         self.bmreq.precompile()
 
     def benchmark(self, *args, out) -> float:
-        if self.bmreq is None:
-            raise AssertionError("expected self.bmreq to be set")
+        assert self.bmreq is not None
         if config.profile_bandwidth_with_do_bench_using_profiling:
             algo = self.bmreq.make_run_fn(*args, out=out)
             return do_bench_using_profiling(algo)

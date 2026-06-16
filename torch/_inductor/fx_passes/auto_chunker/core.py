@@ -82,13 +82,9 @@ def copy_chunking_meta(dst_node: Node, src_node: Node | ChunkingMeta) -> bool:
     if isinstance(src_node, torch.fx.Node):
         src_meta = get_chunking_meta(src_node)
     else:
-        if not isinstance(src_node, ChunkingMeta):
-            raise AssertionError(
-                f"expected src_node to be ChunkingMeta, got {type(src_node)}"
-            )
+        assert isinstance(src_node, ChunkingMeta)
         src_meta = src_node
-    if not src_meta:
-        raise AssertionError("expected src_meta to be truthy")
+    assert src_meta
     return set_chunking_meta(dst_node, src_meta)
 
 
@@ -210,10 +206,7 @@ def reorder_nodes(graph: Graph) -> Graph:
     for node in post_chunking_nodes:
         _copy_node("postchuking", node)
 
-    if graph._len != new_graph._len:
-        raise AssertionError(
-            f"expected graph._len == new_graph._len, got {graph._len} and {new_graph._len}"
-        )
+    assert graph._len == new_graph._len
     new_graph.eliminate_dead_code()
     new_graph.lint()
 

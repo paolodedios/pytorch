@@ -23,15 +23,7 @@ from torch.fx.experimental.symbolic_shapes import (
     SymNode,
 )
 from torch.utils._ordered_set import OrderedSet
-from torch.utils._sympy.functions import (
-    FloorDiv,
-    Max,
-    Min,
-    Mod,
-    ModularIndexing,
-    safe_gcd,
-    simple_floordiv_gcd,
-)
+from torch.utils._sympy.functions import FloorDiv, Max, Min, Mod, ModularIndexing
 from torch.utils._sympy.numbers import int_oo
 from torch.utils._sympy.symbol import symbol_is_type, SymT
 from torch.utils._sympy.value_ranges import IntInfinity, ValueRanges
@@ -381,6 +373,8 @@ class SizeVarAllocator:
             if not statically_known(base >= 0):
                 return base
 
+            from torch.utils._sympy.functions import safe_gcd
+
             for v in base.free_symbols:
                 if v in var_ranges:
                     rest = sympy.Wild("_rest", exclude=[v])
@@ -459,8 +453,7 @@ class SizeVarAllocator:
             )
             for x in index_formulas
         ]
-        if len(sizes) != len(strides[0]):
-            raise AssertionError((len(sizes), len(strides[0])))
+        assert len(sizes) == len(strides[0]), (len(sizes), len(strides[0]))
 
         for i in range(len(sizes)):
             if sizes[i] == 1:
@@ -507,15 +500,11 @@ class SizeVarAllocator:
                     new_index.append(sympy.S.Zero)
                 else:
                     new_index.append(it.pop())
-            if it:
-                raise AssertionError(f"expected all entries consumed, got {it}")
+            assert not it
             return new_index
 
         def prune(index):
-            if len(index) != len(sizes):
-                raise AssertionError(
-                    f"expected len(index) == len(sizes), got {len(index)} != {len(sizes)}"
-                )
+            assert len(index) == len(sizes)
             return [i for i, s in zip(index, sizes) if s is not None]
 
         return [x for x in sizes if x is not None], reindex, prune
@@ -620,6 +609,8 @@ class SizeVarAllocator:
                 return True
 
         # Rule 6 — cheap gcd check before expensive sympy fallback.
+        from torch.utils._sympy.functions import simple_floordiv_gcd
+
         gcd = simple_floordiv_gcd(numerator, sympy.Integer(denominator))
         if isinstance(gcd, (int, sympy.Integer)) and int(gcd) % denominator == 0:
             return True
@@ -645,31 +636,9 @@ class SizeVarAllocator:
         if isinstance(denominator, (int, sympy.Integer)):
             return self._is_multiple_of(numerator, int(denominator))
 
-        if numerator == 0:
-            return True
-
-        # Symbolic denominator: Mod-based reasoning can miss factorable Add
-        # denominators even for small expressions, so prove cancellation
-        # directly under the same limit used for the sympy fallback below.
-        if (
-            len(free_symbols([numerator, denominator]))
-            > _MAX_SYMBOLS_FOR_EXPENSIVE_SYMPY_OPS
-        ):
+        # Symbolic denominator: only the sympy fallback can prove this.
+        if len(free_symbols(numerator)) > _MAX_SYMBOLS_FOR_EXPENSIVE_SYMPY_OPS:
             return False
-
-        def gcd_covers_denominator(gcd: sympy.Basic) -> bool:
-            return gcd != 1 and (
-                gcd == denominator or self.simplify(gcd - denominator) == 0
-            )
-
-        try:
-            if gcd_covers_denominator(simple_floordiv_gcd(numerator, denominator)):
-                return True
-            if gcd_covers_denominator(safe_gcd(numerator, denominator)):
-                return True
-        except sympy.PolynomialError:
-            pass
-
         expr = sympy.Eq(Mod(numerator, denominator), 0)
         return self.statically_known_true(expr)  # type: ignore[arg-type]
 
@@ -860,8 +829,7 @@ class SizeVarAllocator:
         check Note [expect_true].
         """
         expr = sympy_subs(expr, self.inv_precomputed_replacements)
-        if not self.expect_true(expr):
-            raise AssertionError(f"expect_true failed for {expr}")
+        assert self.expect_true(expr)
 
     def check_equals(self, left: Expr, right: Expr) -> None:
         """
@@ -921,8 +889,7 @@ class SizeVarAllocator:
         size_oblivious: bool = False,
         fallback_value: bool | None = None,
     ) -> bool:
-        if not isinstance(left, (Expr, sympy.logic.boolalg.Boolean)):
-            raise AssertionError(type(left))
+        assert isinstance(left, (Expr, sympy.logic.boolalg.Boolean)), type(left)
         return self.shape_env.evaluate_expr(
             sympy.sympify(left),
             size_oblivious=size_oblivious,
@@ -1028,8 +995,7 @@ class SizeVarAllocator:
         # Substitute all hints into expr, but leave unbacked symints alone
         expr = self.simplify(expr)
         if not isinstance(expr, Expr):
-            if not isinstance(expr, int):
-                raise AssertionError(f"expected int, got {type(expr)}")
+            assert isinstance(expr, int)
             return expr
 
         expr = self.remove_precomputed_replacements(expr)
@@ -1525,8 +1491,7 @@ def _join_dimensions_cached(expr: Expr) -> Expr:
 
     This type of pattern can come from view operations
     """
-    if not isinstance(expr, sympy.Add):
-        raise AssertionError(f"expected sympy.Add, got {type(expr)}")
+    assert isinstance(expr, sympy.Add)
 
     scale = sympy.Wild("scale", exclude=[0], integer=True)
     base = sympy.Wild("base", integer=True)

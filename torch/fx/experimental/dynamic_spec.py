@@ -27,7 +27,6 @@ __all__ = [
     "TensorSpec",
     "ObjectSpec",
     "DictSpec",
-    "SeqSpec",
     "ParamsSpec",
     "ShapesSpec",
     "LeafSpec",
@@ -276,9 +275,9 @@ class TensorSpec:
     Example::
 
         B = ShapeVar("batch")
-        TensorSpec([B, STATIC])  # rank 2, dim 0 dynamic
+        TensorSpec([B, None])  # rank 2, dim 0 dynamic
         TensorSpec([B, 10])  # rank 2, dim 0 dynamic, dim 1 static=10
-        TensorSpec([B * 2 + 1, STATIC])  # rank 2, dim 0 derived from B
+        TensorSpec([B * 2 + 1, None])  # rank 2, dim 0 derived from B
     """
 
     def __init__(self, dims: Sequence[LeafIntSpec]) -> None:
@@ -328,7 +327,7 @@ class ObjectSpec:
 
     Example::
 
-        ObjectSpec({"weight": TensorSpec([ShapeVar("h"), STATIC])})
+        ObjectSpec({"weight": TensorSpec([ShapeVar("h"), None])})
         ObjectSpec({"inner": ObjectSpec({"weight": TensorSpec([ShapeVar("h")])})})
     """
 
@@ -380,9 +379,9 @@ class DictSpec:
 
     Example::
 
-        DictSpec({"x": TensorSpec([ShapeVar("h"), STATIC])})
+        DictSpec({"x": TensorSpec([ShapeVar("h"), None])})
         DictSpec({"config": DictSpec({"batch": IntVar()})})
-        DictSpec({0: TensorSpec([ShapeVar("h"), STATIC])})
+        DictSpec({0: TensorSpec([ShapeVar("h"), None])})
     """
 
     def __init__(
@@ -431,51 +430,6 @@ class DictSpec:
         }
 
 
-class SeqSpec:
-    """Spec for a Python ``list``- or ``tuple``-typed value.
-
-    Per-position. The spec list may be shorter than the runtime sequence;
-    any positions beyond ``len(self)`` are treated as fully static (i.e.
-    equivalent to an unspecified slot).
-
-    Constructor::
-
-        SeqSpec([IntermediateSpec, ...])
-
-    Example::
-
-        SeqSpec([TensorSpec([ShapeVar("h"), 10]), 1])
-        SeqSpec((TensorSpec([ShapeVar("a")]), TensorSpec([ShapeVar("b")])))
-    """
-
-    def __init__(self, entries: Sequence[IntermediateSpec]) -> None:
-        self._entries: list[IntermediateSpec] = list(entries)
-
-    def __len__(self) -> int:
-        return len(self._entries)
-
-    def __repr__(self) -> str:
-        lines = ["seq_spec:"]
-        for i, spec in enumerate(self._entries):
-            spec_repr = repr(spec)
-            if "\n" in spec_repr:
-                lines.append(f"{_INDENT}[{i}]:")
-                for line in spec_repr.splitlines():
-                    lines.append(_INDENT * 2 + line)
-            else:
-                lines.append(f"{_INDENT}[{i}]: {spec_repr}")
-        return "\n".join(lines)
-
-    def to_jsonable(self) -> dict[str, Any]:
-        return {
-            "type": "SeqSpec",
-            "entries": [
-                spec.to_jsonable() if hasattr(spec, "to_jsonable") else spec
-                for spec in self._entries
-            ],
-        }
-
-
 # Per-int-leaf spec type: union of valid values that can appear at a slot
 # where the runtime value is an int (tensor dim, scalar arg).
 #
@@ -490,9 +444,9 @@ class SeqSpec:
 LeafIntSpec: TypeAlias = IntVar | SymInt | int | None
 # Leaf specs (individual argument specifications) — ints plus TensorSpec.
 LeafSpec: TypeAlias = LeafIntSpec | TensorSpec
-# Includes containers (``ObjectSpec`` / ``DictSpec`` / ``SeqSpec``)
+# Includes containers (``ObjectSpec`` / ``DictSpec``; future ``ListSpec``)
 # for nested specs reachable via dynamo source-chain walks.
-IntermediateSpec: TypeAlias = LeafSpec | ObjectSpec | DictSpec | SeqSpec
+IntermediateSpec: TypeAlias = LeafSpec | ObjectSpec | DictSpec
 
 # Value type for the dict passed to ``ParamsSpec``/``ShapesSpec``:
 #   - named entries hold a single spec,
@@ -623,27 +577,11 @@ class ShapesSpec:
     into the shape env at compile time and asserted at runtime via the
     deferred-runtime-assert mechanism::
 
-        from torch.fx.experimental.dynamic_spec import (
-            ParamsSpec as PARAMS,
-            ShapesSpec,
-            ShapeVar as VAR,
-            TensorSpec as T,
-        )
-
-        batch = VAR("batch", min=2, max=128)
-        ep = torch.export.export(
-            mod,
-            (torch.randn(8, 3), torch.randn(16, 3)),
-            dynamic_shapes=ShapesSpec(
-                params=PARAMS(
-                    {
-                        "x": T([batch, 3]),
-                        "y": T([batch * 2, 3]),  # derived expression
-                    }
-                ),
-                assumptions=[batch % 2 == 0],
-            ),
-            strict=True,
+        A = ShapeVar("a")
+        B = ShapeVar("b")
+        ShapesSpec(
+            params={"x": TensorSpec([A, None]), "y": TensorSpec([B, None])},
+            assumptions=[A + B > 10, A * 2 == B],
         )
 
     ``globals`` is reserved for future use and will raise
@@ -709,14 +647,3 @@ class ShapesSpec:
             "params": None if self._params is None else self._params.to_jsonable(),
             "assumptions": [repr(a) for a in self._assumptions],
         }
-
-
-# Shared error message for rejecting `dynamic_shapes=ShapesSpec(...)`
-# combined with `prefer_deferred_runtime_asserts_over_guards=True`. Used
-# in multiple export entry points; lifted out so the wording can't drift.
-_SHAPES_SPEC_VS_DEFERRED_RUNTIME_ASSERTS_MSG = (
-    "`prefer_deferred_runtime_asserts_over_guards=True` cannot be "
-    "combined with `dynamic_shapes=ShapesSpec(...)`. ShapesSpec "
-    "currently uses unbacked symbols only, which already emit "
-    "runtime assertions; the flag has no effect."
-)

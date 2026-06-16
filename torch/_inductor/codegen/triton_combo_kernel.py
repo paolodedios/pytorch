@@ -25,11 +25,12 @@ from ..runtime.triton_heuristics import (
 )
 from ..scheduler import BaseSchedulerNode
 from ..stream_utils import get_raw_stream_name
-from ..utils import DeferredLineBase, Placeholder, triton_version_uses_attrs_dict
+from ..utils import Placeholder, triton_version_uses_attrs_dict
 from ..virtualized import V
 from .common import (
     ArgName,
     ConstexprArg,
+    DeferredLine,
     IndentedBuffer,
     InplacedBuffer,
     Kernel,
@@ -78,8 +79,7 @@ def _default_custom_combo_kernel_horizontal_partition(
         3) large reduce nodes are separated from other nodes.
     """
 
-    if len(nodes) < 1:
-        raise AssertionError(f"expected at least 1 node, got {len(nodes)}")
+    assert len(nodes) >= 1
 
     # first partition nodes based on number of block dimensions
     tilings = [node_info_map[n].tiling for n in nodes]
@@ -102,24 +102,11 @@ def _default_custom_combo_kernel_horizontal_partition(
             if V.graph.sizevars.optimization_hint(n.group[-1][-1], fallback=1) > 2048  # type: ignore[arg-type]
         ]
         short_reduction = [n for n in reduction if n not in long_reduction]
-        very_large_reduction = [
-            n
-            for n in long_reduction
-            if (
-                V.graph.sizevars.optimization_hint(node_info_map[n].numel, fallback=1)
-                * V.graph.sizevars.optimization_hint(
-                    node_info_map[n].rnumel, fallback=1
-                )
-            )
-            > LARGE_NUMELS
-        ]
-        long_reduction = [n for n in long_reduction if n not in very_large_reduction]
-        if very_large_reduction:
+        if long_reduction:
             log.debug(
-                "ComboKernels: %d very large reduction nodes are separated",
-                len(very_large_reduction),
+                "ComboKernels: %d long reduction nodes are separated",
+                len(long_reduction),
             )
-            nodes_per_ndim.extend([node] for node in very_large_reduction)
         large_pointwise = [
             n
             for n in not_reduction
@@ -143,8 +130,7 @@ def _default_custom_combo_kernel_horizontal_partition(
             g for g in (not_reduction, short_reduction, long_reduction) if g
         )
 
-    if sum(len(p) for p in nodes_per_ndim) != len(nodes):
-        raise AssertionError("partitioned node count must equal input node count")
+    assert sum(len(p) for p in nodes_per_ndim) == len(nodes)
     return nodes_per_ndim
 
 
@@ -221,10 +207,7 @@ class ComboKernel(Kernel):
         for each subkernel node where each sublist is guaranteed to not exceed CUDA limits for number of args
         (read/writes) and to have the same 2D or 1D blocking strategy."""
         # TODO support combination of kernels with different block dimensions
-        if len(subkernel_nodes) < 1:
-            raise AssertionError(
-                f"expected at least 1 subkernel node, got {len(subkernel_nodes)}"
-            )
+        assert len(subkernel_nodes) >= 1
         mixed_sizes = config.combo_kernel_allow_mixed_sizes > 1 or (
             config.combo_kernel_allow_mixed_sizes == 1 and custom_algorithm
         )
@@ -245,8 +228,7 @@ class ComboKernel(Kernel):
             read_write_count = len(read_writes.reads) + len(read_writes.writes)
 
             ndim = len(tiled_groups)
-            if ndim < 2:
-                raise AssertionError(f"Combokernel not support tile {tiled_groups}")
+            assert ndim >= 2, f"Combokernel not support tile {tiled_groups}"
 
             # Skip 2d reductions (r0_,r1_) and 3D pointwise (x,y,z) from combo
             keys = tiled_groups.keys()
@@ -261,8 +243,7 @@ class ComboKernel(Kernel):
                     partition_state, read_write_count, node_info
                 )
             else:
-                if not (mixed_sizes or ndim <= 3):
-                    raise AssertionError(f"No mixed sizes: tile {tiled_groups}")
+                assert mixed_sizes or ndim <= 3, f"No mixed sizes: tile {tiled_groups}"
                 partition_state = ndim_to_partition_state[ndim]
                 ComboKernel._update_partition(
                     partition_state, read_write_count, node_info
@@ -564,10 +545,7 @@ class ComboKernel(Kernel):
             if isinstance(simplified_tree_numel, (Integer, int)):
                 code.writeline(f"{tree.prefix}numel = {int(simplified_tree_numel)}")
             else:
-                if f"{tree.prefix}numel_{num}" not in self.dynamic_shape_args:
-                    raise AssertionError(
-                        f"{tree.prefix}numel_{num} not in dynamic_shape_args"
-                    )
+                assert f"{tree.prefix}numel_{num}" in self.dynamic_shape_args
                 uniquify_block_sizes.append(f"{tree.prefix}numel")
 
             if not tree.is_reduction:
@@ -638,10 +616,7 @@ class ComboKernel(Kernel):
             if not prefix_is_reduction(prefix) or sub_kernel.inside_reduction
         }
         if sub_kernel.persistent_reduction:
-            if not sub_kernel.inside_reduction:
-                raise AssertionError(
-                    "persistent_reduction sub_kernel must be inside_reduction"
-                )
+            assert sub_kernel.inside_reduction
             heuristics = "persistent_reduction"
         elif sub_kernel.inside_reduction:
             heuristics = "reduction"
@@ -671,10 +646,9 @@ class ComboKernel(Kernel):
             num_persistent_reduction = len(
                 [e for e in heuristics_list if e == "persistent_reduction"]
             )
-            if num_reduction != 0:
-                raise AssertionError(
-                    "combining pointwise and reduction are not supported yet."
-                )
+            assert num_reduction == 0, (
+                "combining pointwise and reduction are not supported yet."
+            )
             heuristics = (
                 "pointwise_with_reduction"
                 if num_persistent_reduction > 0
@@ -712,8 +686,7 @@ class ComboKernel(Kernel):
                     )
                 if mutation in sub_kernel.args.output_buffers:
                     arg = sub_kernel.args.output_buffers[mutation]
-                    if isinstance(arg, RemovedArg):
-                        raise AssertionError("mutated output buffer arg was removed")
+                    assert not isinstance(arg, RemovedArg)
                     mutated_args.add(arg)
         return sorted(mutated_args)
 
@@ -775,8 +748,7 @@ class ComboKernel(Kernel):
 
         mutated_args = self.get_mutated_args_sub_kernels()
         dispatch = self.dispatch_class
-        if dispatch is None:
-            raise AssertionError("dispatch_class must not be None")
+        assert dispatch is not None
 
         # Compute the max persistent R0_BLOCK across sub-kernels.
         # This is used by _reduction_configs() to avoid generating configs
@@ -1022,14 +994,12 @@ class ComboKernel(Kernel):
                 self.codegen_blocks(code)
 
             for num, sub_kernel in enumerate(self.sub_kernels):
-                if self.dispatch_class is None:
-                    raise AssertionError("dispatch_class must not be None")
+                assert self.dispatch_class is not None
                 self.dispatch_class.codegen_pid_range(self, num, code)
                 with code.indent():
                     uniquify = self.codegen_static_numels_sub_kernel(
                         code, sub_kernel, num
                     )
-                    sub_kernel.codegen_prologue(sub_kernel.body)
                     sub_kernel.codegen_body()
                     sub_kernel._filter_pdl(sub_kernel.body)
                     uniquified_body = self.uniquify_block_sizes(
@@ -1176,7 +1146,7 @@ class ComboKernel(Kernel):
                         block, f"{block}_{num_kernel}"
                     )
                 modified.writeline(modified_line)
-            elif isinstance(line, DeferredLineBase) and (
+            elif isinstance(line, DeferredLine) and (
                 blocks := [e for e in uniquify if e in line.line]
             ):
                 modified_line = line.line
@@ -1184,7 +1154,7 @@ class ComboKernel(Kernel):
                     modified_line = modified_line.replace(
                         block, f"{block}_{num_kernel}"
                     )
-                new_line = line._new_line(modified_line)
+                new_line = DeferredLine(line.name, modified_line)
                 modified.writeline(new_line)
             else:
                 modified.writeline(line)
@@ -1194,8 +1164,7 @@ class ComboKernel(Kernel):
         _, call_args, _, arg_types = self.args.python_argdefs()
 
         wrapper = V.graph.wrapper_code
-        if self.dispatch_class is None:
-            raise AssertionError("dispatch_class must not be None")
+        assert self.dispatch_class is not None
         if self.dynamic_shape_args:
             self.add_numel_to_call_args(name, call_args, arg_types)
 

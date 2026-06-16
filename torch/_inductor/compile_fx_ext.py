@@ -256,8 +256,7 @@ class _WireProtocolPickledInput:
 
         fake_mode = _current_fake_mode()
         result = GraphPickler.loads(self.value, fake_mode)
-        if not isinstance(result, _WireProtocolInput):
-            raise AssertionError(f"expected _WireProtocolInput, got {type(result)}")
+        assert isinstance(result, _WireProtocolInput)
         return result
 
 
@@ -298,8 +297,7 @@ class _WireProtocolPickledOutput:
 
         fake_mode = _current_fake_mode()
         result = GraphPickler.loads(self.value, fake_mode)
-        if not isinstance(result, _WireProtocolOutput):
-            raise AssertionError(f"expected _WireProtocolOutput, got {type(result)}")
+        assert isinstance(result, _WireProtocolOutput)
         if isinstance(result.graph, CompiledFxGraph):
             result.graph.after_deserialization(constants)
         return result
@@ -354,8 +352,7 @@ class _LoggerState:
                 q.extend(logger.getChildren())
 
     def __enter__(self) -> _CapturedLogs:
-        if self.captured_logs is not None:
-            raise AssertionError("captured_logs already set on __enter__")
+        assert self.captured_logs is None
         self.captured_logs = _CapturedLogs(self)
         self.captured_logs.apply()
         return self.captured_logs
@@ -366,8 +363,7 @@ class _LoggerState:
         exc_value: BaseException | None,
         traceback: types.TracebackType | None,
     ) -> None:
-        if self.captured_logs is None:
-            raise AssertionError("captured_logs not set on __exit__")
+        assert self.captured_logs is not None
         self.captured_logs.remove()
 
 
@@ -390,8 +386,7 @@ class _CapturedLogs:
         self.handlers = None
 
     def finish(self) -> list[logging.LogRecord]:
-        if self.handlers is not None:
-            raise AssertionError("expected handlers to be None in finish")
+        assert self.handlers is None
         logs = []
         try:
             while True:
@@ -401,8 +396,7 @@ class _CapturedLogs:
         return logs
 
     def remove(self) -> None:
-        if self.handlers is None:
-            raise AssertionError("expected handlers to be set in remove")
+        assert self.handlers is not None
         handlers, self.handlers = self.handlers, None
         for name, handler in handlers.items():
             logger = logging.getLogger(name)
@@ -411,8 +405,7 @@ class _CapturedLogs:
     def apply(self) -> None:
         from logging.handlers import QueueHandler
 
-        if self.handlers is not None:
-            raise AssertionError("expected handlers to be None in apply")
+        assert self.handlers is None
         self.handlers = {}
         for name, level in self.state.loggers.items():
             logger = logging.getLogger(name)

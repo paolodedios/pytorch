@@ -938,10 +938,6 @@ ProcessGroupNCCL::ProcessGroupNCCL(
       ValueError,
       at::cuda::getNumGPUs() != 0,
       "ProcessGroupNCCL is only supported with GPUs, no GPUs found!");
-  TORCH_CHECK(
-      !options_->enable_reconfigure,
-      "ProcessGroupNCCL does not support enable_reconfigure "
-      "(reconfigure-based fault tolerance).");
 
   // getNcclVersion needs to get called before launching threads which can
   // potentially call getenv. getNcclVersion internally calls setenv to set some
@@ -1878,11 +1874,10 @@ void ProcessGroupNCCL::HeartbeatMonitor::runLoop() {
         lastTimePollStore = currentTime;
         auto handleError = [&](const std::string& errorMessage) {
           LOG(WARNING)
-              << pg_->logPrefix() << "TCPStore check for dump key \""
-              << kStoreDumpKey
-              << "\" failed (store unavailable, not absent key). Cannot detect "
-              << "remote dump signals. A rank exiting outside NCCL without "
-              << "broadcasting is a separate case. Error: " << errorMessage;
+              << pg_->logPrefix()
+              << "Failed to check the \"should dump\" flag on TCPStore, "
+              << "(maybe TCPStore server has shut down too early), with error: "
+              << errorMessage;
           // We give up for now assuming TCPStore has been torn down.
           return;
         };
@@ -4966,7 +4961,7 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::allgather_coalesced(
       "ProcessGroupNCCL does not support allgather_coalesced");
 }
 
-c10::intrusive_ptr<Work> ProcessGroupNCCL::all_gather_single_coalesced(
+c10::intrusive_ptr<Work> ProcessGroupNCCL::allgather_into_tensor_coalesced(
     std::vector<at::Tensor>& outputs,
     std::vector<at::Tensor>& inputs,
     const AllgatherOptions& opts) {
@@ -5116,7 +5111,7 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::reduce_scatter(
   }
 }
 
-c10::intrusive_ptr<Work> ProcessGroupNCCL::reduce_scatter_single(
+c10::intrusive_ptr<Work> ProcessGroupNCCL::_reduce_scatter_base(
     at::Tensor& outputTensor,
     at::Tensor& inputTensor,
     const ReduceScatterOptions& opts) {
@@ -5196,7 +5191,7 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::reduce_scatter_single(
       "nccl:_reduce_scatter_base");
 }
 
-c10::intrusive_ptr<Work> ProcessGroupNCCL::reduce_scatter_single_coalesced(
+c10::intrusive_ptr<Work> ProcessGroupNCCL::reduce_scatter_tensor_coalesced(
     std::vector<at::Tensor>& outputs,
     std::vector<at::Tensor>& inputs,
     const ReduceScatterOptions& opts) {
@@ -5353,7 +5348,7 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::barrier(const BarrierOptions& opts) {
   return nullptr;
 }
 
-c10::intrusive_ptr<Work> ProcessGroupNCCL::all_to_all_single(
+c10::intrusive_ptr<Work> ProcessGroupNCCL::alltoall_base(
     at::Tensor& outputTensor,
     at::Tensor& inputTensor,
     std::vector<int64_t>& outputSplitSizes,
@@ -5799,7 +5794,7 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::recvAnysource(
       NotImplementedError, "ProcessGroupNCCL does not support recvAnysource");
 }
 
-c10::intrusive_ptr<Work> ProcessGroupNCCL::all_gather_single(
+c10::intrusive_ptr<Work> ProcessGroupNCCL::_allgather_base(
     at::Tensor& output_tensor,
     at::Tensor& input_tensor,
     const AllgatherOptions& opts) {

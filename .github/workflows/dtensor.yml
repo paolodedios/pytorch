@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: distributed", "module: dtensor"]
 # Workflow: DTensor Unit Test
 # Runs unit tests for DTensor (test/distributed/tensor/).
 name: dtensor
