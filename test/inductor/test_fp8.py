@@ -676,7 +676,9 @@ class TestFP8Lowering(TestCase):
             else:
                 self.assertEqual(y_eager, y_compiled, rtol=1e-2, atol=0.05)
 
-    def _test_scaled_mm_preserves_strides_impl(self, device):
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    @onlyOn(["cuda", "xpu", "cpu"])
+    def test_scaled_mm_preserves_strides(self, device):
         """Test that scaled_mm preserves stride ordering through a custom pass."""
 
         GPU_TYPE = device
@@ -771,19 +773,6 @@ class TestFP8Lowering(TestCase):
             self.assertIn("scaled_mm", wrapper.lower())
             # The clones should be visible in the generated code
             self.assertIn("clone", wrapper.lower())
-
-    # TODO: collapse this back into one test once fixed on CUDA and XPU.
-    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    def test_scaled_mm_preserves_strides_cpu_actual(self):
-        self._test_scaled_mm_preserves_strides_impl("cpu")
-
-    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    # TODO (eellison): fails with:
-    # "RuntimeError: mat2 must be col_major, got stride (64, 1)".
-    @unittest.expectedFailure
-    @onlyOn(["cuda", "xpu"])
-    def test_scaled_mm_preserves_strides(self, device):
-        self._test_scaled_mm_preserves_strides_impl(device)
 
     @onlyCUDA
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
@@ -1568,6 +1557,47 @@ class TestFP8Lowering(TestCase):
         self.assertEqual(y_eager.dtype, dtype)
         self.assertEqual(y_compiled.dtype, dtype)
         torch.testing.assert_close(y_eager, y_compiled, rtol=1e-2, atol=0.07)
+
+    @onlyOn(["cuda", "xpu"])
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
+    def test_scaled_mm_v2_no_swizzle(self, device):
+        """Regression test: _scaled_mm_v2 must not segfault when swizzle is
+        omitted (empty) or explicitly set to NO_SWIZZLE."""
+        from torch.nn.functional import SwizzleType
+
+        m, k, n = 32, 64, 16
+        dtype_float8 = torch.float8_e4m3fn
+        dtype_float8 = _fix_fp8_dtype_for_rocm(dtype_float8, device)
+        a = torch.randn(m, k, device=device, dtype=torch.bfloat16).to(dtype_float8)
+        b = torch.randn(n, k, device=device, dtype=torch.bfloat16).to(dtype_float8).t()
+        scale_a = torch.ones(1, device=device)
+        scale_b = torch.ones(1, device=device)
+
+        # swizzle omitted (None -> empty list in C++)
+        out_no_swizzle = scaled_mm(
+            a,
+            b,
+            scale_a=scale_a,
+            scale_recipe_a=ScalingType.TensorWise,
+            scale_b=scale_b,
+            scale_recipe_b=ScalingType.TensorWise,
+            output_dtype=torch.bfloat16,
+        )
+        self.assertEqual(out_no_swizzle.shape, (m, n))
+
+        # swizzle explicitly NO_SWIZZLE
+        out_explicit = scaled_mm(
+            a,
+            b,
+            scale_a=scale_a,
+            scale_recipe_a=ScalingType.TensorWise,
+            swizzle_a=SwizzleType.NO_SWIZZLE,
+            scale_b=scale_b,
+            scale_recipe_b=ScalingType.TensorWise,
+            swizzle_b=SwizzleType.NO_SWIZZLE,
+            output_dtype=torch.bfloat16,
+        )
+        self.assertEqual(out_no_swizzle, out_explicit)
 
     @onlyOn(["cuda", "xpu"])
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM, "Not supported on non B200")
