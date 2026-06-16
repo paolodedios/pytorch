@@ -575,14 +575,13 @@ def _restore_shallow_copy_placeholders(
         node.meta["example_value"] = snapshot
         if node in placeholders:
             idx = placeholders.index(node)
-            if idx < len(example_inputs) and hasattr(
-                example_inputs[idx], "fake_device"
-            ):
-                example_inputs[
-                    idx
-                ].fake_device = (
-                    snapshot.fake_device
-                )  # pyrefly: ignore[missing-attribute]
+            if idx < len(example_inputs):
+                _copy_fake_device(example_inputs[idx], snapshot)
+
+
+def _copy_fake_device(dst: Any, src: Any) -> None:
+    if hasattr(dst, "fake_device") and hasattr(src, "fake_device"):
+        dst.fake_device = src.fake_device  # pyrefly: ignore[missing-attribute]
 
 
 class OutputGraphCommon(OutputGraphGuardsState):
