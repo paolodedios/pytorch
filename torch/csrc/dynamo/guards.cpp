@@ -830,7 +830,7 @@ struct ActiveGuardReceiptScope {
     if (receipt->actual_partial_shadow_passes >=
         kActualPartialShadowPassThreshold) {
       receipt->actual_partial_state = GuardPartialMemoState::Enabled;
-      receipt->actual_partial_tokens = receipt->actual_partial_stability_tokens;
+      receipt->actual_partial_tokens = pending_tokens;
     } else {
       receipt->actual_partial_tokens = pending_tokens;
     }

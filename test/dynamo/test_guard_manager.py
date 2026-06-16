@@ -735,6 +735,10 @@ num_guards_executed=0)
         self.assertGreater(stats["actual_partial_enabled"], 0)
         self.assertGreater(stats["actual_partial_candidate"], 0)
         self.assertGreater(stats["actual_partial_token_count"], 0)
+        self.assertGreater(
+            stats["actual_partial_token_count"],
+            stats["actual_partial_candidate"],
+        )
 
     def test_dict_getitem_accessor(self):
         foo = {
