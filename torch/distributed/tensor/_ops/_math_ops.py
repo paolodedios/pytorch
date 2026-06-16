@@ -1269,7 +1269,7 @@ def layer_norm_bwd_single_dim_strategy(
     # mean = args_schema[3], rstd = args_schema[4]
     weight_meta = args_schema[5]
     bias_meta = args_schema[6]
-    output_mask = args_schema[7] if len(args_schema) > 7 else (True, True, True)
+    output_mask = args_schema[7]
     compute_d_input = output_mask[0]
     compute_d_weight = weight_meta is not None and output_mask[1]
     compute_d_bias = bias_meta is not None and output_mask[2]
@@ -1316,7 +1316,7 @@ def rms_norm_bwd_single_dim_strategy(
     normalized_shape = args_schema[2]
     # rstd = args_schema[3]
     weight_meta = args_schema[4]
-    output_mask = args_schema[5] if len(args_schema) > 5 else (True, True)
+    output_mask = args_schema[5]
     compute_d_input = output_mask[0]
     compute_d_weight = weight_meta is not None and output_mask[1]
 

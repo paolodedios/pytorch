@@ -1057,6 +1057,7 @@ class TestOpSchemaMetaProperties(TestCase):
                 [8],  # normalized_shape
                 stat_meta,  # rstd
                 weight_meta,  # weight
+                [True, True],  # output_mask
             ),
             {},
         )
@@ -1071,7 +1072,7 @@ class TestOpSchemaMetaProperties(TestCase):
         # Without weight: d_weight=None
         strategies = rms_norm_bwd_single_dim_strategy(
             torch.ops.aten._fused_rms_norm_backward.default,
-            (input_meta, input_meta, [8], stat_meta, None),
+            (input_meta, input_meta, [8], stat_meta, None, [True, True]),
             {},
         )
         self.assertEqual(len(strategies), 1)
