@@ -1,4 +1,5 @@
 #include <c10/metal/indexing.h>
+#include <c10/metal/reduction_utils.h>
 #include <c10/metal/special_math.h>
 #include <c10/metal/utils.h>
 #include <metal_stdlib>
@@ -15,6 +16,39 @@ struct sub_functor {
   template <typename T>
   inline T operator()(const T a, const T b) {
     return static_cast<T>(a - b);
+  }
+};
+
+// MSE loss elementwise: squared difference (input - target)^2. Registered as
+// an OPMATH op so half/bfloat inputs are promoted to float before the functor
+// runs; the squaring and subtraction happen in float32 and the result is cast
+// back to the output dtype on store. This keeps the per-element value matching
+// the CPU/CUDA TensorIterator reference. This elementwise functor is used for
+// reduction=None; mean/sum use the fused mse_reduce_fused kernel (below), which
+// accumulates in float32 -- so large-N fp16/bf16 cases do not overflow.
+struct mse_functor {
+  template <typename T>
+  inline T operator()(const T a, const T b) {
+    const T d = a - b;
+    return static_cast<T>(d * d);
+  }
+};
+
+// MSE loss backward partial: norm * (input - target), where the host supplies
+// norm = (reduction == mean ? 2 / numel : 2) narrowed to the gradient dtype
+// (matching the CPU kernel's value.to<scalar_t>()). The host then
+// multiplies by grad_output via the native Metal mul. The narrowing structure
+// mirrors the CPU kernel `scalar * (self - t1) * t2` (PointwiseOpsKernel.cpp):
+// the difference is narrowed to the gradient dtype, then scaled and narrowed
+// again, and the host mul narrows a third time -- so the result bit-matches the
+// CPU/CUDA gradient. grad_output broadcasts (scalar) for the mean/sum
+// reductions and is elementwise for none.
+struct mse_backward_functor {
+  template <typename T, typename T2>
+  inline T operator()(const T a, const T b, const T2 alpha) {
+    const T diff =
+        static_cast<T>(static_cast<float>(a) - static_cast<float>(b));
+    return static_cast<T>(static_cast<float>(alpha) * static_cast<float>(diff));
   }
 };
 
@@ -601,6 +635,10 @@ REGISTER_INT2FLOAT_BINARY_OP(hermite_polynomial_he);
 REGISTER_FLOAT_BINARY_OP(add);
 REGISTER_INTEGER_BINARY_OP(add);
 REGISTER_OPMATH_FLOAT_BINARY_OP(mul);
+REGISTER_OPMATH_FLOAT_BINARY_OP(mse);
+REGISTER_BINARY_ALPHA_OP(mse_backward, float, float, float);
+REGISTER_BINARY_ALPHA_OP(mse_backward, half, half, half);
+REGISTER_BINARY_ALPHA_OP(mse_backward, bfloat, bfloat, bfloat);
 REGISTER_INTEGER_BINARY_OP(mul);
 REGISTER_FLOAT_BINARY_OP(sub);
 REGISTER_INTEGER_BINARY_OP(sub);
@@ -854,3 +892,109 @@ INSTANTIATE_LERP(half);
 INSTANTIATE_LERP(bfloat);
 INSTANTIATE_LERP(float2);
 INSTANTIATE_LERP(long);
+
+// ---------------------------------------------------------------------------
+// Fused MSE square-and-reduce (reduction = mean / sum).
+//
+// Computes sum over all elements of (input - target)^2 WITHOUT materializing
+// the squared-difference tensor (which is what the earlier "binary mse kernel
+// + at::sum" path did, costing an extra full-size allocation and a second
+// bandwidth-bound pass -- the source of the 1.3-2.4x regression vs the fused
+// MPSGraph square+reduce). Instead each threadgroup grid-strides over its slice
+// of the input, accumulates (in - tgt)^2 in float32, threadgroup-cooperatively
+// tree-reduces via the blessed c10::metal::threadgroup_sum, and writes ONE
+// float32 partial per threadgroup. A tiny second kernel (mse_reduce_final)
+// reduces the per-threadgroup partials to the scalar result, applies the mean
+// divide in float32, and casts to the output dtype.
+//
+// float32 accumulation throughout (so large-N fp16/bf16 does not overflow or
+// lose precision). TI / TT are the input / target element types and may differ
+// (mixed-dtype mse): each is read in its own dtype and promoted to float before
+// the subtract, so the f32 target is never narrowed to an f16 input first.
+// ---------------------------------------------------------------------------
+template <typename TI, typename TT>
+kernel void mse_reduce_partial(
+    constant TI* input [[buffer(0)]],
+    constant TT* target [[buffer(1)]],
+    device float* partials [[buffer(2)]],
+    constant uint& numel [[buffer(3)]],
+    uint tid [[thread_position_in_grid]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]],
+    uint grid_size [[threads_per_grid]],
+    uint tg_id [[threadgroup_position_in_grid]]) {
+  // simdgroup-size scratch for the two-stage threadgroup reduction (max 1024
+  // threads / 32 = 32 simdgroups, so 32 floats is always enough).
+  threadgroup float smem[32];
+
+  float acc = 0.0;
+  for (uint i = tid; i < numel; i += grid_size) {
+    const float d =
+        static_cast<float>(input[i]) - static_cast<float>(target[i]);
+    acc += d * d;
+  }
+  const float tg_sum =
+      c10::metal::threadgroup_sum<float>(smem, acc, lid, tg_size);
+  if (lid == 0) {
+    partials[tg_id] = tg_sum;
+  }
+}
+
+// Second stage: a single threadgroup reduces the per-threadgroup partials to
+// the final scalar. `denom` is numel for mean and 1 for sum (the divide is the
+// float32 mean fold). The result is cast to the output dtype on store.
+template <typename TO>
+kernel void mse_reduce_final(
+    constant float* partials [[buffer(0)]],
+    device TO* out [[buffer(1)]],
+    constant uint& nparts [[buffer(2)]],
+    constant float& denom [[buffer(3)]],
+    uint lid [[thread_position_in_threadgroup]],
+    uint tg_size [[threads_per_threadgroup]]) {
+  threadgroup float smem[32];
+  float acc = 0.0;
+  for (uint i = lid; i < nparts; i += tg_size) {
+    acc += partials[i];
+  }
+  const float total =
+      c10::metal::threadgroup_sum<float>(smem, acc, lid, tg_size);
+  if (lid == 0) {
+    out[0] = static_cast<TO>(total / denom);
+  }
+}
+
+#define REGISTER_MSE_REDUCE_PARTIAL(TI, TT)                             \
+  template [[host_name("mse_reduce_partial_" #TI "_" #TT)]] kernel void \
+  mse_reduce_partial<TI, TT>(                                           \
+      constant TI * input [[buffer(0)]],                                \
+      constant TT * target [[buffer(1)]],                               \
+      device float* partials [[buffer(2)]],                             \
+      constant uint& numel [[buffer(3)]],                               \
+      uint tid [[thread_position_in_grid]],                             \
+      uint lid [[thread_position_in_threadgroup]],                      \
+      uint tg_size [[threads_per_threadgroup]],                         \
+      uint grid_size [[threads_per_grid]],                              \
+      uint tg_id [[threadgroup_position_in_grid]])
+
+#define REGISTER_MSE_REDUCE_FINAL(TO)                         \
+  template [[host_name("mse_reduce_final_" #TO)]] kernel void \
+  mse_reduce_final<TO>(                                       \
+      constant float* partials [[buffer(0)]],                 \
+      device TO* out [[buffer(1)]],                           \
+      constant uint& nparts [[buffer(2)]],                    \
+      constant float& denom [[buffer(3)]],                    \
+      uint lid [[thread_position_in_threadgroup]],            \
+      uint tg_size [[threads_per_threadgroup]])
+
+REGISTER_MSE_REDUCE_PARTIAL(float, float);
+REGISTER_MSE_REDUCE_PARTIAL(float, half);
+REGISTER_MSE_REDUCE_PARTIAL(float, bfloat);
+REGISTER_MSE_REDUCE_PARTIAL(half, float);
+REGISTER_MSE_REDUCE_PARTIAL(half, half);
+REGISTER_MSE_REDUCE_PARTIAL(half, bfloat);
+REGISTER_MSE_REDUCE_PARTIAL(bfloat, float);
+REGISTER_MSE_REDUCE_PARTIAL(bfloat, half);
+REGISTER_MSE_REDUCE_PARTIAL(bfloat, bfloat);
+REGISTER_MSE_REDUCE_FINAL(float);
+REGISTER_MSE_REDUCE_FINAL(half);
+REGISTER_MSE_REDUCE_FINAL(bfloat);

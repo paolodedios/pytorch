@@ -6,5 +6,6 @@ void binary_op_kernel(
     const Tensor& input,
     const Tensor& other,
     const Tensor& output,
-    const std::optional<Scalar> alpha = std::nullopt);
+    const std::optional<Scalar> alpha = std::nullopt,
+    const std::optional<c10::ScalarType> scalar_arg_type = std::nullopt);
 } // namespace at::native::mps

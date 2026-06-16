@@ -4864,6 +4864,32 @@ class TestMPS(TestCaseMPS):
         helper([8, 4, 5, 7, 6], 'mean')
 
     # Mean Squared Error
+    def test_mse_loss_metal_paths(self):
+        # Committed coverage for the native Metal mse_loss kernels: all
+        # reductions x {f32,f16,bf16} fwd+bwd vs fp32 CPU, plus a large shape
+        # that selects the multi-threadgroup mse_reduce_partial/_final reduce
+        # path (OpInfo samples are too small to reach it).
+        def run(shape, reduction, dtype):
+            xc = torch.randn(shape, dtype=torch.float32, requires_grad=True)
+            tc = torch.randn(shape, dtype=torch.float32)
+            xm = xc.detach().to("mps", dtype).requires_grad_()
+            tm = tc.detach().to("mps", dtype)
+            tol = dict(atol=5e-2, rtol=5e-2) if dtype != torch.float32 else {}
+            oc = F.mse_loss(xc, tc, reduction=reduction)
+            om = F.mse_loss(xm, tm, reduction=reduction)
+            self.assertEqual(om.float(), oc, **tol)
+            g = torch.ones_like(oc)
+            oc.backward(g)
+            om.backward(g.to("mps", dtype))
+            self.assertEqual(xm.grad.float(), xc.grad, **tol)
+
+        for reduction in ("none", "mean", "sum"):
+            for dtype in (torch.float32, torch.float16, torch.bfloat16):
+                run((64, 33), reduction, dtype)
+        run((4096, 4096), "mean", torch.float32)  # large -> multi-threadgroup reduce
+        run((4096, 4096), "sum", torch.float32)
+        run((4096, 4096), "mean", torch.float16)  # large reduce, fp32 accumulation
+
     def test_mse_loss(self):
         def helper(shape, reduction):
             # create the criterion

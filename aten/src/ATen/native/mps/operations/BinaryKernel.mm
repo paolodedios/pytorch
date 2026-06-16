@@ -35,7 +35,8 @@ void binary_op_kernel(const std::string func_name,
                       const Tensor& input,
                       const Tensor& other,
                       const Tensor& output,
-                      const std::optional<Scalar> alpha) {
+                      const std::optional<Scalar> alpha,
+                      const std::optional<c10::ScalarType> scalar_arg_type) {
   auto new_size = at::infer_size(input.sizes(), other.sizes());
   if (!output.sizes().equals(new_size)) {
     output.resize_(new_size);
@@ -54,7 +55,7 @@ void binary_op_kernel(const std::string func_name,
                   .promote_inputs_to_common_dtype(true)
                   .build();
 
-  lib.exec_binary_kernel(iter, func_name, alpha);
+  lib.exec_binary_kernel(iter, func_name, alpha, scalar_arg_type);
 }
 
 } // namespace mps

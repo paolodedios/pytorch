@@ -1,6 +1,9 @@
 //  Copyright © 2022 Apple Inc.
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/mps/MPSProfiler.h>
 #include <ATen/native/mps/OperationUtils.h>
+#include <ATen/native/mps/operations/BinaryKernel.h>
+#include <fmt/format.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -8,20 +11,35 @@
 #else
 #include <ATen/ops/binary_cross_entropy_backward_native.h>
 #include <ATen/ops/binary_cross_entropy_native.h>
+#include <ATen/ops/empty.h>
+#include <ATen/ops/empty_like.h>
 #include <ATen/ops/huber_loss_backward_native.h>
 #include <ATen/ops/huber_loss_native.h>
+#include <ATen/ops/mean.h>
 #include <ATen/ops/mse_loss_backward_native.h>
 #include <ATen/ops/mse_loss_native.h>
+#include <ATen/ops/mul.h>
 #include <ATen/ops/nll_loss2d_backward_native.h>
 #include <ATen/ops/nll_loss2d_forward_native.h>
 #include <ATen/ops/nll_loss_backward_native.h>
 #include <ATen/ops/nll_loss_forward_native.h>
+#include <ATen/ops/result_type.h>
 #include <ATen/ops/smooth_l1_loss_backward_native.h>
 #include <ATen/ops/smooth_l1_loss_native.h>
+#include <ATen/ops/sum.h>
 #endif
 
 namespace at::native {
+#ifndef PYTORCH_JIT_COMPILE_SHADERS
+static auto& mse_lib = mps::MetalShaderLibrary::getBundledLibrary();
+#else
+#include <ATen/native/mps/BinaryKernel_metallib.h>
+static auto& mse_lib = lib;
+#endif
+
 namespace mps {
+
+// Native Metal MSE loss path replaces the per-shape MPSGraph cache.
 
 static std::string reductionToString(int64_t reduction) {
   switch (reduction) {
@@ -53,6 +71,66 @@ static MPSGraphTensor* reduceTensor(MPSGraphTensor* tensor,
   }
 }
 
+// Fused MSE square-and-reduce for reduction = mean / sum. Computes
+// sum((input - target)^2) (and, for mean, divides by numel) entirely on the
+// GPU without materializing the squared-difference tensor -- the materialize-
+// then-at::sum approach paid for a full-size temp alloc + a second bandwidth-
+// bound pass and regressed 1.3-2.4x vs the fused MPSGraph square+reduce.
+//
+// Two-stage GPU reduction: mse_reduce_partial has each of a fixed pool of
+// threadgroups grid-stride over the input, accumulate (in - tgt)^2 in float32,
+// threadgroup tree-reduce, and emit one float32 partial; mse_reduce_final
+// reduces the (small) partials buffer to the scalar output, folding the mean
+// divide in float32 and casting to the output dtype. input / target are read in
+// their own (possibly differing) dtypes and promoted to float before the
+// subtract, so a float32 target is never narrowed to a half input first.
+static void mse_reduce_fused(const Tensor& input, const Tensor& target, const Tensor& output, int64_t reduction) {
+  // The reduction reads elements linearly, so require contiguous operands.
+  auto input_c = input.contiguous();
+  auto target_c = target.contiguous();
+  const uint32_t numel = static_cast<uint32_t>(input_c.numel());
+
+  // Size the threadgroup pool to roughly saturate the GPU while keeping the
+  // partials buffer tiny. 1024 threads/TG; cap the TG count so each TG still
+  // grid-strides over a meaningful chunk (and so the single-TG final reduce
+  // stays cheap). 1024 TGs * 1024 threads = ~1M live threads, plenty.
+  const uint32_t threads_per_tg = 1024;
+  uint32_t num_tg = (numel + threads_per_tg - 1) / threads_per_tg;
+  num_tg = std::max<uint32_t>(1, std::min<uint32_t>(num_tg, 1024));
+
+  Tensor partials = at::empty({static_cast<int64_t>(num_tg)}, input.options().dtype(kFloat));
+  const float denom = (reduction == Reduction::Mean) ? static_cast<float>(numel) : 1.0f;
+
+  MPSStream* stream = getCurrentMPSStream();
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> computeEncoder = stream->commandEncoder();
+
+      auto partialPSO = mse_lib.getPipelineStateForFunc(
+          fmt::format("mse_reduce_partial_{}_{}", scalarToMetalTypeString(input_c), scalarToMetalTypeString(target_c)));
+      getMPSProfiler().beginProfileKernel(partialPSO, "mse_reduce_partial", {input_c, target_c});
+      [computeEncoder setComputePipelineState:partialPSO];
+      mtl_setArgs(computeEncoder, input_c, target_c, partials);
+      mtl_setBytes(computeEncoder, numel, 3);
+      [computeEncoder dispatchThreadgroups:MTLSizeMake(num_tg, 1, 1)
+                     threadsPerThreadgroup:MTLSizeMake(threads_per_tg, 1, 1)];
+      getMPSProfiler().endProfileKernel(partialPSO);
+
+      auto finalPSO =
+          mse_lib.getPipelineStateForFunc(fmt::format("mse_reduce_final_{}", scalarToMetalTypeString(output)));
+      getMPSProfiler().beginProfileKernel(finalPSO, "mse_reduce_final", {partials});
+      [computeEncoder setComputePipelineState:finalPSO];
+      mtl_setArgs(computeEncoder, partials, output);
+      mtl_setBytes(computeEncoder, num_tg, 2);
+      mtl_setBytes(computeEncoder, denom, 3);
+      // One threadgroup reduces the (<= 1024) partials.
+      const uint32_t final_threads = std::min<uint32_t>(1024, std::max<uint32_t>(num_tg, 1u));
+      [computeEncoder dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(final_threads, 1, 1)];
+      getMPSProfiler().endProfileKernel(finalPSO);
+    }
+  });
+}
+
 static Tensor& mse_loss_backward_out_impl(const Tensor& grad_output,
                                           const Tensor& input,
                                           const Tensor& target,
@@ -62,44 +140,30 @@ static Tensor& mse_loss_backward_out_impl(const Tensor& grad_output,
   TORCH_CHECK(target.is_same_size(input), op_name + ": target and input tensors must have identical shapes")
   auto norm = reduction == Reduction::Mean ? 2. / static_cast<double>(input.numel()) : 2.;
 
+  // Empty input: gradient norm is 2/numel for mean (-> NaN as 2/0), else 0.
   if ((input.numel() == 0) || (target.numel() == 0) || (grad_output.numel() == 0)) {
     reduction == Reduction::Mean ? grad_input.fill_(std::numeric_limits<float>::quiet_NaN()) : grad_input.zero_();
     return grad_input;
   }
-  struct CachedGraph : public MPSCachedGraph {
-    CachedGraph(MPSGraph* graph) : MPSCachedGraph(graph) {}
-    MPSGraphTensor *inputTensor = nil, *targetTensor = nil;
-    MPSGraphTensor *gradInputTensor = nil, *gradOutputTensor = nil;
-  };
 
-  @autoreleasepool {
-    std::string key = op_name + reductionToString(reduction) + ":" + std::to_string(grad_input.sizes()[1]) +
-        getTensorsStringKey({input, target, grad_output});
-    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
-      newCachedGraph->inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, input);
-      newCachedGraph->targetTensor = mpsGraphRankedPlaceHolder(mpsGraph, target);
-      newCachedGraph->gradOutputTensor = mpsGraphRankedPlaceHolder(mpsGraph, grad_output);
-
-      MPSGraphTensor* normTensor = [mpsGraph constantWithScalar:norm dataType:[newCachedGraph->inputTensor dataType]];
-      MPSGraphTensor* diffTensor = [mpsGraph subtractionWithPrimaryTensor:newCachedGraph->inputTensor
-                                                          secondaryTensor:newCachedGraph->targetTensor
-                                                                     name:nil];
-      MPSGraphTensor* diffGradientTensor = [mpsGraph multiplicationWithPrimaryTensor:diffTensor
-                                                                     secondaryTensor:newCachedGraph->gradOutputTensor
-                                                                                name:nil];
-      newCachedGraph->gradInputTensor = [mpsGraph multiplicationWithPrimaryTensor:diffGradientTensor
-                                                                  secondaryTensor:normTensor
-                                                                             name:nil];
-    });
-    Placeholder inputPlaceholder = Placeholder(cachedGraph->inputTensor, input);
-    Placeholder targetPlaceholder = Placeholder(cachedGraph->targetTensor, target);
-    Placeholder gradInputPlaceholder = Placeholder(cachedGraph->gradInputTensor, grad_input);
-    Placeholder gradOutputPlaceholder = Placeholder(cachedGraph->gradOutputTensor, grad_output);
-
-    auto feeds = dictionaryFromPlaceholders(inputPlaceholder, targetPlaceholder, gradOutputPlaceholder);
-    runMPSGraph(getCurrentMPSStream(), cachedGraph->graph(), feeds, gradInputPlaceholder);
-  }
-
+  // grad_input = norm * (input - target) * grad_output, computed natively (no
+  // MPSGraph). The mse_backward kernel produces scaled_diff = norm * (input -
+  // target); the native Metal mul then multiplies by grad_output.
+  //
+  // The scaled product is staged in the PROMOTED compute dtype -- at::result_type
+  // over {input, target, grad_output} -- NOT input.options(). With a half input
+  // and a float target the promoted dtype is float, so the float target is never
+  // narrowed to half before the subtract (the bug that returned 0 / 0 for mixed-
+  // dtype mse, where the parent MPSGraph path hard-crashed). norm is the alpha;
+  // the kernel narrows the difference and the scaled product to that promoted
+  // dtype, mirroring the CPU kernel scalar * (self - t1) * t2
+  // (value.to<scalar_t>()). grad_output is a scalar for mean/sum (broadcast) and
+  // full-size for none (elementwise). The final at::mul_out casts to grad_inputs
+  // own dtype.
+  const auto compute_dtype = at::promoteTypes(at::result_type(input, target), grad_output.scalar_type());
+  Tensor scaled_diff = at::empty(input.sizes(), input.options().dtype(compute_dtype));
+  binary_op_kernel("mse_backward", input, target, scaled_diff, c10::Scalar(norm), compute_dtype);
+  at::mul_out(grad_input, scaled_diff, grad_output);
   return grad_input;
 }
 
@@ -1009,55 +1073,40 @@ Tensor& huber_loss_backward_out_mps(const Tensor& grad_output,
   return grad_input;
 }
 
-// MSELoss
+// MSELoss: native Metal. reduction=None uses the `mse` binary kernel (the
+// elementwise squared difference). mean/sum use the fused mse_reduce_fused
+// two-stage GPU reduction (mse_reduce_partial -> mse_reduce_final), accumulating
+// in float32 (so large-N fp16/bf16 does not overflow) without materializing the
+// squared-difference tensor. No MPSGraph -> no per-shape graph cache.
 TORCH_IMPL_FUNC(mse_loss_out_mps)(const Tensor& input, const Tensor& target, int64_t reduction, const Tensor& output_) {
   std::string op_name = "mse_loss_out_mps";
   using namespace mps;
+  // Empty input: mean is NaN (0/0), sum and none are 0. Matches CPU/CUDA.
   if ((input.numel() == 0) || (target.numel() == 0)) {
     reduction == Reduction::Mean ? output_.fill_(std::numeric_limits<float>::quiet_NaN()) : output_.zero_();
     return;
-  }
-  bool contiguousOutput = !needsGather(output_);
-  Tensor output = output_;
-  if (!contiguousOutput) {
-    output = output_.contiguous();
   }
 
   TORCH_CHECK(target.is_same_size(input), op_name + ": target and input tensors must have identical shapes");
   TORCH_CHECK(c10::isFloatingType(input.scalar_type()) && c10::isFloatingType(target.scalar_type()),
               op_name + ": only defined for floating types");
-  TORCH_CHECK(output.is_mps());
+  TORCH_CHECK(output_.is_mps());
 
-  struct CachedGraph : public MPSCachedGraph {
-    CachedGraph(MPSGraph* graph) : MPSCachedGraph(graph) {}
-    MPSGraphTensor* inputTensor = nil;
-    MPSGraphTensor* targetTensor = nil;
-    MPSGraphTensor* outputTensor = nil;
-  };
-
-  @autoreleasepool {
-    std::string key = op_name + reductionToString(reduction) + getTensorsStringKey({input, target});
-    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
-      newCachedGraph->inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, input);
-      newCachedGraph->targetTensor = mpsGraphRankedPlaceHolder(mpsGraph, target);
-
-      MPSGraphTensor* diffTensor = [mpsGraph subtractionWithPrimaryTensor:newCachedGraph->inputTensor
-                                                          secondaryTensor:newCachedGraph->targetTensor
-                                                                     name:nil];
-      MPSGraphTensor* diffSquareTensor = [mpsGraph squareWithTensor:diffTensor name:nil];
-      newCachedGraph->outputTensor = reduceTensor(diffSquareTensor, reduction, mpsGraph, input.sizes().size());
-    });
-    Placeholder inputPlaceholder = Placeholder(cachedGraph->inputTensor, input);
-    Placeholder targetPlaceholder = Placeholder(cachedGraph->targetTensor, target);
-    Placeholder outputPlaceholder = Placeholder(cachedGraph->outputTensor, contiguousOutput ? output_ : output);
-
-    auto feeds = dictionaryFromPlaceholders(inputPlaceholder, targetPlaceholder);
-    runMPSGraph(getCurrentMPSStream(), cachedGraph->graph(), feeds, outputPlaceholder);
+  if (reduction == Reduction::None) {
+    // (input - target)^2 written straight to the (possibly non-contiguous)
+    // structured output. exec_binary_kernel handles strided/broadcast inputs.
+    binary_op_kernel("mse", input, target, output_);
+    return;
   }
 
-  if (!contiguousOutput) {
-    output_.copy_(output);
-  }
+  // Mean/Sum: fused square-and-reduce in a single GPU pass (no materialized
+  // squared-difference temp). The kernel reads input and target in their own
+  // dtypes, computes (input - target)^2 in float32, threadgroup-reduces, and
+  // (for mean) divides by numel in float32 before casting to the output dtype.
+  // This matches the fused MPSGraph square+reduce that the materialize-then-
+  // at::sum path regressed against, and keeps the float32 accumulation so
+  // large-N fp16/bf16 does not overflow. output_ is a scalar tensor.
+  mse_reduce_fused(input, target, output_, reduction);
 }
 
 Tensor& mse_loss_backward_out_mps(const Tensor& grad_output,
