@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: pt2"]
 name: Limited CI for CUTLASS backend on H100
 
 on:

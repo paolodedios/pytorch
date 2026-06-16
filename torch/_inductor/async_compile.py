@@ -283,10 +283,7 @@ class AsyncCompile:
     @staticmethod
     @functools.lru_cache(1)
     def pool() -> ThreadPoolExecutor:
-        if get_compile_threads() <= 1:
-            raise AssertionError(
-                f"expected get_compile_threads() > 1, got {get_compile_threads()}"
-            )
+        assert get_compile_threads() > 1
         return ThreadPoolExecutor(get_compile_threads())
 
     @staticmethod
@@ -297,10 +294,7 @@ class AsyncCompile:
     @staticmethod
     @functools.lru_cache(1)
     def process_pool() -> AnyPool:
-        if get_compile_threads() <= 1:
-            raise AssertionError(
-                f"expected get_compile_threads() > 1, got {get_compile_threads()}"
-            )
+        assert get_compile_threads() > 1
         if not _process_pool_allowed():
             raise RuntimeError(
                 "Inductor async compile process pools are disabled in daemonic "

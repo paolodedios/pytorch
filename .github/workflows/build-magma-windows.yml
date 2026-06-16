@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng", "module: windows"]
 name: Build MAGMA for Windows
 
 on:

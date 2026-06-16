@@ -1845,7 +1845,7 @@ class InstructionTranslatorBase(
             cg.extend_output(
                 [
                     *create_swap(2),
-                    *cg.create_list_append(),
+                    create_instruction("LIST_APPEND", arg=1),
                 ]
             )
             self.parent.push(UnknownVariable())

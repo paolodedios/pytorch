@@ -253,10 +253,7 @@ def update_orig_fx_node_name_to_buf_name(
             continue
         else:
             # pyrefly: ignore [bad-argument-type, unsupported-operation]
-            if not (len(children_nodes) == 1 and children_nodes[0] == node):
-                raise AssertionError(
-                    "expected a single child node equal to the current node"
-                )
+            assert len(children_nodes) == 1 and children_nodes[0] == node
 
         ir_node = node.node
         if ir_node is None or ir_node.origins is None:
@@ -355,24 +352,7 @@ _inductor_triton_kernel_to_post_grad_node_info: dict[str, list[str]] = {}
 _pre_grad_graph_id: int | None = None
 _inductor_pre_grad_node_stack_trace: dict[str, str] = {}
 _inductor_kernel_stack_trace: dict[str, list[str]] = {}
-_kernel_information_jsons: dict[str, dict[str, Any]] = {}
 _inductor_kernel_provenance_debug_handle: int = 0
-
-
-def get_kernel_information_jsons() -> dict[str, dict[str, Any]]:
-    return _kernel_information_jsons
-
-
-def alias_kernel_provenance(original_kernel_name: str, alias_kernel_name: str) -> None:
-    """Expose existing kernel provenance under an additional generated name."""
-    if original_kernel_name in _inductor_kernel_stack_trace:
-        _inductor_kernel_stack_trace[alias_kernel_name] = _inductor_kernel_stack_trace[
-            original_kernel_name
-        ]
-    if original_kernel_name in _inductor_triton_kernel_to_post_grad_node_info:
-        _inductor_triton_kernel_to_post_grad_node_info[alias_kernel_name] = (
-            _inductor_triton_kernel_to_post_grad_node_info[original_kernel_name]
-        )
 
 
 def reset_inductor_kernel_provenance_debug_handle() -> None:
@@ -411,9 +391,6 @@ def reset_provenance_globals() -> Iterator[None]:
     _inductor_triton_kernel_to_post_grad_node_info = {}
     _inductor_pre_grad_node_stack_trace = {}
     _inductor_kernel_stack_trace = {}
-    # Kernel timeline information is populated from compile_fx_inner while this
-    # context is active.  It must outlive the reset scope so the profiler can
-    # consume it during export_chrome_trace, which then clears it.
     _inductor_kernel_provenance_debug_handle = 0
 
     try:
@@ -463,8 +440,7 @@ class DebugContext:
     def copy(self, new_path: str) -> None:
         if not self._path:
             return
-        if not new_path.endswith(".debug"):
-            raise AssertionError(new_path)
+        assert new_path.endswith(".debug"), new_path
         from filelock import FileLock
 
         try:
@@ -484,8 +460,7 @@ class DebugContext:
         *args: Any,
         **kwargs: Any,
     ) -> IO[Any]:
-        if not self._path:
-            raise AssertionError("expected self._path to be set")
+        assert self._path
         return open(os.path.join(self._path, filename), write_mode, *args, **kwargs)
 
     @contextlib.contextmanager
@@ -496,22 +471,19 @@ class DebugContext:
         *args: Any,
         **kwargs: Any,
     ) -> Iterator[IO[Any]]:
-        if not self._path:
-            raise AssertionError("expected self._path to be set")
+        assert self._path
         with open(os.path.join(self._path, filename), write_mode, *args, **kwargs) as f:
             yield f
 
     def filename(self, suffix: str) -> str:
-        if not self._path:
-            raise AssertionError("expected self._path to be set")
+        assert self._path
         return os.path.join(self._path, suffix)
 
     def upload_tar(self) -> None:
         if config.trace.upload_tar is not None:
             import tarfile
 
-            if not self._path:
-                raise AssertionError("expected self._path to be set")
+            assert self._path
             tar_file = os.path.join(
                 self._path, f"{os.path.basename(self._path)}.tar.gz"
             )
@@ -574,8 +546,7 @@ class DebugContext:
         self._stack.close()
 
     def _save_profile_data(self) -> None:
-        if not self._prof:
-            raise AssertionError("expected self._prof to be set")
+        assert self._prof
         self._prof.dump_stats(self.filename("compile.prof"))
         with self.fopen("compile.stats") as fd:
             stats = pstats.Stats(self._prof, stream=fd)
@@ -1179,7 +1150,7 @@ def set_kernel_post_grad_provenance_tracing(
     Returns a unique int debug handler for each call to this function.
     """
 
-    if config.effective_provenance_tracking_level() == 0:
+    if config.trace.provenance_tracking_level == 0:
         return None
 
     try:
@@ -1193,10 +1164,7 @@ def set_kernel_post_grad_provenance_tracing(
         stack_traces: list[str] = []
         kernel_name = f"{kernel_name}:{_inductor_kernel_provenance_debug_handle}"
         if is_extern:
-            if not isinstance(node_schedule, ExternKernel):
-                raise AssertionError(
-                    f"expected ExternKernel, got {type(node_schedule)}"
-                )
+            assert isinstance(node_schedule, ExternKernel)
             curr_node_info = _inductor_triton_kernel_to_post_grad_node_info.setdefault(
                 kernel_name, []
             )
@@ -1215,8 +1183,7 @@ def set_kernel_post_grad_provenance_tracing(
                 )
             stack_traces = list(node_schedule.get_stack_traces())
         else:
-            if not isinstance(node_schedule, list):
-                raise AssertionError(f"expected list, got {type(node_schedule)}")
+            assert isinstance(node_schedule, list)
             stack_traces_set: OrderedSet[str] = OrderedSet()
             for snode in node_schedule:
                 if snode not in (EnableReduction, DisableReduction):
@@ -1436,8 +1403,7 @@ def aot_inductor_minifier_wrapper(
     use_minifier = config.aot_inductor.dump_aoti_minifier
 
     gm = exported_program.module(check_guards=False)
-    if not isinstance(gm, torch.fx.GraphModule):
-        raise AssertionError(f"expected torch.fx.GraphModule, got {type(gm)}")
+    assert isinstance(gm, torch.fx.GraphModule)
 
     args, kwargs = exported_program.example_inputs
 

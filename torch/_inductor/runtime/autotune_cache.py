@@ -105,14 +105,10 @@ class AutotuneCacheArtifact(CacheArtifact):
     @override
     @staticmethod
     def encode(content: JsonDataTy) -> bytes:
-        if isinstance(content, bytes):
-            raise AssertionError("content must not be bytes before encoding")
+        assert not isinstance(content, bytes)
         serde = RemoteCacheJsonSerde()
         content_bytes = serde.encode(content)
-        if not isinstance(content_bytes, bytes):
-            raise AssertionError(
-                f"Expected bytes after encoding, got {type(content_bytes)}"
-            )
+        assert isinstance(content_bytes, bytes)
         return content_bytes
 
 
@@ -185,10 +181,7 @@ class AutotuneCache:
             AutotuneCacheBundler.sync()
             best_config = cache.get(key)
             if best_config is not None:
-                if not isinstance(best_config, dict):
-                    raise AssertionError(
-                        f"Expected dict for best_config, got {type(best_config)}"
-                    )
+                assert isinstance(best_config, dict)
                 # Imagine we have a new model that reuses some existing kernels that
                 # have already been compiled. If we didn't put() here on cache hit,
                 # then the new model would only bundle newly compiled kernels, not
@@ -245,10 +238,7 @@ class AutotuneCache:
                 "backend_hash is not passed on the inductor_meta, unable to use autotune remote cache"
             )
             return
-        if not isinstance(backend_hash, str):
-            raise AssertionError(
-                f"Expected str for backend_hash, got {type(backend_hash)}"
-            )
+        assert isinstance(backend_hash, str)
 
         from ..codecache import torch_key
 
@@ -294,18 +284,9 @@ class AutotuneCache:
         # Reconstruct the remote cache on the parent class
         self.__dict__.update(state)
         if self.remote_cache is not None:
-            if not isinstance(self.remote_cache, str):
-                raise AssertionError(
-                    f"Expected str for remote_cache after deserialization, got {type(self.remote_cache)}"
-                )
-            if not hasattr(self, "remote_cache_full_key"):
-                raise AssertionError(
-                    "Missing remote_cache_full_key attribute after deserialization"
-                )
-            if not hasattr(self, "is_fbcode"):
-                raise AssertionError(
-                    "Missing is_fbcode attribute after deserialization"
-                )
+            assert isinstance(self.remote_cache, str)
+            assert hasattr(self, "remote_cache_full_key")
+            assert hasattr(self, "is_fbcode")
             cache_key = self.remote_cache
             remote_cache = create_cache(
                 self.remote_cache_full_key,
@@ -473,10 +454,7 @@ class _AutotuneCacheBundlerImpl:
     @staticmethod
     def _get_backend_hash(inductor_meta: _InductorMetaTy) -> str:
         backend_hash = inductor_meta["backend_hash"]
-        if not isinstance(backend_hash, str):
-            raise AssertionError(
-                f"Expected str for backend_hash, got {type(backend_hash)}"
-            )
+        assert isinstance(backend_hash, str)
         return backend_hash
 
 
@@ -506,10 +484,7 @@ class AutotuneCacheBundler:
             if bundler is None and create:
                 bundler = cls()
                 cls._context_bundlers[ctx] = bundler
-            if bundler is not None and not isinstance(bundler, cls):
-                raise AssertionError(
-                    f"Expected AutotuneCacheBundler or None, got {type(bundler)}"
-                )
+            assert bundler is None or isinstance(bundler, cls)
             return bundler
 
     @classmethod
@@ -529,11 +504,9 @@ class AutotuneCacheBundler:
         code_hash: str | None = None,
     ) -> None:
         if code is not None:
-            if code_hash is not None:
-                raise AssertionError("Cannot specify both code and code_hash")
+            assert code_hash is None, "Cannot specify both code and code_hash"
             code_hash = _comment_stripped_hash(code)
-        if code_hash is None:
-            raise AssertionError("Either code or code_hash must be provided")
+        assert code_hash is not None
 
         if not _AutotuneCacheBundlerImpl._should_use_bundled_autotune_remote_cache(
             inductor_meta
@@ -548,10 +521,7 @@ class AutotuneCacheBundler:
                 "Skipping bundled autotune cache because compile_context is not set"
             )
             return
-        if context_bundler._bundler is not None:
-            raise AssertionError(
-                "begin_compile called while a bundler is already active"
-            )
+        assert context_bundler._bundler is None
 
         cache = create_cache(
             "bundled-autotune-v1",

@@ -438,16 +438,14 @@ class SubprocMain:
             except Exception as e:
                 log.exception("Error in subprocess")
                 result = self.pickler.dumps(e)
-            if not isinstance(result, bytes):
-                raise AssertionError(f"Expected bytes result, got {type(result)}")
+            assert isinstance(result, bytes)
             with self.write_lock:
                 if self.running:
                     _send_msg(self.write_pipe, MsgHeader.JOB, job_id, result)
             return
 
         self._start_pool()
-        if self.pool is None:
-            raise AssertionError("pool must be initialized before submitting jobs")
+        assert self.pool is not None
 
         future = self.pool.submit(
             functools.partial(SubprocMain.do_job, self.pickler, data)

@@ -1,4 +1,3 @@
-# Owner(s): ["module: ci"]
 name: Create a cherry pick from a PR
 
 on:

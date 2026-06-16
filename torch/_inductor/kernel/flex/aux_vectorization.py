@@ -48,13 +48,9 @@ class AuxLoadVecInfo:
     def __post_init__(self) -> None:
         """Validate that only contiguous loads carry a vector width."""
         if self.kind is LoadKind.CONTIGUOUS:
-            if self.vec_size is None:
-                raise AssertionError("CONTIGUOUS load requires a vec_size")
+            assert self.vec_size is not None
         else:
-            if self.vec_size is not None:
-                raise AssertionError(
-                    f"non-CONTIGUOUS load must not carry vec_size, got {self.vec_size}"
-                )
+            assert self.vec_size is None
 
     @classmethod
     def gather(cls) -> "AuxLoadVecInfo":
@@ -255,8 +251,7 @@ def select_aux_mod_vec_size(
                 pass
             case LoadKind.CONTIGUOUS:
                 contiguous_vec_size = aux_load_vec_info.vec_size
-                if contiguous_vec_size is None:
-                    raise AssertionError("CONTIGUOUS load must have a vec_size")
+                assert contiguous_vec_size is not None
                 selected_vec_size = min(selected_vec_size, contiguous_vec_size)
                 found_vectorizable_load = True
 
@@ -298,10 +293,7 @@ def direct_aux_load_vec_size_and_kind(
     """
     if not isinstance(indices, (list, tuple)) or not indices:
         return AuxLoadVecInfo.gather()
-    if not (max_vec_size >= 2 and max_vec_size.bit_count() == 1):
-        raise AssertionError(
-            f"max_vec_size must be a power of two >= 2, got {max_vec_size}"
-        )
+    assert max_vec_size >= 2 and max_vec_size.bit_count() == 1
 
     _, kv_idx, index_symbols = make_fx_index_symbols(
         q_idx_node, kv_idx_node, non_lane_index_nodes

@@ -1,4 +1,3 @@
-# Owner(s): ["module: windows"]
 name: win-test
 
 on:

@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: pt2"]
 name: Upload torch dynamo performance stats
 
 on:

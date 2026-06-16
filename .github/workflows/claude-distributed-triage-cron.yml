@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: distributed"]
 name: Claude Distributed Triage Cron
 
 on:

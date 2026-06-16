@@ -8,45 +8,27 @@
 namespace at::cuda::solver {
 
 template <>
-void getrf_bufferSize<double>(
-    cusolverDnHandle_t handle, int m, int n, double* dA, int ldda, int* lwork) {
-  TORCH_CUSOLVER_CHECK(
-      cusolverDnDgetrf_bufferSize(handle, m, n, dA, ldda, lwork));
-}
-
-template <>
-void getrf_bufferSize<float>(
-    cusolverDnHandle_t handle, int m, int n, float* dA, int ldda, int* lwork) {
-  TORCH_CUSOLVER_CHECK(
-      cusolverDnSgetrf_bufferSize(handle, m, n, dA, ldda, lwork));
-}
-
-template <>
-void getrf_bufferSize<c10::complex<double>>(
-    cusolverDnHandle_t handle, int m, int n, c10::complex<double>* dA, int ldda, int* lwork) {
-  TORCH_CUSOLVER_CHECK(cusolverDnZgetrf_bufferSize(
-      handle, m, n, reinterpret_cast<cuDoubleComplex*>(dA), ldda, lwork));
-}
-
-template <>
-void getrf_bufferSize<c10::complex<float>>(
-    cusolverDnHandle_t handle, int m, int n, c10::complex<float>* dA, int ldda, int* lwork) {
-  TORCH_CUSOLVER_CHECK(cusolverDnCgetrf_bufferSize(
-      handle, m, n, reinterpret_cast<cuComplex*>(dA), ldda, lwork));
-}
-
-template <>
 void getrf<double>(
-    cusolverDnHandle_t handle, int m, int n, double* dA, int ldda, double* workspace, int* ipiv, int* info) {
+    cusolverDnHandle_t handle, int m, int n, double* dA, int ldda, int* ipiv, int* info) {
+  int lwork;
+  TORCH_CUSOLVER_CHECK(
+      cusolverDnDgetrf_bufferSize(handle, m, n, dA, ldda, &lwork));
+  auto& allocator = *::c10::cuda::CUDACachingAllocator::get();
+  auto dataPtr = allocator.allocate(sizeof(double)*lwork);
   TORCH_CUSOLVER_CHECK(cusolverDnDgetrf(
-      handle, m, n, dA, ldda, workspace, ipiv, info));
+      handle, m, n, dA, ldda, static_cast<double*>(dataPtr.get()), ipiv, info));
 }
 
 template <>
 void getrf<float>(
-    cusolverDnHandle_t handle, int m, int n, float* dA, int ldda, float* workspace, int* ipiv, int* info) {
+    cusolverDnHandle_t handle, int m, int n, float* dA, int ldda, int* ipiv, int* info) {
+  int lwork;
+  TORCH_CUSOLVER_CHECK(
+      cusolverDnSgetrf_bufferSize(handle, m, n, dA, ldda, &lwork));
+  auto& allocator = *::c10::cuda::CUDACachingAllocator::get();
+  auto dataPtr = allocator.allocate(sizeof(float)*lwork);
   TORCH_CUSOLVER_CHECK(cusolverDnSgetrf(
-      handle, m, n, dA, ldda, workspace, ipiv, info));
+      handle, m, n, dA, ldda, static_cast<float*>(dataPtr.get()), ipiv, info));
 }
 
 template <>
@@ -56,16 +38,20 @@ void getrf<c10::complex<double>>(
     int n,
     c10::complex<double>* dA,
     int ldda,
-    c10::complex<double>* workspace,
     int* ipiv,
     int* info) {
+  int lwork;
+  TORCH_CUSOLVER_CHECK(cusolverDnZgetrf_bufferSize(
+      handle, m, n, reinterpret_cast<cuDoubleComplex*>(dA), ldda, &lwork));
+  auto& allocator = *::c10::cuda::CUDACachingAllocator::get();
+  auto dataPtr = allocator.allocate(sizeof(cuDoubleComplex) * lwork);
   TORCH_CUSOLVER_CHECK(cusolverDnZgetrf(
       handle,
       m,
       n,
       reinterpret_cast<cuDoubleComplex*>(dA),
       ldda,
-      reinterpret_cast<cuDoubleComplex*>(workspace),
+      static_cast<cuDoubleComplex*>(dataPtr.get()),
       ipiv,
       info));
 }
@@ -77,16 +63,20 @@ void getrf<c10::complex<float>>(
     int n,
     c10::complex<float>* dA,
     int ldda,
-    c10::complex<float>* workspace,
     int* ipiv,
     int* info) {
+  int lwork;
+  TORCH_CUSOLVER_CHECK(cusolverDnCgetrf_bufferSize(
+      handle, m, n, reinterpret_cast<cuComplex*>(dA), ldda, &lwork));
+  auto& allocator = *::c10::cuda::CUDACachingAllocator::get();
+  auto dataPtr = allocator.allocate(sizeof(cuComplex) * lwork);
   TORCH_CUSOLVER_CHECK(cusolverDnCgetrf(
       handle,
       m,
       n,
       reinterpret_cast<cuComplex*>(dA),
       ldda,
-      reinterpret_cast<cuComplex*>(workspace),
+      static_cast<cuComplex*>(dataPtr.get()),
       ipiv,
       info));
 }

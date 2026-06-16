@@ -1,4 +1,3 @@
-# Owner(s): ["module: rocm"]
 # TODO: this looks sort of similar to _linux-test, but there are like a dozen
 # places where you would have to insert an if statement. Probably it's better to
 # just use a different workflow altogether

@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng", "module: macos"]
 name: test-and-upload (macOS wheel)
 
 # Run the smoke-test of a built macOS arm64 wheel on a fresh macos runner,

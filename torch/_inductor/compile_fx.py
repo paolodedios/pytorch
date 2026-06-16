@@ -72,9 +72,7 @@ from torch._inductor.cudagraph_utils import (
 )
 from torch._inductor.custom_graph_pass import CustomPartitionerFn
 from torch._inductor.debug import (
-    create_kernel_information_json,
     create_mapping_pre_post_grad_nodes,
-    get_kernel_information_jsons,
     save_args_for_compile_fx_inner,
 )
 from torch._inductor.output_code import (
@@ -446,10 +444,7 @@ def _unlift_graph(
                 clone_preserve_strides(state_dict[buffer_name])
             )
         else:
-            if node_name not in graph_signature.user_inputs:
-                raise AssertionError(
-                    f"Expected {node_name} to be in graph_signature.user_inputs"
-                )
+            assert node_name in graph_signature.user_inputs
             lifted_inputs.append(None)
 
     from torch.export._unlift import _unlift
@@ -651,8 +646,7 @@ def split_const_gm(
     for node in to_erase_node[::-1]:
         if node.users:
             for n in node.users:
-                if n.meta[META_TAG] != MODULE_TAG:
-                    raise AssertionError(f"node: {node} user not empty.")
+                assert n.meta[META_TAG] == MODULE_TAG, f"node: {node} user not empty."
         else:
             gm.graph.erase_node(node)
     gm.recompile()
@@ -840,21 +834,12 @@ def compile_fx_inner(
             "inductor_compile",
             is_backward=kwargs["is_backward"],
         )
-        compiled_graph = wrap_compiler_debug(
-            _compile_fx_inner, compiler_name="inductor"
-        )(
+        return wrap_compiler_debug(_compile_fx_inner, compiler_name="inductor")(
             gm,
             example_inputs,
             compile_region_name=compile_region_name,
             **kwargs,
         )
-        if config.trace.provenance_tracking_to_timeline:
-            compile_id = torch._guards.CompileContext.current_compile_id()
-            kernel_information_jsons = get_kernel_information_jsons()
-            key = str((f"Torch-Compiled Region: {compile_id}", kwargs["is_backward"]))
-            if key not in kernel_information_jsons:
-                kernel_information_jsons[key] = create_kernel_information_json()
-        return compiled_graph
 
 
 @time_and_log(attr="compilation time (in seconds)")
@@ -910,10 +895,9 @@ def _compile_fx_inner(
     static_inputs_log.debug("static input idxs compile_fx_inner: %s", static_input_idxs)
     inputs_to_check = get_input_idxs_to_check(example_inputs, static_input_idxs)
 
-    if not isinstance(next(iter(reversed(gm.graph.nodes))).args[0], (tuple, list)):
-        raise AssertionError(
-            f"inductor can only compile FX graphs which return a tuple/list, but got {gm.graph}"
-        )
+    assert isinstance(next(iter(reversed(gm.graph.nodes))).args[0], (tuple, list)), (
+        f"inductor can only compile FX graphs which return a tuple/list, but got {gm.graph}"
+    )
 
     if graph_kwargs.get("cudagraphs") is None:
         graph_kwargs["cudagraphs"] = BoxedBool(config.triton.cudagraphs)
@@ -1009,14 +993,8 @@ def _compile_fx_inner(
                 log.debug("Failed to generate FX cache key")
 
         if torch._functorch.config.bundled_autograd_cache:
-            if mb_compiled_graph is not None:
-                raise AssertionError(
-                    "Expected mb_compiled_graph to be None for bundled_autograd_cache path"
-                )
-            if cache_info is not None:
-                raise AssertionError(
-                    "Expected cache_info to be None for bundled_autograd_cache path"
-                )
+            assert mb_compiled_graph is None
+            assert cache_info is None
             # When using bundled autograd cache, we still want
             # to use the TritonBundler, but we don't want to save
             # the results here. The results will get saved directly
@@ -1030,10 +1008,7 @@ def _compile_fx_inner(
                     compile_region_name=compile_region_name,
                     **graph_kwargs,
                 )
-                if mb_compiled_graph is None:
-                    raise AssertionError(
-                        "fx_codegen_and_compile returned None in bundled_autograd_cache path"
-                    )
+                assert mb_compiled_graph is not None
                 (
                     triton_bundle,
                     triton_bundler_meta,
@@ -1052,10 +1027,7 @@ def _compile_fx_inner(
         # (this can happen either because cache was disabled, or we
         # determined the input is uncacheable)
         elif cache_info is None or cache_info["cache_state"] == "bypass":
-            if mb_compiled_graph is not None:
-                raise AssertionError(
-                    "Expected mb_compiled_graph to be None in cache bypass path"
-                )
+            assert mb_compiled_graph is None
             log.debug(
                 "FX cache bypass reason: %s",
                 (
@@ -1079,12 +1051,8 @@ def _compile_fx_inner(
 
         # CACHE MISS: Compile the graph and save to cache
         elif cache_info["cache_state"] == "miss":
-            if mb_compiled_graph is not None:
-                raise AssertionError(
-                    "Expected mb_compiled_graph to be None in cache miss path"
-                )
-            if key_info is None:
-                raise AssertionError("Expected key_info to be set in cache miss path")
+            assert mb_compiled_graph is None
+            assert key_info is not None
             log.debug("FX cache miss, compiling and saving to cache")
             TritonBundler.begin_compile()
             try:
@@ -1095,10 +1063,7 @@ def _compile_fx_inner(
                     compile_region_name=compile_region_name,
                     **graph_kwargs,
                 )
-                if mb_compiled_graph is None:
-                    raise AssertionError(
-                        "fx_codegen_and_compile returned None in cache miss path"
-                    )
+                assert mb_compiled_graph is not None
                 mb_compiled_graph._time_taken_ns = time.time_ns() - start_time
                 cache_key, debug_lines = key_info
                 mb_compiled_graph._fx_graph_cache_key = cache_key
@@ -1131,25 +1096,15 @@ def _compile_fx_inner(
         # CACHE HIT: not much to really do, just make sure the cache key
         # is recorded on the graph
         else:
-            if cache_info["cache_state"] != "hit":
-                raise AssertionError(
-                    f"Expected cache_state to be 'hit', got {cache_info['cache_state']!r}"
-                )
-            if mb_compiled_graph is None:
-                raise AssertionError(
-                    "Expected mb_compiled_graph to be set in cache hit path"
-                )
-            if key_info is None:
-                raise AssertionError("Expected key_info to be set in cache hit path")
+            assert cache_info["cache_state"] == "hit"
+            assert mb_compiled_graph is not None
+            assert key_info is not None
             (cache_key, debug_lines) = key_info
             log.debug("FX cache hit with key: %s", cache_key)
             mb_compiled_graph._fx_graph_cache_key = cache_key
             mb_compiled_graph._fx_graph_cache_debug_lines = debug_lines
 
-        if mb_compiled_graph is None:
-            raise AssertionError(
-                "Expected mb_compiled_graph to be set after cache handling"
-            )
+        assert mb_compiled_graph is not None
         compiled_graph = mb_compiled_graph
         if isinstance(compiled_graph, CompiledFxGraph):
             compiled_graph.compile_region_name = compile_region_name
@@ -1308,8 +1263,7 @@ class _InProcessFxCompile(FxCompile):
         # TODO: _CompileFxKwargs actually has stronger types than in the
         # signature, need to tighten it up
 
-        if "cudagraphs" not in graph_kwargs or graph_kwargs["cudagraphs"] is None:
-            raise AssertionError("Expected 'cudagraphs' to be set in graph_kwargs")
+        assert "cudagraphs" in graph_kwargs and graph_kwargs["cudagraphs"] is not None
         cudagraphs: BoxedBool = graph_kwargs["cudagraphs"]
         static_input_idxs: Sequence[int] = graph_kwargs.get("static_input_idxs", ())
         is_backward: bool = graph_kwargs.get("is_backward", False)
@@ -1455,7 +1409,7 @@ class _InProcessFxCompile(FxCompile):
                     },
                     payload_fn=lambda: inductor_post_grad_graph_str,
                 )
-                if config.effective_provenance_tracking_level() != 0:
+                if config.trace.provenance_tracking_level != 0:
                     provenance_tracking_json = (
                         torch.fx.traceback.get_graph_provenance_json(gm.graph)
                     )
@@ -1525,8 +1479,7 @@ class _InProcessFxCompile(FxCompile):
                         V.set_graph_handler(const_graph),
                         V.set_extern_kernel_nodes([]),
                     ):
-                        if not cpp_wrapper:
-                            raise AssertionError("AOT mode only supports C++ wrapper")
+                        assert cpp_wrapper, "AOT mode only supports C++ wrapper"
                         const_graph.run()
                         const_wrapper_code, const_kernel_code = (
                             const_graph.codegen_with_cpp_wrapper()
@@ -1598,10 +1551,7 @@ class _InProcessFxCompile(FxCompile):
                         "GraphLowering.compile_to_fn", log_pt2_compile_event=True
                     ):
                         if graph.aot_mode and graph.fx_wrapper:
-                            if graph.cpp_wrapper:
-                                raise AssertionError(
-                                    "Expected cpp_wrapper to be False for fx_wrapper AOT mode"
-                                )
+                            assert not graph.cpp_wrapper
                             compiled_fn = graph.codegen()[0].gm  # type: ignore[attr-defined]
                             output_code_log.debug(
                                 "Output graph module: \n%s",
@@ -1611,17 +1561,16 @@ class _InProcessFxCompile(FxCompile):
                         elif graph.aot_mode:
                             from .codecache import AotCodeCompiler
 
-                            if not graph.cpp_wrapper:
-                                raise AssertionError(
-                                    "AOT mode only supports C++ wrapper"
-                                )
+                            assert graph.cpp_wrapper, (
+                                "AOT mode only supports C++ wrapper"
+                            )
                             wrapper_code, kernel_code = graph.codegen_with_cpp_wrapper()
                             output_code_log.debug(
-                                "AOT wrapper code: \n%s", wrapper_code.value
+                                "Output wrapper code: \n%s", wrapper_code.value
                             )
                             if kernel_code.value:
                                 output_code_log.debug(
-                                    "AOT kernel code:\n%s", kernel_code.value
+                                    "Output kernel code:\n%s", kernel_code.value
                                 )
 
                             serialized_extern_kernel_nodes = None
@@ -1665,7 +1614,7 @@ class _InProcessFxCompile(FxCompile):
                     # Dump provenance artifacts for debugging trace
                     inductor_provenance_tracking_node_mappings = None
                     inductor_kernel_stack_trace_str = None
-                    if config.effective_provenance_tracking_level() != 0:
+                    if config.trace.provenance_tracking_level != 0:
                         inductor_provenance_tracking_node_mappings = json.dumps(
                             torch._inductor.debug.dump_inductor_provenance_info()
                         )
@@ -1769,14 +1718,11 @@ class _InProcessFxCompile(FxCompile):
 
                     # pyrefly: ignore [unbound-name]
                     if V.aot_compilation:
-                        if not isinstance(
+                        assert isinstance(
                             compiled_fn,
                             # pyrefly: ignore [unbound-name]
                             (str, list, torch.fx.GraphModule),
-                        ):
-                            raise AssertionError(
-                                f"Expected compiled_fn to be str, list, or GraphModule, got {type(compiled_fn)}"
-                            )
+                        ), type(compiled_fn)
                         return CompiledAOTI(
                             filename=compiled_fn, device_type=graph.device_type
                         )
@@ -1865,10 +1811,9 @@ def fx_codegen_and_compile(
         from .compile_fx_ext import _OutOfProcessFxCompile
 
         # pyrefly: ignore [unbound-name]
-        if not isinstance(scheme, _OutOfProcessFxCompile):
-            raise AssertionError(
-                "async is only valid with an out-of-process compile mode"
-            )
+        assert isinstance(scheme, _OutOfProcessFxCompile), (
+            "async is only valid with an out-of-process compile mode"
+        )
         # pyrefly: ignore [unbound-name]
         scheme = _AsyncFxCompile(scheme)
         scheme._compile.compile_region_name = (
@@ -1880,10 +1825,9 @@ def fx_codegen_and_compile(
         from .compile_fx_ext import _OutOfProcessFxCompile
 
         # pyrefly: ignore [unbound-name]
-        if not isinstance(scheme, _OutOfProcessFxCompile):
-            raise AssertionError(
-                "progressive is only valid with an out-of-process compile mode"
-            )
+        assert isinstance(scheme, _OutOfProcessFxCompile), (
+            "progressive is only valid with an out-of-process compile mode"
+        )
 
         progression_configs = _get_progression_configs()
 
@@ -2022,8 +1966,7 @@ def cudagraphify_impl(
     )
     copy_misaligned_inputs(inputs, check_input_idxs)  # type: ignore[arg-type]
 
-    if not isinstance(inputs, list):
-        raise AssertionError(f"Expected inputs to be a list, got {type(inputs)}")
+    assert isinstance(inputs, list)
 
     inps_expanded_dims = [
         get_expanded_dims(x) if idx not in static_input_idxs else []
@@ -2068,26 +2011,15 @@ def cudagraphify_impl(
     if config.size_asserts:
 
         def run(new_inputs: list[InputType]) -> Callable[[list[InputType]], Any]:
-            if len(static_inputs) != len(new_inputs):
-                raise AssertionError(
-                    f"Expected static_inputs and new_inputs to have same length, "
-                    f"got {len(static_inputs)} vs {len(new_inputs)}"
-                )
+            assert len(static_inputs) == len(new_inputs)
             for idx, (dst, src, expanded_dims) in enumerate(
                 zip(static_inputs, new_inputs, inps_expanded_dims)
             ):
                 if not isinstance(dst, torch.Tensor):
                     continue
-                if not isinstance(src, torch.Tensor):
-                    raise AssertionError(
-                        f"Expected src at index {idx} to be a Tensor, got {type(src)}"
-                    )
+                assert isinstance(src, torch.Tensor)
                 if idx in static_input_idxs:
-                    if dst.data_ptr() != src.data_ptr():
-                        raise AssertionError(
-                            f"Expected static input at index {idx} to have same data_ptr, "
-                            f"got {dst.data_ptr()} vs {src.data_ptr()}"
-                        )
+                    assert dst.data_ptr() == src.data_ptr()
                 else:
                     # TODO - could make one single op of multiple slices
                     # and avoid dispatch.
@@ -2107,10 +2039,7 @@ def cudagraphify_impl(
             for idx in copy_indices:
                 expanded_dims = inps_expanded_dims[idx]
                 src = new_inputs[idx]
-                if not isinstance(src, torch.Tensor):
-                    raise AssertionError(
-                        f"Expected src at index {idx} to be a Tensor, got {type(src)}"
-                    )
+                assert isinstance(src, torch.Tensor)
                 index_expanded_dims_and_copy_(static_inputs[idx], src, expanded_dims)
             new_inputs.clear()
             graph.replay()
@@ -2126,8 +2055,7 @@ def compile_fx_aot(
     inner_compile: _CompileFxCallable = compile_fx_inner,
     config_patches: dict[str, Any] | None = None,
 ) -> list[str | Weights] | str | GraphModule:
-    if not isinstance(model_, GraphModule):
-        raise AssertionError(f"Expected GraphModule, got {type(model_)}: {model_}")
+    assert isinstance(model_, GraphModule), model_
 
     # [See NOTE] Unwrapping subclasses AOT
     unwrap_tensor_subclass_parameters(model_)
@@ -2144,13 +2072,12 @@ def compile_fx_aot(
     )
 
     if output_path:
-        if output_path.endswith(".pt2"):
-            raise AssertionError(
-                "The output path for aot_compile should not have an extension with .pt2 "
-                "this is for specifying the output path for the .so in AOTInductor. "
-                "If you would like to package the AOTInductor generated files "
-                "into a pt2, please call `torch._inductor.aoti_compile_and_package`."
-            )
+        assert not output_path.endswith(".pt2"), (
+            "The output path for aot_compile should not have an extension with .pt2 "
+            "this is for specifying the output path for the .so in AOTInductor. "
+            "If you would like to package the AOTInductor generated files "
+            "into a pt2, please call `torch._inductor.aoti_compile_and_package`."
+        )
     else:
         config_patches = {
             **config_patches,
@@ -2184,10 +2111,7 @@ def compile_fx_aot(
             config_patches=config_patches,
         )
 
-        if not isinstance(compiled_artifacts, CompiledAOTI):
-            raise AssertionError(
-                f"Expected CompiledAOTI, got {type(compiled_artifacts)}"
-            )
+        assert isinstance(compiled_artifacts, CompiledAOTI)
 
         return compiled_artifacts.filename
 
@@ -2244,18 +2168,12 @@ def fw_compiler_freezing(
     unwrapped_args_offsets = [0]
     max_offset_idx = 0
     if tracing_context is not None:
-        if tracing_context.params_flat_unwrap_subclasses is None:
-            raise AssertionError(
-                "Expected tracing_context.params_flat_unwrap_subclasses to be set"
-            )
+        assert tracing_context.params_flat_unwrap_subclasses is not None
         params_flat_unwrap = tracing_context.params_flat_unwrap_subclasses
         max_offset_idx = max(0, len(params_flat_unwrap) - 1)
         preserved_indices_params_flat = OrderedSet[int]()
         unwrapped_idxs = tracing_context.params_unwrapped_to_flat_index
-        if unwrapped_idxs is None:
-            raise AssertionError(
-                "Expected tracing_context.params_unwrapped_to_flat_index to be set"
-            )
+        assert unwrapped_idxs is not None
         current_offset = 0
         if len(params_flat_unwrap) > 0:
             unwrapped_args_offsets = []
@@ -2270,8 +2188,7 @@ def fw_compiler_freezing(
             unwrapped_args_offsets.append(current_offset)
 
         # Deallocate wrapped params, if all subelements were deallocated
-        if tracing_context.params_flat is None:
-            raise AssertionError("Expected tracing_context.params_flat to be set")
+        assert tracing_context.params_flat is not None
         for i in range(len(tracing_context.params_flat)):
             if i not in preserved_indices_params_flat:
                 tracing_context.params_flat[i] = None
@@ -2402,11 +2319,7 @@ def partition_fn(
                 **kwargs,
             )
     else:
-        if not isinstance(config.custom_partitioner_fn, CustomPartitionerFn):
-            raise AssertionError(
-                f"Expected custom_partitioner_fn to be CustomPartitionerFn, "
-                f"got {type(config.custom_partitioner_fn)}"
-            )
+        assert isinstance(config.custom_partitioner_fn, CustomPartitionerFn)
         with dynamo_utils.dynamo_timed(
             config.custom_partitioner_fn.__class__.__name__,
             log_pt2_compile_event=True,
@@ -2587,11 +2500,7 @@ def compile_fx_forward(
         else:
             original_output_start_index = 0
 
-        if num_orig_model_outputs > num_model_outputs:
-            raise AssertionError(
-                f"Expected num_orig_model_outputs ({num_orig_model_outputs}) "
-                f"<= num_model_outputs ({num_model_outputs})"
-            )
+        assert num_orig_model_outputs <= num_model_outputs
 
         # Note [User Outputs in the inductor graph]
         # We makes the following assumption
@@ -2609,11 +2518,7 @@ def compile_fx_forward(
         orig_output_end_idx = original_output_start_index + num_orig_model_outputs
         # Sanity check: we are about to splice out the "user" outputs from the full set
         # of "graph" outputs. Make sure we're within bounds.
-        if orig_output_end_idx > num_model_outputs:
-            raise AssertionError(
-                f"Expected orig_output_end_idx ({orig_output_end_idx}) "
-                f"<= num_model_outputs ({num_model_outputs})"
-            )
+        assert orig_output_end_idx <= num_model_outputs
 
         model_outputs_node.meta["user_visible_output_idxs"] = [
             idx
@@ -2740,7 +2645,7 @@ def run_pre_grad_passes(
     )
     torch._inductor.debug._pre_grad_graph_id = id(model_.graph)
 
-    if config.effective_provenance_tracking_level() == 1:
+    if config.trace.provenance_tracking_level == 1:
         for node in model_.graph.nodes:
             if node.stack_trace:
                 torch._inductor.debug._inductor_pre_grad_node_stack_trace[node.name] = (
@@ -2903,10 +2808,7 @@ def _extract_inputs_from_exported_gm(
         # Validate devices before switching to fake tensors.
         for idx, fi, i in zip(count(), fake_inputs, example_inputs_):
             if fi is not None and isinstance(fi, torch.Tensor):
-                if not isinstance(i, torch.Tensor):
-                    raise AssertionError(
-                        f"Expected example input at position #{idx} to be a Tensor, got {type(i)}"
-                    )
+                assert isinstance(i, torch.Tensor)
                 if fi.device != i.device:
                     raise ValueError(
                         f"Device mismatch between fake input and example input at position #{idx}: "
@@ -2993,15 +2895,14 @@ def _compile_fx_main(
         _use_lazy_graph_module(dynamo_config.use_lazy_graph_module),
         enable_python_dispatcher(),
         torch.fx.traceback.preserve_node_meta(
-            config.effective_provenance_tracking_level() == 1
+            config.trace.provenance_tracking_level == 1
         ),
         torch._inductor.debug.reset_provenance_globals(),
     ):
         # Note: Pre-grad passes are now run inside aot_module_simplified (via the
         # pre_grad_passes callback) after the cache lookup.
 
-        if config._raise_error_for_testing:
-            raise AssertionError("config._raise_error_for_testing is set")
+        assert not config._raise_error_for_testing
 
         num_example_inputs = len(example_inputs_)
 
@@ -3096,10 +2997,7 @@ def _compile_fx_main(
                     trace_joint=False,
                     decompositions=decompositions,
                 )
-                if not isinstance(gm, GraphModule):
-                    raise AssertionError(
-                        f"Expected GraphModule from aot_export_module, got {type(gm)}"
-                    )
+                assert isinstance(gm, GraphModule)
                 from torch._export.utils import _detect_fake_mode_from_gm
 
                 fake_mode = _detect_fake_mode_from_gm(gm)  # type: ignore[assignment]
@@ -3113,10 +3011,7 @@ def _compile_fx_main(
                     if node.op == "get_attr" and "val" not in node.meta:
                         target = attrgetter(node.target)(gm)
                         if isinstance(target, torch.Tensor):
-                            if fake_mode is None:
-                                raise AssertionError(
-                                    "Expected fake_mode to be set for get_attr tensor node"
-                                )
+                            assert fake_mode is not None
                             node.meta["val"] = fake_mode.from_tensor(
                                 target, static_shapes=True
                             )
@@ -3214,8 +3109,7 @@ def make_graph_return_tuple(
     with gm.graph.inserting_before(node):
         gm.graph.output(rv)
     gm.graph.erase_node(node)
-    if not graph_returns_tuple(gm):
-        raise AssertionError("Expected graph to return a tuple")
+    assert graph_returns_tuple(gm)
 
     compiled_fn = compile_gm(gm, inputs)
 
@@ -3252,8 +3146,7 @@ def _check_triton_bf16_support(graph: GraphLowering) -> None:
     def warn_and_skip(device: torch.device | None) -> Never:
         from torch._dynamo.exc import SkipFrame
 
-        if device is None:
-            raise AssertionError("Expected device to be set for bf16 support check")
+        assert device is not None
         device_interface = get_interface_for_device(device.type)
         device_props = device_interface.get_device_properties(device)
         warnings.warn(
@@ -3291,12 +3184,11 @@ def _aoti_flatten_inputs(
     # pyrefly: ignore [missing-module-attribute]
     from .compile_fx import graph_returns_tuple
 
-    if not graph_returns_tuple(gm):
-        raise AssertionError(
-            "Graph output must be a tuple(). This is so that we can avoid "
-            "pytree processing of the outputs. Please change the module to "
-            "have tuple outputs."
-        )
+    assert graph_returns_tuple(gm), (
+        "Graph output must be a tuple(). This is so that we can avoid "
+        "pytree processing of the outputs. Please change the module to "
+        "have tuple outputs."
+    )
 
     # We will serialize the pytree info into the .so as constant strings
     in_spec = None
@@ -3417,7 +3309,7 @@ def autograd_cache_key(
         _use_lazy_graph_module(dynamo_config.use_lazy_graph_module),
         enable_python_dispatcher(),
         torch.fx.traceback.preserve_node_meta(
-            config.effective_provenance_tracking_level() == 1
+            config.trace.provenance_tracking_level == 1
         ),
         torch._inductor.debug.reset_provenance_globals(),
         V.set_fake_mode(fake_mode),

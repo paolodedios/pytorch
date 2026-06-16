@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: distributed"]
 name: CI for distributed tests on B200
 
 on:

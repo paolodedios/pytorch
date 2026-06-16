@@ -158,10 +158,8 @@ def grouped_mm_args(
 
     m1dim, m2dim = len(mat1_size), len(mat2_size)
 
-    if m1dim not in (2, 3):
-        raise AssertionError(f"Expected 2D or 3D mat1, got {m1dim}D")
-    if m2dim not in (2, 3):
-        raise AssertionError(f"Expected 2D or 3D mat2, got {m2dim}D")
+    assert m1dim == 2 or m1dim == 3
+    assert m2dim == 2 or m2dim == 3
 
     if layout is None:
         from torch._inductor.ir import FixedLayout
@@ -172,8 +170,7 @@ def grouped_mm_args(
 
         if m1dim == 2:
             if m2dim == 2:
-                if offs is None:
-                    raise AssertionError("offs must be provided for 2D x 2D grouped mm")
+                assert offs is not None
                 out_size = [offs.get_size()[0], mat1_size[0], mat2_size[1]]
             else:
                 out_size = [mat1_size[0], mat2_size[-1]]
@@ -195,8 +192,7 @@ def grouped_mm_args(
             out_stride,
         )
     else:
-        if out_dtype is not None:
-            raise AssertionError("out_dtype is ignored if layout is specified.")
+        assert out_dtype is None, "out_dtype is ignored if layout is specified."
 
     return (mat1_size, mat2_size, layout, mat1, mat2, offs)
 
@@ -284,12 +280,8 @@ def _tuned_grouped_mm_common(
     use_fast_accum: bool | None = None,
     layout: Layout | None = None,
 ) -> TensorBox:
-    if (scale_a is None) != (scale_b is None):
-        raise AssertionError(
-            "scale_a and scale_b must both be None or both be provided"
-        )
-    if scale_result is not None and scale_a is None:
-        raise AssertionError("scale_result requires scale_a and scale_b")
+    assert (scale_a is None) == (scale_b is None)
+    assert scale_result is None or scale_a is not None
 
     m1_size, m2_size, layout, mat_a, mat_b, offs = grouped_mm_args(
         mat_a, mat_b, offs, layout=layout, out_dtype=out_dtype

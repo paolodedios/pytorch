@@ -122,22 +122,18 @@ def _get_split_args_default(split_node):
 
 
 def _get_dim(node: Any):
-    if not isinstance(node, torch.fx.Node):
-        raise AssertionError(f"expected torch.fx.Node, got {type(node)}")
+    assert isinstance(node, torch.fx.Node)
     if "dim" in node.kwargs:
-        if not isinstance(node.kwargs["dim"], int):
-            raise AssertionError(f"expected int dim, got {node.kwargs['dim']}")
+        assert isinstance(node.kwargs["dim"], int)
         return node.kwargs["dim"]
     if node.target is torch.unbind:
         if len(node.args) == 2:
-            if not isinstance(node.args[-1], int):
-                raise AssertionError(f"expected int dim, got {node.args[-1]}")
+            assert isinstance(node.args[-1], int)
             return node.args[-1]
         return 0  # defaults to dim=0
     if node.target is torch.split:
         if len(node.args) == 3:
-            if not isinstance(node.args[-1], int):
-                raise AssertionError(f"expected int dim, got {node.args[-1]}")
+            assert isinstance(node.args[-1], int)
             return node.args[-1]
         return 0  # defaults to dim=0
     raise AssertionError(
@@ -185,10 +181,7 @@ def normalize_split_base(
     if not is_node_meta_valid(split_node):
         log.debug("example value absent for node: %s", split_node)
         return
-    if not isinstance(split_node.meta["example_value"], (list, tuple)):
-        raise AssertionError(
-            f"expected list/tuple example_value, got {split_node.meta['example_value']}"
-        )
+    assert isinstance(split_node.meta["example_value"], (list, tuple))
     split_sections = [t.size()[split_dim] for t in split_node.meta["example_value"]]
 
     if any(isinstance(section, torch.SymInt) for section in split_sections):
@@ -248,10 +241,7 @@ def remove_split_with_size_one(match: Match, *args, **kwargs):
     if not is_node_meta_valid(split_node):
         log.debug("example value absent for node: %s", split_node)
         return
-    if not isinstance(split_node.meta["example_value"], (list, tuple)):
-        raise AssertionError(
-            f"expected list/tuple example_value, got {split_node.meta['example_value']}"
-        )
+    assert isinstance(split_node.meta["example_value"], (list, tuple))
     split_sections = [t.size()[split_dim] for t in split_node.meta["example_value"]]
 
     if any(isinstance(section, torch.SymInt) for section in split_sections):
@@ -332,8 +322,7 @@ def normalize_cat_default(match: Match, *args, **kwargs):
     if tensors is None or cat_dim is None:
         log.debug("couldn't find cat args")
         return
-    if not isinstance(tensors, (list, tuple)):
-        raise AssertionError(f"expected list/tuple tensors, got {type(tensors)}")
+    assert isinstance(tensors, (list, tuple))
     for tensor in itertools.chain([cat_node], tensors):
         if not is_node_meta_valid(tensor):
             log.debug("example value absent for node: %s", tensor)
@@ -346,10 +335,9 @@ def normalize_cat_default(match: Match, *args, **kwargs):
         x_shape = x.meta["example_value"].shape
         return len(x_shape) == 1 and guard_or_false(x_shape[0] == 0)
 
-    if not all(
+    assert all(
         ndim == x.meta["example_value"].dim() or is_empty_tensor(x) for x in tensors
-    ):
-        raise AssertionError("expected all tensors to match ndim or be empty")
+    )
 
     if cat_dim < 0:  # Normalize cat dim
         cat_dim += ndim
@@ -388,8 +376,7 @@ def normalize_stack_default(match: Match, *args, **kwargs):
     if tensors is None or dim is None:
         log.debug("couldn't find stack args")
         return
-    if not isinstance(tensors, (list, tuple)):
-        raise AssertionError(f"expected list/tuple tensors, got {type(tensors)}")
+    assert isinstance(tensors, (list, tuple))
 
     # A bug in pytorch, some nodes miss the example_value metadata
     for tensor in itertools.chain([node], tensors):
@@ -431,8 +418,7 @@ def normalize_squeeze_default(match: Match, *args, **kwargs):
     squeeze_input = get_arg_value(squeeze_node, 0)
 
     if "dim" in squeeze_node.kwargs:
-        if len(squeeze_node.args) != 1:
-            raise AssertionError(f"expected 1 arg, got {len(squeeze_node.args)}")
+        assert len(squeeze_node.args) == 1
         dim = squeeze_node.kwargs["dim"]
     elif len(squeeze_node.args) == 1:
         # squeeze(Tensor)
@@ -1714,8 +1700,7 @@ def normalize_split_default_aten(match: Match, *args, **kwargs):
     if not is_node_meta_valid(split_node):
         log.debug("val absent for node: %s", split_node)
         return
-    if not isinstance(split_node.meta["val"], (list, tuple)):
-        raise AssertionError(f"expected list/tuple val, got {split_node.meta['val']}")
+    assert isinstance(split_node.meta["val"], (list, tuple))
     split_sections = [t.size()[split_dim] for t in split_node.meta["val"]]
     if any(isinstance(section, torch.SymInt) for section in split_sections):
         # TODO dynamic_shapes with assume_static_by_default=False fails while AOT Autograd tracing.
@@ -1970,8 +1955,7 @@ def normalize_cat_default_aten(match: Match, *args, **kwargs):
     if tensors is None or cat_dim is None:
         log.debug("couldn't find cat args")
         return
-    if not isinstance(tensors, (list, tuple)):
-        raise AssertionError(f"expected list/tuple tensors, got {type(tensors)}")
+    assert isinstance(tensors, (list, tuple))
     for tensor in itertools.chain([cat_node], tensors):
         if "val" not in tensor.meta:
             log.debug("val absent for node: %s", tensor)
@@ -1984,8 +1968,7 @@ def normalize_cat_default_aten(match: Match, *args, **kwargs):
         x_shape = x.meta["val"].shape
         return len(x_shape) == 1 and x_shape[0] == 0
 
-    if not all(ndim == x.meta["val"].dim() or is_empty_tensor(x) for x in tensors):
-        raise AssertionError("expected all tensors to match ndim or be empty")
+    assert all(ndim == x.meta["val"].dim() or is_empty_tensor(x) for x in tensors)
 
     if cat_dim < 0:  # Normalize cat dim
         cat_dim += ndim

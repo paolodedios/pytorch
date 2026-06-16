@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: pt2"]
 # Workflow: Inductor
 # runs all inductor tests, including both benchmark tests and unit tests.
 # adding New Tests:

@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng"]
 name: Build manywheel docker images
 
 on:

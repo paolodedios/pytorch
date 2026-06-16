@@ -180,8 +180,7 @@ def override_template_heuristics(
     _HEURISTIC_CACHE.clear()
     try:
         for template_name, op_name in template_op_pairs:
-            if op_name is None:
-                raise AssertionError("op_name must not be None")
+            assert op_name is not None
             key = (template_name, device_type, op_name)
             if key in _TEMPLATE_HEURISTIC_REGISTRY:
                 original_entries[key] = _TEMPLATE_HEURISTIC_REGISTRY[key]

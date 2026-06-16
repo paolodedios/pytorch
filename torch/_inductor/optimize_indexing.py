@@ -18,8 +18,7 @@ def val_expressable_in_32_bits(val: Any) -> bool:
         return True
 
     if isinstance(val, sympy.Expr):
-        if not val.is_number:
-            raise AssertionError(f"expected a number, got {val}")
+        assert val.is_number
         if val.is_Integer or val.is_Boolean:
             val = int(val)
         else:
@@ -350,8 +349,7 @@ class _ValueUseAnalysis:
 
             if node.op == "call_module" and node.target == "get_index":
                 index_name = node.args[0]
-                if not isinstance(index_name, str):
-                    raise AssertionError(f"expected str index name, got {index_name!r}")
+                assert isinstance(index_name, str)
                 expr = self.loop_body.indexing_exprs[index_name]
                 if isinstance(expr, sympy.Expr):
                     for symbol in expr.free_symbols:
@@ -388,10 +386,7 @@ class _ValueUseAnalysis:
 
     def _enqueue_graph_output(self, graph: torch.fx.Graph) -> None:
         output_nodes = graph.find_nodes(op="output", sort=False)
-        if len(output_nodes) != 1:
-            raise AssertionError(
-                f"expected exactly 1 output node, got {len(output_nodes)}"
-            )
+        assert len(output_nodes) == 1
         map_arg(output_nodes[0].args, lambda n: self.worklist.append((graph, n)))
 
 

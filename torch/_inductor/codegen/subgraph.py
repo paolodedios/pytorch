@@ -85,10 +85,8 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
         with V.fake_mode:
             for i, inp in enumerate(self.input_nodes):
                 # Here there will be no unbacked symbols, as SubgraphBuffer does not support them
-                if len(get_free_symbols(inp.get_size(), unbacked_only=True)) != 0:
-                    raise AssertionError("expected no unbacked symbols in input size")
-                if len(get_free_symbols(inp.get_stride(), unbacked_only=True)) != 0:
-                    raise AssertionError("expected no unbacked symbols in input stride")
+                assert len(get_free_symbols(inp.get_size(), unbacked_only=True)) == 0
+                assert len(get_free_symbols(inp.get_stride(), unbacked_only=True)) == 0
 
                 inp.data.freeze_layout()  # type: ignore[attr-defined]
 
@@ -187,8 +185,7 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
         )
         log.debug("Benchmark compile %s: sym_inputs=%s", self.name, self.sym_inputs)
 
-        if self.gm is None:
-            raise AssertionError("expected self.gm to be set")
+        assert self.gm is not None
         bm_graph_lowering = GraphLowering(
             gm=self.gm,
             example_inputs=compile_inputs,
@@ -224,10 +221,9 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
         self,
     ) -> SubgraphGPUBenchmarkRequest | SubgraphCPUBenchmarkRequest:
         """Create a benchmark request for async autotuning."""
-        if self._compiled_module is None:
-            raise AssertionError(
-                "Module must be compiled before creating benchmark request"
-            )
+        assert self._compiled_module is not None, (
+            "Module must be compiled before creating benchmark request"
+        )
         input_tensor_meta = TensorMeta.from_irnodes(self.input_nodes)
         output_tensor_meta = TensorMeta.from_irnodes(self.layout)
 
@@ -251,10 +247,9 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
         self,
     ) -> SubgraphGPUBenchmarkRequest | SubgraphCPUBenchmarkRequest:
         """Benchmark request for async autotuning. Pre-compiled when pipeline_max_autotune_gemm is enabled."""
-        if self._bmreq is None:
-            raise AssertionError(
-                "bmreq accessed but pipeline_max_autotune_gemm was not enabled during __init__"
-            )
+        assert self._bmreq is not None, (
+            "bmreq accessed but pipeline_max_autotune_gemm was not enabled during __init__"
+        )
         return self._bmreq
 
     def _ensure_compiled(self) -> None:
@@ -287,8 +282,7 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
         self._compiled_module.call([*self.sym_input_values, *args])
 
     def hash_key(self) -> str:
-        if self.gm is None:
-            raise AssertionError("expected self.gm to be set")
+        assert self.gm is not None
         return "-".join(
             [
                 self.name.rsplit("_", 1)[0],
@@ -299,8 +293,7 @@ class SubgraphChoiceCaller(ir.ChoiceCaller):
         )
 
     def output_node(self) -> ir.TensorBox:
-        if self.gm is None:
-            raise AssertionError("expected self.gm to be set")
+        assert self.gm is not None
         return ir.TensorBox.create(
             ir.SubgraphBuffer(
                 layout=self.layout,
@@ -413,11 +406,10 @@ class SubgraphTemplate(KernelTemplate):
         if not decompositions:
             return []
 
-        if len(decompositions) != len(non_tensor_args):
-            raise AssertionError(
-                f"decompositions and non_tensor_args must have same length, "
-                f"got {len(decompositions)} decompositions and {len(non_tensor_args)} kwargs"
-            )
+        assert len(decompositions) == len(non_tensor_args), (
+            f"decompositions and non_tensor_args must have same length, "
+            f"got {len(decompositions)} decompositions and {len(non_tensor_args)} kwargs"
+        )
 
         # Default to empty config_patches if not provided
         if config_patches_list is None:
@@ -527,12 +519,11 @@ class SubgraphTemplate(KernelTemplate):
     def _validate_non_tensor_kwargs(self, kwargs: dict[str, Any]) -> None:
         """Validate that kwargs contains only non-tensor arguments."""
         for key, value in kwargs.items():
-            if isinstance(value, (torch.Tensor, Buffer)):
-                raise AssertionError(
-                    f"kwargs['{key}'] contains tensor {type(value)}. "
-                    f"Tensor arguments should be in input_nodes, not kwargs. "
-                    f"Only scalar/non-tensor parameters should be in kwargs."
-                )
+            assert not isinstance(value, (torch.Tensor, Buffer)), (
+                f"kwargs['{key}'] contains tensor {type(value)}. "
+                f"Tensor arguments should be in input_nodes, not kwargs. "
+                f"Only scalar/non-tensor parameters should be in kwargs."
+            )
 
     def _validate_layout_equivalence(
         self,
@@ -601,11 +592,10 @@ class SubgraphTemplate(KernelTemplate):
             output = fn(*example_inputs)
 
             # Assert single output
-            if not isinstance(output, torch.Tensor):
-                raise AssertionError(
-                    f"Expected single tensor output, got {type(output)}. "
-                    f"Multi-output custom ops not yet supported in autotuning."
-                )
+            assert isinstance(output, torch.Tensor), (
+                f"Expected single tensor output, got {type(output)}. "
+                f"Multi-output custom ops not yet supported in autotuning."
+            )
 
             return FixedLayout(
                 device=output.device,

@@ -381,8 +381,7 @@ def compute_memory_timeline(
                 if step > max_step:
                     max_step = step
                     max_step_snode = succ_node
-            if max_step_snode is None:
-                raise AssertionError("expected max_step_snode to be set")
+            assert max_step_snode is not None
         return max_step, max_step_snode
 
     # 1. for freeable input buffers
@@ -390,8 +389,7 @@ def compute_memory_timeline(
         end_step = -1
         if buf_name not in graph_outputs:
             end_step, end_step_snode = _get_end_step_and_snode(input_buf)
-            if end_step_snode is None:
-                raise AssertionError("expected end_step_snode to be set")
+            assert end_step_snode is not None
             buf_to_snode_last_use[input_buf] = end_step_snode
 
         buf_info_list.append(
@@ -418,8 +416,7 @@ def compute_memory_timeline(
                     end_step = step
                     buf_to_snode_last_use[sched_buf] = node
                 else:
-                    if end_step_snode is None:
-                        raise AssertionError("expected end_step_snode to be set")
+                    assert end_step_snode is not None
                     buf_to_snode_last_use[sched_buf] = end_step_snode
 
             buf_info_list.append(
@@ -527,8 +524,7 @@ def estimate_region_peak_memory(
     for node in nodes_in_window:
         s = step_of(node)
         slot = s - region_start
-        if not (0 <= slot < R):
-            raise AssertionError(f"expected 0 <= slot < {R}, got {slot}")
+        assert 0 <= slot < R
 
         for buf in node.get_outputs():
             bi = buf.mpi_buffer
@@ -545,8 +541,7 @@ def estimate_region_peak_memory(
             if name in graph_outputs:
                 continue
             succ_steps = [step_of(n) for n in pb.mpi_buffer.succ_nodes]
-            if not succ_steps:
-                raise AssertionError("expected non-empty succ_steps")
+            assert succ_steps
             if max(succ_steps) == s:
                 region[slot].size_free += pb.mpi_buffer.size_free
 
@@ -751,20 +746,14 @@ def topological_sort_lpmf(
 
         # update successor nodes and nodes_to_schedule
         for succ_node in selected_node.mpi_node.succ_nodes:
-            if node_info[succ_node]["indegree"] <= 0:
-                raise AssertionError(
-                    f"expected positive indegree, got {node_info[succ_node]['indegree']}"
-                )
+            assert node_info[succ_node]["indegree"] > 0
             node_info[succ_node]["indegree"] -= 1
             if node_info[succ_node]["indegree"] == 0:
                 nodes_to_schedule.add(succ_node)
 
         # update predecessor nodes
         for buf in selected_node.mpi_node.pred_buffers:
-            if buf_info[buf]["outdegree"] <= 0:
-                raise AssertionError(
-                    f"expected positive outdegree, got {buf_info[buf]['outdegree']}"
-                )
+            assert buf_info[buf]["outdegree"] > 0
             buf_info[buf]["outdegree"] -= 1
             if buf_info[buf]["outdegree"] == 1:
                 for succ_node in buf.mpi_buffer.succ_nodes:
@@ -804,10 +793,7 @@ def topological_sort_bfs(nodes: list[BaseSchedulerNode]) -> list[BaseSchedulerNo
 
     def _node_priority(node: BaseSchedulerNode) -> list[int]:
         # priority is the order in which predecessor nodes are executed
-        if node_info[node]["indegree"] != 0:
-            raise AssertionError(
-                f"expected zero indegree, got {node_info[node]['indegree']}"
-            )
+        assert node_info[node]["indegree"] == 0
         exec_orders = sorted(
             OrderedSet(
                 node_info[pred_node]["order"] for pred_node in node.mpi_node.pred_nodes
@@ -837,10 +823,7 @@ def topological_sort_bfs(nodes: list[BaseSchedulerNode]) -> list[BaseSchedulerNo
 
         # update successor nodes and nodes_to_schedule
         for succ_node in selected_node.mpi_node.succ_nodes:
-            if node_info[succ_node]["indegree"] <= 0:
-                raise AssertionError(
-                    f"expected positive indegree, got {node_info[succ_node]['indegree']}"
-                )
+            assert node_info[succ_node]["indegree"] > 0
             node_info[succ_node]["indegree"] -= 1
             if node_info[succ_node]["indegree"] == 0:
                 heapq.heappush(
@@ -930,8 +913,7 @@ def validate_graph_acyclic(nodes: list[BaseSchedulerNode]) -> None:
         path.append(node)
 
         for pred_node in node.mpi_node.pred_nodes:
-            if pred_node == node:
-                raise AssertionError("expected pred_node != node (self-loop)")
+            assert pred_node != node
             dfs_visit(pred_node)
 
         path.pop()
@@ -1075,10 +1057,7 @@ def reorder_for_peak_memory(
                 )
             else:
                 order = method(nodes)
-            if len(order) != len(nodes):
-                raise AssertionError(
-                    f"expected order length {len(nodes)}, got {len(order)}"
-                )
+            assert len(order) == len(nodes)
             peak_memory, _ = estimate_peak_memory(
                 order, name_to_freeable_input_buf, graph_outputs
             )

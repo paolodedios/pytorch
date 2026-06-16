@@ -68,4 +68,3 @@ class PyTypeSlots:
     TP_SETATTRO: int
     TP_DESCR_GET: int
     TP_DESCR_SET: int
-    TP_STR: int

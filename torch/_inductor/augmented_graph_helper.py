@@ -53,10 +53,7 @@ class AugmentedGraphHelper:
         """
         existing_set = self.merge_sets[existing_node]
         new_set = self.merge_sets[new_node]
-        if len(new_set) != 1:
-            raise AssertionError(
-                f"new_node must be a singleton set, got size {len(new_set)}"
-            )
+        assert len(new_set) == 1
 
         # Add all nodes from new_set to existing_set
         existing_set.update(new_set)
@@ -118,8 +115,7 @@ class AugmentedGraphHelper:
     def has_path(self, source: fx.Node, target: fx.Node) -> bool:
         """Check if there's a path from source to target."""
         # we should not be checking path from node to itself
-        if self.merge_sets[source] is self.merge_sets[target]:
-            raise AssertionError("source and target must not be in the same merge set")
+        assert self.merge_sets[source] is not self.merge_sets[target]
 
         # search backwards from target to source
         visited: OrderedSet[fx.Node] = OrderedSet()

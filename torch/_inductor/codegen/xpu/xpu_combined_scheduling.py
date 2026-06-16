@@ -85,8 +85,7 @@ class XPUCombinedScheduling(BaseScheduling):
         prologue_nodes: Sequence[BaseSchedulerNode],
     ) -> str | None:
         if self._cutlass_scheduling.is_cutlass_template(template_node):
-            if prologue_nodes:
-                raise AssertionError("cutlass template does not support prologue_nodes")
+            assert not prologue_nodes
             return self._cutlass_scheduling.codegen_template(
                 template_node, epilogue_nodes, prologue_nodes
             )

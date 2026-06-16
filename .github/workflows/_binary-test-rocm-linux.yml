@@ -1,4 +1,3 @@
-# Owner(s): ["module: rocm"]
 name: linux-binary-test-rocm
 
 # Reusable workflow that runs the ROCm binary test (setup-rocm, GPU device

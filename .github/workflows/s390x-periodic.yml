@@ -1,4 +1,3 @@
-# Owner(s): ["module: POWER"]
 name: s390x-periodic
 
 # DISABLED: this workflow has been failing for months and not providing a useful

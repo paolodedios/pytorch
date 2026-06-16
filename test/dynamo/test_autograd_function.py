@@ -1032,11 +1032,14 @@ class GraphModule(torch.nn.Module):
                 return "FooTensor"
 
             def __tensor_flatten__(self):
-                return ("_data", "_scale"), (self._config,)
+                return ("_data",), (
+                    self._config,
+                    self._scale,
+                )
 
             @staticmethod
             def __tensor_unflatten__(tensors, metadatas, outer_size, outer_stride):
-                return FooTensor(tensors["_data"], metadatas[0], tensors["_scale"])
+                return FooTensor(tensors["_data"], metadatas[0], metadatas[1])
 
             @classmethod
             def __torch_dispatch__(cls, func, types, args, kwargs=None):

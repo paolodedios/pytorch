@@ -199,15 +199,7 @@ def _convert_guards_code_to_fn(
         # printing guards code may potentially introduce redundant parens;
         # we can normalize them out for readability by parsing/unparsing
         # NOTE: this is not necessary for correctness, just deemed desirable
-        try:
-            _shadow = ast.unparse(ast.parse(shadow, mode="eval"))
-        except RecursionError as e:
-            # A deeply nested guard expression (e.g. a sum over many symbolic
-            # sizes) can exceed the recursion limit in ast.parse/ast.unparse.
-            # This normalization only affects the assert error message, so fall
-            # back to the un-normalized guard string instead of crashing.
-            warnings.warn(f"ast.unparse failed for guard expression: {e}", stacklevel=2)
-            _shadow = shadow
+        _shadow = ast.unparse(ast.parse(shadow, mode="eval"))
         # actual code and shadow error message
         code_str += f'  torch._assert({actual}, "Guard failed: {_shadow}")\n'
     code_str += "  return\n"

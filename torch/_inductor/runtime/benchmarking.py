@@ -35,10 +35,7 @@ def _get_default_gpu_device_type() -> str:
         for device_type in GPU_BENCHMARK_DEVICE_TYPES
         if getattr(torch, device_type).is_available()
     ]
-    if len(avail_gpus) > 1:
-        raise AssertionError(
-            f"expected at most one available GPU type, got {avail_gpus}"
-        )
+    assert len(avail_gpus) <= 1
     return "cuda" if len(avail_gpus) == 0 else avail_gpus.pop()
 
 
@@ -137,8 +134,7 @@ def may_distort_benchmarking_result(fn: Callable[..., Any]) -> Callable[..., Any
             return type(ms)(distort(val) for val in ms)  # type: ignore[misc]
 
         distort_method = config.test_configs.distort_benchmarking_result
-        if not isinstance(ms, float):
-            raise AssertionError(f"Expected float, got {type(ms)}")
+        assert isinstance(ms, float)
         if distort_method == "inverse":
             return 1.0 / ms if ms else 0.0
         elif distort_method == "random":
@@ -280,8 +276,7 @@ class Benchmarker:
             fn_kwargs = fn_kwargs or {}
             inferred_device = self.infer_device(*fn_args, **fn_kwargs)
 
-        if not isinstance(inferred_device, torch.device):
-            raise AssertionError(f"Expected torch.device, got {type(inferred_device)}")
+        assert isinstance(inferred_device, torch.device)
 
         fn_args = fn_args or tuple()
         fn_kwargs = fn_kwargs or {}

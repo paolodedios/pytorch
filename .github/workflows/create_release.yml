@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng"]
 name: Create Release
 
 on:

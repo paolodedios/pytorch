@@ -126,16 +126,13 @@ class CuteDSLScheduling(BaseScheduling):
         """
         Codegen a CuteDSL template. Currently doesn't support fusion.
         """
-        if not self.is_cutedsl_template(template_node):
-            raise AssertionError(
-                "Template node passed to CuteDSLScheduling.codegen_template must be a "
-                "SchedulerNode that wraps a CuteDSLTemplateBuffer"
-            )
+        assert self.is_cutedsl_template(template_node), (
+            "Template node passed to CuteDSLScheduling.codegen_template must be a "
+            "SchedulerNode that wraps a CuteDSLTemplateBuffer"
+        )
         # TODO remove when supported
-        if epilogue_nodes:
-            raise AssertionError("CuteDSL doesn't support epilogue fusion yet")
-        if prologue_nodes:
-            raise AssertionError("CuteDSL doesn't support prologue fusion yet")
+        assert not epilogue_nodes, "CuteDSL doesn't support epilogue fusion yet"
+        assert not prologue_nodes, "CuteDSL doesn't support prologue fusion yet"
 
         template_node = cast(SchedulerNode, template_node)
         ctb: CuteDSLTemplateBuffer = cast(CuteDSLTemplateBuffer, template_node.node)

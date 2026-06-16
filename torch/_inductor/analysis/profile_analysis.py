@@ -250,20 +250,14 @@ def _estimate_gb(event: dict[str, Any]) -> float:
         add_type_size = _get_size_from_string(event["args"]["Input type"][0])
         M = input_shapes[1][0]
         N = input_shapes[1][1]
-        if input_shapes[1][1] != input_shapes[2][0]:
-            raise AssertionError(
-                f"Shape mismatch for addmm: {input_shapes[1][1]} != {input_shapes[2][0]}"
-            )
+        assert input_shapes[1][1] == input_shapes[2][0]
         K = input_shapes[2][1]
         mul_type_size = _get_size_from_string(event["args"]["Input type"][1])
         return (mm_formula(M, N, K, mul_type_size) + add_in_size * add_type_size) / 1e9
     elif op_name == "mm":
         M = input_shapes[0][0]
         N = input_shapes[0][1]
-        if input_shapes[0][1] != input_shapes[1][0]:
-            raise AssertionError(
-                f"Shape mismatch for mm: {input_shapes[0][1]} != {input_shapes[1][0]}"
-            )
+        assert input_shapes[0][1] == input_shapes[1][0]
         K = input_shapes[1][1]
         type_size = _get_size_from_string(event["args"]["Input type"][0])
         return mm_formula(M, N, K, type_size) / 1e9
@@ -460,16 +454,8 @@ class JsonProfile:
         input_sizes = event["args"]["Input Dims"]
         input_types = event["args"]["Input type"]
         concrete_inputs = event["args"]["Concrete Inputs"]
-        if len(input_sizes) != len(input_types):
-            raise AssertionError(
-                f"input_sizes and input_types length mismatch: "
-                f"{len(input_sizes)} != {len(input_types)}"
-            )
-        if len(input_types) != len(concrete_inputs):
-            raise AssertionError(
-                f"input_types and concrete_inputs length mismatch: "
-                f"{len(input_types)} != {len(concrete_inputs)}"
-            )
+        assert len(input_sizes) == len(input_types)
+        assert len(input_types) == len(concrete_inputs)
 
         if len(input_sizes) == 0:
             raise RuntimeError("Empty input_sizes and input_types")
@@ -528,20 +514,14 @@ class JsonProfile:
 
             dur = event["dur"]  # us
             if "kernel_flop" in event["args"]:
-                if dur == 0:
-                    raise AssertionError(
-                        "Event duration is 0 for kernel_flop calculation"
-                    )
+                assert dur != 0
                 # 1,000,000us/s * flop / us
                 op_flops = event["args"]["kernel_flop"] / (dur / 1e6)
             else:
                 op_flops = 0
 
             if "kernel_num_gb" in event["args"]:
-                if dur == 0:
-                    raise AssertionError(
-                        "Event duration is 0 for kernel_num_gb calculation"
-                    )
+                assert dur != 0
                 # 1,000,000us/s * gb  = gb/s
                 op_gbps = event["args"]["kernel_num_gb"] / (dur / 1e6)
             else:
@@ -609,8 +589,7 @@ class JsonProfile:
                     bw_count += 1
                 latency += stats.latency
                 ker_count += 1
-            if ker_count == 0:
-                raise AssertionError("ker_count is 0 when computing kernel stats")
+            assert ker_count != 0
             rows[kernel_name] = [
                 str(ker_count),
                 safe_div_format(flops, flops_count),
@@ -643,10 +622,8 @@ class JsonProfile:
             d1_default=["Empty"] * t1_length,
             d2_default=["Empty"] * t2_length,
         ):
-            if row1 is None:
-                raise AssertionError("row1 must not be None in table combination")
-            if row2 is None:
-                raise AssertionError("row2 must not be None in table combination")
+            assert row1 is not None
+            assert row2 is not None
             new_rows[key] = row1 + row2
         return new_headers, new_rows
 
@@ -677,17 +654,12 @@ class JsonProfile:
             )
 
             ret = []
-            if self._devices.keys() != other._devices.keys():
-                raise AssertionError(
-                    f"Device key mismatch: {self._devices.keys()} != {other._devices.keys()}"
-                )
+            assert self._devices.keys() == other._devices.keys()
             for device_idx, t1, t2 in zip_dicts(
                 self_tables, other_tables, d1_default=None, d2_default=None
             ):
-                if t1 is None:
-                    raise AssertionError("t1 must not be None for device comparison")
-                if t2 is None:
-                    raise AssertionError("t2 must not be None for device comparison")
+                assert t1 is not None
+                assert t2 is not None
                 table_headers, table_rows = self._combine_tables(
                     t1, self_name, t2, other_name
                 )

@@ -1,4 +1,3 @@
-# Owner(s): ["module: arm"]
 name: inductor-perf-nightly-aarch64
 
 on:

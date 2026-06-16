@@ -38,8 +38,7 @@ def is_fsdp_all_gather(n: torch.fx.Node) -> bool:
     Handles multi-input chains (e.g. cat(param, zeros) for padding) that the old
     single-input-chain walk would miss.
     """
-    if not is_all_gather(n):
-        raise AssertionError(f"expected an all_gather node, got {n}")
+    assert is_all_gather(n)
     visited: OrderedSet[torch.fx.Node] = OrderedSet()
     queue = list(n.all_input_nodes)
     placeholders = 0
@@ -206,8 +205,7 @@ def bucket_fsdp_all_gather(
         )
 
         bucket_cap_mb_by_bucket_idx = bucket_cap_mb_by_bucket_idx_default
-    if bucket_cap_mb_by_bucket_idx is None:
-        raise AssertionError("expected bucket_cap_mb_by_bucket_idx to be set")
+    assert bucket_cap_mb_by_bucket_idx is not None
     ag_buckets = bucket_all_gather_by_mb(
         gm,
         bucket_cap_mb_by_bucket_idx,
@@ -300,8 +298,7 @@ def _get_collective_kwargs(n: fx.Node) -> dict[str, object]:
         kwargs=n.kwargs,
         normalize_to_only_use_kwargs=True,
     )
-    if opt is None:
-        raise AssertionError(f"normalize_function returned None for {n.target}")
+    assert opt is not None
     _, kwargs = opt
     return kwargs
 

@@ -155,8 +155,7 @@ def tuned_mm_plus_mm(mat1, mat2, mat3, mat4, *, layout=None):
     # Note: This is a special case with 4 matrices, but we use the first pair for M, N, K extraction
     kernel_inputs = MMKernelInputs([mat1, mat2, mat3, mat4], mat1_idx=0, mat2_idx=1)
 
-    if layout1 != layout2:
-        raise AssertionError("layout1 and layout2 must be equal")
+    assert layout1 == layout2
     # options to tune from
     choices: list[ChoiceCaller] = []
 

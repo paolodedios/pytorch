@@ -393,10 +393,7 @@ class BoxedDeviceIndex:
     value: int | None
 
     def set(self, device_idx: int | None) -> None:
-        if not (device_idx is None or isinstance(device_idx, int)):
-            raise AssertionError(
-                f"expected device_idx to be None or int, got {device_idx!r}"
-            )
+        assert device_idx is None or isinstance(device_idx, int)
         self.value = device_idx
 
 
@@ -473,17 +470,15 @@ def log_data_ptr_mismatch(
     Logs the mismatch between input data pointers and recorded data pointers.
     This checks only idxs in target_idxs.
     """
-    if not (len(inputs) == len(recorded_data_ptr) and len(inputs) == len(placeholders)):
-        raise AssertionError(
-            "length mismatch between inputs, recorded_data_ptr, and placeholders"
-        )
+    assert len(inputs) == len(recorded_data_ptr) and len(inputs) == len(placeholders), (
+        "length mismatch between inputs, recorded_data_ptr, and placeholders"
+    )
 
     t_tensors = [inputs[i] for i in target_idxs]
     t_data_ptrs = [recorded_data_ptr[i] for i in target_idxs]
     error_msg = f"{mismatch}.\n"
     for i, (tensor, data_ptr) in enumerate(zip(t_tensors, t_data_ptrs)):
-        if not isinstance(tensor, torch.Tensor):
-            raise AssertionError(f"expected torch.Tensor, got {type(tensor)}")
+        assert isinstance(tensor, torch.Tensor)
         index = target_idxs[i]
         if tensor.data_ptr() != data_ptr:
             placeholder = placeholders[index]

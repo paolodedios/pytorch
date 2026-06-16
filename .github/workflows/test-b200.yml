@@ -1,4 +1,3 @@
-# Owner(s): ["module: cuda"]
 # B200 Smoke Tests CI Workflow
 #
 # This workflow runs smoke tests on B200 hardware

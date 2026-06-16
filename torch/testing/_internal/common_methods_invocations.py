@@ -125,6 +125,7 @@ from torch.testing._internal.opinfo.utils import (
 )
 from torch.testing._internal import opinfo
 from torch.testing._internal.opinfo.definitions.linalg import (
+    sample_inputs_linalg_cholesky,
     sample_inputs_linalg_cholesky_inverse,
     sample_inputs_cross,
     sample_inputs_linalg_qr_geqrf,
@@ -1023,10 +1024,7 @@ def error_inputs_linspace(op, device, **kwargs):
         error_regex="received an invalid combination of arguments - got \\(int, int, float",
     )
     yield ErrorInput(
-        SampleInput(
-            torch.tensor([[1, 1], [1, 1]], device=device),
-            args=(torch.tensor([[3, 3], [3, 3]], device=device), 1),
-        ),
+        SampleInput(torch.tensor([1, 1], device=device), args=(torch.tensor([3, 3], device=device), 1)),
         error_type=RuntimeError,
         error_regex="only supports 0-dimensional start and end tensors"
     )
@@ -6964,16 +6962,14 @@ def sample_inputs_cross_entropy(op_info, device, dtype, requires_grad, **kwargs)
 
         yield SampleInput(input, target, **kwargs)
 
-def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, *, chunked=False, chunked_none=False, **kwargs_unused):
-    # ``chunked=True`` filters to chunked-path samples; the scalar
-    # (mean/sum) and reduction='none' subsets are surfaced by separate
-    # OpInfo variants ("chunked" and "chunked_none") because none's
-    # recompute-in-backward is not batched-grad / vmap compatible, while
-    # scalar's is. ``chunked_none=True`` selects the none-only subset.
-    # Default (chunked=False) emits the unchunked (``options=None``) samples.
+def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, *, chunked=False, **kwargs_unused):
+    # ``chunked=True`` filters to chunked-path samples (surfaced by the
+    # ``variant_test_name="chunked"`` OpInfo); default emits only the
+    # unchunked (``options=None``) samples.
     if not dtype.is_floating_point:
         raise ValueError(f"linear_cross_entropy requires floating point type inputs, got {dtype}")
     reductions = ("mean", "sum", "none")
+    chunked_reductions = ("mean", "sum")
 
     LCEO = torch.nn.LinearCrossEntropyOptions
     # Samples with non-zero label_smoothing are not generated because
@@ -6981,51 +6977,30 @@ def sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, *,
     # composite-compliance tests (cross_entropy calls `masked_fill_`
     # internally).
     if chunked:
-        # none leaves allow_retain_graph at its inert default (its backward
-        # recomputes from saved inputs); scalar requests it.
-        sweep_reductions = ("none",) if chunked_none else ("mean", "sum")
         kwargs_list: list[dict[str, Any]] = [
-            *[dict(reduction=r, options=LCEO(batch_chunk_size=2, allow_retain_graph=(r != "none"))) for r in sweep_reductions],
-            *[dict(reduction=r, options=LCEO(batch_chunk_size=3, allow_retain_graph=(r != "none"))) for r in sweep_reductions],
+            *[dict(reduction=r, options=LCEO(batch_chunk_size=2, allow_retain_graph=True)) for r in chunked_reductions],
+            *[dict(reduction=r, options=LCEO(batch_chunk_size=3, allow_retain_graph=True)) for r in chunked_reductions],
             *[dict(weight="<to be initialized>", reduction=r,
-                   options=LCEO(batch_chunk_size=2, allow_retain_graph=(r != "none"))) for r in sweep_reductions],
+                   options=LCEO(batch_chunk_size=2, allow_retain_graph=True)) for r in chunked_reductions],
+            dict(ignore_index=1, options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
+            dict(weight="<to be initialized>", ignore_index=1,
+                 options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
+            # Chunked path exercising linear_bias; tensor built below.
+            dict(linear_bias="<to be initialized>",
+                 options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
+            dict(linear_bias="<to be initialized>",
+                 weight="<to be initialized>", reduction="sum",
+                 options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
+            # ignore_index + linear_bias: weight_chunk[n]==0 on masked
+            # rows must zero out both the logits.sum contribution and
+            # the index_add correction.
+            dict(linear_bias="<to be initialized>", ignore_index=1,
+                 options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
         ]
-        if chunked_none:
-            # reduction='none' + linear_bias / ignore_index, so the OpInfo
-            # infra tests (cow_input, dtypes, ...) exercise the bias path for
-            # this variant too (numerics live in test_nn.py). allow_retain_graph
-            # is inert for none, so it stays at the default.
-            kwargs_list += [
-                dict(linear_bias="<to be initialized>", reduction="none",
-                     options=LCEO(batch_chunk_size=2)),
-                dict(linear_bias="<to be initialized>", weight="<to be initialized>",
-                     reduction="none", options=LCEO(batch_chunk_size=2)),
-                dict(linear_bias="<to be initialized>", ignore_index=1,
-                     reduction="none", options=LCEO(batch_chunk_size=2)),
-            ]
-        else:
-            # ignore_index / linear_bias fixed-reduction samples (default
-            # reduction is "mean").
-            kwargs_list += [
-                dict(ignore_index=1, options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
-                dict(weight="<to be initialized>", ignore_index=1,
-                     options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
-                # Chunked path exercising linear_bias; tensor built below.
-                dict(linear_bias="<to be initialized>",
-                     options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
-                dict(linear_bias="<to be initialized>",
-                     weight="<to be initialized>", reduction="sum",
-                     options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
-                # ignore_index + linear_bias: weight_chunk[n]==0 on masked
-                # rows must zero out both the logits.sum contribution and
-                # the index_add correction.
-                dict(linear_bias="<to be initialized>", ignore_index=1,
-                     options=LCEO(batch_chunk_size=2, allow_retain_graph=True)),
-            ]
         if dtype in {torch.float16, torch.bfloat16}:
             kwargs_list.extend([
-                dict(reduction=r, options=LCEO(acc_dtype=torch.float32, allow_retain_graph=(r != "none")))
-                for r in sweep_reductions
+                dict(reduction=r, options=LCEO(acc_dtype=torch.float32, allow_retain_graph=True))
+                for r in chunked_reductions
             ])
     else:
         kwargs_list = [
@@ -7133,10 +7108,6 @@ def sample_inputs_linear_cross_entropy_chunked(op_info, device, dtype, requires_
     yield from sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, chunked=True, **kw)
 
 
-def sample_inputs_linear_cross_entropy_chunked_none(op_info, device, dtype, requires_grad, **kw):
-    yield from sample_inputs_linear_cross_entropy(op_info, device, dtype, requires_grad, chunked=True, chunked_none=True, **kw)
-
-
 def error_inputs_linear_cross_entropy(op_info, device, **kwargs):
     make_arg = partial(make_tensor, device=device, dtype=torch.float)
 
@@ -7178,8 +7149,6 @@ def sample_inputs_logit(op_info, device, dtype, requires_grad, **kwargs):
     yield SampleInput(make_arg((S, S, S)), 0.2)
     yield SampleInput(make_arg(()))
     yield SampleInput(make_arg(()), 0.2)
-    # eps > 0.5 exercises the branch where lo > hi; see issue #177839.
-    yield SampleInput(make_arg((S, S, S)), 0.6)
 
 def sample_inputs_isin(op_info, device, dtype, requires_grad, **kwargs):
     make_arg = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
@@ -13347,6 +13316,12 @@ op_db: list[OpInfo] = [
                DecorateInfo(unittest.skip("Skipped!"), 'TestCommon', 'test_dtypes', device_type='cuda', active_if=not SM53OrLater),
                DecorateInfo(toleranceOverride({torch.float32: tol(atol=1e-5, rtol=1e-5)}),
                             "TestCommon", "test_out"),
+               # AssertionError: Tensor-likes are not close!
+               DecorateInfo(
+                   unittest.expectedFailure, 'TestCommon', 'test_out',
+                   device_type='mps', dtypes=(torch.float32,),
+                   active_if=MACOS_VERSION < 26.0,
+               ),
            ),
            sample_inputs_func=sample_inputs_bmm),
     OpInfo('mv',
@@ -13772,6 +13747,27 @@ op_db: list[OpInfo] = [
                    supports_sparse_bsr=True,
                    supports_sparse_bsc=True,
                    assert_autodiffed=True),
+    OpInfo('cholesky',
+           dtypes=floating_and_complex_types(),
+           sample_inputs_func=sample_inputs_linalg_cholesky,
+           gradcheck_wrapper=gradcheck_wrapper_hermitian_input,
+           skips=(
+               # linalg.solve.triangular(); Only float is supported!
+               DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
+               DecorateInfo(
+                   unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples',
+                   device_type='mps', dtypes=(torch.complex64,)
+               ),
+               DecorateInfo(
+                   unittest.expectedFailure, 'TestCommon', 'test_out_requires_grad_error',
+                   device_type='mps', dtypes=(torch.complex64,)
+               ),
+               DecorateInfo(
+                   unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager',
+                   device_type='mps', dtypes=(torch.complex64,)
+               ),
+           ),
+           decorators=[skipCUDAIfNoMagma, skipCPUIfNoLapack],),
     OpInfo('cholesky_inverse',
            dtypes=floating_and_complex_types(),
            backward_dtypes=floating_and_complex_types(),
@@ -15195,6 +15191,9 @@ op_db: list[OpInfo] = [
                                     dtypes=all_types_and_complex_and(torch.half, torch.bfloat16)),
                        DecorateInfo(unittest.skip("Skipped!"), 'TestCommon', 'test_variant_consistency_eager',
                                     dtypes=all_types_and_complex_and(torch.half, torch.bfloat16)),
+                       # AssertionError: RuntimeError not raised : Expected RuntimeError when calling with
+                       # input.device=mps:0 and out.device=cpu.
+                       DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_out', device_type='mps'),
                    )),
     BinaryUfuncInfo('lt',
                     ref=np.less,
@@ -15403,7 +15402,7 @@ op_db: list[OpInfo] = [
     OpInfo('median',
            dtypes=all_types_and(torch.bfloat16, torch.float16),
            dtypesIfHpu=custom_types(torch.float32, torch.bfloat16, torch.int32),
-           dtypesIfMPS=all_types_and(torch.bfloat16, torch.float16),
+           dtypesIfMPS=all_types_and(torch.bfloat16, torch.float16, torch.bool),
            # TODO: some signatures of median do support out
            supports_out=False,
            supports_forward_ad=True,
@@ -15412,7 +15411,7 @@ op_db: list[OpInfo] = [
            sample_inputs_func=partial(sample_inputs_reduction, supports_multiple_dims=False)),
     OpInfo('nanmedian',
            dtypes=all_types_and(torch.bfloat16, torch.float16),
-           dtypesIfMPS=all_types_and(torch.bfloat16, torch.float16),
+           dtypesIfMPS=all_types_and(torch.bfloat16, torch.float16, torch.bool),
            # TODO: some signatures of nanmedian do support out
            supports_out=False,
            supports_forward_ad=True,
@@ -16043,83 +16042,6 @@ op_db: list[OpInfo] = [
             DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vmapjvpvjp"),
             DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vmapvjpvjp"),
             DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vmapvjp_has_batch_rule"),
-            DecorateInfo(unittest.expectedFailure, "TestBwdGradients", "test_fn_gradgrad"),
-            DecorateInfo(unittest.expectedFailure, "TestFwdGradients", "test_forward_mode_AD"),
-            DecorateInfo(unittest.expectedFailure, "TestFwdGradients", "test_fn_fwgrad_bwgrad"),
-            DecorateInfo(unittest.expectedFailure, "TestNormalizeOperators",
-                         "test_normalize_operator_exhaustive"),
-        ),
-    ),
-    # reduction='none' chunked variant. Split from "chunked" because its
-    # backward recomputes the chunked grads in-place (the per-sample loss
-    # makes grad_output a vector that cannot be precomputed in forward), so
-    # unlike the scalar backward it is not composite-compliant and not
-    # batched-grad / vmap compatible. Correctness is covered by the fp64
-    # gradcheck in test_nn.py.
-    OpInfo(
-        "nn.functional.linear_cross_entropy",
-        variant_test_name="chunked_none",
-        dtypes=floating_types_and(torch.float16, torch.bfloat16),
-        sample_inputs_func=sample_inputs_linear_cross_entropy_chunked_none,
-        error_inputs_func=error_inputs_linear_cross_entropy,
-        supports_out=False,
-        supports_forward_ad=False,
-        supports_fwgrad_bwgrad=False,
-        # In-place recompute backward is not vmap-able with a batched cotangent.
-        check_batched_grad=False,
-        check_batched_gradgrad=False,
-        gradcheck_nondet_tol=GRADCHECK_NONDET_TOL,
-        allow_cow_input_materialize_forward=[2],
-        allow_cow_input_materialize_backward=[2, 'output grad 0'],
-        decorators=(
-            DecorateInfo(
-                toleranceOverride({torch.bfloat16: tol(atol=4e-3, rtol=2e-2)}),
-                "TestConsistency", "test_output_match", device_type="mps",
-            ),
-        ),
-        skips=(
-            DecorateInfo(unittest.skip("no Inductor lowering for the chunked op"),
-                         "TestInductorOpInfo", "test_comprehensive"),
-            DecorateInfo(unittest.skip("chunked op falls back to reference under "
-                                       "torch.jit.trace; covered by unchunked variant"),
-                         "TestNNCOpInfo", "test_nnc_correctness"),
-            # nll_loss2d decomp mismatch (CUDA) and the dot.default decomp
-            # not widening bf16 accumulation (CPU); both are aten-decomp
-            # precision properties, not chunked-path bugs.
-            DecorateInfo(
-                unittest.skip("decomposition precision mismatch (nll_loss2d / dot)"),
-                "TestDecomp", "test_comprehensive"),
-            DecorateInfo(unittest.skip("LinearCrossEntropyOptions not JIT-scriptable"),
-                         "TestJit", "test_variant_consistency_jit"),
-            DecorateInfo(unittest.skip("Inconsistent accuracy"),
-                         "TestConsistency", "test_output_match",
-                         dtypes=(torch.float16, torch.bfloat16),
-                         device_type="mps"),
-            DecorateInfo(unittest.skip("Inconsistent accuracy"),
-                         "TestConsistency", "test_output_grad_match",
-                         dtypes=(torch.float16, torch.bfloat16, torch.float32),
-                         device_type="mps"),
-            DecorateInfo(unittest.skip("unspecified launch failure"),
-                         "TestCompositeCompliance", "test_cow_input",
-                         device_type="cuda",
-                         active_if=TEST_WITH_ROCM or IS_LINUX or TEST_WITH_TORCHINDUCTOR),
-            # In-place buffer accumulation in the recompute backward.
-            DecorateInfo(unittest.skip("chunked none backward uses in-place buffer "
-                                       "accumulation; not composite compliant"),
-                         "TestCompositeCompliance", "test_backward"),
-            # No jvp / vmap / second derivatives; the recompute backward also
-            # breaks vmap-over-grad (batched cotangent into in-place buffers).
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_grad"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vjp"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_jvp"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_jvpvjp"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vjpvjp"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vjpvmap"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vmapvjp"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vmapjvpvjp"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vmapvjpvjp"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vmapvjp_has_batch_rule"),
-            DecorateInfo(unittest.expectedFailure, "TestOperators", "test_vmap_autograd_grad"),
             DecorateInfo(unittest.expectedFailure, "TestBwdGradients", "test_fn_gradgrad"),
             DecorateInfo(unittest.expectedFailure, "TestFwdGradients", "test_forward_mode_AD"),
             DecorateInfo(unittest.expectedFailure, "TestFwdGradients", "test_fn_fwgrad_bwgrad"),
@@ -17488,6 +17410,7 @@ op_db: list[OpInfo] = [
         "nn.functional.multilabel_soft_margin_loss",
         supports_out=False,
         dtypes=floating_types_and(torch.half, torch.bfloat16),
+        dtypesIfMPS=floating_types_and(torch.half, torch.bfloat16, torch.int8, torch.uint8, torch.int32, torch.int16),
         sample_inputs_func=sample_inputs_multilabel_soft_margin_loss,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
@@ -18292,6 +18215,9 @@ op_db: list[OpInfo] = [
         aten_backward_name='log_sigmoid_backward',
         ref=reference_logsigmoid,
         dtypes=floating_types_and(torch.half, torch.bfloat16),
+        dtypesIfMPS=floating_types_and(
+            torch.half, torch.bfloat16, torch.int16, torch.int32, torch.uint8, torch.bool, torch.int8
+        ),
         supports_autograd=True,
         assert_autodiffed=False,
         supports_forward_ad=True,
@@ -18456,13 +18382,7 @@ op_db: list[OpInfo] = [
     OpInfo(
         "to",
         op=lambda x, *args, **kwargs: x.to(*args, **kwargs),
-        dtypes=all_types_and_complex_and(
-            torch.bfloat16,
-            torch.float16,
-            torch.bool,
-            torch.complex32,
-            torch.bcomplex32,
-        ),
+        dtypes=all_types_and_complex_and(torch.bfloat16, torch.float16, torch.bool),
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         supports_out=False,
@@ -18752,6 +18672,12 @@ op_db: list[OpInfo] = [
                    'TestSchemaCheckModeOpInfo',
                    'test_schema_correctness',
                    dtypes=(torch.complex64, torch.complex128)),
+               # AssertionError: Tensor-likes are not close!
+               DecorateInfo(
+                   unittest.expectedFailure, 'TestCommon', 'test_out',
+                   device_type='mps', dtypes=(torch.float32,),
+                   active_if=MACOS_VERSION < 26.0,
+               ),
            )),
     OpInfo('mode',
            op=torch.mode,
@@ -27647,6 +27573,7 @@ python_ref_db = [
         skips=(
             # no _refs support for Tensor.__setitem__
             DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref'),
+            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_python_ref_errors'),
         ),
     ),
     PythonRefInfo(

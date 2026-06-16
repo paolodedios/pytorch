@@ -142,8 +142,7 @@ def get_node_is_scalar(nodes: Sequence[Node]) -> dict[Node, bool]:
     node_is_scalar = {}
     for node in nodes:
         ft = get_fake_tensor_from_node_arg(node)
-        if ft is None:
-            raise AssertionError(f"expected a fake tensor for node {node}, got None")
+        assert ft is not None
         node_is_scalar[node] = ft.numel() == 1
     return node_is_scalar
 
@@ -155,8 +154,7 @@ def get_node_ndim(nodes: Sequence[Node]) -> dict[Node, int]:
     node_ndim = {}
     for node in nodes:
         ft = get_fake_tensor_from_node_arg(node)
-        if ft is None:
-            raise AssertionError(f"expected a fake tensor for node {node}, got None")
+        assert ft is not None
         node_ndim[node] = ft.ndim
     return node_ndim
 

@@ -136,8 +136,7 @@ def _normalize_view_op(
         raise AssertionError(f"unsupported view op {target}")
 
     unexpected_kwargs = [name for name in kwargs if name not in names]
-    if unexpected_kwargs:
-        raise AssertionError(f"unexpected kwargs for {target}: {unexpected_kwargs}")
+    assert not unexpected_kwargs, f"unexpected kwargs for {target}: {unexpected_kwargs}"
     normalized_args = tuple(
         _get_view_arg(target, args, kwargs, name, idx, default)
         for idx, (name, default) in enumerate(zip(names, defaults))
@@ -201,16 +200,8 @@ def _decode_view_op(target_code: int, flattened_args: Sequence[Any]) -> ViewOp:
 
 def _decode_view_ops(view_ops: EncodedViewOps) -> tuple[ViewOp, ...]:
     view_codes, view_args, view_arg_counts, view_arg_none = view_ops
-    if len(view_codes) != len(view_arg_counts):
-        raise AssertionError(
-            f"view_codes length {len(view_codes)} != "
-            f"view_arg_counts length {len(view_arg_counts)}"
-        )
-    if len(view_args) != len(view_arg_none):
-        raise AssertionError(
-            f"view_args length {len(view_args)} != "
-            f"view_arg_none length {len(view_arg_none)}"
-        )
+    assert len(view_codes) == len(view_arg_counts)
+    assert len(view_args) == len(view_arg_none)
 
     arg_offset = 0
     decoded_view_ops = []
@@ -222,10 +213,7 @@ def _decode_view_ops(view_ops: EncodedViewOps) -> tuple[ViewOp, ...]:
         decoded_view_ops.append(_decode_view_op(target_code, flattened_args))
         arg_offset += arg_count
 
-    if arg_offset != len(view_args):
-        raise AssertionError(
-            f"consumed arg_offset {arg_offset} != view_args length {len(view_args)}"
-        )
+    assert arg_offset == len(view_args)
     return tuple(decoded_view_ops)
 
 
@@ -495,10 +483,7 @@ def _decompose_scatter_functional(
     view_updated = aten.slice_scatter(view, src, 1, 10, -10)
     inp_updated = aten.slice_scatter(inp, view_updated, 0, 0, 10)
     """
-    if node.target is not _generalized_scatter:
-        raise AssertionError(
-            f"expected node.target to be _generalized_scatter, got {node.target}"
-        )
+    assert node.target is _generalized_scatter
     inp, src, *view_ops = node.args
     return _decompose_scatter_functional_helper(
         graph, inp, src, _decode_view_ops(cast(EncodedViewOps, tuple(view_ops)))
@@ -520,13 +505,9 @@ def _decompose_scatter_mutating(
     slice2.copy_(src)
 
     """
-    if node.target not in (_generalized_scatter, _inplace_generalized_scatter):
-        raise AssertionError(
-            f"expected node.target to be a generalized scatter, got {node.target}"
-        )
+    assert node.target in (_generalized_scatter, _inplace_generalized_scatter)
     inp, src, *view_ops = node.args
-    if node.kwargs:
-        raise AssertionError(f"expected no kwargs, got {node.kwargs}")
+    assert not node.kwargs
 
     if node.target is _generalized_scatter:
         inp = graph_call_function(graph, aten.clone, inp)
@@ -648,14 +629,10 @@ def canonicalize_view_scatter_ops(graph: torch.fx.Graph) -> None:
         ]
 
     def handle_view_scatter(node: torch.fx.Node):
-        if len(node.args) < 2:
-            raise AssertionError(f"expected at least 2 args, got {len(node.args)}")
+        assert len(node.args) >= 2
         inp, src = node.args[:2]
 
-        if not isinstance(node.target, torch._ops.OpOverload):
-            raise AssertionError(
-                f"expected node.target to be an OpOverload, got {type(node.target)}"
-            )
+        assert isinstance(node.target, torch._ops.OpOverload)
         scatter_view_op = ViewOp(
             _SCATTER_OP_TO_VIEW[node.target],
             args=node.args[2:],
@@ -1090,8 +1067,7 @@ def reinplace_inplaceable_ops_core(graph: torch.fx.Graph) -> None:
             return get_node_storage(mutated_arg) in storage_of_reinplaced_args
 
         for arg in old_tensors_to_clone:
-            if arg not in kwargs:
-                raise AssertionError(f"expected {arg} to be in kwargs")
+            assert arg in kwargs
 
             mutated_arg = kwargs[arg]
 
@@ -1220,10 +1196,9 @@ def reinplace_inplaceable_ops_core(graph: torch.fx.Graph) -> None:
 
                 for position, idx in enumerate(mutated_arg_indices):
                     actual_idx = idx + 2  # offset for token and op
-                    if actual_idx >= len(node.args):
-                        raise AssertionError(
-                            f"mutated arg idx {actual_idx} out of range {len(node.args)}"
-                        )
+                    assert actual_idx < len(node.args), (
+                        f"mutated arg idx {actual_idx} out of range {len(node.args)}"
+                    )
                     arg = node.args[actual_idx]
 
                     # Output index is position + 1 (index 0 is the token)

@@ -349,8 +349,7 @@ class GroupLinearFusion(GroupFusion):
             if CallFunctionVarArgs(aten.addmm.default).match(node):
                 bias, input, weight = node.args
             else:
-                if not CallFunctionVarArgs(aten.mm.default).match(node):
-                    raise AssertionError(f"expected aten.mm node, got {node}")
+                assert CallFunctionVarArgs(aten.mm.default).match(node)
                 input, weight = node.args
                 bias = None
 
@@ -496,7 +495,7 @@ class BatchLinearLHSFusion(BatchFusion):
     """
 
     def match(self, node: torch.fx.Node) -> tuple[str, bool, Any] | None:
-        if CallFunctionVarArgs([torch.nn.functional.linear, torch._C._nn.linear]).match(
+        if CallFunctionVarArgs(torch.nn.functional.linear).match(
             node
         ) and is_linear_node_can_be_fused(node):
             input = get_arg_value(node, 0, "input")
@@ -520,10 +519,7 @@ class BatchLinearLHSFusion(BatchFusion):
             if batch_input is None:
                 batch_input = input
             else:
-                if batch_input is not input:
-                    raise AssertionError(
-                        f"expected batch_input to be input, got {batch_input}"
-                    )
+                assert batch_input is input
             batch_weights.append(weight)
             batch_weights_meta.append(weight.meta["example_value"])
             if bias:
@@ -807,8 +803,9 @@ class BatchLayernormFusion(BatchFusion):
             group_biases = None  # type: ignore[assignment]
         if all(weight is None for weight in group_weights):
             group_weights = None  # type: ignore[assignment]
-        if not all(eps == group_epss[0] for eps in group_epss):
-            raise AssertionError("all epsilon values must be equal")
+        assert all(eps == group_epss[0] for eps in group_epss), (
+            "all epsilon values must be equal"
+        )
 
         with graph.inserting_before(subset[0]):  # type: ignore[operator]
             stack_input = graph.call_function(  # type: ignore[operator]
@@ -1384,8 +1381,7 @@ def apply_group_batch_fusion(graph: torch.fx.GraphModule, rule: GroupBatchFusion
         if isinstance(gm, _LazyGraphModule):
             _LazyGraphModule.recompile()
         else:
-            if not isinstance(gm, torch.fx.GraphModule):
-                raise AssertionError(f"expected torch.fx.GraphModule, got {type(gm)}")
+            assert isinstance(gm, torch.fx.GraphModule)
             gm.recompile()
         graph_str = gm.print_readable(
             print_output=False, include_stride=True, include_device=True

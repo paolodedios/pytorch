@@ -836,10 +836,7 @@ class DefaultHandler(OpsHandler[Any]):
                 for p in sig.parameters.values()
             ):
                 self_arg, *args = sig.parameters.keys()
-                if self_arg != "self":
-                    raise AssertionError(
-                        f"expected first parameter 'self', got {self_arg!r}"
-                    )
+                assert self_arg == "self"
                 code.write(
                     f"""
                     def {target}(self, {", ".join(args)}):

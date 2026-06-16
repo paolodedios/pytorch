@@ -24,10 +24,8 @@ ShapeArg = ShapeVar | torch.types.Number | str | OpsValue | torch.dtype
 
 
 def get_broadcasted_shape(a: BlockShapeType, b: BlockShapeType) -> BlockShapeType:
-    if not isinstance(a, Sequence):
-        raise AssertionError(f"expected a to be a Sequence, got {type(a)}")
-    if not isinstance(b, Sequence):
-        raise AssertionError(f"expected b to be a Sequence, got {type(b)}")
+    assert isinstance(a, Sequence)
+    assert isinstance(b, Sequence)
     return _get_broadcasted_shape(tuple(a), tuple(b))
 
 
@@ -47,8 +45,7 @@ def _get_broadcasted_shape(
                 return d2
             elif str(d2) == "1":
                 return d1
-            if str(d1) != str(d2):
-                raise AssertionError(f"expected str(d1) == str(d2), got {d1} != {d2}")
+            assert str(d1) == str(d2)
             return d1
 
         return tuple(_get_broadcasted_dim(d1, d2) for d1, d2 in zip(a, b))
@@ -128,8 +125,7 @@ class ShapePropagationOpsHandler:
     def dot(a: sympy.Expr, b: sympy.Expr) -> BlockShapeType:
         from torch._inductor.codegen.triton import TritonKernel
 
-        if not isinstance(V.kernel, TritonKernel):
-            raise AssertionError("dot supports Triton only")
+        assert isinstance(V.kernel, TritonKernel), "dot supports Triton only"
         return ("YBLOCK", "XBLOCK")
 
     @staticmethod

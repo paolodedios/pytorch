@@ -1,4 +1,3 @@
-# Owner(s): ["oncall: releng"]
 name: Build Official Docker Images
 
 on:
