@@ -30,7 +30,7 @@ std::string get_cuda_error_help(cudaError_t error) noexcept {
 
 namespace {
 
-const char* get_cuda_blocking_message() {
+const char* get_cuda_blocking_message() noexcept {
   static const char* default_message =
       "\nCUDA kernel errors might be asynchronously reported at some"
       " other API call, so the stacktrace below might be incorrect."
@@ -60,11 +60,16 @@ const char* get_cuda_blocking_message() {
           "\nSet AMD_SERIALIZE_KERNEL=3 to wait for completion before AND after kernel enqueue."
           "\n1/2 Only waits before or after enqueue.");
     }
-    // rocm_message is constructed only in rare cases
-    rocm_message = "\nUnsupported AMD_SERIALIZE_KERNEL value ";
-    rocm_message += effective_flag;
-    rocm_message += default_message;
-    return rocm_message.data();
+    // rocm_message is constructed only in rare cases. Guard the allocating
+    // path so an out-of-memory exception cannot escape the noexcept callers.
+    try {
+      rocm_message = "\nUnsupported AMD_SERIALIZE_KERNEL value ";
+      rocm_message += effective_flag;
+      rocm_message += default_message;
+      return rocm_message.c_str();
+    } catch (...) {
+      return default_message;
+    }
   }();
   return rocm_message_view;
 #endif
