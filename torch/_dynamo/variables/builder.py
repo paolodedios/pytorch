@@ -1595,19 +1595,9 @@ class VariableBuilder:
                     # We need to create an unbacked symint to replace the unbacked symbool.
                     new_symint = self.tx.output.shape_env.create_unbacked_symint()
                 else:
-                    if not torch.compiler._is_non_strict_tracing():
-                        # Outside non-strict tracing, raw unbacked SymInt inputs
-                        # still require a broader guard-propagation design.
-                        unimplemented(
-                            gb_type="Attempted to wrap unbacked SymInt",
-                            context="",
-                            explanation="Unbacked SymInt input is not supported yet.",
-                            hints=[*graph_break_hints.SUPPORTABLE],
-                        )
-
                     # Raw unbacked SymInt inputs have no guardable hint. Model
-                    # them as unbacked inputs only for non-strict nested traces;
-                    # data-dependent uses still fail through the normal guard path.
+                    # them as unbacked inputs; data-dependent uses still fail
+                    # through the normal guard path.
                     shape_env = self.tx.output.shape_env
                     if value.node.shape_env is shape_env:
                         # SymInt already belongs to this ShapeEnv — no

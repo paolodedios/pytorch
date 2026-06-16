@@ -4820,16 +4820,6 @@ class ShapeEnv:
             symbolic_context=symbolic_context,
         )
 
-    @staticmethod
-    def _foreign_unbacked_hint(src_shape_env: ShapeEnv, expr: sympy.Expr) -> int | None:
-        hint_sources = (
-            src_shape_env.backed_var_to_val.keys()
-            | src_shape_env.var_to_hint_override.keys()
-        )
-        if not expr.free_symbols - hint_sources:
-            return src_shape_env.optimization_hint(expr)
-        return None
-
     def _transfer_foreign_expr_as_unbacked(
         self,
         value: SymInt,
@@ -4900,11 +4890,25 @@ class ShapeEnv:
                 new_symint = self.create_unbacked_symint(source)
             cached = new_symint.node.expr
             self.foreign_unbacked_symbol_cache[expr_key] = cached
+            # Only carry the foreign optimization hint forward when every
+            # free symbol in expr has an explicit backed value or hint
+            # override — otherwise optimization_hint would return a generic
+            # heuristic fallback that shouldn't be recorded as user
+            # provenance.
+            hint_sources = (
+                src_shape_env.backed_var_to_val.keys()
+                | src_shape_env.var_to_hint_override.keys()
+            )
+            optimization_hint = (
+                src_shape_env.optimization_hint(expr)
+                if not expr.free_symbols - hint_sources
+                else None
+            )
             self._register_unbacked_symbol_as_input(
                 cached,
                 source=source,
                 value_range=src_shape_env.bound_sympy(expr),
-                optimization_hint=self._foreign_unbacked_hint(src_shape_env, expr),
+                optimization_hint=optimization_hint,
             )
         if is_size:
             self._constrain_range_for_size(cached)

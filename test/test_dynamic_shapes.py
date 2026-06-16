@@ -6701,18 +6701,12 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         self.assertEqual(token_grid_sizes[1].node.expr, label_sizes[1].node.expr)
         self.assertEqual(token_grid_strides[0].node.expr, token_grid_sizes[1].node.expr)
         self.assertEqual(label_strides[0].node.expr, label_sizes[1].node.expr)
-        # raw_derived_seq and derived_sizes[1] share via (env, seq//2) cache.
         self.assertEqual(raw_derived_seq.node.expr, derived_sizes[1].node.expr)
-        # derived_strides[0] (= derived_seq * hidden) is its own opaque symbol;
-        # the structural relationship to dims 1 and 2 is intentionally lost.
-        self.assertTrue(isinstance(derived_strides[0].node.expr, sympy.Symbol))
-        self.assertNotEqual(
+        self.assertEqual(
             derived_strides[0].node.expr,
             derived_sizes[1].node.expr * derived_sizes[2].node.expr,
         )
-        # raw_seq_plus_hidden (= seq + hidden) is its own opaque symbol.
-        self.assertTrue(isinstance(raw_seq_plus_hidden.node.expr, sympy.Symbol))
-        self.assertNotEqual(
+        self.assertEqual(
             raw_seq_plus_hidden.node.expr,
             token_grid_sizes[1].node.expr + derived_sizes[2].node.expr,
         )
