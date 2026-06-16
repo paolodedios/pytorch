@@ -70,6 +70,7 @@ from .comm_analysis import (
 )
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .exc import GPUTooOldForTriton, TritonMissing
+from .fx_passes.control_dependencies import NO_FUSE_REGION
 from .fx_utils import count_flops_fx
 from .ir import (
     assign_origin_node,
@@ -3756,6 +3757,9 @@ def pick_loop_order(
 def _replace_operation_buffer(
     orig_node: ir.MultiTemplateBuffer, new_node: ir.OperationBuffer
 ) -> None:
+    if NO_FUSE_REGION in orig_node.annotations:
+        new_node.annotations[NO_FUSE_REGION] = orig_node.annotations[NO_FUSE_REGION]
+
     replaced_buf_name = new_node.get_name()
     orig_buf_name = orig_node.get_name()
     if not (isinstance(orig_buf_name, str) and isinstance(replaced_buf_name, str)):
@@ -4489,6 +4493,27 @@ class Scheduler:
         else:
             raise NotImplementedError(node)
 
+    @staticmethod
+    def get_no_fuse_regions(
+        node: BaseSchedulerNode,
+    ) -> frozenset[str]:
+        regions: OrderedSet[str] = OrderedSet()
+        for snode in node.get_nodes():
+            op = snode.node
+            if op is None or not hasattr(op, "annotations"):
+                continue
+            regions.update(op.annotations.get(NO_FUSE_REGION, ()))
+        return frozenset(regions)
+
+    def _group_by_no_fuse_region(
+        self,
+        nodes: list[BaseSchedulerNode],
+    ) -> list[list[BaseSchedulerNode]]:
+        groups: dict[frozenset[str], list[BaseSchedulerNode]] = defaultdict(list)
+        for node in nodes:
+            groups[self.get_no_fuse_regions(node)].append(node)
+        return list(groups.values())
+
     def create_foreach_nodes(self) -> None:
         removed_node_names: OrderedSet[str] = OrderedSet()
         fe_nodes = []
@@ -4505,21 +4530,34 @@ class Scheduler:
                 # All nodes eliminated
                 continue
 
-            removed_node_names.update(names)
-            snodes = [self.name_to_node[name] for name in names]
-
-            enable_autotune = config.combo_kernels_autotune > 1
-            fe_node = ForeachKernelSchedulerNode(
-                self,
-                snodes,
-                use_custom_partition_algo=False,
-                enable_autotune=enable_autotune,
-            )
-
-            fe_nodes.append(fe_node)
-
+            name_groups: dict[frozenset[str], list[str]] = defaultdict(list)
             for name in names:
-                self.name_to_fused_node[name] = fe_node
+                name_groups[self.get_no_fuse_regions(self.name_to_node[name])].append(
+                    name
+                )
+
+            foreach_name_groups = (
+                [names] if len(name_groups) == 1 else list(name_groups.values())
+            )
+            for name_group in foreach_name_groups:
+                if len(name_group) < 2 and len(name_groups) != 1:
+                    continue
+
+                removed_node_names.update(name_group)
+                snodes = [self.name_to_node[name] for name in name_group]
+
+                enable_autotune = config.combo_kernels_autotune > 1
+                fe_node = ForeachKernelSchedulerNode(
+                    self,
+                    snodes,
+                    use_custom_partition_algo=False,
+                    enable_autotune=enable_autotune,
+                )
+
+                fe_nodes.append(fe_node)
+
+                for name in name_group:
+                    self.name_to_fused_node[name] = fe_node
 
         self.nodes = [
             node for node in self.nodes if node.get_name() not in removed_node_names
@@ -6367,34 +6405,37 @@ class Scheduler:
             if len(members) < 2:
                 continue
 
-            for window in Scheduler._distance_windows(
-                members, node_to_idx, max_distance
-            ):
-                if num_ck_nodes is not None and count > num_ck_nodes:
-                    break
-                if len(window) < 2 or not self.speedup_by_combo_kernel(window):
-                    continue
-                if memory_check:
-                    if mem_ctx is None:
-                        raise AssertionError("expected mem_ctx to be set")
-                    sim_start = time.perf_counter()
-                    self._try_combo_with_halving(
-                        window,
-                        num,
-                        mem_ctx,
-                        enable_autotune=enable_autotune,
-                        on_accept=_register_accept,
-                    )
-                    memory_sim_time += time.perf_counter() - sim_start
-                else:
-                    combo_node = ForeachKernelSchedulerNode(
-                        window[0].scheduler,
-                        window,
-                        use_custom_partition_algo=True,
-                        enable_autotune=enable_autotune,
-                        per_subkernel_blocks=config.combo_kernel_per_subkernel_blocks,
-                    )
-                    _register_accept(combo_node, window, num)
+            for member_group in self._group_by_no_fuse_region(members):
+                for window in Scheduler._distance_windows(
+                    member_group, node_to_idx, max_distance
+                ):
+                    if num_ck_nodes is not None and count > num_ck_nodes:
+                        break
+                    if len(window) < 2 or not self.speedup_by_combo_kernel(window):
+                        continue
+                    if memory_check:
+                        if mem_ctx is None:
+                            raise AssertionError("expected mem_ctx to be set")
+                        sim_start = time.perf_counter()
+                        self._try_combo_with_halving(
+                            window,
+                            num,
+                            mem_ctx,
+                            enable_autotune=enable_autotune,
+                            on_accept=_register_accept,
+                        )
+                        memory_sim_time += time.perf_counter() - sim_start
+                    else:
+                        combo_node = ForeachKernelSchedulerNode(
+                            window[0].scheduler,
+                            window,
+                            use_custom_partition_algo=True,
+                            enable_autotune=enable_autotune,
+                            per_subkernel_blocks=(
+                                config.combo_kernel_per_subkernel_blocks
+                            ),
+                        )
+                        _register_accept(combo_node, window, num)
 
         self.nodes = sorted(fused_nodes, key=lambda x: x.min_order)
         self.nodes = self.topological_sort_schedule(self.nodes)
@@ -7619,6 +7660,13 @@ class Scheduler:
                 for name in index_equivalent_dep_names
             )
 
+        why = WhyNoFuse(node1, node2)
+        regions1 = self.get_no_fuse_regions(node1)
+        regions2 = self.get_no_fuse_regions(node2)
+        if regions1 != regions2:
+            why("no_fuse_region mismatch (%s vs %s)", regions1, regions2)
+            return False
+
         # Prevent fusion across stream boundaries
         if self._has_multi_stream_nodes():
             stream1 = self.node_to_stream.get(node1)
@@ -7637,8 +7685,6 @@ class Scheduler:
             # We don't fuse something before a FusedMixOrderReductions
             # right now
             return False
-
-        why = WhyNoFuse(node1, node2)
 
         if node1.is_template() and self.get_backend(
             node1.get_device()

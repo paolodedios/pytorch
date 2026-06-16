@@ -1,7 +1,9 @@
 # Owner(s): ["module: inductor"]
 
 import torch
+import torch._inductor.metrics as metrics
 from torch._inductor import config
+from torch._inductor.fx_passes.control_dependencies import mark_no_fuse_region
 from torch._inductor.test_case import run_tests, TestCase as InductorTestCase
 from torch._inductor.utils import run_and_get_code
 from torch.testing import FileCheck
@@ -409,6 +411,227 @@ class TestControlDeps(InductorTestCase):
             "no record_event void op appears as an additional_buffer_dep; "
             f"void_names={void_names}, referenced={referenced}",
         )
+
+    @config.patch(reorder_for_locality=False)
+    @requires_gpu()
+    def test_control_deps_no_fuse_region_single_region(self):
+        def fn(x):
+            before = x + 1
+            region0 = x * 2
+            region1 = torch.relu(region0)
+            after = x + 3
+            return before, region1, after
+
+        def add_no_fuse_region(graph):
+            mul_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.mul.Tensor
+            )[0]
+            relu_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.relu.default
+            )[0]
+            mark_no_fuse_region(graph, [mul_node, relu_node])
+            return graph
+
+        with torch._inductor.config.patch(
+            post_grad_custom_post_pass=add_no_fuse_region,
+        ):
+            x = torch.rand([256, 256], device=GPU_TYPE)
+            result, code = run_and_get_code(torch.compile(fn), x)
+
+        torch.testing.assert_close(result, fn(x))
+        FileCheck().check("fused_add").check("fused_mul_relu").run(code[0])
+
+    @config.patch(reorder_for_locality=False)
+    @requires_gpu()
+    def test_control_deps_no_fuse_region_keeps_outside_fusable(self):
+        def fn(x):
+            before = x + 1
+            region0 = x * 2
+            region1 = torch.relu(region0)
+            after = x + 3
+            return before + after, region1
+
+        def add_no_fuse_region(graph):
+            mul_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.mul.Tensor
+            )[0]
+            relu_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.relu.default
+            )[0]
+            mark_no_fuse_region(graph, [mul_node, relu_node])
+            return graph
+
+        with torch._inductor.config.patch(
+            post_grad_custom_post_pass=add_no_fuse_region,
+        ):
+            x = torch.rand([256, 256], device=GPU_TYPE)
+            result, code = run_and_get_code(torch.compile(fn), x)
+
+        torch.testing.assert_close(result, fn(x))
+        FileCheck().check(
+            "Topologically Sorted Source Nodes: [before, after, add_2]"
+        ).check("fused_mul_relu").run(code[0])
+        FileCheck().check_not("fused_add_mul_relu").run(code[0])
+
+    @config.patch(reorder_for_locality=False)
+    @requires_gpu()
+    def test_control_deps_no_fuse_region_multiple_regions(self):
+        def fn(x):
+            region0 = torch.relu(x * 2)
+            region1 = torch.sigmoid(x + 3)
+            return region0, region1
+
+        def add_no_fuse_regions(graph):
+            mul_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.mul.Tensor
+            )[0]
+            relu_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.relu.default
+            )[0]
+            add_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.add.Tensor
+            )[0]
+            sigmoid_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.sigmoid.default
+            )[0]
+            mark_no_fuse_region(graph, [mul_node, relu_node])
+            mark_no_fuse_region(graph, [add_node, sigmoid_node])
+            return graph
+
+        with torch._inductor.config.patch(
+            post_grad_custom_post_pass=add_no_fuse_regions,
+        ):
+            x = torch.rand([256, 256], device=GPU_TYPE)
+            result, code = run_and_get_code(torch.compile(fn), x)
+
+        torch.testing.assert_close(result, fn(x))
+        FileCheck().check("fused_mul_relu").check("fused_add_sigmoid").run(code[0])
+        FileCheck().check_not("fused_add_mul_relu_sigmoid").run(code[0])
+
+    @config.patch(reorder_for_locality=False)
+    @requires_gpu()
+    def test_control_deps_no_fuse_region_multiple_outputs(self):
+        def fn(x):
+            region0 = x * 2
+            region1 = torch.relu(region0)
+            region2 = x + 3
+            region3 = torch.sigmoid(region2)
+            outside = x - 4
+            return region1 + outside, region3 * outside
+
+        def add_no_fuse_region(graph):
+            mul_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.mul.Tensor
+            )[0]
+            relu_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.relu.default
+            )[0]
+            add_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.add.Tensor
+            )[0]
+            sigmoid_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.sigmoid.default
+            )[0]
+            mark_no_fuse_region(graph, [mul_node, relu_node, add_node, sigmoid_node])
+            return graph
+
+        with torch._inductor.config.patch(
+            post_grad_custom_post_pass=add_no_fuse_region,
+        ):
+            x = torch.rand([256, 256], device=GPU_TYPE)
+            result, code = run_and_get_code(torch.compile(fn), x)
+
+        torch.testing.assert_close(result, fn(x))
+        FileCheck().check("fused_add_mul_relu_sigmoid").run(code[0])
+
+    @config.patch(reorder_for_locality=False)
+    @requires_gpu()
+    def test_control_deps_no_fuse_region_interleaved_input(self):
+        def fn(x):
+            region0 = x * 2
+            outside = x + 3
+            region1 = region0 + outside
+            region2 = torch.relu(region1)
+            after = x - 4
+            return region2, after
+
+        def add_no_fuse_region(graph):
+            mul_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.mul.Tensor
+            )[0]
+            add_node = next(
+                node
+                for node in graph.find_nodes(
+                    op="call_function", target=torch.ops.aten.add.Tensor
+                )
+                if mul_node in node.all_input_nodes
+            )
+            relu_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.relu.default
+            )[0]
+            mark_no_fuse_region(graph, [mul_node, add_node, relu_node])
+            return graph
+
+        with torch._inductor.config.patch(
+            post_grad_custom_post_pass=add_no_fuse_region,
+        ):
+            x = torch.rand([256, 256], device=GPU_TYPE)
+            result, code = run_and_get_code(torch.compile(fn), x)
+
+        torch.testing.assert_close(result, fn(x))
+        FileCheck().check("fused_add_sub").check("fused_add_mul_relu").run(code[0])
+
+    def test_mark_no_fuse_region_rejects_boundary_cycle(self):
+        def fn(x):
+            region0 = x * 2
+            outside = region0 + 3
+            region1 = torch.relu(outside)
+            return region1
+
+        gm = torch.fx.symbolic_trace(fn)
+        mul_node = next(node for node in gm.graph.nodes if node.name == "mul")
+        relu_node = next(node for node in gm.graph.nodes if node.name == "relu")
+
+        with self.assertRaisesRegex(AssertionError, "acyclic"):
+            mark_no_fuse_region(gm.graph, [mul_node, relu_node])
+
+    @config.patch(
+        {
+            "reorder_for_locality": False,
+            "combo_kernels": True,
+            "benchmark_combo_kernel": False,
+            "combo_kernel_max_distance": -1,
+            "combo_kernel_peak_memory_increase_gb": None,
+            "combo_kernel_peak_memory_pct_threshold": None,
+        }
+    )
+    @requires_gpu()
+    def test_control_deps_no_fuse_region_blocks_combo_kernel(self):
+        def fn(x):
+            region = torch.relu(x * 2)
+            outside = torch.sigmoid(x + 3)
+            return region, outside
+
+        def add_no_fuse_region(graph):
+            mul_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.mul.Tensor
+            )[0]
+            relu_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.relu.default
+            )[0]
+            mark_no_fuse_region(graph, [mul_node, relu_node])
+            return graph
+
+        metrics.reset()
+        with torch._inductor.config.patch(
+            post_grad_custom_post_pass=add_no_fuse_region,
+        ):
+            x = torch.rand([256, 256], device=GPU_TYPE)
+            result, code = run_and_get_code(torch.compile(fn), x)
+
+        torch.testing.assert_close(result, fn(x))
+        self.assertEqual(metrics.generated_kernel_count, 2)
+        FileCheck().check("fused_mul_relu").check("fused_add_sigmoid").run(code[0])
 
 
 if __name__ == "__main__":
