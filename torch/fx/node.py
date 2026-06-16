@@ -84,7 +84,6 @@ _side_effectful_need_to_be_preserved_pre_dispatch: list[Callable[..., Any]] = [
     torch._C._set_grad_enabled,
     torch.amp._enter_autocast,
     torch.amp._exit_autocast,
-    torch.Tensor.requires_grad_,
 ]
 
 # TODO: Either refactor this into 2 functions 1 dce for functional graphs and 1 dce for all graphs,
@@ -281,7 +280,7 @@ class Node(_NodeBase):
     # All of the nodes that use the value produced by this Node
     # Note one user may correspond to several uses, e.g. the node for ``x + x``
     # would appear once here, but represents two uses.
-    # Is a dict to act as an "ordered set". Keys are significant, value dont-care
+    # Is a dict to act as an "ordered set". Keys are significant, value don't-care
     users: dict["Node", None]
     # Type expression representing the output value of this node.
     # This should contain the same class of Type objects that would appear
