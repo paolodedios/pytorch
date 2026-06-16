@@ -4860,7 +4860,7 @@ class ShapeEnv:
             return src_shape_env.optimization_hint(expr)
         return None
 
-    def _transfer_foreign_expr(
+    def _transfer_foreign_expr_as_unbacked(
         self,
         value: SymInt,
         *,
@@ -4888,7 +4888,8 @@ class ShapeEnv:
         with the minted derived symbol).  This is consistent with the
         pre-refactor behavior."""
         src_shape_env = value.node.shape_env
-        if src_shape_env is None:
+        if src_shape_env is self:
+            # SymInt already belongs to this ShapeEnv — nothing to transfer.
             return value.node.expr
         expr = value.node.expr
 
@@ -4902,10 +4903,19 @@ class ShapeEnv:
 
         # Step 2: all symbols resolved from cache — use the derived expression.
         if not (new_expr.free_symbols - set(cache_map.values())):
+            if is_size:
+                # Symbols may have been cached via a non-size path (e.g. a
+                # raw SymInt transfer); apply the size lower-bound constraint
+                # now that we observe them as a tensor size dim.
+                for sym in new_expr.free_symbols:
+                    self._constrain_range_for_size(sym)
             return new_expr
 
         # Step 3: at least one symbol could not be resolved.  Mint one fresh
         # symbol for the whole foreign expression and cache by expression.
+        # TODO we can do better here: we lose all structural info about the
+        # foreign expression (e.g. that it was u0 + u1) by collapsing it to a
+        # single opaque local symbol.
         expr_key = (id(src_shape_env), expr)
         cached = self.foreign_unbacked_symbol_cache.get(expr_key)
         if cached is None:
@@ -4916,29 +4926,20 @@ class ShapeEnv:
             self._register_unbacked_symbol_as_input(
                 cached,
                 source=source,
-                value_range=src_shape_env.bound_sympy(expr),
-                optimization_hint=self._foreign_unbacked_hint(src_shape_env, expr),
+                value_range=(
+                    src_shape_env.bound_sympy(expr)
+                    if src_shape_env is not None
+                    else None
+                ),
+                optimization_hint=(
+                    self._foreign_unbacked_hint(src_shape_env, expr)
+                    if src_shape_env is not None
+                    else None
+                ),
             )
-            if is_size:
-                self._constrain_range_for_size(cached)
+        if is_size:
+            self._constrain_range_for_size(cached)
         return cached
-
-    def transfer_unbacked_symint_from_foreign_shape_env(
-        self,
-        value: SymInt,
-        source: Source,
-    ) -> SymInt:
-        """Lift a raw foreign unbacked SymInt as an input in this ShapeEnv.
-
-        Uses _transfer_foreign_expr which mints one fresh local symbol for
-        any whole foreign expression that cannot be fully resolved from
-        already-cached symbols.  The user's source is attached to that fresh
-        symbol so the resulting graph input is always 1 source <-> 1 symbol."""
-        new_expr = self._transfer_foreign_expr(value, source=source)
-        return cast(
-            SymInt,
-            self.create_symintnode(new_expr, hint=None, source=source),
-        )
 
     def transfer_symbols_from_foreign_shape_env(
         self,
@@ -4963,7 +4964,7 @@ class ShapeEnv:
 
         For unbacked dims, the underlying foreign unbacked symbols (and any
         user-provided optimization hints registered on the foreign ShapeEnv)
-        are transferred into this env via _transfer_foreign_expr."""
+        are transferred into this env via _transfer_foreign_expr_as_unbacked."""
 
         def _classify(s: IntLikeType) -> DimDynamic:
             if not is_symbolic(s):
@@ -5018,11 +5019,12 @@ class ShapeEnv:
         new_size_exprs: list[sympy.Expr] = []
         for i, old_sz in enumerate(sizes):
             if is_symbolic(old_sz):
-                old_symint = cast(SymInt, old_sz)
                 size_source = TensorPropertySource(source, TensorProperty.SIZE, i)
                 if dynamic_sizes[i] is DimDynamic.UNBACKED:
-                    new_expr = self._transfer_foreign_expr(
-                        old_symint, source=size_source, is_size=True
+                    new_expr = self._transfer_foreign_expr_as_unbacked(
+                        cast(SymInt, old_sz),
+                        source=size_source,
+                        is_size=True,
                     )
                 else:
                     # Backed dim through the legacy create_symbol path so the
@@ -5047,7 +5049,7 @@ class ShapeEnv:
         for i, sd in enumerate(strides):
             if is_symbolic(sd):
                 stride_source = TensorPropertySource(source, TensorProperty.STRIDE, i)
-                new_expr = self._transfer_foreign_expr(
+                new_expr = self._transfer_foreign_expr_as_unbacked(
                     cast(SymInt, sd), source=stride_source
                 )
                 new_stride_exprs.append(new_expr)
@@ -5057,7 +5059,7 @@ class ShapeEnv:
         # 4. Storage offset.
         if is_symbolic(storage_offset):
             offset_source = TensorPropertySource(source, TensorProperty.STORAGE_OFFSET)
-            new_offset_expr = self._transfer_foreign_expr(
+            new_offset_expr = self._transfer_foreign_expr_as_unbacked(
                 cast(SymInt, storage_offset), source=offset_source
             )
         else:
@@ -5518,14 +5520,12 @@ class ShapeEnv:
             self.var_to_range[expr] = value_range
         if optimization_hint is not None:
             self.var_to_hint_override[expr] = optimization_hint
-
-        # Guard diagnostics treat multiple sources for the same symbol as
-        # backed duck-sizing.  An unbacked input minted from a foreign env
-        # can be reached via multiple paths (tensor dim, raw SymInt, ...);
-        # keep only the first source to avoid that.
-        if expr not in self.var_to_sources:
-            self.source_to_var[source.name] = expr
-            self.var_to_sources[expr] = [source]
+        assert source.name not in self.source_to_var, (
+            f"source name {source.name!r} already maps to "
+            f"{self.source_to_var[source.name]!r}"
+        )
+        self.source_to_var[source.name] = expr
+        self.var_to_sources[expr] = [source]
 
     @record_shapeenv_event()
     def _set_unbacked_var_to_hint_override(self, symint: SymInt, hint: int) -> None:

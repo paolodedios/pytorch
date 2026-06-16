@@ -6411,6 +6411,14 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
 
         return ConstantSource(name)
 
+    @staticmethod
+    def _transfer_symint(env, value, source):
+        """Test helper that mirrors what builder.py does when wrapping a raw
+        foreign unbacked SymInt input: transfer the expression and wrap as a
+        SymInt in the local env."""
+        new_expr = env._transfer_foreign_expr_as_unbacked(value, source=source)
+        return env.create_symintnode(new_expr, hint=None, source=source)
+
     def _create_backed_symbols(self, shape_env, tensor, source_name="foreign"):
         """Create backed symbolic sizes/strides/offset using _create_symbolic_sizes_strides_storage_offset."""
         src = self._make_source(source_name)
@@ -6675,11 +6683,9 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
             0,
             source=self._make_source("tensor"),
         )
-        raw_u0 = local_env.transfer_unbacked_symint_from_foreign_shape_env(
-            u0, source=self._make_source("raw")
-        )
-        raw_u0_plus_1 = local_env.transfer_unbacked_symint_from_foreign_shape_env(
-            u0 + 1, source=self._make_source("raw_plus_1")
+        raw_u0 = self._transfer_symint(local_env, u0, source=self._make_source("raw"))
+        raw_u0_plus_1 = self._transfer_symint(
+            local_env, u0 + 1, source=self._make_source("raw_plus_1")
         )
 
         tensor_symbol = new_sizes[0].node.expr
@@ -6702,8 +6708,8 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
             0,
             source=self._make_source("tensor"),
         )
-        raw_sum = local_env.transfer_unbacked_symint_from_foreign_shape_env(
-            u0 + u1, source=self._make_source("raw_sum")
+        raw_sum = self._transfer_symint(
+            local_env, u0 + u1, source=self._make_source("raw_sum")
         )
 
         new_u0 = new_sizes[0].node.expr
@@ -6727,8 +6733,8 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         mixed = u0 + s0_symint
 
         local_env = ShapeEnv()
-        raw = local_env.transfer_unbacked_symint_from_foreign_shape_env(
-            mixed, source=self._make_source("raw_mixed")
+        raw = self._transfer_symint(
+            local_env, mixed, source=self._make_source("raw_mixed")
         )
 
         # Result is a fresh local unbacked symbol — no foreign symbols leaked.
@@ -6755,8 +6761,8 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
             0,
             source=self._make_source("derived_tensor"),
         )
-        raw_derived_tokens = local_env.transfer_unbacked_symint_from_foreign_shape_env(
-            derived_tokens, source=self._make_source("raw_derived_tokens")
+        raw_derived_tokens = self._transfer_symint(
+            local_env, derived_tokens, source=self._make_source("raw_derived_tokens")
         )
 
         self.assertEqual(raw_derived_tokens.node.expr, new_sizes[0].node.expr)
@@ -6804,11 +6810,11 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
                 source=self._make_source("derived_activation"),
             )
         )
-        raw_derived_seq = local_env.transfer_unbacked_symint_from_foreign_shape_env(
-            derived_seq, source=self._make_source("raw_derived_seq")
+        raw_derived_seq = self._transfer_symint(
+            local_env, derived_seq, source=self._make_source("raw_derived_seq")
         )
-        raw_seq_plus_hidden = local_env.transfer_unbacked_symint_from_foreign_shape_env(
-            seq + hidden, source=self._make_source("raw_seq_plus_hidden")
+        raw_seq_plus_hidden = self._transfer_symint(
+            local_env, seq + hidden, source=self._make_source("raw_seq_plus_hidden")
         )
 
         self.assertEqual(token_grid_sizes[0].node.expr, label_sizes[0].node.expr)
@@ -6816,12 +6822,18 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         self.assertEqual(token_grid_sizes[1].node.expr, label_sizes[1].node.expr)
         self.assertEqual(token_grid_strides[0].node.expr, token_grid_sizes[1].node.expr)
         self.assertEqual(label_strides[0].node.expr, label_sizes[1].node.expr)
+        # raw_derived_seq and derived_sizes[1] share via (env, seq//2) cache.
         self.assertEqual(raw_derived_seq.node.expr, derived_sizes[1].node.expr)
-        self.assertEqual(
+        # derived_strides[0] (= derived_seq * hidden) is its own opaque symbol;
+        # the structural relationship to dims 1 and 2 is intentionally lost.
+        self.assertTrue(isinstance(derived_strides[0].node.expr, sympy.Symbol))
+        self.assertNotEqual(
             derived_strides[0].node.expr,
             derived_sizes[1].node.expr * derived_sizes[2].node.expr,
         )
-        self.assertEqual(
+        # raw_seq_plus_hidden (= seq + hidden) is its own opaque symbol.
+        self.assertTrue(isinstance(raw_seq_plus_hidden.node.expr, sympy.Symbol))
+        self.assertNotEqual(
             raw_seq_plus_hidden.node.expr,
             token_grid_sizes[1].node.expr + derived_sizes[2].node.expr,
         )

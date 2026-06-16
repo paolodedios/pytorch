@@ -1680,12 +1680,17 @@ class VariableBuilder:
                     # them as unbacked inputs only for non-strict nested traces;
                     # data-dependent uses still fail through the normal guard path.
                     shape_env = self.tx.output.shape_env
-                    new_symint = (
-                        shape_env.transfer_unbacked_symint_from_foreign_shape_env(
-                            value,
-                            source=source,
+                    if value.node.shape_env is shape_env:
+                        # SymInt already belongs to this ShapeEnv — no
+                        # transfer needed, reuse it directly.
+                        new_symint = value
+                    else:
+                        new_expr = shape_env._transfer_foreign_expr_as_unbacked(
+                            value, source=source
                         )
-                    )
+                        new_symint = shape_env.create_symintnode(
+                            new_expr, hint=None, source=source
+                        )
             if new_symint is None:
                 raise AssertionError("new_symint must not be None after wrapping")
             if not isinstance(new_symint, SymInt):
