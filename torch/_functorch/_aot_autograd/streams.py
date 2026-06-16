@@ -387,10 +387,7 @@ def _expand_dict_returning_deps(
     """
     expanded: list[Node] = []
     for dep in deps:
-        if not (
-            dep.op == "call_function"
-            and dep.target is torch.ops.higher_order.triton_kernel_wrapper_functional
-        ):
+        if not (dep.op == "call_function" and isinstance(dep.meta.get("val"), dict)):
             expanded.append(dep)
             continue
 

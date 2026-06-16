@@ -9065,9 +9065,15 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
     # ops as mutating the pass-through buffers so the scheduler's mutation
     # rename chain forces readers after the subgraph boundary.
     input_ids = OrderedSet([id(a) for a in args])
+    graph_input_names = OrderedSet(V.graph.graph_inputs.keys())
 
     def _add_passthrough_mutation(val, op):
         if id(val) not in input_ids or not isinstance(val, IRNode):
+            return
+        # Skip graph inputs: MutationOutput calls mark_buffer_mutated which
+        # would cause the scheduler to add the input to mutated_inputs,
+        # advertising a phantom input mutation that never happens.
+        if val.get_name() in graph_input_names:
             return
         val.realize()
         op.mutation_outputs.append(
@@ -9078,9 +9084,20 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
             )
         )
 
-    for op in subgraph_ops:
-        if not isinstance(op, ir.ExternKernel):
-            continue
+    # Only attach to void ops (NoneLayout) -- these are the sync ops
+    # (record_event, wait_event) that need ordering edges.  Attaching to
+    # all ExternKernels would over-serialize through the rename chain.
+    void_op_set = OrderedSet(
+        [
+            op
+            for op in subgraph_ops
+            if isinstance(op, ir.ExternKernel)
+            and isinstance(op, ir.Buffer)
+            and op.name is not None
+            and isinstance(op.layout, ir.NoneLayout)
+        ]
+    )
+    for op in void_op_set:
         if isinstance(output, (list, tuple)):
             for v in output:
                 _add_passthrough_mutation(v, op)
