@@ -188,7 +188,6 @@ _device_mapping: dict[str, DeviceInfo] = {
             # Estimated from published single-precision throughput.
             torch.float64: 6.83,
             torch.float32: 13.67,
-            # not specified, fall back to float32 numbers
             "torch.tf32": 116.5,
             torch.bfloat16: 116.5,
             torch.float16: 116.5,
@@ -225,12 +224,8 @@ _device_mapping: dict[str, DeviceInfo] = {
 _device_mapping["AMD INSTINCT MI350X"] = _device_mapping["AMD MI350X"]
 _device_mapping["AMD INSTINCT MI300X"] = _device_mapping["AMD MI300X"]
 _device_mapping["AMD INSTINCT MI210X"] = _device_mapping["AMD MI210X"]
-_device_mapping["Intel(R) Arc(TM) B580 Graphics"] = _device_mapping[
-    "INTEL B580"
-]
-_device_mapping["Intel(R) Arc(TM) Pro B70 Graphics"] = _device_mapping[
-    "INTEL B70"
-]
+_device_mapping["Intel(R) Arc(TM) B580 Graphics"] = _device_mapping["INTEL B580"]
+_device_mapping["Intel(R) Arc(TM) Pro B70 Graphics"] = _device_mapping["INTEL B70"]
 
 # Enforce the upper-case-key invariant so entries cannot silently miss
 # `lookup_device_info` (which upper-cases the query before lookup).
