@@ -861,6 +861,41 @@ static void reset_actual_partial_plan(GuardLastSuccessReceipt* receipt) {
   receipt->actual_partial_tokens.clear();
 }
 
+static const char* actual_partial_disabled_reason_name(
+    ActualPartialReplayFailureReason reason) {
+  switch (reason) {
+    case ActualPartialReplayFailureReason::UnsupportedAccessor:
+      return "unsupported_accessor";
+    case ActualPartialReplayFailureReason::UnsupportedLeaf:
+      return "unsupported_leaf";
+    case ActualPartialReplayFailureReason::None:
+      return "token_mismatch";
+  }
+  return "token_mismatch";
+}
+
+static void record_actual_partial_disabled_reason(
+    GuardLastSuccessReceipt* receipt,
+    ActualPartialReplayFailureReason reason) {
+  if (receipt == nullptr) {
+    return;
+  }
+  auto reason_name = actual_partial_disabled_reason_name(reason);
+  ++receipt->actual_partial_disabled_reasons[reason_name];
+}
+
+static py::dict actual_partial_disabled_reasons_to_dict(
+    const GuardLastSuccessReceipt* receipt) {
+  py::dict reasons;
+  if (receipt == nullptr) {
+    return reasons;
+  }
+  for (const auto& item : receipt->actual_partial_disabled_reasons) {
+    reasons[py::str(item.first)] = item.second;
+  }
+  return reasons;
+}
+
 struct ActiveGuardReceiptScope {
   explicit ActiveGuardReceiptScope(GuardLastSuccessReceipt* receipt)
       : receipt(receipt), previous(active_actual_partial_scope) {
@@ -2362,7 +2397,11 @@ class GuardAccessor {
   virtual GuardDebugInfo check_verbose_nopybind(PyObject* obj) = 0;
   virtual bool replay_actual_partial_tokens(
       PyObject* obj,
-      std::vector<GuardSubtreeEntryToken>& tokens) {
+      std::vector<GuardSubtreeEntryToken>& tokens,
+      ActualPartialReplayFailureReason* reason = nullptr) {
+    if (reason != nullptr) {
+      *reason = ActualPartialReplayFailureReason::UnsupportedAccessor;
+    }
     return false;
   }
   virtual std::string repr() const = 0;
@@ -2600,12 +2639,16 @@ class GuardManager {
 
   virtual bool replay_actual_partial_tokens(
       PyObject* value,
-      std::vector<GuardSubtreeEntryToken>& tokens) {
+      std::vector<GuardSubtreeEntryToken>& tokens,
+      ActualPartialReplayFailureReason* reason = nullptr) {
     if (has_unsupported_actual_partial_leaf_guards()) {
+      if (reason != nullptr) {
+        *reason = ActualPartialReplayFailureReason::UnsupportedLeaf;
+      }
       return false;
     }
     for (const auto& accessor : _accessors) {
-      if (!accessor->replay_actual_partial_tokens(value, tokens)) {
+      if (!accessor->replay_actual_partial_tokens(value, tokens, reason)) {
         return false;
       }
     }
@@ -3306,8 +3349,12 @@ class DictGuardManager : public GuardManager {
 
   bool replay_actual_partial_tokens(
       PyObject* obj,
-      std::vector<GuardSubtreeEntryToken>& tokens) override {
+      std::vector<GuardSubtreeEntryToken>& tokens,
+      ActualPartialReplayFailureReason* reason = nullptr) override {
     if (has_unsupported_actual_partial_leaf_guards()) {
+      if (reason != nullptr) {
+        *reason = ActualPartialReplayFailureReason::UnsupportedLeaf;
+      }
       return false;
     }
     if (Py_TYPE(obj) != _expected_type) {
@@ -3319,7 +3366,7 @@ class DictGuardManager : public GuardManager {
     }
 
     for (const auto& accessor : _accessors) {
-      if (!accessor->replay_actual_partial_tokens(obj, tokens)) {
+      if (!accessor->replay_actual_partial_tokens(obj, tokens, reason)) {
         return false;
       }
     }
@@ -3336,12 +3383,13 @@ class DictGuardManager : public GuardManager {
         KeyValueManager& key_value_manager = _key_value_managers[dict_pointer];
         std::unique_ptr<GuardManager>& key_manager = key_value_manager.first;
         if (key_manager &&
-            !key_manager->replay_actual_partial_tokens(key, tokens)) {
+            !key_manager->replay_actual_partial_tokens(key, tokens, reason)) {
           return false;
         }
         std::unique_ptr<GuardManager>& value_manager = key_value_manager.second;
         if (value_manager &&
-            !value_manager->replay_actual_partial_tokens(value, tokens)) {
+            !value_manager->replay_actual_partial_tokens(
+                value, tokens, reason)) {
           return false;
         }
       }
@@ -3513,7 +3561,9 @@ static bool try_actual_partial_fast_path(
   }
 
   std::vector<GuardSubtreeEntryToken> tokens;
-  if (guard_manager->replay_actual_partial_tokens(value, tokens) &&
+  ActualPartialReplayFailureReason reason =
+      ActualPartialReplayFailureReason::None;
+  if (guard_manager->replay_actual_partial_tokens(value, tokens, &reason) &&
       tokens == receipt->actual_partial_tokens) {
     ++receipt->actual_partial_hit;
     active_actual_partial_scope->saw_fast_hit = true;
@@ -3522,6 +3572,7 @@ static bool try_actual_partial_fast_path(
 
   ++receipt->actual_partial_miss;
   reset_actual_partial_plan(receipt);
+  record_actual_partial_disabled_reason(receipt, reason);
   ++receipt->slow_guard_fallback;
   return false;
 }
@@ -3776,13 +3827,15 @@ class GetAttrGuardAccessor : public GuardAccessor {
 
   bool replay_actual_partial_tokens(
       PyObject* obj,
-      std::vector<GuardSubtreeEntryToken>& tokens) override {
+      std::vector<GuardSubtreeEntryToken>& tokens,
+      ActualPartialReplayFailureReason* reason = nullptr) override {
     PyObject* x = PyObject_GetAttr(obj, _attr_name); // new ref
     if (x == nullptr) {
       PyErr_Clear();
       return false;
     }
-    bool result = _guard_manager->replay_actual_partial_tokens(x, tokens);
+    bool result =
+        _guard_manager->replay_actual_partial_tokens(x, tokens, reason);
     Py_DECREF(x);
     return result;
   }
@@ -4226,13 +4279,14 @@ class DictGetItemGuardAccessor : public GuardAccessor {
 
   bool replay_actual_partial_tokens(
       PyObject* obj,
-      std::vector<GuardSubtreeEntryToken>& tokens) override {
+      std::vector<GuardSubtreeEntryToken>& tokens,
+      ActualPartialReplayFailureReason* reason = nullptr) override {
     PyObject* x = PyDict_GetItem(obj, _key); // borrowed ref
     if (x == nullptr) {
       PyErr_Clear();
       return false;
     }
-    return _guard_manager->replay_actual_partial_tokens(x, tokens);
+    return _guard_manager->replay_actual_partial_tokens(x, tokens, reason);
   }
 
   GuardDebugInfo check_verbose_nopybind(
@@ -5572,6 +5626,8 @@ py::dict debug_check_guard_lookup_receipt(
   stats["actual_partial_hit"] = receipt->actual_partial_hit;
   stats["actual_partial_miss"] = receipt->actual_partial_miss;
   stats["slow_guard_fallback"] = receipt->slow_guard_fallback;
+  stats["actual_partial_disabled_reasons"] =
+      actual_partial_disabled_reasons_to_dict(receipt.get());
   return stats;
 }
 
@@ -5600,6 +5656,8 @@ py::dict debug_check_guard_lookup_receipt_sequence(
   stats["actual_partial_hit"] = receipt->actual_partial_hit;
   stats["actual_partial_miss"] = receipt->actual_partial_miss;
   stats["slow_guard_fallback"] = receipt->slow_guard_fallback;
+  stats["actual_partial_disabled_reasons"] =
+      actual_partial_disabled_reasons_to_dict(receipt.get());
   return stats;
 }
 

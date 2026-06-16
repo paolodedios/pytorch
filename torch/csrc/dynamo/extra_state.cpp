@@ -81,6 +81,15 @@ py::dict ExtraState::get_guard_lookup_stats() const {
       this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->slow_guard_fallback;
+  py::dict actual_partial_disabled_reasons;
+  if (this->last_success_receipt != nullptr) {
+    for (const auto& item :
+         this->last_success_receipt->actual_partial_disabled_reasons) {
+      actual_partial_disabled_reasons[py::str(item.first)] = item.second;
+    }
+  }
+  stats["actual_partial_disabled_reasons"] =
+      actual_partial_disabled_reasons;
   return stats;
 }
 
@@ -94,6 +103,11 @@ void ExtraState::reset_guard_lookup_stats() {
   this->last_success_receipt->actual_partial_hit = 0;
   this->last_success_receipt->actual_partial_miss = 0;
   this->last_success_receipt->slow_guard_fallback = 0;
+  this->last_success_receipt->actual_partial_disabled_reasons.clear();
+  this->last_success_receipt->actual_partial_entry_key = nullptr;
+  this->last_success_receipt->actual_partial_root_key = nullptr;
+  this->last_success_receipt->actual_partial_self_object = nullptr;
+  this->last_success_receipt->actual_partial_self_type = nullptr;
   this->last_success_receipt->actual_partial_state =
       torch::dynamo::GuardPartialMemoState::Training;
   this->last_success_receipt->actual_partial_stability_tokens.clear();
@@ -134,6 +148,7 @@ void ExtraState::invalidate(
   CHECK(cache_entry->_owner == this);
   CHECK(!this->cache_entry_list.empty());
   CHECK(cache_entry == &*cache_entry->_owner_loc);
+  reset_guard_lookup_stats();
   cache_entry->invalidate(std::move(deleted_guard_manager));
   // Move the cache entry to the end of the list because these will always
   // return False.

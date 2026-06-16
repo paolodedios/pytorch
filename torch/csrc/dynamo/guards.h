@@ -5,6 +5,8 @@
 #include <torch/csrc/utils/pybind.h>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace torch::dynamo {
@@ -36,6 +38,12 @@ enum class GuardSubtreeTokenKind : uint8_t {
   TensorMetadata,
 };
 
+enum class ActualPartialReplayFailureReason : uint8_t {
+  None = 0,
+  UnsupportedAccessor = 1,
+  UnsupportedLeaf = 2,
+};
+
 struct GuardSubtreeEntryToken {
   GuardSubtreeTokenKind kind;
   uintptr_t object_id = 0;
@@ -61,6 +69,7 @@ struct GuardLastSuccessReceipt {
   uint64_t actual_partial_hit = 0;
   uint64_t actual_partial_miss = 0;
   uint64_t slow_guard_fallback = 0;
+  std::unordered_map<std::string, uint64_t> actual_partial_disabled_reasons;
   GuardPartialMemoState actual_partial_state =
       GuardPartialMemoState::Training;
   std::vector<GuardSubtreeEntryToken> actual_partial_stability_tokens;

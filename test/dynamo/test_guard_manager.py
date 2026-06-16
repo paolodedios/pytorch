@@ -578,6 +578,8 @@ num_guards_executed=0)
         self.assertEqual(stats["actual_partial_hit"], 0)
         self.assertEqual(stats["actual_partial_miss"], 0)
         self.assertEqual(stats["slow_guard_fallback"], 0)
+        self.assertIn("actual_partial_disabled_reasons", stats)
+        self.assertEqual(stats["actual_partial_disabled_reasons"], {})
 
     def test_guard_lookup_stats_reject_stale_extra_state(self):
         def fn(x):
@@ -813,6 +815,9 @@ num_guards_executed=0)
         self.assertFalse(stats["result"])
         self.assertGreater(stats["actual_partial_miss"], 0)
         self.assertGreater(stats["slow_guard_fallback"], 0)
+        self.assertGreater(
+            stats["actual_partial_disabled_reasons"]["token_mismatch"], 0
+        )
 
     def test_token_plan_fast_hit_preserves_other_guards(self):
         guard_manager = RootGuardManager()
@@ -880,6 +885,47 @@ num_guards_executed=0)
         self.assertGreater(stats["actual_partial_miss"], 0)
         self.assertGreater(stats["slow_guard_fallback"], 0)
         self.assertEqual(stats["actual_partial_hit"], 0)
+        self.assertGreater(
+            stats["actual_partial_disabled_reasons"]["unsupported_leaf"], 0
+        )
+
+    def test_token_plan_unsupported_accessor_falls_back(self):
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {"block": [True]},
+            default_mgr_enum,
+        ).dict_getitem_manager(
+            "block",
+            "L['self']._modules['block']",
+            [True],
+            default_mgr_enum,
+        ).list_getitem_manager(
+            0,
+            "L['self']._modules['block'][0]",
+            True,
+            default_mgr_enum,
+        ).add_equals_match_guard(
+            True, ["block[0] == True"]
+        )
+
+        stats = guards._debug_check_guard_lookup_receipt_sequence(
+            guard_manager,
+            [
+                {"mods": {"block": [True]}},
+                {"mods": {"block": [True]}},
+                {"mods": {"block": [True]}},
+                {"mods": {"block": [False]}},
+            ],
+        )
+
+        self.assertFalse(stats["result"])
+        self.assertGreater(stats["actual_partial_miss"], 0)
+        self.assertGreater(stats["slow_guard_fallback"], 0)
+        self.assertGreater(
+            stats["actual_partial_disabled_reasons"]["unsupported_accessor"], 0
+        )
 
     def test_dict_getitem_accessor(self):
         foo = {
