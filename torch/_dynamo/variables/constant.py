@@ -176,7 +176,7 @@ class ConstantVariable(VariableTracker):
             container_name = "string" if isinstance(self.value, str) else "bytes"
             arg = validate_sequence_index(tx, arg, container_name)
         return ConstantVariable.create(
-            self.value[arg.as_python_constant()],  # pyrefly: ignore[bad-index]
+            self.value[arg.as_python_constant()],
         )
 
     def sq_item_impl(
@@ -861,6 +861,15 @@ class ConstantVariable(VariableTracker):
             return ConstantVariable.create(abs(self.value))
         except OverflowError as e:
             raise_observed_exception(OverflowError, tx, args=list(e.args))
+
+    def nb_invert_impl(
+        self,
+        tx: Any,
+    ) -> VariableTracker:
+        # int: https://github.com/python/cpython/blob/v3.13.0/Objects/longobject.c#L5163-L5177
+        #   long_invert implements ~x as -(x+1).
+        # bool inherits nb_invert from int via slot inheritance.
+        return ConstantVariable.create(~self.value)
 
 
 CONSTANT_VARIABLE_NONE = ConstantVariable(None)
