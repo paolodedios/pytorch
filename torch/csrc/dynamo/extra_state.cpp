@@ -57,6 +57,14 @@ py::dict ExtraState::get_guard_lookup_stats() const {
               torch::dynamo::GuardPartialMemoState::Enabled
       ? 1
       : 0;
+  stats["actual_partial_candidate"] =
+      this->last_success_receipt == nullptr
+      ? 0
+      : this->last_success_receipt->actual_partial_stability_tokens.size();
+  stats["actual_partial_token_count"] =
+      this->last_success_receipt == nullptr
+      ? 0
+      : this->last_success_receipt->actual_partial_tokens.size();
   return stats;
 }
 
@@ -69,6 +77,8 @@ void ExtraState::reset_guard_lookup_stats() {
   this->last_success_receipt->actual_partial_shadow_passes = 0;
   this->last_success_receipt->actual_partial_state =
       torch::dynamo::GuardPartialMemoState::Training;
+  this->last_success_receipt->actual_partial_stability_tokens.clear();
+  this->last_success_receipt->actual_partial_tokens.clear();
 }
 
 void ExtraState::move_to_front(CacheEntry* cache_entry) {
@@ -200,7 +210,9 @@ void lookup(
               cache_entry.diff_guard_root_mgr, f_locals);
         } else {
           valid = torch::dynamo::run_root_guard_manager(
-              cache_entry.root_mgr, f_locals);
+              cache_entry.root_mgr,
+              f_locals,
+              extra_state->last_success_receipt.get());
         }
       } catch (py::error_already_set& e) {
         if (guard_error_hook) {

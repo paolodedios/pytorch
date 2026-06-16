@@ -601,6 +601,33 @@ num_guards_executed=0)
         ):
             guard_manager.reset_guard_lookup_stats()
 
+    def test_self_modules_token_plan_records_tokens(self):
+        class StableModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.block = torch.nn.Sequential(torch.nn.ReLU())
+
+            def forward(self, x):
+                return self.block(x)
+
+        model = StableModule()
+        opt_model = torch.compile(model, backend="eager")
+        x = torch.randn(2, 3)
+        ref = opt_model(x)
+
+        cache_entries = _debug_get_cache_entry_list(model.forward.__code__)
+        self.assertEqual(len(cache_entries), 1)
+        guard_manager = cache_entries[0].guard_manager
+        guard_manager.reset_guard_lookup_stats()
+
+        with torch._dynamo.set_stance("fail_on_recompile"):
+            res = opt_model(x)
+        self.assertEqual(ref, res)
+
+        stats = guard_manager.get_guard_lookup_stats()
+        self.assertGreater(stats["actual_partial_candidate"], 0)
+        self.assertGreater(stats["actual_partial_token_count"], 0)
+
     def test_dict_getitem_accessor(self):
         foo = {
             "a": 1,

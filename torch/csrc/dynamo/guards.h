@@ -5,6 +5,7 @@
 #include <torch/csrc/utils/pybind.h>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace torch::dynamo {
 
@@ -15,10 +16,32 @@ PyObject* torch_c_dynamo_guards_init();
 void* convert_to_root_guard_manager(py::object root);
 bool run_root_guard_manager(void* root, FrameLocalsMapping* f_locals);
 
+struct GuardLastSuccessReceipt;
+bool run_root_guard_manager(
+    void* root,
+    FrameLocalsMapping* f_locals,
+    GuardLastSuccessReceipt* receipt);
+
 enum class GuardPartialMemoState : uint8_t {
   Training = 0,
   Enabled = 1,
   Disabled = 2,
+};
+
+enum class GuardSubtreeTokenKind : uint8_t {
+  ObjectIdentity,
+  ObjectType,
+  DictVersion,
+  SequenceSize,
+  TensorMetadata,
+};
+
+struct GuardSubtreeEntryToken {
+  GuardSubtreeTokenKind kind;
+  uintptr_t object_id = 0;
+  uintptr_t type_id = 0;
+  uint64_t version = 0;
+  int64_t size = -1;
 };
 
 struct GuardLastSuccessReceipt {
@@ -29,6 +52,8 @@ struct GuardLastSuccessReceipt {
   uint64_t actual_partial_shadow_passes = 0;
   GuardPartialMemoState actual_partial_state =
       GuardPartialMemoState::Training;
+  std::vector<GuardSubtreeEntryToken> actual_partial_stability_tokens;
+  std::vector<GuardSubtreeEntryToken> actual_partial_tokens;
 };
 
 std::unique_ptr<GuardLastSuccessReceipt>

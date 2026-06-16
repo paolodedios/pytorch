@@ -762,6 +762,87 @@ static PyObject* dict_version(PyObject* dummy, PyObject* args) {
   return THPUtils_packUInt64(get_dict_version_unchecked(obj));
 }
 
+static thread_local GuardLastSuccessReceipt* active_actual_partial_receipt =
+    nullptr;
+
+static bool is_self_modules_candidate(const std::string& source) {
+  if (source == "L['self']._modules") {
+    return true;
+  }
+  const std::string prefix = "L['self']._modules";
+  return source.rfind(prefix, 0) == 0 &&
+      source.find("._modules", prefix.size()) != std::string::npos;
+}
+
+static void record_actual_partial_token(
+    std::vector<GuardSubtreeEntryToken>& tokens,
+    const GuardSubtreeEntryToken& token) {
+  tokens.emplace_back(token);
+}
+
+static void record_actual_partial_tokens(
+    const std::string& source,
+    PyObject* value) {
+  if (active_actual_partial_receipt == nullptr || value == nullptr ||
+      !is_self_modules_candidate(source)) {
+    return;
+  }
+
+  GuardSubtreeEntryToken identity_token;
+  identity_token.kind = GuardSubtreeTokenKind::ObjectIdentity;
+  identity_token.object_id = reinterpret_cast<uintptr_t>(value);
+  record_actual_partial_token(
+      active_actual_partial_receipt->actual_partial_stability_tokens,
+      identity_token);
+  record_actual_partial_token(
+      active_actual_partial_receipt->actual_partial_tokens, identity_token);
+
+  GuardSubtreeEntryToken type_token;
+  type_token.kind = GuardSubtreeTokenKind::ObjectType;
+  type_token.type_id = reinterpret_cast<uintptr_t>(Py_TYPE(value));
+  record_actual_partial_token(
+      active_actual_partial_receipt->actual_partial_tokens, type_token);
+
+  if (PyDict_Check(value)) {
+    GuardSubtreeEntryToken version_token;
+    version_token.kind = GuardSubtreeTokenKind::DictVersion;
+    version_token.version = get_dict_version_unchecked(value);
+    record_actual_partial_token(
+        active_actual_partial_receipt->actual_partial_tokens, version_token);
+
+    GuardSubtreeEntryToken size_token;
+    size_token.kind = GuardSubtreeTokenKind::SequenceSize;
+    size_token.size = PyDict_Size(value);
+    record_actual_partial_token(
+        active_actual_partial_receipt->actual_partial_tokens, size_token);
+  } else if (PyList_CheckExact(value)) {
+    GuardSubtreeEntryToken size_token;
+    size_token.kind = GuardSubtreeTokenKind::SequenceSize;
+    size_token.size = PyList_GET_SIZE(value);
+    record_actual_partial_token(
+        active_actual_partial_receipt->actual_partial_tokens, size_token);
+  } else if (PyTuple_CheckExact(value)) {
+    GuardSubtreeEntryToken size_token;
+    size_token.kind = GuardSubtreeTokenKind::SequenceSize;
+    size_token.size = PyTuple_GET_SIZE(value);
+    record_actual_partial_token(
+        active_actual_partial_receipt->actual_partial_tokens, size_token);
+  }
+}
+
+struct ActiveGuardReceiptScope {
+  explicit ActiveGuardReceiptScope(GuardLastSuccessReceipt* receipt)
+      : previous(active_actual_partial_receipt) {
+    active_actual_partial_receipt = receipt;
+  }
+
+  ~ActiveGuardReceiptScope() {
+    active_actual_partial_receipt = previous;
+  }
+
+  GuardLastSuccessReceipt* previous;
+};
+
 static PyObject* assert_size_stride(PyObject* dummy, PyObject* args) {
   /*
    Assert that a given tensor has a given size/stride, but ignore strides
@@ -2378,13 +2459,24 @@ class GuardManager {
   // guards and does not change the fail count. For simplicity, we duplicate
   // the code here.
   template <typename T>
-  bool check_nopybind_template(T* value) { // borrowed ref
+  bool check_nopybind_template(
+      T* value,
+      bool record_tokens = true) { // borrowed ref
 
     if (!this->check_leaf_guards_nopybind(value)) {
       return false;
     }
 
-    return this->check_accessors_nopybind(value);
+    if (!this->check_accessors_nopybind(value)) {
+      return false;
+    }
+
+    if constexpr (std::is_same_v<T, PyObject>) {
+      if (record_tokens) {
+        record_actual_partial_tokens(this->get_source(), value);
+      }
+    }
+    return true;
   }
 
   virtual bool check_nopybind(PyObject* value) {
@@ -2952,6 +3044,7 @@ class DictGuardManager : public GuardManager {
 
     // Early return
     if (_size == 0) {
+      record_actual_partial_tokens(this->get_source(), obj);
       return true;
     }
 
@@ -2963,7 +3056,7 @@ class DictGuardManager : public GuardManager {
     // directly into DictGuardManager.  Similarly, incorporating guards such as
     // DICT_CONTAINS and DICT_VERSION as leaf guards offers a simpler solution
     // than embedding these functionalities within the DictGuardManager itself.
-    if (!GuardManager::check_nopybind(obj)) {
+    if (!GuardManager::check_nopybind_template(obj, false)) {
       _fail_count += 1;
       // No need to shuffle the child guards, just return.
       return false;
@@ -2994,6 +3087,7 @@ class DictGuardManager : public GuardManager {
       }
       dict_pointer += 1;
     }
+    record_actual_partial_tokens(this->get_source(), obj);
     return true;
   }
 
@@ -5216,10 +5310,18 @@ void* convert_to_root_guard_manager(py::object root) {
 }
 
 bool run_root_guard_manager(void* root, FrameLocalsMapping* f_locals) {
+  return run_root_guard_manager(root, f_locals, nullptr);
+}
+
+bool run_root_guard_manager(
+    void* root,
+    FrameLocalsMapping* f_locals,
+    GuardLastSuccessReceipt* receipt) {
   // for invalidated guards, return false
   if (root == nullptr) {
     return false;
   }
+  ActiveGuardReceiptScope receipt_scope(receipt);
   py::object config_module = py::module_::import("torch._dynamo.config");
   bool enable_cpp_framelocals_guard_eval =
       config_module.attr("enable_cpp_framelocals_guard_eval").cast<bool>();
