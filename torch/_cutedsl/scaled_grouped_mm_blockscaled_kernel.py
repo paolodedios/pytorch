@@ -1729,11 +1729,20 @@ class Sm100GroupedBlockScaledGemmKernel:
 
             while work_tile.is_valid_tile:
                 # Wait for the mainload warp's metadata broadcast and read
-                # the values directly from smem.
+                # ALL values into locals immediately. `tile_meta` is single-
+                # buffered, and mainload's next-iteration write begins as
+                # soon as it passes barrier-N + finishes its tensormap/TMA
+                # work — well before the epilog finishes the subtile loop
+                # below. Reading any tile_meta entry later in the iteration
+                # (e.g., inside the conditional tensormap-update branch)
+                # would race against that next-iteration overwrite.
                 self.tile_metadata_ready_barrier.arrive_and_wait()
                 cur_group_idx = tile_meta_smem[0]
                 cta_tile_idx_m = tile_meta_smem[1]
                 cta_tile_idx_n = tile_meta_smem[2]
+                problem_shape_m = tile_meta_smem[4]
+                problem_shape_n = tile_meta_smem[5]
+                problem_shape_k = tile_meta_smem[6]
                 is_group_changed = cur_group_idx != last_group_idx
                 if is_group_changed and warp_idx == self.epilog_warp_id[0]:
                     # Inline C tensormap update; replaces the cross-warp
@@ -1741,11 +1750,7 @@ class Sm100GroupedBlockScaledGemmKernel:
                     real_tensor_c = self.make_tensor_abc_for_tensormap_update(
                         cur_group_idx,
                         self.c_dtype,
-                        (
-                            tile_meta_smem[4],
-                            tile_meta_smem[5],
-                            tile_meta_smem[6],
-                        ),
+                        (problem_shape_m, problem_shape_n, problem_shape_k),
                         strides_abc,
                         ptrs_abc,
                         2,  # tensor C

@@ -1,7 +1,6 @@
 import argparse
 import gc
 import importlib
-import subprocess
 import warnings
 from collections.abc import Callable
 from typing import NamedTuple
@@ -192,92 +191,6 @@ def _cuda_dispatch_keyset(device_type: str):
 
 
 _get_cpp_scaled_grouped_mm_v2_kernel()
-
-
-def _nvidia_smi(args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["nvidia-smi", *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def _maybe_warn_perf_tuning_failure(
-    context: str, proc: subprocess.CompletedProcess[str]
-) -> None:
-    stderr = (proc.stderr or "").strip()
-    stdout = (proc.stdout or "").strip()
-    msg = stderr if stderr else stdout
-    if proc.returncode != 0:
-        warnings.warn(
-            (
-                f"GPU perf tuning failed during {context}: {msg}. "
-                "Skipping further clock/persistence changes for this run."
-            ),
-            stacklevel=2,
-        )
-
-
-def _query_gpu_clock_info(device_index: int) -> str | None:
-    query_candidates = [
-        "clocks.sm,clocks.mem,clocks.max.sm,clocks.max.mem,pstate",
-        "clocks.sm,clocks.mem,clocks.max.graphics,clocks.max.memory,pstate",
-    ]
-    for query in query_candidates:
-        proc = _nvidia_smi(
-            [
-                "-i",
-                str(device_index),
-                f"--query-gpu={query}",
-                "--format=csv,noheader,nounits",
-            ]
-        )
-        if proc.returncode == 0 and proc.stdout.strip():
-            return proc.stdout.strip().splitlines()[0]
-    return None
-
-
-def _configure_gpu_perf_once(device_index: int) -> None:
-    before = _query_gpu_clock_info(device_index)
-    if before is not None:
-        print(f"GPU[{device_index}] clocks before tuning: {before}")
-
-    proc_pm = _nvidia_smi(["-i", str(device_index), "-pm", "1"])
-    if proc_pm.returncode != 0:
-        _maybe_warn_perf_tuning_failure("enabling persistence mode", proc_pm)
-        return
-
-    max_info = _query_gpu_clock_info(device_index)
-    if max_info is None:
-        warnings.warn(
-            "Failed to query max GPU clocks; skipping GPU clock locking.",
-            stacklevel=2,
-        )
-        return
-    # Query returns: sm, mem, max_sm, max_mem, pstate
-    parts = [x.strip() for x in max_info.split(",")]
-    if len(parts) < 5:
-        warnings.warn(
-            f"Unexpected GPU clock query format: '{max_info}', skipping GPU clock locking.",
-            stacklevel=2,
-        )
-        return
-    max_sm = parts[2]
-    max_mem = parts[3]
-
-    proc_lgc = _nvidia_smi(["-i", str(device_index), "-lgc", f"{max_sm},{max_sm}"])
-    if proc_lgc.returncode != 0:
-        _maybe_warn_perf_tuning_failure("locking SM clocks", proc_lgc)
-        return
-    proc_lmc = _nvidia_smi(["-i", str(device_index), "-lmc", f"{max_mem},{max_mem}"])
-    if proc_lmc.returncode != 0:
-        _maybe_warn_perf_tuning_failure("locking memory clocks", proc_lmc)
-        return
-
-    after = _query_gpu_clock_info(device_index)
-    if after is not None:
-        print(f"GPU[{device_index}] clocks after tuning:  {after}")
 
 
 def _maybe_wrap_cuda_graph(fn, label: str, use_cuda_graphs: bool):
@@ -676,7 +589,6 @@ def benchmark_scaled_grouped_mm(
     mma_tile_mn: tuple[int, int] | None = None,
     cluster_shape_mn: tuple[int, int] | None = None,
     transpose_ab: bool | None = None,
-    set_max_gpu_clocks=False,
     layout_mode: str = "2d/3d",
     format: str = "mxfp8",
     cuda_profiler_backend: str | None = None,
@@ -738,7 +650,6 @@ def benchmark_scaled_grouped_mm(
     run_cpp = backend in ("both", "cpp")
     run_cute = backend in ("both", "cute")
     do_correctness = run_cpp and run_cute
-    gpu_perf_configured = False
     all_valid = True
 
     results = []
@@ -784,10 +695,6 @@ def benchmark_scaled_grouped_mm(
     for g, m, n, k in gmnk:
         if not is_blackwell():
             raise RuntimeError("Benchmark requires Blackwell (sm_100).")
-        if set_max_gpu_clocks and not gpu_perf_configured:
-            dev_idx = torch.cuda.current_device()
-            _configure_gpu_perf_once(dev_idx)
-            gpu_perf_configured = True
 
         block_size = 16 if format == "nvfp4" else 32
         k_quant_multiple = 32 if format == "nvfp4" else block_size
@@ -1063,12 +970,6 @@ if __name__ == "__main__":
         help="Measured iterations for timing loops.",
     )
     parser.add_argument(
-        "--set-max-gpu-clocks",
-        action="store_true",
-        default=False,
-        help="Attempt to enable persistence mode and lock SM/MEM clocks to max via nvidia-smi once at startup.",
-    )
-    parser.add_argument(
         "--backend",
         choices=["both", "cpp", "cute"],
         default="both",
@@ -1112,7 +1013,6 @@ if __name__ == "__main__":
         mma_tile_mn=args.mma_tile_mn,
         cluster_shape_mn=args.cluster_shape_mn,
         transpose_ab=(None if args.transpose_ab is None else args.transpose_ab == "on"),
-        set_max_gpu_clocks=args.set_max_gpu_clocks,
         layout_mode=args.layout_mode,
         format=args.format,
         cuda_profiler_backend=args.cuda_profiler_backend,
