@@ -655,7 +655,7 @@ class CachingAutotuner(KernelInterface):
         static_triton_bundle_key: str | None = None,
     ):
         if warm_cache_only:
-            self._precompile_worker()
+            self._precompile_worker(set_gpu_driver=False)
             return
         with self.lock:
             # Helper function for reloading a kernel generated in a worker
@@ -678,7 +678,7 @@ class CachingAutotuner(KernelInterface):
             self._make_launchers()
             self._dynamic_scale_rblock()
 
-    def _precompile_worker(self):
+    def _precompile_worker(self, *, set_gpu_driver: bool = True):
         if self.compile_results:
             for result in self.compile_results:
                 TritonBundler.put(
@@ -695,7 +695,9 @@ class CachingAutotuner(KernelInterface):
         exc = None
         for c in self.configs:
             try:
-                compile_results.append(self._precompile_config(c))
+                compile_results.append(
+                    self._precompile_config(c, set_gpu_driver=set_gpu_driver)
+                )
             except (OutOfResources, PTXASError, IntelGPUError) as e:
                 exc = e
         if len(compile_results) == 0:
@@ -1132,13 +1134,15 @@ class CachingAutotuner(KernelInterface):
 
         return options
 
-    def _precompile_config(self, cfg: Config) -> _KernelCompileResult:
+    def _precompile_config(
+        self, cfg: Config, *, set_gpu_driver: bool = True
+    ) -> _KernelCompileResult:
         """Ahead of time compile a given autotuner config."""
         compile_meta = self._create_compile_meta(cfg)
 
         if self.device_props.type == "cpu":
             triton_helpers.set_driver_to_cpu()
-        else:
+        elif set_gpu_driver:
             triton_helpers.set_driver_to_gpu()
 
         if not ASTSource:

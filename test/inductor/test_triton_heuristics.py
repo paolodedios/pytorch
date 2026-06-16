@@ -7,7 +7,7 @@ import tempfile
 import types
 import unittest
 from unittest import skipUnless
-from unittest.mock import MagicMock, patch
+from unittest.mock import call, MagicMock, patch, PropertyMock
 
 import torch
 from torch._dynamo.testing import rand_strided
@@ -463,6 +463,64 @@ class TestTritonHeuristics(TestCase):
 _PLUGIN_FACTORY_PATH = (
     "torch._inductor.runtime.triton_heuristics.get_caching_autotuner_plugins"
 )
+
+
+class TestCachingAutotunerPrecompileDriverSetup(TestCase):
+    def test_warm_cache_only_precompile_skips_driver_setup(self):
+        autotuner = CachingAutotuner.__new__(CachingAutotuner)
+        with patch.object(autotuner, "_precompile_worker") as mock_precompile_worker:
+            autotuner.precompile(warm_cache_only=True)
+
+        mock_precompile_worker.assert_called_once_with(set_gpu_driver=False)
+
+    def test_precompile_worker_forwards_driver_setup_to_configs(self):
+        autotuner = CachingAutotuner.__new__(CachingAutotuner)
+        configs = [object(), object()]
+        compile_results = [object(), object()]
+        autotuner.compile_results = []
+        autotuner.launchers = []
+        autotuner.configs = configs
+        autotuner._precompile_config = MagicMock(side_effect=compile_results)
+
+        autotuner._precompile_worker(set_gpu_driver=False)
+
+        self.assertEqual(autotuner.compile_results, compile_results)
+        self.assertIsNone(autotuner.configs)
+        autotuner._precompile_config.assert_has_calls(
+            [
+                call(configs[0], set_gpu_driver=False),
+                call(configs[1], set_gpu_driver=False),
+            ]
+        )
+
+    @skipIfRocm
+    @skipUnless(HAS_GPU_AND_TRITON, "requires gpu and triton")
+    def test_warm_cache_only_precompile_does_not_require_driver_setup(self):
+        import triton
+
+        args = TestTritonHeuristics._get_cos_kernel_caching_autotuner_args()
+        args["configs"] = args["configs"][:1]
+        autotuner = CachingAutotuner(**args)
+
+        with (
+            patch(
+                "torch._inductor.runtime.triton_helpers.set_driver_to_gpu",
+                side_effect=RuntimeError(
+                    "0 active drivers ([]). There should only be one."
+                ),
+            ) as mock_set_driver_to_gpu,
+            patch.object(
+                type(triton.runtime.driver),
+                "active",
+                new_callable=PropertyMock,
+                side_effect=RuntimeError("driver.active should not be read"),
+            ) as mock_driver_active,
+        ):
+            autotuner.precompile(warm_cache_only=True)
+
+        mock_set_driver_to_gpu.assert_not_called()
+        mock_driver_active.assert_not_called()
+        self.assertEqual(len(autotuner.compile_results), 1)
 
 
 # Triton's HIP MLIR pipeline raises AttributeError("'NoneType' object has no
