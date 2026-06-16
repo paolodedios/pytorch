@@ -6623,6 +6623,49 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         for sym in result_expr.free_symbols:
             self.assertTrue(local_env.is_unbacked_symint(sym))
 
+    def test_transfer_is_self_short_circuit(self):
+        """When the SymInt already belongs to this ShapeEnv,
+        _transfer_foreign_expr_as_unbacked is a no-op (returns the input expr
+        unchanged, no new symbol minted)."""
+        local_env = ShapeEnv()
+        local_u0 = local_env.create_unbacked_symint()
+
+        cache_size_before = len(local_env.foreign_unbacked_symbol_cache)
+        result = local_env._transfer_foreign_expr_as_unbacked(
+            local_u0, source=self._make_source("local")
+        )
+        self.assertEqual(result, local_u0.node.expr)
+        # Nothing should have been added to the cache.
+        self.assertEqual(
+            len(local_env.foreign_unbacked_symbol_cache), cache_size_before
+        )
+
+    def test_transfer_constrains_size_on_cache_hit(self):
+        """When is_size=True and the expression resolves to a single Symbol
+        from the cache (cached via a non-size path earlier),
+        _constrain_range_for_size is still applied — the symbol ends up in
+        size_like."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+
+        local_env = ShapeEnv()
+        # First: transfer u0 via the raw SymInt path (is_size=False).
+        raw_symint = self._transfer_symint(
+            local_env, u0, source=self._make_source("raw")
+        )
+        raw = raw_symint.node.expr
+        self.assertNotIn(raw, local_env.size_like)
+
+        # Now: transfer the same u0 as a tensor size dim (is_size=True via
+        # transfer_symbols_from_foreign_shape_env's UNBACKED path).
+        new_sizes, _, _ = local_env.transfer_symbols_from_foreign_shape_env(
+            (u0,), (1,), 0, source=self._make_source("tensor")
+        )
+        # Same cached local symbol reused.
+        self.assertEqual(new_sizes[0].node.expr, raw)
+        # And now it carries the size lower-bound constraint.
+        self.assertIn(raw, local_env.size_like)
+
     def test_foreign_unbacked_transfer_preserves_derived_tensor_expr(self):
         """Derived tensor dims are minted as opaque symbols; raw SymInt with
         the same expression reuses that symbol via the (env, expr) cache."""

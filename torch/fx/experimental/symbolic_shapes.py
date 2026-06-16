@@ -2905,6 +2905,25 @@ class ShapeGuardPythonPrinter(_ShapeGuardPrinter, PythonPrinter):
         super().__init__(*args)
         self._print_cache: dict[sympy.Expr, str] = {}
 
+    # Guards may be eval'd against unbacked SymInts; builtin max/min would
+    # trigger data-dependent errors, so emit torch.sym_max/sym_min instead.
+    def _print_Max(self, expr: sympy.Expr) -> str:
+        if len(expr.args) < 2:
+            raise AssertionError("Max expects at least two arguments")
+        return self._fold_binary_call("torch.sym_max", expr.args)
+
+    def _print_Min(self, expr: sympy.Expr) -> str:
+        if len(expr.args) < 2:
+            raise AssertionError("Min expects at least two arguments")
+        return self._fold_binary_call("torch.sym_min", expr.args)
+
+    def _fold_binary_call(self, fn: str, args: Sequence[sympy.Expr]) -> str:
+        printed = [self._print(a) for a in args]
+        result = printed[-1]
+        for arg in reversed(printed[:-1]):
+            result = f"{fn}({arg}, {result})"
+        return result
+
     def print_source(self, source: Source) -> str:
         """
         Convert a source object to its string representation using the source_ref function.
