@@ -56,7 +56,7 @@ import torch.utils._pytree as pytree
 
 # NB: The sym_* functions are used via getattr() and must be imported here.
 from torch import SymBool, SymFloat, SymInt
-from torch._C._functorch import get_unwrapped, is_batchedtensor, is_gradtrackingtensor
+from torch._C._functorch import is_batchedtensor, is_gradtrackingtensor
 from torch._guards import ShapeGuard, SLoc, Source, TracingContext
 from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.opaque_object import is_opaque_value
@@ -159,8 +159,10 @@ def optimization_hint(a: torch.SymInt | int, fallback: int | None = None) -> int
     for optimization purposes only (e.g., memory estimation).
     """
     if isinstance(a, torch.SymInt):
-        if a.node._hint is not None:
-            return a.node._hint
+        if (hint := a.hint) is not None:
+            return hint
+        if a.node.shape_env is None:
+            raise AssertionError("shape_env should not be None")
         return a.node.shape_env.optimization_hint(a.node.expr, fallback=fallback)
     if type(a) is not int:
         raise AssertionError(f"Expected int, got {type(a)}")
@@ -306,6 +308,7 @@ def _nested_int_aware_sort(
     return (
         # Order nested ints by their coefficients.
         # 1 here to order nested ints after non-nested-ints.
+        # pyrefly: ignore [missing-attribute]
         (1, tup[0].node.nested_int_coeff(), tup[1])
         if is_nested_int(tup[0])
         else (0, *tup)
@@ -1109,8 +1112,9 @@ def is_symbol_binding_fx_node(node: torch.fx.Node) -> sympy.Symbol | None:
     """
     Check if a given FX node is a symbol binding node.
 
-    A symbol binding node is one that has a SymInt value in its meta that contains
-    a sympy Symbol expression, and is either a placeholder node or contains unbacked symbols.
+    A symbol binding node is one that has a SymInt value in its meta whose
+    placeholder expression is a sympy Symbol, and is either a placeholder node or
+    records that it binds the unbacked symbol in node.meta["unbacked_bindings"].
 
     Args:
         node (torch.fx.Node): The FX node to check
@@ -1118,16 +1122,21 @@ def is_symbol_binding_fx_node(node: torch.fx.Node) -> sympy.Symbol | None:
     Returns:
         Optional[sympy.Symbol]: The sympy Symbol if the node is a symbol binding node, None otherwise
     """
-    if (
-        "val" in node.meta
-        and isinstance(node.meta["val"], torch.SymInt)
-        and isinstance(node.meta["val"].node.expr, sympy.Symbol)
-        and (
-            node.op == "placeholder"
-            or free_unbacked_symbols(node.meta["val"].node.expr)
-        )
+    if "val" not in node.meta or not isinstance(node.meta["val"], torch.SymInt):
+        return None
+
+    expr = _get_placeholder_expr(node.meta["val"].node)
+    if not isinstance(expr, sympy.Symbol):
+        return None
+
+    if node.op == "placeholder":
+        return expr
+
+    if unbacked_bindings := resolve_unbacked_bindings(
+        node.meta["val"].node.shape_env, node.meta.get("unbacked_bindings")
     ):
-        return node.meta["val"].node.expr
+        if expr in unbacked_bindings:
+            return expr
     return None
 
 
@@ -1213,7 +1222,7 @@ class DivideByKey:
 
     def get(self, o: int) -> int:
         """Divide object by divisor"""
-        return o // self.divisor
+        return o // self.divisor  # type: ignore[bad-return]
 
 
 def _free_unbacked_symbols_with_path(
@@ -1318,8 +1327,7 @@ def _free_unbacked_symbols_with_path(
     elif isinstance(a, torch.Tensor) and (
         is_batchedtensor(a) or is_gradtrackingtensor(a)
     ):
-        unwrapped_tensor = get_unwrapped(a)
-        r.update(go(unwrapped_tensor, path))
+        match_tensor(a)
     elif (
         isinstance(a, torch.Tensor)
         and not is_batchedtensor(a)
@@ -1558,6 +1566,8 @@ def _guard_or(a: BoolLikeType, default: bool) -> bool:
         return guard_bool(a)
 
     sym_node = a.node
+    if sym_node.shape_env is None:
+        raise AssertionError("shape_env should not be None")
     if sym_node.expr.free_symbols & shape_env.do_not_specialize_zero_one_symbols:
         return default
 
@@ -1590,6 +1600,8 @@ def _static_eval_sym_bool(x: SymBool) -> bool | None:
         # Shape env access is inside the try on purpose. xla symnode does not
         # have it on its attributes.
         shape_env = x.node.shape_env
+        if shape_env is None:
+            raise AssertionError("shape_env should not be None")
         simplified = shape_env._maybe_evaluate_static(expr)
         if simplified is not None:
             return bool(simplified)
@@ -1736,7 +1748,7 @@ def _advise_is_size(a: SymInt) -> None:
     max=Inf).  Instead of forcibly constraining a variable (and erroring if we
     failed to constrain it), it will simply advise us that a size is
     constrained in some way.  We will always defer a runtime assert for this
-    constraint if we cannot prove it at compile-time, but we we only
+    constraint if we cannot prove it at compile-time, but we only
     *sometimes* learn useful extra information at compile-time with this
     information.  This is in contrast to constrain_range_for_size, where if
     you don't call that on a fresh unbacked symint, chances are we will choke.
@@ -1798,6 +1810,8 @@ def _constrain_range_for_size(
     if not isinstance(a.node.expr, sympy.Symbol):
         raise AssertionError(f"constraining non-Symbols NYI: {a}")
 
+    if a.node.shape_env is None:
+        raise AssertionError("shape_env should not be None")
     a.node.shape_env._constrain_range_for_size(a.node.expr, min, max)
 
 
@@ -1843,6 +1857,8 @@ def constrain_range(a: SymInt, *, min: int | None, max: int | None = None) -> No
             raise ValueError(f"Invalid value {a} for range [{min}:{max}]")
         return
 
+    if a.node.shape_env is None:
+        raise AssertionError("shape_env should not be None")
     a.node.shape_env._constrain_range(a.node.expr, min, max)
 
 
@@ -1862,6 +1878,8 @@ def constrain_unify(a: torch.SymInt, b: torch.SymInt) -> None:
     else:
         shape_env = a.node.shape_env
 
+    if shape_env is None:
+        raise AssertionError("shape_env should not be None")
     shape_env._constrain_unify(a, b)
 
 
@@ -2696,6 +2714,8 @@ def cast_symbool_to_symint_guardless(
     if isinstance(symbool, bool):
         return 1 if symbool else 0
     int_sym = _sympy_cast_symbool_to_symint_guardless(symbool.node.expr)
+    if symbool.node.shape_env is None:
+        raise AssertionError("shape_env should not be None")
     return symbool.node.shape_env.create_symintnode(
         int_sym,
         hint=guarding_hint_or_throw(symbool) if has_guarding_hint(symbool) else None,
@@ -5677,7 +5697,9 @@ class ShapeEnv:
             else:
                 # Only used for jagged layout nested tensors
                 self.backed_var_to_val[sympy_expr] = SingletonInt(
-                    val.node.nested_int(), coeff=val.node.nested_int_coeff()
+                    val.node.nested_int(),
+                    # pyrefly: ignore [missing-attribute]
+                    coeff=val.node.nested_int_coeff(),
                 )
 
             # Do the appending later, because we always want to populate this
@@ -6146,7 +6168,6 @@ class ShapeEnv:
                 # - Raise when the equation was violated by the given input shape values.
                 # - Otherwise issue a guard to constrain them.
                 eq = sympy.Eq(expr1, expr2_)
-                simplified_eq = sympy.simplify(eq)
                 concrete_val = self._maybe_evaluate_static(
                     replace_with_example_values(eq),
                     compute_hint=True,
@@ -6159,7 +6180,8 @@ class ShapeEnv:
                         f"but got {replace_with_example_values(expr1)}"
                     )
                 if (
-                    not (simplified_eq is sympy.S.true or simplified_eq is True)
+                    isinstance(root, sympy.Symbol)
+                    and not (eq is sympy.S.true or eq is True)
                     and concrete_val is not None
                     and expr1.free_symbols
                     and expr1.free_symbols <= expr2_.free_symbols
@@ -6216,8 +6238,8 @@ class ShapeEnv:
             if isinstance(val, SymInt) and not is_symbolic(val):
                 raise AssertionError("val must be symbolic if it is a SymInt")
 
-            if isinstance(val, SymInt) and val.node.maybe_as_int() is not None:
-                val = val.node.maybe_as_int()
+            if isinstance(val, SymInt) and (i := val.node.maybe_as_int()) is not None:
+                val = i
 
             if isinstance(val, SymInt):
                 s = val.node.expr
@@ -6316,8 +6338,11 @@ class ShapeEnv:
             if isinstance(val, SymFloat) and not is_symbolic(val):
                 raise AssertionError("val must be symbolic if it is a SymFloat")
 
-            if isinstance(val, SymFloat) and val.node.maybe_as_float() is not None:
-                val = val.node.maybe_as_float()
+            if (
+                isinstance(val, SymFloat)
+                and (f := val.node.maybe_as_float()) is not None
+            ):
+                val = f
 
             if isinstance(val, SymFloat):
                 s = val.node.expr
