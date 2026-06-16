@@ -762,7 +762,8 @@ static PyObject* dict_version(PyObject* dummy, PyObject* args) {
   return THPUtils_packUInt64(get_dict_version_unchecked(obj));
 }
 
-static thread_local GuardLastSuccessReceipt* active_actual_partial_receipt =
+struct ActiveGuardReceiptScope;
+static thread_local ActiveGuardReceiptScope* active_actual_partial_scope =
     nullptr;
 
 static bool is_self_modules_candidate(const std::string& source) {
@@ -770,8 +771,22 @@ static bool is_self_modules_candidate(const std::string& source) {
     return true;
   }
   const std::string prefix = "L['self']._modules";
-  return source.rfind(prefix, 0) == 0 &&
-      source.find("._modules", prefix.size()) != std::string::npos;
+  if (source.rfind(prefix, 0) != 0 || source.size() == prefix.size() ||
+      source[prefix.size()] != '[') {
+    return false;
+  }
+
+  bool saw_nested_modules = false;
+  size_t next_modules = source.find("._modules", prefix.size() + 1);
+  while (next_modules != std::string::npos) {
+    const size_t segment_end = next_modules + std::string("._modules").size();
+    if (segment_end != source.size() && source[segment_end] != '[') {
+      return false;
+    }
+    saw_nested_modules = true;
+    next_modules = source.find("._modules", segment_end);
+  }
+  return saw_nested_modules;
 }
 
 static void record_actual_partial_token(
@@ -780,10 +795,43 @@ static void record_actual_partial_token(
   tokens.emplace_back(token);
 }
 
+struct ActiveGuardReceiptScope {
+  explicit ActiveGuardReceiptScope(GuardLastSuccessReceipt* receipt)
+      : receipt(receipt), previous(active_actual_partial_scope) {
+    active_actual_partial_scope = this;
+  }
+
+  ~ActiveGuardReceiptScope() {
+    active_actual_partial_scope = previous;
+  }
+
+  void commit() {
+    if (receipt == nullptr || committed) {
+      return;
+    }
+    receipt->actual_partial_stability_tokens.insert(
+        receipt->actual_partial_stability_tokens.end(),
+        pending_stability_tokens.begin(),
+        pending_stability_tokens.end());
+    receipt->actual_partial_tokens.insert(
+        receipt->actual_partial_tokens.end(),
+        pending_tokens.begin(),
+        pending_tokens.end());
+    committed = true;
+  }
+
+  GuardLastSuccessReceipt* receipt;
+  ActiveGuardReceiptScope* previous;
+  std::vector<GuardSubtreeEntryToken> pending_stability_tokens;
+  std::vector<GuardSubtreeEntryToken> pending_tokens;
+  bool committed = false;
+};
+
 static void record_actual_partial_tokens(
     const std::string& source,
     PyObject* value) {
-  if (active_actual_partial_receipt == nullptr || value == nullptr ||
+  if (active_actual_partial_scope == nullptr ||
+      active_actual_partial_scope->receipt == nullptr || value == nullptr ||
       !is_self_modules_candidate(source)) {
     return;
   }
@@ -792,56 +840,42 @@ static void record_actual_partial_tokens(
   identity_token.kind = GuardSubtreeTokenKind::ObjectIdentity;
   identity_token.object_id = reinterpret_cast<uintptr_t>(value);
   record_actual_partial_token(
-      active_actual_partial_receipt->actual_partial_stability_tokens,
-      identity_token);
+      active_actual_partial_scope->pending_stability_tokens, identity_token);
   record_actual_partial_token(
-      active_actual_partial_receipt->actual_partial_tokens, identity_token);
+      active_actual_partial_scope->pending_tokens, identity_token);
 
   GuardSubtreeEntryToken type_token;
   type_token.kind = GuardSubtreeTokenKind::ObjectType;
   type_token.type_id = reinterpret_cast<uintptr_t>(Py_TYPE(value));
   record_actual_partial_token(
-      active_actual_partial_receipt->actual_partial_tokens, type_token);
+      active_actual_partial_scope->pending_tokens, type_token);
 
   if (PyDict_Check(value)) {
     GuardSubtreeEntryToken version_token;
     version_token.kind = GuardSubtreeTokenKind::DictVersion;
     version_token.version = get_dict_version_unchecked(value);
     record_actual_partial_token(
-        active_actual_partial_receipt->actual_partial_tokens, version_token);
+        active_actual_partial_scope->pending_tokens, version_token);
 
     GuardSubtreeEntryToken size_token;
     size_token.kind = GuardSubtreeTokenKind::SequenceSize;
     size_token.size = PyDict_Size(value);
     record_actual_partial_token(
-        active_actual_partial_receipt->actual_partial_tokens, size_token);
+        active_actual_partial_scope->pending_tokens, size_token);
   } else if (PyList_CheckExact(value)) {
     GuardSubtreeEntryToken size_token;
     size_token.kind = GuardSubtreeTokenKind::SequenceSize;
     size_token.size = PyList_GET_SIZE(value);
     record_actual_partial_token(
-        active_actual_partial_receipt->actual_partial_tokens, size_token);
+        active_actual_partial_scope->pending_tokens, size_token);
   } else if (PyTuple_CheckExact(value)) {
     GuardSubtreeEntryToken size_token;
     size_token.kind = GuardSubtreeTokenKind::SequenceSize;
     size_token.size = PyTuple_GET_SIZE(value);
     record_actual_partial_token(
-        active_actual_partial_receipt->actual_partial_tokens, size_token);
+        active_actual_partial_scope->pending_tokens, size_token);
   }
 }
-
-struct ActiveGuardReceiptScope {
-  explicit ActiveGuardReceiptScope(GuardLastSuccessReceipt* receipt)
-      : previous(active_actual_partial_receipt) {
-    active_actual_partial_receipt = receipt;
-  }
-
-  ~ActiveGuardReceiptScope() {
-    active_actual_partial_receipt = previous;
-  }
-
-  GuardLastSuccessReceipt* previous;
-};
 
 static PyObject* assert_size_stride(PyObject* dummy, PyObject* args) {
   /*
@@ -5288,6 +5322,24 @@ double profile_guard_manager(
   return (total_elapsed.count() * 1e6) / n_iters;
 }
 
+py::dict debug_check_guard_lookup_receipt(
+    RootGuardManager& root,
+    py::handle value) {
+  auto receipt = create_guard_last_success_receipt();
+  ActiveGuardReceiptScope receipt_scope(receipt.get());
+  const bool result = root.check_nopybind(value.ptr());
+  if (result) {
+    receipt_scope.commit();
+  }
+
+  py::dict stats;
+  stats["result"] = result;
+  stats["actual_partial_candidate"] =
+      receipt->actual_partial_stability_tokens.size();
+  stats["actual_partial_token_count"] = receipt->actual_partial_tokens.size();
+  return stats;
+}
+
 } // namespace
 
 static void* _torchinductor_pyobject_tensor_data_ptr(PyObject* obj) {
@@ -5325,12 +5377,17 @@ bool run_root_guard_manager(
   py::object config_module = py::module_::import("torch._dynamo.config");
   bool enable_cpp_framelocals_guard_eval =
       config_module.attr("enable_cpp_framelocals_guard_eval").cast<bool>();
+  bool result;
   if (enable_cpp_framelocals_guard_eval) {
-    return ((RootGuardManager*)root)->check_nopybind(f_locals);
+    result = ((RootGuardManager*)root)->check_nopybind(f_locals);
   } else {
-    return ((RootGuardManager*)root)
-        ->check_nopybind((PyObject*)f_locals->to_dict());
+    result = ((RootGuardManager*)root)
+                 ->check_nopybind((PyObject*)f_locals->to_dict());
   }
+  if (result) {
+    receipt_scope.commit();
+  }
+  return result;
 }
 
 PyObject* torch_c_dynamo_guards_init() {
@@ -6290,6 +6347,11 @@ PyObject* torch_c_dynamo_guards_init() {
       py::arg("symbolic") = true);
   py_m.def("install_symbolic_shape_guard", install_symbolic_shape_guard);
   py_m.def("profile_guard_manager", profile_guard_manager);
+  py_m.def(
+      "_debug_is_self_modules_candidate", is_self_modules_candidate);
+  py_m.def(
+      "_debug_check_guard_lookup_receipt",
+      debug_check_guard_lookup_receipt);
 
 // initialize dict_version_map watcher for 3.12
 #if IS_PYTHON_3_12_PLUS

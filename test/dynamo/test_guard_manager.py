@@ -628,6 +628,63 @@ num_guards_executed=0)
         self.assertGreater(stats["actual_partial_candidate"], 0)
         self.assertGreater(stats["actual_partial_token_count"], 0)
 
+    def test_self_modules_token_plan_candidate_is_segment_aware(self):
+        self.assertTrue(
+            guards._debug_is_self_modules_candidate("L['self']._modules")
+        )
+        self.assertTrue(
+            guards._debug_is_self_modules_candidate(
+                "L['self']._modules['block']._modules"
+            )
+        )
+        self.assertFalse(
+            guards._debug_is_self_modules_candidate(
+                "L['self']._modules_extra._modules"
+            )
+        )
+        self.assertFalse(
+            guards._debug_is_self_modules_candidate(
+                "L['self']._modules['block']._modules_extra._modules"
+            )
+        )
+
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "bad",
+            "L['self']._modules_extra._modules",
+            {},
+            default_mgr_enum,
+        ).add_dict_length_check_guard({}, ["len(bad) == 0"])
+
+        stats = guards._debug_check_guard_lookup_receipt(
+            guard_manager, {"bad": {}}
+        )
+        self.assertTrue(stats["result"])
+        self.assertEqual(stats["actual_partial_candidate"], 0)
+        self.assertEqual(stats["actual_partial_token_count"], 0)
+
+    def test_self_modules_token_plan_discards_failed_root_tokens(self):
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {},
+            default_mgr_enum,
+        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+        guard_manager.dict_getitem_manager(
+            "x",
+            "L['x']",
+            1,
+            default_mgr_enum,
+        ).add_equals_match_guard(2, ["x == 2"])
+
+        stats = guards._debug_check_guard_lookup_receipt(
+            guard_manager, {"mods": {}, "x": 1}
+        )
+        self.assertFalse(stats["result"])
+        self.assertEqual(stats["actual_partial_candidate"], 0)
+        self.assertEqual(stats["actual_partial_token_count"], 0)
+
     def test_dict_getitem_accessor(self):
         foo = {
             "a": 1,
