@@ -4498,20 +4498,20 @@ class Scheduler:
         node: BaseSchedulerNode,
     ) -> str | None:
         region: str | None = None
+        seen_region = False
         for snode in node.get_nodes():
             op = snode.node
             if op is None or not hasattr(op, "annotations"):
                 continue
             op_region = op.annotations.get(FUSE_REGION)
-            if op_region is None:
-                continue
-            if not isinstance(op_region, str):
+            if op_region is not None and not isinstance(op_region, str):
                 raise AssertionError(f"expected fuse_region to be str, got {op_region}")
-            if region is not None and region != op_region:
+            if seen_region and region != op_region:
                 raise AssertionError(
                     f"expected one fuse_region per scheduler node, got {region} and {op_region}"
                 )
             region = op_region
+            seen_region = True
         return region
 
     def _group_by_fuse_region(
@@ -7667,19 +7667,19 @@ class Scheduler:
                 for name in index_equivalent_dep_names
             )
 
-        why = WhyNoFuse(node1, node2)
-        region1 = self.get_fuse_region(node1)
-        region2 = self.get_fuse_region(node2)
-        if region1 != region2:
-            why("fuse_region mismatch (%s vs %s)", region1, region2)
-            return False
-
         # Prevent fusion across stream boundaries
         if self._has_multi_stream_nodes():
             stream1 = self.node_to_stream.get(node1)
             stream2 = self.node_to_stream.get(node2)
             if stream1 is not None and stream2 is not None and stream1 != stream2:
                 return False
+
+        why = WhyNoFuse(node1, node2)
+        region1 = self.get_fuse_region(node1)
+        region2 = self.get_fuse_region(node2)
+        if region1 != region2:
+            why("fuse_region mismatch (%s vs %s)", region1, region2)
+            return False
 
         if isinstance(node1, FusedNestedReductions):
             return node1.can_fuse_with(node2, can_reorder=can_reorder)
