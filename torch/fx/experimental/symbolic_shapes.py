@@ -4864,7 +4864,7 @@ class ShapeEnv:
         self,
         value: SymInt,
         *,
-        source: Source | None = None,
+        source: Source,
         is_size: bool = False,
     ) -> sympy.Expr:
         """Transfer a foreign SymInt expression into this ShapeEnv.
@@ -4913,7 +4913,7 @@ class ShapeEnv:
                 new_symint = self.create_unbacked_symint(source)
             cached = new_symint.node.expr
             self.foreign_unbacked_symbol_cache[expr_key] = cached
-            self._register_unbacked_input(
+            self._register_unbacked_symbol_as_input(
                 cached,
                 source=source,
                 value_range=src_shape_env.bound_sympy(expr),
@@ -4921,14 +4921,12 @@ class ShapeEnv:
             )
             if is_size:
                 self._constrain_range_for_size(cached)
-        else:
-            self._register_unbacked_input(cached, source=source)
         return cached
 
     def transfer_unbacked_symint_from_foreign_shape_env(
         self,
         value: SymInt,
-        source: Source | None = None,
+        source: Source,
     ) -> SymInt:
         """Lift a raw foreign unbacked SymInt as an input in this ShapeEnv.
 
@@ -5505,10 +5503,10 @@ class ShapeEnv:
         return SymInt(sym_node)
 
     @record_shapeenv_event()
-    def _register_unbacked_input(
+    def _register_unbacked_symbol_as_input(
         self,
         expr: sympy.Symbol,
-        source: Source | None = None,
+        source: Source,
         value_range: ValueRanges[sympy.Expr] | None = None,
         optimization_hint: int | None = None,
     ) -> None:
@@ -5521,14 +5519,13 @@ class ShapeEnv:
         if optimization_hint is not None:
             self.var_to_hint_override[expr] = optimization_hint
 
-        if source is not None:
-            # Guard diagnostics treat multiple sources for the same symbol as
-            # backed duck-sizing.  An unbacked input minted from a foreign env
-            # can be reached via multiple paths (tensor dim, raw SymInt, ...);
-            # keep only the first source to avoid that.
-            if expr not in self.var_to_sources:
-                self.source_to_var[source.name] = expr
-                self.var_to_sources[expr] = [source]
+        # Guard diagnostics treat multiple sources for the same symbol as
+        # backed duck-sizing.  An unbacked input minted from a foreign env
+        # can be reached via multiple paths (tensor dim, raw SymInt, ...);
+        # keep only the first source to avoid that.
+        if expr not in self.var_to_sources:
+            self.source_to_var[source.name] = expr
+            self.var_to_sources[expr] = [source]
 
     @record_shapeenv_event()
     def _set_unbacked_var_to_hint_override(self, symint: SymInt, hint: int) -> None:
