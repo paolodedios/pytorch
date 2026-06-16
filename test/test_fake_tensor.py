@@ -35,6 +35,7 @@ from torch._subclasses.fake_impls import fast_detach
 from torch._subclasses.fake_tensor import (
     _CacheKeyState,
     _check_for_subclass_arg,
+    _should_propagate_mkldnn,
     DynamicOutputShapeException,
     extract_tensor_metadata,
     FakeTensor,
@@ -876,6 +877,77 @@ class FakeTensorTest(TestCase):
 
         self.assertTrue(isinstance(x, FakeTensor))
         self.assertTrue(x.device.type == "cpu")
+
+    def test_constructor_like_custom_op_without_device_arg(self):
+        with torch.library._scoped_library(
+            "fake_tensor_issue_163196", "FRAGMENT"
+        ) as lib:
+            lib.define("moo(int x) -> Tensor")
+
+            @torch.library.impl(
+                "fake_tensor_issue_163196::moo",
+                "CompositeExplicitAutograd",
+                lib=lib,
+            )
+            def moo(x):
+                return torch.empty(3).fill_(x)
+
+            def f(x):
+                return torch.ops.fake_tensor_issue_163196.moo(x.item())
+
+            gm = make_fx(f, tracing_mode="symbolic")(torch.tensor(4))
+            target = torch.ops.fake_tensor_issue_163196.moo.default
+            (node,) = [n for n in gm.graph.nodes if n.target is target]
+            self.assertIsInstance(node.meta["val"], FakeTensor)
+            self.assertEqual(node.meta["val"].shape, (3,))
+            self.assertEqual(node.meta["val"].device.type, "cpu")
+
+    def test_constructor_like_custom_op_with_device_arg(self):
+        with torch.library._scoped_library(
+            "fake_tensor_issue_163196_device_arg", "FRAGMENT"
+        ) as lib:
+            lib.define("moo(int x, *, Device? device=None) -> Tensor")
+            seen_devices = []
+
+            @torch.library.impl(
+                "fake_tensor_issue_163196_device_arg::moo",
+                "CompositeExplicitAutograd",
+                lib=lib,
+            )
+            def moo(x, device=None):
+                seen_devices.append(device)
+                return torch.empty(3, device=device).fill_(x)
+
+            with FakeTensorMode():
+                out = torch.ops.fake_tensor_issue_163196_device_arg.moo(4, device="cpu")
+
+            self.assertIsInstance(out, FakeTensor)
+            self.assertEqual(out.device.type, "cpu")
+            self.assertTrue(torch.device("meta") in seen_devices)
+
+    def test_constructor_like_custom_op_with_non_device_arg_named_device(self):
+        with torch.library._scoped_library(
+            "fake_tensor_issue_163196_non_device_arg", "FRAGMENT"
+        ) as lib:
+            lib.define("moo(str device) -> Tensor")
+
+            @torch.library.impl(
+                "fake_tensor_issue_163196_non_device_arg::moo",
+                "CompositeExplicitAutograd",
+                lib=lib,
+            )
+            def moo(device):
+                return torch.empty(len(device))
+
+            def f(x):
+                return torch.ops.fake_tensor_issue_163196_non_device_arg.moo("cpu")
+
+            gm = make_fx(f, tracing_mode="symbolic")(torch.tensor(4))
+            target = torch.ops.fake_tensor_issue_163196_non_device_arg.moo.default
+            (node,) = [n for n in gm.graph.nodes if n.target is target]
+            self.assertIsInstance(node.meta["val"], FakeTensor)
+            self.assertEqual(node.meta["val"].shape, (3,))
+            self.assertEqual(node.meta["val"].device.type, "cpu")
 
     def test_mode(self):
         with FakeTensorMode():
@@ -3866,6 +3938,7 @@ class FakeTensorViewCopy(TestCase):
                 torch.sigmoid(fake_x),
                 torch.ops.aten.sigmoid.default(self=fake_x),
                 torch.tanh(fake_x),
+                torch.prelu(fake_x, fake_mode.from_tensor(torch.ones(4))),
                 fake_x * 2,
                 fake_x + fake_x,
             ):
@@ -3874,6 +3947,19 @@ class FakeTensorViewCopy(TestCase):
                     output.view(output.size(0), -1)
             with self.assertRaisesRegex(RuntimeError, "expects MKL-DNN tensor input"):
                 fake_x + fake_mode.from_tensor(torch.ones(fake_x.shape))
+            if torch._C.has_mkl:
+                self.assertFalse(
+                    _should_propagate_mkldnn(
+                        torch.ops.mkl._mkl_linear.default,
+                        (
+                            fake_mode.from_tensor(torch.ones(fake_x.shape)),
+                            fake_x,
+                            fake_mode.from_tensor(torch.ones(fake_x.shape)),
+                            None,
+                            fake_x.size(0),
+                        ),
+                    )
+                )
             for clone in (
                 lambda: torch.clone(fake_x),
                 lambda: torch.clone(fake_x, memory_format=None),

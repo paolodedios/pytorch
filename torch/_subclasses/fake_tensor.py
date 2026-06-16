@@ -85,12 +85,19 @@ aten = torch._ops.ops.aten
 _MKLDNN_PROPAGATE_OPS = {
     aten.clone.default,
     aten.detach.default,
+    aten._prelu_kernel.default,
+    aten.prelu.default,
     aten.relu.default,
     aten.transpose.int,
 }
 _MKLDNN_DENSE_OUTPUT_OPS = {
     aten._to_dense.default,
     aten.to_dense.default,
+}
+_MKLDNN_AUXILIARY_TENSOR_NAMESPACES = {
+    "mkldnn",
+    "mkl",
+    "onednn",
 }
 
 CONSTANT_NUMEL_LIMIT = 1
@@ -873,14 +880,31 @@ def _fake_tensor_dim_order(
     return tuple(reversed(perm))
 
 
+def _is_mkldnn_tensor_arg(arg: Tensor) -> bool:
+    fake_is_mkldnn = getattr(arg, "_fake_is_mkldnn", None)
+    if fake_is_mkldnn is not None:
+        return bool(fake_is_mkldnn)
+    return arg.is_mkldnn
+
+
+def _allows_mkldnn_auxiliary_tensors(func: OpOverload) -> bool:
+    return func.namespace in _MKLDNN_AUXILIARY_TENSOR_NAMESPACES
+
+
 def _should_propagate_mkldnn(func: OpOverload, flat_args: Sequence[object]) -> bool:
     tensor_args = [
         arg for arg in pytree.tree_leaves(flat_args) if isinstance(arg, Tensor)
     ]
-    has_mkldnn_arg = any(arg.is_mkldnn for arg in tensor_args)
-    if not has_mkldnn_arg:
+    mkldnn_args = [_is_mkldnn_tensor_arg(arg) for arg in tensor_args]
+    if not any(mkldnn_args):
         return False
-    if any(not arg.is_mkldnn for arg in tensor_args):
+    if not mkldnn_args[0]:
+        if _allows_mkldnn_auxiliary_tensors(func):
+            return False
+        raise RuntimeError("itensor_from_mkldnn expects MKL-DNN tensor input")
+    if any(not is_mkldnn for is_mkldnn in mkldnn_args) and not (
+        func in _MKLDNN_PROPAGATE_OPS or _allows_mkldnn_auxiliary_tensors(func)
+    ):
         raise RuntimeError("itensor_from_mkldnn expects MKL-DNN tensor input")
     if func in _MKLDNN_DENSE_OUTPUT_OPS:
         return False
@@ -3325,7 +3349,7 @@ class FakeTensorMode(TorchDispatchMode):
                     return maybe_propagate_real_tensors(r)
 
         # prims already wrap FakeTensor inputs to FakeTensor outputs
-        # and do device logic, we dont need do anything but run them
+        # and do device logic, we don't need do anything but run them
         # and ensure that Meta kernels are dispatched to (see)
         # Fake Tensor Dispatch Keys
         # TODO - we should be use the prim aten impl
