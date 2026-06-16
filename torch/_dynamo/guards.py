@@ -798,6 +798,10 @@ def _ast_unparse(node: ast.AST) -> str:
 strip_function_call = torch._C._dynamo.strip_function_call
 
 
+def _safe_type_repr(t: type[Any]) -> str:
+    return type.__repr__(t)
+
+
 def get_verbose_code_part(code_part: str, guard: Guard | None) -> str:
     extra = ""
     if guard is not None:
@@ -885,7 +889,7 @@ def convert_int_to_concrete_values(dim: Any) -> int | None:
         return dim.node.maybe_as_int()
 
 
-def convert_to_concrete_values(size_or_stride: list[Any]) -> list[int | None]:
+def convert_to_concrete_values(size_or_stride: Sequence[Any]) -> list[int | None]:
     return [convert_int_to_concrete_values(dim) for dim in size_or_stride]
 
 
@@ -1061,11 +1065,50 @@ def extract_tensor_metadata(t: torch.Tensor) -> tuple[Any, ...]:
     return (t.shape, t.stride(), t.dtype, t.device, t.requires_grad)
 
 
+def _subclass_metadata_contains_tensor(metadata: Any) -> bool:
+    if isinstance(metadata, torch.Tensor):
+        return True
+
+    node_type = pytree._get_node_type(metadata)
+    if node_type not in pytree.SUPPORTED_NODES:
+        return False
+
+    if isinstance(metadata, collections.abc.Mapping):
+        for key in metadata:
+            if _subclass_metadata_contains_tensor(key):
+                return True
+
+    children, _ = pytree.SUPPORTED_NODES[node_type].flatten_fn(metadata)
+    for child in children:
+        if _subclass_metadata_contains_tensor(child):
+            return True
+    return False
+
+
+def _validate_default_subclass_metadata_guard(metadata: Any, cls: type[Any]) -> None:
+    if not _subclass_metadata_contains_tensor(metadata):
+        return
+
+    raise exc.InternalTorchDynamoError(
+        f"Tensor subclass {cls.__module__}.{cls.__qualname__} returned Tensor "
+        "metadata from __tensor_flatten__() but does not define "
+        "__metadata_guard__. Dynamo's default tensor subclass metadata guard "
+        "uses Python equality, which is not valid for Tensor metadata. Move "
+        "tensor values to the inner tensor names returned by "
+        "__tensor_flatten__(), or define a classmethod __metadata_guard__"
+        "(original_metadata, current_metadata) to compare tensor metadata "
+        "explicitly."
+    )
+
+
 # Used by TENSOR_SUBCLASS_METADATA_MATCH guard check spec
 def extract_subclass_metadata(guard: Any, value: Any) -> tuple[Any, ...]:
-    metadata = deepcopy(value.__tensor_flatten__()[1])
     cls = type(value)
     has_custom_guard = hasattr(value, "__metadata_guard__")
+    metadata = value.__tensor_flatten__()[1]
+    if not has_custom_guard:
+        _validate_default_subclass_metadata_guard(metadata, cls)
+    metadata = deepcopy(metadata)
     return (metadata, cls, has_custom_guard)
 
 
@@ -2208,7 +2251,7 @@ class GuardBuilder(GuardBuilderBase):
             guard._unserializable = True
 
         obj_id = self.id_ref(t, f"type({guard.name})")
-        type_repr = repr(t)
+        type_repr = _safe_type_repr(t)
         code = f"___check_type_id({self.arg_ref(guard)}, {obj_id}), type={type_repr}"
         self._set_guard_export_info(guard, [code])
 
@@ -2244,7 +2287,7 @@ class GuardBuilder(GuardBuilderBase):
             guard._unserializable = True
 
         obj_id = self.id_ref(t, f"type({guard.name})")
-        type_repr = repr(t)
+        type_repr = _safe_type_repr(t)
         code = f"___check_fake_script_type({self.arg_ref(guard)}, {obj_id}), type={type_repr}"
         self._set_guard_export_info(guard, [code])
 
@@ -2417,18 +2460,13 @@ class GuardBuilder(GuardBuilderBase):
         if isinstance(guard.originating_source, TypeSource):
             # optional optimization to produce cleaner/faster guard code
             return self.TYPE_MATCH(
-                Guard(guard.originating_source.base, GuardBuilder.TYPE_MATCH)
+                Guard(guard.originating_source.base, GuardBuilder.TYPE_MATCH)  # type: ignore[arg-type]
             )
 
         ref = self.arg_ref(guard)
         val = self.get(guard)
         id_val = self.id_ref(val, guard.name)
-        try:
-            type_repr = repr(val)
-        except Exception:
-            # During deepcopy reconstruction or other state transitions,
-            # objects may be in an incomplete state where repr() fails
-            type_repr = f"<{type(val).__name__}>"
+        type_repr = _safe_type_repr(val if inspect.isclass(val) else type(val))
         code = f"___check_obj_id({ref}, {id_val}), type={type_repr}"
         self._set_guard_export_info(guard, [code], provided_func_name="ID_MATCH")
         self.get_guard_manager(guard).add_id_match_guard(
@@ -2567,12 +2605,17 @@ class GuardBuilder(GuardBuilderBase):
                 return False
 
         metadata = value.__tensor_flatten__()[1]
+        has_custom_guard = hasattr(value, "__metadata_guard__")
+        if has_custom_guard:
+            verify_guard_fn_signature(value)
+            cls = type(value)
+        else:
+            _validate_default_subclass_metadata_guard(metadata, type(value))
+
         original_metadata = deepcopy(
             pytree.tree_map_only(torch.SymInt, lambda _: _AnyCompare(), metadata)
         )
-        if hasattr(value, "__metadata_guard__"):
-            verify_guard_fn_signature(value)
-            cls = type(value)
+        if has_custom_guard:
 
             def metadata_checker(x: Any) -> bool:
                 return cls.__metadata_guard__(
@@ -2815,7 +2858,7 @@ class GuardBuilder(GuardBuilderBase):
                 )
             if not self.guard_nn_modules:
                 # If guard_nn_modules is true, we will guard on the right set of guards
-                self._guard_on_attribute(guard, "training", GuardBuilder.CONSTANT_MATCH)
+                self._guard_on_attribute(guard, "training", GuardBuilder.CONSTANT_MATCH)  # type: ignore[arg-type]
         else:
             exc.unimplemented(
                 gb_type="Attempted to guard on uninitialized nn.Module",
@@ -2874,7 +2917,7 @@ class GuardBuilder(GuardBuilderBase):
         if type(val) is types.FunctionType and hasattr(val, "__code__"):
             # No explicit HASATTR guard needed for __code__ — the getattr
             # accessor installed by CONSTANT_MATCH implicitly guards hasattr.
-            self._guard_on_attribute(guard, "__code__", GuardBuilder.CONSTANT_MATCH)
+            self._guard_on_attribute(guard, "__code__", GuardBuilder.CONSTANT_MATCH)  # type: ignore[arg-type]
         else:
             self.FUNCTION_MATCH(guard)
 
@@ -3258,9 +3301,9 @@ class GuardBuilder(GuardBuilderBase):
             def _get_code_parts(langs: tuple[str, ...]) -> list[_ShapeGuardsHelper]:
                 # pyrefly: ignore [missing-attribute]
                 return output_graph.shape_env.produce_guards_verbose(
-                    [a.fake for a in fs],
+                    [a.fake for a in fs],  # type: ignore[misc]
                     [a.source for a in fs],
-                    input_contexts=input_contexts,
+                    input_contexts=input_contexts,  # type: ignore[arg-type]
                     equalities_inputs=equalities_inputs,
                     source_ref=self.source_ref,
                     # Export keeps static.

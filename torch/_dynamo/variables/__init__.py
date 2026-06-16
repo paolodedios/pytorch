@@ -22,8 +22,10 @@ from .builtin import (
     BuiltinVariable,
     DictBuiltinVariable,
     GetAttrBuiltinVariable,
+    HasAttrBuiltinVariable,
     IterBuiltinVariable,
     ListBuiltinVariable,
+    SetAttrBuiltinVariable,
 )
 from .constant import ConstantVariable
 from .ctx_manager import (
@@ -57,6 +59,7 @@ from .ctx_manager import (
 from .dicts import (
     ConstDictVariable,
     DictItemsVariable,
+    DictViewVariable,
     DunderDictVariable,
     MappingProxyVariable,
     NNModuleHooksDictVariable,
@@ -104,17 +107,20 @@ from .higher_order_ops import (
     TorchHigherOrderOperatorVariable,
 )
 from .iter import (
+    ChainVariable,
     CountIteratorVariable,
     FilterVariable,
     IteratorVariable,
     ItertoolsVariable,
     MapVariable,
     RepeatIteratorVariable,
+    ZipLongestVariable,
     ZipVariable,
 )
 from .lazy import LazyConstantVariable, LazyVariableTracker
 from .lists import (
     BaseListVariable,
+    DequeVariable,
     ListIteratorVariable,
     ListVariable,
     RangeVariable,
@@ -138,7 +144,6 @@ from .misc import (
     RandomVariable,
     StringFormatVariable,
     SuperVariable,
-    TorchVersionVariable,
     TracebackVariable,
     TypingVariable,
     UnknownVariable,
@@ -210,6 +215,7 @@ __all__ = [
     "ConstantVariable",
     "ConstDictVariable",
     "ContextWrappingVariable",
+    "ChainVariable",
     "CountIteratorVariable",
     "CreateTMADescriptorExperimentalVariable",
     "CreateTMADescriptorStableVariable",
@@ -227,6 +233,7 @@ __all__ = [
     "GetAttrBuiltinVariable",
     "GetAttrVariable",
     "GradModeVariable",
+    "HasAttrBuiltinVariable",
     "InspectSignatureVariable",
     "InspectVariable",
     "IterBuiltinVariable",
@@ -254,6 +261,7 @@ __all__ = [
     "RemovableHandleVariable",
     "RepeatIteratorVariable",
     "SDPAParamsVariable",
+    "SetAttrBuiltinVariable",
     "SkipFunctionVariable",
     "SliceVariable",
     "StringFormatVariable",
@@ -265,7 +273,6 @@ __all__ = [
     "TMADescriptorStableVariable",
     "TorchCtxManagerClassVariable",
     "TorchInGraphFunctionVariable",
-    "TorchVersionVariable",
     "TupleVariable",
     "UnknownVariable",
     "UnspecializedNNModuleVariable",
@@ -280,4 +287,5 @@ __all__ = [
     "WithEnterFunctionVariable",
     "WithExitFunctionVariable",
     "XPUDeviceVariable",
+    "ZipLongestVariable",
 ]
