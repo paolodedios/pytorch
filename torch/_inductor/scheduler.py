@@ -70,7 +70,7 @@ from .comm_analysis import (
 )
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .exc import GPUTooOldForTriton, TritonMissing
-from .fx_passes.control_dependencies import NO_FUSE_REGION
+from .fx_passes.control_dependencies import FUSE_REGION
 from .fx_utils import count_flops_fx
 from .ir import (
     assign_origin_node,
@@ -3757,8 +3757,8 @@ def pick_loop_order(
 def _replace_operation_buffer(
     orig_node: ir.MultiTemplateBuffer, new_node: ir.OperationBuffer
 ) -> None:
-    if NO_FUSE_REGION in orig_node.annotations:
-        new_node.annotations[NO_FUSE_REGION] = orig_node.annotations[NO_FUSE_REGION]
+    if FUSE_REGION in orig_node.annotations:
+        new_node.annotations[FUSE_REGION] = orig_node.annotations[FUSE_REGION]
 
     replaced_buf_name = new_node.get_name()
     orig_buf_name = orig_node.get_name()
@@ -4494,24 +4494,33 @@ class Scheduler:
             raise NotImplementedError(node)
 
     @staticmethod
-    def get_no_fuse_regions(
+    def get_fuse_region(
         node: BaseSchedulerNode,
-    ) -> frozenset[str]:
-        regions: OrderedSet[str] = OrderedSet()
+    ) -> str | None:
+        region: str | None = None
         for snode in node.get_nodes():
             op = snode.node
             if op is None or not hasattr(op, "annotations"):
                 continue
-            regions.update(op.annotations.get(NO_FUSE_REGION, ()))
-        return frozenset(regions)
+            op_region = op.annotations.get(FUSE_REGION)
+            if op_region is None:
+                continue
+            if not isinstance(op_region, str):
+                raise AssertionError(f"expected fuse_region to be str, got {op_region}")
+            if region is not None and region != op_region:
+                raise AssertionError(
+                    f"expected one fuse_region per scheduler node, got {region} and {op_region}"
+                )
+            region = op_region
+        return region
 
-    def _group_by_no_fuse_region(
+    def _group_by_fuse_region(
         self,
         nodes: list[BaseSchedulerNode],
     ) -> list[list[BaseSchedulerNode]]:
-        groups: dict[frozenset[str], list[BaseSchedulerNode]] = defaultdict(list)
+        groups: dict[str | None, list[BaseSchedulerNode]] = defaultdict(list)
         for node in nodes:
-            groups[self.get_no_fuse_regions(node)].append(node)
+            groups[self.get_fuse_region(node)].append(node)
         return list(groups.values())
 
     def create_foreach_nodes(self) -> None:
@@ -4530,11 +4539,9 @@ class Scheduler:
                 # All nodes eliminated
                 continue
 
-            name_groups: dict[frozenset[str], list[str]] = defaultdict(list)
+            name_groups: dict[str | None, list[str]] = defaultdict(list)
             for name in names:
-                name_groups[self.get_no_fuse_regions(self.name_to_node[name])].append(
-                    name
-                )
+                name_groups[self.get_fuse_region(self.name_to_node[name])].append(name)
 
             foreach_name_groups = (
                 [names] if len(name_groups) == 1 else list(name_groups.values())
@@ -6405,7 +6412,7 @@ class Scheduler:
             if len(members) < 2:
                 continue
 
-            for member_group in self._group_by_no_fuse_region(members):
+            for member_group in self._group_by_fuse_region(members):
                 for window in Scheduler._distance_windows(
                     member_group, node_to_idx, max_distance
                 ):
@@ -7661,10 +7668,10 @@ class Scheduler:
             )
 
         why = WhyNoFuse(node1, node2)
-        regions1 = self.get_no_fuse_regions(node1)
-        regions2 = self.get_no_fuse_regions(node2)
-        if regions1 != regions2:
-            why("no_fuse_region mismatch (%s vs %s)", regions1, regions2)
+        region1 = self.get_fuse_region(node1)
+        region2 = self.get_fuse_region(node2)
+        if region1 != region2:
+            why("fuse_region mismatch (%s vs %s)", region1, region2)
             return False
 
         # Prevent fusion across stream boundaries

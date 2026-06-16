@@ -3,7 +3,11 @@
 import torch
 import torch._inductor.metrics as metrics
 from torch._inductor import config
-from torch._inductor.fx_passes.control_dependencies import mark_no_fuse_region
+from torch._inductor.fx_passes.control_dependencies import (
+    control_deps,
+    FUSE_REGION,
+    mark_fuse_region,
+)
 from torch._inductor.test_case import run_tests, TestCase as InductorTestCase
 from torch._inductor.utils import run_and_get_code
 from torch.testing import FileCheck
@@ -414,7 +418,7 @@ class TestControlDeps(InductorTestCase):
 
     @config.patch(reorder_for_locality=False)
     @requires_gpu()
-    def test_control_deps_no_fuse_region_single_region(self):
+    def test_control_deps_fuse_region_single_region(self):
         def fn(x):
             before = x + 1
             region0 = x * 2
@@ -422,18 +426,18 @@ class TestControlDeps(InductorTestCase):
             after = x + 3
             return before, region1, after
 
-        def add_no_fuse_region(graph):
+        def add_fuse_region(graph):
             mul_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.mul.Tensor
             )[0]
             relu_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.relu.default
             )[0]
-            mark_no_fuse_region(graph, [mul_node, relu_node])
+            mark_fuse_region(graph, [mul_node, relu_node])
             return graph
 
         with torch._inductor.config.patch(
-            post_grad_custom_post_pass=add_no_fuse_region,
+            post_grad_custom_post_pass=add_fuse_region,
         ):
             x = torch.rand([256, 256], device=GPU_TYPE)
             result, code = run_and_get_code(torch.compile(fn), x)
@@ -443,7 +447,7 @@ class TestControlDeps(InductorTestCase):
 
     @config.patch(reorder_for_locality=False)
     @requires_gpu()
-    def test_control_deps_no_fuse_region_keeps_outside_fusable(self):
+    def test_control_deps_fuse_region_keeps_outside_fusable(self):
         def fn(x):
             before = x + 1
             region0 = x * 2
@@ -451,18 +455,18 @@ class TestControlDeps(InductorTestCase):
             after = x + 3
             return before + after, region1
 
-        def add_no_fuse_region(graph):
+        def add_fuse_region(graph):
             mul_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.mul.Tensor
             )[0]
             relu_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.relu.default
             )[0]
-            mark_no_fuse_region(graph, [mul_node, relu_node])
+            mark_fuse_region(graph, [mul_node, relu_node])
             return graph
 
         with torch._inductor.config.patch(
-            post_grad_custom_post_pass=add_no_fuse_region,
+            post_grad_custom_post_pass=add_fuse_region,
         ):
             x = torch.rand([256, 256], device=GPU_TYPE)
             result, code = run_and_get_code(torch.compile(fn), x)
@@ -475,13 +479,13 @@ class TestControlDeps(InductorTestCase):
 
     @config.patch(reorder_for_locality=False)
     @requires_gpu()
-    def test_control_deps_no_fuse_region_multiple_regions(self):
+    def test_control_deps_fuse_region_multiple_regions(self):
         def fn(x):
             region0 = torch.relu(x * 2)
             region1 = torch.sigmoid(x + 3)
             return region0, region1
 
-        def add_no_fuse_regions(graph):
+        def add_fuse_regions(graph):
             mul_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.mul.Tensor
             )[0]
@@ -494,12 +498,12 @@ class TestControlDeps(InductorTestCase):
             sigmoid_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.sigmoid.default
             )[0]
-            mark_no_fuse_region(graph, [mul_node, relu_node])
-            mark_no_fuse_region(graph, [add_node, sigmoid_node])
+            mark_fuse_region(graph, [mul_node, relu_node])
+            mark_fuse_region(graph, [add_node, sigmoid_node])
             return graph
 
         with torch._inductor.config.patch(
-            post_grad_custom_post_pass=add_no_fuse_regions,
+            post_grad_custom_post_pass=add_fuse_regions,
         ):
             x = torch.rand([256, 256], device=GPU_TYPE)
             result, code = run_and_get_code(torch.compile(fn), x)
@@ -510,7 +514,7 @@ class TestControlDeps(InductorTestCase):
 
     @config.patch(reorder_for_locality=False)
     @requires_gpu()
-    def test_control_deps_no_fuse_region_multiple_outputs(self):
+    def test_control_deps_fuse_region_multiple_outputs(self):
         def fn(x):
             region0 = x * 2
             region1 = torch.relu(region0)
@@ -519,7 +523,7 @@ class TestControlDeps(InductorTestCase):
             outside = x - 4
             return region1 + outside, region3 * outside
 
-        def add_no_fuse_region(graph):
+        def add_fuse_region(graph):
             mul_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.mul.Tensor
             )[0]
@@ -532,11 +536,11 @@ class TestControlDeps(InductorTestCase):
             sigmoid_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.sigmoid.default
             )[0]
-            mark_no_fuse_region(graph, [mul_node, relu_node, add_node, sigmoid_node])
+            mark_fuse_region(graph, [mul_node, relu_node, add_node, sigmoid_node])
             return graph
 
         with torch._inductor.config.patch(
-            post_grad_custom_post_pass=add_no_fuse_region,
+            post_grad_custom_post_pass=add_fuse_region,
         ):
             x = torch.rand([256, 256], device=GPU_TYPE)
             result, code = run_and_get_code(torch.compile(fn), x)
@@ -546,7 +550,7 @@ class TestControlDeps(InductorTestCase):
 
     @config.patch(reorder_for_locality=False)
     @requires_gpu()
-    def test_control_deps_no_fuse_region_interleaved_input(self):
+    def test_control_deps_fuse_region_interleaved_input(self):
         def fn(x):
             region0 = x * 2
             outside = x + 3
@@ -555,7 +559,7 @@ class TestControlDeps(InductorTestCase):
             after = x - 4
             return region2, after
 
-        def add_no_fuse_region(graph):
+        def add_fuse_region(graph):
             mul_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.mul.Tensor
             )[0]
@@ -569,11 +573,11 @@ class TestControlDeps(InductorTestCase):
             relu_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.relu.default
             )[0]
-            mark_no_fuse_region(graph, [mul_node, add_node, relu_node])
+            mark_fuse_region(graph, [mul_node, add_node, relu_node])
             return graph
 
         with torch._inductor.config.patch(
-            post_grad_custom_post_pass=add_no_fuse_region,
+            post_grad_custom_post_pass=add_fuse_region,
         ):
             x = torch.rand([256, 256], device=GPU_TYPE)
             result, code = run_and_get_code(torch.compile(fn), x)
@@ -581,7 +585,7 @@ class TestControlDeps(InductorTestCase):
         torch.testing.assert_close(result, fn(x))
         FileCheck().check("fused_add_sub").check("fused_add_mul_relu").run(code[0])
 
-    def test_mark_no_fuse_region_rejects_boundary_cycle(self):
+    def test_mark_fuse_region_rejects_boundary_cycle(self):
         def fn(x):
             region0 = x * 2
             outside = region0 + 3
@@ -593,7 +597,30 @@ class TestControlDeps(InductorTestCase):
         relu_node = next(node for node in gm.graph.nodes if node.name == "relu")
 
         with self.assertRaisesRegex(AssertionError, "acyclic"):
-            mark_no_fuse_region(gm.graph, [mul_node, relu_node])
+            mark_fuse_region(gm.graph, [mul_node, relu_node])
+
+    def test_mark_fuse_region_allows_no_external_outputs(self):
+        def fn(x):
+            _ = x + 1
+            return x
+
+        gm = torch.fx.symbolic_trace(fn)
+        add_node = next(node for node in gm.graph.nodes if node.name == "add")
+
+        region_node = mark_fuse_region(gm.graph, [add_node])
+        gm.recompile()
+
+        self.assertEqual(region_node.target, control_deps)
+        self.assertIs(region_node.kwargs.get(FUSE_REGION), True)
+        self.assertEqual(region_node.meta["val"], ())
+
+        get_subgraph = region_node.args[1]
+        subgraph = getattr(gm, get_subgraph.target)
+        output_node = next(node for node in subgraph.graph.nodes if node.op == "output")
+        self.assertEqual(output_node.args[0], ())
+
+        x = torch.ones(2, 2)
+        self.assertEqual(gm(x), fn(x))
 
     @config.patch(
         {
@@ -606,25 +633,25 @@ class TestControlDeps(InductorTestCase):
         }
     )
     @requires_gpu()
-    def test_control_deps_no_fuse_region_blocks_combo_kernel(self):
+    def test_control_deps_fuse_region_blocks_combo_kernel(self):
         def fn(x):
             region = torch.relu(x * 2)
             outside = torch.sigmoid(x + 3)
             return region, outside
 
-        def add_no_fuse_region(graph):
+        def add_fuse_region(graph):
             mul_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.mul.Tensor
             )[0]
             relu_node = graph.find_nodes(
                 op="call_function", target=torch.ops.aten.relu.default
             )[0]
-            mark_no_fuse_region(graph, [mul_node, relu_node])
+            mark_fuse_region(graph, [mul_node, relu_node])
             return graph
 
         metrics.reset()
         with torch._inductor.config.patch(
-            post_grad_custom_post_pass=add_no_fuse_region,
+            post_grad_custom_post_pass=add_fuse_region,
         ):
             x = torch.rand([256, 256], device=GPU_TYPE)
             result, code = run_and_get_code(torch.compile(fn), x)
