@@ -1119,7 +1119,7 @@ class TestOpSchemaMetaProperties(TestCase):
         self.assertIsInstance(rule[1], Partial)  # d_weight reduced
 
     def test_grid_sampler_bwd_single_dim_strategy(self):
-        """grid_sampler backward respects output_mask."""
+        """grid_sampler backward respects the native output_mask contract."""
         from torch.distributed.tensor._ops._math_ops import (
             grid_sampler_backward_strategy,
         )
@@ -1143,7 +1143,7 @@ class TestOpSchemaMetaProperties(TestCase):
         rule = strategies[0]
         self.assertEqual(len(rule), 5)
         self.assertEqual(rule[0].dim, 0)  # grad_input sharded
-        self.assertIsNone(rule[1])  # grad_grid masked off
+        self.assertEqual(rule[1].dim, 0)  # grad_grid is always computed
         self.assertEqual(rule[2].dim, 0)  # grad_output sharded
         self.assertEqual(rule[3].dim, 0)  # input sharded
         self.assertEqual(rule[4].dim, 0)  # grid sharded
@@ -1156,6 +1156,15 @@ class TestOpSchemaMetaProperties(TestCase):
         rule = strategies[0]
         self.assertIsNone(rule[0])  # grad_input masked off
         self.assertEqual(rule[1].dim, 0)  # grad_grid sharded
+
+        strategies = grid_sampler_backward_strategy(
+            torch.ops.aten.grid_sampler_2d_backward.default,
+            (grad_output_meta, input_meta, grid_meta, 0, 0, False, [False, False]),
+            {},
+        )
+        rule = strategies[0]
+        self.assertIsNone(rule[0])  # grad_input masked off
+        self.assertEqual(rule[1].dim, 0)  # grad_grid ignores output_mask[1]
 
     def test_batch_norm_bwd_single_dim_strategy(self):
         """batch_norm backward respects output_mask."""

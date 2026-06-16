@@ -1772,11 +1772,12 @@ def grid_sampler_backward_strategy(
     kwargs_schema: dict[str, Any],
 ) -> list[list[Placement | _ShardingPlaceholder | None]]:
     # grid_sampler_{2,3}d_backward: 2 outputs (grad_input, grad_grid) + 3 inputs = 5 placements, batch-only
+    # The native implementation only honors output_mask[0]; grad_grid is always computed.
     output_mask = args_schema[6]
     return [
         [
             _ShardingPlaceholder(0) if output_mask[0] else None,
-            _ShardingPlaceholder(0) if output_mask[1] else None,
+            _ShardingPlaceholder(0),
             _ShardingPlaceholder(0),  # grad_output
             _ShardingPlaceholder(0),  # input
             _ShardingPlaceholder(0),  # grid

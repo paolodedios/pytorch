@@ -10,10 +10,8 @@ When asked to review a PR, always use the /pr-review skill.
 
 If any tool you're trying to use (pip, python, spin, etc) is missing, check for
 a `.venv` directory in the project root or its parent directory. If found,
-activate it and retry. If no `.venv` is found, try `conda activate pytorch-3.12`
-and retry. If that environment is unavailable or the tool is still missing, stop
-and ask the user if an environment is needed. Do NOT try to find other
-alternatives or install these tools.
+activate it and retry. If no `.venv` is found, stop and ask the user if an
+environment is needed. Do NOT try to find alternatives or install these tools.
 
 # CI Docker Images
 
