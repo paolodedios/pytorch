@@ -1,6 +1,7 @@
 # Owner(s): ["module: functorch"]
 
 import logging
+import unittest
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -34,6 +35,22 @@ class _TestSubclassMeta:
 
 
 class TestSubclassCodegen(TestCase):
+    def _two_tensor_meta(self) -> _TestSubclassMeta:
+        return _TestSubclassMeta(
+            flat_tensor_start_idx=0,
+            arg_count=2,
+            included_subclass_symints=True,
+            attrs={
+                "a": PlainTensorMeta(unwrapped_idx=0),
+                "b": PlainTensorMeta(unwrapped_idx=1),
+            },
+            outer_size=(4,),
+            outer_stride=(1,),
+            meta=None,
+            original_subclass=None,
+            original_subclass_type=TwoTensor,
+        )
+
     @contextmanager
     def _capture_wrapper_source(self):
         """Capture subclass_wrapper artifacts from the structured trace log."""
@@ -161,37 +178,67 @@ def inner_fn(args):
     return (_out_19,)""",
         )
 
+    @unittest.skipIf(not torch.distributed.is_available(), "requires distributed")
+    def test_act_wait_top_level_codegen(self):
+        """ACT paths on plain inputs emit waits during input unwrapping."""
+        source, _ = _codegen_subclass_wrapper_source(
+            inp_metas=[PlainTensorMeta(unwrapped_idx=0)],
+            out_metas=[PlainTensorMeta(unwrapped_idx=0)],
+            num_fw_outs_saved_for_bw=None,
+            act_input_paths=[(0, ())],
+        )
+
+        self.assertExpectedInline(
+            source,
+            """\
+def inner_fn(args):
+    unwrapped_args = []
+    unwrapped_args.append(_maybe_wait_act_0(args[0]))
+    unwrapped_args.extend(args[1:])
+    args.clear()
+    unwrapped_outs = compiled_fn(unwrapped_args)
+    _out_idx = 0
+    _has_subclass_symint_outputs = len(unwrapped_outs) == 1
+    _out_plain_1 = unwrapped_outs[_out_idx]
+    _out_idx += 1
+    return (_out_plain_1,)""",
+        )
+
+    @unittest.skipIf(not torch.distributed.is_available(), "requires distributed")
+    def test_act_wait_nested_codegen(self):
+        """ACT paths inside subclasses emit waits at the matching leaf."""
+        source, _ = _codegen_subclass_wrapper_source(
+            inp_metas=[self._two_tensor_meta()],
+            out_metas=[PlainTensorMeta(unwrapped_idx=0)],
+            num_fw_outs_saved_for_bw=None,
+            act_input_paths=[(0, ("a",))],
+        )
+
+        self.assertExpectedInline(
+            source,
+            """\
+def inner_fn(args):
+    unwrapped_args = []
+    _inp_1 = args[0]
+    assert type(_inp_1) is _expected_type_2, f'expected {_expected_type_2}, got {type(_inp_1)}'
+    _resolved_3 = _maybe_wait_act_0(_inp_1.a)
+    unwrapped_args.append(_resolved_3)
+    unwrapped_args.append(_inp_1.b)
+    unwrapped_args.extend(args[1:])
+    args.clear()
+    unwrapped_outs = compiled_fn(unwrapped_args)
+    _out_idx = 0
+    _has_subclass_symint_outputs = len(unwrapped_outs) == 1
+    _out_plain_4 = unwrapped_outs[_out_idx]
+    _out_idx += 1
+    return (_out_plain_4,)""",
+        )
+
     def test_trailing_args_forwarded(self):
         """Extra trailing args (e.g. rng seed/offset) are forwarded to compiled_fn."""
         # Build SubclassCreationMeta manually to avoid __post_init__ fake tensor check
-        inp_meta = _TestSubclassMeta(
-            flat_tensor_start_idx=0,
-            arg_count=2,
-            included_subclass_symints=True,
-            attrs={
-                "a": PlainTensorMeta(unwrapped_idx=0),
-                "b": PlainTensorMeta(unwrapped_idx=1),
-            },
-            outer_size=(4,),
-            outer_stride=(1,),
-            meta=None,
-            original_subclass=None,
-            original_subclass_type=TwoTensor,
-        )
-        out_meta = _TestSubclassMeta(
-            flat_tensor_start_idx=0,
-            arg_count=2,
-            included_subclass_symints=True,
-            attrs={
-                "a": PlainTensorMeta(unwrapped_idx=0),
-                "b": PlainTensorMeta(unwrapped_idx=1),
-            },
-            outer_size=(4,),
-            outer_stride=(1,),
-            meta=None,
-            original_subclass=None,
-            original_subclass_type=TwoTensor,
-        )
+        inp_meta = self._two_tensor_meta()
+        out_meta = self._two_tensor_meta()
 
         source, globals_dict = _codegen_subclass_wrapper_source(
             inp_metas=[inp_meta],
@@ -341,6 +388,55 @@ def inner_fn(args):
         self.assertIsInstance(second, TwoTensor)
         self.assertEqual(second.a, a1)
         self.assertEqual(second.b, b1)
+
+    def test_plain_output_after_elided_subclass_symints(self):
+        # Build SubclassCreationMeta manually to avoid __post_init__ fake tensor check
+        subclass_meta = _TestSubclassMeta(
+            flat_tensor_start_idx=0,
+            arg_count=5,
+            included_subclass_symints=True,
+            attrs={
+                "a": PlainTensorMeta(unwrapped_idx=0),
+                "b": PlainTensorMeta(unwrapped_idx=1),
+            },
+            outer_size=(None, None),
+            outer_stride=(None, 1),
+            meta=None,
+            original_subclass=None,
+            original_subclass_type=TwoTensor,
+            outer_size_from_attr="a",
+            outer_stride_from_attr="a",
+        )
+        plain_meta = PlainTensorMeta(unwrapped_idx=5)
+
+        source, globals_dict = _codegen_subclass_wrapper_source(
+            inp_metas=[],
+            out_metas=[subclass_meta, plain_meta],
+            num_fw_outs_saved_for_bw=None,
+        )
+
+        a = torch.randn(2, 3)
+        b = torch.randn(2, 3)
+        plain = torch.randn(4)
+
+        def mock_compiled_fn(args):
+            # The partitioner may drop optional subclass SymInt outputs when they
+            # are unused. The following plain output must still be read from the
+            # next sequential runtime output slot, not from its longer-layout
+            # metadata index.
+            return [a, b, plain]
+
+        globals_dict["compiled_fn"] = mock_compiled_fn
+        local_dict = {}
+        exec(compile(source, "<test>", "exec"), globals_dict, local_dict)
+        wrapper = local_dict["inner_fn"]
+
+        subclass_out, plain_out = wrapper([])
+
+        self.assertIsInstance(subclass_out, TwoTensor)
+        self.assertEqual(subclass_out.a, a)
+        self.assertEqual(subclass_out.b, b)
+        self.assertIs(plain_out, plain)
 
     def test_inner_plain_tensor_symints_forwarded(self):
         # Build SubclassCreationMeta manually to avoid __post_init__ fake tensor check

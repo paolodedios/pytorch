@@ -3366,6 +3366,7 @@ class GraphModule(torch.nn.Module):
             sym_size_int_2,  # SubclassSizeAOTOutput(base=PlainAOTOutput(idx=1), idx=0)
             clone_1,  # PlainAOTOutput(idx=2)
             primals_9,  # SavedForBackwardsAOTOutput(idx=0)
+            primals_3,  # SavedForBackwardsAOTOutput(idx=1)
         )
 """,
         )
@@ -3395,6 +3396,7 @@ class GraphModule(torch.nn.Module):
     def forward(
         self,
         primals_9: "Sym(s16)",  # SubclassStrideAOTInput(base=PlainAOTInput(idx=1), idx=0)
+        primals_3: "Sym(s16)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=1), attr='a'), idx=1)
         tangents_1: "f32[3*s16]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=1)), attr='a')
         tangents_2: "f32[3*s16]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=1)), attr='b')
     ):
@@ -3465,6 +3467,7 @@ class GraphModule(torch.nn.Module):
             sym_size_int_2,  # SubclassSizeAOTOutput(base=PlainAOTOutput(idx=1), idx=0)
             clone_1,  # PlainAOTOutput(idx=2)
             primals_9,  # SavedForBackwardsAOTOutput(idx=0)
+            primals_3,  # SavedForBackwardsAOTOutput(idx=1)
         )
 """,
         )
@@ -3476,6 +3479,7 @@ class GraphModule(torch.nn.Module):
     def forward(
         self,
         primals_9: "Sym(s16)",  # SubclassStrideAOTInput(base=PlainAOTInput(idx=1), idx=0)
+        primals_3: "Sym(s16)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=1), attr='a'), idx=1)
         tangents_1: "f32[3*s16]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=1)), attr='a')
         tangents_2: "f32[3*s16]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=1)), attr='b')
     ):
@@ -4803,11 +4807,11 @@ class GraphModule(torch.nn.Module):
             primals_16,  # SubclassStrideAOTOutput(base=PlainAOTOutput(idx=0), idx=1)
             primals_1,  # SavedForBackwardsAOTOutput(idx=0)
             primals_5,  # SavedForBackwardsAOTOutput(idx=1)
-            primals_11,  # SavedForBackwardsAOTOutput(idx=2)
-            primals_13,  # SavedForBackwardsAOTOutput(idx=3)
-            primals_14,  # SavedForBackwardsAOTOutput(idx=4)
-            primals_16,  # SavedForBackwardsAOTOutput(idx=5)
-            primals_9,  # SavedForBackwardsAOTOutput(idx=6)
+            primals_9,  # SavedForBackwardsAOTOutput(idx=2)
+            primals_11,  # SavedForBackwardsAOTOutput(idx=3)
+            primals_13,  # SavedForBackwardsAOTOutput(idx=4)
+            primals_14,  # SavedForBackwardsAOTOutput(idx=5)
+            primals_16,  # SavedForBackwardsAOTOutput(idx=6)
         )
 """,
         )
@@ -4820,11 +4824,11 @@ class GraphModule(torch.nn.Module):
         self,
         primals_1: "Sym(s51)",  # PlainAOTInput(idx=0)
         primals_5: "Sym(s64)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_values'), idx=0)
+        primals_9: "Sym(s51 + 1)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_offsets'), idx=0)
         primals_11: "Sym(s0)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_min_seqlen_tensor'), idx=0)
         primals_13: "Sym(s83)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_max_seqlen_tensor'), idx=0)
         primals_14: "Sym(s51)",  # SubclassSizeAOTInput(base=PlainAOTInput(idx=3), idx=0)
         primals_16: "Sym(s55)",  # SubclassStrideAOTInput(base=PlainAOTInput(idx=3), idx=1)
-        primals_9: "Sym(s51 + 1)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_offsets'), idx=0)
         tangents_1: "f64[s64, s55]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_values')
         tangents_2: "i64[s51 + 1]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_offsets')
         tangents_3: "f32[s0, 0]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_min_seqlen_tensor')
@@ -4904,11 +4908,11 @@ class GraphModule(torch.nn.Module):
             add_2,  # SubclassSizeAOTOutput(base=PlainAOTOutput(idx=0), idx=2)
             add_2,  # SubclassStrideAOTOutput(base=PlainAOTOutput(idx=0), idx=1)
             primals_5,  # SavedForBackwardsAOTOutput(idx=0)
-            primals_11,  # SavedForBackwardsAOTOutput(idx=1)
-            primals_13,  # SavedForBackwardsAOTOutput(idx=2)
-            primals_14,  # SavedForBackwardsAOTOutput(idx=3)
-            primals_16,  # SavedForBackwardsAOTOutput(idx=4)
-            primals_9,  # SavedForBackwardsAOTOutput(idx=5)
+            primals_9,  # SavedForBackwardsAOTOutput(idx=1)
+            primals_11,  # SavedForBackwardsAOTOutput(idx=2)
+            primals_13,  # SavedForBackwardsAOTOutput(idx=3)
+            primals_14,  # SavedForBackwardsAOTOutput(idx=4)
+            primals_16,  # SavedForBackwardsAOTOutput(idx=5)
             add_2,  # SavedForBackwardsAOTOutput(idx=6)
         )
 """,
@@ -4921,11 +4925,11 @@ class GraphModule(torch.nn.Module):
     def forward(
         self,
         primals_5: "Sym(s64)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_values'), idx=0)
+        primals_9: "Sym(s51 + 1)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_offsets'), idx=0)
         primals_11: "Sym(s0)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_min_seqlen_tensor'), idx=0)
         primals_13: "Sym(s83)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_max_seqlen_tensor'), idx=0)
         primals_14: "Sym(s51)",  # SubclassSizeAOTInput(base=PlainAOTInput(idx=3), idx=0)
         primals_16: "Sym(s55)",  # SubclassStrideAOTInput(base=PlainAOTInput(idx=3), idx=1)
-        primals_9: "Sym(s51 + 1)",  # SubclassSizeAOTInput(base=SubclassGetAttrAOTInput(base=PlainAOTInput(idx=3), attr='_offsets'), idx=0)
         add_2: "Sym(2*s55)",
         tangents_1: "f64[s64, 2*s55]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_values')
         tangents_2: "i64[s51 + 1]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_offsets')
