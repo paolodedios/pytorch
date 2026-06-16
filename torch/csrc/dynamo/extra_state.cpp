@@ -14,6 +14,27 @@
 
 Py_ssize_t extra_index = -1;
 
+namespace {
+
+ExtraState* get_live_extra_state_from_guard_manager(
+    const py::object& guard_manager_ref) {
+  py::object guard_manager = guard_manager_ref();
+  if (guard_manager.is_none() ||
+      !py::hasattr(guard_manager, "extra_state")) {
+    throw std::runtime_error(
+        "guard lookup stats are unavailable: guard manager is gone");
+  }
+
+  py::object extra_state = guard_manager.attr("extra_state");
+  if (extra_state.is_none()) {
+    throw std::runtime_error(
+        "guard lookup stats are unavailable: extra_state was cleared");
+  }
+  return extra_state.cast<ExtraState*>();
+}
+
+} // namespace
+
 CacheEntry* ExtraState::get_first_entry() {
   if (this->cache_entry_list.empty()) {
     return nullptr;
@@ -229,13 +250,19 @@ CacheEntry* create_cache_entry(
       py::cast(*new_iter, py::return_value_policy::reference);
   guard_manager.attr("extra_state") =
       py::cast(extra_state, py::return_value_policy::reference);
+  py::object guard_manager_ref =
+      py::module::import("weakref").attr("ref")(guard_manager);
   guard_manager.attr("reset_guard_lookup_stats") =
-      py::cpp_function([extra_state]() {
-        extra_state->reset_guard_lookup_stats();
+      py::cpp_function([guard_manager_ref]() {
+        ExtraState* live_extra_state =
+            get_live_extra_state_from_guard_manager(guard_manager_ref);
+        live_extra_state->reset_guard_lookup_stats();
       });
   guard_manager.attr("get_guard_lookup_stats") =
-      py::cpp_function([extra_state]() {
-        return extra_state->get_guard_lookup_stats();
+      py::cpp_function([guard_manager_ref]() {
+        ExtraState* live_extra_state =
+            get_live_extra_state_from_guard_manager(guard_manager_ref);
+        return live_extra_state->get_guard_lookup_stats();
       });
   return &*new_iter;
 }

@@ -8,7 +8,7 @@ import torch._dynamo
 import torch._dynamo.test_case
 from torch._C._dynamo import guards
 from torch._dynamo.convert_frame import GlobalStateGuard
-from torch._dynamo.eval_frame import _debug_get_cache_entry_list
+from torch._dynamo.eval_frame import _debug_get_cache_entry_list, reset_code
 from torch.testing._internal.common_utils import set_default_dtype
 
 
@@ -572,6 +572,34 @@ num_guards_executed=0)
         stats = guard_manager.get_guard_lookup_stats()
         self.assertIn("actual_partial_receipt_created", stats)
         self.assertEqual(stats["actual_partial_enabled"], 0)
+
+    def test_guard_lookup_stats_reject_stale_extra_state(self):
+        def fn(x):
+            return x + 1
+
+        opt_fn = torch.compile(fn, backend="eager")
+        opt_fn(torch.ones(3))
+
+        cache_entries = _debug_get_cache_entry_list(fn.__code__)
+        self.assertEqual(len(cache_entries), 1)
+        guard_manager = cache_entries[0].guard_manager
+
+        stats = guard_manager.get_guard_lookup_stats()
+        self.assertIn("actual_partial_receipt_created", stats)
+
+        reset_code(fn.__code__)
+        self.assertIsNone(guard_manager.extra_state)
+
+        with self.assertRaisesRegex(
+            (RuntimeError, AttributeError),
+            "guard lookup stats are unavailable|extra_state",
+        ):
+            guard_manager.get_guard_lookup_stats()
+        with self.assertRaisesRegex(
+            (RuntimeError, AttributeError),
+            "guard lookup stats are unavailable|extra_state",
+        ):
+            guard_manager.reset_guard_lookup_stats()
 
     def test_dict_getitem_accessor(self):
         foo = {
