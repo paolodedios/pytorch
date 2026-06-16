@@ -1404,7 +1404,11 @@ class _InProcessFxCompile(FxCompile):
                     fake_mode = fake_tensor_prop(gm, example_inputs)
 
                     if any(
-                        n.target is torch.ops.aten.shallow_copy_data_.default
+                        n.target
+                        in (
+                            torch.ops.aten.shallow_copy_data_.default,
+                            torch.ops.aten.shallow_copy_data_,
+                        )
                         for n in gm.graph.nodes
                         if n.op == "call_function"
                     ):

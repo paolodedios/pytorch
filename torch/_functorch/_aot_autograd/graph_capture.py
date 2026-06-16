@@ -146,7 +146,11 @@ def _create_graph(
         # Restore arg devices mutated by shallow_copy_data_.
         has_shallow_copy = any(
             n.op == "call_function"
-            and n.target is torch.ops.aten.shallow_copy_data_.default
+            and n.target
+            in (
+                torch.ops.aten.shallow_copy_data_.default,
+                torch.ops.aten.shallow_copy_data_,
+            )
             for n in fx_g.graph.nodes
         )
         if has_shallow_copy and original_fake_devices:
@@ -380,7 +384,10 @@ def aot_dispatch_base_graph(
     for node in fw_module.graph.nodes:
         if (
             node.op == "call_function"
-            and node.target is torch.ops.aten.shallow_copy_data_.default
+            and (
+                node.target is torch.ops.aten.shallow_copy_data_.default
+                or node.target is torch.ops.aten.shallow_copy_data_
+            )
             and node.args
             and node.args[0] in placeholders
         ):
