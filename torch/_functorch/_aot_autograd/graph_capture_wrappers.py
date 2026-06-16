@@ -752,7 +752,10 @@ def apply_in_graph_mutations(
     if input_info.mutates_storage_metadata:
         if mcs is None or mcs.mc_storage > applied_mcs.mc_storage:  # type: ignore[union-attr]
             with torch.no_grad():
-                if input_info.mutation_is_shallow_copy_data:
+                if (
+                    input_info.mutation_is_shallow_copy_data
+                    or inpt_old.device != inpt_new.device
+                ):
                     torch.ops.aten.shallow_copy_data_(inpt_old, inpt_new)
                 else:
                     # pyrefly: ignore [bad-argument-type, no-matching-overload]

@@ -3458,18 +3458,26 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                     for tf in to_remove:
                         tx.output.tracked_fakes.remove(tf)
 
-                    # Snapshot the placeholder's example_value before
-                    # shallow_copy_data_ mutates it in place. After
-                    # wrap_fx_proxy, restore the snapshot so the
-                    # placeholder reflects the original input metadata.
+                    # Snapshot the placeholder before
+                    # shallow_copy_data_ mutates it. Record the node
+                    # and snapshot so compile_and_call_fx_graph can
+                    # restore the correct metadata before passing the
+                    # graph to the backend.
                     input_node = obj.as_proxy().node
-                    placeholder_snapshot = None
                     if input_node.op == "placeholder":
                         ev = input_node.meta.get("example_value")
                         if ev is not None and hasattr(ev, "fake_mode"):
                             from torch._subclasses.fake_impls import fast_detach
 
-                            placeholder_snapshot = fast_detach(ev.fake_mode, ev)
+                            snapshot = fast_detach(ev.fake_mode, ev)
+                            if not hasattr(  # pyrefly: ignore[missing-attribute]
+                                tx.output,
+                                "_shallow_copy_placeholder_snapshots",
+                            ):
+                                tx.output._shallow_copy_placeholder_snapshots = []  # pyrefly: ignore[missing-attribute]
+                            tx.output._shallow_copy_placeholder_snapshots.append(  # pyrefly: ignore[missing-attribute]
+                                (input_node, snapshot)
+                            )
 
                     with dynamo_disable_grad(tx), torch.no_grad():
                         out = wrap_fx_proxy(
@@ -3480,12 +3488,6 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                                 *proxy_args_kwargs([obj, val], {}),
                             ),
                         )
-
-                    if placeholder_snapshot is not None:
-                        input_node.meta["example_value"] = placeholder_snapshot
-                        # Update obj to reference the output node so
-                        # subsequent uses see the mutated metadata.
-                        obj.proxy = out.proxy
 
                     return out
                 elif name in ("_grad", "grad"):

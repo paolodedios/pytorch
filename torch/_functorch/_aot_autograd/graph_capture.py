@@ -123,6 +123,14 @@ def _create_graph(
             _allow_token_discovery=True,
         )
 
+    # Save arg devices before make_fx in case
+    # shallow_copy_data_ mutates them during tracing.
+    original_fake_devices = {
+        i: arg.fake_device
+        for i, arg in enumerate(args)
+        if isinstance(arg, torch.Tensor) and hasattr(arg, "fake_device")
+    }
+
     with (
         enable_python_dispatcher(),
         ctx,
@@ -134,6 +142,17 @@ def _create_graph(
             pre_dispatch=aot_config.pre_dispatch,
             _disable_torch_fn_metadata_mode=aot_config._disable_torch_fn_metadata_mode,
         )(*args)
+
+        # Restore arg devices mutated by shallow_copy_data_.
+        has_shallow_copy = any(
+            n.op == "call_function"
+            and n.target is torch.ops.aten.shallow_copy_data_.default
+            for n in fx_g.graph.nodes
+        )
+        if has_shallow_copy and original_fake_devices:
+            for i, device in original_fake_devices.items():
+                if args[i].fake_device != device:  # pyrefly: ignore[missing-attribute]
+                    args[i].fake_device = device  # pyrefly: ignore[missing-attribute]
 
         if args_descs is not None:
             flat_args_descs, _ = pytree.tree_flatten(args_descs)

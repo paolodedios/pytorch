@@ -4,7 +4,23 @@
 
 namespace at::native {
 
-static at::Tensor& shallow_copy_data_(at::Tensor& self, const at::Tensor& source) {
+static at::Tensor& shallow_copy_data_(
+    at::Tensor& self,
+    const at::Tensor& source) {
+  // Mirror the safety checks from VariableHooks::set_data
+  // (torch/csrc/autograd/variable.cpp) so that calling this op
+  // directly enforces the same invariants as eager .data = .
+  TORCH_CHECK(
+      _has_compatible_shallow_copy_type(self, source),
+      "shallow_copy_data_: self and source have incompatible tensor type");
+
+  TORCH_CHECK(
+      !self.requires_grad() ||
+          at::isFloatingType(source.scalar_type()) ||
+          at::isComplexType(source.scalar_type()),
+      "shallow_copy_data_: data set to a tensor that requires gradients "
+      "must be floating point or complex dtype");
+
   if (self.unsafeGetTensorImpl() != source.unsafeGetTensorImpl()) {
     self.unsafeGetTensorImpl()->shallow_copy_from(source.getIntrusivePtr());
   }

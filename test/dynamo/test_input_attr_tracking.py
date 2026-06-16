@@ -321,11 +321,11 @@ class GraphModule(torch.nn.Module):
 
         _set_grad_enabled = torch._C._set_grad_enabled(False);  _set_grad_enabled = None
 
-        shallow_copy_data_: "f32[2, 2]" = torch.ops.aten.shallow_copy_data_(l_x_, _get_data_attr);  l_x_ = _get_data_attr = None
+        shallow_copy_data_: "f32[2, 2]" = torch.ops.aten.shallow_copy_data_(l_x_, _get_data_attr);  _get_data_attr = shallow_copy_data_ = None
 
         _set_grad_enabled_1 = torch._C._set_grad_enabled(True);  _set_grad_enabled_1 = None
 
-        mul: "f32[2, 2]" = shallow_copy_data_ * l_y_;  shallow_copy_data_ = l_y_ = None
+        mul: "f32[2, 2]" = l_x_ * l_y_;  l_x_ = l_y_ = None
         return (mul,)
 """,
         )
