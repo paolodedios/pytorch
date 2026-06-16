@@ -2581,7 +2581,7 @@ class GuardManager {
   virtual bool replay_actual_partial_tokens(
       PyObject* value,
       std::vector<GuardSubtreeEntryToken>& tokens) {
-    if (!_leaf_guards.empty()) {
+    if (has_leaf_guards()) {
       return false;
     }
     for (const auto& accessor : _accessors) {
@@ -2720,6 +2720,10 @@ class GuardManager {
 
   bool has_no_accessors() {
     return _accessors.empty();
+  }
+
+  bool has_leaf_guards() const {
+    return !_leaf_guards.empty();
   }
 
   int64_t fail_count() const {
@@ -3268,7 +3272,7 @@ class DictGuardManager : public GuardManager {
   bool replay_actual_partial_tokens(
       PyObject* obj,
       std::vector<GuardSubtreeEntryToken>& tokens) override {
-    if (!_leaf_guards.empty()) {
+    if (has_leaf_guards()) {
       return false;
     }
     if (!PyDict_Check(obj)) {
