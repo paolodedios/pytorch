@@ -429,12 +429,16 @@ def preserve_node_ordering(
 
         subgraph_attr_name = _register_subgraph(graph, subgraph_module, original_name)
 
-        # Extract unique nodes from nested args/kwargs.  Only fx.Node args and
-        # kwargs are passed into the control_deps subgraph.
-        node_args, _, _ = _extract_unique_nodes(original_args, original_kwargs)
-
+        # Create control_deps call with:
+        # 1. Additional dependencies as first arg (explicit)
+        # 2. Subgraph via get_attr (like b2b gemm pass)
+        # 3. Original arguments (only fx.Node args and kwargs are passed)
         with graph.inserting_before(dependent_node):
+            # Create get_attr node for the subgraph
             get_subgraph = graph.get_attr(subgraph_attr_name)
+
+            # Extract unique nodes from nested args/kwargs
+            node_args, _, _ = _extract_unique_nodes(original_args, original_kwargs)
 
         # Create with temporary name first to avoid conflict with the original
         # node, which is still in the graph.
