@@ -22,7 +22,33 @@ CacheEntry* ExtraState::get_first_entry() {
 }
 
 ExtraState::ExtraState(PyCodeObject* orig_code_arg)
-    : orig_code(orig_code_arg) {}
+    : orig_code(orig_code_arg),
+      last_success_receipt(
+          torch::dynamo::create_guard_last_success_receipt()) {}
+
+py::dict ExtraState::get_guard_lookup_stats() const {
+  py::dict stats;
+  stats["actual_partial_receipt_created"] =
+      this->last_success_receipt != nullptr;
+  stats["actual_partial_enabled"] =
+      this->last_success_receipt != nullptr &&
+          this->last_success_receipt->actual_partial_state ==
+              torch::dynamo::GuardPartialMemoState::Enabled
+      ? 1
+      : 0;
+  return stats;
+}
+
+void ExtraState::reset_guard_lookup_stats() {
+  if (this->last_success_receipt == nullptr) {
+    this->last_success_receipt =
+        torch::dynamo::create_guard_last_success_receipt();
+    return;
+  }
+  this->last_success_receipt->actual_partial_shadow_passes = 0;
+  this->last_success_receipt->actual_partial_state =
+      torch::dynamo::GuardPartialMemoState::Training;
+}
 
 void ExtraState::move_to_front(CacheEntry* cache_entry) {
   CHECK(cache_entry->_owner == this);
@@ -203,6 +229,14 @@ CacheEntry* create_cache_entry(
       py::cast(*new_iter, py::return_value_policy::reference);
   guard_manager.attr("extra_state") =
       py::cast(extra_state, py::return_value_policy::reference);
+  guard_manager.attr("reset_guard_lookup_stats") =
+      py::cpp_function([extra_state]() {
+        extra_state->reset_guard_lookup_stats();
+      });
+  guard_manager.attr("get_guard_lookup_stats") =
+      py::cpp_function([extra_state]() {
+        return extra_state->get_guard_lookup_stats();
+      });
   return &*new_iter;
 }
 

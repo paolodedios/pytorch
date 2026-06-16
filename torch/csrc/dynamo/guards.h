@@ -3,6 +3,8 @@
 #include <torch/csrc/dynamo/framelocals_mapping.h>
 #include <torch/csrc/python_headers.h>
 #include <torch/csrc/utils/pybind.h>
+#include <cstdint>
+#include <memory>
 
 namespace torch::dynamo {
 
@@ -12,6 +14,25 @@ PyObject* torch_c_dynamo_guards_init();
 // not visible there.
 void* convert_to_root_guard_manager(py::object root);
 bool run_root_guard_manager(void* root, FrameLocalsMapping* f_locals);
+
+enum class GuardPartialMemoState : uint8_t {
+  Training = 0,
+  Enabled = 1,
+  Disabled = 2,
+};
+
+struct GuardLastSuccessReceipt {
+  void* actual_partial_entry_key = nullptr;
+  void* actual_partial_root_key = nullptr;
+  PyObject* actual_partial_self_object = nullptr;
+  PyTypeObject* actual_partial_self_type = nullptr;
+  uint64_t actual_partial_shadow_passes = 0;
+  GuardPartialMemoState actual_partial_state =
+      GuardPartialMemoState::Training;
+};
+
+std::unique_ptr<GuardLastSuccessReceipt>
+create_guard_last_success_receipt();
 
 struct LocalState {
   // TLS state that changes operators

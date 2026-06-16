@@ -557,6 +557,22 @@ num_guards_executed=0)
             guard_str,
         )
 
+    def test_guard_last_success_receipt_initializes(self):
+        def fn(x):
+            return x + 1
+
+        opt_fn = torch.compile(fn, backend="eager")
+        opt_fn(torch.ones(3))
+
+        cache_entries = _debug_get_cache_entry_list(fn.__code__)
+        self.assertEqual(len(cache_entries), 1)
+
+        guard_manager = cache_entries[0].guard_manager
+        guard_manager.reset_guard_lookup_stats()
+        stats = guard_manager.get_guard_lookup_stats()
+        self.assertIn("actual_partial_receipt_created", stats)
+        self.assertEqual(stats["actual_partial_enabled"], 0)
+
     def test_dict_getitem_accessor(self):
         foo = {
             "a": 1,

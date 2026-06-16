@@ -75,6 +75,11 @@ typedef struct {
 
 namespace torch::dynamo {
 
+std::unique_ptr<GuardLastSuccessReceipt>
+create_guard_last_success_receipt() {
+  return std::make_unique<GuardLastSuccessReceipt>();
+}
+
 // Macro to skip addition of duplicate guards like EQUALS_MATCH
 #define SKIP_IF_GUARD_ALREADY_PRESENT(name) \
   if (self.is_leaf_guard_present(name)) {   \
