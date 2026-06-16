@@ -784,7 +784,7 @@ class OutputGraph(OutputGraphCommon):
         # We thought of rolling this in variable_tracker_cache but here
         # different sources point to the same object, we also don't want it to
         # go through the side effects cache because even though these objects
-        # are same, we dont want OBJECT_ALIASING guards on them. For these
+        # are same, we don't want OBJECT_ALIASING guards on them. For these
         # objects, we have DICT_CONTAINS absent guards on the mro walk, so there
         # is no need of the OBJECT_ALIASING guards.
         self.mro_source_cache: dict[tuple[int, str], DictGetItemSource] = {}
@@ -1913,9 +1913,12 @@ class OutputGraph(OutputGraphCommon):
                         "variable should never be NULL in Python < 3.12"
                     )
             meta.locals_names[k] = len(meta.locals_names)
-            if isinstance(v, ContextWrappingVariable):
+            # Avoid realizing lazy locals here; resume metadata only needs to
+            # handle context variables that Dynamo already materialized.
+            if type.__instancecheck__(ContextWrappingVariable, v):
+                ctx_v = cast(ContextWrappingVariable, v)
                 target_values = (
-                    () if v.target_values is None else tuple(v.target_values)
+                    () if ctx_v.target_values is None else tuple(ctx_v.target_values)
                 )
                 meta.locals_ctx_args.append((k, target_values))
             stack_values.append(v)
@@ -2091,15 +2094,18 @@ class OutputGraph(OutputGraphCommon):
             self.root_tx is tx  # single frame
             and stack_values_flat
             and all(
-                not isinstance(
-                    v,
-                    (
+                not any(
+                    type.__instancecheck__(cls, v)
+                    for cls in (
                         UnspecializedPythonVariable,
                         NumpyNdarrayVariable,
                         TensorWithTFOverrideVariable,
-                    ),
+                    )
                 )
-                and not (isinstance(v, SymNodeVariable) and v.python_type() is float)
+                and not (
+                    type.__instancecheck__(SymNodeVariable, v)
+                    and v.python_type() is float
+                )
                 for v in stack_values_flat
             )
             and all(x.is_tensor() for x in stack_values_flat)

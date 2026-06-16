@@ -77,7 +77,6 @@ from .bytecode_transformation import (
     cleaned_instructions,
     create_binary_slice,
     create_call_function,
-    create_call_function_ex,
     create_copy,
     create_dup_top,
     create_instruction,
@@ -2121,7 +2120,7 @@ class InstructionTranslatorBase(
         if inst.argval in self.f_locals:
             self.deleted_fast_locals.add(inst.argval)
         var = self.symbolic_locals.get(inst.argval)
-        if isinstance(var, TensorVariable):
+        if not self.is_tracing_resume_prologue and isinstance(var, TensorVariable):
             self._maybe_emit_sync_dealloc(var)
         del self.symbolic_locals[inst.argval]
 
@@ -3808,7 +3807,18 @@ class InstructionTranslatorBase(
         if _is_boxed_resume_code(resume_codes[-1]):
             cg.extend_output(create_call_function(1, True))
         else:
-            cg.extend_output(create_call_function_ex(False, True))
+            resume_args_varname = cg.new_var("resume_args")
+            cg.append_output(cg.create_store(resume_args_varname))
+            for idx in range(resume_codes[-1].co_argcount):
+                cg.extend_output(
+                    [
+                        cg.create_load(resume_args_varname),
+                        cg.create_load_const(idx),
+                        cg.create_binary_subscr(),
+                    ]
+                )
+            cg.append_output(cg.create_delete(resume_args_varname))
+            cg.extend_output(create_call_function(resume_codes[-1].co_argcount, True))
 
     def should_compile_partial_graph(self) -> bool:
         if sys.version_info >= (3, 11):

@@ -3535,13 +3535,20 @@ class GraphModule(torch.nn.Module):
             normalize_gm(eager.graphs[1].print_readable(False)),
             """\
 class GraphModule(torch.nn.Module):
-    def forward(self, L_stack0_: "f32[2]", L_stack1_: "f32[2]", L_x_: "f32[2]"):
-        l_stack0_ = L_stack0_
-        l_stack1_ = L_stack1_
-        l_x_ = L_x_
+    def forward(self, args_list):
+        L_torch_dynamo_resume_args_2_ = args_list[0]
+        L_torch_dynamo_resume_args_3_ = args_list[1]
+        L_torch_dynamo_resume_args_4_ = args_list[2]
+        args_list.clear()
+        l_torch_dynamo_resume_args_2_ = L_torch_dynamo_resume_args_2_
+        L_torch_dynamo_resume_args_2_ = None
+        l_torch_dynamo_resume_args_3_ = L_torch_dynamo_resume_args_3_
+        L_torch_dynamo_resume_args_3_ = None
+        l_torch_dynamo_resume_args_4_ = L_torch_dynamo_resume_args_4_
+        L_torch_dynamo_resume_args_4_ = None
 
-        add: "f32[2]" = l_stack0_ + l_stack1_;  l_stack0_ = l_stack1_ = None
-        cos: "f32[2]" = l_x_.cos();  l_x_ = None
+        add: "f32[2]" = l_torch_dynamo_resume_args_2_ + l_torch_dynamo_resume_args_3_;  l_torch_dynamo_resume_args_2_ = l_torch_dynamo_resume_args_3_ = None
+        cos: "f32[2]" = l_torch_dynamo_resume_args_4_.cos();  l_torch_dynamo_resume_args_4_ = None
         add_1: "f32[2]" = add + cos;  add = cos = None
         return (add_1,)
 """,

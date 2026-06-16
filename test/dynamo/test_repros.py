@@ -6167,6 +6167,21 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
         torch.view_as_real(out_test).sum().backward()
         self.assertEqual(x_ref.grad, x_test.grad)
 
+    def test_compile_complex_tensor_constant_signed_zero(self):
+        def f(x):
+            y = torch.tensor([1e28 + 2j, -1e-28j])
+            return y.cos(), str(y)
+
+        x = torch.tensor([1e28 + 2j, -1e-28j])
+        expected_cos, expected_str = f(x)
+        actual_cos, actual_str = torch.compile(f, backend="eager")(x)
+
+        self.assertEqual(actual_cos, expected_cos)
+        self.assertEqual(
+            torch.signbit(actual_cos.imag), torch.signbit(expected_cos.imag)
+        )
+        self.assertEqual(actual_str, expected_str)
+
     @unittest.skipIf(
         not SM70OrLater,
         "Triton only supports devices of CUDA capability >= 7.0",
@@ -8154,6 +8169,9 @@ SavedForBackwardsAOTOutput(idx=5)""",
         def user_arg_name(__resume_args):  # noqa: PYI063
             return __resume_args + 1
 
+        def torch_dynamo_resume_in_user(__torch_dynamo_resume_args):  # noqa: PYI063
+            return __torch_dynamo_resume_args[0] + 1
+
         def internal_arg_name(x):
             __torch_dynamo_resume_args = x + 1
             torch._dynamo.graph_break()
@@ -8167,6 +8185,13 @@ SavedForBackwardsAOTOutput(idx=5)""",
             internal_arg_name(x),
             torch.compile(internal_arg_name, backend="eager")(x),
         )
+        resume_args = [x]
+        self.assertEqual(
+            torch_dynamo_resume_in_user(resume_args),
+            torch.compile(torch_dynamo_resume_in_user, backend="eager")(resume_args),
+        )
+        self.assertEqual(len(resume_args), 1)
+        self.assertIs(resume_args[0], x)
 
 
 class ReproTestsDevice(torch._dynamo.test_case.TestCase):
@@ -9512,10 +9537,18 @@ class CUDAReproTests(torch._dynamo.test_case.TestCase):
             return peak
 
         n = 2048
-        no_graph_break_peak = measure_peak(no_graph_break, n)
-        graph_break_peak = measure_peak(graph_break, n)
         tensor_bytes = n * n * torch.empty((), dtype=torch.float32).element_size()
-        self.assertLessEqual(graph_break_peak, no_graph_break_peak + tensor_bytes)
+        configs = (
+            (None, contextlib.nullcontext()),
+            ("L['a']", torch.compiler.config.patch(dynamic_sources="L['a']")),
+        )
+        for dynamic_sources, ctx in configs:
+            with self.subTest(dynamic_sources=dynamic_sources), ctx:
+                no_graph_break_peak = measure_peak(no_graph_break, n)
+                graph_break_peak = measure_peak(graph_break, n)
+                self.assertLessEqual(
+                    graph_break_peak, no_graph_break_peak + tensor_bytes
+                )
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     def test_graph_break_resume_releases_dead_tensor_before_disabled_call(self):
