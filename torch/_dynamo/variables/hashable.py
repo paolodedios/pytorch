@@ -194,6 +194,25 @@ class HashableTracker:
         if self_constant is not self._MISSING and other_constant is not self._MISSING:
             return self_constant == other_constant
 
+        # Tensor keys hash by identity (Tensor.__hash__ is id(self)), so CPython
+        # only ever compares identical tensors during a dict/set lookup; a
+        # tensor's elementwise __eq__ is never consulted for membership. Mirror
+        # that with an identity comparison instead of running __eq__, which would
+        # otherwise emit a stray elementwise-eq node into the FX graph and
+        # corrupt the surrounding trace.
+        from .tensor import TensorVariable
+
+        if isinstance(self.vt, TensorVariable) or isinstance(other.vt, TensorVariable):
+            return (
+                self._hash_is_identity
+                and other._hash_is_identity
+                and self._hash == other._hash
+            )
+
+        # All other keys: mirror PyObject_RichCompareBool and run the
+        # comparison through generic_richcompare_bool so any user-defined __eq__
+        # runs and its result (or any exception it raises) is observed by the
+        # traced program.
         from ..symbolic_convert import InstructionTranslator
         from .object_protocol import generic_richcompare_bool
 
@@ -206,10 +225,9 @@ class HashableTracker:
         if result.is_symnode_like():
             return bool(guard_if_dyn(result))
 
-        # Non-constant comparison (e.g. tensor keys whose __eq__ is elementwise).
-        # CPython never reaches such a key's __eq__: its hash is id-based, so only
-        # identical objects collide. Mirror that by comparing identity-based
-        # hashes, which equals object identity here.
+        # Comparison did not resolve to a constant (e.g. keys whose __eq__ could
+        # not be determined). Fall back to identity-based hash equality, which
+        # mirrors CPython treating such keys as equal only when identical.
         return (
             self._hash_is_identity
             and other._hash_is_identity

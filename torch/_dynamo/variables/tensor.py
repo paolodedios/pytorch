@@ -2512,13 +2512,6 @@ class TensorVariable(VariableTracker):
             ),
         )
 
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, VariableTracker):
-            return False
-        a = self.as_proxy().node.meta["example_value"]
-        b = other.as_proxy().node.meta["example_value"]
-        return a is b
-
 
 class SymNodeVariable(VariableTracker):
     """
