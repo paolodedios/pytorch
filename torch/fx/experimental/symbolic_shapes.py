@@ -4854,10 +4854,11 @@ class ShapeEnv:
         # All current callers feed in a SymInt that was minted in a foreign
         # ShapeEnv, so src_shape_env should never be None.  Assert for now;
         # revisit if a use case for env-less SymInts shows up.
-        assert src_shape_env is not None, (
-            f"_transfer_foreign_expr_as_unbacked: expected value to belong to a "
-            f"foreign ShapeEnv, got {value!r} with shape_env=None"
-        )
+        if src_shape_env is None:
+            raise AssertionError(
+                f"_transfer_foreign_expr_as_unbacked: expected value to belong "
+                f"to a foreign ShapeEnv, got {value!r} with shape_env=None"
+            )
         expr = value.node.expr
 
         # Step 1: cache-only replacement.
@@ -4871,11 +4872,15 @@ class ShapeEnv:
         # Step 2: all symbols resolved from cache — use the derived expression.
         if not (new_expr.free_symbols - set(cache_map.values())):
             if is_size:
-                # Symbols may have been cached via a non-size path (e.g. a
-                # raw SymInt transfer); apply the size lower-bound constraint
-                # now that we observe them as a tensor size dim.
-                for sym in new_expr.free_symbols:
-                    self._constrain_range_for_size(sym)
+                if isinstance(new_expr, sympy.Symbol):
+                    self._constrain_range_for_size(new_expr)
+                else:
+                    # Derived expr (e.g. u0+u1): constrain the whole sum to be
+                    # a valid size via a deferred runtime assert, not each
+                    # individual base symbol.
+                    torch._check(
+                        self.create_symintnode(new_expr, hint=None, source=source) >= 0
+                    )
             return new_expr
 
         # Step 3: at least one symbol could not be resolved.  Mint one fresh
@@ -5493,10 +5498,11 @@ class ShapeEnv:
             self.var_to_range[expr] = value_range
         if optimization_hint is not None:
             self.var_to_hint_override[expr] = optimization_hint
-        assert source.name not in self.source_to_var, (
-            f"source name {source.name!r} already maps to "
-            f"{self.source_to_var[source.name]!r}"
-        )
+        if source.name in self.source_to_var:
+            raise AssertionError(
+                f"source name {source.name!r} already maps to "
+                f"{self.source_to_var[source.name]!r}"
+            )
         self.source_to_var[source.name] = expr
         self.var_to_sources[expr] = [source]
 

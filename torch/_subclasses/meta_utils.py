@@ -1134,12 +1134,7 @@ class MetaConverter(Generic[_TensorT]):
                     )
                 else:
                     # FakeTensor from a different ShapeEnv.  Transfer symbols.
-                    # Note: t.dynamo_hint_overrides is intentionally not
-                    # forwarded — mark_unbacked / mark_dynamic on a tensor
-                    # whose dims are already unbacked SymInts in a foreign
-                    # ShapeEnv should write into that env's
-                    # var_to_hint_override directly, so _transfer_foreign_expr
-                    # picks the hint up via the foreign env.
+                    # _transfer_foreign_expr picks the hint up via the foreign env.
                     return shape_env.transfer_symbols_from_foreign_shape_env(
                         t.size,
                         t.stride,

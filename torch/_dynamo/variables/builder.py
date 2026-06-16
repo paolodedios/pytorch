@@ -1595,9 +1595,6 @@ class VariableBuilder:
                     # We need to create an unbacked symint to replace the unbacked symbool.
                     new_symint = self.tx.output.shape_env.create_unbacked_symint()
                 else:
-                    # Raw unbacked SymInt inputs have no guardable hint. Model
-                    # them as unbacked inputs; data-dependent uses still fail
-                    # through the normal guard path.
                     shape_env = self.tx.output.shape_env
                     if value.node.shape_env is shape_env:
                         # SymInt already belongs to this ShapeEnv — no
