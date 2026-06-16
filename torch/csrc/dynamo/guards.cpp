@@ -809,14 +809,8 @@ struct ActiveGuardReceiptScope {
     if (receipt == nullptr || committed) {
       return;
     }
-    receipt->actual_partial_stability_tokens.insert(
-        receipt->actual_partial_stability_tokens.end(),
-        pending_stability_tokens.begin(),
-        pending_stability_tokens.end());
-    receipt->actual_partial_tokens.insert(
-        receipt->actual_partial_tokens.end(),
-        pending_tokens.begin(),
-        pending_tokens.end());
+    receipt->actual_partial_stability_tokens = pending_stability_tokens;
+    receipt->actual_partial_tokens = pending_tokens;
     committed = true;
   }
 
@@ -5324,12 +5318,16 @@ double profile_guard_manager(
 
 py::dict debug_check_guard_lookup_receipt(
     RootGuardManager& root,
-    py::handle value) {
+    py::handle value,
+    int iterations = 1) {
   auto receipt = create_guard_last_success_receipt();
-  ActiveGuardReceiptScope receipt_scope(receipt.get());
-  const bool result = root.check_nopybind(value.ptr());
-  if (result) {
-    receipt_scope.commit();
+  bool result = false;
+  for (int i = 0; i < iterations; ++i) {
+    ActiveGuardReceiptScope receipt_scope(receipt.get());
+    result = root.check_nopybind(value.ptr());
+    if (result) {
+      receipt_scope.commit();
+    }
   }
 
   py::dict stats;
@@ -6351,7 +6349,10 @@ PyObject* torch_c_dynamo_guards_init() {
       "_debug_is_self_modules_candidate", is_self_modules_candidate);
   py_m.def(
       "_debug_check_guard_lookup_receipt",
-      debug_check_guard_lookup_receipt);
+      debug_check_guard_lookup_receipt,
+      py::arg("root"),
+      py::arg("value"),
+      py::arg("iterations") = 1);
 
 // initialize dict_version_map watcher for 3.12
 #if IS_PYTHON_3_12_PLUS

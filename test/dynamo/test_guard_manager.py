@@ -685,6 +685,35 @@ num_guards_executed=0)
         self.assertEqual(stats["actual_partial_candidate"], 0)
         self.assertEqual(stats["actual_partial_token_count"], 0)
 
+    def test_self_modules_token_plan_replaces_receipt_tokens(self):
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {},
+            default_mgr_enum,
+        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+
+        first_stats = guards._debug_check_guard_lookup_receipt(
+            guard_manager, {"mods": {}}
+        )
+        second_stats = guards._debug_check_guard_lookup_receipt(
+            guard_manager, {"mods": {}}, 2
+        )
+
+        self.assertTrue(first_stats["result"])
+        self.assertTrue(second_stats["result"])
+        self.assertGreater(first_stats["actual_partial_candidate"], 0)
+        self.assertGreater(first_stats["actual_partial_token_count"], 0)
+        self.assertEqual(
+            second_stats["actual_partial_candidate"],
+            first_stats["actual_partial_candidate"],
+        )
+        self.assertEqual(
+            second_stats["actual_partial_token_count"],
+            first_stats["actual_partial_token_count"],
+        )
+
     def test_dict_getitem_accessor(self):
         foo = {
             "a": 1,
