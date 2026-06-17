@@ -133,7 +133,8 @@ void boxed_tensor_inputs_batch_rule(const c10::OperatorHandle& op, torch::jit::S
   int64_t cur_level = maybe_layer->layerId();
 
   auto orig_arguments = torch::jit::last(*stack, num_arguments);
-  if (std::ranges::none_of(orig_arguments, ivalueParticipatesInCurrentLevel)) {
+  // NOLINTNEXTLINE(modernize-use-ranges)
+  if (std::none_of(orig_arguments.begin(), orig_arguments.end(), ivalueParticipatesInCurrentLevel)) {
     op.callBoxed(stack);
     return;
   }
@@ -249,7 +250,8 @@ inline void boxed_existing_bdim_all_batch_rule(
   vmap_check_escaped(maybe_layer, "boxed_existing_bdim_all_batch_rule");
 
   const auto arguments = torch::jit::last(stack, num_arguments);
-  if (std::ranges::none_of(arguments, ivalueParticipatesInCurrentLevel)) {
+  // NOLINTNEXTLINE(modernize-use-ranges)
+  if (std::none_of(arguments.begin(), arguments.end(), ivalueParticipatesInCurrentLevel)) {
     op.callBoxed(stack);
     return;
   }
@@ -303,7 +305,8 @@ inline void boxed_all_tensors_have_optional_bdim(
   int64_t cur_level = maybe_layer->layerId();
 
   const auto arguments = torch::jit::last(stack, num_arguments);
-  if (std::ranges::none_of(arguments, ivalueParticipatesInCurrentLevel)) {
+  // NOLINTNEXTLINE(modernize-use-ranges)
+  if (std::ranges::none_of(arguments.begin(), arguments.end(), ivalueParticipatesInCurrentLevel)) {
     op.callBoxed(stack);
     return;
   }
