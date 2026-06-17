@@ -1179,14 +1179,20 @@ class DecompOneOffTests(TestCase):
                     continue
                 eager = torch.linspace(start, end, steps, dtype=dtype, device=device)
                 msg = f"linspace({start}, {end}, {steps}, dtype={dtype})"
-                ref = torch._refs.linspace(start, end, steps, dtype=dtype, device=device)
+                ref = torch._refs.linspace(
+                    start, end, steps, dtype=dtype, device=device
+                )
                 self.assertEqual(ref, eager, exact_dtype=True, msg=f"scalar {msg}")
                 ref_tensor = torch._refs.linspace(
                     torch.tensor(start, device=device),
                     torch.tensor(end, device=device),
-                    steps, dtype=dtype, device=device,
+                    steps,
+                    dtype=dtype,
+                    device=device,
                 )
-                self.assertEqual(ref_tensor, eager, exact_dtype=True, msg=f"tensor {msg}")
+                self.assertEqual(
+                    ref_tensor, eager, exact_dtype=True, msg=f"tensor {msg}"
+                )
 
     @unittest.skipIf(TEST_WITH_ASAN, "Skipped under ASAN")
     @skipIfCrossRef
