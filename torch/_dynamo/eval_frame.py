@@ -115,10 +115,10 @@ from .mutation_guard import install_generation_tagging_init
 from .utils import (
     _get_error_on_graph_break,
     _set_error_on_graph_break,
-    CleanupManager,
+    cleanup_guarded_eager_fallback_code,
     common_constant_types,
     compile_times,
-    guarded_eager_fallback_codes,
+    is_guarded_eager_fallback_code,
 )
 
 
@@ -379,14 +379,12 @@ def _reset_guarded_backend_cache() -> None:
 
 def reset_code(code: types.CodeType) -> None:
     for entry in _debug_get_cache_entry_list(code):
-        if entry.code in guarded_eager_fallback_codes or getattr(
+        if is_guarded_eager_fallback_code(entry.code) or getattr(
             entry, "trace_annotation", ""
         ).startswith("Torch-Compiled Eager Fallback"):
-            CleanupManager.instance.cleanup(entry.code)
-            guarded_eager_fallback_codes._remove_id(id(entry.code))
-    if code in guarded_eager_fallback_codes:
-        CleanupManager.instance.cleanup(code)
-        guarded_eager_fallback_codes._remove_id(id(code))
+            cleanup_guarded_eager_fallback_code(entry.code)
+    if is_guarded_eager_fallback_code(code):
+        cleanup_guarded_eager_fallback_code(code)
     _reset_code(code)
 
 
@@ -2565,7 +2563,7 @@ def export(
                     "Failed to produce a graph during tracing as no tensor operations were found and same_signature is False."
                 )
             # If the module does not contain any tensor computation, we would create a graph with inputs and outputs.
-            # To be consistent with the graph traced by dynano, `graph` will have only tensor inputs as placeholders
+            # To be consistent with the graph traced by dynamo, `graph` will have only tensor inputs as placeholders
             # and tensor outputs as output nodes. non-tensor inputs and outputs will be added when rewriting signature.
             # We will also construct the `example_inputs`, `graph_captured_input`, and `graph_captured_result` corresponding
             # to `graph`.

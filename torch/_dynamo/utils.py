@@ -2490,12 +2490,39 @@ class CleanupManager(ExactWeakKeyDictionary):
     def _remove_id(self, idx: int) -> None:
         hooks = self.values.pop(idx, ())
         self.refs.pop(idx, None)
+        guarded_fallback_ids = globals().get("guarded_eager_fallback_code_ids")
+        if guarded_fallback_ids is not None:
+            guarded_fallback_ids.discard(idx)
         for hook in hooks:
             hook()
 
 
 CleanupManager.instance = CleanupManager()
 guarded_eager_fallback_codes = ExactWeakKeyDictionary()
+guarded_eager_fallback_code_ids: set[int] = set()
+
+
+def register_guarded_eager_fallback_code(code: types.CodeType) -> None:
+    guarded_eager_fallback_codes[code] = True
+    guarded_eager_fallback_code_ids.add(id(code))
+
+
+def is_guarded_eager_fallback_code(code: types.CodeType) -> bool:
+    return code in guarded_eager_fallback_codes
+
+
+def cleanup_guarded_eager_fallback_code(code: types.CodeType) -> None:
+    idx = id(code)
+    CleanupManager.instance._remove_id(idx)
+    guarded_eager_fallback_codes._remove_id(idx)
+    guarded_eager_fallback_code_ids.discard(idx)
+
+
+def cleanup_all_guarded_eager_fallback_codes() -> None:
+    for idx in list(guarded_eager_fallback_code_ids):
+        CleanupManager.instance._remove_id(idx)
+        guarded_eager_fallback_codes._remove_id(idx)
+        guarded_eager_fallback_code_ids.discard(idx)
 
 
 def clone_tensor(x: torch.Tensor) -> torch.Tensor:

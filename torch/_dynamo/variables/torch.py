@@ -1771,11 +1771,14 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             condition: VariableTracker,
             message: VariableTracker,
         ) -> VariableTracker | None:
-            if (condition.is_python_constant() and condition.as_python_constant()) or (
-                isinstance(condition, variables.SymNodeVariable)
-                and condition.evaluate_expr()
-            ):
-                return ConstantVariable.create(None)
+            if condition.is_python_constant():
+                if condition.as_python_constant():
+                    return ConstantVariable.create(None)
+                raise_observed_exception(AssertionError, tx, args=[message])
+            if isinstance(condition, variables.SymNodeVariable):
+                if condition.evaluate_expr():
+                    return ConstantVariable.create(None)
+                raise_observed_exception(AssertionError, tx, args=[message])
             return None
 
         @register(SDPAParams)
@@ -2288,6 +2291,23 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                     f"of length {len(tx.symbolic_torch_function_state.mode_stack)}"
                 )
             return tx.symbolic_torch_function_state.mode_stack[ind]
+
+        @register(torch.utils._python_dispatch._get_current_dispatch_mode_stack)
+        def handle_get_current_dispatch_mode_stack(
+            self,
+            tx: "InstructionTranslatorBase",
+            *args: VariableTracker,
+            **kwargs: VariableTracker,
+        ) -> VariableTracker:
+            if args or kwargs:
+                raise_type_error(
+                    tx,
+                    "_get_current_dispatch_mode_stack() takes no arguments",
+                )
+            # During tracing, Dynamo runs with dispatch modes removed, so
+            # the stack is always empty. Return [] as a constant instead
+            # of graph-breaking.
+            return VariableTracker.build(tx, [])
 
         @register(torch.get_device_module.__wrapped__)
         def handle_get_device_module(
@@ -4020,11 +4040,6 @@ For now, dynamo will explicitly graph break when it encounters user code with th
                 (torch._ops.OpOverload, torch._ops.OpOverloadPacket),
             )
         ) and can_dispatch_torch_function(tx, args, kwargs)
-
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, VariableTracker):
-            return False
-        return self.as_python_constant() == other.as_python_constant()
 
 
 class DispatchKeySetVariable(BaseTorchVariable):

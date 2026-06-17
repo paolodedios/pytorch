@@ -162,7 +162,6 @@ from .utils import (
     gen_record_file_name,
     get_hook_for_recompile_user_context,
     get_metrics_context,
-    guarded_eager_fallback_codes,
     increment_frame,
     is_namedtuple,
     istype,
@@ -170,6 +169,7 @@ from .utils import (
     maybe_disable_inference_mode,
     maybe_disable_inference_mode_for_fake_prop,
     orig_code_map,
+    register_guarded_eager_fallback_code,
     reset_graph_break_dup_checker,
     setup_compile_debug,
     to_int_us,
@@ -382,7 +382,7 @@ def _guarded_eager_fallback(
 
         if output.cleanups:
             CleanupManager.instance[fallback_code] = output.cleanups
-            guarded_eager_fallback_codes[fallback_code] = True
+            register_guarded_eager_fallback_code(fallback_code)
 
         orig_code_map[fallback_code] = code
         output_codes.add(fallback_code)

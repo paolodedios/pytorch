@@ -9,7 +9,7 @@ import torch._dynamo
 import torch._dynamo.test_case
 from torch._dynamo.eval_frame import _debug_get_cache_entry_list, reset_code
 from torch._dynamo.testing import CompileCounter
-from torch._dynamo.utils import CleanupHook, CleanupManager, counters
+from torch._dynamo.utils import CleanupHook, CleanupManager, clone_inputs, counters
 from torch.testing._internal.common_utils import AlwaysWarnTypedStorageRemoval
 
 
@@ -286,6 +286,58 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
             {name for name in fn.__globals__ if name.startswith("__builtins_dict___")},
             preexisting_builtins_keys,
         )
+
+    def test_condition_dependent_skip_reset_cleans_missed_fallback_code(self):
+        def fn(x, n):
+            if n == 0:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return x + 1
+            return x + 1
+
+        opt_fn = torch.compile(fn, backend="eager", dynamic=False)
+        x = torch.ones(3)
+        preexisting_builtins_keys = {
+            name for name in fn.__globals__ if name.startswith("__builtins_dict___")
+        }
+
+        self.assertEqual(opt_fn(x, 0), x + 1)
+        new_builtins_keys = {
+            name for name in fn.__globals__ if name.startswith("__builtins_dict___")
+        } - preexisting_builtins_keys
+        self.assertTrue(new_builtins_keys)
+
+        # Simulate the global reset path missing weakly tracked code objects.
+        torch._dynamo.convert_frame.input_codes.clear()
+        torch._dynamo.convert_frame.output_codes.clear()
+        try:
+            torch._dynamo.reset()
+            self.assertEqual(
+                {
+                    name
+                    for name in fn.__globals__
+                    if name.startswith("__builtins_dict___")
+                },
+                preexisting_builtins_keys,
+            )
+        finally:
+            reset_code(fn.__code__)
+
+    def test_internal_clone_inputs_graph_break_not_counted(self):
+        def fn(x):
+            y = x + 1
+            z = clone_inputs((x,))[0]
+            return y + z
+
+        opt_fn = torch.compile(fn, backend="eager")
+        x = torch.ones(2)
+        counters.clear()
+
+        self.assertEqual(opt_fn(x), x + x + 1)
+        self.assertEqual(sum(counters["graph_break"].values()), 0)
 
     def test_condition_dependent_skip_cleanup_hooks_are_idempotent(self):
         def fn():

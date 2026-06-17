@@ -643,10 +643,15 @@ class UserFunctionVariable(BaseUserFunctionVariable):
         return self.fn.__globals__
 
     def should_allow_nested_graph_breaks(self) -> bool:
-        from torch._dynamo.trace_rules import BUILTIN_INLINE_WHEN_CALLED
+        from torch._dynamo.trace_rules import (
+            BUILTIN_INLINE_WHEN_CALLED,
+            is_ngb_suppressed_inline,
+        )
 
         filename = self.get_filename()
         if any(filename.startswith(d) for d in BUILTIN_INLINE_WHEN_CALLED):
+            return False
+        if is_ngb_suppressed_inline(filename):
             return False
         return True
 
@@ -1047,9 +1052,6 @@ class UserFunctionVariable(BaseUserFunctionVariable):
                 collected.extend(flat)
             return collected
         return None
-
-    def is_python_equal(self, other: object) -> bool:
-        return isinstance(other, variables.UserFunctionVariable) and self.fn is other.fn
 
 
 class InspectSignatureVariable(UserFunctionVariable):
@@ -2488,11 +2490,15 @@ class SkipFunctionVariable(VariableTracker):
                 from ..trace_rules import get_skip_reason
 
                 reason = get_skip_reason(self.value)
+            record_graph_break = not (
+                module_name == "torch._dynamo.utils" and qualname == "clone_inputs"
+            )
             unimplemented(
                 gb_type="Attempted to call function marked as skipped",
                 context=f"module: {module_name}, qualname: {qualname}, skip reason: {reason}",
                 explanation=explanation,
                 hints=hints,
+                record_graph_break=record_graph_break,
             )
 
     def reconstruct_pycode(self, codegen):
@@ -2516,12 +2522,6 @@ class SkipFunctionVariable(VariableTracker):
             )
 
         return fn_var_getattr(tx, self.value, self.source, name)
-
-    def is_python_equal(self, other: object) -> bool:
-        return (
-            isinstance(other, VariableTracker)
-            and self.as_python_constant() == other.as_python_constant()
-        )
 
 
 class WrappedSkipFunctionVariable(SkipFunctionVariable):
@@ -3045,22 +3045,6 @@ class FunctoolsPartialVariable(VariableTracker):
         if self.original_cache_hash is not None:
             result.cache_hash = self.original_cache_hash  # type: ignore[missing-attribute]
         return result
-
-    def is_python_equal(self, other: object) -> bool:
-        return (
-            isinstance(other, FunctoolsPartialVariable)
-            and self.func.is_python_equal(other.func)
-            and all(
-                arg_a.is_python_equal(arg_b)
-                for (arg_a, arg_b) in zip(self.args, other.args)
-            )
-            and all(
-                value_a.is_python_equal(value_b)
-                for (value_a, value_b) in zip(
-                    self.keywords.values(), other.keywords.values()
-                )
-            )
-        )
 
 
 class PolyfilledFunctionVariable(VariableTracker):
@@ -4065,14 +4049,6 @@ class MethodWrapperVariable(VariableTracker):
         from .object_protocol import python_constant_richcompare_impl
 
         return python_constant_richcompare_impl(self, tx, other, op)
-
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, VariableTracker):
-            return False
-        try:
-            return self.as_python_constant() == other.as_python_constant()
-        except NotImplementedError:
-            return False
 
 
 class MethodDescriptorVariable(VariableTracker):
