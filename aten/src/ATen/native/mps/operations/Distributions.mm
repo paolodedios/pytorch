@@ -528,7 +528,9 @@ Tensor _s_binomial_mps(const Tensor& count, const Tensor& prob, std::optional<Ge
   }
 
   auto count_contig = count.contiguous();
-  auto prob_contig = prob.expand(count.sizes()).to(count.scalar_type()).contiguous();
+  auto prob_contig = prob.expand(count.sizes())
+                         .to(count.scalar_type(), /*non_blocking=*/false, /*copy=*/false, MemoryFormat::Contiguous)
+                         .contiguous();
   auto mps_gen = get_generator_or_default<MPSGeneratorImpl>(gen_, at::mps::detail::getDefaultMPSGenerator());
   auto stream = getCurrentMPSStream();
 
