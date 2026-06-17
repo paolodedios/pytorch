@@ -76,15 +76,15 @@ jobs:
         include:
           - docker-image-name: pytorch-linux-jammy-aarch64-py3.10-gcc15
             buildkit_addr: "tcp://buildkitd-arm64.buildkit:1234"
-            runner_label: mt-l-arm64g2-6-25
+            runner_label: mt-l-arm64g4-16-62
           - docker-image-name: pytorch-linux-jammy-aarch64-py3.10-gcc15-inductor-benchmarks
             buildkit_addr: "tcp://buildkitd-arm64.buildkit:1234"
             timeout-minutes: 600
-            runner_label: mt-l-arm64g2-6-25
+            runner_label: mt-l-arm64g4-16-62
     # Regular OSDC pool on the `default` group (the arc-cbr-production cluster),
     # which deploys BuildKit. The orchestrator runner only streams build context
     # to the remote BuildKit, so the smallest pools fit both arches
-    # (x86: mt-l-x86iavx512-2-4, arm64: mt-l-arm64g2-6-25).
+    # (x86: mt-l-x86iavx512-2-4, arm64: mt-l-arm64g4-16-62).
     #
     # CAVEAT: regular mt-l-* nodes are subject to the cache-enforcer DaemonSet,
     # which blocks outbound ghcr.io egress at the host iptables layer (release
