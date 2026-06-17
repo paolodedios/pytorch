@@ -1,6 +1,7 @@
 #pragma once
 
 #include <torch/csrc/inductor/aoti_torch/c/shim.h>
+#include <torch/csrc/stable/macros.h>
 #include <torch/headeronly/core/Layout.h>
 #include <torch/headeronly/core/ScalarType.h>
 #include <torch/headeronly/macros/Macros.h>
@@ -9,7 +10,6 @@
 #include <torch/headeronly/util/shim_utils.h>
 #include <climits>
 #include <memory>
-#include <utility>
 
 #include <torch/csrc/stable/accelerator.h>
 #include <torch/csrc/stable/device_struct.h>
@@ -62,9 +62,9 @@ class Tensor {
    */
   Tensor() {
     AtenTensorHandle ret;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_new_uninitialized_tensor(&ret));
+    STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_new_uninitialized_tensor(&ret));
     ath_ = std::shared_ptr<AtenTensorOpaque>(ret, [](AtenTensorHandle ath) {
-      TORCH_ERROR_CODE_CHECK(aoti_torch_delete_tensor_object(ath));
+      STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_delete_tensor_object(ath));
     });
   }
 
@@ -80,7 +80,7 @@ class Tensor {
    */
   explicit Tensor(AtenTensorHandle ath)
       : ath_(ath, [](AtenTensorHandle ath) {
-          TORCH_ERROR_CODE_CHECK(aoti_torch_delete_tensor_object(ath));
+          STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_delete_tensor_object(ath));
         }) {}
 
   // Copy and move constructors can be default cuz the underlying handle is a
@@ -126,7 +126,8 @@ class Tensor {
    */
   void* data_ptr() const {
     void* data_ptr;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_get_data_ptr(ath_.get(), &data_ptr));
+    STABLE_TORCH_ERROR_CODE_CHECK(
+        aoti_torch_get_data_ptr(ath_.get(), &data_ptr));
     return data_ptr;
   }
 
@@ -140,7 +141,8 @@ class Tensor {
    */
   void* mutable_data_ptr() const {
     void* data_ptr{};
-    TORCH_ERROR_CODE_CHECK(torch_get_mutable_data_ptr(ath_.get(), &data_ptr));
+    STABLE_TORCH_ERROR_CODE_CHECK(
+        torch_get_mutable_data_ptr(ath_.get(), &data_ptr));
     return data_ptr;
   }
 
@@ -153,7 +155,8 @@ class Tensor {
    */
   const void* const_data_ptr() const {
     const void* data_ptr{};
-    TORCH_ERROR_CODE_CHECK(torch_get_const_data_ptr(ath_.get(), &data_ptr));
+    STABLE_TORCH_ERROR_CODE_CHECK(
+        torch_get_const_data_ptr(ath_.get(), &data_ptr));
     return data_ptr;
   }
 
@@ -190,7 +193,8 @@ class Tensor {
    * Minimum compatible version: PyTorch 2.10.
    */
   const Tensor& set_requires_grad(bool requires_grad) const {
-    TORCH_ERROR_CODE_CHECK(torch_set_requires_grad(ath_.get(), requires_grad));
+    STABLE_TORCH_ERROR_CODE_CHECK(
+        torch_set_requires_grad(ath_.get(), requires_grad));
     return *this;
   }
 #endif // TORCH_FEATURE_VERSION >= TORCH_VERSION_2_10_0
@@ -204,7 +208,7 @@ class Tensor {
    */
   int64_t dim() const {
     int64_t dim;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_get_dim(ath_.get(), &dim));
+    STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_get_dim(ath_.get(), &dim));
     return dim;
   }
 
@@ -217,7 +221,7 @@ class Tensor {
    */
   int64_t numel() const {
     int64_t numel;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_get_numel(ath_.get(), &numel));
+    STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_get_numel(ath_.get(), &numel));
     return numel;
   }
 
@@ -239,7 +243,7 @@ class Tensor {
    */
   IntHeaderOnlyArrayRef sizes() const {
     int64_t* sizes;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_get_sizes(ath_.get(), &sizes));
+    STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_get_sizes(ath_.get(), &sizes));
     return IntHeaderOnlyArrayRef(sizes, dim());
   }
 
@@ -255,7 +259,7 @@ class Tensor {
    */
   IntHeaderOnlyArrayRef strides() const {
     int64_t* strides;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_get_strides(ath_.get(), &strides));
+    STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_get_strides(ath_.get(), &strides));
     return IntHeaderOnlyArrayRef(strides, dim());
   }
 
@@ -272,7 +276,7 @@ class Tensor {
    */
   bool is_contiguous() const {
     bool is_contiguous;
-    TORCH_ERROR_CODE_CHECK(
+    STABLE_TORCH_ERROR_CODE_CHECK(
         aoti_torch_is_contiguous(ath_.get(), &is_contiguous));
     return is_contiguous;
   }
@@ -287,7 +291,8 @@ class Tensor {
    */
   int64_t stride(int64_t dim) const {
     int64_t stride;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_get_stride(ath_.get(), dim, &stride));
+    STABLE_TORCH_ERROR_CODE_CHECK(
+        aoti_torch_get_stride(ath_.get(), dim, &stride));
     return stride;
   }
 
@@ -297,10 +302,11 @@ class Tensor {
   /// \private
   int8_t get_device() const {
     int32_t device_index;
-    TORCH_ERROR_CODE_CHECK(
+    STABLE_TORCH_ERROR_CODE_CHECK(
         aoti_torch_get_device_index(ath_.get(), &device_index));
     STD_TORCH_CHECK(
-        std::in_range<int8_t>(device_index),
+        device_index >= std::numeric_limits<int8_t>::min() &&
+            device_index <= std::numeric_limits<int8_t>::max(),
         "Device index is out of range of return type int8_t, please use get_device_index() instead.");
     return static_cast<int8_t>(device_index);
   }
@@ -319,7 +325,7 @@ class Tensor {
    */
   DeviceIndex get_device_index() const {
     int32_t device_index;
-    TORCH_ERROR_CODE_CHECK(
+    STABLE_TORCH_ERROR_CODE_CHECK(
         aoti_torch_get_device_index(ath_.get(), &device_index));
     return device_index;
   }
@@ -333,7 +339,7 @@ class Tensor {
    */
   bool is_cuda() const {
     int32_t device_type;
-    TORCH_ERROR_CODE_CHECK(
+    STABLE_TORCH_ERROR_CODE_CHECK(
         aoti_torch_get_device_type(ath_.get(), &device_type));
     return device_type == aoti_torch_device_type_cuda();
   }
@@ -347,7 +353,7 @@ class Tensor {
    */
   bool is_cpu() const {
     int32_t device_type;
-    TORCH_ERROR_CODE_CHECK(
+    STABLE_TORCH_ERROR_CODE_CHECK(
         aoti_torch_get_device_type(ath_.get(), &device_type));
     return device_type == aoti_torch_device_type_cpu();
   }
@@ -362,7 +368,7 @@ class Tensor {
    */
   int64_t size(int64_t dim) const {
     int64_t size;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_get_size(ath_.get(), dim, &size));
+    STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_get_size(ath_.get(), dim, &size));
     return size;
   }
 
@@ -375,7 +381,7 @@ class Tensor {
    */
   bool defined() const {
     bool defined;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_is_defined(ath_.get(), &defined));
+    STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_is_defined(ath_.get(), &defined));
     return defined;
   }
 
@@ -391,7 +397,7 @@ class Tensor {
    */
   int64_t storage_offset() const {
     int64_t storage_offset;
-    TORCH_ERROR_CODE_CHECK(
+    STABLE_TORCH_ERROR_CODE_CHECK(
         aoti_torch_get_storage_offset(ath_.get(), &storage_offset));
     return storage_offset;
   }
@@ -405,7 +411,7 @@ class Tensor {
    */
   size_t element_size() const {
     int32_t dtype;
-    TORCH_ERROR_CODE_CHECK(aoti_torch_get_dtype(ath_.get(), &dtype));
+    STABLE_TORCH_ERROR_CODE_CHECK(aoti_torch_get_dtype(ath_.get(), &dtype));
     return aoti_torch_dtype_element_size(dtype);
   }
 
