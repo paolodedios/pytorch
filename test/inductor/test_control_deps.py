@@ -341,12 +341,11 @@ class TestControlDeps(InductorTestCase):
             expected = fn(x, y)
             torch.testing.assert_close(result, expected)
 
-    @requires_gpu()
     def test_wait_event_threads_record_event_passthroughs(self):
         """wait_event must thread record_event's passthroughs to consumers.
 
         Regression test for the backward reload pattern:
-          reload [side stream] → record_event → ... → wait_event [default] → consumer
+          reload [side stream] -> record_event -> ... -> wait_event [default] -> consumer
 
         Without threading, the consumer depends only on record_event's getitem
         (wrong stream), so the inductor scheduler can place the consumer kernel
@@ -361,7 +360,7 @@ class TestControlDeps(InductorTestCase):
 
         gm = torch.fx.GraphModule(torch.nn.Module(), torch.fx.Graph())
         g = gm.graph
-        val = torch.randn(4, device=GPU_TYPE)
+        val = torch.randn(4)
 
         x = g.placeholder("x")
         x.meta["val"] = val
