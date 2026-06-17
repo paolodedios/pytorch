@@ -33,6 +33,7 @@ from torch.fx.graph_module import _get_attr
 from torch.utils import _pytree as pytree
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._pytree import tree_map
+from torch.utils._typing_utils import not_none
 from torch.utils.flop_counter import flop_registry
 
 from .virtualized import V
@@ -82,7 +83,16 @@ def _is_fake_tensor_same(
     node: torch.fx.Node | None = None,
     recursive_ids: OrderedSet[tuple[int, int]] | None = None,
 ) -> bool:
-    """Validate that two FakeTensors or collections thereof are the same."""
+    """Validate that two FakeTensors or collections thereof are the same, including
+    storage locations if enabled.
+
+    check_dtype: disabling this flag will remove dtype checks.
+    check_strides: disabling this flag will remove checks for striding.
+    check_storage: disabling this flag will remove checks for storage offset and
+    location.  This is useful for subgraph argument and output updating, where storage
+    location can change without invalidating the subgraph.
+    recursive_ids: This is only for use when recursing through collections, and must not
+    be supplied by users of this function."""
 
     def is_intlist_same(new, old):
         return statically_known_true(sym_eq(new, old))
@@ -95,20 +105,28 @@ def _is_fake_tensor_same(
             return old is None
 
         if isinstance(new, Mapping):
-            if new.keys() != old.keys():
-                return False
-            return all(
-                _is_fake_tensor_same(
-                    new[key],
-                    old[key],
-                    existing_storages,
-                    check_dtype=check_dtype,
-                    check_strides=check_strides,
-                    check_storage=check_storage,
-                    node=node,
-                    recursive_ids=recursive_ids,
+            if recursive_ids is None:
+                recursive_ids = OrderedSet()
+
+            id_pair = (id(new), id(old))
+            visited = id_pair in recursive_ids
+            recursive_ids.add(id_pair)
+
+            return visited or (
+                new.keys() == old.keys()
+                and all(
+                    _is_fake_tensor_same(
+                        new[key],
+                        old[key],
+                        existing_storages,
+                        check_dtype=check_dtype,
+                        check_strides=check_strides,
+                        check_storage=check_storage,
+                        node=node,
+                        recursive_ids=recursive_ids,
+                    )
+                    for key in new
                 )
-                for key in new
             )
 
         if isinstance(new, Collection) and not isinstance(new, (str, bytes)):
@@ -141,7 +159,7 @@ def _is_fake_tensor_same(
 
         if isinstance(new, torch.types.py_sym_types):
             return (
-                new.node.shape_env._maybe_evaluate_static(
+                not_none(new.node.shape_env)._maybe_evaluate_static(
                     sympy.Eq(new.node.expr, old.node.expr)
                 )
                 == sympy.true
@@ -538,7 +556,9 @@ class FakeTensorUpdater:
                 return True
 
             return (
-                isinstance(node.target, torch._ops.OpOverload)
+                isinstance(
+                    node.target, (torch._ops.OpOverload, torch._ops.OpOverloadPacket)
+                )
                 or node.target is operator.getitem
                 or node.target
                 is torch._inductor.fx_passes.reinplace._generalized_scatter
@@ -751,6 +771,9 @@ def get_fake(x: Any, gm: torch.fx.GraphModule | None) -> Any:
         if gm is not None and x.op == "get_attr" and isinstance(x.target, str):
             attr = _get_attr(gm, x.target)
             if pytree.tree_any_only(torch.Tensor, lambda _: True, attr):
+                # Keep tensor-valued attributes invalid until they have fake metadata.
+                # Feeding real module tensors into FakeTensor propagation can silently
+                # mix real and fake inputs.
                 return x
             return attr
         return x

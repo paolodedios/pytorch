@@ -467,14 +467,21 @@ class TestFakeTensorUpdater(TestCase):
                     )
                 else:
                     cloned_node = gm.graph.call_function(clone_function, (fn,))
-            fn.replace_all_uses_with(cloned_node, lambda n: n != cloned_node)
+            nodes_modified = fn.replace_all_uses_with(
+                cloned_node, lambda n: n != cloned_node
+            )
 
             with V.set_fake_mode(fake_mode):
                 clone_num_updated = updater.incremental_update()
 
             # At a minimum, we have to update the newly inserted node.  The users
-            # may not need updates if the replacement has equivalent metadata.
-            self.assertGreaterEqual(clone_num_updated, 1)
+            # may not need updates if the replacement has equivalent metadata, but
+            # stride-changing replacements should propagate through modified
+            # call_function users.
+            minimum_updated = 1
+            if should_shuffle_strides:
+                minimum_updated += sum(n.op == "call_function" for n in nodes_modified)
+            self.assertGreaterEqual(clone_num_updated, minimum_updated)
             self.assertIn("val", cloned_node.meta)
             with V.set_fake_mode(fake_mode):
                 self.assertEqual(updater.incremental_update(), 0)
@@ -482,7 +489,10 @@ class TestFakeTensorUpdater(TestCase):
             cloned_node.replace_all_uses_with(fn)
             gm.graph.erase_node(cloned_node)
             with V.set_fake_mode(fake_mode):
-                updater.incremental_update()
+                erase_num_updated = updater.incremental_update()
+                if should_shuffle_strides:
+                    self.assertGreaterEqual(erase_num_updated, minimum_updated - 1)
+                self.assertLessEqual(erase_num_updated, clone_num_updated - 1)
                 self.assertEqual(updater.incremental_update(), 0)
 
     def test_hop_implicit_subgraph_inputs(self):
@@ -732,6 +742,36 @@ class TestFakeTensorUpdater(TestCase):
             self.assertEqual(view_dtype_node.meta["val"].dtype, torch.float32)
             self.assertEqual(updated_tensor_dtype(), torch.float32)
             self.assertEqual(add_node.meta["val"].dtype, torch.float32)
+
+    def test_op_overload_packet_dtype_change(self):
+        root = torch.nn.Module()
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        view = graph.call_function(torch.ops.aten.view.dtype, (x, torch.int32))
+        add = graph.call_function(torch.ops.aten.add, (view, 1))
+        graph.output(add)
+        graph_module = torch.fx.GraphModule(root, graph)
+
+        self.assertIsInstance(add.target, torch._ops.OpOverloadPacket)
+
+        fake_mode = torch._subclasses.FakeTensorMode()
+        with fake_mode:
+            x.meta["val"] = torch.randn(4)
+            view.meta["val"] = view.target(
+                *(get_fake(arg, graph_module) for arg in view.args)
+            )
+            add.meta["val"] = add.target(get_fake(view, graph_module), 1)
+
+        self.assertEqual(view.meta["val"].dtype, torch.int32)
+        self.assertEqual(add.meta["val"].dtype, torch.int32)
+
+        updater = FakeTensorUpdater(graph_module)
+        view.args = (x, torch.float32)
+        with V.set_fake_mode(fake_mode):
+            updater.incremental_update()
+
+        self.assertEqual(view.meta["val"].dtype, torch.float32)
+        self.assertEqual(add.meta["val"].dtype, torch.float32)
 
     def test_run_const_graph_dtype_change(self):
         def inner_fn(y: torch.Tensor) -> torch.Tensor:
