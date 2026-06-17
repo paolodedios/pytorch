@@ -67,7 +67,7 @@ ENV PATH=/usr/local/nvidia/bin:/usr/local/cuda/bin:$PATH
 
 # Install MAGMA into the CUDA toolkit dir (was previously pulled in via conda)
 COPY ./common/install_magma.sh install_magma.sh
-RUN if [ -n "${CUDA_VERSION}" ]; then bash ./install_magma.sh $(cut -f1-2 -d'.' <<< ${CUDA_VERSION}); fi
+RUN if [ -n "${CUDA_VERSION}" ]; then bash ./install_magma.sh $(echo ${CUDA_VERSION} | cut -f1-2 -d'.'); fi
 RUN rm -f install_magma.sh
 ENV MAGMA_HOME=/usr/local/cuda/magma
 # No effect if cuda not installed
