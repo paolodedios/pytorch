@@ -6,6 +6,7 @@ Tests for inductor lowering of functional custom ops to out-variant via ExternKe
 import torch
 from torch._C import FileCheck
 from torch._inductor import config
+from torch._inductor.codegen import common
 from torch._inductor.test_case import TestCase as InductorTestCase
 from torch._inductor.utils import run_and_get_code
 from torch.testing._internal.common_utils import (
@@ -161,12 +162,19 @@ class TestCustomOpOutLowering(InductorTestCase):
             self.assertEqual(compiled_out, eager_out)
             source_code = "\n".join(code)
             FileCheck().check("aoti_torch_call_dispatcher").run(source_code)
-            # ArrayRef wrapper tensors are not AtenTensorHandle, so that wrapper
-            # path intentionally does not emit assert_size_stride.
-            if "array_ref.h" not in source_code:
+            if "assert_size_stride" in source_code:
                 FileCheck().check_regex(
                     r'assert_size_stride\([^,]+,\s*\{4L?,\s*4L?\},\s*\{4L?,\s*1L?\},\s*"torch.ops.mylib.no_out_op.default"\)'
                 ).run(source_code)
+            else:
+                # ArrayRef wrapper tensors are not AtenTensorHandle, so that wrapper
+                # path intentionally does not emit assert_size_stride.
+                self.assertEqual(
+                    common.get_wrapper_codegen_for_device(
+                        "cpu", cpp_wrapper=True
+                    ).__name__,
+                    "CppWrapperCpuArrayRef",
+                )
             self.assertNotRegex(source_code, r"\bbuf\d+\s*=\s*buf\d+\b")
 
 
