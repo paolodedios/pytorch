@@ -9087,17 +9087,15 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
     # Only attach to void ops (NoneLayout) -- these are the sync ops
     # (record_event, wait_event) that need ordering edges.  Attaching to
     # all ExternKernels would over-serialize through the rename chain.
-    void_op_set = OrderedSet(
-        [
-            op
-            for op in subgraph_ops
-            if isinstance(op, ir.ExternKernel)
-            and isinstance(op, ir.Buffer)
-            and op.name is not None
-            and isinstance(op.layout, ir.NoneLayout)
-        ]
-    )
-    for op in void_op_set:
+    void_ops = [
+        op
+        for op in subgraph_ops
+        if isinstance(op, ir.ExternKernel)
+        and isinstance(op, ir.Buffer)
+        and op.name is not None
+        and isinstance(op.layout, ir.NoneLayout)
+    ]
+    for op in void_ops:
         if isinstance(output, (list, tuple)):
             for v in output:
                 _add_passthrough_mutation(v, op)
