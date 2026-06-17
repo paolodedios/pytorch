@@ -36,7 +36,6 @@ from torch.testing._internal.common_utils import (
     IS_ARM64,
     IS_LINUX,
     IS_WINDOWS,
-    MACOS_VERSION,
     make_fullrank_matrices_with_distinct_singular_values,
     skipIfSlowGradcheckEnv,
     slowTest,
@@ -1708,15 +1707,6 @@ op_db: list[OpInfo] = [
                 device_type="mps",
                 dtypes=(torch.complex64,),
             ),
-            # AssertionError: Tensor-likes are not close!
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_out",
-                device_type="mps",
-                dtypes=(torch.float32,),
-                active_if=MACOS_VERSION < 26.0,
-            ),
         ),
         sample_inputs_func=sample_inputs_linalg_matrix_power,
     ),
@@ -1757,16 +1747,20 @@ op_db: list[OpInfo] = [
                 device_type="cpu",
                 dtypes=(torch.long,),
             ),
-            # AssertionError: Tensor-likes are not close!
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_out",
-                device_type="mps",
-                dtypes=(torch.float32,),
-                active_if=MACOS_VERSION < 26.0,
-            ),
         ),
+        decorators=[
+            # https://github.com/pytorch/pytorch/issues/184350
+            # DTensor lowers a multi_dot chain with a Shard contraction dim
+            # into a per-rank partial sum, then all-reduces. The summation
+            # order differs from the single reference matmul, and in float32
+            # the drift can exceed the default tolerance for some inputs.
+            DecorateInfo(
+                toleranceOverride({torch.float32: tol(atol=1e-5, rtol=2.4e-6)}),
+                "TestDTensorOps",
+                "test_dtensor_op_db",
+                dtypes=(torch.float32,),
+            ),
+        ],
     ),
     # NB: linalg.norm has two variants so that different skips can be used for different sample inputs
     OpInfo(
@@ -2626,9 +2620,8 @@ op_db: list[OpInfo] = [
                 "test_variant_consistency_eager",
                 device_type="mps",
             ),
-            # see https://github.com/pytorch/pytorch/issues/177264
             DecorateInfo(
-                unittest.expectedFailure,
+                toleranceOverride({torch.float32: tol(atol=1e-03, rtol=1e-04)}),
                 "TestEagerFusionOpInfo",
                 "test_aot_autograd_symbolic_exhaustive",
                 device_type="cpu",

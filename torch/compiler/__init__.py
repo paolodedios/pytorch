@@ -18,6 +18,7 @@ __all__ = [
     "assume_constant_result",
     "reset",
     "allow_in_graph",
+    "nonstrict_trace",
     "substitute_in_graph",
     "list_backends",
     "disable",
@@ -153,6 +154,31 @@ def allow_in_graph(fn):
     return torch._dynamo.allow_in_graph(fn)
 
 
+def nonstrict_trace(traceable_fn: Callable[_P, _R]) -> Callable[_P, _R]:
+    """
+    Mark a function as nonstrict-traceable for :func:`torch.compile`.
+
+    A nonstrict-traced function appears as an opaque call in the Dynamo graph,
+    but AOTAutograd traces through it. This is similar to
+    :func:`allow_in_graph`, with enhanced support for user-defined classes,
+    ``nn.Module`` arguments, and captured tensors.
+
+    Args:
+        traceable_fn: A callable to mark as nonstrict-traceable.
+
+    Example::
+
+        @torch.compiler.nonstrict_trace
+        def traced_forward(model, x):
+            torch._dynamo.graph_break()
+            return model(x) + x
+
+    """
+    import torch._dynamo
+
+    return torch._dynamo.nonstrict_trace(traceable_fn)
+
+
 def substitute_in_graph(
     original_fn: Callable[_P, _R],
     *,
@@ -238,7 +264,7 @@ def assume_constant_result(fn):
         fn: The function to be marked as having a constant result.
 
     .. warning::
-        `assume_constant_result` can if invalid cause safety and soundness issues, :func:`torch.compile`
+        `assume_constant_result` can, if invalid, cause safety and soundness issues, :func:`torch.compile`
         will not attempt to validate whether the constant assumption is true or not
 
     """
@@ -393,7 +419,7 @@ def set_enable_guard_collectives(enabled: bool):
     for all ranks to compile at the same time to run compiler collectives).  Like
     compiler collectives, you can only run this on SPMD programs; you will hang
     otherwise.  Note that a guard collective is only issued if there is any
-    compiled code to guard on; if this the first time we encounter a frame or
+    compiled code to guard on; if this is the first time we encounter a frame or
     the frame is skipped, we don't issue collectives.
 
     Returns the previous setting of enabled.
@@ -629,7 +655,7 @@ def is_dynamo_compiling() -> bool:
 
 def is_exporting() -> bool:
     """
-    Indicated whether we're under exporting.
+    Indicates whether we're under exporting.
 
     It's stricter than is_compiling() flag, as it would only be set to True when
     torch.export is used.
@@ -896,7 +922,7 @@ def load_compiled_function(
         file: A file-like object containing the serialized compiled function.
         f_globals: Optional global scope enclosing the compiled function.
         external_data: Optional data to be loaded into the runtime environment
-                       of the compiled function. This should contains the same
+                       of the compiled function. This should contain the same
                        data as AOTCompileResult.external_data returned from save_compiled_function() call.
 
     Returns:

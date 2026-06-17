@@ -2512,8 +2512,22 @@ Detected recompile when torch.compile stance is 'fail_on_recompile'. filename: '
                 compiled(torch.ones(()))
 
         msg = str(cm.exception)
-        self.assertIn("torch._dynamo.nonstrict_trace", msg)
+        self.assertIn("torch.compiler.nonstrict_trace", msg)
         self.assertNotIn("torch.compiler.allow_in_graph", msg)
+
+    def test_torch_compiler_nonstrict_trace(self):
+        def traceable_fn(x):
+            torch._dynamo.graph_break()
+            return x.sin() + x
+
+        def forward(x):
+            return torch.compiler.nonstrict_trace(traceable_fn)(x).cos()
+
+        x = torch.randn(4)
+        self.assertEqual(
+            torch.compile(forward, fullgraph=True, backend="aot_eager")(x),
+            forward(x),
+        )
 
 
 instantiate_parametrized_tests(DecoratorTests)
