@@ -3,6 +3,7 @@ import copy
 import os
 import unittest
 from collections.abc import Callable
+from unittest import mock
 
 import torch
 import torch._dynamo.config as dynamo_config
@@ -2481,6 +2482,26 @@ class TestPatternMatcher(TestCase):
         gm.graph.eliminate_dead_code()
         gm.graph.lint()
 
+    def test_multioutput_replacement_skips_reorder_without_later_input(self):
+        def fn(A, B, C):
+            x = A + B
+            z = x + C
+            return torch.abs(z)
+
+        gm = make_fx(fn, tracing_mode="fake")(
+            *(torch.randn(4, dtype=torch.float32) for _ in range(3))
+        )
+        patterns = self._make_add_add_multioutput_patterns()
+
+        with mock.patch.object(
+            ReplacementPatternEntry,
+            "_move_affected_nodes_after_later_inputs",
+            side_effect=AssertionError("unexpected reorder"),
+        ):
+            self.assertEqual(patterns.apply(gm.graph), 1)
+        gm.graph.eliminate_dead_code()
+        gm.graph.lint()
+
     def test_multioutput_replacement_moves_early_user_after_later_input(self):
         tensor_a = KeywordArg("A")
         tensor_b = KeywordArg("B")
@@ -2512,6 +2533,51 @@ class TestPatternMatcher(TestCase):
         def fn(A, B, C, D, T):
             x = A + B
             early_user = x * D
+            grad = T * D
+            z = x + C
+            return early_user, z * grad
+
+        gm = make_fx(fn, tracing_mode="fake")(
+            *(torch.randn(4, dtype=torch.float32) for _ in range(5))
+        )
+
+        self.assertEqual(patterns.apply(gm.graph), 1)
+        gm.graph.eliminate_dead_code()
+        gm.graph.lint()
+
+    def test_multioutput_replacement_moves_deep_affected_users(self):
+        tensor_a = KeywordArg("A")
+        tensor_b = KeywordArg("B")
+        tensor_c = KeywordArg("C")
+        tensor_g = KeywordArg("G")
+        add_1 = CallFunction(aten.add.Tensor, tensor_a, tensor_b, _users=2)
+        add_2 = CallFunction(aten.add.Tensor, add_1, tensor_c)
+        mul_1 = CallFunction(aten.mul.Tensor, add_2, tensor_g)
+        pattern = MultiOutputPattern([add_1, mul_1])
+
+        def empty_pattern(A, B, C, G):
+            return
+
+        def replacement(A, B, C, G):
+            x = torch.ops.aten.add.Tensor(A, G)
+            z = torch.ops.aten.add.Tensor(A, C)
+            return x, torch.ops.aten.mul.Tensor(z, G)
+
+        patterns = PatternMatcherPass()
+        register_replacement(
+            empty_pattern,
+            replacement,
+            [torch.empty(4, dtype=torch.float32) for _ in range(4)],
+            fwd_only,
+            patterns,
+            search_fn_pattern=pattern,
+        )
+
+        def fn(A, B, C, D, T):
+            x = A + B
+            early_user = x * D
+            early_user = early_user + C
+            early_user = early_user * D
             grad = T * D
             z = x + C
             return early_user, z * grad
