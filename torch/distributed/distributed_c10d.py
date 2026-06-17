@@ -465,19 +465,19 @@ class BackendConfig:
                 self.device_backend_map[device] = Backend(backend)
         else:
             # User specified a single backend name whose device capability is
-            # unknown, assuming it can support the default devices of PyTorch
-            # (cpu and cuda)
+            # unknown, assuming it can support cpu and the current accelerator.
+            acc = torch._C._get_accelerator()
+            acc_type = acc.type if acc is not None else "cuda"
             warnings.warn(
                 f"Device capability of {backend} unknown, assuming `cpu` and "
-                "`cuda`. You can specify it in `device:backend` format in "
+                f"`{acc_type}`. You can specify it in `device:backend` format in "
                 "`init_process_group` call.",
                 stacklevel=2,
             )
             backend_val = Backend(backend)
             self.device_backend_map = {
                 "cpu": backend_val,
-                "cuda": backend_val,
-                "xpu": backend_val,
+                acc_type: backend_val,
             }
 
         logger.info("Using backend config: %s", self.device_backend_map)
