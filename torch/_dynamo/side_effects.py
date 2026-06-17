@@ -23,6 +23,7 @@ while enabling optimizations where safe.
 
 import collections
 import contextlib
+import enum
 import inspect
 import logging
 import textwrap
@@ -53,6 +54,7 @@ from .source import AttrSource, GlobalSource, LocalCellSource, Source, TempLocal
 from .utils import (
     is_frozen_dataclass,
     is_namedtuple_cls,
+    is_pybind11_enum_member,
     istype,
     nn_module_new,
     object_new,
@@ -1157,31 +1159,49 @@ class SideEffects:
         def visit_vt(value: Any, cache: dict[int, Any] | None = None) -> None:
             if cache is None:
                 cache = {}
-            value_id = id(value)
-            if value_id in cache:
-                return
-            cache[value_id] = value
 
-            if isinstance(value, VariableTracker):
-                value = value.unwrap()
-                collect_from_vt(value)
-                value = value.unwrap()
-                if isinstance(value, variables.CellVariable):
-                    visit_cell_contents(value, cache)
-                    return
+            def mark_seen(candidate: Any) -> bool:
+                value_id = id(candidate)
+                if value_id in cache:
+                    return False
+                cache[value_id] = candidate
+                return True
 
-                nonvars = value._nonvar_fields
-                for key, subvalue in value.__dict__.items():
-                    if key not in nonvars:
-                        visit_vt(subvalue, cache)
-                if value in self.store_attr_mutations:
-                    visit_vt(self.store_attr_mutations[value], cache)
-            elif istype(value, (list, tuple)):
-                for subvalue in value:
-                    visit_vt(subvalue, cache)
-            elif istype(value, (dict, collections.OrderedDict)):
-                for subvalue in value.values():
-                    visit_vt(subvalue, cache)
+            pending = [value]
+            while pending:
+                value = pending.pop()
+                if not mark_seen(value):
+                    continue
+
+                if isinstance(value, VariableTracker):
+                    unwrapped = value.unwrap()
+                    if unwrapped is not value:
+                        if not mark_seen(unwrapped):
+                            continue
+                        value = unwrapped
+
+                    collect_from_vt(value)
+
+                    unwrapped = value.unwrap()
+                    if unwrapped is not value:
+                        if not mark_seen(unwrapped):
+                            continue
+                        value = unwrapped
+
+                    if isinstance(value, variables.CellVariable):
+                        visit_cell_contents(value, cache)
+                        continue
+
+                    nonvars = value._nonvar_fields
+                    for key, subvalue in value.__dict__.items():
+                        if key not in nonvars:
+                            pending.append(subvalue)
+                    if value in self.store_attr_mutations:
+                        pending.append(self.store_attr_mutations[value])
+                elif istype(value, (list, tuple)):
+                    pending.extend(value)
+                elif istype(value, (dict, collections.OrderedDict)):
+                    pending.extend(value.values())
 
         def vt_matches_real_value(var: VariableTracker, value: Any) -> bool:
             try:
@@ -1255,6 +1275,27 @@ class SideEffects:
                 var,
                 (variables.NamedTupleVariable, variables.StructSequenceVariable),
             ) and not self.has_pending_mutation(var):
+                continue
+
+            # Sourceless enum members registered with AttributeMutationNew
+            # don't need __new__-based tempvar reconstruction -- they are
+            # reconstructible as constants.
+            if (
+                var.is_python_constant()
+                and isinstance(var.mutation_type, AttributeMutationNew)
+                and isinstance(var, variables.UserDefinedObjectVariable)
+                and (
+                    isinstance(
+                        var.value,
+                        (
+                            enum.Enum,
+                            torch.DispatchKey,
+                            torch._C._functorch.TransformType,
+                        ),
+                    )
+                    or is_pybind11_enum_member(var.value)
+                )
+            ):
                 continue
 
             if isinstance(var, variables.CellVariable):
@@ -1688,6 +1729,26 @@ class SideEffects:
                 # avoid double-emitting.
                 if isinstance(var.mutation_type, AttributeMutationNew) and isinstance(
                     var, variables.FrozenDataClassVariable
+                ):
+                    continue
+
+                # Sourceless enum members: mutations (like _inverted_ caching)
+                # already happened on the real object during tracing.
+                if (
+                    var.is_python_constant()
+                    and isinstance(var.mutation_type, AttributeMutationNew)
+                    and isinstance(var, variables.UserDefinedObjectVariable)
+                    and (
+                        isinstance(
+                            var.value,
+                            (
+                                enum.Enum,
+                                torch.DispatchKey,
+                                torch._C._functorch.TransformType,
+                            ),
+                        )
+                        or is_pybind11_enum_member(var.value)
+                    )
                 ):
                     continue
 

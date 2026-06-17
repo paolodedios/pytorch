@@ -1,6 +1,7 @@
 # Owner(s): ["module: dynamo"]
 
 import enum
+import itertools
 import types
 
 import torch
@@ -1241,6 +1242,31 @@ class TestIterators(torch._dynamo.test_case.TestCase):
         self.assertEqual(compiled(torch.tensor([0.0]), False), torch.tensor([1.0]))
         self.assertEqual(compiled(torch.tensor([0.0]), True), torch.tensor([2.0]))
         self.assertEqual(cnt.frame_count, 1)
+
+    def test_dict_view_liveness_scan_handles_deep_tee_state(self):
+        class MutatingIterator:
+            def __init__(self, values):
+                self.values = values
+                self.index = 0
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                if self.index >= len(self.values):
+                    raise StopIteration
+                value = self.values[self.index]
+                self.index += 1
+                return value
+
+        def fn(values):
+            it1, it2 = itertools.tee(MutatingIterator(values))
+            return len(list(it1)), len(list(it2))
+
+        values = list(range(1000))
+        compiled = torch.compile(fn, backend="eager", fullgraph=True)
+
+        self.assertEqual(compiled(values), fn(values))
 
     def test_nullified_attribute_mutation_does_not_stale_dict_view(self):
         class Holder:
