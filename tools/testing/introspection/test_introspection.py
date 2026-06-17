@@ -5,7 +5,10 @@ Fast tests cover the platform/descriptor logic. The collector smoke tests import
 real (small) test file in a subprocess and are marked slow.
 """
 
+import os
 import pathlib
+import subprocess
+import sys
 import tempfile
 
 from tools.testing.introspection import collector, diff, platforms, where
@@ -38,6 +41,43 @@ class TestPlatforms(TestCase):
 
 
 class TestCollector(TestCase):
+    @slowTest
+    def test_worker_does_not_shadow_torch_from_cwd(self):
+        # In CI torch is wheel-installed (site-packages) while the repo tree still has
+        # a torch/ source dir. The worker must import the installed torch, not the repo
+        # source. Reproduce by running the worker from a cwd containing a poison torch/
+        # package; it must still import the real torch (worker runs by path, so cwd is
+        # not on sys.path[0]).
+        with tempfile.TemporaryDirectory() as td:
+            (pathlib.Path(td) / "torch").mkdir()
+            (pathlib.Path(td) / "torch" / "__init__.py").write_text(
+                "raise RuntimeError('poison torch on path')\n"
+            )
+            env = dict(os.environ)
+            env.update(platforms.get_job("linux-cpu").subprocess_env())
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    collector._COLLECTOR,
+                    "linux-cpu/default",
+                    "enumerate",
+                    "test/test_bundled_inputs.py",
+                ],
+                cwd=td,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            self.assertNotIn("poison torch", proc.stderr)
+            self.assertTrue(
+                any(
+                    line.startswith(collector._SENTINEL)
+                    for line in proc.stdout.splitlines()
+                ),
+                msg=f"worker failed:\n{proc.stderr[-2000:]}",
+            )
+
     @slowTest
     def test_device_gating(self):
         # GPU classes appear only on the cuda platform, not on cpu.
