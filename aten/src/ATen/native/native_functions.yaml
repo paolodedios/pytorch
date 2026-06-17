@@ -1276,8 +1276,7 @@
 - func: logical_not.out(Tensor self, *, Tensor(a!) out) -> Tensor(a!)
   device_check: NoCheck   # TensorIterator
   dispatch:
-    CPU, CUDA, MTIA, XPU: logical_not_out
-    MPS: logical_not_out_mps
+    CPU, CUDA, MPS, MTIA, XPU: logical_not_out
   tags: pointwise
 
 - func: logical_xor(Tensor self, Tensor other) -> Tensor
@@ -7121,14 +7120,12 @@
   tags: needs_exact_strides
 
 - func: _scaled_mm_v2(Tensor self, Tensor mat2, Tensor[] scale_a, int[] recipe_a, int[] swizzle_a, Tensor[] scale_b, int[] recipe_b, int[] swizzle_b, Tensor? bias, ScalarType? out_dtype, int[] contraction_dim=[], bool use_fast_accum=False) -> Tensor
+  structured_delegate: _scaled_mm_v2.out
   variants: function
-  dispatch:
-    CPU: _scaled_mm_cpu_v2
-    CUDA: _scaled_mm_cuda_v2
-    XPU: _scaled_mm_xpu_v2
   tags: needs_exact_strides
 
 - func: _scaled_mm_v2.out(Tensor self, Tensor mat2, Tensor[] scale_a, int[] recipe_a, int[] swizzle_a, Tensor[] scale_b, int[] recipe_b, int[] swizzle_b, Tensor? bias, ScalarType? out_dtype, int[] contraction_dim=[], bool use_fast_accum=False, *, Tensor(a!) out) -> Tensor(a!)
+  structured: True
   variants: function
   dispatch:
     CPU: _scaled_mm_cpu_v2_out

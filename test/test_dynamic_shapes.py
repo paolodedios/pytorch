@@ -4834,29 +4834,38 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     @fresh_cache()
     def test_unbacked_contiguous_aliasing_mutation_recompiles(self):
-        cnt = CompileCounterWithBackend("inductor")
-
         def func(x):
             y = x.contiguous()
             y.add_(1)
             return x
 
-        compiled_func = torch.compile(fullgraph=True, backend=cnt, dynamic=True)(func)
+        def aten_func(x):
+            y = torch.ops.aten.contiguous.default(x)
+            y.add_(1)
+            return x
 
-        x = torch.zeros(3, 3).t()
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        self.assertEqual(compiled_func(x), func(torch.zeros(3, 3).t()))
-        self.assertEqual(x, torch.zeros(3, 3).t())
-        self.assertEqual(cnt.frame_count, 1)
+        for name, f in (("method", func), ("aten", aten_func)):
+            with self.subTest(name=name):
+                torch._dynamo.reset()
+                cnt = CompileCounterWithBackend("inductor")
+                compiled_func = torch.compile(
+                    fullgraph=True, backend=cnt, dynamic=True
+                )(f)
 
-        y = torch.zeros(3, 3)
-        torch._dynamo.decorators.mark_unbacked(y, 0)
-        torch._dynamo.decorators.mark_unbacked(y, 1)
-        eager_y = torch.zeros(3, 3)
-        self.assertEqual(compiled_func(y), func(eager_y))
-        self.assertEqual(y, eager_y)
-        self.assertEqual(cnt.frame_count, 2)
+                x = torch.zeros(3, 3).t()
+                torch._dynamo.decorators.mark_unbacked(x, 0)
+                torch._dynamo.decorators.mark_unbacked(x, 1)
+                self.assertEqual(compiled_func(x), f(torch.zeros(3, 3).t()))
+                self.assertEqual(x, torch.zeros(3, 3).t())
+                self.assertEqual(cnt.frame_count, 1)
+
+                y = torch.zeros(3, 3)
+                torch._dynamo.decorators.mark_unbacked(y, 0)
+                torch._dynamo.decorators.mark_unbacked(y, 1)
+                eager_y = torch.zeros(3, 3)
+                self.assertEqual(compiled_func(y), f(eager_y))
+                self.assertEqual(y, eager_y)
+                self.assertEqual(cnt.frame_count, 2)
 
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     @fresh_cache()
@@ -5020,28 +5029,35 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     @fresh_cache()
     def test_unbacked_contiguous_return_alias_recompiles(self):
-        cnt = CompileCounterWithBackend("inductor")
-
         def func(x):
             return x.contiguous()
 
-        compiled_func = torch.compile(fullgraph=True, backend=cnt, dynamic=True)(func)
+        def aten_func(x):
+            return torch.ops.aten.contiguous.default(x)
 
-        x = torch.zeros(3, 3).t()
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        compiled_x = compiled_func(x)
-        self.assertEqual(compiled_x, func(torch.zeros(3, 3).t()))
-        self.assertNotEqual(compiled_x.data_ptr(), x.data_ptr())
-        self.assertEqual(cnt.frame_count, 1)
+        for name, f in (("method", func), ("aten", aten_func)):
+            with self.subTest(name=name):
+                torch._dynamo.reset()
+                cnt = CompileCounterWithBackend("inductor")
+                compiled_func = torch.compile(
+                    fullgraph=True, backend=cnt, dynamic=True
+                )(f)
 
-        y = torch.zeros(3, 3)
-        torch._dynamo.decorators.mark_unbacked(y, 0)
-        torch._dynamo.decorators.mark_unbacked(y, 1)
-        compiled_y = compiled_func(y)
-        self.assertEqual(compiled_y, func(torch.zeros(3, 3)))
-        self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
-        self.assertEqual(cnt.frame_count, 2)
+                x = torch.zeros(3, 3).t()
+                torch._dynamo.decorators.mark_unbacked(x, 0)
+                torch._dynamo.decorators.mark_unbacked(x, 1)
+                compiled_x = compiled_func(x)
+                self.assertEqual(compiled_x, f(torch.zeros(3, 3).t()))
+                self.assertNotEqual(compiled_x.data_ptr(), x.data_ptr())
+                self.assertEqual(cnt.frame_count, 1)
+
+                y = torch.zeros(3, 3)
+                torch._dynamo.decorators.mark_unbacked(y, 0)
+                torch._dynamo.decorators.mark_unbacked(y, 1)
+                compiled_y = compiled_func(y)
+                self.assertEqual(compiled_y, f(torch.zeros(3, 3)))
+                self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
+                self.assertEqual(cnt.frame_count, 2)
 
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     @fresh_cache()
@@ -5075,59 +5091,6 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
                 self.assertEqual(compiled_y, func(torch.zeros(3, 3)))
                 self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
                 self.assertEqual(cnt.frame_count, 2)
-
-    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
-    @fresh_cache()
-    def test_unbacked_aten_contiguous_aliasing_mutation_recompiles(self):
-        cnt = CompileCounterWithBackend("inductor")
-
-        def func(x):
-            y = torch.ops.aten.contiguous.default(x)
-            y.add_(1)
-            return x
-
-        compiled_func = torch.compile(fullgraph=True, backend=cnt, dynamic=True)(func)
-
-        x = torch.zeros(3, 3).t()
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        self.assertEqual(compiled_func(x), func(torch.zeros(3, 3).t()))
-        self.assertEqual(x, torch.zeros(3, 3).t())
-        self.assertEqual(cnt.frame_count, 1)
-
-        y = torch.zeros(3, 3)
-        torch._dynamo.decorators.mark_unbacked(y, 0)
-        torch._dynamo.decorators.mark_unbacked(y, 1)
-        eager_y = torch.zeros(3, 3)
-        self.assertEqual(compiled_func(y), func(eager_y))
-        self.assertEqual(y, eager_y)
-        self.assertEqual(cnt.frame_count, 2)
-
-    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
-    @fresh_cache()
-    def test_unbacked_aten_contiguous_return_alias_recompiles(self):
-        cnt = CompileCounterWithBackend("inductor")
-
-        def func(x):
-            return torch.ops.aten.contiguous.default(x)
-
-        compiled_func = torch.compile(fullgraph=True, backend=cnt, dynamic=True)(func)
-
-        x = torch.zeros(3, 3).t()
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        compiled_x = compiled_func(x)
-        self.assertEqual(compiled_x, func(torch.zeros(3, 3).t()))
-        self.assertNotEqual(compiled_x.data_ptr(), x.data_ptr())
-        self.assertEqual(cnt.frame_count, 1)
-
-        y = torch.zeros(3, 3)
-        torch._dynamo.decorators.mark_unbacked(y, 0)
-        torch._dynamo.decorators.mark_unbacked(y, 1)
-        compiled_y = compiled_func(y)
-        self.assertEqual(compiled_y, func(torch.zeros(3, 3)))
-        self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
-        self.assertEqual(cnt.frame_count, 2)
 
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     @fresh_cache()
@@ -5185,55 +5148,36 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
 
     @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     @fresh_cache()
-    def test_unbacked_contiguous_transpose_property_return_alias_recompiles(self):
-        cnt = CompileCounterWithBackend("inductor")
-
-        def func(x):
+    def test_unbacked_contiguous_property_return_alias_recompiles(self):
+        def transpose_func(x):
             return x.contiguous().T
 
-        compiled_func = torch.compile(fullgraph=True, backend=cnt, dynamic=True)(func)
-
-        x = torch.zeros(3, 3).t()
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        compiled_x = compiled_func(x)
-        self.assertEqual(compiled_x, func(torch.zeros(3, 3).t()))
-        self.assertNotEqual(compiled_x.data_ptr(), x.data_ptr())
-        self.assertEqual(cnt.frame_count, 1)
-
-        y = torch.zeros(3, 3)
-        torch._dynamo.decorators.mark_unbacked(y, 0)
-        torch._dynamo.decorators.mark_unbacked(y, 1)
-        compiled_y = compiled_func(y)
-        self.assertEqual(compiled_y, func(torch.zeros(3, 3)))
-        self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
-        self.assertEqual(cnt.frame_count, 2)
-
-    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
-    @fresh_cache()
-    def test_unbacked_contiguous_real_property_return_alias_recompiles(self):
-        cnt = CompileCounterWithBackend("inductor")
-
-        def func(x):
+        def real_func(x):
             return x.contiguous().real
 
-        compiled_func = torch.compile(fullgraph=True, backend=cnt, dynamic=True)(func)
+        for name, func in (("transpose", transpose_func), ("real", real_func)):
+            with self.subTest(name=name):
+                torch._dynamo.reset()
+                cnt = CompileCounterWithBackend("inductor")
+                compiled_func = torch.compile(
+                    fullgraph=True, backend=cnt, dynamic=True
+                )(func)
 
-        x = torch.zeros(3, 3).t()
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        compiled_x = compiled_func(x)
-        self.assertEqual(compiled_x, func(torch.zeros(3, 3).t()))
-        self.assertNotEqual(compiled_x.data_ptr(), x.data_ptr())
-        self.assertEqual(cnt.frame_count, 1)
+                x = torch.zeros(3, 3).t()
+                torch._dynamo.decorators.mark_unbacked(x, 0)
+                torch._dynamo.decorators.mark_unbacked(x, 1)
+                compiled_x = compiled_func(x)
+                self.assertEqual(compiled_x, func(torch.zeros(3, 3).t()))
+                self.assertNotEqual(compiled_x.data_ptr(), x.data_ptr())
+                self.assertEqual(cnt.frame_count, 1)
 
-        y = torch.zeros(3, 3)
-        torch._dynamo.decorators.mark_unbacked(y, 0)
-        torch._dynamo.decorators.mark_unbacked(y, 1)
-        compiled_y = compiled_func(y)
-        self.assertEqual(compiled_y, func(torch.zeros(3, 3)))
-        self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
-        self.assertEqual(cnt.frame_count, 2)
+                y = torch.zeros(3, 3)
+                torch._dynamo.decorators.mark_unbacked(y, 0)
+                torch._dynamo.decorators.mark_unbacked(y, 1)
+                compiled_y = compiled_func(y)
+                self.assertEqual(compiled_y, func(torch.zeros(3, 3)))
+                self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
+                self.assertEqual(cnt.frame_count, 2)
 
     @fresh_cache()
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
@@ -6660,6 +6604,7 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
         self.assertEqual(cnt.frame_count, 4)
 
     @fresh_cache()
+    @skipIfTorchDynamo("test invokes torch.compile")
     def test_unmarked_view_base_observed_recompiles(self):
         cnt = CompileCounterWithBackend("eager")
 
@@ -6777,87 +6722,35 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
 
     @fresh_cache()
     @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_unbacked_to_memory_format_mutation_fails_closed(self):
+    def test_unbacked_to_memory_format_cases(self):
         from torch._dynamo.exc import Unsupported
 
-        def fn(x):
-            y = x.to(memory_format=torch.channels_last)
-            y.add_(1)
-            return x.sum()
+        def mark_unbacked(x):
+            for dim in range(x.dim()):
+                torch._dynamo.decorators.mark_unbacked(x, dim)
+            return x
 
-        compiled_fn = torch.compile(
-            fn,
-            fullgraph=True,
-            dynamic=True,
-            backend="eager",
-        )
+        def compile_fn(fn):
+            return torch.compile(fn, fullgraph=True, dynamic=True, backend="eager")
 
-        x = torch.zeros(2, 3, 4, 5)
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        torch._dynamo.decorators.mark_unbacked(x, 2)
-        torch._dynamo.decorators.mark_unbacked(x, 3)
-        with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
-            compiled_fn(x)
+        for x, memory_format in (
+            (torch.zeros(2, 3, 4, 5), torch.channels_last),
+            (torch.zeros(2, 3, 4, 5).transpose(2, 3), torch.contiguous_format),
+        ):
 
-    @fresh_cache()
-    @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_unbacked_to_contiguous_memory_format_mutation_fails_closed(self):
-        from torch._dynamo.exc import Unsupported
+            def fn(x, memory_format=memory_format):
+                y = x.to(memory_format=memory_format)
+                y.add_(1)
+                return x.sum()
 
-        def fn(x):
-            y = x.to(memory_format=torch.contiguous_format)
-            y.add_(1)
-            return x.sum()
-
-        compiled_fn = torch.compile(
-            fn,
-            fullgraph=True,
-            dynamic=True,
-            backend="eager",
-        )
-
-        x = torch.zeros(2, 3, 4, 5).transpose(2, 3)
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        torch._dynamo.decorators.mark_unbacked(x, 2)
-        torch._dynamo.decorators.mark_unbacked(x, 3)
-        with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
-            compiled_fn(x)
-
-    @fresh_cache()
-    @skipIfTorchDynamo("mark_unbacked is not traceable")
-    def test_unbacked_to_memory_format_with_dtype_fails_closed(self):
-        from torch._dynamo.exc import Unsupported
+            with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
+                compile_fn(fn)(mark_unbacked(x))
 
         def fn(x):
             return x.to(dtype=torch.float64, memory_format=torch.channels_last)
 
-        def positional_dtype_fn(x):
-            return x.to(torch.float64, memory_format=torch.channels_last)
-
-        compiled_fn = torch.compile(
-            fn,
-            fullgraph=True,
-            dynamic=True,
-            backend="eager",
-        )
-        compiled_positional_dtype_fn = torch.compile(
-            positional_dtype_fn,
-            fullgraph=True,
-            dynamic=True,
-            backend="eager",
-        )
-
-        x = torch.zeros(2, 3, 4, 5)
-        torch._dynamo.decorators.mark_unbacked(x, 0)
-        torch._dynamo.decorators.mark_unbacked(x, 1)
-        torch._dynamo.decorators.mark_unbacked(x, 2)
-        torch._dynamo.decorators.mark_unbacked(x, 3)
-        with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
-            compiled_fn(x)
-        with self.assertRaisesRegex(Unsupported, "alias-or-copy"):
-            compiled_positional_dtype_fn(x)
+        x = mark_unbacked(torch.zeros(2, 3, 4, 5))
+        self.assertEqual(compile_fn(fn)(x), fn(x))
 
     @fresh_cache()
     @skipIfTorchDynamo("mark_unbacked is not traceable")
@@ -7167,6 +7060,46 @@ class TestMaybeFastEvalComparison(TestCase):
         result = shape_env._maybe_fast_eval_comparison(expr)
         self.assertIsNone(result)
 
+    def test_sympy_interp_min_max_are_symbol_safe(self):
+        from torch._dynamo.source import LocalSource
+        from torch.fx.experimental.symbolic_shapes import ShapeGuardPythonPrinter
+        from torch.utils._sympy.functions import Max, Min
+
+        shape_env = ShapeEnv()
+        u0 = shape_env.create_unbacked_symint()
+        sym = u0.node.expr
+        source = LocalSource("u0")
+        printer = ShapeGuardPythonPrinter(
+            {sym: [source]}, lambda source: source.name, {sym: [source]}
+        )
+
+        # Printer emits torch.sym_max / torch.sym_min so the printed string is
+        # symbol-safe to eval on unbacked SymInts.
+        max_expr = printer.doprint(sympy.Max(1, sym))
+        min_expr = printer.doprint(sympy.Min(1, sym))
+        self.assertEqual(max_expr, "torch.sym_max(1, L['u0'])")
+        self.assertEqual(min_expr, "torch.sym_min(1, L['u0'])")
+
+        locals_ = {"L": {"u0": u0}}
+        max_result = eval(max_expr, SYMPY_INTERP, locals_).node.expr  # noqa: P204
+        min_result = eval(min_expr, SYMPY_INTERP, locals_).node.expr  # noqa: P204
+        self.assertEqual(max_result, Max(1, sym))
+        self.assertEqual(min_result, Min(1, sym))
+
+        # Three-arg form right-folds into nested binary calls.
+        u1 = shape_env.create_unbacked_symint()
+        sym1 = u1.node.expr
+        printer3 = ShapeGuardPythonPrinter(
+            {sym: [source], sym1: [LocalSource("u1")]},
+            lambda s: s.name,
+            {sym: [source], sym1: [LocalSource("u1")]},
+        )
+        max3 = printer3.doprint(sympy.Max(1, sym, sym1))
+        self.assertIn("torch.sym_max", max3)
+        locals3 = {"L": {"u0": u0, "u1": u1}}
+        max3_result = eval(max3, SYMPY_INTERP, locals3).node.expr  # noqa: P204
+        self.assertEqual(max3_result, Max(1, sym, sym1))
+
     def test_non_zero_rhs_returns_none(self):
         """Test that comparison with non-zero RHS returns None."""
         shape_env = ShapeEnv()
@@ -7259,6 +7192,14 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
 
         return ConstantSource(name)
 
+    @staticmethod
+    def _transfer_symint(env, value, source):
+        """Test helper that mirrors what builder.py does when wrapping a raw
+        foreign unbacked SymInt input: transfer the expression and wrap as a
+        SymInt in the local env."""
+        new_expr = env._transfer_foreign_expr_as_unbacked(value, source=source)
+        return env.create_symintnode(new_expr, hint=None, source=source)
+
     def _create_backed_symbols(self, shape_env, tensor, source_name="foreign"):
         """Create backed symbolic sizes/strides/offset using _create_symbolic_sizes_strides_storage_offset."""
         src = self._make_source(source_name)
@@ -7327,7 +7268,7 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         u0 = foreign_env.create_unbacked_symint()
         u1 = foreign_env.create_unbacked_symint()
 
-        # Use plain int strides — unbacked symbols as strides would need
+        # Use plain int strides; unbacked symbols as strides would need
         # valid positive hints, and INFER_STRIDE handles stride creation.
         sizes = (u0, u1)
         strides = (1, 1)
@@ -7509,6 +7450,211 @@ class TestTransferSymbolsFromForeignShapeEnv(TestCase):
         self.assertIs(new_sizes[2].node.shape_env, local_env)
         self.assertFalse(local_env.has_guarding_hint(new_sizes[2].node.expr))
         self.assertEqual(local_env.var_to_hint_override[new_sizes[2].node.expr], 99)
+
+    def test_raw_unbacked_symint_transfer_shares_tensor_symbol(self):
+        """Tensor dims and raw SymInts from one foreign ShapeEnv share transfer."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+        foreign_env.var_to_hint_override[u0.node.expr] = 32
+
+        local_env = ShapeEnv()
+        new_sizes, _, _ = local_env.transfer_symbols_from_foreign_shape_env(
+            (u0,),
+            (1,),
+            0,
+            source=self._make_source("tensor"),
+        )
+        raw_u0 = self._transfer_symint(local_env, u0, source=self._make_source("raw"))
+        raw_u0_plus_1 = self._transfer_symint(
+            local_env, u0 + 1, source=self._make_source("raw_plus_1")
+        )
+
+        tensor_symbol = new_sizes[0].node.expr
+        self.assertEqual(raw_u0.node.expr, tensor_symbol)
+        self.assertEqual(raw_u0_plus_1.node.expr, tensor_symbol + 1)
+        self.assertEqual(local_env.var_to_hint_override[tensor_symbol], 32)
+
+    def test_raw_unbacked_symint_transfer_preserves_multi_symbol_expr(self):
+        """Derived raw SymInts are rebuilt from transferred base symbols."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+        u1 = foreign_env.create_unbacked_symint()
+        foreign_env.var_to_hint_override[u0.node.expr] = 32
+        foreign_env.var_to_hint_override[u1.node.expr] = 16
+
+        local_env = ShapeEnv()
+        new_sizes, _, _ = local_env.transfer_symbols_from_foreign_shape_env(
+            (u0, u1, u0 + u1),
+            (1, 1, 1),
+            0,
+            source=self._make_source("tensor"),
+        )
+        raw_sum = self._transfer_symint(
+            local_env, u0 + u1, source=self._make_source("raw_sum")
+        )
+
+        new_u0 = new_sizes[0].node.expr
+        new_u1 = new_sizes[1].node.expr
+        self.assertEqual(new_sizes[2].node.expr, new_u0 + new_u1)
+        self.assertEqual(raw_sum.node.expr, new_u0 + new_u1)
+        self.assertEqual(local_env.var_to_hint_override[new_u0], 32)
+        self.assertEqual(local_env.var_to_hint_override[new_u1], 16)
+
+    def test_raw_unbacked_symint_transfer_falls_back_for_backed_leftover(self):
+        """Mixed backed+unbacked foreign expr falls back to fresh local unbacked."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+        # Create a backed foreign symbol that this env cannot translate.
+        s0 = foreign_env.create_symbol(
+            8,
+            self._make_source("s0"),
+            DimDynamic.DYNAMIC,
+        )
+        s0_symint = foreign_env.create_symintnode(s0, hint=8)
+        mixed = u0 + s0_symint
+
+        local_env = ShapeEnv()
+        raw = self._transfer_symint(
+            local_env, mixed, source=self._make_source("raw_mixed")
+        )
+
+        # Result is a fresh local unbacked symbol; no foreign symbols leaked.
+        result_expr = raw.node.expr
+        self.assertTrue(local_env.is_unbacked_symint(result_expr))
+        # All free symbols are owned by local_env.
+        for sym in result_expr.free_symbols:
+            self.assertTrue(local_env.is_unbacked_symint(sym))
+
+    def test_transfer_is_self_short_circuit(self):
+        """When the SymInt already belongs to this ShapeEnv,
+        _transfer_foreign_expr_as_unbacked is a no-op (returns the input expr
+        unchanged, no new symbol minted)."""
+        local_env = ShapeEnv()
+        local_u0 = local_env.create_unbacked_symint()
+
+        cache_size_before = len(local_env.foreign_unbacked_symbol_cache)
+        result = local_env._transfer_foreign_expr_as_unbacked(
+            local_u0, source=self._make_source("local")
+        )
+        self.assertEqual(result, local_u0.node.expr)
+        # Nothing should have been added to the cache.
+        self.assertEqual(
+            len(local_env.foreign_unbacked_symbol_cache), cache_size_before
+        )
+
+    def test_transfer_constrains_size_on_cache_hit(self):
+        """When is_size=True and the expression resolves to a single Symbol
+        from the cache (cached via a non-size path earlier),
+        _constrain_range_for_size is still applied; the symbol ends up in
+        size_like."""
+        foreign_env = ShapeEnv()
+        u0 = foreign_env.create_unbacked_symint()
+
+        local_env = ShapeEnv()
+        # First: transfer u0 via the raw SymInt path (is_size=False).
+        raw_symint = self._transfer_symint(
+            local_env, u0, source=self._make_source("raw")
+        )
+        raw = raw_symint.node.expr
+        self.assertNotIn(raw, local_env.size_like)
+
+        # Now: transfer the same u0 as a tensor size dim (is_size=True via
+        # transfer_symbols_from_foreign_shape_env's UNBACKED path).
+        new_sizes, _, _ = local_env.transfer_symbols_from_foreign_shape_env(
+            (u0,), (1,), 0, source=self._make_source("tensor")
+        )
+        # Same cached local symbol reused.
+        self.assertEqual(new_sizes[0].node.expr, raw)
+        # And now it carries the size lower-bound constraint.
+        self.assertIn(raw, local_env.size_like)
+
+    def test_foreign_unbacked_transfer_preserves_derived_tensor_expr(self):
+        """Derived tensor dims are minted as opaque symbols; raw SymInt with
+        the same expression reuses that symbol via the (env, expr) cache."""
+        foreign_env = ShapeEnv()
+        global_tokens = foreign_env.create_unbacked_symint()
+        hidden = foreign_env.create_unbacked_symint()
+        foreign_env.var_to_hint_override[global_tokens.node.expr] = 64
+        foreign_env.var_to_hint_override[hidden.node.expr] = 128
+
+        derived_tokens = global_tokens // 2
+        local_env = ShapeEnv()
+        new_sizes, new_strides, _ = local_env.transfer_symbols_from_foreign_shape_env(
+            (derived_tokens, hidden),
+            (hidden, 1),
+            0,
+            source=self._make_source("derived_tensor"),
+        )
+        raw_derived_tokens = self._transfer_symint(
+            local_env, derived_tokens, source=self._make_source("raw_derived_tokens")
+        )
+
+        self.assertEqual(raw_derived_tokens.node.expr, new_sizes[0].node.expr)
+        self.assertEqual(new_strides[0].node.expr, new_sizes[1].node.expr)
+        self.assertEqual(len(raw_derived_tokens.node.expr.free_symbols), 1)
+        derived_token_sym = next(iter(raw_derived_tokens.node.expr.free_symbols))
+        # `derived_tokens` (= global_tokens // 2) is minted as one fresh
+        # opaque symbol; its hint is the foreign expression's hint (64 // 2).
+        self.assertEqual(local_env.var_to_hint_override[derived_token_sym], 32)
+        self.assertEqual(local_env.var_to_hint_override[new_sizes[1].node.expr], 128)
+
+    def test_foreign_unbacked_transfer_preserves_shared_token_grid(self):
+        """Separate tensor transfers preserve shared token-grid symbols."""
+        foreign_env = ShapeEnv()
+        batch = foreign_env.create_unbacked_symint()
+        seq = foreign_env.create_unbacked_symint()
+        hidden = foreign_env.create_unbacked_symint()
+        foreign_env.var_to_hint_override[batch.node.expr] = 4
+        foreign_env.var_to_hint_override[seq.node.expr] = 128
+        foreign_env.var_to_hint_override[hidden.node.expr] = 64
+
+        derived_seq = seq // 2
+        local_env = ShapeEnv()
+        token_grid_sizes, token_grid_strides, _ = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                (batch, seq),
+                (seq, 1),
+                0,
+                source=self._make_source("token_grid"),
+            )
+        )
+        label_sizes, label_strides, _ = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                (batch, seq),
+                (seq, 1),
+                0,
+                source=self._make_source("labels"),
+            )
+        )
+        derived_sizes, derived_strides, _ = (
+            local_env.transfer_symbols_from_foreign_shape_env(
+                (batch, derived_seq, hidden),
+                (derived_seq * hidden, hidden, 1),
+                0,
+                source=self._make_source("derived_activation"),
+            )
+        )
+        raw_derived_seq = self._transfer_symint(
+            local_env, derived_seq, source=self._make_source("raw_derived_seq")
+        )
+        raw_seq_plus_hidden = self._transfer_symint(
+            local_env, seq + hidden, source=self._make_source("raw_seq_plus_hidden")
+        )
+
+        self.assertEqual(token_grid_sizes[0].node.expr, label_sizes[0].node.expr)
+        self.assertEqual(token_grid_sizes[0].node.expr, derived_sizes[0].node.expr)
+        self.assertEqual(token_grid_sizes[1].node.expr, label_sizes[1].node.expr)
+        self.assertEqual(token_grid_strides[0].node.expr, token_grid_sizes[1].node.expr)
+        self.assertEqual(label_strides[0].node.expr, label_sizes[1].node.expr)
+        self.assertEqual(raw_derived_seq.node.expr, derived_sizes[1].node.expr)
+        self.assertEqual(
+            derived_strides[0].node.expr,
+            derived_sizes[1].node.expr * derived_sizes[2].node.expr,
+        )
+        self.assertEqual(
+            raw_seq_plus_hidden.node.expr,
+            token_grid_sizes[1].node.expr + derived_sizes[2].node.expr,
+        )
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
     def test_flex_attention_foreign_fake_e2e(self):

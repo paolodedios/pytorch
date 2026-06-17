@@ -697,42 +697,6 @@ class TensorVariable(VariableTracker):
             )
         )
 
-    def _install_unbacked_to_memory_format_guard(
-        self, kwargs: dict[str, VariableTracker]
-    ) -> None:
-        if (
-            not config.mark_unbacked_strides
-            or "memory_format" not in kwargs
-            or not self._has_marked_unbacked_dims()
-        ):
-            return
-
-        copy_arg = kwargs.get("copy")
-        if copy_arg is not None:
-            try:
-                if copy_arg.as_python_constant() is True:
-                    return
-            except NotImplementedError:
-                pass
-
-        try:
-            memory_format = kwargs["memory_format"].as_python_constant()
-        except NotImplementedError:
-            unimplemented(
-                gb_type="unbacked to() with dynamic memory format",
-                context="to(memory_format=...) on marked-unbacked tensor",
-                explanation="Dynamo cannot safely cache a memory-format branch "
-                "for a marked-unbacked tensor without a concrete memory format.",
-                hints=[*graph_break_hints.SUPPORTABLE],
-            )
-
-        if memory_format in (
-            torch.contiguous_format,
-            torch.channels_last,
-            torch.channels_last_3d,
-        ):
-            self._install_unbacked_contiguity_guard(memory_format)
-
     def _try_call_marked_unbacked_to_memory_format(
         self,
         tx: "InstructionTranslatorBase",
@@ -763,6 +727,65 @@ class TensorVariable(VariableTracker):
             torch.channels_last_3d,
         ):
             return None
+
+        def const_arg(arg: VariableTracker) -> object:
+            try:
+                return arg.as_python_constant()
+            except NotImplementedError:
+                return _MISSING
+
+        def device_arg_differs(arg: VariableTracker) -> bool:
+            device = const_arg(arg)
+            if device in (_MISSING, None) or self.device is None:
+                return False
+            if not isinstance(device, (torch.device, int, str)):
+                return False
+            try:
+                target_device = torch.device(device)
+            except (RuntimeError, TypeError):
+                return False
+            if target_device.type != self.device.type:
+                return True
+            if target_device.index is None or self.device.index is None:
+                return False
+            return target_device.index != self.device.index
+
+        def dtype_arg_differs(arg: VariableTracker) -> bool:
+            dtype = const_arg(arg)
+            return dtype is not _MISSING and dtype is not None and dtype != self.dtype
+
+        copy_arg = kwargs.get("copy")
+        dtype_arg = kwargs.get("dtype")
+        device_arg = kwargs.get("device")
+        if copy_arg is None and len(args) >= 4:
+            copy_arg = args[3]
+        if args:
+            first_arg = const_arg(args[0])
+            if isinstance(args[0], TensorVariable):
+                if args[0].dtype != self.dtype or args[0].device != self.device:
+                    return None
+                if copy_arg is None and len(args) >= 3:
+                    copy_arg = args[2]
+            elif isinstance(first_arg, torch.dtype):
+                dtype_arg = dtype_arg or args[0]
+                if copy_arg is None and len(args) >= 3:
+                    copy_arg = args[2]
+            else:
+                device_arg = device_arg or args[0]
+                if len(args) >= 2:
+                    dtype_arg = dtype_arg or args[1]
+
+        if (dtype_arg is not None and dtype_arg_differs(dtype_arg)) or (
+            device_arg is not None and device_arg_differs(device_arg)
+        ):
+            return None
+
+        if copy_arg is not None:
+            try:
+                if copy_arg.as_python_constant() is True:
+                    return None
+            except NotImplementedError:
+                pass
 
         unimplemented(
             gb_type="unbacked to(memory_format=...) alias-or-copy op",
@@ -1324,6 +1347,14 @@ class TensorVariable(VariableTracker):
                 return variables.misc.DelayGraphBreakVariable(
                     source=AttrSource(self.source, name),
                     msg="Getting an inplace view on a graph input is not supported",
+                    hints=[
+                        "Avoid mutating a graph input's tensor metadata with in-place view ops. "
+                        "If the mutation is only needed inside the compiled region, replace the in-place call "
+                        "with an out-of-place view, for example `x = x.transpose(1, 2)` instead of "
+                        "`x.transpose_(1, 2)`.",
+                        "If you need to mutate the input tensor's metadata, move the in-place view call outside "
+                        "`torch.compile`.",
+                    ],
                 )
 
         # For attributes (not methods) that were not caught in the special handling above,
@@ -1676,8 +1707,6 @@ class TensorVariable(VariableTracker):
 
         if name in _UNBACKED_ALIAS_OR_COPY_METHODS:
             self._install_unbacked_alias_or_copy_guard(tx, proxy.node, args, kwargs)
-        elif name == "to":
-            self._install_unbacked_to_memory_format_guard(kwargs)
 
         # [Note: Inplace ops and VariableTracker metadata]
         # For inplace operations, we need to propagate tensor metadata from the
@@ -1914,7 +1943,7 @@ class TensorVariable(VariableTracker):
             context=f"{self}.as_subclass({cls})",
             explanation="Currently not supported",
             hints=[
-                "Avoid this call or move it outside `torch.compile` regione",
+                "Avoid this call or move it outside `torch.compile` region",
                 *graph_break_hints.SUPPORTABLE,
             ],
         )
@@ -2396,6 +2425,25 @@ class TensorVariable(VariableTracker):
 
     def method___abs__(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         return self.nb_absolute_impl(tx)
+
+    def nb_invert_impl(
+        self,
+        tx: "InstructionTranslatorBase",
+    ) -> VariableTracker:
+        from .builder import wrap_fx_proxy
+
+        return wrap_fx_proxy(
+            tx,
+            tx.output.create_proxy(
+                "call_function",
+                operator.invert,
+                (self.as_proxy(),),
+                {},
+            ),
+        )
+
+    def method___invert__(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+        return self.nb_invert_impl(tx)
 
     def method___getitem__(
         self,
@@ -3188,13 +3236,6 @@ class TensorVariable(VariableTracker):
             ),
         )
 
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, VariableTracker):
-            return False
-        a = self.as_proxy().node.meta["example_value"]
-        b = other.as_proxy().node.meta["example_value"]
-        return a is b
-
 
 class SymNodeVariable(VariableTracker):
     """
@@ -3653,15 +3694,6 @@ class SymNodeVariable(VariableTracker):
         # searched for a dict key.
         return hash(self.evaluate_expr())
 
-    def is_python_equal(self, other: object) -> bool:
-        if isinstance(other, SymNodeVariable):
-            return self.evaluate_expr() == other.evaluate_expr()
-        # could be constant variable as well
-        return (
-            isinstance(other, VariableTracker)
-            and self.evaluate_expr() == other.as_python_constant()
-        )
-
 
 class NumpyNdarrayVariable(TensorVariable):
     """
@@ -3937,7 +3969,7 @@ class TensorSubclassVariable(UserDefinedClassVariable):
                     explanation="Currently not supported",
                     hints=[
                         "Avoid this constructor call or move it outside "
-                        "`torch.compile` regione",
+                        "`torch.compile` region",
                         *graph_break_hints.SUPPORTABLE,
                     ],
                 )
