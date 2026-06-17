@@ -1186,9 +1186,9 @@ def cpp_int_array_str(values):
 
 
 def target_assert_size_stride_str(
-    name, sizes, strides, dynamic_sizes=None, dynamic_strides=None
+    name, sizes, strides, dynamic_sizes=None, dynamic_strides=None, dtype=None
 ):
-    """Build expected assert_size_stride check string for generated code.
+    """Build expected tensor metadata check string for generated code.
 
     Handles cpp_wrapper ({}/L or LL suffix) vs Python wrapper (()). When dynamic_sizes
     and dynamic_strides are provided, uses them if dynamic shapes are enabled.
@@ -1208,6 +1208,8 @@ def target_assert_size_stride_str(
         size_str = "(" + ", ".join(str(s) for s in sizes) + ")"
         stride_str = "(" + ", ".join(str(s) for s in strides) + ")"
 
+    if name is not None and dtype is not None and not config.cpp_wrapper:
+        return f"assert_tensor_metadata({name}, {size_str}, {stride_str}, {dtype}"
     if name is not None:
         return f"assert_size_stride({name}, {size_str}, {stride_str}"
     return f"{size_str}, {stride_str}"
@@ -2325,13 +2327,15 @@ class CommonTemplate:
         triton reduction configs for large size hints. #128826 introduced a scaling XBLOCK
         feature to resolve the issue in reduction configs which may exceed the maxGridSize
         """
+        from torch._inductor.runtime.hints import get_warp_size
         from torch._inductor.runtime.runtime_utils import next_power_of_2
         from torch._inductor.runtime.triton_heuristics import triton_config_reduction
 
+        warp_size = get_warp_size(torch.device(self.device))
         size_hints = {"x": 67108864, "r0_": 8192}
         for _ in range(4):
             size_hints["x"] = next_power_of_2(size_hints["x"])
-            triton_config_reduction(size_hints, 1, 2048, 1, 8)
+            triton_config_reduction(size_hints, 1, 2048, 1, 8, warp_size=warp_size)
 
     def test_prod(self):
         def fn(a):
@@ -6004,6 +6008,58 @@ for dtype in (torch.int32, torch.int64):
         )
 
     @skip_if_cpu
+    @skipIfRocm  # Triton conv backward kernels stay enabled on ROCm
+    @config.patch(
+        {
+            "max_autotune": True,
+            "max_autotune_conv_bwd_weight_backends": "TRITON",
+            "max_autotune_conv_bwd_input_backends": "TRITON",
+        }
+    )
+    def test_conv2d_backward_triton_disabled(self):
+        # On NVIDIA CUDA the Triton conv backward kernels hit a ptxas illegal
+        # memory access (#187081) and are force-disabled; even when TRITON is
+        # requested the lowering must fall back to ATEN. Assert the Triton
+        # kernels are not emitted -- a numeric/IMA check would be flaky since
+        # the out-of-bounds read only faults when it lands in unmapped memory.
+        if self.device != "cuda":
+            self.skipTest("CUDA-only behavior")
+
+        def fn(grad_output, inp, weight):
+            return torch.ops.aten.convolution_backward.default(
+                grad_output,
+                inp,
+                weight,
+                [4],
+                [1, 1],
+                [1, 1],
+                [2, 2],
+                False,
+                [0, 0],
+                1,
+                [True, True, False],
+            )
+
+        inps = (
+            torch.randn([2, 4, 18, 18], device=self.device),
+            torch.randn([2, 3, 16, 16], device=self.device),
+            torch.randn([4, 3, 1, 1], device=self.device),
+        )
+        _, code = run_and_get_code(torch.compile(fn), *inps)
+        code = "".join(code)
+        # Without the fix a triton_tem_fused_convolution_backward template
+        # kernel is emitted; with the fix the lowering falls back to ATEN. The
+        # ATEN call spelling depends on the wrapper: the Python wrapper emits
+        # torch.ops.aten.convolution_backward, the C++/AOTI wrapper emits
+        # aoti_torch_cuda_convolution_backward.
+        self.assertNotIn("triton_tem_fused_convolution_backward", code)
+        self.assertTrue(
+            "torch.ops.aten.convolution_backward.default(" in code
+            or "aoti_torch_cuda_convolution_backward(" in code,
+            "expected conv backward to fall back to ATEN",
+        )
+
+    @skip_if_cpu
     @config.patch(
         {
             "max_autotune": True,
@@ -8189,24 +8245,18 @@ for dtype in (torch.int32, torch.int64):
             atol = 5e-4
             rtol = 3e-4
 
-        # MPS has correctness problem before MacOS15
-        with (
-            contextlib.nullcontext()
-            if self.device != "mps" or MACOS_VERSION >= 15.0
-            else self.assertRaises(AssertionError)
-        ):
-            self.common(
-                fn,
-                (
-                    torch.randn(256, 256),
-                    torch.randn(256, 1024),
-                    torch.randn(1024, 1600),
-                    torch.randn(100, 256),
-                ),
-                atol=atol,
-                rtol=rtol,
-                check_lowp=False,  # accuracy issues with relatively large matmuls
-            )
+        self.common(
+            fn,
+            (
+                torch.randn(256, 256),
+                torch.randn(256, 1024),
+                torch.randn(1024, 1600),
+                torch.randn(100, 256),
+            ),
+            atol=atol,
+            rtol=rtol,
+            check_lowp=False,  # accuracy issues with relatively large matmuls
+        )
 
     @skip_if_gpu_halide
     # Constant folding was explicitly turned off due to issue #108388
@@ -9662,6 +9712,46 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 torch.rand(30, dtype=torch.float32),
             ),
         )
+
+    def test_bincount_with_int_weights(self):
+        def fn(x, w):
+            return torch.bincount(x, weights=w, minlength=8)
+
+        self.common(
+            fn,
+            (
+                torch.randint(0, 8, (30,), dtype=torch.int64),
+                torch.arange(30, dtype=torch.int32),
+            ),
+        )
+
+    def test_bincount_empty_with_weights(self):
+        def fn(x, w):
+            return torch.bincount(x, weights=w, minlength=8)
+
+        self.common(
+            fn,
+            (
+                torch.empty(0, dtype=torch.int64),
+                torch.empty(0, dtype=torch.float32),
+            ),
+        )
+
+    @lowering.force_fallback(aten.quantize_per_tensor.default)
+    def test_quantize_per_tensor_fallback_output_dtype(self):
+        if self.device != "cpu":
+            raise unittest.SkipTest("quantized tensor kernels are CPU-only")
+
+        def fn(x):
+            return torch.quantize_per_tensor(x, 0.1, 5, torch.quint8)
+
+        x = torch.randn(16, dtype=torch.float32, device=self.device)
+        ref = fn(x)
+        out = torch.compile(fn)(x)
+        self.assertEqual(out.dtype, torch.quint8)
+        self.assertEqual(out.q_scale(), ref.q_scale())
+        self.assertEqual(out.q_zero_point(), ref.q_zero_point())
+        self.assertEqual(out.int_repr(), ref.int_repr())
 
     def test_unique(self):
         # aten._unique2: torch.unique() backend; multi-output with data-dependent size.
@@ -12787,7 +12877,8 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
     @requires_cuda
     def test_max_min_bool(self):
         # Regression test for https://github.com/pytorch/pytorch/issues/174069
-        # max/min on boolean tensors returned incorrect indices in Triton
+        # and https://github.com/pytorch/pytorch/issues/184893
+        # max/min on boolean tensors returned incorrect indices on Triton and CPU.
         def fn(x):
             return (
                 x.max(0),
@@ -12796,17 +12887,28 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 x.min(1),
             )
 
-        # Unrolled reduction
-        t1 = torch.randint(2, size=(6, 6), dtype=torch.bool)
-        self.common(fn, (t1,))
+        # Use deterministic seeds since the exact index values depend on
+        # which duplicate True/False row is selected when ties are broken.
+        shapes = [
+            (2, 32),  # Minimal CPU repro from #184893
+            (7, 32),  # CPU repro from #184893
+            (6, 6),  # Unrolled reduction
+            (32, 32),  # Persistent reduction
+            (1028, 1028),  # Non-persistent reduction
+        ]
+        for i, shape in enumerate(shapes, start=2):
+            torch.manual_seed(i)
+            t1 = torch.randint(2, size=shape, dtype=torch.bool)
+            self.common(fn, (t1,))
 
-        # Persistent reduction
-        t1 = torch.randint(2, size=(32, 32), dtype=torch.bool)
-        self.common(fn, (t1,))
+    def test_max_min_bool_keepdim(self):
+        # keepdim=True variant -- second reproducer from #184893
+        def fn(x):
+            return x.min(1, keepdim=True)[1]
 
-        # Non-persistent reduction
-        t1 = torch.randint(2, size=(1028, 1028), dtype=torch.bool)
-        self.common(fn, (t1,))
+        torch.manual_seed(184893)
+        t = torch.randint(2, size=(4, 8, 32), dtype=torch.bool)
+        self.common(fn, (t,))
 
     def test_conv_backward(self):
         def fn(rank4_inps, rank3_inps, rank5_inps):
@@ -16755,7 +16857,10 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             # Dynamic shapes have compound sympy expressions (e.g. 3*s12*s80*s80)
             # whose C++ formatting (3L*s12*...) requires regex matching.
             suffix = "L?" if config.cpp_wrapper else ""
-            size_assert_pattern = rf"assert_size_stride.[a-z]+[0-9]+, .2{suffix}, 3{suffix}, s12, s80, s80., .3{suffix}\*s12\*s80\*s80, s12\*s80\*s80, 1{suffix}, s12\*s80, s1.."
+            assert_fn = (
+                "assert_size_stride" if config.cpp_wrapper else "assert_tensor_metadata"
+            )
+            size_assert_pattern = rf"{assert_fn}.[a-z]+[0-9]+, .2{suffix}, 3{suffix}, s12, s80, s80., .3{suffix}\*s12\*s80\*s80, s12\*s80\*s80, 1{suffix}, s12\*s80, s1.."
             FileCheck().check_regex(size_assert_pattern).run(code)
         else:
             FileCheck().check("assert_size_stride(").check(
@@ -16994,10 +17099,20 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         code = run_and_get_triton_code(f, x)
 
         check1 = target_assert_size_stride_str(
-            "buf1", [16, 32], [32, 1], ["s77", "s27"], ["s27", 1]
+            "buf1",
+            [16, 32],
+            [32, 1],
+            ["s77", "s27"],
+            ["s27", 1],
+            torch.float32,
         )
         check2 = target_assert_size_stride_str(
-            "buf2", [16, 32], [32, 1], ["s77", "s27"], ["s27", 1]
+            "buf2",
+            [16, 32],
+            [32, 1],
+            ["s77", "s27"],
+            ["s27", 1],
+            torch.int64,
         )
         FileCheck().check(check1).check(check2).run(code)
 
@@ -18472,6 +18587,36 @@ if RUN_CPU:
     class CpuTests(TestCase):
         common = check_model
         device = "cpu"
+
+        def test_uint8_abs_codegen_issue_187018(self):
+            """
+            Ensures torch.compile does not emit std::abs or .abs() for unsigned integers,
+            which causes implicit promotion to signed int and downstream miscompilation.
+            """
+            from torch._inductor.utils import run_and_get_cpp_code
+            from torch.testing import FileCheck
+
+            def f(x):
+                y = -x.abs()
+                return torch.cat([y, y]).sum()
+
+            # Small tensor triggers the scalar codegen path
+            x_scalar = torch.tensor([200, 200], dtype=torch.uint8)
+            # Large tensor (>= 256) triggers the vectorized codegen path
+            x_vec = torch.full((256,), 200, dtype=torch.uint8)
+
+            opt_f = torch.compile(f)
+
+            # 1. Numeric equivalence tests
+            self.assertEqual(opt_f(x_scalar), f(x_scalar))
+            self.assertEqual(opt_f(x_vec), f(x_vec))
+
+            # 2. FileCheck tests to strictly guarantee bypass in generated C++
+            _, code_scalar = run_and_get_cpp_code(opt_f, x_scalar)
+            FileCheck().check_not("std::abs(").run(code_scalar)
+
+            _, code_vec = run_and_get_cpp_code(opt_f, x_vec)
+            FileCheck().check_not(".abs()").run(code_vec)
 
     copy_tests(CommonTemplate, CpuTests, "cpu")
 
