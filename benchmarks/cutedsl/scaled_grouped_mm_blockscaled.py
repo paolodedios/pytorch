@@ -1,6 +1,7 @@
 import argparse
 import gc
 import importlib
+import time
 import warnings
 from collections.abc import Callable
 from typing import NamedTuple
@@ -15,6 +16,7 @@ from torch.testing._internal.common_quantized import (
 
 
 _CPP_SCALED_GROUPED_MM_V2_KERNEL = None
+_BENCH_SETTLE_SECONDS = 0.1
 
 
 def is_blackwell():
@@ -130,12 +132,14 @@ def _do_bench_cuda(fn, warmup=10, rep=100, stat: str = "median") -> BenchResult:
             raise ValueError("fn list for benchmarking cannot be empty")
         fns = fn
         for i in range(warmup):
+            time.sleep(_BENCH_SETTLE_SECONDS)
             fns[i % len(fns)]()
         torch.cuda.synchronize()
         samples_us = []
         for i in range(rep):
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
+            time.sleep(_BENCH_SETTLE_SECONDS)
             start.record()
             fns[i % len(fns)]()
             end.record()
@@ -144,12 +148,14 @@ def _do_bench_cuda(fn, warmup=10, rep=100, stat: str = "median") -> BenchResult:
         return _summarize(samples_us, stat)
 
     for _ in range(warmup):
+        time.sleep(_BENCH_SETTLE_SECONDS)
         fn()
     torch.cuda.synchronize()
     samples_us = []
     for _ in range(rep):
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
+        time.sleep(_BENCH_SETTLE_SECONDS)
         start.record()
         fn()
         end.record()
