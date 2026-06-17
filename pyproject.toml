@@ -145,6 +145,25 @@ exclude = [
     "torch/share/cmake/ittapi/**",
     "torch/share/cmake/dnnl/**",
     "torch/share/cpuinfo/**",
+    # Windows analog of the above: third-party import libs and their CMake
+    # package configs / pkg-config files leak in via the subproject install()
+    # rules (GNUInstallDirs lib/cmake, plus *.lib), the way *.a + share/cmake/*
+    # do on Linux. The setuptools wheel ships none of these and downstream
+    # find_package(Torch) works: nothing in torch/share/cmake/ (the Torch
+    # config tree, shipped identically) consumes them -- MKLDNN/Protobuf resolve
+    # via QUIET + bundled-static fallbacks, and dnnl is statically linked into
+    # torch_cpu.dll. dnnl.lib alone is ~1.3GB uncompressed. Do NOT broaden to
+    # **/*.lib: torch's own c10/torch/torch_cpu/torch_python import libs are
+    # required for Windows downstream linking and must stay.
+    "torch/lib/dnnl.lib",
+    "torch/lib/kineto.lib",
+    "torch/lib/libprotobuf.lib",
+    "torch/lib/libprotobuf-lite.lib",
+    "torch/lib/libprotoc.lib",
+    "torch/lib/mimalloc-2.3/mimalloc.lib",
+    "torch/lib/cmake/**",
+    "torch/cmake/**",
+    "torch/lib/pkgconfig/**",
     # File types that are unambiguously build inputs or dev artifacts; none
     # of these appear in nightly wheels today.
     "**/*.bzl",
