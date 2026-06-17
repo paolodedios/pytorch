@@ -1736,7 +1736,7 @@ class PythonWrapperCodegen(CodeGen):
 
         with self.prefix.indent(prefix_indent):
             if config.triton.debug_sync_graph:
-                self.prefix.writeline(V.graph.device_ops.synchronize())
+                self.generate_debug_sync(self.prefix)
             phase = V.graph.get_training_phase()
             if config.annotate_training:
                 self.prefix.writeline(
@@ -1827,6 +1827,11 @@ class PythonWrapperCodegen(CodeGen):
         for idx in inputs_to_check:
             if idx not in mutated_idxs:
                 name = V.graph.graph_input_names[idx]
+                if name in V.graph.data_ptr_keepalive_buffers:
+                    # data_ptr() exposes the input's actual address, so an
+                    # alignment clone would change observable pointer identity.
+                    V.graph._defers_input_alignment = True
+                    continue
                 self._pending_alignment_copies.add(name)
         if self._pending_alignment_copies:
             V.graph._defers_input_alignment = True
@@ -2285,7 +2290,7 @@ class PythonWrapperCodegen(CodeGen):
             output_refs = self.get_output_refs()
             self.mark_output_type()
             if config.triton.debug_sync_graph:
-                self.wrapper_call.writeline(V.graph.device_ops.synchronize())
+                self.generate_debug_sync(self.wrapper_call)
 
             if config.profile_bandwidth:
                 self.generate_end_graph()
@@ -2470,24 +2475,33 @@ class PythonWrapperCodegen(CodeGen):
             return f"{name}_stride"
 
         def maybe_emit_replacement_aliases(sym: sympy.Symbol) -> None:
-            # Deferred runtime asserts reference pre-replacement backed
-            # symbols (e.g. s77) that were replaced to this canonical
-            # symbol (s31) during constraint solving. Emit aliases so
-            # the asserts compile. Skip unbacked symbols — they are
-            # defined separately by the unbacked symbol codegen path.
+            # Deferred runtime asserts and graph input metadata can reference
+            # either side of a backed-symbol replacement. Emit aliases so both
+            # the pre-replacement and canonical names are defined.
             from torch.utils._sympy.symbol import symbol_is_type, SymT
+
+            def is_backed_symbol(s: sympy.Symbol) -> bool:
+                return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
 
             for src, tgt in V.graph.sizevars.shape_env.replacements.items():
                 if (
                     tgt == sym
                     and isinstance(src, sympy.Symbol)
                     and src not in bound_vars
-                    and not symbol_is_type(
-                        src, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
-                    )
+                    and is_backed_symbol(src)
+                    and is_backed_symbol(sym)
                 ):
                     code.writeline(f"{src} = {sym}")
                     bound_vars.add(src)
+                elif (
+                    src == sym
+                    and isinstance(tgt, sympy.Symbol)
+                    and tgt not in bound_vars
+                    and is_backed_symbol(sym)
+                    and is_backed_symbol(tgt)
+                ):
+                    code.writeline(f"{tgt} = {sym}")
+                    bound_vars.add(tgt)
 
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:
@@ -3382,6 +3396,9 @@ class PythonWrapperCodegen(CodeGen):
     def wrap_kernel_call(self, name, call_args):
         return f"{name}({', '.join(call_args)}){self.ending}"
 
+    def generate_debug_sync(self, buffer):
+        buffer.writeline(V.graph.device_ops.synchronize())
+
     def generate_profiler_mark_wrapper_call(self, stack):
         self.wrapper_call.writeline("from torch.profiler import record_function")
         self.wrapper_call.writeline(
@@ -4017,6 +4034,10 @@ class PythonWrapperCodegen(CodeGen):
 
     def codegen_free(self, buffer):
         name = buffer.get_name()
+        if name in V.graph.data_ptr_keepalive_buffers:
+            # Later opaque kernels may dereference the raw address returned by
+            # data_ptr(), so keep the backing tensor live through the call.
+            return
 
         # can be freed but not reused
         if isinstance(buffer, (ir.InputBuffer, ir.TorchBindObject)):

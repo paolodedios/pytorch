@@ -54,6 +54,7 @@ from torch.fx.passes.reinplace import _is_view_op
 from torch.utils._mode_utils import no_dispatch
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._sympy.numbers import int_oo
+from torch.utils._typing_utils import not_none
 
 from . import config, ir
 from .codegen.common import (
@@ -491,6 +492,9 @@ class GraphLowering(torch.fx.Interpreter):
         self.mutated_buffers: OrderedSet[str] = OrderedSet()
         self.sdpa_constraint_cache: dict[tuple, ir.IRNode] = {}
         self.never_reuse_buffers: OrderedSet[str] = OrderedSet()
+        self.data_ptr_keepalive_buffers: OrderedSet[str] = OrderedSet()
+        self.data_ptr_keepalive_input_names: OrderedSet[str] = OrderedSet()
+        self.data_ptr_keepalive_input_idxs: OrderedSet[int] = OrderedSet()
         self.inplaced_to_remove: OrderedSet[str] = OrderedSet()
         self.device_ops: DeviceOpOverrides = None  # type: ignore[assignment]
         self.wrapper_code: PythonWrapperCodegen = None  # type: ignore[assignment]
@@ -516,6 +520,9 @@ class GraphLowering(torch.fx.Interpreter):
         self.name = name  # type: ignore[assignment]
         self.cpp_wrapper = cpp_wrapper
         self.fx_wrapper = fx_wrapper
+        self.data_ptr_keepalive_input_names = self.find_data_ptr_keepalive_input_names(
+            gm.graph
+        )
 
         # record multi_kernel choice for cpp_wrapper so the second pass knows
         # which sub-kernel is picked. Copy cpp_wrapper to another variable
@@ -919,6 +926,54 @@ class GraphLowering(torch.fx.Interpreter):
             return f"{self.name}_{name}"
         return name
 
+    def mark_data_ptr_keepalive_buffer(
+        self, name: str, input_idx: int | None = None
+    ) -> None:
+        if self.aot_mode:
+            raise NotImplementedError("AOTInductor does not support tracing data_ptr()")
+        if self.disable_cudagraphs_reason is None:
+            self.disable_cudagraphs_reason = (
+                "data_ptr() exposes the caller's tensor address"
+            )
+        self.data_ptr_keepalive_buffers.add(name)
+        self.unaligned_buffers.add(name)
+        self.never_reuse_buffers.add(name)
+        if input_idx is not None:
+            self.data_ptr_keepalive_input_idxs.add(input_idx)
+
+    def find_data_ptr_keepalive_input_names(self, graph: Graph) -> OrderedSet[str]:
+        def is_data_ptr_target(target: object) -> bool:
+            return (
+                isinstance(target, torch._ops.OpOverload)
+                and target.name() == "prims::_data_ptr"
+            )
+
+        def alias_inputs(node: Node, seen: OrderedSet[Node]) -> OrderedSet[str]:
+            if node in seen:
+                return OrderedSet()
+            seen.add(node)
+            if node.op == "placeholder":
+                return OrderedSet([self.qualify_name(str(node.target))])
+            if (
+                node.op == "call_function"
+                and (_is_view_op(node.target) or node.target is operator.getitem)
+                and node.args
+                and isinstance(node.args[0], Node)
+            ):
+                return alias_inputs(node.args[0], seen)
+            return OrderedSet()
+
+        input_names: OrderedSet[str] = OrderedSet()
+        for node in graph.nodes:
+            if (
+                node.op == "call_function"
+                and is_data_ptr_target(node.target)
+                and node.args
+                and isinstance(node.args[0], Node)
+            ):
+                input_names.update(alias_inputs(node.args[0], OrderedSet()))
+        return input_names
+
     def make_subgraph(
         self,
         gm: torch.fx.GraphModule,
@@ -1277,12 +1332,7 @@ class GraphLowering(torch.fx.Interpreter):
         example = super().placeholder(target, args, kwargs)  # type: ignore[arg-type]
         target = self.qualify_name(target)
         if isinstance(example, SymTypes):
-            # TODO fix partitioning issue and re-enable for backward
-            # https://github.com/pytorch/pytorch/issues/155468.
-            if not V.graph.is_backward:
-                expr = _get_placeholder_expr(example.node)
-            else:
-                expr = example.node.expr
+            expr = _get_placeholder_expr(example.node)
             self.graph_inputs[target] = expr
             self.graph_input_names.append(target)
             return expr
@@ -1359,6 +1409,8 @@ class GraphLowering(torch.fx.Interpreter):
         self.graph_inputs_original[target] = tensor.data.data  # type: ignore[union-attr]
         if self.current_node.users:  # cudagraphs should work with an unused CPU input
             self.add_device_info(example.device)
+        if target in self.data_ptr_keepalive_input_names:
+            self.mark_data_ptr_keepalive_buffer(target, len(self.graph_input_names) - 1)
 
         # Note: [Input Alignment handling in Inductor]
         # Alignment matters for generating efficient code. Some operations,
@@ -2055,7 +2107,7 @@ class GraphLowering(torch.fx.Interpreter):
                         # require_exact_strides to handle views. But ultimately it's better to require
                         # the right strides at the tensor definition.
                         if n.meta["val"]._is_view() or isinstance(
-                            result.data,
+                            result.data,  # type: ignore[missing-attribute]
                             ir.BaseView,
                         ):
                             result = ir.ExternKernel.require_stride_order(
@@ -2532,7 +2584,7 @@ class GraphLowering(torch.fx.Interpreter):
                         return None
                     elif isinstance(x, (torch.SymInt, torch.SymFloat)):
                         # Need concrete value to run dynamic shapes and tune the result
-                        return x.node.hint
+                        return not_none(x.hint)
                     elif isinstance(x, FakeTensor):
                         return defake(x)
                     else:
