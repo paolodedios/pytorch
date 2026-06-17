@@ -123,6 +123,7 @@ from .graph_id_filter import (
 from .graph_region_tracker import GraphRegionTracker
 from .guards import GuardBuilder, install_guard
 from .mutation_guard import is_dynamic_nn_module
+from .resume_execution import TORCH_DYNAMO_RESUME_IN_PREFIX
 from .side_effects import AttributeMutationExisting, SideEffects, ValueMutationExisting
 from .source import (
     _get_source_debug_name,
@@ -784,7 +785,7 @@ class OutputGraph(OutputGraphCommon):
         # We thought of rolling this in variable_tracker_cache but here
         # different sources point to the same object, we also don't want it to
         # go through the side effects cache because even though these objects
-        # are same, we dont want OBJECT_ALIASING guards on them. For these
+        # are same, we don't want OBJECT_ALIASING guards on them. For these
         # objects, we have DICT_CONTAINS absent guards on the mro walk, so there
         # is no need of the OBJECT_ALIASING guards.
         self.mro_source_cache: dict[tuple[int, str], DictGetItemSource] = {}
@@ -839,6 +840,9 @@ class OutputGraph(OutputGraphCommon):
         self.should_exit = False
         self.compile_subgraph_reason = GraphCompileReason(
             "output graph has not been compiled", [], graph_break=False
+        )
+        self.is_torch_dynamo_resume_frame = f_code.co_name.startswith(
+            TORCH_DYNAMO_RESUME_IN_PREFIX
         )
         self.compile_context_weakrefs_cleared = False
         self.unspec_variable_map: dict[str, UnspecializedPythonVariable] = {}
