@@ -44,7 +44,6 @@ from torch.testing._internal.common_utils import (
     retry_on_connect_failures,
     run_tests,
     TEST_WITH_DEV_DBG_ASAN,
-    TEST_XPU,
     TestCase,
 )
 from torch.utils.checkpoint import checkpoint
