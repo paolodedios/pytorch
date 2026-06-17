@@ -10,6 +10,7 @@ from torch._inductor.fx_passes.control_dependencies import (
 )
 from torch._inductor.test_case import run_tests, TestCase as InductorTestCase
 from torch._inductor.utils import run_and_get_code
+from torch.fx import Graph, GraphModule
 from torch.testing import FileCheck
 from torch.testing._internal.common_utils import IS_LINUX
 from torch.testing._internal.inductor_utils import (
@@ -20,6 +21,48 @@ from torch.testing._internal.inductor_utils import (
 
 
 class TestControlDeps(InductorTestCase):
+    def test_fuse_region_subgraph_arg_fake_update(self):
+        from torch._inductor.fx_utils import _extract_subgraphs_and_args
+
+        def make_region() -> GraphModule:
+            graph = Graph()
+            x = graph.placeholder("x")
+            nested = graph.placeholder("nested")
+            add = graph.call_function(torch.ops.aten.add.Tensor, (x, 1))
+            mul = graph.call_function(torch.ops.aten.mul.Tensor, (add, 2))
+            graph.output((mul, nested))
+            return GraphModule({}, graph)
+
+        def make_nested() -> GraphModule:
+            graph = Graph()
+            x = graph.placeholder("x")
+            graph.output(graph.call_function(torch.ops.aten.sin.default, (x,)))
+            return GraphModule({}, graph)
+
+        region = make_region()
+        nested = make_nested()
+        outer_graph = Graph()
+        node = outer_graph.call_function(control_deps, args=((), region), kwargs={})
+
+        x = torch.empty(1)
+        subgraphs = {region: None, nested: None}
+        extracted = list(
+            _extract_subgraphs_and_args(
+                node,
+                subgraphs,
+                (),
+                region,
+                x,
+                nested,
+                **{FUSE_REGION: True},
+            )
+        )
+
+        self.assertEqual(len(extracted), 1)
+        self.assertIs(extracted[0][0], region)
+        self.assertIs(extracted[0][1][0], x)
+        self.assertIs(extracted[0][1][1], nested)
+
     @config.patch(reorder_for_locality=False)
     @requires_gpu()
     def test_control_deps_prevents_fusion(self):

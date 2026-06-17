@@ -356,6 +356,8 @@ def _extract_subgraphs_and_args(
         control_deps_args = tuple(args[2:])
         if control_deps_subgraph in valid_subgraphs:
             yield control_deps_subgraph, control_deps_args
+        if kwargs.get(FUSE_REGION, False):
+            return
         if isinstance(
             control_deps_subgraph, torch.fx.GraphModule
         ) and pytree.tree_any_only(
