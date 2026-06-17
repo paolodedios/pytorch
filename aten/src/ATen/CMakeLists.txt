@@ -951,7 +951,7 @@ if(USE_MPS)
             list(APPEND METALLIB_DEPS ${SHADER_HDR})
         endforeach()
     endif()
-  
+
     add_custom_target(metallibs DEPENDS ${METALLIB_DEPS})
 endif()
 
