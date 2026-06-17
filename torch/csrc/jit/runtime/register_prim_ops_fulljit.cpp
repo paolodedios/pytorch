@@ -155,8 +155,7 @@ RegisterOperators reg({
         "aten::_grad_sum_to_size(Tensor(a) self, int[]? size) -> Tensor(a)",
         [](Stack& stack) {
           RECORD_FUNCTION("_grad_sum_to_size", std::vector<c10::IValue>());
-          IValue self, size;
-          pop(stack, self, size);
+          auto [self, size] = pop<IValue, IValue>(stack);
           if (size.isNone()) {
             push(stack, std::move(self));
           } else {
@@ -630,16 +629,13 @@ IValue convert_scale_factor_to_double(const IValue& int_ivalue) {
     std::stringstream ss;
     ss << "Expecting optional int or int list arg for scale factor, got"
        << int_ivalue;
-    throw std::runtime_error(ss.str());
+    throw std::runtime_error(std::move(ss).str());
   }
   return scale_factor_double;
 }
 
 void upsample_nearest_op(Stack& stack) {
-  at::Tensor input;
-  IValue size;
-  IValue scale_factor_int;
-  pop(stack, input, size, scale_factor_int);
+  auto [input, size, scale_factor_int] = pop<at::Tensor, IValue, IValue>(stack);
   IValue scale_factor_double = convert_scale_factor_to_double(scale_factor_int);
   at::Tensor res = interpolate(
       input, size, scale_factor_double, "nearest", std::nullopt, std::nullopt);
@@ -647,12 +643,8 @@ void upsample_nearest_op(Stack& stack) {
 }
 
 void upsample_op(Stack& stack) {
-  at::Tensor input;
-  IValue size;
-  IValue scale_factor_int;
-  std::string mode;
-  IValue align_corners;
-  pop(stack, input, size, scale_factor_int, mode, align_corners);
+  auto [input, size, scale_factor_int, mode, align_corners] =
+      pop<at::Tensor, IValue, IValue, std::string, IValue>(stack);
   IValue scale_factor_double = convert_scale_factor_to_double(scale_factor_int);
   at::Tensor res = interpolate(
       input,
@@ -665,10 +657,7 @@ void upsample_op(Stack& stack) {
 }
 
 void upsample_bilinear_op(Stack& stack) {
-  at::Tensor input;
-  IValue size;
-  IValue scale_factor_int;
-  pop(stack, input, size, scale_factor_int);
+  auto [input, size, scale_factor_int] = pop<at::Tensor, IValue, IValue>(stack);
   IValue scale_factor_double = convert_scale_factor_to_double(scale_factor_int);
   at::Tensor res = interpolate(
       input, size, scale_factor_double, "bilinear", true, std::nullopt);
