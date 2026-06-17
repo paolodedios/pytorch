@@ -436,12 +436,6 @@ class CustomOpDef:
                 dtypes = list(device_types)
             for device_type in dtypes:
                 if device_type not in self._backend_fns:
-                    schema = self._opoverload._schema
-                    check_aliasing = not schema._is_view_op() and any(
-                        utils.is_tensor_like_type(ret.type)
-                        or utils.is_tensorlist_like_type(ret.type)
-                        for ret in schema.returns
-                    )
 
                     def backend_impl(*args, **kwargs):
                         result = self._backend_fns[device_type](*args, **kwargs)
@@ -450,6 +444,7 @@ class CustomOpDef:
                             fn = self._backend_fns[device_type]
                             return inspect.getmodule(fn)
 
+                        schema = self._opoverload._schema
                         if self._is_inplace:
                             if result is not args[0]:
                                 raise RuntimeError(
@@ -460,8 +455,7 @@ class CustomOpDef:
                         elif self._is_out:
                             out_kwarg_names = self._out_kwarg_names
                             if len(out_kwarg_names) == 1:
-                                out_arg_name = out_kwarg_names[0]
-                                returns_out_args = result is kwargs[out_arg_name]
+                                returns_out_args = result is kwargs[out_kwarg_names[0]]
                             else:
                                 returns_out_args = (
                                     isinstance(result, tuple)
@@ -477,7 +471,7 @@ class CustomOpDef:
                                     "An operator tagged with torch.Tag.out must "
                                     "return its mutable keyword-only arguments."
                                 )
-                        elif check_aliasing:
+                        elif not schema._is_view_op():
                             utils._c_check_aliasing_constraint(
                                 self._name,
                                 args,
