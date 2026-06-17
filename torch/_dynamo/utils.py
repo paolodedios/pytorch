@@ -4043,7 +4043,13 @@ def _get_fake_value_impl(
     from torch.utils._sympy.value_ranges import ValueRangeError
 
     from . import graph_break_hints
-    from .exc import unimplemented, Unsupported, UserError, UserErrorType
+    from .exc import (
+        raise_observed_exception,
+        unimplemented,
+        Unsupported,
+        UserError,
+        UserErrorType,
+    )
 
     op = node.op
 
@@ -4227,8 +4233,6 @@ def _get_fake_value_impl(
                 from_exc=cause,
             )
         elif _can_raise_fake_runtime_error_to_user_handler(cause, tx):
-            from .exc import raise_observed_exception
-
             runtime_error = cast(RuntimeError, cause)
             tx.output.remove_node(node)
             raise_observed_exception(
