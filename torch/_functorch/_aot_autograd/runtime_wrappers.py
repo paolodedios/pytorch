@@ -14,6 +14,7 @@ import itertools
 import pprint
 import typing
 import warnings
+import weakref
 from collections.abc import Callable, Generator, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
@@ -25,10 +26,7 @@ import torch.fx as fx
 from torch import Tensor
 from torch._dynamo import config as dynamo_config
 from torch._dynamo.callback import callback_handler, CallbackTrigger
-from torch._dynamo.graph_bytecode_inputs import (
-    index_to_external_object_weakref,
-    set_external_object_by_index,
-)
+from torch._dynamo.graph_bytecode_inputs import index_to_external_object_weakref
 from torch._dynamo.utils import CompileEventLogger, dynamo_timed, get_metrics_context
 from torch._guards import (
     compile_context,
@@ -3566,7 +3564,7 @@ class _AOTDispatchAutogradFunctionFactory:
                     )
 
                 for idx, obj in getattr(ctx, "_external_objects", {}).items():
-                    set_external_object_by_index(idx, obj)
+                    index_to_external_object_weakref[idx] = weakref.ref(obj)
 
                 return call_func_at_runtime_with_args(
                     compiled_bw,
