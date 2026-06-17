@@ -1,6 +1,7 @@
 //  Copyright © 2022 Apple Inc.
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
 #include <ATen/native/mps/OperationUtils.h>
+#include <ATen/native/mps/kernels/LossOps.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -20,8 +21,133 @@
 #include <ATen/ops/smooth_l1_loss_native.h>
 #endif
 
+#include <ATen/ops/huber_loss.h>
+#include <ATen/ops/huber_loss_backward.h>
+#include <ATen/ops/smooth_l1_loss.h>
+#include <ATen/ops/smooth_l1_loss_backward.h>
+#include <torch/csrc/autograd/custom_function.h>
+
 namespace at::native {
 namespace mps {
+
+// Metal kernel library (LossOps.metal). SmoothHuberParams comes from kernels/LossOps.h.
+#ifndef PYTORCH_JIT_COMPILE_SHADERS
+static auto& lib = MetalShaderLibrary::getBundledLibrary();
+#else
+#include <ATen/native/mps/LossOps_metallib.h>
+#endif
+
+static constexpr uint32_t kLossKernelTgsz = 256;
+// Cap reduce threadgroup count: avoids O(N/256) barrier calls at large N
+static constexpr uint32_t kMaxReduceTGs = 256u;
+
+static void encode_reduce_partials(id<MTLComputeCommandEncoder> enc,
+                                   const Tensor& partial,
+                                   const Tensor& loss_out,
+                                   uint32_t n_tg) {
+  const std::string dt_out = scalarToMetalTypeString(loss_out);
+  auto pso = lib.getPipelineStateForFunc("loss_reduce_partials_" + dt_out);
+  [enc setComputePipelineState:pso];
+  mtl_setArgs(enc, partial, loss_out, n_tg);
+  [enc dispatchThreads:MTLSizeMake(kLossKernelTgsz, 1, 1) threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
+}
+
+static void smooth_huber_fwd_metal(const Tensor& input,
+                                   const Tensor& target,
+                                   int64_t reduction,
+                                   float beta,
+                                   uint32_t is_huber,
+                                   const Tensor& output) {
+  // Metal kernels are only instantiated for float/half/bfloat. Promote
+  // integer / bool inputs to float (mirrors MPSGraph baseline).
+  if (c10::isIntegralType(input.scalar_type(), /*includeBool=*/true)) {
+    Tensor output_f = at::empty_like(output, output.options().dtype(at::kFloat));
+    smooth_huber_fwd_metal(input.to(at::kFloat), target.to(at::kFloat), reduction, beta, is_huber, output_f);
+    output.copy_(output_f);
+    return;
+  }
+  if (input.numel() == 0 || target.numel() == 0) {
+    reduction == Reduction::Mean ? output.fill_(std::numeric_limits<float>::quiet_NaN()) : output.zero_();
+    return;
+  }
+  const Tensor input_c = input.is_contiguous() ? input : input.contiguous();
+  const Tensor target_c = target.is_contiguous() ? target : target.contiguous();
+  const bool need_out_copy = !output.is_contiguous();
+  Tensor out_buf = need_out_copy ? at::empty_like(output, at::MemoryFormat::Contiguous) : output;
+  const uint32_t N = static_cast<uint32_t>(input_c.numel());
+  const float scale = (reduction == Reduction::Mean) ? 1.f / static_cast<float>(N) : 1.f;
+  SmoothHuberParams p{N, scale, static_cast<uint32_t>(reduction), beta, is_huber};
+  const std::string dt = scalarToMetalTypeString(input_c);
+  MPSStream* stream = getCurrentMPSStream();
+  if (reduction == Reduction::None) {
+    dispatch_sync_with_rethrow(stream->queue(), ^() {
+      @autoreleasepool {
+        id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+        auto pso = lib.getPipelineStateForFunc("smooth_huber_fwd_none_" + dt);
+        [enc setComputePipelineState:pso];
+        mtl_setArgs(enc, input_c, target_c, out_buf, p);
+        [enc dispatchThreads:MTLSizeMake((N + 3u) / 4u, 1, 1) threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
+      }
+    });
+    stream->synchronize(SyncType::COMMIT);
+  } else {
+    const uint32_t n_tg = std::min((N + kLossKernelTgsz - 1) / kLossKernelTgsz, kMaxReduceTGs);
+    Tensor partial = at::empty({static_cast<int64_t>(n_tg)}, input.options().dtype(at::kFloat));
+    dispatch_sync_with_rethrow(stream->queue(), ^() {
+      @autoreleasepool {
+        id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+        auto pso = lib.getPipelineStateForFunc("smooth_huber_fwd_reduce_" + dt);
+        [enc setComputePipelineState:pso];
+        mtl_setArgs(enc, input_c, target_c, partial, p);
+        [enc dispatchThreadgroups:MTLSizeMake(n_tg, 1, 1) threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
+        encode_reduce_partials(enc, partial, out_buf, n_tg);
+      }
+    });
+    stream->synchronize(SyncType::COMMIT);
+  }
+  if (need_out_copy)
+    output.copy_(out_buf);
+}
+
+static void smooth_huber_bwd_metal(const Tensor& grad_output,
+                                   const Tensor& input,
+                                   const Tensor& target,
+                                   int64_t reduction,
+                                   float beta,
+                                   uint32_t is_huber,
+                                   Tensor& grad_input) {
+  if (grad_input.numel() == 0)
+    return;
+  if (c10::isIntegralType(input.scalar_type(), /*includeBool=*/true)) {
+    Tensor gi_f = at::empty_like(grad_input, grad_input.options().dtype(at::kFloat));
+    smooth_huber_bwd_metal(
+        grad_output.to(at::kFloat), input.to(at::kFloat), target.to(at::kFloat), reduction, beta, is_huber, gi_f);
+    grad_input.copy_(gi_f);
+    return;
+  }
+  const Tensor g = grad_output.is_contiguous() ? grad_output : grad_output.contiguous();
+  const Tensor i = input.is_contiguous() ? input : input.contiguous();
+  const Tensor t = target.is_contiguous() ? target : target.contiguous();
+  const bool need_gi_copy = !grad_input.is_contiguous();
+  Tensor gi = need_gi_copy ? at::empty_like(grad_input, at::MemoryFormat::Contiguous) : grad_input;
+  const uint32_t N = static_cast<uint32_t>(i.numel());
+  const float scale = (reduction == Reduction::Mean) ? 1.f / static_cast<float>(N) : 1.f;
+  SmoothHuberParams p{N, scale, static_cast<uint32_t>(reduction), beta, is_huber};
+  const std::string dt = scalarToMetalTypeString(i);
+  MPSStream* stream = getCurrentMPSStream();
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+      auto pso = lib.getPipelineStateForFunc("smooth_huber_bwd_" + dt);
+      [enc setComputePipelineState:pso];
+      mtl_setArgs(enc, g, i, t, gi, p);
+      [enc dispatchThreads:MTLSizeMake((N + 15u) / 16u, 1, 1) threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
+    }
+  });
+  stream->synchronize(SyncType::COMMIT);
+  if (need_gi_copy)
+    grad_input.copy_(gi);
+}
 
 static std::string reductionToString(int64_t reduction) {
   switch (reduction) {
@@ -613,92 +739,9 @@ static void smooth_l1_loss_impl(const Tensor& input,
                                 const int64_t reduction,
                                 double beta,
                                 const Tensor& output,
-                                MPSShape* mpsInputShape,
-                                MPSShape* mpsOutputShape) {
-  struct CachedGraph : public MPSCachedGraph {
-    CachedGraph(MPSGraph* graph) : MPSCachedGraph(graph) {}
-    MPSGraphTensor* inputTensor_ = nil;
-    MPSGraphTensor* targetTensor_ = nil;
-    MPSGraphTensor* outputTensor_ = nil;
-  };
-
-  MPSStream* stream = getCurrentMPSStream();
-
-  @autoreleasepool {
-    MPSShape* input_shape = getMPSShape(input);
-    NSString* ns_shape_key = [[input_shape valueForKey:@"description"] componentsJoinedByString:@","];
-
-    std::string key = "smooth_l1_loss_impl:" + reductionToString(reduction) + ":" + [ns_shape_key UTF8String] + ":" +
-        std::to_string(beta) + ":" + getMPSTypeString(input) + ":" + getMPSTypeString(target);
-    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
-      // smooth_l1_loss_mps:
-      // ln = 0.5 * ( xn - yn ) ^ 2 / beta,       if |xn - yn| < beta
-      //    = | xn - yn | - 0.5 * beta,           otherwise
-
-      MPSGraphTensor* inputTensor = mpsGraphUnrankedPlaceHolder(mpsGraph, getMPSDataType(input));
-      MPSGraphTensor* targetTensor = mpsGraphUnrankedPlaceHolder(mpsGraph, getMPSDataType(target));
-
-      // Setup tensors
-      MPSGraphTensor* mpsGraphHalfTensor = [mpsGraph constantWithScalar:0.5 dataType:inputTensor.dataType];
-      MPSGraphTensor* betaTensor = [mpsGraph constantWithScalar:beta dataType:inputTensor.dataType];
-      // 0.5 * beta
-      MPSGraphTensor* halfTensorMulBetaTensor = [mpsGraph constantWithScalar:beta * 0.5 dataType:inputTensor.dataType];
-      // Calculating first part of the equation:
-      // ln = 0.5(xn - yn)^2/beta, if |xn - yn| < beta
-
-      // xn - yn
-      MPSGraphTensor* diffTensor = [mpsGraph subtractionWithPrimaryTensor:inputTensor
-                                                          secondaryTensor:targetTensor
-                                                                     name:nil];
-
-      // | xn - yn |
-      MPSGraphTensor* diffAbsTensor = [mpsGraph absoluteWithTensor:diffTensor name:nil];
-
-      // | xn - yn | < beta
-      MPSGraphTensor* diffAbsLessThanBetaTensor = [mpsGraph lessThanWithPrimaryTensor:diffAbsTensor
-                                                                      secondaryTensor:betaTensor
-                                                                                 name:nil];
-
-      // ( xn - yn ) ^ 2
-      MPSGraphTensor* diffSquare = [mpsGraph squareWithTensor:diffTensor name:nil];
-
-      // 0.5 * ( xn - yn ) ^ 2
-      MPSGraphTensor* diffSquareMulHalfTensor = [mpsGraph multiplicationWithPrimaryTensor:diffSquare
-                                                                          secondaryTensor:mpsGraphHalfTensor
-                                                                                     name:nil];
-
-      // 0.5 * ( xn - yn ) ^ 2 / beta
-      MPSGraphTensor* loss1Temp = [mpsGraph divisionWithPrimaryTensor:diffSquareMulHalfTensor
-                                                      secondaryTensor:betaTensor
-                                                                 name:nil];
-
-      // Calculating second part of the equation:
-      // | xn - yn | - 0.5 * beta, if | xn - yn | >= beta
-
-      // | xn - yn | - 0.5 * beta
-      MPSGraphTensor* loss2Temp = [mpsGraph subtractionWithPrimaryTensor:diffAbsTensor
-                                                         secondaryTensor:halfTensorMulBetaTensor
-                                                                    name:nil];
-
-      MPSGraphTensor* lossTensor = [mpsGraph selectWithPredicateTensor:diffAbsLessThanBetaTensor
-                                                   truePredicateTensor:loss1Temp
-                                                  falsePredicateTensor:loss2Temp
-                                                                  name:@"lossTensor"];
-
-      MPSGraphTensor* outputTensor = reduceTensor(lossTensor, reduction, mpsGraph, 1);
-
-      newCachedGraph->inputTensor_ = inputTensor;
-      newCachedGraph->targetTensor_ = targetTensor;
-      newCachedGraph->outputTensor_ = outputTensor;
-    });
-
-    Placeholder inputPlaceholder = Placeholder(cachedGraph->inputTensor_, input, mpsInputShape);
-    Placeholder targetPlaceholder = Placeholder(cachedGraph->targetTensor_, target, mpsInputShape);
-    Placeholder outputPlaceholder = Placeholder(cachedGraph->outputTensor_, output, mpsOutputShape);
-
-    auto feeds = dictionaryFromPlaceholders(inputPlaceholder, targetPlaceholder);
-    runMPSGraph(stream, cachedGraph->graph(), feeds, outputPlaceholder);
-  }
+                                MPSShape* /*mpsInputShape*/,
+                                MPSShape* /*mpsOutputShape*/) {
+  smooth_huber_fwd_metal(input, target, reduction, static_cast<float>(beta), 0u, output);
 }
 
 static void smooth_l1_loss_template(const Tensor& input,
@@ -754,74 +797,71 @@ static void smooth_l1_loss_backward_impl(const Tensor& grad_output,
                                          int64_t reduction,
                                          double beta,
                                          Tensor& grad_input) {
-  if (grad_input.numel() == 0) {
-    return;
-  }
-  TORCH_CHECK(beta >= 0, "smooth_l1_loss_backward does not support negative values for beta.");
+  TORCH_CHECK(beta >= 0, "smooth_l1_loss does not support negative values for beta.");
+  smooth_huber_bwd_metal(grad_output, input, target, reduction, static_cast<float>(beta), 0u, grad_input);
+}
 
-  struct CachedGraph : public MPSCachedGraph {
-    CachedGraph(MPSGraph* graph) : MPSCachedGraph(graph) {}
-    MPSGraphTensor* inputTensor_ = nil;
-    MPSGraphTensor* targetTensor_ = nil;
-    MPSGraphTensor* gradInputTensor_ = nil;
-    MPSGraphTensor* gradOutputTensor_ = nil;
-  };
+// =============================================================================
+// Fused fwd (writes loss + saved_dg) for Huber / SmoothL1.
+// Used by AutogradMPS overrides to enable a single-kernel-launch backward.
+// =============================================================================
+static std::tuple<Tensor, Tensor> huber_or_sl1_fwd_metal_sg(const Tensor& input,
+                                                            const Tensor& target,
+                                                            int64_t reduction,
+                                                            float beta,
+                                                            uint32_t is_huber) {
+  Tensor loss = at::empty_like(input); // only called for reduction=None
+  Tensor saved_dg = at::empty_like(input);
+  if (input.numel() == 0)
+    return {loss, saved_dg};
+  const uint32_t N = static_cast<uint32_t>(input.numel());
+  const float scale = 1.f;
+  SmoothHuberParams p{N, scale, static_cast<uint32_t>(reduction), beta, is_huber};
+  const std::string dt = scalarToMetalTypeString(input);
+  const std::string fn_name = (is_huber ? "huber_fwd_sg_" : "smooth_l1_fwd_sg_") + dt;
+  Tensor input_c = input.is_contiguous() ? input : input.contiguous();
+  Tensor target_c = target.is_contiguous() ? target : target.contiguous();
+  MPSStream* stream = getCurrentMPSStream();
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+      auto pso = lib.getPipelineStateForFunc(fn_name);
+      [enc setComputePipelineState:pso];
+      mtl_setArgs(enc, input_c, target_c, loss, saved_dg, p);
+      const uint32_t vec_n = 8u;
+      [enc dispatchThreads:MTLSizeMake((N + vec_n - 1u) / vec_n, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
+    }
+  });
+  stream->synchronize(SyncType::COMMIT);
+  return {loss, saved_dg};
+}
 
-  @autoreleasepool {
-    std::string key = "smooth_l1_loss_backward" + getTensorsStringKey({input, grad_output, grad_input, target}) + ":" +
-        reductionToString(reduction) + ":" + std::to_string(beta);
-
-    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
-      MPSGraphTensor* inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, input);
-      MPSGraphTensor* targetTensor = mpsGraphRankedPlaceHolder(mpsGraph, target);
-      MPSGraphTensor* gradOutputTensor = mpsGraphRankedPlaceHolder(mpsGraph, grad_output);
-
-      MPSGraphTensor* betaTensor = [mpsGraph constantWithScalar:beta dataType:[inputTensor dataType]];
-      // xn - yn
-      MPSGraphTensor* diffTensor = [mpsGraph subtractionWithPrimaryTensor:inputTensor
-                                                          secondaryTensor:targetTensor
-                                                                     name:nil];
-      // | xn - yn |
-      MPSGraphTensor* diffAbsTensor = [mpsGraph absoluteWithTensor:diffTensor name:nil];
-      // | xn - yn | < beta
-      MPSGraphTensor* diffAbsLessThanBetaTensor = [mpsGraph lessThanWithPrimaryTensor:diffAbsTensor
-                                                                      secondaryTensor:betaTensor
-                                                                                 name:nil];
-      // ( xn - yn ) / beta
-      MPSGraphTensor* truePredicateTensor = [mpsGraph divisionWithPrimaryTensor:diffTensor
-                                                                secondaryTensor:betaTensor
-                                                                           name:nil];
-      // ( x - y ) / | x - y |
-      MPSGraphTensor* falsePredicateTensor = [mpsGraph divisionWithPrimaryTensor:diffTensor
-                                                                 secondaryTensor:diffAbsTensor
-                                                                            name:nil];
-
-      MPSGraphTensor* lossTensor = [mpsGraph selectWithPredicateTensor:diffAbsLessThanBetaTensor
-                                                   truePredicateTensor:truePredicateTensor
-                                                  falsePredicateTensor:falsePredicateTensor
-                                                                  name:@"lossTensor"];
-      MPSGraphTensor* outputTensor = lossTensor;
-      if (reduction == Reduction::Mean) {
-        MPSGraphTensor* numelTensor = [mpsGraph constantWithScalar:(double)input.numel()
-                                                          dataType:[lossTensor dataType]];
-        outputTensor = [mpsGraph divisionWithPrimaryTensor:lossTensor secondaryTensor:numelTensor name:nil];
-      }
-      MPSGraphTensor* gradInputTensor = [mpsGraph multiplicationWithPrimaryTensor:outputTensor
-                                                                  secondaryTensor:gradOutputTensor
-                                                                             name:nil];
-      newCachedGraph->inputTensor_ = inputTensor;
-      newCachedGraph->targetTensor_ = targetTensor;
-      newCachedGraph->gradInputTensor_ = gradInputTensor;
-      newCachedGraph->gradOutputTensor_ = gradOutputTensor;
-    });
-    Placeholder inputPlaceholder = Placeholder(cachedGraph->inputTensor_, input);
-    Placeholder targetPlaceholder = Placeholder(cachedGraph->targetTensor_, target);
-    Placeholder gradInputPlaceholder = Placeholder(cachedGraph->gradInputTensor_, grad_input);
-    Placeholder gradOutputPlaceholder = Placeholder(cachedGraph->gradOutputTensor_, grad_output);
-
-    auto feeds = dictionaryFromPlaceholders(inputPlaceholder, targetPlaceholder, gradOutputPlaceholder);
-    runMPSGraph(getCurrentMPSStream(), cachedGraph->graph(), feeds, gradInputPlaceholder);
-  }
+static Tensor huber_or_sl1_bwd_metal_sg(const Tensor& grad_output,
+                                        const Tensor& saved_dg,
+                                        int64_t reduction,
+                                        float beta,
+                                        uint32_t is_huber) {
+  Tensor grad_in = at::empty_like(saved_dg);
+  const uint32_t N = static_cast<uint32_t>(saved_dg.numel());
+  const float scale = (reduction == Reduction::Mean) ? 1.f / static_cast<float>(N) : 1.f;
+  SmoothHuberParams p{N, scale, static_cast<uint32_t>(reduction), beta, is_huber};
+  const std::string dt = scalarToMetalTypeString(saved_dg);
+  const Tensor grad_out_c = grad_output.is_contiguous() ? grad_output : grad_output.contiguous();
+  MPSStream* stream = getCurrentMPSStream();
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+      auto pso = lib.getPipelineStateForFunc("huber_or_sl1_bwd_sg_" + dt);
+      [enc setComputePipelineState:pso];
+      mtl_setArgs(enc, grad_out_c, saved_dg, grad_in, p);
+      const uint32_t vec_n = 8u;
+      [enc dispatchThreads:MTLSizeMake((N + vec_n - 1u) / vec_n, 1, 1)
+          threadsPerThreadgroup:MTLSizeMake(kLossKernelTgsz, 1, 1)];
+    }
+  });
+  stream->synchronize(SyncType::COMMIT);
+  return grad_in;
 }
 
 } // namespace mps
@@ -831,76 +871,17 @@ static void smooth_l1_loss_backward_impl(const Tensor& grad_output,
 // HuberLoss
 
 Tensor& huber_loss_out_mps(const Tensor& input, const Tensor& target, int64_t reduction, double delta, Tensor& output) {
-  std::string op_name = __func__;
-  using namespace mps;
   TORCH_CHECK_NOT_IMPLEMENTED(input.scalar_type() != kLong, "MPS doesn't know how to do square_i64");
   TORCH_CHECK_NOT_IMPLEMENTED(!c10::isComplexType(input.scalar_type()),
                               "huber_loss for complex is not supported for MPS");
-  TORCH_CHECK(delta > 0, "huber_loss does not support non-positive values for delta.")
-  TORCH_CHECK(target.is_same_size(input), op_name + ": target and input tensors must have identical shapes")
+  TORCH_CHECK(delta > 0, "huber_loss does not support non-positive values for delta.");
+  TORCH_CHECK(target.is_same_size(input), __func__, ": target and input tensors must have identical shapes");
   TORCH_CHECK(output.is_mps());
-
   if (reduction == Reduction::None)
     output.resize_(target.sizes());
-  if (reduction == Reduction::Sum)
+  else
     output.resize_({});
-  if (reduction == Reduction::Mean)
-    output.resize_({});
-
-  struct CachedGraph : public MPSCachedGraph {
-    CachedGraph(MPSGraph* graph) : MPSCachedGraph(graph) {}
-    MPSGraphTensor* inputTensor_ = nil;
-    MPSGraphTensor* targetTensor_ = nil;
-    MPSGraphTensor* outputTensor_ = nil;
-  };
-
-  @autoreleasepool {
-    std::string key = op_name + ":" + reductionToString(reduction) + ":" + std::to_string(delta) + ":" +
-        getTensorsStringKey({input, target});
-    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
-      MPSGraphTensor* inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, input);
-      MPSGraphTensor* targetTensor = mpsGraphRankedPlaceHolder(mpsGraph, target);
-
-      MPSDataType input_type = getMPSScalarType(input.scalar_type());
-      MPSGraphTensor* deltaTensor = [mpsGraph constantWithScalar:delta shape:@[ @1 ] dataType:input_type];
-      MPSGraphTensor* halfTensor = [mpsGraph constantWithScalar:.5f shape:@[ @1 ] dataType:input_type];
-
-      MPSGraphTensor* diffTensor = [mpsGraph subtractionWithPrimaryTensor:inputTensor
-                                                          secondaryTensor:targetTensor
-                                                                     name:nil];
-      MPSGraphTensor* absDiffTensor = [mpsGraph absoluteWithTensor:diffTensor name:nil];
-      MPSGraphTensor* firstCondTensor = [mpsGraph multiplicationWithPrimaryTensor:absDiffTensor
-                                                                  secondaryTensor:absDiffTensor
-                                                                             name:nil];
-      firstCondTensor = [mpsGraph multiplicationWithPrimaryTensor:firstCondTensor secondaryTensor:halfTensor name:nil];
-      MPSGraphTensor* secondCondTensor = [mpsGraph multiplicationWithPrimaryTensor:deltaTensor
-                                                                   secondaryTensor:halfTensor
-                                                                              name:nil];
-      secondCondTensor = [mpsGraph subtractionWithPrimaryTensor:absDiffTensor
-                                                secondaryTensor:secondCondTensor
-                                                           name:nil];
-      secondCondTensor = [mpsGraph multiplicationWithPrimaryTensor:deltaTensor
-                                                   secondaryTensor:secondCondTensor
-                                                              name:nil];
-      MPSGraphTensor* outputTensor =
-          [mpsGraph selectWithPredicateTensor:[mpsGraph lessThanOrEqualToWithPrimaryTensor:absDiffTensor
-                                                                           secondaryTensor:deltaTensor
-                                                                                      name:nil]
-                          truePredicateTensor:firstCondTensor
-                         falsePredicateTensor:secondCondTensor
-                                         name:nil];
-
-      newCachedGraph->inputTensor_ = inputTensor;
-      newCachedGraph->targetTensor_ = targetTensor;
-      newCachedGraph->outputTensor_ = reduceTensor(outputTensor, reduction, mpsGraph, input.sizes().size());
-    });
-    Placeholder inputPlaceholder = Placeholder(cachedGraph->inputTensor_, input);
-    Placeholder targetPlaceholder = Placeholder(cachedGraph->targetTensor_, target);
-    Placeholder outputPlaceholder = Placeholder(cachedGraph->outputTensor_, output);
-
-    auto feeds = dictionaryFromPlaceholders(inputPlaceholder, targetPlaceholder);
-    runMPSGraph(getCurrentMPSStream(), cachedGraph->graph(), feeds, outputPlaceholder);
-  }
+  mps::smooth_huber_fwd_metal(input, target, reduction, static_cast<float>(delta), 1u, output);
   return output;
 }
 
@@ -916,96 +897,7 @@ Tensor& huber_loss_backward_out_mps(const Tensor& grad_output,
                                     int64_t reduction,
                                     double delta,
                                     Tensor& grad_input) {
-  using namespace mps;
-  auto is_mean_reduction = reduction == Reduction::Mean;
-  auto input_numel = input.numel();
-
-  struct CachedGraph : public MPSCachedGraph {
-    CachedGraph(MPSGraph* graph) : MPSCachedGraph(graph) {}
-    MPSGraphTensor* gradOutputTensor_ = nil;
-    MPSGraphTensor* inputTensor_ = nil;
-    MPSGraphTensor* targetTensor_ = nil;
-    MPSGraphTensor* outputTensor_ = nil;
-  };
-
-  MPSStream* stream = getCurrentMPSStream();
-
-  @autoreleasepool {
-    MPSShape* input_shape = getMPSShape(input);
-    NSString* ns_shape_key = [[input_shape valueForKey:@"description"] componentsJoinedByString:@","];
-
-    std::string key = "huber_loss_backward_out_mps:" + reductionToString(reduction) + ":" + std::to_string(delta) +
-        ":" + [ns_shape_key UTF8String] + ":" + getMPSTypeString(input) + ":" + getMPSTypeString(target);
-    auto cachedGraph = LookUpOrCreateCachedGraph<CachedGraph>(key, [&](auto mpsGraph, auto newCachedGraph) {
-      MPSGraphTensor* gradOutputTensor =
-          mpsGraphRankedPlaceHolder(mpsGraph, getMPSDataType(grad_output), getMPSShape(grad_output));
-      MPSGraphTensor* inputTensor = mpsGraphRankedPlaceHolder(mpsGraph, getMPSDataType(input), input_shape);
-      MPSGraphTensor* targetTensor = mpsGraphRankedPlaceHolder(mpsGraph, getMPSDataType(target), getMPSShape(target));
-      MPSGraphTensor* isMeanReductionTensor =
-          [mpsGraph constantWithScalar:is_mean_reduction
-                              dataType:MPSDataTypeInt64]; // constant does not support MPSDataTypeBool
-      MPSGraphTensor* inputNumelTensor = [mpsGraph constantWithScalar:input_numel dataType:getMPSDataType(grad_output)];
-
-      MPSGraphTensor* normGradOutputTensor =
-          [mpsGraph selectWithPredicateTensor:isMeanReductionTensor
-                          truePredicateTensor:[mpsGraph divisionWithPrimaryTensor:gradOutputTensor
-                                                                  secondaryTensor:inputNumelTensor
-                                                                             name:nil]
-                         falsePredicateTensor:gradOutputTensor
-                                         name:nil];
-      MPSGraphTensor* deltaTensor = [mpsGraph constantWithScalar:delta
-                                                           shape:getMPSShape(target)
-                                                        dataType:getMPSDataType(target)];
-      MPSGraphTensor* diffTensor = [mpsGraph subtractionWithPrimaryTensor:inputTensor
-                                                          secondaryTensor:targetTensor
-                                                                     name:nil];
-      MPSGraphTensor* normGradOutputDeltaTensor = [mpsGraph multiplicationWithPrimaryTensor:normGradOutputTensor
-                                                                            secondaryTensor:deltaTensor
-                                                                                       name:nil];
-      // first condition: (input - target) <= -delta
-      // formula: -norm * grad_output * delta
-      MPSGraphTensor* firstCondTensor = [mpsGraph negativeWithTensor:normGradOutputDeltaTensor name:nil];
-      // second condition: (input - target) >= delta
-      // formula: norm * grad_output * delta
-      MPSGraphTensor* secondCondTensor = normGradOutputDeltaTensor;
-
-      // third condition: (input - target) within -delta to delta
-      // formula: norm * (input - target) * grad_output
-      MPSGraphTensor* thirdCondTensor = [mpsGraph multiplicationWithPrimaryTensor:normGradOutputTensor
-                                                                  secondaryTensor:diffTensor
-                                                                             name:nil];
-
-      MPSGraphTensor* secondThirdTensor =
-          [mpsGraph selectWithPredicateTensor:[mpsGraph greaterThanOrEqualToWithPrimaryTensor:diffTensor
-                                                                              secondaryTensor:deltaTensor
-                                                                                         name:nil]
-                          truePredicateTensor:secondCondTensor
-                         falsePredicateTensor:thirdCondTensor
-                                         name:nil];
-      MPSGraphTensor* outputTensor = [mpsGraph
-          selectWithPredicateTensor:[mpsGraph
-                                        lessThanOrEqualToWithPrimaryTensor:diffTensor
-                                                           secondaryTensor:[mpsGraph negativeWithTensor:deltaTensor
-                                                                                                   name:nil]
-                                                                      name:nil]
-                truePredicateTensor:firstCondTensor
-               falsePredicateTensor:secondThirdTensor
-                               name:nil];
-
-      newCachedGraph->gradOutputTensor_ = gradOutputTensor;
-      newCachedGraph->inputTensor_ = inputTensor;
-      newCachedGraph->targetTensor_ = targetTensor;
-      newCachedGraph->outputTensor_ = outputTensor;
-    });
-
-    Placeholder gradOutputPlaceholder = Placeholder(cachedGraph->gradOutputTensor_, grad_output);
-    Placeholder inputPlaceholder = Placeholder(cachedGraph->inputTensor_, input);
-    Placeholder targetPlaceholder = Placeholder(cachedGraph->targetTensor_, target);
-    Placeholder outputPlaceholder = Placeholder(cachedGraph->outputTensor_, grad_input);
-
-    auto feeds = dictionaryFromPlaceholders(gradOutputPlaceholder, inputPlaceholder, targetPlaceholder);
-    runMPSGraph(stream, cachedGraph->graph(), feeds, outputPlaceholder);
-  }
+  mps::smooth_huber_bwd_metal(grad_output, input, target, reduction, static_cast<float>(delta), 1u, grad_input);
   return grad_input;
 }
 
@@ -1285,5 +1177,137 @@ Tensor nll_loss2d_backward_mps(const Tensor& grad_output,
   nll_loss2d_backward_out_mps(grad_output, self, target, weight, reduction, ignore_index, total_weight, grad_input);
   return grad_input;
 }
+
+// =============================================================================
+// AutogradMPS overrides -- dual-path fusion for huber/smooth_l1 losses.
+// For reduction=None and N >= kFusionMinNumel, the fused fwd_sg+bwd_sg pair
+// halves bwd memory traffic by caching the gradient factor. Otherwise we
+// take the standard structured kernel path (already optimized for mean/sum
+// via fwd_reduce, which accumulates in fp32 -- overflow-safe for fp16/bf16).
+// =============================================================================
+namespace {
+
+static constexpr int64_t kFusionMinNumel = 1 << 20; // 1,048,576
+
+struct HuberLossMPSAutograd : public torch::autograd::Function<HuberLossMPSAutograd> {
+  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
+                            const at::Tensor& input,
+                            const at::Tensor& target,
+                            int64_t reduction,
+                            double delta) {
+    at::AutoDispatchBelowAutograd guard;
+    if (reduction == at::Reduction::None && input.numel() >= kFusionMinNumel) {
+      auto [loss, saved_dg] =
+          at::native::mps::huber_or_sl1_fwd_metal_sg(input, target, reduction, static_cast<float>(delta), 1u);
+      ctx->save_for_backward({saved_dg, input, target});
+      ctx->saved_data["reduction"] = reduction;
+      ctx->saved_data["delta"] = delta;
+      ctx->saved_data["fused"] = true;
+      return loss;
+    }
+    auto loss = at::huber_loss(input, target, reduction, delta);
+    ctx->save_for_backward({input, target});
+    ctx->saved_data["reduction"] = reduction;
+    ctx->saved_data["delta"] = delta;
+    ctx->saved_data["fused"] = false;
+    return loss;
+  }
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext* ctx,
+                                                 torch::autograd::variable_list grads) {
+    auto saved = ctx->get_saved_variables();
+    auto reduction = ctx->saved_data["reduction"].toInt();
+    auto delta = ctx->saved_data["delta"].toDouble();
+    const bool fused = ctx->saved_data["fused"].toBool();
+    // Fast single-kernel backward for the common (non-double-backward) fused
+    // case. Under create_graph the saved_dg path is not differentiable, so fall
+    // through to the structured, differentiable backward using saved input/target.
+    if (fused && !at::GradMode::is_enabled()) {
+      at::AutoDispatchBelowAutograd guard;
+      auto grad_in =
+          at::native::mps::huber_or_sl1_bwd_metal_sg(grads[0], saved[0], reduction, static_cast<float>(delta), 1u);
+      return {grad_in, ctx->needs_input_grad(1) ? grad_in.neg() : at::Tensor(), at::Tensor(), at::Tensor()};
+    }
+    const at::Tensor& input = fused ? saved[1] : saved[0];
+    const at::Tensor& target = fused ? saved[2] : saved[1];
+    auto grad_in = at::huber_loss_backward(grads[0], input, target, reduction, delta);
+    at::Tensor grad_target;
+    if (ctx->needs_input_grad(1)) {
+      grad_target = at::huber_loss_backward(grads[0], target, input, reduction, delta);
+    }
+    return {grad_in, grad_target, at::Tensor(), at::Tensor()};
+  }
+};
+
+struct SmoothL1LossMPSAutograd : public torch::autograd::Function<SmoothL1LossMPSAutograd> {
+  static at::Tensor forward(torch::autograd::AutogradContext* ctx,
+                            const at::Tensor& input,
+                            const at::Tensor& target,
+                            int64_t reduction,
+                            double beta) {
+    at::AutoDispatchBelowAutograd guard;
+    if (reduction == at::Reduction::None && input.numel() >= kFusionMinNumel) {
+      auto [loss, saved_dg] =
+          at::native::mps::huber_or_sl1_fwd_metal_sg(input, target, reduction, static_cast<float>(beta), 0u);
+      ctx->save_for_backward({saved_dg, input, target});
+      ctx->saved_data["reduction"] = reduction;
+      ctx->saved_data["beta"] = beta;
+      ctx->saved_data["fused"] = true;
+      return loss;
+    }
+    auto loss = at::smooth_l1_loss(input, target, reduction, beta);
+    ctx->save_for_backward({input, target});
+    ctx->saved_data["reduction"] = reduction;
+    ctx->saved_data["beta"] = beta;
+    ctx->saved_data["fused"] = false;
+    return loss;
+  }
+  static torch::autograd::variable_list backward(torch::autograd::AutogradContext* ctx,
+                                                 torch::autograd::variable_list grads) {
+    auto saved = ctx->get_saved_variables();
+    auto reduction = ctx->saved_data["reduction"].toInt();
+    auto beta = ctx->saved_data["beta"].toDouble();
+    const bool fused = ctx->saved_data["fused"].toBool();
+    // Fast single-kernel backward for the common (non-double-backward) fused
+    // case. Under create_graph the saved_dg path is not differentiable, so fall
+    // through to the structured, differentiable backward using saved input/target.
+    if (fused && !at::GradMode::is_enabled()) {
+      at::AutoDispatchBelowAutograd guard;
+      auto grad_in =
+          at::native::mps::huber_or_sl1_bwd_metal_sg(grads[0], saved[0], reduction, static_cast<float>(beta), 0u);
+      return {grad_in, ctx->needs_input_grad(1) ? grad_in.neg() : at::Tensor(), at::Tensor(), at::Tensor()};
+    }
+    const at::Tensor& input = fused ? saved[1] : saved[0];
+    const at::Tensor& target = fused ? saved[2] : saved[1];
+    auto grad_in = at::smooth_l1_loss_backward(grads[0], input, target, reduction, beta);
+    at::Tensor grad_target;
+    if (ctx->needs_input_grad(1)) {
+      grad_target = at::smooth_l1_loss_backward(grads[0], target, input, reduction, beta);
+    }
+    return {grad_in, grad_target, at::Tensor(), at::Tensor()};
+  }
+};
+
+TORCH_LIBRARY_IMPL(aten, AutogradMPS, m) {
+  m.impl("huber_loss",
+         [](const at::Tensor& input, const at::Tensor& target, int64_t reduction, double delta) -> at::Tensor {
+           TORCH_CHECK(delta > 0, "huber_loss does not support non-positive values for delta.");
+           if (input.requires_grad() || target.requires_grad()) {
+             return HuberLossMPSAutograd::apply(input, target, reduction, delta);
+           }
+           at::AutoDispatchBelowAutograd guard;
+           return at::huber_loss(input, target, reduction, delta);
+         });
+  m.impl("smooth_l1_loss",
+         [](const at::Tensor& input, const at::Tensor& target, int64_t reduction, double beta) -> at::Tensor {
+           TORCH_CHECK(beta >= 0, "smooth_l1_loss does not support negative values for beta.");
+           if (input.requires_grad() || target.requires_grad()) {
+             return SmoothL1LossMPSAutograd::apply(input, target, reduction, beta);
+           }
+           at::AutoDispatchBelowAutograd guard;
+           return at::smooth_l1_loss(input, target, reduction, beta);
+         });
+}
+
+} // anonymous namespace
 
 } // namespace at::native

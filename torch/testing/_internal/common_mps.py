@@ -422,7 +422,6 @@ if torch.backends.mps.is_available():
             ],
             "nn.functional.huber_loss": [
                 torch.uint8,
-                torch.bool,
                 torch.int8,
                 torch.int16,
                 torch.int32,

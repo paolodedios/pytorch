@@ -4883,6 +4883,38 @@ class TestMPS(TestCaseMPS):
         helper([8, 4, 5, 7, 6], 'mean')
 
     # Mean Squared Error
+    def test_smooth_l1_huber_metal_paths(self):
+        # Coverage for the native Metal smooth_l1/huber kernels including the
+        # fused AutogradMPS path (reduction=None, numel >= 2^20) the structured
+        # tests never reach -- with a NONZERO grad_output -- and double-backward
+        # (create_graph), which must fall through to the differentiable path.
+        for N in (4096, (1 << 20) + 7):  # structured (non-fused) and fused paths
+            for fn, kw in ((F.smooth_l1_loss, dict(beta=1.0)), (F.huber_loss, dict(delta=1.0))):
+                for dtype in (torch.float32, torch.float16, torch.bfloat16):
+                    xc = torch.randn(N, dtype=torch.float32, requires_grad=True)
+                    tc = torch.randn(N, dtype=torch.float32)
+                    xm = xc.detach().to("mps", dtype).requires_grad_()
+                    tm = tc.detach().to("mps", dtype)
+                    gc = torch.randn(N, dtype=torch.float32)
+                    gm = gc.to("mps", dtype)
+                    tol = dict(atol=5e-2, rtol=5e-2) if dtype != torch.float32 else {}
+                    oc = fn(xc, tc, reduction="none", **kw)
+                    om = fn(xm, tm, reduction="none", **kw)
+                    self.assertEqual(om.float(), oc, **tol)
+                    (gxc,) = torch.autograd.grad(oc, xc, gc, create_graph=True)
+                    (gxm,) = torch.autograd.grad(om, xm, gm, create_graph=True)
+                    # the fused path must fall through to a differentiable backward
+                    self.assertTrue(gxm.requires_grad)
+                    self.assertEqual(gxm.float(), gxc, **tol)
+                    # double-backward must work (fused path falls through to structured).
+                    # gradgrad is a step at |x-t|=thr; exclude elements at the kink.
+                    thr = kw.get("beta", kw.get("delta"))
+                    ggc = torch.randn(N, dtype=torch.float32)
+                    (g2c,) = torch.autograd.grad(gxc, xc, ggc)
+                    (g2m,) = torch.autograd.grad(gxm, xm, ggc.to("mps", dtype))
+                    mask = ((xc - tc).abs() - thr).abs() > 0.05
+                    self.assertEqual(g2m.float()[mask], g2c[mask], **tol)
+
     def test_mse_loss(self):
         def helper(shape, reduction):
             # create the criterion
