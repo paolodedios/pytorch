@@ -1632,6 +1632,8 @@ class CppWrapperCpu(PythonWrapperCodegen):
     def _codegen_entry_impl_prologue(self):
         """Hook for subclasses to emit code at the top of inductor_entry_impl,
         before the GIL is released. Default no-op."""
+        if config.triton.debug_sync_graph:
+            self.generate_debug_sync(self.prefix)
 
     def generate_before_suffix(self, result):
         # Close the entry function. In dual-wrapper-mode `result` is the JIT side;
@@ -1861,6 +1863,8 @@ class CppWrapperCpu(PythonWrapperCodegen):
     def wrap_fallback_dispatch_cpp(self, lines: list[str]) -> list[str]:
         if V.graph.aot_mode:
             return lines
+        # Some libtorch-owned shims also guard internally for AOTI. Keep the
+        # generated guard for non-AOT calls; the dispatch-key guard is idempotent.
         self.include_extra_header("ATen/core/LegacyTypeDispatch.h")
         return [
             "{",
@@ -2250,6 +2254,9 @@ class CppWrapperCpu(PythonWrapperCodegen):
 
     def codegen_exact_buffer_reuse(self, old_name: str, new_name: str, del_line: str):
         return f"auto {new_name} = std::move({old_name});  // reuse"
+
+    def generate_debug_sync(self, buffer):
+        pass
 
     def generate_profiler_mark_wrapper_call(self, stack):
         self.wrapper_call.writeline(

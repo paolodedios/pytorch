@@ -697,10 +697,7 @@ class ExternKernelMultiOutLine(WrapperLine):
             args.append(f"{out_name}={out_node.get_name()}")
 
         line = f"{node.get_name()} = {kernel_name}({', '.join(args)})"
-        if isinstance(node, ir.FallbackKernel):
-            self.wrapper.codegen_fallback_line(line)
-        else:
-            code.writeline(line)
+        self.wrapper.codegen_fallback_line(line)
 
 
 @dataclasses.dataclass
@@ -1742,7 +1739,7 @@ class PythonWrapperCodegen(CodeGen):
 
         with self.prefix.indent(prefix_indent):
             if config.triton.debug_sync_graph:
-                self.prefix.writeline(V.graph.device_ops.synchronize())
+                self.generate_debug_sync(self.prefix)
             phase = V.graph.get_training_phase()
             if config.annotate_training:
                 self.prefix.writeline(
@@ -2288,6 +2285,8 @@ class PythonWrapperCodegen(CodeGen):
     def should_wrap_entire_wrapper_call_below_autograd(self) -> bool:
         if V.graph.cpp_wrapper:
             return False
+        # Some fallback paths only set the flag while line.codegen() runs, so
+        # scan wrapper lines eagerly before deciding whether to emit the guard.
         return self.needs_fallback_dispatch_guard or any(
             self._wrapper_line_needs_fallback_dispatch_guard(line)
             for line in self.lines
@@ -2329,7 +2328,7 @@ class PythonWrapperCodegen(CodeGen):
             output_refs = self.get_output_refs()
             self.mark_output_type()
             if config.triton.debug_sync_graph:
-                self.wrapper_call.writeline(V.graph.device_ops.synchronize())
+                self.generate_debug_sync(self.wrapper_call)
 
             if config.profile_bandwidth:
                 self.generate_end_graph()
@@ -3441,6 +3440,9 @@ class PythonWrapperCodegen(CodeGen):
 
     def wrap_kernel_call(self, name, call_args):
         return f"{name}({', '.join(call_args)}){self.ending}"
+
+    def generate_debug_sync(self, buffer):
+        buffer.writeline(V.graph.device_ops.synchronize())
 
     def wrap_fallback_dispatch(self, line):
         self.needs_fallback_dispatch_guard = True
