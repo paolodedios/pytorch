@@ -1032,14 +1032,11 @@ class GraphModule(torch.nn.Module):
                 return "FooTensor"
 
             def __tensor_flatten__(self):
-                return ("_data",), (
-                    self._config,
-                    self._scale,
-                )
+                return ("_data", "_scale"), (self._config,)
 
             @staticmethod
             def __tensor_unflatten__(tensors, metadatas, outer_size, outer_stride):
-                return FooTensor(tensors["_data"], metadatas[0], metadatas[1])
+                return FooTensor(tensors["_data"], metadatas[0], tensors["_scale"])
 
             @classmethod
             def __torch_dispatch__(cls, func, types, args, kwargs=None):
@@ -1478,11 +1475,11 @@ class GraphModule(torch.nn.Module):
             return ((out1, out2), ())
 
     class bwd_body_0(torch.nn.Module):
-        def forward(self, grad1: "f32[]", grad2: "f32[]"):
+        def forward(self, grad_grad1: "f32[]", grad_grad2: "f32[]"):
             _set_grad_enabled = torch._C._set_grad_enabled(False);  _set_grad_enabled = None
 
-            cos: "f32[]" = grad1.cos();  grad1 = None
-            mul: "f32[]" = grad2 * 0.0;  grad2 = None
+            cos: "f32[]" = grad_grad1.cos();  grad_grad1 = None
+            mul: "f32[]" = grad_grad2 * 0.0;  grad_grad2 = None
 
             _set_grad_enabled_1 = torch._C._set_grad_enabled(True);  _set_grad_enabled_1 = None
             return (cos, mul)
