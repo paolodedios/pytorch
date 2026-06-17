@@ -4144,7 +4144,8 @@ Tensor flatten(const Tensor& self, int64_t start_dim, int64_t end_dim) {
   // Flattening a statically size-one leading dimension into a single symbolic
   // dimension is always a view. Handle this directly so reshape viewability
   // does not specialize on whether the symbolic dimension is size one.
-  if (start_dim == 0 && end_dim == 1 &&
+  if (self.unsafeGetTensorImpl()->has_symbolic_sizes_strides() &&
+      start_dim == 0 && end_dim == 1 &&
       TORCH_STATICALLY_KNOWN_TRUE(self.sym_sizes()[0].sym_eq(1)) &&
       !TORCH_STATICALLY_KNOWN_TRUE(self.sym_sizes()[1].sym_eq(1))) {
     c10::SymDimVector strides;

@@ -416,14 +416,12 @@ def _broadcast_shapes(*_shapes):
         1,
     ] * reduce(max, (len(shape) for shape in shapes))
 
-    def guard_or_false_unless_static_metadata(x):
-        if isinstance(x, torch.SymBool):
-            shape_env = getattr(x.node, "shape_env", None)
-            if (
-                shape_env is None
-                or not shape_env.prefer_deferred_runtime_asserts_over_guards
-            ):
-                return statically_known_true(x)
+    def guard_or_false_unless_exporting(x):
+        # During export, metadata-time size-one checks become user-visible
+        # constraints. In normal compile they are needed to preserve hinted
+        # broadcasting behavior, so keep the original guard_or_false semantics.
+        if torch.compiler.is_exporting():
+            return statically_known_true(x)
         return guard_or_false(x)
 
     for arg_idx, shape in enumerate(shapes):
@@ -457,19 +455,17 @@ def _broadcast_shapes(*_shapes):
                         torch._check(shape[idx] == 1)
                     if b == 1 and a != 1:
                         torch._check(common_shape[idx] == 1)
-                if guard_or_false_unless_static_metadata(
-                    shape[idx] == common_shape[idx]
-                ):
+                if guard_or_false_unless_exporting(shape[idx] == common_shape[idx]):
                     continue
 
-            if guard_or_false_unless_static_metadata(common_shape[idx] == 1):
+            if guard_or_false_unless_exporting(common_shape[idx] == 1):
                 if shape[idx] < 0:
                     raise ValueError(
                         "Attempting to broadcast a dimension with negative length!"
                     )
                 common_shape[idx] = shape[idx]
 
-            if not is_nested_int(shape[idx]) and guard_or_false_unless_static_metadata(
+            if not is_nested_int(shape[idx]) and guard_or_false_unless_exporting(
                 shape[idx] == 1
             ):
                 # broadcast case .
@@ -4733,7 +4729,7 @@ def diagonal(
         storage_offset -= offset * self.stride()[dim1]
 
     sizes = [s for i, s in enumerate(self.size()) if i not in (dim1, dim2)]
-    sizes.append(diag_size)
+    sizes.append(diag_size)  # type: ignore[arg-type]
 
     strides = [s for i, s in enumerate(self.stride()) if i not in (dim1, dim2)]
     strides.append(self.stride()[dim1] + self.stride()[dim2])
@@ -6048,7 +6044,9 @@ def _uniform_helper(
         raise AssertionError(f"low must be Number, got {type(low)}")
     if not isinstance(high, Number):
         raise AssertionError(f"high must be Number, got {type(high)}")
+    # pyrefly: ignore [bad-assignment]
     low = sym_float(low)
+    # pyrefly: ignore [bad-assignment]
     high = sym_float(high)
 
     if not isinstance(dtype, torch.dtype):
