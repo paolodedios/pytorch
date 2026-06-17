@@ -407,9 +407,10 @@ def _expand_dict_returning_deps(
                 key = old_gi.args[1]
                 new_gi = graph.call_function(operator.getitem, args=(dep, key))
                 new_gi.meta.update(old_gi.meta)
-                assert not isinstance(new_gi.meta.get("val"), dict), (
-                    f"nested dict in triton kernel output for key {key}"
-                )
+                if isinstance(new_gi.meta.get("val"), dict):
+                    raise AssertionError(
+                        f"nested dict in triton kernel output for key {key}"
+                    )
                 visited.add(new_gi)
                 expanded.append(new_gi)
                 old_gi.replace_all_uses_with(new_gi)
