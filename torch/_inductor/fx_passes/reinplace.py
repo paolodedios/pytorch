@@ -834,7 +834,9 @@ def _is_control_deps_ordering_only_use(
         return False
     additional_deps = user.args[0]
     pass_through = user.args[2:]
-    return view in additional_deps and view not in pass_through  # pyrefly: ignore
+    return (
+        view in additional_deps and view not in pass_through
+    )  # pyrefly: ignore[not-iterable, unsupported-operation]
 
 
 def reinplace_inplaceable_ops_core(graph: torch.fx.Graph) -> None:
@@ -1183,7 +1185,7 @@ def reinplace_inplaceable_ops_core(graph: torch.fx.Graph) -> None:
             new_bases_to_clone: list[int] = reinplace_and_refine_tensors_to_clone(
                 bases_to_clone,
                 base_tensors_dct,
-                node.target,
+                _mutable_op._name,
                 ReInplaceTrigger.AUTO_FUNC_V2,
             )
             # Stash the metadata. There is a pass later on where we decompose
