@@ -82,7 +82,6 @@ from torch.testing._internal.common_cuda import (
     TEST_CUDNN,
     tf32_on_and_off,
     with_tf32_off,
-    xfailIfSM100OrLater,
 )
 from torch.testing._internal.common_device_type import (
     expectedFailureXPU,
@@ -18681,10 +18680,6 @@ if RUN_GPU:
 
             return kernels
 
-        # On Blackwell+, #179729 raised the split-reduction no-split threshold to 524288,
-        # so the 256*256=65536-element reduction below no longer splits and produces 1 kernel
-        # instead of the expected 2.
-        @xfailIfSM100OrLater
         def test_divisible_by_16_covers_numel_args(self):
             torch._dynamo.reset()
 
@@ -19818,6 +19813,10 @@ if RUN_GPU:
         @unittest.skipIf(
             torch.cuda.is_available() and torch.cuda.get_device_capability() < (9, 0),
             "Triton does not support fp8 on A100",
+        )
+        @unittest.skipIf(
+            not IS_BIG_GPU,
+            "requires >= 68 SMs for max_autotune_gemm kernel fusion; kernel count differs on low-SM devices",
         )
         def test_red_followed_by_transposed_pointwise(self):
             bs = 26624
