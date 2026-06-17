@@ -27,6 +27,7 @@ x = torch.tensor(4)
 weakref_x = weakref.ref(x)
 
 default_mgr_enum = torch._dynamo.guards.GuardManagerType.GUARD_MANAGER
+dict_mgr_enum = torch._dynamo.guards.GuardManagerType.DICT_GUARD_MANAGER
 
 
 class Pair:
@@ -662,7 +663,7 @@ num_guards_executed=0)
             "L['self']._modules_extra._modules",
             {},
             default_mgr_enum,
-        ).add_dict_length_check_guard({}, ["len(bad) == 0"])
+        ).add_dict_length_check_guard(0, ["len(bad) == 0"])
 
         stats = guards._debug_check_guard_lookup_receipt(
             guard_manager, {"bad": {}}
@@ -678,7 +679,7 @@ num_guards_executed=0)
             "L['self']._modules",
             {},
             default_mgr_enum,
-        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+        ).add_dict_length_check_guard(0, ["len(mods) == 0"])
         guard_manager.dict_getitem_manager(
             "x",
             "L['x']",
@@ -700,7 +701,7 @@ num_guards_executed=0)
             "L['self']._modules",
             {},
             default_mgr_enum,
-        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+        ).add_dict_length_check_guard(0, ["len(mods) == 0"])
 
         first_stats = guards._debug_check_guard_lookup_receipt(
             guard_manager, {"mods": {}}
@@ -729,7 +730,7 @@ num_guards_executed=0)
             "L['self']._modules",
             {},
             default_mgr_enum,
-        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+        ).add_dict_length_check_guard(0, ["len(mods) == 0"])
 
         stats = guards._debug_check_guard_lookup_receipt(
             guard_manager, {"mods": {}}, 3
@@ -756,7 +757,7 @@ num_guards_executed=0)
             "block",
             "L['self']._modules['block']",
             {},
-            default_mgr_enum,
+            dict_mgr_enum,
         ).add_dict_length_check_guard(
             {}, ["len(block) == 0"]
         )
@@ -770,6 +771,76 @@ num_guards_executed=0)
         self.assertEqual(stats["actual_partial_miss"], 0)
         self.assertEqual(stats["slow_guard_fallback"], 0)
         self.assertGreater(stats["actual_partial_enabled"], 0)
+
+    def test_token_plan_fast_hit_requires_same_entry_and_root(self):
+        first_root = RootGuardManager()
+        first_root.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {"block": {}},
+            default_mgr_enum,
+        ).dict_getitem_manager(
+            "block",
+            "L['self']._modules['block']",
+            {},
+            dict_mgr_enum,
+        ).add_dict_length_check_guard(
+            {}, ["len(block) == 0"]
+        )
+
+        second_root = RootGuardManager()
+        second_root.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {"block": {}},
+            default_mgr_enum,
+        ).dict_getitem_manager(
+            "block",
+            "L['self']._modules['block']",
+            {},
+            dict_mgr_enum,
+        ).add_dict_length_check_guard(
+            {}, ["len(block) == 0"]
+        )
+
+        stats = guards._debug_check_guard_lookup_receipt_cross_root(
+            first_root,
+            second_root,
+            {"mods": {"block": {}}},
+            3,
+        )
+
+        self.assertTrue(stats["result"])
+        self.assertEqual(stats["actual_partial_hit"], 0)
+        self.assertGreater(stats["actual_partial_enabled_before_cross"], 0)
+
+    def test_token_plan_fast_hit_requires_same_self(self):
+        guard_manager = RootGuardManager()
+        guard_manager.dict_getitem_manager(
+            "mods",
+            "L['self']._modules",
+            {"block": {}},
+            default_mgr_enum,
+        ).dict_getitem_manager(
+            "block",
+            "L['self']._modules['block']",
+            {},
+            dict_mgr_enum,
+        ).add_dict_length_check_guard(
+            {}, ["len(block) == 0"]
+        )
+
+        stats = guards._debug_check_guard_lookup_receipt_cross_self(
+            guard_manager,
+            {"mods": {"block": {}}},
+            object(),
+            object(),
+            3,
+        )
+
+        self.assertTrue(stats["result"])
+        self.assertEqual(stats["actual_partial_hit"], 0)
+        self.assertGreater(stats["actual_partial_enabled_before_cross"], 0)
 
     def test_token_plan_fast_hit_allows_token_covered_leaf_guard(self):
         modules = {"block": {}}
@@ -794,20 +865,21 @@ num_guards_executed=0)
         self.assertEqual(stats["slow_guard_fallback"], 0)
 
     def test_token_plan_miss_falls_back_to_slow_guard(self):
+        modules = {}
         guard_manager = RootGuardManager()
         guard_manager.dict_getitem_manager(
             "mods",
             "L['self']._modules",
-            {},
+            modules,
             default_mgr_enum,
-        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+        ).add_dict_length_check_guard(0, ["len(mods) == 0"])
 
         stats = guards._debug_check_guard_lookup_receipt_sequence(
             guard_manager,
             [
-                {"mods": {}},
-                {"mods": {}},
-                {"mods": {}},
+                {"mods": modules},
+                {"mods": modules},
+                {"mods": modules},
                 {"mods": {"extra": object()}},
             ],
         )
@@ -820,13 +892,14 @@ num_guards_executed=0)
         )
 
     def test_token_plan_fast_hit_preserves_other_guards(self):
+        modules = {}
         guard_manager = RootGuardManager()
         guard_manager.dict_getitem_manager(
             "mods",
             "L['self']._modules",
-            {},
+            modules,
             default_mgr_enum,
-        ).add_dict_length_check_guard({}, ["len(mods) == 0"])
+        ).add_dict_length_check_guard(0, ["len(mods) == 0"])
         guard_manager.dict_getitem_manager(
             "x",
             "L['x']",
@@ -837,10 +910,10 @@ num_guards_executed=0)
         stats = guards._debug_check_guard_lookup_receipt_sequence(
             guard_manager,
             [
-                {"mods": {}, "x": 1},
-                {"mods": {}, "x": 1},
-                {"mods": {}, "x": 1},
-                {"mods": {}, "x": 2},
+                {"mods": modules, "x": 1},
+                {"mods": modules, "x": 1},
+                {"mods": modules, "x": 1},
+                {"mods": modules, "x": 2},
             ],
         )
 
@@ -890,16 +963,18 @@ num_guards_executed=0)
         )
 
     def test_token_plan_unsupported_accessor_falls_back(self):
+        block = [True]
+        modules = {"block": block}
         guard_manager = RootGuardManager()
         guard_manager.dict_getitem_manager(
             "mods",
             "L['self']._modules",
-            {"block": [True]},
+            modules,
             default_mgr_enum,
         ).dict_getitem_manager(
             "block",
             "L['self']._modules['block']",
-            [True],
+            block,
             default_mgr_enum,
         ).list_getitem_manager(
             0,
@@ -913,9 +988,9 @@ num_guards_executed=0)
         stats = guards._debug_check_guard_lookup_receipt_sequence(
             guard_manager,
             [
-                {"mods": {"block": [True]}},
-                {"mods": {"block": [True]}},
-                {"mods": {"block": [True]}},
+                {"mods": modules},
+                {"mods": modules},
+                {"mods": modules},
                 {"mods": {"block": [False]}},
             ],
         )

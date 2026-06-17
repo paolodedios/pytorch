@@ -239,15 +239,14 @@ void lookup(
 
     if (valid) {
       try {
-        if (is_skip_guard_eval_unsafe) {
-          valid = torch::dynamo::run_root_guard_manager(
-              cache_entry.diff_guard_root_mgr, f_locals);
-        } else {
-          valid = torch::dynamo::run_root_guard_manager(
-              cache_entry.root_mgr,
-              f_locals,
-              extra_state->last_success_receipt.get());
-        }
+        valid =
+            torch::dynamo::run_root_guard_manager_with_last_success_receipt(
+                extra_state->last_success_receipt.get(),
+                &cache_entry,
+                is_skip_guard_eval_unsafe ? cache_entry.diff_guard_root_mgr
+                                          : cache_entry.root_mgr,
+                f_locals,
+                is_skip_guard_eval_unsafe);
       } catch (py::error_already_set& e) {
         if (guard_error_hook) {
           py::handle guard_error_hook_handle(guard_error_hook);

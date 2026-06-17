@@ -768,6 +768,24 @@ static thread_local ActiveGuardReceiptScope* active_actual_partial_scope =
     nullptr;
 constexpr uint64_t kActualPartialShadowPassThreshold = 2;
 
+static PyObject* guard_last_success_self_key() {
+  static PyObject* key = PyUnicode_InternFromString("self");
+  return key;
+}
+
+static PyObject* guard_last_success_current_self(
+    FrameLocalsMapping* f_locals) {
+  if (f_locals == nullptr) {
+    return nullptr;
+  }
+  PyObject* key = guard_last_success_self_key();
+  if (key == nullptr) {
+    PyErr_Clear();
+    return nullptr;
+  }
+  return PyDict_GetItem((PyObject*)f_locals->to_dict(), key);
+}
+
 static bool is_self_modules_candidate(const std::string& source) {
   if (source == "L['self']._modules") {
     return true;
@@ -855,6 +873,10 @@ static void append_actual_partial_tokens(
 }
 
 static void reset_actual_partial_plan(GuardLastSuccessReceipt* receipt) {
+  receipt->actual_partial_entry_key = nullptr;
+  receipt->actual_partial_root_key = nullptr;
+  receipt->actual_partial_self_object = nullptr;
+  receipt->actual_partial_self_type = nullptr;
   receipt->actual_partial_shadow_passes = 0;
   receipt->actual_partial_state = GuardPartialMemoState::Training;
   receipt->actual_partial_stability_tokens.clear();
@@ -897,8 +919,17 @@ static py::dict actual_partial_disabled_reasons_to_dict(
 }
 
 struct ActiveGuardReceiptScope {
-  explicit ActiveGuardReceiptScope(GuardLastSuccessReceipt* receipt)
-      : receipt(receipt), previous(active_actual_partial_scope) {
+  explicit ActiveGuardReceiptScope(
+      GuardLastSuccessReceipt* receipt,
+      void* entry_key = nullptr,
+      void* root_key = nullptr,
+      PyObject* self_object = nullptr)
+      : receipt(receipt),
+        previous(active_actual_partial_scope),
+        entry_key(entry_key),
+        root_key(root_key),
+        self_object(self_object),
+        self_type(self_object == nullptr ? nullptr : Py_TYPE(self_object)) {
     active_actual_partial_scope = this;
   }
 
@@ -918,9 +949,17 @@ struct ActiveGuardReceiptScope {
       return;
     }
 
-    if (receipt->actual_partial_stability_tokens == pending_stability_tokens) {
+    if (receipt->actual_partial_entry_key == entry_key &&
+        receipt->actual_partial_root_key == root_key &&
+        receipt->actual_partial_self_object == self_object &&
+        receipt->actual_partial_self_type == self_type &&
+        receipt->actual_partial_stability_tokens == pending_stability_tokens) {
       ++receipt->actual_partial_shadow_passes;
     } else {
+      receipt->actual_partial_entry_key = entry_key;
+      receipt->actual_partial_root_key = root_key;
+      receipt->actual_partial_self_object = self_object;
+      receipt->actual_partial_self_type = self_type;
       receipt->actual_partial_shadow_passes = 0;
       receipt->actual_partial_state = GuardPartialMemoState::Training;
       receipt->actual_partial_stability_tokens = pending_stability_tokens;
@@ -938,6 +977,10 @@ struct ActiveGuardReceiptScope {
 
   GuardLastSuccessReceipt* receipt;
   ActiveGuardReceiptScope* previous;
+  void* entry_key;
+  void* root_key;
+  PyObject* self_object;
+  PyTypeObject* self_type;
   std::vector<GuardSubtreeEntryToken> pending_stability_tokens;
   std::vector<GuardSubtreeEntryToken> pending_tokens;
   bool committed = false;
@@ -2861,6 +2904,10 @@ class GuardManager {
   // False. This is used for sorting optimization.
   int64_t _fail_count{0};
 
+  const std::vector<std::unique_ptr<GuardAccessor>>& accessors() const {
+    return _accessors;
+  }
+
  private:
   // Root of the guard manager, this is the used to install the relational
   // guard resetters.
@@ -3365,7 +3412,7 @@ class DictGuardManager : public GuardManager {
       return false;
     }
 
-    for (const auto& accessor : _accessors) {
+    for (const auto& accessor : accessors()) {
       if (!accessor->replay_actual_partial_tokens(obj, tokens, reason)) {
         return false;
       }
@@ -3404,7 +3451,7 @@ class DictGuardManager : public GuardManager {
     return true;
   }
 
-  void skip_adding_guard(const py::object& a, const py::object& b) {
+  void skip_adding_guard(py::object a, py::object b) {
     // The `add_leaf_guard` method in `DictGuardManager` is overridden to block
     // the addition of leaf guards. However, this is too strict. Python side of
     // guard management frequently adds TYPE_MATCH and DICT_LENGTH on
@@ -3557,6 +3604,15 @@ static bool try_actual_partial_fast_path(
 
   GuardLastSuccessReceipt* receipt = active_actual_partial_scope->receipt;
   if (receipt->actual_partial_state != GuardPartialMemoState::Enabled) {
+    return false;
+  }
+  if (receipt->actual_partial_entry_key !=
+          active_actual_partial_scope->entry_key ||
+      receipt->actual_partial_root_key != active_actual_partial_scope->root_key ||
+      receipt->actual_partial_self_object !=
+          active_actual_partial_scope->self_object ||
+      receipt->actual_partial_self_type !=
+          active_actual_partial_scope->self_type) {
     return false;
   }
 
@@ -5607,7 +5663,7 @@ py::dict debug_check_guard_lookup_receipt(
   auto receipt = create_guard_last_success_receipt();
   bool result = false;
   for (int i = 0; i < iterations; ++i) {
-    ActiveGuardReceiptScope receipt_scope(receipt.get());
+    ActiveGuardReceiptScope receipt_scope(receipt.get(), &root, &root);
     result = root.check_nopybind(value.ptr());
     if (result) {
       receipt_scope.commit();
@@ -5637,7 +5693,7 @@ py::dict debug_check_guard_lookup_receipt_sequence(
   auto receipt = create_guard_last_success_receipt();
   bool result = false;
   for (py::handle value : values) {
-    ActiveGuardReceiptScope receipt_scope(receipt.get());
+    ActiveGuardReceiptScope receipt_scope(receipt.get(), &root, &root);
     result = root.check_nopybind(value.ptr());
     if (result) {
       receipt_scope.commit();
@@ -5653,6 +5709,97 @@ py::dict debug_check_guard_lookup_receipt_sequence(
       receipt->actual_partial_shadow_passes;
   stats["actual_partial_enabled"] =
       receipt->actual_partial_state == GuardPartialMemoState::Enabled ? 1 : 0;
+  stats["actual_partial_hit"] = receipt->actual_partial_hit;
+  stats["actual_partial_miss"] = receipt->actual_partial_miss;
+  stats["slow_guard_fallback"] = receipt->slow_guard_fallback;
+  stats["actual_partial_disabled_reasons"] =
+      actual_partial_disabled_reasons_to_dict(receipt.get());
+  return stats;
+}
+
+py::dict debug_check_guard_lookup_receipt_cross_root(
+    RootGuardManager& first_root,
+    RootGuardManager& second_root,
+    py::handle value,
+    int first_iterations = 3) {
+  auto receipt = create_guard_last_success_receipt();
+  bool result = false;
+  for (int i = 0; i < first_iterations; ++i) {
+    ActiveGuardReceiptScope receipt_scope(
+        receipt.get(), &first_root, &first_root);
+    result = first_root.check_nopybind(value.ptr());
+    if (result) {
+      receipt_scope.commit();
+    }
+  }
+  const bool enabled_before_cross =
+      receipt->actual_partial_state == GuardPartialMemoState::Enabled;
+  {
+    ActiveGuardReceiptScope receipt_scope(
+        receipt.get(), &second_root, &second_root);
+    result = second_root.check_nopybind(value.ptr());
+    if (result) {
+      receipt_scope.commit();
+    }
+  }
+
+  py::dict stats;
+  stats["result"] = result;
+  stats["actual_partial_candidate"] =
+      receipt->actual_partial_stability_tokens.size();
+  stats["actual_partial_token_count"] = receipt->actual_partial_tokens.size();
+  stats["actual_partial_shadow_passes"] =
+      receipt->actual_partial_shadow_passes;
+  stats["actual_partial_enabled"] =
+      receipt->actual_partial_state == GuardPartialMemoState::Enabled ? 1 : 0;
+  stats["actual_partial_enabled_before_cross"] =
+      enabled_before_cross ? 1 : 0;
+  stats["actual_partial_hit"] = receipt->actual_partial_hit;
+  stats["actual_partial_miss"] = receipt->actual_partial_miss;
+  stats["slow_guard_fallback"] = receipt->slow_guard_fallback;
+  stats["actual_partial_disabled_reasons"] =
+      actual_partial_disabled_reasons_to_dict(receipt.get());
+  return stats;
+}
+
+py::dict debug_check_guard_lookup_receipt_cross_self(
+    RootGuardManager& root,
+    py::handle value,
+    py::handle first_self,
+    py::handle second_self,
+    int first_iterations = 3) {
+  auto receipt = create_guard_last_success_receipt();
+  bool result = false;
+  for (int i = 0; i < first_iterations; ++i) {
+    ActiveGuardReceiptScope receipt_scope(
+        receipt.get(), &root, &root, first_self.ptr());
+    result = root.check_nopybind(value.ptr());
+    if (result) {
+      receipt_scope.commit();
+    }
+  }
+  const bool enabled_before_cross =
+      receipt->actual_partial_state == GuardPartialMemoState::Enabled;
+  {
+    ActiveGuardReceiptScope receipt_scope(
+        receipt.get(), &root, &root, second_self.ptr());
+    result = root.check_nopybind(value.ptr());
+    if (result) {
+      receipt_scope.commit();
+    }
+  }
+
+  py::dict stats;
+  stats["result"] = result;
+  stats["actual_partial_candidate"] =
+      receipt->actual_partial_stability_tokens.size();
+  stats["actual_partial_token_count"] = receipt->actual_partial_tokens.size();
+  stats["actual_partial_shadow_passes"] =
+      receipt->actual_partial_shadow_passes;
+  stats["actual_partial_enabled"] =
+      receipt->actual_partial_state == GuardPartialMemoState::Enabled ? 1 : 0;
+  stats["actual_partial_enabled_before_cross"] =
+      enabled_before_cross ? 1 : 0;
   stats["actual_partial_hit"] = receipt->actual_partial_hit;
   stats["actual_partial_miss"] = receipt->actual_partial_miss;
   stats["slow_guard_fallback"] = receipt->slow_guard_fallback;
@@ -5686,15 +5833,20 @@ bool run_root_guard_manager(void* root, FrameLocalsMapping* f_locals) {
   return run_root_guard_manager(root, f_locals, nullptr);
 }
 
-bool run_root_guard_manager(
+static bool run_root_guard_manager(
     void* root,
     FrameLocalsMapping* f_locals,
-    GuardLastSuccessReceipt* receipt) {
+    GuardLastSuccessReceipt* receipt,
+    void* entry_key) {
   // for invalidated guards, return false
   if (root == nullptr) {
     return false;
   }
-  ActiveGuardReceiptScope receipt_scope(receipt);
+  ActiveGuardReceiptScope receipt_scope(
+      receipt,
+      entry_key,
+      root,
+      guard_last_success_current_self(f_locals));
   py::object config_module = py::module_::import("torch._dynamo.config");
   bool enable_cpp_framelocals_guard_eval =
       config_module.attr("enable_cpp_framelocals_guard_eval").cast<bool>();
@@ -5709,6 +5861,25 @@ bool run_root_guard_manager(
     receipt_scope.commit();
   }
   return result;
+}
+
+bool run_root_guard_manager(
+    void* root,
+    FrameLocalsMapping* f_locals,
+    GuardLastSuccessReceipt* receipt) {
+  return run_root_guard_manager(root, f_locals, receipt, nullptr);
+}
+
+bool run_root_guard_manager_with_last_success_receipt(
+    GuardLastSuccessReceipt* receipt,
+    void* entry_key,
+    void* root,
+    FrameLocalsMapping* f_locals,
+    bool is_skip_guard_eval_unsafe) {
+  if (is_skip_guard_eval_unsafe || receipt == nullptr) {
+    return run_root_guard_manager(root, f_locals);
+  }
+  return run_root_guard_manager(root, f_locals, receipt, entry_key);
 }
 
 PyObject* torch_c_dynamo_guards_init() {
@@ -6581,8 +6752,22 @@ PyObject* torch_c_dynamo_guards_init() {
           &DictGuardManager::get_key_value_managers,
           py::return_value_policy::reference)
       // Skipped leaf guards
-      .def("add_type_match_guard", &DictGuardManager::skip_adding_guard)
-      .def("add_dict_length_check_guard", &DictGuardManager::skip_adding_guard)
+      .def(
+          "add_type_match_guard",
+          [](DictGuardManager& self,
+             py::object value,
+             py::object verbose_code_parts) -> void {
+            self.skip_adding_guard(
+                std::move(value), std::move(verbose_code_parts));
+          })
+      .def(
+          "add_dict_length_check_guard",
+          [](DictGuardManager& self,
+             py::object value,
+             py::object verbose_code_parts) -> void {
+            self.skip_adding_guard(
+                std::move(value), std::move(verbose_code_parts));
+          })
       // Permitted leaf guards
       .def(
           "add_dict_contains_guard",
@@ -6681,6 +6866,21 @@ PyObject* torch_c_dynamo_guards_init() {
       debug_check_guard_lookup_receipt_sequence,
       py::arg("root"),
       py::arg("values"));
+  py_m.def(
+      "_debug_check_guard_lookup_receipt_cross_root",
+      debug_check_guard_lookup_receipt_cross_root,
+      py::arg("first_root"),
+      py::arg("second_root"),
+      py::arg("value"),
+      py::arg("first_iterations") = 3);
+  py_m.def(
+      "_debug_check_guard_lookup_receipt_cross_self",
+      debug_check_guard_lookup_receipt_cross_self,
+      py::arg("root"),
+      py::arg("value"),
+      py::arg("first_self"),
+      py::arg("second_self"),
+      py::arg("first_iterations") = 3);
 
 // initialize dict_version_map watcher for 3.12
 #if IS_PYTHON_3_12_PLUS

@@ -23,6 +23,12 @@ bool run_root_guard_manager(
     void* root,
     FrameLocalsMapping* f_locals,
     GuardLastSuccessReceipt* receipt);
+bool run_root_guard_manager_with_last_success_receipt(
+    GuardLastSuccessReceipt* receipt,
+    void* entry_key,
+    void* root,
+    FrameLocalsMapping* f_locals,
+    bool is_skip_guard_eval_unsafe);
 
 enum class GuardPartialMemoState : uint8_t {
   Training = 0,
