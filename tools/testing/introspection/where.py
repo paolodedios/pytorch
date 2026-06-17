@@ -9,14 +9,19 @@ variant exists at all is NOT_GENERATED (distinct from SKIPPED).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from tools.testing.introspection import collector, platforms
-from tools.testing.introspection.platforms import Job
+
+
+if TYPE_CHECKING:
+    from tools.testing.introspection.platforms import Job
 
 
 def _match(query: str, test_id: str) -> bool:
     """test_id is 'Class::method'. Match a full id, a bare method, or a substring."""
     _, method = test_id.split("::", 1)
-    return query == test_id or query == method or query in test_id
+    return query in (test_id, method) or query in test_id
 
 
 def _lookup_files(query: str, job: Job) -> list[str]:

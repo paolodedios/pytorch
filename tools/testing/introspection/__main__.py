@@ -156,22 +156,15 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         if a is None:
             print("error: pass --pr N or --from REF", file=sys.stderr)
             return 2
-    res = diff_mod.diff(jobs, a, b, files_filter=args.files, full=args.full)
+    res = diff_mod.diff(
+        jobs, a, b, files_filter=args.files, full=args.full, locations=args.locations
+    )
     if args.json:
         print(json.dumps(res, indent=2))
         return 0
 
     # Invert per-job results to per-test: which platforms added / removed each test.
-    job_names = list(res["per_job"])
-    added: dict[str, set[str]] = {}
-    removed: dict[str, set[str]] = {}
-    for job_name, jr in res["per_job"].items():
-        for f, v in jr["per_file"].items():
-            for t in v["added"]:
-                added.setdefault(f"{f}::{t}", set()).add(job_name)
-            for t in v["removed"]:
-                removed.setdefault(f"{f}::{t}", set()).add(job_name)
-
+    added, removed, job_names = diff_mod.invert_per_job(res)
     all_jobs = set(job_names)
 
     def _plats(s: set[str]) -> str:
@@ -185,13 +178,7 @@ def _cmd_diff(args: argparse.Namespace) -> int:
         if not m:
             return
         print(f"\n{title}:")
-        # Group tests by the set of platforms they apply to.
-        groups: dict[frozenset, list[str]] = {}
-        for test, plats in m.items():
-            groups.setdefault(frozenset(plats), []).append(test)
-        # All-platforms group first, then by platform list.
-        for fs in sorted(groups, key=lambda fs: (fs != all_jobs, sorted(fs))):
-            tests = sorted(groups[fs])
+        for fs, tests in diff_mod.group_by_platform_set(m, all_jobs):
             for t in tests[:cap]:
                 print(f"{sign} {t}")
             if cap and len(tests) > cap:
@@ -291,6 +278,11 @@ def main(argv: list[str] | None = None) -> int:
         "--variants",
         action="store_true",
         help="show all added/removed, not just first 10",
+    )
+    p_diff.add_argument(
+        "--locations",
+        action="store_true",
+        help="also report each test's source file/line (added_loc/removed_loc in --json)",
     )
     p_diff.add_argument("--json", action="store_true")
     p_diff.set_defaults(func=_cmd_diff)

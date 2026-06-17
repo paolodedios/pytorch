@@ -19,9 +19,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from typing import TYPE_CHECKING
 
 from tools.testing.introspection import collector
-from tools.testing.introspection.platforms import Job
+
+
+if TYPE_CHECKING:
+    from tools.testing.introspection.platforms import Job
 
 
 def _git(*args: str) -> str:
@@ -212,29 +216,37 @@ def _root_env(path: str):
 
 
 def _collect_job_files(
-    job: Job, files: list[str], max_workers: int
-) -> tuple[dict[str, set[str]], set[str]]:
+    job: Job, files: list[str], max_workers: int, op: str = "enumerate"
+) -> tuple[dict[str, set[str]], set[str], dict[str, dict]]:
     """Collect `files` for one job at the currently-set TESTINTRO_ROOT. Returns
-    ({relpath: {Class::method,...}}, errored)."""
+    ({relpath: {Class::method,...}}, errored, {relpath: {Class::method: [file, line]}}).
+    Locations are present only when op == 'enumloc'."""
     present = [f for f in files if (collector._root() / f).exists()]
-    raw = collector.collect(job, "enumerate", present, max_workers=max_workers)
+    raw = collector.collect(job, op, present, max_workers=max_workers)
     out: dict[str, set[str]] = {}
     errored: set[str] = set()
+    locs: dict[str, dict] = {}
     for f in files:
         r = raw.get(f)
         if r and "error" not in r:
             out[f] = {f"{c}::{m}" for c, ms in r["classes"].items() for m in ms}
+            if "locations" in r:
+                locs[f] = r["locations"]
         elif r and "error" in r:
             out[f] = set()
             errored.add(f)
         else:
             out[f] = set()  # absent at this root
-    return out, errored
+    return out, errored, locs
 
 
 def _collect_phase(
-    root: str, jobs: list[Job], affected_by_job: dict[str, list[str]], label: str
-) -> dict[str, tuple[dict[str, set[str]], set[str]]]:
+    root: str,
+    jobs: list[Job],
+    affected_by_job: dict[str, list[str]],
+    label: str,
+    op: str = "enumerate",
+) -> dict[str, tuple]:
     """Collect all jobs at one ref `root`, in parallel. The root is identical for
     every job in the phase, so it is set once (no per-thread env mutation), and the
     worker budget is split across jobs to avoid oversubscription."""
@@ -247,7 +259,11 @@ def _collect_phase(
         with ThreadPoolExecutor(max_workers=max(1, len(jobs))) as ex:
             futs = {
                 ex.submit(
-                    _collect_job_files, job, affected_by_job[job.name], per_job_workers
+                    _collect_job_files,
+                    job,
+                    affected_by_job[job.name],
+                    per_job_workers,
+                    op,
                 ): job
                 for job in jobs
             }
@@ -264,18 +280,17 @@ def _collect_phase(
 
 
 def diff(
-    jobs: list[Job] | Job,
+    jobs: list[Job],
     a: str,
     b: str,
     files_filter: str | None = None,
     full: bool = False,
+    locations: bool = False,
 ) -> dict:
     """Tests added/removed between refs a and b, for each job. Both refs are
     materialized once as git worktrees and reused across all jobs. Selection (varies
     only by config+rocm) and the import graph (content-only) are computed once and
     reused; collection fans out across jobs in parallel per ref."""
-    if isinstance(jobs, Job):
-        jobs = [jobs]
     changed = _changed_files(a, b)
     changed_tests = [f for f in changed if _is_test_py(f)]
     broad = full or any(_is_broad(f) for f in changed)
@@ -317,14 +332,19 @@ def diff(
                 affected = [f for f in affected if files_filter in f]
             affected_by_job[job.name] = affected
 
-        at_a = _collect_phase(wt_a, jobs, affected_by_job, "collecting base")
-        at_b = _collect_phase(wt_b, jobs, affected_by_job, "collecting head")
+        op = "enumloc" if locations else "enumerate"
+        at_a = _collect_phase(wt_a, jobs, affected_by_job, "collecting base", op)
+        at_b = _collect_phase(wt_b, jobs, affected_by_job, "collecting head", op)
 
         per_job = {}
+        # Locations key on the comment's test id "file::Class::method": added tests are
+        # located at the head (b), removed at the base (a), since each exists only there.
+        added_loc: dict[str, list] = {}
+        removed_loc: dict[str, list] = {}
         for job in jobs:
             affected = affected_by_job[job.name]
-            sa_map, err_a = at_a[job.name]
-            sb_map, err_b = at_b[job.name]
+            sa_map, err_a, loc_a = at_a[job.name]
+            sb_map, err_b, loc_b = at_b[job.name]
             errored = err_a | err_b
             per_file = {}
             for f in affected:
@@ -334,6 +354,14 @@ def diff(
                 removed = sorted(sa_map[f] - sb_map[f])
                 if added or removed:
                     per_file[f] = {"added": added, "removed": removed}
+                for t in added:
+                    loc = loc_b.get(f, {}).get(t)
+                    if loc:
+                        added_loc[f"{f}::{t}"] = loc
+                for t in removed:
+                    loc = loc_a.get(f, {}).get(t)
+                    if loc:
+                        removed_loc[f"{f}::{t}"] = loc
             per_job[job.name] = {
                 "scope_reason": scope_reason,
                 "n_affected": len(affected),
@@ -344,4 +372,41 @@ def diff(
         _remove_worktree(wt_a)
         _remove_worktree(wt_b)
 
-    return {"from": a, "to": b, "per_job": per_job}
+    result = {"from": a, "to": b, "per_job": per_job}
+    if locations:
+        result["added_loc"] = added_loc
+        result["removed_loc"] = removed_loc
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Result shaping shared by the CLI text view and the PR-comment renderer
+# --------------------------------------------------------------------------- #
+def invert_per_job(
+    res: dict,
+) -> tuple[dict[str, set[str]], dict[str, set[str]], list[str]]:
+    """From a diff() result, return (added, removed, job_names) where added/removed map
+    a concrete test id "file::Class::method" -> the set of jobs it was added/removed on."""
+    job_names = list(res["per_job"])
+    added: dict[str, set[str]] = {}
+    removed: dict[str, set[str]] = {}
+    for job_name, jr in res["per_job"].items():
+        for f, v in jr["per_file"].items():
+            for t in v["added"]:
+                added.setdefault(f"{f}::{t}", set()).add(job_name)
+            for t in v["removed"]:
+                removed.setdefault(f"{f}::{t}", set()).add(job_name)
+    return added, removed, job_names
+
+
+def group_by_platform_set(
+    m: dict[str, set[str]], all_jobs: set[str]
+) -> list[tuple[frozenset[str], list[str]]]:
+    """Group test ids by the set of jobs they apply to; all-platforms group first."""
+    groups: dict[frozenset[str], list[str]] = {}
+    for test, plats in m.items():
+        groups.setdefault(frozenset(plats), []).append(test)
+    return [
+        (fs, sorted(groups[fs]))
+        for fs in sorted(groups, key=lambda fs: (fs != all_jobs, sorted(fs)))
+    ]
