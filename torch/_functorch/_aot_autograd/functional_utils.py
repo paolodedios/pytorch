@@ -111,10 +111,7 @@ def mutated_input_storage_copy_length(
     ):
         return None
 
-    try:
-        updated_storage_len = compute_storage_length(updated_inpt)
-    except RuntimeError:
-        return None
+    updated_storage_len = compute_storage_length(updated_inpt)
 
     # If the updated tensor uses storage past its logical shape, a normal
     # original_inpt.copy_(updated_inpt) would miss part of the mutation.  During
@@ -125,10 +122,7 @@ def mutated_input_storage_copy_length(
     # updated_inpt in the first place.
     if updated_storage_len > updated_inpt.numel():
         if original_storage_len is None:
-            try:
-                original_storage_len = compute_storage_length(original_inpt)
-            except RuntimeError:
-                original_storage_len = None
+            original_storage_len = compute_storage_length(original_inpt)
         if original_storage_len is not None and guard_or_false(
             original_storage_len < updated_storage_len
         ):

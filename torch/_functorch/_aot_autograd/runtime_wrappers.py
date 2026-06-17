@@ -1405,7 +1405,7 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
         *,
         runtime_metadata: ViewAndMutationMeta,
     ) -> Callable[..., Any]:
-        if self.maybe_subclass_meta is None and not runtime_metadata.act_input_indices:
+        if self.maybe_subclass_meta is None and not runtime_metadata.act_input_paths:
             return compiled_fn
 
         from .subclass_codegen import codegen_subclass_wrapper
@@ -1416,7 +1416,7 @@ class AOTDispatchSubclassWrapper(CompilerWrapper):
             out_metas=runtime_metadata.subclass_fw_graph_out_meta,
             num_fw_outs_saved_for_bw=self.num_fw_outs_saved_for_bw,
             frozen_inp_indices=self._get_frozen_inp_indices(),
-            act_input_indices=runtime_metadata.act_input_indices,
+            act_input_paths=runtime_metadata.act_input_paths,
         )
         inner_fn._boxed_call = True  # type: ignore[attr-defined]
         return inner_fn
@@ -1552,8 +1552,15 @@ def _add_storage_metadata_guards(
             continue
         source = aot_config.aot_autograd_arg_pos_to_source[arg_pos]
         arg = flat_args[arg_pos]
-        if source is not None and isinstance(arg, torch.Tensor):
+        if isinstance(arg, torch.Tensor):
+            # Avoid a top-level Inductor import from this runtime wrapper.
+            from torch._inductor.codecache import (
+                _is_valid_storage_metadata_guard_source,
+            )
             from torch.fx.experimental.symbolic_shapes import guarding_hint_or_throw
+
+            if not _is_valid_storage_metadata_guard_source(source):
+                continue
 
             storage_size = int(guarding_hint_or_throw(arg.untyped_storage().size()))
             storage_offset = int(guarding_hint_or_throw(arg.storage_offset()))
