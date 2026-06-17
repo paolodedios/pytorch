@@ -35,6 +35,7 @@ install_conda_dependencies() {
     conda_install --file conda-env-ci.txt
   else
     # venv image: install the conda-env-ci.txt equivalents from apt + pip
+    sudo apt-get update
     sudo apt-get install -y libuv1-dev libomp-dev pkg-config
     pip_install cmake==3.31.2 ninja==1.10.2
   fi

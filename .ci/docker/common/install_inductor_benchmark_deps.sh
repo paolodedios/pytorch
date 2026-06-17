@@ -31,6 +31,7 @@ function install_torchbench() {
 }
 
 # Pango is needed for weasyprint which is needed for doctr
+sudo apt-get update
 sudo apt-get install -y libpango-1.0-0 libpangocairo-1.0-0
 
 # Detect CUDA version and use appropriate wheel index
