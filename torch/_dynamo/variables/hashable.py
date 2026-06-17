@@ -12,7 +12,7 @@ import torch
 
 from .. import variables
 from ..exc import raise_observed_exception
-from ..utils import specialize_symnode
+from ..utils import guard_if_dyn, specialize_symnode
 from .base import VariableTracker
 
 
@@ -114,6 +114,7 @@ class HashableTracker:
             and vt.is_hashable_lazy()
         ):
             self._hash = hash(vt.original_value())
+            self._hash_is_identity = False
             self.vt = vt
             return
 
@@ -122,7 +123,9 @@ class HashableTracker:
         from torch._dynamo.symbolic_convert import InstructionTranslator
 
         tx = InstructionTranslator.current_tx()
-        self._hash, _ = vt.container_key_hash_impl(tx)
+        # is_fake marks an identity-based hash (e.g. id(fake_tensor)); such VTs
+        # have no python-constant value, so their key equality is identity.
+        self._hash, self._hash_is_identity = vt.container_key_hash_impl(tx)
         self.vt = vt
 
     @classmethod
@@ -170,8 +173,8 @@ class HashableTracker:
         """
         Checks equality between two HashableTracker instances.
 
-        Delegates to the VariableTracker's is_python_equal method to compare
-        the underlying variable trackers for Python-level equality.
+        Mirrors CPython's PyObject_RichCompareBool: routes the comparison
+        through generic_richcompare_bool so any user-defined __eq__ runs.
 
         Args:
             other: Another HashableTracker instance to compare with
@@ -189,4 +192,42 @@ class HashableTracker:
         if self_constant is not self._MISSING and other_constant is not self._MISSING:
             return self_constant == other_constant
 
-        return self.vt.is_python_equal(other.vt)
+        # Tensor keys hash by identity (Tensor.__hash__ is id(self)), so CPython
+        # only ever compares identical tensors during a dict/set lookup; a
+        # tensor's elementwise __eq__ is never consulted for membership. Mirror
+        # that with an identity comparison instead of running __eq__, which would
+        # otherwise emit a stray elementwise-eq node into the FX graph and
+        # corrupt the surrounding trace.
+        from .tensor import TensorVariable
+
+        if isinstance(self.vt, TensorVariable) or isinstance(other.vt, TensorVariable):
+            return (
+                self._hash_is_identity
+                and other._hash_is_identity
+                and self._hash == other._hash
+            )
+
+        # All other keys: mirror PyObject_RichCompareBool and run the
+        # comparison through generic_richcompare_bool so any user-defined __eq__
+        # runs and its result (or any exception it raises) is observed by the
+        # traced program.
+        from ..symbolic_convert import InstructionTranslator
+        from .object_protocol import generic_richcompare_bool
+
+        tx = InstructionTranslator.current_tx()
+
+        result = generic_richcompare_bool(tx, self.vt, other.vt, op="__eq__")
+        if result.is_python_constant():
+            return bool(result.as_python_constant())
+
+        if result.is_symnode_like():
+            return bool(guard_if_dyn(result))
+
+        # Comparison did not resolve to a constant (e.g. keys whose __eq__ could
+        # not be determined). Fall back to identity-based hash equality, which
+        # mirrors CPython treating such keys as equal only when identical.
+        return (
+            self._hash_is_identity
+            and other._hash_is_identity
+            and self._hash == other._hash
+        )

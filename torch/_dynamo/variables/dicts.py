@@ -76,7 +76,7 @@ if TYPE_CHECKING:
 # [Adding a new supported class within the keys of ConstDictVariable]
 # - Implement hash_impl(self, tx) on the VariableTracker subclass (or rely on the
 #   base class default which uses get_real_python_backed_value())
-# - Implement is_python_equal() for key equality
+# - Implement richcompare_impl() for key equality
 
 
 def pydict_check(obj: VariableTracker) -> bool:
@@ -94,25 +94,26 @@ def _is_set_or_dictview(obj: VariableTracker) -> bool:
 
 
 def _is_removable_handle_id_key(vt: VariableTracker) -> bool:
-    if isinstance(vt, variables.LazyVariableTracker) and not vt.is_realized():
-        return False
-    # Local import avoids a circular import with user_defined.py.
-    from .user_defined import RemovableHandleIdVariable
+    if isinstance(vt, variables.LazyVariableTracker):
+        if not vt.is_realized():
+            return False
+        vt = vt.realize()
 
-    return isinstance(vt, RemovableHandleIdVariable)
+    return bool(getattr(vt, "_dynamo_is_removable_handle_id", False))
 
 
 def _removable_handle_id_value(vt: VariableTracker) -> int | None:
-    if isinstance(vt, variables.LazyVariableTracker) and not vt.is_realized():
-        return None
-    # Local import avoids a circular import with user_defined.py.
-    from .user_defined import RemovableHandleIdVariable
+    if isinstance(vt, variables.LazyVariableTracker):
+        if not vt.is_realized():
+            return None
+        vt = vt.realize()
 
-    if not isinstance(vt, RemovableHandleIdVariable):
+    if not getattr(vt, "_dynamo_is_removable_handle_id", False):
         return None
-    if not vt.handle_id.is_python_constant():
+    handle_id = getattr(vt, "handle_id", None)
+    if not isinstance(handle_id, VariableTracker) or not handle_id.is_python_constant():
         return None
-    value = vt.handle_id.as_python_constant()
+    value = handle_id.as_python_constant()
     return value if isinstance(value, int) else None
 
 

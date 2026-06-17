@@ -890,6 +890,18 @@ class UserDefinedClassVariable(UserDefinedVariable):
             f"bad operand type for abs(): '{self.python_type_name()}'",
         )
 
+    def nb_invert_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+        m = self._maybe_get_baseclass_method("__invert__")
+        if m:
+            source = self.source and AttrSource(self.source, "__invert__")
+            return variables.UserMethodVariable(
+                m, self, source_fn=source
+            ).call_function(tx, [], {})
+        raise_type_error(
+            tx,
+            f"bad operand type for unary ~: '{self.python_type_name()}'",
+        )
+
     def mp_ass_subscript_impl(
         self,
         tx: "InstructionTranslatorBase",
@@ -1562,12 +1574,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
             return self.value.__name__
         return super().const_getattr(tx, name)
 
-    def is_python_equal(self, other: object) -> bool:
-        return (
-            isinstance(other, variables.UserDefinedClassVariable)
-            and self.value is other.value
-        )
-
     def reconstruct_pycode(self, codegen) -> str:
         if self.source:
             return self.source.reconstruct_pycode(codegen)
@@ -1900,6 +1906,69 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 skip_frame=True,
             )
 
+    def str_impl(
+        self,
+        tx: "InstructionTranslatorBase",
+    ) -> VariableTracker:
+        from .object_protocol import generic_repr
+
+        type_attr = self.lookup_class_mro_attr("__str__")
+        if type_attr is NO_SUCH_SUBOBJ:
+            return super().str_impl(tx)
+        if type_attr is None:
+            raise_type_error(tx, "'NoneType' object is not callable")
+
+        method = self._maybe_get_baseclass_method("__str__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.str_impl(tx)
+
+        if type(self.value).__str__ is object.__str__:
+            return generic_repr(tx, self)
+
+        if (
+            is_wrapper_or_member_descriptor(type_attr)
+            or torch._C._dynamo.utils.is_instancemethod(type_attr)  # type: ignore[attr-defined]
+            or is_cython_function(type_attr)
+        ):
+            try:
+                inspect.getattr_static(type(type_attr), "__get__")(
+                    type_attr, self.value, type(self.value)
+                )
+            except (AttributeError, TypeError) as e:
+                raise_observed_exception(type(e), tx, args=list(e.args))
+            else:
+                unimplemented(
+                    gb_type="untraceable user-defined __str__",
+                    context=f"Could not trace __str__ override for {type(self.value).__name__}",
+                    explanation="Dynamo could not safely trace this user-defined __str__ override.",
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                    skip_frame=True,
+                )
+
+        source = self.source and self.get_source_by_walking_mro(tx, "__str__")
+        method_var = self.resolve_type_attr(tx, "__str__", type_attr, source)
+        if not isinstance(method_var, variables.GetAttrVariable):
+            return method_var.call_function(tx, [], {})
+
+        try:
+            inspect.getattr_static(type(type_attr), "__get__")(
+                type_attr, self.value, type(self.value)
+            )
+        except (AttributeError, TypeError) as e:
+            raise_observed_exception(type(e), tx, args=list(e.args))
+        else:
+            unimplemented(
+                gb_type="untraceable user-defined __str__",
+                context=f"Could not trace __str__ override for {type(self.value).__name__}",
+                explanation="Dynamo could not safely trace this user-defined __str__ override.",
+                hints=[*graph_break_hints.SUPPORTABLE],
+                skip_frame=True,
+            )
+
     def nb_index_impl(
         self,
         tx: "InstructionTranslatorBase",
@@ -2034,6 +2103,31 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             )
 
         return self.call_method(tx, "__abs__", [], {})
+
+    def nb_invert_impl(
+        self,
+        tx: "InstructionTranslatorBase",
+    ) -> VariableTracker:
+        # CPython: slot_nb_invert calls __invert__() via vectorcall_method.
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/typeobject.c#L9426
+
+        type_attr = self.lookup_class_mro_attr("__invert__")
+        if type_attr is NO_SUCH_SUBOBJ:
+            raise_type_error(
+                tx,
+                f"bad operand type for unary ~: '{self.python_type_name()}'",
+            )
+        if type_attr is None:
+            raise_type_error(tx, "'NoneType' object is not callable")
+
+        method = self._maybe_get_baseclass_method("__invert__")
+        if method is None:
+            raise_type_error(
+                tx,
+                f"bad operand type for unary ~: '{self.python_type_name()}'",
+            )
+
+        return self.call_method(tx, "__invert__", [], {})
 
     def torch_function_check(self) -> None:
         if not has_torch_function(self):
@@ -3852,18 +3946,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         return object_richcompare(self, tx, other, op)
 
-    def is_python_equal(self, other: object) -> bool:
-        if (
-            isinstance(other, VariableTracker)
-            and self.is_python_constant()
-            and other.is_python_constant()
-        ):
-            return self.as_python_constant() == other.as_python_constant()
-        # id check
-        if not isinstance(other, UserDefinedVariable):
-            return False
-        return self.value is other.value
-
     def call_tree_map_branch(
         self,
         tx: "InstructionTranslatorBase",
@@ -4124,18 +4206,6 @@ class FrozenDataClassVariable(UserDefinedObjectVariable):
             raw_hashes.append(RawHash(h))
         return hash(tuple(raw_hashes)), is_fake
 
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, FrozenDataClassVariable):
-            return False
-        if self.python_type() is not other.python_type():
-            return False
-        from dataclasses import fields as dc_fields
-
-        return all(
-            self._get_field_vt(f.name).is_python_equal(other._get_field_vt(f.name))
-            for f in dc_fields(self.value)  # type: ignore[arg-type]
-        )
-
 
 class SourcelessGraphModuleVariable(UserDefinedObjectVariable):
     def __init__(
@@ -4355,6 +4425,7 @@ class IntWrapperVariable(UserDefinedObjectVariable):
 
 
 class RemovableHandleIdVariable(VariableTracker):
+    _dynamo_is_removable_handle_id = True
     _nonvar_fields = {
         "handle_id",
         *VariableTracker._nonvar_fields,
@@ -4392,6 +4463,9 @@ class RemovableHandleIdVariable(VariableTracker):
     def as_proxy(self) -> object:
         self._graph_break_current_tx()
 
+    def get_real_python_backed_value(self) -> object:
+        return NO_SUCH_SUBOBJ
+
     def reconstruct(self, codegen: "PyCodegen") -> None:
         self._graph_break(codegen.tx)
 
@@ -4403,9 +4477,28 @@ class RemovableHandleIdVariable(VariableTracker):
     ) -> tuple[int, bool]:
         return self.handle_id.container_key_hash_impl(tx)
 
+    def _handle_id_as_constant(self) -> int:
+        if self.handle_id.is_python_constant():
+            value = self.handle_id.as_python_constant()
+            if isinstance(value, int):
+                return value
+        self._graph_break_current_tx()
+
+    def richcompare_impl(
+        self, tx: "InstructionTranslatorBase", other: VariableTracker, op: str
+    ) -> VariableTracker:
+        from .constant import ConstantVariable
+
+        if isinstance(other, RemovableHandleIdVariable) and op in ("__eq__", "__ne__"):
+            result = self._handle_id_as_constant() == other._handle_id_as_constant()
+            if op == "__ne__":
+                result = not result
+            return ConstantVariable.create(result)
+        self._graph_break(tx)
+
     def is_python_equal(self, other: object) -> bool:
         if isinstance(other, RemovableHandleIdVariable):
-            return self.handle_id.is_python_equal(other.handle_id)
+            return self._handle_id_as_constant() == other._handle_id_as_constant()
         self._graph_break_current_tx()
 
     def nb_add_impl(
@@ -5478,12 +5571,6 @@ class UserDefinedTupleVariable(UserDefinedObjectVariable):
             )
 
         return self._make_tree_map_result(new_items)
-
-    def is_python_equal(self, other: object) -> bool:
-        if self._base_vt is None:
-            raise AssertionError("_base_vt must not be None in is_python_equal")
-        other = other._base_vt if isinstance(other, UserDefinedTupleVariable) else other
-        return self._base_vt.is_python_equal(other)
 
 
 class NamedTupleVariable(UserDefinedTupleVariable):

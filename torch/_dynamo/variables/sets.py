@@ -80,25 +80,26 @@ def set_copy(obj: VariableTracker) -> VariableTracker:
 
 
 def _is_removable_handle_id_key(vt: VariableTracker) -> bool:
-    if isinstance(vt, variables.LazyVariableTracker) and not vt.is_realized():
-        return False
-    # Local import avoids a circular import with user_defined.py.
-    from .user_defined import RemovableHandleIdVariable
+    if isinstance(vt, variables.LazyVariableTracker):
+        if not vt.is_realized():
+            return False
+        vt = vt.realize()
 
-    return isinstance(vt, RemovableHandleIdVariable)
+    return bool(getattr(vt, "_dynamo_is_removable_handle_id", False))
 
 
 def _removable_handle_id_value(vt: VariableTracker) -> int | None:
-    if isinstance(vt, variables.LazyVariableTracker) and not vt.is_realized():
-        return None
-    # Local import avoids a circular import with user_defined.py.
-    from .user_defined import RemovableHandleIdVariable
+    if isinstance(vt, variables.LazyVariableTracker):
+        if not vt.is_realized():
+            return None
+        vt = vt.realize()
 
-    if not isinstance(vt, RemovableHandleIdVariable):
+    if not getattr(vt, "_dynamo_is_removable_handle_id", False):
         return None
-    if not vt.handle_id.is_python_constant():
+    handle_id = getattr(vt, "handle_id", None)
+    if not isinstance(handle_id, VariableTracker) or not handle_id.is_python_constant():
         return None
-    value = vt.handle_id.as_python_constant()
+    value = handle_id.as_python_constant()
     return value if isinstance(value, int) else None
 
 
@@ -145,6 +146,11 @@ class SetVariable(VariableTracker):
 
     # PySet_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/setobject.c#L2436
     _cpython_type = set
+    _nonvar_fields = {
+        "_has_non_removable_handle_id_key_value",
+        "_min_removable_handle_id_key_value",
+        *VariableTracker._nonvar_fields,
+    }
 
     CONTAINS_GUARD = GuardBuilder.SET_CONTAINS
     NOT_CONTAINS_GUARD = GuardBuilder.SET_NOT_CONTAINS
@@ -159,6 +165,10 @@ class SetVariable(VariableTracker):
             kwargs.pop("original_items")
         if "should_reconstruct_all" in kwargs:
             kwargs.pop("should_reconstruct_all")
+        if "_has_non_removable_handle_id_key_value" in kwargs:
+            kwargs.pop("_has_non_removable_handle_id_key_value")
+        if "_min_removable_handle_id_key_value" in kwargs:
+            kwargs.pop("_min_removable_handle_id_key_value")
 
         super().__init__(**kwargs)
 
@@ -167,12 +177,13 @@ class SetVariable(VariableTracker):
         # when the same object appears multiple times.
         hashable_items = []
         min_handle_id: int | None = None
-        raw_items: list[VariableTracker] = []
+        has_non_removable_handle_id_key = False
         for item in items:
             if isinstance(item, HashableTracker):
-                raw_items.append(item.vt)
                 handle_id_value = _removable_handle_id_value(item.vt)
-                if handle_id_value is not None:
+                if handle_id_value is None:
+                    has_non_removable_handle_id_key = True
+                else:
                     min_handle_id = (
                         handle_id_value
                         if min_handle_id is None
@@ -181,9 +192,10 @@ class SetVariable(VariableTracker):
                 # Already a HashableTracker from a set operation
                 hashable_items.append(item)
             else:
-                raw_items.append(item)
                 handle_id_value = _removable_handle_id_value(item)
-                if handle_id_value is not None:
+                if handle_id_value is None:
+                    has_non_removable_handle_id_key = True
+                else:
                     min_handle_id = (
                         handle_id_value
                         if min_handle_id is None
@@ -192,11 +204,10 @@ class SetVariable(VariableTracker):
                 # VariableTracker - realize to install guards, then wrap
                 # pyrefly: ignore [bad-argument-type]
                 hashable_items.append(HashableTracker(item.realize()))
-        if min_handle_id is not None and any(
-            _ordinary_key_may_equal_future_removable_handle_id(item, min_handle_id)
-            for item in raw_items
-        ):
+        if min_handle_id is not None and has_non_removable_handle_id_key:
             _graph_break_removable_handle_id_current_tx()
+        self._min_removable_handle_id_key_value = min_handle_id
+        self._has_non_removable_handle_id_key_value = has_non_removable_handle_id_key
         # Internal representation as dict allows for simple integration with
         # OrderedSet, notably polyfills. Using set moves complexity to OrderedSet
         self.items = dict.fromkeys(hashable_items, SetVariable._default_value())
@@ -258,26 +269,65 @@ class SetVariable(VariableTracker):
         key = HashableTracker(vt)
         return key in self.items
 
+    @staticmethod
+    def _handle_id_key_metadata(
+        items: Iterable[VariableTracker | HashableTracker],
+    ) -> tuple[int | None, bool]:
+        min_handle_id: int | None = None
+        has_non_removable_handle_id_key = False
+        for item in items:
+            vt = item.vt if isinstance(item, HashableTracker) else item
+            handle_id_value = _removable_handle_id_value(vt)
+            if handle_id_value is None:
+                has_non_removable_handle_id_key = True
+            else:
+                min_handle_id = (
+                    handle_id_value
+                    if min_handle_id is None
+                    else min(min_handle_id, handle_id_value)
+                )
+        return min_handle_id, has_non_removable_handle_id_key
+
+    def _refresh_removable_handle_id_key_metadata(self) -> None:
+        (
+            self._min_removable_handle_id_key_value,
+            self._has_non_removable_handle_id_key_value,
+        ) = self._handle_id_key_metadata(self.items)
+
+    def _add_removable_handle_id_key_metadata(self, key: VariableTracker) -> None:
+        handle_id_value = _removable_handle_id_value(key)
+        if handle_id_value is None:
+            self._has_non_removable_handle_id_key_value = True
+        else:
+            min_handle_id = self._min_removable_handle_id_key_value
+            self._min_removable_handle_id_key_value = (
+                handle_id_value
+                if min_handle_id is None
+                else min(min_handle_id, handle_id_value)
+            )
+
+    def _merge_removable_handle_id_key_metadata(self, other: "SetVariable") -> None:
+        other_min_handle_id = other._min_removable_handle_id_key()
+        if other_min_handle_id is not None:
+            min_handle_id = self._min_removable_handle_id_key()
+            self._min_removable_handle_id_key_value = (
+                other_min_handle_id
+                if min_handle_id is None
+                else min(min_handle_id, other_min_handle_id)
+            )
+        if other._has_non_removable_handle_id_key():
+            self._has_non_removable_handle_id_key_value = True
+
     def _has_removable_handle_id_key(self) -> bool:
-        return any(_is_removable_handle_id_key(key.vt) for key in self.items)
+        return self._min_removable_handle_id_key_value is not None
 
     def _min_removable_handle_id_key(self) -> int | None:
-        values = [
-            value
-            for key in self.items
-            if (value := _removable_handle_id_value(key.vt)) is not None
-        ]
-        return min(values) if values else None
+        return self._min_removable_handle_id_key_value
 
     def _has_non_removable_handle_id_key(
         self, min_handle_id: int | None = None
     ) -> bool:
-        if min_handle_id is None:
-            return any(not _is_removable_handle_id_key(key.vt) for key in self.items)
-        return any(
-            _ordinary_key_may_equal_future_removable_handle_id(key.vt, min_handle_id)
-            for key in self.items
-        )
+        return self._has_non_removable_handle_id_key_value
 
     def _check_removable_handle_id_lookup(
         self, tx: "InstructionTranslatorBase", key: VariableTracker
@@ -456,6 +506,7 @@ class SetVariable(VariableTracker):
             tx.output.side_effects.mutation(self)
             self.items.clear()
             self.items.update(temp_set_vt.items)  # type: ignore[attr-defined]
+            self._refresh_removable_handle_id_key_metadata()
             return ConstantVariable.create(None)
         elif name == "add":
             if kwargs or len(args) != 1:
@@ -475,6 +526,7 @@ class SetVariable(VariableTracker):
             self._check_removable_handle_id_lookup(tx, args[0])
             tx.output.side_effects.mutation(self)
             self.items[HashableTracker(args[0])] = SetVariable._default_value()
+            self._add_removable_handle_id_key_metadata(args[0])
             return ConstantVariable.create(None)
         elif name == "pop":
             if kwargs or args:
@@ -492,6 +544,7 @@ class SetVariable(VariableTracker):
             self.should_reconstruct_all = True
             tx.output.side_effects.mutation(self)
             self.items.pop(HashableTracker(result))
+            self._refresh_removable_handle_id_key_metadata()
             return result
         elif name == "isdisjoint":
             if kwargs or len(args) != 1:
@@ -607,6 +660,7 @@ class SetVariable(VariableTracker):
             # a frozenset, so pop that same normalized key.
             key = args[0] if is_hashable(args[0]) else FrozensetVariable(args[0].items)  # type: ignore[missing-attribute]
             self.items.pop(HashableTracker(key))
+            self._refresh_removable_handle_id_key_metadata()
             return ConstantVariable.create(None)
         elif name == "discard":
             if kwargs or len(args) != 1:
@@ -627,6 +681,7 @@ class SetVariable(VariableTracker):
                     else FrozensetVariable(args[0].items)  # type: ignore[missing-attribute]
                 )
                 self.items.pop(HashableTracker(key))
+                self._refresh_removable_handle_id_key_metadata()
             return ConstantVariable.create(None)
         elif name in ("issubset", "issuperset"):
             if len(args) != 1:
@@ -748,6 +803,7 @@ class SetVariable(VariableTracker):
             self.should_reconstruct_all = True
             tx.output.side_effects.mutation(self)
             self.items.clear()
+            self._refresh_removable_handle_id_key_metadata()
             return ConstantVariable.create(None)
         return super().call_method(tx, name, args, kwargs)
 
@@ -783,6 +839,7 @@ class SetVariable(VariableTracker):
         if self_ is other_:
             return result
         result.items.update(other_.items)  # type: ignore[missing-attribute]
+        result._merge_removable_handle_id_key_metadata(other_)  # type: ignore[arg-type]
         return result
 
     def nb_inplace_or_impl(
@@ -795,6 +852,7 @@ class SetVariable(VariableTracker):
         self._check_removable_handle_id_set_op(tx, other)
         tx.output.side_effects.mutation(self)
         self.items.update(other.items)  # type: ignore[missing-attribute]
+        self._merge_removable_handle_id_key_metadata(other)  # type: ignore[arg-type]
         return self
 
     def nb_subtract_impl(
@@ -813,6 +871,7 @@ class SetVariable(VariableTracker):
         result = set_copy(self_)
         for k in list(other_.items.keys()):  # type: ignore[missing-attribute]
             result.items.pop(k, None)  # type: ignore[missing-attribute]
+        result._refresh_removable_handle_id_key_metadata()  # type: ignore[union-attr]
         return result
 
     def nb_inplace_subtract_impl(
@@ -826,6 +885,7 @@ class SetVariable(VariableTracker):
         tx.output.side_effects.mutation(self)
         for k in list(other.items.keys()):  # type: ignore[missing-attribute]
             self.items.pop(k, None)
+        self._refresh_removable_handle_id_key_metadata()
         return self
 
     def nb_and_impl(
@@ -1182,12 +1242,6 @@ class FrozensetVariable(SetVariable):
             is_fake = is_fake or fake
             raw_hashes.append(RawHash(h))
         return hash(frozenset(raw_hashes)), is_fake
-
-    def is_python_equal(self, other: object) -> bool:
-        return (
-            isinstance(other, VariableTracker)
-            and self.as_python_constant() == other.as_python_constant()
-        )
 
 
 class DictKeySetVariable(SetVariable):
