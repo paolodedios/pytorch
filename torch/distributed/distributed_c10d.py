@@ -423,7 +423,9 @@ class BackendConfig:
             # Detect the accelerator on the machine. If no accelerator is
             # available, it returns CPU.
             device_type = (
-                acc.type if (acc := torch.accelerator.current_accelerator()) else "cpu"
+                acc.type
+                if (acc := torch.accelerator.current_accelerator(check_available=True))
+                else "cpu"
             )
             try:
                 backend_str = Backend.default_device_backend_map[device_type]
