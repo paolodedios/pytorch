@@ -307,20 +307,23 @@ class AutogradFunctionTests(torch._dynamo.test_case.TestCase):
             def backward(ctx, grad_out):
                 return grad_out * grad_out
 
-        def fn(x, grad_out):
+        def fn(x, grad_out, create_graph):
             y = CustomFunc.apply(x)
-            (grad,) = torch.autograd.grad(y, x, grad_out, create_graph=True)
+            (grad,) = torch.autograd.grad(y, x, grad_out, create_graph=create_graph)
             return grad
 
         opt_fn = torch.compile(fn, backend="eager")
         x = torch.randn(3, requires_grad=True)
         grad_out = torch.randn(3, requires_grad=True)
 
-        ref = fn(x, grad_out)
-        res = opt_fn(x, grad_out)
+        for create_graph in (False, True):
+            ref = fn(x, grad_out, create_graph)
+            res = opt_fn(x, grad_out, create_graph)
+            self.assertEqual(ref, res)
+            self.assertEqual(res.requires_grad, create_graph)
 
-        self.assertEqual(ref, res)
-        self.assertTrue(res.requires_grad)
+        ref = fn(x, grad_out, True)
+        res = opt_fn(x, grad_out, True)
         self.assertEqual(
             torch.autograd.grad(ref.sum(), grad_out),
             torch.autograd.grad(res.sum(), grad_out),
@@ -1133,14 +1136,11 @@ class GraphModule(torch.nn.Module):
                 return "FooTensor"
 
             def __tensor_flatten__(self):
-                return ("_data",), (
-                    self._config,
-                    self._scale,
-                )
+                return ("_data", "_scale"), (self._config,)
 
             @staticmethod
             def __tensor_unflatten__(tensors, metadatas, outer_size, outer_stride):
-                return FooTensor(tensors["_data"], metadatas[0], metadatas[1])
+                return FooTensor(tensors["_data"], metadatas[0], tensors["_scale"])
 
             @classmethod
             def __torch_dispatch__(cls, func, types, args, kwargs=None):
