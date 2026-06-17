@@ -1107,6 +1107,48 @@ class CPUReproTests(TestCase):
                 )
 
     @requires_vectorization
+    def test_cosh_near_overflow(self):
+        # https://github.com/pytorch/pytorch/issues/183765
+        def fn(x):
+            return torch.cosh(x)
+
+        x = torch.tensor([88.5, 88.85, 89.0, 89.4, -88.85, -89.0]).repeat(3, 6)
+        for dtype in [torch.float32, torch.double]:
+            with torch.no_grad():
+                torch._dynamo.reset()
+                _x = x.to(dtype)
+                self.assertFalse(torch.cosh(_x).isinf().any())
+                self.common(fn, (_x,))
+
+    @requires_vectorization
+    def test_sinh_near_overflow(self):
+        # https://github.com/pytorch/pytorch/issues/183763
+        def fn(x):
+            return torch.sinh(x)
+
+        x = torch.tensor([88.5, 88.85, 89.0, -89.0, -89.2, 0.0]).repeat(3, 6)
+        for dtype in [torch.float32, torch.double]:
+            with torch.no_grad():
+                torch._dynamo.reset()
+                _x = x.to(dtype)
+                self.assertFalse(torch.sinh(_x).isinf().any())
+                self.common(fn, (_x,))
+
+    @requires_vectorization
+    def test_acosh_near_overflow(self):
+        # https://github.com/pytorch/pytorch/issues/183768
+        def fn(x):
+            return torch.acosh(x)
+
+        x = torch.tensor([2.0, 1e10, 5e22, 7e21, 9e25, 1.0]).repeat(3, 6)
+        for dtype in [torch.float32, torch.double]:
+            with torch.no_grad():
+                torch._dynamo.reset()
+                _x = x.to(dtype)
+                self.assertFalse(torch.acosh(_x).isinf().any())
+                self.common(fn, (_x,))
+
+    @requires_vectorization
     def test_asinh_with_corner_inputs(self):
         # https://github.com/pytorch/pytorch/issues/142345
 
@@ -6672,13 +6714,13 @@ class CPUReproTests(TestCase):
         Original PR: https://github.com/pytorch/pytorch/pull/141766
         """
         from torch.testing._internal.common_quantization import (
-            _static_reference_quantized_linear_module,
+            _static_quantized_linear_module,
         )
 
         class Model(torch.nn.Module):
             def __init__(self, example_input):
                 super().__init__()
-                self.dense = _static_reference_quantized_linear_module(
+                self.dense = _static_quantized_linear_module(
                     N=768, K=768, bias=True, example_input=example_input
                 )
                 self.layernorm = torch.nn.LayerNorm(768, eps=1e-12)

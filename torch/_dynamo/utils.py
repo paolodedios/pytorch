@@ -2887,14 +2887,36 @@ common_constant_types: set[type] = {
 """
 
 
+_cached_triton_language_dtype: Any = None
+_safe_constant_types: set[type] = common_constant_types | {slice}
+_safe_constant_types_has_triton_dtype = False
+
+
 def _get_triton_language_dtype() -> Any:
+    global _cached_triton_language_dtype
+    if _cached_triton_language_dtype is not None:
+        return _cached_triton_language_dtype
+
     triton = sys.modules.get("triton")
     if triton is None:
         return None
     triton_language = getattr(triton, "language", None)
     if triton_language is None:
         triton_language = sys.modules.get("triton.language")
-    return getattr(triton_language, "dtype", None)
+    triton_language_dtype = getattr(triton_language, "dtype", None)
+    if triton_language_dtype is not None:
+        _cached_triton_language_dtype = triton_language_dtype
+    return triton_language_dtype
+
+
+def _get_safe_constant_types() -> set[type]:
+    global _safe_constant_types_has_triton_dtype
+    if not _safe_constant_types_has_triton_dtype:
+        triton_language_dtype = _get_triton_language_dtype()
+        if triton_language_dtype is not None:
+            _safe_constant_types.add(triton_language_dtype)
+            _safe_constant_types_has_triton_dtype = True
+    return _safe_constant_types
 
 
 def is_triton_language_dtype(value: object) -> bool:
@@ -2903,11 +2925,6 @@ def is_triton_language_dtype(value: object) -> bool:
 
 
 def is_safe_constant(v: Any) -> bool:
-    extra_constant_types: set[type[Any]] = {slice}
-    triton_language_dtype = _get_triton_language_dtype()
-    if triton_language_dtype is not None:
-        extra_constant_types.add(triton_language_dtype)
-
     if istype(v, (tuple, frozenset)):
         return all(map(is_safe_constant, v))
     return isinstance(
@@ -2919,7 +2936,7 @@ def is_safe_constant(v: Any) -> bool:
             typing._GenericAlias,  # type: ignore[attr-defined]
             types.GenericAlias,
         ),
-    ) or istype(v, common_constant_types | extra_constant_types)
+    ) or istype(v, _get_safe_constant_types())
 
 
 @functools.cache

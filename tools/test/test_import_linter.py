@@ -55,12 +55,38 @@ class TestImportLinter(unittest.TestCase):
         self.assertEqual(messages[0].name, "Disallowed import-time import")
         self.assertEqual(messages[0].line, 2)
 
+    def test_disallows_class_body_optional_import(self) -> None:
+        messages = self.check_contents(
+            """
+            class Foo:
+                import triton
+            """
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].name, "Disallowed import-time import")
+        self.assertEqual(messages[0].line, 3)
+
     def test_disallows_import_time_has_triton_package_call(self) -> None:
         messages = self.check_contents(
             """
             from torch.utils._triton import has_triton_package
 
             HAS_TRITON_PACKAGE = has_triton_package()
+            """
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].name, "Disallowed import-time call")
+        self.assertEqual(messages[0].line, 4)
+
+    def test_disallows_import_time_has_triton_package_default_arg(self) -> None:
+        messages = self.check_contents(
+            """
+            from torch.utils._triton import has_triton_package
+
+            def fn(has_triton=has_triton_package()):
+                pass
             """
         )
 
