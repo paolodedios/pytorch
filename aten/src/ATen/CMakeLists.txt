@@ -918,6 +918,7 @@ if(USE_MPS)
     include(../../../cmake/Metal.cmake)
 
     set(ATen_MPS_SRCS ${ATen_MPS_SRCS} ${mps_cpp} ${mps_mm} ${mps_h} ${native_mps_cpp} ${native_mps_mm} ${native_mps_h} ${native_sparse_mps_mm})
+    set(METALLIB_DEPS)
 
     if(CAN_COMPILE_METAL)
         foreach(SHADER ${native_mps_metal} ${native_mps_sparse_metal})
@@ -927,7 +928,7 @@ if(USE_MPS)
             metal_to_air(${SHADER} ${TGT_BASIC} "-std=metal3.1")
         endforeach()
         air_to_metallib(kernels_basic.metallib ${AIR_BASIC})
-        set(METALLIB_DEPS kernels_basic.metallib)
+        list(APPEND METALLIB_DEPS kernels_basic.metallib)
         if(CAN_COMPILE_METAL_40)
             foreach(SHADER ${native_mps_metal} ${native_mps_sparse_metal})
                 cmake_path(GET SHADER STEM TGT_STEM)
@@ -943,22 +944,15 @@ if(USE_MPS)
                           DEPENDS ${METALLIB_DEPS}
                           OUTPUT metallib_dummy.cpp
                           COMMENT "Updating metallibs timestamp")
-        add_custom_target(metallibs DEPENDS ${METALLIB_DEPS} metallib_dummy.cpp)
+        list(APPEND METALLIB_DEPS metallib_dummy.cpp)
     else()
-        file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native/mps")
-        set(METALLIB_HEADERS)
         foreach(SHADER ${native_mps_metal} ${native_mps_sparse_metal})
-            cmake_path(GET SHADER STEM TGT_STEM)
-            string(CONCAT SHADER_HDR_NAME  "${CMAKE_CURRENT_BINARY_DIR}" /native/mps/ ${TGT_STEM} "_metallib.h")
-            add_custom_command(OUTPUT ${SHADER_HDR_NAME}
-                               COMMAND ${Python_EXECUTABLE} torch/utils/_write_metallib_headers.py ${SHADER} ${SHADER_HDR_NAME}
-                               DEPENDS ${SHADER}
-                               WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-                               VERBATIM)
-            list(APPEND METALLIB_HEADERS ${SHADER_HDR_NAME})
+            metal_to_metallib_h(${SHADER})
+            list(APPEND METALLIB_DEPS ${SHADER_HDR})
         endforeach()
-        add_custom_target(metallibs DEPENDS ${METALLIB_HEADERS})
     endif()
+  
+    add_custom_target(metallibs DEPENDS ${METALLIB_DEPS})
 endif()
 
 if(USE_ROCM)
