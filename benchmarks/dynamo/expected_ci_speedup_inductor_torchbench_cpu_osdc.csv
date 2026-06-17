@@ -3,7 +3,7 @@
 phlippe_densenet,inductor,float32,static,default,1.862,0.98
 basic_gnn_edgecnn,inductor,float32,dynamic,default,1.547441
 llama_v2_7b_16h,inductor,float32,dynamic,default,1.212
-resnet50,inductor,float32,dynamic,default,1.50000000
+resnet50,inductor,float32,dynamic,default,1.822613
 mobilenet_v3_large,inductor,float32,static,cpp,2.63311706
 functorch_maml_omniglot,inductor,float32,dynamic,cpp,1.126799
 yolov3,export-aot-inductor,float32,static,default,1.40687424
