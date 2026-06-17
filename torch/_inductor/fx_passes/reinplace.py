@@ -832,11 +832,9 @@ def _is_control_deps_ordering_only_use(
         and user.target._name == "control_deps"
     ):
         return False
-    additional_deps = user.args[0]
-    pass_through = user.args[2:]
-    return (
-        view in additional_deps and view not in pass_through
-    )  # pyrefly: ignore[not-iterable, unsupported-operation]
+    additional_deps = cast(tuple[torch.fx.Node, ...], user.args[0])
+    pass_through = cast(tuple[torch.fx.Node, ...], user.args[2:])
+    return view in additional_deps and view not in pass_through
 
 
 def reinplace_inplaceable_ops_core(graph: torch.fx.Graph) -> None:
