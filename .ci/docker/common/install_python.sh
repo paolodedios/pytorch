@@ -30,3 +30,6 @@ if [ -n "$DOCS" ]; then
   apt-get -y install expect-dev
   python -mpip install -r /opt/requirements-docs.txt
 fi
+
+# Hand the venv to the runtime user so later (as_jenkins) installs can write to it
+chown -R jenkins:jenkins "${VENV_PATH}"

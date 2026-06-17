@@ -201,8 +201,5 @@ ENV BUILD_ENVIRONMENT=${BUILD_ENVIRONMENT}
 ENV TORCH_NVCC_FLAGS="-Xfatbin -compress-all"
 ENV CUDA_PATH=/usr/local/cuda
 
-# Allow the runtime user to install packages into the venv
-RUN chown -R jenkins:jenkins ${VENV_PATH}
-
 USER jenkins
 CMD ["bash"]
