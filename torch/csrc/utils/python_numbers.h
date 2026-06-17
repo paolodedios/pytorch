@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
-#include <utility>
 // @allow-raw-throw
 
 // largest integer that can be represented consecutively in a double
@@ -66,7 +65,9 @@ inline int32_t THPUtils_unpackInt(PyObject* obj) {
   }
   TORCH_CHECK_VALUE(overflow == 0, "Overflow when unpacking long long");
   TORCH_CHECK_VALUE(
-      std::in_range<int32_t>(value), "Overflow when unpacking long");
+      value <= std::numeric_limits<int32_t>::max() &&
+          value >= std::numeric_limits<int32_t>::min(),
+      "Overflow when unpacking long");
   return (int32_t)value;
 }
 
@@ -86,7 +87,8 @@ inline uint32_t THPUtils_unpackUInt32(PyObject* obj) {
     throw python_error();
   }
   TORCH_CHECK_VALUE(
-      std::in_range<uint32_t>(value), "Overflow when unpacking long long");
+      value <= std::numeric_limits<uint32_t>::max(),
+      "Overflow when unpacking long long");
   return (uint32_t)value;
 }
 
