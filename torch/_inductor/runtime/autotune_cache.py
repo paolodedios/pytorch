@@ -29,10 +29,13 @@ import logging
 import os
 import os.path
 import re
+import threading
+import weakref
 from typing import Any
 from typing_extensions import override
 
 import torch
+from torch._guards import CompileContext
 from torch._inductor.runtime.runtime_utils import cache_dir
 from torch.compiler._cache import (
     CacheArtifact,
@@ -102,10 +105,14 @@ class AutotuneCacheArtifact(CacheArtifact):
     @override
     @staticmethod
     def encode(content: JsonDataTy) -> bytes:
-        assert not isinstance(content, bytes)
+        if isinstance(content, bytes):
+            raise AssertionError("content must not be bytes before encoding")
         serde = RemoteCacheJsonSerde()
         content_bytes = serde.encode(content)
-        assert isinstance(content_bytes, bytes)
+        if not isinstance(content_bytes, bytes):
+            raise AssertionError(
+                f"Expected bytes after encoding, got {type(content_bytes)}"
+            )
         return content_bytes
 
 
@@ -178,7 +185,10 @@ class AutotuneCache:
             AutotuneCacheBundler.sync()
             best_config = cache.get(key)
             if best_config is not None:
-                assert isinstance(best_config, dict)
+                if not isinstance(best_config, dict):
+                    raise AssertionError(
+                        f"Expected dict for best_config, got {type(best_config)}"
+                    )
                 # Imagine we have a new model that reuses some existing kernels that
                 # have already been compiled. If we didn't put() here on cache hit,
                 # then the new model would only bundle newly compiled kernels, not
@@ -235,7 +245,10 @@ class AutotuneCache:
                 "backend_hash is not passed on the inductor_meta, unable to use autotune remote cache"
             )
             return
-        assert isinstance(backend_hash, str)
+        if not isinstance(backend_hash, str):
+            raise AssertionError(
+                f"Expected str for backend_hash, got {type(backend_hash)}"
+            )
 
         from ..codecache import torch_key
 
@@ -281,9 +294,18 @@ class AutotuneCache:
         # Reconstruct the remote cache on the parent class
         self.__dict__.update(state)
         if self.remote_cache is not None:
-            assert isinstance(self.remote_cache, str)
-            assert hasattr(self, "remote_cache_full_key")
-            assert hasattr(self, "is_fbcode")
+            if not isinstance(self.remote_cache, str):
+                raise AssertionError(
+                    f"Expected str for remote_cache after deserialization, got {type(self.remote_cache)}"
+                )
+            if not hasattr(self, "remote_cache_full_key"):
+                raise AssertionError(
+                    "Missing remote_cache_full_key attribute after deserialization"
+                )
+            if not hasattr(self, "is_fbcode"):
+                raise AssertionError(
+                    "Missing is_fbcode attribute after deserialization"
+                )
             cache_key = self.remote_cache
             remote_cache = create_cache(
                 self.remote_cache_full_key,
@@ -390,7 +412,7 @@ class _AutotuneCacheBundlerImpl:
         if not inductor_meta.get("autotune_local_cache", True):
             return False
 
-        # Check if the we're enabled via config
+        # Check if we're enabled via config
         if (
             bundled_autotune_remote_cache := inductor_meta.get(
                 "bundled_autotune_remote_cache"
@@ -451,15 +473,49 @@ class _AutotuneCacheBundlerImpl:
     @staticmethod
     def _get_backend_hash(inductor_meta: _InductorMetaTy) -> str:
         backend_hash = inductor_meta["backend_hash"]
-        assert isinstance(backend_hash, str)
+        if not isinstance(backend_hash, str):
+            raise AssertionError(
+                f"Expected str for backend_hash, got {type(backend_hash)}"
+            )
         return backend_hash
 
 
 class AutotuneCacheBundler:
-    _bundler: _AutotuneCacheBundlerImpl | None = None
+    """Manages one bundled autotune cache write scope for a compile context."""
+
+    _context_bundlers: weakref.WeakKeyDictionary[
+        CompileContext, AutotuneCacheBundler
+    ] = weakref.WeakKeyDictionary()
+    _context_bundlers_lock = threading.Lock()
 
     def __init__(self) -> None:
-        pass
+        self._bundler: _AutotuneCacheBundlerImpl | None = None
+
+    @classmethod
+    def _get_context_bundler(
+        cls,
+        ctx: CompileContext | None = None,
+        *,
+        create: bool,
+    ) -> AutotuneCacheBundler | None:
+        if ctx is None:
+            return None
+
+        with cls._context_bundlers_lock:
+            bundler = cls._context_bundlers.get(ctx)
+            if bundler is None and create:
+                bundler = cls()
+                cls._context_bundlers[ctx] = bundler
+            if bundler is not None and not isinstance(bundler, cls):
+                raise AssertionError(
+                    f"Expected AutotuneCacheBundler or None, got {type(bundler)}"
+                )
+            return bundler
+
+    @classmethod
+    def has_active_compile(cls, compile_context: CompileContext | None) -> bool:
+        context_bundler = cls._get_context_bundler(compile_context, create=False)
+        return context_bundler is not None and context_bundler._bundler is not None
 
     # Call this before we start any autotune computation for an inductor python
     # file. On a cache hit it copies the individual results into the local
@@ -472,17 +528,30 @@ class AutotuneCacheBundler:
         code: str | None = None,
         code_hash: str | None = None,
     ) -> None:
-        assert cls._bundler is None
-
         if code is not None:
-            assert code_hash is None, "Cannot specify both code and code_hash"
+            if code_hash is not None:
+                raise AssertionError("Cannot specify both code and code_hash")
             code_hash = _comment_stripped_hash(code)
-        assert code_hash is not None
+        if code_hash is None:
+            raise AssertionError("Either code or code_hash must be provided")
 
         if not _AutotuneCacheBundlerImpl._should_use_bundled_autotune_remote_cache(
             inductor_meta
         ):
             return
+
+        context_bundler = cls._get_context_bundler(
+            CompileContext.try_get(), create=True
+        )
+        if context_bundler is None:
+            log.debug(
+                "Skipping bundled autotune cache because compile_context is not set"
+            )
+            return
+        if context_bundler._bundler is not None:
+            raise AssertionError(
+                "begin_compile called while a bundler is already active"
+            )
 
         cache = create_cache(
             "bundled-autotune-v1",
@@ -512,7 +581,7 @@ class AutotuneCacheBundler:
         if not bundler._load_cache():
             # We couldn't load from the cache - so save the data so we can store
             # the saved autotunes.
-            cls._bundler = bundler
+            context_bundler._bundler = bundler
 
         # If we get a cache hit don't bother saving any of the individual
         # autotune results.
@@ -522,18 +591,36 @@ class AutotuneCacheBundler:
     # those and put it into the cache.
     @classmethod
     def end_compile(cls) -> None:
-        if bundler := cls._bundler:
-            cls._bundler = None
+        if not (
+            context_bundler := cls._get_context_bundler(
+                CompileContext.try_get(), create=False
+            )
+        ):
+            return
+        if bundler := context_bundler._bundler:
+            context_bundler._bundler = None
             bundler.end_compile()
 
     @classmethod
     def sync(cls) -> None:
-        if bundler := cls._bundler:
+        if not (
+            context_bundler := cls._get_context_bundler(
+                CompileContext.try_get(), create=False
+            )
+        ):
+            return
+        if bundler := context_bundler._bundler:
             bundler.sync()
 
     @classmethod
     def put(cls, filename: str, data: JsonDataTy) -> None:
-        if bundler := cls._bundler:
+        if not (
+            context_bundler := cls._get_context_bundler(
+                CompileContext.try_get(), create=False
+            )
+        ):
+            return
+        if bundler := context_bundler._bundler:
             # The filename comes in as something like
             # "/tmp/tmp{random}/{aa}/{basename}.py" (where aa is
             # basename[1:3]). Strip it down and make sure that it looks like a path
@@ -572,6 +659,30 @@ def _should_use_remote_autotune_cache(inductor_meta: _InductorMetaTy) -> bool:
     )
 
 
+def _reconstruct_triton_config(
+    best_config: dict[str, Any],
+    extra_options: JsonDataTy | None,
+) -> Config:
+    num_warps = best_config.pop("num_warps")
+    num_stages = best_config.pop("num_stages")
+    config_args: dict[str, Any] = {
+        "num_warps": num_warps,
+        "num_stages": num_stages,
+    }
+    if HAS_WARP_SPEC:
+        config_args.update(
+            {
+                "num_consumer_groups": best_config.pop("num_consumer_groups", 0),
+                "num_buffers_warp_spec": best_config.pop("num_buffers_warp_spec", 0),
+            }
+        )
+    # pyrefly: ignore [bad-argument-count, unexpected-keyword]
+    triton_config = Config(best_config, **config_args)
+    # pyrefly: ignore [missing-attribute]
+    triton_config.extra_options = extra_options
+    return triton_config
+
+
 def _load_cached_autotuning(
     best_config: dict[str, JsonDataTy],
     configs_hash: str,
@@ -592,56 +703,36 @@ def _load_cached_autotuning(
     # to restore custom tuned options from the cache.
     extra_options = best_config.pop("extra_options", None)
 
-    if inductor_meta.get("coordinate_descent_tuning") and best_config.pop(
-        "found_by_coordesc", False
-    ):
-        num_warps = best_config.pop("num_warps")
-        num_stages = best_config.pop("num_stages")
+    found_by_coordesc = inductor_meta.get(
+        "coordinate_descent_tuning"
+    ) and best_config.pop("found_by_coordesc", False)
 
-        # Extract common arguments
-        config_args = {
-            "num_warps": num_warps,
-            "num_stages": num_stages,
-        }
+    if not found_by_coordesc:
+        matching_configs = [
+            cfg
+            for cfg in configs
+            # pyrefly: ignore [missing-attribute]
+            if all(val == best_config.get(key) for key, val in cfg.kwargs.items())
+            # pyrefly: ignore [missing-attribute]
+            and cfg.num_warps == best_config.get("num_warps")
+            # pyrefly: ignore [missing-attribute]
+            and cfg.num_stages == best_config.get("num_stages")
+        ]
+        if len(matching_configs) == 1:
+            matched_config = matching_configs[0]
+            # pyrefly: ignore [missing-attribute]
+            matched_config.extra_options = extra_options
+            return matched_config
 
-        if HAS_WARP_SPEC:
-            config_args.update(
-                {
-                    "num_consumer_groups": best_config.pop("num_consumer_groups", 0),
-                    "num_buffers_warp_spec": best_config.pop(
-                        "num_buffers_warp_spec", 0
-                    ),
-                }
-            )
-
-        # Create the triton_config with the appropriate arguments
-        # pyrefly: ignore [bad-argument-count, unexpected-keyword]
-        triton_config = Config(best_config, **config_args)
+    # Reconstruct Config from cached data. This handles both coordesc
+    # configs and dynamically added configs (e.g. _dynamic_scale_rblock)
+    # that aren't in the original config list.
+    best_config.pop("found_by_coordesc", None)
+    triton_config = _reconstruct_triton_config(best_config, extra_options)
+    if found_by_coordesc:
         # pyrefly: ignore [missing-attribute]
         triton_config.found_by_coordesc = True
-        # Restore extra_options (may be None if not used by backend)
-        # pyrefly: ignore [missing-attribute]
-        triton_config.extra_options = extra_options
-        return triton_config
-
-    matching_configs = [
-        cfg
-        for cfg in configs
-        # pyrefly: ignore [missing-attribute]
-        if all(val == best_config.get(key) for key, val in cfg.kwargs.items())
-        # pyrefly: ignore [missing-attribute]
-        and cfg.num_warps == best_config.get("num_warps")
-        # pyrefly: ignore [missing-attribute]
-        and cfg.num_stages == best_config.get("num_stages")
-    ]
-    if len(matching_configs) != 1:
-        return None
-
-    matched_config = matching_configs[0]
-    # Restore extra_options (may be None if not used by backend)
-    # pyrefly: ignore [missing-attribute]
-    matched_config.extra_options = extra_options
-    return matched_config
+    return triton_config
 
 
 def _splitext_nodot(basename: str) -> tuple[str, str]:

@@ -9,11 +9,11 @@
 #include "torch/csrc/Exceptions.h"
 // @allow-raw-throw
 
-namespace torch { namespace autograd { namespace generated {
+namespace torch::autograd::generated {
 
 ${py_return_types}
 
-}}}
+} // namespace torch::autograd::generated
 
 namespace torch::autograd {
 
