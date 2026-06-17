@@ -3433,7 +3433,8 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                         obj_fake = get_fake_value(obj.as_proxy().node, tx)
                         val_fake = get_fake_value(val.as_proxy().node, tx)
                         if (
-                            obj_fake.shape != val_fake.shape
+                            obj_fake.dtype != val_fake.dtype
+                            or obj_fake.shape != val_fake.shape
                             or obj_fake.stride() != val_fake.stride()
                         ):
                             unimplemented(
@@ -3470,12 +3471,7 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
                             from torch._subclasses.fake_impls import fast_detach
 
                             snapshot = fast_detach(ev.fake_mode, ev)
-                            if not hasattr(  # pyrefly: ignore[missing-attribute]
-                                tx.output,
-                                "_shallow_copy_placeholder_snapshots",
-                            ):
-                                tx.output._shallow_copy_placeholder_snapshots = []  # pyrefly: ignore[missing-attribute]
-                            tx.output._shallow_copy_placeholder_snapshots.append(  # pyrefly: ignore[missing-attribute]
+                            tx.output._shallow_copy_placeholder_snapshots.append(
                                 (input_node, snapshot)
                             )
 
