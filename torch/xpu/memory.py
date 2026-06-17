@@ -630,6 +630,9 @@ def list_gpu_processes(device: "Device" = None) -> str:
             current device, given by :func:`~torch.xpu.current_device`,
             if ``None`` (default).
 
+    Returns:
+        str: A human-readable summary of each running process and the given GPU memory usage in MB.
+
     .. note:: On multi-tile devices, processes are reported at the root (physical) device
         level, so the output covers all tiles rather than just the selected tile.
     """

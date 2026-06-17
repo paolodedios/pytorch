@@ -420,6 +420,11 @@ if __name__ == "__main__":
             import pyzes  # noqa: F401
         except ImportError:
             self.skipTest("pyzes is required for this test")
+        if torch.xpu._get_pyzes_version() < (0, 1, 2):
+            with self.assertRaisesRegex(
+                RuntimeError, "requires pyzes version >= 0.1.2"
+            ):
+                torch.xpu.list_gpu_processes()
 
         processes_info = torch.xpu.list_gpu_processes()
 

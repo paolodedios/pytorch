@@ -783,7 +783,10 @@ def _import_pyzes():
 
 
 def _get_pyzes_version() -> tuple[int, ...]:
-    """Return the version of the pyzes package as a tuple of integers (major, minor, patch). Always ensure that the pyzes package is installed before calling this function."""
+    """
+    Return the version of the pyzes package as a tuple of integers (major, minor, patch).
+    Always ensure that the pyzes package is installed before calling this function.
+    """
     from importlib.metadata import version
 
     return tuple(map(int, version("pyzes").split(".")))
