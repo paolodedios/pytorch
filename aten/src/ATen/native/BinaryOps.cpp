@@ -1003,6 +1003,11 @@ Tensor& mul__scalar_sparse_csr(Tensor& self, const Scalar& other) {
 }
 
 static Device correct_out_device(const Tensor& self, const Tensor& other) {
+  // Efficient ZeroTensors on CPU or meta are metadata-only sentinels for these
+  // kernels.  When paired with a real device-carrying operand, let that operand
+  // choose the output device so meta ZeroTensor placeholders used during meta
+  // redispatch do not turn fake/CPU results into meta results.  If both operands
+  // are device-neutral, fall back to the legacy CPU-first rule below.
   const auto self_is_device_neutral_zero =
       self._is_zerotensor() && (self.device().is_cpu() || self.device().is_meta());
   const auto other_is_device_neutral_zero =
