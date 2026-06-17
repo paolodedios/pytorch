@@ -2286,7 +2286,7 @@ def cat(inputs, dim=0):
     fusable_reduction = any(can_fuse_reduction(t, exclude) for t in inputs)
 
     def should_lower_cat_input(x) -> bool:
-        # Unrealized inputs will not be storage and layouts, and we dont want to realize
+        # Unrealized inputs will not be storage and layouts, and we don't want to realize
         # them in case we want to fuse
         if ir.is_storage_and_layout(x):
             storage, _ = ir.as_storage_and_layout(x, freeze=False)
@@ -3758,44 +3758,6 @@ make_fallback(aten._efficientzerotensor)
 make_fallback(aten._sparse_coo_tensor_with_dims_and_tensors)
 make_fallback(aten.to_sparse)
 make_fallback(aten._to_sparse)
-
-
-@register_lowering(aten._to_dense.default, type_promotion_kind=None)
-def _to_dense(x, dtype=None, masked_grad=None):
-    x = ir.ExternKernel.realize_input(x)
-    size = x.get_size()
-    device = x.get_device()
-    if device is None:
-        raise AssertionError("realized _to_dense input must have a device")
-    output_dtype = dtype if dtype is not None else x.get_dtype()
-
-    def unflatten_args(tensor_args, non_tensor_args):
-        return [tensor_args[0], *non_tensor_args], {}
-
-    # cpp_wrapper has no direct AOTI C shim for _to_dense, so route through the
-    # proxy-executor fallback while still describing the single dense output.
-    # MultiOutput lets this single-output op force a contiguous strided output
-    # layout instead of inheriting anything from the opaque MKLDNN input.
-    packed = ir.FallbackKernel(
-        ir.MultiOutputLayout(device=device),
-        aten._to_dense.default,
-        [x],
-        [dtype, masked_grad],
-        unflatten_args,
-    )
-    out = ir.MultiOutput(
-        ir.FixedLayout(
-            device,
-            output_dtype,
-            size,
-            ir.FlexibleLayout.contiguous_strides(size),
-        ),
-        packed,
-        [],
-    )
-    packed.outputs = [out]
-    return TensorBox.create(out)
-
 
 # 6) Pattern-matched
 make_fallback(
@@ -7176,13 +7138,11 @@ def make_reduction(
 ) -> Callable[..., TensorBox]:
     def inner(x, axis=None, keepdims=False, *, dtype=None) -> TensorBox:
         # For argmax/argmin on boolean tensors, cast to int32 first to ensure
-        # correct comparison in Triton. See https://github.com/pytorch/pytorch/issues/174069
-        # Only apply on Triton backend; MPS handles bool comparisons natively.
-        if (
-            reduction_type in ("argmax", "argmin")
-            and x.get_dtype() == torch.bool
-            and is_triton(x)
-        ):
+        # correct comparison. Boolean comparisons can produce incorrect indices
+        # on multiple backends (Triton, CPU, etc.).
+        # See https://github.com/pytorch/pytorch/issues/174069
+        # and https://github.com/pytorch/pytorch/issues/184893
+        if reduction_type in ("argmax", "argmin") and x.get_dtype() == torch.bool:
             x = to_dtype(x, torch.int32)
         kwargs = _make_reduction_inner(
             x,

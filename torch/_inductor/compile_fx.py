@@ -2781,14 +2781,74 @@ class _ConstantDecompTable(Generic[_P, _T]):
 _LSTM_OPS_TO_PRESERVE = (torch.ops.aten.lstm.input,)
 
 
-def _contains_lstm_op(model_: torch.nn.Module) -> bool:
+def _fx_node_tensor_value(node: torch.fx.Node) -> torch.Tensor | None:
+    for key in ("val", "example_value"):
+        val = node.meta.get(key)
+        if isinstance(val, torch.Tensor):
+            return val
+    return None
+
+
+def _lstm_fx_arg_requires_grad(arg: Any) -> bool | None:
+    requires_grad = False
+    has_missing_metadata = False
+
+    def visit(node: torch.fx.Node) -> torch.fx.Node:
+        nonlocal has_missing_metadata, requires_grad
+        val = _fx_node_tensor_value(node)
+        if val is None:
+            has_missing_metadata = True
+        elif val.requires_grad:
+            requires_grad = True
+        return node
+
+    torch.fx.map_arg(arg, visit)
+    if has_missing_metadata:
+        return None
+    return requires_grad
+
+
+def _lstm_fx_node_input_is_cuda(node: torch.fx.Node) -> bool | None:
+    input_arg = node.args[0]
+    if not isinstance(input_arg, torch.fx.Node):
+        return None
+
+    input_val = _fx_node_tensor_value(input_arg)
+    if input_val is None:
+        return None
+    return input_val.device.type == "cuda"
+
+
+def _contains_preservable_lstm_op(model_: torch.nn.Module) -> bool:
     if not isinstance(model_, GraphModule):
         return False
 
-    return any(
-        node.op == "call_function" and node.target in _LSTM_OPS_TO_PRESERVE
-        for node in model_.graph.nodes
-    )
+    grad_enabled = torch.is_grad_enabled()
+    contains_preservable_lstm_op = False
+    for node in model_.graph.nodes:
+        if node.op != "call_function" or node.target not in _LSTM_OPS_TO_PRESERVE:
+            continue
+
+        input_arg, hx_arg, params_arg = node.args[:3]
+        input_is_cuda = _lstm_fx_node_input_is_cuda(node)
+        if input_is_cuda is None:
+            if grad_enabled:
+                return False
+            continue
+        if grad_enabled:
+            # The CIA override is graph-wide. If grad is enabled, only use it
+            # when every LSTM in the graph is known non-differentiable.
+            requires_grad = (
+                _lstm_fx_arg_requires_grad(input_arg),
+                _lstm_fx_arg_requires_grad(hx_arg),
+                _lstm_fx_arg_requires_grad(params_arg),
+            )
+            if any(value is None or value for value in requires_grad):
+                return False
+
+        contains_preservable_lstm_op = contains_preservable_lstm_op or input_is_cuda
+
+    return contains_preservable_lstm_op
 
 
 def _lstm_input_decomp_for_inductor(
@@ -2802,7 +2862,12 @@ def _lstm_input_decomp_for_inductor(
     bidirectional,
     batch_first,
 ):
-    if input.device.type == "cuda":
+    requires_grad = torch.is_grad_enabled() and (
+        input.requires_grad
+        or any(t.requires_grad for t in hx)
+        or any(t.requires_grad for t in params)
+    )
+    if input.device.type == "cuda" and not requires_grad:
         return NotImplemented
 
     return lstm_impl(
@@ -2872,8 +2937,8 @@ def compile_fx(
     NB: This function TAKES OWNERSHIP of the input ``model_`` and can potentially
     mutate it!  Make a copy if you need to preserve the original GraphModule.
     """
-    use_conditional_lstm_decompositions = decompositions is None and _contains_lstm_op(
-        model_
+    use_conditional_lstm_decompositions = (
+        decompositions is None and _contains_preservable_lstm_op(model_)
     )
 
     if decompositions is not None:
@@ -3478,8 +3543,16 @@ def autograd_cache_key(
             "autograd_cache_key is not supported with cpp_wrapper or fx_wrapper"
         )
 
-    decompositions = (
-        decompositions if decompositions is not None else select_decomp_table()
+    use_conditional_lstm_decompositions = (
+        decompositions is None and _contains_preservable_lstm_op(graph)
+    )
+    if use_conditional_lstm_decompositions:
+        decompositions = _select_decomp_table_with_conditional_lstm()
+    elif decompositions is None:
+        decompositions = select_decomp_table()
+    override_lstm_cia_ops = (
+        use_conditional_lstm_decompositions
+        and _uses_conditional_lstm_decompositions(decompositions)
     )
     # compile_fx applies these graph transforms before reaching _compile_fx_main.
     # Neither occurs on the torch.compile/Dynamo path (which always produces
@@ -3526,6 +3599,7 @@ def autograd_cache_key(
         V.set_fake_mode(fake_mode),
         torch._guards.tracing(tracing_context),
         compiled_autograd._disable(),
+        _override_lstm_cia_ops() if override_lstm_cia_ops else contextlib.nullcontext(),
     ):
         return aot_autograd.autograd_cache_key(
             graph,
