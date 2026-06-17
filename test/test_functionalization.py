@@ -15,6 +15,7 @@ from torch._subclasses.functional_tensor import (
     FunctionalTensor,
     FunctionalTensorMode,
 )
+from torch.export.decomp_utils import CustomDecompTable
 from torch.fx.experimental.proxy_tensor import get_proxy_mode, make_fx
 from torch.fx.passes.reinplace import reinplace
 from torch.multiprocessing.reductions import StorageWeakRef
@@ -2190,6 +2191,26 @@ def forward(self, x_1):
         self.assertNotIn(torch.ops.aten.neg.default, ops)
         self.assertIn(torch.ops.aten.sub.Tensor, ops)
         self.assertNotIn(torch.ops.aten.sub_.Tensor, ops)
+
+    def test_python_functionalization_custom_decomposition_table_no_proxy(self):
+        def f(x):
+            return torch.neg(x)
+
+        decomp_seen = []
+
+        def neg_decomp(x):
+            decomp_seen.append(True)
+            out = torch.zeros_like(x)
+            out.sub_(x)
+            return out
+
+        decompositions = CustomDecompTable()
+        decompositions[torch.ops.aten.neg.default] = neg_decomp
+        mode = FunctionalTensorMode(decomposition_table=decompositions)
+        x = torch.randn(4)
+
+        self.assertEqual(dispatch_functionalize(f, mode)(x), f(x))
+        self.assertEqual(decomp_seen, [True])
 
     def test_python_functionalization_skips_inductor_decomposition_table(self):
         from torch._inductor.decomposition import decompositions as inductor_decomps
