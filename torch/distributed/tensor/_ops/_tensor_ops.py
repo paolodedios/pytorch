@@ -1288,20 +1288,15 @@ def eye_out_single_dim_strategy(
 ) -> list[list[Placement | _ShardingPlaceholder]]:
     """Strategy for torch.eye(..., out=...).
 
-    The out kwarg is both an input and output tensor, so the result placement
-    is determined by the out tensor placement.
+    Sharded eye needs global index offsets to place the diagonal correctly.
+    The local out= kernel does not have that context, so only the implicit
+    all-Replicate strategy is valid.
     """
     out_meta = kwargs_schema["out"]
     if not isinstance(out_meta, TensorMeta):
         raise AssertionError(f"Expected TensorMeta for out, got {type(out_meta)}")
 
-    strategies: list[list[Placement | _ShardingPlaceholder]] = [
-        [_ShardingPlaceholder(dim), _ShardingPlaceholder(dim)]
-        for dim in range(len(out_meta.shape))
-    ]
-    for reduce_op in _PARTIAL_PASS_THROUGH_REDUCE_OPS:
-        strategies.append([Partial(reduce_op), Partial(reduce_op)])
-    return strategies
+    return []
 
 
 def _pass_through_partials(

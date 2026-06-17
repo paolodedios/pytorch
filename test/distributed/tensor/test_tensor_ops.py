@@ -307,6 +307,25 @@ class DistTensorOpsTest(DTensorContinuousTestBase):
         self.assertTrue(res.placements == tuple(replica_spec))
         self.assertEqual(replicate_out.to_local(), expected_dt.to_local())
 
+    def test_eye_out_sharded_rejected(self):
+        mesh = self.build_device_mesh()
+        input_size = (8, 8)
+
+        for placement in (Shard(0), Shard(1)):
+            local_size = list(input_size)
+            local_size[placement.dim] //= self.world_size
+            local_tensor = torch.empty(*local_size, device=self.device_type)
+            dtensor = DTensor.from_local(
+                local_tensor,
+                mesh,
+                [placement],
+                shape=torch.Size(input_size),
+                stride=(input_size[1], 1),
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "no valid sharding strategy"):
+                torch.eye(input_size[0], input_size[1], out=dtensor)
+
     def test_empty_like(self):
         device_mesh = self.build_device_mesh()
         shard_spec = [Shard(0)]
