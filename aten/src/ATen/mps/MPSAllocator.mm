@@ -93,11 +93,11 @@ size_t MPSHeapAllocatorImpl::get_allocation_size(size_t size, uint32_t usage) co
     granule = vm_page_size;
   }
   const size_t bucketed = BufferBlock::alignUp(aligned, granule);
-  // Keep the request in its original heap-size class (see createHeapBlock): never
-  // let rounding push it over kMinLargeAlloc or kXLargeHeap/2, which would reserve
-  // a much larger backing heap, nor past Metal's per-buffer limit.
-  auto heap_class = [](size_t s) -> int { return s < kMinLargeAlloc ? 0 : (s < kXLargeHeap / 2 ? 1 : 2); };
-  if (bucketed >= m_max_buffer_size || heap_class(bucketed) != heap_class(aligned)) {
+  // Keep the request in its original heap-size class (see getHeapTier): never let
+  // rounding cross into a larger class, which would reserve a much larger backing
+  // heap, nor push it past Metal's per-buffer limit.
+  if (bucketed >= m_max_buffer_size ||
+      getHeapTier(bucketed, /*has_memory_pressure=*/false) != getHeapTier(aligned, /*has_memory_pressure=*/false)) {
     return aligned;
   }
   return bucketed;
@@ -241,8 +241,9 @@ bool MPSHeapAllocatorImpl::get_free_buffer(AllocParams& params) {
     // bucket, the cached buffers are one bucket smaller and can never be reused
     // again. Release the stranded near-fit, freeing its heap, to reclaim them.
     if (no_larger_buffer && !(pool.usage & UsageFlags::SMALL) && !pool.available_buffers.empty()) {
+      constexpr size_t kNearFitReuseDenom = 8;
       BufferBlock* nearest = *pool.available_buffers.rbegin();
-      if (nearest->size >= params.size() - params.size() / 8 && nearest->retainCount() <= 1) {
+      if (nearest->size >= params.size() - params.size() / kNearFitReuseDenom && nearest->retainCount() <= 1) {
         release_buffer(nearest, /*remove_empty_heap=*/true);
       }
     }
