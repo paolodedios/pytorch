@@ -26,7 +26,9 @@ class HandlerRegistry {
 
     TORCH_CHECK(
         handlers_.find(name) == handlers_.end(),
-        "Handler ", name, " already registered");
+        "Handler ",
+        name,
+        " already registered");
 
     handlers_[name] = std::move(f);
   }

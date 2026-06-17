@@ -42,8 +42,7 @@ struct DynamicCounter::Guard {
             [](auto& backends) { return backends; })} {
     registeredCounters().withLock([&](auto& registeredCounters) {
       if (!registeredCounters.insert(std::string(key)).second) {
-        TORCH_CHECK(
-            false, "Counter ", std::string(key), " already registered");
+        TORCH_CHECK(false, "Counter ", std::string(key), " already registered");
       }
     });
 
