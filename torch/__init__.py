@@ -66,7 +66,9 @@ def _patch_skbuild_editable_rebuild() -> None:
             _orig = _finder.rebuild
             _path = _finder.path
 
-            def _rebuild_once(_orig=_orig, _path=_path) -> None:
+            def _rebuild_once(
+                _orig: _Callable[[], None] = _orig, _path: str = _path
+            ) -> None:
                 _real_stderr = getattr(sys, "__stderr__", None)
                 _saved_stderr = sys.stderr
                 if _real_stderr is not None:
