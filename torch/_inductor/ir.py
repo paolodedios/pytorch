@@ -1091,7 +1091,7 @@ class Loops(IRNode):
             self.inner_fn, *self.inner_fn_args()
         )
 
-    def has_large_inner_fn(self, threshold: int | None = None) -> bool:
+    def get_realize_opcount_threshold(self, threshold: int | None = None) -> int:
         if threshold is None:
             threshold = 0
         realize_opcount_threshold = config.realize_opcount_threshold
@@ -1105,8 +1105,12 @@ class Loops(IRNode):
                 raise AssertionError(
                     f"expected int realize_opcount_threshold, got {type(realize_opcount_threshold)}"
                 )
-        threshold = max(threshold, realize_opcount_threshold)
-        return self.inner_fn_opcount().num_ops > threshold
+        return max(threshold, realize_opcount_threshold)
+
+    def has_large_inner_fn(self, threshold: int | None = None) -> bool:
+        return self.inner_fn_opcount().num_ops > self.get_realize_opcount_threshold(
+            threshold
+        )
 
     def inner_fn_free_symbols(self, unbacked_only: bool = False) -> OrderedSet[Symbol]:
         index = self._index(self.ranges)
@@ -4473,7 +4477,7 @@ class Layout(OutputSpec):
         if len(self.stride) != len(order):
             raise AssertionError("Expected len(self.stride) == len(order)")
 
-        # ignore dimensions of size 1, they dont affect layout
+        # ignore dimensions of size 1, they don't affect layout
         non_1_indices = [
             i
             for i, dim in enumerate(self.size)
@@ -7805,27 +7809,45 @@ class ExternKernel(InputsKernel):
             op_name = "unknown_op"
         return op_name
 
+    def is_inplace_view(self) -> bool:
+        return (
+            isinstance(self.op_overload, torch._ops.OpOverload)
+            and torch.Tag.inplace_view in self.op_overload.tags
+        )
+
+    def should_assert_dtype(self, op_name: str) -> bool:
+        # FakeTensor does not support quantized meta tensors today, so
+        # quantize_per_tensor's fake dtype intentionally remains non-quantized.
+        return (
+            not self.is_inplace_view()
+            and not op_name.startswith("torch.ops.aten.quantize_per_tensor.")
+            and (
+                self.op_overload
+                not in (
+                    torch.ops.aten.quantize_per_tensor.default,
+                    torch.ops.aten.quantize_per_tensor.tensor_qparams,
+                )
+            )
+        )
+
     def codegen_size_asserts(self, wrapper: PythonWrapperCodegen) -> None:
         if not config.size_asserts:
             return
-        # comparing strides for 0 size tensor is tricky. Ignore them for now.
-        if sympy_product(self.get_size()) == 0:
+        if self.is_inplace_view() and not V.graph.cpp_wrapper:
             return
-        size = V.graph.wrapper_code.codegen_shape_tuple(self.get_size())
-        stride = V.graph.wrapper_code.codegen_shape_tuple(self.get_stride())
         op_name = self.get_op_name()
         name = self.get_name()
         if V.graph.cpp_wrapper:
             # inplace_view ops (e.g. set_.source_Tensor) don't declare an
             # output variable; assert on the mutated input instead.
-            if isinstance(self.op_overload, torch._ops.OpOverload):
-                if torch.Tag.inplace_view in self.op_overload.tags:
-                    if not isinstance(self.inputs[0], IRNode):
-                        raise AssertionError(
-                            "Expected isinstance(self.inputs[0], IRNode)"
-                        )
-                    name = self.inputs[0].get_name()
-        wrapper.write_assert_size_stride(name, size, stride, op_name)
+            if self.is_inplace_view():
+                if not isinstance(self.inputs[0], IRNode):
+                    raise AssertionError("Expected isinstance(self.inputs[0], IRNode)")
+                name = self.inputs[0].get_name()
+        size = V.graph.wrapper_code.codegen_shape_tuple(self.get_size())
+        stride = V.graph.wrapper_code.codegen_shape_tuple(self.get_stride())
+        dtype = self.get_dtype() if self.should_assert_dtype(op_name) else None
+        wrapper.write_assert_size_stride(name, size, stride, op_name, dtype)
 
     def codegen_alignment_asserts(self, wrapper: PythonWrapperCodegen) -> None:
         if config.alignment_asserts and not V.graph.cpp_wrapper:
@@ -9907,7 +9929,7 @@ class MemoryCheckKernel(FallbackKernel):
         dead_repr = repr(dead_list)
         if is_final_step:
             wrapper.writeline(
-                "# note: dont currently distinguish between buffers returned and dealloc'd in last step"
+                "# note: don't currently distinguish between buffers returned and dealloc'd in last step"
             )
             call = f"check_memory_step(allocated={alive_repr}, freed={dead_repr}, is_final_step={is_final_step})"
         else:
@@ -10453,6 +10475,14 @@ class StorageBox(MutableBox):
                     "tanh",
                 ]
                 if any(x in opcount.used_ops for x in heavy_ops):
+                    return True
+                realize_threshold = self.data.get_realize_opcount_threshold()
+                if (
+                    isinstance(self.data, Pointwise)
+                    and graph_reuse
+                    and users > config.realize_opusers_threshold
+                    and opcount.num_ops > max(0, realize_threshold - 2)
+                ):
                     return True
             if self.has_large_inner_fn():
                 return True

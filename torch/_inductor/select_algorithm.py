@@ -1527,6 +1527,12 @@ class TritonTemplateKernel(TritonKernel):
                         old_name = lookup_output.symbol()
                         lookup_output.set_name(name)
                         # Update var_list and var_range
+                        old_entry = self.range_tree_nodes.pop(old_name)
+                        if old_entry is not lookup_output:
+                            raise AssertionError(
+                                "range_tree_nodes is inconsistent with range_tree"
+                            )
+                        self.range_tree_nodes[symbol] = lookup_output
                         range_tree.var_list[range_tree.var_list.index(old_name)] = (
                             symbol
                         )
@@ -6005,7 +6011,12 @@ def clear_preprocessing_fns(clear_defaults: bool = False):
 
 def realize_inputs(*args):
     if len(args) == 1:
-        return ir.ExternKernel.require_stride1(ir.ExternKernel.realize_input(args[0]))
+        realized = ir.ExternKernel.realize_input(args[0])
+        # Shape scalars are represented as scalar IR, e.g. ShapeAsConstantBuffer.
+        # Tensor layout constraints such as stride-1 only apply to tensor IR.
+        if not realized.has_tensor_output():
+            return realized
+        return ir.ExternKernel.require_stride1(realized)
     return [realize_inputs(x) for x in args]
 
 

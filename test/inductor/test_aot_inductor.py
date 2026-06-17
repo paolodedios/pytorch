@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 import zipfile
 from unittest import skip
 from unittest.mock import patch
@@ -402,6 +403,30 @@ class AOTInductorTestsTemplate:
                 FileCheck().check(file_extension).run(code)
 
     def test_small_constant(self):
+        class Model(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        example_inputs = (torch.randn(4, 4, device=self.device),)
+        with config.patch({"always_keep_tensor_constants": True}):
+            self.check_model(Model().to(self.device), example_inputs)
+
+    @unittest.skipIf(
+        not HAS_GPU or GPU_TYPE != "cuda" or TEST_WITH_ROCM,
+        "Pinned async constant copy is CUDA-only",
+    )
+    @patch.dict(
+        os.environ,
+        {
+            "AOTI_COPY_USE_PINNED_ASYNC": "1",
+            "AOTI_COPY_STAGE_BUFFER_BYTES": "1024",
+        },
+    )
+    def test_small_constant_pinned_async_copy(self):
         class Model(torch.nn.Module):
             def __init__(self) -> None:
                 super().__init__()
@@ -3356,11 +3381,11 @@ class AOTInductorTestsTemplate:
         Original PR: https://github.com/pytorch/pytorch/pull/139054
         """
         from torch.testing._internal.common_quantization import (
-            _static_reference_quantized_linear_module,
+            _static_quantized_linear_module,
         )
 
         example_inputs = (torch.randn(32, 16),)
-        model = _static_reference_quantized_linear_module(
+        model = _static_quantized_linear_module(
             N=15, K=16, bias=True, example_input=example_inputs[0]
         )
         model = torch.export.export(model, example_inputs, strict=True).module()
@@ -5051,6 +5076,49 @@ class AOTInductorTestsTemplate:
         self.assertTrue(torch.allclose(result2, sample * 2))
 
     @unittest.skipIf(IS_FBCODE, "Not yet runnable in fbcode")
+    @config.patch({"size_asserts": True, "fx_graph_cache": False})
+    @patch.dict(os.environ, {"AOTI_RUNTIME_CHECK_INPUTS": "1"})
+    def test_aoti_custom_op_bad_fake_dtype_fails_fast(self):
+        if self.device == "mps":
+            raise unittest.SkipTest("bfloat16 custom op fallback not covered on MPS")
+
+        namespace = f"aoti_test_bad_fake_dtype_{uuid.uuid4().hex}"
+
+        @torch.library.custom_op(f"{namespace}::bad_meta_mul", mutates_args=())
+        def bad_meta_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+            return a * b
+
+        @bad_meta_mul.register_fake
+        def _(a, b):
+            return torch.empty_like(a, dtype=torch.bfloat16)
+
+        from torch._inductor.lowering import make_fallback
+
+        op = getattr(torch.ops, namespace).bad_meta_mul
+        make_fallback(op.default, warn=False)
+
+        class M(torch.nn.Module):
+            def forward(self, a, b):
+                x = op(a, b)
+                return x + 1
+
+        sample = (
+            torch.randn(16, device=self.device, dtype=torch.float32),
+            torch.randn(16, device=self.device, dtype=torch.float32),
+        )
+        package_path, code = run_and_get_cpp_code(AOTIRunnerUtil.compile, M(), sample)
+        FileCheck().check(
+            "if (_check_aoti_runtime_check_inputs_env()) { assert_size_stride("
+        ).check('"torch.bfloat16"').run(code)
+
+        aoti_module = torch._inductor.aoti_load_package(package_path)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"(?s)expected dtype torch\.bfloat16 but got dtype code .*incorrect fake",
+        ):
+            aoti_module(*sample)
+
+    @unittest.skipIf(IS_FBCODE, "Not yet runnable in fbcode")
     @patch.dict(os.environ, {"AOTI_RUNTIME_CHECK_INPUTS": "1"})
     def test_runtime_check_error_message_preserved(self):
         # Exception thrown from CONVERT_EXCEPTION_TO_ERROR_CODE at the outer
@@ -6637,6 +6705,9 @@ class AOTInductorTestsTemplate:
         self.check_model(sin_triton, not_none_inputs)
 
     @skipIfRocm  # RoCM does not support the config block size in test suite.
+    @skipIfXpu(
+        msg="SYCL work-item index overflow issue when block sizes are used in this test."
+    )
     def test_autotune_int64_user_defined_triton_kernel(self):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest("requires GPU")
@@ -9214,6 +9285,13 @@ copy_tests(
 # Lazy-autotune-mode-specific failures go here. Inherits regular GPU failures.
 GPU_LAZY_AUTOTUNE_TEST_FAILURES = {
     **GPU_TEST_FAILURES,
+    # This regression intentionally creates an incorrect fake dtype and
+    # expects AOTI runtime validation to catch it.  Lazy autotune dual-wrapper
+    # mode runs the generated JIT wrapper during compile, so it fails before
+    # the AOTI package can be loaded.
+    "test_aoti_custom_op_bad_fake_dtype_fails_fast": fail_gpu(
+        ("cuda", "xpu"), is_skip=True
+    ),
 }
 
 

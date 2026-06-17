@@ -2841,7 +2841,7 @@ class GraphModule(torch.nn.Module):
         def fn(x):
             return wrap(gn, x)
 
-        arg_count = ifdynstaticdefault(4, 5)
+        arg_count = ifdynstaticdefault(4, 6)
         self._test_wrap_simple(
             fn, default_args_generator((torch.randn(10, 10),)), arg_count
         )
