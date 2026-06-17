@@ -629,18 +629,26 @@ def list_gpu_processes(device: "Device" = None) -> str:
         device (torch.device, str or int, optional): selected device. Uses the
             current device, given by :func:`~torch.xpu.current_device`,
             if ``None`` (default).
-    """
-    try:
-        import pyzes  # type: ignore[import]
-    except ImportError:
-        raise ImportError(
-            "pyzes is required; install it with 'pip install pyzes'"
-        ) from None
 
+    .. note:: On multi-tile devices, processes are reported at the root (physical) device
+        level, so the output covers all tiles rather than just the selected tile.
+    """
     from ctypes import byref, c_uint32
 
-    from . import _cached_zes_device_infos, _zes_check, _zes_ensure_device_infos
+    from . import (
+        _cached_zes_device_infos,
+        _get_pyzes_version,
+        _import_pyzes,
+        _zes_check,
+        _zes_ensure_device_infos,
+    )
 
+    pyzes = _import_pyzes()
+    version = _get_pyzes_version()
+    if version < (0, 1, 2):
+        raise RuntimeError(
+            f"list_gpu_processes requires pyzes version >= 0.1.2, but found {'.'.join(map(str, version))}"
+        )
     device = _get_device_index(device, optional=True)
     _zes_ensure_device_infos(device)
 
