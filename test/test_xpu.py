@@ -426,7 +426,6 @@ if __name__ == "__main__":
             ):
                 torch.xpu.list_gpu_processes()
 
-        _ = torch.randn(10, device="xpu")
         processes_info = torch.xpu.list_gpu_processes()
 
         self.assertIsInstance(processes_info, str)
