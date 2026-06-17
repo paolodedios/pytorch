@@ -1465,6 +1465,25 @@ class TestMPS(TestCaseMPS):
         helper(input_shape=(10, 3, 5), batch1_shape=(10, 3, 4), batch2_shape=(10, 4, 5))
         helper(input_shape=(1, 77, 77), batch1_shape=(8, 77, 64), batch2_shape=(8, 64, 77))
 
+    def test_baddbmm_beta_zero_ignores_input(self):
+        # When beta == 0 the input/bias must be ignored entirely. nan/inf in it
+        # must not be propagated. Regression test for: #187521.
+        for dtype in [torch.float32, torch.float16, torch.bfloat16]:
+            batch1 = torch.randn(8, 77, 64, dtype=dtype, device="mps")
+            batch2 = torch.randn(8, 64, 77, dtype=dtype, device="mps")
+            for bad in [float("nan"), float("inf"), float("-inf")]:
+                inp = torch.full((8, 77, 77), bad, dtype=dtype, device="mps")
+                out = torch.baddbmm(inp, batch1, batch2, beta=0, alpha=0.125)
+                self.assertFalse(out.isnan().any() or out.isinf().any(),
+                                 f"baddbmm beta=0 propagated {bad} for dtype={dtype}")
+                ref = torch.bmm(batch1, batch2) * 0.125
+                self.assertEqual(out, ref)
+
+                inp_a = torch.full((77, 77), bad, dtype=dtype, device="mps")
+                out_a = torch.addbmm(inp_a, batch1, batch2, beta=0, alpha=0.125)
+                self.assertFalse(out_a.isnan().any() or out_a.isinf().any(),
+                                 f"addbmm beta=0 propagated {bad} for dtype={dtype}")
+
     def test_local_scalar_dense_mps(self):
         x_cpu = torch.randn(1)
         y_mps = x_cpu.to("mps")
@@ -3576,6 +3595,25 @@ class TestMPS(TestCaseMPS):
         helper(torch.add)
         helper(torch.not_equal)
         helper(torch.eq)
+
+    def test_cpu_scalar_storage_offset_binary(self):
+        # https://github.com/pytorch/pytorch/issues/187117
+        # CPU 0-dim view with storage_offset > 0 was ignored; the kernel read
+        # element 0 of the backing storage instead of the correct element.
+        cpu_vals = torch.tensor([0.0, 1.0, 2.0, 3.0, 4.0])
+        mps_tensor = torch.ones(3, device="mps")
+        for i in range(len(cpu_vals)):
+            scalar_cpu = cpu_vals[i]  # 0-dim view, storage_offset = i
+            self.assertEqual((mps_tensor + scalar_cpu).cpu(), torch.full((3,), 1.0 + i))
+            self.assertEqual((scalar_cpu + mps_tensor).cpu(), torch.full((3,), 1.0 + i))
+            self.assertEqual((mps_tensor * scalar_cpu).cpu(), torch.full((3,), float(i)))
+
+        # also verify with integer dtype
+        cpu_ints = torch.tensor([10, 20, 30, 40], dtype=torch.int32)
+        mps_ints = torch.ones(3, dtype=torch.int32, device="mps")
+        for i in range(len(cpu_ints)):
+            scalar_int = cpu_ints[i]
+            self.assertEqual((mps_ints + scalar_int).cpu(), torch.full((3,), 1 + (i + 1) * 10, dtype=torch.int32))
 
     def test_slice_contiguous_view(self):
         # https://github.com/pytorch/pytorch/issues/77750
