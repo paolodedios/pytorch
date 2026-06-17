@@ -266,7 +266,7 @@ class DistMathOpsTest(DTensorTestBase):
                     y.backward()
                 with comm_mode:
                     dist_y = loss_fn(dist_x, dist_target, reduction=reduction)
-                    if shard_dim == channel_dim:
+                    if shard_dim == channel_dim or reduction == "mean":
                         self.assertEqual(comm_mode.get_total_counts(), 1)
                         self.assertEqual(
                             comm_mode.get_comm_counts()[funcol.all_gather_into_tensor],
@@ -300,6 +300,45 @@ class DistMathOpsTest(DTensorTestBase):
                         )
                         self.assertEqual(dist_x.grad.full_tensor(), x.grad)
                     x.grad.zero_()
+
+    @with_comms
+    @skip_unless_torch_gpu
+    def test_nll_loss_weighted_mean_with_even_target_counts(self):
+        if self.world_size < 2:
+            self.skipTest("requires at least 2 ranks")
+
+        device_mesh = self.build_device_mesh()
+        samples_per_rank = 2
+        batch = self.world_size * samples_per_rank
+        x = torch.zeros(batch, 2, device=self.device_type)
+        target = torch.empty(batch, device=self.device_type, dtype=torch.long)
+
+        for rank in range(self.world_size):
+            start = rank * samples_per_rank
+            cls = rank % 2
+            loss = 2.0 if cls == 0 else 4.0
+            target[start : start + samples_per_rank] = cls
+            x[start : start + samples_per_rank, cls] = -loss
+
+        weight = torch.tensor([1.0, 10.0], device=self.device_type)
+        dist_x = distribute_tensor(x, device_mesh, [Shard(0)])
+        dist_target = distribute_tensor(target, device_mesh, [Replicate()])
+        dist_weight = distribute_tensor(weight, device_mesh, [Replicate()])
+
+        y = torch.nn.functional.nll_loss(
+            x,
+            target,
+            weight=weight,
+            reduction="mean",
+        )
+        dist_y = torch.nn.functional.nll_loss(
+            dist_x,
+            dist_target,
+            weight=dist_weight,
+            reduction="mean",
+        )
+        self.assertTrue(dist_y.placements[0].is_replicate())
+        self.assertEqual(dist_y.to_local(), y)
 
     @with_comms
     def test_shard_math_ops(self):
