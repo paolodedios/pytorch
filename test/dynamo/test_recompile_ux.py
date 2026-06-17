@@ -940,6 +940,7 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
 
                 self.assertEqual(opt_f(x), x - 1)
                 self.assertEqual(cnt.frame_count, 1)
+                self.assertTrue(torch._dynamo.eval_frame._is_code_skipped(f.__code__))
 
     def test_compile_skipfile_function_attempts_compile(self):
         import torch.nn.modules.linear as linear_mod
@@ -988,6 +989,40 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
                 self.assertEqual(opt_mod(x), x - 1)
                 self.assertEqual(cnt.frame_count, 1)
 
+    def test_compile_skip_code_skipfile_module_attempts_compile(self):
+        import torch.nn.modules.linear as linear_mod
+
+        class Mod(torch.nn.Module):
+            def forward(self, x):
+                if torch.compiler.is_compiling():
+                    return x - 1
+                return x + 1
+
+        Mod.forward = types.FunctionType(
+            Mod.forward.__code__.replace(co_filename=linear_mod.__file__),
+            globals(),
+            "forward",
+        )
+
+        for isolate_recompiles in (False, True):
+            with self.subTest(isolate_recompiles=isolate_recompiles):
+                torch._dynamo.reset()
+
+                mod = Mod()
+                cnt = torch._dynamo.testing.CompileCounter()
+                torch._dynamo.eval_frame.skip_code(mod.forward.__code__)
+
+                x = torch.ones(3)
+                opt_mod = torch.compile(
+                    mod, backend=cnt, isolate_recompiles=isolate_recompiles
+                )
+
+                self.assertEqual(opt_mod(x), x - 1)
+                self.assertEqual(cnt.frame_count, 1)
+                self.assertTrue(
+                    torch._dynamo.eval_frame._is_code_skipped(mod.forward.__code__)
+                )
+
     def test_module_compile_skip_code_attempts_compile(self):
         for isolate_recompiles in (False, True):
             with self.subTest(isolate_recompiles=isolate_recompiles):
@@ -1008,6 +1043,38 @@ class IsolateRecompilesTests(torch._dynamo.test_case.TestCase):
 
                 self.assertEqual(mod(x), x - 1)
                 self.assertEqual(cnt.frame_count, 1)
+
+    def test_module_compile_skip_code_skipfile_attempts_compile(self):
+        import torch.nn.modules.linear as linear_mod
+
+        class Mod(torch.nn.Module):
+            def forward(self, x):
+                if torch.compiler.is_compiling():
+                    return x - 1
+                return x + 1
+
+        Mod.forward = types.FunctionType(
+            Mod.forward.__code__.replace(co_filename=linear_mod.__file__),
+            globals(),
+            "forward",
+        )
+
+        for isolate_recompiles in (False, True):
+            with self.subTest(isolate_recompiles=isolate_recompiles):
+                torch._dynamo.reset()
+
+                mod = Mod()
+                cnt = torch._dynamo.testing.CompileCounter()
+                torch._dynamo.eval_frame.skip_code(mod.forward.__code__)
+
+                x = torch.ones(3)
+                mod.compile(backend=cnt, isolate_recompiles=isolate_recompiles)
+
+                self.assertEqual(mod(x), x - 1)
+                self.assertEqual(cnt.frame_count, 1)
+                self.assertTrue(
+                    torch._dynamo.eval_frame._is_code_skipped(mod.forward.__code__)
+                )
 
     def test_module_compile_skipfile_attempts_compile(self):
         import torch.nn.modules.linear as linear_mod

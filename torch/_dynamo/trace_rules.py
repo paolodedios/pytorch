@@ -33,6 +33,7 @@ import os
 import random
 import re
 import sys
+import threading
 import types
 import typing
 import unittest
@@ -421,6 +422,9 @@ manual_torch_name_rule_map: dict[
     f"torch/testing/_internal/common_distributed.py#{TORCH_DYNAMO_RESUME_IN_PREFIX}": UserFunctionVariable,
     "torch.utils._pytree._get_node_type": PyTreeGetNodeTypeFunctionVariable,
     "torch.utils._pytree.tree_is_leaf": PyTreeTreeIsLeafFunctionVariable,
+    # torch.utils._python_dispatch is in MOD_INLINELIST; override so the handler
+    # in variables/torch.py fires instead of graph-breaking on _len_torch_dispatch_stack.
+    "torch.utils._python_dispatch._get_current_dispatch_mode_stack": TorchInGraphFunctionVariable,
     "torch._utils_internal.justknobs_check": UserFunctionVariable,
     "inspect.signature": InspectSignatureVariable,
 }
@@ -3557,6 +3561,20 @@ MOD_INLINELIST = set(MOD_INLINELIST)
 if torch.distributed.is_available():
     MOD_INLINELIST.add("torch.distributed")
 
+# Modules in MOD_INLINELIST where nested graph breaks should be suppressed.
+# These are large internal modules that are inlined for correctness but whose
+# internal operations are not worth compiling as separate NGB subgraphs.
+NGB_SUPPRESS_INLINELIST: set[str] = set()
+
+if torch.distributed.is_available():
+    NGB_SUPPRESS_INLINELIST.add("torch.distributed")
+
+if not NGB_SUPPRESS_INLINELIST <= MOD_INLINELIST:
+    raise AssertionError(
+        "NGB_SUPPRESS_INLINELIST entries must also be in MOD_INLINELIST: "
+        f"{NGB_SUPPRESS_INLINELIST - MOD_INLINELIST}"
+    )
+
 
 # By default, all functions under these modules are skipped.
 # All the other knobs
@@ -3884,6 +3902,23 @@ we don't want to inline the lower level function call (e.g, f3) by default.
 """
 
 _force_inline_flag = False
+_skipfile_code_override = threading.local()
+
+
+def _get_skipfile_code_override() -> types.CodeType | None:
+    return getattr(_skipfile_code_override, "code", None)
+
+
+@contextlib.contextmanager
+def _skipfile_code_override_context(
+    code: types.CodeType | None,
+) -> Iterator[None]:
+    prior_code = _get_skipfile_code_override()
+    _skipfile_code_override.code = code
+    try:
+        yield
+    finally:
+        _skipfile_code_override.code = prior_code
 
 
 # pyrefly: ignore [deprecated]
@@ -3988,6 +4023,12 @@ def check_verbose(
         raise AssertionError(
             f"lookup_inner returned None for {fi.name} in {fi.filename}"
         )
+    if (
+        rule is SkipFunctionVariable
+        and fi.code is not None
+        and fi.code is _get_skipfile_code_override()
+    ):
+        return SkipResult(False, "explicit torch.compile skipfile target")
     if issubclass(
         rule,
         (
@@ -4035,6 +4076,21 @@ _recompile_re()
 
 def is_torch_inline_allowed(filename: str) -> bool:
     return any(filename.startswith(d) for d in get_mod_inlinelist())
+
+
+@functools.cache
+def get_ngb_suppress_inlinelist() -> set[str]:
+    torch_dir = _module_dir(torch)
+    if torch_dir is None:
+        return set()
+    return {
+        _as_posix_path(torch_dir + m[len("torch.") :].replace(".", "/"))
+        for m in NGB_SUPPRESS_INLINELIST
+    }
+
+
+def is_ngb_suppressed_inline(filename: str) -> bool:
+    return any(filename.startswith(d) for d in get_ngb_suppress_inlinelist())
 
 
 @functools.cache
@@ -4228,4 +4284,5 @@ def clear_lru_cache() -> None:
     torch._dynamo.trace_rules.get_tensor_method.cache_clear()
     torch._dynamo.trace_rules.get_legacy_mod_inlinelist.cache_clear()
     torch._dynamo.trace_rules.get_mod_inlinelist.cache_clear()
+    torch._dynamo.trace_rules.get_ngb_suppress_inlinelist.cache_clear()
     torch._dynamo.trace_rules.dynamo_dir.cache_clear()

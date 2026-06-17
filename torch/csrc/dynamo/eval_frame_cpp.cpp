@@ -526,12 +526,15 @@ PyObject* dynamo__custom_eval_frame(
   int64_t isolate_recompiles_id = get_current_isolate_recompiles_id();
   FrameExecStrategy strategy =
       extra_state_get_region_exec_strategy(extra, isolate_recompiles_id);
+  FrameExecStrategy original_strategy = strategy;
 
   recursive_callback =
       _callback_from_action(recursive_callback, strategy.recursive_action);
 
+  bool skip_overridden = false;
   if (strategy.cur_action == FrameAction::SKIP &&
       should_override_skip(F_CODE(frame))) {
+    skip_overridden = true;
     strategy.cur_action = FrameAction::DEFAULT;
   }
 
@@ -676,15 +679,19 @@ PyObject* dynamo__custom_eval_frame(
 
   // possibly apply frame strategy to future frames with same code object
   if (apply_to_code) {
-    if (new_strategy.cur_action != FrameAction::DEFAULT) {
-      DEBUG_TRACE("create action: %d\n", new_strategy.cur_action);
+    // An explicit torch.compile target may temporarily bypass a deliberate
+    // SKIP, but the callback's DEFAULT result must not clear that marker.
+    FrameExecStrategy strategy_to_apply =
+        skip_overridden ? original_strategy : new_strategy;
+    if (strategy_to_apply.cur_action != FrameAction::DEFAULT) {
+      DEBUG_TRACE("create action: %d\n", strategy_to_apply.cur_action);
     }
-    if (new_strategy.recursive_action != FrameAction::DEFAULT) {
+    if (strategy_to_apply.recursive_action != FrameAction::DEFAULT) {
       DEBUG_TRACE(
-          "create recursive action: %d\n", new_strategy.recursive_action);
+          "create recursive action: %d\n", strategy_to_apply.recursive_action);
     }
     extra_state_set_region_exec_strategy(
-        extra, isolate_recompiles_id, new_strategy);
+        extra, isolate_recompiles_id, strategy_to_apply);
   }
 
   if (!Py_IsNone(guarded_code)) {

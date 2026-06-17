@@ -427,9 +427,9 @@ def _temporarily_unskip_code(
 
     with contextlib.ExitStack() as stack:
         if ignore_trace_rules:
-            # trace_rules skipfile checks do not have a per-code override, so
-            # explicit skipfile targets need this coarse trace-scope override.
-            stack.enter_context(config.patch(dont_skip_tracing=True))
+            # Skipfile decisions live in trace_rules, so override exactly the
+            # explicit target code instead of recursively unskipping the trace.
+            stack.enter_context(trace_rules._skipfile_code_override_context(code))
 
         if _is_code_skipped(code):
             # Prefer the C++ thread-local override so that we do not mutate code
@@ -583,7 +583,9 @@ class OptimizedModule(torch.nn.Module):
                 self.dynamo_ctx._skip_code_override_code = (
                     self._orig_mod.forward.__code__
                 )
-                self.dynamo_ctx._skip_code_override_ignore_trace_rules = False
+                self.dynamo_ctx._skip_code_override_ignore_trace_rules = (
+                    forward_is_skipfile
+                )
                 try:
                     self.forward = self.dynamo_ctx(self._orig_mod.__call__)
                 finally:
@@ -1150,8 +1152,16 @@ class _TorchDynamoContext:
         fn_code = getattr(fn, "__code__", None)
         unskip_code = self._skip_code_override_code
         ignore_trace_rules = self._skip_code_override_ignore_trace_rules
+        is_module_wrapper = getattr(fn, "__name__", "") in [
+            "_call_impl",
+            "_wrapped_call_impl",
+            "_lazy_forward",
+        ]
         is_skipfile_target = (
-            fn_code is not None and inspect.isfunction(fn) and trace_rules.check(fn)
+            fn_code is not None
+            and inspect.isfunction(fn)
+            and not is_module_wrapper
+            and trace_rules.check(fn)
         )
         if unskip_code is None:
             unskip_code, ignore_trace_rules = _skipped_forward_code_for_call_impl(fn)
@@ -1170,14 +1180,11 @@ class _TorchDynamoContext:
                 # but can be traced directly; wrapping collapses them onto
                 # wrap_inline's shared `inner` code (#124269).
                 (filename is None and not inspect.isfunction(fn))
-                or trace_rules.check(fn)
+                or (trace_rules.check(fn) and not is_skipfile_target)
                 or top_level_in_graph
                 or has_polyfill
             )
-            and (
-                getattr(fn, "__name__", "")
-                not in ["_call_impl", "_wrapped_call_impl", "_lazy_forward"]
-            )
+            and (not is_module_wrapper)
             and filename not in DONT_WRAP_FILES
         ):
             # call to a builtin without a frame for us to capture
@@ -2677,7 +2684,7 @@ def export(
                     "Failed to produce a graph during tracing as no tensor operations were found and same_signature is False."
                 )
             # If the module does not contain any tensor computation, we would create a graph with inputs and outputs.
-            # To be consistent with the graph traced by dynano, `graph` will have only tensor inputs as placeholders
+            # To be consistent with the graph traced by dynamo, `graph` will have only tensor inputs as placeholders
             # and tensor outputs as output nodes. non-tensor inputs and outputs will be added when rewriting signature.
             # We will also construct the `example_inputs`, `graph_captured_input`, and `graph_captured_result` corresponding
             # to `graph`.
