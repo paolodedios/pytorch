@@ -328,7 +328,7 @@ def launch_build_group_ptrs_from_bases(
     gemm_executor = disk_cache_get(_gemm_fn_cache, __file__, _KERNEL_CONFIG_KEY, gemm_cache_key, dev_idx)
 
     # GroupedGemmKernel initializes TMA descriptors from these tensors before
-    # updating them to each group at runtime.  Use a real single-group shape
+    # updating them to each group at runtime. Use a real single-group shape
     # instead of the full packed A/C tensors to avoid descriptor init/update
     # shape mismatches in the CuTeDSL grouped GEMM.
     initial_m_end = initial_m_start + initial_m
@@ -485,7 +485,10 @@ def {{kernel_name}}_precompile(precompile_shapes, precompile_strides, precompile
         1,
     ), torch.int64)
 
-    # Compute per-group problem sizes analytically from offsets
+    # Compute per-group problem sizes analytically from offsets. Precompile
+    # only knows packed shapes, so this even split warms the GEMM cache only
+    # when runtime offsets produce the same initial_m; otherwise runtime
+    # compiles the exact descriptor shape lazily.
     offs_data = [sumM * (i + 1) // G for i in range(G)]
     problem_sizes = []
     for i in range(G):
