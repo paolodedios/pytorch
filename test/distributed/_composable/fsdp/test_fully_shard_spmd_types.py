@@ -104,7 +104,16 @@ class TestFullyShardSpmdTypes(TestCase):
         cls.cp_axis = spmd.MeshAxis.of(cls.dense_type_mesh.get_group("cp"))
         cls.tp_axis = spmd.MeshAxis.of(cls.dense_type_mesh.get_group("tp"))
         cls.dp_replicate_axis = spmd.MeshAxis.of(
-            cls.sparse_mesh.get_group("dp_replicate")
+            cls.dense_storage_mesh.get_group("dp_replicate")
+        )
+        cls.dense_storage_dp_shard_axis = spmd.MeshAxis.of(
+            cls.dense_storage_mesh.get_group("dp_shard")
+        )
+        cls.dense_storage_cp_axis = spmd.MeshAxis.of(
+            cls.dense_storage_mesh.get_group("cp")
+        )
+        cls.dense_storage_tp_axis = spmd.MeshAxis.of(
+            cls.dense_storage_mesh.get_group("tp")
         )
         cls.efsdp_axis = spmd.MeshAxis.of(cls.sparse_mesh.get_group("efsdp"))
         cls.ep_axis = spmd.MeshAxis.of(cls.sparse_mesh.get_group("ep"))
@@ -307,10 +316,10 @@ class TestFullyShardSpmdTypes(TestCase):
             """Cannot convert plain Varying to a DTensor placement. Use S(dim) to specify which tensor dimension is sharded.""",
         )
 
-    def test_partial_param_annotations_infer_fsdp_axes_at_compute(self):
-        """Use init-time current_mesh to restore omitted FSDP axes as R.
+    def test_partial_param_annotations_infer_fsdp_axes_at_init(self):
+        """Use init-time current_mesh to infer omitted FSDP axes as R.
 
-        Params annotate only TP; FSDP fills DP/CP axes for module compute.
+        Params annotate only TP; FSDP fills DP/CP axes during fully_shard().
         """
         model = SpmdLinear(self.dense_type_mesh, seq_parallel=False)
 
@@ -350,22 +359,32 @@ class TestFullyShardSpmdTypes(TestCase):
 
     def test_mixed_dense_sparse_params_use_per_param_restore_meshes(self):
         """
-        Test inference of missing "DP" axes for both dense & sparse mesh params.
+        Test restoring per-param dense and sparse type meshes.
 
         This models TorchTitan's FSDP setup, where one fully_shard call handles
         both dense-mesh & EP-sharded params, separated by shard_placement_fn.
 
-        dense storage mesh: [dp_replicate, dp_shard, cp, tp]
         dense typecheck mesh: [dp, cp, tp]
+        dense storage mesh: [dp_replicate, dp_shard, cp, tp]
         sparse mesh: [dp_replicate, efsdp, ep]
 
-        With dense params annotated {tp: S(0)},
-             sparse params annotated {ep: S(0)},
-        FSDP is able to infer the remaining axes as `spmd.R`.
+        With dense params annotated {dp: R, cp: R, tp: S(0)},
+             sparse params annotated {dp_replicate: R, efsdp: R, ep: S(0)},
+        FSDP restores each param on its original type mesh.
         """
         model = DenseSparseParams()
-        spmd.assert_type(model.dense_weight, {self.tp_axis: spmd.S(0)})
-        spmd.assert_type(model.sparse_weight, {self.ep_axis: spmd.S(0)})
+        spmd.assert_type(
+            model.dense_weight,
+            {self.dp_axis: spmd.R, self.cp_axis: spmd.R, self.tp_axis: spmd.S(0)},
+        )
+        spmd.assert_type(
+            model.sparse_weight,
+            {
+                self.dp_replicate_axis: spmd.R,
+                self.efsdp_axis: spmd.R,
+                self.ep_axis: spmd.S(0),
+            },
+        )
 
         dense_mesh_info = _get_mesh_info(
             self.dense_storage_mesh,
@@ -386,7 +405,6 @@ class TestFullyShardSpmdTypes(TestCase):
             return ShardPlacementResult(
                 placement=Shard(0),
                 mesh_info=dense_mesh_info,
-                spmd_compute_mesh=self.dense_type_mesh,  # specify [dp, cp, tp] here
             )
 
         fully_shard(
@@ -482,10 +500,10 @@ class TestFullyShardSpmdTypes(TestCase):
             str(cm.exception),
         )
 
-    def test_partial_param_annotations_require_init_compute_mesh(self):
-        """Partial annotations need a compute mesh to infer omitted storage axes."""
-        model = SpmdLinear(self.dense_type_mesh, seq_parallel=False)
-        spmd.assert_type(model.unsharded_weight, {self.tp_axis: spmd.I})
+    def test_partial_non_storage_annotations_require_current_mesh(self):
+        """Partial non-storage annotations need a shared current mesh."""
+        model = nn.Linear(16, 16, bias=False)
+        spmd.assert_type(model.weight, {self.ep_axis: spmd.S(0)})
 
         with self.assertRaises(ValueError) as cm:
             fully_shard(
@@ -498,13 +516,13 @@ class TestFullyShardSpmdTypes(TestCase):
             )
         self.assertExpectedInline(
             str(cm.exception),
-            "Parameter 'unsharded_weight' has partial spmd_types annotations "
-            "that do not span the full FSDP storage mesh. Wrap fully_shard() "
-            "in spmd.set_current_mesh() if all parameters in the FSDP unit "
-            "share a typechecking mesh, set ShardPlacementResult.spmd_compute_mesh "
-            "when the typechecking and storage meshes differ, or set "
-            "ShardPlacementResult.mesh_info.spmd_mesh when they match. "
-            "Annotated axes: (mesh_tp,). Storage mesh axes: (mesh_dp_replicate, "
+            "Parameter 'weight' has partial spmd_types annotations that cannot "
+            "be restored from its FSDP storage mesh. Fully annotate the "
+            "parameter on its storage mesh, or wrap fully_shard() in "
+            "spmd.set_current_mesh(...) when all parameters in the FSDP unit "
+            "share one typechecking mesh. Mixed per-parameter typechecking "
+            "meshes with partial annotations are not supported. Annotated "
+            "axes: (mesh_ep,). Storage mesh axes: (mesh_dp_replicate, "
             "mesh_dp_shard, mesh_cp, mesh_tp).",
         )
 

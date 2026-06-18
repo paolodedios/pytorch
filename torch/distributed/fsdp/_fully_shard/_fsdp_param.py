@@ -41,7 +41,6 @@ from ._fsdp_common import (
     HSDPMeshInfo,
     resolve_shard_placement,
     ShardPlacementFnResult,
-    ShardPlacementResult,
 )
 
 
@@ -297,7 +296,7 @@ class FSDPParam:
         if self.is_spmd_types:
             self._spmd_partition_spec = get_partition_spec(param)
             self._spmd_init_local_type = spmd.get_local_type(param)
-            self._resolve_spmd_restore_mesh(shard_placement_result)
+            self._resolve_spmd_restore_mesh()
             param = self._spmd_types_to_dtensor(
                 param,
                 self.mesh_info,
@@ -424,32 +423,14 @@ class FSDPParam:
         )
         return dtensor_param
 
-    def _resolve_spmd_restore_mesh(
-        self,
-        shard_placement_result: ShardPlacementResult | None,
-    ) -> None:
-        """Resolve the compute mesh used to restore spmd_types metadata.
+    def _resolve_spmd_restore_mesh(self) -> None:
+        """Resolve the typechecking mesh used to restore spmd_types metadata.
 
         The restore mesh is the spmd_types typechecking mesh used during
-        module compute. If the parameter annotation already spans the full FSDP
-        storage mesh, it is self-contained and can be used directly. Otherwise,
-        FSDP needs an external compute/typechecking mesh to fill omitted axes as
-        ``spmd.R`` when restoring annotations on the unsharded parameter.
-
-        Precedence:
-        1. Use the parameter's annotated axes when they span the same ranks as
-           the FSDP storage mesh.
-        2. Use ``ShardPlacementResult.spmd_compute_mesh`` when per-parameter
-           sharding explicitly says that module compute/typechecking uses a
-           different mesh from FSDP storage.
-        3. For per-parameter sharding without an explicit compute mesh, use
-           the named FSDP SPMD storage mesh from ``ShardPlacementResult``.
-           This covers mixed parameter groups where typechecking and storage
-           use the same mesh.
-        4. Otherwise, use the ambient init-time ``spmd.current_mesh()``. This
-           covers the single typechecking mesh case for the whole FSDP unit.
-        5. Otherwise, error because FSDP cannot fill omitted DP annotations
-           without knowing the compute/typechecking mesh.
+        module compute. Storage-native annotations can be restored directly on
+        the FSDP storage mesh. Otherwise, FSDP uses the ambient init-time
+        ``spmd.current_mesh()`` as the shared typechecking mesh for the FSDP
+        unit.
         """
         spmd_mesh = self.mesh_info.spmd_mesh
         if spmd_mesh is None or spmd_mesh.mesh_dim_names is None:
@@ -467,43 +448,20 @@ class FSDPParam:
         annotated_axes = tuple(local_type.keys())
 
         if _spans_same_mesh(annotated_axes, storage_mesh_axes):
-            # 1. Read the restore mesh from the parameter's annotated axes.
+            # Storage-axis compatibility is checked when translating to DTensor placements.
             self._spmd_restore_mesh = annotated_axes
             return
-        elif (
-            shard_placement_result is not None
-            and (compute_mesh := shard_placement_result.spmd_compute_mesh) is not None
-        ):
-            # 2. Read the restore mesh from ShardPlacementResult.spmd_compute_mesh.
-            if compute_mesh.mesh_dim_names is None:
-                raise AssertionError("spmd_compute_mesh.mesh_dim_names cannot be None")
-            restore_mesh = tuple(
-                spmd.MeshAxis.of(compute_mesh.get_group(name))
-                for name in compute_mesh.mesh_dim_names
-            )
-        elif (
-            shard_placement_result is not None
-            and (storage_mesh := shard_placement_result.mesh_info.spmd_mesh) is not None
-        ):
-            # 3. Read the restore mesh from ShardPlacementResult.mesh_info.spmd_mesh.
-            if storage_mesh.mesh_dim_names is None:
-                raise AssertionError("spmd_mesh.mesh_dim_names cannot be None")
-            restore_mesh = tuple(
-                spmd.MeshAxis.of(storage_mesh.get_group(name))
-                for name in storage_mesh.mesh_dim_names
-            )
         elif (current_mesh := spmd.current_mesh()) is not None:
-            # 4. Read the restore mesh from the ambient spmd.current_mesh().
             restore_mesh = tuple(current_mesh)
         else:
             raise ValueError(
                 f"Parameter '{self._module_info.param_name}' has partial "
-                "spmd_types annotations that do not span the full FSDP "
-                "storage mesh. Wrap fully_shard() in spmd.set_current_mesh() "
-                "if all parameters in the FSDP unit share a typechecking mesh, "
-                "set ShardPlacementResult.spmd_compute_mesh when the "
-                "typechecking and storage meshes differ, or set "
-                "ShardPlacementResult.mesh_info.spmd_mesh when they match. "
+                "spmd_types annotations that cannot be restored from its FSDP "
+                "storage mesh. Fully annotate the parameter on its storage "
+                "mesh, or wrap fully_shard() in spmd.set_current_mesh(...) "
+                "when all parameters in the FSDP unit share one typechecking "
+                "mesh. Mixed per-parameter typechecking meshes with partial "
+                "annotations are not supported. "
                 f"Annotated axes: {annotated_axes}. "
                 f"Storage mesh axes: {storage_mesh_axes}."
             )
