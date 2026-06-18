@@ -6,7 +6,6 @@
 #include <c10/mobile/CPUCachingAllocator.h>
 #include <c10/mobile/CPUProfilingAllocator.h>
 #include <c10/util/Logging.h>
-// @allow-raw-throw(bare rethrow in OOM handler)
 
 // TODO: rename flag to C10
 C10_DEFINE_bool(

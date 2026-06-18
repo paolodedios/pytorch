@@ -5,7 +5,6 @@
 #include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
 #include <c10/core/Stream.h>
-// @allow-raw-throw
 
 C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wunused-parameter")
 

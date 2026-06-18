@@ -5,7 +5,6 @@
 #include <torch/csrc/autograd/input_buffer.h>
 #include <torch/csrc/autograd/utils/warnings.h>
 #include <vector>
-// @allow-raw-throw
 
 namespace torch::autograd {
 

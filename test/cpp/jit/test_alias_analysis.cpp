@@ -10,7 +10,6 @@
 #include <torch/csrc/jit/runtime/graph_iterator.h>
 
 #include <ATen/TensorOperators.h>
-// @allow-raw-throw
 
 namespace torch {
 namespace jit {

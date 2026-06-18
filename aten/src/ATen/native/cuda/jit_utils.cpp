@@ -36,7 +36,6 @@
   #include <sys/types.h>
   #include <sys/stat.h> // mkdir
   #include <unistd.h>
-// @allow-raw-throw
 #endif
 
 

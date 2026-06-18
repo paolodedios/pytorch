@@ -5,7 +5,6 @@
 
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/utils/python_scalars.h>
-// @allow-raw-throw
 
 using namespace at;
 

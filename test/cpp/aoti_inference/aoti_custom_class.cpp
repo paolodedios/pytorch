@@ -1,3 +1,4 @@
+// @allow-raw-throw
 #include <stdexcept>
 
 #include <torch/csrc/inductor/aoti_runner/model_container_runner_cpu.h>
@@ -6,7 +7,6 @@
 #endif
 
 #include "aoti_custom_class.h"
-// @allow-raw-throw
 
 namespace torch::aot_inductor {
 

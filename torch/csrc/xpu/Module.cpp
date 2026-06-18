@@ -14,7 +14,6 @@
 #include <torch/csrc/xpu/Module.h>
 #include <torch/csrc/xpu/XPUPluggableAllocator.h>
 #include <torch/csrc/xpu/memory_snapshot.h>
-// @allow-raw-throw
 
 using namespace torch;
 

@@ -21,7 +21,6 @@
 #include <cstring>
 #include <stdexcept>
 #include <type_traits>
-// @allow-raw-throw
 
 namespace torch::aot_inductor {
 

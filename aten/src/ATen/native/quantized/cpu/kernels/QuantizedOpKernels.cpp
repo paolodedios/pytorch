@@ -34,7 +34,6 @@
 #if defined(__ARM_NEON__) || defined(__aarch64__)
 #include <ATen/quantized/Quantizer.h>
 #include <arm_neon.h>
-// @allow-raw-throw
 #endif
 
 

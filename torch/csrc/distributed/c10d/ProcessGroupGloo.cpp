@@ -32,7 +32,6 @@
 #include <c10/util/thread_name.h>
 #include <gloo/rendezvous/context.h>
 #include <gloo/rendezvous/prefix_store.h>
-// @allow-raw-throw
 
 namespace c10d {
 

@@ -7,7 +7,6 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
-// @allow-raw-throw
 
 namespace torch::unwind {
 

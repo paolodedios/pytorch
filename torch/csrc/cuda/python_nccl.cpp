@@ -13,7 +13,6 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/util/Exception.h>
 #include <c10/util/irange.h>
-// @allow-raw-throw
 
 using namespace at;
 using namespace torch;

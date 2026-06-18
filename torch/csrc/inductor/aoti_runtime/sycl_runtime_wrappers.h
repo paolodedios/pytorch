@@ -7,7 +7,6 @@
 #include <fstream>
 #include <iostream>
 #include <string>
-// @allow-raw-throw
 
 #define ZE_CHECK(status)                                                  \
   {                                                                       \

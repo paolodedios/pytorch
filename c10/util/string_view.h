@@ -7,7 +7,6 @@
 #include <string_view>
 
 #include <c10/macros/Macros.h>
-// @allow-raw-throw
 
 namespace c10 {
 
