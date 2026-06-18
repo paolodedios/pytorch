@@ -2099,6 +2099,7 @@ class SIMDScheduling(BaseScheduling):
     """
 
     kernel_type: type[Any] = SIMDKernel  # override in subclass
+    supports_polyhedral: bool = False
 
     def group_fn(self, sizes):
         return tuple(V.graph.sizevars.simplify(sympy_product(s)) for s in sizes)
@@ -2277,7 +2278,11 @@ class SIMDScheduling(BaseScheduling):
             if numel1 == numel2:
                 return True
 
-            if config.polyhedral_fusion and V.graph.is_inference:
+            if (
+                config.polyhedral_fusion
+                and V.graph.is_inference
+                and self.supports_polyhedral
+            ):
                 reduction_writes = [
                     w for w in node2.read_writes.writes if isinstance(w, MemoryDep)
                 ]
@@ -2444,7 +2449,11 @@ class SIMDScheduling(BaseScheduling):
                 return False
             if node_numel == numel:
                 return True
-            if not (config.polyhedral_fusion and V.graph.is_inference):
+            if not (
+                config.polyhedral_fusion
+                and V.graph.is_inference
+                and self.supports_polyhedral
+            ):
                 return False
             if not (all_reduction_names & n.ancestors):
                 return False
@@ -2531,7 +2540,11 @@ class SIMDScheduling(BaseScheduling):
                 schedule_node_in_loop(node)
             elif fits_outside_reduction(node):
                 with end_current_reduction_loop():
-                    if config.polyhedral_fusion and V.graph.is_inference:
+                    if (
+                        config.polyhedral_fusion
+                        and V.graph.is_inference
+                        and self.supports_polyhedral
+                    ):
                         _, (node_numel_here, _) = node.group
                         inner_numel = V.graph.sizevars.simplify(
                             node_numel_here // numel
