@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cstdint>
-// @allow-raw-throw
 
 namespace c10 {
 

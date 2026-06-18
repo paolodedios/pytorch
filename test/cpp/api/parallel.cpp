@@ -1,3 +1,4 @@
+// @allow-raw-throw
 #include <gtest/gtest.h>
 
 #include <c10/util/irange.h>
@@ -17,7 +18,6 @@
 #include <memory>
 #include <utility>
 #include <vector>
-// @allow-raw-throw
 
 using namespace torch::autograd;
 using namespace torch::nn;

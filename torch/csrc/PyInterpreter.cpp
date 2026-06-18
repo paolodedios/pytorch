@@ -7,7 +7,6 @@
 #include <torch/csrc/utils/python_dispatch.h>
 
 #include <string>
-// @allow-raw-throw
 
 using namespace torch;
 using namespace at;

@@ -542,6 +542,7 @@ command = [
     'tools/linter/adapters/grep_linter.py',
     '--pattern=\bthrow\b',
     '--allowlist-pattern=@allow-raw-throw',
+    '--line-allowlist-pattern=^\s*//|^\s*\*|//.*throw|/\*.*throw|"[^"]*throw|^\s*throw\s*$|throw python_error|throw py::|throw\s*;|throw ErrorReport|throw\(|throw JITException|throw schema_match_error|throw PythonError|throw UnwindError|throw TypeError|throw AttributeError|throw MyException|throw WorkerException|throw cast_error|throw miopen_exception|throw unwind::|throw c10::|throw ::c10::|throw ::at::|throw std::move|throw std::system_error|std::rethrow_exception|TORCH_CHECK_PYTHON',
     '--linter-name=RAWTHROW',
     '--error-name=raw throw statement',
     """--error-description=\

@@ -12,7 +12,6 @@
 
 #include <cuda_runtime_api.h>
 #include <structmember.h>
-// @allow-raw-throw
 
 PyObject* THCPEventClass = nullptr;
 

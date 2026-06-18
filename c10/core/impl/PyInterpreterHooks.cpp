@@ -1,5 +1,4 @@
 #include <c10/core/impl/PyInterpreterHooks.h>
-// @allow-raw-throw
 
 namespace c10::impl {
 
