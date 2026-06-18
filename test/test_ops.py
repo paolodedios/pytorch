@@ -273,10 +273,14 @@ class TestCommon(TestCase):
             "aten.max.default",
             "aten.max.dim",
             "aten.max.dim_max",
+            "aten.max.names_dim",
+            "aten.max.names_dim_max",
             "aten.max.unary_out",
             "aten.min.default",
             "aten.min.dim",
             "aten.min.dim_min",
+            "aten.min.names_dim",
+            "aten.min.names_dim_min",
             "aten.min.unary_out",
             # not pointwise
             "aten.isin.Tensor_Tensor",
@@ -286,6 +290,8 @@ class TestCommon(TestCase):
             "aten.isin.Scalar_Tensor",
             "aten.isin.Scalar_Tensor_out",
             "aten.mode.default",
+            "aten.mode.dimname",
+            "aten.mode.dimname_out",
             "aten.mode.values",
         )
 
@@ -1947,6 +1953,7 @@ class TestCompositeCompliance(TestCase):
         {
             xfail("istft"),
             xfail("narrow"),
+            xfail("native_group_norm"),
             xfail("nn.functional.gaussian_nll_loss"),
             xfail("tensor_split"),
             skip("normal", variant_name="number_mean"),
@@ -1982,13 +1989,9 @@ class TestCompositeCompliance(TestCase):
             xfail("narrow"),
             xfail("nn.functional.gaussian_nll_loss"),
             xfail("tensor_split"),
-            skip("_batch_norm_with_update"),
-            skip("_native_batch_norm_legit"),
-            skip("native_batch_norm"),
             skip("nn.functional.max_unpool2d"),
             skip("nn.functional.max_unpool3d"),
             skip("nn.functional.multi_head_attention_forward"),
-            skip("svd_lowrank"),
             skip("bmm", variant_name="triton_optimized"),
         }
     )

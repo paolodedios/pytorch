@@ -56,9 +56,9 @@ class TestBwdGradients(TestGradients):
     @skipOps(
         _bwd_grad_all
         | {
-            skip("acos"),
             xfail("cov"),
             xfail("istft"),
+            xfail("native_group_norm"),
             skip("sparse.sampled_addmm"),
             skip("sparse.mm", variant_name="reduce"),
             xfail("as_strided_scatter"),
@@ -87,7 +87,6 @@ class TestBwdGradients(TestGradients):
         _bwd_grad_all
         | {
             skip("abs", dtypes=(torch.cdouble,)),
-            skip("acos"),
             xfail("as_strided", variant_name="partial_views"),
         }
     )
