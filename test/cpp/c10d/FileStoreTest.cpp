@@ -13,7 +13,6 @@
 
 #include <torch/csrc/distributed/c10d/FileStore.hpp>
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp>
-// @allow-raw-throw
 
 #ifdef _WIN32
 std::string tmppath() {

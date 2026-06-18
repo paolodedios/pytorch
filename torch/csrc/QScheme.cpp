@@ -6,7 +6,6 @@
 
 #include <cstring>
 #include <string>
-// @allow-raw-throw
 
 PyObject* THPQScheme_New(at::QScheme qscheme, const std::string& name) {
   auto type = &THPQSchemeType;

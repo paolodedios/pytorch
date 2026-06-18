@@ -1,3 +1,4 @@
+// @allow-raw-throw
 #include <gtest/gtest.h>
 
 #include <torch/torch.h>
@@ -21,7 +22,6 @@
 #include <thread>
 #include <unordered_set>
 #include <vector>
-// @allow-raw-throw
 
 using namespace torch::data; // NOLINT
 

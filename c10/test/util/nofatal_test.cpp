@@ -2,7 +2,6 @@
 
 #include <c10/util/Exception.h>
 #include <c10/util/Logging.h>
-// @allow-raw-throw
 
 namespace {
 template <typename T>

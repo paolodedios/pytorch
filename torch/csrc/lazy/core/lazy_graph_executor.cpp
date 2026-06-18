@@ -18,7 +18,6 @@
 #include <torch/csrc/lazy/core/thread_pool.h>
 
 #include <utility>
-// @allow-raw-throw
 
 namespace torch::lazy {
 namespace {

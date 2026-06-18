@@ -15,7 +15,6 @@
 #include <torch/csrc/jit/serialization/import.h>
 #include <torch/data/dataloader.h>
 #include <torch/torch.h>
-// @allow-raw-throw
 
 // Tests go in torch::jit
 namespace torch {

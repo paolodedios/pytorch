@@ -1,5 +1,4 @@
 #pragma once
-// @allow-raw-throw
 
 /*
  * Ported from folly/FileUtil.h

@@ -10,7 +10,6 @@
 #include <torch/csrc/THP.h>
 
 #include <c10/util/StringUtil.h>
-// @allow-raw-throw
 
 PyObject *THPException_FatalError, *THPException_LinAlgError,
     *THPException_OutOfMemoryError, *THPException_DistError,
