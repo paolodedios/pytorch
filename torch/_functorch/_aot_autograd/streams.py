@@ -514,7 +514,6 @@ def _wrap_sync_node(
 
             user.args = map_arg(user.args, _replace)
             user.kwargs = map_arg(user.kwargs, _replace)
-            user.meta.pop("eager_input_vals", None)
 
     # Remove original sync node
     sync_node.replace_all_uses_with(control_deps_node)
