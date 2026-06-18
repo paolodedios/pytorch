@@ -10,6 +10,7 @@ from collections.abc import (
     Generator,
     Iterable,
     Mapping,
+    Sequence,
 )
 from dataclasses import dataclass
 from functools import partial
@@ -32,6 +33,7 @@ from torch.fx.experimental.symbolic_shapes import (
 from torch.utils import _pytree as pytree
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._pytree import tree_map
+from torch.utils._typing_utils import not_none
 from torch.utils.flop_counter import flop_registry
 
 from .virtualized import V
@@ -129,7 +131,7 @@ def _is_fake_tensor_same(
 
         if isinstance(new, torch.types.py_sym_types):
             return (
-                new.node.shape_env._maybe_evaluate_static(
+                not_none(new.node.shape_env)._maybe_evaluate_static(
                     sympy.Eq(new.node.expr, old.node.expr)
                 )
                 == sympy.true
@@ -754,11 +756,14 @@ def maybe_fake_layout_constraints(
             or fake_t.layout != torch.strided
         ):
             return t
+        # These checks can see unbacked symbols from dynamic-shape outputs.
+        # Only take storage-preserving shortcuts when they are statically known.
         if exact_strides:
-            if t.stride() == fake_t.stride():
+            if statically_known_true(sym_eq(t.stride(), fake_t.stride())):
                 return t
             if len(t.size()) == len(t.stride()) == len(fake_t.stride()) and all(
-                dim <= 1 or stride == fake_stride
+                statically_known_true(dim <= 1)
+                or statically_known_true(sym_eq(stride, fake_stride))
                 for dim, stride, fake_stride in zip(
                     t.size(), t.stride(), fake_t.stride(), strict=True
                 )
@@ -767,12 +772,23 @@ def maybe_fake_layout_constraints(
         else:
             from torch._inductor.ir import get_stride_order
 
-            if t.numel() in (0, 1):
+            if statically_known_true(t.numel() <= 1):
                 return t
-            significant_dims = [i for i, dim in enumerate(t.size()) if dim != 1]
+            significant_dims = [
+                i
+                for i, dim in enumerate(t.size())
+                if not statically_known_true(dim == 1)
+            ]
             t_stride = [t.stride()[i] for i in significant_dims]
             fake_t_stride = [fake_t.stride()[i] for i in significant_dims]
-            if get_stride_order(t_stride) == get_stride_order(fake_t_stride):
+            shape_env = getattr(getattr(t, "fake_mode", None), "shape_env", None)
+            if shape_env is None:
+                shape_env = getattr(
+                    getattr(fake_t, "fake_mode", None), "shape_env", None
+                )
+            if get_stride_order(t_stride, shape_env) == get_stride_order(
+                fake_t_stride, shape_env
+            ):
                 return t
         return torch.empty_strided(
             t.size(),
@@ -829,13 +845,29 @@ def maybe_fake_layout_constraints(
         )
 
     if layout_constraint in (require_contiguous, require_contiguous_strides):
-        # require_contiguous also preserves MKLDNN tensors in lowering.  Fake
-        # execution skips all non-strided tensors here, so the fake metadata
-        # equivalent is contiguous for both constraint variants.
+
+        def contiguous_strides(size: Sequence[int]) -> tuple[Any, ...]:
+            if len(size) == 0:
+                return ()
+            reversed_strides: list[Any] = [1]
+            for dim in reversed(size[1:]):
+                reversed_strides.append(dim * reversed_strides[-1])
+            return tuple(reversed(reversed_strides))
+
         def maybe_contiguous(t: torch.Tensor) -> torch.Tensor:
             if t.layout != torch.strided:
                 return t
-            return t.contiguous()
+            return fake_with_stride(
+                t,
+                torch.empty_strided(
+                    t.size(),
+                    contiguous_strides(t.size()),
+                    dtype=t.dtype,
+                    device=t.device,
+                    requires_grad=t.requires_grad,
+                ),
+                exact_strides=True,
+            )
 
         new_args, new_kwargs = pytree.tree_map_only(
             torch.Tensor, maybe_contiguous, (args, kwargs)

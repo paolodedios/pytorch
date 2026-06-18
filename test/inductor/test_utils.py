@@ -17,11 +17,13 @@ from torch._inductor.fx_utils import (
     FakeTensorUpdater,
     get_fake,
     get_storage,
+    maybe_fake_layout_constraints,
 )
 from torch._inductor.utils import get_device_tflops, sympy_str, sympy_subs
 from torch._inductor.virtualized import V
 from torch._subclasses.fake_tensor import FakeTensor
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.experimental.symbolic_shapes import ShapeEnv
 from torch.ops import aten
 from torch.testing._internal.common_device_type import (
     dtypes,
@@ -702,6 +704,16 @@ class TestFakeTensorUpdater(TestCase):
             len(graph.find_nodes(op="call_function", target=aten.clone.default)), 0
         )
 
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        view_as_complex = graph.call_function(aten.view_as_complex.default, (x,))
+        graph.output(view_as_complex)
+        gm = torch.fx.GraphModule({}, graph)
+
+        fake_tensor_prop(gm, [torch.empty_strided((2, 1, 2), (2, 99, 1))])
+
+        self.assertEqual(view_as_complex.meta["val"].stride(), (1, 1))
+
     def test_fake_tensor_prop_exact_stride_constraints(self):
         @torch.library.custom_op(
             "test_fake_tensor_prop_exact_stride_constraints::needs_exact",
@@ -803,6 +815,25 @@ class TestFakeTensorUpdater(TestCase):
         self.assertEqual(exact_node.meta["val"].stride(), (6, 2, 1))
         self.assertIsInstance(exact_node.meta["val"], FakeTensor)
 
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        exact = graph.call_function(needs_exact_op, (x,))
+        graph.output(exact)
+
+        shape_env = ShapeEnv()
+        with torch._subclasses.FakeTensorMode(shape_env=shape_env):
+            u0 = shape_env.create_unbacked_symint()
+            u1 = shape_env.create_unbacked_symint()
+            fake_t = torch.empty_strided((u0 + u1, 1), (1, 1))
+            expected_t = torch.empty_strided((u0 + u1, 1), (99, 1))
+            x.meta["val"] = fake_t
+            exact.meta["eager_input_vals"] = ((expected_t,), {})
+
+            args, kwargs = maybe_fake_layout_constraints(exact, (fake_t,), {})
+
+        self.assertEqual(kwargs, {})
+        self.assertEqual(args[0].stride(), (99, 1))
+
     def test_fake_tensor_prop_fixed_stride_order_constraints(self):
         @torch.library.custom_op(
             "test_fake_tensor_prop_fixed_stride_order_constraints::needs_fixed",
@@ -827,6 +858,40 @@ class TestFakeTensorUpdater(TestCase):
 
         self.assertEqual(exact.meta["val"].stride(), (100, 1))
         self.assertEqual(get_storage(exact.meta["val"]), get_storage(x.meta["val"]))
+
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        exact = graph.call_function(needs_fixed_op, (x,))
+        graph.output(exact)
+
+        shape_env = ShapeEnv()
+        with torch._subclasses.FakeTensorMode(shape_env=shape_env):
+            u0 = shape_env.create_unbacked_symint()
+            u1 = shape_env.create_unbacked_symint()
+            fake_t = torch.empty_strided((u0 + u1,), (1,))
+            x.meta["val"] = fake_t
+
+            args, kwargs = maybe_fake_layout_constraints(exact, (fake_t,), {})
+
+        self.assertEqual(kwargs, {})
+        self.assertIs(args[0], fake_t)
+
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        exact = graph.call_function(needs_fixed_op, (x,))
+        graph.output(exact)
+
+        shape_env = ShapeEnv()
+        with torch._subclasses.FakeTensorMode(shape_env=shape_env):
+            u0 = shape_env.create_unbacked_symint()
+            u1 = shape_env.create_unbacked_symint()
+            fake_t = torch.empty_strided((2, 2), (u1, u0))
+            x.meta["val"] = fake_t
+
+            args, kwargs = maybe_fake_layout_constraints(exact, (fake_t,), {})
+
+        self.assertEqual(kwargs, {})
+        self.assertIs(args[0], fake_t)
 
     def test_fake_tensor_prop_layout_constraints_invoke_subgraph(self):
         subgraph = torch.fx.Graph()
