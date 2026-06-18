@@ -1373,19 +1373,9 @@ def rms_norm_single_dim_strategy(
     args_schema: tuple[Any, ...],
     kwargs_schema: dict[str, Any],
 ) -> list[list[Placement | _ShardingPlaceholder]]:
-    if len(args_schema) != 4:
-        raise AssertionError(f"Expected 4 args, got {len(args_schema)}")
     input_meta = args_schema[0]
     normalized_shape = args_schema[1]
     weight_meta = args_schema[2]
-    if not isinstance(input_meta, TensorMeta):
-        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
-    if not isinstance(normalized_shape, (int, Sequence, torch.Size)):
-        raise AssertionError(
-            f"Expected int, Sequence, or torch.Size, got {type(normalized_shape)}"
-        )
-    if weight_meta is not None and not isinstance(weight_meta, TensorMeta):
-        raise AssertionError(f"Expected TensorMeta, got {type(weight_meta)}")
 
     axis = len(input_meta.shape) - len(normalize_to_torch_size(normalized_shape))
 
@@ -1426,13 +1416,14 @@ def layer_norm_bwd_single_dim_strategy(
 
     strategies: list[list[Placement | _ShardingPlaceholder | None]] = []
     for dim in range(axis):
-        # Outputs: [d_input, d_weight, d_bias]. Masked-off outputs use None.
+        # outputs: [d_input, d_weight, d_bias] — always 3 per schema
+        # Masked-off outputs use None even if the corresponding input exists.
         rule: list[Placement | _ShardingPlaceholder | None] = [
             _ShardingPlaceholder(dim) if compute_d_input else None,
             Partial("sum") if compute_d_weight else None,
             Partial("sum") if compute_d_bias else None,
         ]
-        # Inputs: [grad_out, input, mean, rstd, weight?, bias?]
+        # inputs: [grad_out, input, mean, rstd, weight?, bias?]
         rule.extend(
             [
                 _ShardingPlaceholder(dim),  # grad_out
@@ -1471,8 +1462,9 @@ def rms_norm_bwd_single_dim_strategy(
 
     strategies: list[list[Placement | _ShardingPlaceholder | None]] = []
     for dim in range(axis):
-        # Outputs: [d_input, d_weight]. Masked-off outputs use None.
-        # Inputs: [grad_out, input, rstd, weight?]
+        # outputs: [d_input, d_weight] — always 2 per schema
+        # Masked-off outputs use None even if the corresponding input exists.
+        # inputs: [grad_out, input, rstd, weight?]
         rule: list[Placement | _ShardingPlaceholder | None] = [
             _ShardingPlaceholder(dim) if compute_d_input else None,
             Partial("sum") if compute_d_weight else None,
