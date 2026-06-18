@@ -630,6 +630,30 @@ graph():
         self.assertEqual(tuple(flat_outputs[0].shape), (3, 2))
         self.assertEqual(tuple(flat_outputs[1].shape), (3, 2))
 
+    def test_strict_export_dynamic_tensor_constant_attrs(self):
+        class Module(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.weight = torch.randn(2, 3)
+                self.bias = torch.randn(2)
+
+            def forward(self, x):
+                return torch.nn.functional.linear(x, self.weight, self.bias)
+
+        m = Module()
+        inp = torch.randn(4, 3)
+        dynamic_shapes = {"x": {0: Dim("batch", min=1, max=8)}}
+
+        ep = export(m, (inp,), dynamic_shapes=dynamic_shapes, strict=True)
+        constant_specs = [
+            spec
+            for spec in ep.graph_signature.input_specs
+            if spec.kind == InputKind.CONSTANT_TENSOR
+        ]
+
+        self.assertEqual([spec.target for spec in constant_specs], ["weight", "bias"])
+        self.assertEqual(ep.module()(inp), m(inp))
+
     def test_strict_export_unlifts_shape_only_output(self):
         class Module(torch.nn.Module):
             def forward(self, x):
@@ -7633,12 +7657,8 @@ def forward(self, p_linear_weight, p_linear_bias, b_buffer, x):
         y2 = torch.arange(9).reshape((3, 3))
         with self.assertRaisesRegex(
             AssertionError,
-            (
-                escape("Guard failed: max(x.size()[1], y.size()[1]) == x.size()[1]")
-                if is_retracebility_test(self._testMethodName)
-                else escape(
-                    "Guard failed: max(1, x.size()[1], y.size()[1]) == x.size()[1]"
-                )
+            escape(
+                "Guard failed: torch.sym_max(1, torch.sym_max(x.size()[1], y.size()[1])) == x.size()[1]"
             ),
         ):
             # TODO: this should not error?
@@ -10906,13 +10926,18 @@ def forward(self, x):
             """cond(SymBool pred, GraphModule true_fn, GraphModule false_fn, Tensor[2] operands) -> Tensor[1]""",
         )
         # serdes deserializes tuple as list
+        sym_size_name = (
+            "sym_size_int_1"
+            if is_non_strict_test(self._testMethodName)
+            else "sym_size_int"
+        )
         if need_serdes_test(self._testMethodName):
             self.assertExpectedInline(
                 ep.graph_module.code.strip(),
-                """\
+                f"""\
 def forward(self, b_a_buffer, x):
-    sym_size_int_1 = torch.ops.aten.sym_size.int(x, 0)
-    gt = sym_size_int_1 > 4;  sym_size_int_1 = None
+    {sym_size_name} = torch.ops.aten.sym_size.int(x, 0)
+    gt = {sym_size_name} > 4;  {sym_size_name} = None
     true_graph_0 = self.true_graph_0
     false_graph_0 = self.false_graph_0
     cond = torch.ops.higher_order.cond(gt, true_graph_0, false_graph_0, [x, b_a_buffer]);  gt = true_graph_0 = false_graph_0 = x = b_a_buffer = None
@@ -10923,10 +10948,10 @@ def forward(self, b_a_buffer, x):
         else:
             self.assertExpectedInline(
                 ep.graph_module.code.strip(),
-                """\
+                f"""\
 def forward(self, b_a_buffer, x):
-    sym_size_int_1 = torch.ops.aten.sym_size.int(x, 0)
-    gt = sym_size_int_1 > 4;  sym_size_int_1 = None
+    {sym_size_name} = torch.ops.aten.sym_size.int(x, 0)
+    gt = {sym_size_name} > 4;  {sym_size_name} = None
     true_graph_0 = self.true_graph_0
     false_graph_0 = self.false_graph_0
     cond = torch.ops.higher_order.cond(gt, true_graph_0, false_graph_0, (x, b_a_buffer));  gt = true_graph_0 = false_graph_0 = x = b_a_buffer = None
@@ -16903,7 +16928,6 @@ graph():
                 Block(torch.randn(4, 4), torch.randn(4, 4))
             )
 
-    @testing.expectedFailureStrictV2
     def test_enum_str(self):
         class TensorDim(str, enum.Enum):
             DDP = "ddp"

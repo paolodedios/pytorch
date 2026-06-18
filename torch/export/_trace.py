@@ -8,7 +8,8 @@ import re
 import sys
 import time
 import warnings
-from collections.abc import Callable
+from collections import defaultdict
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager, ExitStack, nullcontext
 from itertools import chain
 from typing import Any, cast, TYPE_CHECKING, TypeAlias
@@ -509,6 +510,47 @@ def _restore_get_attr_targets_from_dynamo_metadata(
         gm.recompile()
 
 
+def _restore_get_attr_targets_from_constants(
+    gm: torch.fx.GraphModule,
+    constant_attrs: ConstantAttrMap,
+) -> None:
+    """Restore get_attr targets for tensor constants captured by bytecode export."""
+
+    if not constant_attrs:
+        return
+
+    from torch._dynamo.output_graph import OutputGraph
+
+    dynamo_name_to_constant_fqns: dict[str, list[str]] = defaultdict(list)
+    for constant_fqns in constant_attrs.values():
+        for constant_fqn in constant_fqns:
+            dynamo_name = OutputGraph.module_key_name(f"L['self'].{constant_fqn}")
+            dynamo_name_to_constant_fqns[dynamo_name].append(constant_fqn)
+
+    changed = False
+    for node in gm.graph.find_nodes(op="get_attr"):
+        try:
+            torch.fx.graph_module._get_attr(gm, node.target)
+            continue
+        except (AttributeError, AssertionError):
+            pass
+
+        constant_fqns = dynamo_name_to_constant_fqns.get(node.target)
+        if constant_fqns is None or len(constant_fqns) != 1:
+            continue
+
+        constant_fqn = constant_fqns[0]
+        try:
+            torch.fx.graph_module._get_attr(gm, constant_fqn)
+        except (AttributeError, AssertionError):
+            continue
+        node.target = constant_fqn
+        changed = True
+
+    if changed:
+        gm.recompile()
+
+
 def _preserve_requires_grad_pass(
     gm: torch.fx.GraphModule,
     sig: ExportGraphSignature,
@@ -843,6 +885,197 @@ def _tracked_fake_for_source_in_shape_env(shape_env: Any, source: Source) -> Any
     return None
 
 
+def _is_hop_operand_container(value: object) -> bool:
+    return isinstance(
+        value,
+        (tuple, list, torch.fx.immutable_collections.immutable_list),
+    )
+
+
+def _graph_module_from_hop_arg(
+    hop_node: torch.fx.Node, arg: object
+) -> torch.fx.GraphModule | None:
+    if isinstance(arg, torch.fx.GraphModule):
+        return arg
+    if not isinstance(arg, torch.fx.Node) or arg.op != "get_attr":
+        return None
+    if not isinstance(arg.target, str):
+        return None
+    owning_module = hop_node.graph.owning_module
+    if owning_module is None:
+        return None
+    subgraph = getattr(owning_module, arg.target, None)
+    if isinstance(subgraph, torch.fx.GraphModule):
+        return subgraph
+    return None
+
+
+def _replace_symbolic_hop_placeholder(
+    subgraph: torch.fx.GraphModule,
+    *,
+    symbolic_pos: int,
+    base_pos: int | None,
+    target: Callable,
+    replacement_args: tuple[object, ...],
+    outer_base_node: torch.fx.Node,
+) -> None:
+    placeholders = list(subgraph.graph.find_nodes(op="placeholder"))
+    symbolic_placeholder = placeholders[symbolic_pos]
+
+    if symbolic_placeholder.users:
+        if base_pos is None:
+            raise AssertionError("base_pos is required to replace placeholder users")
+        base_placeholder = placeholders[base_pos]
+        first_non_placeholder = next(
+            (node for node in subgraph.graph.nodes if node.op != "placeholder"),
+            None,
+        )
+        subgraph_replacement_args = tuple(
+            base_placeholder if arg is outer_base_node else arg
+            for arg in replacement_args
+        )
+        with subgraph.graph.inserting_before(first_non_placeholder):
+            replacement = subgraph.graph.call_function(
+                target,
+                cast(tuple[torch.fx.node.Argument, ...], subgraph_replacement_args),
+            )
+            replacement.meta.update(symbolic_placeholder.meta)
+        symbolic_placeholder.replace_all_uses_with(replacement)
+
+    subgraph.graph.erase_node(symbolic_placeholder)
+    subgraph.graph.lint()
+    subgraph.recompile()
+
+
+def _symbolic_hop_operand_can_be_removed(
+    hop_node: torch.fx.Node, operand_arg_idx: int
+) -> bool:
+    hop_name = getattr(hop_node.target, "_name", None)
+    if hop_name == "cond":
+        return True
+    if hop_name in {"while_loop", "while_loop_stack_output"}:
+        # For while_loop, carried_inputs define output arity. Only additional_inputs
+        # can be pruned without changing loop state semantics.
+        return operand_arg_idx == 3
+    return False
+
+
+def _drop_symbolic_hop_operands(
+    hop_node: torch.fx.Node,
+    *,
+    symbolic_operand: torch.fx.Node,
+    target: Callable,
+    replacement_args: tuple[object, ...],
+    base_node: torch.fx.Node,
+) -> None:
+    """Remove lifted tensor-property SymInts from HOP operand lists.
+
+    HOP subgraphs can receive lifted shape placeholders because Dynamo captures
+    all free symbolic inputs. Public export should instead pass the base tensor
+    and let each subgraph recompute the tensor property from that tensor, keeping
+    HOP operand schemas tensor-only when the symbolic input came from a tensor.
+    """
+
+    args = list(hop_node.args)
+    operand_containers: list[tuple[int, Sequence[object], int]] = []
+    flat_operands: list[object] = []
+    for arg_idx, arg in enumerate(args):
+        if not _is_hop_operand_container(arg):
+            continue
+        container = cast(Sequence[object], arg)
+        operand_containers.append((arg_idx, container, len(flat_operands)))
+        flat_operands.extend(container)
+
+    if symbolic_operand not in flat_operands:
+        return
+
+    symbolic_positions = []
+    for pos, operand in enumerate(flat_operands):
+        if operand is not symbolic_operand:
+            continue
+        for arg_idx, container, start_pos in operand_containers:
+            if start_pos <= pos < start_pos + len(container):
+                if _symbolic_hop_operand_can_be_removed(hop_node, arg_idx):
+                    symbolic_positions.append(pos)
+                break
+    if not symbolic_positions:
+        return
+
+    subgraphs = [
+        subgraph
+        for arg in pytree.tree_leaves((hop_node.args, hop_node.kwargs))
+        if (subgraph := _graph_module_from_hop_arg(hop_node, arg)) is not None
+    ]
+    if not subgraphs:
+        return
+    if any(
+        len(list(subgraph.graph.find_nodes(op="placeholder"))) != len(flat_operands)
+        for subgraph in subgraphs
+    ):
+        return
+
+    base_pos = flat_operands.index(base_node) if base_node in flat_operands else None
+    removals_by_arg: dict[int, set[int]] = defaultdict(set)
+    removed_symbolic_positions: set[int] = set()
+    for symbolic_pos in reversed(symbolic_positions):
+        current_base_pos = (
+            base_pos
+            - sum(removed_pos < base_pos for removed_pos in removed_symbolic_positions)
+            if base_pos is not None
+            else None
+        )
+        can_remove = True
+        for subgraph in subgraphs:
+            placeholders = list(subgraph.graph.find_nodes(op="placeholder"))
+            if symbolic_pos >= len(placeholders):
+                can_remove = False
+                break
+            symbolic_placeholder = placeholders[symbolic_pos]
+            if symbolic_placeholder.users:
+                if (
+                    current_base_pos is None
+                    or current_base_pos >= len(placeholders)
+                    or symbolic_placeholder is placeholders[current_base_pos]
+                ):
+                    can_remove = False
+                    break
+        if not can_remove:
+            continue
+
+        for subgraph in subgraphs:
+            _replace_symbolic_hop_placeholder(
+                subgraph,
+                symbolic_pos=symbolic_pos,
+                base_pos=current_base_pos,
+                target=target,
+                replacement_args=replacement_args,
+                outer_base_node=base_node,
+            )
+        removed_symbolic_positions.add(symbolic_pos)
+
+        for arg_idx, container, start_pos in operand_containers:
+            if start_pos <= symbolic_pos < start_pos + len(container):
+                removals_by_arg[arg_idx].add(symbolic_pos - start_pos)
+                break
+
+    if not removals_by_arg:
+        return
+
+    for arg_idx, remove_indices in removals_by_arg.items():
+        old_container = args[arg_idx]
+        new_items = [
+            item
+            for item_idx, item in enumerate(cast(Sequence[object], old_container))
+            if item_idx not in remove_indices
+        ]
+        if isinstance(old_container, tuple):
+            args[arg_idx] = cast(torch.fx.node.Argument, tuple(new_items))
+        else:
+            args[arg_idx] = cast(torch.fx.node.Argument, list(new_items))
+
+    hop_node.args = tuple(args)
+
+
 def _module_attr_fqn_from_source(source: Source) -> tuple[str, str] | None:
     def module_path(module_source: Source) -> list[str] | None:
         if (
@@ -1026,6 +1259,15 @@ def _unlift_symbolic_placeholders(
                 for key in ("nn_module_stack", "stack_trace", "custom"):
                     if key not in replacement.meta and key in default_node_meta:
                         replacement.meta[key] = default_node_meta[key]
+            for user in list(node.users):
+                if isinstance(user.target, torch._ops.HigherOrderOperator):
+                    _drop_symbolic_hop_operands(
+                        user,
+                        symbolic_operand=node,
+                        target=target,
+                        replacement_args=args,
+                        base_node=base_node,
+                    )
             node.replace_all_uses_with(replacement)
         gm.graph.erase_node(node)
         removed_placeholders.add(node.name)
@@ -1462,6 +1704,7 @@ def _export_to_torch_ir(
                     if use_legacy_dynamo_graph_capture():
                         if (
                             (constraints or dynamic_shapes)
+                            and not is_shapes_spec
                             and not isinstance(f, torch.fx.GraphModule)
                             and not torch._dynamo.config.install_free_tensors
                         ):
@@ -2311,6 +2554,8 @@ def _strict_export(
 
     _normalize_nn_module_stack(gm_torch_level, type(mod))
     _restore_get_attr_targets_from_dynamo_metadata(gm_torch_level)
+    constant_attrs = _gather_constant_attrs(mod)
+    _restore_get_attr_targets_from_constants(gm_torch_level, constant_attrs)
 
     params_buffers_to_node_meta = _collect_param_buffer_metadata(gm_torch_level)
 
@@ -2319,7 +2564,6 @@ def _strict_export(
     # Therefore, we manually extract them before calling into aot_export
     # params_buffers_to_node_meta = _collect_param_buffer_metadata(gm_torch_level)
 
-    constant_attrs = _gather_constant_attrs(mod)
     param_buffer_table: dict[str, str] = _get_param_buffer_mapping(mod, gm_torch_level)
 
     # Dynamo does not track which buffers were registered as non-persistent. This info
