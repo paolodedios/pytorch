@@ -7,7 +7,7 @@ import torch
 
 
 # The idea for this parameter is that we forbid bare assignment
-# to torch.backends.<cudnn|mkldnn>.enabled and friends when running our
+# to torch.backends.<cudnn|onednn>.enabled and friends when running our
 # test suite, where it's very easy to forget to undo the change
 # later.
 __allow_nonbracketed_mutation_flag = True

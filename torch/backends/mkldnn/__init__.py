@@ -87,7 +87,7 @@ def set_flags(
         torch._C._get_onednn_enabled(),
         torch._C._get_onednn_deterministic(),
         torch._C._get_onednn_allow_tf32(),
-        torch._C._get_fp32_precision_getter("mkldnn", "all"),
+        torch._C._get_fp32_precision_getter("onednn", "all"),
     )
     if _enabled is not None:
         torch._C._set_onednn_enabled(_enabled)
@@ -96,7 +96,7 @@ def set_flags(
     if _allow_tf32 is not None:
         torch._C._set_onednn_allow_tf32(_allow_tf32)
     if _fp32_precision is not None:
-        torch._C._set_fp32_precision_setter("mkldnn", "all", _fp32_precision)
+        torch._C._set_fp32_precision_setter("onednn", "all", _fp32_precision)
     return orig_flags
 
 
@@ -122,11 +122,11 @@ class OnednnModule(PropModule):
     allow_tf32 = ContextProp(
         torch._C._get_onednn_allow_tf32, torch._C._set_onednn_allow_tf32
     )
-    matmul = _FP32Precision("mkldnn", "matmul")
-    conv = _FP32Precision("mkldnn", "conv")
-    rnn = _FP32Precision("mkldnn", "rnn")
+    matmul = _FP32Precision("onednn", "matmul")
+    conv = _FP32Precision("onednn", "conv")
+    rnn = _FP32Precision("onednn", "rnn")
     fp32_precision = ContextProp(
-        _get_fp32_precision_getter("mkldnn", "all"),
+        _get_fp32_precision_getter("onednn", "all"),
         _set_fp32_precision_setter("generic", "all"),
     )
 
