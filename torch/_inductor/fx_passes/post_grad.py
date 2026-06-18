@@ -181,7 +181,7 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
             and config.max_autotune
             and "CPP" in config.max_autotune_gemm_backends
         ):
-            from .mkldnn_fusion import grouped_gemm_pass
+            from .onednn_fusion import grouped_gemm_pass
 
             grouped_gemm_pass(gm.graph)
 
