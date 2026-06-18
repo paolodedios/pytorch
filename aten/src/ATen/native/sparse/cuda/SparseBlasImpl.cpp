@@ -1341,13 +1341,13 @@ void sampled_addmm_out_sparse_csr(
   c10::MaybeOwned<Tensor> A_ = prepare_dense_matrix_for_cusparse(A);
   c10::MaybeOwned<Tensor> B_ = prepare_dense_matrix_for_cusparse(B);
 
-  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(
-      kHalf, kBFloat16,
+  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
+      kHalf,
       C.scalar_type(),
       "sampled_addmm_out_sparse_csr",
       [&] {
-        // cuSPARSE SDDMM accumulates in float32 for half/bfloat16 inputs.
-        // opmath_type<half/bfloat16> == float, so alpha/beta and compute_type use float.
+        // cuSPARSE SDDMM supports float16 with float32 accumulation, but not bfloat16.
+        // opmath_type<half> == float, so alpha/beta and compute_type use float.
         using opmath_t = at::opmath_type<scalar_t>;
         // CUDA 11.6 doesn't support batched inputs, it raises an error:
         // ** On entry to cusparseSDDMM_bufferSize(): batched SDDMM is not supported
