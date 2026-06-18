@@ -667,6 +667,36 @@ def forward(self, L_x_ : torch.Tensor):
         result = grad_with_hook(boxed_compiled, x2)
         self.assertEqual(result, expected)
 
+    def test_tensor_and_shape_output_does_not_fallback_aot_autograd(self):
+        from torch._dynamo.backends.common import aot_autograd
+        from torch._dynamo.utils import counters
+
+        def fn(x):
+            y = x * x
+            return y, y.shape[0]
+
+        gm = torch.fx.symbolic_trace(fn)
+        x = torch.randn(4, requires_grad=True)
+        for node in gm.graph.nodes:
+            if node.name == "x":
+                node.meta["example_value"] = x
+            elif node.name == "mul":
+                node.meta["example_value"] = x * x
+            elif node.name == "getitem":
+                node.meta["example_value"] = 4
+
+        torch._dynamo.reset()
+        counters.clear()
+        compiled = aot_autograd(fw_compiler=nop)(gm, (x,))
+        y, size = compiled(x)
+
+        self.assertEqual(y, x * x)
+        self.assertEqual(size, 4)
+        self.assertEqual(
+            counters["aot_autograd"].get("graph_has_dependent_outputs", 0), 0
+        )
+        self.assertEqual(counters["aot_autograd"]["total"], 1)
+
     def test_output_hook_on_dependent_output_after_graph_break_aot_eager(self):
         def fn(x):
             y = x * x

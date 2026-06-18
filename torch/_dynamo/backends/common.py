@@ -56,10 +56,12 @@ def _node_meta_value(node: torch.fx.Node) -> Any:
 
 
 def _node_requires_grad(node: torch.fx.Node) -> bool:
+    if "example_value" not in node.meta and "val" not in node.meta:
+        return True
     meta_value = _node_meta_value(node)
     if isinstance(meta_value, torch.Tensor):
         return meta_value.requires_grad
-    return True
+    return False
 
 
 def _node_is_view(node: torch.fx.Node) -> bool:
