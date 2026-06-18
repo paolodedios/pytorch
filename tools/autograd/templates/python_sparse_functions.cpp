@@ -14,7 +14,6 @@
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
-// @allow-raw-throw
 #else
 $ops_headers
 #endif

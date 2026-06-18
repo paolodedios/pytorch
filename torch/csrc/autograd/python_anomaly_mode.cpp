@@ -7,7 +7,6 @@
 #include <torch/csrc/utils/object_ptr.h>
 #include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/python_strings.h>
-// @allow-raw-throw
 
 namespace torch::autograd {
 

@@ -1,3 +1,4 @@
+// @allow-raw-throw
 #include <test/cpp/jit/test_custom_class_registrations.h>
 
 #include <torch/custom_class.h>
@@ -6,7 +7,6 @@
 #include <iostream>
 #include <string>
 #include <vector>
-// @allow-raw-throw
 
 using namespace torch::jit;
 

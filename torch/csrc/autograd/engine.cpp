@@ -43,7 +43,6 @@
 #include <thread>
 #include <unordered_set>
 #include <utility>
-// @allow-raw-throw
 
 namespace torch::autograd {
 

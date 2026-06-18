@@ -5,7 +5,6 @@
 
 #include <torch/csrc/profiler/unwind/dwarf_enums.h>
 #include <torch/csrc/profiler/unwind/unwind_error.h>
-// @allow-raw-throw
 
 namespace torch::unwind {
 

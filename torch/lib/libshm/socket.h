@@ -13,7 +13,6 @@
 
 #include <libshm/alloc_info.h>
 #include <libshm/err.h>
-// @allow-raw-throw
 
 class Socket {
  public:

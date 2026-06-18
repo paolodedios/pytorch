@@ -6,7 +6,6 @@
 
 #include <stdexcept>
 #include <string>
-// @allow-raw-throw
 
 namespace torch {
 namespace test {

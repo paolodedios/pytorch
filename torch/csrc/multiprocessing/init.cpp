@@ -11,7 +11,6 @@
 
 #if defined(__linux__)
 #include <sys/prctl.h>
-// @allow-raw-throw
 #endif
 
 #define SYSASSERT(rv, ...)                                                 \

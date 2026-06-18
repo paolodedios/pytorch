@@ -12,7 +12,6 @@
 #include <c10/util/intrusive_ptr.h>
 #include <cstddef>
 #include <utility>
-// @allow-raw-throw
 
 namespace c10 {
 

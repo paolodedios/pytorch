@@ -6,7 +6,6 @@
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/Export.h>
 #include <torch/csrc/Types.h>
-// @allow-raw-throw
 
 #define THPStorageStr "torch.UntypedStorage"
 
