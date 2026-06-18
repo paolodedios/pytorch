@@ -37,6 +37,7 @@ from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
     onlyAccelerator,
     onlyCUDA,
+    onlyOn,
     e4m3_type,
     e5m2_type,
     E4M3_MAX_POS,
@@ -56,7 +57,6 @@ from torch.testing._internal.common_utils import (
     skipIfTorchDynamo,
     TEST_CUDA,
     TestCase,
-    skipIfXpu,
 )
 from torch.testing._internal.common_quantized import (
     _bfloat16_to_float4_e2m1fn_x2,
@@ -83,10 +83,6 @@ mxfp8_grouped_mm_skip_msg = "MXFP8 grouped GEMM is only supported when PyTorch i
 # avoid division by zero when calculating scale
 EPS = 1e-12
 
-def _device_supports_scaled_mm_fp8(device):
-    if device not in ['cpu', 'xpu'] and (torch.cuda.is_available() and not PLATFORM_SUPPORTS_FP8):
-        return False
-    return True
 
 
 def amax_to_scale(
@@ -643,7 +639,7 @@ class TestFP8Matmul(TestCase):
                               x_cm: bool = True,
                               y_cm: bool = False,
                               size: int = 16) -> None:
-        if not _device_supports_scaled_mm_fp8(device):
+        if not PLATFORM_SUPPORTS_FP8:
             raise unittest.SkipTest(f8_msg)
         x_fp8 = torch.rand(size, size, device=device).to(x_dtype)
         y_fp8 = torch.eye(size, device=device, dtype=y_dtype)
@@ -659,8 +655,7 @@ class TestFP8Matmul(TestCase):
             self.assertEqual(out_dtype, out_fp8.dtype)
         self.assertEqual(out_fp32, out_fp8.to(torch.float))
 
-    # Skip on XPU due to known oneDNN accuracy issue (#169772)
-    @skipXPU
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     @parametrize(
         "test_case",
         [
@@ -679,8 +674,6 @@ class TestFP8Matmul(TestCase):
         name_fn=lambda test_case: test_case[0],
     )
     def test_float8_basics(self, device, test_case) -> None:
-        if not _device_supports_scaled_mm_fp8(device):
-            raise unittest.SkipTest(f8_msg)
         _, x_dtype, y_dtype, out_dtype, size = test_case
         expect_e5m2_cuda_error = x_dtype == e5m2_type and y_dtype == e5m2_type
         # According to https://docs.nvidia.com/cuda/cublas/#id99 8F_E5M2 MM is unsupported
@@ -699,11 +692,8 @@ class TestFP8Matmul(TestCase):
                 size=size,
             )
 
-    # Skip on XPU due to known oneDNN accuracy issue (#169772)
-    @skipXPU
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     def test_float8_basics_layout_permutations(self, device) -> None:
-        if not _device_supports_scaled_mm_fp8(device):
-            raise unittest.SkipTest(f8_msg)
         if "cuda" in device:
             for (x_cm, y_cm) in itertools.product([True, False], repeat=2):
                 # SM 10 and 11 support all permutations, SM 12 TT and TN, SM 9 only TN
@@ -720,20 +710,17 @@ class TestFP8Matmul(TestCase):
             # Non-CUDA: test basic TN layout as sanity check
             self._test_tautological_mm(device, size=64, out_dtype=torch.bfloat16, x_cm=True, y_cm=False)
 
-    # Skip on XPU due to known oneDNN accuracy issue (#169772)
-    @skipXPU
+
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     def test_float8_basics_invalid_out_dtype(self, device) -> None:
-        if not _device_supports_scaled_mm_fp8(device):
-            raise unittest.SkipTest(f8_msg)
         with self.assertRaises(
             AssertionError if (torch.version.hip or "xpu" in device or "cpu" in device)
             else RuntimeError
         ):
             self._test_tautological_mm(device, out_dtype=e5m2_type)
 
+    @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
     def test_float8_scale(self, device) -> None:
-        if not _device_supports_scaled_mm_fp8(device):
-            raise unittest.SkipTest(f8_msg)
         size = (16, 16)
         x = torch.full(size, .5, device=device, dtype=e4m3_type)
         # hipblaslt does not yet support mixed e4m3_type input
@@ -992,9 +979,8 @@ class TestFP8Matmul(TestCase):
     @parametrize("y_cm", [True, False])
     def test_scaled_mm_vs_emulated(self, base_dtype, x_cm, y_cm, device):
         # Blackwell (SM_10) supports all possible layout permutations, while Hopper only TN
-        if torch.cuda.is_available():
-            if (x_cm, y_cm) != (True, False) and torch.cuda.get_device_properties(0).major != 10:
-                raise unittest.SkipTest("Unsupported layout on the architecture")
+        if torch.cuda.is_available() and (x_cm, y_cm) != (True, False) and torch.cuda.get_device_properties(0).major != 10:
+            raise unittest.SkipTest("Unsupported layout on the architecture")
         torch.manual_seed(42)
         input_dtype = e4m3_type
         output_dtype = base_dtype
@@ -1165,9 +1151,8 @@ class TestFP8Matmul(TestCase):
             lambda: scaled_mm_wrap(x, y, scale_a, scale_b, out_dtype=torch.float32),
         )
 
-    @skipIfXpu(msg="AssertionError, torch-xpu-ops: 2862")
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8, f8_msg)
-    @unittest.skipIf(SM100OrLater, "fast_accum is SM90-only")
+    @skipCUDAIf(SM100OrLater, "fast_accum is SM90-only")
     def test_float8_scale_fast_accum(self, device) -> None:
         size = (16, 16)
         x = torch.full(size, .5, device=device, dtype=e4m3_type)
@@ -1185,8 +1170,6 @@ class TestFP8Matmul(TestCase):
     @skipCUDAIf(not SM89OrLater, "rowwise implementation is currently sm89-sm100 specific")
     @parametrize("use_fast_accum", [True, False])
     def test_float8_rowwise_scaling_sanity(self, device, use_fast_accum: bool) -> None:
-        if torch.xpu.is_available() and use_fast_accum:
-            raise unittest.SkipTest("XPU does not support fast accum yet")
 
         M, K, N = (1024, 512, 2048)
         fill_value = 0.5
@@ -1386,9 +1369,10 @@ class TestFP8Matmul(TestCase):
         else:
             test()
 
+    @onlyOn(["cuda", "xpu"])
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8 or IS_WINDOWS, f8_msg)
-    @unittest.skipIf(not IS_SM90, "DeepSeek style (1x128, 128x128) blockwise scaling requires SM90 (Hopper)")
-    @unittest.skipIf(
+    @skipCUDAIf(not IS_SM90, "DeepSeek style (1x128, 128x128) blockwise scaling requires SM90 (Hopper)")
+    @skipCUDAIf(
         _get_torch_cuda_version() < (12, 9),
         "cuBLAS blockwise scaling added in CUDA 12.9",
     )
@@ -1418,7 +1402,11 @@ class TestFP8Matmul(TestCase):
         # Inputs (as generated are):
         #   A: [M, K]
         #   B: [N, K]
+        #
         # then scales are, for the 3 combinations:
+        # Scale shapes are the same for CUDA and XPU (only strides differ).
+        # For CUDA, scales use column-major strides;
+        # XPU accepts any stride, but prefers row-major. XPU doesn't do L4 padding
         #   1x128 x 1x128:
         #     As: [M, K // 128], stride: [1, M] -> scale.t().contiguous().t()
         #     Bs: [N, K // 128], stride: [1, N] -> scale.t().contiguous().t()
@@ -1433,24 +1421,33 @@ class TestFP8Matmul(TestCase):
         """
         torch.manual_seed(42)
 
+        is_xpu = "xpu" in str(device)
+
         def _adjust_lhs_scale(x_fp8, x_scales, lhs_block):
             M, K = x_fp8.shape
             x_scales_original = x_scales.clone()
             # 1x128 blocks need scales to be outer-dim-major
             if lhs_block == 1:
-                x_scales = x_scales.t().contiguous().t()
                 lhs_recipe = ScalingType.BlockWise1x128
+                x_hp = hp_from_1x128(x_fp8, x_scales_original)
+                # Shape [M, K//128] for both CUDA and XPU.
+                # cuBLAS requires column-major stride (1, M); XPU also accepts this.
+                x_scales = x_scales.t().contiguous().t()
                 if not (x_scales.shape[0] == M and x_scales.shape[1] == K // 128):
                     raise AssertionError(f"{x_scales.shape=}")
                 if not (x_scales.stride(0) == 1 and x_scales.stride(1) in [1, M]):
                     raise AssertionError(f"{x_scales.stride=}")
-                x_hp = hp_from_1x128(x_fp8, x_scales_original)
             else:
                 lhs_recipe = ScalingType.BlockWise128x128
-                x_scales, pad_amount = _pad_128x128_scales(x_scales)
-                # scales in [M // 128, L4] -> [L4, M // 128]
-                x_scales = x_scales.t()
                 x_hp = hp_from_128x128(x_fp8, x_scales_original)
+                if is_xpu:
+                    # XPU: same shape as CUDA v2 without L4: [K//128, M//128]
+                    x_scales = x_scales_original.t()
+                else:
+                    # cuBLAS: shape [L4, M//128] where L4=round_up(K//128, 4)
+                    x_scales, pad_amount = _pad_128x128_scales(x_scales)
+                    # scales in [M // 128, L4] -> [L4, M // 128]
+                    x_scales = x_scales.t()
 
             return x_hp, lhs_recipe, x_scales, x_scales_original
 
@@ -1459,19 +1456,28 @@ class TestFP8Matmul(TestCase):
             y_scales_original = y_scales.clone()
 
             if rhs_block == 1:
-                y_scales = y_scales.t().contiguous().t()
                 rhs_recipe = ScalingType.BlockWise1x128
+                y_hp = hp_from_1x128(y_fp8, y_scales_original)
+                # Shape [N, K//128] for both CUDA and XPU.
+                # cuBLAS requires column-major stride (1, N); XPU C++ internally
+                # transposes to [K//128, N] row-major for oneDNN.
+                y_scales = y_scales.t().contiguous().t()
                 if not (y_scales.shape[0] == N and y_scales.shape[1] == K // 128):
                     raise AssertionError(f"{y_scales.shape=}")
                 if not (y_scales.stride(0) == 1 and y_scales.stride(1) in [1, N]):
                     raise AssertionError(f"{y_scales.stride=}")
-                y_hp = hp_from_1x128(y_fp8, y_scales_original)
             else:
                 rhs_recipe = ScalingType.BlockWise128x128
-                y_scales, pad_amount = _pad_128x128_scales(y_scales)
-                # Scale in [N // 128, L4] -> [L4, N // 128]
-                y_scales = y_scales.t()
                 y_hp = hp_from_128x128(y_fp8, y_scales_original)
+                if is_xpu:
+                    # XPU: same shape as CUDA v2 without L4: [K//128, N//128]
+                    y_scales = y_scales_original.t()
+                else:
+                    # cuBLAS: shape [L4, N//128] where L4=round_up(K//128, 4)
+                    y_scales, pad_amount = _pad_128x128_scales(y_scales)
+                    # Scale in [N // 128, L4] -> [L4, N // 128]
+                    y_scales = y_scales.t()
+
 
             return y_hp, rhs_recipe, y_scales, y_scales_original
 
@@ -1568,13 +1574,13 @@ class TestFP8Matmul(TestCase):
             y = torch.eye(M, device=device)
 
             x_hp, x_recipe, x_fp8, x_scales, x_scales_original = _build_lhs(x, lhs_block)
-            y_hp, y_recipe, y_fp8, y_scales, y_scales_original = _build_lhs(y, rhs_block)
+            y_hp, y_recipe, y_fp8, y_scales, y_scales_original = _build_rhs(y, rhs_block)
         elif test_case == "x_ones_y_ones_calc_scales":
             x = torch.full((M, K), 1.0, device=device)
             y = torch.full((N, K), 1.0, device=device)
 
             x_hp, x_recipe, x_fp8, x_scales, x_scales_original = _build_lhs(x, lhs_block)
-            y_hp, y_recipe, y_fp8, y_scales, y_scales_original = _build_lhs(y, rhs_block)
+            y_hp, y_recipe, y_fp8, y_scales, y_scales_original = _build_rhs(y, rhs_block)
         elif test_case in ["x_ones_y_ones_set_scales", "x_ones_y_ones_modify_scales"]:
             x = torch.full((M, K), 1.0, device=device)
             y = torch.full((N, K), 1.0, device=device)
@@ -1609,7 +1615,7 @@ class TestFP8Matmul(TestCase):
             y = torch.randn(N, K, device=device, dtype=output_dtype) * 1e-3
 
             x_hp, x_recipe, x_fp8, x_scales, x_scales_original = _build_lhs(x, lhs_block)
-            y_hp, y_recipe, y_fp8, y_scales, y_scales_original = _build_lhs(y, rhs_block)
+            y_hp, y_recipe, y_fp8, y_scales, y_scales_original = _build_rhs(y, rhs_block)
         else:
             raise ValueError("Unknown test-case passed")
 
@@ -1617,9 +1623,10 @@ class TestFP8Matmul(TestCase):
                   y_hp, y_recipe, y_fp8, y_scales, y_scales_original)
 
 
+    @onlyOn(["cuda", "xpu"])
     @unittest.skipIf(not PLATFORM_SUPPORTS_FP8 or IS_WINDOWS, f8_msg)
-    @unittest.skipIf(not IS_SM90, "DeepSeek style (1x128, 128x128) blockwise scaling requires SM90 (Hopper)")
-    @unittest.skipIf(
+    @skipCUDAIf(not IS_SM90, "DeepSeek style (1x128, 128x128) blockwise scaling requires SM90 (Hopper)")
+    @skipCUDAIf(
         _get_torch_cuda_version() < (12, 9),
         "cuBLAS blockwise scaling added in CUDA 12.9",
     )
@@ -1640,31 +1647,46 @@ class TestFP8Matmul(TestCase):
         x_scales_original = x_scales
         y_scales_original = y_scales
         # 1x128 blocks need scales to be outer-dim-major
+
+        is_xpu = "xpu" in str(device)
+
         if lhs_block == 1:
-            x_scales = x_scales.t().contiguous().t()
             lhs_recipe = ScalingType.BlockWise1x128
+            # shape [M, K//128].
+            x_scales = x_scales.t().contiguous().t()
             if not (x_scales.shape[0] == M and x_scales.shape[1] == K // 128):
                 raise AssertionError(f"{x_scales.shape=}")
             if not (x_scales.stride(0) == 1 and x_scales.stride(1) in [1, M]):
                 raise AssertionError(f"{x_scales.stride=}")
         else:
             lhs_recipe = ScalingType.BlockWise128x128
-            x_scales, pad_amount = _pad_128x128_scales(x_scales)
-            # scales in [M // 128, L4] -> [L4, M // 128]
-            x_scales = x_scales.t()
+            if is_xpu:
+                # XPU: same shape as CUDA v2 without L4: [K//128, M//128]
+                x_scales = x_scales_original.t()
+            else:
+                # cuBLAS: shape [L4, M//128] where L4=round_up(K//128, 4)
+                x_scales, pad_amount = _pad_128x128_scales(x_scales)
+                # scales in [M // 128, L4] -> [L4, M // 128]
+                x_scales = x_scales.t()
 
         if rhs_block == 1:
-            y_scales = y_scales.t().contiguous().t()
             rhs_recipe = ScalingType.BlockWise1x128
+            # shape [N, K//128].
+            y_scales = y_scales.t().contiguous().t()
             if not (y_scales.shape[0] == N and y_scales.shape[1] == K // 128):
                 raise AssertionError(f"{y_scales.shape=}")
             if not (y_scales.stride(0) == 1 and y_scales.stride(1) in [1, N]):
                 raise AssertionError(f"{y_scales.stride=}")
         else:
             rhs_recipe = ScalingType.BlockWise128x128
-            y_scales, pad_amount = _pad_128x128_scales(y_scales)
-            # Scale in [N // 128, L4] -> [L4, N // 128]
-            y_scales = y_scales.t()
+            if is_xpu:
+                # XPU: same shape as CUDA v2 without L4: [K//128, N//128]
+                y_scales = y_scales_original.t()
+            else:
+                # cuBLAS: shape [L4, N//128] where L4=round_up(K//128, 4)
+                y_scales, pad_amount = _pad_128x128_scales(y_scales)
+                # Scale in [N // 128, L4] -> [L4, N // 128]
+                y_scales = y_scales.t()
 
         # Verify that actual F8 mm doesn't error
         scaled_mm_wrap(
@@ -2580,7 +2602,6 @@ class TestFP8Matmul(TestCase):
         torch.testing.assert_close(C, C_ref, atol=0, rtol=0)
 
 
-    @skipIfRocm
     @unittest.skipIf(not PLATFORM_SUPPORTS_MX_GEMM, mx_skip_msg)
     def test_blockwise_nvfp4_compile(self, device) -> None:
 
