@@ -1974,7 +1974,7 @@ class TestDynamicSpecDecoratorCompile(TestCase):
         # graph (dim 0 is unbacked) -- proving the decorator was picked up.
         compiled(torch.randn(20, 3))
         self.assertEqual(len(backend.graphs), 1)
-        # Find the tensor placeholder (could be other SymInt placeholders too).
+        # Find the tensor placeholder.
         tensor_phs = [
             n
             for n in backend.graphs[0].graph.nodes
