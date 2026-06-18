@@ -45,7 +45,7 @@ from torch._export.serde.serialize import GraphModuleSerializer
 from torch._higher_order_ops.auto_functionalize import can_auto_functionalize
 from torch._inductor import metrics
 from torch._inductor.utils import get_free_symbols
-from torch._library.fake_class_registry import FakeScriptObject
+from torch._library.fake_class_registry import FakeScriptObject, maybe_to_fake_obj
 from torch._library.opaque_object import get_opaque_obj_repr, is_opaque_value
 from torch._prims_common import (
     compute_required_storage_length,
@@ -4477,7 +4477,7 @@ class Layout(OutputSpec):
         if len(self.stride) != len(order):
             raise AssertionError("Expected len(self.stride) == len(order)")
 
-        # ignore dimensions of size 1, they dont affect layout
+        # ignore dimensions of size 1, they don't affect layout
         non_1_indices = [
             i
             for i, dim in enumerate(self.size)
@@ -6027,17 +6027,6 @@ class TemplateBuffer(OperationBuffer):
         return tuple(walk(structured, []))
 
 
-@dataclasses.dataclass(frozen=True)
-class FlexGemmEpilogueConfig:
-    epilogue_name: str
-    epilogue_source: str
-    gemm_op: str
-    alpha: float
-    beta: float
-    tuned: bool = False
-    out_dtype: Any | None = None
-
-
 class TritonTemplateBuffer(TemplateBuffer):
     def __init__(
         self,
@@ -7215,6 +7204,12 @@ class ExternKernel(InputsKernel):
         # We need to retain the constant values of fake tensors that we originally
         # propagated the graph with, because for some operators running without a
         # constant would trigger an error / DataDependentException
+        # TorchBind fake objects are mutable and may have been advanced by AOT
+        # tracing. Replay effectful methods on a fresh per-graph copy of the
+        # guarded object state instead of the already-mutated lowering value.
+        replay_torchbind = isinstance(
+            kernel, torch._higher_order_ops.torchbind.CallTorchBind
+        )
         for x in tensor_args:
             # if x is a view of a constant, we need to realize the view
             # (we can't pass the constant into the kernel directly)
@@ -7226,7 +7221,15 @@ class ExternKernel(InputsKernel):
             ):
                 example_args.append(V.graph.torchbind_constants[x.get_name()])
             elif isinstance(x, TorchBindObject):
-                example_args.append(x.get_value())
+                if replay_torchbind:
+                    replay_objects = V.graph.torchbind_replay_objects
+                    if x.get_name() not in replay_objects:
+                        replay_objects[x.get_name()] = maybe_to_fake_obj(
+                            V.fake_mode, x.get_real_obj()
+                        )
+                    example_args.append(replay_objects[x.get_name()])
+                else:
+                    example_args.append(x.get_value())
             elif isinstance(x, OpaqueMultiOutput):
                 example_args.append(x.opaque_example_value)
             elif isinstance(x, torch._inductor.ir.GeneratorState):
@@ -8428,6 +8431,7 @@ class UserDefinedTritonKernel(ExternKernel):
             reset_to_zero_args,
             self.grid,
             epilogue_fusion,
+            self.launch_kwargs,
         )
         named_args = {
             k: self.get_kwargs_value(k) for k in self.ordered_kwargs_for_cpp_kernel
@@ -8514,6 +8518,7 @@ class UserDefinedTritonKernel(ExternKernel):
         grid: Any,
         tma_descriptor_metadata: dict[str, Any],
         kernel_args: dict[str, Any],
+        launch_kwargs: tuple[str, ...],
     ) -> None:
         inputs: list[IRNode] = []
         kwargs: dict[str, IRNode] = {}
@@ -8545,6 +8550,7 @@ class UserDefinedTritonKernel(ExternKernel):
         )
         self.kernel_idx = kernel_idx
         self.grid = grid
+        self.launch_kwargs = launch_kwargs
 
         kernel, configs, _, _ = self.get_kernel_and_metadata()
 
@@ -9929,7 +9935,7 @@ class MemoryCheckKernel(FallbackKernel):
         dead_repr = repr(dead_list)
         if is_final_step:
             wrapper.writeline(
-                "# note: dont currently distinguish between buffers returned and dealloc'd in last step"
+                "# note: don't currently distinguish between buffers returned and dealloc'd in last step"
             )
             call = f"check_memory_step(allocated={alive_repr}, freed={dead_repr}, is_final_step={is_final_step})"
         else:
