@@ -5885,6 +5885,10 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         res = opt_mod(x)
 
         self.assertTrue(same(ref, res))
+        if not torch._dynamo.config.assume_static_by_default:
+            self.assertEqual(len(backend.graphs), 0)
+            return
+
         self.assertEqual(len(backend.graphs), 1)
         call_nodes = [
             node for node in backend.graphs[0].graph.nodes if node.op == "call_function"
@@ -5942,11 +5946,15 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         res = opt_mod(x)
 
         self.assertTrue(same(ref, res))
-        self.assertEqual(len(backend.graphs), 2)
         call_targets = [
             [node.target for node in graph.graph.nodes if node.op == "call_function"]
             for graph in backend.graphs
         ]
+        if not torch._dynamo.config.assume_static_by_default:
+            self.assertEqual(call_targets, [[operator.eq, torch.any]])
+            return
+
+        self.assertEqual(len(backend.graphs), 2)
         self.assertEqual(call_targets, [[operator.eq, torch.any], [torch.reshape]])
         reshape_node = next(
             node
