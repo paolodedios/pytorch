@@ -249,6 +249,50 @@ def get_kernel_bin_format(device: str) -> str:
         return ""
 
 
+def _cuda_fatbin_command(
+    asm_file: str,
+    cubin_file: str,
+    raw_cubin_file: str | None,
+    nvcc: str | None,
+    fatbinary: str | None,
+    current_arch: str | None = None,
+) -> list[str]:
+    current_arch = current_arch or cuda_compile_utils._nvcc_arch_as_compile_option()
+    gencode_options = cuda_compile_utils._cuda_multi_arch_gencode_options(current_arch)
+    if (
+        fatbinary is not None
+        and raw_cubin_file is not None
+        and os.path.exists(raw_cubin_file)
+        and not cuda_compile_utils._cuda_gencode_options_have_non_current_sass(
+            gencode_options, current_arch
+        )
+    ):
+        # Avoid re-running ptxas; the CUDA toolkit can lag the PTX version
+        # emitted by Triton. This path is only valid when no extra SASS images
+        # beyond the current GPU generation were requested.
+        return [
+            fatbinary,
+            f"--create={cubin_file}",
+            "-64",
+            f"--image3=kind=elf,sm={current_arch},file={raw_cubin_file}",
+            f"--image3=kind=ptx,sm={current_arch},file={asm_file}",
+        ]
+
+    if nvcc is None:
+        raise RuntimeError("nvcc is required to build fatbin")
+
+    cmd = [
+        *shlex.split(nvcc),
+        "-fatbin",
+        asm_file,
+        "-o",
+        cubin_file,
+    ]
+    for gencode_option in gencode_options:
+        cmd.extend(["-gencode", gencode_option])
+    return cmd
+
+
 def get_device_information(device_type: str) -> dict[str, str]:
     """
     Gets all the current device information used to compile the .so.
@@ -612,16 +656,16 @@ def _op_overload_packet_cache_key(
 
 def _record_op_overload_schema_details(
     value: Any,
-    result: dict[tuple[str, str, str, tuple[str, ...]], None],
+    result: OrderedSet[tuple[str, str, str, tuple[str, ...]]],
 ) -> None:
     if isinstance(value, torch._ops.OpOverload):
         if not _needs_explicit_schema_cache_key(value):
             return
-        result[_op_overload_cache_key(value)] = None
+        result.add(_op_overload_cache_key(value))
         return
     if isinstance(value, torch._ops.OpOverloadPacket):
         for detail in _op_overload_packet_cache_key(value):
-            result[detail] = None
+            result.add(detail)
         return
     if isinstance(value, torch.fx.Node):
         return
@@ -631,20 +675,6 @@ def _record_op_overload_schema_details(
     elif isinstance(value, dict):
         for item in itertools.chain(value.keys(), value.values()):
             _record_op_overload_schema_details(item, result)
-
-
-def _get_op_overload_schema_details(
-    gm: torch.fx.GraphModule,
-) -> list[tuple[str, str, str, tuple[str, ...]]]:
-    result: dict[tuple[str, str, str, tuple[str, ...]], None] = {}
-    for module in gm.modules():
-        if not isinstance(module, torch.fx.GraphModule):
-            continue
-        for node in module.graph.nodes:
-            _record_op_overload_schema_details(node.target, result)
-            _record_op_overload_schema_details(node.args, result)
-            _record_op_overload_schema_details(node.kwargs, result)
-    return sorted(result)
 
 
 def extract_tensor_metadata_for_cache_key(t: Tensor) -> TensorMetadata:
@@ -772,10 +802,6 @@ class FxGraphCachePickler(pickle.Pickler):
         is sufficient for cache-key hashing.
         """
         t = type(obj)
-        if isinstance(obj, torch._ops.OpOverload):
-            return self._reduce_op_overload(obj)
-        if isinstance(obj, torch._ops.OpOverloadPacket):
-            return self._reduce_op_overload_packet(obj)
         # Types already registered or handled by default pickle.
         # Use isinstance for _PICKLE_NATIVE_TYPES to cover subclasses
         # (e.g. ABCMeta is a subclass of type, and pickle handles all
@@ -891,7 +917,9 @@ class FxGraphCachePickler(pickle.Pickler):
 
         Default pickling identifies an overload by its qualified name, which is
         not enough for custom ops whose schema can change across processes while
-        keeping the same name.
+        keeping the same name. This complements the FX graph walk, which covers
+        operators hidden by GraphModule's generated source serialization; this
+        reducer covers live operator objects stored elsewhere in hash details.
         """
         return (
             _ident,
@@ -908,7 +936,9 @@ class FxGraphCachePickler(pickle.Pickler):
         Custom reducer to pickle OpOverloadPackets.
 
         A packet's qualified name does not capture schema alias/mutation details
-        for custom ops registered under the same name in another process.
+        for custom ops registered under the same name in another process. This
+        complements the FX graph walk in FxGraphHashDetails for live packet
+        objects outside GraphModule's generated source serialization.
         """
         return (
             _ident,
@@ -1522,18 +1552,33 @@ class FxGraphHashDetails:
         # the kernel source code separately
         self.user_defined_triton_source: list[Any] = []
         if gm is not None:
-            op_overload_schema_details = _get_op_overload_schema_details(gm)
+            op_overload_schema_details: OrderedSet[
+                tuple[str, str, str, tuple[str, ...]]
+            ] = OrderedSet()
             for module in gm.modules():
                 if not isinstance(module, torch.fx.GraphModule):
                     continue
-                for node in itertools.chain(
-                    module.graph.find_nodes(
-                        op="call_function", target=triton_kernel_wrapper_functional
-                    ),
-                    module.graph.find_nodes(
-                        op="call_function", target=triton_kernel_wrapper_mutation
-                    ),
-                ):
+
+                for node in module.graph.nodes:
+                    # GraphModule pickling emits operator targets as generated
+                    # source, so custom op schemas stored on FX nodes would not
+                    # reach the OpOverload reducers below.
+                    _record_op_overload_schema_details(
+                        node.target, op_overload_schema_details
+                    )
+                    _record_op_overload_schema_details(
+                        node.args, op_overload_schema_details
+                    )
+                    _record_op_overload_schema_details(
+                        node.kwargs, op_overload_schema_details
+                    )
+
+                    if node.op != "call_function" or not (
+                        node.target is triton_kernel_wrapper_functional
+                        or node.target is triton_kernel_wrapper_mutation
+                    ):
+                        continue
+
                     from triton.runtime.autotuner import Autotuner
 
                     kernel = kernel_side_table.get_kernel(node.kwargs["kernel_idx"])
@@ -1561,7 +1606,7 @@ class FxGraphHashDetails:
                     )
 
             if op_overload_schema_details:
-                self.op_overload_schema_details = op_overload_schema_details
+                self.op_overload_schema_details = sorted(op_overload_schema_details)
 
         no_tensor_inputs = not any(isinstance(x, torch.Tensor) for x in example_inputs)
         # This device index is usually already encoded by the device of the inputs
@@ -1664,7 +1709,7 @@ class FxGraphHashDetails:
             config._fuse_ddp_communication_passes
         )
 
-        # Register indcutor backends and custom passes and get their UUIDs.
+        # Register inductor backends and custom passes and get their UUIDs.
         init_backend_registration()
         self.custom_backend_passes = tuple(
             map(self._get_custom_pass_detail, custom_backend_passes.values())
@@ -2238,29 +2283,8 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
 
         # Now re-evaluate with the symints to add any guards to the current env.
         if graph.guards_expr:
-            # Older cache entries were serialized before guard source locations
-            # were stored, so keep accepting entries with only guards_expr.
-            guards_expr_with_source = getattr(graph, "guards_expr_with_source", None)
-            guards_expr_with_source_arg_count = getattr(
-                graph, "guards_expr_with_source_arg_count", None
-            )
-            # AOTAutograd can load an FX graph using a custom guard checker and
-            # an argument list that differs from the one Inductor used to save
-            # these per-guard expressions. In that case, preserve the custom
-            # evaluate_guards fallback below.
-            can_replay_guards_with_source = (
-                guards_expr_with_source is not None
-                and guards_expr_with_source_arg_count == len(symints)
-                and not config.unsafe_skip_cache_dynamic_shape_guards
-            )
-            if can_replay_guards_with_source:
-                check = shape_env.evaluate_guards_expression_with_source_info(
-                    guards_expr_with_source, symints
-                )
-            else:
-                check = bool(evaluate_guards(graph.guards_expr, symints))
-            if check is not True:
-                raise AssertionError(f"Post-load guard evaluation failed for key {key}")
+            check = bool(evaluate_guards(graph.guards_expr, symints))
+            assert check is True  # noqa: S101
             log.debug(
                 "fx graph cache key %s post-load guards: %s", key, shape_env.guards
             )
@@ -2314,14 +2338,8 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
             raise AssertionError("ShapeEnv is not set for cache serialization")
         symints = FxGraphCache._filter_backed_symints(example_inputs)
         guards = shape_env.get_pruned_guards(symints)
-        (
-            compiled_graph.guards_expr,
-            compiled_graph.guards_expr_with_source,
-        ) = shape_env.produce_guards_expression_with_source_info(
+        compiled_graph.guards_expr = shape_env.produce_guards_expression(
             placeholders=symints, guards=guards
-        )
-        compiled_graph.guards_expr_with_source_arg_count = (
-            len(symints) if compiled_graph.guards_expr_with_source is not None else None
         )
         try:
             backend = torch.utils._triton.triton_backend()
@@ -3344,7 +3362,7 @@ end
 
             cubins_o = []
             asm_files = []
-            fatbin_cmds: list[tuple[str, str, str | None]] = []
+            fatbin_cmds: list[tuple[str, str, str | None, str | None]] = []
             if not _IS_WINDOWS:
                 cubins_to_embed: list[tuple[str, str]] = []
                 ld, objcopy = get_ld_and_objcopy(use_relative_path)
@@ -3365,7 +3383,12 @@ end
                     ):
                         if torch.version.hip is None:
                             fatbin_cmds.append(
-                                (asm_file, cubin_file, value.get("runtime_bin_path"))
+                                (
+                                    asm_file,
+                                    cubin_file,
+                                    value.get("runtime_bin_path"),
+                                    value.get("cuda_arch"),
+                                )
                             )
 
                         else:
@@ -3406,7 +3429,6 @@ end
                 if fatbin_cmds:
                     from concurrent.futures import ThreadPoolExecutor
 
-                    current_arch = cuda_compile_utils._nvcc_arch_as_compile_option()
                     nvcc = cuda_compile_utils._cuda_compiler()
                     fatbinary = shutil.which("fatbinary")
                     if nvcc is not None and (nvcc_dir := os.path.dirname(nvcc)):
@@ -3415,37 +3437,12 @@ end
                             fatbinary = candidate
 
                     def _compile_fatbin(
-                        asm_cubin_and_raw: tuple[str, str, str | None],
+                        asm_cubin_and_raw: tuple[str, str, str | None, str | None],
                     ) -> None:
-                        asm_f, cubin_f, raw_cubin_f = asm_cubin_and_raw
-                        if (
-                            fatbinary is not None
-                            and raw_cubin_f is not None
-                            and os.path.exists(raw_cubin_f)
-                        ):
-                            # Avoid re-running ptxas; the CUDA toolkit can lag
-                            # the PTX version emitted by Triton.
-                            cmd = [
-                                fatbinary,
-                                f"--create={cubin_f}",
-                                "-64",
-                                f"--image3=kind=elf,sm={current_arch},file={raw_cubin_f}",
-                                f"--image3=kind=ptx,sm={current_arch},file={asm_f}",
-                            ]
-                        else:
-                            if nvcc is None:
-                                raise RuntimeError("nvcc is required to build fatbin")
-                            cmd = [
-                                *shlex.split(nvcc),
-                                "-fatbin",
-                                asm_f,
-                                "-o",
-                                cubin_f,
-                                "-gencode",
-                                f"arch=compute_{current_arch},code=compute_{current_arch}",
-                                "-gencode",
-                                f"arch=compute_{current_arch},code=sm_{current_arch}",
-                            ]
+                        asm_f, cubin_f, raw_cubin_f, cuda_arch = asm_cubin_and_raw
+                        cmd = _cuda_fatbin_command(
+                            asm_f, cubin_f, raw_cubin_f, nvcc, fatbinary, cuda_arch
+                        )
                         try:
                             subprocess.run(
                                 cmd, capture_output=True, text=True, check=True
