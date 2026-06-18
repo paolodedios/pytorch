@@ -2430,7 +2430,9 @@ class TestSparseCSR(TestCase):
             run_test(n, k, upper, unitriangular, transpose, zero)
 
     @dtypes(torch.float32, torch.float64, torch.complex64, torch.complex128)
-    @dtypesIfCUDA(*floating_and_complex_types_and(torch.half, torch.bfloat16))
+    @dtypesIfCUDA(*floating_and_complex_types_and(
+        torch.half,
+        *([torch.bfloat16] if PLATFORM_SUPPORTS_BF16 else [])))
     @precisionOverride({torch.float32: 1e-3, torch.complex64: 1e-3,
                         torch.float64: 1e-8, torch.complex128: 1e-8,
                         torch.half: 1e-2, torch.bfloat16: 3.5e-2})
@@ -2482,7 +2484,9 @@ class TestSparseCSR(TestCase):
                     run_test(c, a, b, op_a, op_b)
 
     @dtypes(torch.float32, torch.float64, torch.complex64, torch.complex128)
-    @dtypesIfCUDA(*floating_and_complex_types_and(torch.half, torch.bfloat16))
+    @dtypesIfCUDA(*floating_and_complex_types_and(
+        torch.half,
+        *([torch.bfloat16] if PLATFORM_SUPPORTS_BF16 else [])))
     @precisionOverride({torch.float32: 1e-3, torch.complex64: 1e-3,
                         torch.float64: 1e-8, torch.complex128: 1e-8,
                         torch.half: 1e-2, torch.bfloat16: 3.5e-2})
