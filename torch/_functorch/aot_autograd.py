@@ -569,7 +569,7 @@ def create_aot_state(
         with (
             patch("torch.cuda.set_rng_state", lambda *args: None),
             patch("torch.xpu.set_rng_state", lambda *args: None),
-            patch("torch.accelerator.set_rng_state", lambda *args: None),
+            patch("torch.accelerator.random.set_rng_state", lambda *args: None),
         ):
             mod = root_module_when_exporting_non_strict(flat_fn)
             if mod is not None:
