@@ -9,6 +9,7 @@ from typing import Any
 import torch
 from torch._dynamo.utils import counters, is_node_meta_valid
 from torch._logging import trace_structured
+from torch.fx.experimental.symbolic_shapes import free_symbols
 from torch.fx.passes.graph_transform_observer import GraphTransformObserver
 from torch.utils._ordered_set import OrderedSet
 
@@ -741,6 +742,185 @@ class PreGradBatchLinearFusion(BatchFusion):
                 getitem.meta.update(linear.meta)
                 graph.erase_node(linear)  # type: ignore[operator]
         counters["inductor"]["batch_linear"] += 1
+
+
+# Cap the contracted width we are willing to split. Past this the original
+# linear is compute-bound enough that the cat it removes is in the noise, while
+# the split still pays N launches plus the partial-sum adds, so it tends to lose.
+CAT_LINEAR_MAX_TOTAL_WIDTH = 384
+# Skip slivers: a piece this thin turns into a launch-bound matmul whose own
+# overhead outweighs the slice of the cat traffic it saves.
+CAT_LINEAR_MIN_PIECE_WIDTH = 8
+# Keep the fan-out small. More pieces means more kernel launches and more
+# operator.add nodes in the reduce, which eats the cat saving.
+CAT_LINEAR_MAX_PARTS = 3
+
+
+def _meta_shape(node):
+    if not isinstance(node, torch.fx.Node) or not is_node_meta_valid(node):
+        return None
+    val = node.meta.get("example_value")
+    if val is None:
+        val = node.meta.get("val")
+    if val is None or not hasattr(val, "shape"):
+        return None
+    shape = val.shape
+    # static shapes only: bail on symbolic so we never specialize a backed
+    # SymInt or trip over an unbacked one (same free_symbols guard split_cat uses)
+    if free_symbols(shape):
+        return None
+    return tuple(int(s) for s in shape)
+
+
+def match_cat_linear(node: torch.fx.Node):
+    """Match linear(cat([parts...], dim=-1), weight, bias).
+
+    Returns (parts, weight, bias, offsets) or None. Conservative on purpose:
+    last-dim cat only, total width and part count capped, no thin slivers, and
+    a weight whose contraction dim lines up with the cat. The cat must have a
+    single user so it can actually be erased once the linear is rewritten.
+    """
+    cat_in = get_arg_value(node, 0, "input")
+    weight = get_arg_value(node, 1, "weight")
+    bias = get_arg_value(node, 2, "bias")
+    if not isinstance(cat_in, torch.fx.Node) or not CallFunctionVarArgs(
+        [torch.cat]
+    ).match(cat_in):
+        return None
+    if len(cat_in.users) != 1:
+        return None
+
+    parts = get_arg_value(cat_in, 0, "tensors")
+    if not isinstance(parts, (list, tuple)) or not (
+        2 <= len(parts) <= CAT_LINEAR_MAX_PARTS
+    ):
+        return None
+    if not all(isinstance(p, torch.fx.Node) for p in parts):
+        return None
+
+    cat_shape = _meta_shape(cat_in)
+    if cat_shape is None or len(cat_shape) < 2:
+        return None
+    rank = len(cat_shape)
+    cat_dim = get_arg_value(cat_in, 1, "dim")
+    if cat_dim is None:
+        cat_dim = 0
+    if not isinstance(cat_dim, int):
+        return None
+    if (cat_dim + rank if cat_dim < 0 else cat_dim) != rank - 1:
+        return None
+
+    k_total = int(cat_shape[-1])
+    if k_total > CAT_LINEAR_MAX_TOTAL_WIDTH:
+        return None
+
+    offsets = [0]
+    for p in parts:
+        sh = _meta_shape(p)
+        if sh is None or len(sh) != rank:
+            return None
+        k_i = int(sh[-1])
+        if k_i < CAT_LINEAR_MIN_PIECE_WIDTH:
+            return None
+        offsets.append(offsets[-1] + k_i)
+    if offsets[-1] != k_total:
+        return None
+
+    w_shape = _meta_shape(weight)
+    if w_shape is None or len(w_shape) != 2 or int(w_shape[-1]) != k_total:
+        return None
+
+    return parts, weight, bias, offsets
+
+
+@register_fusion("cat_linear")
+class CatLinearFusion(BatchFusion):
+    """
+    Rewrite linear(cat([x0, x1, ...], dim=-1), weight, bias) into a sum of
+    per-piece linears on contiguous last-dim weight slices, so the concatenated
+    activation is never materialised in forward or backward.
+
+    Unlike the other fusions here this is a per-node rewrite (one linear(cat)
+    splits into several smaller linears) rather than a batch of like-shaped ops,
+    so every match forms its own group of one. Off by default; opt in via
+    pre_grad_fusion_options["cat_linear"].
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.graph_search_options = {
+            **self.graph_search_options,
+            "min_fuse_set_size": 1,
+        }
+
+    def match(self, node: torch.fx.Node):
+        if not CallFunctionVarArgs(
+            [torch.nn.functional.linear, torch._C._nn.linear]
+        ).match(node):
+            return None
+        if not is_node_meta_valid(node):
+            return None
+        matched = match_cat_linear(node)
+        if matched is None:
+            return None
+        # stash so fuse() doesn't recompute the whole match per candidate; the
+        # same node object is what apply_group_batch_fusion hands back to fuse.
+        node.meta["cat_linear_match"] = matched
+        return ("cat_linear", node)
+
+    def fuse(self, graph: torch.fx.GraphModule, subset: list[torch.fx.Node]):
+        for node in subset:
+            matched = node.meta.pop("cat_linear_match", None)
+            if matched is None:
+                matched = match_cat_linear(node)
+            if matched is None:
+                continue
+            parts, weight, bias, offsets = matched
+            node_val = node.meta.get("example_value", node.meta.get("val"))
+            weight_val = weight.meta.get("example_value", weight.meta.get("val"))
+
+            with graph.inserting_before(node):  # type: ignore[operator]
+                partials = []
+                for i, part in enumerate(parts):
+                    # slice+clone gives each piece a contiguous weight. In the
+                    # frozen/inference path these fold to constants; in the
+                    # training/non-frozen path the params are lifted to inputs so
+                    # the slice+clone re-run every forward. That cost is weight-
+                    # only (no activation) and is already in the measured win, so
+                    # we keep it here rather than hoisting.
+                    w_slice = graph.call_function(  # type: ignore[operator]
+                        aten.slice.Tensor, args=(weight, 1, offsets[i], offsets[i + 1])
+                    )
+                    w_cont = graph.call_function(  # type: ignore[operator]
+                        aten.clone.default,
+                        args=(w_slice,),
+                        kwargs={"memory_format": torch.contiguous_format},
+                    )
+                    if weight_val is not None:
+                        sv = aten.slice.Tensor(
+                            weight_val, 1, offsets[i], offsets[i + 1]
+                        )
+                        w_slice.meta["example_value"] = sv
+                        w_cont.meta["example_value"] = sv.contiguous()
+                    # bias rides on the first piece only; folding it into the
+                    # reduce-add would just be an extra node.
+                    out_i = graph.call_function(  # type: ignore[operator]
+                        torch.nn.functional.linear,
+                        args=(part, w_cont, bias if i == 0 else None),
+                    )
+                    if node_val is not None:
+                        out_i.meta["example_value"] = node_val
+                    partials.append(out_i)
+
+                acc = partials[0]
+                for out_i in partials[1:]:
+                    acc = graph.call_function(operator.add, args=(acc, out_i))  # type: ignore[operator]
+                    if node_val is not None:
+                        acc.meta["example_value"] = node_val
+
+            node.replace_all_uses_with(acc)
+            graph.erase_node(node)  # type: ignore[operator]
+            counters["inductor"]["cat_linear"] += 1
 
 
 @register_fusion("batch_layernorm")
