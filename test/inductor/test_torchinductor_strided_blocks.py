@@ -1445,15 +1445,14 @@ class CommonTemplate:
             [2, 3, 5, 5], dtype=torch.float16, requires_grad=True, device=self.device
         )
         args = [2, 1, 0, 1]
-        _, code = self._run_and_compare(
+        self._run_and_compare(
             model,
             data,
             *args,
-            expected_num_triton_kernels=1,
-            expected_num_block_pointers=None,
+            expected_num_triton_kernels=2,
+            expected_num_block_pointers=4,
             compile_kwargs={"fullgraph": True},
         )
-        self.assertIn(self.block_descriptor_constructor_str, "\n".join(code))
 
     # Integration test to test block analysis with index expressions using
     # negative strides.

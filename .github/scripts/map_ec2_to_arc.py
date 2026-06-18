@@ -47,12 +47,6 @@ def load_mapping(arc_yaml: Path) -> dict[str, str]:
     return data["runner_mapping"]
 
 
-def load_meta_only(arc_yaml: Path) -> set[str]:
-    with open(arc_yaml) as f:
-        data = yaml.safe_load(f)
-    return set(data.get("meta_only_runners") or [])
-
-
 def set_output(name: str, val: str) -> None:
     print(f"Setting {name}={val}")
     github_output = os.getenv("GITHUB_OUTPUT")
@@ -65,7 +59,6 @@ def main() -> None:
     args = parse_args()
     arc_yaml = Path(__file__).resolve().parent.parent / "arc.yaml"
     mapping = load_mapping(arc_yaml)
-    meta_only = load_meta_only(arc_yaml)
 
     matrix = yaml.safe_load(args.matrix)
     if not matrix:
@@ -99,11 +92,6 @@ def main() -> None:
             print(f"error: no ARC runner found for '{clean}'", file=sys.stderr)
             sys.exit(1)
         mapped = mapping[clean]
-        # Some hardware (H100, B200) exists only on the Meta fleet, so force the
-        # 'mt-' prefix regardless of the build job's fleet assignment.
-        if clean in meta_only:
-            entry["runner"] = "mt-" + mapped
-            continue
         # Passthrough runners (e.g. linux.rocm.gpu.2, linux.idc.xpu) are not
         # OSDC-managed so they keep their original label without the prefix.
         entry["runner"] = mapped if mapped == clean else args.prefix + mapped

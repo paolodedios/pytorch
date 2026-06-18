@@ -2036,7 +2036,7 @@ class ProcessGroupOpaqueTypeTest(TestCase):
     def test_registered_members_exist_on_process_group(self):
         from torch._library.opaque_object import get_member_type
 
-        # Every member registered in _register_process_group_opaque_type()
+        # Every member registered in _register_distributed_opaque_types()
         # must actually exist on ProcessGroup. This catches renames or
         # removals of C++ attributes that would cause torch.compile
         # (fullgraph=True) to silently register a stale name while the
@@ -2053,8 +2053,8 @@ class ProcessGroupOpaqueTypeTest(TestCase):
             self.assertIsNotNone(
                 get_member_type(ProcessGroup, member_name),
                 f"'{member_name}' is not registered as a ProcessGroup opaque "
-                f"type member. Add it to _register_process_group_opaque_type() "
-                f"in torch/distributed/distributed_c10d.py",
+                f"type member. Add it to _register_distributed_opaque_types() "
+                f"in torch/distributed/device_mesh.py",
             )
             self.assertTrue(
                 hasattr(ProcessGroup, member_name),

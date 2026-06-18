@@ -495,19 +495,13 @@ class BatchLinearLHSFusion(BatchFusion):
     We have a separate pass to eliminate contiguous transpose in a generic way.
     """
 
-    def match(self, node: torch.fx.Node) -> tuple[str, int | None, Any] | None:
+    def match(self, node: torch.fx.Node) -> tuple[str, bool, Any] | None:
         if CallFunctionVarArgs([torch.nn.functional.linear, torch._C._nn.linear]).match(
             node
         ) and is_linear_node_can_be_fused(node):
             input = get_arg_value(node, 0, "input")
             bias = get_arg_value(node, 2, "bias")
-            bias_tensor = None
-            if bias is not None:
-                bias_tensor = bias.meta.get("val")
-                if bias_tensor is None:
-                    bias_tensor = bias.meta.get("example_value")
-            bias_dim = None if bias_tensor is None else bias_tensor.ndim  # type: ignore[union-attr]
-            group_key = ("batch_linear_lhs", bias_dim, input)
+            group_key = ("batch_linear_lhs", bias is None, input)
         else:
             group_key = None
         return group_key
@@ -1418,23 +1412,18 @@ def generate_fusion_from_config(config_options: dict[str, Any], pre_grad=True):
             continue
         fusion_cls = PRE_GRAD_FUSIONS[name] if pre_grad else POST_GRAD_FUSIONS[name]
         _options = graph_search_options.copy()
-        _options.update({k: v for k, v in options.items() if k != "devices"})
+        _options.update(options)
         fusions.append(fusion_cls(graph_search_options=_options))  # type: ignore[operator]
     return fusions
 
 
-def group_batch_fusion_passes(
-    graph: torch.fx.Graph, pre_grad=True, fusion_options=None
-):
+def group_batch_fusion_passes(graph: torch.fx.Graph, pre_grad=True):
     fusions: list[GroupBatchFusionBase] = []
     # we keep all current pre grad fusions to keep
     # current implementation, will remove this later
     if pre_grad:
         fusions += generate_fusion_from_config(
-            fusion_options
-            if fusion_options is not None
-            else config.pre_grad_fusion_options,
-            pre_grad=True,
+            config.pre_grad_fusion_options, pre_grad=True
         )
     else:
         fbgemm_fusion_keys = [

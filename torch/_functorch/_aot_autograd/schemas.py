@@ -7,10 +7,9 @@ from __future__ import annotations
 
 import collections
 import functools
-from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Any, NewType, Protocol, TYPE_CHECKING, TypeAlias, TypeVar
+from typing import Any, NewType, Protocol, TYPE_CHECKING, TypeVar
 from typing_extensions import ParamSpec
 
 import torch
@@ -23,17 +22,13 @@ from torch.fx.experimental._backward_state import BackwardState
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
 from .. import config
-from .functional_utils import (
-    _check_if_mutation_can_be_in_graph,
-    SubclassViewMetaSequence,
-    ViewMetaSequence,
-)
+from .functional_utils import _check_if_mutation_can_be_in_graph, ViewMetaSequence
 from .utils import strict_zip
 
 
 if TYPE_CHECKING:
     import contextlib
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Sequence
 
     from torch._guards import Source
     from torch._inductor.output_code import OutputCode
@@ -47,9 +42,6 @@ if TYPE_CHECKING:
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 zip = strict_zip
-
-ActInputPath: TypeAlias = tuple[int, tuple[str, ...]]
-ActInputPaths: TypeAlias = Sequence[ActInputPath]
 
 
 OutputType = Enum(
@@ -127,7 +119,7 @@ class OutputAliasInfo:
     # We need to wrap the actual list of ViewMeta with this class so that
     # we compare the ViewMeta elements appropriately, i.e. their type and
     # the elements returned by the `as_tuple()` call.
-    view_meta_sequence: ViewMetaSequence | SubclassViewMetaSequence | None = None
+    view_meta_sequence: ViewMetaSequence | None = None
 
 
 class MutationType(Enum):
@@ -287,8 +279,6 @@ class SubclassCreationMeta:
     # Used at runtime to determine the subclass type, so we don't need to save the original subclass
     original_subclass_type: type | None = None
     memory_format: MemoryFormatMeta | None = None
-    outer_size_from_attr: str | None = None
-    outer_stride_from_attr: str | None = None
 
     def compute_outer_size_and_stride(
         self,
@@ -365,16 +355,6 @@ class SubclassCreationMeta:
                 all_args,
                 curr_start_idx=curr_start_idx,
             )
-            if self.outer_size_from_attr is not None:
-                size_attr = inner_tensors[self.outer_size_from_attr]
-                if not isinstance(size_attr, Tensor):
-                    raise AssertionError("Tensor expected")
-                outer_size = size_attr.size()
-            if self.outer_stride_from_attr is not None:
-                stride_attr = inner_tensors[self.outer_stride_from_attr]
-                if not isinstance(stride_attr, Tensor):
-                    raise AssertionError("Tensor expected")
-                outer_stride = stride_attr.stride()
         else:
             outer_size, outer_stride = self.outer_size, self.outer_stride
 
@@ -523,11 +503,10 @@ class ViewAndMutationMeta:
     # Keeps track of which input indices store parameters (which we will treat as static)
     static_input_indices: list[int] = field(default_factory=list)
 
-    # Input paths that held AsyncCollectiveTensors at compile time. A path is
-    # (input_index, attr_path), where an empty attr_path means the top-level
-    # input. Used to emit direct trigger_wait() calls at runtime instead of
+    # Input indices that held AsyncCollectiveTensors at compile time.
+    # Used to emit direct trigger_wait() calls at runtime instead of
     # scanning every arg on every graph invocation.
-    act_input_paths: list[ActInputPath] = field(default_factory=list)
+    act_input_indices: list[int] = field(default_factory=list)
 
     # Map of effect type (ex. _EffectType.ORDERED) to token.  If there are
     # side-effectful operators, FunctionalTensorMode will populate this
@@ -762,17 +741,10 @@ class ViewAndMutationMeta:
         # be used at runtime anyway (gen_alias_from_base skips view replay for
         # symbolic inputs) and the SymInt references make it unpicklable.
         for i, out_info in enumerate(self.output_info):
-            runtime_safe_view_meta_sequence = (
-                None
-                if out_info.view_meta_sequence is None
-                else out_info.view_meta_sequence.make_runtime_safe()
-            )
-            # make_runtime_safe only returns the original object or None, so
-            # identity comparison is enough here and avoids __eq__(None) quirks.
-            if runtime_safe_view_meta_sequence is not out_info.view_meta_sequence:
-                self.output_info[i] = replace(
-                    out_info, view_meta_sequence=runtime_safe_view_meta_sequence
-                )
+            if out_info.view_meta_sequence is not None and any(
+                vm.has_symbolic_inputs for vm in out_info.view_meta_sequence.sequence
+            ):
+                self.output_info[i] = replace(out_info, view_meta_sequence=None)
 
     @property
     def tensors_saved_for_backwards_slice(self) -> slice:

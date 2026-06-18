@@ -87,10 +87,11 @@ bool use_mkldnn(const Tensor& input, TensorList params, TensorList hx) {
   if (!at::globalContext().userEnabledMkldnn()) {
     return false;
   }
-  // XPU: oneDNN LSTM for inference (GPU primitive supports f32 and f16)
+  // XPU: oneDNN LSTM for inference
   if (input.is_xpu()) {
     return !at::GradMode::is_enabled() &&
-        (input.scalar_type() == kFloat || input.scalar_type() == kHalf) &&
+        (input.scalar_type() == kFloat || input.scalar_type() == kBFloat16 ||
+         input.scalar_type() == kHalf) &&
         input.numel() != 0;
   }
   auto is_cpu_backend = [&](const TensorList tensors) {

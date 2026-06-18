@@ -69,21 +69,6 @@ from .virtualized import V
 
 CUDA_VISIBLE_DEVICES = "CUDA_VISIBLE_DEVICES"
 
-
-_visible_device_env_var_maps = {
-    "cuda": "CUDA_VISIBLE_DEVICES",
-    "xpu": "ZE_AFFINITY_MASK",
-}
-
-
-def get_visible_devices_env_var(gpu_type: str | None = None) -> str:
-    if gpu_type is None:
-        gpu_type = get_gpu_type()
-    if gpu_type not in _visible_device_env_var_maps:
-        raise ValueError(f"Unsupported gpu_type: {gpu_type}")
-    return _visible_device_env_var_maps[gpu_type]
-
-
 autotuning_log = getArtifactLogger(__name__, "autotuning")
 
 
@@ -104,7 +89,7 @@ class TuningProcess:
         autotuning_log.debug(
             "Started autotune subprocess %s. Visible devices: %s",
             os.getpid(),
-            os.environ.get(get_visible_devices_env_var()),
+            os.environ.get(CUDA_VISIBLE_DEVICES),
         )
 
         def workloop():
@@ -176,7 +161,7 @@ class TuningProcess:
             else "0",
         }
         if self.device is not None:
-            env[get_visible_devices_env_var()] = str(self.device)
+            env[CUDA_VISIBLE_DEVICES] = str(self.device)
         self.process = subprocess.Popen(
             cmd,
             env=env,
@@ -312,14 +297,13 @@ class TuningProcessPool:
         gpu_type = get_gpu_type()
         device_interface = get_interface_for_device(gpu_type)
         count = device_interface.device_count()
-        visible_devices_env_var = get_visible_devices_env_var(gpu_type)
 
         # If the user specified the visible devices in the env, use those.
-        if visible_devices_env_var in os.environ:
-            devices = [int(d) for d in os.environ[visible_devices_env_var].split(",")]
+        if CUDA_VISIBLE_DEVICES in os.environ:
+            devices = [int(d) for d in os.environ[CUDA_VISIBLE_DEVICES].split(",")]
             if not len(devices) <= count:
                 raise AssertionError(
-                    f"{visible_devices_env_var} specifies {len(devices)} devices, "
+                    f"CUDA_VISIBLE_DEVICES specifies {len(devices)} devices, "
                     f"but only {count} devices are available"
                 )
             return devices
@@ -600,11 +584,10 @@ class _TestBenchmarkRequest(BenchmarkRequest):
         self, *input_tensors: torch.Tensor, out: torch.Tensor | None = None
     ) -> float:
         if self.device is not None:
-            visible_devices_env_var = get_visible_devices_env_var()
-            if os.environ.get(visible_devices_env_var, None) != str(self.device):
+            if not os.environ.get(CUDA_VISIBLE_DEVICES, None) == str(self.device):
                 raise AssertionError(
-                    f"Expected {visible_devices_env_var}='{self.device}', "
-                    f"but got '{os.environ.get(visible_devices_env_var, None)}'"
+                    f"Expected {CUDA_VISIBLE_DEVICES}='{self.device}', "
+                    f"but got '{os.environ.get(CUDA_VISIBLE_DEVICES, None)}'"
                 )
         if self.sleep:
             time.sleep(self.sleep)
@@ -1256,7 +1239,7 @@ class CuteDSLBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest):
         def run_kernel():
             device_interface = get_interface_for_device("cuda")
             stream = device_interface.get_raw_stream(out.device.index)
-            return kernel_func(*input_tensors, out, *self.extra_args, stream=stream)
+            return kernel_func(*input_tensors, out, stream=stream)
 
         return run_kernel
 
