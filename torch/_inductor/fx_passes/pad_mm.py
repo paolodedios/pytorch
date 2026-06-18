@@ -415,8 +415,6 @@ def get_non_view_def(node: torch.fx.Node) -> torch.fx.Node:
 
 
 def should_exclude_padding_time(match: Match, arg_name: str) -> bool:
-    from torch._prims_common import is_contiguous_or_false
-
     node_def = get_non_view_def(match.kwargs[arg_name])
 
     # constant padding converts tensors to contiguous so even if the input tensor
@@ -970,7 +968,7 @@ def _pad_mm_init(input_device: torch.device | None = None) -> None:
         else:
             device = "cpu"
 
-    # sizes/values dont actually matter for initial trace
+    # sizes/values don't actually matter for initial trace
     # once we get a possible match we re-trace with the actual values and verify the match still holds
 
     dim2a = functools.partial(torch.empty, (4, 4), device=device, requires_grad=True)
