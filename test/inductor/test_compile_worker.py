@@ -1,8 +1,14 @@
 # Owner(s): ["module: inductor"]
 import operator
 import os
+import subprocess
+import sys
 import tempfile
+import textwrap
+import types
+import unittest
 from threading import Event
+from unittest.mock import patch
 
 import torch._inductor.config as config
 from torch._inductor.compile_worker.subproc_pool import (
@@ -12,8 +18,8 @@ from torch._inductor.compile_worker.subproc_pool import (
 )
 from torch._inductor.compile_worker.timer import Timer
 from torch._inductor.test_case import TestCase
-from torch.testing._internal.common_utils import skipIfWindows
-from torch.testing._internal.inductor_utils import HAS_CPU
+from torch.testing._internal.common_utils import IS_FBCODE, IS_LINUX, skipIfWindows
+from torch.testing._internal.inductor_utils import HAS_CPU, HAS_TRITON
 
 
 class TestCompileWorker(TestCase):
@@ -73,6 +79,7 @@ class TestCompileWorker(TestCase):
         finally:
             pool.shutdown()
 
+    @unittest.skipIf(IS_LINUX, "https://github.com/pytorch/pytorch/issues/176968")
     @skipIfWindows(msg="pass_fds not supported on Windows.")
     def test_quiesce_repeatedly(self):
         pool = SubprocPool(2)
@@ -102,6 +109,53 @@ class TestCompileWorker(TestCase):
                 self.assertEqual(os.path.exists(temp_log.name), True)
             finally:
                 pool.shutdown()
+
+    @skipIfWindows(msg="pass_fds not supported on Windows.")
+    def test_shutdown_terminates_sidecar_worker_pool(self):
+        code = textwrap.dedent(
+            """
+            import operator
+            import subprocess
+            import time
+
+            from torch._inductor.compile_worker.subproc_pool import SubprocPool
+
+            pool = SubprocPool(2)
+            assert pool.submit(operator.add, 1, 2).result() == 3
+            pool.submit(time.sleep, 5)
+            time.sleep(0.5)
+
+            wait = pool.process.wait
+
+            def short_wait(timeout=None):
+                return wait(timeout=2)
+
+            pool.process.wait = short_wait
+
+            try:
+                pool.shutdown()
+            except subprocess.TimeoutExpired:
+                pool.process.kill()
+                pool.process.wait()
+                raise
+
+            print("shutdown returned")
+            """
+        )
+        with tempfile.TemporaryDirectory() as cwd:
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn("shutdown returned", result.stdout)
 
 
 @config.patch("quiesce_async_compile_time", 0.1)
@@ -176,6 +230,124 @@ class _FakeTritonKernel:
 
 
 class TestSubprocessEnv(TestCase):
+    def assert_path_in_dir(self, path, expected_dir):
+        expected_dir = os.path.abspath(expected_dir)
+        self.assertEqual(
+            os.path.commonpath([os.path.abspath(path), expected_dir]),
+            expected_dir,
+        )
+
+    def test_pycodecache_kernel_compile_sends_full_cache_env(self):
+        from torch._inductor.async_compile import AsyncCompile
+        from torch._inductor.runtime.compile_tasks import (
+            _worker_compile_pycodecache_kernel,
+        )
+
+        class FakeFuture:
+            def result(self):
+                return "key", "/tmp/kernel.py", 0
+
+        class FakePool:
+            def __init__(self):
+                self.calls = []
+
+            def submit(self, fn, *args):
+                self.calls.append((fn, args))
+                return FakeFuture()
+
+        env_keys = [
+            "TORCHINDUCTOR_CACHE_DIR",
+            "TRITON_CACHE_DIR",
+            "TORCHINDUCTOR_CUTLASS_DIR",
+        ]
+        old_env = {key: os.environ.get(key) for key in env_keys}
+        pool = FakePool()
+
+        try:
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/tmp/current-inductor-cache"
+            os.environ.pop("TRITON_CACHE_DIR", None)
+            os.environ.pop("TORCHINDUCTOR_CUTLASS_DIR", None)
+
+            with (
+                patch.object(AsyncCompile, "use_process_pool", return_value=True),
+                patch.object(AsyncCompile, "process_pool", return_value=pool),
+            ):
+                AsyncCompile().cutedsl("kernel", "def kernel_main():\n    pass\n")
+                AsyncCompile().nv_universal_gemm(
+                    "kernel", "def kernel_main():\n    pass\n"
+                )
+
+            self.assertEqual(len(pool.calls), 2)
+            for fn, args in pool.calls:
+                self.assertIs(fn, _worker_compile_pycodecache_kernel)
+                self.assertEqual(
+                    args[3],
+                    {
+                        "TORCHINDUCTOR_CACHE_DIR": "/tmp/current-inductor-cache",
+                        "TRITON_CACHE_DIR": None,
+                        "TORCHINDUCTOR_CUTLASS_DIR": None,
+                    },
+                )
+        finally:
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+    def test_worker_compile_pycodecache_kernel_clears_cache_env(self):
+        import torch._inductor.runtime.compile_tasks as compile_tasks
+        from torch._inductor.runtime.cache_dir_utils import default_cache_dir
+
+        old_env = {
+            "TORCHINDUCTOR_CACHE_DIR": os.environ.get("TORCHINDUCTOR_CACHE_DIR"),
+            "TRITON_CACHE_DIR": os.environ.get("TRITON_CACHE_DIR"),
+            "TORCHINDUCTOR_CUTLASS_DIR": os.environ.get("TORCHINDUCTOR_CUTLASS_DIR"),
+        }
+        old_last_applied_cache_env = compile_tasks._last_applied_cache_env
+        source_code = "def kernel_main():\n    pass\n"
+
+        try:
+            compile_tasks._last_applied_cache_env = None
+            with tempfile.TemporaryDirectory() as cache_dir:
+                triton_cache_dir = os.path.join(cache_dir, "triton")
+                _, path_1, _ = compile_tasks._worker_compile_pycodecache_kernel(
+                    "kernel",
+                    source_code,
+                    "main",
+                    {
+                        "TORCHINDUCTOR_CACHE_DIR": cache_dir,
+                        "TRITON_CACHE_DIR": triton_cache_dir,
+                        "TORCHINDUCTOR_CUTLASS_DIR": None,
+                    },
+                )
+                self.assert_path_in_dir(path_1, cache_dir)
+                self.assertEqual(os.environ["TORCHINDUCTOR_CACHE_DIR"], cache_dir)
+                self.assertEqual(os.environ["TRITON_CACHE_DIR"], triton_cache_dir)
+                self.assertNotIn("TORCHINDUCTOR_CUTLASS_DIR", os.environ)
+
+                _, path_2, _ = compile_tasks._worker_compile_pycodecache_kernel(
+                    "kernel",
+                    source_code,
+                    "main",
+                    {
+                        "TORCHINDUCTOR_CACHE_DIR": None,
+                        "TRITON_CACHE_DIR": None,
+                        "TORCHINDUCTOR_CUTLASS_DIR": None,
+                    },
+                )
+                self.assert_path_in_dir(path_2, default_cache_dir())
+                self.assertNotEqual(path_1, path_2)
+                self.assertNotIn("TRITON_CACHE_DIR", os.environ)
+                self.assertNotIn("TORCHINDUCTOR_CUTLASS_DIR", os.environ)
+        finally:
+            compile_tasks._last_applied_cache_env = old_last_applied_cache_env
+            for key, value in old_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_worker_compile_triton_clears_libdevice_path(self):
         try:
             from triton import knobs
@@ -242,6 +414,16 @@ class TestSubprocessEnv(TestCase):
 
 
 class TestSetTritonLibdevicePath(TestCase):
+    @unittest.skipIf(
+        IS_FBCODE,
+        "knobs.nvidia.libdevice_path mismatch in fbcode CI environment; "
+        "matches sibling test_libdevice_path_* disables",
+    )
+    @config.patch({"compile_threads": 1, "emulate_precision_casts": True})
+    def test_emulate_precision_casts_sets_libdevice_path(self):
+        """Test eager numerics mode sets libdevice path for CUDA libdevice calls."""
+        self._test_libdevice_path_with_compilation()
+
     @config.patch({"compile_threads": 1, "eager_numerics.use_pytorch_libdevice": True})
     def test_libdevice_path_no_subprocess(self):
         """Test libdevice path is set with compile_threads=1 (no subprocess)."""
@@ -282,6 +464,40 @@ class TestSetTritonLibdevicePath(TestCase):
         compiled_result = torch.compile(torch.pow)(base, exp)
         self.assertEqual(eager_result, compiled_result, atol=0, rtol=0)
 
+    @config.patch({"compile_threads": 1, "emulate_precision_casts": True})
+    def test_erf_bitwise_precision_with_emulate_precision_casts(self):
+        """Test that erf matches eager bitwise when eager numerics mode is active."""
+        import torch
+        from torch.utils.cpp_extension import CUDA_HOME
+
+        if not torch.cuda.is_available():
+            self.skipTest("CUDA not available")
+        if CUDA_HOME is None:
+            self.skipTest("CUDA_HOME not set")
+        expected = os.path.join(CUDA_HOME, "nvvm", "libdevice", "libdevice.10.bc")
+        if not os.path.isfile(expected):
+            self.skipTest(f"libdevice not found at {expected}")
+
+        torch._dynamo.reset()
+        values = torch.tensor(
+            [
+                -3.9194295406341553,
+                -3.9188895225524902,
+                0.0,
+                1.0,
+                3.9194295406341553,
+            ],
+            device="cuda",
+            dtype=torch.float32,
+        )
+
+        def fn(x):
+            return torch.erf(x)
+
+        eager_result = fn(values)
+        compiled_result = torch.compile(fn)(values)
+        self.assertEqual(eager_result, compiled_result, atol=0, rtol=0)
+
     def _test_libdevice_path_with_compilation(self):
         import torch
         from torch.utils.cpp_extension import CUDA_HOME
@@ -308,6 +524,70 @@ class TestSetTritonLibdevicePath(TestCase):
         from triton import knobs
 
         self.assertEqual(knobs.nvidia.libdevice_path, expected)
+
+
+class TestTritonCompileWorker(TestCase):
+    @unittest.skipIf(not HAS_TRITON, "requires triton")
+    def test_worker_compile_triton_warm_cache_skips_gpu_driver_setup(self):
+        from torch._inductor.runtime import triton_helpers
+        from torch._inductor.runtime.compile_tasks import _worker_compile_triton
+
+        class RaisingDriver:
+            @staticmethod
+            def is_active():
+                raise RuntimeError("0 active drivers ([]). There should only be one.")
+
+        class FakeKernel:
+            def __init__(self):
+                self.precompile_calls = []
+                self.prepared = False
+
+            def precompile(self, warm_cache_only=False):
+                self.precompile_calls.append(warm_cache_only)
+                triton_helpers.set_driver_to_gpu()
+
+            def prepare_for_pickle(self):
+                self.prepared = True
+
+        kernel = FakeKernel()
+
+        def load_kernel():
+            triton_helpers.set_driver_to_gpu()
+            return kernel
+
+        fake_backends = {"nvidia": types.SimpleNamespace(driver=RaisingDriver)}
+        with patch.object(triton_helpers.triton.backends, "backends", fake_backends):
+            result, _elapsed_us = _worker_compile_triton(load_kernel, {}, {})
+            self.assertIs(result, kernel)
+            self.assertEqual(kernel.precompile_calls, [True])
+            self.assertTrue(kernel.prepared)
+
+            # The skip is scoped to the worker compile call and restored afterward.
+            with self.assertRaisesRegex(RuntimeError, "0 active drivers"):
+                triton_helpers.set_driver_to_gpu()
+
+    @unittest.skipIf(not HAS_TRITON, "requires triton")
+    def test_worker_compile_triton_restores_gpu_driver_setup_after_error(self):
+        from torch._inductor.runtime import triton_helpers
+        from torch._inductor.runtime.compile_tasks import _worker_compile_triton
+
+        class RaisingDriver:
+            @staticmethod
+            def is_active():
+                raise RuntimeError("0 active drivers ([]). There should only be one.")
+
+        def load_kernel():
+            triton_helpers.set_driver_to_gpu()
+            raise ValueError("compile failed")
+
+        fake_backends = {"nvidia": types.SimpleNamespace(driver=RaisingDriver)}
+        with patch.object(triton_helpers.triton.backends, "backends", fake_backends):
+            with self.assertRaisesRegex(ValueError, "compile failed"):
+                _worker_compile_triton(load_kernel, {}, {})
+
+            # The skip is restored even if worker compilation raises.
+            with self.assertRaisesRegex(RuntimeError, "0 active drivers"):
+                triton_helpers.set_driver_to_gpu()
 
 
 if __name__ == "__main__":
