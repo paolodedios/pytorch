@@ -2756,7 +2756,7 @@ class FusedSchedulerNode(BaseSchedulerNode):
 
         if not new_order:
             loop_ordering_log.debug(
-                "Dont reordering fused node %s because we can not decide the suitable loop order",
+                "Don't reordering fused node %s because we can not decide the suitable loop order",
                 self.get_name(),
             )
             return False
@@ -4147,6 +4147,10 @@ class Scheduler:
         with dynamo_timed("Scheduler.__init__"):
             self._init(nodes)
 
+    @staticmethod
+    def count_kernel_nodes(nodes: Sequence[BaseSchedulerNode]) -> int:
+        return sum(1 for node in nodes if not isinstance(node, NopKernelSchedulerNode))
+
     def _init(self, nodes: list[ir.Operation]) -> None:
         super().__init__()
         V.graph.scheduler = self
@@ -4233,6 +4237,13 @@ class Scheduler:
         if config._pre_fusion_custom_pass is not None:
             self.nodes = config._pre_fusion_custom_pass(self.nodes)
 
+        # Distributed autotune can replace MultiTemplateBuffer nodes before the
+        # normal mempool assignment pass runs. Initialize these maps now so
+        # replacement can preserve any IR-level mempool metadata it sees.
+        self.node_to_mempool: dict[BaseSchedulerNode, tuple[int, int] | None] = {}
+        self.buff_to_mempool: dict[str, tuple[int, int] | None] = {}
+        self._mempool_nodes: bool = False
+
         if config.distributed_max_autotune_gemm:
             from . import distributed_autotune
 
@@ -4247,9 +4258,6 @@ class Scheduler:
         # Maps stream_idx → user_object_index for retrieving user stream objects
         self.stream_idx_to_user_obj_idx: dict[int, int] = {}
         self._populate_stream_assignments()
-        self.node_to_mempool: dict[BaseSchedulerNode, tuple[int, int] | None] = {}
-        self.buff_to_mempool: dict[str, tuple[int, int] | None] = {}
-        self._mempool_nodes: bool = False
         self._populate_mempool_assignments()
 
         self.nodes = self.fuse_nodes(self.nodes)
@@ -4458,6 +4466,8 @@ class Scheduler:
 
     def _populate_mempool_assignments(self) -> None:
         """Populate node_to_mempool and buff_to_mempool from IR node metadata."""
+        self.node_to_mempool.clear()
+        self.buff_to_mempool.clear()
         for node in self.nodes:
             mempool = self._get_node_mempool(node)
             self.node_to_mempool[node] = mempool
@@ -5416,6 +5426,13 @@ class Scheduler:
         new_scheduler_node.last_usage = node.last_usage
 
         mempool = self.node_to_mempool.get(node)
+        if node not in self.node_to_mempool:
+            mempool = self._get_node_mempool(node)
+        # If replacement happens before _populate_mempool_assignments, the
+        # later population pass must be able to recover the preserved context
+        # from the replacement IR node itself.
+        if new_scheduler_node.node is not None:
+            typing.cast(ir.IRNode, new_scheduler_node.node).mempool = mempool
         self.node_to_mempool[new_scheduler_node] = mempool
         for buf in new_scheduler_node.get_buffer_names():
             self.buff_to_mempool[buf] = mempool
@@ -5768,7 +5785,15 @@ class Scheduler:
                         # pyrefly: ignore [bad-argument-type]
                         with multi_node.swap_as_triton_caller(choice):
                             future_choices.append(
-                                (choice, *self.compile_kernel(node_list_fused))
+                                (
+                                    choice,
+                                    *self.compile_kernel(
+                                        node_list_fused,
+                                        hint_override=getattr(
+                                            choice, "hint_override", None
+                                        ),
+                                    ),
+                                )
                             )
                     elif is_nvgemm:
                         # pyrefly: ignore [missing-attribute]
@@ -7411,7 +7436,7 @@ class Scheduler:
         """
         Heuristics to avoid benchmarking predictably slow prologue fusions
         """
-        # user opt into more aggressive prologue fusion, dont use heuristics
+        # user opt into more aggressive prologue fusion, don't use heuristics
         if prologue_node.get_operation_names() <= V.graph.invoke_quant_ops:
             return True
 
@@ -9463,12 +9488,7 @@ class Scheduler:
         if min_size > 0:
             for i, (partition, skip) in enumerate(zip(partitions, skip_cudagraphs)):
                 if not skip:
-                    # Count kernels excluding NopKernelSchedulerNode
-                    kernel_count = sum(
-                        1
-                        for n in partition
-                        if not isinstance(n, NopKernelSchedulerNode)
-                    )
+                    kernel_count = self.count_kernel_nodes(partition)
                     if kernel_count < min_size:
                         skip_cudagraphs[i] = True
                         cudagraphs_log.debug(

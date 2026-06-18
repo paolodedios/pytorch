@@ -2277,6 +2277,9 @@ class CUDACtxManagerTests(torch._dynamo.test_case.TestCase):
                 self.assertEqual(pool.use_count(), 1)
 
                 source = "\n".join(source_codes)
+                # The compiled wrapper deliberately normalizes to pool-outer,
+                # stream-inner ordering so allocators with set_context/pop_context
+                # side effects see a consistent pool lifetime.
                 mempool_enter = source.index("with torch.cuda.use_mem_pool(")
                 stream_enter = source.index("with stream")
                 self.assertLess(mempool_enter, stream_enter)

@@ -37,6 +37,10 @@ def _current_cuda_device_source() -> CallFunctionNoArgsSource:
     )
 
 
+# These marker ops are intentional even though Inductor also annotates enclosed
+# FX nodes. The annotations tell Inductor which scheduler nodes allocate in a
+# user pool, while begin/end keep the pool lifetime visible as ordered FX
+# side-effects for non-Inductor backends.
 @custom_op("mempool::begin", mutates_args=())
 def begin_mempool(device_index: int, mempool_index: int) -> None:
     mempool = _get_mempool_by_index(mempool_index)
@@ -199,6 +203,9 @@ class CUDAMemPoolContextVariable(ContextWrappingVariable):
         return "use_mem_pool"
 
     def reconstruct_type(self, codegen: "PyCodegen") -> None:
+        # Supporting graph breaks safely requires reconstructing the eager
+        # torch.cuda.use_mem_pool context on the resume path while keeping the
+        # compiled begin/end marker ops balanced around each compiled segment.
         unimplemented(
             gb_type="torch.cuda.use_mem_pool graph break",
             context=str(self),
