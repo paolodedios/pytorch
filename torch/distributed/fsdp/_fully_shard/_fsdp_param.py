@@ -426,11 +426,20 @@ class FSDPParam:
     def _resolve_spmd_restore_mesh(self) -> None:
         """Resolve the typechecking mesh used to restore spmd_types metadata.
 
-        The restore mesh is the spmd_types typechecking mesh used during
-        module compute. Storage-native annotations can be restored directly on
-        the FSDP storage mesh. Otherwise, FSDP uses the ambient init-time
-        ``spmd.current_mesh()`` as the shared typechecking mesh for the FSDP
-        unit.
+        FSDP restores saved spmd_types metadata on the plain unsharded
+        parameter before module compute. There are two supported cases:
+
+        1. Fully annotated params: if the annotated axes span the same rank set
+           as the FSDP storage mesh, restore on the annotated axes directly.
+           This allows mixed dense/sparse params to use different typechecking
+           meshes when each param is fully annotated.
+        2. Partial annotations: FSDP-managed axes that would be ``spmd.R`` may
+           be omitted. Infer those axes from the ambient init-time
+           ``spmd.current_mesh()``.
+
+        This method chooses only the mesh used to restore annotations before
+        compute. The later DTensor conversion validates that the annotations
+        are compatible with FSDP storage.
         """
         spmd_mesh = self.mesh_info.spmd_mesh
         if spmd_mesh is None or spmd_mesh.mesh_dim_names is None:

@@ -301,9 +301,6 @@ class FSDPState(_State):
                     if not fsdp_param_group.is_unsharded:
                         fsdp_param_group.unshard()
                         fsdp_param_group.wait_for_unshard()
-            for fsdp_param_group in self._fsdp_param_groups:
-                for fsdp_param in fsdp_param_group.fsdp_params:
-                    fsdp_param._restore_spmd_types(fsdp_param.unsharded_param)
             return self._cast_forward_inputs(args, kwargs)
 
         # With grouped ``fully_shard([a, b, ...])`` the pre-hook fires per
