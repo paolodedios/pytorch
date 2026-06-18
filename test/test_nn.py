@@ -7857,6 +7857,23 @@ tensor(..., device='meta', size=(1,), requires_grad=True)""")
             ref = torch.layer_norm(x[row:row + 1], [N], gamma, beta)
             self.assertEqual(y[row], ref[0])
 
+    @unittest.skipIf(not TEST_CUDA, "CUDA not available")
+    @largeTensorTest("1GB", device="cuda")
+    def test_layer_norm_large_m_non_vectorized(self):
+        # test for https://github.com/pytorch/pytorch/issues/184826
+        # N is intentionally not divisible by 4 so the vectorized kernel is skipped.
+        N = 3
+        gamma = torch.ones(N, dtype=torch.float32, device="cuda")
+
+        for M in (2**23, 2**23 + 1):
+            x = torch.randn(M, N, dtype=torch.float32, device="cuda")
+            y = torch.layer_norm(x, [N], gamma, None)
+
+            for start in (0, M - 8192):
+                x_chunk = x[start:start + 8192].contiguous()
+                ref = torch.layer_norm(x_chunk, [N], gamma, None)
+                self.assertEqual(y[start:start + 8192], ref, atol=1e-5, rtol=1e-5)
+
     def test_padding_list(self):
         # Padding can be a list, or tuple (regression test for gh-54452)
         x = torch.randn(4, 8, 32, 32)
@@ -13309,7 +13326,9 @@ if __name__ == '__main__':
         # CUDA says "device-side assert triggered"
         # ROCm says "unspecified launch failure", or HSA_STATUS_ERROR_EXCEPTION
         has_cuda_assert = 'CUDA error: device-side assert triggered' in stderr
-        has_hip_assert = 'launch failure' in stderr or 'HSA_STATUS_ERROR_EXCEPTION' in stderr
+        has_hip_assert = ('launch failure' in stderr
+                          or 'HSA_STATUS_ERROR_EXCEPTION' in stderr
+                          or 'illegal memory access' in stderr)
         self.assertTrue(has_cuda_assert or has_hip_assert,
                         f"Expected device assert error in stderr, got: {stderr}")
 
