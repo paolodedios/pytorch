@@ -53,11 +53,11 @@ jobs:
       use-arc: true
       build-environment: linux-noble-rocm-py3.12-mi350
       docker-image-name: ci-image:pytorch-linux-noble-rocm-n-py3
+      # The distributed_4gpu config only runs the distributed tests that require
+      # 4 GPUs, so it must run on the gfx950.4 (4-GPU) runner labels.
       test-matrix: |
         { include: [
-          { config: "distributed", shard: 1, num_shards: 3, runner: "${{ needs.get-label-type.outputs.amd-do-label-type }}linux.rocm.gpu.gfx950.4", owners: ["module:rocm", "oncall:distributed"] },
-          { config: "distributed", shard: 2, num_shards: 3, runner: "${{ needs.get-label-type.outputs.amd-do-label-type }}linux.rocm.gpu.gfx950.4", owners: ["module:rocm", "oncall:distributed"] },
-          { config: "distributed", shard: 3, num_shards: 3, runner: "${{ needs.get-label-type.outputs.amd-do-label-type }}linux.rocm.gpu.gfx950.4", owners: ["module:rocm", "oncall:distributed"] },
+          { config: "distributed_4gpu", shard: 1, num_shards: 1, runner: "${{ needs.get-label-type.outputs.amd-do-label-type }}linux.rocm.gpu.gfx950.4", owners: ["module:rocm", "oncall:distributed"] },
         ]}
     secrets: inherit
 
