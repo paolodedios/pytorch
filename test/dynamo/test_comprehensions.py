@@ -771,6 +771,15 @@ class ComprehensionTests(torch._dynamo.test_case.TestCase):
         for i in range(2):
             self.assertEqual(count_op(backend.graphs[i], operator.add), 3)
 
+    def test_reuse_name(self):
+        def fn(x):
+            i = [(i + x, torch._dynamo.graph_break()) for i in range(5)]
+            return i
+
+        x = torch.randn(3, 3)
+        opt_fn = torch.compile(fn, backend="eager")
+        self.assertEqual(fn(x), opt_fn(x))
+
 
 @skipIfNotPy312
 class NestedGraphBreakTests(torch._dynamo.test_case.TestCase):
