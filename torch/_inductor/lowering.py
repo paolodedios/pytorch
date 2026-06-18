@@ -8966,7 +8966,11 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
 
 
 # Import the control_deps_op HOP for lowering
-from torch._inductor.fx_passes.control_dependencies import control_deps, FUSE_REGION
+from torch._inductor.fx_passes.control_dependencies import (
+    control_deps,
+    FUSE_REGION,
+    FUSE_REGION_ID,
+)
 
 
 @register_lowering(control_deps, type_promotion_kind=None)
@@ -9034,7 +9038,11 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args, fuse_region=Fa
     new_ops = V.graph.operations[operation_len:]
 
     if fuse_region:
-        region = V.graph.current_node.name
+        region = V.graph.current_node.meta.get(
+            FUSE_REGION_ID, V.graph.current_node.name
+        )
+        if not isinstance(region, str):
+            raise AssertionError(f"expected fuse_region_id to be str, got {region}")
         for op in new_ops:
             if not hasattr(op, "annotations"):
                 continue

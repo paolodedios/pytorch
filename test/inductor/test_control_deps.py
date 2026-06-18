@@ -1,11 +1,14 @@
 # Owner(s): ["module: inductor"]
 
+from types import SimpleNamespace
+
 import torch
 import torch._inductor.metrics as metrics
 from torch._inductor import config
 from torch._inductor.fx_passes.control_dependencies import (
     control_deps,
     FUSE_REGION,
+    FUSE_REGION_ID,
     mark_fuse_region,
 )
 from torch._inductor.test_case import run_tests, TestCase as InductorTestCase
@@ -21,6 +24,116 @@ from torch.testing._internal.inductor_utils import (
 
 
 class TestControlDeps(InductorTestCase):
+    def test_mark_fuse_region_preserves_region_id_single_output(self):
+        graph = Graph()
+        x = graph.placeholder("x")
+        sin = graph.call_function(torch.ops.aten.sin.default, (x,))
+        graph.output(sin)
+        gm = GraphModule(torch.nn.Module(), graph)
+
+        x.meta["val"] = torch.empty(4)
+        sin.meta["val"] = torch.empty(4)
+
+        mark_fuse_region(gm.graph, [sin], fuse_region_id="shared")
+
+        region_nodes = [
+            node
+            for node in gm.graph.nodes
+            if node.op == "call_function"
+            and node.target is control_deps
+            and node.kwargs.get(FUSE_REGION) is True
+        ]
+        self.assertEqual(len(region_nodes), 1)
+        self.assertEqual(region_nodes[0].meta[FUSE_REGION_ID], "shared")
+
+    @config.patch(reorder_for_locality=False)
+    @requires_gpu()
+    def test_fuse_region_id_allows_separate_islands_to_fuse(self):
+        def fn(x):
+            a = x * 2
+            outside = x + 3
+            b = torch.relu(a)
+            return b, outside
+
+        def add_shared_regions(graph):
+            mul_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.mul.Tensor
+            )[0]
+            relu_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.relu.default
+            )[0]
+            mark_fuse_region(graph, [mul_node], fuse_region_id="shared")
+            mark_fuse_region(graph, [relu_node], fuse_region_id="shared")
+            return graph
+
+        def add_unique_regions(graph):
+            mul_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.mul.Tensor
+            )[0]
+            relu_node = graph.find_nodes(
+                op="call_function", target=torch.ops.aten.relu.default
+            )[0]
+            mark_fuse_region(graph, [mul_node], fuse_region_id="mul")
+            mark_fuse_region(graph, [relu_node], fuse_region_id="relu")
+            return graph
+
+        x = torch.rand([256, 256], device=GPU_TYPE)
+
+        torch._dynamo.reset()
+        with config.patch(post_grad_custom_post_pass=add_shared_regions):
+            result, code = run_and_get_code(torch.compile(fn), x)
+        torch.testing.assert_close(result, fn(x))
+        self.assertIn("fused_mul_relu", code[0])
+
+        torch._dynamo.reset()
+        with config.patch(post_grad_custom_post_pass=add_unique_regions):
+            result, code = run_and_get_code(torch.compile(fn), x)
+        torch.testing.assert_close(result, fn(x))
+        self.assertNotIn("fused_mul_relu", code[0])
+        self.assertIn("fused_mul", code[0])
+        self.assertIn("fused_relu", code[0])
+
+    def test_non_adjacent_reuse_respects_fuse_region_config(self):
+        from torch._inductor.codegen.wrapper import AllocateLine
+        from torch._inductor.virtualized import V
+
+        nodes = [
+            SimpleNamespace(region="free"),
+            SimpleNamespace(region="middle"),
+            SimpleNamespace(region="alloc"),
+        ]
+        scheduler = SimpleNamespace(
+            nodes=nodes,
+            get_fuse_region=lambda node: node.region,
+        )
+        graph = SimpleNamespace(scheduler=scheduler)
+        estimate_peak = SimpleNamespace(
+            overall_peak_memory=1024,
+            peak_between=lambda free_line, alloc_line: 0,
+        )
+
+        free_line = SimpleNamespace(scheduler_node_index=0)
+        alloc_line = object.__new__(AllocateLine)
+        alloc_line.comm_buffer = False
+        alloc_line.scheduler_node_index = 2
+        alloc_line.wrapper = SimpleNamespace(estimate_peak=estimate_peak)
+
+        with V.set_graph_handler(graph):
+            with config.patch(allow_buffer_reuse_across_fuse_regions=False):
+                self.assertFalse(alloc_line.should_reuse_buffer(free_line, 128))
+
+            with config.patch(allow_buffer_reuse_across_fuse_regions=True):
+                self.assertTrue(alloc_line.should_reuse_buffer(free_line, 128))
+
+            nodes[2].region = "free"
+            with config.patch(allow_buffer_reuse_across_fuse_regions=False):
+                self.assertTrue(alloc_line.should_reuse_buffer(free_line, 128))
+
+            nodes[1].region = "alloc"
+            adjacent_free_line = SimpleNamespace(scheduler_node_index=1)
+            with config.patch(allow_buffer_reuse_across_fuse_regions=False):
+                self.assertTrue(alloc_line.should_reuse_buffer(adjacent_free_line, 128))
+
     def test_fuse_region_subgraph_arg_fake_update(self):
         from torch._inductor.fx_utils import _extract_subgraphs_and_args
 

@@ -33,6 +33,7 @@ from torch.utils._ordered_set import OrderedSet
 
 
 FUSE_REGION = "fuse_region"
+FUSE_REGION_ID = "fuse_region_id"
 
 
 class ControlDeps(HigherOrderOperator):
@@ -205,6 +206,8 @@ def _extract_unique_nodes(
 def mark_fuse_region(
     graph: fx.Graph,
     nodes: list[fx.Node],
+    *,
+    fuse_region_id: str | None = None,
 ) -> fx.Node | tuple[fx.Node, ...]:
     """
     Wrap a region of FX nodes with control_deps(..., fuse_region=True).
@@ -226,7 +229,9 @@ def mark_fuse_region(
     - A region with no external consumers is allowed.  It outlines to a
       subgraph returning ``()`` and leaves the control_deps node in place.
 
-    The helper preserves the original graph boundary: external producer nodes
+    If ``fuse_region_id`` is provided, multiple calls with the same id create
+    separate graph islands that can still fuse with each other.  The helper
+    preserves the original graph boundary: external producer nodes
     become HOP operands, and nodes used outside the region become replacement
     outputs.  HOP subgraph operands stored as GraphModule ``get_attr`` nodes are
     kept as ``get_attr`` inside the outlined graph so recursive subgraph passes
@@ -382,6 +387,9 @@ def mark_fuse_region(
     for node in reversed(ordered_nodes):
         graph.erase_node(node)
     graph.lint()
+
+    if fuse_region_id is not None:
+        region_node.meta[FUSE_REGION_ID] = fuse_region_id
 
     if not replacements:
         return region_node
