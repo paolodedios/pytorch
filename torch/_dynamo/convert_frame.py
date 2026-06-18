@@ -352,7 +352,7 @@ def preserve_global_state(fn: Callable[_P, _T]) -> Callable[_P, _T]:
             acc_rng_state = None
             if torch.accelerator.is_available():
                 with torch._C.DisableTorchFunction():
-                    acc_rng_state = torch.accelerator.get_rng_state()
+                    acc_rng_state = torch.accelerator.random.get_rng_state()
             cuda_matmul_fp32_prec = torch._C._get_fp32_precision_getter(
                 "cuda", "matmul"
             )
@@ -383,7 +383,7 @@ def preserve_global_state(fn: Callable[_P, _T]) -> Callable[_P, _T]:
                     torch._C._unset_default_mobile_cpu_allocator()
                 if acc_rng_state is not None:
                     with torch._C.DisableTorchFunction():
-                        torch.accelerator.set_rng_state(acc_rng_state)
+                        torch.accelerator.random.set_rng_state(acc_rng_state)
                 torch._C._set_fp32_precision_setter(
                     "cuda", "matmul", cuda_matmul_fp32_prec
                 )
