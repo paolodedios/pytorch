@@ -106,15 +106,6 @@ class TestFullyShardSpmdTypes(TestCase):
         cls.dp_replicate_axis = spmd.MeshAxis.of(
             cls.dense_storage_mesh.get_group("dp_replicate")
         )
-        cls.dense_storage_dp_shard_axis = spmd.MeshAxis.of(
-            cls.dense_storage_mesh.get_group("dp_shard")
-        )
-        cls.dense_storage_cp_axis = spmd.MeshAxis.of(
-            cls.dense_storage_mesh.get_group("cp")
-        )
-        cls.dense_storage_tp_axis = spmd.MeshAxis.of(
-            cls.dense_storage_mesh.get_group("tp")
-        )
         cls.efsdp_axis = spmd.MeshAxis.of(cls.sparse_mesh.get_group("efsdp"))
         cls.ep_axis = spmd.MeshAxis.of(cls.sparse_mesh.get_group("ep"))
 
