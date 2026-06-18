@@ -7300,12 +7300,8 @@ def forward(self, p_linear_weight, p_linear_bias, b_buffer, x):
         y2 = torch.arange(9).reshape((3, 3))
         with self.assertRaisesRegex(
             AssertionError,
-            (
-                escape("Guard failed: max(x.size()[1], y.size()[1]) == x.size()[1]")
-                if is_retracebility_test(self._testMethodName)
-                else escape(
-                    "Guard failed: max(1, x.size()[1], y.size()[1]) == x.size()[1]"
-                )
+            escape(
+                "Guard failed: torch.sym_max(1, torch.sym_max(x.size()[1], y.size()[1])) == x.size()[1]"
             ),
         ):
             # TODO: this should not error?
@@ -17389,7 +17385,7 @@ def forward(self, x):
                 for node in ep.graph.nodes
             ].count(True)
             if private_api:
-                self.assertEqual(num_asserts, 4)
+                self.assertEqual(num_asserts, 3)
                 with self.assertRaisesRegex(
                     RuntimeError,
                     r"Runtime assertion failed for expression Eq\(Mod\(s27\*s77, s77 - 1\), 0\)",

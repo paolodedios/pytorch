@@ -1142,8 +1142,13 @@ _integer_dtypes = (
     torch.int32,
     torch.int64,
 )
-_low_precision_dtypes = (torch.float16, torch.bfloat16, torch.complex32)
-_complex_dtypes = (torch.complex32, torch.complex64, torch.complex128)
+_low_precision_dtypes = (
+    torch.float16,
+    torch.bfloat16,
+    torch.complex32,
+    torch.bcomplex32,
+)
+_complex_dtypes = (torch.complex32, torch.bcomplex32, torch.complex64, torch.complex128)
 
 
 def is_boolean_dtype(dtype: torch.dtype) -> bool:
@@ -1187,11 +1192,12 @@ _complex_to_real_dtype_map = {
     torch.complex128: torch.float64,
     torch.complex64: torch.float32,
     torch.complex32: torch.float16,
+    torch.bcomplex32: torch.bfloat16,
 }
 
 _real_to_complex_dtype_map = {
     torch.float16: torch.complex32,
-    torch.bfloat16: torch.complex64,
+    torch.bfloat16: torch.bcomplex32,
     torch.float32: torch.complex64,
     torch.float64: torch.complex128,
 }
@@ -1238,6 +1244,7 @@ def dtype_to_type_ctor(dtype: torch.dtype) -> Callable[[NumberType], NumberType]
     if dtype in _integer_dtypes:
         return sym_int
     if dtype.is_floating_point:
+        # pyrefly: ignore [bad-return]
         return sym_float
     if dtype in _complex_dtypes:
         # TODO: type error here is real, replace with sym_complex
@@ -1282,7 +1289,7 @@ def check_fp_or_complex(
 ):
     """
     Checks whether the input is floating point or complex.
-    If allow_low_precision_dtypes is True, it allows having float16, bfloat16, and complex32
+    If allow_low_precision_dtypes is True, it allows having float16, bfloat16, and [b]complex32
     """
     torch._check(
         is_float_dtype(dtype) or is_complex_dtype(dtype),
@@ -1380,7 +1387,7 @@ def get_higher_dtype(
         (torch.float16, torch.bfloat16),
         (torch.float32,),
         (torch.float64,),
-        (torch.complex32,),
+        (torch.complex32, torch.bcomplex32),
         (torch.complex64,),
         (torch.complex128,),
     )
@@ -1510,6 +1517,7 @@ _computation_dtype_map = {
     torch.bfloat16: torch.float32,
     torch.float16: torch.float32,
     torch.complex32: torch.complex64,
+    torch.bcomplex32: torch.complex64,
 }
 
 
@@ -1617,7 +1625,7 @@ def elementwise_dtypes(
     partially ordered as follows:
 
     bool -> uint8, int8 -> int16 -> int32 -> int64 ->
-      float16, bfloat16 -> float32 -> float64 -> complex32 -> complex64 -> complex128
+      float16, bfloat16 -> float32 -> float64 -> complex32, bcomplex32 -> complex64 -> complex128
 
     The result dtype is selected by:
       - if no tensor's dtype has the same corresponding type as the one selected,
@@ -1637,7 +1645,7 @@ def elementwise_dtypes(
 
     The "corresponding complex dtypes" are:
       float16    -> complex32
-      bfloat16   -> complex64
+      bfloat16   -> bcomplex32
       float32    -> complex64
       float64    -> complex128
       complex32  -> complex32
@@ -1648,7 +1656,7 @@ def elementwise_dtypes(
     dtype by mapping low precision floating point and complex dtypes as follows:
 
       float16   -> float32
-      bfloat16  -> float32
+      bfloat16  -> bcomplex32
       complex32 -> complex64
 
     This is referred to as "op math", and the NO_OPMATH type promotion kind disables this mapping, making the
@@ -1833,7 +1841,7 @@ def make_contiguous_strides_for(
         if len(shape) < 2:
             return result
         # Use sym_max to handle unbacked symbolic dimensions
-        return result[:-2] + (1, sym_max(shape[-2], 1))
+        return result[:-2] + (1, sym_max(shape[-2], 1))  # type: ignore[return-value]
 
 
 def make_channels_last_1d_strides_for(
@@ -1952,6 +1960,7 @@ def set_correction(
     # NB: we don't actually support symint here, but it's harmless to accept
     if not isinstance(correction, (IntLike, FloatLike)):
         raise ValueError("correction argument should be integer or float")
+    # pyrefly: ignore [bad-return]
     return sym_float(correction)
 
 

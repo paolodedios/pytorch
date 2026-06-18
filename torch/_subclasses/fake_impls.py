@@ -363,7 +363,7 @@ def workaround_stride_incorrect_op(
     raise UnsupportedOperatorException(func)
 
 
-# Dont default to default device handling,
+# Don't default to default device handling,
 # since the device of `the_template` is ignored
 @register_op_impl(aten.resize_as_.default)
 def resize_as_(
@@ -1000,6 +1000,7 @@ def try_duck_specialization_first(a: torch.Tensor, shape) -> bool:
     buckets: dict[int, dict[sympy.Expr, torch.SymInt]] = defaultdict(dict)
     for s in list(a_syms) + list(target_syms):
         # setdefault keeps the *first* SymInt seen for each (hint, expr).
+        # pyrefly: ignore [bad-index]
         buckets[s.node.hint].setdefault(s.node.expr, s)
 
     candidates: list[tuple[torch.SymInt, torch.SymInt]] = []
@@ -1415,7 +1416,7 @@ def slice_forward(
     new_size: IntLikeType | None = None
     if start_index is not None and end_index is not None:
         if guard_or_false(end_index >= start_index):
-            new_size = (end_index - start_index + step - 1) // step
+            new_size = (end_index - start_index + step - 1) // step  # type: ignore[bad-assignment]
         elif guard_or_false(start_index >= end_index):
             new_size = 0
         else:
@@ -1423,7 +1424,7 @@ def slice_forward(
             # ordering (e.g., when they involve Min/Max). Compute the size via
             # max(end - start, 0) to avoid creating an unbacked symint.
             diff = torch.sym_max(end_index - start_index, 0)
-            new_size = (diff + step - 1) // step
+            new_size = (diff + step - 1) // step  # type: ignore[assignment]
 
     # create unbacked if case unknown
     if new_size is None:
@@ -1629,7 +1630,7 @@ def foreach_run_and_map_input_device(
     return out_fake
 
 
-# Dont default to default device handling,
+# Don't default to default device handling,
 # Since op can take in non-zero sized cpu
 # index tensors with cuda self
 @register_op_impl(aten.index.Tensor)
@@ -1973,6 +1974,14 @@ def infer_size(
         sizeA = a[dimA] if dimA >= 0 else 1
         sizeB = b[dimB] if dimB >= 0 else 1
 
+        def check_sizes(check: Any) -> None:
+            torch._check(
+                check,
+                lambda: f"The size of tensor a ({sizeA}) "
+                f"must match the size of tensor b ({sizeB}) "
+                f"at non-singleton dimension {i})",
+            )
+
         if statically_known_true(sizeA == sizeB):
             expandedSizes[i] = sizeA
             continue
@@ -1989,39 +1998,22 @@ def infer_size(
         # were not the case, we'd need to write this using sym_or() or
         # something like that).
         if statically_known_true(sizeA == 1):
-            torch._check(
-                sym_or(sizeA == 1, sizeA == sizeB),
-                lambda: f"The size of tensor a ({sizeA}) "
-                f"must match the size of tensor b ({sizeB}) "
-                f"at non-singleton dimension {i})",
-            )
+            check_sizes(sym_or(sizeA == 1, sizeA == sizeB))
             expandedSizes[i] = sizeB
         elif statically_known_true(sizeB == 1):
-            torch._check(
-                sym_or(sizeB == 1, sizeA == sizeB),
-                lambda: f"The size of tensor a ({sizeA}) "
-                f"must match the size of tensor b ({sizeB}) "
-                f"at non-singleton dimension {i})",
-            )
+            check_sizes(sym_or(sizeB == 1, sizeA == sizeB))
             expandedSizes[i] = sizeA
         else:
             sizeA_hint = _optimization_hint_or_none(sizeA)
             sizeB_hint = _optimization_hint_or_none(sizeB)
-            if sizeA_hint == 1 and sizeB_hint != 1:
-                torch._check(
-                    sym_or(sizeA == 1, sizeA == sizeB),
-                    lambda: f"The size of tensor a ({sizeA}) "
-                    f"must match the size of tensor b ({sizeB}) "
-                    f"at non-singleton dimension {i})",
-                )
+            if sizeA_hint is not None and sizeA_hint == sizeB_hint and sizeA_hint != 1:
+                check_sizes(sizeA == sizeB)
+                expandedSizes[i] = sizeA
+            elif sizeA_hint == 1 and sizeB_hint != 1:
+                check_sizes(sym_or(sizeA == 1, sizeA == sizeB))
                 expandedSizes[i] = sizeB
             else:
-                torch._check(
-                    sym_or(sizeB == 1, sizeA == sizeB),
-                    lambda: f"The size of tensor a ({sizeA}) "
-                    f"must match the size of tensor b ({sizeB}) "
-                    f"at non-singleton dimension {i})",
-                )
+                check_sizes(sym_or(sizeB == 1, sizeA == sizeB))
                 expandedSizes[i] = sizeA
     return tuple(expandedSizes)
 
@@ -2062,7 +2054,31 @@ def make_fast_binary_impl(
         if final_shape is None:
             raise AssertionError("final_shape must not be None")
 
-        from torch.fx.experimental.symbolic_shapes import statically_known_true, sym_eq
+        from torch.fx.experimental.symbolic_shapes import (
+            guard_or_false,
+            statically_known_true,
+            sym_eq,
+        )
+
+        def shapes_match_without_negative_guard(
+            shape: Sequence[IntLikeType], target: Sequence[IntLikeType]
+        ) -> bool:
+            shape_eq = sym_eq(shape, target)  # type: ignore[arg-type]
+            if statically_known_true(shape_eq):
+                return True
+            # guard_or_false() records a guard for a concrete False result too.
+            # That is too strong for singleton broadcast warmups under
+            # dynamic=True: e.g. (1, 3) + (2, 3) must still accept (2, 3) +
+            # (2, 3).  Only ask it to prove equality when hints say the shapes
+            # are equal for the current trace.
+            if len(shape) != len(target):
+                return False
+            if any(
+                _optimization_hint_or_none(x) != _optimization_hint_or_none(y)
+                for x, y in zip(shape, target)
+            ):
+                return False
+            return guard_or_false(shape_eq)
 
         # Do some extra safety checks to see if the output
         # stride is obvious
@@ -2071,7 +2087,7 @@ def make_fast_binary_impl(
                 isinstance(op, torch.Tensor)
                 and len(op.shape) == len(final_shape)
                 # take the slow path if result is not determined.
-                and statically_known_true(sym_eq(op.shape, final_shape))  # type: ignore[arg-type]
+                and shapes_match_without_negative_guard(op.shape, final_shape)
             ):
                 break
         else:

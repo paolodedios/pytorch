@@ -3184,6 +3184,13 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             if result:
                 return result
 
+        if self.value is torch.empty and len(args) == 1 and args[0].is_tensor():
+            # Eager accepts a one-element tensor as the size for torch.empty(),
+            # equivalent to using tensor.item().  Lower it explicitly before
+            # fake propagation so dynamic=True size-one tensor inputs do not
+            # leave TensorImpl with symbolic sizes when it checks numel().
+            args = [args[0].call_method(tx, "item", [], {})]
+
         any_symints_or_symfloats = any(isinstance(x, SymNodeVariable) for x in args)
 
         all_ints_or_floats = all(
@@ -4037,11 +4044,6 @@ For now, dynamo will explicitly graph break when it encounters user code with th
                 (torch._ops.OpOverload, torch._ops.OpOverloadPacket),
             )
         ) and can_dispatch_torch_function(tx, args, kwargs)
-
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, VariableTracker):
-            return False
-        return self.as_python_constant() == other.as_python_constant()
 
 
 class DispatchKeySetVariable(BaseTorchVariable):
