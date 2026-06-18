@@ -69,7 +69,7 @@ def set_rng_state(new_state: Tensor, device: _device_t = None) -> None:
         If the accelerator runtime is not yet initialized, the state is deferred
         and applied once the runtime is ready. See :ref:`lazy-initialization-and-fork-safety-note`.
     """
-    if not torch._C._accelerator_isLazyInitialized():
+    if not torch._C._accelerator_isInitialized():
         with torch._C._DisableFuncTorch():
             new_state = new_state.clone(memory_format=torch.contiguous_format)
 
