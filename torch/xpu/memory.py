@@ -633,8 +633,8 @@ def list_gpu_processes(device: "Device" = None) -> str:
     Returns:
         str: A human-readable summary of each running process and the given GPU memory usage in MB.
 
-    .. note:: On multi-tile devices, processes are reported at the root (physical) device
-        level, so the output covers all tiles rather than just the selected tile.
+    .. note:: Process status is reported at the physical device level and reflects all processes
+        associated with the device.
     """
     from ctypes import byref, c_uint32
 
