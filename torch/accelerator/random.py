@@ -182,7 +182,7 @@ def seed(device: _device_t = None, /) -> None:
 
 
 def seed_all() -> None:
-    r"""Set the seed for generating random numbers to a random number on all devices for the current :ref:`accelerator<accelerators>`.
+    r"""Set the same random seed across all devices of the current :ref:`accelerator<accelerators>`.
 
     .. note::
         If the accelerator runtime is not yet initialized, the state is deferred
