@@ -325,29 +325,6 @@ def pycallable_check(obj_type: type) -> bool:
     return type_implements_tp_call(obj_type)
 
 
-def generic_call(
-    tx: "InstructionTranslatorBase",
-    obj: VariableTracker,
-    args: list[VariableTracker],
-    kwargs: dict[str, VariableTracker],
-) -> VariableTracker:
-    """Mirrors CPython's PyObject_Call: invoke the tp_call slot.
-
-    ref: https://github.com/python/cpython/blob/v3.13.0/Objects/call.c#L361-L391
-
-    Dynamo models the tp_call slot via VariableTracker.call_function, which
-    every callable VT already implements, so this routes straight to it.  The
-    ``tp_call == NULL`` -> ``TypeError: 'X' object is not callable`` case is
-    enforced in the base ``VariableTracker.call_function`` fallback, which is
-    reached only by VTs with no call override -- i.e. objects that genuinely
-    cannot be called.  Applying PyCallable_Check here instead would
-    false-positive on VTs whose ``python_type()`` lacks tp_call yet are
-    invocable in Dynamo (e.g. ``classmethod``/``staticmethod`` descriptors,
-    which Dynamo resolves before calling).
-    """
-    return obj.call_function(tx, args, kwargs)
-
-
 def maybe_get_python_type(obj: VariableTracker) -> type:
     try:
         return obj.python_type()
@@ -868,6 +845,28 @@ def vt_is_iterable(obj: VariableTracker) -> bool:
     """Check if the object supports iteration (i.e. has tp_iter or sequence protocol)."""
     T = maybe_get_python_type(obj)
     return type_implements_tp_iter(T) or pysequence_check(T)
+
+
+def generic_invert(
+    tx: "InstructionTranslatorBase", obj: VariableTracker
+) -> VariableTracker:
+    """Mirrors PyNumber_Invert.
+
+    https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1375-L1394
+
+    Algorithm:
+    1. If type has nb_invert slot, call obj.nb_invert_impl(tx)
+    2. Otherwise, raise TypeError
+    """
+    obj_type = maybe_get_python_type(obj)
+
+    if type_implements_nb_invert(obj_type):
+        return obj.nb_invert_impl(tx)
+
+    raise_type_error(
+        tx,
+        f"bad operand type for unary ~: '{obj.python_type_name()}'",
+    )
 
 
 def generic_getiter(

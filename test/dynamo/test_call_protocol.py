@@ -2,9 +2,11 @@
 """Tests for tp_call: callable() (PyCallable_Check) and the __call__ slot."""
 
 import functools
+import operator
 import types
 
 import torch
+from torch._dynamo.exc import Unsupported
 from torch._dynamo.test_case import run_tests, TestCase
 from torch.testing._internal.common_utils import make_dynamo_test
 
@@ -25,6 +27,12 @@ class _WithCall:
 
 class _WithCallChild(_WithCall):
     pass
+
+
+class _WithUntraceableCall:
+    # __call__ is a C builtin with no traceable Python body; the type has a
+    # tp_call slot (callable) but Dynamo cannot trace the call -> graph break.
+    __call__ = operator.add
 
 
 class TpCallTests(TestCase):
@@ -133,6 +141,28 @@ class TpCallTests(TestCase):
             assert str(e) == "'module' object is not callable"  # noqa: S101
         else:
             raise AssertionError("expected TypeError")
+
+    def test_untraceable_dunder_call_graph_breaks(self):
+        obj = _WithUntraceableCall()
+
+        def fn(x):
+            return obj(x)
+
+        compiled = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            Unsupported, "call to a callable object with no traceable __call__"
+        ):
+            compiled(torch.randn(2))
+
+    def test_polyfilled_function_dunder_call(self):
+        # PolyfilledFunctionVariable.__call__ must route back to call_function
+        # instead of resolving the method-wrapper as a polyfill handler.
+        def fn(x):
+            return functools.reduce.__call__(operator.add, [x, x, x])
+
+        compiled = torch.compile(fn, backend="eager", fullgraph=True)
+        x = torch.randn(2)
+        self.assertEqual(fn(x), compiled(x))
 
     def test_functools_partial_call(self):
         def g(a, b):
