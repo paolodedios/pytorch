@@ -1888,8 +1888,8 @@ class GraphModule(torch.nn.Module):
 
     class partitioned_fw_subgraph_0_0(torch.nn.Module):
         def forward(self, primals_0: "f32[8, 8]"):
-            mul: "f32[8, 8]" = torch.ops.aten.mul.Tensor(primals_0, 2)
-            mul_1: "f32[8, 8]" = torch.ops.aten.mul.Tensor(primals_0, 3);  primals_0 = None
+            mul: "f32[8, 8]" = torch.ops.aten.mul.Scalar(primals_0, 2)
+            mul_1: "f32[8, 8]" = torch.ops.aten.mul.Scalar(primals_0, 3);  primals_0 = None
             return (mul, mul_1)
 """,
             )
@@ -1908,8 +1908,8 @@ class GraphModule(torch.nn.Module):
 
     class partitioned_bw_subgraph_0_0(torch.nn.Module):
         def forward(self, tangents_0: "f32[8, 8]", tangents_1: "f32[8, 8]"):
-            mul_2: "f32[8, 8]" = torch.ops.aten.mul.Tensor(tangents_1, 3)
-            mul_3: "f32[8, 8]" = torch.ops.aten.mul.Tensor(tangents_1, 2);  tangents_1 = None
+            mul_2: "f32[8, 8]" = torch.ops.aten.mul.Scalar(tangents_1, 3)
+            mul_3: "f32[8, 8]" = torch.ops.aten.mul.Scalar(tangents_1, 2);  tangents_1 = None
             add: "f32[8, 8]" = torch.ops.aten.add.Tensor(mul_2, mul_3);  mul_2 = mul_3 = None
             return (add,)
 """,
@@ -2569,7 +2569,7 @@ class GraphModule(torch.nn.Module):
         def forward(self, x: "f32[5]", y: "f32[5]"):
             o: "f32[5]" = torch.zeros_like(x)
 
-            triton_kernel_wrapper_mutation = torch.ops.higher_order.triton_kernel_wrapper_mutation(kernel_idx = 0, constant_args_idx = 0, grid = [(5, 1, 1)], tma_descriptor_metadata = {}, kwargs = {'in_ptr0': x, 'in_ptr1': y, 'out_ptr': o}, launch_kwargs = ('BLOCK_SIZE',));  x = y = triton_kernel_wrapper_mutation = None
+            triton_kernel_wrapper_mutation = torch.ops.higher_order.triton_kernel_wrapper_mutation(kernel_idx = 0, constant_args_idx = 0, grid = [(5, 1, 1)], tma_descriptor_metadata = {}, kwargs = {'in_ptr0': x, 'in_ptr1': y, 'out_ptr': o});  x = y = triton_kernel_wrapper_mutation = None
 
             sin: "f32[5]" = o.sin();  o = None
             return (sin,)

@@ -4834,7 +4834,7 @@ class <lambda>(torch.nn.Module):
         cat_2: "f64[9, s55 + 5]" = torch.ops.aten.cat.default([cat, arg3_1], 1);  cat = arg3_1 = None
 
         sin: "f64[9, s55 + 5]" = torch.ops.aten.sin.default(cat_2)
-        mul: "f64[9, s55 + 5]" = torch.ops.aten.mul.Tensor(sin, 3);  sin = None
+        mul: "f64[9, s55 + 5]" = torch.ops.aten.mul.Scalar(sin, 3);  sin = None
 
         sym_size_int: "Sym(s55 + 5)" = torch.ops.aten.sym_size.int(cat_2, 1);  cat_2 = None
         sym_stride_int: "Sym(s55 + 5)" = torch.ops.aten.sym_stride.int(mul, 0)
