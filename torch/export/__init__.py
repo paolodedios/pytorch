@@ -1,6 +1,5 @@
 import logging
 import os
-import re
 import warnings
 import zipfile
 from collections.abc import Callable, Mapping
@@ -79,26 +78,12 @@ def _make_device_mismatch_error(devices: set[torch.device] | None = None) -> Val
     )
 
 
-def _parse_mismatched_devices(message: str) -> set[torch.device] | None:
-    try:
-        found_devices = re.search(r"found at least two devices, ([^\n!]+)", message)
-        if found_devices is not None:
-            return {
-                torch.device(device)
-                for device in re.split(
-                    r"\s+and\s+|,\s*", found_devices.group(1).strip()
-                )
-            }
+def _prims_device_mismatch_devices(exc: BaseException) -> set[torch.device] | None:
+    # torch.export is imported during torch initialization; keep this import lazy.
+    from torch._prims_common import _DeviceMismatchError
 
-        expected_device = re.search(
-            r"Tensor on device ([^ ]+) is not on the expected device ([^'!)]+)",
-            message,
-        )
-        if expected_device is not None:
-            return {torch.device(device) for device in expected_device.groups()}
-    except (RuntimeError, ValueError):
-        return None
-
+    if isinstance(exc, _DeviceMismatchError):
+        return {exc.device, exc.expected_device}
     return None
 
 
@@ -110,9 +95,20 @@ def _fake_tensor_device_mismatch_error(exc: Exception) -> ValueError | None:
         return _make_device_mismatch_error({exc.common_device, exc.device})
 
     if isinstance(exc, torch._dynamo.exc.TorchRuntimeError):
-        devices = _parse_mismatched_devices(str(exc))
-        if str(exc).startswith("Tensor device mismatch") or devices is not None:
-            return _make_device_mismatch_error(devices)
+        inner_exception = exc.inner_exception
+        if isinstance(inner_exception, FakeTensorDeviceMismatchError):
+            return _make_device_mismatch_error(
+                {inner_exception.common_device, inner_exception.device}
+            )
+
+        if inner_exception is not None:
+            devices = _prims_device_mismatch_devices(inner_exception)
+            if devices is not None:
+                return _make_device_mismatch_error(devices)
+
+    devices = _prims_device_mismatch_devices(exc)
+    if devices is not None:
+        return _make_device_mismatch_error(devices)
 
     return None
 
@@ -122,7 +118,8 @@ def export(
     args: tuple[Any, ...],
     kwargs: Mapping[str, Any] | None = None,
     *,
-    dynamic_shapes: dict[str, Any] | tuple[Any, ...] | list[Any] | None = None,
+    # dynamic_shapes: _DynamicShapesInput | AdditionalInputs | ShapesCollection
+    dynamic_shapes: Any = None,
     strict: bool = False,
     preserve_module_call_signature: tuple[str, ...] = (),
     prefer_deferred_runtime_asserts_over_guards: bool = False,
@@ -187,6 +184,52 @@ def export(
          where the :func:`Dim` types correspond to dynamic dimensions, and static dimensions
          are denoted by None. Arguments that are dicts or tuples / lists of tensors are
          recursively specified by using mappings or sequences of contained specifications.
+
+         **ShapesSpec API.** ``dynamic_shapes`` may also be a
+         :class:`torch.fx.experimental.dynamic_spec.ShapesSpec` (or its
+         shorthand :class:`torch.fx.experimental.dynamic_spec.ParamsSpec`).
+         This is a newer unbacked unified API across compile, pre-compile,
+         export, etc., and is the recommended way to specify dynamic
+         shapes for export going forward. It is the same spec API exposed
+         via ``shapes_spec=`` in :func:`torch.compile`.
+
+         The keys of ``ParamsSpec`` are **parameter names of the callable
+         being traced** (for an ``nn.Module``, the parameters of
+         ``forward``); keyword and ``**kwargs`` arguments are addressed by
+         name too.
+
+         Key properties (see :mod:`torch.fx.experimental.dynamic_spec` for
+         full details):
+
+         * **Unbacked-only.** Dims / scalars marked dynamic become unbacked
+           SymInts (``u`` symbols) and are never specialized (including no
+           0/1 specialization).
+         * **Assumptions and derived expressions.** A dim can be an
+           expression over the spec's symbols (e.g. ``TensorSpec([B * 2,
+           ...])``), and you can pass relational ``assumptions`` between
+           symbols (e.g. ``[B % 2 == 0]``) that export validates.
+         * **No silent specialization.** The exported graph is guaranteed valid
+           for every assumption provided, otherwise export fails. (By
+           contrast, ``Dim.DYNAMIC`` / ``Dim.AUTO`` may silently specialize a
+           dynamic dim, yielding a graph that is not valid for all the inputs).
+
+         Example::
+
+            batch = ShapeVar("batch", min=2, max=128)
+            ep = torch.export.export(
+                mod,
+                (torch.randn(8, 3), torch.randn(16, 3)),
+                dynamic_shapes=ShapesSpec(
+                    params=ParamsSpec(
+                        {
+                            "x": TensorSpec([batch, 3]),
+                            "y": TensorSpec([batch * 2, 3]),  # derived expression
+                        }
+                    ),
+                    assumptions=[batch % 2 == 0],
+                ),
+                strict=True,
+            )
 
         strict: When disabled (default), the export function will trace the program through
          Python runtime, which by itself will not validate some of the implicit assumptions
@@ -514,7 +557,15 @@ def draft_export(
     an ExportedProgram, even if there are potential soundness issues, and to
     generate a report listing the issues found.
     """
+    from torch.fx.experimental.dynamic_spec import ParamsSpec, ShapesSpec
+
     from ._draft_export import draft_export
+
+    if isinstance(dynamic_shapes, (ShapesSpec, ParamsSpec)):
+        raise NotImplementedError(
+            f"draft_export does not support the new dynamic shapes API "
+            f"({type(dynamic_shapes).__name__}); use torch.export.export instead."
+        )
 
     return draft_export(
         mod=mod,
