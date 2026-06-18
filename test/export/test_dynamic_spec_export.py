@@ -818,8 +818,7 @@ Range constraints: {u0: VR[0, int_oo]}""",
     # ---- @dynamic_spec(...) decorator (auto-attach) ----
 
     def test_spec_decorator_per_param_form(self):
-        """``@dynamic_spec(x=...)`` attached to ``forward`` is auto-applied when
-        ``export()`` is called without ``dynamic_shapes=``."""
+        """``@dynamic_spec(x=...)`` attached to ``forward`` is auto-applied."""
         from torch.fx.experimental.dynamic_spec import dynamic_spec
 
         class M(torch.nn.Module):
@@ -833,7 +832,8 @@ Range constraints: {u0: VR[0, int_oo]}""",
         self.assertGreater(len(free_unbacked_symbols(shape[0])), 0)
 
     def test_spec_decorator_full_form_with_assumptions(self):
-        """``@dynamic_spec(params_spec=..., assumptions=...)`` form is auto-applied."""
+        """``@dynamic_spec(params_spec=..., assumptions=...)`` form is auto-applied,
+        and the assumption is enforced as a runtime assertion."""
         from torch.fx.experimental.dynamic_spec import dynamic_spec
 
         B = VAR("batch")
@@ -847,8 +847,13 @@ Range constraints: {u0: VR[0, int_oo]}""",
                 return x.sum(0)
 
         ep = export(M(), (torch.randn(8, 3),), strict=self.strict)
-        # The assumption fires as a runtime assert in the graph.
-        self.assertTrue(_has_assert_scalar(ep.graph_module))
+        # Valid input (dim 0 is even) -- runs cleanly.
+        ep.module()(torch.randn(8, 3))
+        ep.module()(torch.randn(20, 3))
+        # Violation (dim 0 is odd) -- runtime assertion fires, proving the
+        # assumption from the decorator was actually wired into the graph.
+        with self.assertRaisesRegex(RuntimeError, "Runtime assertion failed"):
+            ep.module()(torch.randn(7, 3))
 
     def test_spec_decorator_and_explicit_dynamic_shapes_raises(self):
         """Mixing ``@dynamic_spec(...)`` with an explicit ``dynamic_shapes=`` kwarg

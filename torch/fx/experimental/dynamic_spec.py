@@ -6,10 +6,14 @@ Currently only supports unbacked dynamic shapes.
 from __future__ import annotations
 
 import itertools
+import logging
 import threading
 from typing import Any, cast, TYPE_CHECKING, TypeAlias, TypeVar
 
 from torch import SymBool, SymInt
+
+
+log = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
@@ -753,7 +757,7 @@ def _coerce_to_shapes_spec(
 
 # Attribute used to store the resolved ``ShapesSpec`` on a decorated function
 # (or ``nn.Module.forward``). Read by ``_resolve_dynamic_shapes`` below.
-_SPEC_ATTR = "_dynamo_spec"
+_DYNAMIC_SPEC_ATTR = "_dynamo_spec"
 
 
 def dynamic_spec(
@@ -819,7 +823,7 @@ def dynamic_spec(
         )
 
     def _decorator(fn: Any) -> Any:
-        setattr(fn, _SPEC_ATTR, resolved)
+        setattr(fn, _DYNAMIC_SPEC_ATTR, resolved)
         return fn
 
     return _decorator
@@ -843,7 +847,7 @@ def _resolve_dynamic_shapes(
 
     if isinstance(fn_or_module, torch.nn.Module):
         fn = fn_or_module.forward
-    attached = getattr(fn, _SPEC_ATTR, None)
+    attached = getattr(fn, _DYNAMIC_SPEC_ATTR, None)
     if attached is None:
         return dynamic_shapes_kwarg
     if dynamic_shapes_kwarg is not None:
@@ -851,4 +855,9 @@ def _resolve_dynamic_shapes(
             "Both `@dynamic_spec(...)` is attached to the function/forward "
             "AND a `dynamic_shapes=` argument was passed. Provide only one."
         )
+    log.info(
+        "Using @dynamic_spec attached to %s: %s",
+        getattr(fn, "__qualname__", repr(fn)),
+        attached,
+    )
     return attached
