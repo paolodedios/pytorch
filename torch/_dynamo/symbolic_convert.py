@@ -141,6 +141,7 @@ from .trace_rules import is_builtin_constant, is_forbidden
 from .utils import (
     _get_error_on_graph_break,
     counters,
+    FrameState,
     get_fake_value,
     get_instruction_source_311,
     get_metrics_context,
@@ -1247,7 +1248,7 @@ class ExceptionStack:
     # and "stack" sometimes refers to a C variable with the same name and the
     # exception stack, respectively.
     #
-    # The lifetime of an exception in Python 3.11+ is:
+    # The lifetime of an exception is (Python 3.11+):
     #  + tx._raise_exception_variable(...) := sets the current_exception variable
     #  + PUSH_EXC_INFO := pushes the current_exception to the *exception stack*
     #  + POP_EXCEPT := pops TOS from the *exception stack*
@@ -6008,7 +6009,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
             if (
                 is_generator(code)
                 and isinstance(self, InliningGeneratorInstructionTranslator)
-                and self.generator_exhausted
+                and self.frame_state == FrameState.FRAME_CLEARED
             ):
                 if not isinstance(self, InliningGeneratorInstructionTranslator):
                     raise AssertionError(
@@ -6248,8 +6249,8 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.generated_items = []
-        self.generator_exhausted = False
         self.is_generator_from_ctx_manager = False
+        self.frame_state = FrameState.FRAME_CREATED
 
     def inline_call_(self) -> VariableTracker:
         with profile_inline_call(self.output, self.f_code, lambda: self.inline_depth):
@@ -6262,6 +6263,7 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
     def YIELD_VALUE(self, inst: Instruction) -> None:
         top = self.pop()
         self.generated_items.append(top)
+        self.frame_state = FrameState.FRAME_SUSPENDED
         if len(self.generated_items) > MAX_ITERATOR_LIMIT:
             raise exc.InfiniteGeneratorError
         if (
@@ -6284,11 +6286,11 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
         raise ReturnValueOp
 
     def RETURN_VALUE(self, inst: Instruction) -> None:
-        self.generator_exhausted = True
+        self.frame_state = FrameState.FRAME_CLEARED
         return super().RETURN_VALUE(inst)
 
     def RETURN_CONST(self, inst: Instruction) -> None:
-        self.generator_exhausted = True
+        self.frame_state = FrameState.FRAME_CLEARED
         return super().RETURN_CONST(inst)
 
     def YIELD_FROM(self, inst: Instruction) -> None:

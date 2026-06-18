@@ -776,7 +776,7 @@ class OutputGraph(OutputGraphCommon):
         # Stores the full fqn of a param or buffer to the relevant source.
         self.param_name_to_source: dict[str, Source] | None = {}
         self.side_effects = SideEffects(self)
-        # Generators created while tracing this frame. Owned here (not on
+        # Generators created while tracing this frame. Tracked here (not on
         # SideEffects) because SideEffects is cloned/swapped during HOP
         # speculation and graph-break restore; the OutputGraph is the single
         # instance that lives for the whole frame. Closed in compile_subgraph.
@@ -941,6 +941,24 @@ class OutputGraph(OutputGraphCommon):
 
         self.attr_source_cache: dict[tuple[Source, str], AttrSource] = {}
         self._cached_replayed_side_effect_source_refs: tuple[str, ...] | None = None
+
+    def track_generator(self, gen: "LocalGeneratorObjectVariable") -> None:
+        self.local_generators.append(gen)
+
+    def untrack_generator(self, gen: "LocalGeneratorObjectVariable") -> None:
+        if gen in self.local_generators:
+            self.local_generators.remove(gen)
+
+    def close_local_generators(self) -> None:
+        from .symbolic_convert import temporarely_allow_writes_to_output_graph
+
+        tx = self.root_tx
+        with temporarely_allow_writes_to_output_graph(tx):
+            # close() runs user code that may untrack, so iterate a snapshot
+            for gen in list(self.local_generators):
+                if not gen._frame_state_finished():
+                    # pyrefly: ignore[bad-argument-type]
+                    gen.call_method(tx, "close", [], {})
 
     def get_replayed_side_effect_source_refs(
         self, *, populate_export_metadata: bool = False
@@ -2151,7 +2169,7 @@ class OutputGraph(OutputGraphCommon):
             # Close all generators opened while tracing. Needs to be done after
             # pass1, as PyCodegen might try to reconstruct the generator, which
             # sets LocalGeneratorObjectVariable.remaining_items
-            self.side_effects.close_local_generators()
+            self.close_local_generators()
 
             # Use `pass1.uses` to selectively cache multi-user variables into a
             # temporary local source. This (a). speeds up loading VTs with long

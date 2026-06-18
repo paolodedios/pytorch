@@ -37,7 +37,6 @@ import traceback
 import types
 import typing
 from collections.abc import Callable, Sequence
-from enum import Enum
 from types import CellType, FunctionType
 from typing import Any, cast, Literal, Optional, TYPE_CHECKING, TypeVar
 from typing_extensions import Never
@@ -52,6 +51,7 @@ from .. import config, graph_break_hints, polyfills, variables
 from ..bytecode_transformation import create_call_function, create_rot_n, is_generator
 from ..exc import (
     format_frame_info,
+    get_dynamo_observed_exception,
     InfiniteGeneratorError,
     ObservedException,
     ObservedGeneratorExit,
@@ -80,6 +80,7 @@ from ..utils import (
     check_constant_args,
     check_unspec_or_constant_args,
     cmp_name_to_op_mapping,
+    FrameState,
     identity,
     is_function,
     is_lru_cache_wrapper_trace_without_warning_allowed,
@@ -1133,15 +1134,6 @@ class TreeMapOnlyFunctionVariable(BaseUserFunctionVariable):
         return leaf
 
 
-class FrameState(Enum):
-    FRAME_CREATED = (-3,)
-    FRAME_SUSPENDED = (-2,)
-    FRAME_SUSPENDED_YIELD_FROM = (-1,)
-    FRAME_EXECUTING = (0,)
-    FRAME_COMPLETED = (1,)
-    FRAME_CLEARED = 4
-
-
 class LocalGeneratorObjectVariable(VariableTracker):
     # PyGen_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/genobject.c#L814
     _cpython_type = types.GeneratorType
@@ -1157,8 +1149,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         self.code = code
         self.f_globals = f_globals
         self.inline_tracer = inline_tracer
-        inline_tracer.output.side_effects.track_generator(self)
-        self.frame_state = FrameState.FRAME_CREATED
+        inline_tracer.output.track_generator(self)
 
     def get_code(self) -> types.CodeType:
         return self.code
@@ -1196,8 +1187,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         temp = temporarely_allow_writes_to_output_graph(tx)
 
         with save, disallow, temp:
-            tracer = self.inline_tracer
-            if not tracer.generator_exhausted:
+            if not self._frame_state_finished():
                 self.remaining_items = unpack_iterable(tx, self)  # type: ignore[bad-argument-type]
             variables.ListIteratorVariable(self.remaining_items).reconstruct(codegen)
 
@@ -1217,33 +1207,39 @@ class LocalGeneratorObjectVariable(VariableTracker):
         # https://github.com/python/cpython/blob/f31a89bb901067dd105b00cfa90523cf7ffdbbdd/Objects/genobject.c#L259
         tracer = self.inline_tracer
 
-        if self._is_generator_just_started() and not arg.is_constant_none():
+        if (
+            tracer.frame_state == FrameState.FRAME_CREATED
+            and not arg.is_constant_none()
+        ):
             raise_type_error(
                 tx,
                 "can't send non-None value to a just-started generator",
             )
 
-        if not self._is_generator_just_started():
+        if tracer.frame_state == FrameState.FRAME_EXECUTING:
             raise_value_error(tx, "generator already executing")
 
-        if self._is_generator_exhausted():
+        if self._frame_state_finished():
             # TODO(guilhermeleobas): Implement this!
-            ...
-
-        if self._is_generator_exhausted():
             raise_observed_exception(StopIteration, tx)
+
+        tracer.frame_state = FrameState.FRAME_EXECUTING
 
         try:
             # Hierarchically, tx can be seen as the parent of the inline tracer
             # created on call_function. Any exception needs to be propagated to tx
             # for Dynamo to behave correctly
             tracer.push(arg)
+            if exc:
+                self.throw_pending()
             return tracer.inline_call_()
         except ObservedUserStopIteration:
-            tracer.output.side_effects.untrack_generator(self)
+            tracer.output.untrack_generator(self)
             raise
         except ObservedException:
-            tracer.generator_exhausted = True
+            # An exception propagating out of the generator frame finishes it,
+            # mirroring CPython setting gi_frame_state = FRAME_CLEARED.
+            tracer.frame_state = FrameState.FRAME_COMPLETED
             raise
         except InfiniteGeneratorError:
             # test/dynamo/test_misc.py::test_iterator_limit
@@ -1271,9 +1267,21 @@ class LocalGeneratorObjectVariable(VariableTracker):
         exc: bool,
         closing: bool,
     ) -> VariableTracker:
+        # rule of thumb for gen_send_ex2:
+        # - PYGEN_RETURN => No exception raised
+        # - PYGEN_ERROR => Exception raised
+        # - PYGEN_NEXT => yielded - frame suspended
+        # gen_send_ex raises StopIteration if gen_send_ex2 returns PYGEN_RETURN
         result = self.gen_send_ex2(tx, arg, exc, closing)
-        if result.is_constant_none():
-            ...
+        if self._frame_state_suspended():
+            # PYGEN_NEXT
+            return result
+        else:
+            # PYGEN_RETURN
+            if result.is_constant_none():
+                raise_observed_exception(StopIteration, tx)
+            else:
+                raise_observed_exception(StopIteration, tx, args=[result])
         return result
 
     def tp_iternext_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
@@ -1295,37 +1303,32 @@ class LocalGeneratorObjectVariable(VariableTracker):
     def should_allow_nested_graph_breaks(self) -> Literal[False]:
         return False
 
-    def _setup_and_raise_exception(
+    def _setup_exception(
         self, tx: "InstructionTranslatorBase", exc: VariableTracker
     ) -> None:
-        # Raise an exception at the point where the generator is paused
-        tracer = self.inline_tracer
-        try:
-            tracer._raise_exception_variable(exc, set_context=True)
-        except ObservedException as e:
-            # if no handler is available (i.e. user code doesn't catch it), the
-            # exception is raised again.
-            tracer.exception_handler(e)
+        # Set up the exception to be raised in the generator frame
+        from torch._dynamo.symbolic_convert import ExceptionVals
 
-    def _is_generator_just_started(self) -> bool:
-        return self.frame_state == FrameState.FRAME_CREATED
+        val = exc
+        if isinstance(exc, variables.BuiltinVariable):
+            val = exc.call_function(tx, [], {})
+        if not isinstance(val, ExceptionVals):
+            raise AssertionError(f"Expected an exception variable, got {val}")
+        tx.exn_vt_stack.set_current_exception(val, set_context=True)
 
-        # if sys.version_info < (3, 11):
-        #     first_inst = 0
-        # else:
-        #     first_inst = 1
-        # return (
-        #     self.inline_tracer is None
-        #     or self.inline_tracer.instruction_pointer == first_inst
-        # )
+    def _frame_state_created(self) -> bool:
+        return self.inline_tracer.frame_state == FrameState.FRAME_CREATED
 
-    def _is_generator_exhausted(self) -> bool:
-        return getattr(self.inline_tracer, "generator_exhausted", False)
-
-    def frame_state_finished(self) -> bool:
-        return self.frame_state in {
+    def _frame_state_finished(self) -> bool:
+        return self.inline_tracer.frame_state in {
             FrameState.FRAME_COMPLETED,
             FrameState.FRAME_CLEARED,
+        }
+
+    def _frame_state_suspended(self) -> bool:
+        return self.inline_tracer.frame_state in {
+            FrameState.FRAME_SUSPENDED,
+            FrameState.FRAME_SUSPENDED_YIELD_FROM,
         }
 
     def gen_send(
@@ -1336,9 +1339,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         # exits without yielding another value
         return self.gen_send_ex(tx, arg, False, False)
 
-    def gen_close(
-        self, tx: "InstructionTranslatorBase"
-    ) -> VariableTracker:
+    def gen_close(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         # * Raises a GeneratorExit at the point where the generator function was paused.
         # * If the generator function catches the exception and returns a
         # value, this value is returned from close() - Python 3.13+
@@ -1349,101 +1350,50 @@ class LocalGeneratorObjectVariable(VariableTracker):
         # * If the generator has already exited due to an exception or normal
         # exit, close() returns None and has no other effect.
 
-        if self.frame_state == FrameState.FRAME_CREATED:
-            self.frame_state = FrameState.FRAME_COMPLETED
-            return ConstantVariable.create(None)
-
-        if self.frame_state_finished():
-            return ConstantVariable.create(None)
-
-        # TODO(dynamo-team): Missing sub-generator handling
-        tracer = self.inline_tracer
-        try:
-            retval = self.gen_send_ex(tx, ConstantVariable.create(None), True, True)
-            if not retval.is_constant_none():
-                raise_observed_exception(
-                    RuntimeError,
-                    tx,
-                    args=["generator ignored GeneratorExit"],
-                )
-        except ObservedGeneratorExit:
-            # tracer.generator_exhausted = True
-            return variables.ConstantVariable.create(None)
-        except ObservedUserStopIteration:
-            # In Python 3.13+, one can capture GeneratorExit and return a value
-            # See test_generator.py::test_close_capture_GeneratorExit_return
-            # https://discuss.python.org/t/let-generator-close-return-stopiteration-value/24786/26
-            # https://github.com/python/cpython/pull/104771
-            if tracer.symbolic_result is None:
-                raise AssertionError(
-                    "expected symbolic_result to be set after StopIteration"
-                ) from None
-            return tracer.symbolic_result
-
-        return ConstantVariable.create(None)
-
-        # if the generator returned a value while closing, StopIteration was
-        # raised in gen_send_ex() above; retrieve and return this value
-
         # Return None if close is called on a just-started generator
         # See test GeneratorCloseCpythonTests::test_close_not_started
 
-        # tracer = self.inline_tracer
-        # if self._is_generator_just_started() or self._is_generator_exhausted():
-        #     tracer.generator_exhausted = True
-        #     return variables.ConstantVariable.create(None)
+        tracer = self.inline_tracer
+        if self._frame_state_created():
+            tracer.frame_state = FrameState.FRAME_COMPLETED
+            return ConstantVariable.create(None)
 
-        # # Raise GeneratorExit to see if user code catches it. Any other exception
-        # # is propagated to the parent frame.
-        # try:
-        #     self._setup_and_raise_exception(
-        #         tx, variables.ExceptionVariable(GeneratorExit, [])
-        #     )
-        #     # There's an extra block on Python 3.12+ to handle StopIteration
-        #     # see: https://github.com/python/cpython/blob/8f93dd8a8f237b277abad20d566df90c5cbd7f1e/Objects/genobject.c#L394-L397
-        #     #
-        #     #   1           0 RETURN_GENERATOR
-        #     #               2 POP_TOP
-        #     #               4 RESUME                   0
+        if self._frame_state_finished():
+            return ConstantVariable.create(None)
 
-        #     #   2           6 LOAD_CONST               1 (1)
-        #     #               8 YIELD_VALUE              1
-        #     #              10 RESUME                   1
-        #     #              12 POP_TOP
-        #     #              14 RETURN_CONST             0 (None)
-        #     #         >>   16 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
-        #     #              18 RERAISE                  1
-        #     # ExceptionTable:
-        #     #   4 to 14 -> 16 [0] lasti
-        #     if (
-        #         sys.version_info >= (3, 12)
-        #         and tracer.next_instruction.opname == "CALL_INTRINSIC_1"
-        #     ):
-        #         tracer.generator_exhausted = True
-        #         return variables.ConstantVariable.create(None)
-        # except ObservedGeneratorExit:
-        #     # If it doesn't catch, we just return None, as per the text above
-        #     tracer.generator_exhausted = True
-        #     return variables.ConstantVariable.create(None)
+        self._setup_exception(tx, VariableTracker.build(tx, GeneratorExit))
 
-        # try:
-        #     # Raise RuntimeError if the generator yields any other value
-        #     # TODO seems like this should send None
-        #     if tracer.inline_call_():
-        #         raise_observed_exception(RuntimeError, tx)
-        # except ObservedGeneratorExit:
-        #     tracer.generator_exhausted = True
-        #     return variables.ConstantVariable.create(None)
-        # except ObservedUserStopIteration:
-        #     # In Python 3.13+, one can capture GeneratorExit and return a value
-        #     # See test_generator.py::test_close_capture_GeneratorExit_return
-        #     # https://discuss.python.org/t/let-generator-close-return-stopiteration-value/24786/26
-        #     # https://github.com/python/cpython/pull/104771
-        #     if tracer.symbolic_result is None:
-        #         raise AssertionError(
-        #             "expected symbolic_result to be set after StopIteration"
-        #         ) from None
-        #     return tracer.symbolic_result
+        try:
+            self.gen_send_ex(tx, ConstantVariable.create(None), True, True)
+        except ObservedGeneratorExit:
+            return ConstantVariable.create(None)
+        except ObservedUserStopIteration:
+            # generator returned a value while closing. gen_send_ex() raises
+            # StopIteration with the value returned
+            curr_exc = tracer.exn_vt_stack.get_current_exception()
+            if not isinstance(curr_exc, variables.ExceptionVariable):
+                # make pyrefly happy
+                raise AssertionError(
+                    f"Expected current exception to be an ExceptionVariable, got {curr_exc}"
+                ) from None
+            if curr_exc.args:
+                return curr_exc.args[0]
+        else:
+            # if it reaches here, the generator yielded a value while closing
+            raise_observed_exception(
+                RuntimeError,
+                tx,
+                args=["generator ignored GeneratorExit"],
+            )
+        return ConstantVariable.create(None)
+
+    def throw_pending(self) -> None:
+        tracer = self.inline_tracer
+        curr_exc = tracer.exn_vt_stack.get_current_exception()
+        observed = get_dynamo_observed_exception(curr_exc.python_type())(
+            f"raised exception {curr_exc}"
+        )
+        tracer.exception_handler(observed)
 
     def gen_throw(
         self, tx: "InstructionTranslatorBase", arg: VariableTracker
@@ -1454,18 +1404,8 @@ class LocalGeneratorObjectVariable(VariableTracker):
         # * If the generator function does not catch the passed-in exception,
         # or raises a different exception, then that exception propagates to the caller.
 
-        # Setup the exception table and jump target in case of try...finally
-        try:
-            # re-raise the exception object given to avoid
-            # creating a new object, so that IS_OP works.
-            # See: https://github.com/pytorch/pytorch/pull/146496
-            self._setup_and_raise_exception(tx, arg)
-        except ObservedException:  # noqa: TRY203
-            # propagate the exception back to the parent caller
-            raise
-
-        # If reaches here, it means user code captured the exception
-        return self.next_variable(tx)
+        self._setup_exception(tx, arg)
+        return self.gen_send_ex(tx, ConstantVariable.create(None), True, False)
 
     def call_method(
         self,
@@ -1480,79 +1420,6 @@ class LocalGeneratorObjectVariable(VariableTracker):
             return self.gen_close(tx)
         elif name == "throw":
             return self.gen_throw(tx, args[0])
-        return super().call_method(tx, name, args, kwargs)
-
-        if name == "close":
-            # * Raises a GeneratorExit at the point where the generator function was paused.
-            # * If the generator function catches the exception and returns a
-            # value, this value is returned from close() - Python 3.13+
-            # * If the generator function is already closed, or raises GeneratorExit
-            # (by not catching the exception), close() returns None.
-            # * If the generator yields a value, a RuntimeError is raised.
-            # * If the generator raises any other exception, it is propagated to the caller.
-            # * If the generator has already exited due to an exception or normal
-            # exit, close() returns None and has no other effect.
-
-            # Return None if close is called on a just-started generator
-            # See test GeneratorCloseCpythonTests::test_close_not_started
-
-            tracer = self.inline_tracer
-            if self._is_generator_just_started() or self._is_generator_exhausted():
-                tracer.generator_exhausted = True
-                return variables.ConstantVariable.create(None)
-
-            # Raise GeneratorExit to see if user code catches it. Any other exception
-            # is propagated to the parent frame.
-            try:
-                self._setup_and_raise_exception(
-                    tx, variables.ExceptionVariable(GeneratorExit, [])
-                )
-                # There's an extra block on Python 3.12+ to handle StopIteration
-                # see: https://github.com/python/cpython/blob/8f93dd8a8f237b277abad20d566df90c5cbd7f1e/Objects/genobject.c#L394-L397
-                #
-                #   1           0 RETURN_GENERATOR
-                #               2 POP_TOP
-                #               4 RESUME                   0
-
-                #   2           6 LOAD_CONST               1 (1)
-                #               8 YIELD_VALUE              1
-                #              10 RESUME                   1
-                #              12 POP_TOP
-                #              14 RETURN_CONST             0 (None)
-                #         >>   16 CALL_INTRINSIC_1         3 (INTRINSIC_STOPITERATION_ERROR)
-                #              18 RERAISE                  1
-                # ExceptionTable:
-                #   4 to 14 -> 16 [0] lasti
-                if (
-                    sys.version_info >= (3, 12)
-                    and tracer.next_instruction.opname == "CALL_INTRINSIC_1"
-                ):
-                    tracer.generator_exhausted = True
-                    return variables.ConstantVariable.create(None)
-            except ObservedGeneratorExit:
-                # If it doesn't catch, we just return None, as per the text above
-                tracer.generator_exhausted = True
-                return variables.ConstantVariable.create(None)
-
-            try:
-                # Raise RuntimeError if the generator yields any other value
-                # TODO seems like this should send None
-                if tracer.inline_call_():
-                    raise_observed_exception(RuntimeError, tx)
-            except ObservedGeneratorExit:
-                tracer.generator_exhausted = True
-                return variables.ConstantVariable.create(None)
-            except ObservedUserStopIteration:
-                # In Python 3.13+, one can capture GeneratorExit and return a value
-                # See test_generator.py::test_close_capture_GeneratorExit_return
-                # https://discuss.python.org/t/let-generator-close-return-stopiteration-value/24786/26
-                # https://github.com/python/cpython/pull/104771
-                if tracer.symbolic_result is None:
-                    raise AssertionError(
-                        "expected symbolic_result to be set after StopIteration"
-                    ) from None
-                return tracer.symbolic_result
-
         return super().call_method(tx, name, args, kwargs)
 
 
