@@ -2508,8 +2508,8 @@ class TritonKernelOverrides(TritonOverrides):
     def value_expr(cls, expr, dtype):
         """
         Like :meth:`index_expr`, but honors ``dtype`` by setting the kernel
-        index dtype before emitting, casting range symbols before arithmetic,
-        and casting the result if needed.
+        index dtype before emitting, casting range symbols before integer
+        arithmetic, and casting the result if needed.
         """
         real_index_dtype = V.kernel._index_dtype
         real_codegen_value_expr_symbol_casts = V.kernel.codegen_value_expr_symbol_casts
@@ -2520,7 +2520,7 @@ class TritonKernelOverrides(TritonOverrides):
         V.kernel._index_dtype = (
             dtype if dtype in (torch.int32, torch.int64) else torch.int64
         )
-        V.kernel.codegen_value_expr_symbol_casts = True
+        V.kernel.codegen_value_expr_symbol_casts = dtype in (torch.int32, torch.int64)
         try:
             var = cls.index_expr(expr, dtype)
         finally:
@@ -6465,7 +6465,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 and "x" in tiling_scores
                 and "r0_" in tiling_scores
             ):
-                # large rblock inhibits xblock size, dont attempt if there is a decent amount of
+                # large rblock inhibits xblock size, don't attempt if there is a decent amount of
                 # reads coalesced by xblock
                 r_coalesce_ratio = tiling_scores["r0_"] / max(tiling_scores["x"], 1)
                 contiguous_red = r_coalesce_ratio >= INNER_REDUCTION_RATIO_THRESHOLD
