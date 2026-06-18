@@ -99,7 +99,7 @@ void initModule(PyObject* module) {
     return at::getDeviceAllocator(device_type)->initialized();
   });
 
-  m.def("_accelerator_isLazyInitialized", []() {
+  m.def("_accelerator_isInitialized", []() {
     const auto device_type = at::accelerator::getAccelerator();
     if (!device_type.has_value()) {
       return false;
