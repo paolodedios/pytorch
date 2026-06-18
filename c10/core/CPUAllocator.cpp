@@ -6,7 +6,7 @@
 #include <c10/mobile/CPUCachingAllocator.h>
 #include <c10/mobile/CPUProfilingAllocator.h>
 #include <c10/util/Logging.h>
-// @allow-raw-throw
+// @allow-raw-throw(bare rethrow in OOM handler)
 
 // TODO: rename flag to C10
 C10_DEFINE_bool(
@@ -22,9 +22,9 @@ struct C10_API DefaultCPUAllocator final : at::Allocator {
     void* data = nullptr;
     try {
       data = c10::alloc_cpu(nbytes);
-    } catch (c10::Error& e) {
+    } catch (c10::Error&) {
       profiledCPUMemoryReporter().OutOfMemory(nbytes);
-      throw e;
+      throw;
     }
     profiledCPUMemoryReporter().New(data, nbytes);
     return {data, data, &ReportAndDelete, at::Device(at::DeviceType::CPU)};
@@ -122,9 +122,9 @@ class DefaultMobileCPUAllocator final : public at::Allocator {
     } else {
       try {
         data = c10::alloc_cpu(alloc_size);
-      } catch (c10::Error& e) {
+      } catch (c10::Error&) {
         profiledCPUMemoryReporter().OutOfMemory(alloc_size);
-        throw e;
+        throw;
       }
       auto allocation_planner = GetThreadLocalAllocationPlanner();
       if (allocation_planner != nullptr) {
