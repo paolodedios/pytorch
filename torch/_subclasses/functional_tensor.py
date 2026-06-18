@@ -6,7 +6,7 @@ import warnings
 import weakref
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 from typing_extensions import Self
 
 
@@ -446,8 +446,9 @@ class FunctionalTensorMode(TorchDispatchMode):
                 return _get_dispatch_mode_pre_dispatch(
                     torch._C._TorchDispatchModeKey.FUNCTIONAL
                 )
-            return torch._C._get_dispatch_mode(
-                torch._C._TorchDispatchModeKey.FUNCTIONAL
+            return cast(
+                "FunctionalTensorMode | None",
+                torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FUNCTIONAL),
             )
 
         if _get_prev_mode() is None:
@@ -638,26 +639,27 @@ class FunctionalTensorMode(TorchDispatchMode):
         )
 
         if (
-            func in (torch.ops.aten.alias.default, torch.ops.aten.detach.default)
+            (
+                func is torch.ops.aten.alias.default
+                or func is torch.ops.aten.detach.default
+            )
             and len(args) == 1
             and isinstance(args[0], FunctionalTensor)
         ):
             input_unwrapped = torch._from_functional_tensor(args[0].elem)
-            input_dispatch_keys = (
-                input_unwrapped.dispatch_keys
-                if isinstance(input_unwrapped, torch._subclasses.FakeTensor)
-                else None
-            )
+            if (
+                isinstance(input_unwrapped, torch._subclasses.FakeTensor)
+                and input_unwrapped.dispatch_keys is not None
+            ):
+                input_dispatch_keys = input_unwrapped.dispatch_keys
 
-            def preserve_dispatch_keys(out: object) -> None:
-                if input_dispatch_keys is not None and isinstance(
-                    out, FunctionalTensor
-                ):
-                    unwrapped = torch._from_functional_tensor(out.elem)
-                    if isinstance(unwrapped, torch._subclasses.FakeTensor):
-                        unwrapped.dispatch_keys = input_dispatch_keys
+                def preserve_dispatch_keys(out: object) -> None:
+                    if isinstance(out, FunctionalTensor):
+                        unwrapped = torch._from_functional_tensor(out.elem)
+                        if isinstance(unwrapped, torch._subclasses.FakeTensor):
+                            unwrapped.dispatch_keys = input_dispatch_keys
 
-            pytree.tree_map_(preserve_dispatch_keys, outs_wrapped)
+                pytree.tree_map_(preserve_dispatch_keys, outs_wrapped)
 
         if (
             # If no outputs are our functional subclass, then don't try to fix up aliasing
@@ -711,6 +713,7 @@ class FunctionalTensorMode(TorchDispatchMode):
                     continue
                 unwrapped = torch._from_functional_tensor(a.elem)
                 try:
+                    # pyrefly: ignore[missing-attribute]
                     tracker_entry = m.tracer.tensor_tracker[unwrapped]
                 except KeyError:
                     # A tensor constant lifted from a nested HOP subgraph

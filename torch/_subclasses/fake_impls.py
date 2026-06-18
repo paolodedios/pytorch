@@ -86,6 +86,12 @@ _MKLDNN_DTYPES = {
     torch.uint8,
     torch.int8,
 }
+_MKLDNN_TO_DENSE_DTYPES = _MKLDNN_DTYPES | {torch.float8_e4m3fn}
+_MKLDNN_DTYPE_CHANGE_RESTRICTED_DTYPES = {
+    torch.uint8,
+    torch.int8,
+    torch.float8_e4m3fn,
+}
 _TO_DENSE_SPARSE_LAYOUTS = frozenset(
     {
         torch.sparse_coo,
@@ -190,6 +196,20 @@ def _is_tensor_constructor(func: OpOverload) -> bool:
     )
 
 
+@functools.cache
+def _has_device_arg(func: OpOverload) -> bool:
+    device_type = torch._C.DeviceObjType.get()
+    optional_device_type = torch._C.OptionalType(device_type)
+    return any(
+        arg.name == "device"
+        and (
+            arg.type.isSubtypeOf(device_type)
+            or arg.type.isSubtypeOf(optional_device_type)
+        )
+        for arg in func._schema.arguments
+    )
+
+
 def register_op_impl(
     run_impl_check: Callable[[OpOverload], bool]
     | OpOverload
@@ -256,14 +276,20 @@ def constructors(
         # cpu is default device if none is specified
         default_device = torch.device("cpu")
         args = ()
-    out_device = new_kwargs.pop("device", None)
+    has_device_arg = _has_device_arg(func)
+    out_device = new_kwargs.pop("device", None) if has_device_arg else None
     out_device = out_device if out_device is not None else default_device
-    new_kwargs["device"] = torch.device("meta")
+    if has_device_arg:
+        new_kwargs["device"] = torch.device("meta")
     # _like constructors have fake tensor inputs (maybe this causes the non-like
     # to fail? hmmm)
     with in_kernel_invocation_manager(fake_mode):
         r = func(*args, **new_kwargs)
-    return FakeTensor(fake_mode, r, out_device)
+    if r.device.type == "meta":
+        return fake_mode.fake_tensor_converter.from_meta_and_device(
+            fake_mode, r, out_device
+        )
+    return fake_mode.fake_tensor_converter.from_real_tensor(fake_mode, r)
 
 
 @register_op_impl(aten.is_pinned.default)
@@ -373,7 +399,7 @@ def workaround_stride_incorrect_op(
     raise UnsupportedOperatorException(func)
 
 
-# Dont default to default device handling,
+# Don't default to default device handling,
 # since the device of `the_template` is ignored
 @register_op_impl(aten.resize_as_.default)
 def resize_as_(
@@ -1014,6 +1040,7 @@ def try_duck_specialization_first(a: torch.Tensor, shape) -> bool:
     buckets: dict[int, dict[sympy.Expr, torch.SymInt]] = defaultdict(dict)
     for s in list(a_syms) + list(target_syms):
         # setdefault keeps the *first* SymInt seen for each (hint, expr).
+        # pyrefly: ignore [bad-index]
         buckets[s.node.hint].setdefault(s.node.expr, s)
 
     candidates: list[tuple[torch.SymInt, torch.SymInt]] = []
@@ -1429,7 +1456,7 @@ def slice_forward(
     new_size: IntLikeType | None = None
     if start_index is not None and end_index is not None:
         if guard_or_false(end_index >= start_index):
-            new_size = (end_index - start_index + step - 1) // step
+            new_size = (end_index - start_index + step - 1) // step  # type: ignore[bad-assignment]
         elif guard_or_false(start_index >= end_index):
             new_size = 0
         else:
@@ -1437,7 +1464,7 @@ def slice_forward(
             # ordering (e.g., when they involve Min/Max). Compute the size via
             # max(end - start, 0) to avoid creating an unbacked symint.
             diff = torch.sym_max(end_index - start_index, 0)
-            new_size = (diff + step - 1) // step
+            new_size = (diff + step - 1) // step  # type: ignore[assignment]
 
     # create unbacked if case unknown
     if new_size is None:
@@ -1612,18 +1639,20 @@ def maybe_to_dense_mkldnn(
         return NotImplemented
 
     out_dtype = dtype if dtype is not None else a.dtype
-    if a.dtype not in _MKLDNN_DTYPES:
+    if a.dtype not in _MKLDNN_TO_DENSE_DTYPES:
         raise RuntimeError(
-            "mkldnn_to_dense expects float, bfloat16, half, uint8, int8 tensor input"
+            "mkldnn_to_dense expects float, bfloat16, half, uint8, int8, "
+            "float8_e4m3fn tensor input"
         )
-    if out_dtype not in _MKLDNN_DTYPES:
+    if out_dtype not in _MKLDNN_TO_DENSE_DTYPES:
         raise RuntimeError(
             "mkldnn tensor only can be converted to be a float, bfloat16, Half, "
-            "uint8, int8 cpu tensor"
+            "uint8, int8, float8_e4m3fn cpu tensor"
         )
-    if a.dtype in (torch.uint8, torch.int8) and out_dtype != a.dtype:
+    if a.dtype in _MKLDNN_DTYPE_CHANGE_RESTRICTED_DTYPES and out_dtype != a.dtype:
         raise RuntimeError(
-            "For int8, uint8 mkldnn_tensor input, we should not change the data type."
+            "For int8, uint8, float8 mkldnn_tensor input, we should not change "
+            "the data type."
         )
     shape = tuple(a.shape)
     with in_kernel_invocation_manager(fake_mode):
@@ -1714,7 +1743,7 @@ def to_dense_functorch_frontmode_impl(
         ) -> torch.Tensor:
             ctx.set_materialize_grads(False)
             unwrapped_self = _unwrap_for_grad(self, level)
-            ctx.input = unwrapped_self
+            ctx.save_for_backward(unwrapped_self)
             ctx.input_dtype = unwrapped_self.dtype
             ctx.input_is_mkldnn = unwrapped_self.is_mkldnn
             ctx.masked_grad = masked_grad
@@ -1736,8 +1765,9 @@ def to_dense_functorch_frontmode_impl(
                 # Functorch grad transforms replay setup_context on a strided
                 # wrapper, so return the wrapper's expected dense gradient.
                 return grad.to(dtype=ctx.input_dtype), None, None
+            (input,) = ctx.saved_tensors
             return (
-                aten.to_dense_backward.default(grad, ctx.input, ctx.masked_grad),
+                aten.to_dense_backward.default(grad, input, ctx.masked_grad),
                 None,
                 None,
             )
@@ -1868,7 +1898,7 @@ def foreach_run_and_map_input_device(
     return out_fake
 
 
-# Dont default to default device handling,
+# Don't default to default device handling,
 # Since op can take in non-zero sized cpu
 # index tensors with cuda self
 @register_op_impl(aten.index.Tensor)
@@ -2052,6 +2082,13 @@ def conv(
             # TODO: We can make this a little more faithful with best effort
             # channels last detection (but only if it's statically obvious!)
             mem_fmt = None
+        elif input_.dim() == k - 1:
+            # Unbatched input: eager routes directly to the slow dilated
+            # backward kernels, which produce contiguous gradients and bypass
+            # the channels-last backend-memory-format selection. Mirror that
+            # here; _select_conv_backend would also reject the missing batch
+            # dim.
+            mem_fmt = None
         else:
             # convolution has "bias" but not "bias_sizes"; convolution_backward
             # has "bias_sizes" but not "bias". .get() handles both with one call.
@@ -2170,6 +2207,23 @@ def _pack_padded_sequence(
     packed_data = inputs.new_empty(res_size)
     batch_size = inputs.new_empty((new_batch_size,))
     return (packed_data, batch_size)  # type: ignore[return]
+
+
+def _fake_alias(fake_mode: FakeTensorMode, x: FakeTensor) -> FakeTensor:
+    with no_python_dispatcher(), in_kernel_invocation_manager(fake_mode):
+        out = aten.alias.default(x)
+    # Real MKLDNN alias is not public API, but compiler-generated alias nodes
+    # must preserve fake MKLDNN layout state through tracing.
+    return FakeTensor(fake_mode, out, x.device, dispatch_keys=x.dispatch_keys)
+
+
+@register_op_impl(aten.alias.default)
+def fake_alias(
+    fake_mode: FakeTensorMode, func: OpOverload, x: FakeTensor
+) -> FakeTensor | object:
+    if not isinstance(x, FakeTensor):
+        return NotImplemented
+    return _fake_alias(fake_mode, x)
 
 
 # pyrefly: ignore [implicit-any]
@@ -2393,6 +2447,10 @@ def fast_detach(
     return FakeTensor(fake_mode, out, x.device, dispatch_keys=dispatch_keys)
 
 
+def fast_alias(fake_mode: FakeTensorMode, x: FakeTensor) -> FakeTensor:
+    return _fake_alias(fake_mode, x)
+
+
 @functools.cache
 def get_fast_op_impls() -> dict[OpOverload, Callable[..., Any]]:
     import torch._refs
@@ -2413,4 +2471,5 @@ def get_fast_op_impls() -> dict[OpOverload, Callable[..., Any]]:
         )
     )
     register_fast_op_impl(torch.ops.aten.detach.default)(fast_detach)
+    register_fast_op_impl(torch.ops.aten.alias.default)(fast_alias)
     return FAST_OP_IMPLEMENTATIONS
