@@ -301,6 +301,9 @@ class FSDPState(_State):
                     if not fsdp_param_group.is_unsharded:
                         fsdp_param_group.unshard()
                         fsdp_param_group.wait_for_unshard()
+            for fsdp_param_group in self._fsdp_param_groups:
+                for fsdp_param in fsdp_param_group.fsdp_params:
+                    fsdp_param._restore_spmd_types(fsdp_param.unsharded_param)
             return self._cast_forward_inputs(args, kwargs)
 
         # With grouped ``fully_shard([a, b, ...])`` the pre-hook fires per
@@ -313,9 +316,9 @@ class FSDPState(_State):
             if state_first_in_pass:
                 args, kwargs = self._root_pre_forward(module, args, kwargs)
         args, kwargs = self._cast_forward_inputs(args, kwargs)
+        for fsdp_param_group in self._fsdp_param_groups:
+            args, kwargs = fsdp_param_group.pre_forward(module, args, kwargs)
         with _spmd_no_typecheck():
-            for fsdp_param_group in self._fsdp_param_groups:
-                args, kwargs = fsdp_param_group.pre_forward(module, args, kwargs)
             if state_first_in_pass:
                 for fsdp_state in self._states_to_forward_prefetch:
                     # Forward order (not reversed) to match forward execution

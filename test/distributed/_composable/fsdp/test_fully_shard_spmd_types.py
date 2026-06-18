@@ -5,11 +5,17 @@ import unittest
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+from torch.distributed.device_mesh import DeviceMesh
 from torch.distributed.fsdp import (
     DataParallelMeshDims,
     fully_shard,
     MixedPrecisionPolicy,
 )
+from torch.distributed.fsdp._fully_shard._fsdp_common import (
+    FSDPMeshInfo,
+    ShardPlacementResult,
+)
+from torch.distributed.fsdp._fully_shard._fsdp_init import _get_mesh_info
 from torch.distributed.tensor import init_device_mesh, Replicate, Shard
 from torch.distributed.tensor.debug import CommDebugMode
 from torch.distributed.tensor.placement_types import _StridedShard
@@ -62,6 +68,32 @@ class SpmdLinear(nn.Module):
         return x.sum()
 
 
+class SpmdParamOnly(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.weight = nn.Parameter(torch.randn(16, 16))
+        self.compute_param_type = None
+
+    def forward(self):
+        self.compute_param_type = dict(spmd.get_local_type(self.weight))
+        return self.weight.sum()
+
+
+class DenseSparseParams(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.dense_weight = nn.Parameter(torch.randn(16, 16))
+        self.sparse_weight = nn.Parameter(torch.randn(16, 16))
+        self.compute_param_types = None
+
+    def forward(self):
+        self.compute_param_types = (
+            dict(spmd.get_local_type(self.dense_weight)),
+            dict(spmd.get_local_type(self.sparse_weight)),
+        )
+        return self.dense_weight.sum(), self.sparse_weight.sum()
+
+
 @unittest.skipUnless(dist._is_spmd_types_available(), "requires spmd_types")
 class TestFullyShardSpmdTypes(TestCase):
     @classmethod
@@ -78,6 +110,12 @@ class TestFullyShardSpmdTypes(TestCase):
         cls.fsdp_mesh = init_device_mesh(
             "cpu", (2, 2, 2, 2), mesh_dim_names=("dpr", "dps", "cp", "tp")
         )
+        cls.sparse_mesh = init_device_mesh(
+            "cpu", (4, 4), mesh_dim_names=("efsdp", "ep")
+        )
+        cls.sparse_compute_mesh = init_device_mesh(
+            "cpu", (2, 2, 4), mesh_dim_names=("sdp", "scp", "ep")
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -89,16 +127,13 @@ class TestFullyShardSpmdTypes(TestCase):
         """FSDP restores user SPMD metadata on params for compute.
 
         FSDP should preserve the compute-mesh annotations when applied with
-        a different storage-mesh view. fully_shard() itself does not need a
-        set_current_mesh() scope when all parameter axes are already annotated.
+        a different storage-mesh view.
         """
         dp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("dp"))
         cp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("cp"))
         tp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("tp"))
         for seq_parallel in (False, True):
             with self.subTest(seq_parallel=seq_parallel):
-                # init model, annotate params
-                # # TODO(pianpwk): support optionally-annotated for DP/CP axes.
                 model = SpmdLinear(self.type_mesh, seq_parallel)
                 spmd.assert_type(
                     model.unsharded_weight,
@@ -114,19 +149,20 @@ class TestFullyShardSpmdTypes(TestCase):
                 )
 
                 # FSDP turns params into DTensor, in this case should contain StridedShard @ dps
-                fully_shard(
-                    model,
-                    mesh=self.fsdp_mesh,
-                    dp_mesh_dims=DataParallelMeshDims(
-                        shard=("dps", "cp"),
-                        replicate="dpr",
-                    ),
-                    mp_policy=MixedPrecisionPolicy(
-                        param_dtype=torch.bfloat16,
-                        reduce_dtype=torch.float32,
-                        cast_forward_inputs=True,
-                    ),
-                )
+                with spmd.set_current_mesh(self.type_mesh):
+                    fully_shard(
+                        model,
+                        mesh=self.fsdp_mesh,
+                        dp_mesh_dims=DataParallelMeshDims(
+                            shard=("dps", "cp"),
+                            replicate="dpr",
+                        ),
+                        mp_policy=MixedPrecisionPolicy(
+                            param_dtype=torch.bfloat16,
+                            reduce_dtype=torch.float32,
+                            cast_forward_inputs=True,
+                        ),
+                    )
                 self.assertEqual(
                     model.sharded_weight._spec.placements,
                     (
@@ -193,38 +229,7 @@ class TestFullyShardSpmdTypes(TestCase):
                     2,
                 )
 
-    def test_local_v_param_requires_partition_spec(self):
-        """Local-only V@TP params are ambiguous for FSDP.
-
-        Without PartitionSpec shard info, FSDP cannot choose the matching
-        DTensor Shard(dim), so it rejects the parameter at init time.
-        """
-        model = SpmdLinear(self.type_mesh, seq_parallel=False)
-
-        with spmd.set_current_mesh(self.type_mesh):
-            spmd.assert_type(
-                model.unsharded_weight,
-                {"dp": spmd.R, "cp": spmd.R, "tp": spmd.I},
-            )
-            spmd.assert_type(
-                model.sharded_weight,
-                {"dp": spmd.R, "cp": spmd.R, "tp": spmd.V},
-            )
-        with self.assertRaises(ValueError) as cm:
-            fully_shard(
-                model,
-                mesh=self.fsdp_mesh,
-                dp_mesh_dims=DataParallelMeshDims(
-                    shard=("dps", "cp"),
-                    replicate="dpr",
-                ),
-            )
-        self.assertExpectedInline(
-            str(cm.exception),
-            """Cannot convert plain Varying to a DTensor placement. Use S(dim) to specify which tensor dimension is sharded.""",
-        )
-
-    def test_partial_param_annotations_infer_fsdp_axes_at_compute(self):
+    def test_full_param_annotations_do_not_require_init_compute_mesh(self):
         model = SpmdLinear(self.type_mesh, seq_parallel=False)
         dp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("dp"))
         cp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("cp"))
@@ -232,11 +237,11 @@ class TestFullyShardSpmdTypes(TestCase):
 
         spmd.assert_type(
             model.unsharded_weight,
-            {tp_axis: spmd.I},
+            {dp_axis: spmd.R, cp_axis: spmd.R, tp_axis: spmd.I},
         )
         spmd.assert_type(
             model.sharded_weight,
-            {tp_axis: spmd.S(0)},
+            {dp_axis: spmd.R, cp_axis: spmd.R, tp_axis: spmd.S(0)},
         )
         fully_shard(
             model,
@@ -270,6 +275,219 @@ class TestFullyShardSpmdTypes(TestCase):
             ),
         )
 
+    def test_local_v_param_requires_partition_spec(self):
+        """Local-only V@TP params are ambiguous for FSDP.
+
+        Without PartitionSpec shard info, FSDP cannot choose the matching
+        DTensor Shard(dim), so it rejects the parameter at init time.
+        """
+        model = SpmdLinear(self.type_mesh, seq_parallel=False)
+
+        with spmd.set_current_mesh(self.type_mesh):
+            spmd.assert_type(
+                model.unsharded_weight,
+                {"dp": spmd.R, "cp": spmd.R, "tp": spmd.I},
+            )
+            spmd.assert_type(
+                model.sharded_weight,
+                {"dp": spmd.R, "cp": spmd.R, "tp": spmd.V},
+            )
+        with self.assertRaises(ValueError) as cm, spmd.set_current_mesh(self.type_mesh):
+            fully_shard(
+                model,
+                mesh=self.fsdp_mesh,
+                dp_mesh_dims=DataParallelMeshDims(
+                    shard=("dps", "cp"),
+                    replicate="dpr",
+                ),
+            )
+        self.assertExpectedInline(
+            str(cm.exception),
+            """Cannot convert plain Varying to a DTensor placement. Use S(dim) to specify which tensor dimension is sharded.""",
+        )
+
+    def test_partial_param_annotations_infer_fsdp_axes_at_compute(self):
+        """Use init-time current_mesh to restore omitted FSDP axes as R.
+
+        Params annotate only TP; FSDP fills DP/CP axes for module compute.
+        """
+        model = SpmdLinear(self.type_mesh, seq_parallel=False)
+        dp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("dp"))
+        cp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("cp"))
+        tp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("tp"))
+
+        spmd.assert_type(
+            model.unsharded_weight,
+            {tp_axis: spmd.I},
+        )
+        spmd.assert_type(
+            model.sharded_weight,
+            {tp_axis: spmd.S(0)},
+        )
+        with spmd.set_current_mesh(self.type_mesh):
+            fully_shard(
+                model,
+                mesh=self.fsdp_mesh,
+                dp_mesh_dims=DataParallelMeshDims(
+                    shard=("dps", "cp"),
+                    replicate="dpr",
+                ),
+            )
+
+        inp = torch.randn(4, 8, 16)
+        with (
+            spmd.set_current_mesh(self.type_mesh),
+            typecheck(strict_mode="strict", local=False),
+        ):
+            spmd.assert_type(
+                inp,
+                {dp_axis: spmd.V, cp_axis: spmd.V, tp_axis: spmd.I},
+                partition_spec=spmd.PartitionSpec(dp_axis, cp_axis, None),
+            )
+            model(inp)
+
+        self.assertEqual(
+            model.compute_param_types,
+            (
+                {dp_axis: spmd.R, cp_axis: spmd.R, tp_axis: spmd.I},
+                {dp_axis: spmd.R, cp_axis: spmd.R, tp_axis: spmd.V},
+            ),
+        )
+
+    def test_mixed_dense_sparse_params_use_per_param_restore_meshes(self):
+        """Dense uses storage mesh restore; sparse uses explicit compute mesh."""
+        model = DenseSparseParams()
+        dense_dp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("dp"))
+        dense_cp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("cp"))
+        dense_tp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("tp"))
+        sparse_dp_axis = spmd.MeshAxis.of(self.sparse_compute_mesh.get_group("sdp"))
+        sparse_cp_axis = spmd.MeshAxis.of(self.sparse_compute_mesh.get_group("scp"))
+        sparse_ep_axis = spmd.MeshAxis.of(self.sparse_compute_mesh.get_group("ep"))
+        spmd.assert_type(model.dense_weight, {dense_tp_axis: spmd.S(0)})
+        spmd.assert_type(model.sparse_weight, {sparse_ep_axis: spmd.S(0)})
+
+        dense_mesh_info = _get_mesh_info(
+            self.type_mesh,
+            DataParallelMeshDims(shard=("dp", "cp")),
+        )
+        sparse_mesh_info = _get_mesh_info(
+            self.sparse_mesh,
+            DataParallelMeshDims(shard="efsdp"),
+        )
+        self.assertIsInstance(dense_mesh_info, FSDPMeshInfo)
+        self.assertIsInstance(sparse_mesh_info, FSDPMeshInfo)
+        sparse_param = model.sparse_weight
+
+        def shard_placement_fn(param):
+            if param is sparse_param:
+                return ShardPlacementResult(
+                    placement=Shard(0),
+                    mesh_info=sparse_mesh_info,
+                    spmd_compute_mesh=self.sparse_compute_mesh,
+                )
+            return ShardPlacementResult(
+                placement=Shard(0),
+                mesh_info=dense_mesh_info,
+            )
+
+        fully_shard(
+            model,
+            mesh=self.type_mesh,
+            dp_mesh_dims=DataParallelMeshDims(shard=("dp", "cp")),
+            shard_placement_fn=shard_placement_fn,
+        )
+
+        with typecheck(strict_mode="strict", local=False):
+            model()
+        self.assertEqual(
+            model.compute_param_types,
+            (
+                {dense_dp_axis: spmd.R, dense_cp_axis: spmd.R, dense_tp_axis: spmd.V},
+                {
+                    sparse_dp_axis: spmd.R,
+                    sparse_cp_axis: spmd.R,
+                    sparse_ep_axis: spmd.V,
+                },
+            ),
+        )
+
+    def test_spmd_compute_mesh_axes_must_match_annotations(self):
+        model = SpmdParamOnly()
+        tp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("tp"))
+        spmd.assert_type(model.weight, {tp_axis: spmd.I})
+
+        mesh_info = _get_mesh_info(
+            self.fsdp_mesh,
+            DataParallelMeshDims(shard=("dps", "cp"), replicate="dpr"),
+        )
+        self.assertIsInstance(mesh_info, FSDPMeshInfo)
+
+        def shard_placement_fn(param):
+            return ShardPlacementResult(
+                placement=Shard(0),
+                mesh_info=mesh_info,
+                spmd_compute_mesh=self.sparse_mesh,
+            )
+
+        with self.assertRaises(ValueError) as cm:
+            fully_shard(
+                model,
+                mesh=self.fsdp_mesh,
+                dp_mesh_dims=DataParallelMeshDims(
+                    shard=("dps", "cp"),
+                    replicate="dpr",
+                ),
+                shard_placement_fn=shard_placement_fn,
+            )
+        self.assertIn(
+            "annotations on axes that are not in the resolved typechecking mesh",
+            str(cm.exception),
+        )
+
+    def test_spmd_compute_mesh_same_size_different_span_errors(self):
+        model = SpmdParamOnly()
+        compute_mesh = DeviceMesh(
+            "cpu",
+            torch.arange(0, 16, 2),
+            mesh_dim_names=("even",),
+        )
+        compute_axis = spmd.MeshAxis.of(compute_mesh.get_group("even"))
+        spmd.assert_type(model.weight, {compute_axis: spmd.I})
+
+        storage_mesh = DeviceMesh(
+            "cpu",
+            torch.arange(8).reshape(2, 2, 2),
+            mesh_dim_names=("half_dpr", "half_dps", "half_tp"),
+        )
+        mesh_info = _get_mesh_info(
+            storage_mesh,
+            DataParallelMeshDims(shard="half_dps", replicate="half_dpr"),
+        )
+        self.assertIsInstance(mesh_info, FSDPMeshInfo)
+
+        def shard_placement_fn(param):
+            return ShardPlacementResult(
+                placement=Shard(0),
+                mesh_info=mesh_info,
+                spmd_compute_mesh=compute_mesh,
+            )
+
+        with self.assertRaises(ValueError) as cm:
+            fully_shard(
+                model,
+                mesh=storage_mesh,
+                dp_mesh_dims=DataParallelMeshDims(
+                    shard="half_dps",
+                    replicate="half_dpr",
+                ),
+                shard_placement_fn=shard_placement_fn,
+            )
+        self.assertIn(
+            "FSDP can fill omitted FSDP-managed axes only when these meshes "
+            "span the same rank set.",
+            str(cm.exception),
+        )
+
     def test_spmd_params_require_dp_mesh_dims(self):
         model = SpmdLinear(self.type_mesh, seq_parallel=False)
 
@@ -278,12 +496,38 @@ class TestFullyShardSpmdTypes(TestCase):
                 model.unsharded_weight,
                 {"dp": spmd.R, "cp": spmd.R, "tp": spmd.I},
             )
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(ValueError) as cm, spmd.set_current_mesh(self.type_mesh):
             fully_shard(model, mesh=self.type_mesh["dp"])
         self.assertExpectedInline(
             str(cm.exception),
             "spmd_types parameters require a named SPMD mesh "
             "(pass dp_mesh_dims to fully_shard)",
+        )
+
+    def test_partial_param_annotations_require_init_compute_mesh(self):
+        model = SpmdLinear(self.type_mesh, seq_parallel=False)
+        tp_axis = spmd.MeshAxis.of(self.type_mesh.get_group("tp"))
+        spmd.assert_type(model.unsharded_weight, {tp_axis: spmd.I})
+
+        with self.assertRaises(ValueError) as cm:
+            fully_shard(
+                model,
+                mesh=self.fsdp_mesh,
+                dp_mesh_dims=DataParallelMeshDims(
+                    shard=("dps", "cp"),
+                    replicate="dpr",
+                ),
+            )
+        self.assertExpectedInline(
+            str(cm.exception),
+            "Parameter 'unsharded_weight' has partial spmd_types annotations "
+            "that do not span the full FSDP storage mesh. Wrap fully_shard() "
+            "in spmd.set_current_mesh() if all parameters in the FSDP unit "
+            "share a typechecking mesh, set ShardPlacementResult.spmd_compute_mesh "
+            "when the typechecking and storage meshes differ, or set "
+            "ShardPlacementResult.mesh_info.spmd_mesh when they match. "
+            "Annotated axes: (mesh_tp,). Storage mesh axes: (mesh_dpr, "
+            "mesh_dps, mesh_cp, mesh_tp).",
         )
 
     def test_partial_param_annotations_missing_non_fsdp_axis_errors(self):
@@ -300,7 +544,7 @@ class TestFullyShardSpmdTypes(TestCase):
             model.sharded_weight,
             {tp_axis: spmd.S(0)},
         )
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(ValueError) as cm, spmd.set_current_mesh(self.type_mesh):
             fully_shard(
                 model,
                 mesh=self.fsdp_mesh,
@@ -327,7 +571,7 @@ class TestFullyShardSpmdTypes(TestCase):
                 model.unsharded_weight,
                 {"dp": spmd.I, "cp": spmd.R, "tp": spmd.I},
             )
-        with self.assertRaises(ValueError) as cm:
+        with self.assertRaises(ValueError) as cm, spmd.set_current_mesh(self.type_mesh):
             fully_shard(
                 model,
                 mesh=self.fsdp_mesh,
