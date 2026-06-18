@@ -167,7 +167,7 @@ int nminussumofbits(int v) {
 
 int64_t factorial(int n) {
   if (n < 0) {
-    throw std::runtime_error("factorial() not defined for negative values");
+    TORCH_CHECK(false, "factorial() not defined for negative values");
   }
   int64_t p = 1, r = 1;
   loop(n, p, r);

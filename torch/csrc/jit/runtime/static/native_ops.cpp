@@ -11,7 +11,6 @@
 #include <torch/csrc/jit/mobile/promoted_prim_ops.h>
 #include <torch/csrc/jit/runtime/register_ops_utils.h>
 #include <torch/csrc/jit/runtime/vararg_functions.h>
-// @allow-raw-throw
 
 namespace {
 constexpr auto createBorrowedIValue =
@@ -297,7 +296,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
         auto step = p_node->Input(2).toInt();
         // error handling when step_val == 0 during runtime
         if (step == 0) {
-          throw std::runtime_error("range() arg 3 must not be zero");
+          TORCH_CHECK(false, "range() arg 3 must not be zero");
         }
         if (step > 0 && lo < hi) {
           p_node->Output(0) = 1 + (hi - 1 - lo) / step;
@@ -1252,7 +1251,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
         if (norm_idx < 0 || norm_idx >= num_elems) {
           // Use std::runtime_error instead of c10::Error to be consistent with
           // JIT
-          throw std::out_of_range("Tuple index out of range");
+          TORCH_CHECK_INDEX(false, "Tuple index out of range");
         }
         pnode->Output(0) = elems[norm_idx];
       };
@@ -1267,7 +1266,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       return [](ProcessedNode* pnode) {
         const auto& message = pnode->Input(0).toStringRef();
-        throw std::runtime_error(message);
+        TORCH_CHECK(false, message);
       };
     })
 
@@ -1483,14 +1482,14 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
         // JIT does a check for requires_grad, but we skip it here since SR is
         // inference only
         if (!tensor.sizes().empty()) {
-          throw std::runtime_error(
-              "Cannot convert a tensor of dimension > 0 to scalar");
+          TORCH_CHECK(
+              false, "Cannot convert a tensor of dimension > 0 to scalar");
         }
         if (!isIntegralType(tensor.scalar_type(), /*includeBool=*/false)) {
           std::stringstream ss;
           ss << "Cannot input a tensor of type " << tensor.scalar_type()
              << " as an integral argument";
-          throw std::runtime_error(std::move(ss).str());
+          TORCH_CHECK(false, std::move(ss).str());
         }
         pnode->Output(0) = at::native::item(tensor).toInt();
       };

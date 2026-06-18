@@ -2,8 +2,6 @@
 
 #include <ATen/cuda/nvrtc_stub/ATenNVRTC.h>
 #include <ATen/DynamicLibrary.h>
-#include <stdexcept>
-// @allow-raw-throw
 
 
 
@@ -87,7 +85,7 @@ at::DynamicLibrary& getNVRTCLibrary() {
 RETTYPE NAME(ARG1 a1) {                                                              \
   auto fn = reinterpret_cast<decltype(&NAME)>(get## LIB ## Library().sym(__func__)); \
   if (!fn)                                                                           \
-    throw std::runtime_error("Can't get " C10_STRINGIZE(NAME) );                     \
+    TORCH_CHECK(false, "Can't get " C10_STRINGIZE(NAME) );                     \
   lazyNVRTC.NAME = fn;                                                               \
   return fn(a1);                                                                     \
 }
@@ -96,7 +94,7 @@ RETTYPE NAME(ARG1 a1) {                                                         
 RETTYPE NAME(ARG1 a1, ARG2 a2) {                                                     \
   auto fn = reinterpret_cast<decltype(&NAME)>(get## LIB ## Library().sym(__func__)); \
   if (!fn)                                                                           \
-    throw std::runtime_error("Can't get " C10_STRINGIZE(NAME) );                     \
+    TORCH_CHECK(false, "Can't get " C10_STRINGIZE(NAME) );                     \
   lazyNVRTC.NAME = fn;                                                               \
   return fn(a1, a2);                                                                 \
 }
@@ -105,7 +103,7 @@ RETTYPE NAME(ARG1 a1, ARG2 a2) {                                                
 RETTYPE NAME(ARG1 a1, ARG2 a2, ARG3 a3) {                                            \
   auto fn = reinterpret_cast<decltype(&NAME)>(get## LIB ## Library().sym(__func__)); \
   if (!fn)                                                                           \
-    throw std::runtime_error("Can't get " C10_STRINGIZE(NAME) );                     \
+    TORCH_CHECK(false, "Can't get " C10_STRINGIZE(NAME) );                     \
   lazyNVRTC.NAME = fn;                                                               \
   return fn(a1, a2, a3);                                                             \
 }
@@ -114,7 +112,7 @@ RETTYPE NAME(ARG1 a1, ARG2 a2, ARG3 a3) {                                       
 RETTYPE NAME(ARG1 a1, ARG2 a2, ARG3 a3, ARG4 a4) {                                   \
   auto fn = reinterpret_cast<decltype(&NAME)>(get## LIB ## Library().sym(__func__)); \
   if (!fn)                                                                           \
-    throw std::runtime_error("Can't get " C10_STRINGIZE(NAME) );                     \
+    TORCH_CHECK(false, "Can't get " C10_STRINGIZE(NAME) );                     \
   lazyNVRTC.NAME = fn;                                                               \
   return fn(a1, a2, a3, a4);                                                         \
 }
@@ -139,7 +137,7 @@ nvrtcResult nvrtcCreateProgram(nvrtcProgram *prog,
                                const char * const *includeNames) {
   auto fn = reinterpret_cast<decltype(&nvrtcCreateProgram)>(getNVRTCLibrary().sym(__func__));
   if (!fn)
-    throw std::runtime_error("Can't get nvrtcCreateProgram");
+    TORCH_CHECK(false, "Can't get nvrtcCreateProgram");
   lazyNVRTC.nvrtcCreateProgram = fn;
   return fn(prog, src, name, numHeaders, headers, includeNames);
 }
@@ -193,7 +191,7 @@ cuTensorMapEncodeTiled(
   auto fn = reinterpret_cast<decltype(&cuTensorMapEncodeTiled)>(
       getCUDALibrary().sym(__func__));
   if (!fn)
-    throw std::runtime_error("Can't get cuTensorMapEncodeTiled");
+    TORCH_CHECK(false, "Can't get cuTensorMapEncodeTiled");
   lazyNVRTC.cuTensorMapEncodeTiled = fn;
   return fn(
       tensorMap,
@@ -226,7 +224,7 @@ CUresult CUDAAPI cuLaunchKernel(CUfunction f,
                                 void **extra) {
   auto fn = reinterpret_cast<decltype(&cuLaunchKernel)>(getCUDALibrary().sym(__func__));
   if (!fn)
-    throw std::runtime_error("Can't get cuLaunchKernel");
+    TORCH_CHECK(false, "Can't get cuLaunchKernel");
   lazyNVRTC.cuLaunchKernel = fn;
   return fn(f,
             gridDimX, gridDimY, gridDimZ, blockDimX, blockDimY, blockDimZ,
@@ -248,7 +246,7 @@ CUresult CUDAAPI cuLaunchCooperativeKernel(
   auto fn = reinterpret_cast<decltype(&cuLaunchCooperativeKernel)>(
       getCUDALibrary().sym(__func__));
   if (!fn)
-    throw std::runtime_error("Can't get cuLaunchCooperativeKernel");
+    TORCH_CHECK(false, "Can't get cuLaunchCooperativeKernel");
   lazyNVRTC.cuLaunchCooperativeKernel = fn;
   return fn(
       f,
@@ -270,7 +268,7 @@ CUresult CUDAAPI cuModuleLoadDataEx(CUmodule *module,
                                     void **optionValues) {
   auto fn = reinterpret_cast<decltype(&cuModuleLoadDataEx)>(getCUDALibrary().sym(__func__));
   if (!fn)
-    throw std::runtime_error("Can't get cuModuleLoadDataEx");
+    TORCH_CHECK(false, "Can't get cuModuleLoadDataEx");
   lazyNVRTC.cuModuleLoadDataEx = fn;
   return fn(module, image, numOptions, options, optionValues);
 }
@@ -286,7 +284,7 @@ cuLinkAddData(CUlinkState state,
               void **optionValues) {
   auto fn = reinterpret_cast<decltype(&cuLinkAddData)>(getCUDALibrary().sym(__func__));
   if (!fn)
-    throw std::runtime_error("Can't get cuLinkAddData");
+    TORCH_CHECK(false, "Can't get cuLinkAddData");
   lazyNVRTC.cuLinkAddData = fn;
   return fn(state, type, data, size, name, numOptions, options, optionValues);
 }

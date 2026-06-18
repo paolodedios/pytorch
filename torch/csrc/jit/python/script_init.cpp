@@ -1053,7 +1053,7 @@ void initJitScriptBindings(PyObject* module) {
                       err << qualname->qualifiedName() << ' ';
                     }
                     err << "which does not have a __setstate__ method defined!";
-                    throw std::runtime_error(std::move(err).str());
+                    TORCH_CHECK(false, std::move(err).str());
                   }
                 }
 
@@ -1063,7 +1063,7 @@ void initJitScriptBindings(PyObject* module) {
                   err << qualname->qualifiedName() << ' ';
                 }
                 err << "which does not have a __getstate__ method defined!";
-                throw std::runtime_error(std::move(err).str());
+                TORCH_CHECK(false, std::move(err).str());
               })
           .def(py::pickle(
               [](const Object& self)
@@ -1080,7 +1080,7 @@ void initJitScriptBindings(PyObject* module) {
                   err << qualname->qualifiedName() << ' ';
                 }
                 err << "which does not have a __getstate__ method defined!";
-                throw std::runtime_error(std::move(err).str());
+                TORCH_CHECK(false, std::move(err).str());
               },
               [](const std::tuple<py::object, std::string>& state_tup)
                   -> Object {
@@ -1117,7 +1117,7 @@ void initJitScriptBindings(PyObject* module) {
                   err << qualname->qualifiedName() << ' ';
                 }
                 err << "which does not have a __setstate__ method defined!";
-                throw std::runtime_error(std::move(err).str());
+                TORCH_CHECK(false, std::move(err).str());
               }));
 
   py::class_<Object::Property>(m, "ScriptObjectProperty")
@@ -1322,7 +1322,8 @@ void initJitScriptBindings(PyObject* module) {
             if (auto m = self.find_method("forward")) {
               return m->get_executor().getDebugState();
             }
-            throw std::runtime_error(
+            TORCH_CHECK(
+                false,
                 "Attempted to call get_debug_state on a Module without a compiled forward()");
           })
       .def(

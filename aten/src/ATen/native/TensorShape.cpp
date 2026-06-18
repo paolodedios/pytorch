@@ -217,7 +217,6 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
-// @allow-raw-throw
 
 namespace at::meta {
 
@@ -4181,7 +4180,7 @@ static inline Tensor unflatten_impl(
   try {
     inferred_size = at::infer_size_dv(sizes, self.sym_size(dim));
   } catch (const std::exception& e) {
-    // at::infer_size would throw std::runtime_error for invalid size,
+    // at::infer_size raises std::runtime_error for invalid size,
     // catch the runtime_error and display the error message in a more
     // user-friendly way
     handle_unflatten_exception(e, self, dim, sizes);
@@ -4314,7 +4313,7 @@ Tensor numpy_T(const Tensor& self) {
   if (n != 2 && n != 0) {
     TORCH_WARN_ONCE(
         "The use of `x.T` on tensors of dimension other than 2 to reverse their shape is deprecated ",
-        "and it will throw an error in a future release. Consider `x.mT` to transpose batches of matrices ",
+        "and it will error in a future release. Consider `x.mT` to transpose batches of matrices ",
         "or `x.permute(*torch.arange(x.ndim - 1, -1, -1))` to reverse the dimensions of a tensor.");
   }
   if (n == 0) {

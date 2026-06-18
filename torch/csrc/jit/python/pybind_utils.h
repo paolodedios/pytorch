@@ -187,7 +187,7 @@ struct VISIBILITY_HIDDEN PythonFutureWrapper
               PyErr_Clear();
             }
 
-            throw std::runtime_error(err);
+            TORCH_CHECK(false, err.what());
           }
         },
         PyObjectType::get()));
@@ -847,7 +847,8 @@ inline IValue returnToIValue(const TypePtr& type, py::handle object) {
   try {
     return toIValue(object, type);
   } catch (const py::cast_error& error) {
-    throw std::runtime_error(c10::str(
+    TORCH_CHECK(
+        false,
         " expected value of type ",
         type->str(),
         " for return value but instead got value of type ",
@@ -856,7 +857,7 @@ inline IValue returnToIValue(const TypePtr& type, py::handle object) {
         "\nValue: ",
         py::repr(object),
         "\nCast error details: ",
-        error.what()));
+        error.what());
   }
 }
 
@@ -869,7 +870,7 @@ inline py::object getScriptedClassOrError(const c10::NamedTypePtr& classType) {
     err << "Unknown reference to ScriptClass ";
     err << classType->name()->qualifiedName();
     err << ". (Did you forget to import it?)";
-    throw std::runtime_error(std::move(err).str());
+    TORCH_CHECK(false, std::move(err).str());
   }
   return py_class;
 }

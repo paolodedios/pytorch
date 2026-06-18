@@ -75,7 +75,7 @@ struct C10_EXPORT ConcretePyObjectHolder final : PyObjectHolder {
         e.restore();
         PyErr_Clear();
       }
-      throw std::runtime_error(err);
+      TORCH_CHECK(false, err);
     }
   }
 

@@ -61,7 +61,6 @@
 #include <ATen/ops/scatter_reduce.h>
 #include <ATen/ops/view_as_real_ops.h>
 #include <ATen/ops/view_ops.h>
-// @allow-raw-throw
 #endif
 
 using namespace torch::aot_inductor;
@@ -1359,7 +1358,8 @@ AOTITorchError aoti_torch_proxy_executor_call_function(
     AtenTensorHandle* flatten_tensor_args) {
   AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
     if (!proxy_executor) {
-      throw std::runtime_error(
+      TORCH_CHECK(
+          false,
           "Unable to find a proxy executor to run custom ops. Please check if "
           "there is a json file generated in the same directory as the so, or use "
           "torch._inductor.aoti_compile_and_package to package everything into a "

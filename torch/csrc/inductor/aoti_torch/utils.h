@@ -13,7 +13,6 @@
 #include <torch/csrc/shim_exception_state.h>
 #include <optional>
 #include <type_traits>
-// @allow-raw-throw
 
 namespace torch::aot_inductor {
 TORCH_API const char* get_last_error();
@@ -111,11 +110,12 @@ inline void assert_inf_and_nan(
     at::Tensor& check_tensor) {
   auto isnan_tensor = check_tensor.isnan();
   if (isnan_tensor.any().item<bool>()) {
-    throw std::runtime_error("At least one NaN in " + tensor_name);
+    TORCH_CHECK(
+        !isnan_tensor.any().item<bool>(), "At least one NaN in ", tensor_name);
   }
   auto isinf_tensor = check_tensor.isinf();
   if (isinf_tensor.any().item<bool>()) {
-    throw std::runtime_error("At least one INF in " + tensor_name);
+    TORCH_CHECK(false, "At least one INF in ", tensor_name);
   }
 }
 

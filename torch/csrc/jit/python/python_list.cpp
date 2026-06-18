@@ -171,7 +171,8 @@ void initScriptListBindings(PyObject* module) {
             }
 
             if (slicelength != value.size()) {
-              throw std::runtime_error(
+              TORCH_CHECK(
+                  false,
                   "Left and right hand size of slice assignment have different sizes");
             }
 

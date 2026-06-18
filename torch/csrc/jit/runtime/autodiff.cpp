@@ -12,7 +12,6 @@
 #include <torch/csrc/jit/runtime/symbolic_script.h>
 #include <algorithm>
 #include <memory>
-// @allow-raw-throw
 
 namespace torch::jit {
 
@@ -176,8 +175,10 @@ class GradientHelper {
 
   std::vector<Value*> gradient(ArrayRef<Value*> grad_values) {
     if (!isDifferentiable(node)) {
-      throw std::runtime_error(
-          std::string("differentiation of ") + node->kind().toDisplayString() +
+      TORCH_CHECK(
+          false,
+          "differentiation of ",
+          node->kind().toDisplayString(),
           " is not supported, or it is missing necessary type information");
     }
     // If AD is defined using torchscript, use it instead of symbolic
@@ -284,9 +285,11 @@ class GradientHelper {
           nullptr};
     }
 
-    throw std::runtime_error(
-        std::string("failed to differentiate `") +
-        node->kind().toDisplayString() + "`");
+    TORCH_CHECK(
+        false,
+        "failed to differentiate `",
+        node->kind().toDisplayString(),
+        "`");
   }
 };
 } // namespace
@@ -515,7 +518,7 @@ static bool inBlock(Node* node, Block* container) {
 
 static void liftConstants(Node* node, Block* move_to_this_block) {
   static const auto err = [](Value*) -> Value* {
-    throw std::runtime_error("unexpected input");
+    TORCH_CHECK(false, "unexpected input");
   };
   auto& graph = *node->owningGraph();
   for (Value* input : node->inputs()) {

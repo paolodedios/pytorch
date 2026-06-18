@@ -476,12 +476,13 @@ IValue toIValue(py::handle obj, const TypePtr& type, std::optional<int32_t> N) {
         auto pyCu = get_python_cu();
         classType = pyCu->get_class(c10::QualifiedName(qualified_name));
         if (!classType) {
-          throw std::runtime_error(c10::str(
+          TORCH_CHECK(
+              false,
               "Assigning the object ",
               py::str(obj),
               " to an interface fails because the value is not "
               "a TorchScript compatible type, did you forget to",
-              "turn it into a user defined TorchScript class?"));
+              "turn it into a user defined TorchScript class?");
         }
         res = toIValue(obj, classType);
       }
@@ -851,7 +852,7 @@ std::pair<std::shared_ptr<Operator>, Stack> getOpWithStack(
       for (const auto& err : errors) {
         ss << err.what() << "\n\n";
       }
-      throw std::runtime_error(std::move(ss).str());
+      TORCH_CHECK(false, std::move(ss).str());
     }
 
     return std::make_pair(std::move(found_op), std::move(stack));
@@ -870,7 +871,7 @@ bool checkSchemaAllowFakeScriptObject(
   try {
     match = matchSchemaAllowFakeScriptObject(schema, args, kwargs);
   } catch (schema_match_error& error) {
-    throw std::runtime_error(error.what());
+    TORCH_CHECK(false, error.what());
   }
   return match;
 }

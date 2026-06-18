@@ -47,7 +47,7 @@ class unwrapping_shared_ptr {
   }
   T* get() const {
     if (!impl->elem) {
-      throw std::logic_error("has been invalidated");
+      TORCH_CHECK(false, "has been invalidated");
     }
     return impl->elem;
   }
@@ -57,7 +57,7 @@ class unwrapping_shared_ptr {
     ((PYBIND11_VERSION_MAJOR == 2) && (PYBIND11_VERSION_MINOR >= 3))
   T** operator&() {
     if (!impl->elem) {
-      throw std::logic_error("has been invalidated");
+      TORCH_CHECK(false, "has been invalidated");
     }
     return &(impl->elem);
   }
