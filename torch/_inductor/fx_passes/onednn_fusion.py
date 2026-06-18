@@ -214,7 +214,7 @@ if torch._C._has_mkldnn:
         fixed number of output nodes. Extend to support Group GEMM for pattern matcher.
         """
         computation_op = mkldnn._linear_pointwise.default
-        from ..mkldnn_lowerings import grouped_gemm_lowering
+        from ..onednn_lowerings import grouped_gemm_lowering
 
         for node in graph.find_nodes(op="call_function", target=computation_op):
             if (
