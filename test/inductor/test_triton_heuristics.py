@@ -7,7 +7,7 @@ import tempfile
 import types
 import unittest
 from unittest import skipUnless
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 
 import torch
 from torch._dynamo.testing import rand_strided
@@ -26,6 +26,7 @@ from torch.testing._internal.inductor_utils import (
     HAS_GPU_AND_TRITON,
     requires_gpu_with_enough_memory,
 )
+from torch.utils._ordered_set import OrderedSet
 
 
 try:
@@ -210,7 +211,28 @@ class TestTritonHeuristics(TestCase):
         self.assertEqual(cfg.kwargs["XBLOCK"], 128)
         self.assertEqual(cfg.kwargs["R0_BLOCK"], 512)
 
-    def test_mix_order_reduction_autotunes_xblock(self):
+    def test_mix_order_reduction_large_rnumel_caps_default_xblock(self):
+        device = DeviceProperties(
+            type="cuda",
+            index=0,
+            multi_processor_count=152,
+            cc=100,
+            major=10,
+            max_threads_per_block=1024,
+            warp_size=32,
+        )
+
+        for rsplit_size in (16, 64, 128):
+            cfgs = persistent_reduction(
+                {"x": 32768, "r0_": 16384},
+                triton_meta={"device": device, "signature": {}},
+                inductor_meta={"RSPLIT_SIZE": rsplit_size},
+                return_configs=True,
+            )
+            self.assertEqual([cfg.kwargs["XBLOCK"] for cfg in cfgs], [1])
+            self.assertEqual([cfg.kwargs["NUM_STAGES"] for cfg in cfgs], [2])
+
+    def test_mix_order_reduction_max_autotune_adds_xblock_choices(self):
         device = DeviceProperties(
             type="cuda",
             index=0,
@@ -224,25 +246,23 @@ class TestTritonHeuristics(TestCase):
         cfgs = persistent_reduction(
             {"x": 32768, "r0_": 16384},
             triton_meta={"device": device, "signature": {}},
-            inductor_meta={"RSPLIT_SIZE": 16},
+            inductor_meta={"RSPLIT_SIZE": 16, "max_autotune": True},
             return_configs=True,
         )
 
-        self.assertEqual([cfg.kwargs["XBLOCK"] for cfg in cfgs], [1, 2, 4])
-        self.assertEqual([cfg.kwargs["NUM_STAGES"] for cfg in cfgs], [2, 2, 1])
+        self.assertEqual(
+            OrderedSet(cfg.kwargs["XBLOCK"] for cfg in cfgs), OrderedSet([1, 2, 4])
+        )
+        self.assertEqual(
+            {
+                cfg.kwargs["XBLOCK"]: cfg.kwargs["NUM_STAGES"]
+                for cfg in cfgs
+                if cfg.num_warps == 16
+            },
+            {1: 2, 2: 2, 4: 1},
+        )
         for cfg in cfgs:
             self.assertEqual(cfg.kwargs["RSPLIT_SIZE"] % cfg.kwargs["XBLOCK"], 0)
-
-        for rsplit_size, heuristic_xblock in ((64, 2), (128, 4)):
-            cfgs = persistent_reduction(
-                {"x": 32768, "r0_": 16384},
-                triton_meta={"device": device, "signature": {}},
-                inductor_meta={"RSPLIT_SIZE": rsplit_size},
-                return_configs=True,
-            )
-            xblocks = [cfg.kwargs["XBLOCK"] for cfg in cfgs]
-            self.assertEqual(xblocks[0], heuristic_xblock)
-            self.assertIn(1, xblocks)
 
     def test_mix_order_reduction_xblock_candidates_divide_rsplit(self):
         device = DeviceProperties(
@@ -258,11 +278,13 @@ class TestTritonHeuristics(TestCase):
         cfgs = persistent_reduction(
             {"x": 32768, "r0_": 16384},
             triton_meta={"device": device, "signature": {}},
-            inductor_meta={"RSPLIT_SIZE": 18},
+            inductor_meta={"RSPLIT_SIZE": 18, "max_autotune": True},
             return_configs=True,
         )
 
-        self.assertEqual([cfg.kwargs["XBLOCK"] for cfg in cfgs], [1, 2])
+        self.assertEqual(
+            OrderedSet(cfg.kwargs["XBLOCK"] for cfg in cfgs), OrderedSet([1, 2])
+        )
 
     def _test_artificial_zgrid(self):
         def forward(primals_1, primals_2, primals_5):
@@ -518,6 +540,33 @@ class TestTritonHeuristics(TestCase):
 _PLUGIN_FACTORY_PATH = (
     "torch._inductor.runtime.triton_heuristics.get_caching_autotuner_plugins"
 )
+
+
+class TestCachingAutotunerPrecompileDriverSetup(TestCase):
+    @skipIfRocm
+    @skipUnless(HAS_GPU_AND_TRITON, "requires gpu and triton")
+    def test_warm_cache_only_precompile_skips_driver_setup_in_context(self):
+        from torch._inductor.runtime import triton_helpers
+
+        args = TestTritonHeuristics._get_cos_kernel_caching_autotuner_args()
+        num_configs = len(args["configs"])
+        self.assertGreaterEqual(num_configs, 2)
+        autotuner = CachingAutotuner(**args)
+
+        with (
+            triton_helpers.skip_gpu_driver_setup(),
+            patch.object(
+                type(triton.runtime.driver),
+                "active",
+                new_callable=PropertyMock,
+                side_effect=RuntimeError("driver.active should not be read"),
+            ) as mock_driver_active,
+        ):
+            autotuner.precompile(warm_cache_only=True)
+
+        # Covers every synchronous _precompile_config() iteration.
+        mock_driver_active.assert_not_called()
+        self.assertEqual(len(autotuner.compile_results), num_configs)
 
 
 # Triton's HIP MLIR pipeline raises AttributeError("'NoneType' object has no
@@ -1171,7 +1220,7 @@ class TestFastLauncherDeviceSupport(TestCase):
         return CachingAutotuner(
             fn=triton_,
             triton_meta=triton_meta,
-            configs=[triton_config({"x": 1}, 1)],
+            configs=[triton_config({"x": 1}, 1, warp_size=device.warp_size_or_default)],
             save_cache_hook=False,
             mutated_arg_names=[],
             reset_to_zero_arg_names=[],
@@ -1482,7 +1531,15 @@ class TestWarpSizeUnification(TestCase):
         none_props = DeviceProperties(
             type="cuda", index=0, multi_processor_count=80, cc=80, warp_size=None
         )
-        self.assertEqual(none_props.warp_size_or_default, 32)
+        with self.assertRaisesRegex(
+            RuntimeError, "cuda device properties must report warp_size"
+        ):
+            none_props.warp_size_or_default
+
+        cpu_props = DeviceProperties(
+            type="cpu", index=0, multi_processor_count=80, cc=80, warp_size=None
+        )
+        self.assertEqual(cpu_props.warp_size_or_default, 32)
 
         w32 = DeviceProperties(
             type="cuda", index=0, multi_processor_count=80, cc=80, warp_size=32
