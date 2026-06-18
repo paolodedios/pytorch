@@ -1358,8 +1358,7 @@ AOTITorchError aoti_torch_proxy_executor_call_function(
     AtenTensorHandle* flatten_tensor_args) {
   AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
     if (!proxy_executor) {
-      TORCH_CHECK(
-          false,
+      throw std::runtime_error(
           "Unable to find a proxy executor to run custom ops. Please check if "
           "there is a json file generated in the same directory as the so, or use "
           "torch._inductor.aoti_compile_and_package to package everything into a "

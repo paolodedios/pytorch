@@ -21,7 +21,6 @@
 
 #ifdef QNNPACK_BCSRMATRIX_DEBUG
 #include <iostream>
-// @allow-raw-throw
 #endif // QNNPACK_BCSRMATRIX_DEBUG
 
 namespace qnnpack {

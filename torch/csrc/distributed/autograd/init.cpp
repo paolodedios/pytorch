@@ -3,7 +3,6 @@
 #include <torch/csrc/distributed/autograd/python_autograd.h>
 #include <torch/csrc/jit/python/pybind_utils.h>
 #include <torch/csrc/utils/object_ptr.h>
-// @allow-raw-throw
 
 namespace torch::distributed::autograd {
 
@@ -15,14 +14,10 @@ using shared_ptr_class_ = py::class_<T, std::shared_ptr<T>>;
 PyObject* dist_autograd_init(PyObject* _unused, PyObject* noargs) {
   auto autograd_module =
       THPObjectPtr(PyImport_ImportModule("torch.distributed.autograd"));
-  if (!autograd_module) {
-    throw python_error();
-  }
+  TORCH_CHECK_PYTHON(autograd_module);
 
   auto torch_C_module = THPObjectPtr(PyImport_ImportModule("torch._C"));
-  if (!torch_C_module) {
-    throw python_error();
-  }
+  TORCH_CHECK_PYTHON(torch_C_module);
 
   auto torch_C_m = py::handle(torch_C_module).cast<py::module>();
   auto m = torch_C_m.def_submodule(

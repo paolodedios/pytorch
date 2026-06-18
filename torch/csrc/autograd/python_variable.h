@@ -10,7 +10,6 @@
 #include <torch/csrc/Export.h>
 #include <torch/csrc/autograd/variable.h>
 #include <torch/csrc/utils/pybind.h>
-// @allow-raw-throw
 
 namespace py = pybind11;
 

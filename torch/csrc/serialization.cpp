@@ -6,7 +6,6 @@
 #include <c10/util/error.h>
 #include <torch/csrc/THP.h>
 #include <torch/csrc/serialization.h>
-// @allow-raw-throw
 
 template <class io>
 static Py_ssize_t doPartialRead(io fildes, void* buf, size_t nbytes);

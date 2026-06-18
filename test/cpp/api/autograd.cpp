@@ -9,7 +9,6 @@
 #include <torch/csrc/autograd/functions/basic_ops.h>
 
 #include <test/cpp/api/support.h>
-// @allow-raw-throw
 
 using namespace torch::autograd;
 using namespace torch::test;

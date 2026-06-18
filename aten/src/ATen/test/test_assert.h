@@ -1,7 +1,6 @@
 #pragma once
 #include <stdexcept>
 #include <stdarg.h>
-// @allow-raw-throw
 
 static inline void barf(const char *fmt, ...) {
   char msg[2048];

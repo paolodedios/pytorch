@@ -1,7 +1,6 @@
 #pragma once
 
 #include <torch/csrc/inductor/aoti_runtime/arrayref_tensor.h>
-// @allow-raw-throw
 
 namespace torch::aot_inductor {
 

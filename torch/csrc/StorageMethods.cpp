@@ -35,7 +35,6 @@
 
 #include <ATen/detail/PrivateUse1HooksInterface.h>
 #include <ATen/native/Resize.h>
-// @allow-raw-throw
 
 #ifdef _MSC_VER
 #define LSEEK _lseeki64

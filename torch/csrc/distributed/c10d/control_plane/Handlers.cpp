@@ -1,6 +1,5 @@
 #include <torch/csrc/distributed/c10d/control_plane/Handlers.hpp>
 
-#include <c10/util/Exception.h>
 #include <torch/csrc/distributed/c10d/FlightRecorder.hpp>
 
 #include <fmt/format.h>
@@ -13,7 +12,6 @@
 #include <vector>
 
 #include <torch/csrc/distributed/c10d/control_plane/WaitCounterHandler.hpp>
-// @allow-raw-throw
 
 namespace c10d::control_plane {
 
@@ -24,11 +22,10 @@ class HandlerRegistry {
   void registerHandler(const std::string& name, HandlerFunc f) {
     std::unique_lock<std::shared_mutex> lock(handlersMutex_);
 
-    TORCH_CHECK(
-        handlers_.find(name) == handlers_.end(),
-        "Handler ",
-        name,
-        " already registered");
+    if (handlers_.find(name) != handlers_.end()) {
+      throw std::invalid_argument(
+          fmt::format("Handler {} already registered", name));
+    }
 
     handlers_[name] = std::move(f);
   }
@@ -37,8 +34,11 @@ class HandlerRegistry {
     std::shared_lock<std::shared_mutex> lock(handlersMutex_);
 
     auto it = handlers_.find(name);
-    TORCH_CHECK(it != handlers_.end(), "Failed to find handler ", name);
-    return it->second;
+    if (it == handlers_.end()) {
+      throw std::invalid_argument(
+          fmt::format("Failed to find handler {}", name));
+    }
+    return handlers_[name];
   }
 
   std::vector<std::string> getHandlerNames() {
@@ -111,7 +111,9 @@ RegisterHandler pyspyHandler{
       std::array<char, 4096> buf{};
       std::string output;
       FILE* pipe = popen(cmd.c_str(), "r");
-      TORCH_CHECK(pipe, "Failed to start py-spy, not installed?");
+      if (!pipe) {
+        throw std::runtime_error("Failed to start py-spy, not installed?");
+      }
       while (fgets(buf.data(), buf.size(), pipe)) {
         output.append(buf.data());
       }

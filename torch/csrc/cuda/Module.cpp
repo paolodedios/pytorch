@@ -52,7 +52,6 @@
 #include <sstream>
 #include <thread>
 #include <unordered_map>
-// @allow-raw-throw
 
 namespace at::native {
 void* getCurrentCUDASolverDnHandleLazy();

@@ -4,7 +4,6 @@
 #include <torch/csrc/python_headers.h>
 #include <torch/csrc/utils/object_ptr.h>
 #include <torch/csrc/utils/python_numbers.h>
-// @allow-raw-throw
 
 inline void THPUtils_packInt64Array(
     PyObject* tuple,

@@ -1,3 +1,4 @@
+// @allow-raw-throw
 #include <torch/extension.h>
 #include <torch/library.h>
 #include <ATen/Generator.h>
@@ -5,7 +6,6 @@
 #include <ATen/native/DistributionTemplates.h>
 #include <ATen/native/cpu/DistributionTemplates.h>
 #include <memory>
-// @allow-raw-throw
 
 using namespace at;
 

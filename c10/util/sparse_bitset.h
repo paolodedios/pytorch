@@ -20,7 +20,6 @@
 #include <iterator>
 #include <list>
 #include <ostream>
-// @allow-raw-throw
 
 namespace c10 {
 

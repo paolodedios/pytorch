@@ -3,7 +3,6 @@
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/utils/object_ptr.h>
 #include <torch/csrc/utils/tensor_dtypes.h>
-// @allow-raw-throw
 
 namespace torch::utils {
 
