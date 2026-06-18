@@ -1,9 +1,11 @@
 # Owner(s): ["module: dynamo"]
 import contextlib
+import contextvars
 import copy
 import functools
 import math
 import re
+import threading
 import unittest
 from importlib import import_module
 
@@ -176,6 +178,29 @@ def _get_custom_policy(no_recompute_list=None, must_recompute_list=None):
             return CheckpointPolicy.PREFER_RECOMPUTE
 
     return _custom_policy
+
+
+class AutogradContextVarsTests(torch._dynamo.test_case.TestCase):
+    def test_contextvar_mutation_preserved_on_backward_calling_thread(self):
+        ctx_var = contextvars.ContextVar("autograd_context", default="unset")
+
+        class SetContextVar(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x.sin()
+
+            @staticmethod
+            def backward(ctx, grad):
+                ctx_var.set("backward")
+                return grad
+
+        token = ctx_var.set("forward")
+        try:
+            x = torch.randn((), requires_grad=True)
+            SetContextVar.apply(x).backward()
+            self.assertEqual(ctx_var.get(), "backward")
+        finally:
+            ctx_var.reset(token)
 
 
 class ActivationCheckpointingViaTagsTests(torch._dynamo.test_case.TestCase):
@@ -389,6 +414,34 @@ class ActivationCheckpointingViaTagsTests(torch._dynamo.test_case.TestCase):
                 (x.sin() * 2).sum().backward()
 
             self.assertEqual(seen_limits["post_accumulate"], 8192)
+        finally:
+            torch._dynamo.reset()
+
+    @onlyCUDA
+    def test_dynamo_config_visible_in_queued_callback(self, device):
+        torch._dynamo.reset()
+        try:
+            caller_thread_id = threading.get_ident()
+            seen_limits = {}
+            callback_thread_ids = []
+
+            def callback():
+                callback_thread_ids.append(threading.get_ident())
+                seen_limits.setdefault("callback", torch._dynamo.config.recompile_limit)
+
+            def hook(grad):
+                torch.autograd.Variable._execution_engine.queue_callback(callback)
+                return grad
+
+            with torch._dynamo.config.patch(
+                recompile_limit=8192, fail_on_recompile_limit_hit=True
+            ):
+                x = torch.randn(8, device=device, requires_grad=True)
+                x.register_hook(hook)
+                (x.sin() * 2).sum().backward()
+
+            self.assertEqual(seen_limits["callback"], 8192)
+            self.assertNotEqual(callback_thread_ids[0], caller_thread_id)
         finally:
             torch._dynamo.reset()
 

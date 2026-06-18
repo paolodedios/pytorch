@@ -27,7 +27,7 @@ void PySavedVariableHooks::call_pack_hook(const at::Tensor& tensor) {
   }
   THPObjectPtr packed(call_with_context(pack_hook_, args.get()));
   if (!packed) {
-    throw python_error();
+    throw_persisted_python_error();
   }
   data_ = packed.release();
   // obj is decrefed on exit, packed has their references stolen
@@ -43,7 +43,7 @@ at::Tensor PySavedVariableHooks::call_unpack_hook() {
   }
   THPObjectPtr res(call_with_context(unpack_hook_, args.get()));
   if (!res) {
-    throw python_error();
+    throw_persisted_python_error();
   }
   TORCH_CHECK_TYPE(
       THPVariable_Check(res),

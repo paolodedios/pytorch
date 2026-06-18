@@ -16,6 +16,26 @@ inline void throw_persisted_python_error() {
   throw std::move(err);
 }
 
+inline bool is_context_origin_thread() {
+  if (!at::impl::ThreadLocalPythonObjects::contains(
+          "context_origin_thread_id")) {
+    return false;
+  }
+
+  auto origin_thread_id =
+      at::impl::ThreadLocalPythonObjects::get("context_origin_thread_id");
+  auto* py_origin_thread_id = origin_thread_id->ptr(getPyInterpreter());
+  if (Py_IsNone(py_origin_thread_id)) {
+    return false;
+  }
+
+  auto origin_id = PyLong_AsUnsignedLong(py_origin_thread_id);
+  if (origin_id == static_cast<unsigned long>(-1) && PyErr_Occurred()) {
+    throw_persisted_python_error();
+  }
+  return origin_id == PyThread_get_thread_ident();
+}
+
 inline THPObjectPtr call_with_context(PyObject* callable, PyObject* args) {
   if (!at::impl::ThreadLocalPythonObjects::contains("context")) {
     return THPObjectPtr(PyObject_CallObject(callable, args));
@@ -24,6 +44,9 @@ inline THPObjectPtr call_with_context(PyObject* callable, PyObject* args) {
   auto context = at::impl::ThreadLocalPythonObjects::get("context");
   auto* py_context = context->ptr(getPyInterpreter());
   if (Py_IsNone(py_context)) {
+    return THPObjectPtr(PyObject_CallObject(callable, args));
+  }
+  if (is_context_origin_thread()) {
     return THPObjectPtr(PyObject_CallObject(callable, args));
   }
 

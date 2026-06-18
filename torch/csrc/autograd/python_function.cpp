@@ -278,7 +278,7 @@ auto PyNode::apply_with_saved_impl(
     // Metadata is a tuple of 4 elements: (layout, device, dtype, size)
     THPObjectPtr fwdInputMetadata(PyTuple_New(4));
     if (!fwdInputMetadata)
-      throw python_error();
+      throw_python_error();
     PyTuple_SET_ITEM(
         fwdInputMetadata.get(), 0, autograd::utils::wrap(input_info.layout));
     PyTuple_SET_ITEM(fwdInputMetadata.get(), 1, device.release());

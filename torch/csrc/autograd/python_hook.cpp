@@ -74,7 +74,7 @@ bool _call_hooks(PyObject* dict, PyObject* args) {
 
     THPObjectPtr res(call_with_context(hook, args));
     if (!res)
-      throw python_error();
+      throw_persisted_python_error();
     if (Py_IsNone(res))
       continue;
 
