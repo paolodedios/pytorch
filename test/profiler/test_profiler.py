@@ -1139,7 +1139,9 @@ class TestProfiler(TestCase):
             with open(output_code, "w", encoding="utf-8") as fd:
                 fd.write("output")
 
-            with patch.object(inductor_debug.V.debug, "_path", tmpdir, create=True):
+            with inductor_debug.V.set_debug_handler(
+                types.SimpleNamespace(_path=tmpdir)
+            ):
                 manifest = inductor_debug.create_inductor_timeline_artifact_manifest()
 
         self.assertEqual(manifest["dir"], tmpdir)
