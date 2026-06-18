@@ -2662,14 +2662,14 @@ def preserve_rng_state() -> Generator[None, None, None]:
         rng_state = torch.clone(torch.random.get_rng_state())
         skip_frame_if_in_functorch_mode(rng_state)
         if torch.accelerator.is_available():
-            acc_rng_state = torch.clone(torch.accelerator.get_rng_state())
+            acc_rng_state = torch.clone(torch.accelerator.random.get_rng_state())
     try:
         yield
     finally:
         with torch.utils._python_dispatch._disable_current_modes():
             torch.random.set_rng_state(rng_state)
             if torch.accelerator.is_available():
-                torch.accelerator.set_rng_state(acc_rng_state)  # type: ignore[possibly-undefined]
+                torch.accelerator.random.set_rng_state(acc_rng_state)  # type: ignore[possibly-undefined]
 
 
 def is_jit_model(
@@ -2788,7 +2788,7 @@ def checkpoint_params(gm: torch.fx.GraphModule) -> Callable[[], None]:
     with torch.no_grad():
         rng_state = torch.clone(torch.random.get_rng_state())
         if torch.accelerator.is_available():
-            acc_rng_state = torch.clone(torch.accelerator.get_rng_state())
+            acc_rng_state = torch.clone(torch.accelerator.random.get_rng_state())
         saved_state = [
             (param, param._version, torch.clone(param))
             # pyrefly: ignore [bad-argument-type]
@@ -2799,7 +2799,7 @@ def checkpoint_params(gm: torch.fx.GraphModule) -> Callable[[], None]:
         with torch.no_grad():
             torch.random.set_rng_state(rng_state)
             if torch.accelerator.is_available():
-                torch.accelerator.set_rng_state(acc_rng_state)
+                torch.accelerator.random.set_rng_state(acc_rng_state)
             for param, version, original_value in saved_state:
                 if param._version != version:
                     param.copy_(original_value)
