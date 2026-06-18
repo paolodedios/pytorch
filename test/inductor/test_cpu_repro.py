@@ -6905,7 +6905,7 @@ class CPUReproTests(TestCase):
                 if (
                     torch.version.hip
                     and dtype == torch.bfloat16
-                    and "torch.ops.mkldnn._convolution" not in code
+                    and "torch.ops.onednn._convolution" not in code
                 ):
                     FileCheck().check_count(
                         "extern_kernels.convolution",

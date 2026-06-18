@@ -20,8 +20,8 @@ from ..pattern_matcher import (
     MULTIPLE,
 )
 from ..utils import (
-    is_mkldnn_bf16_supported,
-    is_mkldnn_fp16_supported,
+    is_onednn_bf16_supported,
+    is_onednn_fp16_supported,
     SUPPORTED_MKLDNN_DEVICES,
 )
 from ..virtualized import ops, V
@@ -75,10 +75,10 @@ if torch._C._has_mkldnn:
     class CpuMkldnnDeviceOp(MkldnnDeviceOpBase):
         def get_linear_transpose_weight(self, weight_node):
             packed_weight_node = weight_node
-            if packed_weight_node.target != mkldnn._reorder_linear_weight:
+            if packed_weight_node.target != onednn._reorder_linear_weight:
                 raise AssertionError(
                     "expected packed_weight_node.target to be "
-                    "mkldnn._reorder_linear_weight, got "
+                    "onednn._reorder_linear_weight, got "
                     f"{packed_weight_node.target}"
                 )
             transpose_weight_node = packed_weight_node.args[0]
@@ -97,9 +97,9 @@ if torch._C._has_mkldnn:
             constant_args,
             input_size,
         ):
-            packed_weight_op = mkldnn._reorder_convolution_weight
+            packed_weight_op = onednn._reorder_convolution_weight
             if is_transposed:
-                packed_weight_op = mkldnn._reorder_convolution_transpose_weight
+                packed_weight_op = onednn._reorder_convolution_transpose_weight
 
             # mkldnn_reorder_conv_weight(self, padding, stride, dilation, groups, input_size)
             packed_weight_inputs = (weight,) + tuple(constant_args) + (input_size,)
@@ -125,10 +125,10 @@ if torch._C._has_mkldnn:
             # Disable MKL prepack linear in AOT mode.
             # Disable MKL prepack linear when batch_size has free symbols.
             packed_weight_op = (
-                mkldnn._reorder_linear_weight
+                onednn._reorder_linear_weight
                 if (
                     is_lp_weight
-                    or mkldnn._is_mkldnn_acl_supported()
+                    or onednn._is_onednn_acl_supported()
                     or V.aot_compilation
                     or has_free_symbols(batch_size)
                 )
@@ -145,12 +145,12 @@ if torch._C._has_mkldnn:
             transpose_weight_node = packed_weight_node.args[0]
             if (
                 is_lp_weight
-                or mkldnn._is_mkldnn_acl_supported()
+                or onednn._is_onednn_acl_supported()
                 or V.aot_compilation
                 or has_free_symbols(batch_size)
             ):
                 packed_linear_inputs += (bias, "none", [], "")
-                packed_linear_op: Callable[..., Any] = mkldnn._linear_pointwise.default
+                packed_linear_op: Callable[..., Any] = onednn._linear_pointwise.default
             else:
                 packed_linear_inputs += (transpose_weight_node, bias, batch_size)
                 packed_linear_op = torch.ops.mkl._mkl_linear
@@ -170,7 +170,7 @@ if torch._C._has_mkldnn:
         ):
             if is_transposed:
                 raise AssertionError(
-                    "'mkldnn::_convolution_transpose_pointwise' is not currently implemented for the XPU device."
+                    "'onednn::_convolution_transpose_pointwise' is not currently implemented for the XPU device."
                 )
             return weight
 
@@ -192,7 +192,7 @@ if torch._C._has_mkldnn:
         2. All the GEMM nodes share the same activation.
         3. All the GEMM nodes have same weight size but different wgt node.
         """
-        computation_op = mkldnn._linear_pointwise.default
+        computation_op = onednn._linear_pointwise.default
         act = computation_nodes[0].args[0]
         wgt = computation_nodes[0].args[1]
         wgt_size = wgt.meta.get("val").size()  # type: ignore[union-attr]
@@ -213,8 +213,8 @@ if torch._C._has_mkldnn:
         TODO: Use MultiOutputPattern, current limitation is the pattern requires
         fixed number of output nodes. Extend to support Group GEMM for pattern matcher.
         """
-        computation_op = mkldnn._linear_pointwise.default
-        from ..mkldnn_lowerings import grouped_gemm_lowering
+        computation_op = onednn._linear_pointwise.default
+        from ..onednn_lowerings import grouped_gemm_lowering
 
         for node in graph.find_nodes(op="call_function", target=computation_op):
             if (
@@ -621,7 +621,7 @@ if torch._C._has_mkldnn:
                     f"{computation_op}, got {computation_node.target}"
                 )
             computation_node_size = get_meta_value(computation_node).size()
-            if computation_op is mkldnn._linear_pointwise.default:
+            if computation_op is onednn._linear_pointwise.default:
                 broadcast_sizes = []
                 if len(computation_node_size) >= 2:
                     broadcast_sizes = [
@@ -1227,7 +1227,7 @@ if torch._C._has_mkldnn:
         """
         conv_node = match.output_node()
         device_type = conv_node.meta.get("val").device.type
-        # The operator 'mkldnn::_convolution_transpose_pointwise' is not currently implemented for the XPU device.
+        # The operator 'onednn::_convolution_transpose_pointwise' is not currently implemented for the XPU device.
         if match.kwargs["is_transposed"] and device_type == "xpu":
             return False
 
@@ -1314,7 +1314,7 @@ if torch._C._has_mkldnn:
             torch.bfloat16,
             torch.float16,
         )
-        reduced_f32_matmul_enabled = torch.backends.mkldnn.matmul.fp32_precision in [  # type: ignore[attr-defined]
+        reduced_f32_matmul_enabled = torch.backends.onednn.matmul.fp32_precision in [  # type: ignore[attr-defined]
             "bf16",
             "tf32",
         ]
@@ -1543,7 +1543,7 @@ if torch._C._has_mkldnn:
                     torch.float16,
                 )
                 reduced_f32_matmul_enabled = (
-                    torch.backends.mkldnn.matmul.fp32_precision in ["bf16", "tf32"]  # type: ignore[attr-defined]
+                    torch.backends.onednn.matmul.fp32_precision in ["bf16", "tf32"]  # type: ignore[attr-defined]
                 )
                 use_reduced_f32_for_fp32_weight = (
                     reduced_f32_matmul_enabled and weight_dtype == torch.float32
@@ -1613,7 +1613,7 @@ if torch._C._has_mkldnn:
         ):
             return
 
-        if not torch.ops.mkldnn._is_onednn_acl_supported():
+        if not torch.ops.onednn._is_onednn_acl_supported():
             _register_unary_fusion()
             _register_inplace_fusion()
             _register_binary_unary_fusion()
