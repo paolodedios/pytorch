@@ -432,6 +432,56 @@ class TestFullyShardSpmdTypes(TestCase):
             "(pass dp_mesh_dims to fully_shard)",
         )
 
+    def test_fully_annotated_sparse_param_requires_sparse_storage_mesh(self):
+        """Fully-annotated sparse param + dense FSDP mesh errors out."""
+        model = nn.Linear(16, 16, bias=False)
+        spmd.assert_type(
+            model.weight,
+            {
+                self.dp_replicate_axis: spmd.R,
+                self.efsdp_axis: spmd.R,
+                self.ep_axis: spmd.S(0),
+            },
+        )
+
+        with self.assertRaises(ValueError) as cm:
+            fully_shard(
+                model,
+                mesh=self.dense_storage_mesh,
+                dp_mesh_dims=DataParallelMeshDims(
+                    shard=("dp_shard", "cp"),
+                    replicate="dp_replicate",
+                ),
+            )
+        self.assertExpectedInline(
+            str(cm.exception),
+            "Parameter 'weight' has spmd_types annotation on axis mesh_ep, "
+            "which is neither a non-FSDP storage-mesh axis nor contained in "
+            "the FSDP DP mesh.",
+        )
+
+    def test_spmd_restore_mesh_must_contain_annotated_axes(self):
+        """Partial TP annotations w/ sparse current_mesh context fail."""
+        model = SpmdLinear(self.dense_type_mesh, seq_parallel=False)
+        spmd.assert_type(model.unsharded_weight, {self.tp_axis: spmd.I})
+
+        with (
+            self.assertRaises(ValueError) as cm,
+            spmd.set_current_mesh(self.sparse_mesh),
+        ):
+            fully_shard(
+                model,
+                mesh=self.dense_storage_mesh,
+                dp_mesh_dims=DataParallelMeshDims(
+                    shard=("dp_shard", "cp"),
+                    replicate="dp_replicate",
+                ),
+            )
+        self.assertIn(
+            "annotations on axes that are not in the resolved typechecking mesh",
+            str(cm.exception),
+        )
+
     def test_partial_param_annotations_require_init_compute_mesh(self):
         """Partial annotations need a compute mesh to infer omitted storage axes."""
         model = SpmdLinear(self.dense_type_mesh, seq_parallel=False)
