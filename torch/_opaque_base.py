@@ -1,3 +1,6 @@
+from functools import wraps
+
+
 # Cached lazily on first __instancecheck__ miss to avoid an import cycle at
 # module load (FakeScriptObject's module imports torch, which imports us).
 _FakeScriptObject_cls: type | None = None
@@ -19,9 +22,7 @@ def _rebuild_opaque_base(cls, newargs=(), newkwargs=None):
     if not _is_instance_of_type(instance, cls):
         raise TypeError(f"{cls.__name__}.__new__ did not return an instance")
 
-    pybind_opaque_base = _get_pybind_opaque_base()
-    pybind_opaque_base.__init__(instance)
-    object.__setattr__(instance, "_opaque_base_initialized", True)
+    _ensure_opaque_base_initialized(instance)
     return instance
 
 
@@ -60,6 +61,7 @@ def _find_pickle_method(cls, name):
 def _strip_opaque_base_state(state):
     if isinstance(state, dict):
         state = dict(state)
+        state.pop("_opaque_base_constructing", None)
         state.pop("_opaque_base_initialized", None)
         return state
 
@@ -138,6 +140,43 @@ def _is_opaque_base_instance(cls, instance, base_instancecheck):
     return False
 
 
+def _set_constructing(instance):
+    try:
+        instance_dict = object.__getattribute__(instance, "__dict__")
+    except AttributeError:
+        instance_dict = {}
+    if "_opaque_base_constructing" in instance_dict:
+        instance_constructing = instance_dict["_opaque_base_constructing"]
+    else:
+        instance_constructing = _MISSING
+    try:
+        object.__setattr__(instance, "_opaque_base_constructing", True)
+    except (AttributeError, TypeError):
+        pass
+    return instance_constructing
+
+
+def _restore_constructing(instance, instance_constructing):
+    if instance_constructing is _MISSING:
+        try:
+            object.__delattr__(instance, "_opaque_base_constructing")
+        except AttributeError:
+            pass
+    else:
+        object.__setattr__(instance, "_opaque_base_constructing", instance_constructing)
+
+
+def _ensure_opaque_base_initialized(instance):
+    try:
+        initialized = object.__getattribute__(instance, "_opaque_base_initialized")
+    except AttributeError:
+        initialized = False
+    if initialized:
+        return
+    _get_pybind_opaque_base().__init__(instance)
+    object.__setattr__(instance, "_opaque_base_initialized", True)
+
+
 class OpaqueBaseMeta(type):
     def __instancecheck__(cls, instance):
         return _is_opaque_base_instance(cls, instance, super().__instancecheck__)
@@ -151,7 +190,7 @@ def _install_opaque_base(_PybindOpaqueBase: type) -> tuple[type, type]:
     """Install OpaqueBase on top of a pybind-registered marker base.
 
     Pybind assumes explicit Python bases passed to py::class_ also have pybind
-    type information.  The C extension calls this with a tiny pybind class so
+    type information. The C extension calls this with a tiny pybind class so
     pybinded opaque types can inherit from OpaqueBase directly.
     """
     global OpaqueBaseMeta, OpaqueBase
@@ -162,58 +201,45 @@ def _install_opaque_base(_PybindOpaqueBase: type) -> tuple[type, type]:
     class OpaqueBaseMeta(
         type(_PybindOpaqueBase),  # pyrefly: ignore [invalid-inheritance]
     ):
-        def __call__(cls: type, *args, **kwargs):
-            if _needs_pybind_meta_call(cls):
-                return super().__call__(*args, **kwargs)
-            return _construct_python_opaque(cls, args, kwargs)
-
         def __instancecheck__(cls, instance):
             return _is_opaque_base_instance(cls, instance, super().__instancecheck__)
 
-    def _construct_python_opaque(cls, args, kwargs):
-        instance = cls.__new__(cls, *args, **kwargs)
-        try:
-            instance_dict = object.__getattribute__(instance, "__dict__")
-        except AttributeError:
-            instance_dict = {}
-        if "_opaque_base_constructing" in instance_dict:
-            instance_constructing = instance_dict["_opaque_base_constructing"]
-        else:
-            instance_constructing = _MISSING
-        try:
-            object.__setattr__(instance, "_opaque_base_constructing", True)
-        except (AttributeError, TypeError):
-            pass
+    def _wrap_python_construction_method(cls, name):
+        method = cls.__dict__.get(name)
+        if method is None or not callable(method):
+            return
+        if _is_pybind_init(method):
+            return
 
-        try:
-            if not _is_instance_of_type(instance, cls):
-                return instance
+        @wraps(method)
+        def wrapped(self, *args, **kwargs):
+            instance_constructing = _set_constructing(self)
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                _restore_constructing(self, instance_constructing)
 
-            init = _find_python_init(cls)
-            if init is not None:
-                init(instance, *args, **kwargs)
-            _ensure_opaque_base_initialized(instance)
+        setattr(cls, name, wrapped)
+
+    class OpaqueBase(_PybindOpaqueBase):
+        def __new__(cls, *args, **kwargs):
+            # pyrefly: ignore [no-matching-overload]
+            instance = _PybindOpaqueBase.__new__(cls)
+            if not _needs_pybind_meta_call(cls):
+                _ensure_opaque_base_initialized(instance)
             return instance
-        finally:
-            if instance_constructing is _MISSING:
-                try:
-                    object.__delattr__(instance, "_opaque_base_constructing")
-                except AttributeError:
-                    pass
-            else:
-                object.__setattr__(
-                    instance, "_opaque_base_constructing", instance_constructing
-                )
 
-    class OpaqueBase(_PybindOpaqueBase, metaclass=OpaqueBaseMeta):
         def __init__(self, *args, **kwargs):
             if _needs_pybind_meta_call(type(self)):
                 return
-            _ensure_opaque_base_initialized(self)
-
             init = _find_python_init_after_opaque_base(type(self))
             if init is not None:
                 init(self, *args, **kwargs)
+
+        def __init_subclass__(cls, **kwargs):
+            super().__init_subclass__(**kwargs)
+            _wrap_python_construction_method(cls, "__init__")
+            _wrap_python_construction_method(cls, "__post_init__")
 
         def __reduce_ex__(self, protocol):
             if _needs_pybind_meta_call(type(self)):
@@ -249,19 +275,6 @@ def _install_opaque_base(_PybindOpaqueBase: type) -> tuple[type, type]:
                 return True
         return False
 
-    def _find_python_init(cls):
-        for base in cls.__mro__:
-            if (
-                base in {OpaqueBase, _PybindOpaqueBase, object}
-                or base.__module__ == "pybind11_builtins"
-            ):
-                continue
-            init = base.__dict__.get("__init__")
-            if init is None or init is object.__init__ or _is_pybind_init(init):
-                continue
-            return init
-        return None
-
     def _find_python_init_after_opaque_base(cls):
         after_opaque_base = False
         for base in cls.__mro__:
@@ -285,16 +298,6 @@ def _install_opaque_base(_PybindOpaqueBase: type) -> tuple[type, type]:
         # This is pybind11's internal method wrapper type name. PyTorch vendors
         # pybind11, so the dependency is stable and covered by opaque tests.
         return type(init).__name__ == "instancemethod"
-
-    def _ensure_opaque_base_initialized(instance):
-        try:
-            initialized = object.__getattribute__(instance, "_opaque_base_initialized")
-        except AttributeError:
-            initialized = False
-        if initialized:
-            return
-        _PybindOpaqueBase.__init__(instance)
-        object.__setattr__(instance, "_opaque_base_initialized", True)
 
     def _pybind_instancecheck(cls, instance):
         if OpaqueBase in getattr(cls, "__mro__", ()):

@@ -1022,6 +1022,30 @@ class TestOpaqueObject(TestCase):
         self.assertEqual(obj.fake_self.value, 5)
         self.assertFalse(hasattr(obj.fake_self, "late"))
 
+    def test_opaque_base_constructing_guard_covers_dataclass_post_init(self):
+        @dataclass
+        class ConstructingDataOpaque(OpaqueBase):
+            value: int
+            fake_mode: FakeTensorMode
+
+            def __post_init__(self):
+                with self.fake_mode:
+                    self.fake_self = maybe_to_fake_obj(self.fake_mode, self)
+                self.late = self.value + 1
+
+        register_opaque_type(
+            ConstructingDataOpaque,
+            typ="reference",
+            members={"value": MemberType.USE_REAL, "late": MemberType.USE_REAL},
+        )
+
+        fake_mode = FakeTensorMode(shape_env=ShapeEnv())
+        obj = ConstructingDataOpaque(5, fake_mode)
+
+        self.assertIsInstance(obj.fake_self, FakeScriptObject)
+        self.assertEqual(obj.fake_self.value, 5)
+        self.assertFalse(hasattr(obj.fake_self, "late"))
+
     def test_isinstance_opaque_base_covers_all_opaque_types(self):
         # isinstance(x, OpaqueBase) should match registered opaque values and
         # physical OpaqueBase subclasses.
@@ -1206,6 +1230,7 @@ def forward(self, x_1, cfg_1):
     def test_opaque_base_is_pybind_backed(self):
         self.assertTrue(hasattr(torch._C, "_OpaqueBase"))
         self.assertIn(torch._C._OpaqueBase, OpaqueBase.__mro__)
+        self.assertIs(type(OpaqueBase), type(torch._C._OpaqueBase))
 
         class PyOpaque(OpaqueBase):
             def __init__(self, value):
