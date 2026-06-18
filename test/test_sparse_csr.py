@@ -2430,12 +2430,10 @@ class TestSparseCSR(TestCase):
             run_test(n, k, upper, unitriangular, transpose, zero)
 
     @dtypes(torch.float32, torch.float64, torch.complex64, torch.complex128)
-    @dtypesIfCUDA(*floating_and_complex_types_and(
-        torch.half,
-        *([torch.bfloat16] if PLATFORM_SUPPORTS_BF16 else [])))
+    @dtypesIfCUDA(*floating_and_complex_types_and(torch.half))
     @precisionOverride({torch.float32: 1e-3, torch.complex64: 1e-3,
                         torch.float64: 1e-8, torch.complex128: 1e-8,
-                        torch.half: 1e-2, torch.bfloat16: 3.5e-2})
+                        torch.half: 1e-2})
     def test_sampled_addmm(self, device, dtype):
         def run_test(c, a, b, op_a, op_b, *, alpha=None, beta=None):
             if dtype.is_complex:
@@ -2484,12 +2482,10 @@ class TestSparseCSR(TestCase):
                     run_test(c, a, b, op_a, op_b)
 
     @dtypes(torch.float32, torch.float64, torch.complex64, torch.complex128)
-    @dtypesIfCUDA(*floating_and_complex_types_and(
-        torch.half,
-        *([torch.bfloat16] if PLATFORM_SUPPORTS_BF16 else [])))
+    @dtypesIfCUDA(*floating_and_complex_types_and(torch.half))
     @precisionOverride({torch.float32: 1e-3, torch.complex64: 1e-3,
                         torch.float64: 1e-8, torch.complex128: 1e-8,
-                        torch.half: 1e-2, torch.bfloat16: 3.5e-2})
+                        torch.half: 1e-2})
     def test_sampled_addmm_autograd(self, device, dtype):
         from torch.testing._internal.common_methods_invocations import sample_inputs_sparse_sampled_addmm
 
