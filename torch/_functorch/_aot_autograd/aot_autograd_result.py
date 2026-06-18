@@ -96,7 +96,14 @@ class BundledOutputCodeLoadable(InductorOutput[TOutputCode], Generic[TOutputCode
 
     def pre_save(self) -> None:
         disk_result = copy(self.result)
-        disk_result.prepare_for_serialization(preserve_original_gm=True)
+
+        @torch._dynamo.disable(  # type: ignore[misc]
+            reason="do not trace bundled autograd cache serialization"
+        )
+        def prepare_for_serialization() -> None:
+            disk_result.prepare_for_serialization()
+
+        prepare_for_serialization()
         self.result = disk_result
         return
 
