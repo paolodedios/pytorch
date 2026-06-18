@@ -1,11 +1,13 @@
+from __future__ import annotations
+
 import inspect
 import logging
 import sys
 import traceback
 import types
 from collections import namedtuple
-from collections.abc import Callable, Iterable, Sequence
-from typing import Any, Optional, TYPE_CHECKING, TypeVar
+from contextlib import nullcontext
+from typing import Any, cast, TYPE_CHECKING, TypeVar
 
 import sympy
 
@@ -16,22 +18,31 @@ from torch._dynamo.convert_frame import CaptureOutput, fullgraph_capture, get_tr
 from torch._dynamo.decorators import disable as dynamo_disable
 from torch._dynamo.eval_frame import argument_names, check_user_input_output
 from torch._dynamo.exc import UserErrorType
+from torch._dynamo.source import GetItemSource
 from torch._dynamo.utils import dynamo_timed, get_metrics_context
 from torch._export.utils import _compiling_state_context
-from torch._guards import TracingContext
+from torch._guards import detect_fake_mode, TracingContext
 from torch.export.dynamic_shapes import _RelaxedConstraint, Constraint
-from torch.fx import Node
 from torch.fx.experimental.symbolic_shapes import (
     ConstraintViolationError,
     DimDynamic,
     StatelessSymbolicContext,
 )
 from torch.fx.graph import _PyTreeCodeGen, _PyTreeInfo
-from torch.fx.node import Argument, Target
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Sequence
+
+    from torch._dynamo.output_graph import OutputReturnInfo
     from torch._subclasses.fake_tensor import FakeTensorMode
+    from torch.export._trace import _DynamicShapesInput
+    from torch.fx import Node
+    from torch.fx.node import Argument, Target
+
+from torch.fx.experimental._spec_binding import _flatten_shapes_spec
+from torch.fx.experimental.dynamic_spec import ParamsSpec, ShapesSpec
+
 
 T = TypeVar("T")
 log = logging.getLogger(__name__)
@@ -222,7 +233,7 @@ class ModuleToTrace(torch.nn.Module):
         self._export_root = foo
         self.in_spec = in_spec
 
-    def forward(self, *flat_args: Any) -> "ExportTracerOutput":
+    def forward(self, *flat_args: Any) -> ExportTracerOutput:
         args, kwargs = pytree.tree_unflatten(flat_args, self.in_spec)
         res = self._export_root(*args, **kwargs)
         out_flat, out_spec = pytree.tree_flatten(res)
@@ -242,7 +253,7 @@ class DynamoGraphTransformer(torch.fx.Transformer):
         flat_inputs: list[Any],
         flat_args_dynamic_dims: list[set[int]],
         graph_input_order: dict[int, int],
-        graph_output_map: dict[int, tuple[str, Any]],
+        graph_output_map: dict[int, OutputReturnInfo],
         fake_mode: Any | None = None,
         graph_inputs: dict[int, Any] | None = None,
     ) -> None:
@@ -349,7 +360,7 @@ class DynamoGraphTransformer(torch.fx.Transformer):
             placeholder_idx = self.placeholders.index(self.current_node)
             if placeholder_idx in self.graph_inputs:
                 source = self.graph_inputs[placeholder_idx]
-                if not isinstance(source, torch._dynamo.source.GetItemSource):
+                if not isinstance(source, GetItemSource):
                     example_val = self.current_node.meta.get(
                         "val"
                     ) or self.current_node.meta.get("example_value")
@@ -377,9 +388,9 @@ class DynamoGraphTransformer(torch.fx.Transformer):
             output_type, val = self.graph_output_map[i]
 
             if output_type == "graph_out":
-                new_outputs.append(original_outputs[val])
+                new_outputs.append(original_outputs[cast(int, val)])
             elif output_type == "input":
-                input_idx = val.index
+                input_idx = cast(GetItemSource, val).index
                 new_outputs.append(self.new_input_nodes[input_idx])
             elif output_type == "constant":
                 new_outputs.append(val)
@@ -430,7 +441,7 @@ class DynamoGraphTransformer(torch.fx.Transformer):
 def _suggest_or_raise_constraint_violation(
     module_to_trace: torch.nn.Module,
     orig_callable: Callable[..., Any],
-    fake_mode: Optional["FakeTensorMode"],
+    fake_mode: FakeTensorMode | None,
     graph_capture_output: CaptureOutput,
     args: Any,
     kwargs: Any,
@@ -752,6 +763,18 @@ class _DynamoBytecodeCodeGen(torch.fx.graph.CodeGen):
     def process_inputs(self, *inputs: Any) -> Any:
         self._inputs = inputs
         results = self.dynamo_bytecode_flatten(*inputs)
+        fake_mode = detect_fake_mode()
+        if fake_mode is not None and pytree.tree_any(
+            lambda x: isinstance(x, torch.Tensor) and not fake_mode.is_our_fake(x),
+            results,
+        ):
+            # Bytecode replay can recover tensors captured from module
+            # attributes as extra FX placeholder values. These tensors are not
+            # visible in AOTAutograd's user-facing call signature, so allow the
+            # active FakeTensorMode to convert them at dispatch time. This must
+            # remain enabled for AOT's backward trace too, since autograd can
+            # save the recovered tensors from the forward.
+            fake_mode.allow_non_fake_inputs = True
         return results
 
     def process_outputs(self, outputs: Any) -> Any:
@@ -772,6 +795,23 @@ class _DynamoBytecodeCodeGen(torch.fx.graph.CodeGen):
         has_orig_self = (fn_args[0] == "self") if len(fn_args) > 0 else False
         if has_orig_self:
             free_vars.insert(0, "self")
+        # Rename any non-first `self` in fn_args to a unique name. The base
+        # CodeGen.gen_fn_def prepends `"self"` for the GraphModule's bound-
+        # method receiver whenever fn_args[0] != "self", which collides with
+        # a schema param literally named `self` (e.g. `aten.where.self(Tensor
+        # cond, Tensor self, Tensor other)` -> `def forward(self, cond, self,
+        # other)` -> `SyntaxError: duplicate argument 'self' in function
+        # definition`). Both the function-def arg list (via super().gen_fn_def)
+        # and the body binding (via gen_var_bindings) reference fn_args, so
+        # the rename is consistent end-to-end.
+        fn_args = list(fn_args)
+        first_pos = 1 if has_orig_self else 0
+        for i in range(first_pos, len(fn_args)):
+            if fn_args[i] == "self":
+                new_name = "self_"
+                while new_name in fn_args:
+                    new_name += "_"
+                fn_args[i] = new_name
         fn_definition = super().gen_fn_def(
             fn_args[:], maybe_return_annotation, expanded_def=expanded_def
         )
@@ -863,7 +903,7 @@ def _dynamo_graph_capture_for_export(
     mod: Callable[..., Any],
     *,
     constraints: list[Constraint] | None = None,
-    dynamic_shapes: dict[str, Any] | tuple[Any] | list[Any] | None = None,
+    dynamic_shapes: _DynamicShapesInput = None,
 ) -> Callable[..., torch.fx.GraphModule]:
     """
     Improved dynamo graph capture using transformer approach with proper fake tensor handling.
@@ -886,7 +926,6 @@ def _dynamo_graph_capture_for_export(
     2. Need to attach guards
     """
 
-    _dynamic_shapes = dynamic_shapes
     _constraints = constraints
 
     def inner(*args: Any, **kwargs: Any) -> torch.fx.GraphModule:
@@ -898,9 +937,6 @@ def _dynamo_graph_capture_for_export(
             orig_callable = mod.forward if isinstance(mod, torch.nn.Module) else mod
 
             constraints: list[Constraint] | None = _constraints
-            dynamic_shapes: dict[str, Any] | tuple[Any] | list[Any] | None = (
-                _dynamic_shapes
-            )
 
             from . import reset  # type: ignore[attr-defined]
 
@@ -923,10 +959,29 @@ def _dynamo_graph_capture_for_export(
                 install_free_tensors=torch._dynamo.config.install_free_tensors_for_export,
             )
 
+            # If `dynamic_shapes` is a ShapesSpec/ParamsSpec, auto-wrap
+            # ParamsSpec → ShapesSpec, flatten into the (args, kwargs) layout
+            # the tracer builds above, and expose it via
+            # `torch._dynamo.config._shapes_spec` for the variable builder.
+            shapes_spec_in_use = False
+            shapes_spec_ctx = nullcontext()
+            if isinstance(dynamic_shapes, (ShapesSpec, ParamsSpec)):
+                shapes_spec_in_use = True
+                user_spec = (
+                    ShapesSpec(dynamic_shapes)
+                    if isinstance(dynamic_shapes, ParamsSpec)
+                    else dynamic_shapes
+                )
+                flattened_spec = _flatten_shapes_spec(mod, args, kwargs, user_spec)
+                shapes_spec_ctx = torch._dynamo.config.patch(
+                    _shapes_spec=flattened_spec
+                )
+
             with (
                 get_metrics_context(),
                 dynamo_timed("fullgraph_capture"),
                 dynamo_config_ctx,
+                shapes_spec_ctx,
             ):
                 out = fullgraph_capture(
                     module_to_trace,
@@ -951,15 +1006,18 @@ def _dynamo_graph_capture_for_export(
                     graph.recompile()
                     fake_mode = None
 
-                _suggest_or_raise_constraint_violation(
-                    module_to_trace,
-                    orig_callable,
-                    fake_mode,
-                    out,
-                    args,
-                    kwargs,
-                    dynamic_shapes,
-                )
+                # ShapesSpec is unbacked based, constraint violations are not
+                # relevant.
+                if not shapes_spec_in_use:
+                    _suggest_or_raise_constraint_violation(
+                        module_to_trace,
+                        orig_callable,
+                        fake_mode,
+                        out,
+                        args,
+                        kwargs,
+                        dynamic_shapes,  # type: ignore[arg-type]
+                    )
 
                 # Extract export metadata from the new location
                 export_metadata = out.graph_capture_output.output_graph.export_metadata
