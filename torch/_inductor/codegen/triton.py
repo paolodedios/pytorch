@@ -5930,6 +5930,10 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             or self.compute
             or self.post_loop_combine
             or self.post_loop_store
+            or self.pointwise_indexing_code
+            or self.pointwise_loads
+            or self.pointwise_compute
+            or self.pointwise_stores
         ):
             return
 
@@ -6081,6 +6085,12 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                     loop_end = self.index_to_str(self.pointwise_loop_numel)
                     block_size = f"{prefix.upper()}BLOCK"
 
+                    # Splice reduction operations first (outside loop)
+                    self.body.splice(self.indexing_code)
+                    self.body.splice(self.loads)
+                    self.body.splice(self.compute)
+
+                    # Generate pointwise loop
                     self.body.writeline(
                         f"{prefix}base = {self.iteration_ranges_ranges_code(r_tree)}"
                     )
@@ -6094,7 +6104,14 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                         self.body.writeline(
                             f"{r_tree.mask_name()} = {r_tree.name} < {loop_end}"
                         )
-                        self._splice_body_sections()
+                        # Splice pointwise operations inside loop
+                        self.body.splice(self.pointwise_indexing_code)
+                        self.body.splice(self.pointwise_loads)
+                        self.body.splice(self.pointwise_compute)
+                        self.body.splice(self.pointwise_stores)
+
+                    # Reduction stores go after loop
+                    self.body.splice(self.stores)
                 else:
                     need_pointwise_loop = False
 
@@ -6122,6 +6139,11 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         self.stores.clear()
         self.post_loop_combine.clear()
         self.post_loop_store.clear()
+        self.pointwise_indexing_code.clear()
+        self.pointwise_loads.clear()
+        self.pointwise_compute.clear()
+        self.pointwise_stores.clear()
+        self.pointwise_loop_numel = None
 
     def kernel_benchmark_extra_args(self) -> list[str]:
         args = []
@@ -6904,7 +6926,14 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
 
         # mix order reduction introduces an extra loop across the x
         # dimension
-        if entry.root.is_loop or (self.mix_order_reduction and entry.prefix == "x"):
+        in_pointwise_context = self.indexing_code is self.pointwise_indexing_code
+
+        if (
+            entry.root.is_loop
+            or (self.mix_order_reduction and entry.prefix == "x")
+            or in_pointwise_context
+        ):
+            # Write to indexing_code for loop entries, mix order reduction x, or when in pointwise context
             self.indexing_code.writeline(line)
         else:
             # lift non-reduction stores outside loop
