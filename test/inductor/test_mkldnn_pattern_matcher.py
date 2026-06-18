@@ -859,7 +859,7 @@ class TestPatternMatcher(TestPatternMatcherBase):
                     v,
                 )
                 self.assertIn(
-                    "torch.ops.mkldnn._linear_pointwise.default"
+                    "torch.ops.onednn._linear_pointwise.default"
                     if autocast_enabled
                     else "torch.ops.mkl._mkl_linear.default",
                     source_code,
