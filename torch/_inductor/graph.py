@@ -54,6 +54,7 @@ from torch.fx.passes.reinplace import _is_view_op
 from torch.utils._mode_utils import no_dispatch
 from torch.utils._ordered_set import OrderedSet
 from torch.utils._sympy.numbers import int_oo
+from torch.utils._typing_utils import not_none
 
 from . import config, ir
 from .codegen.common import (
@@ -1277,12 +1278,7 @@ class GraphLowering(torch.fx.Interpreter):
         example = super().placeholder(target, args, kwargs)  # type: ignore[arg-type]
         target = self.qualify_name(target)
         if isinstance(example, SymTypes):
-            # TODO fix partitioning issue and re-enable for backward
-            # https://github.com/pytorch/pytorch/issues/155468.
-            if not V.graph.is_backward:
-                expr = _get_placeholder_expr(example.node)
-            else:
-                expr = example.node.expr
+            expr = _get_placeholder_expr(example.node)
             self.graph_inputs[target] = expr
             self.graph_input_names.append(target)
             return expr
@@ -1389,7 +1385,33 @@ class GraphLowering(torch.fx.Interpreter):
             # passthrough lowerings from .pattern_matcher
             return target(*args, **kwargs)
 
-        if target not in lowerings:
+        n = self.current_node
+
+        from torch._inductor.compiler_bisector import CompilerBisector
+
+        is_current_call_function = n.op == "call_function" and target is n.target
+        force_fallback = is_current_call_function and (
+            "should_fallback" in n.meta
+            or n.meta.get("custom", {}).get("fallback_to_eager")
+        )
+        if is_current_call_function:
+            if (
+                isinstance(target, torch._ops.OpOverload)
+                and torch._library.utils.is_builtin(target)
+                and (
+                    fallback_node_due_to_unsupported_type(n)
+                    or CompilerBisector.disable_subsystem(
+                        "inductor", "lowerings", lambda: repr(n)
+                    )
+                )
+            ):
+                force_fallback = True
+            elif isinstance(
+                target, (torch._ops.OpOverload, torch._ops.HigherOrderOperator)
+            ) and should_fallback_by_default(n):
+                force_fallback = True
+
+        if target not in lowerings and not force_fallback:
             if not isinstance(target, torch._ops.OpOverload):
                 raise AssertionError(f"{target} is not an OpOverload")
             base_name = target.name().split(".")[0]
@@ -1452,17 +1474,62 @@ class GraphLowering(torch.fx.Interpreter):
                 raise MissingOperatorWithoutDecomp(target, args, kwargs)
 
         try:
-            log.debug("  via %s", lowerings[target])  # type: ignore[index]
+            if target in lowerings:
+                log.debug("  via %s", lowerings[target])  # type: ignore[index]
+            else:
+                log.debug("  via fallback_handler")
 
-            n = self.current_node
-            should_fallback = "should_fallback" in n.meta or n.meta.get(
-                "custom", {}
-            ).get("fallback_to_eager")
-            args, kwargs, mutation_args = self._apply_layout_constraints(
-                target, n, args, kwargs, with_default=should_fallback
-            )
+            layout_constraints = maybe_layout_constraints(target)
+            if (
+                force_fallback
+                and layout_constraints is None
+                and isinstance(target, torch._ops.OpOverload)
+            ):
+                layout_constraints = tag_to_layout_constraint(
+                    get_layout_constraint_tag(target, with_default=True)
+                )
 
-            if should_fallback:
+            mutation_args = None
+            if layout_constraints:
+                old_args, old_kwargs = args, kwargs
+                if layout_constraints is constrain_to_fake_tensors:
+                    # Only constrain to fake tensors when eager_input_vals is present.
+                    # Ops inserted after tracing do not have those values, so untagged
+                    # custom ops keep their compiled layout unless the pass supplied a
+                    # concrete layout tag such as needs_contiguous_strides.
+                    if "eager_input_vals" in n.meta:
+                        fake_args, fake_kwargs = n.meta["eager_input_vals"]
+
+                        # (fake_args, fake_kwargs) might not align with (args, kwargs).
+                        # we need to normalize them based on the schema
+                        if not isinstance(target, torch._ops.OpOverload):
+                            raise AssertionError(
+                                f"Expected torch._ops.OpOverload, got {type(target)}"
+                            )
+
+                        def normalize(args: Any, kwargs: Any) -> tuple[Any, Any]:
+                            result = torch.fx.operator_schemas.normalize_function(
+                                target, args, kwargs
+                            )
+                            if result is None:
+                                raise AssertionError(
+                                    f"normalize_function returned None for {target}"
+                                )
+                            return result[0], result[1]
+
+                        fake_args, fake_kwargs = normalize(fake_args, fake_kwargs)
+                        args, kwargs = normalize(args, kwargs)
+                        old_args, old_kwargs = normalize(old_args, old_kwargs)
+
+                        args, kwargs = constrain_to_fake_tensors(
+                            args, kwargs, fake_args, fake_kwargs
+                        )
+                        mutation_args = (old_args, old_kwargs)
+                else:
+                    args, kwargs = layout_constraints(n, *args, **kwargs)
+                    mutation_args = (old_args, old_kwargs)
+
+            if force_fallback:
                 out = fallback_handler(target, add_to_fallback_set=False)(
                     *args, **kwargs
                 )
@@ -1511,76 +1578,6 @@ class GraphLowering(torch.fx.Interpreter):
             raise LoweringException(
                 e, target, args, kwargs, stack_trace=stack_trace
             ).with_traceback(e.__traceback__) from None
-
-    def _apply_layout_constraints(
-        self,
-        target: Callable[..., Any],
-        node: torch.fx.Node,
-        args: Any,
-        kwargs: dict[str, Any],
-        *,
-        with_default: bool = False,
-    ) -> tuple[Any, dict[str, Any], tuple[Any, Any] | None]:
-        layout_constraints = maybe_layout_constraints(target)
-        if (
-            layout_constraints is None
-            and with_default
-            and isinstance(target, torch._ops.OpOverload)
-        ):
-            layout_constraints = tag_to_layout_constraint(
-                get_layout_constraint_tag(target, with_default=True)
-            )
-        if layout_constraints is None:
-            return args, kwargs, None
-
-        old_args, old_kwargs = args, kwargs
-        if layout_constraints is constrain_to_fake_tensors:
-            if not isinstance(target, torch._ops.OpOverload):
-                return args, kwargs, None
-
-            if "eager_input_vals" not in node.meta:
-                return args, kwargs, None
-
-            fake_args, fake_kwargs = node.meta["eager_input_vals"]
-            result = torch.fx.operator_schemas.normalize_function(
-                target, fake_args, fake_kwargs
-            )
-            if result is None:
-                raise AssertionError(f"normalize_function returned None for {target}")
-            fake_args, fake_kwargs = result[0], result[1]
-            result = torch.fx.operator_schemas.normalize_function(target, args, kwargs)
-            if result is None:
-                raise AssertionError(f"normalize_function returned None for {target}")
-            args, kwargs = result[0], result[1]
-            result = torch.fx.operator_schemas.normalize_function(
-                target, old_args, old_kwargs
-            )
-            if result is None:
-                raise AssertionError(f"normalize_function returned None for {target}")
-            old_args, old_kwargs = result[0], result[1]
-            args, kwargs = constrain_to_fake_tensors(
-                args, kwargs, fake_args, fake_kwargs
-            )
-        else:
-            args, kwargs = layout_constraints(node, *args, **kwargs)
-
-        return args, kwargs, (old_args, old_kwargs)
-
-    def _call_fallback_with_constraints(
-        self,
-        target: Callable[..., Any],
-        node: torch.fx.Node,
-        args: Any,
-        kwargs: dict[str, Any],
-    ) -> Any:
-        args, kwargs, mutation_args = self._apply_layout_constraints(
-            target, node, args, kwargs, with_default=True
-        )
-        result = fallback_handler(target, add_to_fallback_set=False)(*args, **kwargs)
-        if mutation_args is not None:
-            old_args, old_kwargs = mutation_args
-            self.propagate_mutation(node, old_args, old_kwargs, args, kwargs)
-        return result
 
     @staticmethod
     def can_inline_constant(t: torch.Tensor) -> bool:
@@ -1936,8 +1933,6 @@ class GraphLowering(torch.fx.Interpreter):
                 )
             return result
 
-        from torch._inductor.compiler_bisector import CompilerBisector
-
         buffer_watermark = len(self.buffers)
         operation_watermark = len(self.operations)
 
@@ -1955,42 +1950,6 @@ class GraphLowering(torch.fx.Interpreter):
             V.set_current_node(n),
         ):
             if (
-                is_call_function
-                # this path only for built-in operators
-                and n.target
-                and isinstance(n.target, torch._ops.OpOverload)
-                and torch._library.utils.is_builtin(n.target)
-                and (
-                    fallback_node_due_to_unsupported_type(n)
-                    or CompilerBisector.disable_subsystem(
-                        "inductor", "lowerings", lambda: repr(n)
-                    )
-                )
-            ):
-                debug("fallback_handler")
-                result = self._call_fallback_with_constraints(
-                    n.target,
-                    n,
-                    args,  # type: ignore[possibly-undefined]
-                    kwargs,  # type: ignore[possibly-undefined]
-                )
-            elif (
-                n.op == "call_function"
-                and isinstance(
-                    n.target, (torch._ops.OpOverload, torch._ops.HigherOrderOperator)
-                )
-                and should_fallback_by_default(n)
-            ):
-                # this path supports fallback due to inductor lite mode. It supports
-                # both OpOverload and HOPs (e.g., triton_kernel_wrapper_functional).
-                debug("fallback_handler")
-                result = self._call_fallback_with_constraints(
-                    n.target,
-                    n,
-                    args,  # type: ignore[possibly-undefined]
-                    kwargs,  # type: ignore[possibly-undefined]
-                )
-            elif (
                 n.op == "call_function"
                 and n.target is torch.ops.higher_order.triton_kernel_wrapper_mutation
                 and config.triton_kernel_default_layout_constraint != "flexible_layout"
@@ -2097,7 +2056,7 @@ class GraphLowering(torch.fx.Interpreter):
                         # require_exact_strides to handle views. But ultimately it's better to require
                         # the right strides at the tensor definition.
                         if n.meta["val"]._is_view() or isinstance(
-                            result.data,
+                            result.data,  # type: ignore[missing-attribute]
                             ir.BaseView,
                         ):
                             result = ir.ExternKernel.require_stride_order(
@@ -2574,7 +2533,7 @@ class GraphLowering(torch.fx.Interpreter):
                         return None
                     elif isinstance(x, (torch.SymInt, torch.SymFloat)):
                         # Need concrete value to run dynamic shapes and tune the result
-                        return x.node.hint
+                        return not_none(x.hint)
                     elif isinstance(x, FakeTensor):
                         return defake(x)
                     else:
