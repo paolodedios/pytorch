@@ -1273,7 +1273,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             epilogue_fn(torch.bmm(a.double(), b.double())),
             a.shape[-1],
         )
-        self.assertFlexGemmGeneratedCode(code)
+        self.assertFlexGemmGeneratedCode(code, "expected_ndim=3")
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -1303,7 +1303,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             epilogue_fn(torch.bmm(a.double(), b.double())),
             a.shape[-1],
         )
-        self.assertFlexGemmGeneratedCode(code)
+        self.assertFlexGemmGeneratedCode(code, "expected_ndim=3")
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -1342,7 +1342,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             epilogue_fn(torch.bmm(a.double(), b.double())),
             a.shape[-1],
         )
-        self.assertFlexGemmGeneratedCode(code)
+        self.assertFlexGemmGeneratedCode(code, "expected_ndim=3")
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -1378,7 +1378,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             ),
             a.shape[-1],
         )
-        self.assertFlexGemmGeneratedCode(code, "C=")
+        self.assertFlexGemmGeneratedCode(code, "C=", "expected_ndim=3")
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
