@@ -24,7 +24,6 @@
 #include <string>
 #include <type_traits>
 #include <vector>
-// @allow-raw-throw
 
 namespace torch::tensors {
 

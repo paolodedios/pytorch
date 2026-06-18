@@ -9,7 +9,6 @@
 
 #include <memory>
 #include <utility>
-// @allow-raw-throw
 
 namespace torch::autograd {
 

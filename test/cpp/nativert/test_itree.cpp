@@ -6,7 +6,6 @@
 #include <c10/util/Enumerate.h>
 #include <torch/custom_class.h>
 #include <torch/nativert/detail/ITree.h>
-// @allow-raw-throw
 
 namespace torch::nativert::detail {
 

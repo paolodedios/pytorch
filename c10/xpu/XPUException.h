@@ -2,7 +2,6 @@
 
 #include <c10/util/Exception.h>
 #include <sycl/sycl.hpp>
-// @allow-raw-throw
 
 namespace c10::xpu {
 

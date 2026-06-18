@@ -5,7 +5,6 @@
 
 #include <string>
 #include <utility>
-// @allow-raw-throw
 
 namespace c10::cuda {
 

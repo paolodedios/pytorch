@@ -4,7 +4,6 @@
 #include <c10/core/SafePyObject.h>
 #include <torch/csrc/PyInterpreter.h>
 #include <torch/csrc/THP.h>
-// @allow-raw-throw
 
 namespace py = pybind11;
 

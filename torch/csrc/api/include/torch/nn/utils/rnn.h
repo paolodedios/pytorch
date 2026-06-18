@@ -4,7 +4,6 @@
 #include <torch/types.h>
 
 #include <utility>
-// @allow-raw-throw
 
 namespace torch::nn::utils::rnn {
 

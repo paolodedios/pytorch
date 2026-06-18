@@ -1,3 +1,4 @@
+// @allow-raw-throw
 #include <torch/csrc/stable/device.h>
 #include <torch/csrc/stable/library.h>
 #include <torch/csrc/stable/ops.h>
@@ -5,7 +6,6 @@
 
 #ifdef LAE_USE_CUDA
 #include <cuda_runtime.h>
-// @allow-raw-throw
 #endif
 
 using torch::stable::Tensor;

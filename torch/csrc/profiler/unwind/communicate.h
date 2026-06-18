@@ -4,7 +4,6 @@
 #include <unistd.h>
 #include <array>
 #include <memory>
-// @allow-raw-throw
 
 namespace torch::unwind {
 // helper to open a process with stdin/stdout/stderr streams.

@@ -16,7 +16,6 @@
 #include <torch/torch.h>
 
 #include "caffe2/serialize/istream_adapter.h"
-// @allow-raw-throw
 
 namespace torch {
 namespace jit {

@@ -10,7 +10,6 @@
 
 #include <limits>
 #include <sstream>
-// @allow-raw-throw
 
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 static PyObject* THPUpperModuleOfDevice = nullptr;
