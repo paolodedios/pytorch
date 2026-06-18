@@ -315,10 +315,16 @@ class TestAccelerator(TestCase):
             self.assertNotEqual(old_state, new_state)
             self.assertEqual(12345, torch.accelerator.random.initial_seed(device_idx))
             torch.accelerator.random.set_rng_state(old_state, device_idx)
-            self.assertEqual(old_state, torch.accelerator.random.get_rng_state(device_idx))
-            self.assertEqual(initial_seed, torch.accelerator.random.initial_seed(device_idx))
+            self.assertEqual(
+                old_state, torch.accelerator.random.get_rng_state(device_idx)
+            )
+            self.assertEqual(
+                initial_seed, torch.accelerator.random.initial_seed(device_idx)
+            )
             torch.accelerator.random.seed(device_idx)
-            self.assertNotEqual(old_state, torch.accelerator.random.get_rng_state(device_idx))
+            self.assertNotEqual(
+                old_state, torch.accelerator.random.get_rng_state(device_idx)
+            )
         torch.accelerator.random.manual_seed_all(54321)
         for device_idx in range(torch.accelerator.device_count()):
             with torch.accelerator.device_index(device_idx):
