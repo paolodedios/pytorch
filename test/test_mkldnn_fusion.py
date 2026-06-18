@@ -271,7 +271,7 @@ class TestOnednnFusion(JitTestCase):
             bias = torch.randn(64, dtype=torch.float32)
             with torch.no_grad():
                 ref = torch.nn.functional.conv2d(x, weight, bias)
-                fused = torch.ops.mkldnn._convolution_pointwise(
+                fused = torch.ops.onednn._convolution_pointwise(
                     x,
                     weight,
                     bias,
