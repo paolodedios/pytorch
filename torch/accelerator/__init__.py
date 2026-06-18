@@ -22,17 +22,7 @@ from .memory import (
     reset_accumulated_memory_stats,
     reset_peak_memory_stats,
 )
-from .random import (
-    get_rng_state,
-    get_rng_state_all,
-    initial_seed,
-    manual_seed,
-    manual_seed_all,
-    seed,
-    seed_all,
-    set_rng_state,
-    set_rng_state_all,
-)
+from . import random
 
 
 __all__ = [
@@ -47,12 +37,7 @@ __all__ = [
     "empty_cache",
     "empty_host_cache",
     "get_memory_info",
-    "get_rng_state",
-    "get_rng_state_all",
-    "initial_seed",
     "is_available",
-    "manual_seed",
-    "manual_seed_all",
     "max_memory_allocated",
     "max_memory_reserved",
     "memory_allocated",
@@ -60,12 +45,8 @@ __all__ = [
     "memory_stats",
     "reset_accumulated_memory_stats",
     "reset_peak_memory_stats",
-    "seed",
-    "seed_all",
     "set_device_idx",  # deprecated
     "set_device_index",
-    "set_rng_state",
-    "set_rng_state_all",
     "set_stream",
     "synchronize",
 ]
