@@ -1,7 +1,6 @@
 #include <torch/csrc/utils/pybind.h>
 #include <torch/csrc/utils/python_arg_parser.h>
 #include <torch/csrc/utils/python_symnode.h>
-// @allow-raw-throw
 
 namespace pybind11::detail {
 

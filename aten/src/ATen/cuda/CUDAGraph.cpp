@@ -11,7 +11,6 @@
 
 #include <cstddef>
 #include <optional>
-// @allow-raw-throw
 
 namespace at::cuda {
 

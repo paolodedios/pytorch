@@ -6,7 +6,6 @@
 #include <torch/csrc/utils/pybind.h>
 #include <sstream>
 #include <stdexcept>
-// @allow-raw-throw
 
 namespace torch::jit {
 

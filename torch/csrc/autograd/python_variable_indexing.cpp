@@ -30,7 +30,6 @@
 
 #include <c10/core/Layout.h>
 #include <fmt/format.h>
-// @allow-raw-throw
 
 using namespace at;
 using namespace torch::autograd::utils;

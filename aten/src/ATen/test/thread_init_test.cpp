@@ -4,7 +4,6 @@
 #include <ATen/Parallel.h>
 #include <c10/util/irange.h>
 #include <thread>
-// @allow-raw-throw
 
 
 // This checks whether threads can see the global

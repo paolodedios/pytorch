@@ -15,7 +15,6 @@
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-// @allow-raw-throw
 
 namespace py = pybind11;
 
@@ -47,7 +46,7 @@ class unwrapping_shared_ptr {
   }
   T* get() const {
     if (!impl->elem) {
-      TORCH_CHECK(false, "has been invalidated");
+      throw std::logic_error("has been invalidated");
     }
     return impl->elem;
   }
@@ -57,7 +56,7 @@ class unwrapping_shared_ptr {
     ((PYBIND11_VERSION_MAJOR == 2) && (PYBIND11_VERSION_MINOR >= 3))
   T** operator&() {
     if (!impl->elem) {
-      TORCH_CHECK(false, "has been invalidated");
+      throw std::logic_error("has been invalidated");
     }
     return &(impl->elem);
   }

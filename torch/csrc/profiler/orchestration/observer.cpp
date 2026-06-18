@@ -3,7 +3,6 @@
 #include <torch/csrc/profiler/util.h>
 
 #include <utility>
-// @allow-raw-throw
 
 namespace torch::profiler::impl {
 

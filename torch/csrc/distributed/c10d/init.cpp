@@ -69,7 +69,6 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include <torch/custom_class.h>
-// @allow-raw-throw
 
 namespace {
 
@@ -480,14 +479,10 @@ PyObject* c10d_init(PyObject* _unused, PyObject* noargs) {
   C10_LOG_API_USAGE_ONCE("c10d.python.import");
 
   auto c10d_module = THPObjectPtr(PyImport_ImportModule("torch.distributed"));
-  if (!c10d_module) {
-    throw python_error();
-  }
+  TORCH_CHECK_PYTHON(c10d_module);
 
   auto torch_C_module = THPObjectPtr(PyImport_ImportModule("torch._C"));
-  if (!torch_C_module) {
-    throw python_error();
-  }
+  TORCH_CHECK_PYTHON(torch_C_module);
 
   auto torch_C_m = py::handle(torch_C_module).cast<py::module>();
   auto m =
@@ -3669,8 +3664,8 @@ options :class:`~torch.distributed.ProcessGroupNCCL.Options`).
               return ::c10d::ProcessGroupGloo::createDeviceForInterface(
                   interface, lazyInit);
             }
-            TORCH_CHECK(
-                false, "Specify either `hostname` or `interface` argument.");
+            throw std::invalid_argument(
+                "Specify either `hostname` or `interface` argument.");
           },
           py::arg("hostname") = "",
           py::arg("interface") = "",

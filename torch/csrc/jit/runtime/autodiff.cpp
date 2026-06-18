@@ -175,10 +175,8 @@ class GradientHelper {
 
   std::vector<Value*> gradient(ArrayRef<Value*> grad_values) {
     if (!isDifferentiable(node)) {
-      TORCH_CHECK(
-          false,
-          "differentiation of ",
-          node->kind().toDisplayString(),
+      throw std::runtime_error(
+          std::string("differentiation of ") + node->kind().toDisplayString() +
           " is not supported, or it is missing necessary type information");
     }
     // If AD is defined using torchscript, use it instead of symbolic
@@ -285,11 +283,9 @@ class GradientHelper {
           nullptr};
     }
 
-    TORCH_CHECK(
-        false,
-        "failed to differentiate `",
-        node->kind().toDisplayString(),
-        "`");
+    throw std::runtime_error(
+        std::string("failed to differentiate `") +
+        node->kind().toDisplayString() + "`");
   }
 };
 } // namespace
@@ -518,7 +514,7 @@ static bool inBlock(Node* node, Block* container) {
 
 static void liftConstants(Node* node, Block* move_to_this_block) {
   static const auto err = [](Value*) -> Value* {
-    TORCH_CHECK(false, "unexpected input");
+    throw std::runtime_error("unexpected input");
   };
   auto& graph = *node->owningGraph();
   for (Value* input : node->inputs()) {

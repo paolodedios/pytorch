@@ -18,7 +18,6 @@
 #include <iostream>
 #include <sstream>
 #include <utility>
-// @allow-raw-throw
 
 namespace torch::jit {
 

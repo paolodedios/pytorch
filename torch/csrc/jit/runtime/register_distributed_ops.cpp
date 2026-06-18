@@ -86,13 +86,12 @@ void prepare_and_call_rpc_op(
     } else if (arg.default_value()) {
       push(userCallableStack, *arg.default_value());
     } else {
-      TORCH_CHECK(
-          false,
+      throw std::runtime_error(c10::str(
           functionSchema.name(),
           "() is missing value for argument '",
           argName,
           "'. Declaration: ",
-          functionSchema);
+          functionSchema));
     }
   }
   // Raise exception showing the unexpected kwargs.
@@ -103,7 +102,7 @@ void prepare_and_call_rpc_op(
       const std::string& keyStr = keyIValue.toStringRef();
       names.emplace_back(keyStr);
     }
-    TORCH_CHECK(false, functionSchema.findErrorInKwargs(names));
+    throw std::runtime_error(functionSchema.findErrorInKwargs(names));
   }
 
   // Get destination WorkerName.
@@ -140,8 +139,8 @@ void prepare_and_call_rpc_op(
         rpcTimeout);
     futureIValuePtr->wait();
     if (futureIValuePtr->hasError()) {
-      // report error if future hasError
-      TORCH_CHECK(false, futureIValuePtr->tryRetrieveErrorMessage());
+      // throw error if future hasError
+      throw std::runtime_error(futureIValuePtr->tryRetrieveErrorMessage());
     } else {
       auto res = futureIValuePtr->value();
       // Push output to the stack.
@@ -160,7 +159,8 @@ void prepare_and_call_rpc_op(
     stack.emplace_back(
         c10::static_intrusive_pointer_cast<c10::RRefInterface>(rrefPtr));
   } else {
-    TORCH_CHECK(false, rpc_op, "() is not supported in TorchScript!'");
+    throw std::runtime_error(
+        c10::str(rpc_op, "() is not supported in TorchScript!'"));
   }
 }
 

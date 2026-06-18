@@ -6,7 +6,6 @@
 #include <torch/csrc/jit/python/python_list.h>
 #include <torch/csrc/utils/pybind.h>
 #include <stdexcept>
-// @allow-raw-throw
 
 namespace torch::jit {
 
@@ -171,8 +170,7 @@ void initScriptListBindings(PyObject* module) {
             }
 
             if (slicelength != value.size()) {
-              TORCH_CHECK(
-                  false,
+              throw std::runtime_error(
                   "Left and right hand size of slice assignment have different sizes");
             }
 

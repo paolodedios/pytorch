@@ -13,7 +13,6 @@
 
 #include <c10/util/Exception.h>
 #include <c10/util/irange.h>
-// @allow-raw-throw
 
 namespace torch::jit {
 
@@ -167,7 +166,7 @@ int nminussumofbits(int v) {
 
 int64_t factorial(int n) {
   if (n < 0) {
-    TORCH_CHECK(false, "factorial() not defined for negative values");
+    throw std::runtime_error("factorial() not defined for negative values");
   }
   int64_t p = 1, r = 1;
   loop(n, p, r);

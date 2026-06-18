@@ -19,7 +19,6 @@
 #ifdef FBCODE_CAFFE2
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
-// @allow-raw-throw
 #endif
 
 namespace torch::jit {

@@ -121,7 +121,6 @@
 #include <string>
 #include <tuple>
 #include <utility>
-// @allow-raw-throw
 
 namespace torch::jit {
 
@@ -702,13 +701,9 @@ void initJITBindings(PyObject* module) {
       .def("_jit_has_cpp_tests", []() { return true; })
       .def("_has_tensorexpr_cpp_tests", []() { return true; })
 #else
-      .def(
-          "_jit_run_cpp_tests",
-          []() { TORCH_CHECK(false, "JIT CPP tests not available"); })
+      .def("_jit_run_cpp_tests", []() { throw std::exception(); })
       .def("_jit_has_cpp_tests", []() { return false; })
-      .def(
-          "_run_tensorexpr_cpp_tests",
-          []() { TORCH_CHECK(false, "TensorExpr CPP tests not available"); })
+      .def("_run_tensorexpr_cpp_tests", []() { throw std::exception(); })
       .def("_has_tensorexpr_cpp_tests", []() { return false; })
 #endif
       .def(
@@ -1553,9 +1548,7 @@ void initJITBindings(PyObject* module) {
     THPObjectPtr getMemview(void* buf, size_t n) const {
       THPObjectPtr memview(PyMemoryView_FromMemory(
           reinterpret_cast<char*>(buf), n, PyBUF_WRITE));
-      if (!memview) {
-        throw python_error();
-      }
+      TORCH_CHECK_PYTHON(memview);
       return memview;
     }
 
@@ -1721,12 +1714,12 @@ void initJITBindings(PyObject* module) {
               return op->schema();
             }
           }
-          TORCH_CHECK(false, "Found no matching schema");
+          throw std::runtime_error("Found no matching schema");
         } catch (const c10::Error& e) {
           auto msg = torch::get_cpp_stacktraces_enabled()
               ? e.what()
               : e.what_without_backtrace();
-          TORCH_CHECK(false, msg);
+          throw std::runtime_error(msg);
         }
       });
 
@@ -1767,7 +1760,7 @@ void initJITBindings(PyObject* module) {
           auto msg = torch::get_cpp_stacktraces_enabled()
               ? e.what()
               : e.what_without_backtrace();
-          TORCH_CHECK(false, msg);
+          throw std::runtime_error(msg);
         }
       });
 
@@ -1800,7 +1793,7 @@ void initJITBindings(PyObject* module) {
           auto msg = torch::get_cpp_stacktraces_enabled()
               ? e.what()
               : e.what_without_backtrace();
-          TORCH_CHECK(false, msg);
+          throw std::runtime_error(msg);
         }
       });
 
@@ -1844,7 +1837,7 @@ void initJITBindings(PyObject* module) {
           auto msg = torch::get_cpp_stacktraces_enabled()
               ? e.what()
               : e.what_without_backtrace();
-          TORCH_CHECK(false, msg);
+          throw std::runtime_error(msg);
         }
       },
       py::arg("qualified_name"));
@@ -1906,7 +1899,7 @@ void initJITBindings(PyObject* module) {
     std::ostringstream s;
     auto type = unifyTypeList(types, s);
     if (!type) {
-      TORCH_CHECK(false, std::move(s).str());
+      throw std::runtime_error(std::move(s).str());
     }
     return type.value();
   });
@@ -2388,7 +2381,7 @@ void initJITBindings(PyObject* module) {
       auto _stdout = py::module::import("sys").attr("stdout");
       _stdout.attr("write")(str);
     } catch (py::error_already_set& e) {
-      TORCH_CHECK(false, e.what());
+      throw std::runtime_error(e.what());
     }
   });
 

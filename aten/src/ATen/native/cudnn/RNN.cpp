@@ -26,7 +26,6 @@
 #include <ATen/ops/empty.h>
 #include <ATen/ops/zeros.h>
 #include <ATen/ops/zeros_like.h>
-// @allow-raw-throw
 #endif
 
 #if !AT_CUDNN_ENABLED()

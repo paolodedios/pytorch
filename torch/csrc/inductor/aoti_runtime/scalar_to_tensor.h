@@ -2,7 +2,6 @@
 
 #include <c10/util/complex.h>
 #include <torch/csrc/inductor/aoti_runtime/utils.h>
-// @allow-raw-throw
 
 namespace torch::aot_inductor {
 

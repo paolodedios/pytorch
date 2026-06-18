@@ -13,7 +13,6 @@
 #include <string>
 #include <tuple>
 #include <vector>
-// @allow-raw-throw
 
 namespace torch::jit {
 

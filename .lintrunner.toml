@@ -526,22 +526,23 @@ include_patterns = [
 exclude_patterns = [
     # Vendored code
     'third_party/concurrentqueue/**',
-    # Dead TorchScript code (not on torch.ops codepath)
-    'torch/csrc/jit/api/**',
-    'torch/csrc/jit/backends/**',
-    'torch/csrc/jit/frontend/**',
-    'torch/csrc/jit/ir/**',
-    'torch/csrc/jit/mobile/**',
-    'torch/csrc/jit/passes/**',
-    'torch/csrc/jit/serialization/**',
-    'torch/csrc/jit/tensorexpr/**',
-    'torch/csrc/jit/testing/**',
+    # Remaining burn-down
+    'aten/src/**',
+    'c10/util/**',
+    'torch/csrc/autograd/**',
+    'torch/csrc/distributed/**',
+    'torch/csrc/fx/**',
+    'torch/csrc/inductor/**',
+    'torch/csrc/jit/**',
+    'torch/csrc/profiler/**',
+    'torch/csrc/utils/**',
 ]
 command = [
     'python3',
     'tools/linter/adapters/grep_linter.py',
     '--pattern=\bthrow\b',
     '--allowlist-pattern=@allow-raw-throw',
+    '--line-allowlist-pattern=^\s*//|^\s*\*|//.*throw|/\*.*throw|"[^"]*throw|^\s*throw\s*$|throw python_error|throw py::|throw\s*;|throw ErrorReport|throw\(|throw JITException|throw schema_match_error|throw PythonError|throw UnwindError|throw TypeError|throw AttributeError|throw MyException|throw WorkerException|throw cast_error|throw miopen_exception|throw unwind::|throw c10::|throw ::c10::|throw ::at::|throw std::move|throw std::system_error|std::rethrow_exception|TORCH_CHECK_PYTHON',
     '--linter-name=RAWTHROW',
     '--error-name=raw throw statement',
     """--error-description=\

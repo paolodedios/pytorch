@@ -296,7 +296,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
         auto step = p_node->Input(2).toInt();
         // error handling when step_val == 0 during runtime
         if (step == 0) {
-          TORCH_CHECK(false, "range() arg 3 must not be zero");
+          throw std::runtime_error("range() arg 3 must not be zero");
         }
         if (step > 0 && lo < hi) {
           p_node->Output(0) = 1 + (hi - 1 - lo) / step;
@@ -1251,7 +1251,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
         if (norm_idx < 0 || norm_idx >= num_elems) {
           // Use std::runtime_error instead of c10::Error to be consistent with
           // JIT
-          TORCH_CHECK_INDEX(false, "Tuple index out of range");
+          throw std::out_of_range("Tuple index out of range");
         }
         pnode->Output(0) = elems[norm_idx];
       };
@@ -1266,7 +1266,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       return [](ProcessedNode* pnode) {
         const auto& message = pnode->Input(0).toStringRef();
-        TORCH_CHECK(false, message);
+        throw std::runtime_error(message);
       };
     })
 
@@ -1482,14 +1482,14 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
         // JIT does a check for requires_grad, but we skip it here since SR is
         // inference only
         if (!tensor.sizes().empty()) {
-          TORCH_CHECK(
-              false, "Cannot convert a tensor of dimension > 0 to scalar");
+          throw std::runtime_error(
+              "Cannot convert a tensor of dimension > 0 to scalar");
         }
         if (!isIntegralType(tensor.scalar_type(), /*includeBool=*/false)) {
           std::stringstream ss;
           ss << "Cannot input a tensor of type " << tensor.scalar_type()
              << " as an integral argument";
-          TORCH_CHECK(false, std::move(ss).str());
+          throw std::runtime_error(std::move(ss).str());
         }
         pnode->Output(0) = at::native::item(tensor).toInt();
       };

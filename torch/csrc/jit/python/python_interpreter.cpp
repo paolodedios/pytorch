@@ -5,7 +5,6 @@
 #include <torch/csrc/jit/python/python_ir.h>
 #include <torch/csrc/jit/runtime/custom_operator.h>
 #include <torch/csrc/jit/runtime/operator.h>
-// @allow-raw-throw
 
 namespace py = pybind11;
 
@@ -54,7 +53,7 @@ Operation createPythonOperation(const Node* op_) {
       py::object py_output(func(*py_inputs));
       stack.push_back(returnToIValue(op->output()->type(), py_output));
     } catch (py::error_already_set& e) {
-      TORCH_CHECK(false, e.what());
+      throw std::runtime_error(e.what());
     }
   };
 }

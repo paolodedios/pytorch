@@ -73,7 +73,7 @@ void checkImplicitTensorToNum(const at::Tensor& t, bool toInt);
 
 [[maybe_unused]] static int64_t floordiv(int64_t a, int64_t b) {
   if (b == 0) {
-    TORCH_CHECK(false, "division by 0");
+    throw std::runtime_error("division by 0");
   }
   if ((a > 0) == (b > 0)) {
     // simple case, both have same sign
@@ -125,7 +125,7 @@ auto getItem(const c10::List<T>& list, int64_t idx) {
   const int64_t list_size = list.size();
   const int64_t normalized_idx = normalizeIndex(idx, list_size);
   if (normalized_idx < 0 || normalized_idx >= list_size) {
-    TORCH_CHECK_INDEX(false, "list index out of range");
+    throw std::out_of_range("list index out of range");
   }
   return list.get(normalized_idx);
 }
@@ -135,7 +135,7 @@ void setItem(const c10::List<T>& list, int64_t idx, T&& value) {
   const int64_t list_size = list.size();
   const int64_t normalized_idx = normalizeIndex(idx, list_size);
   if (normalized_idx < 0 || normalized_idx >= list_size) {
-    TORCH_CHECK_INDEX(false, "list index out of range");
+    throw std::out_of_range("list index out of range");
   }
   list.set(normalized_idx, std::forward<T>(value));
 }
@@ -207,7 +207,7 @@ void listMin(Stack& stack) {
   c10::List<T> list = pop(stack).to<c10::List<T>>();
   size_t list_size = list.size();
   if (list_size == 0) {
-    TORCH_CHECK(false, "min() arg is an empty sequence");
+    throw std::runtime_error("min() arg is an empty sequence");
   }
 
   T min_elem = list[0];
@@ -224,7 +224,7 @@ void listMax(Stack& stack) {
   c10::List<T> list = pop(stack).to<c10::List<T>>();
   size_t list_size = list.size();
   if (list_size == 0) {
-    TORCH_CHECK(false, "max() arg is an empty sequence");
+    throw std::runtime_error("max() arg is an empty sequence");
   }
 
   T max_elem = list[0];

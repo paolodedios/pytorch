@@ -12,7 +12,6 @@
 #else
 #include <ATen/ops/_propagate_xla_data.h>
 #include <ATen/ops/_to_copy.h>
-// @allow-raw-throw
 #endif
 
 namespace at {

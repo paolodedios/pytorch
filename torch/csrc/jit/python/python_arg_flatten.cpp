@@ -4,7 +4,6 @@
 #include <torch/csrc/utils/structseq.h>
 
 #include <torch/csrc/autograd/grad_mode.h>
-// @allow-raw-throw
 
 namespace torch::jit::python {
 
@@ -94,7 +93,7 @@ void flatten_rec(PyObject* obj, ParsedArgs& args) {
         "Dictionaries and strings are also accepted, but their usage is not "
         "recommended. Here, received an input of unsupported type: ";
     msg += THPUtils_typename(obj);
-    TORCH_CHECK(false, msg);
+    throw std::runtime_error(msg);
   }
 }
 
@@ -168,7 +167,7 @@ py::object unflatten_rec(
     return cast_dict(objs);
   } else if (type == D::String) {
     if (str_it == str_it_end)
-      TORCH_CHECK(false, "Not enough Variables given to unflatten");
+      throw std::runtime_error("Not enough Variables given to unflatten");
     auto str = *str_it++;
     return py::reinterpret_borrow<py::object>(THPUtils_packString(str));
   } else if (type == D::NoneType) {
@@ -178,7 +177,7 @@ py::object unflatten_rec(
     // D::Variable) unwrap variables (D::Variable), or unwrap primitive types
     // (Long, Double, Bool) as variables for tracer.
     if (var_it == var_it_end)
-      TORCH_CHECK(false, "Not enough Variables given to unflatten");
+      throw std::runtime_error("Not enough Variables given to unflatten");
     auto var = *var_it++;
     return py::reinterpret_steal<py::object>(THPVariable_Wrap(var));
   }
@@ -196,7 +195,7 @@ PyObject* unflatten(ArrayRef<Variable> vars, const IODescriptor& desc) {
   std::vector<std::string>::const_iterator str_end = desc.strings.end();
   auto output = unflatten_rec(vars_it, vars_it_end, desc_it, str_it, str_end);
   if (vars_it != vars_it_end)
-    TORCH_CHECK(false, "Too many Variables given to unflatten");
+    throw std::runtime_error("Too many Variables given to unflatten");
   return output.release().ptr();
 }
 

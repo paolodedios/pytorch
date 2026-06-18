@@ -5,7 +5,6 @@
 #include <mutex>
 #include <thread>
 #include <vector>
-// @allow-raw-throw
 
 namespace c10d {
 

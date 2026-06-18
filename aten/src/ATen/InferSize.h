@@ -8,7 +8,6 @@
 #include <optional>
 #include <sstream>
 #include <vector>
-// @allow-raw-throw
 
 namespace at {
 

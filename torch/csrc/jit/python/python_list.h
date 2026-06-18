@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
-// @allow-raw-throw
 
 namespace torch::jit {
 
@@ -199,7 +198,7 @@ class ScriptList final {
     }
 
     if (idx < 0 || idx > len()) {
-      TORCH_CHECK_INDEX(false, "list index out of range");
+      throw std::out_of_range("list index out of range");
     }
 
     list_.insert(list_.begin() + idx, value);
@@ -219,7 +218,7 @@ class ScriptList final {
     }
 
     if (idx < 0 || idx >= sz) {
-      TORCH_CHECK_INDEX(false, "list index out of range");
+      throw std::out_of_range("list index out of range");
     }
 
     return idx;

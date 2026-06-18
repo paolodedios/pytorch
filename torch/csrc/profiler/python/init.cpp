@@ -13,7 +13,6 @@
 #include <torch/csrc/profiler/python/combined_traceback.h>
 #include <torch/csrc/profiler/standalone/execution_trace_observer.h>
 #include <torch/csrc/utils/pybind.h>
-// @allow-raw-throw
 
 // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
 struct THPCapturedTraceback {

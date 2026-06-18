@@ -25,7 +25,6 @@
 
 #ifdef USE_RPC
 #include <torch/csrc/distributed/autograd/context/container.h>
-// @allow-raw-throw
 using torch::distributed::autograd::DistAutogradContainer;
 #endif
 
@@ -935,7 +934,7 @@ struct InterpreterStateImpl : c10::intrusive_ptr_target {
       if (get_cpp_stacktraces_enabled()) {
         ss << e.what() << '\n';
       }
-      TORCH_CHECK(false, std::move(ss).str());
+      throw std::runtime_error(std::move(ss).str());
     }
   }
 

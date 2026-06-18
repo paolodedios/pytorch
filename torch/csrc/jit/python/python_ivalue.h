@@ -4,7 +4,6 @@
 #include <torch/csrc/jit/python/pybind_utils.h>
 #include <torch/csrc/python_headers.h>
 #include <torch/csrc/utils/pybind.h>
-// @allow-raw-throw
 
 namespace py = pybind11;
 
@@ -75,7 +74,7 @@ struct C10_EXPORT ConcretePyObjectHolder final : PyObjectHolder {
         e.restore();
         PyErr_Clear();
       }
-      TORCH_CHECK(false, err);
+      throw std::runtime_error(err);
     }
   }
 

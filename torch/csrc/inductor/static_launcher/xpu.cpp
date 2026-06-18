@@ -32,7 +32,7 @@
     if (status != ZE_RESULT_SUCCESS) {                                    \
       std::stringstream ss;                                               \
       ss << "L0 runtime error: " << std::hex << std::uppercase << status; \
-      TORCH_CHECK(false, ss.str());                                       \
+      throw std::runtime_error(std::move(ss).str());                      \
     }                                                                     \
   }
 

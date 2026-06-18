@@ -39,7 +39,6 @@
 #include <string>
 #include <utility>
 #include <vector>
-// @allow-raw-throw
 
 // The visibility attribute is to avoid a warning about storing a field in the
 // struct that has a different visibility (from pybind) than the struct.
@@ -187,7 +186,7 @@ struct VISIBILITY_HIDDEN PythonFutureWrapper
               PyErr_Clear();
             }
 
-            TORCH_CHECK(false, err.what());
+            throw std::runtime_error(err);
           }
         },
         PyObjectType::get()));
@@ -847,8 +846,7 @@ inline IValue returnToIValue(const TypePtr& type, py::handle object) {
   try {
     return toIValue(object, type);
   } catch (const py::cast_error& error) {
-    TORCH_CHECK(
-        false,
+    throw std::runtime_error(c10::str(
         " expected value of type ",
         type->str(),
         " for return value but instead got value of type ",
@@ -857,7 +855,7 @@ inline IValue returnToIValue(const TypePtr& type, py::handle object) {
         "\nValue: ",
         py::repr(object),
         "\nCast error details: ",
-        error.what());
+        error.what()));
   }
 }
 
@@ -870,7 +868,7 @@ inline py::object getScriptedClassOrError(const c10::NamedTypePtr& classType) {
     err << "Unknown reference to ScriptClass ";
     err << classType->name()->qualifiedName();
     err << ". (Did you forget to import it?)";
-    TORCH_CHECK(false, std::move(err).str());
+    throw std::runtime_error(std::move(err).str());
   }
   return py_class;
 }
