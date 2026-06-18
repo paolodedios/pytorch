@@ -111,25 +111,29 @@ def _contains_tensor_variable(value: Any) -> bool:
     return result
 
 
-def _raise_if_displacing_tensor_from_existing_list(
+def _raise_if_replacing_tensor_in_existing_list(
     tx: "InstructionTranslatorBase",
     mutation_type: MutationType | None,
-    value: Any,
+    old_value: Any,
+    new_value: Any,
 ) -> None:
     if tx.export or tx.is_tracing_resume_prologue:
         return
-    if isinstance(mutation_type, ValueMutationExisting) and _contains_tensor_variable(
-        value
+    if (
+        isinstance(mutation_type, ValueMutationExisting)
+        and _contains_tensor_variable(old_value)
+        and _contains_tensor_variable(new_value)
     ):
         unimplemented(
-            gb_type="Tensor displacement from existing Python list",
-            context="replacing or removing a tensor from a pre-existing list",
+            gb_type="Tensor replacement in existing Python list",
+            context="replacing a tensor in a pre-existing list with another tensor",
             explanation=(
                 "Dynamo replays existing Python list mutations after a compiled "
-                "graph returns. When an assignment or deletion displaces a tensor "
-                "from a pre-existing list slot, replay can keep the old tensor "
-                "entry alive longer than eager execution and increase peak memory, "
-                "so Dynamo graph breaks before the mutation."
+                "graph returns. When an assignment replaces a tensor in a "
+                "pre-existing list slot with another tensor, replay can keep the "
+                "old and new tensors alive together longer than eager execution "
+                "and increase peak memory, so Dynamo graph breaks before the "
+                "mutation."
             ),
             hints=[*graph_break_hints.SUPPORTABLE],
         )
@@ -944,16 +948,6 @@ class RangeVariable(BaseListVariable):
         # CPython range_hash: https://github.com/python/cpython/blob/e76aa128fe/Objects/rangeobject.c#L572
         return hash(self.as_python_constant()), False
 
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, variables.RangeVariable):
-            return False
-
-        return (
-            self.start() == other.start()
-            and self.step() == other.step()
-            and self.stop() == other.stop()
-        )
-
 
 class CommonListMethodsVariable(BaseListVariable):
     """
@@ -1054,9 +1048,6 @@ class CommonListMethodsVariable(BaseListVariable):
                     idx += len(self.items)
             else:
                 idx = len(self.items) - 1
-            _raise_if_displacing_tensor_from_existing_list(
-                tx, self.mutation_type, self.items[idx]
-            )
             tx.output.side_effects.mutation(self)
             return self.items.pop(idx)
         elif name == "clear" and self.is_mutable():
@@ -1067,9 +1058,6 @@ class CommonListMethodsVariable(BaseListVariable):
                     "0 args and 0 kwargs",
                     f"{len(args)} args and {len(kwargs)} kwargs",
                 )
-            _raise_if_displacing_tensor_from_existing_list(
-                tx, self.mutation_type, self.items
-            )
             tx.output.side_effects.mutation(self)
             self.items.clear()
             return ConstantVariable.create(None)
@@ -1180,10 +1168,6 @@ class ListVariable(CommonListMethodsVariable):
             new_items = self.items * n
         except (MemoryError, OverflowError) as e:
             raise_observed_exception(type(e), tx, args=list(e.args))
-        if n <= 0:
-            _raise_if_displacing_tensor_from_existing_list(
-                tx, self.mutation_type, self.items
-            )
         tx.output.side_effects.mutation(self)
         self.items[:] = new_items
         return self
@@ -1278,18 +1262,12 @@ class ListVariable(CommonListMethodsVariable):
             if kwargs:
                 raise_args_mismatch(tx, name, "0 kwargs", f"{len(kwargs)} kwargs")
             if len(args) == 0:
-                _raise_if_displacing_tensor_from_existing_list(
-                    tx, self.mutation_type, self.items
-                )
                 tx.output.side_effects.mutation(self)
                 self.items.clear()
                 return ConstantVariable.create(None)
             elif len(args) == 1:
                 (arg,) = args
                 new_items = unpack_iterable(tx, arg)
-                _raise_if_displacing_tensor_from_existing_list(
-                    tx, self.mutation_type, self.items
-                )
                 tx.output.side_effects.mutation(self)
                 self.items[:] = new_items
                 return ConstantVariable.create(None)
@@ -1330,9 +1308,10 @@ class ListVariable(CommonListMethodsVariable):
             raise_observed_exception(
                 IndexError, tx, args=["list assignment index out of range"]
             )
-        _raise_if_displacing_tensor_from_existing_list(
-            tx, self.mutation_type, self.items[idx]
-        )
+        if value is not None:
+            _raise_if_replacing_tensor_in_existing_list(
+                tx, self.mutation_type, self.items[idx], value
+            )
         try:
             if value is None:
                 self.items.__delitem__(idx)
@@ -1368,9 +1347,6 @@ class ListVariable(CommonListMethodsVariable):
                 )
             if value is None:
                 # delete slice
-                _raise_if_displacing_tensor_from_existing_list(
-                    tx, self.mutation_type, self.items[key_as_const]
-                )
                 try:
                     self.items.__delitem__(key_as_const)
                 except ValueError as exc:
@@ -1398,8 +1374,8 @@ class ListVariable(CommonListMethodsVariable):
                         tx,
                         args=list(exc.args),
                     )
-                _raise_if_displacing_tensor_from_existing_list(
-                    tx, self.mutation_type, old_items
+                _raise_if_replacing_tensor_in_existing_list(
+                    tx, self.mutation_type, old_items, value_unpack
                 )
                 tx.output.side_effects.mutation(self)
         else:
@@ -1793,11 +1769,6 @@ class TupleVariable(BaseListVariable):
             is_fake = is_fake or fake
             raw_hashes.append(RawHash(h))
         return hash(tuple(raw_hashes)), is_fake
-
-    def is_python_equal(self, other: object) -> bool:
-        return isinstance(other, variables.TupleVariable) and all(
-            a.is_python_equal(b) for (a, b) in zip(self.items, other.items)
-        )
 
 
 class SizeVariable(TupleVariable):

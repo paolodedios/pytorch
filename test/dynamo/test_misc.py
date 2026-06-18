@@ -6762,7 +6762,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         self.assertEqual(cnts.frame_count, 2)
 
         with self.assertRaisesRegex(
-            Unsupported, "Tensor displacement from existing Python list"
+            Unsupported, "Tensor replacement in existing Python list"
         ):
             torch.compile(fn, backend="eager", fullgraph=True)(x, [torch.zeros(3)])
 
@@ -6785,7 +6785,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         self.assertEqual(cnts.frame_count, 2)
 
         with self.assertRaisesRegex(
-            Unsupported, "Tensor displacement from existing Python list"
+            Unsupported, "Tensor replacement in existing Python list"
         ):
             torch.compile(fn, backend="eager", fullgraph=True)(x, [torch.zeros(3)])
 
@@ -6840,10 +6840,10 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             str(ctx.exception),
         )
         self.assertNotIn(
-            "Tensor displacement from existing Python list", str(ctx.exception)
+            "Tensor replacement in existing Python list", str(ctx.exception)
         )
 
-    def test_existing_list_tensor_removal_graph_breaks(self):
+    def test_existing_list_tensor_removal_does_not_graph_break(self):
         def assign_none_fn(x, cache):
             cache[0] = None
             return x + 1
@@ -6898,12 +6898,19 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             inplace_repeat_negative_fn,
         ):
             with self.subTest(fn=fn.__name__):
-                with self.assertRaisesRegex(
-                    Unsupported, "Tensor displacement from existing Python list"
-                ):
-                    torch.compile(fn, backend="eager", fullgraph=True)(
-                        x, [torch.zeros(3)]
-                    )
+                eager_cache = [torch.zeros(3)]
+                expected = fn(x, eager_cache)
+
+                compiled_cache = [torch.zeros(3)]
+                cnts = torch._dynamo.testing.CompileCounter()
+                opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
+                actual = opt_fn(x, compiled_cache)
+
+                self.assertTrue(same(actual, expected))
+                self.assertEqual(len(compiled_cache), len(eager_cache))
+                for compiled_item, eager_item in zip(compiled_cache, eager_cache):
+                    self.assertTrue(same(compiled_item, eager_item))
+                self.assertEqual(cnts.frame_count, 1)
 
     @unittest.skipIf(not TEST_CUDA, "cuda needed")
     def test_existing_list_tensor_setitem_peak_memory(self):
