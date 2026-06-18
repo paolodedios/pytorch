@@ -31,7 +31,7 @@ from torch._higher_order_ops.associative_scan import associative_scan_op
 from torch._higher_order_ops.flex_gemm import (
     _SUPPORTED_FLEX_GEMM_OP_NAMES,
     flex_gemm_hop,
-    FLEX_GEMM_OP_INPUT_INDICES,
+    FLEX_GEMM_OP_SPECS,
 )
 from torch._higher_order_ops.triton_kernel_wrap import triton_kernel_wrapper_mutation
 from torch._library.fake_class_registry import FakeScriptObject
@@ -7243,8 +7243,10 @@ def use_two_step_variance(x, axis, keepdim, input_dtype):
     # Welford does more work per element. Preserve the old tiny-reduction
     # two-step path, keep Welford for the rest of the small reductions where
     # the speedup is limited and training gradients are more sensitive to the
-    # different accumulation order, and keep Welford for larger or split
-    # reductions where avoiding another full pass over the data is profitable.
+    # different accumulation order. It is also faster for L2-sized CUDA inputs,
+    # where the second pass usually reloads from L2 instead of DRAM. Keep
+    # Welford for split reductions where avoiding another full pass over the
+    # data is profitable.
     axis = _validate_reduction_axis(x, axis)
     kwargs = _make_reduction_inner(
         x, axis=axis, keepdims=keepdim, dtype=None, override_return_dtype=None
@@ -7253,32 +7255,56 @@ def use_two_step_variance(x, axis, keepdim, input_dtype):
     ranges = kwargs["ranges"]
     reduction_numel = sympy_product(kwargs["reduction_ranges"])
     device = x.get_device()
-    check_for_split = False
-    min_numel = 0
-    is_cuda_two_step_dtype = input_dtype in (torch.bfloat16, torch.float16)
+    has_multiple_outputs = sympy_product(ranges) != 1
+    if not (isinstance(reduction_numel, sympy.Integer) and has_multiple_outputs):
+        return False
+
+    reduction_numel = int(reduction_numel)
     if device and device.type == "cpu":
         # 1024 is a default value to pass all the UTs about accuracy.
         # A larger threshold can still get performance benefits.
         threshold = config.cpp.use_two_step_variance_threshold
-    elif device and device.type == "cuda" and is_triton(x) and is_cuda_two_step_dtype:
-        min_numel = config.triton.use_two_step_variance_min_numel
-        threshold = config.triton.use_two_step_variance_threshold
-        check_for_split = True
-    else:
-        threshold = config.unroll_reductions_threshold
+        return reduction_numel <= threshold
 
-    if not isinstance(reduction_numel, sympy.Integer):
-        return False
-
-    reduction_numel = int(reduction_numel)
-    if reduction_numel > threshold or sympy_product(ranges) == 1:
-        return False
-
-    if min_numel and config.unroll_reductions_threshold < reduction_numel < min_numel:
-        return False
-
-    if not check_for_split:
+    if reduction_numel <= config.unroll_reductions_threshold:
         return True
+
+    if not (device and device.type == "cuda" and is_triton(x)):
+        return False
+
+    is_cuda_two_step_dtype = input_dtype in (torch.bfloat16, torch.float16)
+    threshold = config.triton.use_two_step_variance_threshold
+    min_numel = config.triton.use_two_step_variance_min_numel
+    small_lowp_reduction = (
+        is_cuda_two_step_dtype
+        and config.unroll_reductions_threshold < reduction_numel < min_numel
+    )
+    use_two_step_cuda_threshold = (
+        is_cuda_two_step_dtype
+        and reduction_numel <= threshold
+        and not small_lowp_reduction
+    )
+
+    use_two_step_l2 = False
+    if (
+        config.triton.two_pass_variance_l2_fraction
+        and not small_lowp_reduction
+        and torch.version.hip is None
+    ):
+        input_numel = x.get_numel()
+        if isinstance(input_numel, sympy.Integer):
+            device_idx = (
+                device.index
+                if device.index is not None
+                else torch.cuda.current_device()
+            )
+            input_dtype = input_dtype or x.get_dtype()
+            l2_cache_size = torch.cuda.get_device_properties(device_idx).L2_cache_size
+            l2_threshold = l2_cache_size * config.triton.two_pass_variance_l2_fraction
+            use_two_step_l2 = int(input_numel) * input_dtype.itemsize <= l2_threshold
+
+    if not (use_two_step_cuda_threshold or use_two_step_l2):
+        return False
 
     _, split = ir.Reduction.num_splits(
         reduction_numel=reduction_numel,
@@ -8777,7 +8803,6 @@ def triton_kernel_wrap_(
     grid,
     tma_descriptor_metadata,
     kwargs,
-    launch_kwargs,
 ):
     from torch._higher_order_ops.triton_kernel_wrap import kernel_side_table
 
@@ -8787,7 +8812,6 @@ def triton_kernel_wrap_(
         grid=grid,
         tma_descriptor_metadata=tma_descriptor_metadata,
         kernel_args={**kwargs, **constant_args},
-        launch_kwargs=launch_kwargs,
     )
     return {key: val for key, val in kwargs.items() if isinstance(val, TensorBox)}
 
@@ -8885,15 +8909,11 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
     """Lower FlexGEMM to the regular subgraph path or the QUACK template."""
     if kernel_options.get("backend", "TRITON") != "QUACK":
         return process_subgraph_nodes(subgraph.graph_module, list(args))
-    if gemm_op not in FLEX_GEMM_OP_INPUT_INDICES:
+    if gemm_op not in FLEX_GEMM_OP_SPECS:
         raise NotImplementedError(
             f"FlexGEMM QUACK backend currently supports only aten.{_SUPPORTED_FLEX_GEMM_OP_NAMES}"
         )
     tuned = kernel_options.get("tuned", False)
-    if tuned:
-        raise NotImplementedError(
-            "FlexGEMM generated epilogues do not support tuned=True yet"
-        )
     unsupported_options = OrderedSet(kernel_options) - OrderedSet(["backend", "tuned"])
     if unsupported_options:
         raise NotImplementedError(
@@ -8905,10 +8925,14 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
         materialize_flex_gemm_epilogue,
         output_node as flex_gemm_output_node,
     )
-    from torch._inductor.kernel.flex_gemm.template import flex_gemm_epilogue_template
+    from torch._inductor.kernel.flex_gemm.template import (
+        flex_gemm_epilogue_template,
+        FlexGemmEpilogueConfig,
+    )
     from torch._inductor.select_algorithm import autotune_select_algorithm
 
-    mat1_index, _ = FLEX_GEMM_OP_INPUT_INDICES[gemm_op]
+    op_spec = FLEX_GEMM_OP_SPECS[gemm_op]
+    mat1_index, mat2_index = op_spec.mat1_index, op_spec.mat2_index
     unsupported_gemm_kwargs = OrderedSet(gemm_kwargs) - OrderedSet(["alpha", "beta"])
     if unsupported_gemm_kwargs:
         raise NotImplementedError(
@@ -8944,23 +8968,46 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
         subgraph.graph_module, gemm_op
     )
     input_nodes = [ir.TemplateBuffer.realize_template_input(arg) for arg in gemm_args]
+    if tuned:
+        from torch._inductor.template_heuristics.flex_gemm import (
+            candidate_gemm_configs_for_device,
+            gemm_config_key,
+        )
+
+        quack_config_keys = tuple(
+            gemm_config_key(config)
+            for config in candidate_gemm_configs_for_device(layout.device)
+        )
+    else:
+        from torch._inductor.template_heuristics.flex_gemm import (
+            default_gemm_config_key,
+        )
+
+        quack_config_keys = (
+            default_gemm_config_key(
+                layout.device,
+                gemm_args[mat1_index].get_size()[0],
+                gemm_args[mat2_index].get_size()[1],
+            ),
+        )
     choices: list[Any] = []
-    error = flex_gemm_epilogue_template.maybe_append_choice(
-        choices,
-        input_nodes=input_nodes,
-        layout=layout,
-        config=ir.FlexGemmEpilogueConfig(
-            epilogue_name=epilogue_name,
-            epilogue_source=epilogue_source,
-            gemm_op=gemm_op.name().removeprefix("aten::"),
-            alpha=float(alpha),
-            beta=float(beta),
-            tuned=tuned,
-            out_dtype=output_meta.dtype,
-        ),
-    )
-    if error is not None:
-        raise error
+    for quack_config_key in quack_config_keys:
+        error = flex_gemm_epilogue_template.maybe_append_choice(
+            choices,
+            input_nodes=input_nodes,
+            layout=layout,
+            config=FlexGemmEpilogueConfig(
+                epilogue_name=epilogue_name,
+                epilogue_source=epilogue_source,
+                gemm_op=op_spec,
+                alpha=float(alpha),
+                beta=float(beta),
+                out_dtype=output_meta.dtype,
+                quack_config_key=quack_config_key,
+            ),
+        )
+        if error is not None:
+            raise error
     result, _ = autotune_select_algorithm(
         "flex_gemm_epilogue", choices, input_nodes, layout
     )
