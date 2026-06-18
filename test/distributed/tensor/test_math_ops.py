@@ -1614,8 +1614,8 @@ class DistMathOpsTest(DTensorTestBase):
         # Expected backward all-reduce counts per reduction mode:
         # - "sum": 0 (total_weight unused in backward)
         # - "none": 0 (total_weight unused in backward)
-        # - "mean": 1 (total_weight needed to normalize gradients)
-        expected_backward_allreduce = {"sum": 0, "none": 0, "mean": 1}
+        # - "mean": 0 (forward forces distribution of mean to Replicate)
+        expected_backward_allreduce = {"sum": 0, "none": 0, "mean": 0}
 
         for reduction, expected_allreduce_count in expected_backward_allreduce.items():
             x = torch.rand(8, channel_size, device=self.device_type, requires_grad=True)

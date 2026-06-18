@@ -400,10 +400,7 @@ FOREACH_LINEAR_REDUCTION_OP_MAP = {
     aten._foreach_max.default: "max",
 }
 
-LINEAR_REDUCTION_OP_TO_REDUCE_OP = {
-    **LINEAR_REDUCTION_OP_MAP,
-    **FOREACH_LINEAR_REDUCTION_OP_MAP,
-}
+FOREACH_LINEAR_REDUCTION_OPS = list(FOREACH_LINEAR_REDUCTION_OP_MAP)
 
 # all/any are NOT linear reductions: validation showed S(reduction_dim)->P(...)
 # produces incorrect results. They only support sharding on non-reduction dims.
@@ -434,6 +431,12 @@ LINEAR_REDUCTION_OPS = [
 
 
 @register_single_dim_strategy(
+    FOREACH_LINEAR_REDUCTION_OPS,
+    schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
+    allow_uneven_sharding=True,
+    allow_unbacked_sharding=False,
+)
+@register_single_dim_strategy(
     LINEAR_REDUCTION_OPS,
     schema_info=RuntimeSchemaInfo(1),
     allow_uneven_sharding=True,
@@ -454,7 +457,11 @@ def linear_reduction_single_dim_strategy(
         dims = _infer_reduction_dims(args_schema[1], ndim)
 
     keep_dim = len(args_schema) > 2 and bool(args_schema[2])
-    reduction_op = LINEAR_REDUCTION_OP_TO_REDUCE_OP[op]
+    reduction_op = (
+        FOREACH_LINEAR_REDUCTION_OP_MAP[op]
+        if op in FOREACH_LINEAR_REDUCTION_OP_MAP
+        else LINEAR_REDUCTION_OP_MAP[op]
+    )
     return _reduction_single_dim_strategy(
         args_schema,
         reduction_dims=dims,
@@ -462,14 +469,6 @@ def linear_reduction_single_dim_strategy(
         reduction_linear=True,
         reduction_op=reduction_op,
     )
-
-
-register_single_dim_strategy(
-    list(FOREACH_LINEAR_REDUCTION_OP_MAP.keys()),
-    schema_info=RuntimeSchemaInfo(1, needs_pytree=True),
-    allow_uneven_sharding=True,
-    allow_unbacked_sharding=False,
-)(linear_reduction_single_dim_strategy)
 
 
 def _is_spec_evenly_sharded_on_dim(spec: DTensorSpec, dim: int) -> bool:
@@ -1404,113 +1403,6 @@ def rms_norm_single_dim_strategy(
     return strategies
 
 
-def _norm_backward_single_dim_strategy(
-    op: torch._ops.OpOverload,
-    args_schema: tuple[Any, ...],
-    kwargs_schema: dict[str, Any],
-    rms_norm: bool = False,
-) -> list[list[Placement | _ShardingPlaceholder | None]]:
-    """Single-dim strategy for layer_norm / rms_norm backward.
-
-    layer_norm_backward: args = (grad_out, input, normalized_shape, mean, rstd, weight, bias, output_mask)
-                         outputs = (d_input, d_weight, d_bias)
-    rms_norm_backward:   args = (grad_out, input, normalized_shape, rstd, weight, output_mask)
-                         outputs = (d_input, d_weight)
-
-    For outer dim d:
-    - d_input: Shard(d) (same shape as input)
-    - d_weight: Partial("sum") (reduced over outer dims)
-    - d_bias: Partial("sum") (reduced over outer dims) [layer_norm only]
-    - grad_out, input: Shard(d)
-    - mean, rstd: Shard(d) (outer dims only)
-    - weight, bias: Replicate
-    """
-    if not rms_norm:
-        # grad_out, input, normalized_shape, mean, rstd, weight, bias, output_mask
-        grad_out_meta = args_schema[0]
-        input_meta = args_schema[1]  # input is arg 1
-        normalized_shape = args_schema[2]
-        mean_meta = args_schema[3]
-        rstd_meta = args_schema[4]
-        weight_meta = args_schema[5]
-        bias_meta = args_schema[6]
-        output_mask = args_schema[7]
-    else:
-        # grad_out, input, normalized_shape, rstd, weight, output_mask
-        grad_out_meta = args_schema[0]
-        input_meta = args_schema[1]
-        normalized_shape = args_schema[2]
-        rstd_meta = args_schema[3]
-        weight_meta = args_schema[4]
-        bias_meta = None
-        output_mask = args_schema[5]
-        mean_meta = None
-
-    if not isinstance(grad_out_meta, TensorMeta):
-        raise AssertionError(f"Expected TensorMeta, got {type(grad_out_meta)}")
-    if not isinstance(input_meta, TensorMeta):
-        raise AssertionError(f"Expected TensorMeta, got {type(input_meta)}")
-    if mean_meta is not None and not isinstance(mean_meta, TensorMeta):
-        raise AssertionError(f"Expected TensorMeta, got {type(mean_meta)}")
-    if not isinstance(rstd_meta, TensorMeta):
-        raise AssertionError(f"Expected TensorMeta, got {type(rstd_meta)}")
-    if weight_meta is not None and not isinstance(weight_meta, TensorMeta):
-        raise AssertionError(f"Expected TensorMeta, got {type(weight_meta)}")
-    if bias_meta is not None and not isinstance(bias_meta, TensorMeta):
-        raise AssertionError(f"Expected TensorMeta, got {type(bias_meta)}")
-    ndim = len(input_meta.shape)
-
-    if not isinstance(normalized_shape, (int, Sequence, torch.Size)):
-        raise AssertionError(
-            f"Expected int, Sequence, or torch.Size, got {type(normalized_shape)}"
-        )
-    normalized_size = normalize_to_torch_size(normalized_shape)
-    axis = ndim - len(normalized_size)
-    expected_mask_len = 2 if rms_norm else 3
-    if not isinstance(output_mask, list) or len(output_mask) != expected_mask_len:
-        raise AssertionError(
-            f"Expected output_mask to be list of length {expected_mask_len}, "
-            f"got {type(output_mask)}"
-        )
-    if weight_meta is None and output_mask[1] is not False:
-        raise AssertionError(
-            "output_mask[1] should not be `True` while weight argument is `None`."
-        )
-    if not rms_norm and bias_meta is None and output_mask[2] is not False:
-        raise AssertionError(
-            "output_mask[2] should not be `True` while bias argument is `None`."
-        )
-
-    strategies: list[list[Placement | _ShardingPlaceholder | None]] = []
-    for d in range(axis):
-        rule: list[Placement | _ShardingPlaceholder | None] = []
-
-        # Outputs: d_input shards on d, d_weight/d_bias are Partial("sum") or None
-        rule.append(_ShardingPlaceholder(d) if output_mask[0] else None)  # d_input
-        if output_mask[1]:
-            rule.append(Partial("sum"))  # d_weight
-        else:
-            rule.append(None)  # d_weight masked out
-        if not rms_norm:
-            if output_mask[2]:
-                rule.append(Partial("sum"))  # d_bias
-            else:
-                rule.append(None)  # d_bias masked out
-
-        rule.append(_ShardingPlaceholder(d))  # grad_out
-        rule.append(_ShardingPlaceholder(d))  # input
-        if not rms_norm:
-            rule.append(_ShardingPlaceholder(d))  # mean
-        rule.append(_ShardingPlaceholder(d))  # rstd
-        if weight_meta is not None:
-            rule.append(Replicate())  # weight
-        if not rms_norm and bias_meta is not None:
-            rule.append(Replicate())  # bias
-
-        strategies.append(rule)
-    return strategies
-
-
 @register_single_dim_strategy(
     [aten.native_layer_norm_backward.default],
     schema_info=RuntimeSchemaInfo(2),
@@ -1520,7 +1412,42 @@ def layer_norm_bwd_single_dim_strategy(
     args_schema: tuple[Any, ...],
     kwargs_schema: dict[str, Any],
 ) -> list[list[Placement | _ShardingPlaceholder | None]]:
-    return _norm_backward_single_dim_strategy(op, args_schema, kwargs_schema)
+    input_meta = args_schema[1]
+    normalized_shape = args_schema[2]
+    # mean = args_schema[3], rstd = args_schema[4]
+    weight_meta = args_schema[5]
+    bias_meta = args_schema[6]
+    output_mask = args_schema[7]
+    compute_d_input = output_mask[0]
+    compute_d_weight = weight_meta is not None and output_mask[1]
+    compute_d_bias = bias_meta is not None and output_mask[2]
+
+    axis = len(input_meta.shape) - len(normalize_to_torch_size(normalized_shape))
+
+    strategies: list[list[Placement | _ShardingPlaceholder | None]] = []
+    for dim in range(axis):
+        # Outputs: [d_input, d_weight, d_bias]. Masked-off outputs use None.
+        rule: list[Placement | _ShardingPlaceholder | None] = [
+            _ShardingPlaceholder(dim) if compute_d_input else None,
+            Partial("sum") if compute_d_weight else None,
+            Partial("sum") if compute_d_bias else None,
+        ]
+        # Inputs: [grad_out, input, mean, rstd, weight?, bias?]
+        rule.extend(
+            [
+                _ShardingPlaceholder(dim),  # grad_out
+                _ShardingPlaceholder(dim),  # input
+                _ShardingPlaceholder(dim),  # mean
+                _ShardingPlaceholder(dim),  # rstd
+            ]
+        )
+        if weight_meta is not None:
+            rule.append(Replicate())
+        if bias_meta is not None:
+            rule.append(Replicate())
+        strategies.append(rule)
+
+    return strategies
 
 
 @register_single_dim_strategy(
@@ -1532,11 +1459,32 @@ def rms_norm_bwd_single_dim_strategy(
     args_schema: tuple[Any, ...],
     kwargs_schema: dict[str, Any],
 ) -> list[list[Placement | _ShardingPlaceholder | None]]:
-    if len(args_schema) != 6:
-        raise AssertionError(f"Expected 6 args, got {len(args_schema)}")
-    return _norm_backward_single_dim_strategy(
-        op, args_schema, kwargs_schema, rms_norm=True
-    )
+    input_meta = args_schema[1]
+    normalized_shape = args_schema[2]
+    # rstd = args_schema[3]
+    weight_meta = args_schema[4]
+    output_mask = args_schema[5]
+    compute_d_input = output_mask[0]
+    compute_d_weight = weight_meta is not None and output_mask[1]
+
+    axis = len(input_meta.shape) - len(normalize_to_torch_size(normalized_shape))
+
+    strategies: list[list[Placement | _ShardingPlaceholder | None]] = []
+    for dim in range(axis):
+        # Outputs: [d_input, d_weight]. Masked-off outputs use None.
+        # Inputs: [grad_out, input, rstd, weight?]
+        rule: list[Placement | _ShardingPlaceholder | None] = [
+            _ShardingPlaceholder(dim) if compute_d_input else None,
+            Partial("sum") if compute_d_weight else None,
+            _ShardingPlaceholder(dim),  # grad_out
+            _ShardingPlaceholder(dim),  # input
+            _ShardingPlaceholder(dim),  # rstd
+        ]
+        if weight_meta is not None:
+            rule.append(Replicate())
+        strategies.append(rule)
+
+    return strategies
 
 
 @register_single_dim_strategy(
