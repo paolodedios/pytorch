@@ -8,7 +8,7 @@ from __future__ import annotations
 import itertools
 import logging
 import threading
-from typing import Any, cast, TYPE_CHECKING, TypeAlias, TypeVar
+from typing import Any, cast, TYPE_CHECKING, TypeAlias
 
 from torch import SymBool, SymInt
 
@@ -20,12 +20,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
     import torch.nn
-    from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
-    # Generic kwarg type so ``_resolve_dynamic_shapes`` returns the same
-    # narrower type the caller passes in (e.g. ``make_fx`` doesn't accept
-    # the legacy tuple form).
-    _DynamicShapesKwargT = TypeVar("_DynamicShapesKwargT")
+    from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
 
 __all__ = [
@@ -759,12 +755,7 @@ def _coerce_to_shapes_spec(
 _DYNAMIC_SPEC_ATTR = "_dynamo_spec"
 
 
-def dynamic_spec(
-    params_spec: Any = None,
-    *,
-    assumptions: Any = None,
-    **per_param: Any,
-) -> Any:
+def dynamic_spec(spec: Any) -> Any:
     """Attach a ``ShapesSpec`` to a function (or ``nn.Module.forward``).
 
     When :func:`torch.compile`, :func:`torch.export.export`, or
@@ -774,47 +765,39 @@ def dynamic_spec(
     also passes an explicit ``dynamic_shapes=`` kwarg, in which case the
     two-source ambiguity is rejected with ``ValueError``.
 
-    Two equivalent surface forms::
+    ``spec`` accepts the same types as the call-site
+    ``dynamic_shapes=`` a ``dict``, a ``ParamsSpec``, or a ``ShapesSpec``.
+    To attach assumptions, build a ``ShapesSpec(params=..., assumptions=[...])``
+    and pass it.
 
-        # 1) Full form -- pass a ShapesSpec or ParamsSpec (or a dict).
+    Usage::
+
+        # Simple per-param mapping (no assumptions):
+        @dynamic_spec({"x": TensorSpec([ShapeVar("B"), STATIC])})
+        def fn(x): ...
+
+        # With assumptions: build a ShapesSpec.
+        B = ShapeVar("B")
         @dynamic_spec(
-            params_spec=ParamsSpec({"x": TensorSpec([ShapeVar("B"), STATIC])}),
-            assumptions=[B > 0],
+            ShapesSpec(
+                ParamsSpec({"x": TensorSpec([B, STATIC])}),
+                assumptions=[B % 2 == 0],
+            )
         )
         def fn(x): ...
-
-
-        # 2) Per-parameter sugar -- kwargs are auto-wrapped into a
-        # ``ParamsSpec`` keyed by parameter name.
-        @dynamic_spec(x=TensorSpec([ShapeVar("B"), STATIC]), assumptions=[B > 0])
-        def fn(x): ...
-
-    The two forms are mutually exclusive: mixing ``params_spec=`` with
-    per-parameter kwargs raises ``ValueError``.
 
     Equivalent for an ``nn.Module``::
 
         class M(nn.Module):
-            @dynamic_spec(x=TensorSpec([ShapeVar("B"), STATIC]))
+            @dynamic_spec({"x": TensorSpec([ShapeVar("B"), STATIC])})
             def forward(self, x): ...
     """
-    if params_spec is not None and per_param:
-        raise ValueError(
-            "dynamic_spec(): pass either `params_spec=...` OR per-parameter "
-            "kwargs (e.g. `dynamic_spec(x=..., y=...)`), not both."
+    resolved = _coerce_to_shapes_spec(spec)
+    if resolved is None:
+        raise TypeError(
+            f"dynamic_spec(): `spec` must be a dict, ParamsSpec, or "
+            f"ShapesSpec, got {type(spec).__name__}."
         )
-
-    if params_spec is not None:
-        resolved = _coerce_to_shapes_spec(params_spec)
-        if resolved is None:
-            raise ValueError("dynamic_spec(): `params_spec` must not be None")
-        if assumptions:
-            resolved = ShapesSpec(
-                params=resolved._params,
-                assumptions=list(resolved._assumptions or []) + list(assumptions),
-            )
-    else:
-        resolved = ShapesSpec(ParamsSpec(per_param), assumptions=assumptions or None)
 
     def _decorator(fn: Any) -> Any:
         setattr(fn, _DYNAMIC_SPEC_ATTR, resolved)
@@ -825,8 +808,8 @@ def dynamic_spec(
 
 def _resolve_dynamic_shapes(
     fn_or_module: Callable[..., Any] | torch.nn.Module,
-    dynamic_shapes_kwarg: _DynamicShapesKwargT,
-) -> _DynamicShapesKwargT | ShapesSpec:
+    dynamic_shapes_kwarg: Any,
+) -> Any:
     """Resolve the effective dynamic-shapes spec for a call site.
 
     Reads ``@dynamic_spec(...)`` metadata from ``fn_or_module`` (for an

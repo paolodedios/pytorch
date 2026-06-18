@@ -557,11 +557,11 @@ class <lambda>(torch.nn.Module):
 
     # ---- @dynamic_spec(...) decorator (auto-attach) ----
 
-    def test_dynamic_spec_decorator_per_param_form(self):
-        """``@dynamic_spec(x=...)`` on a function is auto-applied by make_fx."""
+    def test_dynamic_spec_decorator_dict_form(self):
+        """``@dynamic_spec({"x": ...})`` on a function is auto-applied by make_fx."""
         from torch.fx.experimental.dynamic_spec import dynamic_spec
 
-        @dynamic_spec(x=T([VAR("B"), STATIC]))
+        @dynamic_spec({"x": T([VAR("B"), STATIC])})
         def fn(x):
             return x.sum(0)
 
@@ -570,8 +570,8 @@ class <lambda>(torch.nn.Module):
         self.assertIsInstance(val, torch.Tensor)
         self.assertEqual(len(free_unbacked_symbols(val.shape[0])), 1)
 
-    def test_dynamic_spec_decorator_full_form_with_assumptions(self):
-        """``@dynamic_spec(params_spec=..., assumptions=...)`` is auto-applied
+    def test_dynamic_spec_decorator_with_assumptions(self):
+        """``@dynamic_spec(ShapesSpec(params=..., assumptions=...))`` is auto-applied
         and the assumption is wired into the shape env: branching on the
         assumed relation resolves statically (no DDE) and the assertion
         appears in the traced graph."""
@@ -580,8 +580,10 @@ class <lambda>(torch.nn.Module):
         B = VAR("batch")
 
         @dynamic_spec(
-            params_spec=PARAMS({"x": T([B, STATIC])}),
-            assumptions=[B % 2 == 0],
+            ShapesSpec(
+                PARAMS({"x": T([B, STATIC])}),
+                assumptions=[B % 2 == 0],
+            )
         )
         def fn(x):
             # Branching on the assumption: without it, this would raise a DDE.
@@ -601,7 +603,7 @@ class <lambda>(torch.nn.Module):
         is ambiguous and must raise."""
         from torch.fx.experimental.dynamic_spec import dynamic_spec
 
-        @dynamic_spec(x=T([VAR("B"), STATIC]))
+        @dynamic_spec({"x": T([VAR("B"), STATIC])})
         def fn(x):
             return x.sum(0)
 

@@ -818,11 +818,11 @@ Range constraints: {u0: VR[0, int_oo]}""",
     # ---- @dynamic_spec(...) decorator (auto-attach) ----
 
     def test_spec_decorator_per_param_form(self):
-        """``@dynamic_spec(x=...)`` attached to ``forward`` is auto-applied."""
+        """``@dynamic_spec({"x": ...})`` attached to ``forward`` is auto-applied."""
         from torch.fx.experimental.dynamic_spec import dynamic_spec
 
         class M(torch.nn.Module):
-            @dynamic_spec(x=T([VAR("B"), STATIC]))
+            @dynamic_spec({"x": T([VAR("B"), STATIC])})
             def forward(self, x):
                 return x.sum(0)
 
@@ -832,7 +832,7 @@ Range constraints: {u0: VR[0, int_oo]}""",
         self.assertEqual(len(free_unbacked_symbols(shape[0])), 1)
 
     def test_spec_decorator_full_form_with_assumptions(self):
-        """``@dynamic_spec(params_spec=..., assumptions=...)`` form is auto-applied,
+        """``@dynamic_spec(ShapesSpec(params=..., assumptions=...))`` form is auto-applied,
         and the assumption is enforced as a runtime assertion."""
         from torch.fx.experimental.dynamic_spec import dynamic_spec
 
@@ -840,8 +840,10 @@ Range constraints: {u0: VR[0, int_oo]}""",
 
         class M(torch.nn.Module):
             @dynamic_spec(
-                params_spec=PARAMS({"x": T([B, STATIC])}),
-                assumptions=[B % 2 == 0],
+                ShapesSpec(
+                    PARAMS({"x": T([B, STATIC])}),
+                    assumptions=[B % 2 == 0],
+                )
             )
             def forward(self, x):
                 return x.sum(0)
@@ -861,7 +863,7 @@ Range constraints: {u0: VR[0, int_oo]}""",
         from torch.fx.experimental.dynamic_spec import dynamic_spec
 
         class M(torch.nn.Module):
-            @dynamic_spec(x=T([VAR("B"), STATIC]))
+            @dynamic_spec({"x": T([VAR("B"), STATIC])})
             def forward(self, x):
                 return x.sum(0)
 
