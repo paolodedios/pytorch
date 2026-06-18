@@ -1232,9 +1232,6 @@ class LocalGeneratorObjectVariable(VariableTracker):
             if exc:
                 self.throw_pending()
             return tracer.inline_call_()
-        except ObservedUserStopIteration:
-            tracer.output.untrack_generator(self)
-            raise
         except ObservedException:
             # An exception propagating out of the generator frame finishes it,
             # mirroring CPython setting gi_frame_state = FRAME_CLEARED.
