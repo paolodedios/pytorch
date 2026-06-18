@@ -120,7 +120,7 @@ class _TestExportDynamicSpecBase(TestCase):
         )
         shape = _first_tensor_placeholder_shape(ep.graph_module)
         self.assertIsInstance(shape[0], torch.SymInt)
-        self.assertGreater(len(free_unbacked_symbols(shape[0])), 0)
+        self.assertEqual(len(free_unbacked_symbols(shape[0])), 1)
         self.assertExpectedInline(
             str(ep).strip(),
             """\
@@ -829,7 +829,7 @@ Range constraints: {u0: VR[0, int_oo]}""",
         ep = export(M(), (torch.randn(8, 3),), strict=self.strict)
         shape = _first_tensor_placeholder_shape(ep.graph_module)
         self.assertIsInstance(shape[0], torch.SymInt)
-        self.assertGreater(len(free_unbacked_symbols(shape[0])), 0)
+        self.assertEqual(len(free_unbacked_symbols(shape[0])), 1)
 
     def test_spec_decorator_full_form_with_assumptions(self):
         """``@dynamic_spec(params_spec=..., assumptions=...)`` form is auto-applied,

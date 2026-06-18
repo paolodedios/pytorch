@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
     import torch.nn
-
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
     # Generic kwarg type so ``_resolve_dynamic_shapes`` returns the same
@@ -779,18 +778,15 @@ def dynamic_spec(
 
         # 1) Full form -- pass a ShapesSpec or ParamsSpec (or a dict).
         @dynamic_spec(
-            params_spec=ParamsSpec(
-                {"x": TensorSpec([ShapeVar("B"), STATIC])}
-            ),
+            params_spec=ParamsSpec({"x": TensorSpec([ShapeVar("B"), STATIC])}),
             assumptions=[B > 0],
         )
         def fn(x): ...
 
+
         # 2) Per-parameter sugar -- kwargs are auto-wrapped into a
         # ``ParamsSpec`` keyed by parameter name.
-        @dynamic_spec(
-            x=TensorSpec([ShapeVar("B"), STATIC]), assumptions=[B > 0]
-        )
+        @dynamic_spec(x=TensorSpec([ShapeVar("B"), STATIC]), assumptions=[B > 0])
         def fn(x): ...
 
     The two forms are mutually exclusive: mixing ``params_spec=`` with
@@ -818,9 +814,7 @@ def dynamic_spec(
                 assumptions=list(resolved._assumptions or []) + list(assumptions),
             )
     else:
-        resolved = ShapesSpec(
-            ParamsSpec(per_param), assumptions=assumptions or None
-        )
+        resolved = ShapesSpec(ParamsSpec(per_param), assumptions=assumptions or None)
 
     def _decorator(fn: Any) -> Any:
         setattr(fn, _DYNAMIC_SPEC_ATTR, resolved)
