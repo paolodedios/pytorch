@@ -815,6 +815,62 @@ Range constraints: {u0: VR[0, int_oo]}""",
         self.assertEqual(int(vr.lower), 10)
         self.assertEqual(int(vr.upper), 100)
 
+    # ---- @dynamic_spec(...) decorator (auto-attach) ----
+
+    def test_spec_decorator_per_param_form(self):
+        """``@dynamic_spec(x=...)`` attached to ``forward`` is auto-applied when
+        ``export()`` is called without ``dynamic_shapes=``."""
+        from torch.fx.experimental.dynamic_spec import dynamic_spec
+
+        class M(torch.nn.Module):
+            @dynamic_spec(x=T([VAR("B"), STATIC]))
+            def forward(self, x):
+                return x.sum(0)
+
+        ep = export(M(), (torch.randn(8, 3),), strict=self.strict)
+        shape = _first_tensor_placeholder_shape(ep.graph_module)
+        self.assertIsInstance(shape[0], torch.SymInt)
+        self.assertGreater(len(free_unbacked_symbols(shape[0])), 0)
+
+    def test_spec_decorator_full_form_with_assumptions(self):
+        """``@dynamic_spec(params_spec=..., assumptions=...)`` form is auto-applied."""
+        from torch.fx.experimental.dynamic_spec import dynamic_spec
+
+        B = VAR("batch")
+
+        class M(torch.nn.Module):
+            @dynamic_spec(
+                params_spec=PARAMS({"x": T([B, STATIC])}),
+                assumptions=[B % 2 == 0],
+            )
+            def forward(self, x):
+                return x.sum(0)
+
+        ep = export(M(), (torch.randn(8, 3),), strict=self.strict)
+        # The assumption fires as a runtime assert in the graph.
+        self.assertTrue(_has_assert_scalar(ep.graph_module))
+
+    def test_spec_decorator_and_explicit_dynamic_shapes_raises(self):
+        """Mixing ``@dynamic_spec(...)`` with an explicit ``dynamic_shapes=`` kwarg
+        is ambiguous and must raise."""
+        from torch.fx.experimental.dynamic_spec import dynamic_spec
+
+        class M(torch.nn.Module):
+            @dynamic_spec(x=T([VAR("B"), STATIC]))
+            def forward(self, x):
+                return x.sum(0)
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r"`@dynamic_spec\(\.\.\.\)` is attached.*AND a `dynamic_shapes=`",
+        ):
+            export(
+                M(),
+                (torch.randn(8, 3),),
+                dynamic_shapes=PARAMS({"x": T([VAR("B"), STATIC])}),
+                strict=self.strict,
+            )
+
     def test_export_to_torch_ir_shapes_spec_direct(self):
         # Strict-only internal-API test; skip in non-strict mode.
         if not self.strict:

@@ -7,15 +7,22 @@ from __future__ import annotations
 
 import itertools
 import threading
-from typing import Any, cast, TYPE_CHECKING, TypeAlias
+from typing import Any, cast, TYPE_CHECKING, TypeAlias, TypeVar
 
 from torch import SymBool, SymInt
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
+
+    import torch.nn
 
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+    # Generic kwarg type so ``_resolve_dynamic_shapes`` returns the same
+    # narrower type the caller passes in (e.g. ``make_fx`` doesn't accept
+    # the legacy tuple form).
+    _DynamicShapesKwargT = TypeVar("_DynamicShapesKwargT")
 
 
 __all__ = [
@@ -31,6 +38,7 @@ __all__ = [
     "LeafSpec",
     "LeafIntSpec",
     "IntermediateSpec",
+    "dynamic_spec",
 ]
 
 
@@ -741,3 +749,106 @@ def _coerce_to_shapes_spec(
         f"dynamic spec expects a dict, ShapesSpec, or ParamsSpec, "
         f"got {type(x).__name__}"
     )
+
+
+# Attribute used to store the resolved ``ShapesSpec`` on a decorated function
+# (or ``nn.Module.forward``). Read by ``_resolve_dynamic_shapes`` below.
+_SPEC_ATTR = "_dynamo_spec"
+
+
+def dynamic_spec(
+    params_spec: Any = None,
+    *,
+    assumptions: Any = None,
+    **per_param: Any,
+) -> Any:
+    """Attach a ``ShapesSpec`` to a function (or ``nn.Module.forward``).
+
+    When :func:`torch.compile`, :func:`torch.export.export`, or
+    :func:`torch.fx.experimental.proxy_tensor.make_fx` is invoked on a
+    function (or module) that carries this metadata, the attached
+    ``ShapesSpec`` is used as the dynamic-shape spec **unless** the caller
+    also passes an explicit ``dynamic_shapes=`` kwarg, in which case the
+    two-source ambiguity is rejected with ``ValueError``.
+
+    Two equivalent surface forms::
+
+        # 1) Full form -- pass a ShapesSpec or ParamsSpec (or a dict).
+        @dynamic_spec(
+            params_spec=ParamsSpec(
+                {"x": TensorSpec([ShapeVar("B"), STATIC])}
+            ),
+            assumptions=[B > 0],
+        )
+        def fn(x): ...
+
+        # 2) Per-parameter sugar -- kwargs are auto-wrapped into a
+        # ``ParamsSpec`` keyed by parameter name.
+        @dynamic_spec(
+            x=TensorSpec([ShapeVar("B"), STATIC]), assumptions=[B > 0]
+        )
+        def fn(x): ...
+
+    The two forms are mutually exclusive: mixing ``params_spec=`` with
+    per-parameter kwargs raises ``ValueError``.
+
+    Equivalent for an ``nn.Module``::
+
+        class M(nn.Module):
+            @dynamic_spec(x=TensorSpec([ShapeVar("B"), STATIC]))
+            def forward(self, x): ...
+    """
+    if params_spec is not None and per_param:
+        raise ValueError(
+            "dynamic_spec(): pass either `params_spec=...` OR per-parameter "
+            "kwargs (e.g. `dynamic_spec(x=..., y=...)`), not both."
+        )
+
+    if params_spec is not None:
+        resolved = _coerce_to_shapes_spec(params_spec)
+        if resolved is None:
+            raise ValueError("dynamic_spec(): `params_spec` must not be None")
+        if assumptions:
+            resolved = ShapesSpec(
+                params=resolved._params,
+                assumptions=list(resolved._assumptions or []) + list(assumptions),
+            )
+    else:
+        resolved = ShapesSpec(
+            ParamsSpec(per_param), assumptions=assumptions or None
+        )
+
+    def _decorator(fn: Any) -> Any:
+        setattr(fn, _SPEC_ATTR, resolved)
+        return fn
+
+    return _decorator
+
+
+def _resolve_dynamic_shapes(
+    fn_or_module: Callable[..., Any] | torch.nn.Module,
+    dynamic_shapes_kwarg: _DynamicShapesKwargT,
+) -> _DynamicShapesKwargT | ShapesSpec:
+    """Resolve the effective dynamic-shapes spec for a call site.
+
+    Reads ``@dynamic_spec(...)`` metadata from ``fn_or_module`` (for an
+    ``nn.Module``, the metadata is read from its bound ``forward`` method).
+    Raises ``ValueError`` if both the decorator and an explicit
+    ``dynamic_shapes_kwarg`` are present, since the precedence is ambiguous.
+    Returns ``dynamic_shapes_kwarg`` if the decorator is absent, else the
+    attached ``ShapesSpec``.
+    """
+    fn = fn_or_module
+    import torch.nn
+
+    if isinstance(fn_or_module, torch.nn.Module):
+        fn = fn_or_module.forward
+    attached = getattr(fn, _SPEC_ATTR, None)
+    if attached is None:
+        return dynamic_shapes_kwarg
+    if dynamic_shapes_kwarg is not None:
+        raise ValueError(
+            "Both `@dynamic_spec(...)` is attached to the function/forward "
+            "AND a `dynamic_shapes=` argument was passed. Provide only one."
+        )
+    return attached
