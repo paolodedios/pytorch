@@ -36,6 +36,145 @@ def _copy_placeholder_meta(
         placeholder.meta["val"] = attrgetter(input_node.target)(owning_module)
 
 
+def _getattr_or_none(module: fx.GraphModule, target: str) -> Any:
+    try:
+        return attrgetter(target)(module)
+    except AttributeError:
+        return None
+
+
+def _has_graph_module_arg(node: fx.Node) -> bool:
+    gm = node.graph.owning_module
+    if gm is None:
+        return False
+    return any(
+        inp.op == "get_attr"
+        and isinstance(inp.target, str)
+        and isinstance(_getattr_or_none(gm, inp.target), fx.GraphModule)
+        for inp in node.all_input_nodes
+    )
+
+
+def fuse_region_key(node: fx.Node) -> str | None:
+    if node.op in ("placeholder", "output", "get_attr"):
+        return None
+    if node.op == "call_function" and isinstance(
+        node.target, torch._ops.HigherOrderOperator
+    ):
+        return None
+    if _has_graph_module_arg(node):
+        return None
+
+    custom = node.meta.get("custom")
+    if not isinstance(custom, dict):
+        return None
+    region = _fuse_region_from_custom(custom)
+    if region is None:
+        return None
+    phase = "bwd" if node.meta.get("autograd_backward") is True else "fwd"
+    return f"{region}_{phase}"
+
+
+def _fuse_region_from_custom(custom: dict[str, Any]) -> str | None:
+    region = custom.get(FUSE_REGION)
+    if region is not None:
+        if not isinstance(region, str):
+            raise AssertionError(
+                f"expected custom {FUSE_REGION} to be a str, got {type(region)}"
+            )
+        return region
+
+    compile_with_inductor = custom.get("compile_with_inductor")
+    if isinstance(compile_with_inductor, dict):
+        region = compile_with_inductor.get(FUSE_REGION)
+        if region is not None:
+            if not isinstance(region, str):
+                raise AssertionError(
+                    f"expected custom compile_with_inductor {FUSE_REGION} "
+                    f"to be a str, got {type(region)}"
+                )
+            return region
+    return None
+
+
+def _strip_fuse_region_from_meta(meta: dict[str, Any]) -> None:
+    custom = meta.get("custom")
+    if not isinstance(custom, dict):
+        return
+
+    custom = custom.copy()
+    custom.pop(FUSE_REGION, None)
+    compile_with_inductor = custom.get("compile_with_inductor")
+    if isinstance(compile_with_inductor, dict):
+        compile_with_inductor = compile_with_inductor.copy()
+        compile_with_inductor.pop(FUSE_REGION, None)
+        custom["compile_with_inductor"] = compile_with_inductor
+
+    if custom:
+        meta["custom"] = custom
+    else:
+        meta.pop("custom", None)
+
+
+def collect_fuse_region_groups(graph: fx.Graph) -> list[tuple[str, list[fx.Node]]]:
+    groups: list[tuple[str, list[fx.Node]]] = []
+    current_key: str | None = None
+    current_nodes: list[fx.Node] = []
+
+    def flush() -> None:
+        nonlocal current_key, current_nodes
+        if current_key is not None and len(current_nodes) > 1:
+            groups.append((current_key, current_nodes))
+        current_key = None
+        current_nodes = []
+
+    for node in list(graph.nodes):
+        key = fuse_region_key(node)
+        if key is None:
+            flush()
+            continue
+        if key != current_key:
+            flush()
+            current_key = key
+        current_nodes.append(node)
+    flush()
+    return groups
+
+
+def fuse_region_annotations_cache_key(
+    gm: fx.GraphModule,
+) -> tuple[tuple[str, tuple[tuple[str, tuple[str, ...]], ...]], ...]:
+    entries = []
+    for module_name, module in gm.named_modules():
+        if not isinstance(module, fx.GraphModule):
+            continue
+        groups = collect_fuse_region_groups(module.graph)
+        if groups:
+            group_entries = tuple(
+                (key, tuple(node.name for node in nodes)) for key, nodes in groups
+            )
+            entries.append((module_name, group_entries))
+    return tuple(entries)
+
+
+def apply_fuse_region_annotations(graph: fx.Graph) -> None:
+    """
+    Outline contiguous FX nodes annotated with ``node.meta["custom"][FUSE_REGION]``.
+
+    ``torch.fx.traceback.annotate`` stores user metadata in ``node.meta["custom"]``.
+    This pass consumes string-valued ``FUSE_REGION`` annotations from that dict,
+    or from the nested ``compile_with_inductor`` annotation used by
+    regional_inductor callers, and turns each contiguous same-id run into one
+    invoke_subgraph fuse region.
+    """
+    groups = collect_fuse_region_groups(graph)
+    if not groups:
+        return
+    for key, nodes in groups:
+        mark_fuse_region(graph, nodes, fuse_region_id=key)
+    graph.lint()
+
+
 def mark_fuse_region(
     graph: fx.Graph,
     nodes: list[fx.Node],
@@ -224,6 +363,7 @@ def mark_fuse_region(
         replacement = region_node
         replacement.meta = region_outputs[0].meta.copy()
         replacement.meta.pop("eager_input_vals", None)
+        _strip_fuse_region_from_meta(replacement.meta)
         replacements.append(replacement)
     else:
         region_node.meta["val"] = tuple(node.meta.get("val") for node in region_outputs)
@@ -237,6 +377,7 @@ def mark_fuse_region(
                 )
             replacement.meta = output_node.meta.copy()
             replacement.meta.pop("eager_input_vals", None)
+            _strip_fuse_region_from_meta(replacement.meta)
             replacements.append(replacement)
             insert_after = replacement
 

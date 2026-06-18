@@ -13,6 +13,251 @@ from torch.testing._internal.inductor_utils import GPU_TYPE, requires_gpu
 
 
 class TestFuseRegions(InductorTestCase):
+    def test_apply_fuse_region_annotations_no_annotations_is_noop(self):
+        from torch._inductor.fx_passes.fuse_regions import apply_fuse_region_annotations
+
+        graph = Graph()
+        x = graph.placeholder("x")
+        sin = graph.call_function(torch.ops.aten.sin.default, (x,))
+        graph.output(sin)
+        gm = GraphModule(torch.nn.Module(), graph)
+        before_nodes = list(gm.graph.nodes)
+
+        apply_fuse_region_annotations(gm.graph)
+
+        self.assertEqual(list(gm.graph.nodes), before_nodes)
+
+    def test_apply_fuse_region_annotations_groups_contiguous_nodes(self):
+        from torch._inductor.fx_passes.fuse_regions import (
+            apply_fuse_region_annotations,
+            FUSE_REGION,
+        )
+
+        graph = Graph()
+        x = graph.placeholder("x")
+        add = graph.call_function(torch.ops.aten.add.Tensor, (x, 1))
+        relu = graph.call_function(torch.ops.aten.relu.default, (add,))
+        sin = graph.call_function(torch.ops.aten.sin.default, (relu,))
+        cos = graph.call_function(torch.ops.aten.cos.default, (sin,))
+        graph.output(cos)
+        gm = GraphModule(torch.nn.Module(), graph)
+
+        fake = torch.empty(4)
+        for node in (x, add, relu, sin, cos):
+            node.meta["val"] = fake
+        for node in (add, relu):
+            node.meta["custom"] = {FUSE_REGION: "region_a"}
+        for node in (sin, cos):
+            node.meta["custom"] = {FUSE_REGION: "region_b"}
+
+        apply_fuse_region_annotations(gm.graph)
+
+        region_nodes = [
+            node
+            for node in gm.graph.nodes
+            if node.op == "call_function"
+            and node.target is torch.ops.higher_order.invoke_subgraph
+        ]
+        self.assertEqual(
+            [node.meta[FUSE_REGION] for node in region_nodes],
+            [
+                "region_a_fwd",
+                "region_b_fwd",
+            ],
+        )
+
+    def test_apply_fuse_region_annotations_is_idempotent(self):
+        from torch._inductor.fx_passes.fuse_regions import (
+            apply_fuse_region_annotations,
+            FUSE_REGION,
+        )
+
+        graph = Graph()
+        x = graph.placeholder("x")
+        add = graph.call_function(torch.ops.aten.add.Tensor, (x, 1))
+        relu = graph.call_function(torch.ops.aten.relu.default, (add,))
+        graph.output(relu)
+        gm = GraphModule(torch.nn.Module(), graph)
+
+        fake = torch.empty(4)
+        for node in (x, add, relu):
+            node.meta["val"] = fake
+        for node in (add, relu):
+            node.meta["custom"] = {FUSE_REGION: "region_a"}
+
+        apply_fuse_region_annotations(gm.graph)
+        apply_fuse_region_annotations(gm.graph)
+
+        region_nodes = [
+            node
+            for node in gm.graph.nodes
+            if node.op == "call_function"
+            and node.target is torch.ops.higher_order.invoke_subgraph
+        ]
+        self.assertEqual(len(region_nodes), 1)
+        self.assertEqual(region_nodes[0].meta[FUSE_REGION], "region_a_fwd")
+
+    def test_apply_fuse_region_annotations_reads_compile_with_inductor_metadata(self):
+        from torch._inductor.fx_passes.fuse_regions import (
+            apply_fuse_region_annotations,
+            FUSE_REGION,
+        )
+
+        graph = Graph()
+        x = graph.placeholder("x")
+        add = graph.call_function(torch.ops.aten.add.Tensor, (x, 1))
+        relu = graph.call_function(torch.ops.aten.relu.default, (add,))
+        graph.output(relu)
+        gm = GraphModule(torch.nn.Module(), graph)
+
+        fake = torch.empty(4)
+        for node in (x, add, relu):
+            node.meta["val"] = fake
+        for node in (add, relu):
+            node.meta["custom"] = {
+                "compile_with_inductor": {FUSE_REGION: "compiled_region"}
+            }
+
+        apply_fuse_region_annotations(gm.graph)
+
+        region_nodes = [
+            node
+            for node in gm.graph.nodes
+            if node.op == "call_function"
+            and node.target is torch.ops.higher_order.invoke_subgraph
+        ]
+        self.assertEqual(len(region_nodes), 1)
+        self.assertEqual(region_nodes[0].meta[FUSE_REGION], "compiled_region_fwd")
+
+    def test_apply_fuse_region_annotations_splits_forward_backward(self):
+        from torch._inductor.fx_passes.fuse_regions import (
+            apply_fuse_region_annotations,
+            FUSE_REGION,
+        )
+
+        graph = Graph()
+        x = graph.placeholder("x")
+        add = graph.call_function(torch.ops.aten.add.Tensor, (x, 1))
+        relu = graph.call_function(torch.ops.aten.relu.default, (add,))
+        sin = graph.call_function(torch.ops.aten.sin.default, (relu,))
+        cos = graph.call_function(torch.ops.aten.cos.default, (sin,))
+        graph.output(cos)
+        gm = GraphModule(torch.nn.Module(), graph)
+
+        fake = torch.empty(4)
+        for node in (x, add, relu, sin, cos):
+            node.meta["val"] = fake
+        for node in (add, relu, sin, cos):
+            node.meta["custom"] = {FUSE_REGION: "shared"}
+        for node in (sin, cos):
+            node.meta["autograd_backward"] = True
+
+        apply_fuse_region_annotations(gm.graph)
+
+        region_nodes = [
+            node
+            for node in gm.graph.nodes
+            if node.op == "call_function"
+            and node.target is torch.ops.higher_order.invoke_subgraph
+        ]
+        self.assertEqual(
+            [node.meta[FUSE_REGION] for node in region_nodes],
+            [
+                "shared_fwd",
+                "shared_bwd",
+            ],
+        )
+
+    def test_apply_fuse_region_annotations_rejects_invalid_annotation(self):
+        from torch._inductor.fx_passes.fuse_regions import (
+            apply_fuse_region_annotations,
+            FUSE_REGION,
+        )
+
+        graph = Graph()
+        x = graph.placeholder("x")
+        add = graph.call_function(torch.ops.aten.add.Tensor, (x, 1))
+        relu = graph.call_function(torch.ops.aten.relu.default, (add,))
+        graph.output(relu)
+        gm = GraphModule(torch.nn.Module(), graph)
+
+        fake = torch.empty(4)
+        for node in (x, add, relu):
+            node.meta["val"] = fake
+        for node in (add, relu):
+            node.meta["custom"] = {FUSE_REGION: 1}
+
+        with self.assertRaisesRegex(AssertionError, "expected custom fuse_region"):
+            apply_fuse_region_annotations(gm.graph)
+
+    def test_post_grad_passes_apply_fuse_region_annotations_by_default(self):
+        from torch._inductor.fx_passes.fuse_regions import FUSE_REGION
+        from torch._inductor.fx_passes.post_grad import post_grad_passes
+        from torch._inductor.virtualized import V
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        graph = Graph()
+        x = graph.placeholder("x")
+        add = graph.call_function(torch.ops.aten.add.Tensor, (x, 1))
+        relu = graph.call_function(torch.ops.aten.relu.default, (add,))
+        sin = graph.call_function(torch.ops.aten.sin.default, (relu,))
+        cos = graph.call_function(torch.ops.aten.cos.default, (sin,))
+        graph.output(cos)
+        gm = GraphModule(torch.nn.Module(), graph)
+
+        fake_mode = FakeTensorMode()
+        fake = fake_mode.from_tensor(torch.empty(4))
+        for node in (x, add, relu, sin, cos):
+            node.meta["val"] = fake
+        for node in (add, relu):
+            node.meta["custom"] = {FUSE_REGION: "region_a"}
+        for node in (sin, cos):
+            node.meta["custom"] = {FUSE_REGION: "region_b"}
+
+        with config.patch(pattern_matcher=False), V.set_fake_mode(fake_mode):
+            post_grad_passes(gm, is_inference=False)
+
+        region_nodes = [
+            node
+            for node in gm.graph.nodes
+            if node.op == "call_function"
+            and node.target is torch.ops.higher_order.invoke_subgraph
+        ]
+        self.assertEqual(
+            [node.meta[FUSE_REGION] for node in region_nodes],
+            [
+                "region_a_fwd",
+                "region_b_fwd",
+            ],
+        )
+
+    def test_fuse_region_annotations_affect_fx_graph_cache_key(self):
+        from torch._inductor.codecache import compiled_fx_graph_hash
+        from torch._inductor.fx_passes.fuse_regions import FUSE_REGION
+
+        def make_gm(annotate: bool):
+            graph = Graph()
+            x = graph.placeholder("x")
+            add = graph.call_function(torch.ops.aten.add.Tensor, (x, 1))
+            relu = graph.call_function(torch.ops.aten.relu.default, (add,))
+            graph.output(relu)
+            gm = GraphModule(torch.nn.Module(), graph)
+            if annotate:
+                for node in (add, relu):
+                    node.meta["custom"] = {FUSE_REGION: "region_a"}
+            return gm
+
+        example_inputs = [torch.empty(4)]
+        unannotated_key, _ = compiled_fx_graph_hash(
+            make_gm(False), example_inputs, {}, []
+        )
+        annotated_key, debug_lines = compiled_fx_graph_hash(
+            make_gm(True), example_inputs, {}, []
+        )
+
+        self.assertNotEqual(unannotated_key, annotated_key)
+        self.assertTrue(any("fuse_region_annotations" in line for line in debug_lines))
+
     def test_mark_fuse_region_preserves_region_id_single_output(self):
         from torch._inductor.fx_passes.fuse_regions import FUSE_REGION, mark_fuse_region
 
