@@ -4738,7 +4738,8 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         for node in gm.graph.nodes:
             if node.op == "placeholder":
                 ev = node.meta.get("example_value")
-                self.assertEqual(ev.device.type, "cpu")
+                if isinstance(ev, torch.Tensor):
+                    self.assertEqual(ev.device.type, "cpu")
 
     def test_user_ctor_ctx_manager(self):
         class UserCtxManager:

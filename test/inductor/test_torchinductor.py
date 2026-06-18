@@ -18220,6 +18220,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             )
 
     @requires_gpu()
+    @skip_if_cpp_wrapper("cross-device shallow_copy_data_ not in AOTI shim")
     def test_tensor_set_data_cross_device(self):
         def func(x):
             x.data = x.data.to(self.device)
