@@ -20,8 +20,8 @@ from ..pattern_matcher import (
     MULTIPLE,
 )
 from ..utils import (
-    is_mkldnn_bf16_supported,
-    is_mkldnn_fp16_supported,
+    is_onednn_bf16_supported,
+    is_onednn_fp16_supported,
     SUPPORTED_MKLDNN_DEVICES,
 )
 from ..virtualized import ops, V
@@ -128,7 +128,7 @@ if torch._C._has_mkldnn:
                 mkldnn._reorder_linear_weight
                 if (
                     is_lp_weight
-                    or mkldnn._is_mkldnn_acl_supported()
+                    or mkldnn._is_onednn_acl_supported()
                     or V.aot_compilation
                     or has_free_symbols(batch_size)
                 )
@@ -145,7 +145,7 @@ if torch._C._has_mkldnn:
             transpose_weight_node = packed_weight_node.args[0]
             if (
                 is_lp_weight
-                or mkldnn._is_mkldnn_acl_supported()
+                or mkldnn._is_onednn_acl_supported()
                 or V.aot_compilation
                 or has_free_symbols(batch_size)
             ):
@@ -214,7 +214,7 @@ if torch._C._has_mkldnn:
         fixed number of output nodes. Extend to support Group GEMM for pattern matcher.
         """
         computation_op = mkldnn._linear_pointwise.default
-        from ..mkldnn_lowerings import grouped_gemm_lowering
+        from ..onednn_lowerings import grouped_gemm_lowering
 
         for node in graph.find_nodes(op="call_function", target=computation_op):
             if (
