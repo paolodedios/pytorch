@@ -913,7 +913,7 @@ class FSDPParam:
             storage_offset=0,
         )
         if self.is_spmd_types:
-            pass  # keep as plain tensor; spmd_types restored in to_unsharded()
+            pass  # keep as plain tensor; spmd_types restored before module compute
         elif self._unsharded_dtensor_spec is not None:
             unsharded_dtensor_spec = self._get_unsharded_dtensor_spec(unsharded_param)
             unsharded_param = _from_local_no_grad(
@@ -993,8 +993,6 @@ class FSDPParam:
     def to_unsharded(self) -> None:
         # Assume that the data has been allocated and all-gathered
         set_requires_grad_if_needed(self.sharded_param, self._unsharded_param)
-        if self.is_spmd_types:
-            self._restore_spmd_types(self._unsharded_param)
         self._setattr_on_modules(self._unsharded_param)
         if self.sharded_state == ShardedState.SHARDED_POST_FORWARD:
             # The data is allocated in the default stream via the post-forward
