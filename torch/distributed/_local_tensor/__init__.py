@@ -1891,7 +1891,9 @@ def get_generator_seed_for_device_type(device_type: str):
             for rank in sorted(lm.ranks):
                 _set_rng_state(*lm._per_rank_rng_states[rank])
                 rank_seeds[rank] = int(
-                    torch.accelerator.random.get_rng_state()[:8].view(torch.int64).item()
+                    torch.accelerator.random.get_rng_state()[:8]
+                    .view(torch.int64)
+                    .item()
                 )
         finally:
             # restore original state
