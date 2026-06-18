@@ -797,6 +797,7 @@ def _rand_like(
 ) -> torch.Tensor:
     dtype = self.dtype if dtype is None else dtype
     device = self.device if device is None else device
+    requires_grad = kwargs.get("requires_grad", False)
 
     if memory_format != torch.preserve_format:
         return rand_fn(
@@ -807,11 +808,15 @@ def _rand_like(
         ).to(memory_format=memory_format)
 
     if utils.is_non_overlapping_and_dense_or_false(self):
+        rand_kwargs = kwargs
+        if requires_grad:
+            rand_kwargs = kwargs.copy()
+            rand_kwargs.pop("requires_grad", None)
         result = rand_fn(
             self.shape,
             dtype=dtype,
             device=device,
-            **kwargs,
+            **rand_kwargs,
         )
         if not _same_stride(result.stride(), self.stride()):
             empty = torch.empty_strided(
@@ -822,6 +827,8 @@ def _rand_like(
                 pin_memory=kwargs.get("pin_memory", False),
             )
             result = torch.ops.aten.copy.default(empty, result)
+        if requires_grad:
+            result.requires_grad_(True)
         return result
 
     shape, permutation = _get_shape_permutation_like(self)
@@ -1344,7 +1351,7 @@ def repeat_interleave_Tensor(
     return torch.clamp(indices, max=repeat.size(0) - 1)
 
 
-# intentionally not regiestered
+# intentionally not registered
 def conv1d_to_conv2d(
     input: torch.Tensor,
     weight: torch.Tensor,
