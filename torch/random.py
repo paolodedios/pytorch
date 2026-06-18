@@ -31,7 +31,7 @@ def set_rng_state(new_state: torch.Tensor) -> None:
         new_state (torch.Tensor): The desired state, a tensor of dtype `torch.uint8`
 
     .. note:: This function only works for CPU. For :ref:`accelerator<accelerators>`, please use
-        :func:`torch.accelerator.set_rng_state`.
+        :func:`torch.accelerator.random.set_rng_state`.
     """
     default_generator.set_state(new_state)
 
@@ -42,7 +42,7 @@ def get_rng_state() -> torch.Tensor:
     See also: :func:`torch.random.fork_rng`.
 
     .. note:: This function only works for CPU.
-        For :ref:`accelerator<accelerators>`, please use :func:`torch.accelerator.get_rng_state`.
+        For :ref:`accelerator<accelerators>`, please use :func:`torch.accelerator.random.get_rng_state`.
     """
     return default_generator.get_state()
 
@@ -59,7 +59,7 @@ def manual_seed(seed: int) -> torch._C.Generator:
 
     .. note:: This function seeds both the CPU and the current :ref:`accelerator<accelerators>`.
         For CPU only, use ``torch.default_generator.manual_seed(seed)``.
-        For the accelerator only, use :func:`torch.accelerator.manual_seed_all`.
+        For the accelerator only, use :func:`torch.accelerator.random.manual_seed_all`.
     """
     return _manual_seed_impl(seed)
 
@@ -69,7 +69,7 @@ def _manual_seed_impl(seed: int) -> torch._C.Generator:
     import torch.accelerator
 
     if not torch._C._accelerator_isInBadFork():
-        torch.accelerator.manual_seed_all(seed)
+        torch.accelerator.random.manual_seed_all(seed)
 
     return default_generator.manual_seed(seed)
 
@@ -80,14 +80,14 @@ def seed() -> int:
 
     .. note:: This function generates a non-deterministic seed on CPU, then uses
         it to seed all :ref:`accelerators<accelerators>`.
-        For the accelerator only, use :func:`torch.accelerator.manual_seed_all`.
+        For the accelerator only, use :func:`torch.accelerator.random.manual_seed_all`.
     """
     seed = default_generator.seed()
 
     import torch.accelerator
 
     if not torch._C._accelerator_isInBadFork():
-        torch.accelerator.manual_seed_all(seed)
+        torch.accelerator.random.manual_seed_all(seed)
 
     return seed
 
@@ -96,7 +96,7 @@ def initial_seed() -> int:
     r"""Returns the initial seed for generating random numbers as a Python `int`.
 
     .. note:: The returned seed is for the default generator on CPU only.
-        For :ref:`accelerator<accelerators>`, please use :func:`torch.accelerator.initial_seed`.
+        For :ref:`accelerator<accelerators>`, please use :func:`torch.accelerator.random.initial_seed`.
     """
     return default_generator.initial_seed()
 
@@ -187,14 +187,14 @@ def fork_rng(
         devices = list(devices)
 
     cpu_rng_state = torch.get_rng_state()
-    device_rng_states = [torch.accelerator.get_rng_state(device) for device in devices]
+    device_rng_states = [torch.accelerator.random.get_rng_state(device) for device in devices]
 
     try:
         yield
     finally:
         torch.set_rng_state(cpu_rng_state)
         for device, device_rng_state in zip(devices, device_rng_states):
-            torch.accelerator.set_rng_state(device_rng_state, device)
+            torch.accelerator.random.set_rng_state(device_rng_state, device)
 
 
 def thread_safe_generator() -> torch.Generator | None:
