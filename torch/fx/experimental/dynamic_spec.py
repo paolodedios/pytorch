@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Sequence
 
     import torch.nn
-
     from torch.fx.experimental.symbolic_shapes import ShapeEnv
 
 
@@ -752,7 +751,7 @@ def _coerce_to_shapes_spec(
 
 # Attribute used to store the resolved ``ShapesSpec`` on a decorated function
 # (or ``nn.Module.forward``). Read by ``_resolve_dynamic_shapes`` below.
-_DYNAMIC_SPEC_ATTR = "_dynamo_spec"
+_DYNAMIC_SPEC_ATTR = "_dynamic_spec"
 
 
 def dynamic_spec(spec: Any) -> Any:
@@ -776,8 +775,11 @@ def dynamic_spec(spec: Any) -> Any:
         @dynamic_spec({"x": TensorSpec([ShapeVar("B"), STATIC])})
         def fn(x): ...
 
+
         # With assumptions: build a ShapesSpec.
         B = ShapeVar("B")
+
+
         @dynamic_spec(
             ShapesSpec(
                 ParamsSpec({"x": TensorSpec([B, STATIC])}),
@@ -800,6 +802,13 @@ def dynamic_spec(spec: Any) -> Any:
         )
 
     def _decorator(fn: Any) -> Any:
+        if hasattr(fn, _DYNAMIC_SPEC_ATTR):
+            raise ValueError(
+                "@dynamic_spec(...) is already attached to "
+                f"{getattr(fn, '__qualname__', repr(fn))}. Stacking multiple "
+                "@dynamic_spec decorators on the same function is not "
+                "allowed; merge them into a single spec."
+            )
         setattr(fn, _DYNAMIC_SPEC_ATTR, resolved)
         return fn
 

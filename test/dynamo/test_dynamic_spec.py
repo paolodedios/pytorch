@@ -1976,11 +1976,10 @@ class TestDynamicSpecDecoratorCompile(TestCase):
         self.assertEqual(len(backend.graphs), 1)
         # Find the tensor placeholder (could be other SymInt placeholders too).
         tensor_phs = [
-            n for n in backend.graphs[0].graph.nodes
+            n
+            for n in backend.graphs[0].graph.nodes
             if n.op == "placeholder"
-            and isinstance(
-                n.meta.get("example_value", n.meta.get("val")), torch.Tensor
-            )
+            and isinstance(n.meta.get("example_value", n.meta.get("val")), torch.Tensor)
         ]
         self.assertEqual(len(tensor_phs), 1)
         val = tensor_phs[0].meta.get("example_value", tensor_phs[0].meta.get("val"))
@@ -2043,6 +2042,21 @@ class TestDynamicSpecDecoratorCompile(TestCase):
                 fn,
                 shapes_spec=ParamsSpec({"x": TensorSpec([ShapeVar("Z"), STATIC])}),
             )(torch.randn(8, 3))
+
+    def test_dynamic_spec_stacked_decorators_raise(self):
+        """Stacking ``@dynamic_spec`` on the same function should raise --
+        silently overwriting the previously attached spec would mask user
+        error."""
+        from torch.fx.experimental.dynamic_spec import dynamic_spec
+
+        with self.assertRaisesRegex(
+            ValueError, r"@dynamic_spec\(\.\.\.\) is already attached"
+        ):
+
+            @dynamic_spec({"x": TensorSpec([ShapeVar("A"), STATIC])})
+            @dynamic_spec({"x": TensorSpec([ShapeVar("B"), STATIC])})
+            def fn(x):
+                return x.sum(0)
 
 
 if __name__ == "__main__":
