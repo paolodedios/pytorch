@@ -54,7 +54,6 @@ _fwd_grad_all = {
     xfail("chalf"),
     skip("normal"),
     skip("normal", variant_name="number_mean"),
-    skip("normal", variant_name="in_place"),
     skip("linalg.lstsq"),
 }
 
