@@ -2651,13 +2651,11 @@ class CppBuilder:
             )
 
         if device_type == "cuda" and torch.version.hip is None:
-            from torch._inductor.codegen.cuda import compile_utils
-
-            cuda_arch = compile_utils._aoti_cuda_target_arch()
-            cuda_gencode_flags = "\n                                ".join(
-                f"-gencode {option}"
-                for option in compile_utils._cuda_multi_arch_gencode_options(cuda_arch)
+            from torch._inductor.codegen.cuda.compile_utils import (
+                _nvcc_arch_as_compile_option,
             )
+
+            current_arch = _nvcc_arch_as_compile_option()
             contents += textwrap.dedent(
                 f"""
                 enable_language(CUDA)
@@ -2694,7 +2692,8 @@ class CppBuilder:
                     add_custom_command(
                         OUTPUT ${{FATBIN_FILE}}
                         COMMAND ${{CUDAToolkit_NVCC_EXECUTABLE}} --fatbin ${{PTX_FILE}} -o ${{FATBIN_FILE}} ${{NVCC_GENCODE_FLAGS}}
-                                {cuda_gencode_flags}
+                                -gencode arch=compute_{current_arch},code=compute_{current_arch}
+                                -gencode arch=compute_{current_arch},code=sm_{current_arch}
                         DEPENDS ${{PTX_FILE}}
                     )
 

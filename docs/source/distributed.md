@@ -426,10 +426,6 @@ check whether the process group has already been initialized use {func}`torch.di
 .. autofunction:: get_pg_count
 ```
 
-```{eval-rst}
-.. autofunction:: set_timeout
-```
-
 ## Shutdown
 
 It is important to clean up resources on exit by calling {func}`destroy_process_group`.

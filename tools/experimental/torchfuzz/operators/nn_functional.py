@@ -543,8 +543,7 @@ class GELUOperator(Operator):
             raise ValueError("GELU requires exactly 1 input")
 
         input_name = input_names[0]
-        approx = random.choice(["none", "tanh"])
-        return f"{output_name} = torch.nn.functional.gelu({input_name}, approximate={approx!r})"
+        return f"{output_name} = torch.nn.functional.gelu({input_name})"
 
 
 class SigmoidOperator(Operator):
@@ -878,8 +877,7 @@ class LeakyReLUOperator(Operator):
             raise ValueError("LeakyReLU requires exactly 1 input")
 
         input_name = input_names[0]
-        slope = round(random.uniform(0.001, 0.5), 4)
-        return f"{output_name} = torch.nn.functional.leaky_relu({input_name}, negative_slope={slope!r})"
+        return f"{output_name} = torch.nn.functional.leaky_relu({input_name}, negative_slope=0.01)"
 
 
 class ELUOperator(Operator):
@@ -921,8 +919,7 @@ class ELUOperator(Operator):
             raise ValueError("ELU requires exactly 1 input")
 
         input_name = input_names[0]
-        alpha = round(random.uniform(0.1, 3.0), 4)
-        return f"{output_name} = torch.nn.functional.elu({input_name}, alpha={alpha!r})"
+        return f"{output_name} = torch.nn.functional.elu({input_name})"
 
 
 class SiLUOperator(Operator):

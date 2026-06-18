@@ -160,20 +160,6 @@ def _is_tensor_constructor(func: OpOverload) -> bool:
     )
 
 
-@functools.cache
-def _has_device_arg(func: OpOverload) -> bool:
-    device_type = torch._C.DeviceObjType.get()
-    optional_device_type = torch._C.OptionalType(device_type)
-    return any(
-        arg.name == "device"
-        and (
-            arg.type.isSubtypeOf(device_type)
-            or arg.type.isSubtypeOf(optional_device_type)
-        )
-        for arg in func._schema.arguments
-    )
-
-
 def register_op_impl(
     run_impl_check: Callable[[OpOverload], bool]
     | OpOverload
@@ -240,20 +226,14 @@ def constructors(
         # cpu is default device if none is specified
         default_device = torch.device("cpu")
         args = ()
-    has_device_arg = _has_device_arg(func)
-    out_device = new_kwargs.pop("device", None) if has_device_arg else None
+    out_device = new_kwargs.pop("device", None)
     out_device = out_device if out_device is not None else default_device
-    if has_device_arg:
-        new_kwargs["device"] = torch.device("meta")
+    new_kwargs["device"] = torch.device("meta")
     # _like constructors have fake tensor inputs (maybe this causes the non-like
     # to fail? hmmm)
     with in_kernel_invocation_manager(fake_mode):
         r = func(*args, **new_kwargs)
-    if r.device.type == "meta":
-        return fake_mode.fake_tensor_converter.from_meta_and_device(
-            fake_mode, r, out_device
-        )
-    return fake_mode.fake_tensor_converter.from_real_tensor(fake_mode, r)
+    return FakeTensor(fake_mode, r, out_device)
 
 
 @register_op_impl(aten.is_pinned.default)
@@ -363,7 +343,7 @@ def workaround_stride_incorrect_op(
     raise UnsupportedOperatorException(func)
 
 
-# Don't default to default device handling,
+# Dont default to default device handling,
 # since the device of `the_template` is ignored
 @register_op_impl(aten.resize_as_.default)
 def resize_as_(
@@ -1000,7 +980,6 @@ def try_duck_specialization_first(a: torch.Tensor, shape) -> bool:
     buckets: dict[int, dict[sympy.Expr, torch.SymInt]] = defaultdict(dict)
     for s in list(a_syms) + list(target_syms):
         # setdefault keeps the *first* SymInt seen for each (hint, expr).
-        # pyrefly: ignore [bad-index]
         buckets[s.node.hint].setdefault(s.node.expr, s)
 
     candidates: list[tuple[torch.SymInt, torch.SymInt]] = []
@@ -1416,7 +1395,7 @@ def slice_forward(
     new_size: IntLikeType | None = None
     if start_index is not None and end_index is not None:
         if guard_or_false(end_index >= start_index):
-            new_size = (end_index - start_index + step - 1) // step  # type: ignore[bad-assignment]
+            new_size = (end_index - start_index + step - 1) // step
         elif guard_or_false(start_index >= end_index):
             new_size = 0
         else:
@@ -1424,7 +1403,7 @@ def slice_forward(
             # ordering (e.g., when they involve Min/Max). Compute the size via
             # max(end - start, 0) to avoid creating an unbacked symint.
             diff = torch.sym_max(end_index - start_index, 0)
-            new_size = (diff + step - 1) // step  # type: ignore[assignment]
+            new_size = (diff + step - 1) // step
 
     # create unbacked if case unknown
     if new_size is None:
@@ -1630,7 +1609,7 @@ def foreach_run_and_map_input_device(
     return out_fake
 
 
-# Don't default to default device handling,
+# Dont default to default device handling,
 # Since op can take in non-zero sized cpu
 # index tensors with cuda self
 @register_op_impl(aten.index.Tensor)
@@ -1813,13 +1792,6 @@ def conv(
         if not all_hinted:
             # TODO: We can make this a little more faithful with best effort
             # channels last detection (but only if it's statically obvious!)
-            mem_fmt = None
-        elif input_.dim() == k - 1:
-            # Unbatched input: eager routes directly to the slow dilated
-            # backward kernels, which produce contiguous gradients and bypass
-            # the channels-last backend-memory-format selection. Mirror that
-            # here; _select_conv_backend would also reject the missing batch
-            # dim.
             mem_fmt = None
         else:
             # convolution has "bias" but not "bias_sizes"; convolution_backward

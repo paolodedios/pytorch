@@ -25,22 +25,10 @@
     dq_out_transposed = dq_out.transpose(1, 2)
     dk_out_transposed = DK.transpose(1, 2)
     dv_out_transposed = DV.transpose(1, 2)
-    aux_scalars = {{ define_aux_scalars(AUX_SCALAR_SYMBOLS) }}
 
-    {# FA4 omits aux_scalars when it is None for compatibility with older callables. #}
-    {# Keep the default so generated mods accept both FA4 call forms. #}
     {% if HAS_SCORE_MOD %}
     @cute.jit
-    def score_mod(
-        tSrS_ssa,
-        b_idx,
-        h_idx,
-        q_idx,
-        kv_idx,
-        seqlen_info,
-        aux_tensors,
-        aux_scalars=None,
-    ):
+    def score_mod(tSrS_ssa, b_idx, h_idx, q_idx, kv_idx, seqlen_info, aux_tensors):
         {{unpack_buffers("aux_tensors", indent_width=8)}}
         {{ modification(
             subgraph_number=0,
@@ -52,21 +40,11 @@
             n="kv_idx",
             out="tSrS_ssa"
         ) | indent_except_first(2) }}
-        return tSrS_ssa.to(cutlass.Float32)
+        return tSrS_ssa
     {{ set_cute_hash("score_mod", "score") }}
 
     @cute.jit
-    def score_mod_bwd(
-        grad_score_mod_ssa,
-        tSrS_ssa,
-        b_idx,
-        h_idx,
-        q_idx,
-        kv_idx,
-        seqlen_info,
-        aux_tensors,
-        aux_scalars=None,
-    ):
+    def score_mod_bwd(grad_score_mod_ssa, tSrS_ssa, b_idx, h_idx, q_idx, kv_idx, seqlen_info, aux_tensors):
         {{unpack_buffers("aux_tensors", indent_width=8)}}
         {{ modification(
             subgraph_number=1,
@@ -78,7 +56,7 @@
             m="q_idx",
             n="kv_idx"
         ) | indent_except_first(2) }}
-        return grad_score_mod_ssa_out.to(cutlass.Float32)
+        return grad_score_mod_ssa_out
     {{ set_cute_hash("score_mod_bwd", "score_bwd") }}
     {% else %}
     score_mod = None
@@ -90,7 +68,7 @@
     {# mask_mod is subgraph 2 when HAS_SCORE_MOD, else subgraph 0 #}
     {% set mask_subgraph_idx = 2 if HAS_SCORE_MOD else 0 %}
     @cute.jit
-    def mask_mod(b_idx, h_idx, q_idx, kv_idx, seqlen_info, aux_tensors, aux_scalars=None):
+    def mask_mod(b_idx, h_idx, q_idx, kv_idx, seqlen_info, aux_tensors):
         {{unpack_buffers("aux_tensors", indent_width=8)}}
         {{ modification(
             subgraph_number=mask_subgraph_idx,
@@ -151,8 +129,7 @@
         score_mod=score_mod,
         score_mod_bwd=score_mod_bwd,
         mask_mod=mask_mod,
-        aux_tensors=buffers,{% if AUX_SCALAR_SYMBOLS %}
-        aux_scalars=aux_scalars,{% endif %}
+        aux_tensors=buffers,
         dq=dq_out_transposed,
         dk=dk_out_transposed,
         dv=dv_out_transposed,

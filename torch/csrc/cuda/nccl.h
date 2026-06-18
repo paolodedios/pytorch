@@ -125,7 +125,6 @@ TORCH_CUDA_CPP_API void comm_destroy(ncclComm_t comm);
 
 TORCH_CUDA_CPP_API void broadcast(
     at::TensorList tensors,
-    int32_t root = 0,
     const stream_list& streams = {},
     const comm_list& user_comms = {});
 

@@ -24,19 +24,15 @@ if "TORCHINDUCTOR_FX_GRAPH_CACHE" not in os.environ:
     torch._inductor.config.fx_graph_cache = True
 
 
-def pip_install(package, *, no_deps=False):
-    command = [sys.executable, "-m", "pip", "install"]
-    if no_deps:
-        command.append("--no-deps")
-    command.append(package)
-    subprocess.check_call(command)
+def pip_install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
 
 try:
     importlib.import_module("timm")
 except ModuleNotFoundError:
     print("Installing PyTorch Image Models...")
-    pip_install("git+https://github.com/rwightman/pytorch-image-models", no_deps=True)
+    pip_install("git+https://github.com/rwightman/pytorch-image-models")
 finally:
     from timm import __version__ as timmversion
     from timm.data import resolve_data_config
@@ -268,16 +264,6 @@ class TimmRunner(BenchmarkRunner):
                 int(recorded_batch_size / batch_size_divisors[model_name]), 1
             )
         batch_size = batch_size or recorded_batch_size
-        if (
-            device == "cuda"
-            and torch.version.hip is None
-            and self.args.backend == "inductor"
-            and self.args.ci
-            and self.args.accuracy
-            and self.args.training
-        ):
-            ci_accuracy_batch_sizes = self._batch_size.get("ci_accuracy", {})
-            batch_size = ci_accuracy_batch_sizes.get(model_name, batch_size)
 
         torch.manual_seed(1337)
         input_tensor = torch.randint(

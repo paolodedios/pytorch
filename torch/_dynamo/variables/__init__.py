@@ -107,14 +107,12 @@ from .higher_order_ops import (
     TorchHigherOrderOperatorVariable,
 )
 from .iter import (
-    ChainVariable,
     CountIteratorVariable,
     FilterVariable,
     IteratorVariable,
     ItertoolsVariable,
     MapVariable,
     RepeatIteratorVariable,
-    ZipLongestVariable,
     ZipVariable,
 )
 from .lazy import LazyConstantVariable, LazyVariableTracker
@@ -215,7 +213,6 @@ __all__ = [
     "ConstantVariable",
     "ConstDictVariable",
     "ContextWrappingVariable",
-    "ChainVariable",
     "CountIteratorVariable",
     "CreateTMADescriptorExperimentalVariable",
     "CreateTMADescriptorStableVariable",
@@ -287,5 +284,4 @@ __all__ = [
     "WithEnterFunctionVariable",
     "WithExitFunctionVariable",
     "XPUDeviceVariable",
-    "ZipLongestVariable",
 ]

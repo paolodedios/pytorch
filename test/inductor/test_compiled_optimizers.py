@@ -46,7 +46,6 @@ from torch.optim.lr_scheduler import (
     OneCycleLR,
     PolynomialLR,
     ReduceLROnPlateau,
-    SequentialLR,
     StepLR,
 )
 from torch.testing._internal.common_device_type import (
@@ -153,9 +152,11 @@ LR_SCHEDULER_TO_KWARGS = {
     StepLR: {"step_size": 1, "gamma": 100},
     MultiStepLR: {"milestones": [1, 2], "gamma": 100},
     ExponentialLR: {"gamma": 100},
-    SequentialLR: {"schedulers": None, "milestones": [1, 2]},
     CosineAnnealingLR: {"T_max": 7},
-    ChainedScheduler: {"schedulers": None},
+    # These schedulers have memory leaks in eager
+    # https://github.com/pytorch/pytorch/issues/126131
+    # SequentialLR: {"schedulers": None, "milestones": [1, 2]},
+    # ChainedScheduler: {"schedulers": None},
     CyclicLR: {"base_lr": 0.001, "max_lr": 0.02, "cycle_momentum": False},
     CosineAnnealingWarmRestarts: {"T_0": 1},
     OneCycleLR: {
@@ -172,7 +173,7 @@ LR_SCHEDULER_TO_KWARGS = {
 
 
 def create_scheduler(scheduler, optim):
-    kwargs = deepcopy(LR_SCHEDULER_TO_KWARGS[scheduler])
+    kwargs = LR_SCHEDULER_TO_KWARGS[scheduler]
     if "schedulers" in kwargs:
         kwargs["schedulers"] = [
             create_scheduler(torch.optim.lr_scheduler.ConstantLR, optim)
@@ -725,16 +726,6 @@ class CompiledOptimizerTests(TestCase):
         manager = torch._inductor.cudagraph_trees.get_container(0).tree_manager
         self.assertIsNotNone(manager)
         self.assertEqual(manager.new_graph_id().id, 1)
-
-    def test_create_scheduler_does_not_mutate_kwargs(self):
-        for scheduler_cls in (ChainedScheduler, SequentialLR):
-            expected_kwargs = deepcopy(LR_SCHEDULER_TO_KWARGS[scheduler_cls])
-            model = torch.nn.Linear(1, 1)
-            opt = SGD(model.parameters(), lr=0.1)
-
-            create_scheduler(scheduler_cls, opt)
-
-            self.assertEqual(LR_SCHEDULER_TO_KWARGS[scheduler_cls], expected_kwargs)
 
     test_adam_recompile = make_recompile_test(Adam, lr=0.01)
     test_adamw_recompile = make_recompile_test(AdamW, lr=0.01)

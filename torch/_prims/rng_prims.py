@@ -142,8 +142,6 @@ def get_device(args, kwargs):
     for arg in args:
         if isinstance(arg, torch.Tensor):
             return arg.device.type
-        if isinstance(arg, torch.device):
-            return arg.type
     return None
 
 
