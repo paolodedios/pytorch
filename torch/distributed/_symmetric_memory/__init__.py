@@ -2328,7 +2328,8 @@ def all_gather_offset(
         >>> split_sizes = [s0, s1]
         >>> inp = symm_mem.empty(s0 + s1, dtype=torch.bfloat16, device="cuda")
         >>> symm_mem.rendezvous(inp, group=group_name)
-        >>> out = torch.empty((s0 + s1) * world_size, dtype=torch.bfloat16, device="cuda")
+        >>> out = symm_mem.empty((s0 + s1) * world_size, dtype=torch.bfloat16, device="cuda")
+        >>> symm_mem.rendezvous(out, group=group_name)
         >>> symm_mem.all_gather_offset(inp, out, group_name, split_sizes)
     """
     backend = get_backend(input.device)

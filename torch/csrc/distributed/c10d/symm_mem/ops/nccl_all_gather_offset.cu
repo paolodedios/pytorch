@@ -224,6 +224,18 @@ void nccl_all_gather_offset(
   const int my_rank = devcomm.rank;
   const int elem_size = static_cast<int>(input.element_size());
 
+  // Both paths address every rank within a single LSA (NVLink) team -- the
+  // multimem multicast and the LSA peer pointers only reach intra-node peers.
+  // Multi-node groups (lsaSize < nRanks) are not yet supported.
+  TORCH_CHECK(
+      devcomm.lsaSize == world_size,
+      "nccl_all_gather_offset currently requires all ranks to be in a single "
+      "LSA (NVLink) team; got lsaSize=",
+      devcomm.lsaSize,
+      ", world_size=",
+      world_size,
+      " (multi-node groups are not yet supported)");
+
   // Resolve effective offsets: explicit, or exclusive prefix sum of sizes.
   std::vector<int64_t> offsets_vec;
   at::IntArrayRef eff_offsets;
