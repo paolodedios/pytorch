@@ -1354,7 +1354,7 @@ void sampled_addmm_out_sparse_csr(
 
   AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(
       kHalf, kBFloat16,
-      C.scalar_type(),
+      st,
       "sampled_addmm_out_sparse_csr",
       [&] {
         // cuSPARSE SDDMM supports float16 and bfloat16 with float32 accumulation
