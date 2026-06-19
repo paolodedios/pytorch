@@ -290,6 +290,19 @@ class MetaTensorDescriber:
         layout = t.layout
         is_nested = t.is_nested
         is_traceable_wrapper_subclass_v = is_traceable_wrapper_subclass(t)
+        base = t._base if is_view else None
+        if (
+            is_view
+            and is_nested
+            and is_traceable_wrapper_subclass_v
+            and base is not None
+            and base.is_nested
+            and not is_traceable_wrapper_subclass(base)
+        ):
+            # Jagged NestedTensor wrappers can be views of raw strided nested
+            # tensors, whose metadata cannot be described with size().
+            is_view = False
+            base = None
         is_functorch_wrapped = is_functorch_wrapped_tensor(t)
         is_mkldnn = t.is_mkldnn
         is_batchedtensor_v = is_batchedtensor(t)
@@ -482,7 +495,7 @@ class MetaTensorDescriber:
                 else None
             ),
             creation_meta=(
-                torch._C._autograd._get_creation_meta(t) if t._is_view() else None
+                torch._C._autograd._get_creation_meta(t) if is_view else None
             ),
             unwrapped=unwrapped,
             level=(
@@ -492,8 +505,8 @@ class MetaTensorDescriber:
             ),
             bdim=maybe_get_bdim(t) if is_batchedtensor_v else None,
             base=(
-                self.describe_tensor(t._base, trace=trace)
-                if recurse and t._is_view() and t._base is not None
+                self.describe_tensor(base, trace=trace)
+                if recurse and is_view and base is not None
                 else None
             ),
             fake_mode=torch._subclasses.fake_tensor.maybe_get_fake_mode(t),
@@ -859,6 +872,11 @@ def _grad_context_compatible(
     if not _view_base_compatible(symbolic_context, grad_desc):
         return False
 
+    if grad_desc.is_traceable_wrapper_subclass and not isinstance(
+        symbolic_context, SubclassSymbolicContext
+    ):
+        return False
+
     # Check inner (subclass) level
     if isinstance(symbolic_context, SubclassSymbolicContext):
         if grad_desc.attrs is None:
@@ -1145,13 +1163,13 @@ class MetaConverter(Generic[_TensorT]):
                     )
                 else:
                     # FakeTensor from a different ShapeEnv.  Transfer symbols.
+                    # _transfer_foreign_expr picks the hint up via the foreign env.
                     return shape_env.transfer_symbols_from_foreign_shape_env(
                         t.size,
                         t.stride,
                         t.storage_offset,
                         src,
                         symbolic_context=symbolic_context,
-                        hint_overrides=t.dynamo_hint_overrides,
                     )
             else:
                 return (t.size, t.stride, t.storage_offset)

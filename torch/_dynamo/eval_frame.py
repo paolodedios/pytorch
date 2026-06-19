@@ -89,7 +89,11 @@ from torch.fx.experimental._dynamism import (
     clone_and_convert_to_meta,
     track_dynamism_across_examples,
 )
-from torch.fx.experimental.dynamic_spec import ParamsSpec, ShapesSpec
+from torch.fx.experimental.dynamic_spec import (
+    _coerce_to_shapes_spec,
+    ParamsSpec,
+    ShapesSpec,
+)
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.experimental.symbolic_shapes import (
     ConstraintViolationError,
@@ -933,8 +937,7 @@ class _TorchDynamoContext:
             )
         # Normalize the shorthand forms: dict / ParamsSpec / ShapesSpec all
         # land here as a ShapesSpec (or None).
-        if shapes_spec is not None and not isinstance(shapes_spec, ShapesSpec):
-            shapes_spec = ShapesSpec(shapes_spec)
+        shapes_spec = _coerce_to_shapes_spec(shapes_spec)
         self.callback: DynamoCallback = callback
         self._backend_ctx_ctor = backend_ctx_ctor
         self.prior: Unset | DynamoCallback = unset
@@ -1138,6 +1141,7 @@ class _TorchDynamoContext:
         # Similarly, functions registered via substitute_in_graph have a polyfill
         # that Dynamo can trace, so they also need wrap_inline.
         from .variables import TorchInGraphFunctionVariable
+        from .variables.functions import CollectiveFunctionRewriteVariable
 
         rule = trace_rules.lookup(fn)
         top_level_in_graph = isinstance(rule, type) and issubclass(
@@ -1152,6 +1156,7 @@ class _TorchDynamoContext:
         fn_code = getattr(fn, "__code__", None)
         unskip_code = self._skip_code_override_code
         ignore_trace_rules = self._skip_code_override_ignore_trace_rules
+        has_collective_rewrite = CollectiveFunctionRewriteVariable.can_rewrite(fn)
         is_module_wrapper = getattr(fn, "__name__", "") in [
             "_call_impl",
             "_wrapped_call_impl",
@@ -1161,6 +1166,8 @@ class _TorchDynamoContext:
             fn_code is not None
             and inspect.isfunction(fn)
             and not is_module_wrapper
+            and not trace_rules.is_forbidden(fn)
+            and not has_collective_rewrite
             and trace_rules.check(fn)
         )
         if unskip_code is None:
