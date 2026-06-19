@@ -155,26 +155,25 @@ class TestCustomOpOutLowering(InductorTestCase):
             x = torch.randn(4, 4)
             eager_out = f(x)
 
-            with config.patch(cpp_wrapper=True, size_asserts=True):
+            with config.patch(
+                cpp_wrapper=True, size_asserts=True, force_disable_caches=True
+            ):
                 compiled_out, code = run_and_get_code(
                     torch.compile(f, backend="inductor", fullgraph=True), x
                 )
             self.assertEqual(compiled_out, eager_out)
             source_code = "\n".join(code)
             FileCheck().check("aoti_torch_call_dispatcher").run(source_code)
-            if "assert_size_stride" in source_code:
-                FileCheck().check_regex(
-                    r'assert_size_stride\([^,]+,\s*\{4L?,\s*4L?\},\s*\{4L?,\s*1L?\},\s*"torch.ops.mylib.no_out_op.default"\)'
-                ).run(source_code)
-            else:
+            output_assert = r'assert_size_stride\([^,]+,\s*\{4L?L?,\s*4L?L?\},\s*\{4L?L?,\s*1L?L?\},\s*"torch.ops.mylib.no_out_op.default"\)'
+            wrapper_codegen = common.get_wrapper_codegen_for_device(
+                "cpu", cpp_wrapper=True
+            )
+            if wrapper_codegen.__name__ == "CppWrapperCpuArrayRef":
                 # ArrayRef wrapper tensors are not AtenTensorHandle, so that wrapper
                 # path intentionally does not emit assert_size_stride.
-                self.assertEqual(
-                    common.get_wrapper_codegen_for_device(
-                        "cpu", cpp_wrapper=True
-                    ).__name__,
-                    "CppWrapperCpuArrayRef",
-                )
+                self.assertNotRegex(source_code, output_assert)
+            else:
+                FileCheck().check_regex(output_assert).run(source_code)
             self.assertNotRegex(source_code, r"\bbuf\d+\s*=\s*buf\d+\b")
 
 
