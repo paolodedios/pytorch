@@ -863,7 +863,7 @@ class _TorchDynamoContext:
 
         if dynamic_shapes is not None:
             self.enter_exit_hooks.append(
-                config._make_closure_patcher(_dynamic_shapes=dynamic_shapes)
+                config._make_closure_patcher(_dynamic_shapes_spec=dynamic_shapes)
             )
 
         if on_enter is not nothing:
@@ -2279,7 +2279,7 @@ def export(
     if config.debug_force_graph_break_on_leaf_return:
         raise unittest.SkipTest("Cannot force graph break on export")
 
-    # `dynamic_shapes` is overloaded: it accepts the legacy dict/tuple/list/Dim
+    # `dynamic_shapes` is overloaded: it accepts the Dim-based dict/tuple/list
     # spec, OR the new ShapesSpec/ParamsSpec API. If the latter is passed, we
     # route it through dynamo's `dynamic_shapes` mechanism and skip the legacy
     # constraint processing.
@@ -2553,7 +2553,7 @@ def export(
                     "Failed to produce a graph during tracing as no tensor operations were found and same_signature is False."
                 )
             # If the module does not contain any tensor computation, we would create a graph with inputs and outputs.
-            # To be consistent with the graph traced by dynano, `graph` will have only tensor inputs as placeholders
+            # To be consistent with the graph traced by dynamo, `graph` will have only tensor inputs as placeholders
             # and tensor outputs as output nodes. non-tensor inputs and outputs will be added when rewriting signature.
             # We will also construct the `example_inputs`, `graph_captured_input`, and `graph_captured_result` corresponding
             # to `graph`.

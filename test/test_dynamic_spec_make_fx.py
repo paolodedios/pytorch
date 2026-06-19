@@ -92,6 +92,9 @@ class TestMakeFxDynamicSpec(TestCase):
             """\
 class f(torch.nn.Module):
     def forward(self, x_1: "f32[u0, 3]"):
+        sym_size_int: "Sym(u0)" = torch.ops.aten.sym_size.int(x_1, 0)
+        ge: "Sym(u0 >= 0)" = sym_size_int >= 0;  sym_size_int = None
+        _assert_scalar_default = torch.ops.aten._assert_scalar.default(ge, "Runtime assertion failed for expression u0 >= 0 on node 'ge'");  ge = _assert_scalar_default = None
         sum_1: "f32[3]" = torch.ops.aten.sum.dim_IntList(x_1, [0]);  x_1 = None
         return sum_1""",
             ignore_comments=True,
@@ -170,6 +173,12 @@ class f(torch.nn.Module):
             """\
 class <lambda>(torch.nn.Module):
     def forward(self, arg0_1: "f32[u0, 3]", arg1_1: "f32[u1, 3]"):
+        sym_size_int: "Sym(u0)" = torch.ops.aten.sym_size.int(arg0_1, 0)
+        ge: "Sym(u0 >= 0)" = sym_size_int >= 0;  sym_size_int = None
+        _assert_scalar_default = torch.ops.aten._assert_scalar.default(ge, "Runtime assertion failed for expression u0 >= 0 on node 'ge'");  ge = _assert_scalar_default = None
+        sym_size_int_1: "Sym(u1)" = torch.ops.aten.sym_size.int(arg1_1, 0)
+        ge_1: "Sym(u1 >= 0)" = sym_size_int_1 >= 0;  sym_size_int_1 = None
+        _assert_scalar_default_1 = torch.ops.aten._assert_scalar.default(ge_1, "Runtime assertion failed for expression u1 >= 0 on node 'ge_1'");  ge_1 = _assert_scalar_default_1 = None
         sum_1: "f32[3]" = torch.ops.aten.sum.dim_IntList(arg0_1, [0]);  arg0_1 = None
         sum_2: "f32[3]" = torch.ops.aten.sum.dim_IntList(arg1_1, [0]);  arg1_1 = None
         return (sum_1, sum_2)""",
@@ -193,6 +202,14 @@ class <lambda>(torch.nn.Module):
             """\
 class <lambda>(torch.nn.Module):
     def forward(self, arg0_1: "f32[u0, 3]", arg1_1: "f32[u0, 3]"):
+        sym_size_int: "Sym(u0)" = torch.ops.aten.sym_size.int(arg0_1, 0)
+        ge: "Sym(u0 >= 0)" = sym_size_int >= 0
+        _assert_scalar_default = torch.ops.aten._assert_scalar.default(ge, "Runtime assertion failed for expression u0 >= 0 on node 'ge'");  ge = _assert_scalar_default = None
+        sym_size_int_1: "Sym(u0)" = torch.ops.aten.sym_size.int(arg1_1, 0)
+        ge_1: "Sym(u0 >= 0)" = sym_size_int_1 >= 0
+        _assert_scalar_default_1 = torch.ops.aten._assert_scalar.default(ge_1, "Runtime assertion failed for expression u1 >= 0 on node 'ge_1'");  ge_1 = _assert_scalar_default_1 = None
+        eq: "Sym(True)" = sym_size_int_1 == sym_size_int;  sym_size_int_1 = sym_size_int = None
+        _assert_scalar_default_2 = torch.ops.aten._assert_scalar.default(eq, "Runtime assertion failed for expression Eq(u1, u0) on node 'eq'");  eq = _assert_scalar_default_2 = None
         sum_1: "f32[3]" = torch.ops.aten.sum.dim_IntList(arg0_1, [0]);  arg0_1 = None
         sum_2: "f32[3]" = torch.ops.aten.sum.dim_IntList(arg1_1, [0]);  arg1_1 = None
         return (sum_1, sum_2)""",
@@ -285,6 +302,9 @@ class <lambda>(torch.nn.Module):
             """\
 class f(torch.nn.Module):
     def forward(self, x_1: "f32[u0, 4]"):
+        sym_size_int: "Sym(u0)" = torch.ops.aten.sym_size.int(x_1, 0)
+        ge: "Sym(u0 >= 0)" = sym_size_int >= 0;  sym_size_int = None
+        _assert_scalar_default = torch.ops.aten._assert_scalar.default(ge, "Runtime assertion failed for expression u0 >= 0 on node 'ge'");  ge = _assert_scalar_default = None
         sum_1: "f32[u0]" = torch.ops.aten.sum.dim_IntList(x_1, [1]);  x_1 = None
         return sum_1""",
             ignore_comments=True,
@@ -363,6 +383,15 @@ class f(torch.nn.Module):
             """\
 class <lambda>(torch.nn.Module):
     def forward(self, arg0_1: "f32[u0, 3]", arg1_1: "f32[2*u0, 5]"):
+        sym_size_int_2: "Sym(u0)" = torch.ops.aten.sym_size.int(arg0_1, 0)
+        ge: "Sym(u0 >= 0)" = sym_size_int_2 >= 0
+        _assert_scalar_default = torch.ops.aten._assert_scalar.default(ge, "Runtime assertion failed for expression u0 >= 0 on node 'ge'");  ge = _assert_scalar_default = None
+        sym_size_int_3: "Sym(2*u0)" = torch.ops.aten.sym_size.int(arg1_1, 0)
+        ge_1: "Sym(2*u0 >= 0)" = sym_size_int_3 >= 0
+        _assert_scalar_default_1 = torch.ops.aten._assert_scalar.default(ge_1, "Runtime assertion failed for expression u1 >= 0 on node 'ge_1'");  ge_1 = _assert_scalar_default_1 = None
+        mul_1: "Sym(2*u0)" = 2 * sym_size_int_2;  sym_size_int_2 = None
+        eq_1: "Sym(True)" = sym_size_int_3 == mul_1;  sym_size_int_3 = mul_1 = None
+        _assert_scalar_default_2 = torch.ops.aten._assert_scalar.default(eq_1, "Runtime assertion failed for expression Eq(u1, 2*u0) on node 'eq_1'");  eq_1 = _assert_scalar_default_2 = None
         sum_1: "f32[]" = torch.ops.aten.sum.default(arg0_1);  arg0_1 = None
         sum_2: "f32[]" = torch.ops.aten.sum.default(arg1_1);  arg1_1 = None
         add: "f32[]" = torch.ops.aten.add.Tensor(sum_1, sum_2);  sum_1 = sum_2 = None
@@ -394,7 +423,7 @@ class <lambda>(torch.nn.Module):
     def test_assumption(self):
         """A relational ``assumptions=[A > B]`` is wired into the shape env:
         the assumed-true branch is taken at trace time and the relation
-        is materialized as a runtime assertion."""
+        is materialized as a runtime assertion in the graph."""
         A = VAR("a")
         B = VAR("b")
 
@@ -430,6 +459,19 @@ class <lambda>(torch.nn.Module):
                 for node in gm.graph.nodes
             )
         )
+        # The assumption is materialized as a runtime assertion node in the
+        # graph and enforced when the graph is executed.
+        self.assertTrue(
+            any(
+                node.op == "call_function" and "_assert_scalar" in str(node.target)
+                for node in gm.graph.nodes
+            )
+        )
+        # Correct: a=5 > b=3.
+        gm(torch.randn(5, 2), torch.randn(3, 2))
+        # Violation: a=2 not > b=3.
+        with self.assertRaisesRegex(RuntimeError, "Runtime assertion failed"):
+            gm(torch.randn(2, 2), torch.randn(3, 2))
 
     def test_tensor_dim_optimization_hint(self):
         """A ShapeVar's ``optimization_hint`` lands in the shape env's
@@ -493,8 +535,16 @@ class <lambda>(torch.nn.Module):
 class <lambda>(torch.nn.Module):
     def forward(self, arg0, arg1, arg2):
         arg0_1: "f32[7, 3]"; arg0_2: "f32[u0, 3]"; arg1_1: "f32[4, 3]"; arg1_2: "f32[u1, 3]"; arg2_1: "f32[6, 3]"; arg2_2: "f32[u2, 3]";
-
         arg0_1, arg0_2, arg1_1, arg1_2, arg2_1, arg2_2, = fx_pytree.tree_flatten_spec([arg0, arg1, arg2], self._in_spec)
+        sym_size_int: "Sym(u0)" = torch.ops.aten.sym_size.int(arg0_2, 0)
+        ge: "Sym(u0 >= 0)" = sym_size_int >= 0;  sym_size_int = None
+        _assert_scalar_default = torch.ops.aten._assert_scalar.default(ge, "Runtime assertion failed for expression u0 >= 0 on node 'ge'");  ge = _assert_scalar_default = None
+        sym_size_int_1: "Sym(u1)" = torch.ops.aten.sym_size.int(arg1_2, 0)
+        ge_1: "Sym(u1 >= 0)" = sym_size_int_1 >= 0;  sym_size_int_1 = None
+        _assert_scalar_default_1 = torch.ops.aten._assert_scalar.default(ge_1, "Runtime assertion failed for expression u1 >= 0 on node 'ge_1'");  ge_1 = _assert_scalar_default_1 = None
+        sym_size_int_2: "Sym(u2)" = torch.ops.aten.sym_size.int(arg2_2, 0)
+        ge_2: "Sym(u2 >= 0)" = sym_size_int_2 >= 0;  sym_size_int_2 = None
+        _assert_scalar_default_2 = torch.ops.aten._assert_scalar.default(ge_2, "Runtime assertion failed for expression u2 >= 0 on node 'ge_2'");  ge_2 = _assert_scalar_default_2 = None
         sum_1: "f32[3]" = torch.ops.aten.sum.dim_IntList(arg0_2, [0]);  arg0_2 = None
         sum_2: "f32[3]" = torch.ops.aten.sum.dim_IntList(arg1_2, [0]);  arg1_2 = None
         add: "f32[3]" = torch.ops.aten.add.Tensor(sum_1, sum_2);  sum_1 = sum_2 = None
