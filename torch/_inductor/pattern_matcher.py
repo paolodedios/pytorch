@@ -161,7 +161,7 @@ def _transfer_meta(
 
     # Transfer metadata after pattern matching occurs.
     # Copies _COPY_META_FIELDS, stack_trace, and (if missing) val/tensor_meta.
-    if config.trace.provenance_tracking_level == 1:
+    if config.effective_provenance_tracking_level() == 1:
         new_from_node = new_meta.get("from_node", []).copy()
         new_from_node.append(NodeSource(old_node, pass_name, NodeSourceAction.REPLACE))
         new_meta.update(
@@ -545,6 +545,18 @@ def _get_fake_tensor_constant(value: torch.Tensor) -> torch.Tensor | None:
     return value
 
 
+def _tensor_values_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
+    if torch.equal(a, b):
+        return True
+    if a.dtype.is_complex:
+        return _tensor_values_equal(a.real, b.real) and _tensor_values_equal(
+            a.imag, b.imag
+        )
+    if a.dtype.is_floating_point:
+        return bool(((a == b) | (torch.isnan(a) & torch.isnan(b))).all().item())
+    return False
+
+
 def _constant_values_equal(a: Any, b: Any) -> bool:
     if isinstance(a, torch.Tensor) or isinstance(b, torch.Tensor):
         if not isinstance(a, torch.Tensor) or not isinstance(b, torch.Tensor):
@@ -562,7 +574,7 @@ def _constant_values_equal(a: Any, b: Any) -> bool:
             return False
         try:
             with unset_fake_temporarily():
-                return bool(torch.equal(a_constant, b_constant))
+                return _tensor_values_equal(a_constant, b_constant)
         except Exception:
             return False
 
