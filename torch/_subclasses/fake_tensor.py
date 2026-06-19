@@ -99,6 +99,9 @@ _MKLDNN_AUXILIARY_TENSOR_NAMESPACES = {
     "mkl",
     "onednn",
 }
+_MKLDNN_AUXILIARY_TENSOR_OPS = {
+    aten.mkldnn_rnn_layer.default,
+}
 
 CONSTANT_NUMEL_LIMIT = 1
 
@@ -888,7 +891,10 @@ def _is_mkldnn_tensor_arg(arg: Tensor) -> bool:
 
 
 def _allows_mkldnn_auxiliary_tensors(func: OpOverload) -> bool:
-    return func.namespace in _MKLDNN_AUXILIARY_TENSOR_NAMESPACES
+    return (
+        func in _MKLDNN_AUXILIARY_TENSOR_OPS
+        or func.namespace in _MKLDNN_AUXILIARY_TENSOR_NAMESPACES
+    )
 
 
 def _should_propagate_mkldnn(func: OpOverload, flat_args: Sequence[object]) -> bool:
