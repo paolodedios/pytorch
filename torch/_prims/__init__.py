@@ -1283,6 +1283,11 @@ def _broadcast_in_dim_meta(
         sym_or,
     )
 
+    def guard_or_false_unless_exporting(x):
+        if torch.compiler.is_exporting():
+            return statically_known_true(x)
+        return guard_or_false(x)
+
     # Type checks
     if not isinstance(a, TensorLike):
         raise AssertionError(f"a must be TensorLike, got {type(a)}")  # mypy
@@ -1337,9 +1342,9 @@ def _broadcast_in_dim_meta(
         if idx in broadcast_dimensions:
             # Assigns a stride of zero to dimensions
             # which were actually broadcast
-            if statically_known_true(a.shape[original_idx] == shape[idx]):
+            if guard_or_false_unless_exporting(a.shape[original_idx] == shape[idx]):
                 new_strides.append(a.stride()[original_idx])
-            elif statically_known_true(a.shape[original_idx] == 1):
+            elif guard_or_false_unless_exporting(a.shape[original_idx] == 1):
                 new_strides.append(0)
             else:
                 torch._check(

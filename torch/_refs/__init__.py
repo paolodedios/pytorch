@@ -489,15 +489,41 @@ def _maybe_broadcast(*args, preserve_cpu_scalar_tensors=True):
     )
 
     def should_expand(a: ShapeType, b: ShapeType) -> bool:
-        from torch.fx.experimental.symbolic_shapes import statically_known_true
+        from torch.fx.experimental.symbolic_shapes import (
+            guard_or_false,
+            statically_known_true,
+            sym_and,
+            sym_or,
+        )
 
         if len(a) != len(b):
             return True
 
+        if torch.compiler.is_exporting():
+            for x, y in zip(a, b):
+                if not statically_known_true(x == y):
+                    return True
+            return False
+
         for x, y in zip(a, b):
-            if statically_known_true(x == y):
-                continue
-            return True
+            if guard_or_false(x != y):
+                # We know they are not the same.
+                return True
+
+            # They are the same or we do not know if they are the same or not.
+            # 1==1 no-broadcast
+            # u0==1 and 1==u0 cases. We broadcast!
+            if guard_or_false(sym_and(x == 1, y == 1)):
+                pass
+            elif guard_or_false(sym_or(x == 1, y == 1)):
+                # assume broadcasting.
+                return True
+
+            # u0==u1 assume the same, no broadcasting!
+            torch._check(
+                x == y,
+                lambda: "sizes assumed to be the same due to unbacked broadcasting semantics",
+            )
 
         return False
 
@@ -3352,8 +3378,6 @@ def _unsqueeze_multiple(x: TensorLikeType, dimensions: list[int]) -> TensorLikeT
 
 
 def _contiguous_or_clone_without_guards(x: TensorLikeType) -> TensorLikeType:
-    from torch._prims_common import is_contiguous_or_false
-
     if is_contiguous_or_false(x):
         return x
     return x.clone(memory_format=torch.contiguous_format)

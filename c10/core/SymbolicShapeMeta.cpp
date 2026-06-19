@@ -92,21 +92,6 @@ bool all_hinted(
   return all_hinted;
 }
 
-bool any_symbolic(
-    const c10::SymIntArrayRef& sizes,
-    const c10::SymIntArrayRef& strides) {
-  for (const auto& s : sizes) {
-    if (s.is_symbolic()) {
-      return true;
-    }
-  }
-  for (const auto& s : strides) {
-    if (s.is_symbolic()) {
-      return true;
-    }
-  }
-  return false;
-}
 } // namespace
 
 // Special treatment because of numel
@@ -125,10 +110,10 @@ SymBool SymbolicShapeMeta::compute_contiguous() const {
     return maybe_as_bool.value();
   }
 
-  if (all_hinted(sizes, strides) && !any_symbolic(sizes, strides) &&
-      !numel().is_symbolic()) {
+  if (all_hinted(sizes, strides)) {
     // We avoid going through the slow path if everything is hinted,
     // because evaluating a large SymPy expression can be expensive.
+    // TODO exclude backed_size_oblivious from this path.
     return _compute_contiguous<SymInt>(sizes_, strides_, numel());
   }
 
@@ -150,9 +135,10 @@ SymBool SymbolicShapeMeta::compute_channels_last_contiguous_2d() const {
     return maybe_as_bool.value();
   }
 
-  if (all_hinted(sizes, strides) && !any_symbolic(sizes, strides)) {
+  if (all_hinted(sizes, strides)) {
     // We avoid going through the slow path if everything is hinted,
     // because evaluating a large SymPy expression can be expensive.
+    // TODO exclude backed_size_oblivious from this path.
     return _compute_channels_last_contiguous_2d<SymInt>(sizes_, strides_);
   }
 
@@ -174,9 +160,10 @@ SymBool SymbolicShapeMeta::compute_channels_last_contiguous_3d() const {
     return maybe_as_bool.value();
   }
 
-  if (all_hinted(sizes, strides) && !any_symbolic(sizes, strides)) {
+  if (all_hinted(sizes, strides)) {
     // We avoid going through the slow path if everything is hinted,
     // because evaluating a large SymPy expression can be expensive.
+    // TODO exclude backed_size_oblivious from this path.
     return _compute_channels_last_contiguous_3d<SymInt>(sizes_, strides_);
   }
 
