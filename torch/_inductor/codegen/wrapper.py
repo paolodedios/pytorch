@@ -1271,11 +1271,10 @@ class AssertSizeStrideLine(WrapperLine):
     size: str
     stride: str
     op_name: str = "input"
-    dtype: torch.dtype | None = None
 
     def codegen(self, code: IndentedBuffer) -> None:
         self.wrapper._codegen_assert_size_stride(
-            code, self.name, self.size, self.stride, self.op_name, self.dtype
+            code, self.name, self.size, self.stride, self.op_name
         )
 
     @staticmethod
@@ -1774,15 +1773,10 @@ class PythonWrapperCodegen(CodeGen):
                 self.write_assert_size_stride(name, size, stride, "input")
 
     def write_assert_size_stride(
-        self,
-        name: str,
-        size: str,
-        stride: str,
-        op_name: str,
-        dtype: torch.dtype | None = None,
+        self, name: str, size: str, stride: str, op_name: str
     ) -> None:
         """Queue an assert_size_stride for emission during replay."""
-        self.writeline(AssertSizeStrideLine(self, name, size, stride, op_name, dtype))
+        self.writeline(AssertSizeStrideLine(self, name, size, stride, op_name))
 
     def _codegen_assert_size_stride(
         self,
@@ -1791,22 +1785,13 @@ class PythonWrapperCodegen(CodeGen):
         size: str,
         stride: str,
         op_name: str,
-        dtype: torch.dtype | None = None,
     ) -> None:
         """Emit one assert_size_stride line to `code` (replay-phase target).
 
         Subclasses override to change the emitted form (e.g., C++ assert with
         an AOTI runtime env guard).
         """
-        if dtype is None:
-            code.writeline(f"assert_size_stride({name}, {size}, {stride}, {op_name!r})")
-        else:
-            self.add_import_once(
-                "from torch._inductor.runtime.runtime_utils import assert_tensor_metadata"
-            )
-            code.writeline(
-                f"assert_tensor_metadata({name}, {size}, {stride}, {dtype}, {op_name!r})"
-            )
+        code.writeline(f"assert_size_stride({name}, {size}, {stride}, {op_name!r})")
 
     def write_assert_div_by_zero(self, divisor_str: str, op_name: str) -> None:
         """Queue a div-by-zero AOTI check for emission during replay.
@@ -2485,33 +2470,24 @@ class PythonWrapperCodegen(CodeGen):
             return f"{name}_stride"
 
         def maybe_emit_replacement_aliases(sym: sympy.Symbol) -> None:
-            # Deferred runtime asserts and graph input metadata can reference
-            # either side of a backed-symbol replacement. Emit aliases so both
-            # the pre-replacement and canonical names are defined.
+            # Deferred runtime asserts reference pre-replacement backed
+            # symbols (e.g. s77) that were replaced to this canonical
+            # symbol (s31) during constraint solving. Emit aliases so
+            # the asserts compile. Skip unbacked symbols — they are
+            # defined separately by the unbacked symbol codegen path.
             from torch.utils._sympy.symbol import symbol_is_type, SymT
-
-            def is_backed_symbol(s: sympy.Symbol) -> bool:
-                return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
 
             for src, tgt in V.graph.sizevars.shape_env.replacements.items():
                 if (
                     tgt == sym
                     and isinstance(src, sympy.Symbol)
                     and src not in bound_vars
-                    and is_backed_symbol(src)
-                    and is_backed_symbol(sym)
+                    and not symbol_is_type(
+                        src, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
+                    )
                 ):
                     code.writeline(f"{src} = {sym}")
                     bound_vars.add(src)
-                elif (
-                    src == sym
-                    and isinstance(tgt, sympy.Symbol)
-                    and tgt not in bound_vars
-                    and is_backed_symbol(sym)
-                    and is_backed_symbol(tgt)
-                ):
-                    code.writeline(f"{tgt} = {sym}")
-                    bound_vars.add(tgt)
 
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:

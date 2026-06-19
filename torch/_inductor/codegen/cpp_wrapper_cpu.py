@@ -672,38 +672,24 @@ class CppWrapperCpu(PythonWrapperCodegen):
             return f"{name}_stride"
 
         def maybe_emit_replacement_aliases(sym: sympy.Symbol) -> None:
-            # Deferred runtime asserts and graph input metadata can reference
-            # either side of a backed-symbol replacement. Emit aliases so both
-            # the pre-replacement and canonical names are defined.
-            def is_backed_symbol(s: sympy.Symbol) -> bool:
-                return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
-
-            def decl_type(s: sympy.Symbol) -> str:
-                if s.is_integer:
-                    return "int64_t"
-                if s.is_float:
-                    return "double"
-                raise AssertionError("Unexpected symbol type")
+            # Deferred runtime asserts reference pre-replacement backed
+            # symbols (e.g. s77) that were replaced to this canonical
+            # symbol (s31) during constraint solving. Emit aliases so
+            # the asserts compile. Skip unbacked symbols — they are
+            # defined separately by the unbacked symbol codegen path.
+            from torch.utils._sympy.symbol import symbol_is_type, SymT
 
             for src, tgt in V.graph.sizevars.shape_env.replacements.items():
                 if (
                     tgt == sym
                     and isinstance(src, sympy.Symbol)
                     and src not in bound_vars
-                    and is_backed_symbol(src)
-                    and is_backed_symbol(sym)
+                    and not symbol_is_type(
+                        src, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
+                    )
                 ):
-                    code.writeline(f"{decl_type(src)} {src} = {sym};")
+                    code.writeline(f"int64_t {src} = {sym};")
                     bound_vars.add(src)
-                elif (
-                    src == sym
-                    and isinstance(tgt, sympy.Symbol)
-                    and tgt not in bound_vars
-                    and is_backed_symbol(sym)
-                    and is_backed_symbol(tgt)
-                ):
-                    code.writeline(f"{decl_type(tgt)} {tgt} = {sym};")
-                    bound_vars.add(tgt)
 
         def codegen_symbol(
             sym_or_exp: sympy.Symbol | sympy.Expr,
@@ -2265,14 +2251,10 @@ class CppWrapperCpu(PythonWrapperCodegen):
         size: str,
         stride: str,
         op_name: str,
-        dtype: torch.dtype | None = None,
     ) -> None:
         if V.graph.aot_mode and V.graph.is_const_graph:
             return
-        dtype_args = (
-            f', {self.codegen_dtype(dtype)}, "{dtype}"' if dtype is not None else ""
-        )
-        stmt = f'assert_size_stride({name}, {size}, {stride}, "{op_name}"{dtype_args});'
+        stmt = f'assert_size_stride({name}, {size}, {stride}, "{op_name}");'
         if V.graph.aot_mode:
             guarded = f"if (_check_aoti_runtime_check_inputs_env()) {{ {stmt} }}"
             if V.graph.is_dual_wrapper_mode:

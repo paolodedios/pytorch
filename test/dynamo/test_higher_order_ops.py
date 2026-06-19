@@ -1673,7 +1673,7 @@ class GraphModule(torch.nn.Module):
             return wrap(f, x)
 
         x = torch.randn(3, 3)
-        arg_count = ifdynstaticdefault(2, 3)
+        arg_count = ifdynstaticdefault(2, 4)
         self._test_wrap_simple(g, default_args_generator((x,)), arg_count)
 
     def test_wrap_kwarg(self):
