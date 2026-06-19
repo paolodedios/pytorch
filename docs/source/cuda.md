@@ -131,6 +131,7 @@
     :nosignatures:
 
      empty_cache
+     clear_cublas_workspaces
      get_per_process_memory_fraction
      list_gpu_processes
      mem_get_info
