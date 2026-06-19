@@ -830,6 +830,93 @@ class TestFxGraphCache(TestCase):
         self.assertEqual(stats.hit, 1)
         cache_stats._stats.clear()
 
+    def test_save_graph_with_legacy_shape_env(self):
+        from torch._inductor.compile_fx import CompiledFxGraph
+
+        class LegacyShapeEnv:
+            def __init__(self):
+                self.produce_guards_expression_called = False
+
+            def get_pruned_guards(self, symints):
+                self.symints = symints
+                return []
+
+            def produce_guards_expression(
+                self, placeholders, *, guards=None, ignore_static=True
+            ):
+                self.produce_guards_expression_called = True
+                self.placeholders = placeholders
+                self.guards = guards
+                return "legacy_guard"
+
+        compiled_graph = object.__new__(CompiledFxGraph)
+        compiled_graph.current_callable = None
+        compiled_graph.recursively_apply_fns = None
+        compiled_graph.compiled_fn_runner = None
+        compiled_graph._compile_context = None
+        compiled_graph._original_gm = None
+
+        shape_env = LegacyShapeEnv()
+        with mock.patch.object(FxGraphCache, "_get_shape_env", return_value=shape_env):
+            FxGraphCache._save_graph(
+                "legacy_shape_env_test",
+                compiled_graph,
+                [],
+                local=False,
+                remote_cache=None,
+            )
+
+        self.assertTrue(shape_env.produce_guards_expression_called)
+        self.assertEqual(shape_env.symints, [])
+        self.assertEqual(shape_env.placeholders, [])
+        self.assertEqual(shape_env.guards, [])
+        self.assertEqual(compiled_graph.guards_expr, "legacy_guard")
+        self.assertIsNone(compiled_graph.guards_expr_with_source)
+        self.assertIsNone(compiled_graph.guards_expr_with_source_arg_count)
+
+    def test_cache_load_falls_back_to_plain_guards_with_legacy_shape_env(self):
+        class LegacyShapeEnv:
+            def __init__(self):
+                self.evaluated_guards = None
+                self.guards = []
+
+            def evaluate_guards_expression(self, code, args):
+                self.evaluated_guards = (code, args)
+                return True
+
+        shape_env = LegacyShapeEnv()
+        graph = types.SimpleNamespace(
+            guards_expr="legacy_guard",
+            guards_expr_with_source=[object()],
+            guards_expr_with_source_arg_count=0,
+            extern_libs_key=None,
+        )
+
+        with (
+            mock.patch.object(FxGraphCache, "_get_shape_env", return_value=shape_env),
+            mock.patch.object(
+                FxGraphCache,
+                "find_guarded_entry",
+                return_value=(graph, None, {}),
+            ),
+            mock.patch.object(
+                FxGraphCache,
+                "cache_hit_post_compile",
+                return_value=("compiled_graph", {}),
+            ),
+        ):
+            compiled_graph, cache_info = FxGraphCache._lookup_graph(
+                "legacy_shape_env_test",
+                [],
+                local=False,
+                remote_cache=None,
+                constants=mock.sentinel.constants,
+            )
+
+        self.assertEqual(compiled_graph, "compiled_graph")
+        self.assertEqual(cache_info, {})
+        self.assertEqual(shape_env.evaluated_guards, ("legacy_guard", []))
+
     @config.patch({"fx_graph_cache": True, "fx_graph_remote_cache": False})
     @functorch_config.patch({"enable_autograd_cache": False})
     def test_default_dtype_affects_factory_cache_key(self):

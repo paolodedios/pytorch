@@ -2178,6 +2178,7 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
                 guards_expr_with_source is not None
                 and guards_expr_with_source_arg_count == len(symints)
                 and not config.unsafe_skip_cache_dynamic_shape_guards
+                and hasattr(shape_env, "evaluate_guards_expression_with_source_info")
             )
             if can_replay_guards_with_source:
                 check = shape_env.evaluate_guards_expression_with_source_info(
@@ -2240,12 +2241,18 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
             raise AssertionError("ShapeEnv is not set for cache serialization")
         symints = FxGraphCache._filter_backed_symints(example_inputs)
         guards = shape_env.get_pruned_guards(symints)
-        (
-            compiled_graph.guards_expr,
-            compiled_graph.guards_expr_with_source,
-        ) = shape_env.produce_guards_expression_with_source_info(
-            placeholders=symints, guards=guards
-        )
+        if hasattr(shape_env, "produce_guards_expression_with_source_info"):
+            (
+                compiled_graph.guards_expr,
+                compiled_graph.guards_expr_with_source,
+            ) = shape_env.produce_guards_expression_with_source_info(
+                symints, guards=guards
+            )
+        else:
+            compiled_graph.guards_expr = shape_env.produce_guards_expression(
+                symints, guards=guards
+            )
+            compiled_graph.guards_expr_with_source = None
         compiled_graph.guards_expr_with_source_arg_count = (
             len(symints) if compiled_graph.guards_expr_with_source is not None else None
         )
