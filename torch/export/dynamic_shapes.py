@@ -579,6 +579,9 @@ def _process_equalities(
                     dynamic_dim=torch.fx.experimental.symbolic_shapes.DimDynamic.DYNAMIC,
                     constraint_dim=constraint.root.constraint_range,
                     do_not_specialize_zero_one=constraint.root.do_not_specialize_zero_one,
+                    skip_zero_one_guard_specialization=(
+                        constraint.root.do_not_specialize_zero_one
+                    ),
                 )
                 phantom_symbols[constraint.root.name] = root
 
