@@ -1189,8 +1189,9 @@ class CppWrapperCpuArrayRef(CppWrapperCpu):
         # while stack-allocation results in ArrayRefTensor
         # so disable stack allocation here
         self.allow_stack_allocation = False
+        dst = f"expensive_copy_to_tensor_if_needed({dst})"
         self.codegen_fallback_line(
-            f"AOTI_TORCH_ERROR_CODE_CHECK(aoti_torch_copy_(expensive_copy_to_tensor_if_needed({dst}), {src}, {non_blocking}));"
+            f"AOTI_TORCH_ERROR_CODE_CHECK({self.codegen_fallback_copy_call(dst, src, non_blocking)});"
         )
 
     def codegen_reinterpret_view(

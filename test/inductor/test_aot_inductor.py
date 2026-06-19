@@ -2480,9 +2480,6 @@ class AOTInductorTestsTemplate:
         }
         self.check_model(Repro(), example_inputs, dynamic_shapes=spec)
 
-    @skipIfXpu(
-        msg="FlashAttentionForward headdim limitation on xpu - torch-xpu-ops: 2698"
-    )
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Some archs don't support flash SDPA"
     )
@@ -4738,7 +4735,10 @@ class AOTInductorTestsTemplate:
 
         inputs = (torch.randn(4, device=self.device),)
         _, code = run_and_get_cpp_code(AOTIRunnerUtil.compile, copy_fn, inputs)
-        self.assertIn("aoti_torch_copy_", code)
+        self.assertIn("#include <torch/csrc/stable/macros.h>", code)
+        self.assertIn("TORCH_DYNAMIC_VERSION_CALL_2_14_0(", code)
+        self.assertIn("aoti_torch_copy_below_autograd_", code)
+        self.assertNotIn("AOTI_TORCH_ERROR_CODE_CHECK(aoti_torch_copy_(", code)
         self.assertNotIn("ATen/core/LegacyTypeDispatch.h", code)
         self.assertNotIn("at::AutoDispatchBelowADInplaceOrView guard;", code)
 

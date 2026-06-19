@@ -1238,6 +1238,16 @@ class ScatterFallbackLine(WrapperLine):
 
 
 @dataclasses.dataclass
+class FallbackDispatchLine(WrapperLine):
+    line: str
+
+    def codegen(self, code: IndentedBuffer) -> None:
+        code.writeline("with torch._C._AutoDispatchBelowADInplaceOrView():")
+        with code.indent():
+            code.writeline(self.line)
+
+
+@dataclasses.dataclass
 class SymbolicCallArgLine(WrapperLine):
     wrapper: PythonWrapperCodegen
     arg: SymbolicCallArg
@@ -1346,7 +1356,6 @@ class PythonWrapperCodegen(CodeGen):
         self.none_str = "None"
         self.move_begin = "std::move(" if V.graph.cpp_wrapper else ""
         self.move_end = ")" if V.graph.cpp_wrapper else ""
-        self.needs_fallback_dispatch_guard = False
         self.last_seen_device_guard_index: int | None = None
         self.supports_intermediate_hooks = True
         self.user_defined_kernel_cache: dict[
@@ -2271,27 +2280,6 @@ class PythonWrapperCodegen(CodeGen):
         else:
             self.header.splice(kernel_defs)
 
-    @staticmethod
-    def _wrapper_line_needs_fallback_dispatch_guard(line: Line) -> bool:
-        if isinstance(line, (IndexPutFallbackLine, ScatterFallbackLine)):
-            return True
-        if isinstance(
-            line,
-            (ExternKernelAllocLine, ExternKernelOutLine, ExternKernelMultiOutLine),
-        ):
-            return isinstance(line.node, (ir.FallbackKernel, ir.FallbackKernelOut))
-        return False
-
-    def should_wrap_entire_wrapper_call_below_autograd(self) -> bool:
-        if V.graph.cpp_wrapper:
-            return False
-        # Some fallback paths only set the flag while line.codegen() runs, so
-        # scan wrapper lines eagerly before deciding whether to emit the guard.
-        return self.needs_fallback_dispatch_guard or any(
-            self._wrapper_line_needs_fallback_dispatch_guard(line)
-            for line in self.lines
-        )
-
     def _generate(self, is_inference):
         if config.profile_bandwidth:
             self.write_triton_header_once()
@@ -2300,11 +2288,6 @@ class PythonWrapperCodegen(CodeGen):
             self.run_wrapper_ir_passes(is_inference)
 
             stack.enter_context(self.wrapper_call.indent())
-            if self.should_wrap_entire_wrapper_call_below_autograd():
-                self.wrapper_call.writeline(
-                    "with torch._C._AutoDispatchBelowADInplaceOrView():"
-                )
-                stack.enter_context(self.wrapper_call.indent())
             if config.profiler_mark_wrapper_call:
                 self.generate_profiler_mark_wrapper_call(stack)
             if config.profile_bandwidth:
@@ -2513,33 +2496,24 @@ class PythonWrapperCodegen(CodeGen):
             return f"{name}_stride"
 
         def maybe_emit_replacement_aliases(sym: sympy.Symbol) -> None:
-            # Deferred runtime asserts and graph input metadata can reference
-            # either side of a backed-symbol replacement. Emit aliases so both
-            # the pre-replacement and canonical names are defined.
+            # Deferred runtime asserts reference pre-replacement backed
+            # symbols (e.g. s77) that were replaced to this canonical
+            # symbol (s31) during constraint solving. Emit aliases so
+            # the asserts compile. Skip unbacked symbols — they are
+            # defined separately by the unbacked symbol codegen path.
             from torch.utils._sympy.symbol import symbol_is_type, SymT
-
-            def is_backed_symbol(s: sympy.Symbol) -> bool:
-                return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
 
             for src, tgt in V.graph.sizevars.shape_env.replacements.items():
                 if (
                     tgt == sym
                     and isinstance(src, sympy.Symbol)
                     and src not in bound_vars
-                    and is_backed_symbol(src)
-                    and is_backed_symbol(sym)
+                    and not symbol_is_type(
+                        src, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
+                    )
                 ):
                     code.writeline(f"{src} = {sym}")
                     bound_vars.add(src)
-                elif (
-                    src == sym
-                    and isinstance(tgt, sympy.Symbol)
-                    and tgt not in bound_vars
-                    and is_backed_symbol(sym)
-                    and is_backed_symbol(tgt)
-                ):
-                    code.writeline(f"{tgt} = {sym}")
-                    bound_vars.add(tgt)
 
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:
@@ -2730,8 +2704,7 @@ class PythonWrapperCodegen(CodeGen):
         self.writeline(f"{event_var}.synchronize()")
 
     def codegen_fallback_line(self, line: str) -> None:
-        self.needs_fallback_dispatch_guard = True
-        self.writeline(line)
+        self.writeline(self.wrap_fallback_dispatch(line))
 
     def codegen_fallback_device_copy(self, src, dst, non_blocking: bool | str):
         self.codegen_fallback_line(f"{dst}.copy_({src}, {non_blocking})")
@@ -3445,8 +3418,7 @@ class PythonWrapperCodegen(CodeGen):
         buffer.writeline(V.graph.device_ops.synchronize())
 
     def wrap_fallback_dispatch(self, line):
-        self.needs_fallback_dispatch_guard = True
-        return line
+        return FallbackDispatchLine(line)
 
     def generate_profiler_mark_wrapper_call(self, stack):
         self.wrapper_call.writeline("from torch.profiler import record_function")

@@ -309,6 +309,17 @@ class CPUReproTests(TestCase):
 
     @config.patch(cpp_wrapper=False)
     def test_special_fallback_codegen_runs_below_autograd(self):
+        def no_fallback_fn(x):
+            return x.sin().cos()
+
+        _, (no_fallback_code,) = run_and_get_code(
+            torch.compile(no_fallback_fn, backend="inductor", fullgraph=True),
+            torch.randn(4),
+        )
+        FileCheck().check_not("torch._C._AutoDispatchBelowADInplaceOrView").run(
+            no_fallback_code
+        )
+
         def copy_fn(x):
             return x.to(torch.complex64)
 
@@ -319,6 +330,22 @@ class CPUReproTests(TestCase):
         FileCheck().check("with torch._C._AutoDispatchBelowADInplaceOrView():").check(
             ".copy_("
         ).run(copy_code)
+        self.assertIn("\n        return (", copy_code)
+        self.assertNotIn("\n            return (", copy_code)
+
+        def mixed_fn(x):
+            y = x.to(torch.complex64)
+            return y.real + x
+
+        _, (mixed_code,) = run_and_get_code(
+            torch.compile(mixed_fn, backend="inductor", fullgraph=True),
+            torch.randn(4),
+        )
+        FileCheck().check("with torch._C._AutoDispatchBelowADInplaceOrView():").check(
+            ".copy_("
+        ).check("cpp_fused").run(mixed_code)
+        self.assertIn("\n        cpp_fused", mixed_code)
+        self.assertNotIn("\n            cpp_fused", mixed_code)
 
         def bernoulli_fn(x):
             y = x.clone()
@@ -1773,6 +1800,34 @@ class CPUReproTests(TestCase):
             ref = fn(*inp_clone2)
             res = cfn(*inp_clone3)
             self.assertEqual(ref, res, atol=1e-3, rtol=1e-3)
+
+    def test_randperm_full_advanced_indexing_issue_158457(self):
+        def full_index(x):
+            perm = torch.randperm(x.size(0))
+            return x[perm]
+
+        x = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+
+        full_actual = torch.compile(full_index, backend="inductor", fullgraph=True)(x)
+        self.assertEqual(full_actual.shape, x.shape)
+        self.assertEqual(torch.sort(full_actual[:, 0]).values, x[:, 0])
+
+    def test_randperm_sliced_advanced_indexing_issue_158457(self):
+        def sliced_index(x):
+            perm = torch.randperm(x.size(0))[:2]
+            return x[perm]
+
+        x = torch.arange(12, dtype=torch.float32).reshape(3, 4)
+
+        sliced_actual = torch.compile(sliced_index, backend="inductor", fullgraph=True)(
+            x
+        )
+        self.assertEqual(sliced_actual.shape, (2, x.size(1)))
+        self.assertEqual(sliced_actual[:, 1:], sliced_actual[:, :1] + x[0, 1:])
+        self.assertTrue((sliced_actual[:, :1] == x[:, 0]).any(dim=1).all().item())
+        self.assertEqual(
+            torch.unique(sliced_actual[:, 0]).numel(), sliced_actual.size(0)
+        )
 
     def test_ModularIndexing_range_issue_103133(self):
         def fn(q, k):

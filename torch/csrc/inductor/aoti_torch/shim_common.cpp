@@ -972,6 +972,16 @@ AOTITorchError aoti_torch_copy_(
     AtenTensorHandle src,
     int32_t non_blocking) {
   AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
+    tensor_handle_to_tensor_pointer(self)->copy_(
+        *tensor_handle_to_tensor_pointer(src), non_blocking);
+  });
+}
+
+AOTITorchError aoti_torch_copy_below_autograd_(
+    AtenTensorHandle self,
+    AtenTensorHandle src,
+    int32_t non_blocking) {
+  AOTI_TORCH_CONVERT_EXCEPTION_TO_ERROR_CODE({
     at::AutoDispatchBelowADInplaceOrView guard;
     tensor_handle_to_tensor_pointer(self)->copy_(
         *tensor_handle_to_tensor_pointer(src), non_blocking);
