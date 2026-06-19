@@ -706,7 +706,7 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
 
     @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
-    @requires_nccl_version((2, 28, 0), "nccl_all_to_all_permute requires nccl 2.28")
+    @requires_nccl_version((2, 28, 0), "nccl_all_to_all_nd requires nccl 2.28")
     @skip_if_lt_x_gpu(2)
     @parametrize(
         "scatter_gather,out_2d,input_3d",
@@ -721,8 +721,8 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
             ((0, 1), True, True),
         ],
     )
-    def test_all_to_all_permute(self, scatter_gather, out_2d, input_3d):
-        """all_to_all_permute: (1,0)/(0,1); 3-D input [rows,G,loc] or [G,loc,cols] where supported."""
+    def test_all_to_all_nd(self, scatter_gather, out_2d, input_3d):
+        """all_to_all_nd: (1,0)/(0,1); 3-D input [rows,G,loc] or [G,loc,cols] where supported."""
         scatter_dim, gather_dim = scatter_gather
         symm_mem.set_backend("NCCL")
         torch.cuda.set_device(self.rank)
@@ -748,7 +748,7 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
                 out = torch.empty(p * rows, local_cols, dtype=dtype, device=self.device)
             else:
                 out = torch.empty(p, rows, local_cols, dtype=dtype, device=self.device)
-            symm_mem.all_to_all_permute(
+            symm_mem.all_to_all_nd(
                 buf,
                 out,
                 scatter_dim=scatter_dim,
@@ -784,7 +784,7 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
                 out = torch.empty(local_rows, p * cols, dtype=dtype, device=self.device)
             else:
                 out = torch.empty(local_rows, p, cols, dtype=dtype, device=self.device)
-            symm_mem.all_to_all_permute(
+            symm_mem.all_to_all_nd(
                 buf,
                 out,
                 scatter_dim=scatter_dim,

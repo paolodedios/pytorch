@@ -2298,7 +2298,7 @@ def is_symm_mem_tensor(tensor: torch.Tensor) -> bool:
     return _SymmetricMemory.is_symm_mem_tensor(tensor)
 
 
-def all_to_all_permute(
+def all_to_all_nd(
     input: torch.Tensor,
     out: torch.Tensor,
     scatter_dim: int,
@@ -2307,7 +2307,7 @@ def all_to_all_permute(
     group: str,
 ) -> None:
     r"""
-    all_to_all_permute(input, out, scatter_dim, gather_dim, *, group) -> None
+    all_to_all_nd(input, out, scatter_dim, gather_dim, *, group) -> None
 
     Permute-free all-to-all: shards along ``scatter_dim`` of ``input`` are exchanged
     so each rank receives one shard per peer; results are laid out along ``gather_dim``
@@ -2339,11 +2339,11 @@ def all_to_all_permute(
     """
     backend = get_backend(input.device)
     if backend == "NCCL":
-        torch.ops.symm_mem.nccl_all_to_all_permute(
+        torch.ops.symm_mem.nccl_all_to_all_nd(
             input, out, scatter_dim, gather_dim, group
         )
     else:
-        raise NotImplementedError(f"all_to_all_permute: unsupported backend: {backend}")
+        raise NotImplementedError(f"all_to_all_nd: unsupported backend: {backend}")
 
 
 __all__ = [
@@ -2357,5 +2357,5 @@ __all__ = [
     "get_signal_pad_size",
     "get_mem_pool",
     "reduce_scatter_offset",
-    "all_to_all_permute",
+    "all_to_all_nd",
 ]
