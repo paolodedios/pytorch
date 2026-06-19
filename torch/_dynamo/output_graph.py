@@ -3492,6 +3492,7 @@ class OutputGraph(OutputGraphCommon):
         # There is a reference cycle between tracer and OutputGraph, causing
         # some of the tensor objects to be held alive for longer than necessary.
         self.root_tx = None  # type: ignore[assignment]
+        self.local_generators.clear()
         self.nn_modules.clear()
         self.used_inlined_inbuilt_modules_names.clear()
         self.param_name_to_source = None
