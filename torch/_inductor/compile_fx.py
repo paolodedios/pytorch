@@ -1797,6 +1797,14 @@ class _InProcessFxCompile(FxCompile):
                             )
                         )
 
+                    if (
+                        cudagraphs
+                        and not V.graph.disable_cudagraphs_reason
+                        and graph.scheduler.count_kernel_nodes(graph.scheduler.nodes)
+                        == 0
+                    ):
+                        V.graph.kernel_free_cudagraph = True
+
                     self._compile_stats[type(self)].codegen_and_compile += 1
 
                     if (
@@ -1950,6 +1958,7 @@ def cudagraphify(
     constants: tuple[torch.Tensor, ...] = (),
     placeholders: Sequence[PlaceholderInfo] = (),
     mutated_input_idxs: tuple[int, ...] = (),
+    kernel_free_cudagraph: bool = False,
 ) -> Callable[..., Any]:
     from torch._inductor.cudagraph_trees import (
         cudagraphify_impl as new_cudagraphify_impl,
@@ -1966,10 +1975,14 @@ def cudagraphify(
             constants=constants,
             placeholders=placeholders,
             mutated_input_idxs=mutated_input_idxs,
+            kernel_free_cudagraph=kernel_free_cudagraph,
             compile_id=torch._guards.CompileContext.current_compile_id(),
         )
     else:
-        cudagraphify_fn = cudagraphify_impl
+        cudagraphify_fn = functools.partial(
+            cudagraphify_impl,
+            kernel_free_cudagraph=kernel_free_cudagraph,
+        )
 
     thread_local = threading.local()
 
@@ -2012,10 +2025,15 @@ def cudagraphify_impl(
     model: Callable[..., Any],
     inputs: list[torch.Tensor],
     static_input_idxs: Sequence[int] = (),
+    *,
+    kernel_free_cudagraph: bool = False,
 ) -> Callable[[list[InputType]], Any]:
     """
     Assumes inputs[static_input_idxs[i]] are always the same memory address
     """
+    if kernel_free_cudagraph:
+        return model
+
     check_input_idxs = get_input_idxs_to_check(inputs, static_input_idxs)  # type: ignore[arg-type]
     # pyrefly: ignore [annotation-mismatch, redefinition]
     static_input_idxs: OrderedSet[int] = OrderedSet(
@@ -2829,11 +2847,15 @@ def _contains_preservable_lstm_op(model_: torch.nn.Module) -> bool:
         if node.op != "call_function" or node.target not in _LSTM_OPS_TO_PRESERVE:
             continue
 
+        if len(node.args) < 3:
+            return False
         input_arg, hx_arg, params_arg = node.args[:3]
         input_is_cuda = _lstm_fx_node_input_is_cuda(node)
         if input_is_cuda is None:
             if grad_enabled:
                 return False
+            # Unknown-device LSTMs are checked again with fake tensors in
+            # _lstm_input_decomp_for_inductor.
             continue
         if grad_enabled:
             # The CIA override is graph-wide. If grad is enabled, only use it
@@ -2862,6 +2884,8 @@ def _lstm_input_decomp_for_inductor(
     bidirectional,
     batch_first,
 ):
+    # Keep this differentiability policy aligned with
+    # _contains_preservable_lstm_op.
     requires_grad = torch.is_grad_enabled() and (
         input.requires_grad
         or any(t.requires_grad for t in hx)
