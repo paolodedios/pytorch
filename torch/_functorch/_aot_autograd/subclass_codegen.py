@@ -329,7 +329,21 @@ def _emit_output_wrapping(
         )
         + saved_for_bw
     )
+    expected_without_symints = (
+        sum(
+            _count_output_args(meta, include_subclass_symints=False)
+            for meta in out_metas
+        )
+        + saved_for_bw
+    )
     state.emit("_out_idx = 0")
+    if expected_with_symints != expected_without_symints:
+        state.emit(
+            "assert "
+            f"len(unwrapped_outs) in ({expected_without_symints}, {expected_with_symints}), "
+            f"f'expected {expected_without_symints} or {expected_with_symints} "
+            "outputs, got {len(unwrapped_outs)}'"
+        )
     state.emit(
         f"_has_subclass_symint_outputs = len(unwrapped_outs) == {expected_with_symints}"
     )

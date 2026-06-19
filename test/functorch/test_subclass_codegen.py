@@ -438,6 +438,47 @@ def inner_fn(args):
         self.assertEqual(subclass_out.b, b)
         self.assertIs(plain_out, plain)
 
+    def test_partial_elided_subclass_symints_errors(self):
+        # Build SubclassCreationMeta manually to avoid __post_init__ fake tensor check
+        subclass_meta = _TestSubclassMeta(
+            flat_tensor_start_idx=0,
+            arg_count=5,
+            included_subclass_symints=True,
+            attrs={
+                "a": PlainTensorMeta(unwrapped_idx=0),
+                "b": PlainTensorMeta(unwrapped_idx=1),
+            },
+            outer_size=(None, None),
+            outer_stride=(None, 1),
+            meta=None,
+            original_subclass=None,
+            original_subclass_type=TwoTensor,
+            outer_size_from_attr="a",
+            outer_stride_from_attr="a",
+        )
+        plain_meta = PlainTensorMeta(unwrapped_idx=5)
+
+        source, globals_dict = _codegen_subclass_wrapper_source(
+            inp_metas=[],
+            out_metas=[subclass_meta, plain_meta],
+            num_fw_outs_saved_for_bw=None,
+        )
+
+        a = torch.randn(2, 3)
+        b = torch.randn(2, 3)
+        plain = torch.randn(4)
+
+        def mock_compiled_fn(args):
+            return [a, b, a.shape[0], plain]
+
+        globals_dict["compiled_fn"] = mock_compiled_fn
+        local_dict = {}
+        exec(compile(source, "<test>", "exec"), globals_dict, local_dict)
+        wrapper = local_dict["inner_fn"]
+
+        with self.assertRaisesRegex(AssertionError, "expected 3 or 6 outputs"):
+            wrapper([])
+
     def test_inner_plain_tensor_symints_forwarded(self):
         # Build SubclassCreationMeta manually to avoid __post_init__ fake tensor check
         inner_a_meta = PlainTensorMeta(

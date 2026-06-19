@@ -477,8 +477,9 @@ s0 = s1""",
         s0 = sympy.Symbol("s0")
         s1 = sympy.Symbol("s1")
 
-        wrapper.bind_input_symbol(s0, "arg0_1", "size", 0, bound_vars)
-        wrapper.bind_input_symbol(s1, "arg0_1", "stride", 1, bound_vars)
+        with V.set_graph_handler(self._graph_with_sizevars()):
+            wrapper.bind_input_symbol(s0, "arg0_1", "size", 0, bound_vars)
+            wrapper.bind_input_symbol(s1, "arg0_1", "stride", 1, bound_vars)
 
         self.assertExpectedInline(
             wrapper.prefix.getvalue().strip(),
@@ -487,6 +488,44 @@ int64_t s0 = arg0_1.sizes()[0];
 int64_t s1 = arg0_1.strides()[1];""",
         )
         self.assertEqual(list(bound_vars), [s0, s1])
+
+    def test_cpp_bind_input_symbol_emits_raw_replacement_alias(self):
+        wrapper = self._new_cpp_wrapper()
+        bound_vars = OrderedSet()
+        raw = sympy.Symbol("s0")
+        canonical = sympy.Symbol("s1")
+        graph = self._graph_with_sizevars()
+        graph.sizevars.shape_env = SimpleNamespace(replacements={raw: canonical})
+
+        with V.set_graph_handler(graph):
+            wrapper.bind_input_symbol(canonical, "arg0_1", "size", 0, bound_vars)
+
+        self.assertExpectedInline(
+            wrapper.prefix.getvalue().strip(),
+            """\
+int64_t s1 = arg0_1.sizes()[0];
+int64_t s0 = s1;""",
+        )
+        self.assertEqual(list(bound_vars), [canonical, raw])
+
+    def test_cpp_bind_input_symbol_emits_canonical_replacement_alias(self):
+        wrapper = self._new_cpp_wrapper()
+        bound_vars = OrderedSet()
+        raw = sympy.Symbol("s0")
+        canonical = sympy.Symbol("s1")
+        graph = self._graph_with_sizevars()
+        graph.sizevars.shape_env = SimpleNamespace(replacements={raw: canonical})
+
+        with V.set_graph_handler(graph):
+            wrapper.bind_input_symbol(raw, "arg0_1", "size", 0, bound_vars)
+
+        self.assertExpectedInline(
+            wrapper.prefix.getvalue().strip(),
+            """\
+int64_t s0 = arg0_1.sizes()[0];
+int64_t s1 = s0;""",
+        )
+        self.assertEqual(list(bound_vars), [raw, canonical])
 
 
 if __name__ == "__main__":
