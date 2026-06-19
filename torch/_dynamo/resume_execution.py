@@ -33,7 +33,7 @@ from .bytecode_transformation import (
     transform_code_object,
     unique_id,
 )
-from .utils import ExactWeakKeyDictionary
+from .utils import ExactWeakKeyDictionary, istensor
 
 
 if TYPE_CHECKING:
@@ -78,6 +78,11 @@ def _boxed_resume_local_argname_indexes(code: types.CodeType) -> dict[int, str]:
     if metadata is None:
         return {}
     return metadata.boxed_resume_local_argname_indexes
+
+
+def _maybe_clear_tensor_resume_arg(resume_args: list[Any], idx: int) -> None:
+    if idx < len(resume_args) and istensor(resume_args[idx]):
+        resume_args[idx] = None
 
 
 # If is_resume - this codegen is for a resume function
@@ -529,20 +534,6 @@ class ContinueExecutionCache:
                             create_instruction("STORE_FAST", argval=name),
                         ]
                     )
-                # Clear the boxed argument list as soon as all entries have
-                # real locals. The caller's stack can still own this list while
-                # the resume runs, so deleting only the local is not enough.
-                for idx in reversed(range(len(resume_arg_names))):
-                    prefix.extend(
-                        [
-                            create_instruction("LOAD_FAST", argval=resume_args_varname),
-                            create_instruction("LOAD_CONST", argval=idx),
-                            create_instruction("DELETE_SUBSCR"),
-                        ]
-                    )
-                prefix.append(
-                    create_instruction("DELETE_FAST", argval=resume_args_varname)
-                )
 
             cleanup: list[Instruction] = []
             hooks = {fn.stack_index: fn for fn in setup_fns}

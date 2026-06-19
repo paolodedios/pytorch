@@ -134,6 +134,7 @@ from .source import (
     GlobalStateSource,
     is_constant_source,
     is_from_local_source,
+    ListGetItemSource,
     LocalSource,
     NumpyTensorSource,
     ParamBufferSource,
@@ -158,6 +159,7 @@ from .utils import (
     get_unique_name_wrt,
     graph_break_reasons,
     increment_op_count,
+    istensor,
     istype,
     lazy_format_graph_code,
     LazyString,
@@ -542,6 +544,100 @@ class ExportMetaData:
     ] = dc_field(default_factory=dict)
 
 
+_IN_PLACE_OPERATORS = frozenset(
+    {
+        "iadd",
+        "iand",
+        "iconcat",
+        "ifloordiv",
+        "ilshift",
+        "imatmul",
+        "imod",
+        "imul",
+        "ior",
+        "ipow",
+        "irshift",
+        "isub",
+        "itruediv",
+        "ixor",
+    }
+)
+
+
+def _is_safe_to_reorder(node: fx.Node) -> bool:
+    """Check if a node is safe to reorder during graph canonicalization.
+
+    Builds on Node.is_impure() (used by DCE) with two additional checks for
+    cases it doesn't cover: in-place call_method nodes and non-OpOverload
+    state-changing functions detected by a no-node-arguments heuristic.
+    """
+    if node.op == "call_method":
+        return not node.target.endswith("_")  # pyrefly: ignore[missing-attribute]
+    if node.op == "call_module":
+        return not node.is_impure()
+    if node.op != "call_function":
+        return True
+    if node.is_impure():
+        return False
+    if not isinstance(node.target, torch._ops.OpOverload):
+        name = getattr(node.target, "__name__", "")
+        if name.endswith("_"):
+            return False
+        if (
+            getattr(node.target, "__module__", "") == "_operator"
+            and name in _IN_PLACE_OPERATORS
+        ):
+            return False
+        if isinstance(node.kwargs.get("out"), fx.Node):
+            return False
+        # Non-OpOverload targets with no FX Node arguments are likely
+        # state-changing (e.g., _vmap_increment_nesting,
+        # _set_fwd_grad_enabled). This is intentionally conservative:
+        # pure constant-producing ops would also be treated as barriers,
+        # but those are rare in Dynamo output graphs (constants are
+        # typically lifted as placeholders or get_attr nodes).
+        if not node.all_input_nodes:
+            return False
+        # functorch batch dim ops modify the vmap interpreter stack.
+        if name in ("_add_batch_dim", "_remove_batch_dim"):
+            return False
+    return True
+
+
+def _canonical_key(node: fx.Node, canonical_idx: dict[fx.Node, int]) -> object:
+    """Canonical heap key for Dynamo output graph nodes.
+
+    - Placeholders sorted by grapharg source name
+    - get_attr nodes sorted by target
+    - Computation nodes sorted by (target, canonical indices of inputs)
+    """
+    if node.op == "placeholder":
+        grapharg = node.meta.get("grapharg")
+        if grapharg is not None and grapharg.source is not None:
+            source_name = grapharg.source.name
+        else:
+            source_name = ""
+        return (0, source_name)
+    elif node.op == "get_attr":
+        return (1, str(node.target))
+    elif node.op == "output":
+        return (3,)
+    else:
+        input_indices = tuple(canonical_idx[n] for n in node.all_input_nodes)
+        return (2, node.graph._target_to_str(node.target), input_indices)
+
+
+def _canonicalize_graph(graph: fx.Graph) -> fx.Graph:
+    """Canonicalize a Dynamo output graph's node order and names.
+
+    Delegates to ``torch.fx.passes.canonicalize.canonicalize_graph`` with
+    Dynamo-specific key generation and barrier detection.
+    """
+    from torch.fx.passes.canonicalize import canonicalize_graph
+
+    return canonicalize_graph(graph, _canonical_key, _is_safe_to_reorder)
+
+
 def get_builtins_dict(global_scope: Scope) -> dict[str, Any]:
     # f_globals["__builtins__"] can be a dict or a module. This is an
     # implementation detail -
@@ -760,7 +856,7 @@ class OutputGraph(OutputGraphCommon):
         # Wire ShapesSpec.assumptions BEFORE any input is processed. Each
         # assumption is appended to `_shape_spec_pending_assumptions`;
         if config._shapes_spec is not None:
-            from torch._dynamo.variables.builder import _wire_spec_assumptions
+            from torch.fx.experimental.symbolic_shapes import _wire_spec_assumptions
 
             _wire_spec_assumptions(self.shape_env, config._shapes_spec)
 
@@ -1953,7 +2049,7 @@ class OutputGraph(OutputGraphCommon):
         # check still has unbound IntVar dependencies (i.e. an IntVar
         # appears in an expression but never as a bare-IntVar input slot).
         if config._shapes_spec is not None:
-            from torch._dynamo.variables.builder import _finalize_spec_wiring
+            from torch.fx.experimental.symbolic_shapes import _finalize_spec_wiring
 
             _finalize_spec_wiring(self.shape_env)
 
@@ -2094,18 +2190,15 @@ class OutputGraph(OutputGraphCommon):
             self.root_tx is tx  # single frame
             and stack_values_flat
             and all(
-                not any(
-                    type.__instancecheck__(cls, v)
-                    for cls in (
+                not isinstance(
+                    v,
+                    (
                         UnspecializedPythonVariable,
                         NumpyNdarrayVariable,
                         TensorWithTFOverrideVariable,
-                    )
+                    ),
                 )
-                and not (
-                    type.__instancecheck__(SymNodeVariable, v)
-                    and v.python_type() is float
-                )
+                and not (isinstance(v, SymNodeVariable) and v.python_type() is float)
                 for v in stack_values_flat
             )
             and all(x.is_tensor() for x in stack_values_flat)
@@ -2244,6 +2337,21 @@ class OutputGraph(OutputGraphCommon):
                     live_local_names
                 )
                 resume_args_varname = tx._boxed_resume_arg_name()
+                resume_arg_indexes_to_clear: set[int] = set()
+                if (
+                    resume_args_varname is not None
+                    and resume_args_varname in tx.cleared_fast_locals
+                ):
+                    resume_args = tx.f_locals.get(resume_args_varname)
+                    if isinstance(resume_args, list):
+                        live_resume_arg_indexes = self._live_resume_arg_indexes(
+                            pass2, resume_args_varname, len(resume_args)
+                        )
+                        resume_arg_indexes_to_clear = {
+                            idx
+                            for idx, value in enumerate(resume_args)
+                            if idx not in live_resume_arg_indexes and istensor(value)
+                        }
                 if (
                     resume_args_varname is not None
                     and resume_args_varname in live_local_names
@@ -2251,7 +2359,9 @@ class OutputGraph(OutputGraphCommon):
                     graph_input_names_to_delete.discard(resume_args_varname)
                 graph_input_names_to_clear = tx.cleared_fast_locals - live_local_names
                 use_boxed_graph_call = resume_args_varname is not None and bool(
-                    graph_input_names_to_delete or graph_input_names_to_clear
+                    graph_input_names_to_delete
+                    or graph_input_names_to_clear
+                    or resume_arg_indexes_to_clear
                 )
                 instructions, subgraph_pycode = self.compile_and_call_fx_graph(
                     tx,
@@ -2259,10 +2369,12 @@ class OutputGraph(OutputGraphCommon):
                     root,
                     graph_input_names_to_delete,
                     graph_input_names_to_clear,
+                    resume_arg_indexes_to_clear,
                     use_boxed_graph_call,
                 )
-                if resume_args_varname is not None and resume_args_varname in (
-                    graph_input_names_to_delete | graph_input_names_to_clear
+                if (
+                    resume_args_varname is not None
+                    and resume_args_varname in graph_input_names_to_delete
                 ):
                     tx._mark_resume_args_cleanup_emitted()
                     if self.root_tx is not tx:
@@ -2497,6 +2609,31 @@ class OutputGraph(OutputGraphCommon):
             if local_name is not None:
                 live_local_names.add(local_name)
         return live_local_names
+
+    def _live_resume_arg_indexes(
+        self, cg: PyCodegen, resume_args_varname: str, resume_args_len: int
+    ) -> set[int]:
+        live_indexes: set[int] = set()
+        for value in cg.uses:
+            source = (
+                value if isinstance(value, Source) else getattr(value, "source", None)
+            )
+            while source is not None:
+                if (
+                    isinstance(source, (GetItemSource, ListGetItemSource))
+                    and isinstance(source.base, LocalSource)
+                    and source.base.local_name == resume_args_varname
+                    and isinstance(source.index, int)
+                ):
+                    live_indexes.add(source.index)
+                    break
+                if (
+                    isinstance(source, LocalSource)
+                    and source.local_name == resume_args_varname
+                ):
+                    return set(range(resume_args_len))
+                source = getattr(source, "base", None)
+        return live_indexes
 
     def _resume_live_local_names(self) -> set[str]:
         if not self.compile_subgraph_reason.graph_break:
@@ -2784,6 +2921,7 @@ class OutputGraph(OutputGraphCommon):
         root: FakeRootModule,
         graph_input_names_to_delete: set[str] | None = None,
         graph_input_names_to_clear: set[str] | None = None,
+        resume_arg_indexes_to_clear: set[int] | None = None,
         use_boxed_graph_call: bool = False,
     ) -> tuple[list[Instruction], list[str] | None]:
         """
@@ -2869,6 +3007,15 @@ class OutputGraph(OutputGraphCommon):
 
             # free a bit of memory
             self.real_value_cache.clear()
+
+            # CA backward graphs have side-effecting ops (call_accumulate_grad,
+            # call_hook) that is_impure() doesn't flag, and a fixed positional
+            # placeholder layout that must not be reordered.
+            if (
+                config.canonicalize_output_graph_node_order
+                and not torch._dynamo.compiled_autograd.in_compiled_autograd_region
+            ):
+                _canonicalize_graph(self.graph)
 
             gm = _make_graph_module(root, self.graph)
 
@@ -3137,6 +3284,7 @@ class OutputGraph(OutputGraphCommon):
                 name,
                 graph_input_names_to_delete,
                 graph_input_names_to_clear,
+                resume_arg_indexes_to_clear,
                 boxed_call,
             )
 

@@ -678,6 +678,7 @@ class PyCodegen:
         fn_name: str,
         graph_input_names_to_delete: set[str] | None = None,
         graph_input_names_to_clear: set[str] | None = None,
+        resume_arg_indexes_to_clear: set[int] | None = None,
         boxed_call: bool = False,
     ) -> None:
         """Call the generated code function stored in fn_name"""
@@ -694,6 +695,9 @@ class PyCodegen:
             for name in graph_input_names_to_clear or set()
             if name in self.code_options["co_varnames"]
         }
+        resume_args_varname = self.tx._boxed_resume_arg_name()
+        if resume_args_varname is not None:
+            graph_input_names_to_clear.discard(resume_args_varname)
 
         def extract_nested_sources(source: Source) -> list[Source]:
             nested_sources: list[Source] = []
@@ -776,6 +780,20 @@ class PyCodegen:
             self.load_method("clear")
             self.call_method(0)
             self.pop_top()
+        if resume_args_varname is not None and resume_arg_indexes_to_clear:
+            resume_args = self.tx.f_locals.get(resume_args_varname)
+            if isinstance(resume_args, list):
+                for idx in sorted(resume_arg_indexes_to_clear, reverse=True):
+                    self.add_push_null(
+                        lambda: self.load_import_from(
+                            "torch._dynamo.resume_execution",
+                            "_maybe_clear_tensor_resume_arg",
+                        )
+                    )
+                    self.append_output(self.create_load(resume_args_varname))
+                    self.append_output(self.create_load_const(idx))
+                    self.extend_output(create_call_function(2, False))
+                    self.pop_top()
         graph_input_names_to_delete |= graph_input_names_to_clear
         for name in sorted(graph_input_names_to_delete):
             self.append_output(self.create_delete(name))

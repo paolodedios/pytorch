@@ -3643,7 +3643,10 @@ class InstructionTranslatorBase(
         resume_args_varname = self._boxed_resume_arg_name()
         if (
             resume_args_varname is None
-            or resume_args_varname not in self.deleted_fast_locals
+            or (
+                resume_args_varname not in self.deleted_fast_locals
+                and resume_args_varname not in self.cleared_fast_locals
+            )
             or resume_args_varname not in self.f_locals
             or resume_args_varname not in self.code_options["co_varnames"]
         ):
@@ -3652,18 +3655,27 @@ class InstructionTranslatorBase(
         self._mark_resume_args_cleanup_emitted()
         resume_args = self.f_locals[resume_args_varname]
         if not isinstance(resume_args, list):
-            return [create_instruction("DELETE_FAST", argval=resume_args_varname)]
+            return []
 
         insts: list[Instruction] = []
         for idx in reversed(range(len(resume_args))):
+            helper_cg = PyCodegen(self)
+            helper_cg.add_push_null(
+                functools.partial(
+                    helper_cg.load_import_from,
+                    "torch._dynamo.resume_execution",
+                    "_maybe_clear_tensor_resume_arg",
+                )
+            )
             insts.extend(
                 [
+                    *helper_cg.get_instructions(),
                     create_instruction("LOAD_FAST", argval=resume_args_varname),
                     create_instruction("LOAD_CONST", argval=idx),
-                    create_instruction("DELETE_SUBSCR"),
+                    *create_call_function(2, False),
+                    create_instruction("POP_TOP"),
                 ]
             )
-        insts.append(create_instruction("DELETE_FAST", argval=resume_args_varname))
         return insts
 
     def _boxed_resume_arg_name(self) -> str | None:
@@ -3869,6 +3881,8 @@ class InstructionTranslatorBase(
     ) -> None:
         from .variables.dicts import ConstDictVariable
         from .variables.lists import BaseListVariable
+
+        # TODO(dynamo-team): Refactor this to use sq_item / mp_ass_subscript
 
         item_var = None
         try:
@@ -4226,6 +4240,33 @@ class InstructionTranslatorBase(
             return
 
         value = self._convert_value(value, flags & 0x03)
+
+        # For plain f"{obj}" (no conversion, empty format spec, default
+        # __format__), eagerly evaluate str() via generic_str to capture
+        # the current symbolic state.  This avoids deferring to
+        # StringFormatVariable whose reconstruct runs before mutations
+        # are replayed in the epilogue.
+        # Skip when __format__ is overridden since format(obj, "") may
+        # differ from str(obj) in that case.
+        if (
+            (flags & 0x03) == 0
+            and fmt_spec.is_python_constant()
+            and fmt_spec.as_python_constant() == ""
+        ):
+            realized = value.realize()
+            try:
+                py_type = realized.python_type()
+            except NotImplementedError:
+                py_type = None
+            if py_type is not None and py_type.__format__ is object.__format__:
+                try:
+                    from .variables.object_protocol import generic_str
+
+                    str_result = generic_str(self, realized)
+                    self.push(str_result)
+                    return
+                except Unsupported:
+                    pass
 
         fmt_var = VariableTracker.build(
             self, "{:" + fmt_spec.as_python_constant() + "}"
