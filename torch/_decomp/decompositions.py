@@ -1272,7 +1272,7 @@ def dropout(input: Tensor, p: float, train: bool | None):
     if train and p != 0:
         return aten.native_dropout(input, p, train)[0]
     else:
-        return input.clone()
+        return input
 
 
 @register_decomposition(aten.native_dropout)
@@ -3410,12 +3410,14 @@ def _index_add(
             lambda: f"alpha argument of type {type(alpha)} cannot be safely cast to type {python_type}!",
         )
         tensor = tensor * alpha
+        if x.dtype == torch.bool and tensor.dtype != x.dtype:
+            tensor = tensor.to(x.dtype)
     # Treat scalars as elements of \R^1
     zero_dim = x.ndim == 0
     x1 = x.unsqueeze(0) if zero_dim else x
     scatter_dim = 0 if zero_dim else dim
-    # CPU low-precision dtypes keep the old path to match eager numerics.
-    use_index_put = x.dtype == torch.complex32 or (
+    # Keep the old path where scatter_add would diverge from eager casting/numerics.
+    use_index_put = x.dtype in (torch.bool, torch.complex32) or (
         x.device.type == "cpu" and x.dtype in (torch.float16, torch.bfloat16)
     )
     if use_index_put:
@@ -5661,7 +5663,7 @@ def _reflection_pad_backward(grad_output, x, padding):
 
 
 @register_decomposition(aten.aminmax)
-@out_wrapper("min", "max")
+@out_wrapper("min", "max", exact_dtype=True)
 def aminmax(self, *, dim=None, keepdim=False):
     # pyrefly: ignore [bad-argument-type]
     amin = torch.amin(self, dim=dim, keepdim=keepdim)
