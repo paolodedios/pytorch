@@ -1783,16 +1783,24 @@ static void metal_qr_kernel_impl(const Tensor& A, const Tensor& Q, const Tensor&
 
   auto A_work = A.reshape({batch_size, m, n}).contiguous();
 
+  auto k = std::min(m, n);
+  // In reduced mode the kernel materializes only the k = min(m,n) columns of Q
+  // that the factorization actually needs; complete mode builds the full m x m.
+  int64_t q_cols = reduced_mode ? k : m;
+
   QrParams params;
   params.m = m;
   params.n = n;
+  params.q_cols = q_cols;
 
   auto info = at::zeros({1}, A.options().dtype(kInt));
   MPSStream* stream = getCurrentMPSStream();
 
-  Tensor Q_work = at::empty({batch_size, m, m}, A.options());
+  Tensor Q_work = at::empty({batch_size, m, q_cols}, A.options());
   Tensor R_work = at::empty({batch_size, m, n}, A.options());
-  Tensor v_work = at::empty({batch_size, m}, A.options());
+  // Householder reflectors (column k holds v_k) and their tau scalars.
+  Tensor v_work = at::empty({batch_size, m, k}, A.options());
+  Tensor tau_work = at::empty({batch_size, k}, A.options());
 
   dispatch_sync_with_rethrow(stream->queue(), ^() {
     @autoreleasepool {
@@ -1806,7 +1814,7 @@ static void metal_qr_kernel_impl(const Tensor& A, const Tensor& Q, const Tensor&
       // one threadgroup per matrix in batch
       MTLSize gridSize = MTLSizeMake(batch_size, 1, 1);
 
-      mtl_setArgs(compute_encoder, A_work, Q_work, R_work, info, params, v_work);
+      mtl_setArgs(compute_encoder, A_work, Q_work, R_work, info, params, v_work, tau_work);
       [compute_encoder dispatchThreadgroups:gridSize threadsPerThreadgroup:threadGroupSize];
 
       getMPSProfiler().endProfileKernel(pso);
@@ -1816,15 +1824,14 @@ static void metal_qr_kernel_impl(const Tensor& A, const Tensor& Q, const Tensor&
   bool is_batched = A.dim() > 2;
 
   if (reduced_mode) {
-    auto k = std::min(m, n);
-    auto Q_reduced = Q_work.narrow(-1, 0, k); // [batch, m, k]
+    // Q_work is already [batch, m, k]; only R needs to be trimmed to [batch, k, n].
     auto R_reduced = R_work.narrow(-2, 0, k); // [batch, k, n]
 
     if (is_batched) {
-      Q.copy_(Q_reduced.reshape(Q.sizes()));
+      Q.copy_(Q_work.reshape(Q.sizes()));
       R.copy_(R_reduced.reshape(R.sizes()));
     } else {
-      Q.copy_(Q_reduced.squeeze(0));
+      Q.copy_(Q_work.squeeze(0));
       R.copy_(R_reduced.squeeze(0));
     }
   } else {

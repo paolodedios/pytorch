@@ -25,6 +25,8 @@ struct UnpackPivotsParams {
 struct QrParams {
   uint32_t m;
   uint32_t n;
+  uint32_t q_cols; // number of Q columns to materialize: min(m,n) reduced, m
+                   // complete
 };
 
 struct SvdParams {
