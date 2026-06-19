@@ -676,10 +676,19 @@ class _ChunkContext:
         else:
             torch.mm(mat1, mat2, out_dtype=out.dtype, out=out)
 
-    def amax(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.tmp.narrow(0, 0, x.shape[0]).unsqueeze(1)
-        torch.amax(x, dim=1, keepdim=True, out=out)
-        return out
+    def shifted_logits(self, chunk: "_ChunkViews") -> torch.Tensor:
+        # Per-chunk forward prelude shared by all three chunk loops (none /
+        # prob / index): logits = input @ weight.T (+ bias), shifted by the
+        # per-row max for softmax stability. Writes into ``chunk.logits``.
+        logits = chunk.logits
+        self.mm(chunk.input, chunk.linear_weight.T, out=logits)
+        if self.linear_bias_cast is not None:
+            logits.add_(self.linear_bias_cast)
+        # Subtract the per-row max in place; ``self.tmp`` is reused scratch.
+        row_max = self.tmp.narrow(0, 0, logits.shape[0]).unsqueeze(1)
+        torch.amax(logits, dim=1, keepdim=True, out=row_max)
+        logits.sub_(row_max)
+        return logits
 
     def dotgather(
         self, weight: torch.Tensor, x: torch.Tensor, indices: torch.Tensor
@@ -840,14 +849,9 @@ def _linear_cross_entropy_batch_chunked_accumulator(
     # shifted_logit[T[n]]) = W[T[n]] * (-log_softmax). The "none" backward
     # (loss_grad_output set) routes through the grad loop below instead.
     if reduction == "none" and loss_grad_output is None:
-        linear_bias_cast = ctx.linear_bias_cast
         out = torch.empty(ctx.num_batches, dtype=dtype, device=ctx.input.device)
         for chunk in ctx.chunks():
-            logits = chunk.logits
-            ctx.mm(chunk.input, chunk.linear_weight.T, out=logits)
-            if linear_bias_cast is not None:
-                logits.add_(linear_bias_cast)
-            logits.sub_(ctx.amax(logits))
+            logits = ctx.shifted_logits(chunk)
             # Read the target logit BEFORE ``sumexp_`` -- it does ``exp_()``
             # in place, overwriting logits with exp(shifted).
             ls_target = logits.gather(1, chunk.target_chunk.unsqueeze(1)).squeeze(1)
@@ -867,7 +871,6 @@ def _linear_cross_entropy_batch_chunked_accumulator(
     grad_linear_bias = ctx.grad_linear_bias
     weight_grad_chunk = ctx.weight_grad_chunk
     linear_weight_cast = ctx.linear_weight_cast
-    linear_bias_cast = ctx.linear_bias_cast
 
     if reduction == "mean" and ctx.num_batches == 0:
         output.fill_(torch.nan)
@@ -887,15 +890,17 @@ def _linear_cross_entropy_batch_chunked_accumulator(
         # loop's negated ``neg_weight_target`` convention.
         loss_scale = ctx.loss_scale
         for chunk in ctx.chunks():
-            logits = chunk.logits
+            logits = ctx.shifted_logits(chunk)
             wt = chunk.prob_wt
-            ctx.mm(chunk.input, chunk.linear_weight.T, out=logits)
-            if linear_bias_cast is not None:
-                logits.add_(linear_bias_cast)
-            logits.sub_(ctx.amax(logits))
             # Loss target term: the scalar reduction only needs the total
             # sum_{n,c} (w*t) * x_shifted -- one flat dot, no per-row
             # temp. Read BEFORE ``sumexp_`` (it ``exp_``s logits in place).
+            # Both dot operands (``wt`` and ``logits``) are at logits_buf_dtype,
+            # which is fp16/bf16 only on the CUDA memory-like policies
+            # (balanced/compact) -- where torch.dot accumulates in fp32 -- and
+            # acc_dtype (fp32) otherwise (accurate / CPU). So this (B, V)
+            # reduction is fp32-accumulated on every path it runs; upcasting
+            # here would cost a (B, V) temp for no accuracy gain.
             output.sub_(torch.dot(wt.reshape(-1), logits.reshape(-1)), alpha=loss_scale)
             # Per-row weight mass with the reduction factor folded in.
             s = wt.sum(1, dtype=ctx.weight_chunk_dtype).mul_(loss_scale)
@@ -943,14 +948,9 @@ def _linear_cross_entropy_batch_chunked_accumulator(
     # Do not ``break`` from this loop -- ``ctx.chunks()`` runs a
     # post-yield grad_input commit that the in-flight chunk needs.
     for chunk in ctx.chunks():
-        logits = chunk.logits
+        logits = ctx.shifted_logits(chunk)
         weight_chunk = chunk.weight_chunk
         target_chunk = chunk.target_chunk
-
-        ctx.mm(chunk.input, chunk.linear_weight.T, out=logits)
-        if linear_bias_cast is not None:
-            logits.add_(linear_bias_cast)  # broadcasts (V,) -> (B_chunk, V)
-        logits.sub_(ctx.amax(logits))  # softmax stability
         # output += <weight_chunk, logits[:, target_chunk]>
         output.add_(ctx.dotgather(weight_chunk, logits, target_chunk))
         softmax_denom = ctx.sumexp_(logits, dim=1)
