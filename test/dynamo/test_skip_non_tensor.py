@@ -326,7 +326,7 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         finally:
             reset_code(fn.__code__)
 
-    def test_internal_clone_inputs_graph_break_not_counted(self):
+    def test_internal_clone_inputs_graph_break_counted(self):
         def fn(x):
             y = x + 1
             z = clone_inputs((x,))[0]
@@ -337,7 +337,7 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         counters.clear()
 
         self.assertEqual(opt_fn(x), x + x + 1)
-        self.assertEqual(sum(counters["graph_break"].values()), 0)
+        self.assertEqual(sum(counters["graph_break"].values()), 1)
 
     def test_condition_dependent_skip_cleanup_hooks_are_idempotent(self):
         def fn():

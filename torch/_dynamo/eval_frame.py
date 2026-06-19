@@ -89,7 +89,11 @@ from torch.fx.experimental._dynamism import (
     clone_and_convert_to_meta,
     track_dynamism_across_examples,
 )
-from torch.fx.experimental.dynamic_spec import ParamsSpec, ShapesSpec
+from torch.fx.experimental.dynamic_spec import (
+    _coerce_to_shapes_spec,
+    ParamsSpec,
+    ShapesSpec,
+)
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.experimental.symbolic_shapes import (
     ConstraintViolationError,
@@ -116,6 +120,7 @@ from .utils import (
     _get_error_on_graph_break,
     _set_error_on_graph_break,
     cleanup_guarded_eager_fallback_code,
+    cleanup_guarded_eager_fallback_codes_for_code,
     common_constant_types,
     compile_times,
     is_guarded_eager_fallback_code,
@@ -378,6 +383,7 @@ def _reset_guarded_backend_cache() -> None:
 
 
 def reset_code(code: types.CodeType) -> None:
+    cleanup_guarded_eager_fallback_codes_for_code(code)
     for entry in _debug_get_cache_entry_list(code):
         if is_guarded_eager_fallback_code(entry.code) or getattr(
             entry, "trace_annotation", ""
@@ -837,8 +843,7 @@ class _TorchDynamoContext:
             )
         # Normalize the shorthand forms: dict / ParamsSpec / ShapesSpec all
         # land here as a ShapesSpec (or None).
-        if shapes_spec is not None and not isinstance(shapes_spec, ShapesSpec):
-            shapes_spec = ShapesSpec(shapes_spec)
+        shapes_spec = _coerce_to_shapes_spec(shapes_spec)
         self.callback: DynamoCallback = callback
         self._backend_ctx_ctor = backend_ctx_ctor
         self.prior: Unset | DynamoCallback = unset

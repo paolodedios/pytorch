@@ -382,7 +382,7 @@ def _guarded_eager_fallback(
 
         if output.cleanups:
             CleanupManager.instance[fallback_code] = output.cleanups
-            register_guarded_eager_fallback_code(fallback_code)
+            register_guarded_eager_fallback_code(fallback_code, code)
 
         orig_code_map[fallback_code] = code
         output_codes.add(fallback_code)

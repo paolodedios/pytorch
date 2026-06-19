@@ -1295,26 +1295,19 @@ def is_numpy_float_type(value: Any) -> bool:
     )
 
 
-def unpack_iterable(
-    tx: InstructionTranslatorBase, iterable: VariableTracker
-) -> list[VariableTracker]:
-    items: list[VariableTracker] = []
-    unpack_and_apply_fn(tx, iterable, items.append)
-    return items
+_unpack_fast_types_cache: tuple[type, ...] | None = None
 
 
-def unpack_and_apply_fn(
-    tx: InstructionTranslatorBase,
-    iterable: VariableTracker,
-    apply_fn,
-) -> None:
-    from . import variables
-    from .exc import handle_observed_exception, ObservedUserStopIteration
-    from .variables.object_protocol import generic_getiter, generic_iternext
+def _unpack_fast_types() -> tuple[type, ...]:
+    # Builtin iterables whose elements we can get directly via
+    # unpack_var_sequence, skipping the generic iter/getiter/iternext protocol
+    # (a bottleneck for large iterables). Built lazily since `variables` is a
+    # circular import at module load.
+    global _unpack_fast_types_cache
+    if _unpack_fast_types_cache is None:
+        from . import variables
 
-    if isinstance(
-        iterable,
-        (
+        _unpack_fast_types_cache = (
             variables.ConstDictVariable,
             variables.DictViewVariable,
             variables.MappingProxyVariable,
@@ -1325,19 +1318,44 @@ def unpack_and_apply_fn(
             variables.SetVariable,
             variables.TensorVariable,
             variables.TupleVariable,
-        ),
-    ):
-        # avoid going through the generic iter/getiter/iternext protocol for
-        # common builtin iterables, since it can be a bottleneck for large
-        # iterables (e.g. unpacking a list of 1000 items)
-        [apply_fn(item) for item in iterable.unpack_var_sequence(tx)]  # type: ignore[bad-argument-type]
+        )
+    return _unpack_fast_types_cache
+
+
+def unpack_iterable(
+    tx: InstructionTranslatorBase, iterable: VariableTracker
+) -> list[VariableTracker]:
+    if isinstance(iterable, _unpack_fast_types()):
+        # unpack_var_sequence returns a fresh list, so hand it back directly:
+        # no generator, no per-element callback, single allocation.
+        return iterable.unpack_var_sequence(tx)
+    return list(lazily_unpack(tx, iterable))
+
+
+def unpack_and_apply_fn(
+    tx: InstructionTranslatorBase,
+    iterable: VariableTracker,
+    apply_fn,
+) -> None:
+    for item in lazily_unpack(tx, iterable):
+        apply_fn(item)
+
+
+def lazily_unpack(
+    tx: InstructionTranslatorBase,
+    iterable: VariableTracker,
+):
+    from .exc import handle_observed_exception, ObservedUserStopIteration
+    from .variables.object_protocol import generic_getiter, generic_iternext
+
+    if isinstance(iterable, _unpack_fast_types()):
+        yield from iterable.unpack_var_sequence(tx)
         return
 
     iterator = generic_getiter(tx, iterable)  # type: ignore[bad-argument-type]
     while True:
         try:
-            item = generic_iternext(tx, iterator)  # type: ignore[bad-argument-type]
-            apply_fn(item)
+            yield generic_iternext(tx, iterator)  # type: ignore[bad-argument-type]
         except ObservedUserStopIteration:
             handle_observed_exception(tx)
             break
@@ -2493,6 +2511,20 @@ class CleanupManager(ExactWeakKeyDictionary):
         guarded_fallback_ids = globals().get("guarded_eager_fallback_code_ids")
         if guarded_fallback_ids is not None:
             guarded_fallback_ids.discard(idx)
+        guarded_fallback_orig_code_ids = globals().get(
+            "guarded_eager_fallback_code_ids_by_orig_code"
+        )
+        guarded_fallback_orig_id_by_code_id = globals().get(
+            "guarded_eager_fallback_orig_code_id_by_code_id"
+        )
+        if guarded_fallback_orig_id_by_code_id is not None:
+            orig_idx = guarded_fallback_orig_id_by_code_id.pop(idx, None)
+            if orig_idx is not None and guarded_fallback_orig_code_ids is not None:
+                code_ids = guarded_fallback_orig_code_ids.values.get(orig_idx)
+                if code_ids is not None:
+                    code_ids.discard(idx)
+                    if not code_ids:
+                        guarded_fallback_orig_code_ids._remove_id(orig_idx)
         for hook in hooks:
             hook()
 
@@ -2500,11 +2532,23 @@ class CleanupManager(ExactWeakKeyDictionary):
 CleanupManager.instance = CleanupManager()
 guarded_eager_fallback_codes = ExactWeakKeyDictionary()
 guarded_eager_fallback_code_ids: set[int] = set()
+guarded_eager_fallback_code_ids_by_orig_code = ExactWeakKeyDictionary()
+guarded_eager_fallback_orig_code_id_by_code_id: dict[int, int] = {}
 
 
-def register_guarded_eager_fallback_code(code: types.CodeType) -> None:
+def register_guarded_eager_fallback_code(
+    code: types.CodeType, orig_code: types.CodeType
+) -> None:
     guarded_eager_fallback_codes[code] = True
-    guarded_eager_fallback_code_ids.add(id(code))
+    code_id = id(code)
+    guarded_eager_fallback_code_ids.add(code_id)
+    orig_code_id = id(orig_code)
+    guarded_eager_fallback_orig_code_id_by_code_id[code_id] = orig_code_id
+    code_ids = guarded_eager_fallback_code_ids_by_orig_code.get(orig_code)
+    if code_ids is None:
+        code_ids = set()
+        guarded_eager_fallback_code_ids_by_orig_code[orig_code] = code_ids
+    code_ids.add(code_id)
 
 
 def is_guarded_eager_fallback_code(code: types.CodeType) -> bool:
@@ -2516,6 +2560,19 @@ def cleanup_guarded_eager_fallback_code(code: types.CodeType) -> None:
     CleanupManager.instance._remove_id(idx)
     guarded_eager_fallback_codes._remove_id(idx)
     guarded_eager_fallback_code_ids.discard(idx)
+    guarded_eager_fallback_orig_code_id_by_code_id.pop(idx, None)
+
+
+def cleanup_guarded_eager_fallback_codes_for_code(code: types.CodeType) -> None:
+    code_ids = guarded_eager_fallback_code_ids_by_orig_code.get(code)
+    if code_ids is None:
+        return
+    for idx in list(code_ids):
+        CleanupManager.instance._remove_id(idx)
+        guarded_eager_fallback_codes._remove_id(idx)
+        guarded_eager_fallback_code_ids.discard(idx)
+        guarded_eager_fallback_orig_code_id_by_code_id.pop(idx, None)
+    guarded_eager_fallback_code_ids_by_orig_code._remove_id(id(code))
 
 
 def cleanup_all_guarded_eager_fallback_codes() -> None:
@@ -2523,6 +2580,8 @@ def cleanup_all_guarded_eager_fallback_codes() -> None:
         CleanupManager.instance._remove_id(idx)
         guarded_eager_fallback_codes._remove_id(idx)
         guarded_eager_fallback_code_ids.discard(idx)
+        guarded_eager_fallback_orig_code_id_by_code_id.pop(idx, None)
+    guarded_eager_fallback_code_ids_by_orig_code.clear()
 
 
 def clone_tensor(x: torch.Tensor) -> torch.Tensor:
@@ -2569,8 +2628,13 @@ def clone_input(x: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.T
         # this func fails on fake tensors in __torch_dispatch__
         return x
 
+    def is_pinned_cpu_tensor(x: torch.Tensor) -> bool:
+        return x.device.type == "cpu" and x.is_pinned()
+
     def torch_clone(x: torch.Tensor) -> torch.Tensor:
         y = torch.clone(x)
+        if is_pinned_cpu_tensor(x):
+            y = y.pin_memory()
         if x.is_leaf:
             y.requires_grad_(x.requires_grad)
         if x.is_leaf and x.grad is not None:
@@ -2617,7 +2681,10 @@ def clone_input(x: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.T
             result = torch.empty_quantized((needed_size + 32,), x)
         else:
             result = torch.empty(
-                needed_size + 32, dtype=dtype or x.dtype, device=x.device
+                needed_size + 32,
+                dtype=dtype or x.dtype,
+                device=x.device,
+                pin_memory=is_pinned_cpu_tensor(x),
             )
         cache_line_offset = (
             (x.data_ptr() - result.data_ptr()) % 32

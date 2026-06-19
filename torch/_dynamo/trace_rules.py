@@ -19,6 +19,7 @@ These rules are critical for TorchDynamo's ability to automatically determine
 compilation boundaries and optimize PyTorch programs effectively.
 """
 
+import _weakrefset
 import abc
 import builtins
 import contextlib
@@ -253,6 +254,7 @@ manual_torch_name_rule_map: dict[
     "torch.Tensor#_make_wrapper_subclass": SkipFunctionVariable,
     "torch.Tensor#__init__": SkipFunctionVariable,
     "torch.Tensor#split": TorchInGraphFunctionVariable,
+    "torch.cuda._clear_cublas_workspaces": SkipFunctionVariable,
     "torch.cuda.set_device": SkipFunctionVariable,
     "torch.cuda.current_device": TorchInGraphFunctionVariable,
     "torch.autograd.grad": TorchInGraphFunctionVariable,
@@ -3389,6 +3391,7 @@ def is_numpy_type_info(obj: Any) -> bool:
 
 
 BUILTIN_SKIPLIST = (
+    _weakrefset,
     abc,
     copy,
     importlib,
