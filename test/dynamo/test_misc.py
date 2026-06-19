@@ -86,6 +86,7 @@ from torch.testing._internal.common_cuda import (
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
     onlyCUDA,
+    PYTORCH_CUDA_MEMCHECK,
 )
 from torch.testing._internal.common_methods_invocations import (
     sample_inputs_take_along_dim,
@@ -2277,6 +2278,19 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.tensor([1.0, 2.0, 3.0])
         self.assertEqual(f(x), x + 1)
+
+    def test_check_tensor_predicate_raises_clear_error(self):
+        @torch.compile(backend="eager")
+        def f(x):
+            torch._check(x > 0)
+            return torch.log(x)
+
+        with self.assertRaisesRegex(
+            TypeError, r"cond must be a bool.*torch[.]_check_tensor_all"
+        ) as cm:
+            f(torch.rand(1))
+
+        self.assertNotIn("FakeTensor", str(cm.exception))
 
     def test_check_with_closure_constant(self):
         @torch.compile(backend="eager", fullgraph=True)
@@ -6269,6 +6283,34 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
                 # Make sure sparse clone is successful.
                 self.assertEqual(sparse_input, sparse_copy)
 
+    @unittest.skipIf(not TEST_CUDA, "pinned CPU memory requires CUDA")
+    @unittest.skipIf(
+        PYTORCH_CUDA_MEMCHECK, "is_pinned uses failure to detect pointer property"
+    )
+    def test_clone_input_preserves_pinned_cpu_tensor_metadata(self):
+        base = torch.randn(4, 6, pin_memory=True)
+        x = base[:, ::2].requires_grad_()
+        x.grad = torch.ones_like(x).pin_memory()
+        x._dynamo_dynamic_indices = {1}
+
+        cloned = torch._dynamo.utils.clone_input(x)
+
+        self.assertTrue(cloned.is_pinned())
+        self.assertEqual(cloned.stride(), x.stride())
+        self.assertEqual(cloned, x)
+        self.assertNotEqual(cloned.data_ptr(), x.data_ptr())
+        self.assertTrue(cloned.requires_grad)
+        self.assertIsNotNone(cloned.grad)
+        self.assertTrue(cloned.grad.is_pinned())
+        self.assertEqual(cloned.grad, x.grad)
+        self.assertEqual(cloned._dynamo_dynamic_indices, x._dynamo_dynamic_indices)
+        self.assertIsNot(cloned._dynamo_dynamic_indices, x._dynamo_dynamic_indices)
+
+        expanded = torch.arange(3, dtype=torch.float32, pin_memory=True).expand(2, 3)
+        expanded_cloned = torch._dynamo.utils.clone_input(expanded)
+        self.assertTrue(expanded_cloned.is_pinned())
+        self.assertEqual(expanded_cloned, expanded)
+
     def test_tensor_is_contiguous(self):
         def fn(x):
             input = torch.randn((1, 16, 1, 1))
@@ -8222,7 +8264,11 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             opt_fn(x, obj)
             self.assertFalse(True)
         except TypeError as e:
-            self.assertIn("__bool__ should return bool, returned float", str(e))
+            if sys.version_info >= (3, 15):
+                msg = "__bool__() must return a bool, not float"
+            else:
+                msg = "__bool__ should return bool, returned float"
+            self.assertIn(msg, str(e))
 
     def test_unpack_tensor_shape_mismatch(self):
         @torch.compile(backend="eager")
@@ -15253,6 +15299,71 @@ fn
             "Reconstruct user defined class without a source",
         ):
             fn(t)
+
+    @expectedFailureDynamic
+    @torch._dynamo.config.patch(enable_trace_load_build_class=True)
+    def test_build_class_closure_over_nonconstant(self):
+        class Outer:
+            def __init__(self):
+                self.scale = 3
+
+        outer = Outer()
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt, fullgraph=True)
+        def fn(t):
+            class Wrapper:
+                def __init__(self, t):
+                    self.t = t
+
+                def compute(self):
+                    return self.t.sin() * outer.scale
+
+            obj = Wrapper(t)
+            return obj.compute()
+
+        t = torch.randn(2)
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        # Same value: the EQUALS_MATCH guard on outer.scale holds, no recompile.
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        self.assertEqual(cnt.frame_count, 1)
+        # Mutating the closed-over non-constant trips the guard -> recompile with
+        # the new value (proves scale is guarded, not baked in as a constant).
+        outer.scale = 5
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        self.assertEqual(cnt.frame_count, 2)
+
+    @expectedFailureDynamic
+    @torch._dynamo.config.patch(enable_trace_load_build_class=True)
+    def test_build_class_closure_over_nonconstant_method(self):
+        class Outer:
+            def __init__(self):
+                self.scale = 2
+
+            def get_scale(self):
+                return self.scale
+
+        outer = Outer()
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt, fullgraph=True)
+        def fn(t):
+            class Wrapper:
+                def keys(self):
+                    return outer.get_scale()
+
+            return Wrapper().keys() + t.sum()
+
+        t = torch.randn(2)
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(cnt.frame_count, 1)
+        # Mutating the closed-over value re-guards and recompiles.
+        outer.scale = 7
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(cnt.frame_count, 2)
 
     def test_dunder_weakref(self):
         class Foo:
