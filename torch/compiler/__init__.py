@@ -199,7 +199,7 @@ def nonstrict_trace(traceable_fn: Callable[_P, _R]) -> Callable[_P, _R]:
     Example::
 
         >>> import torch
-        >>> @torch._dynamo.nonstrict_trace
+        >>> @torch.compiler.nonstrict_trace
         ... def traced_forward(model, x):
         ...     # It's OK to have dynamo graph break within nonstrict_trace region
         ...     torch._dynamo.graph_break()
