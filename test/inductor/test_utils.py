@@ -447,9 +447,7 @@ class TestFakeTensorUpdater(TestCase):
             # cascading changes, cloning is the most straightforward approach to ensure
             # that constraint is met.
             clone_function = (
-                aten._foreach_clone.default
-                if isinstance(fake_outputs, tuple)
-                else aten.clone.default
+                torch._foreach_clone if isinstance(fake_outputs, tuple) else torch.clone
             )
             with gm.graph.inserting_after(fn):
                 # When tests use input tensors with dim == 4, shuffle striding order to
@@ -1095,6 +1093,35 @@ class TestFakeTensorUpdater(TestCase):
         self.assertFalse(is_valid)
         self.assertIs(args[1], buf)
         self.assertEqual(kwargs, {})
+
+    def test_tensor_get_attr_retraces_once_after_meta_available(self):
+        class Root(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("buf", torch.ones(4))
+
+        root = Root()
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        buf = graph.get_attr("buf")
+        add = graph.call_function(torch.ops.aten.add.Tensor, (x, buf))
+        graph.output(add)
+        graph_module = torch.fx.GraphModule(root, graph)
+
+        fake_mode = torch._subclasses.FakeTensorMode()
+        with fake_mode:
+            x.meta["val"] = torch.empty(4)
+            buf_fake = fake_mode.from_tensor(root.buf)
+
+        updater = FakeTensorUpdater(graph_module)
+        with V.set_fake_mode(fake_mode):
+            self.assertEqual(updater.incremental_update(), 0)
+            self.assertNotIn("val", add.meta)
+
+            buf.meta["val"] = buf_fake
+            self.assertEqual(updater.incremental_update(), 1)
+            self.assertIn("val", add.meta)
+            self.assertEqual(updater.incremental_update(), 0)
 
     def test_get_fake_args_kwargs_tensor_container_get_attr_is_invalid(self):
         class Root(torch.nn.Module):

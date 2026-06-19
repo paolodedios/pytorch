@@ -555,13 +555,12 @@ class FakeTensorUpdater:
             if isinstance(node.target, torch._ops.HigherOrderOperator):
                 return True
 
-            return (
-                isinstance(
-                    node.target, (torch._ops.OpOverload, torch._ops.OpOverloadPacket)
-                )
-                or node.target is operator.getitem
-                or node.target
-                is torch._inductor.fx_passes.reinplace._generalized_scatter
+            return callable(node.target) and not hasattr(
+                node.target,
+                # node.target will be called with FakeTensor arguments, which are not
+                # supported by Inductor lowerings. TODO: Investigate how to remove
+                # this. See https://github.com/pytorch/pytorch/issues/164920
+                "_inductor_lowering_function",
             )
 
         def node_invokes_subgraph(
@@ -773,7 +772,8 @@ def get_fake(x: Any, gm: torch.fx.GraphModule | None) -> Any:
             if pytree.tree_any_only(torch.Tensor, lambda _: True, attr):
                 # Keep tensor-valued attributes invalid until they have fake metadata.
                 # Feeding real module tensors into FakeTensor propagation can silently
-                # mix real and fake inputs.
+                # mix real and fake inputs. Once metadata is attached, users are cached
+                # normally and no-op updates stay cheap.
                 return x
             return attr
         return x
