@@ -672,38 +672,24 @@ class CppWrapperCpu(PythonWrapperCodegen):
             return f"{name}_stride"
 
         def maybe_emit_replacement_aliases(sym: sympy.Symbol) -> None:
-            # Deferred runtime asserts and graph input metadata can reference
-            # either side of a backed-symbol replacement. Emit aliases so both
-            # the pre-replacement and canonical names are defined.
-            def is_backed_symbol(s: sympy.Symbol) -> bool:
-                return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
-
-            def decl_type(s: sympy.Symbol) -> str:
-                if s.is_integer:
-                    return "int64_t"
-                if s.is_float:
-                    return "double"
-                raise AssertionError("Unexpected symbol type")
+            # Deferred runtime asserts reference pre-replacement backed
+            # symbols (e.g. s77) that were replaced to this canonical
+            # symbol (s31) during constraint solving. Emit aliases so
+            # the asserts compile. Skip unbacked symbols — they are
+            # defined separately by the unbacked symbol codegen path.
+            from torch.utils._sympy.symbol import symbol_is_type, SymT
 
             for src, tgt in V.graph.sizevars.shape_env.replacements.items():
                 if (
                     tgt == sym
                     and isinstance(src, sympy.Symbol)
                     and src not in bound_vars
-                    and is_backed_symbol(src)
-                    and is_backed_symbol(sym)
+                    and not symbol_is_type(
+                        src, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
+                    )
                 ):
-                    code.writeline(f"{decl_type(src)} {src} = {sym};")
+                    code.writeline(f"int64_t {src} = {sym};")
                     bound_vars.add(src)
-                elif (
-                    src == sym
-                    and isinstance(tgt, sympy.Symbol)
-                    and tgt not in bound_vars
-                    and is_backed_symbol(sym)
-                    and is_backed_symbol(tgt)
-                ):
-                    code.writeline(f"{decl_type(tgt)} {tgt} = {sym};")
-                    bound_vars.add(tgt)
 
         def codegen_symbol(
             sym_or_exp: sympy.Symbol | sympy.Expr,
@@ -1577,6 +1563,21 @@ class CppWrapperCpu(PythonWrapperCodegen):
     def generate_return(self, output_refs: list[str]):
         cst_names = V.graph.constants.keys()
         output2idx: dict[str, int] = {}
+
+        has_cuda_data_ptr_keepalive = False
+        for name in V.graph.data_ptr_keepalive_buffers:
+            buf = V.graph.try_get_buffer(name)
+            if buf is None:
+                continue
+            device = buf.get_device()
+            if device is not None and device.type == "cuda":
+                has_cuda_data_ptr_keepalive = True
+                break
+
+        if has_cuda_data_ptr_keepalive:
+            # The stable ABI wrapper has no record_stream shim for hidden
+            # data_ptr() sources, so wait before RAII handles release storage.
+            self.generate_debug_sync(self.wrapper_call)
 
         # If any output ref represents an rvalue tensor, materialize it to an lvalue
         # RAIIAtenTensorHandle first.  This prevents situations where the code for the

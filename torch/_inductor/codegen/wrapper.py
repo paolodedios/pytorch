@@ -1966,7 +1966,36 @@ class PythonWrapperCodegen(CodeGen):
         """Generate data structure for exiting a CUDA Stream context."""
         self.writeline(ExitCudaStreamContextLine())
 
+    def generate_data_ptr_keepalive_records(self) -> None:
+        for name in V.graph.data_ptr_keepalive_buffers:
+            buf = V.graph.try_get_buffer(name)
+            if buf is None:
+                continue
+            device = buf.get_device()
+            if device is None or device.type not in ("cuda", "xpu"):
+                continue
+            # Opaque kernels may dereference escaped data_ptr() addresses after
+            # wrapper locals go out of scope.
+            if V.graph.scheduler._has_multi_stream_nodes():
+                stream_idxs = OrderedSet(
+                    stream_idx
+                    for node, stream_idx in V.graph.scheduler.node_to_stream.items()
+                    if node.get_device() == device
+                )
+                for stream_idx in stream_idxs:
+                    stream_name = (
+                        DEFAULT_STREAM
+                        if stream_idx == DEFAULT_STREAM_IDX
+                        else get_stream_name(stream_idx)
+                    )
+                    self.wrapper_call.writeline(f"{name}.record_stream({stream_name})")
+            else:
+                self.wrapper_call.writeline(
+                    f"{name}.record_stream(torch.accelerator.current_stream({name}.device))"
+                )
+
     def generate_return(self, output_refs: list[str]) -> None:
+        self.generate_data_ptr_keepalive_records()
         if output_refs:
             if config.nan_asserts:
                 self.wrapper_call.writeline(
@@ -2475,33 +2504,24 @@ class PythonWrapperCodegen(CodeGen):
             return f"{name}_stride"
 
         def maybe_emit_replacement_aliases(sym: sympy.Symbol) -> None:
-            # Deferred runtime asserts and graph input metadata can reference
-            # either side of a backed-symbol replacement. Emit aliases so both
-            # the pre-replacement and canonical names are defined.
+            # Deferred runtime asserts reference pre-replacement backed
+            # symbols (e.g. s77) that were replaced to this canonical
+            # symbol (s31) during constraint solving. Emit aliases so
+            # the asserts compile. Skip unbacked symbols — they are
+            # defined separately by the unbacked symbol codegen path.
             from torch.utils._sympy.symbol import symbol_is_type, SymT
-
-            def is_backed_symbol(s: sympy.Symbol) -> bool:
-                return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
 
             for src, tgt in V.graph.sizevars.shape_env.replacements.items():
                 if (
                     tgt == sym
                     and isinstance(src, sympy.Symbol)
                     and src not in bound_vars
-                    and is_backed_symbol(src)
-                    and is_backed_symbol(sym)
+                    and not symbol_is_type(
+                        src, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
+                    )
                 ):
                     code.writeline(f"{src} = {sym}")
                     bound_vars.add(src)
-                elif (
-                    src == sym
-                    and isinstance(tgt, sympy.Symbol)
-                    and tgt not in bound_vars
-                    and is_backed_symbol(sym)
-                    and is_backed_symbol(tgt)
-                ):
-                    code.writeline(f"{tgt} = {sym}")
-                    bound_vars.add(tgt)
 
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:
