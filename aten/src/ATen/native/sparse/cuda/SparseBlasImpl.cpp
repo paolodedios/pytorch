@@ -10,6 +10,7 @@
 #include <ATen/native/cuda/MiscUtils.h>
 #include <ATen/native/sparse/SparseBlasImpl.h>
 #include <ATen/native/sparse/cuda/SparseBlasImpl.h>
+#include <ATen/cuda/CUDAContext.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -1341,13 +1342,24 @@ void sampled_addmm_out_sparse_csr(
   c10::MaybeOwned<Tensor> A_ = prepare_dense_matrix_for_cusparse(A);
   c10::MaybeOwned<Tensor> B_ = prepare_dense_matrix_for_cusparse(B);
 
-  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
-      kHalf,
+  const auto st = C.scalar_type();
+  if (st == kHalf || st == kBFloat16) {
+    TORCH_CHECK(
+        at::cuda::getCurrentDeviceProperties()->major >= 8,
+        "sampled_addmm: float16/bfloat16 inputs are only supported on GPUs with "
+        "compute capability >= 8.0 (Ampere or newer); got sm_",
+        at::cuda::getCurrentDeviceProperties()->major,
+        at::cuda::getCurrentDeviceProperties()->minor);
+  }
+
+  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(
+      kHalf, kBFloat16,
       C.scalar_type(),
       "sampled_addmm_out_sparse_csr",
       [&] {
-        // cuSPARSE SDDMM supports float16 with float32 accumulation, but not bfloat16.
-        // opmath_type<half> == float, so alpha/beta and compute_type use float.
+        // cuSPARSE SDDMM supports float16 and bfloat16 with float32 accumulation
+        // on Ampere and newer (CC >= 8.0). opmath_type<half/bfloat16> == float,
+        // so alpha/beta and compute_type correctly select fp32 accumulation.
         using opmath_t = at::opmath_type<scalar_t>;
         // CUDA 11.6 doesn't support batched inputs, it raises an error:
         // ** On entry to cusparseSDDMM_bufferSize(): batched SDDMM is not supported
