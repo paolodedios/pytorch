@@ -8506,9 +8506,7 @@ def _infer_quack_epilogue_arg_kinds(
 
 
 def _quack_tensor_args(args):
-    return tuple(
-        arg for arg in args if isinstance(arg, IRNode) and arg.has_tensor_output()
-    )
+    return tuple(arg for arg in args if isinstance(arg, IRNode))
 
 
 def _quack_mxfp8_expected_swizzle():

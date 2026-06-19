@@ -3749,6 +3749,66 @@ class FlexGemmTests(TestCase):
         ).check_not("extern_kernels.mm").run(code)
 
     @requires_cuda_and_triton
+    def test_cuda_inductor_quack_backend_tuple_epilogue_local_sum_epilogue_source_fuses(
+        self,
+    ):
+        M = 64
+        N = 64
+        group = 32
+
+        def fn(a, b, residual, gamma):
+            def epilogue(acc):
+                h = acc.float() + residual
+                h_sq = (h * h).view(M, -1, group)
+                return (h * gamma).to(acc.dtype), h_sq.sum(-1)
+
+            return flex_gemm(
+                torch.ops.aten.mm.default,
+                (a, b),
+                epilogue,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(M, 64, device="cuda", dtype=torch.float16)
+        b = torch.randn(64, N, device="cuda", dtype=torch.float16)
+        residual = torch.randn(M, N, device="cuda", dtype=torch.float16)
+        gamma = torch.randn(1, N, device="cuda", dtype=torch.float16)
+
+        actual, (code,) = run_and_get_code(
+            torch.compile(fn, backend="inductor", fullgraph=True), a, b, residual, gamma
+        )
+        expected = fn(a, b, residual, gamma)
+
+        torch.testing.assert_close(actual[0], expected[0], atol=1e-2, rtol=1e-2)
+        torch.testing.assert_close(actual[1], expected[1], atol=1e-1, rtol=1e-2)
+        FileCheck().check("epilogue_args=").check(f"local_reduce_group={group}").check(
+            "local_reduce_source_from_epilogue=True"
+        ).check_not("extern_kernels.mm").run(code)
+
+    @requires_cuda_and_triton
+    def test_cuda_inductor_quack_backend_reads_intermediate_closure_tensor(self):
+        def fn(a, b, partial_sums):
+            inv_rms = torch.rsqrt(partial_sums.sum(-1, keepdim=True) + 1.0)
+            return flex_gemm(
+                torch.ops.aten.mm.default,
+                (a, b),
+                lambda acc: (acc.float() * inv_rms).to(acc.dtype),
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(32, 64, device="cuda", dtype=torch.float16)
+        b = torch.randn(64, 48, device="cuda", dtype=torch.float16)
+        partial_sums = torch.randn(32, 2, device="cuda", dtype=torch.float16).abs()
+
+        actual, (code,) = run_and_get_code(
+            torch.compile(fn, backend="inductor", fullgraph=True), a, b, partial_sums
+        )
+        expected = fn(a, b, partial_sums)
+
+        torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
+        FileCheck().check("epilogue_args=").check_not("extern_kernels.mm").run(code)
+
+    @requires_cuda_and_triton
     def test_cuda_inductor_quack_backend_tuple_epilogue_relu_local_amax_scale_fuses(
         self,
     ):

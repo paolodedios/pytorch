@@ -618,8 +618,12 @@ def match_local_n_reduce(
     if view_match is None:
         return None
     source_node = match_acc_source(view_match.base, mm_node)
+    epilogue_reduce_source_node = None
     if source_node is None:
-        return None
+        if not output_uses_node(view_match.base, mm_node):
+            return None
+        source_node = view_match.base
+        epilogue_reduce_source_node = view_match.node
     shape = normalize_shape(view_match.shape)
     group_shape = grouped_n_fragment_shape(shape)
     if not is_n_group_shape(group_shape):
@@ -644,6 +648,7 @@ def match_local_n_reduce(
         keepdim=bool(sum_match.keepdim),
         group_size=group_size,
         dim=QUACK_REDUCE_DIM_N,
+        epilogue_reduce_source_node=epilogue_reduce_source_node,
     )
 
 
@@ -769,6 +774,15 @@ def match_local_norm(
         group_size=local_reduce.group_size,
         dim=dim,
         extra_skip_nodes=frozenset(extra_skip_nodes),
+    )
+
+
+def local_reduce_source_uses_node(
+    local_reduce: QuackLocalReduceInfo, node: torch.fx.Node
+) -> bool:
+    """Return whether a source-from-epilogue reduce still needs an FX node."""
+    return local_reduce.epilogue_reduce_source_node is not None and output_uses_node(
+        local_reduce.epilogue_reduce_source_node, node
     )
 
 
@@ -1022,14 +1036,28 @@ def analyze_output(output_value: Any, mm_node: torch.fx.Node) -> QuackOutputPlan
                         scale=1.0,
                         epilogue_reduce_source_node=local_reduce.epilogue_reduce_value_node,
                     )
-                if not output_uses_node(output_value[0], local_reduce.aux_output_node):
+                if not output_uses_node(
+                    output_value[0], local_reduce.aux_output_node
+                ) and not local_reduce_source_uses_node(
+                    local_reduce, local_reduce.aux_output_node
+                ):
                     skip_nodes.add(local_reduce.aux_output_node)
-                if not output_uses_node(output_value[0], local_reduce.reduce_op_node):
+                if not output_uses_node(
+                    output_value[0], local_reduce.reduce_op_node
+                ) and not local_reduce_source_uses_node(
+                    local_reduce, local_reduce.reduce_op_node
+                ):
                     skip_nodes.add(local_reduce.reduce_op_node)
                 for skip_node in local_reduce.producer_skip_nodes:
-                    if not output_uses_node(output_value[0], skip_node):
+                    if not output_uses_node(
+                        output_value[0], skip_node
+                    ) and not local_reduce_source_uses_node(local_reduce, skip_node):
                         skip_nodes.add(skip_node)
-                if not output_uses_node(output_value[0], local_reduce.view_node):
+                if not output_uses_node(
+                    output_value[0], local_reduce.view_node
+                ) and not local_reduce_source_uses_node(
+                    local_reduce, local_reduce.view_node
+                ):
                     skip_nodes.add(local_reduce.view_node)
                     if local_reduce.source_node is not mm_node:
                         skip_nodes.add(local_reduce.source_node)
