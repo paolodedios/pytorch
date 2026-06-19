@@ -827,7 +827,7 @@ class AutogradFunctionApply(HigherOrderOperator):
         is_under_vmap = (
             current_functorch_interpreter is not None
             and current_functorch_interpreter.key()
-            is torch._C._functorch.TransformType.Vmap
+            == torch._C._functorch.TransformType.Vmap
         ) or any(
             torch._C._functorch.is_batchedtensor(arg)
             for arg in fwd_args
