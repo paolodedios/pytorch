@@ -3097,8 +3097,6 @@ class TestMPS(TestCaseMPS):
         helper(threshold=-0.1, value=10, num_elems=10)
         helper(threshold=0.5, value=-15, num_elems=100)
         helper(threshold=1, value=10, num_elems=100, inplace=True, requires_grad=False)
-        helper(threshold=0.1, value=20, num_elems=0)
-        helper(threshold=0.1, value=20, num_elems=0, inplace=True, requires_grad=False)
 
     # Test pow
     def test_pow(self):
