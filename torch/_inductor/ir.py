@@ -56,13 +56,13 @@ from torch._prims_common import (
     StrideType,
 )
 from torch.fx.experimental.symbolic_shapes import (
+    _invalidate_unbacked_memos_for_replay,
     _remove_effect_token_unbacked_bindings,
     compute_unbacked_bindings,
     free_symbols,
     free_unbacked_symbols,
     GuardOnDataDependentSymNode,
     has_free_unbacked_symbols,
-    invalidate_unbacked_memos_for_replay,
     IterateExprs,
     rebind_unbacked,
     resolve_unbacked_bindings,
@@ -6028,17 +6028,6 @@ class TemplateBuffer(OperationBuffer):
         return tuple(walk(structured, []))
 
 
-@dataclasses.dataclass(frozen=True)
-class FlexGemmEpilogueConfig:
-    epilogue_name: str
-    epilogue_source: str
-    gemm_op: str
-    alpha: float
-    beta: float
-    tuned: bool = False
-    out_dtype: Any | None = None
-
-
 class TritonTemplateBuffer(TemplateBuffer):
     def __init__(
         self,
@@ -7248,7 +7237,7 @@ class ExternKernel(InputsKernel):
             enable_python_dispatcher(),
             _fallback_kernel_symbol_tracking_context(shape_env),
         ):
-            invalidate_unbacked_memos_for_replay(V.current_node, new_args, new_kwargs)
+            _invalidate_unbacked_memos_for_replay(V.current_node, new_args, new_kwargs)
             example_output = kernel(*new_args, **new_kwargs)
 
         unbacked_bindings: dict[sympy.Symbol, pytree.KeyPath] | None = None
@@ -8412,7 +8401,6 @@ class UserDefinedTritonKernel(ExternKernel):
             reset_to_zero_args,
             self.grid,
             epilogue_fusion,
-            self.launch_kwargs,
         )
         named_args = {
             k: self.get_kwargs_value(k) for k in self.ordered_kwargs_for_cpp_kernel
@@ -8499,7 +8487,6 @@ class UserDefinedTritonKernel(ExternKernel):
         grid: Any,
         tma_descriptor_metadata: dict[str, Any],
         kernel_args: dict[str, Any],
-        launch_kwargs: tuple[str, ...],
     ) -> None:
         inputs: list[IRNode] = []
         kwargs: dict[str, IRNode] = {}
@@ -8531,7 +8518,6 @@ class UserDefinedTritonKernel(ExternKernel):
         )
         self.kernel_idx = kernel_idx
         self.grid = grid
-        self.launch_kwargs = launch_kwargs
 
         kernel, configs, _, _ = self.get_kernel_and_metadata()
 

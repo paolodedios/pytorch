@@ -159,8 +159,8 @@ class ShapeProp(torch.fx.Interpreter):
 
     def run_node(self, n: Node) -> Any:
         from torch.fx.experimental.symbolic_shapes import (
+            _invalidate_unbacked_memos_for_replay,
             compute_unbacked_bindings,
-            invalidate_unbacked_memos_for_replay,
             rebind_unbacked,
         )
 
@@ -174,7 +174,7 @@ class ShapeProp(torch.fx.Interpreter):
                     with self.fake_mode, enable_python_dispatcher():
                         if n.meta.get("unbacked_bindings"):
                             args, kwargs = self.fetch_args_kwargs_from_env(n)
-                            invalidate_unbacked_memos_for_replay(n, args, kwargs)
+                            _invalidate_unbacked_memos_for_replay(n, args, kwargs)
                         result = super().run_node(n)
                         rebind_unbacked(self.fake_mode.shape_env, n, result)
                 else:
