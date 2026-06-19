@@ -583,7 +583,7 @@ def _is_foreach_op(node: torch.fx.Node) -> bool:
 
 def _get_foreach_copy_candidate(
     node: torch.fx.Node, placeholders: set[torch.fx.Node]
-) -> tuple[torch.fx.Node, torch.fx.Node, torch.fx.Node] | None:
+) -> tuple[torch.fx.Node, torch.fx.Node, torch.fx.Node, int] | None:
     if (
         node.op != "call_function"
         or node.target is not torch.ops.aten.copy_.default
@@ -609,7 +609,16 @@ def _get_foreach_copy_candidate(
     if not _is_foreach_op(parent):
         return None
 
-    return parent, dst, src
+    return parent, dst, src, index
+
+
+def _foreach_input_count(parent: torch.fx.Node) -> int | None:
+    if not parent.args:
+        return None
+    tensor_list = parent.args[0]
+    if not isinstance(tensor_list, (list, tuple)):
+        return None
+    return len(tensor_list)
 
 
 def _storage_ref(node: torch.fx.Node) -> StorageWeakRef | None:
@@ -630,10 +639,21 @@ def _device(node: torch.fx.Node) -> torch.device | None:
 
 
 def _can_fold_foreach_copy_group(
-    group: list[tuple[torch.fx.Node, torch.fx.Node, torch.fx.Node, torch.fx.Node]],
+    group: list[tuple[torch.fx.Node, torch.fx.Node, torch.fx.Node, torch.fx.Node, int]],
 ) -> bool:
-    dsts = [dst for _, _, dst, _ in group]
-    srcs = [src for _, _, _, src in group]
+    parent = group[0][1]
+    foreach_input_count = _foreach_input_count(parent)
+    # Inductor can fuse foreach nodes pairwise only when both foreach lists
+    # have the same length. Keep individual copy_ nodes for partial groups.
+    if foreach_input_count is None or foreach_input_count != len(group):
+        return False
+
+    indices = [index for *_, index in group]
+    if indices != list(range(foreach_input_count)):
+        return False
+
+    dsts = [dst for _, _, dst, _, _ in group]
+    srcs = [src for _, _, _, src, _ in group]
 
     device = _device(dsts[0])
     if device is None:
@@ -669,10 +689,10 @@ def _can_fold_foreach_copy_group(
 def fold_foreach_input_mutation_ops(fx_g: torch.fx.Graph) -> None:
     placeholders = {node for node in fx_g.nodes if node.op == "placeholder"}
     groups: list[
-        list[tuple[torch.fx.Node, torch.fx.Node, torch.fx.Node, torch.fx.Node]]
+        list[tuple[torch.fx.Node, torch.fx.Node, torch.fx.Node, torch.fx.Node, int]]
     ] = []
     current_group: list[
-        tuple[torch.fx.Node, torch.fx.Node, torch.fx.Node, torch.fx.Node]
+        tuple[torch.fx.Node, torch.fx.Node, torch.fx.Node, torch.fx.Node, int]
     ] = []
     current_key: tuple[torch.fx.Node, str | None] | None = None
 
@@ -693,21 +713,21 @@ def fold_foreach_input_mutation_ops(fx_g: torch.fx.Graph) -> None:
             flush()
             continue
 
-        parent, dst, src = candidate
+        parent, dst, src, index = candidate
         candidate_key = (parent, node.meta.get("partitioner_tag"))
         if current_group and candidate_key != current_key:
             flush()
 
         if current_key is None:
             current_key = candidate_key
-        current_group.append((node, parent, dst, src))
+        current_group.append((node, parent, dst, src, index))
 
     flush()
 
     for group in groups:
         first_copy = group[0][0]
-        dsts = [dst for _, _, dst, _ in group]
-        srcs = [src for _, _, _, src in group]
+        dsts = [dst for _, _, dst, _, _ in group]
+        srcs = [src for _, _, _, src, _ in group]
 
         with fx_g.inserting_before(first_copy):
             foreach_copy = fx_g.call_function(
