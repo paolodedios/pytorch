@@ -1,7 +1,6 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
-#include <ATen/ops/empty.h>
 #include <torch/csrc/distributed/c10d/NCCLUtils.hpp>
 #include <torch/csrc/distributed/c10d/symm_mem/nccl_dev_cap.hpp>
 #include <torch/csrc/distributed/c10d/symm_mem/nccl_extension.hpp>
@@ -52,6 +51,17 @@ constexpr int AG_THREADS_PER_CTA = 256;
 constexpr int AG_MAX_CTAS = 32;
 // Vectorized copy width in bytes (128-bit). All slices are 16-byte aligned.
 constexpr int AG_ALIGN = 16;
+// Max parameters per call.  The schedule is passed by value as a kernel
+// argument (copied by the launch, no device-side upload), so it must fit the
+// kernel parameter space; 256 keeps it at 4 KB.
+constexpr int AG_MAX_PARAMS = 256;
+
+// Per-parameter schedule, passed by value to the kernel.  The output base of
+// parameter i is derived in the kernel as offsets[i] * world_size.
+struct AllGatherOffsetSchedule {
+  int64_t offsets[AG_MAX_PARAMS]; // logical element offset of each param
+  int64_t sizes[AG_MAX_PARAMS];   // per-rank shard size of each param
+};
 
 // LSA push kernel.  Each CTA grid-strides over the (parameter, destination-
 // peer) work items, writing this rank's own shard of parameter i into the
@@ -63,10 +73,8 @@ constexpr int AG_ALIGN = 16;
 __global__ void all_gather_offset_push_kernel(
     ncclWindow_t out_window,
     size_t out_window_base_offset,
-    const char* input_ptr,       // local base pointer of `input`
-    const int64_t* offsets,      // logical element offset of each param
-    const int64_t* out_bases,    // element base of each param in the output
-    const int64_t* sizes,        // per-rank shard size of each param
+    const char* input_ptr, // local base pointer of `input`
+    AllGatherOffsetSchedule sched,
     int n_params,
     int my_rank,
     int world_size,
@@ -81,12 +89,13 @@ __global__ void all_gather_offset_push_kernel(
   for (int pair = blockIdx.x; pair < total_pairs; pair += gridDim.x) {
     const int param = pair / world_size;
     const int dst_peer = pair % world_size;
-    const int64_t count = sizes[param];
+    const int64_t count = sched.sizes[param];
     const int64_t nbytes = count * elem_size;
-    const char* src = input_ptr + offsets[param] * elem_size;  // own shard
+    const char* src =
+        input_ptr + sched.offsets[param] * elem_size; // own shard
+    const int64_t out_base = sched.offsets[param] * world_size;
     const size_t dst_byte = out_window_base_offset +
-        static_cast<size_t>(
-            out_bases[param] + static_cast<int64_t>(my_rank) * count) *
+        static_cast<size_t>(out_base + static_cast<int64_t>(my_rank) * count) *
             elem_size;
     char* dst = reinterpret_cast<char*>(
         ncclGetLsaPointer(out_window, dst_byte, dst_peer));
@@ -116,12 +125,11 @@ __global__ void all_gather_offset_push_kernel(
 __global__ void all_gather_offset_mm_kernel(
     ncclWindow_t out_window,
     size_t out_window_base_offset,
-    const char* input_ptr,       // local base pointer of `input`
-    const int64_t* offsets,      // logical element offset of each param
-    const int64_t* out_bases,    // element base of each param in the output
-    const int64_t* sizes,        // per-rank shard size of each param
+    const char* input_ptr, // local base pointer of `input`
+    AllGatherOffsetSchedule sched,
     int n_params,
     int my_rank,
+    int world_size,
     int elem_size,
     ncclMultimemHandle mm_handle,
     ncclDevComm devComm) {
@@ -131,13 +139,13 @@ __global__ void all_gather_offset_mm_kernel(
   bar.sync(coop, cuda::memory_order_acquire);
 
   for (int param = blockIdx.x; param < n_params; param += gridDim.x) {
-    const int64_t count = sizes[param];
+    const int64_t count = sched.sizes[param];
     const int64_t words = count * elem_size / 4;
+    const int64_t out_base = sched.offsets[param] * world_size;
     uint32_t* src = reinterpret_cast<uint32_t*>(
-        const_cast<char*>(input_ptr + offsets[param] * elem_size));
+        const_cast<char*>(input_ptr + sched.offsets[param] * elem_size));
     const size_t dst_byte = out_window_base_offset +
-        static_cast<size_t>(
-            out_bases[param] + static_cast<int64_t>(my_rank) * count) *
+        static_cast<size_t>(out_base + static_cast<int64_t>(my_rank) * count) *
             elem_size;
     ncclMultimemCopy(coop, src, out_window, dst_byte, words, mm_handle);
   }
@@ -150,7 +158,7 @@ __global__ void all_gather_offset_mm_kernel(
 #endif // NCCL_DEVICE_HAS_REDUCE_COPY
 
 // Host entry point.  Validates arguments, resolves the default offsets, picks
-// the multimem or LSA-push path, uploads the per-parameter schedule, launches.
+// the multimem or LSA-push path, fills the schedule, and launches.
 void nccl_all_gather_offset(
     const at::Tensor& input,
     at::Tensor& out,
@@ -176,6 +184,10 @@ void nccl_all_gather_offset(
   const int n_params = static_cast<int>(split_sizes.size());
   TORCH_CHECK(
       n_params > 0, "nccl_all_gather_offset: split_sizes must be non-empty");
+  TORCH_CHECK(
+      n_params <= AG_MAX_PARAMS,
+      "nccl_all_gather_offset: too many parameters: ", n_params,
+      " (max ", AG_MAX_PARAMS, "); split the call");
 
   c10::cuda::CUDAGuard guard(input.device());
   auto stream = at::cuda::getCurrentCUDAStream();
@@ -272,13 +284,8 @@ void nccl_all_gather_offset(
       out_window_base_offset % AG_ALIGN == 0,
       "nccl_all_gather_offset: out must be 16-byte aligned in the window");
 
-  // Build the per-parameter schedule on the host:
-  //   row 0: logical element offset of param i (offsets[i])
-  //   row 1: element base of param i in the output (off[i] * world_size)
-  //   row 2: per-rank shard size of param i
-  auto host = at::empty(
-      {3, n_params}, at::TensorOptions().dtype(at::kLong).pinned_memory(true));
-  auto acc = host.accessor<int64_t, 2>();
+  // Fill the per-parameter schedule (passed by value to the kernel).
+  AllGatherOffsetSchedule sched;
   for (int i = 0; i < n_params; i++) {
     const int64_t off = eff_offsets[i];
     const int64_t sz = split_sizes[i];
@@ -302,14 +309,9 @@ void nccl_all_gather_offset(
         " slices are not 16-byte aligned (offset=", off, ", size=", sz,
         ", elem_size=", elem_size,
         "); all per-parameter offsets and sizes must be 16-byte aligned");
-    acc[0][i] = off;
-    acc[1][i] = out_base;
-    acc[2][i] = sz;
+    sched.offsets[i] = off;
+    sched.sizes[i] = sz;
   }
-  auto sched = host.to(device, at::kLong, /*non_blocking=*/true);
-  const int64_t* offsets = sched[0].data_ptr<int64_t>();
-  const int64_t* out_bases = sched[1].data_ptr<int64_t>();
-  const int64_t* sizes = sched[2].data_ptr<int64_t>();
 
   const char* input_ptr = reinterpret_cast<const char*>(input.data_ptr());
 
@@ -320,11 +322,10 @@ void nccl_all_gather_offset(
         out_window,
         out_window_base_offset,
         input_ptr,
-        offsets,
-        out_bases,
-        sizes,
+        sched,
         n_params,
         my_rank,
+        world_size,
         elem_size,
         devcomm.lsaMultimem,
         devcomm);
@@ -339,9 +340,7 @@ void nccl_all_gather_offset(
       out_window,
       out_window_base_offset,
       input_ptr,
-      offsets,
-      out_bases,
-      sizes,
+      sched,
       n_params,
       my_rank,
       world_size,
