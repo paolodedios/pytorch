@@ -9587,6 +9587,11 @@ class CUDAReproTests(torch._dynamo.test_case.TestCase):
             torch.float16,
             "expected scalar type BFloat16 but found Half",
         )
+        check_error(
+            torch.int64,
+            torch.bfloat16,
+            "expected scalar type BFloat16 but found Long",
+        )
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     @unittest.skipIf(not dist.is_available(), "test requires distributed")
