@@ -1102,6 +1102,61 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
         ):
             opt_fn(torch.randn(2, 3))
 
+    def test_fake_tensor_runtime_error_in_with_inside_try_except(self):
+        backend = EagerAndRecordGraphs()
+
+        class PassThroughRuntimeError:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, typ, exc, tb):
+                return False
+
+        def fn(t):
+            try:
+                with PassThroughRuntimeError():
+                    t.expand_as(torch.randn(2))
+            except RuntimeError:
+                return t.sin()
+            return t.cos()
+
+        opt_fn = torch.compile(fn, backend=backend, fullgraph=True)
+        t = torch.randn(2, 3)
+        self.assertEqual(fn(t), opt_fn(t))
+
+        self.assertEqual(len(backend.graphs), 1)
+        node_targets = [node.target for node in backend.graphs[0].graph.nodes]
+        self.assertNotIn("expand_as", node_targets)
+        self.assertIn("sin", node_targets)
+
+    def test_fake_tensor_runtime_error_in_suppressing_with_inside_try_except(self):
+        backend = EagerAndRecordGraphs()
+
+        class SwallowRuntimeError:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, typ, exc, tb):
+                return typ is RuntimeError
+
+        def fn(t):
+            try:
+                with SwallowRuntimeError():
+                    t.expand_as(torch.randn(2))
+            except RuntimeError:
+                return t.sin()
+            return t.cos()
+
+        opt_fn = torch.compile(fn, backend=backend, fullgraph=True)
+        t = torch.randn(2, 3)
+        self.assertEqual(fn(t), opt_fn(t))
+
+        self.assertEqual(len(backend.graphs), 1)
+        node_targets = [node.target for node in backend.graphs[0].graph.nodes]
+        self.assertNotIn("expand_as", node_targets)
+        self.assertIn("cos", node_targets)
+        self.assertNotIn("sin", node_targets)
+
     def test_fake_tensor_runtime_error_in_try_finally(self):
         def fn(t):
             try:
