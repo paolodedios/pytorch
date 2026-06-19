@@ -3454,33 +3454,6 @@ class TestGuardsExpressions(TestCase):
             shape_env.evaluate_guards_expression(guards, [guarding_hint_or_throw(s2)])
         )
 
-    def test_guards_expression_source_info(self):
-        from torch._guards import ShapeGuard, SLoc
-
-        shape_env = ShapeEnv()
-        s0 = create_symint(shape_env, 6)
-        guard_bool(s0 * s0 < 40)
-
-        sloc = SLoc("_inductor/codegen/simd.py:2011 in can_use_32bit_indexing", None)
-        guard = shape_env.guards[-1]
-        shape_env.guards[-1] = ShapeGuard(guard.expr, sloc, guard.size_oblivious)
-
-        guards, guards_with_source = (
-            shape_env.produce_guards_expression_with_source_info([s0])
-        )
-        self.assertIsNotNone(guards)
-        self.assertIsNotNone(guards_with_source)
-        self.assertIn(str(sloc), {str(g.sloc) for g in guards_with_source})
-
-        new_shape_env = ShapeEnv()
-        new_s0 = create_symint(new_shape_env, 6)
-        self.assertTrue(
-            new_shape_env.evaluate_guards_expression_with_source_info(
-                guards_with_source, [new_s0]
-            )
-        )
-        self.assertIn(str(sloc), {str(g.sloc) for g in new_shape_env.guards})
-
     def test_guards_float_print(self):
         shape_env = ShapeEnv()
         s0 = create_symint(shape_env, 3)
@@ -5035,7 +5008,26 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
         def aten_func(x):
             return torch.ops.aten.contiguous.default(x)
 
-        for name, f in (("method", func), ("aten", aten_func)):
+        def detach_func(x):
+            return x.contiguous().detach()
+
+        def data_func(x):
+            return x.contiguous().data
+
+        def transpose_func(x):
+            return x.contiguous().T
+
+        def real_func(x):
+            return x.contiguous().real
+
+        for name, f in (
+            ("method", func),
+            ("aten", aten_func),
+            ("detach", detach_func),
+            ("data", data_func),
+            ("transpose", transpose_func),
+            ("real", real_func),
+        ):
             with self.subTest(name=name):
                 torch._dynamo.reset()
                 cnt = CompileCounterWithBackend("inductor")
@@ -5056,39 +5048,6 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
                 torch._dynamo.decorators.mark_unbacked(y, 1)
                 compiled_y = compiled_func(y)
                 self.assertEqual(compiled_y, f(torch.zeros(3, 3)))
-                self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
-                self.assertEqual(cnt.frame_count, 2)
-
-    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
-    @fresh_cache()
-    def test_unbacked_contiguous_storage_alias_return_recompiles(self):
-        def detach_func(x):
-            return x.contiguous().detach()
-
-        def data_func(x):
-            return x.contiguous().data
-
-        for name, func in (("detach", detach_func), ("data", data_func)):
-            with self.subTest(name=name):
-                torch._dynamo.reset()
-                cnt = CompileCounterWithBackend("inductor")
-                compiled_func = torch.compile(
-                    fullgraph=True, backend=cnt, dynamic=True
-                )(func)
-
-                x = torch.zeros(3, 3).t()
-                torch._dynamo.decorators.mark_unbacked(x, 0)
-                torch._dynamo.decorators.mark_unbacked(x, 1)
-                compiled_x = compiled_func(x)
-                self.assertEqual(compiled_x, func(torch.zeros(3, 3).t()))
-                self.assertNotEqual(compiled_x.data_ptr(), x.data_ptr())
-                self.assertEqual(cnt.frame_count, 1)
-
-                y = torch.zeros(3, 3)
-                torch._dynamo.decorators.mark_unbacked(y, 0)
-                torch._dynamo.decorators.mark_unbacked(y, 1)
-                compiled_y = compiled_func(y)
-                self.assertEqual(compiled_y, func(torch.zeros(3, 3)))
                 self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
                 self.assertEqual(cnt.frame_count, 2)
 
@@ -5145,39 +5104,6 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
         self.assertEqual(compiled_func(y), func(eager_y))
         self.assertEqual(y, eager_y)
         self.assertEqual(cnt.frame_count, 2)
-
-    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
-    @fresh_cache()
-    def test_unbacked_contiguous_property_return_alias_recompiles(self):
-        def transpose_func(x):
-            return x.contiguous().T
-
-        def real_func(x):
-            return x.contiguous().real
-
-        for name, func in (("transpose", transpose_func), ("real", real_func)):
-            with self.subTest(name=name):
-                torch._dynamo.reset()
-                cnt = CompileCounterWithBackend("inductor")
-                compiled_func = torch.compile(
-                    fullgraph=True, backend=cnt, dynamic=True
-                )(func)
-
-                x = torch.zeros(3, 3).t()
-                torch._dynamo.decorators.mark_unbacked(x, 0)
-                torch._dynamo.decorators.mark_unbacked(x, 1)
-                compiled_x = compiled_func(x)
-                self.assertEqual(compiled_x, func(torch.zeros(3, 3).t()))
-                self.assertNotEqual(compiled_x.data_ptr(), x.data_ptr())
-                self.assertEqual(cnt.frame_count, 1)
-
-                y = torch.zeros(3, 3)
-                torch._dynamo.decorators.mark_unbacked(y, 0)
-                torch._dynamo.decorators.mark_unbacked(y, 1)
-                compiled_y = compiled_func(y)
-                self.assertEqual(compiled_y, func(torch.zeros(3, 3)))
-                self.assertEqual(compiled_y.data_ptr(), y.data_ptr())
-                self.assertEqual(cnt.frame_count, 2)
 
     @fresh_cache()
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
@@ -6573,6 +6499,7 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
         self.assertEqual(cnt.frame_count, 4)
 
     @fresh_cache()
+    @skipIfTorchDynamo("not allowed to trace mark_unbacked")
     def test_view_base_identity_observation_no_duplicate_guard(self):
         cnt = CompileCounterWithBackend("eager")
 

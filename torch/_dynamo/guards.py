@@ -1289,7 +1289,7 @@ class GuardBuilder(GuardBuilderBase):
 
         # Save the guard managers to avoid repeatedly traversing sources.
         self._cached_guard_managers: dict[str, GuardManager] = {}
-        self._cached_duplicate_input_guards: set[tuple[str, str]] = set()
+        self._cached_duplicate_input_guards: set[tuple[str, str, bool]] = set()
         self.object_aliasing_guard_codes: list[tuple[str, str]] = []
         self.guard_nn_modules = config.guard_nn_modules and justknobs_check(
             "pytorch/compiler:guard_nn_modules"
@@ -3046,7 +3046,9 @@ class GuardBuilder(GuardBuilderBase):
     # single source → value check.
     # TODO(voz): Deduplicate w/ AOTAutograd dupe input guards
     @skip_guard_check_spec
-    def DUPLICATE_INPUT(self, guard: Guard, source_b: Source) -> None:
+    def DUPLICATE_INPUT(
+        self, guard: Guard, source_b: Source, expected: bool = True
+    ) -> None:
         if is_from_skip_guard_source(
             guard.originating_source
         ) or is_from_skip_guard_source(source_b):
@@ -3067,15 +3069,22 @@ class GuardBuilder(GuardBuilderBase):
             return
 
         # Check that the guard has not been inserted already
-        key = (ref_a, ref_b)
+        key = (ref_a, ref_b, expected)
         if key in self._cached_duplicate_input_guards:
             return
 
-        self._cached_duplicate_input_guards.add((ref_a, ref_b))
-        self._cached_duplicate_input_guards.add((ref_b, ref_a))
+        self._cached_duplicate_input_guards.add(key)
+        self._cached_duplicate_input_guards.add((ref_b, ref_a, expected))
 
-        code = [f"{ref_b} is {ref_a}"]
+        code = [f"{ref_b} is {'not ' if not expected else ''}{ref_a}"]
         self._set_guard_export_info(guard, code)
+
+        if not expected:
+            self.add_python_lambda_leaf_guard_to_root(
+                code,
+                get_verbose_code_parts(code, guard),
+            )
+            return
 
         if config.use_lamba_guard_for_object_aliasing:
             # Save the code part so that we can install a lambda guard at the
