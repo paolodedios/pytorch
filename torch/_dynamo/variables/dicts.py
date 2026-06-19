@@ -197,12 +197,16 @@ def _min_removable_handle_id_key(items: Iterable[object]) -> int | None:
 def _ordinary_key_may_equal_future_removable_handle_id(
     key: object, min_handle_id: int
 ) -> bool:
-    vt = _hashable_tracker_vt(key)
-    return not _is_removable_handle_id_key(vt)
+    key_value = _int_like_constant_key(key)
+    return key_value is None or key_value >= min_handle_id
 
 
 def _int_like_constant_key(key: object) -> int | None:
     vt = _hashable_tracker_vt(key)
+    if isinstance(vt, variables.LazyVariableTracker):
+        if not vt.is_realized():
+            return None
+        vt = vt.realize()
     if _is_removable_handle_id_key(vt) or not vt.is_python_constant():
         return None
     value = vt.as_python_constant()
@@ -254,6 +258,7 @@ class ConstDictVariable(VariableTracker):
 
     _nonvar_fields = {
         "user_cls",
+        "_checking_python_constant",
         *VariableTracker._nonvar_fields,
     }
 
@@ -269,6 +274,8 @@ class ConstDictVariable(VariableTracker):
             kwargs.pop("original_items")
         if "should_reconstruct_all" in kwargs:
             kwargs.pop("should_reconstruct_all")
+        if "_checking_python_constant" in kwargs:
+            kwargs.pop("_checking_python_constant")
 
         super().__init__(**kwargs)
 
@@ -305,6 +312,11 @@ class ConstDictVariable(VariableTracker):
         )
         self.original_items = items.copy()
         self.user_cls = user_cls
+        # Re-entrancy guard for is_python_constant against self-referential
+        # dicts (d[k] = d, directly or via an OrderedDict/defaultdict wrapper
+        # whose _base_vt is this instance). Both forms re-enter this same
+        # instance's is_python_constant, so a per-instance flag suffices.
+        self._checking_python_constant = False
 
     def _get_dict_cls_from_user_cls(self, user_cls: type) -> type:
         accepted_dict_types = (dict, collections.OrderedDict, collections.defaultdict)
@@ -336,6 +348,25 @@ class ConstDictVariable(VariableTracker):
             val_str = _item_debug_repr(v)
             items.append(f"{key_str}: {val_str}")
         return "{" + ", ".join(items) + "}"
+
+    def is_python_constant(self) -> bool:
+        # Avoid the base implementation, which probes as_python_constant() and
+        # thus rebuilds a real dict, re-hashing the keys (wrong for keys with a
+        # side-effecting __hash__).  Check element constness directly instead.
+        # Re-entrancy guard: a self-referential dict (d[k] = d, directly or via
+        # an OrderedDict/defaultdict wrapper delegating to this _base_vt) would
+        # otherwise recurse forever. A cyclic dict is not a flat python
+        # constant; return False so reconstruct handles the cycle.
+        if self._checking_python_constant:
+            return False
+        self._checking_python_constant = True
+        try:
+            return all(
+                k.vt.is_python_constant() and v.is_python_constant()
+                for k, v in self.items.items()
+            )
+        finally:
+            self._checking_python_constant = False
 
     def as_python_constant(self) -> dict[Any, Any]:
         return {
@@ -1342,18 +1373,19 @@ class NNModuleHooksDictVariable(ConstDictVariable):
             return
         ConstDictVariable.install_dict_keys_match_guard(self)
         expected_keys = self._constant_key_tuple_or_graph_break(tx)
-        if self.source is None:
+        source = self.source
+        if source is None:
             _graph_break_removable_handle_id(tx)
         install_guard(
-            self.source.make_guard(
+            source.make_guard(
                 functools.partial(
                     GuardBuilder.NN_MODULE_HOOKS_DICT_KEYS_MATCH,
                     expected_keys=expected_keys,
                 )
             )
         )
-        if self.source and not is_constant_source(self.source):
-            tx.output.guard_on_key_order.add(self.source)
+        if not is_constant_source(source):
+            tx.output.guard_on_key_order.add(source)
 
     def install_dict_contains_guard(
         self, tx: "InstructionTranslatorBase", args: list[VariableTracker]

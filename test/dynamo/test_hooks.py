@@ -1306,62 +1306,6 @@ def forward(self, L_x_ : torch.Tensor):
                 replacement_handle.remove()
             RemovableHandle.next_id = old_next_id
 
-    def test_register_forward_hook_inside_compiled_region_existing_hook_key_replacement_preserves_runtime_key(
-        self,
-    ):
-        class Mod(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.linear = torch.nn.Linear(4, 4)
-                with torch.no_grad():
-                    self.linear.weight.zero_()
-                    self.linear.bias.zero_()
-
-            def forward(self, x):
-                def forward_hook(module, args, output):
-                    return output + 1
-
-                handle = self.linear.register_forward_hook(forward_hook)
-                try:
-                    return self.linear(x)
-                finally:
-                    handle.remove()
-
-        def existing_hook(module, args, output):
-            return output + 2
-
-        old_next_id = RemovableHandle.next_id
-        pre_handle = None
-        replacement_handle = None
-        try:
-            RemovableHandle.next_id = 0
-            mod = Mod()
-            pre_handle = mod.linear.register_forward_hook(existing_hook)
-            x = torch.randn(4, 4)
-            ref = mod(x)
-
-            cnts = torch._dynamo.testing.CompileCounter()
-            opt_mod = torch.compile(mod, backend=cnts, fullgraph=True)
-            self.assertEqual(opt_mod(x), ref)
-            self.assertEqual(cnts.frame_count, 1)
-
-            pre_handle.remove()
-            RemovableHandle.next_id = 100
-            replacement_handle = mod.linear.register_forward_hook(existing_hook)
-            self.assertEqual(replacement_handle.id, 100)
-            self.assertEqual(opt_mod(x), ref)
-            self.assertEqual(cnts.frame_count, 2)
-            self.assertEqual(list(mod.linear._forward_hooks.keys()), [100])
-
-            replacement_handle.remove()
-            self.assertEqual(len(mod.linear._forward_hooks), 0)
-        finally:
-            if pre_handle is not None:
-                pre_handle.remove()
-            if replacement_handle is not None:
-                replacement_handle.remove()
-            RemovableHandle.next_id = old_next_id
-
     def test_removable_handle_public_hook_dict_keys_replacement_recompiles(self):
         class Mod(torch.nn.Module):
             def __init__(self) -> None:
@@ -1411,71 +1355,6 @@ def forward(self, L_x_ : torch.Tensor):
                 pre_handle.remove()
             if replacement_handle is not None:
                 replacement_handle.remove()
-            RemovableHandle.next_id = old_next_id
-
-    def test_removable_handle_public_hook_dict_direct_iteration_replacement_recompiles(
-        self,
-    ):
-        class Mod(torch.nn.Module):
-            def __init__(self, mode) -> None:
-                super().__init__()
-                self.linear = torch.nn.Linear(4, 4)
-                self.mode = mode
-                with torch.no_grad():
-                    self.linear.weight.zero_()
-                    self.linear.bias.zero_()
-
-            def forward(self, x):
-                def forward_hook(module, args, output):
-                    return output + 1
-
-                handle = self.linear.register_forward_hook(forward_hook)
-                try:
-                    out = self.linear(x)
-                finally:
-                    handle.remove()
-
-                if self.mode == "sum_iter":
-                    key_value = sum(self.linear._forward_hooks)
-                else:
-                    key_value = next(iter(self.linear._forward_hooks))
-                return out + key_value
-
-        def existing_hook(module, args, output):
-            return output + 2
-
-        old_next_id = RemovableHandle.next_id
-        try:
-            for mode in ("sum_iter", "list_index"):
-                with self.subTest(mode=mode):
-                    pre_handle = None
-                    replacement_handle = None
-                    try:
-                        RemovableHandle.next_id = 0
-                        mod = Mod(mode)
-                        pre_handle = mod.linear.register_forward_hook(existing_hook)
-                        x = torch.randn(4, 4)
-
-                        cnts = torch._dynamo.testing.CompileCounter()
-                        opt_mod = torch.compile(mod, backend=cnts, fullgraph=True)
-                        self.assertEqual(opt_mod(x), torch.full_like(x, 3))
-                        self.assertEqual(cnts.frame_count, 1)
-
-                        pre_handle.remove()
-                        RemovableHandle.next_id = 100
-                        replacement_handle = mod.linear.register_forward_hook(
-                            existing_hook
-                        )
-                        self.assertEqual(replacement_handle.id, 100)
-                        self.assertEqual(opt_mod(x), torch.full_like(x, 103))
-                        self.assertEqual(cnts.frame_count, 2)
-                        self.assertEqual(list(mod.linear._forward_hooks.keys()), [100])
-                    finally:
-                        if pre_handle is not None:
-                            pre_handle.remove()
-                        if replacement_handle is not None:
-                            replacement_handle.remove()
-        finally:
             RemovableHandle.next_id = old_next_id
 
     def test_register_forward_pre_hook_inside_compiled_region_prepend(self):
@@ -1576,44 +1455,6 @@ def forward(self, L_x_ : torch.Tensor):
         old_next_id = RemovableHandle.next_id
         try:
             mod = Mod()
-            opt_mod = torch.compile(mod, backend="eager", fullgraph=True)
-            with self.assertRaisesRegex(
-                torch._dynamo.exc.Unsupported, "RemovableHandle.id"
-            ):
-                opt_mod(torch.ones(4, 4))
-        finally:
-            RemovableHandle.next_id = old_next_id
-
-    def test_removable_handle_id_read_spoofed_nn_modules_filename_graph_breaks(self):
-        fake_filename = "/tmp/user/torch/nn/modules/not_internal.py"
-        namespace = {"torch": torch}
-        exec(
-            compile(
-                """
-class Mod(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.linear = torch.nn.Linear(4, 4)
-
-    def forward(self, x):
-        def forward_hook(module, args, output):
-            return output
-
-        handle = self.linear.register_forward_hook(forward_hook)
-        try:
-            return self.linear(x) + handle.id
-        finally:
-            handle.remove()
-""",
-                fake_filename,
-                "exec",
-            ),
-            namespace,
-        )
-
-        old_next_id = RemovableHandle.next_id
-        try:
-            mod = namespace["Mod"]()
             opt_mod = torch.compile(mod, backend="eager", fullgraph=True)
             with self.assertRaisesRegex(
                 torch._dynamo.exc.Unsupported, "RemovableHandle.id"

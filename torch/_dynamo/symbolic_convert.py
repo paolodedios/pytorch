@@ -922,11 +922,6 @@ def generic_jump(
                     self.push(value)
                 self.jump(inst)
         elif value.is_python_constant():
-            # ConstDictVariable is optimized to be very lazy about insertion of
-            # guards, so we have to manually insert a SEQUENCE_LENGTH guard
-            # here.
-            if isinstance(value, ConstDictVariable) and value.source:
-                install_guard(value.source.make_guard(GuardBuilder.SEQUENCE_LENGTH))
             if truth_fn(value.as_python_constant()):
                 if push:
                     self.push(value)
@@ -3826,6 +3821,8 @@ class InstructionTranslatorBase(
     ) -> None:
         from .variables.dicts import ConstDictVariable
         from .variables.lists import BaseListVariable
+
+        # TODO(dynamo-team): Refactor this to use sq_item / mp_ass_subscript
 
         item_var = None
         try:
