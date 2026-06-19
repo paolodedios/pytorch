@@ -473,7 +473,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
         from .object_protocol import mro_lookup
 
         return mro_lookup(type(self.value), name)
-        return NO_SUCH_SUBOBJ
 
     def bool_impl(
         self,

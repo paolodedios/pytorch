@@ -641,8 +641,8 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
     # --- object_generic_getattr on converted VTs ---
 
     def test_constant_method_via_generic_getattr(self):
-        """ConstantVariable now resolves methods through the descriptor protocol
-        via object_generic_getattr, instead of falling back to GetAttrVariable.
+        """ConstantVariable resolves methods through the descriptor protocol
+        via object_generic_getattr.
         """
 
         def fn():
@@ -1421,6 +1421,59 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
 
         result = torch.compile(fn, backend="eager", fullgraph=True)()
         self.assertIs(result, property.__get__)
+
+    def test_unresolved_attr_graph_breaks(self):
+        """Accessing an attribute that getattro_impl cannot resolve graph-breaks
+        instead of silently deferring via GetAttrVariable."""
+
+        def fn():
+            s = frozenset((1, 2, 3))
+            return s.add
+
+        with self.assertRaises(torch._dynamo.exc.TorchDynamoException):
+            torch.compile(fn, backend="eager", fullgraph=True)()
+
+    def test_autograd_function_apply_call(self):
+        """AutogradFunctionVariable.apply resolves via getattro_impl MTV."""
+
+        class MyFunc(torch.autograd.Function):
+            @staticmethod
+            def forward(ctx, x):
+                return x * 2
+
+            @staticmethod
+            def backward(ctx, grad):
+                return grad * 2
+
+        def fn(x):
+            return MyFunc.apply(x)
+
+        x = torch.randn(3, requires_grad=True)
+        result = torch.compile(fn, backend="eager", fullgraph=True)(x)
+        self.assertEqual(result, x * 2)
+
+    def test_tensor_subclass_method_via_trampoline(self):
+        """Tensor subclass methods not in all_tensor_attrs resolve via MTV."""
+        import torch.nested
+
+        def fn(values, offsets):
+            t = torch.nested.nested_tensor_from_jagged(values, offsets)
+            return t.offsets()
+
+        values = torch.randn(10, 5)
+        offsets = torch.tensor([0, 2, 4, 7, 10])
+        result = torch.compile(fn, backend="eager", fullgraph=True)(values, offsets)
+        self.assertEqual(result, offsets)
+
+    def test_tensor_hasattr_unresolvable_returns_false(self):
+        """hasattr on a tensor for a non-existent attr returns False without
+        graph-breaking, even though generic_getattr would graph-break."""
+
+        def fn(x):
+            return hasattr(x, "nonexistent_custom_attr")
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(torch.randn(3))
+        self.assertFalse(result)
 
 
 if __name__ == "__main__":
