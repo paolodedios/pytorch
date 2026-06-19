@@ -284,7 +284,7 @@ def aot_stage1_graph_capture(
                         graph_capture_aot_config,
                         fw_metadata=aot_state.fw_metadata,
                     )
-            except RuntimeError as exc:
+            except Exception as exc:
                 if (
                     not aot_config.is_export
                     and CompileContext.try_get() is not None
