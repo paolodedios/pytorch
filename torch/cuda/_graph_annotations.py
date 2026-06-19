@@ -346,18 +346,14 @@ def stamp_capture_graph_id(torch_cuda_graph: torch.cuda.CUDAGraph) -> None:
     if capture_state is None:
         return
     graph, _ = capture_state
-    # Best-effort: a failure here must not abort the graph capture, so soft-check
-    # the status and leave the id unstamped (remap no-ops) instead of raising.
-    err, graph_id = _cuda_runtime.cudaGraphGetId(  # pyrefly: ignore[missing-attribute]
-        graph
+    # Past the _is_tools_id_unavailable() guard cuda-bindings is present and the
+    # driver supports the toolsId API (same version gate as cudaGraphGetId), so
+    # any error here is unexpected: error-check and let it raise.
+    torch_cuda_graph._capture_graph_id = _check_cuda_bindings(
+        _cuda_runtime.cudaGraphGetId(graph)  # pyrefly: ignore[missing-attribute]
     )
-    if (
-        err
-        == _cuda_runtime.cudaError_t.cudaSuccess  # pyrefly: ignore[missing-attribute]
-    ):
-        torch_cuda_graph._capture_graph_id = graph_id
-        # Fresh capture: annotations are keyed by this capture id until remapped.
-        torch_cuda_graph._remapped_exec_id = None
+    # Fresh capture: annotations are keyed by this capture id until remapped.
+    torch_cuda_graph._remapped_exec_id = None
 
 
 def resolve_pending_annotations() -> None:
