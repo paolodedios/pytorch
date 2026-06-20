@@ -2554,7 +2554,11 @@ def clone_input(x: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.T
         return x
 
     def is_pinned_cpu_tensor(x: torch.Tensor) -> bool:
-        return x.device.type == "cpu" and x.is_pinned()
+        return (
+            x.device.type == "cpu"
+            and not is_traceable_wrapper_subclass(x)
+            and x.is_pinned()
+        )
 
     def torch_clone(x: torch.Tensor) -> torch.Tensor:
         y = torch.clone(x)
