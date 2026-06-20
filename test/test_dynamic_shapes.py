@@ -4876,10 +4876,10 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
         self.assertExpectedInline(
             output,
             """\
-        _local_scalar_dense: "Sym(u0)" = torch.ops.aten._local_scalar_dense.default(arg1_1);  arg1_1 = None
-        select: "f32[s77, s77][s77, 1]cpu" = torch.ops.aten.select.int(arg3_1, 0, _local_scalar_dense)
-        select_1: "f32[s77, s77][s77**2, 1]cpu" = torch.ops.aten.select.int(arg3_1, 1, _local_scalar_dense)
-        select_2: "f32[s77, s77][s77**2, s77]cpu" = torch.ops.aten.select.int(arg3_1, 2, _local_scalar_dense);  arg3_1 = _local_scalar_dense = None
+        _local_scalar_dense: "Sym(u0)" = torch.ops.aten._local_scalar_dense.default(arg0_1);  arg0_1 = None
+        select: "f32[s77, s77][s77, 1]cpu" = torch.ops.aten.select.int(arg2_1, 0, _local_scalar_dense)
+        select_1: "f32[s77, s77][s77**2, 1]cpu" = torch.ops.aten.select.int(arg2_1, 1, _local_scalar_dense)
+        select_2: "f32[s77, s77][s77**2, s77]cpu" = torch.ops.aten.select.int(arg2_1, 2, _local_scalar_dense);  arg2_1 = _local_scalar_dense = None
         return (select, select_1, select_2)""",
             ignore_comments=True,
             ignore_empty_lines=True,

@@ -150,6 +150,27 @@ class RecompileTests(torch._dynamo.test_case.TestCase):
         opt = torch.compile(foo, dynamic=True, fullgraph=True)
         self.assertEqual(opt(x), foo(x))
 
+    def test_dynamic_true_empty_tensor_size(self):
+        def foo(size):
+            return torch.empty(size).fill_(1)
+
+        for size in (torch.tensor(3), torch.tensor([3])):
+            cnt = torch._dynamo.testing.CompileCounter()
+            opt = torch.compile(foo, backend=cnt, dynamic=True, fullgraph=True)
+            self.assertEqual(opt(size), torch.ones(3))
+            self.assertEqual(cnt.frame_count, 1)
+            torch._dynamo.reset()
+
+        with self.assertRaises(TypeError):
+            torch.empty(torch.tensor([2, 3]))
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.TorchRuntimeError,
+            "cannot be converted to Scalar",
+        ):
+            torch.compile(foo, backend="eager", dynamic=True, fullgraph=True)(
+                torch.tensor([2, 3])
+            )
+
     @patch.object(torch._dynamo.config, "assume_static_by_default", True)
     def test_recompiles_true_false_flop(self):
         # Test the counterfactual, lots of recompiles without this config
