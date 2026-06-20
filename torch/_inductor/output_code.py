@@ -27,6 +27,7 @@ import copy
 import dataclasses
 import logging
 import os
+import weakref
 from functools import partial
 from typing import Any, cast, TYPE_CHECKING, TypeAlias
 
@@ -975,13 +976,19 @@ class CompiledFxGraph(OutputCode):
             and not self._forward_ad_fallback_installed
         ):
             original_callable = self.current_callable
+            self_ref = weakref.ref(self)
 
             @torch._dynamo.disable(  # type: ignore[misc]
                 reason="do not trace Inductor forward AD fallback"
             )
             def forward_ad_fallback(inputs):
                 if _boxed_inputs_have_forward_grad(inputs):
-                    gm = self._load_original_gm()
+                    compiled_graph = self_ref()
+                    gm = (
+                        compiled_graph._load_original_gm()
+                        if compiled_graph is not None
+                        else None
+                    )
                     if gm is None:
                         raise RuntimeError(
                             "Inductor received forward AD inputs, but the original "
