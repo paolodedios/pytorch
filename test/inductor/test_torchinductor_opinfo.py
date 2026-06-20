@@ -233,11 +233,6 @@ inductor_skips["cuda"] = {
 if not SM80OrLater:
     inductor_skips["cuda"]["bfloat16"] = {b8, f16, f32, f64, i32, i64}
 
-if TEST_WITH_ROCM:
-    # Tensors are not alike
-    inductor_skips["cuda"]["logcumsumexp"] = {f32}
-    inductor_skips["cuda"]["special.modified_bessel_i1"] = {f64}
-
 inductor_skips["xpu"] = {
     "multinomial": {f16, f32, f64},  # stochastic op, output comparison not meaningful
 }
@@ -366,6 +361,15 @@ if IS_LINUX and IS_ARM64:
     inductor_should_fail_with_exception["cpu"]["__rmod__"] = {
         i32: "ZeroDivisionError",
         i64: "ZeroDivisionError",
+    }
+    # GCC 15 SVE ICE while compiling fp16 n=0 polygamma kernels.
+    inductor_should_fail_with_exception["cpu"]["polygamma.polygamma_n_0"] = {
+        f16: "internal compiler error: in convert_mode_scalar",
+    }
+    inductor_should_fail_with_exception["cpu"][
+        "special.polygamma.special_polygamma_n_0"
+    ] = {
+        f16: "internal compiler error: in convert_mode_scalar",
     }
 
 
