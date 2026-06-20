@@ -125,6 +125,7 @@ def gemm_node(
 
 
 def _cute_arg(value: Any, env: dict[torch.fx.Node, Any]) -> Any:
+    """Translate FX node references and constants into CuTeDSL epilogue values."""
     if isinstance(value, torch.fx.Node):
         if value in env:
             return env[value]
@@ -169,6 +170,7 @@ def materialize_flex_gemm_epilogue(
     gemm_op: torch._ops.OpOverload,
     epilogue_arg_placeholders: tuple[torch.fx.Node, ...] = (),
 ) -> tuple[str, str]:
+    """Build the generated CuTeDSL epilogue callable from the traced FX body."""
     gemm = gemm_node(graph_module, gemm_op)
     output = output_node(graph_module)
     kernel = FlexGemmCuteDSLKernel()

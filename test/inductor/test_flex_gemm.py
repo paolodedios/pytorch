@@ -878,11 +878,14 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         torch._dynamo.reset()
         _, shape_fn = case
 
+        def epilogue_fn(acc, scale):
+            return (acc.float() * scale).relu()
+
         def fn(a, b, scale):
             return flex_gemm(
                 torch.mm,
                 (a, b),
-                lambda acc: (acc.float() * scale).relu(),
+                lambda acc: epilogue_fn(acc, scale),
                 kernel_options={"backend": "QUACK", "tuned": tuned},
             )
 
@@ -909,8 +912,8 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                 actual = compiled(a, b, scale)
                 self.assertMatchesLowPrecisionEager(
                     actual,
-                    fn(a, b, scale),
-                    ((a.double() @ b.double()) * scale.double()).relu(),
+                    epilogue_fn(a @ b, scale),
+                    epilogue_fn(a.double() @ b.double(), scale.double()),
                     a.shape[1],
                 )
 
@@ -1012,11 +1015,14 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     def test_mm_generated_code_reads_captured_tensor_epilogue_arg(self, case):
         kind, shape_fn = case
 
+        def epilogue_fn(acc, scale):
+            return (acc.float() * scale).relu()
+
         def fn(a, b, scale):
             return flex_gemm(
                 torch.mm,
                 (a, b),
-                lambda acc: (acc.float() * scale).relu(),
+                lambda acc: epilogue_fn(acc, scale),
                 kernel_options={"backend": "QUACK"},
             )
 
@@ -1031,8 +1037,8 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         self.assertMatchesLowPrecisionEager(
             actual,
-            fn(a, b, scale),
-            ((a.double() @ b.double()) * scale.double()).relu(),
+            epilogue_fn(a @ b, scale),
+            epilogue_fn(a.double() @ b.double(), scale.double()),
             a.shape[1],
         )
         self.assertFlexGemmGeneratedCode(
