@@ -115,7 +115,7 @@ def get_module_string(gm: torch.fx.GraphModule) -> str:
     def _convert_to_comment(s_: str) -> str:
         return "\n".join(f"# {line}" if line.strip() else "" for line in s_.split("\n"))
 
-    module_string = NNModuleToString.convert(gm)
+    module_string = NNModuleToString.convert(gm, allow_unsafe_repr=True)
     return _convert_to_comment(module_string)
 
 
