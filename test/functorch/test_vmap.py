@@ -4185,6 +4185,7 @@ class TestVmapOperatorsOpInfo(TestCase):
                     and getattr(op, "variant_test_name", "") == "Tensor"
                     and error_input.error_regex in skip_error_regexes
                 )
+
             # Error inputs check
             if op.error_inputs_func is not None:
                 error_inputs = op.error_inputs(device)
