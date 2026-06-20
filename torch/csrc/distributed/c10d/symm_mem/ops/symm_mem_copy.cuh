@@ -6,13 +6,18 @@ namespace c10d::symmetric_memory {
 
 // Cooperative 16-byte-vectorized copy of `nbytes` from `src` to `dst`.  Caller
 // must ensure both pointers are 16-byte aligned and nbytes is a multiple of 16.
+// `src` and `dst` are `__restrict__`: the two regions must not overlap, which
+// lets the compiler pipeline loads ahead of stores.  Overlapping ranges are
+// undefined behavior and are NOT diagnosed (the contract is unchecked), so only
+// use this for distinct buffers -- both callers copy between separate input and
+// output windows, never in place.
 // `tid`/`stride` are this thread's rank and the cooperating thread count (e.g.
 // threadIdx.x / blockDim.x for a CTA-wide copy).  Loads are batched kUnroll-deep
 // before the stores so several loads stay in flight (memory-level parallelism),
 // which is what hides latency when occupancy is low (few CTAs).
 __device__ inline void copy_bytes_vec16_aligned(
-    const char* src,
-    char* dst,
+    const char* __restrict__ src,
+    char* __restrict__ dst,
     size_t nbytes,
     size_t tid,
     size_t stride) {
