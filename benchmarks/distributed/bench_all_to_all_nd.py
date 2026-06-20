@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Compare ``torch.distributed._symmetric_memory.all_to_all_permute`` against
+Compare ``torch.distributed._symmetric_memory.all_to_all_nd`` against
 ``permute`` + ``torch.distributed.all_to_all_single`` (equivalent data movement).
 
 The (scatter_dim=1, gather_dim=0) case maps per-rank input
@@ -13,7 +13,7 @@ implementation is::
 
 Run (multi-process; the test harness spawns one process per GPU)::
 
-    python benchmarks/distributed/bench_all_to_all_permute.py -v
+    python benchmarks/distributed/bench_all_to_all_nd.py -v
 
 ``test_profile_col_scatter_implementations`` runs both implementations back to
 back inside each profiler step (symm then ``permute`` + ``all_to_all_single``),
@@ -85,7 +85,7 @@ def _permute_all_to_all_single_col_scatter(
 
 @requires_cuda_p2p_access()
 @skip_but_pass_in_sandcastle_if(not TEST_CUDA, "CUDA not available")
-class AllToAllPermuteBenchmark(MultiProcContinuousTest):
+class AllToAllNdBenchmark(MultiProcContinuousTest):
     @classmethod
     def backend_str(cls) -> str | None:
         return "nccl"
@@ -99,7 +99,7 @@ class AllToAllPermuteBenchmark(MultiProcContinuousTest):
         torch.cuda.set_device(self.device)
         dist.all_reduce(torch.ones(1, device=self.device))
 
-    @requires_nccl_version((2, 29, 0), "nccl_all_to_all_permute requires nccl 2.29.0")
+    @requires_nccl_version((2, 29, 0), "nccl_all_to_all_nd requires nccl 2.29.0")
     @skip_if_lt_x_gpu(2)
     def test_bench_col_scatter_vs_permute_a2a(self) -> None:
         """
@@ -127,7 +127,7 @@ class AllToAllPermuteBenchmark(MultiProcContinuousTest):
         symm_out = torch.empty(g, rows, local_cols, dtype=dtype, device=self.device)
 
         for _ in range(warmup):
-            symm_mem.all_to_all_permute(
+            symm_mem.all_to_all_nd(
                 symm_in,
                 symm_out,
                 scatter_dim=1,
@@ -139,7 +139,7 @@ class AllToAllPermuteBenchmark(MultiProcContinuousTest):
         t_symm = _mean_cuda_ms_per_iter(
             self.device,
             bench,
-            lambda: symm_mem.all_to_all_permute(
+            lambda: symm_mem.all_to_all_nd(
                 symm_in,
                 symm_out,
                 scatter_dim=1,
@@ -170,18 +170,18 @@ class AllToAllPermuteBenchmark(MultiProcContinuousTest):
 
         if self.rank == 0:
             print()
-            print("bench_all_to_all_permute: (scatter_dim=1, gather_dim=0)")
+            print("bench_all_to_all_nd: (scatter_dim=1, gather_dim=0)")
             print(
                 f"  seq_len={seq_len}, rows=seq_len/G={rows}, G={g}, "
                 f"local_cols={local_cols}, dtype={dtype}, "
                 f"elements/rank={elems}, bytes/rank={nbytes / 1e6:.2f} MB"
             )
-            print(f"  all_to_all_permute (symm): {t_symm:.4f} ms/iter")
+            print(f"  all_to_all_nd (symm): {t_symm:.4f} ms/iter")
             print(f"  permute + all_to_all_single: {t_base:.4f} ms/iter")
             print(f"  ratio (baseline / symm): {t_base / t_symm:.3f}x")
             print()
 
-    @requires_nccl_version((2, 29, 0), "nccl_all_to_all_permute requires nccl 2.29.0")
+    @requires_nccl_version((2, 29, 0), "nccl_all_to_all_nd requires nccl 2.29.0")
     @skip_if_lt_x_gpu(2)
     def test_profile_col_scatter_implementations(self) -> None:
         """Profile both paths in one session: each step runs symm then baseline (rank 0 prints + traces)."""
@@ -204,7 +204,7 @@ class AllToAllPermuteBenchmark(MultiProcContinuousTest):
         base_out = torch.empty(g, rows, local_cols, dtype=dtype, device=self.device)
 
         for _ in range(3):
-            symm_mem.all_to_all_permute(
+            symm_mem.all_to_all_nd(
                 symm_in,
                 symm_out,
                 scatter_dim=1,
@@ -237,7 +237,7 @@ class AllToAllPermuteBenchmark(MultiProcContinuousTest):
             with_modules=True,
         ) as prof:
             for _ in range(profile_steps):
-                symm_mem.all_to_all_permute(
+                symm_mem.all_to_all_nd(
                     symm_in,
                     symm_out,
                     scatter_dim=1,
@@ -261,7 +261,7 @@ class AllToAllPermuteBenchmark(MultiProcContinuousTest):
             table_kwargs = dict(sort_by="self_cuda_time_total", row_limit=30)
             print()
             print(
-                "profile: both per step (all_to_all_permute then permute+all_to_all_single)"
+                "profile: both per step (all_to_all_nd then permute+all_to_all_single)"
             )
             print(prof.key_averages().table(**table_kwargs))
             print(f"Chrome trace directory: {trace_dir}")

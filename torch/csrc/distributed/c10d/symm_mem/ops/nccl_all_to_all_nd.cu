@@ -134,7 +134,7 @@ __global__ void all_to_all_lsa_kernel(
 
 // Host entry point.  Validates arguments, builds the devcomm (cached), and
 // launches the kernel.  See file-level comment for semantics.
-void nccl_all_to_all_permute(
+void nccl_all_to_all_nd(
     const at::Tensor& input,
     at::Tensor& out,
     int64_t scatter_dim,
@@ -143,24 +143,24 @@ void nccl_all_to_all_permute(
 #ifdef NCCL_HAS_SYMMEM_DEVICE_SUPPORT
   TORCH_CHECK(
       input.stride(-1) == 1,
-      "nccl_all_to_all_permute: innermost dimension must be contiguous (stride[-1] == 1)");
+      "nccl_all_to_all_nd: innermost dimension must be contiguous (stride[-1] == 1)");
   const bool col_scatter =
       (scatter_dim == 1 && gather_dim == 0);
   const bool row_scatter =
       (scatter_dim == 0 && gather_dim == 1);
   TORCH_CHECK(
       col_scatter || row_scatter,
-      "nccl_all_to_all_permute: unsupported (scatter_dim, gather_dim) = (", scatter_dim, ", ",
+      "nccl_all_to_all_nd: unsupported (scatter_dim, gather_dim) = (", scatter_dim, ", ",
       gather_dim, "); supported pairs are (1, 0) and (0, 1)");
 
   auto symm_mem = c10d::symmetric_memory::rendezvous(input, group_name);
   TORCH_CHECK(
       symm_mem != nullptr,
-      "nccl_all_to_all_permute: input must be allocated via NCCL symmetric memory "
+      "nccl_all_to_all_nd: input must be allocated via NCCL symmetric memory "
       "(use empty_strided_p2p with NCCL backend)");
 
   auto* nccl_hdl = dynamic_cast<NCCLSymmetricMemory*>(symm_mem.get());
-  TORCH_CHECK(nccl_hdl != nullptr, "nccl_all_to_all_permute: requires NCCL symmetric memory backend");
+  TORCH_CHECK(nccl_hdl != nullptr, "nccl_all_to_all_nd: requires NCCL symmetric memory backend");
 
   c10::cuda::CUDAGuard guard(input.device());
   auto stream = at::cuda::getCurrentCUDAStream();
@@ -169,7 +169,7 @@ void nccl_all_to_all_permute(
   auto& manager = c10d::symmetric_memory::NCCLDevCommManager::get(device);
   ncclComm_t comm = manager.get_comm(group_name);
 
-  static constexpr char const kDevcommKey[] = "nccl_all_to_all_permute";
+  static constexpr char const kDevcommKey[] = "nccl_all_to_all_nd";
   auto devcomm_opt = manager.get_devcomm(group_name, kDevcommKey);
   if (!devcomm_opt) {
     ncclDevCommRequirements reqs = NCCL_DEV_COMM_REQUIREMENTS_INITIALIZER;
@@ -177,7 +177,7 @@ void nccl_all_to_all_permute(
     ncclDevComm devcomm;
     C10D_NCCL_CHECK(
         ncclDevCommCreate(comm, &reqs, &devcomm),
-        "ncclDevCommCreate failed in nccl_all_to_all_permute");
+        "ncclDevCommCreate failed in nccl_all_to_all_nd");
     devcomm_opt = manager.register_devcomm(group_name, devcomm, kDevcommKey);
   }
   ncclDevComm& devcomm = devcomm_opt->get();
@@ -187,15 +187,15 @@ void nccl_all_to_all_permute(
 
   TORCH_CHECK(
       p <= A2A_MAX_SLOTS,
-      "nccl_all_to_all_permute: group size (", p, ") exceeds maximum supported (", A2A_MAX_SLOTS, ")");
+      "nccl_all_to_all_nd: group size (", p, ") exceeds maximum supported (", A2A_MAX_SLOTS, ")");
 
-  TORCH_CHECK(out.is_contiguous(), "nccl_all_to_all_permute: out must be contiguous");
+  TORCH_CHECK(out.is_contiguous(), "nccl_all_to_all_nd: out must be contiguous");
   TORCH_CHECK(
       out.scalar_type() == input.scalar_type(),
-      "nccl_all_to_all_permute: out must have the same dtype as input");
+      "nccl_all_to_all_nd: out must have the same dtype as input");
 
   auto window = nccl_hdl->get_window();
-  TORCH_CHECK(window != nullptr, "nccl_all_to_all_permute: NCCL window is null");
+  TORCH_CHECK(window != nullptr, "nccl_all_to_all_nd: NCCL window is null");
 
   const size_t window_base_offset = nccl_hdl->get_offset();
 
@@ -205,13 +205,13 @@ void nccl_all_to_all_permute(
       static_cast<size_t>(input.storage_offset()) * static_cast<size_t>(esize);
   TORCH_CHECK(
       tensor_leading_offset % 16 == 0,
-      "nccl_all_to_all_permute: tensor byte offset within the symmetric window must be 16-byte aligned");
+      "nccl_all_to_all_nd: tensor byte offset within the symmetric window must be 16-byte aligned");
   TORCH_CHECK(
       reinterpret_cast<uintptr_t>(input.data_ptr()) % 16 == 0,
-      "nccl_all_to_all_permute: input tensor data pointer must be 16-byte aligned");
+      "nccl_all_to_all_nd: input tensor data pointer must be 16-byte aligned");
   TORCH_CHECK(
       reinterpret_cast<uintptr_t>(out.data_ptr()) % 16 == 0,
-      "nccl_all_to_all_permute: output tensor data pointer must be 16-byte aligned");
+      "nccl_all_to_all_nd: output tensor data pointer must be 16-byte aligned");
 
   const int unroll = 4 * 16 / static_cast<int>(input.element_size());
   const int elems_per_cta = A2A_THREADS_PER_CTA * unroll;
@@ -225,16 +225,16 @@ void nccl_all_to_all_permute(
       total_cols = input.size(1);
       TORCH_CHECK(
           total_cols % p == 0,
-          "nccl_all_to_all_permute: input columns (", total_cols, ") must be divisible by group size (",
+          "nccl_all_to_all_nd: input columns (", total_cols, ") must be divisible by group size (",
           p, ")");
       local_cols = static_cast<int>(total_cols / p);
     } else {
       TORCH_CHECK(
           input.dim() == 3,
-          "nccl_all_to_all_permute: for scatter_dim=1, gather_dim=0, input must be 2-D or 3-D");
+          "nccl_all_to_all_nd: for scatter_dim=1, gather_dim=0, input must be 2-D or 3-D");
       TORCH_CHECK(
           input.size(1) == p,
-          "nccl_all_to_all_permute: 3-D input must have shape [rows, G, local_cols] with size(1) equal "
+          "nccl_all_to_all_nd: 3-D input must have shape [rows, G, local_cols] with size(1) equal "
           "to group size (",
           p, "); got ",
           input.size(1));
@@ -242,7 +242,7 @@ void nccl_all_to_all_permute(
       total_cols = static_cast<int64_t>(p) * local_cols_i64;
       TORCH_CHECK(
           input.stride(1) == local_cols_i64 && input.stride(0) == total_cols,
-          "nccl_all_to_all_permute: 3-D input must be row-major contiguous in the last two dimensions "
+          "nccl_all_to_all_nd: 3-D input must be row-major contiguous in the last two dimensions "
           "(stride(1)=local_cols, stride(0)=G*local_cols)");
       local_cols = static_cast<int>(local_cols_i64);
     }
@@ -254,7 +254,7 @@ void nccl_all_to_all_permute(
         out.size(1) == local_cols;
     TORCH_CHECK(
         out_shape_3d || out_shape_2d,
-        "nccl_all_to_all_permute: out must have shape [", p, ", ", rows, ", ", local_cols, "] or [",
+        "nccl_all_to_all_nd: out must have shape [", p, ", ", rows, ", ", local_cols, "] or [",
         static_cast<int64_t>(p) * static_cast<int64_t>(rows), ", ", local_cols,
         "] for scatter_dim=1, gather_dim=0");
 
@@ -262,7 +262,7 @@ void nccl_all_to_all_permute(
         static_cast<size_t>(local_cols) * static_cast<size_t>(esize);
     TORCH_CHECK(
         row_bytes % 16 == 0,
-        "nccl_all_to_all_permute: local column span in bytes (local_cols * element_size) must be "
+        "nccl_all_to_all_nd: local column span in bytes (local_cols * element_size) must be "
         "divisible by 16 for vectorized copy");
 
     ctas_per_slot = std::max(1, std::min(
@@ -300,16 +300,16 @@ void nccl_all_to_all_permute(
       cols = static_cast<int>(input.size(1));
       TORCH_CHECK(
           total_rows % p == 0,
-          "nccl_all_to_all_permute: input rows (", total_rows, ") must be divisible by group size (",
+          "nccl_all_to_all_nd: input rows (", total_rows, ") must be divisible by group size (",
           p, ")");
       local_rows = static_cast<int>(total_rows / p);
     } else {
       TORCH_CHECK(
           input.dim() == 3,
-          "nccl_all_to_all_permute: for scatter_dim=0, gather_dim=1, input must be 2-D or 3-D");
+          "nccl_all_to_all_nd: for scatter_dim=0, gather_dim=1, input must be 2-D or 3-D");
       TORCH_CHECK(
           input.size(0) == p,
-          "nccl_all_to_all_permute: 3-D input must have shape [G, local_rows, cols] with size(0) equal "
+          "nccl_all_to_all_nd: 3-D input must have shape [G, local_rows, cols] with size(0) equal "
           "to group size (",
           p, "); got ",
           input.size(0));
@@ -319,7 +319,7 @@ void nccl_all_to_all_permute(
       const int64_t stride01 = static_cast<int64_t>(local_rows) * cols_i64;
       TORCH_CHECK(
           input.stride(1) == cols_i64 && input.stride(0) == stride01,
-          "nccl_all_to_all_permute: 3-D input must be row-major contiguous in the last two dimensions "
+          "nccl_all_to_all_nd: 3-D input must be row-major contiguous in the last two dimensions "
           "(stride(1)=cols, stride(0)=local_rows*cols)");
     }
 
@@ -329,7 +329,7 @@ void nccl_all_to_all_permute(
         out.size(1) == static_cast<int64_t>(p) * static_cast<int64_t>(cols);
     TORCH_CHECK(
         out_shape_3d || out_shape_2d,
-        "nccl_all_to_all_permute: out must have shape [", local_rows, ", ", p, ", ", cols, "] or [",
+        "nccl_all_to_all_nd: out must have shape [", local_rows, ", ", p, ", ", cols, "] or [",
         local_rows, ", ", static_cast<int64_t>(p) * static_cast<int64_t>(cols),
         "] for scatter_dim=0, gather_dim=1");
 
@@ -337,7 +337,7 @@ void nccl_all_to_all_permute(
         static_cast<size_t>(cols) * static_cast<size_t>(esize);
     TORCH_CHECK(
         row_bytes % 16 == 0,
-        "nccl_all_to_all_permute: full row in bytes (cols * element_size) must be divisible by 16 "
+        "nccl_all_to_all_nd: full row in bytes (cols * element_size) must be divisible by 16 "
         "for vectorized copy");
 
     ctas_per_slot = std::max(1, std::min(
@@ -368,7 +368,7 @@ void nccl_all_to_all_permute(
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
 #else
-  TORCH_CHECK(false, "nccl_all_to_all_permute requires NCCL >= 2.28 with symmetric memory device support");
+  TORCH_CHECK(false, "nccl_all_to_all_nd requires NCCL >= 2.28 with symmetric memory device support");
 #endif // NCCL_HAS_SYMMEM_DEVICE_SUPPORT
 }
 
