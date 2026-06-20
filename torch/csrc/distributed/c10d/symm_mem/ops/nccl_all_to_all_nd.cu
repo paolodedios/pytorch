@@ -34,6 +34,35 @@ constexpr int A2A_MAX_CTA_COUNT = A2A_MAX_SLOTS * A2A_MAX_CTAS_PER_SLOT;
 // Target 16-byte vectors per thread before adding another CTA to a slot.
 constexpr int64_t A2A_VECS_PER_THREAD = 4;
 
+// clang-format off
+// Decomposition.  For col-scatter this rank copies its own column block out of
+// every source row of a peer's [rows, G*local_cols] matrix; the unit of work is
+// one `copy_row_bytes = local_cols*esize`-wide segment (a "row"):
+//
+//            |<-local_cols->|                            total_cols
+//            +--------------+--------------+-----+--------------+
+//   row 0    |   rank 0     |   rank 1     | ... |   rank G-1   |
+//            +--------------+--------------+-----+--------------+
+//   row 1    |   rank 0     |   rank 1     | ... |   rank G-1   |
+//            +--------------+--------------+-----+--------------+
+//   ...      |     ...      |              |     |              |
+//            +--------------+--------------+-----+--------------+
+//   row R-1  |   rank 0     |   rank 1     | ... |   rank G-1   |
+//            +--------------+--------------+-----+--------------+
+//              ^^^^^^^^^^^^  this rank's block, copied from every row
+//
+// A "row" is wide or narrow, measured in 16-byte vectors:
+//
+//   wide   (local_cols=1024 bf16 = 128 vecs):  [v0][v1]...[v127]
+//   narrow (local_cols=8    bf16 =   1 vec ):  [v0]
+//
+// One CTA per row wastes threads on narrow rows (a 16-byte row uses 1 of 256
+// threads).  Instead the slot is flattened into all (row, vec) pairs and every
+// thread grid-strides over them: wide rows stay coalesced (consecutive threads
+// -> consecutive vecs of one row), narrow rows pack many rows across the block,
+// so no thread idles.
+// clang-format on
+
 // Grid: dim3(p, ctas_per_slot).
 //   blockIdx.x = peer_idx — LSA peer to read from (matches output slot index)
 //   blockIdx.y           — work tile within that peer's slot
