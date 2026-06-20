@@ -4963,13 +4963,19 @@ graph():
         if not is_training_ir_test(self._testMethodName) and not is_retracebility_test(
             self._testMethodName
         ):
+            sym_size_name = (
+                "sym_size_int_1"
+                if is_strict_test(self._testMethodName)
+                or is_strict_v2_test(self._testMethodName)
+                else "sym_size_int_4"
+            )
             self.assertExpectedInline(
                 str(ep.graph_module.code).strip(),
-                """\
+                f"""\
 def forward(self, causal_mask, fill_value):
-    sym_size_int_4 = torch.ops.aten.sym_size.int(fill_value, 3)
+    {sym_size_name} = torch.ops.aten.sym_size.int(fill_value, 3)
     clone = torch.ops.aten.clone.default(causal_mask);  causal_mask = None
-    slice_1 = torch.ops.aten.slice.Tensor(clone, 3, 0, sym_size_int_4);  sym_size_int_4 = None
+    slice_1 = torch.ops.aten.slice.Tensor(clone, 3, 0, {sym_size_name});  {sym_size_name} = None
     copy_ = torch.ops.aten.copy_.default(slice_1, fill_value);  slice_1 = fill_value = copy_ = None
     return (clone,)""",
             )
@@ -10929,6 +10935,8 @@ def forward(self, x):
         sym_size_name = (
             "sym_size_int_1"
             if is_non_strict_test(self._testMethodName)
+            or is_retracebility_test(self._testMethodName)
+            or is_training_ir_test(self._testMethodName)
             else "sym_size_int"
         )
         if need_serdes_test(self._testMethodName):
@@ -11504,7 +11512,6 @@ def forward(self, p_lin_weight, p_lin_bias, x):
         )
 
     @unittest.skipIf(IS_FBCODE, "We can't customize decomp in fbcode")
-    @testing.expectedFailureStrictV2
     def test_export_decomp_torture_case_2(self):
         class MyLinear(torch.nn.Module):
             def __init__(self) -> None:
