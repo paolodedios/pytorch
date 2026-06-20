@@ -230,8 +230,14 @@ class RecompileTests(torch._dynamo.test_case.TestCase):
             "NO_TENSOR_ALIASING guard source(s) no longer evaluate",
             failure_reasons[0],
         )
-        self.assertIn("data[0]", failure_reasons[0])
-        self.assertIn("data[1]", failure_reasons[0])
+        # debug_force_nested_calls rewrites top-level argument names in the
+        # nested-graph-breaks wrapper, but the same indexed source must fail.
+        for source in ("[0]", "[1]"):
+            self.assertTrue(
+                f"data{source}" in failure_reasons[0]
+                or f"args[2]{source}" in failure_reasons[0],
+                failure_reasons[0],
+            )
 
     def test_aliasing_guard_recompile_reason_with_unavailable_sources(self):
         class MissingAttr:
