@@ -2,6 +2,7 @@
 import contextlib
 import functools
 import inspect
+import logging
 import re
 import sys
 import weakref
@@ -52,102 +53,141 @@ _P = ParamSpec("_P")
 # libraries calling into kernels not intended to be called.
 _impls: set[str] = set()
 _defs: set[str] = set()
+_def_sources: dict[str, str] = {}
+_warned_schema_symint_args: set[tuple[str, str]] = set()
+_ops_log = logging.getLogger("torch._ops")
+# Diagnostic state is best-effort: concurrent define/destroy can duplicate or
+# drop a warning, but must not affect dispatch.
 
 # prim is reserved by TorchScript interpreter
 _reserved_namespaces = ["prim"]
-_PLAIN_INT_SCHEMA_TYPE = re.compile(r"^int(?:$|\?|\[)")
 
 
-def _schema_argument_declarations(schema: str) -> list[str]:
-    start = schema.index("(") + 1
-    depth = 1
-    end = start
-    quote = ""
-    while end < len(schema) and depth:
-        ch = schema[end]
-        if quote:
-            if ch == quote and schema[end - 1] != "\\":
-                quote = ""
-        elif ch in ("'", '"'):
-            quote = ch
-        elif ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        end += 1
-
-    args = []
-    current = []
-    paren_depth = 0
-    square_depth = 0
-    quote = ""
-    for ch in schema[start : end - 1]:
-        if quote:
-            current.append(ch)
-            if ch == quote and current[-2:-1] != ["\\"]:
-                quote = ""
-        elif ch in ("'", '"'):
-            quote = ch
-            current.append(ch)
-        elif ch == "(":
-            paren_depth += 1
-            current.append(ch)
-        elif ch == ")":
-            paren_depth -= 1
-            current.append(ch)
-        elif ch == "[":
-            square_depth += 1
-            current.append(ch)
-        elif ch == "]":
-            square_depth -= 1
-            current.append(ch)
-        elif ch == "," and paren_depth == 0 and square_depth == 0:
-            args.append("".join(current).strip())
-            current = []
-        else:
-            current.append(ch)
-    if current:
-        args.append("".join(current).strip())
-    return args
+_SchemaSpecializationWarning = tuple[str, str, str, tuple[tuple[int, str, str], ...]]
+_SchemaSpecializationWarnings = tuple[_SchemaSpecializationWarning, ...]
 
 
-def _strip_schema_arg_default(arg: str) -> str:
-    quote = ""
-    square_depth = 0
-    for idx, ch in enumerate(arg):
-        if quote:
-            if ch == quote and arg[idx - 1] != "\\":
-                quote = ""
-        elif ch in ("'", '"'):
-            quote = ch
-        elif ch == "[":
-            square_depth += 1
-        elif ch == "]":
-            square_depth -= 1
-        elif ch == "=" and square_depth == 0:
-            return arg[:idx].rstrip()
-    return arg
+def _plain_int_schema_type(type_: Any) -> str | None:
+    if isinstance(type_, torch.SymIntType):
+        return None
+    if isinstance(type_, torch.IntType):
+        return "int"
+    if isinstance(type_, torch.OptionalType):
+        inner = _plain_int_schema_type(type_.getElementType())
+        return f"{inner}?" if inner is not None else None
+    if isinstance(type_, torch.ListType):
+        inner = _plain_int_schema_type(type_.getElementType())
+        return f"{inner}[]" if inner is not None else None
+    return None
 
 
-def _plain_int_schema_arg_types(schema: str) -> dict[str, str]:
-    parsed_schema = torch._C.parse_schema(schema)
-    arg_types = {}
-    parsed_args = iter(parsed_schema.arguments)
-    for declaration in _schema_argument_declarations(schema):
-        if declaration in {"*", "..."}:
+def _schema_type_contains_symint(type_: Any) -> bool:
+    if isinstance(type_, torch.SymIntType):
+        return True
+    if isinstance(type_, (torch.OptionalType, torch.ListType)):
+        return _schema_type_contains_symint(type_.getElementType())
+    return False
+
+
+def _schema_specialization_metadata(
+    qualname: str, schema: torch._C.FunctionSchema
+) -> _SchemaSpecializationWarnings | None:
+    source = _def_sources.get(qualname)
+    if source is None:
+        return None
+
+    int_args = tuple(
+        (idx, arg.name, arg_type)
+        for idx, arg in enumerate(schema.arguments)
+        if (arg_type := _plain_int_schema_type(arg.real_type)) is not None
+    )
+    if not int_args:
+        return None
+    return ((qualname, source, str(schema), int_args),)
+
+
+def _packet_schema_specialization_metadata(
+    qualified_op_name: str, overload_names: list[str]
+) -> _SchemaSpecializationWarnings | None:
+    warnings: list[_SchemaSpecializationWarning] = []
+    has_symint_overload = False
+    for overload_name in overload_names:
+        qualname = qualified_op_name
+        if overload_name:
+            qualname += "." + overload_name
+        if qualname not in _def_sources:
             continue
-        arg = next(parsed_args, None)
-        if arg is None:
-            break
-        declaration = _strip_schema_arg_default(declaration)
-        type_and_name = declaration.rsplit(None, 1)
-        if len(type_and_name) != 2:
-            continue
-        arg_type, arg_name = type_and_name
-        if arg_name == arg.name and _PLAIN_INT_SCHEMA_TYPE.match(arg_type):
-            arg_types[arg.name] = arg_type
+        schema = torch._C._get_schema(qualified_op_name, overload_name)
+        has_symint_overload = has_symint_overload or any(
+            _schema_type_contains_symint(arg.real_type) for arg in schema.arguments
+        )
+        metadata = _schema_specialization_metadata(qualname, schema)
+        if metadata is not None:
+            warnings.extend(metadata)
 
-    return arg_types
+    if not warnings:
+        return None
+    if len(overload_names) != 1 and has_symint_overload:
+        return None
+    return tuple(warnings)
+
+
+_MISSING = object()
+
+
+def _contains_symint(value: object) -> bool:
+    if isinstance(value, torch.SymInt):
+        return True
+    if isinstance(value, (tuple, list)):
+        return any(_contains_symint(item) for item in value)
+    return False
+
+
+def _maybe_warn_for_schema_specialization(
+    warnings: _SchemaSpecializationWarnings,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> None:
+    for qualname, source, schema, int_args in warnings:
+        if _def_sources.get(qualname) != source:
+            continue
+
+        for idx, arg_name, arg_type in int_args:
+            warning_key = (qualname, arg_name)
+            if warning_key in _warned_schema_symint_args:
+                continue
+
+            value = args[idx] if idx < len(args) else kwargs.get(arg_name, _MISSING)
+            if value is _MISSING or not _contains_symint(value):
+                continue
+
+            _warned_schema_symint_args.add(warning_key)
+
+            suggested_type = arg_type.replace("int", "SymInt", 1)
+            _ops_log.warning(
+                "Operator %s was called with a SymInt value for argument %r but "
+                "its schema defines this argument as %s. This forces the "
+                "symbolic value to be specialized and can cause torch.compile "
+                "recompilation. Use %s in the operator schema for shape-like "
+                "values. The operator schema was defined at %s: %s",
+                qualname,
+                arg_name,
+                arg_type,
+                suggested_type,
+                source,
+                schema,
+            )
+
+
+def _clear_schema_definition_sources(
+    op_defs: set[str],
+    def_sources: dict[str, str],
+    warned_schema_symint_args: set[tuple[str, str]],
+) -> None:
+    for qualname in op_defs:
+        def_sources.pop(qualname, None)
+    keys_to_clear = {key for key in warned_schema_symint_args if key[0] in op_defs}
+    warned_schema_symint_args.difference_update(keys_to_clear)
 
 
 def fallthrough_kernel():
@@ -354,6 +394,8 @@ class Library:
             self._op_impls,
             _defs,
             self._op_defs,
+            _def_sources,
+            _warned_schema_symint_args,
             self._registration_handles,
             self.m,
             _SCHEMA_TO_SIGNATURE_CACHE,
@@ -403,16 +445,10 @@ class Library:
         if torch.Tag.inplace in tags:
             _validate_inplace_schema(schema)
 
-        int_arg_types = _plain_int_schema_arg_types(schema)
         result = self.m.define(schema, alias_analysis, tuple(tags))
         name = schema.split("(")[0]
         qualname = self.ns + "::" + name
-        torch._ops._set_schema_definition_source(
-            qualname,
-            torch._library.utils.get_source(_stacklevel + 1),
-            schema,
-            int_arg_types,
-        )
+        _def_sources[qualname] = torch._library.utils.get_source(_stacklevel + 1)
 
         # If the OpOverloadPacket exists already, then this means we're adding a
         # new OpOverload for it. Refresh the packet to include the new OpOverload.
@@ -708,7 +744,9 @@ class Library:
         global _impls
         _impls -= self._op_impls
         _clear_torch_ops_cache(self._op_defs)
-        torch._ops._clear_schema_definition_sources(self._op_defs)
+        _clear_schema_definition_sources(
+            self._op_defs, _def_sources, _warned_schema_symint_args
+        )
 
 
 def _clear_torch_ops_cache(op_defs):
@@ -742,6 +780,8 @@ def _del_library(
     op_impls,
     captured_defs,
     op_defs,
+    def_sources,
+    warned_schema_symint_args,
     registration_handles,
     m,
     schema_to_signature_cache,
@@ -766,7 +806,7 @@ def _del_library(
         m.reset()
 
     _clear_torch_ops_cache(op_defs)
-    torch._ops._clear_schema_definition_sources(op_defs)
+    _clear_schema_definition_sources(op_defs, def_sources, warned_schema_symint_args)
 
 
 @contextlib.contextmanager

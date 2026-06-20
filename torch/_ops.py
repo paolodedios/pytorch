@@ -4,7 +4,6 @@ import contextlib
 import ctypes
 import importlib
 import inspect
-import logging
 import sys
 import types
 from collections.abc import Callable, Iterator
@@ -34,127 +33,8 @@ _T = TypeVar("_T", default=Any)
 _P = ParamSpec("_P", default=...)
 
 
-log = logging.getLogger(__name__)
-
 # Query `hasattr` only once.
 _SET_GLOBAL_FLAGS = hasattr(sys, "getdlopenflags") and hasattr(sys, "setdlopenflags")
-
-
-_SCHEMA_TO_DEFINITION_SOURCE: dict[str, tuple[str, str, dict[str, str]]] = {}
-_PACKET_TO_PLAIN_INT_SCHEMA_COUNT: dict[str, int] = {}
-_WARNED_SCHEMA_SYMINT_ARGUMENTS: set[tuple[str, str]] = set()
-# These diagnostic registries are best-effort: concurrent registration, teardown,
-# and warning can duplicate or drop a warning, but should not affect dispatch.
-
-
-def _schema_qualname(schema: torch._C.FunctionSchema) -> str:
-    qualname = schema.name
-    if schema.overload_name:
-        qualname += "." + schema.overload_name
-    return qualname
-
-
-def _packet_qualname(schema_qualname: str) -> str:
-    namespace, name = schema_qualname.split("::", 1)
-    return f"{namespace}::{name.split('.', 1)[0]}"
-
-
-def _set_schema_definition_source(
-    qualname: str, source: str, schema: str, int_arg_types: dict[str, str]
-) -> None:
-    if int_arg_types:
-        # Operator names are globally unique, but guard against replacing tracked
-        # metadata without changing the packet count.
-        if qualname not in _SCHEMA_TO_DEFINITION_SOURCE:
-            packet = _packet_qualname(qualname)
-            _PACKET_TO_PLAIN_INT_SCHEMA_COUNT[packet] = (
-                _PACKET_TO_PLAIN_INT_SCHEMA_COUNT.get(packet, 0) + 1
-            )
-        _SCHEMA_TO_DEFINITION_SOURCE[qualname] = (source, schema, int_arg_types)
-
-
-def _clear_schema_definition_sources(qualnames: set[str]) -> None:
-    warned_keys = set()
-    for qualname in qualnames:
-        definition = _SCHEMA_TO_DEFINITION_SOURCE.pop(qualname, None)
-        if definition is not None:
-            _, _, int_arg_types = definition
-            warned_keys.update((qualname, arg_name) for arg_name in int_arg_types)
-            packet = _packet_qualname(qualname)
-            remaining = _PACKET_TO_PLAIN_INT_SCHEMA_COUNT.get(packet, 1) - 1
-            if remaining:
-                _PACKET_TO_PLAIN_INT_SCHEMA_COUNT[packet] = remaining
-            else:
-                _PACKET_TO_PLAIN_INT_SCHEMA_COUNT.pop(packet, None)
-    _WARNED_SCHEMA_SYMINT_ARGUMENTS.difference_update(warned_keys)
-
-
-_MISSING = object()
-
-
-def _contains_symint(value: object) -> bool:
-    if isinstance(value, torch.SymInt):
-        return True
-    if isinstance(value, (tuple, list)):
-        return any(_contains_symint(item) for item in value)
-    return False
-
-
-def _maybe_warn_for_schema_specialization(
-    schema: torch._C.FunctionSchema, args: tuple[Any, ...], kwargs: dict[str, Any]
-) -> None:
-    if not _SCHEMA_TO_DEFINITION_SOURCE:
-        return
-
-    qualname = _schema_qualname(schema)
-    definition = _SCHEMA_TO_DEFINITION_SOURCE.get(qualname)
-    if definition is None:
-        return
-
-    source, definition_schema, int_arg_types = definition
-    for idx, arg in enumerate(schema.arguments):
-        arg_type = int_arg_types.get(arg.name)
-        if arg_type is None:
-            continue
-        value = args[idx] if idx < len(args) else kwargs.get(arg.name, _MISSING)
-        if value is _MISSING or not _contains_symint(value):
-            continue
-
-        warning_key = (qualname, arg.name)
-        if warning_key in _WARNED_SCHEMA_SYMINT_ARGUMENTS:
-            continue
-        _WARNED_SCHEMA_SYMINT_ARGUMENTS.add(warning_key)
-
-        # `_plain_int_schema_arg_types` only records schema types rooted at int.
-        suggested_type = arg_type.replace("int", "SymInt", 1)
-        log.warning(
-            "Operator %s was called with a SymInt value for argument %r but "
-            "its schema defines this argument as %s. This forces the "
-            "symbolic value to be specialized and can cause torch.compile "
-            "recompilation. Use %s in the operator schema for shape-like "
-            "values. The operator schema was defined at %s: %s",
-            qualname,
-            arg.name,
-            arg_type,
-            suggested_type,
-            source,
-            definition_schema,
-        )
-
-
-def _maybe_warn_for_packet_schema_specialization(
-    qualified_op_name: str,
-    overload_names: list[str],
-    args: tuple[Any, ...],
-    kwargs: dict[str, Any],
-) -> None:
-    if qualified_op_name not in _PACKET_TO_PLAIN_INT_SCHEMA_COUNT:
-        return
-    if len(overload_names) != 1:
-        return
-    _maybe_warn_for_schema_specialization(
-        torch._C._get_schema(qualified_op_name, overload_names[0]), args, kwargs
-    )
 
 
 @contextlib.contextmanager
@@ -658,6 +538,7 @@ class HigherOrderOperator(OperatorBase, abc.ABC):
             return torch.overrides.handle_torch_function(
                 self, flat_args, *args, **kwargs
             )
+        del flat_args
 
         dispatch_key_set = _compute_keyset(args, kwargs, self.non_fallthrough_keys)
         return self.dispatch(dispatch_key_set.highestPriorityTypeId(), *args, **kwargs)
@@ -951,12 +832,14 @@ class OpOverload(OperatorBase, Generic[_P, _T]):
         op.__module__ = overloadpacket.__module__
         self.__qualname__ = self._name
         self.__annotations__ = {}
-        self._has_plain_int_schema_args = (
-            self.__qualname__ in _SCHEMA_TO_DEFINITION_SOURCE
-        )
 
         # If the OpOverload was constructed from a Library.def in Python.
         self._defined_in_python = self.__qualname__ in torch.library._defs
+        self._schema_specialization_warning = (
+            torch.library._schema_specialization_metadata(
+                self.__qualname__, self._schema
+            )
+        )
 
         # Logic replicated from aten/src/ATen/native/MathBitsFallback.h
         is_write = None
@@ -995,8 +878,10 @@ class OpOverload(OperatorBase, Generic[_P, _T]):
     # Use positional-only argument to avoid naming collision with aten ops arguments
     # that are named "self". This way, all the aten ops can be called by kwargs.
     def __call__(self, /, *args: _P.args, **kwargs: _P.kwargs) -> _T:
-        if self._has_plain_int_schema_args:
-            _maybe_warn_for_schema_specialization(self._schema, args, kwargs)
+        if self._schema_specialization_warning is not None:
+            torch.library._maybe_warn_for_schema_specialization(
+                self._schema_specialization_warning, args, kwargs
+            )
         return self._op(*args, **kwargs)
 
     # Use positional-only argument to avoid naming collision with aten ops arguments
@@ -1217,9 +1102,7 @@ class TorchBindOpOverload(OpOverload[_P, _T]):
             # skip c++ dispatcher and dispatch in python through _get_dispatch of python_dispatcher
             # because C++ dispatcher will check the schema and cannot recognize FakeScriptObject.
             return self._dispatch_in_python(self._fallthrough_keys(), *args, **kwargs)
-        if self._has_plain_int_schema_args:
-            _maybe_warn_for_schema_specialization(self._schema, args, kwargs)
-        return self._op(*args, **kwargs)
+        return super().__call__(*args, **kwargs)
 
     def _dispatch_in_python(
         self, fallthrough_keys: list[DispatchKey], *args: _P.args, **kwargs: _P.kwargs
@@ -1309,6 +1192,11 @@ class OpOverloadPacket(Generic[_P, _T]):
         self._dir: list[str] = []
         self._has_torchbind_op_overload = any(
             _has_script_object_arg(schema) for schema in self._schemas.values()
+        )
+        self._schema_specialization_warning = (
+            torch.library._packet_schema_specialization_metadata(
+                self._qualified_op_name, self._overload_names
+            )
         )
 
     # it's a no-op since OpOverloadPacket object is immutable and must be unique for a given op.
@@ -1403,9 +1291,10 @@ class OpOverloadPacket(Generic[_P, _T]):
         if self._has_torchbind_op_overload and _must_dispatch_in_python(args, kwargs):
             # pyrefly: ignore [bad-argument-type]
             return _call_overload_packet_from_python(self, *args, **kwargs)
-        _maybe_warn_for_packet_schema_specialization(
-            self._qualified_op_name, self._overload_names, args, kwargs
-        )
+        if self._schema_specialization_warning is not None:
+            torch.library._maybe_warn_for_schema_specialization(
+                self._schema_specialization_warning, args, kwargs
+            )
         return self._op(*args, **kwargs)
 
     # TODO: use this to make a __dir__
@@ -1430,7 +1319,7 @@ def _call_overload_packet_from_python(
         return ret
 
     # The following mirrors getOpWithStack.
-    # In cpp, we do a schema matching for the arguments, and call ToIValue to
+    # In cpp, we do a schema matching for the arguments, and call ToIValue
     # to check whether the arguments are valid. But need to do similar things here
     # and check the schema whether the FakeScriptObject is the corresponding fake class
     # of the actual class used in schema.
@@ -1557,6 +1446,11 @@ def _refresh_packet(packet):
         raise AssertionError(f"failed to get packet for {packet._qualified_op_name}")
     packet._op = op
     packet._overload_names = overload_names
+    packet._schema_specialization_warning = (
+        torch.library._packet_schema_specialization_metadata(
+            packet._qualified_op_name, packet._overload_names
+        )
+    )
 
 
 class _HigherOrderNamespace(types.ModuleType):
