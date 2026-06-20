@@ -845,6 +845,18 @@ class TestAvgPool(TestCaseMPS):
         bn_cpu = torch.nn.BatchNorm2d(64).eval()(x.cpu())
         self.assertEqual(bn_mps.cpu(), bn_cpu)
 
+    def test_avg_pool_complex_dtype_rejected(self):
+        # Regression test for gh-187611: complex64 input must raise
+        # NotImplementedError instead of "Failed to create function state
+        # object for avg_pool_float2" when routed through avg_pool3d or
+        # avg_pool2d with ceil_mode=True on MPS.
+        x3d = torch.randn(2, 3, 4, 4, 4, dtype=torch.cfloat, device="mps")
+        with self.assertRaisesRegex(NotImplementedError, "Not implemented for complex"):
+            F.avg_pool3d(x3d, kernel_size=2)
+        x2d = torch.randn(1, 3, 4, 4, dtype=torch.cfloat, device="mps")
+        with self.assertRaisesRegex(NotImplementedError, "Not implemented for complex"):
+            F.avg_pool2d(x2d, kernel_size=2, ceil_mode=True)
+
 
 class TestMPS(TestCaseMPS):
     def ulpAssertAllClose(self, output, reference, n_ulps):
