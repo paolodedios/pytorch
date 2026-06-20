@@ -1,3 +1,4 @@
+import sys
 from functools import wraps
 
 
@@ -5,6 +6,24 @@ from functools import wraps
 # module load (FakeScriptObject's module imports torch, which imports us).
 _FakeScriptObject_cls: type | None = None
 _MISSING = object()
+
+
+def _maybe_skip_dynamo_code(fn):
+    """Preserve skip-frame handling when wrapping constructors."""
+    eval_frame = sys.modules.get("torch._dynamo.eval_frame")
+    if eval_frame is None:
+        return
+
+    code = getattr(fn, "__code__", None)
+    if code is None:
+        return
+
+    try:
+        eval_frame.skip_code(code)
+    except Exception:
+        # Dynamo skip registration is best-effort here; construction must not
+        # fail just because Dynamo is partially initialized.
+        pass
 
 
 def _get_pybind_opaque_base():
@@ -213,6 +232,7 @@ def _install_opaque_base(_PybindOpaqueBase: type) -> tuple[type, type]:
 
         @wraps(method)
         def wrapped(self, *args, **kwargs):
+            _maybe_skip_dynamo_code(method)
             instance_constructing = _set_constructing(self)
             try:
                 return method(self, *args, **kwargs)
