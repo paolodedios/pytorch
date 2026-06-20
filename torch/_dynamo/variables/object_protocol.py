@@ -39,11 +39,13 @@ from ..guards import GuardBuilder, install_guard
 from ..source import (
     AttrSource,
     CellContentsSource,
+    ConstDictKeySource,
     DictGetItemSource,
     GetItemSource,
     GlobalSource,
     LocalSource,
     NNModuleSource,
+    NonSerializableSetGetItemSource,
     SkipGuardSource,
     Source,
     TypeDictSource,
@@ -92,18 +94,28 @@ def vt_identity_compare(
             return value
         return NO_SUCH_SUBOBJ
 
+    def resolve_source_value(source: Source) -> object:
+        try:
+            return tx.output.resolve_source_value(source)
+        except (AttributeError, IndexError, KeyError, NameError):
+            return NO_SUCH_SUBOBJ
+
     def source_identity_value_from_source(source: object) -> object:
         if isinstance(
             source,
             (GlobalSource, LocalSource, TypeSource, NNModuleSource, CellContentsSource),
         ):
-            return tx.output.resolve_source_value(source)
+            return resolve_source_value(source)
         if isinstance(source, DictGetItemSource):
-            return tx.output.resolve_source_value(source)
+            return resolve_source_value(source)
+        if isinstance(source, ConstDictKeySource):
+            return resolve_source_value(source)
         if isinstance(source, GetItemSource):
-            return tx.output.resolve_source_value(source)
+            return resolve_source_value(source)
+        if isinstance(source, NonSerializableSetGetItemSource):
+            return resolve_source_value(source)
         if isinstance(source, SkipGuardSource):
-            return tx.output.resolve_source_value(source)
+            return resolve_source_value(source)
         return NO_SUCH_SUBOBJ
 
     def source_identity_value(var: VariableTracker) -> object:
@@ -113,23 +125,25 @@ def vt_identity_compare(
         if isinstance(source, DictGetItemSource) and isinstance(
             source.base, TypeDictSource
         ):
-            owner = tx.output.resolve_source_value(source.base.base)
+            owner = source_identity_value_from_source(source.base.base)
             if isinstance(owner, type) and isinstance(source.index, str):
-                source_value = tx.output.resolve_source_value(source)
+                source_value = source_identity_value_from_source(source)
                 if stable_class_attr_value(owner, source.index) is source_value:
                     return source_value
                 return NO_SUCH_SUBOBJ
         if isinstance(source, AttrSource):
-            base = tx.output.resolve_source_value(source.base)
+            base = resolve_source_value(source.base)
+            if base is NO_SUCH_SUBOBJ:
+                return NO_SUCH_SUBOBJ
             if isinstance(base, type):
                 return stable_class_attr_value(base, source.member)
             if source.member in ("__func__", "__name__", "__objclass__"):
                 base_value = source_identity_value_from_source(source.base)
                 if base_value is not NO_SUCH_SUBOBJ:
-                    return tx.output.resolve_source_value(source)
+                    return resolve_source_value(source)
             static_value = inspect.getattr_static(base, source.member, NO_SUCH_SUBOBJ)
             if static_value is not NO_SUCH_SUBOBJ:
-                resolved_value = tx.output.resolve_source_value(source)
+                resolved_value = resolve_source_value(source)
                 if static_value is resolved_value:
                     return resolved_value
                 if (
@@ -2338,33 +2352,3 @@ def generic_issubclass(
 
     # Coerce to bool (PyObject_IsTrue, abstract.c L2812).
     return generic_bool(tx, result)
-
-
-def virtual_iterator_next(
-    tx: "InstructionTranslatorBase",
-    iter_: VariableTracker,
-    null_or_idx: VariableTracker,
-) -> tuple[VariableTracker, VariableTracker]:
-    """
-    Mirrors _PyForIter_VirtualIteratorNext.
-
-    When ``null_or_idx`` is a tagged int (3.15+ virtual-iter path), dispatch
-    to the iterable's ``_tp_iteritem`` slot via ``tp_iteritem_impl`` and
-    return ``(value, next_index)``.  Otherwise fall back to the standard
-    iterator protocol (``tp_iternext``) and return ``(value, NULL)``.
-
-    Iterator exhaustion is signaled by ``ObservedUserStopIteration``
-    propagating out of the slot impl, matching the rest of Dynamo's
-    iterator protocol.
-
-    https://github.com/python/cpython/blob/f31a89bb901067dd105b00cfa90523cf7ffdbbdd/Python/ceval.c#L3733
-    """
-    from .misc import NullVariable
-
-    if (
-        not isinstance(null_or_idx, NullVariable)
-        and maybe_get_python_type(null_or_idx) is int
-    ):
-        return iter_.tp_iteritem_impl(tx, null_or_idx)
-    next_ = generic_iternext(tx, iter_)
-    return next_, NullVariable()
