@@ -208,7 +208,8 @@ def _analyze_comprehension(tx: InstructionTranslatorBase) -> ComprehensionAnalys
     # The comprehension epilogue always restores the iteration variables that
     # were saved by LOAD_FAST_AND_CLEAR (one STORE_FAST each). The disposition
     # of the result is determined relative to those restores:
-    #   - a POP_TOP before the stores discards the result (bare statement)
+    #   - a POP_TOP right after the loop teardown discards the result
+    #     (bare statement)
     #   - one extra STORE_FAST beyond the iteration vars is a result
     #     assignment (the extra store may reuse an iteration var's name)
     #   - no extra store leaves the result on the stack (returned/consumed)
@@ -218,17 +219,22 @@ def _analyze_comprehension(tx: InstructionTranslatorBase) -> ComprehensionAnalys
     store_targets = [tx.instructions[i].argval for i in range(store_fast_ip, scan_ip)]
 
     result_var: str | None = None
-    if "POP_TOP" in pre_store_ops:  # discarded
+    if pre_store_ops[-1:] == ["POP_TOP"]:  # discarded
         result_var = None
         result_on_stack = False
     elif len(store_targets) > n_iter:  # stored
-        # Drop one restore per iteration variable; the remaining store is the
-        # result assignment (for a reused name the leftover is that name).
         remaining = list(store_targets)
         for iter_var in iterator_vars:
             if iter_var in remaining:
                 remaining.remove(iter_var)
-        result_var = remaining[0] if remaining else store_targets[-1]
+        if len(remaining) != 1:
+            unimplemented(
+                gb_type="Comprehension analysis failed: ambiguous result store",
+                context=f"store_targets={store_targets}, iterator_vars={iterator_vars}",
+                explanation="Expected exactly one comprehension result assignment.",
+                hints=[],
+            )
+        result_var = remaining[0]
         result_on_stack = False
     elif len(store_targets) == n_iter:  # returned/consumed
         result_var = None
