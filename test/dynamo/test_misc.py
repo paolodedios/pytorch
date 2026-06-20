@@ -5974,6 +5974,32 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         self.assertEqual(SizeVariable._size_item_example(torch.fx.Proxy(node)), 4)
 
+    def test_torch_size_item_example_from_symint(self):
+        from torch._dynamo.source import ConstantSource
+        from torch._dynamo.variables.lists import SizeVariable
+        from torch.fx.experimental._constant_symnode import ConstantIntNode
+        from torch.fx.experimental.sym_node import SymNode
+        from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+        shape_env = ShapeEnv()
+        symbol = shape_env.create_symbol(5, ConstantSource("item"))
+        symint = torch.SymInt(SymNode(symbol, shape_env, int, hint=5))
+
+        graph = torch.fx.Graph()
+        node = graph.placeholder("item")
+        node.meta["example_value"] = symint
+
+        self.assertIs(SizeVariable._size_item_example(torch.fx.Proxy(node)), symint)
+
+        constant_node = graph.placeholder("constant_item")
+        constant_symint = torch.SymInt(ConstantIntNode(5))
+        constant_node.meta["example_value"] = constant_symint
+
+        self.assertIs(
+            SizeVariable._size_item_example(torch.fx.Proxy(constant_node)),
+            constant_symint,
+        )
+
     def test_torch_size_item_example_graph_breaks(self):
         from torch._dynamo.variables.lists import SizeVariable
 
@@ -5992,6 +6018,15 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         non_scalar_node.meta["example_value"] = non_scalar_value
         with self.assertRaisesRegex(Unsupported, "non-scalar tensor item"):
             SizeVariable._size_item_example(torch.fx.Proxy(non_scalar_node))
+
+    def test_torch_size_from_tensor_item_graph_breaks(self):
+        def fn(x):
+            return torch.empty(torch.Size([x.item()]))
+
+        with self.assertRaisesRegex(Unsupported, "non-constant tensor data"):
+            torch.compile(fn, backend="eager", fullgraph=True)(
+                torch.tensor(3, dtype=torch.int64)
+            )
 
     def test_torch_size_numel(self):
         cnts = torch._dynamo.testing.CompileCounter()
