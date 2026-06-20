@@ -77,6 +77,19 @@ def graph_pool_handle() -> _POOL_HANDLE:
     return torch.cuda._POOL_HANDLE(_graph_pool_handle())
 
 
+def _require_cuda_bindings() -> None:
+    """Raise a uniform error if the cuda-bindings package is unavailable.
+
+    ``_cuda_runtime`` and ``_cuda_driver`` are imported together, so checking one
+    suffices.
+    """
+    if _cuda_runtime is None:
+        raise RuntimeError(
+            "This CUDAGraph API requires the cuda-bindings package; "
+            "install it with `pip install cuda-bindings`."
+        )
+
+
 # Python shim helps Sphinx process docstrings more reliably.
 class CUDAGraph(_CUDAGraph):
     r"""Wrapper around a CUDA graph.
@@ -380,8 +393,9 @@ class CUDAGraph(_CUDAGraph):
         """
         from torch.cuda._graph_annotations import _is_tools_id_unavailable
 
-        if _cuda_runtime is None or _cuda_driver is None:
-            raise RuntimeError("get_graph_data requires the cuda.bindings package")
+        _require_cuda_bindings()
+        # Narrow for the type checker (cuda bindings are present past the check).
+        assert _cuda_runtime is not None and _cuda_driver is not None  # noqa: S101
 
         if _is_tools_id_unavailable():
             raise RuntimeError(
@@ -477,23 +491,18 @@ class CUDAGraph(_CUDAGraph):
 
 def _dump_graph_dot(cuda_graph: CUDAGraph, path: str, *, verbose: bool = True) -> None:
     """Write ``cuda_graph``'s template to ``path`` in Graphviz DOT format."""
-    if _cuda_runtime is None:
-        raise RuntimeError(
-            "CUDAGraph.debug_dump / export_dot require the cuda-bindings package; "
-            "install it with `pip install cuda-bindings`."
-        )
+    _require_cuda_bindings()
     flags = (
         _cuda_runtime.cudaGraphDebugDotFlags.cudaGraphDebugDotFlagsVerbose  # pyrefly: ignore[missing-attribute]
         if verbose
         else 0
     )
-    graph = _cuda_runtime.cudaGraph_t(  # pyrefly: ignore[missing-attribute]
-        init_value=cuda_graph.raw_cuda_graph()
-    )
-    # cudaGraphDebugDotPrint takes a C string (bytes), not str.
+    # cuda.bindings runtime calls accept the raw handle (int) directly; no need
+    # to wrap raw_cuda_graph() in cudaGraph_t(init_value=...). Path is a C string
+    # (bytes), not str.
     _check_cuda_bindings(
         _cuda_runtime.cudaGraphDebugDotPrint(  # pyrefly: ignore[missing-attribute]
-            graph, path.encode(), flags
+            cuda_graph.raw_cuda_graph(), path.encode(), flags
         )
     )
 
