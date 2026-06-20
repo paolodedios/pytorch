@@ -711,6 +711,8 @@ class FakeTensorTest(TestCase):
             )
 
     def test_conv_rejects_mismatched_fake_devices(self):
+        if torch._functorch.config.fake_tensor_propagate_real_tensors and not RUN_CUDA:
+            self.skipTest("propagate_real_tensors requires real CUDA tensors")
         with FakeTensorMode():
             x = torch.empty(1, 3, 8, 8)
             w = torch.empty(3, 3, 3, 3, device="cuda")
