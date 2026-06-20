@@ -75,8 +75,7 @@ typedef struct {
 
 namespace torch::dynamo {
 
-std::unique_ptr<GuardLastSuccessReceipt>
-create_guard_last_success_receipt() {
+std::unique_ptr<GuardLastSuccessReceipt> create_guard_last_success_receipt() {
   return std::make_unique<GuardLastSuccessReceipt>();
 }
 
@@ -773,8 +772,7 @@ static PyObject* guard_last_success_self_key() {
   return key;
 }
 
-static PyObject* guard_last_success_current_self(
-    FrameLocalsMapping* f_locals) {
+static PyObject* guard_last_success_current_self(FrameLocalsMapping* f_locals) {
   if (f_locals == nullptr) {
     return nullptr;
   }
@@ -3608,7 +3606,8 @@ static bool try_actual_partial_fast_path(
   }
   if (receipt->actual_partial_entry_key !=
           active_actual_partial_scope->entry_key ||
-      receipt->actual_partial_root_key != active_actual_partial_scope->root_key ||
+      receipt->actual_partial_root_key !=
+          active_actual_partial_scope->root_key ||
       receipt->actual_partial_self_object !=
           active_actual_partial_scope->self_object ||
       receipt->actual_partial_self_type !=
@@ -5675,8 +5674,7 @@ py::dict debug_check_guard_lookup_receipt(
   stats["actual_partial_candidate"] =
       receipt->actual_partial_stability_tokens.size();
   stats["actual_partial_token_count"] = receipt->actual_partial_tokens.size();
-  stats["actual_partial_shadow_passes"] =
-      receipt->actual_partial_shadow_passes;
+  stats["actual_partial_shadow_passes"] = receipt->actual_partial_shadow_passes;
   stats["actual_partial_enabled"] =
       receipt->actual_partial_state == GuardPartialMemoState::Enabled ? 1 : 0;
   stats["actual_partial_hit"] = receipt->actual_partial_hit;
@@ -5705,8 +5703,7 @@ py::dict debug_check_guard_lookup_receipt_sequence(
   stats["actual_partial_candidate"] =
       receipt->actual_partial_stability_tokens.size();
   stats["actual_partial_token_count"] = receipt->actual_partial_tokens.size();
-  stats["actual_partial_shadow_passes"] =
-      receipt->actual_partial_shadow_passes;
+  stats["actual_partial_shadow_passes"] = receipt->actual_partial_shadow_passes;
   stats["actual_partial_enabled"] =
       receipt->actual_partial_state == GuardPartialMemoState::Enabled ? 1 : 0;
   stats["actual_partial_hit"] = receipt->actual_partial_hit;
@@ -5748,12 +5745,10 @@ py::dict debug_check_guard_lookup_receipt_cross_root(
   stats["actual_partial_candidate"] =
       receipt->actual_partial_stability_tokens.size();
   stats["actual_partial_token_count"] = receipt->actual_partial_tokens.size();
-  stats["actual_partial_shadow_passes"] =
-      receipt->actual_partial_shadow_passes;
+  stats["actual_partial_shadow_passes"] = receipt->actual_partial_shadow_passes;
   stats["actual_partial_enabled"] =
       receipt->actual_partial_state == GuardPartialMemoState::Enabled ? 1 : 0;
-  stats["actual_partial_enabled_before_cross"] =
-      enabled_before_cross ? 1 : 0;
+  stats["actual_partial_enabled_before_cross"] = enabled_before_cross ? 1 : 0;
   stats["actual_partial_hit"] = receipt->actual_partial_hit;
   stats["actual_partial_miss"] = receipt->actual_partial_miss;
   stats["slow_guard_fallback"] = receipt->slow_guard_fallback;
@@ -5794,12 +5789,10 @@ py::dict debug_check_guard_lookup_receipt_cross_self(
   stats["actual_partial_candidate"] =
       receipt->actual_partial_stability_tokens.size();
   stats["actual_partial_token_count"] = receipt->actual_partial_tokens.size();
-  stats["actual_partial_shadow_passes"] =
-      receipt->actual_partial_shadow_passes;
+  stats["actual_partial_shadow_passes"] = receipt->actual_partial_shadow_passes;
   stats["actual_partial_enabled"] =
       receipt->actual_partial_state == GuardPartialMemoState::Enabled ? 1 : 0;
-  stats["actual_partial_enabled_before_cross"] =
-      enabled_before_cross ? 1 : 0;
+  stats["actual_partial_enabled_before_cross"] = enabled_before_cross ? 1 : 0;
   stats["actual_partial_hit"] = receipt->actual_partial_hit;
   stats["actual_partial_miss"] = receipt->actual_partial_miss;
   stats["slow_guard_fallback"] = receipt->slow_guard_fallback;
@@ -5843,10 +5836,7 @@ static bool run_root_guard_manager(
     return false;
   }
   ActiveGuardReceiptScope receipt_scope(
-      receipt,
-      entry_key,
-      root,
-      guard_last_success_current_self(f_locals));
+      receipt, entry_key, root, guard_last_success_current_self(f_locals));
   py::object config_module = py::module_::import("torch._dynamo.config");
   bool enable_cpp_framelocals_guard_eval =
       config_module.attr("enable_cpp_framelocals_guard_eval").cast<bool>();
@@ -6853,8 +6843,7 @@ PyObject* torch_c_dynamo_guards_init() {
       py::arg("symbolic") = true);
   py_m.def("install_symbolic_shape_guard", install_symbolic_shape_guard);
   py_m.def("profile_guard_manager", profile_guard_manager);
-  py_m.def(
-      "_debug_is_self_modules_candidate", is_self_modules_candidate);
+  py_m.def("_debug_is_self_modules_candidate", is_self_modules_candidate);
   py_m.def(
       "_debug_check_guard_lookup_receipt",
       debug_check_guard_lookup_receipt,

@@ -56,8 +56,7 @@ typedef struct VISIBILITY_HIDDEN ExtraState {
   std::list<CacheEntry> cache_entry_list;
   // Frame state to detect dynamic shape dims
   py::dict frame_state;
-  std::unique_ptr<torch::dynamo::GuardLastSuccessReceipt>
-      last_success_receipt;
+  std::unique_ptr<torch::dynamo::GuardLastSuccessReceipt> last_success_receipt;
   // Actions to apply to all frames with this code object
   FrameExecStrategy strategy{DEFAULT, DEFAULT};
 

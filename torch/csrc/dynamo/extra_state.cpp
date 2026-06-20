@@ -19,8 +19,7 @@ namespace {
 ExtraState* get_live_extra_state_from_guard_manager(
     const py::object& guard_manager_ref) {
   py::object guard_manager = guard_manager_ref();
-  if (guard_manager.is_none() ||
-      !py::hasattr(guard_manager, "extra_state")) {
+  if (guard_manager.is_none() || !py::hasattr(guard_manager, "extra_state")) {
     throw std::runtime_error(
         "guard lookup stats are unavailable: guard manager is gone");
   }
@@ -44,41 +43,34 @@ CacheEntry* ExtraState::get_first_entry() {
 
 ExtraState::ExtraState(PyCodeObject* orig_code_arg)
     : orig_code(orig_code_arg),
-      last_success_receipt(
-          torch::dynamo::create_guard_last_success_receipt()) {}
+      last_success_receipt(torch::dynamo::create_guard_last_success_receipt()) {
+}
 
 py::dict ExtraState::get_guard_lookup_stats() const {
   py::dict stats;
   stats["actual_partial_receipt_created"] =
       this->last_success_receipt != nullptr;
-  stats["actual_partial_enabled"] =
-      this->last_success_receipt != nullptr &&
+  stats["actual_partial_enabled"] = this->last_success_receipt != nullptr &&
           this->last_success_receipt->actual_partial_state ==
               torch::dynamo::GuardPartialMemoState::Enabled
       ? 1
       : 0;
-  stats["actual_partial_candidate"] =
-      this->last_success_receipt == nullptr
+  stats["actual_partial_candidate"] = this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->actual_partial_stability_tokens.size();
-  stats["actual_partial_token_count"] =
-      this->last_success_receipt == nullptr
+  stats["actual_partial_token_count"] = this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->actual_partial_tokens.size();
-  stats["actual_partial_shadow_passes"] =
-      this->last_success_receipt == nullptr
+  stats["actual_partial_shadow_passes"] = this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->actual_partial_shadow_passes;
-  stats["actual_partial_hit"] =
-      this->last_success_receipt == nullptr
+  stats["actual_partial_hit"] = this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->actual_partial_hit;
-  stats["actual_partial_miss"] =
-      this->last_success_receipt == nullptr
+  stats["actual_partial_miss"] = this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->actual_partial_miss;
-  stats["slow_guard_fallback"] =
-      this->last_success_receipt == nullptr
+  stats["slow_guard_fallback"] = this->last_success_receipt == nullptr
       ? 0
       : this->last_success_receipt->slow_guard_fallback;
   py::dict actual_partial_disabled_reasons;
@@ -88,8 +80,7 @@ py::dict ExtraState::get_guard_lookup_stats() const {
       actual_partial_disabled_reasons[py::str(item.first)] = item.second;
     }
   }
-  stats["actual_partial_disabled_reasons"] =
-      actual_partial_disabled_reasons;
+  stats["actual_partial_disabled_reasons"] = actual_partial_disabled_reasons;
   return stats;
 }
 
@@ -239,14 +230,13 @@ void lookup(
 
     if (valid) {
       try {
-        valid =
-            torch::dynamo::run_root_guard_manager_with_last_success_receipt(
-                extra_state->last_success_receipt.get(),
-                &cache_entry,
-                is_skip_guard_eval_unsafe ? cache_entry.diff_guard_root_mgr
-                                          : cache_entry.root_mgr,
-                f_locals,
-                is_skip_guard_eval_unsafe);
+        valid = torch::dynamo::run_root_guard_manager_with_last_success_receipt(
+            extra_state->last_success_receipt.get(),
+            &cache_entry,
+            is_skip_guard_eval_unsafe ? cache_entry.diff_guard_root_mgr
+                                      : cache_entry.root_mgr,
+            f_locals,
+            is_skip_guard_eval_unsafe);
       } catch (py::error_already_set& e) {
         if (guard_error_hook) {
           py::handle guard_error_hook_handle(guard_error_hook);
