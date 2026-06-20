@@ -186,6 +186,9 @@ class DictTests(torch._dynamo.test_case.TestCase):
         explain_output = torch._dynamo.explain(Module(1.0))(x)
         guard_names = {guard.name for guard in explain_output.out_guards}
         self.assertIn("dict.__getitem__(L['cache'], L['self'].key)", guard_names)
+        for guard in explain_output.out_guards:
+            if guard.name == "L['self'].key":
+                self.assertNotIn("EQUALS_MATCH", guard.guard_types or ())
 
         cnt = torch._dynamo.testing.CompileCounter()
 
