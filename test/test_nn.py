@@ -13,6 +13,7 @@ import warnings
 import os
 import pickle
 import re
+import sys
 import dataclasses
 from copy import deepcopy
 from itertools import product
@@ -15167,6 +15168,10 @@ if __name__ == '__main__':
                 f"  cap={expected_weight_grad_max_ulp_diff:6d}\n"
                 f"  linear_bias:   observed={maximal_linear_bias_grad_max_ulp_diff:6d}"
                 f"  cap={expected_linear_bias_grad_max_ulp_diff:6d}",
+                # ``sys.__stdout__`` bypasses the test runner's per-test stdout
+                # capture (which only surfaces on failure), so the calibration
+                # reaches CI logs on passing runs too. TEMP, with this block.
+                file=sys.__stdout__,
                 flush=True,
             )
 
