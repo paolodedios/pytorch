@@ -4477,7 +4477,7 @@ class Layout(OutputSpec):
         if len(self.stride) != len(order):
             raise AssertionError("Expected len(self.stride) == len(order)")
 
-        # ignore dimensions of size 1, they dont affect layout
+        # ignore dimensions of size 1, they don't affect layout
         non_1_indices = [
             i
             for i, dim in enumerate(self.size)
@@ -6025,17 +6025,6 @@ class TemplateBuffer(OperationBuffer):
             return []
 
         return tuple(walk(structured, []))
-
-
-@dataclasses.dataclass(frozen=True)
-class FlexGemmEpilogueConfig:
-    epilogue_name: str
-    epilogue_source: str
-    gemm_op: str
-    alpha: float
-    beta: float
-    tuned: bool = False
-    out_dtype: Any | None = None
 
 
 class TritonTemplateBuffer(TemplateBuffer):
@@ -8410,7 +8399,6 @@ class UserDefinedTritonKernel(ExternKernel):
             reset_to_zero_args,
             self.grid,
             epilogue_fusion,
-            self.launch_kwargs,
         )
         named_args = {
             k: self.get_kwargs_value(k) for k in self.ordered_kwargs_for_cpp_kernel
@@ -8497,7 +8485,6 @@ class UserDefinedTritonKernel(ExternKernel):
         grid: Any,
         tma_descriptor_metadata: dict[str, Any],
         kernel_args: dict[str, Any],
-        launch_kwargs: tuple[str, ...],
     ) -> None:
         inputs: list[IRNode] = []
         kwargs: dict[str, IRNode] = {}
@@ -8529,7 +8516,6 @@ class UserDefinedTritonKernel(ExternKernel):
         )
         self.kernel_idx = kernel_idx
         self.grid = grid
-        self.launch_kwargs = launch_kwargs
 
         kernel, configs, _, _ = self.get_kernel_and_metadata()
 
@@ -9914,7 +9900,7 @@ class MemoryCheckKernel(FallbackKernel):
         dead_repr = repr(dead_list)
         if is_final_step:
             wrapper.writeline(
-                "# note: dont currently distinguish between buffers returned and dealloc'd in last step"
+                "# note: don't currently distinguish between buffers returned and dealloc'd in last step"
             )
             call = f"check_memory_step(allocated={alive_repr}, freed={dead_repr}, is_final_step={is_final_step})"
         else:
