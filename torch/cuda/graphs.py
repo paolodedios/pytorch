@@ -497,9 +497,6 @@ def _dump_graph_dot(cuda_graph: CUDAGraph, path: str, *, verbose: bool = True) -
         if verbose
         else 0
     )
-    # cuda.bindings runtime calls accept the raw handle (int) directly; no need
-    # to wrap raw_cuda_graph() in cudaGraph_t(init_value=...). Path is a C string
-    # (bytes), not str.
     _check_cuda_bindings(
         _cuda_runtime.cudaGraphDebugDotPrint(  # pyrefly: ignore[missing-attribute]
             cuda_graph.raw_cuda_graph(), path.encode(), flags
