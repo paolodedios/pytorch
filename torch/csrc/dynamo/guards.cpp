@@ -629,7 +629,7 @@ struct AutocastState {
     if (cache_enabled != o.cache_enabled) {
       os << "autocast_cache_enabled ";
     }
-    return std::move(os).str();
+    return os.str();
   }
 
   template <typename T>
@@ -722,7 +722,7 @@ struct GlobalStateGuard {
       os << "num_threads ";
     if (_default_dtype != at::get_default_dtype())
       os << "default_dtype ";
-    return std::move(os).str();
+    return os.str();
   }
 
   template <typename T>
@@ -1337,9 +1337,8 @@ struct DynamicMeta {
 };
 
 /**
- * Assumption: x and y are known to share a storage, and we are trying to
- * determine if their memory is actually completely disjoint, based on
- * sizes/strides/storage_offset
+ * Determine if x and y are completely disjoint, based on raw storage identity
+ * and sizes/strides/storage_offset.
  *
  * "Meta" should be one of the "*Meta" classes above. They dictate which
  * version of the metadata functions we should be using (symbolic vs.
@@ -1352,7 +1351,8 @@ bool tensors_definitely_do_not_overlap(const Tensor& x, const Tensor& y) {
   if (x.is_same(y)) {
     return false;
   }
-  if (!x.is_alias_of(y)) {
+  if (x.storage().unsafeGetStorageImpl() !=
+      y.storage().unsafeGetStorageImpl()) {
     return true;
   }
   if (Meta::numel(x) == 0 || Meta::numel(y) == 0) {
