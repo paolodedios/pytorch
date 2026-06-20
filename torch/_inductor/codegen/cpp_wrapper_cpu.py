@@ -1618,6 +1618,8 @@ class CppWrapperCpu(PythonWrapperCodegen):
     def _codegen_entry_impl_prologue(self):
         """Hook for subclasses to emit code at the top of inductor_entry_impl,
         before the GIL is released. Default no-op."""
+        if config.triton.debug_sync_graph:
+            self.generate_debug_sync(self.prefix)
 
     def generate_before_suffix(self, result):
         # Close the entry function. In dual-wrapper-mode `result` is the JIT side;
@@ -2211,6 +2213,9 @@ class CppWrapperCpu(PythonWrapperCodegen):
 
     def codegen_exact_buffer_reuse(self, old_name: str, new_name: str, del_line: str):
         return f"auto {new_name} = std::move({old_name});  // reuse"
+
+    def generate_debug_sync(self, buffer):
+        pass
 
     def generate_profiler_mark_wrapper_call(self, stack):
         self.wrapper_call.writeline(
@@ -3270,12 +3275,25 @@ class CppWrapperCpu(PythonWrapperCodegen):
                 self._target_buf("wrapper_call", aot_code),
                 self.set_writeline(aot_code, aot_code.writeline_aot),
             ):
-                self.generate_fallback_kernel_with_runtime_lookup_aot(
-                    op_overload,
-                    raw_args,
-                    output_args,
-                    outputs,
-                )
+                if route_through_call_dispatcher:
+                    if not isinstance(op_overload, torch._ops.OpOverload):
+                        raise AssertionError(type(op_overload))
+                    if not self._compatible_with_stableivalue(op_overload):
+                        raise AssertionError(op_overload)
+                    self.generate_fallback_kernel_with_runtime_lookup_nopython(
+                        get_args,
+                        op_overload,
+                        raw_args,
+                        output_args,  # type: ignore[arg-type]
+                        outputs,
+                    )
+                else:
+                    self.generate_fallback_kernel_with_runtime_lookup_aot(
+                        op_overload,
+                        raw_args,
+                        output_args,
+                        outputs,
+                    )
 
             self.writeline(DualWrapperCodeLine(jit_code, aot_code))
             return

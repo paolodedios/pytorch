@@ -414,6 +414,30 @@ class AOTInductorTestsTemplate:
         with config.patch({"always_keep_tensor_constants": True}):
             self.check_model(Model().to(self.device), example_inputs)
 
+    @unittest.skipIf(
+        not HAS_GPU or GPU_TYPE != "cuda" or TEST_WITH_ROCM,
+        "Pinned async constant copy is CUDA-only",
+    )
+    @patch.dict(
+        os.environ,
+        {
+            "AOTI_COPY_USE_PINNED_ASYNC": "1",
+            "AOTI_COPY_STAGE_BUFFER_BYTES": "1024",
+        },
+    )
+    def test_small_constant_pinned_async_copy(self):
+        class Model(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+
+            def forward(self, x):
+                return self.linear(x)
+
+        example_inputs = (torch.randn(4, 4, device=self.device),)
+        with config.patch({"always_keep_tensor_constants": True}):
+            self.check_model(Model().to(self.device), example_inputs)
+
     def test_output_path_1(self):
         class Model(torch.nn.Module):
             def __init__(self) -> None:
@@ -2456,9 +2480,6 @@ class AOTInductorTestsTemplate:
         }
         self.check_model(Repro(), example_inputs, dynamic_shapes=spec)
 
-    @skipIfXpu(
-        msg="FlashAttentionForward headdim limitation on xpu - torch-xpu-ops: 2698"
-    )
     @unittest.skipIf(
         not PLATFORM_SUPPORTS_FLASH_ATTENTION, "Some archs don't support flash SDPA"
     )
@@ -3356,11 +3377,11 @@ class AOTInductorTestsTemplate:
         Original PR: https://github.com/pytorch/pytorch/pull/139054
         """
         from torch.testing._internal.common_quantization import (
-            _static_reference_quantized_linear_module,
+            _static_quantized_linear_module,
         )
 
         example_inputs = (torch.randn(32, 16),)
-        model = _static_reference_quantized_linear_module(
+        model = _static_quantized_linear_module(
             N=15, K=16, bias=True, example_input=example_inputs[0]
         )
         model = torch.export.export(model, example_inputs, strict=True).module()
@@ -6637,6 +6658,9 @@ class AOTInductorTestsTemplate:
         self.check_model(sin_triton, not_none_inputs)
 
     @skipIfRocm  # RoCM does not support the config block size in test suite.
+    @skipIfXpu(
+        msg="SYCL work-item index overflow issue when block sizes are used in this test."
+    )
     def test_autotune_int64_user_defined_triton_kernel(self):
         if self.device != GPU_TYPE:
             raise unittest.SkipTest("requires GPU")
@@ -9342,7 +9366,7 @@ class TestAOTInductorOnlyForKernelBackends(TestCase):
         return impl
 
     def _check_overrideable_sdpa_routes_through_dispatcher(
-        self, device, dtype, dispatch_key
+        self, device, dtype, dispatch_key, check_runtime=True
     ):
         sentinel = 1.25
 
@@ -9397,12 +9421,17 @@ class TestAOTInductorOnlyForKernelBackends(TestCase):
                 f"aoti_torch_{device}__scaled_dot_product_fused_attention_overrideable(",
                 wrapper_sources,
             )
+            self.assertNotIn(
+                "aoti_torch_proxy_executor_call_function",
+                wrapper_sources,
+            )
 
-            runner = torch._inductor.aoti_load_package(package_path)
-            actual_output = runner(*inputs)
-            if isinstance(actual_output, (list, tuple)):
-                actual_output = actual_output[0]
-            self.assertTrue(torch.allclose(actual_output, expected))
+            if check_runtime:
+                runner = torch._inductor.aoti_load_package(package_path)
+                actual_output = runner(*inputs)
+                if isinstance(actual_output, (list, tuple)):
+                    actual_output = actual_output[0]
+                self.assertTrue(torch.allclose(actual_output, expected))
 
     def _check_overrideable_sdpa_backward_routes_through_dispatcher(
         self, device, dtype, dispatch_key
@@ -9475,6 +9504,10 @@ class TestAOTInductorOnlyForKernelBackends(TestCase):
                 f"aoti_torch_{device}__scaled_dot_product_fused_attention_overrideable_backward(",
                 wrapper_sources,
             )
+            self.assertNotIn(
+                "aoti_torch_proxy_executor_call_function",
+                wrapper_sources,
+            )
 
             runner = torch._inductor.aoti_load_package(package_path)
             actual_output = runner(*inputs)
@@ -9492,6 +9525,13 @@ class TestAOTInductorOnlyForKernelBackends(TestCase):
         self._check_overrideable_sdpa_routes_through_dispatcher(
             "cuda", torch.float16, "CUDA"
         )
+
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA not available")
+    def test_overrideable_sdpa_routes_through_dispatcher_cuda_dual_wrapper(self):
+        with torch._inductor.config.patch("triton.autotune_at_compile_time", False):
+            self._check_overrideable_sdpa_routes_through_dispatcher(
+                "cuda", torch.float16, "CUDA", check_runtime=False
+            )
 
     def test_overrideable_sdpa_backward_routes_through_dispatcher_cpu(self):
         self._check_overrideable_sdpa_backward_routes_through_dispatcher(
