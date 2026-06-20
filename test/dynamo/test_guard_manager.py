@@ -638,18 +638,14 @@ num_guards_executed=0)
         self.assertGreater(stats["actual_partial_token_count"], 0)
 
     def test_self_modules_token_plan_candidate_is_segment_aware(self):
-        self.assertTrue(
-            guards._debug_is_self_modules_candidate("L['self']._modules")
-        )
+        self.assertTrue(guards._debug_is_self_modules_candidate("L['self']._modules"))
         self.assertTrue(
             guards._debug_is_self_modules_candidate(
                 "L['self']._modules['block']._modules"
             )
         )
         self.assertFalse(
-            guards._debug_is_self_modules_candidate(
-                "L['self']._modules_extra._modules"
-            )
+            guards._debug_is_self_modules_candidate("L['self']._modules_extra._modules")
         )
         self.assertFalse(
             guards._debug_is_self_modules_candidate(
@@ -665,9 +661,7 @@ num_guards_executed=0)
             default_mgr_enum,
         ).add_dict_length_check_guard(0, ["len(bad) == 0"])
 
-        stats = guards._debug_check_guard_lookup_receipt(
-            guard_manager, {"bad": {}}
-        )
+        stats = guards._debug_check_guard_lookup_receipt(guard_manager, {"bad": {}})
         self.assertTrue(stats["result"])
         self.assertEqual(stats["actual_partial_candidate"], 0)
         self.assertEqual(stats["actual_partial_token_count"], 0)
@@ -732,9 +726,7 @@ num_guards_executed=0)
             default_mgr_enum,
         ).add_dict_length_check_guard(0, ["len(mods) == 0"])
 
-        stats = guards._debug_check_guard_lookup_receipt(
-            guard_manager, {"mods": {}}, 3
-        )
+        stats = guards._debug_check_guard_lookup_receipt(guard_manager, {"mods": {}}, 3)
 
         self.assertTrue(stats["result"])
         self.assertGreaterEqual(stats["actual_partial_shadow_passes"], 2)

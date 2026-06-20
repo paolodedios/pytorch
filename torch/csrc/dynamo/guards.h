@@ -76,14 +76,12 @@ struct GuardLastSuccessReceipt {
   uint64_t actual_partial_miss = 0;
   uint64_t slow_guard_fallback = 0;
   std::unordered_map<std::string, uint64_t> actual_partial_disabled_reasons;
-  GuardPartialMemoState actual_partial_state =
-      GuardPartialMemoState::Training;
+  GuardPartialMemoState actual_partial_state = GuardPartialMemoState::Training;
   std::vector<GuardSubtreeEntryToken> actual_partial_stability_tokens;
   std::vector<GuardSubtreeEntryToken> actual_partial_tokens;
 };
 
-std::unique_ptr<GuardLastSuccessReceipt>
-create_guard_last_success_receipt();
+std::unique_ptr<GuardLastSuccessReceipt> create_guard_last_success_receipt();
 
 struct LocalState {
   // TLS state that changes operators
