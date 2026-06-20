@@ -1,4 +1,4 @@
-add_loop_eager,compile_time_instruction_count,3479000000,0.1
+add_loop_eager,compile_time_instruction_count,3860000000,0.1
 
 
 
@@ -22,7 +22,7 @@ basic_modules_ListOfLinears_eager,compile_time_instruction_count,932400000,0.1
 
 
 
-basic_modules_ListOfLinears_inductor,compile_time_instruction_count,15640000000,0.1
+basic_modules_ListOfLinears_inductor,compile_time_instruction_count,13392543503,0.1
 
 
 
