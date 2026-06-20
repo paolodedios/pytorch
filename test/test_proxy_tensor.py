@@ -217,9 +217,17 @@ def forward(self, a_1):
         ref_y, ref_grad = f(x)
 
         grad_enabled = torch.is_grad_enabled()
+
+        @torch._dynamo.disable
+        def trace_f():
+            # compiled_autograd wraps the backward formula with Dynamo in
+            # dynamo_wrapped CI, which cannot be nested inside FX tracing.
+            with torch._dynamo.compiled_autograd._disable():
+                return make_fx(f, tracing_mode="fake", pre_dispatch=True)(x)
+
         try:
             # Non-strict export uses fake pre-dispatch make_fx tracing.
-            fx_g = make_fx(f, tracing_mode="fake", pre_dispatch=True)(x)
+            fx_g = trace_f()
             self.assertEqual(torch.is_grad_enabled(), grad_enabled)
         finally:
             torch.set_grad_enabled(grad_enabled)
