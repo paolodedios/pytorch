@@ -7205,10 +7205,11 @@ class ExternKernel(InputsKernel):
         # propagated the graph with, because for some operators running without a
         # constant would trigger an error / DataDependentException
         # TorchBind fake objects are mutable and may have been advanced by AOT
-        # tracing. Replay effectful methods on a fresh per-graph copy of the
-        # guarded object state instead of the already-mutated lowering value.
-        replay_torchbind = isinstance(
-            kernel, torch._higher_order_ops.torchbind.CallTorchBind
+        # tracing. Replay effectful ops on a fresh per-graph copy of the guarded
+        # object state instead of the already-mutated lowering value.
+        replay_torchbind = (
+            isinstance(kernel, torch._higher_order_ops.torchbind.CallTorchBind)
+            or V.current_node.target is torch._higher_order_ops.effects.with_effects
         )
         for x in tensor_args:
             # if x is a view of a constant, we need to realize the view
@@ -8431,7 +8432,6 @@ class UserDefinedTritonKernel(ExternKernel):
             reset_to_zero_args,
             self.grid,
             epilogue_fusion,
-            self.launch_kwargs,
         )
         named_args = {
             k: self.get_kwargs_value(k) for k in self.ordered_kwargs_for_cpp_kernel
@@ -8518,7 +8518,6 @@ class UserDefinedTritonKernel(ExternKernel):
         grid: Any,
         tma_descriptor_metadata: dict[str, Any],
         kernel_args: dict[str, Any],
-        launch_kwargs: tuple[str, ...],
     ) -> None:
         inputs: list[IRNode] = []
         kwargs: dict[str, IRNode] = {}
@@ -8550,7 +8549,6 @@ class UserDefinedTritonKernel(ExternKernel):
         )
         self.kernel_idx = kernel_idx
         self.grid = grid
-        self.launch_kwargs = launch_kwargs
 
         kernel, configs, _, _ = self.get_kernel_and_metadata()
 
