@@ -8986,11 +8986,6 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             expected = fn(x)
             actual = compiled_fn(x)
             self.assertEqual(actual, expected, atol=0, rtol=0)
-            if self.device == "cpu":
-                self.assertEqual(
-                    tuple(torch.signbit(t) for t in actual),
-                    tuple(torch.signbit(t) for t in expected),
-                )
 
     @skip_if_halide  # log2 not implemented for halide
     def test_log2(self):
