@@ -1162,6 +1162,9 @@ class _TorchDynamoContext:
             "_wrapped_call_impl",
             "_lazy_forward",
         ]
+        # Only explicit Python function targets should override skipfile rules.
+        # Module wrappers, forbidden callables, and distributed collective
+        # rewrites have special handling that tracing as ordinary Python breaks.
         is_skipfile_target = (
             fn_code is not None
             and inspect.isfunction(fn)

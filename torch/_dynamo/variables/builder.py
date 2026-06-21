@@ -2983,6 +2983,8 @@ class VariableBuilder:
         with torch._C.DisableTorchFunctionSubclass():
             is_view = value._is_view()
             view_base = value._base if is_view else None
+            # Jagged NestedTensor wrappers can produce views backed by raw
+            # strided nested bases, whose metadata Dynamo cannot describe.
             view_base_is_strided_nested = (
                 view_base is not None and _is_strided_nested_tensor(view_base)
             )
@@ -4434,6 +4436,8 @@ def _automatic_dynamic(
         is_strided_nested = _is_strided_nested_tensor(e)
         is_view = e._is_view()
         view_base = e._base if is_view else None
+        # Jagged NestedTensor wrappers can produce views backed by raw strided
+        # nested bases, so do not recurse into the base shape policy.
         view_base_is_strided_nested = (
             view_base is not None and _is_strided_nested_tensor(view_base)
         )

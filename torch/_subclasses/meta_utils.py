@@ -293,14 +293,13 @@ class MetaTensorDescriber:
         base = t._base if is_view else None
         if (
             is_view
-            and is_nested
-            and is_traceable_wrapper_subclass_v
             and base is not None
             and base.is_nested
             and not is_traceable_wrapper_subclass(base)
         ):
-            # Jagged NestedTensor wrappers can be views of raw strided nested
-            # tensors, whose metadata cannot be described with size().
+            # Views produced from jagged NestedTensor wrappers can have raw
+            # strided nested bases, whose metadata cannot be described with
+            # size().
             is_view = False
             base = None
         is_functorch_wrapped = is_functorch_wrapped_tensor(t)
