@@ -171,6 +171,9 @@ class KernelTests(torch._inductor.test_case.TestCase):
     @requires_gpu
     @parametrize("cpp_wrapper", [False, True])
     def test_data_ptr_packing(self, cpp_wrapper):
+        if cpp_wrapper and GPU_TYPE == "xpu":
+            self.skipTest("XPU cpp_wrapper data_ptr tracing is not supported yet")
+
         @triton.jit
         def add_kernel(xy, z, BLOCK_SIZE: "tl.constexpr", n_elements):
             pid = tl.program_id(axis=0)
@@ -282,7 +285,12 @@ class KernelTests(torch._inductor.test_case.TestCase):
                     self.assertIn("stream1 = get_external_object_by_index", stream_code)
                     self.assertIn(".record_stream(stream1)", stream_code)
             elif GPU_TYPE == "cuda":
-                self.assertIn("cudaDeviceSynchronize", code)
+                sync_fn = (
+                    "hipDeviceSynchronize"
+                    if torch.version.hip
+                    else "cudaDeviceSynchronize"
+                )
+                self.assertIn(sync_fn, code)
 
     @requires_gpu
     def test_triton_kernel_dunder_name_no_name_mangling(self):
