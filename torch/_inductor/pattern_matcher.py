@@ -566,6 +566,11 @@ def _constant_values_equal(a: Any, b: Any) -> bool:
             or a.shape != b.shape
             or a.device != b.device
             or a.layout != b.layout
+            or a.requires_grad != b.requires_grad
+        ):
+            return False
+        if a.layout == torch.strided and (
+            a.stride() != b.stride() or a.storage_offset() != b.storage_offset()
         ):
             return False
         a_constant = _get_fake_tensor_constant(a)
@@ -591,6 +596,8 @@ def _python_constant_repr(value: Any) -> str:
             return "float('nan')"
         if math.isinf(value):
             return "float('inf')" if value > 0 else "-float('inf')"
+    if isinstance(value, complex):
+        return f"complex({_python_constant_repr(value.real)}, {_python_constant_repr(value.imag)})"
     if isinstance(value, list):
         return f"[{', '.join(map(_python_constant_repr, value))}]"
     if isinstance(value, tuple):
@@ -615,6 +622,8 @@ def _tensor_constant_repr(value: torch.Tensor) -> str:
         data_value = value
     if value.requires_grad:
         raise NotImplementedError("NYI: serializing tensor that requires grad")
+    if not value.is_contiguous() or value.storage_offset() != 0:
+        raise NotImplementedError("NYI: serializing non-contiguous get_attr tensor")
     with unset_fake_temporarily():
         if data_value.device.type != "cpu":
             cpu_value = data_value.detach().cpu()

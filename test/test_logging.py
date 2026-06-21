@@ -146,6 +146,47 @@ class LoggingTest(TestCase):
             log_internal.LOG_TRACE_HANDLER = old_handler
             _init_logs()
 
+    def test_init_logs_removes_marked_handlers_if_weak_registry_is_reset(self):
+        old_logs = os.environ.get(log_internal.LOG_ENV_VAR)
+        old_logs_out = os.environ.get(log_internal.LOG_OUT_ENV_VAR)
+        old_log_state = log_internal._get_log_state()
+        created_handlers = set()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                log_path = os.path.join(tmpdir, "torch.log")
+                os.environ[log_internal.LOG_ENV_VAR] = "+dynamic"
+                os.environ[log_internal.LOG_OUT_ENV_VAR] = log_path
+                log_internal._set_log_state(log_internal.LogState())
+
+                _init_logs()
+                for log_qname in log_internal.log_registry.get_log_qnames():
+                    created_handlers.update(logging.getLogger(log_qname).handlers)
+
+                log_internal.handlers.clear()
+                _init_logs()
+                for log_qname in log_internal.log_registry.get_log_qnames():
+                    logger = logging.getLogger(log_qname)
+                    created_handlers.update(logger.handlers)
+                    self.assertEqual(
+                        len(logger.handlers),
+                        2,
+                        f"{log_qname} should only have stream and file handlers",
+                    )
+        finally:
+            if old_logs is None:
+                os.environ.pop(log_internal.LOG_ENV_VAR, None)
+            else:
+                os.environ[log_internal.LOG_ENV_VAR] = old_logs
+            if old_logs_out is None:
+                os.environ.pop(log_internal.LOG_OUT_ENV_VAR, None)
+            else:
+                os.environ[log_internal.LOG_OUT_ENV_VAR] = old_logs_out
+            log_internal._set_log_state(old_log_state)
+            _init_logs()
+            for handler in created_handlers:
+                handler.close()
+
     def test_trace_handler_close_stream_can_skip_flush(self):
         paths: list[Path] = []
 

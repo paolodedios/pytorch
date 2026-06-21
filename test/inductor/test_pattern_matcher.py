@@ -2675,6 +2675,27 @@ class TestPatternMatcher(TestCase):
         self.assertIn("float('inf')", pattern_str)
         self.assertIn("float('nan')", pattern_str)
 
+        complex_get_attr_pattern = GetAttr(
+            torch.tensor([complex(float("nan"), 1.0), complex(2.0, float("inf"))])
+        )
+        complex_pattern_str = PatternPrettyPrinter.run(complex_get_attr_pattern)
+        namespace = {"GetAttr": GetAttr, "torch": torch}
+
+        exec(complex_pattern_str, namespace)
+
+        self.assertIsInstance(namespace["output"], GetAttr)
+        self.assertTrue(complex_get_attr_pattern.pattern_eq(namespace["output"]))
+        self.assertIn("complex(float('nan'), 1.0)", complex_pattern_str)
+        self.assertIn("complex(2.0, float('inf'))", complex_pattern_str)
+
+    def test_pretty_print_get_attr_tensor_constant_requires_contiguous(self):
+        get_attr_pattern = GetAttr(torch.arange(6)[1:5:2])
+
+        with self.assertRaisesRegex(
+            NotImplementedError, "non-contiguous get_attr tensor"
+        ):
+            PatternPrettyPrinter.run(get_attr_pattern)
+
     def test_get_attr_nonfinite_tensor_constant_pattern_matching(self):
         def make_attr_node(value):
             graph = torch.fx.Graph()
@@ -2702,6 +2723,35 @@ class TestPatternMatcher(TestCase):
             GetAttr(complex_expected).match(
                 make_attr_node(torch.tensor([complex(float("nan"), 2.0)]))
             )
+        )
+
+    def test_get_attr_tensor_constant_metadata_must_match(self):
+        def make_attr_node(value):
+            graph = torch.fx.Graph()
+            attr = graph.get_attr("constant")
+            graph.output(attr)
+            mod = torch.nn.Module()
+            mod.constant = value
+            gm = torch.fx.GraphModule(mod, graph)
+            return next(n for n in gm.graph.nodes if n.op == "get_attr")
+
+        expected = torch.arange(6)[1:5:2]
+        same_metadata = torch.as_strided(torch.tensor([0, 1, 0, 3]), (2,), (2,), 1)
+        same_values_contiguous = expected.clone()
+        same_values_different_offset = torch.as_strided(
+            torch.tensor([1, 0, 3]), (2,), (2,), 0
+        )
+        same_values_requires_grad = torch.tensor([1.0, 3.0], requires_grad=True)
+
+        self.assertTrue(GetAttr(expected).match(make_attr_node(same_metadata)))
+        self.assertFalse(
+            GetAttr(expected).match(make_attr_node(same_values_contiguous))
+        )
+        self.assertFalse(
+            GetAttr(expected).match(make_attr_node(same_values_different_offset))
+        )
+        self.assertFalse(
+            GetAttr(expected.float()).match(make_attr_node(same_values_requires_grad))
         )
 
     def test_get_attr_fake_tensor_constant_requires_value(self):
