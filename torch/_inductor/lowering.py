@@ -294,8 +294,8 @@ def decode_dtype(dtype: int | torch.dtype) -> torch.dtype:
     return dtype
 
 
-def is_integer_type(x: Any) -> TypeGuard[TensorBox | sympy.Expr | int]:
-    if isinstance(x, TensorBox):
+def is_integer_type(x: Any) -> TypeGuard[TensorBox | IRNode | sympy.Expr | int]:
+    if isinstance(x, (TensorBox, IRNode)):
         return is_integer_dtype(x.get_dtype()) or is_boolean_dtype(x.get_dtype())
     elif isinstance(x, sympy.Expr):
         return x.is_integer is True  # type: ignore[attr-defined]
@@ -303,8 +303,8 @@ def is_integer_type(x: Any) -> TypeGuard[TensorBox | sympy.Expr | int]:
         return isinstance(x, int)
 
 
-def is_boolean_type(x: Any) -> TypeGuard[TensorBox | bool]:
-    if isinstance(x, TensorBox):
+def is_boolean_type(x: Any) -> TypeGuard[TensorBox | IRNode | bool]:
+    if isinstance(x, (TensorBox, IRNode)):
         return is_boolean_dtype(x.get_dtype())
     else:
         return isinstance(x, bool)
@@ -945,36 +945,15 @@ def to_dtype(
     src_dtype = x.get_dtype()
     if src_dtype == dtype:
         return clone(x) if copy else x
-    low_pr_fp = (torch.bfloat16, torch.float16)
-    current_node = (
-        getattr(V.graph, "current_node", None) if V.graph is not None else None
-    )
-    should_round_lowp_source = (
-        config.emulate_precision_casts
-        and isinstance(current_node, torch.fx.Node)
-        and current_node.meta.get("low_precision_pointwise_barrier", False)
-        and src_dtype in low_pr_fp
-        and dtype not in low_pr_fp
-        and not ir.is_storage_and_layout(x)
-    )
 
     def _to_dtype(x):
-        x_to_convert = x
-        if should_round_lowp_source:
-            # Type promotion can widen a fused lowp expression before the
-            # eager-visible barrier gets a chance to round its inputs.
-            x_to_convert = ops.to_dtype(
-                x,
-                src_dtype,
-                src_dtype=src_dtype,
-                use_compute_types=False,
-            )
         result = ops.to_dtype(
-            x_to_convert,
+            x,
             dtype,
             src_dtype=src_dtype,
             use_compute_types=use_compute_types,
         )
+        low_pr_fp = (torch.bfloat16, torch.float16)
         if not use_compute_types and dtype in low_pr_fp:
             # Upcast back to compute type so fused consumers see a compute-type
             # value. Without this, a raw low-precision value gets a redundant
@@ -1047,6 +1026,8 @@ def _convert_element_type(x: TensorBox, dtype: torch.dtype):
             )(x, dtype)
     src_dtype = x.get_dtype()
     low_pr_fp = (torch.bfloat16, torch.float16)
+    # In precision-emulation mode, explicit lowp casts must materialize the
+    # storage dtype. Later pointwise barriers will widen from that rounded value.
     use_compute_types = not (
         config.emulate_precision_casts
         and (src_dtype in low_pr_fp or dtype in low_pr_fp)
@@ -7264,10 +7245,8 @@ def use_two_step_variance(x, axis, keepdim, input_dtype):
     # Welford does more work per element. Preserve the old tiny-reduction
     # two-step path, keep Welford for the rest of the small reductions where
     # the speedup is limited and training gradients are more sensitive to the
-    # different accumulation order. It is also faster for L2-sized CUDA inputs,
-    # where the second pass usually reloads from L2 instead of DRAM. Keep
-    # Welford for split reductions where avoiding another full pass over the
-    # data is profitable.
+    # different accumulation order, and keep Welford for larger or split
+    # reductions where avoiding another full pass over the data is profitable.
     axis = _validate_reduction_axis(x, axis)
     kwargs = _make_reduction_inner(
         x, axis=axis, keepdims=keepdim, dtype=None, override_return_dtype=None
@@ -7276,56 +7255,32 @@ def use_two_step_variance(x, axis, keepdim, input_dtype):
     ranges = kwargs["ranges"]
     reduction_numel = sympy_product(kwargs["reduction_ranges"])
     device = x.get_device()
-    has_multiple_outputs = sympy_product(ranges) != 1
-    if not (isinstance(reduction_numel, sympy.Integer) and has_multiple_outputs):
-        return False
-
-    reduction_numel = int(reduction_numel)
+    check_for_split = False
+    min_numel = 0
+    is_cuda_two_step_dtype = input_dtype in (torch.bfloat16, torch.float16)
     if device and device.type == "cpu":
         # 1024 is a default value to pass all the UTs about accuracy.
         # A larger threshold can still get performance benefits.
         threshold = config.cpp.use_two_step_variance_threshold
-        return reduction_numel <= threshold
+    elif device and device.type == "cuda" and is_triton(x) and is_cuda_two_step_dtype:
+        min_numel = config.triton.use_two_step_variance_min_numel
+        threshold = config.triton.use_two_step_variance_threshold
+        check_for_split = True
+    else:
+        threshold = config.unroll_reductions_threshold
 
-    if reduction_numel <= config.unroll_reductions_threshold:
+    if not isinstance(reduction_numel, sympy.Integer):
+        return False
+
+    reduction_numel = int(reduction_numel)
+    if reduction_numel > threshold or sympy_product(ranges) == 1:
+        return False
+
+    if min_numel and config.unroll_reductions_threshold < reduction_numel < min_numel:
+        return False
+
+    if not check_for_split:
         return True
-
-    if not (device and device.type == "cuda" and is_triton(x)):
-        return False
-
-    is_cuda_two_step_dtype = input_dtype in (torch.bfloat16, torch.float16)
-    threshold = config.triton.use_two_step_variance_threshold
-    min_numel = config.triton.use_two_step_variance_min_numel
-    small_lowp_reduction = (
-        is_cuda_two_step_dtype
-        and config.unroll_reductions_threshold < reduction_numel < min_numel
-    )
-    use_two_step_cuda_threshold = (
-        is_cuda_two_step_dtype
-        and reduction_numel <= threshold
-        and not small_lowp_reduction
-    )
-
-    use_two_step_l2 = False
-    if (
-        config.triton.two_pass_variance_l2_fraction
-        and not small_lowp_reduction
-        and torch.version.hip is None
-    ):
-        input_numel = x.get_numel()
-        if isinstance(input_numel, sympy.Integer):
-            device_idx = (
-                device.index
-                if device.index is not None
-                else torch.cuda.current_device()
-            )
-            input_dtype = input_dtype or x.get_dtype()
-            l2_cache_size = torch.cuda.get_device_properties(device_idx).L2_cache_size
-            l2_threshold = l2_cache_size * config.triton.two_pass_variance_l2_fraction
-            use_two_step_l2 = int(input_numel) * input_dtype.itemsize <= l2_threshold
-
-    if not (use_two_step_cuda_threshold or use_two_step_l2):
-        return False
 
     _, split = ir.Reduction.num_splits(
         reduction_numel=reduction_numel,
@@ -9007,8 +8962,8 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
         quack_config_keys = (
             default_gemm_config_key(
                 layout.device,
-                gemm_args[mat1_index].get_size()[0],
-                gemm_args[mat2_index].get_size()[1],
+                gemm_args[mat1_index].get_size()[-2],
+                gemm_args[mat2_index].get_size()[-1],
             ),
         )
     choices: list[Any] = []
