@@ -18,6 +18,7 @@
 #include <c10/cuda/CUDAAllocatorConfig.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/util/ScopeExit.h>
 #include <c10/util/error.h>
 #include <mutex>
 #include <c10/util/flat_hash_map.h>
@@ -490,6 +491,22 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
             expandable_segments();
     void* ptr = nullptr;
     if (use_caching_allocator) {
+      // With expandable_segments we allocate via the CUDA caching allocator
+      // (raw_alloc). This is incompatible with symmetric memory's implicit CUDA
+      // MemPool: the pool uses this allocator as its backing (segment)
+      // allocator, so raw_alloc would route right back into this alloc() to
+      // create a segment, recursing forever with ever-growing sizes. Detect
+      // that re-entry and fail with an actionable message instead of hanging.
+      static thread_local bool in_caching_alloc = false;
+      TORCH_CHECK(
+          !in_caching_alloc,
+          "NCCLSymmetricMemoryAllocator::alloc was re-entered while allocating "
+          "expandable_segments-backed memory. Symmetric memory's implicit CUDA "
+          "MemPool is incompatible with expandable_segments. Disable it by "
+          "setting the environment variable TORCH_SYMMMEM_IMPLICIT_POOL=0.");
+      in_caching_alloc = true;
+      auto reset_in_caching_alloc =
+          c10::make_scope_exit([&]() { in_caching_alloc = false; });
       ptr = c10::cuda::CUDACachingAllocator::raw_alloc(total_size);
       TORCH_CHECK(
           ptr != nullptr,
