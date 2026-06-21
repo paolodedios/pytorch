@@ -85,6 +85,15 @@ def _maybe_clear_tensor_resume_arg(resume_args: list[Any], idx: int) -> None:
         resume_args[idx] = None
 
 
+def create_clear_resume_arg(resume_args_varname: str, index: int) -> list[Instruction]:
+    return [
+        create_load_const(None),
+        create_instruction("LOAD_FAST", argval=resume_args_varname),
+        create_load_const(index),
+        create_instruction("STORE_SUBSCR"),
+    ]
+
+
 # If is_resume - this codegen is for a resume function
 def _initial_push_null(insts: list[Instruction]) -> None:
     if sys.version_info >= (3, 11):
@@ -367,6 +376,7 @@ class ContinueExecutionCache:
         # mainly used to ensure distinct code objects per stack trace,
         # which prevents excessive recompilation of inner frames
         nested_code_objs: tuple[types.CodeType],
+        tensor_resume_arg_indexes: tuple[int, ...],
         # Are we currently graph breaking on an instruction that doesn't push
         # its result to the stack? If so, and we are not the leaf resume, then we need to pop
         # the result of calling the next resume function.
@@ -398,6 +408,7 @@ class ContinueExecutionCache:
                 argnames_ctx_vars,
                 null_idxes,
                 nested_code_objs,
+                tensor_resume_arg_indexes,
                 pop_nested_resume_result,
             )
 
@@ -534,6 +545,8 @@ class ContinueExecutionCache:
                             create_instruction("STORE_FAST", argval=name),
                         ]
                     )
+                for idx in tensor_resume_arg_indexes:
+                    prefix.extend(create_clear_resume_arg(resume_args_varname, idx))
 
             cleanup: list[Instruction] = []
             hooks = {fn.stack_index: fn for fn in setup_fns}
@@ -560,6 +573,10 @@ class ContinueExecutionCache:
                         # NOTE: we assume that current stack var is a context manager CLASS!
                         # Load args for context variable and construct it
                         prefix.extend(_load_tuple_and_call(stack_ctx_vars_d[stack_i]))
+                    if boxed_resume:
+                        prefix.extend(
+                            create_clear_resume_arg(resume_args_varname, 2 + stack_i)
+                        )
                     prefix.append(
                         create_instruction("DELETE_FAST", argval=f"___stack{stack_i}")
                     )

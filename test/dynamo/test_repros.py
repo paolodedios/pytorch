@@ -8274,6 +8274,19 @@ SavedForBackwardsAOTOutput(idx=5)""",
         opt_fn = torch.compile(fn, backend="eager")
         self.assertEqual(fn(x), opt_fn(x))
 
+    def test_graph_break_resume_args_cleared_when_resume_frame_skips(self):
+        def fn(x):
+            y = x + 1
+            ref = weakref.ref(y)
+            torch._dynamo.graph_break()
+            del y
+            return ref() is None
+
+        x = torch.randn(2)
+        opt_fn = torch.compile(fn, backend="eager")
+        self.assertTrue(fn(x))
+        self.assertTrue(opt_fn(x))
+
     def test_resume_args_name_collision(self):
         def user_arg_name(__resume_args):  # noqa: PYI063
             return __resume_args + 1

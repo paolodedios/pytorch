@@ -159,6 +159,7 @@ from .utils import (
     get_unique_name_wrt,
     graph_break_reasons,
     increment_op_count,
+    is_numpy_ndarray,
     istensor,
     istype,
     lazy_format_graph_code,
@@ -2185,23 +2186,35 @@ class OutputGraph(OutputGraphCommon):
         stored_graph_output_var = False
         graph_output_var = None
 
+        def can_use_tensor_stack_fast_path(v: VariableTracker) -> bool:
+            if isinstance(v, variables.LazyVariableTracker):
+                if v.is_realized():
+                    v = v.unwrap()
+                elif is_numpy_ndarray(v.original_value()):
+                    return False
+                elif v.is_tensor():
+                    v = v.unwrap()
+                else:
+                    return False
+            elif not v.is_tensor():
+                return False
+
+            return not any(
+                type.__instancecheck__(cls, v)
+                for cls in (
+                    UnspecializedPythonVariable,
+                    NumpyNdarrayVariable,
+                    TensorWithTFOverrideVariable,
+                )
+            ) and not (
+                type.__instancecheck__(SymNodeVariable, v) and v.python_type() is float
+            )
+
         # call compiled fx graph and codegen all values - stack and locals
         if (
             self.root_tx is tx  # single frame
             and stack_values_flat
-            and all(
-                not isinstance(
-                    v,
-                    (
-                        UnspecializedPythonVariable,
-                        NumpyNdarrayVariable,
-                        TensorWithTFOverrideVariable,
-                    ),
-                )
-                and not (isinstance(v, SymNodeVariable) and v.python_type() is float)
-                for v in stack_values_flat
-            )
-            and all(x.is_tensor() for x in stack_values_flat)
+            and all(can_use_tensor_stack_fast_path(v) for v in stack_values_flat)
             and len(set(stack_values_flat)) == len(stack_values_flat)
             and self.side_effects.is_empty()
             and not tx.debug_locals
