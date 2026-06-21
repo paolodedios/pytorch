@@ -7,7 +7,6 @@
 // optional nccl4py wheel that provides it is absent). libtorch_cuda therefore
 // never references ncclEp* and torch imports with or without nccl4py.
 #include <torch/csrc/distributed/c10d/symm_mem/nccl_ep.hpp>
-#include <nccl_ep.h>  // NCCL_EP_LAYOUT_* constants
 #include <torch/csrc/utils/pybind.h>
 
 #include <pybind11/pybind11.h>
@@ -27,10 +26,10 @@ PYBIND11_MODULE(_nccl_ep, m) {
   setenv("NCCL_HOME", NCCL_EP_JIT_HOME, /*overwrite=*/0);
 #endif
 
-  // Layout constants matching ncclEpLayout_t.
-  m.attr("LAYOUT_EXPERT_MAJOR") = static_cast<int64_t>(NCCL_EP_LAYOUT_EXPERT_MAJOR);
-  m.attr("LAYOUT_RANK_MAJOR") = static_cast<int64_t>(NCCL_EP_LAYOUT_RANK_MAJOR);
-  m.attr("LAYOUT_FLAT") = static_cast<int64_t>(NCCL_EP_LAYOUT_FLAT);
+  py::enum_<NcclEpLayout>(m, "Layout")
+      .value("FLAT", NcclEpLayout::Flat)
+      .value("EXPERT_MAJOR", NcclEpLayout::ExpertMajor)
+      .value("RANK_MAJOR", NcclEpLayout::RankMajor);
 
   py::class_<NcclEpGroup, c10::intrusive_ptr<NcclEpGroup>>(m, "_NcclEpGroup")
       .def_static(

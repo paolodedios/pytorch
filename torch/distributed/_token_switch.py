@@ -178,8 +178,12 @@ class _CombineAutograd(torch.autograd.Function):
         # ctx.expert_shape so the returned grad matches the combine input.
         max_recv = ts._max_recv_tokens_per_rank
         grad_expert_full, dummy_out_weights, dummy_out_idx = ts._alloc_dispatch_outputs(
-            ctx.routing, grad_out_tokens, grad_out_tokens.new_zeros(N, K, dtype=torch.float32),
-            max_recv, H, K,
+            ctx.routing,
+            grad_out_tokens,
+            grad_out_tokens.new_zeros(N, K, dtype=torch.float32),
+            max_recv,
+            H,
+            K,
         )
         grad_expert_full = grad_expert_full.to(dtype)
         dummy_weights = grad_out_tokens.new_zeros(N, K, dtype=torch.float32)
@@ -257,7 +261,8 @@ class TokenSwitch(abc.ABC):
         topk_weights: torch.Tensor,
         max_recv_tokens: int | None = None,
         *,
-        out: tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None] | None = None,
+        out: tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]
+        | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         """Route tokens to experts.
 
@@ -318,8 +323,8 @@ class TokenSwitchNCCL(TokenSwitch):
         ep = self._ep
 
         self._layout_map = {
-            "flat": ep.LAYOUT_FLAT,
-            "expert_major": ep.LAYOUT_EXPERT_MAJOR,
+            "flat": ep.Layout.FLAT,
+            "expert_major": ep.Layout.EXPERT_MAJOR,
         }
 
         self._max_recv_tokens_per_rank = max_recv_tokens_per_rank
@@ -359,15 +364,18 @@ class TokenSwitchNCCL(TokenSwitch):
         self,
         topk_idx: torch.Tensor,
         per_expert_token_counts: torch.Tensor | None = None,
-        layout: str = "flat",
+        *,
+        layout: str,
     ) -> Routing:
         """Create expert routing for this phase; pass to :meth:`dispatch` / :meth:`combine`.
 
-        ``layout`` controls the dispatch output memory layout: ``"flat"`` or
-        ``"expert_major"``.
+        ``layout`` (required) controls the dispatch output memory layout:
+        ``"flat"`` or ``"expert_major"``.
         """
         if layout not in self._layout_map:
-            raise ValueError(f"layout must be one of {list(self._layout_map)}; got {layout!r}")
+            raise ValueError(
+                f"layout must be one of {list(self._layout_map)}; got {layout!r}"
+            )
         handle = self._ep._NcclEpHandle.create(
             self._group,
             topk_idx,
