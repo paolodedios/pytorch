@@ -15174,6 +15174,12 @@ if __name__ == '__main__':
                 file=sys.__stdout__,
                 flush=True,
             )
+            # TEMP: MPS jobs don't upload the test-report artifact, so force
+            # the MPS shard to FAIL here -- run_test.py then dumps the captured
+            # per-file log to the console, surfacing the MPS calibration above.
+            # Remove with the [prob calibration] block.
+            if torch.device(device).type == "mps":
+                self.fail("TEMP: dumping MPS prob ULP calibration; see print above")
 
         self.assertLessEqual(maximal_input_grad_err, feps,
                              msg=f"worst input-grad err {maximal_input_grad_err} from kwargs={worst_input_grad_err_kwargs}")
