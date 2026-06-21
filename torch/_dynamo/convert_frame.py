@@ -39,7 +39,6 @@ import pstats
 import random  # noqa: F401 -- eval_frame_cpp.cpp imports random at runtime; torch.package needs this to detect the dependency
 import subprocess
 import sys
-import sysconfig
 import tempfile
 import threading
 import time
@@ -260,16 +259,6 @@ def clear_compile_context_weakrefs(
     if hasattr(output_graph, "_old_fake_mode"):
         _clear_fake_mode_weakrefs(output_graph._old_fake_mode)
     output_graph.compile_context_weakrefs_cleared = True
-    if (
-        is_graph_break_cleanup
-        and sysconfig.get_config_var("Py_GIL_DISABLED") == 1
-        and not config.run_gc_after_compile
-    ):
-        # Free-threaded Python can defer destruction of cleared WeakIdRef
-        # objects. Match the regular post-compile GC generation so deferred
-        # refs are processed before eager graph-break code resumes and
-        # potentially calls swap_tensors, which rejects any live weakrefs.
-        gc.collect(1)
 
 
 class Tracker:

@@ -1131,33 +1131,21 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(len(weakref.getweakrefs(x)), 0)
 
     def test_swap_tensors_after_custom_backend_graph_break_free_threaded_gc(self):
-        def backend(gm, example_inputs):
-            return gm.forward
-
-        x = torch.randn(5, requires_grad=True)
-
-        @torch.compile(backend=backend)
-        def f(x):
-            y = x.to(dtype=torch.bfloat16)
-            torch.utils.swap_tensors(x, y)
-            return x.dtype
-
+        t1 = torch.tensor([1.0])
+        t2 = torch.tensor([2.0])
         with (
-            torch._dynamo.config.patch(
-                invalidate_compile_context_weakrefs=None,
-                run_gc_after_compile=False,
-            ),
+            mock.patch("torch.utils._IS_FREE_THREADED", True),
             mock.patch(
-                "torch._dynamo.convert_frame.sysconfig.get_config_var",
-                return_value=1,
+                "torch.utils.weakref.getweakrefs",
+                side_effect=[[object()], [], []],
             ),
-            mock.patch(
-                "torch._dynamo.convert_frame.gc.collect", wraps=gc.collect
-            ) as collect,
+            mock.patch("torch.utils.gc.collect") as collect,
         ):
-            self.assertEqual(f(x), torch.bfloat16)
-        self.assertGreaterEqual(collect.call_count, 2)
-        self.assertTrue(all(call == mock.call(1) for call in collect.call_args_list))
+            torch.utils.swap_tensors(t1, t2)
+
+        collect.assert_called_once_with(1)
+        self.assertEqual(t1.item(), 2.0)
+        self.assertEqual(t2.item(), 1.0)
 
     def test_swap_module_params_on_conversion_after_custom_backend_graph_break(self):
         def backend(gm, example_inputs):
