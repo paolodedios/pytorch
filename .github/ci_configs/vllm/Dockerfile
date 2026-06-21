@@ -50,6 +50,11 @@ ENV UV_LINK_MODE=copy
 FROM ${BUILD_BASE_IMAGE} AS base
 USER root
 
+# The pytorch CI base image activates a venv via VIRTUAL_ENV; vllm installs with
+# `uv pip install --system` but inspects with bare `uv pip freeze`, which diverge
+# when a venv is active. Unset it so both hit the same on-PATH interpreter.
+ENV VIRTUAL_ENV=""
+
 ARG CUDA_VERSION
 ARG PYTHON_VERSION
 
