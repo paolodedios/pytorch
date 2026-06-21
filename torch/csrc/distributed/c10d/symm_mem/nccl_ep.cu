@@ -33,9 +33,7 @@ struct EpTensor {
         desc.sizes = const_cast<size_t*>(
             reinterpret_cast<const size_t*>(t.sizes().data()));
     }
-
 };
-
 
 #define NCCL_EP_CHECK(expr)                                             \
     do {                                                                \

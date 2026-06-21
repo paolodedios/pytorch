@@ -212,11 +212,14 @@ class TokenSwitch(abc.ABC):
         self,
         topk_idx: torch.Tensor,
         per_expert_token_counts: torch.Tensor | None = None,
+        *,
+        layout: str,
     ) -> Routing:
         """Create expert routing for the current phase (e.g. top-k indices).
 
         ``per_expert_token_counts`` is optional 1D int32, length >= local experts:
         output buffer for per-expert receive counts (NCCL EP ``RECV_EXPERT_COUNTER``).
+        ``layout`` selects the dispatch output memory layout.
         """
         raise NotImplementedError
 
