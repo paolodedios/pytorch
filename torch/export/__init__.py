@@ -87,7 +87,7 @@ def _prims_device_mismatch_devices(exc: BaseException) -> set[torch.device] | No
     return None
 
 
-def _fake_tensor_device_mismatch_error(exc: Exception) -> ValueError | None:
+def _device_mismatch_error(exc: Exception) -> ValueError | None:
     # torch.export is imported during torch initialization; keep this import lazy.
     from torch._subclasses.fake_tensor import FakeTensorDeviceMismatchError
 
@@ -283,7 +283,7 @@ def export(
             prefer_deferred_runtime_asserts_over_guards=prefer_deferred_runtime_asserts_over_guards,
         )
     except Exception as e:
-        device_mismatch_error = _fake_tensor_device_mismatch_error(e)
+        device_mismatch_error = _device_mismatch_error(e)
         if device_mismatch_error is not None:
             raise device_mismatch_error from e
 
