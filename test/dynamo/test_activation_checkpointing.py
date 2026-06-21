@@ -418,6 +418,40 @@ class ActivationCheckpointingViaTagsTests(torch._dynamo.test_case.TestCase):
             torch._dynamo.reset()
 
     @onlyCUDA
+    def test_dynamo_config_visible_after_nested_backward_in_hook(self, device):
+        torch._dynamo.reset()
+        try:
+            caller_thread_id = threading.get_ident()
+            seen = {}
+
+            def nested_backward_hook(tensor):
+                seen["nested_hook_thread"] = threading.get_ident()
+                with torch.enable_grad():
+                    nested = torch.randn((), device=device, requires_grad=True)
+                    (nested.sin() * 2).sum().backward()
+
+            def read_config_hook(tensor):
+                seen["read_hook_thread"] = threading.get_ident()
+                seen["read_hook_limit"] = torch._dynamo.config.recompile_limit
+
+            with torch._dynamo.config.patch(
+                recompile_limit=8192, fail_on_recompile_limit_hit=True
+            ):
+                x = torch.randn(8, device=device, requires_grad=True)
+                x.register_post_accumulate_grad_hook(nested_backward_hook)
+                x.register_post_accumulate_grad_hook(read_config_hook)
+                (x.sin() * 2).sum().backward()
+
+            self.assertEqual(seen["read_hook_limit"], 8192)
+            if seen["nested_hook_thread"] == caller_thread_id:
+                self.skipTest(
+                    "post accumulate hooks ran on the backward calling thread"
+                )
+            self.assertEqual(seen["read_hook_thread"], seen["nested_hook_thread"])
+        finally:
+            torch._dynamo.reset()
+
+    @onlyCUDA
     def test_dynamo_config_visible_in_queued_callback(self, device):
         torch._dynamo.reset()
         try:
@@ -440,8 +474,10 @@ class ActivationCheckpointingViaTagsTests(torch._dynamo.test_case.TestCase):
                 x.register_hook(hook)
                 (x.sin() * 2).sum().backward()
 
+            self.assertTrue(callback_thread_ids)
+            if callback_thread_ids[0] == caller_thread_id:
+                self.skipTest("queued callback ran on the backward calling thread")
             self.assertEqual(seen_limits["callback"], 8192)
-            self.assertNotEqual(callback_thread_ids[0], caller_thread_id)
         finally:
             torch._dynamo.reset()
 

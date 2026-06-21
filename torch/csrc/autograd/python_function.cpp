@@ -90,9 +90,7 @@ inline void check_legacy_fn_attr_access(
 //
 // See Note [ Persisting PyErr state across autograd engine threads ]
 void throw_python_error() {
-  python_error err;
-  err.persist();
-  throw std::move(err);
+  throw_persisted_python_error();
 }
 
 static PyObject* unpack_saved_variables(
