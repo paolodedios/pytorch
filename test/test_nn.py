@@ -8534,6 +8534,8 @@ def _buildEquivalentAffineTransforms3d(device, input_size, output_size, angle_ra
 
 
 class TestNNDeviceType(NNTestCase):
+    _mps_prob_calib_seen = 0  # TEMP: mps prob ULP calibration dump counter
+
     def _get_mixed_dtypes(self, device):
         """Get appropriate mixed dtype pair (param_dtype, input_dtype) for the device.
         Returns lower precision for params and higher precision for input to test
@@ -15174,12 +15176,18 @@ if __name__ == '__main__':
                 file=sys.__stdout__,
                 flush=True,
             )
-            # TEMP: MPS jobs don't upload the test-report artifact, so force
-            # the MPS shard to FAIL here -- run_test.py then dumps the captured
-            # per-file log to the console, surfacing the MPS calibration above.
-            # Remove with the [prob calibration] block.
+            # TEMP: MPS jobs don't upload the test-report artifact, so we
+            # surface the calibration via run_test.py's dump-on-failure. The
+            # runner (stepcurrent) halts the parametrized sweep at the FIRST
+            # failure, so every (dtype, policy) combo must print before we
+            # fail. Count the mps prob calls and fail once the full grid has
+            # printed (4 fp32 + 2x4 fp16/bf16); skip the real ULP asserts on
+            # mps until then so the sweep continues. Remove with this block.
             if torch.device(device).type == "mps":
-                self.fail("TEMP: dumping MPS prob ULP calibration; see print above")
+                TestNNDeviceType._mps_prob_calib_seen += 1
+                if TestNNDeviceType._mps_prob_calib_seen >= 12:
+                    self.fail("TEMP: dumped all mps prob calibration; see prints above")
+                return
 
         self.assertLessEqual(maximal_input_grad_err, feps,
                              msg=f"worst input-grad err {maximal_input_grad_err} from kwargs={worst_input_grad_err_kwargs}")
