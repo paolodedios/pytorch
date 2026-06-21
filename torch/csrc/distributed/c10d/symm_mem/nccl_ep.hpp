@@ -8,6 +8,16 @@
 
 namespace c10d::nccl_ep {
 
+// Dispatch output layout. Values mirror ncclEpLayout_t (ep_enums.h); kept as a
+// standalone enum so this header stays free of <nccl_ep.h> (the .cu maps it to
+// the library enum). Unset (0) is the zero-init sentinel.
+enum class NcclEpLayout : int64_t {
+  Unset = 0,
+  ExpertMajor = 1,
+  RankMajor = 2,
+  Flat = 3,
+};
+
 struct NcclEpGroup : c10::intrusive_ptr_target {
   void* group{nullptr}; // ncclEpGroup_t, opaque to avoid including nccl_ep.h
 
@@ -17,7 +27,7 @@ struct NcclEpGroup : c10::intrusive_ptr_target {
 
 struct NcclEpHandle : c10::intrusive_ptr_target {
   void* handle{nullptr}; // ncclEpHandle_t, opaque
-  int64_t layout{0};     // ncclEpLayout_t, for callers to query dispatch output shapes
+  NcclEpLayout layout{NcclEpLayout::Unset}; // queried for output shapes
   // The library stashes topk_idx's device pointer on the handle (per nccl_ep.h:
   // "User-owned (do not free). LL reads directly; HT uses cached
   // hybridep.topk_idx"). recv_total_counter is allocated by us and read back
@@ -28,7 +38,7 @@ struct NcclEpHandle : c10::intrusive_ptr_target {
 
   NcclEpHandle(
       void* handle,
-      int64_t layout,
+      NcclEpLayout layout,
       at::Tensor topk_idx,
       at::Tensor recv_total_counter)
       : handle(handle),
@@ -49,7 +59,7 @@ TORCH_API c10::intrusive_ptr<NcclEpHandle> nccl_ep_create_handle(
     const c10::intrusive_ptr<NcclEpGroup>& group,
     const at::Tensor& topk_idx,
     const std::optional<at::Tensor>& recv_expert_counter,
-    int64_t layout); // ncclEpLayout_t: expert_major=1, rank_major=2, flat=3
+    NcclEpLayout layout);
 
 TORCH_API int64_t nccl_ep_handle_get_num_recv_tokens(
     const c10::intrusive_ptr<NcclEpHandle>& handle);
