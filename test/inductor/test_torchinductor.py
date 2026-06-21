@@ -10785,6 +10785,8 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             )
         )
 
+    @skip_if_halide  # Halide generator emits no outputs for this index_add lowering
+    @skip_if_pallas  # device assertions are not implemented for Pallas
     def test_index_ops_on_expanded_tensor_dim1(self):
         def fn(idx, src):
             x = torch.zeros(src.size(0), 1, device=src.device).expand(
