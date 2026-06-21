@@ -94,7 +94,8 @@ c10::intrusive_ptr<NcclEpGroup> nccl_ep_create_group(
 c10::intrusive_ptr<NcclEpHandle> nccl_ep_create_handle(
     const c10::intrusive_ptr<NcclEpGroup>& group,
     const at::Tensor& topk_idx,
-    const std::optional<at::Tensor>& recv_expert_counter) {
+    const std::optional<at::Tensor>& recv_expert_counter,
+    int64_t layout) {
     auto stream = at::cuda::getCurrentCUDAStream();
     auto ep_group = reinterpret_cast<ncclEpGroup_t>(group->group);
 
@@ -116,14 +117,17 @@ c10::intrusive_ptr<NcclEpHandle> nccl_ep_create_handle(
     ncclEpHandle_t ep_handle = nullptr;
     NCCL_EP_CHECK(ncclEpCreateHandle(
         &ep_handle, ep_group,
-        NCCL_EP_LAYOUT_FLAT,
+        static_cast<ncclEpLayout_t>(layout),
         &topk.desc,
         &layout_info,
         /*config=*/nullptr,
         stream));
 
     return c10::make_intrusive<NcclEpHandle>(
-        ep_handle, topk_idx, std::move(recv_total_counter));
+        ep_handle,
+        layout,
+        topk_idx,
+        std::move(recv_total_counter));
 }
 
 int64_t nccl_ep_handle_get_num_recv_tokens(
@@ -142,8 +146,8 @@ void nccl_ep_dispatch(
     const at::Tensor& tokens,
     const at::Tensor& topk_weights,
     at::Tensor& out_tokens,
-    at::Tensor& out_topk_weights,
-    at::Tensor& out_topk_idx) {
+    std::optional<at::Tensor> out_topk_weights,
+    std::optional<at::Tensor> out_topk_idx) {
     auto stream = at::cuda::getCurrentCUDAStream();
     auto ep_handle = reinterpret_cast<ncclEpHandle_t>(handle->handle);
 
@@ -152,8 +156,9 @@ void nccl_ep_dispatch(
     EpTensor in_tokens(tokens);
     EpTensor in_weights(topk_weights);
     EpTensor out_tok(out_tokens);
-    EpTensor out_wts(out_topk_weights);
-    EpTensor out_idx(out_topk_idx);
+    std::optional<EpTensor> out_wts, out_idx;
+    if (out_topk_weights) out_wts.emplace(*out_topk_weights);
+    if (out_topk_idx) out_idx.emplace(*out_topk_idx);
 
     ncclEpDispatchInputs_t inputs = NCCL_EP_DISPATCH_INPUTS_INIT;
     inputs.tokens = &in_tokens.desc;
@@ -161,8 +166,8 @@ void nccl_ep_dispatch(
 
     ncclEpDispatchOutputs_t outputs = NCCL_EP_DISPATCH_OUTPUTS_INIT;
     outputs.tokens = &out_tok.desc;
-    outputs.topk_weights = &out_wts.desc;
-    outputs.topk_idx = &out_idx.desc;
+    outputs.topk_weights = out_wts ? &out_wts->desc : nullptr;
+    outputs.topk_idx = out_idx ? &out_idx->desc : nullptr;
 
     ncclEpDispatchConfig_t config = NCCL_EP_DISPATCH_CONFIG_INIT;
 
@@ -216,7 +221,8 @@ c10::intrusive_ptr<NcclEpGroup> nccl_ep_create_group(
 c10::intrusive_ptr<NcclEpHandle> nccl_ep_create_handle(
     const c10::intrusive_ptr<NcclEpGroup>&,
     const at::Tensor&,
-    const std::optional<at::Tensor>&) {
+    const std::optional<at::Tensor>&,
+    int64_t) {
     not_supported();
 }
 
@@ -228,7 +234,7 @@ int64_t nccl_ep_handle_get_num_recv_tokens(
 void nccl_ep_dispatch(
     const c10::intrusive_ptr<NcclEpHandle>&,
     const at::Tensor&, const at::Tensor&,
-    at::Tensor&, at::Tensor&, at::Tensor&) {
+    at::Tensor&, std::optional<at::Tensor>, std::optional<at::Tensor>) {
     not_supported();
 }
 
