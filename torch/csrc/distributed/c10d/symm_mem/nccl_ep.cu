@@ -10,6 +10,8 @@
 #include <torch/csrc/distributed/c10d/symm_mem/SymmetricMemory.hpp>
 #include <nccl_ep.h>
 
+#include <string_view>
+
 namespace c10d::nccl_ep {
 
 // Wraps an at::Tensor as ncclEpTensor_t. Holding the at::Tensor by value bumps
@@ -58,13 +60,12 @@ struct EpTensor {
 // Returns an EpTensor for t. If t is backed by NCCLSymmetricMemory registered
 // under group_name, uses the window + offset (zero-copy RDMA path); otherwise
 // falls back to the plain device-pointer path.
-static EpTensor make_ep_tensor(
-    const at::Tensor& t,
-    const std::string& group_name) {
+static EpTensor make_ep_tensor(const at::Tensor& t, std::string_view group_name) {
     namespace sm = c10d::symmetric_memory;
     if (sm::is_symm_mem_tensor(t)) {
-        // rendezvous() is cached after the first collective call — cheap here.
-        auto symm_mem = sm::rendezvous(t, group_name);
+        // rendezvous() takes std::optional<std::string> (no null-termination
+        // requirement); it is cached after the first collective call.
+        auto symm_mem = sm::rendezvous(t, std::string(group_name));
         auto* nccl_sm =
             dynamic_cast<sm::NCCLSymmetricMemory*>(symm_mem.get());
         if (nccl_sm != nullptr) {
