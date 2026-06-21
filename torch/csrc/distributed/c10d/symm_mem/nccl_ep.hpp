@@ -10,6 +10,7 @@ namespace c10d::nccl_ep {
 
 struct NcclEpGroup : c10::intrusive_ptr_target {
   void* group{nullptr}; // ncclEpGroup_t, opaque to avoid including nccl_ep.h
+  std::string group_name;
 
   NcclEpGroup() = default;
   ~NcclEpGroup();
@@ -18,6 +19,7 @@ struct NcclEpGroup : c10::intrusive_ptr_target {
 struct NcclEpHandle : c10::intrusive_ptr_target {
   void* handle{nullptr}; // ncclEpHandle_t, opaque
   int64_t layout{0};     // ncclEpLayout_t, for callers to query dispatch output shapes
+  std::string group_name; // for symm_mem zero-copy rendezvous lookup
   // The library stashes topk_idx's device pointer on the handle (per nccl_ep.h:
   // "User-owned (do not free). LL reads directly; HT uses cached
   // hybridep.topk_idx"). recv_total_counter is allocated by us and read back
@@ -29,10 +31,12 @@ struct NcclEpHandle : c10::intrusive_ptr_target {
   NcclEpHandle(
       void* handle,
       int64_t layout,
+      std::string group_name,
       at::Tensor topk_idx,
       at::Tensor recv_total_counter)
       : handle(handle),
         layout(layout),
+        group_name(std::move(group_name)),
         topk_idx(std::move(topk_idx)),
         recv_total_counter(std::move(recv_total_counter)) {}
   ~NcclEpHandle();
