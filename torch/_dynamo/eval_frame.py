@@ -1871,7 +1871,7 @@ def explain(f: Callable[..., Any], *extra_args: Any, **extra_kwargs: Any) -> Any
         opt_f(*args, **kwargs)
 
         graph_count = len(graphs)
-        graph_break_count = graph_count - 1
+        graph_break_count = len(break_reasons)
         compile_time = compile_times(repr="str")
 
         # TODO(voz): Do we want a decorator for this?

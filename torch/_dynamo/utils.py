@@ -2527,6 +2527,12 @@ class CleanupManager(ExactWeakKeyDictionary):
                         guarded_fallback_orig_code_ids._remove_id(orig_idx)
         for hook in hooks:
             hook()
+        guarded_fallback_cleanup_hooks = globals().get(
+            "guarded_eager_fallback_cleanup_hooks_by_code_id"
+        )
+        if guarded_fallback_cleanup_hooks is not None:
+            for hook in guarded_fallback_cleanup_hooks.pop(idx, ()):
+                hook()
 
 
 CleanupManager.instance = CleanupManager()
@@ -2534,14 +2540,19 @@ guarded_eager_fallback_codes = ExactWeakKeyDictionary()
 guarded_eager_fallback_code_ids: set[int] = set()
 guarded_eager_fallback_code_ids_by_orig_code = ExactWeakKeyDictionary()
 guarded_eager_fallback_orig_code_id_by_code_id: dict[int, int] = {}
+guarded_eager_fallback_cleanup_hooks_by_code_id: dict[int, tuple[CleanupHook, ...]] = {}
 
 
 def register_guarded_eager_fallback_code(
-    code: types.CodeType, orig_code: types.CodeType
+    code: types.CodeType,
+    orig_code: types.CodeType,
+    cleanup_hooks: list[CleanupHook] | None = None,
 ) -> None:
     guarded_eager_fallback_codes[code] = True
     code_id = id(code)
     guarded_eager_fallback_code_ids.add(code_id)
+    if cleanup_hooks:
+        guarded_eager_fallback_cleanup_hooks_by_code_id[code_id] = tuple(cleanup_hooks)
     orig_code_id = id(orig_code)
     guarded_eager_fallback_orig_code_id_by_code_id[code_id] = orig_code_id
     code_ids = guarded_eager_fallback_code_ids_by_orig_code.get(orig_code)
@@ -2561,6 +2572,7 @@ def cleanup_guarded_eager_fallback_code(code: types.CodeType) -> None:
     guarded_eager_fallback_codes._remove_id(idx)
     guarded_eager_fallback_code_ids.discard(idx)
     guarded_eager_fallback_orig_code_id_by_code_id.pop(idx, None)
+    guarded_eager_fallback_cleanup_hooks_by_code_id.pop(idx, None)
 
 
 def cleanup_guarded_eager_fallback_codes_for_code(code: types.CodeType) -> None:
@@ -2572,6 +2584,7 @@ def cleanup_guarded_eager_fallback_codes_for_code(code: types.CodeType) -> None:
         guarded_eager_fallback_codes._remove_id(idx)
         guarded_eager_fallback_code_ids.discard(idx)
         guarded_eager_fallback_orig_code_id_by_code_id.pop(idx, None)
+        guarded_eager_fallback_cleanup_hooks_by_code_id.pop(idx, None)
     guarded_eager_fallback_code_ids_by_orig_code._remove_id(id(code))
 
 
@@ -2581,6 +2594,7 @@ def cleanup_all_guarded_eager_fallback_codes() -> None:
         guarded_eager_fallback_codes._remove_id(idx)
         guarded_eager_fallback_code_ids.discard(idx)
         guarded_eager_fallback_orig_code_id_by_code_id.pop(idx, None)
+        guarded_eager_fallback_cleanup_hooks_by_code_id.pop(idx, None)
     guarded_eager_fallback_code_ids_by_orig_code.clear()
 
 
@@ -2628,13 +2642,8 @@ def clone_input(x: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.T
         # this func fails on fake tensors in __torch_dispatch__
         return x
 
-    def is_pinned_cpu_tensor(x: torch.Tensor) -> bool:
-        return x.device.type == "cpu" and x.is_pinned()
-
     def torch_clone(x: torch.Tensor) -> torch.Tensor:
         y = torch.clone(x)
-        if is_pinned_cpu_tensor(x):
-            y = y.pin_memory()
         if x.is_leaf:
             y.requires_grad_(x.requires_grad)
         if x.is_leaf and x.grad is not None:
@@ -2681,10 +2690,7 @@ def clone_input(x: torch.Tensor, *, dtype: torch.dtype | None = None) -> torch.T
             result = torch.empty_quantized((needed_size + 32,), x)
         else:
             result = torch.empty(
-                needed_size + 32,
-                dtype=dtype or x.dtype,
-                device=x.device,
-                pin_memory=is_pinned_cpu_tensor(x),
+                needed_size + 32, dtype=dtype or x.dtype, device=x.device
             )
         cache_line_offset = (
             (x.data_ptr() - result.data_ptr()) % 32

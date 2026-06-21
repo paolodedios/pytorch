@@ -310,7 +310,15 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         } - preexisting_builtins_keys
         self.assertTrue(new_builtins_keys)
 
-        # Simulate the global reset path missing weakly tracked code objects.
+        entries = _debug_get_cache_entry_list(fn.__code__)
+        fallback_code = next(
+            entry.code
+            for entry in entries
+            if entry.trace_annotation.startswith("Torch-Compiled Eager Fallback")
+        )
+
+        # Simulate the global reset path missing the weak cleanup-manager entry.
+        CleanupManager.instance.values.pop(id(fallback_code), None)
         torch._dynamo.convert_frame.input_codes.clear()
         torch._dynamo.convert_frame.output_codes.clear()
         try:
@@ -326,7 +334,7 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         finally:
             reset_code(fn.__code__)
 
-    def test_internal_clone_inputs_graph_break_counted(self):
+    def test_internal_clone_inputs_graph_break_not_counted(self):
         def fn(x):
             y = x + 1
             z = clone_inputs((x,))[0]
@@ -337,7 +345,11 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         counters.clear()
 
         self.assertEqual(opt_fn(x), x + x + 1)
-        self.assertEqual(sum(counters["graph_break"].values()), 1)
+        self.assertEqual(sum(counters["graph_break"].values()), 0)
+
+        explain_output = torch._dynamo.explain(fn)(x)
+        self.assertEqual(explain_output.graph_break_count, 0)
+        self.assertEqual(explain_output.break_reasons, [])
 
     def test_condition_dependent_skip_cleanup_hooks_are_idempotent(self):
         def fn():
