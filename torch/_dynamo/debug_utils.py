@@ -487,6 +487,11 @@ def _cuda_system_info_comment() -> str:
     return _initialized_cuda_system_info_comment()
 
 
+_cuda_system_info_comment.cache_clear = (  # type: ignore[attr-defined]
+    _initialized_cuda_system_info_comment.cache_clear
+)
+
+
 def generate_env_vars_string(*, stable_output: bool = False) -> str:
     """
     Generate a string configuration for environment variables related to Dynamo, Inductor, and Triton.

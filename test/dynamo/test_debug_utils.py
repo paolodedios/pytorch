@@ -144,6 +144,7 @@ def forward(self, x_1):
                 debug_utils._cuda_system_info_comment.cache_clear()
                 with (
                     patch.object(torch.cuda, "is_available", return_value=True),
+                    patch.object(torch.cuda, "is_initialized", return_value=True),
                     patch.object(torch.version, "hip", None),
                     patch.object(
                         debug_utils.subprocess,
