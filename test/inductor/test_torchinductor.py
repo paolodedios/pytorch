@@ -8609,15 +8609,15 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
     def test_threshold_low_precision_boundary(self):
         device_type = torch.device(self.device).type
-        if device_type not in ("cpu", "cuda", "mps"):
-            raise unittest.SkipTest("CPU/CUDA/MPS-specific threshold boundary")
+        if device_type not in ("cpu", "cuda", "xpu", "mps"):
+            raise unittest.SkipTest("CPU/CUDA/XPU/MPS-specific threshold boundary")
         if not self.is_dtype_supported(torch.bfloat16):
             raise unittest.SkipTest(
                 f"torch.bfloat16 not supported for device {self.device}"
             )
 
         # bf16(0.1) == 0.10009765625. CPU threshold compares this boundary in
-        # fp32, while CUDA/MPS threshold compares it in the input dtype.
+        # fp32, while CUDA/XPU/MPS threshold compares it in the input dtype.
         def fn(x):
             return F.threshold(x, 0.1, 0.0)
 
@@ -8638,8 +8638,8 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
 
     def test_threshold_scalar_value_casts_to_input_dtype(self):
         device_type = torch.device(self.device).type
-        if device_type not in ("cpu", "cuda"):
-            raise unittest.SkipTest("CPU/CUDA integer threshold")
+        if device_type not in ("cpu", "cuda", "xpu"):
+            raise unittest.SkipTest("CPU/CUDA/XPU integer threshold")
 
         def fn(x):
             return F.threshold(x, -0.1, 9.9)

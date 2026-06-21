@@ -950,8 +950,8 @@ def _threshold_impl(
     if utils.is_float_dtype(kernel_dtype) and utils.is_low_precision_dtype(
         kernel_dtype
     ):
-        if a.device.type in ("cuda", "mps"):
-            # CUDA/MPS threshold kernels cast the scalar to the iterator dtype.
+        if a.device.type in ("cuda", "xpu", "mps"):
+            # CUDA/XPU/MPS threshold kernels cast the scalar to the iterator dtype.
             cmp_dtype = kernel_dtype
         else:
             # CPU threshold kernels compare reduced floating inputs in fp32.
@@ -992,7 +992,7 @@ def threshold_out(
     *,
     out: TensorLikeType,
 ) -> TensorLikeType:
-    if a.device.type == "cuda":
+    if a.device.type in ("cuda", "xpu"):
         torch._check(
             utils.can_safe_cast_to(cast_from=a.dtype, cast_to=out.dtype),
             lambda: f"result type {a.dtype} can't be cast to the desired output type {out.dtype}",
