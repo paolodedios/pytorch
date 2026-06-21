@@ -91,7 +91,6 @@ bool all_hinted(
   }
   return all_hinted;
 }
-
 } // namespace
 
 // Special treatment because of numel
