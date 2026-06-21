@@ -101,7 +101,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         per_expert_counts = torch.zeros(
             num_local_experts, dtype=torch.int32, device=self.device
         )
-        ts.create_routing(topk_idx, per_expert_counts)
+        ts.create_routing(topk_idx, per_expert_counts, layout="flat")
         self.assertEqual(per_expert_counts.dtype, torch.int32)
         self.assertEqual(per_expert_counts.numel(), num_local_experts)
         self.assertEqual(per_expert_counts.item(), NUM_TOKENS)
@@ -119,7 +119,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         per_expert_counts = torch.zeros(
             self.world_size, dtype=torch.int32, device=self.device
         )
-        routing = ts.create_routing(topk_idx, per_expert_counts)
+        routing = ts.create_routing(topk_idx, per_expert_counts, layout="flat")
 
         token_val = float(self.rank + 1)
         tokens = torch.full(
@@ -163,7 +163,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         per_expert_counts = torch.zeros(
             self.world_size, dtype=torch.int32, device=self.device
         )
-        routing = ts.create_routing(topk_idx, per_expert_counts)
+        routing = ts.create_routing(topk_idx, per_expert_counts, layout="flat")
 
         token_val = float(self.rank + 1)
         tokens = torch.full(
@@ -209,7 +209,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         per_expert_counts = torch.zeros(
             self.world_size, dtype=torch.int32, device=self.device
         )
-        routing = ts.create_routing(topk_idx, per_expert_counts)
+        routing = ts.create_routing(topk_idx, per_expert_counts, layout="flat")
 
         tokens = torch.full(
             (NUM_TOKENS, HIDDEN),
@@ -240,7 +240,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         per_expert_counts = torch.zeros(
             self.world_size, dtype=torch.int32, device=self.device
         )
-        routing = ts.create_routing(topk_idx, per_expert_counts)
+        routing = ts.create_routing(topk_idx, per_expert_counts, layout="flat")
 
         # Pre-dispatch so the routing handle is primed, then test combine autograd
         tokens = torch.full(
@@ -289,7 +289,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         per_expert_counts = torch.zeros(
             self.world_size, dtype=torch.int32, device=self.device
         )
-        routing = ts.create_routing(topk_idx, per_expert_counts)
+        routing = ts.create_routing(topk_idx, per_expert_counts, layout="flat")
 
         token_val = float(self.rank + 1)
         tokens = torch.full(
@@ -323,7 +323,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         per_expert_counts = torch.zeros(
             self.world_size, dtype=torch.int32, device=self.device
         )
-        routing = ts.create_routing(topk_idx, per_expert_counts)
+        routing = ts.create_routing(topk_idx, per_expert_counts, layout="flat")
 
         out_tokens = torch.zeros(
             (num_recv_tokens, HIDDEN), dtype=torch.bfloat16, device=self.device
@@ -362,7 +362,6 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
             (NUM_TOKENS, HIDDEN), token_val, dtype=torch.bfloat16, device=self.device
         )
         self.assertEqual(combined, expected)
-
 
     @skip_if_lt_x_gpu(2)
     def test_dispatch_expert_major(self):
@@ -440,8 +439,10 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         expert_tokens = out_tokens[:NUM_TOKENS].contiguous()
         expert_weights = out_topk_weights[:NUM_TOKENS]
         expert_tokens_weighted = (
-            expert_tokens.float().mul_(expert_weights[:, None])
-        ).to(torch.bfloat16).contiguous()
+            (expert_tokens.float().mul_(expert_weights[:, None]))
+            .to(torch.bfloat16)
+            .contiguous()
+        )
 
         combined = torch.zeros(
             (NUM_TOKENS, HIDDEN), dtype=torch.bfloat16, device=self.device
@@ -474,7 +475,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         topk_idx, topk_weights = _generate_topk(
             self.rank, self.world_size, NUM_TOKENS, TOP_K, self.device
         )
-        routing = ts.create_routing(topk_idx)
+        routing = ts.create_routing(topk_idx, layout="flat")
 
         out_tokens = symm_mem.empty(
             num_recv_tokens, HIDDEN, dtype=torch.bfloat16, device=self.device
@@ -504,7 +505,6 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
             f"rank {self.rank}: expected {expected_val}, got {received[0, 0].item()}",
         )
 
-
     @skip_if_lt_x_gpu(2)
     def test_combine_symm_mem_tokens(self):
         """Combine with symm_mem-backed expert tokens exercises the zero-copy window path."""
@@ -516,7 +516,7 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         topk_idx, topk_weights = _generate_topk(
             self.rank, self.world_size, NUM_TOKENS, TOP_K, self.device
         )
-        routing = ts.create_routing(topk_idx)
+        routing = ts.create_routing(topk_idx, layout="flat")
 
         token_val = float(self.rank + 1)
         tokens = torch.full(
@@ -600,8 +600,10 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         expert_weights = out_topk_weights[:NUM_TOKENS]
         with torch.cuda.use_mem_pool(symm_mem.get_mem_pool(self.device)):
             gemm_weighted = (
-                gemm_out.float().mul_(expert_weights[:, None])
-            ).to(torch.bfloat16).contiguous()
+                (gemm_out.float().mul_(expert_weights[:, None]))
+                .to(torch.bfloat16)
+                .contiguous()
+            )
         symm_mem.rendezvous(gemm_weighted, group=pg)
 
         combined = torch.zeros(

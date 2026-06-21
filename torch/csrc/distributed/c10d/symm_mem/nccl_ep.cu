@@ -84,6 +84,22 @@ static EpTensor make_ep_tensor(
         TORCH_CHECK(_r == ncclSuccess, "nccl_ep error: ", ncclGetErrorString(_r)); \
     } while (0)
 
+// Translate the header's standalone layout enum to the library enum.
+static ncclEpLayout_t to_nccl_layout(NcclEpLayout layout) {
+    switch (layout) {
+        case NcclEpLayout::ExpertMajor:
+            return NCCL_EP_LAYOUT_EXPERT_MAJOR;
+        case NcclEpLayout::RankMajor:
+            return NCCL_EP_LAYOUT_RANK_MAJOR;
+        case NcclEpLayout::Flat:
+            return NCCL_EP_LAYOUT_FLAT;
+        case NcclEpLayout::Unset:
+            break; // not a valid dispatch layout
+    }
+    TORCH_CHECK(
+        false, "nccl_ep: layout must be set; got ", static_cast<int64_t>(layout));
+}
+
 static ncclComm_t get_nccl_comm(
     const c10::intrusive_ptr<::c10d::ProcessGroup>& pg) {
     auto* ncclPg = dynamic_cast<c10d::ProcessGroupNCCL*>(
@@ -139,7 +155,7 @@ c10::intrusive_ptr<NcclEpHandle> nccl_ep_create_handle(
     const c10::intrusive_ptr<NcclEpGroup>& group,
     const at::Tensor& topk_idx,
     const std::optional<at::Tensor>& recv_expert_counter,
-    int64_t layout) {
+    NcclEpLayout layout) {
     auto stream = at::cuda::getCurrentCUDAStream();
     auto ep_group = reinterpret_cast<ncclEpGroup_t>(group->group);
 
@@ -161,7 +177,7 @@ c10::intrusive_ptr<NcclEpHandle> nccl_ep_create_handle(
     ncclEpHandle_t ep_handle = nullptr;
     NCCL_EP_CHECK(ncclEpCreateHandle(
         &ep_handle, ep_group,
-        static_cast<ncclEpLayout_t>(layout),
+        to_nccl_layout(layout),
         &topk.desc,
         &layout_info,
         /*config=*/nullptr,
@@ -267,7 +283,7 @@ c10::intrusive_ptr<NcclEpHandle> nccl_ep_create_handle(
     const c10::intrusive_ptr<NcclEpGroup>&,
     const at::Tensor&,
     const std::optional<at::Tensor>&,
-    int64_t) {
+    NcclEpLayout) {
     not_supported();
 }
 
