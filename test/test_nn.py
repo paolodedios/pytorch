@@ -15184,8 +15184,11 @@ if __name__ == '__main__':
             # printed (4 fp32 + 2x4 fp16/bf16); skip the real ULP asserts on
             # mps until then so the sweep continues. Remove with this block.
             if torch.device(device).type == "mps":
-                TestNNDeviceType._mps_prob_calib_seen += 1
-                if TestNNDeviceType._mps_prob_calib_seen >= 12:
+                # type(self) is the instantiated TestNNDeviceTypeMPS;
+                # instantiate_device_type_tests deletes the generic base name
+                # from module globals, so reference the counter via the class.
+                type(self)._mps_prob_calib_seen += 1
+                if type(self)._mps_prob_calib_seen >= 12:
                     self.fail("TEMP: dumped all mps prob calibration; see prints above")
                 return
 
