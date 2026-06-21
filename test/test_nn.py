@@ -13,7 +13,6 @@ import warnings
 import os
 import pickle
 import re
-import sys
 import dataclasses
 from copy import deepcopy
 from itertools import product
@@ -8534,8 +8533,6 @@ def _buildEquivalentAffineTransforms3d(device, input_size, output_size, angle_ra
 
 
 class TestNNDeviceType(NNTestCase):
-    _mps_prob_calib_seen = 0  # TEMP: mps prob ULP calibration dump counter
-
     def _get_mixed_dtypes(self, device):
         """Get appropriate mixed dtype pair (param_dtype, input_dtype) for the device.
         Returns lower precision for params and higher precision for input to test
@@ -14810,21 +14807,28 @@ if __name__ == '__main__':
         expected_linear_bias_grad_max_ulp_diff = 0
         if prob_target:
             # Probability-target caps with the near-zero ULP floor (see
-            # ``grad_max_ulp``). Measured on A100-host CPU/CUDA and
-            # x86_64 + RTX 2060; ROCm / aarch64 / MPS pending (the
-            # ``[prob calibration]`` print stays until they report).
-            # fp32 takes the all-input-dtype path, so its caps are
-            # policy-independent and the ULP counts run larger (smaller
-            # eps; the floor threshold feps*max barely bites), in line
-            # with the index-target fp32 caps below. Observed maxima:
-            # fp32 ig 9229 (aarch64; x86_64 4619, A100 173) / w 16-914;
-            # fp16 balanced/compact ig 60-93 / w 17-58; bf16
-            # balanced/compact ig 6 / w 3; accurate fp16/bf16 all 0.
+            # ``grad_max_ulp``). fp32 takes the all-input-dtype path, so
+            # its caps are policy-independent and the ULP counts run larger
+            # (smaller eps; the floor threshold feps*max barely bites), in
+            # line with the index-target fp32 caps below -- and they spread
+            # by host, so fp32 is split by device; the fp16/bf16 caps cover
+            # every device. Observed maxima (input_grad / weight):
+            # fp32 cpu 9229/914 (aarch64; x86_64 4619), cuda 189/131
+            # (NVIDIA ig 189 / w 106, ROCm ig 105 / w 131), mps 98/29;
+            # fp16 balanced/compact ig 60-93 / w 17-58 (mps 67/14); bf16
+            # balanced/compact ig 6 / w 3 (mps 0); accurate fp16/bf16 ~0.
             # No bias=True prob samples, so the bias-grad cap stays 0.
             expected_max_ulp_diff = 4
             if dtype == torch.float32:
-                expected_input_grad_max_ulp_diff = 16384  # aarch64 9229
-                expected_weight_grad_max_ulp_diff = 2048
+                if "cpu" in device:
+                    expected_input_grad_max_ulp_diff = 16384  # aarch64 9229
+                    expected_weight_grad_max_ulp_diff = 2048
+                elif "mps" in device:
+                    expected_input_grad_max_ulp_diff = 256  # observed 98
+                    expected_weight_grad_max_ulp_diff = 64  # observed 29
+                else:  # cuda / rocm
+                    expected_input_grad_max_ulp_diff = 512  # NVIDIA 189
+                    expected_weight_grad_max_ulp_diff = 256  # ROCm 131
             elif _resolved_policy == "accurate":
                 expected_input_grad_max_ulp_diff = 4
                 expected_weight_grad_max_ulp_diff = 4
@@ -15153,44 +15157,6 @@ if __name__ == '__main__':
                 if err > maximal_linear_bias_grad_err:
                     maximal_linear_bias_grad_err = err
                     worst_linear_bias_grad_err_kwargs = dict(module_kwargs)
-
-        if prob_target:
-            # TEMP: calibration data for the probability-target ULP caps.
-            # Re-run per host, copy the observed values into the
-            # ``if prob_target:`` cap block above (keyed on policy /
-            # dtype / device), then delete this block.
-            print(
-                f"\n[prob calibration] _resolved_policy={_resolved_policy!r}"
-                f" dtype={dtype} device={device} bias={bias}\n"
-                f"  output:        observed={maximal_output_max_ulp_diff:6d}"
-                f"  cap={expected_max_ulp_diff:6d}\n"
-                f"  input_grad:    observed={maximal_input_grad_max_ulp_diff:6d}"
-                f"  cap={expected_input_grad_max_ulp_diff:6d}\n"
-                f"  linear_weight: observed={maximal_linear_weight_grad_max_ulp_diff:6d}"
-                f"  cap={expected_weight_grad_max_ulp_diff:6d}\n"
-                f"  linear_bias:   observed={maximal_linear_bias_grad_max_ulp_diff:6d}"
-                f"  cap={expected_linear_bias_grad_max_ulp_diff:6d}",
-                # ``sys.__stdout__`` bypasses the test runner's per-test stdout
-                # capture (which only surfaces on failure), so the calibration
-                # reaches CI logs on passing runs too. TEMP, with this block.
-                file=sys.__stdout__,
-                flush=True,
-            )
-            # TEMP: MPS jobs don't upload the test-report artifact, so we
-            # surface the calibration via run_test.py's dump-on-failure. The
-            # runner (stepcurrent) halts the parametrized sweep at the FIRST
-            # failure, so every (dtype, policy) combo must print before we
-            # fail. Count the mps prob calls and fail once the full grid has
-            # printed (4 fp32 + 2x4 fp16/bf16); skip the real ULP asserts on
-            # mps until then so the sweep continues. Remove with this block.
-            if torch.device(device).type == "mps":
-                # type(self) is the instantiated TestNNDeviceTypeMPS;
-                # instantiate_device_type_tests deletes the generic base name
-                # from module globals, so reference the counter via the class.
-                type(self)._mps_prob_calib_seen += 1
-                if type(self)._mps_prob_calib_seen >= 12:
-                    self.fail("TEMP: dumped all mps prob calibration; see prints above")
-                return
 
         self.assertLessEqual(maximal_input_grad_err, feps,
                              msg=f"worst input-grad err {maximal_input_grad_err} from kwargs={worst_input_grad_err_kwargs}")
