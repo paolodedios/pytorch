@@ -4658,7 +4658,7 @@ class GraphModule(torch.nn.Module):
     ):
         clone: "f64[s64, s55]" = torch.ops.aten.clone.default(primals_4);  primals_4 = None
 
-        mul: "f64[s64, s55]" = torch.ops.aten.mul.Tensor(clone, primals_1);  clone = None
+        mul: "f64[s64, s55]" = torch.ops.aten.mul.Scalar(clone, primals_1);  clone = None
         return (
             mul,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_values')
             primals_5,  # SubclassGetAttrAOTOutput(base=PlainAOTOutput(idx=0), attr='_offsets')
@@ -4688,7 +4688,7 @@ class GraphModule(torch.nn.Module):
         tangents_3: "f32[s0, 0]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_min_seqlen_tensor')
         tangents_4: "f32[s83, 0]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='_max_seqlen_tensor')
     ):
-        mul_1: "f64[s64, s55]" = torch.ops.aten.mul.Tensor(tangents_1, primals_1);  tangents_1 = primals_1 = None
+        mul_1: "f64[s64, s55]" = torch.ops.aten.mul.Scalar(tangents_1, primals_1);  tangents_1 = primals_1 = None
         return (
             None,  # None
             None,  # None

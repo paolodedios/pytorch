@@ -12,6 +12,7 @@ import torch
 import torch._guards
 import torch.utils._pytree as pytree
 from torch._dynamo.utils import counters
+from torch._higher_order_ops.flex_gemm import _PRESERVE_FLEX_GEMM_GEMM_OP
 from torch._inductor.constant_folding import ConstantFolder
 from torch._inductor.fx_passes.dedupe_symint_uses import _SymHashingDict
 from torch._inductor.utils import get_gpu_type
@@ -159,63 +160,79 @@ def remove_no_ops(
             replacement.meta.update(node.meta)
             graph.erase_node(node)
 
-        for node in graph.find_nodes(op="call_function", target=aten.add.Tensor):
-            if len(node.args) == 2:
-                if (
-                    not any(
-                        e in zeros or (isScalarValue(e) and e == 0) for e in node.args
-                    )
-                    or node.kwargs.get("alpha", 1) != 1
-                ):
-                    continue
-
-                replace_index = (
-                    1
-                    if node.args[0] in zeros
-                    or (isScalarValue(node.args[0]) and node.args[0] == 0)
-                    else 0
-                )
-                replacement = node.args[replace_index]
-                if isinstance(replacement, torch.fx.Node):
-                    val = replacement.meta.get("val")
-                    if isinstance(val, torch.Tensor) and val.is_conj():
+        for target in (aten.add.Tensor, aten.add.Scalar):
+            for node in graph.find_nodes(op="call_function", target=target):
+                if len(node.args) == 2:
+                    if node.kwargs.get("alpha", 1) != 1:
                         continue
-                replace_no_op(node, replace_index)
 
-        for node in graph.find_nodes(op="call_function", target=aten.sub.Tensor):
-            if len(node.args) == 2:
-                if (
-                    not (
-                        node.args[1] in zeros
-                        or (isScalarValue(node.args[1]) and node.args[1] == 0)
-                    )
-                    or node.kwargs.get("alpha", 1) != 1
+                    replace_index = None
+                    if target is aten.add.Scalar:
+                        if isScalarValue(node.args[1]) and node.args[1] == 0:
+                            replace_index = 0
+                    elif any(
+                        e in zeros or (isScalarValue(e) and e == 0) for e in node.args
+                    ):
+                        replace_index = (
+                            1
+                            if node.args[0] in zeros
+                            or (isScalarValue(node.args[0]) and node.args[0] == 0)
+                            else 0
+                        )
+
+                    if replace_index is None:
+                        continue
+
+                    replacement = node.args[replace_index]
+                    if isinstance(replacement, torch.fx.Node):
+                        val = replacement.meta.get("val")
+                        if isinstance(val, torch.Tensor) and val.is_conj():
+                            continue
+                    replace_no_op(node, replace_index)
+
+        for target in (aten.sub.Tensor, aten.sub.Scalar):
+            for node in graph.find_nodes(op="call_function", target=target):
+                if len(node.args) == 2:
+                    if (
+                        not (
+                            node.args[1] in zeros
+                            or (isScalarValue(node.args[1]) and node.args[1] == 0)
+                        )
+                        or node.kwargs.get("alpha", 1) != 1
+                    ):
+                        continue
+
+                    replace_no_op(node, 0)
+
+        for target in (aten.mul.Tensor, aten.mul.Scalar):
+            for node in graph.find_nodes(op="call_function", target=target):
+                if len(node.args) == 2:
+                    replace_input_index = None
+                    if target is aten.mul.Scalar:
+                        if isScalarValue(node.args[1]) and node.args[1] == 1:
+                            replace_input_index = 0
+                    elif any(
+                        e in ones or (isScalarValue(e) and e == 1) for e in node.args
+                    ):
+                        replace_input_index = (
+                            1
+                            if node.args[0] in ones
+                            or (isScalarValue(node.args[0]) and node.args[0] == 1)
+                            else 0
+                        )
+
+                    if replace_input_index is None:
+                        continue
+
+                    replace_no_op(node, replace_input_index)
+
+        for target in (aten.div.Tensor, aten.div.Scalar):
+            for node in graph.find_nodes(op="call_function", target=target):
+                if len(node.args) == 2 and (
+                    node.args[1] in ones
+                    or (isScalarValue(node.args[1]) and node.args[1] == 1)
                 ):
-                    continue
-
-                replace_no_op(node, 0)
-
-        for node in graph.find_nodes(op="call_function", target=aten.mul.Tensor):
-            if len(node.args) == 2:
-                if not any(
-                    e in ones or (isScalarValue(e) and e == 1) for e in node.args
-                ):
-                    continue
-
-                replace_input_index = (
-                    1
-                    if node.args[0] in ones
-                    or (isScalarValue(node.args[0]) and node.args[0] == 1)
-                    else 0
-                )
-                replace_no_op(node, replace_input_index)
-
-        for node in graph.find_nodes(op="call_function", target=aten.div.Tensor):
-            if len(node.args) == 2 and (
-                node.args[1] in ones
-                or (isScalarValue(node.args[1]) and node.args[1] == 1)
-            ):
-                replace_no_op(node, 0)
+                    replace_no_op(node, 0)
 
         # meta tensors returned from the graph have no data and can be replaced with empty_strided
         for output_node in graph.find_nodes(op="output"):
@@ -977,6 +994,9 @@ def pointless_permute_pair(match: Match, arg, perm1, perm2):
 )
 def bmm_to_mm(match: Match, mat1: torch.fx.Node, mat2: torch.fx.Node):
     """Convert bmm to mm when batch size is 1"""
+    # See Note [Preserving FlexGEMM body GEMMs].
+    if match.output_node().meta.get(_PRESERVE_FLEX_GEMM_GEMM_OP):
+        return
 
     def repl(a, b):
         return torch.mm(a.squeeze(0), b.squeeze(0)).unsqueeze(0)

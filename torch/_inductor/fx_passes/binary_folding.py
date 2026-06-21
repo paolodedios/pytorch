@@ -100,6 +100,7 @@ def _tensor_binary_target(target):
 
 @functools.cache
 def binary_folding_init():
+    """Register patterns that fold constant binary ops into frozen linear/conv weights."""
     _conv_args = [Arg() for _ in range(9)]
     _addmm_args = [Arg() for _ in range(3)]
     _mm_args = [Arg() for _ in range(2)]
@@ -290,8 +291,53 @@ def binary_folding_init():
 
         return True
 
+    def _single_user(node):
+        if len(node.users) != 1:
+            return None
+        return next(iter(node.users))
+
+    def _has_literal_arg(node, value):
+        return (
+            len(node.args) > 1
+            and isinstance(node.args[1], numbers.Real)
+            and node.args[1] == value
+        )
+
+    def _is_hardsigmoid_add_pattern(binary_node):
+        if _tensor_binary_target(binary_node.target) is not aten.add.Tensor:
+            return False
+        if not _has_literal_arg(binary_node, 3):
+            return False
+
+        clamp_min = _single_user(binary_node)
+        if (
+            clamp_min is None
+            or clamp_min.target is not aten.clamp_min.default
+            or not _has_literal_arg(clamp_min, 0)
+        ):
+            return False
+
+        clamp_max = _single_user(clamp_min)
+        if (
+            clamp_max is None
+            or clamp_max.target is not aten.clamp_max.default
+            or not _has_literal_arg(clamp_max, 6)
+        ):
+            return False
+
+        div = _single_user(clamp_max)
+        if (
+            div is None
+            or div.target not in _binary_tensor_targets
+            or _tensor_binary_target(div.target) is not aten.div.Tensor
+        ):
+            return False
+        return _has_literal_arg(div, 6)
+
     def _is_foldable_pattern(match):
         binary_node = match.output_node()
+        if _is_hardsigmoid_add_pattern(binary_node):
+            return False
         has_reshape = False
         if binary_node.args[0].target in _computation_ops:
             computation_node = binary_node.args[0]
