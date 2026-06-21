@@ -109,13 +109,15 @@ def inner_fn(args):
     args.clear()
     unwrapped_outs = compiled_fn(unwrapped_args)
     _out_idx = 0
-    _has_subclass_symint_outputs = len(unwrapped_outs) == 2
+    _num_wrapped_outs = len(unwrapped_outs)
+    assert _num_wrapped_outs == 2, f'expected 2 wrapped outputs, got {_num_wrapped_outs}'
     _out_attr_3 = unwrapped_outs[_out_idx]
     _out_idx += 1
     _out_attr_4 = unwrapped_outs[_out_idx]
     _out_idx += 1
     _out_inner_2 = {'a': _out_attr_3, 'b': _out_attr_4}
     _out_7 = _subclass_type_5.__tensor_unflatten__(_out_inner_2, _meta_6, _out_attr_3.size(), _out_attr_3.stride())
+    assert _out_idx == _num_wrapped_outs, f'wrapped {_out_idx} outputs, expected {_num_wrapped_outs}'
     return (_out_7,)""",
         )
 
@@ -160,7 +162,8 @@ def inner_fn(args):
     args.clear()
     unwrapped_outs = compiled_fn(unwrapped_args)
     _out_idx = 0
-    _has_subclass_symint_outputs = len(unwrapped_outs) == 4
+    _num_wrapped_outs = len(unwrapped_outs)
+    assert _num_wrapped_outs == 4, f'expected 4 wrapped outputs, got {_num_wrapped_outs}'
     _out_attr_6 = unwrapped_outs[_out_idx]
     _out_idx += 1
     _out_attr_7 = unwrapped_outs[_out_idx]
@@ -175,6 +178,7 @@ def inner_fn(args):
     _out_16 = _subclass_type_14.__tensor_unflatten__(_out_inner_11, _meta_15, _out_attr_12.size(), _out_attr_12.stride())
     _out_inner_4 = {'a': _out_10, 'b': _out_16}
     _out_19 = _subclass_type_17.__tensor_unflatten__(_out_inner_4, _meta_18, _out_10.size(), _out_10.stride())
+    assert _out_idx == _num_wrapped_outs, f'wrapped {_out_idx} outputs, expected {_num_wrapped_outs}'
     return (_out_19,)""",
         )
 
@@ -198,9 +202,11 @@ def inner_fn(args):
     args.clear()
     unwrapped_outs = compiled_fn(unwrapped_args)
     _out_idx = 0
-    _has_subclass_symint_outputs = len(unwrapped_outs) == 1
+    _num_wrapped_outs = len(unwrapped_outs)
+    assert _num_wrapped_outs == 1, f'expected 1 wrapped outputs, got {_num_wrapped_outs}'
     _out_plain_1 = unwrapped_outs[_out_idx]
     _out_idx += 1
+    assert _out_idx == _num_wrapped_outs, f'wrapped {_out_idx} outputs, expected {_num_wrapped_outs}'
     return (_out_plain_1,)""",
         )
 
@@ -228,9 +234,11 @@ def inner_fn(args):
     args.clear()
     unwrapped_outs = compiled_fn(unwrapped_args)
     _out_idx = 0
-    _has_subclass_symint_outputs = len(unwrapped_outs) == 1
+    _num_wrapped_outs = len(unwrapped_outs)
+    assert _num_wrapped_outs == 1, f'expected 1 wrapped outputs, got {_num_wrapped_outs}'
     _out_plain_4 = unwrapped_outs[_out_idx]
     _out_idx += 1
+    assert _out_idx == _num_wrapped_outs, f'wrapped {_out_idx} outputs, expected {_num_wrapped_outs}'
     return (_out_plain_4,)""",
         )
 
@@ -438,7 +446,46 @@ def inner_fn(args):
         self.assertEqual(subclass_out.b, b)
         self.assertIs(plain_out, plain)
 
-    def test_partial_elided_subclass_symints_errors(self):
+    def test_plain_tensor_symint_outputs_can_be_mixed(self):
+        first_meta = PlainTensorMeta(
+            unwrapped_idx=0,
+            size_symbol_placeholders=(True,),
+            stride_symbol_placeholders=(True,),
+        )
+        second_meta = PlainTensorMeta(
+            unwrapped_idx=3,
+            size_symbol_placeholders=(True,),
+            stride_symbol_placeholders=(True,),
+        )
+
+        source, globals_dict = _codegen_subclass_wrapper_source(
+            inp_metas=[],
+            out_metas=[first_meta, second_meta],
+            num_fw_outs_saved_for_bw=None,
+        )
+
+        first = torch.randn(2)
+        second = torch.randn(3)
+        outputs = [first, first.shape[0], first.stride()[0], second]
+
+        def mock_compiled_fn(args):
+            return outputs
+
+        globals_dict["compiled_fn"] = mock_compiled_fn
+        local_dict = {}
+        exec(compile(source, "<test>", "exec"), globals_dict, local_dict)
+        wrapper = local_dict["inner_fn"]
+
+        first_out, second_out = wrapper([])
+        self.assertIs(first_out, first)
+        self.assertIs(second_out, second)
+
+        outputs = [first, second, second.shape[0], second.stride()[0]]
+        first_out, second_out = wrapper([])
+        self.assertIs(first_out, first)
+        self.assertIs(second_out, second)
+
+    def test_partial_elided_subclass_symints_between_outputs(self):
         # Build SubclassCreationMeta manually to avoid __post_init__ fake tensor check
         subclass_meta = _TestSubclassMeta(
             flat_tensor_start_idx=0,
@@ -476,8 +523,12 @@ def inner_fn(args):
         exec(compile(source, "<test>", "exec"), globals_dict, local_dict)
         wrapper = local_dict["inner_fn"]
 
-        with self.assertRaisesRegex(AssertionError, "expected 3 or 6 outputs"):
-            wrapper([])
+        subclass_out, plain_out = wrapper([])
+
+        self.assertIsInstance(subclass_out, TwoTensor)
+        self.assertEqual(subclass_out.a, a)
+        self.assertEqual(subclass_out.b, b)
+        self.assertIs(plain_out, plain)
 
     def test_inner_plain_tensor_symints_forwarded(self):
         # Build SubclassCreationMeta manually to avoid __post_init__ fake tensor check
