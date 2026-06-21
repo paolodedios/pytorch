@@ -111,7 +111,7 @@ from .base import (
 )
 from .dicts import ConstDictVariable, pydict_check
 from .hashable import HashableTracker
-from .object_protocol import is_nb_not_implemented, type_implements_nb_slot
+from .object_protocol import is_nb_not_implemented, type_implements_nb_slot, vt_getitem
 from .sets import SetVariable
 
 
@@ -422,9 +422,11 @@ class UserDefinedClassVariable(UserDefinedVariable):
 
     def lookup_cls_mro_attr(self, name: str) -> object:
         """Walk cls.__mro__ only (not the metaclass chain) to find *name*."""
-        for base in self.value.__mro__:
-            if name in base.__dict__:
-                return base.__dict__[name]
+        mro = type.__getattribute__(self.value, "__mro__")
+        for base in mro:
+            class_dict = type.__getattribute__(base, "__dict__")
+            if name in class_dict:
+                return class_dict[name]
         return NO_SUCH_SUBOBJ
 
     def get_source_by_walking_mro(
@@ -434,12 +436,14 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if source is None:
             raise RuntimeError("get_source_by_walking_mro requires source")
 
-        for idx, klass in enumerate(self.value.__mro__):
-            if name in klass.__dict__:
-                descriptor = klass.__dict__[name]
+        mro = type.__getattribute__(self.value, "__mro__")
+        for idx, klass in enumerate(mro):
+            klass_dict = type.__getattribute__(klass, "__dict__")
+            if name in klass_dict:
+                descriptor = klass_dict[name]
 
                 for absent_idx in range(1, idx):
-                    absent_klass = self.value.__mro__[absent_idx]
+                    absent_klass = mro[absent_idx]
                     cache_key = (id(absent_klass), name)
                     if cache_key in tx.output.guarded_mro_absent_keys:
                         continue
@@ -531,6 +535,22 @@ class UserDefinedClassVariable(UserDefinedVariable):
         # type.__getattribute__ which is the algorithm we implement below.
         metacls = type(self.value)
         if metacls is not type and "__getattribute__" in metacls.__dict__:
+            if name in ("__new__", "__init__") and (
+                getattr(tx, "f_code", None)
+                is polyfills.instantiate_user_defined_class_object.__code__
+            ):
+                # Class construction looks up __new__ and __init__ through type
+                # slots, not by invoking a custom metaclass __getattribute__.
+                cls_attr = self.lookup_cls_mro_attr(name)
+                if cls_attr is not NO_SUCH_SUBOBJ:
+                    source = (
+                        self.get_source_by_walking_mro(tx, name)
+                        if self.source is not None
+                        else None
+                    )
+                    if hasattr(type(cls_attr), "__get__"):
+                        return self.resolve_cls_descriptor(tx, name, cls_attr, source)
+                    return self.resolve_cls_plain_attr(tx, name, cls_attr, source)
             unimplemented(
                 gb_type="Custom metaclass with __getattribute__",
                 context=f"type({self.value}) = {metacls}",
@@ -1054,16 +1074,51 @@ class UserDefinedClassVariable(UserDefinedVariable):
                     tx,
                     f"descriptor '__init__' requires a 'collections.OrderedDict' object but received a '{receiver.python_type_name()}'",
                 )
-            if len(args) > 1 or kwargs:
-                temp_dict_vt = variables.DictBuiltinVariable.call_custom_dict(
-                    tx, dict, *args[1:], **kwargs
-                )
-                if not isinstance(temp_dict_vt, ConstDictVariable):
-                    raise AssertionError(
-                        f"Expected ConstDictVariable, got {type(temp_dict_vt)}"
+            if len(args) > 2:
+                raise_args_mismatch(tx, name, "at most 2 args", f"{len(args)} args")
+            if len(args) == 2:
+                other = args[1]
+                if isinstance(other, ConstDictVariable):
+                    other.install_dict_keys_match_guard()
+                    for key, value in other.items.items():
+                        receiver.call_method(tx, "__setitem__", [key.vt, value], {})
+                elif (
+                    isinstance(
+                        other,
+                        (
+                            variables.UserDefinedObjectVariable,
+                            variables.MappingProxyVariable,
+                        ),
                     )
-                for key, value in temp_dict_vt.items.items():
-                    receiver.call_method(tx, "__setitem__", [key.vt, value], {})
+                    and other.call_obj_hasattr(tx, "keys").as_python_constant()
+                ):
+                    keys = other.call_method(tx, "keys", [], {})
+                    for key in unpack_iterable(tx, keys):
+                        receiver.call_method(
+                            tx, "__setitem__", [key, vt_getitem(tx, other, key)], {}
+                        )
+                else:
+                    for idx, item in enumerate(unpack_iterable(tx, other)):
+                        pair = unpack_iterable(tx, item)
+                        if len(pair) != 2:
+                            if len(pair) < 2:
+                                plural = "s" if len(pair) != 1 else ""
+                                msg = (
+                                    f"need more than {len(pair)} value{plural} "
+                                    "to unpack"
+                                )
+                            else:
+                                msg = "too many values to unpack (expected 2)"
+                            raise_observed_exception(
+                                ValueError,
+                                tx,
+                                args=[msg],
+                            )
+                        receiver.call_method(tx, "__setitem__", pair, {})
+            for key, value in kwargs.items():
+                receiver.call_method(
+                    tx, "__setitem__", [VariableTracker.build(tx, key), value], {}
+                )
             return variables.ConstantVariable.create(None)
         elif (
             issubclass(self.value, collections.defaultdict)
@@ -1200,15 +1255,17 @@ class UserDefinedClassVariable(UserDefinedVariable):
             and name == "__enter__"
         ):
             return args[0].enter(tx)
-        elif name == "__new__" and UserDefinedClassVariable.is_supported_new_method(
-            self.value.__new__
-        ):
+        elif name == "__new__":
+            new_fn = inspect.getattr_static(self.value, "__new__", None)
+            if isinstance(new_fn, staticmethod):
+                new_fn = new_fn.__func__
+            if not UserDefinedClassVariable.is_supported_new_method(new_fn):
+                return super().call_method(tx, name, args, kwargs)
             # Some C-level tp_new functions (dict.__new__, set.__new__) ignore
             # extra args — only the type arg matters.  Pass init_args=[] for
             # those so reconstruction emits base_cls.__new__(cls) without
             # unreconstructable args (e.g. generators).  Other tp_new functions
             # (tuple.__new__, BaseException.__new__) use the extra args.
-            new_fn = self.value.__new__
             if new_fn in (dict.__new__, set.__new__):
                 init_args: list[VariableTracker] = []
             else:
@@ -1362,6 +1419,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             if "maxlen" in bound_args.arguments:
                 maxlen = bound_args.arguments["maxlen"]
 
+            variables.lists.DequeVariable.validate_maxlen(tx, maxlen)
             return variables.lists.DequeVariable(
                 items, maxlen=maxlen, mutation_type=ValueMutationNew()
             )
@@ -1664,7 +1722,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         elif SideEffects.cls_supports_mutation_side_effects(self.value) and (
             self.source or torch._dynamo.config.enable_trace_load_build_class
         ):
-            if self.value.__new__ is object.__new__:
+            if self.is_standard_new():
                 # Graph-break before inlining the class-instantiation polyfill
                 # for extension types where object.__new__ cannot allocate an
                 # example object. SideEffects keeps a matching backstop for
@@ -2056,6 +2114,69 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 gb_type="untraceable user-defined __repr__",
                 context=f"Could not trace __repr__ override for {type(self.value).__name__}",
                 explanation="Dynamo could not safely trace this user-defined __repr__ override.",
+                hints=[*graph_break_hints.SUPPORTABLE],
+                skip_frame=True,
+            )
+
+    def str_impl(
+        self,
+        tx: "InstructionTranslatorBase",
+    ) -> VariableTracker:
+        from .object_protocol import generic_repr
+
+        type_attr = self.lookup_class_mro_attr("__str__")
+        if type_attr is NO_SUCH_SUBOBJ:
+            return super().str_impl(tx)
+        if type_attr is None:
+            raise_type_error(tx, "'NoneType' object is not callable")
+
+        method = self._maybe_get_baseclass_method("__str__")
+        if (
+            self._base_vt is not None
+            and self._base_methods is not None
+            and method in self._base_methods
+        ):
+            return self._base_vt.str_impl(tx)
+
+        if type(self.value).__str__ is object.__str__:
+            return generic_repr(tx, self)
+
+        if (
+            is_wrapper_or_member_descriptor(type_attr)
+            or torch._C._dynamo.utils.is_instancemethod(type_attr)  # type: ignore[attr-defined]
+            or is_cython_function(type_attr)
+        ):
+            try:
+                inspect.getattr_static(type(type_attr), "__get__")(
+                    type_attr, self.value, type(self.value)
+                )
+            except (AttributeError, TypeError) as e:
+                raise_observed_exception(type(e), tx, args=list(e.args))
+            else:
+                unimplemented(
+                    gb_type="untraceable user-defined __str__",
+                    context=f"Could not trace __str__ override for {type(self.value).__name__}",
+                    explanation="Dynamo could not safely trace this user-defined __str__ override.",
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                    skip_frame=True,
+                )
+
+        source = self.source and self.get_source_by_walking_mro(tx, "__str__")
+        method_var = self.resolve_type_attr(tx, "__str__", type_attr, source)
+        if not isinstance(method_var, variables.GetAttrVariable):
+            return method_var.call_function(tx, [], {})
+
+        try:
+            inspect.getattr_static(type(type_attr), "__get__")(
+                type_attr, self.value, type(self.value)
+            )
+        except (AttributeError, TypeError) as e:
+            raise_observed_exception(type(e), tx, args=list(e.args))
+        else:
+            unimplemented(
+                gb_type="untraceable user-defined __str__",
+                context=f"Could not trace __str__ override for {type(self.value).__name__}",
+                explanation="Dynamo could not safely trace this user-defined __str__ override.",
                 hints=[*graph_break_hints.SUPPORTABLE],
                 skip_frame=True,
             )

@@ -222,6 +222,8 @@ class TestTorchDeviceType(TestCase):
         b = a.view(2, 5)
         self.assertEqual(torch._C._storage_Use_Count(b.untyped_storage()._cdata), prev_cf + 1)
 
+    # This PR makes the Py3.14 CPU storage_type() path traceable; older Python
+    # versions and CUDA still exercise separate Dynamo gaps, so keep those xfailed.
     @decorateIf(
         unittest.expectedFailure,
         lambda params: TEST_WITH_TORCHDYNAMO

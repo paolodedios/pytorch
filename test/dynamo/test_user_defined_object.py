@@ -119,6 +119,47 @@ class TestUserDefinedObjectConstruction(TestCase):
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         self.assertEqual(opt_fn(x), fn(x))
 
+    def test_instantiate_class_avoids_metaclass_getattribute_for_init(self):
+        class Meta(type):
+            def __getattribute__(cls, name):
+                if name in {"__new__", "__init__"}:
+                    raise RuntimeError("should use static constructor lookup")
+                return super().__getattribute__(name)
+
+        class Foo(metaclass=Meta):
+            def __init__(self, a):
+                self.a = a
+
+        def fn(t):
+            f = Foo(3)
+            return t.sin() + f.a
+
+        x = torch.randn(2)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(x), fn(x))
+
+    def test_class_init_read_honors_metaclass_getattribute_with_polyfill_name(self):
+        class Meta(type):
+            def __getattribute__(cls, name):
+                if name == "__init__":
+                    raise RuntimeError("should use metaclass lookup")
+                return super().__getattribute__(name)
+
+        class Foo(metaclass=Meta):
+            pass
+
+        def instantiate_user_defined_class_object():
+            return Foo.__init__
+
+        opt_fn = torch.compile(
+            instantiate_user_defined_class_object, backend="eager", fullgraph=True
+        )
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported,
+            "Observed exception|Custom metaclass with __getattribute__",
+        ):
+            opt_fn()
+
     def test_instantiate_class_ignores_instance_init_attr(self):
         class Foo:
             def __new__(cls, *args):
@@ -466,6 +507,36 @@ class TestUserDefinedObjectConstruction(TestCase):
 
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         self.assertEqual(opt_fn(), fn())
+
+    def test_explicit_ordered_dict_init_preserves_duplicate_pair_setitems(self):
+        class MyOrderedDict(collections.OrderedDict):
+            def __init__(self):
+                self.count = 0
+
+            def __setitem__(self, key, value):
+                self.count += 1
+                return super().__setitem__(key, value)
+
+        def fn():
+            values = MyOrderedDict()
+            collections.OrderedDict.__init__(values, [("a", 1), ("a", 2)])
+            return values.count, list(values.items())
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(), fn())
+
+    def test_explicit_ordered_dict_init_bad_pair_error_matches_eager(self):
+        def fn(data):
+            values = collections.OrderedDict()
+            try:
+                collections.OrderedDict.__init__(values, data)
+            except ValueError as e:
+                return str(e)
+            return "no error"
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        for data in ([()], [("a",)], [("a", 1, 2)]):
+            self.assertEqual(opt_fn(data), fn(data))
 
     def test_explicit_defaultdict_init_with_wrong_receiver_not_supported(self):
         def fn():

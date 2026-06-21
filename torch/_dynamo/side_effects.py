@@ -28,7 +28,6 @@ import inspect
 import logging
 import textwrap
 import traceback
-import warnings
 import weakref
 from collections.abc import Generator, MutableMapping
 from types import CellType
@@ -655,11 +654,7 @@ class SideEffects:
         variable_cls: Any,
         options: dict[str, Any],
     ) -> VariableTracker:
-        if user_cls is torch.autograd.function.FunctionCtx:
-            with warnings.catch_warnings(record=True):
-                obj = torch.autograd.Function()
-        else:
-            obj = object_new(user_cls)
+        obj = object_new(user_cls)
         variable = variable_cls(
             obj,
             mutation_type=AttributeMutationNew(cls_source),
@@ -747,9 +742,10 @@ class SideEffects:
             else:
                 raise RuntimeError(f"Unexpected base_cls_vt {base_cls_vt}")
 
-            if not variables.UserDefinedClassVariable.is_supported_new_method(
-                base_cls.__new__
-            ):
+            base_new = inspect.getattr_static(base_cls, "__new__", None)
+            if isinstance(base_new, staticmethod):
+                base_new = base_new.__func__
+            if not variables.UserDefinedClassVariable.is_supported_new_method(base_new):
                 raise AssertionError(f"Unsupported __new__ method for {base_cls}")
             if is_structseq_class(user_cls):
                 # Structseq tp_new requires a sequence argument and rejects
@@ -761,19 +757,17 @@ class SideEffects:
             ):
                 example_args = [arg.as_python_constant() for arg in init_args]
                 try:
-                    obj = base_cls.__new__(  # pyrefly: ignore[bad-specialization]
+                    obj = base_new(  # pyrefly: ignore[bad-specialization]
                         user_cls, *example_args
                     )
                 except Exception:
                     # __new__ can raise (e.g., exceeding int str digit limits).
                     # Fall back to creating without args — the example value is
                     # only used for tracing, not for correctness.
-                    obj = base_cls.__new__(  # pyrefly: ignore[bad-specialization]
-                        user_cls
-                    )
+                    obj = base_new(user_cls)  # pyrefly: ignore[bad-specialization]
             else:
                 try:
-                    obj = base_cls.__new__(user_cls)
+                    obj = base_new(user_cls)
                 except TypeError as exc:
                     # Backstop for direct construction paths that bypass the
                     # UserDefinedClassVariable object.__new__ preflight.
