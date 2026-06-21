@@ -1238,16 +1238,6 @@ class ScatterFallbackLine(WrapperLine):
 
 
 @dataclasses.dataclass
-class FallbackDispatchLine(WrapperLine):
-    line: str
-
-    def codegen(self, code: IndentedBuffer) -> None:
-        code.writeline("with torch._C._AutoDispatchBelowADInplaceOrView():")
-        with code.indent():
-            code.writeline(self.line)
-
-
-@dataclasses.dataclass
 class SymbolicCallArgLine(WrapperLine):
     wrapper: PythonWrapperCodegen
     arg: SymbolicCallArg
@@ -1357,6 +1347,7 @@ class PythonWrapperCodegen(CodeGen):
         self.move_begin = "std::move(" if V.graph.cpp_wrapper else ""
         self.move_end = ")" if V.graph.cpp_wrapper else ""
         self.last_seen_device_guard_index: int | None = None
+        self.needs_fallback_dispatch_guard = False
         self.supports_intermediate_hooks = True
         self.user_defined_kernel_cache: dict[
             tuple[Any, ...], tuple[str, Any, dict[str, Any]]
@@ -2331,6 +2322,15 @@ class PythonWrapperCodegen(CodeGen):
                     "nvtx._device_range_end(training_annotation)"
                 )
             self.generate_return(output_refs)
+
+        if self.needs_fallback_dispatch_guard:
+            guarded_wrapper_call = make_codegen_buffer()
+            guarded_wrapper_call.writeline(
+                "with torch._C._AutoDispatchBelowADInplaceOrView():"
+            )
+            with guarded_wrapper_call.indent():
+                guarded_wrapper_call.splice(self.wrapper_call)
+            self.wrapper_call = guarded_wrapper_call
 
         # Assemble the final code from sections.
         result = IndentedBuffer()
@@ -3418,7 +3418,10 @@ class PythonWrapperCodegen(CodeGen):
         buffer.writeline(V.graph.device_ops.synchronize())
 
     def wrap_fallback_dispatch(self, line):
-        return FallbackDispatchLine(line)
+        # The Python context manager has nontrivial entry/exit overhead, so use a
+        # single guard around the wrapper body once any fallback dispatch is present.
+        self.needs_fallback_dispatch_guard = True
+        return line
 
     def generate_profiler_mark_wrapper_call(self, stack):
         self.wrapper_call.writeline("from torch.profiler import record_function")

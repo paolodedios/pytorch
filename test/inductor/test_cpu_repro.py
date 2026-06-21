@@ -330,8 +330,8 @@ class CPUReproTests(TestCase):
         FileCheck().check("with torch._C._AutoDispatchBelowADInplaceOrView():").check(
             ".copy_("
         ).run(copy_code)
-        self.assertIn("\n        return (", copy_code)
-        self.assertNotIn("\n            return (", copy_code)
+        self.assertIn("\n            return (", copy_code)
+        self.assertNotIn("\n        return (", copy_code)
 
         def mixed_fn(x):
             y = x.to(torch.complex64)
@@ -344,8 +344,8 @@ class CPUReproTests(TestCase):
         FileCheck().check("with torch._C._AutoDispatchBelowADInplaceOrView():").check(
             ".copy_("
         ).check("cpp_fused").run(mixed_code)
-        self.assertIn("\n        cpp_fused", mixed_code)
-        self.assertNotIn("\n            cpp_fused", mixed_code)
+        self.assertIn("\n            cpp_fused", mixed_code)
+        self.assertNotIn("\n        cpp_fused", mixed_code)
 
         def bernoulli_fn(x):
             y = x.clone()
@@ -359,6 +359,26 @@ class CPUReproTests(TestCase):
         FileCheck().check("with torch._C._AutoDispatchBelowADInplaceOrView():").check(
             "bernoulli"
         ).run(bernoulli_code)
+
+        def multiple_fallbacks_fn(x):
+            y = x.to(torch.complex64)
+            z = x.clone()
+            z.bernoulli_(0.5)
+            return y.real + z
+
+        _, (multiple_fallbacks_code,) = run_and_get_code(
+            torch.compile(multiple_fallbacks_fn, backend="inductor", fullgraph=True),
+            torch.rand(4),
+        )
+        FileCheck().check("with torch._C._AutoDispatchBelowADInplaceOrView():").check(
+            ".copy_("
+        ).check("bernoulli").run(multiple_fallbacks_code)
+        self.assertEqual(
+            multiple_fallbacks_code.count(
+                "with torch._C._AutoDispatchBelowADInplaceOrView():"
+            ),
+            1,
+        )
 
     @config.patch(cpp_wrapper=True)
     def test_special_fallback_codegen_runs_below_autograd_cpp_wrapper(self):
