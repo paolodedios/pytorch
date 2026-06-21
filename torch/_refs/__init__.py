@@ -4677,7 +4677,7 @@ def diagonal_scatter(
     # storage and corrupt non-diagonal positions. This arises in the backward
     # of diagonal_scatter(x, src).sum(), where grad_output is expanded. Fall
     # back to a plain clone, which materializes a contiguous buffer.
-    if any(
+    if builtins.any(
         guard_or_false(sz > 1) and guard_or_false(s == 0)
         for sz, s in zip(input.size(), input.stride())
     ):
