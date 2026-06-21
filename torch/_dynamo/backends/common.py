@@ -41,6 +41,10 @@ P = ParamSpec("P")
 R = TypeVar("R")
 
 
+AOT_AUTOGRAD_DEPENDENT_OUTPUTS_COUNTER = "graph_has_dependent_outputs"
+AOT_AUTOGRAD_DEPENDENT_OUTPUTS_REASON = "graph has dependent outputs"
+
+
 def _output_nodes(gm: torch.fx.GraphModule) -> list[torch.fx.Node]:
     output_node = next((node for node in gm.graph.nodes if node.op == "output"), None)
     if output_node is None:
@@ -107,12 +111,15 @@ def _has_output_node_dependency(gm: torch.fx.GraphModule) -> bool:
     return False
 
 
-def _aot_autograd_fallback_reason(gm: torch.nn.Module) -> str | None:
+def _aot_autograd_fallback_info(gm: torch.nn.Module) -> tuple[str, str] | None:
     graph_module = gm.gm if isinstance(gm, GmWrapper) else gm
     if isinstance(graph_module, torch.fx.GraphModule) and _has_output_node_dependency(
         graph_module
     ):
-        return "graph has dependent outputs"
+        return (
+            AOT_AUTOGRAD_DEPENDENT_OUTPUTS_REASON,
+            AOT_AUTOGRAD_DEPENDENT_OUTPUTS_COUNTER,
+        )
     return None
 
 
@@ -140,11 +147,12 @@ class AotAutograd:
         if kwargs:
             log.warning("aot_autograd-based backend ignoring extra kwargs %s", kwargs)
 
-        fallback_reason = _aot_autograd_fallback_reason(gm)
-        if fallback_reason is not None:
+        fallback_info = _aot_autograd_fallback_info(gm)
+        if fallback_info is not None:
+            fallback_reason, fallback_counter = fallback_info
             log.debug("Unable to use AOT Autograd because %s", fallback_reason)
             counters["aot_autograd"]["not_ok"] += 1
-            counters["aot_autograd"][fallback_reason.replace(" ", "_")] += 1
+            counters["aot_autograd"][fallback_counter] += 1
             return _make_aot_autograd_fallback(gm)
 
         if any(isinstance(x, (list, tuple, dict)) for x in example_inputs):
