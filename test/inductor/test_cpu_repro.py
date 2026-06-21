@@ -6888,6 +6888,18 @@ class CPUReproTests(TestCase):
 
                 torch.testing.assert_close(actual, expected, atol=0, rtol=0)
 
+        if config.cpp_wrapper:
+            torch.manual_seed(0)
+            model = Model(-1)
+            x = torch.randn(2, 3, 16, 16)
+            with torch.no_grad():
+                _, code = run_and_get_cpp_code(
+                    torch.compile(model, backend="inductor", dynamic=True), x
+                )
+
+            self.assertIn("aoti_torch_cpu_convolution(arg", code)
+            self.assertNotIn("aoti_torch_cpu_convolution(buf", code)
+
     def test_issue_185589_erf_matcher_sum_without_keepdim(self):
         def fn(x):
             y = torch.erf(x)
