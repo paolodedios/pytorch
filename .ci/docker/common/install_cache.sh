@@ -3,6 +3,8 @@
 set -ex
 
 install_ubuntu() {
+  ARCH=$(uname -m)
+  FEATURES="dist-client dist-server" # may vary based on the architecture we are building for
   echo "Installing pkg-config and libssl-dev"
   apt-get update && apt-get install -y pkg-config libssl-dev curl
   echo "Installing rust"
@@ -10,12 +12,14 @@ install_ubuntu() {
   echo "Checking out sccache repo"
   git clone https://github.com/mozilla/sccache -b v0.13.0
   cd sccache
-  echo "Patch dist build on aarch64"
-  sed -i '/all(target_os = "linux", target_arch = "x86_64"),/{ p; s/x86_64/aarch64/; }' src/bin/sccache-dist/main.rs
+  echo "Patch dist build on ${ARCH}"
+  sed -i "/all(target_os = \"linux\", target_arch = \"x86_64\"),/{ p; s/x86_64/${ARCH}/; }" src/bin/sccache-dist/main.rs
   echo "Building sccache"
-  . "$HOME/.cargo/env" && cargo build --release --features="dist-client dist-server"
+  . "$HOME/.cargo/env" && cargo build --release --features="${FEATURES}"
   cp target/release/sccache /opt/cache/bin
-  cp target/release/sccache-dist /opt/cache/bin
+  if [[ "${FEATURES}" =~ *dist-server* ]]; then
+    cp target/release/sccache-dist /opt/cache/bin
+  fi
   echo "Cleaning up"
   cd ..
   rm -rf sccache
