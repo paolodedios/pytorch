@@ -42,7 +42,6 @@ from torch.testing._internal.inductor_utils import (
     HAS_GPU,
     patch_custom_fallback_pass,
     requires_gpu,
-    TRITON_HAS_CPU,
 )
 from torch.utils._sympy.functions import FloorDiv
 
@@ -1478,5 +1477,5 @@ class TestReplaceFloorDiv(InductorTestCase):
 if __name__ == "__main__":
     from torch._inductor.test_case import run_tests
 
-    if HAS_GPU or TRITON_HAS_CPU:
+    if HAS_GPU:
         run_tests(needs="filelock")
