@@ -78,12 +78,6 @@ class DistributedVariable(VariableTracker):
 
         return object_richcompare(self, tx, other, op)
 
-    def is_python_equal(self, other: object) -> bool:
-        return (
-            isinstance(other, VariableTracker)
-            and self.as_python_constant() == other.as_python_constant()
-        )
-
 
 def is_from_local(value: object) -> bool:
     if not DistributedVariable.is_available():
@@ -238,6 +232,9 @@ class BackwardHookVariable(VariableTracker):
 
     def as_proxy(self) -> torch.fx.Proxy:
         return self.proxy
+
+    def python_type(self) -> type:
+        return torch.utils.hooks.BackwardHook
 
     def call_method(
         self,
