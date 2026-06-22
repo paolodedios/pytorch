@@ -151,9 +151,10 @@ class StaticallyLaunchedTritonKernel:
         # from the retained raw bytes if the file was removed under us.
         if self.cubin_path is not None and os.path.exists(self.cubin_path):
             return self.cubin_path
-        assert self.cubin_raw is not None and self.cubin_path is not None, (
-            "device-agnostic kernel cannot reload its cubin for a new device"
-        )
+        if self.cubin_raw is None or self.cubin_path is None:
+            raise AssertionError(
+                "device-agnostic kernel cannot reload its cubin for a new device"
+            )
         os.makedirs(os.path.dirname(self.cubin_path), exist_ok=True)
         with open(self.cubin_path, "wb") as f:
             f.write(self.cubin_raw)
