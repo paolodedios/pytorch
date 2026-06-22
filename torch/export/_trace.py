@@ -863,6 +863,13 @@ def _collect_public_input_source_values(
     return public_input_sources, source_to_value
 
 
+def _has_tensor_outside_fake_mode(value: Any, fake_mode: FakeTensorMode) -> bool:
+    return pytree.tree_any(
+        lambda x: isinstance(x, torch.Tensor) and not fake_mode.is_our_fake(x),
+        value,
+    )
+
+
 def _root_nn_module_stack(mod: torch.nn.Module) -> dict[str, tuple[str, str]]:
     root_cls = type(mod)
     return {
@@ -2604,6 +2611,29 @@ def _strict_export(
             )
             gm_torch_level.graph._codegen = torch.fx.graph.CodeGen()
             gm_torch_level.recompile()
+            if _has_tensor_outside_fake_mode(
+                (public_fake_args, public_fake_kwargs), dynamo_fake_mode
+            ):
+                # Unused public tensor inputs may not survive as Dynamo
+                # placeholders, so _extract_fake_inputs leaves them as real
+                # tensors. Re-fakify the public signature in the existing fake
+                # mode to preserve the user's dynamic/static shape spec when
+                # those placeholders are reintroduced after AOT pruning.
+                (
+                    _,
+                    public_fake_args,
+                    public_fake_kwargs,
+                    _,
+                    _,
+                    _,
+                ) = make_fake_inputs(
+                    mod,
+                    args,
+                    kwargs,
+                    dynamic_shapes,
+                    prefer_deferred_runtime_asserts_over_guards=prefer_deferred_runtime_asserts_over_guards,
+                    source_is_input=True,
+                )
             public_input_sources, source_to_public_input_value = (
                 _collect_public_input_source_values(
                     mod, public_fake_args, public_fake_kwargs

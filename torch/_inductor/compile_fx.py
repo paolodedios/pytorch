@@ -3321,8 +3321,12 @@ def _aoti_flatten_inputs(
     Flatten the inputs to the graph module and return the flat inputs and options.
     Add "aot_inductor.serialized_in_spec" and "aot_inductor.serialized_out_spec" to the options.
     """
+    from torch._dynamo.functional_export import _DynamoBytecodeCodeGen
+
     # pyrefly: ignore [missing-module-attribute]
     from .compile_fx import graph_returns_tuple
+
+    kwargs = kwargs or {}
 
     if not graph_returns_tuple(gm):
         raise AssertionError(
@@ -3344,6 +3348,36 @@ def _aoti_flatten_inputs(
         if codegen.pytree_info.out_spec is not None:
             out_spec = codegen.pytree_info.out_spec
 
+    elif isinstance(gm.graph._codegen, _DynamoBytecodeCodeGen):
+        codegen = gm.graph._codegen
+        _, in_spec = pytree.tree_flatten((args, kwargs))
+
+        # Bytecode export graphs recover their public output pytree through
+        # this callback instead of _PyTreeCodeGen metadata.
+        output_node = gm.graph.output_node()
+        flat_outputs = output_node.args[0]
+        if not isinstance(flat_outputs, (tuple, list)):
+            flat_outputs = (flat_outputs,)
+        dummy_outputs = tuple(object() for _ in flat_outputs)
+
+        if len(codegen.orig_arg_names) != len(args) + len(kwargs):
+            raise AssertionError(
+                f"Total number of arg names is expected to be {len(codegen.orig_arg_names)} "
+                f"but got {len(args)} positional args, {len(kwargs)} kwargs."
+            )
+        positional_inputs = (
+            *args,
+            *(kwargs[name] for name in codegen.orig_arg_names[len(args) :]),
+        )
+        unflatten_output = getattr(gm, "_dynamo_bytecode_unflatten", None)
+        if not callable(unflatten_output):
+            raise AssertionError(
+                "Expected _dynamo_bytecode_unflatten on bytecode export graph"
+            )
+        _, out_spec = pytree.tree_flatten(
+            unflatten_output(dummy_outputs, positional_inputs)
+        )
+
     else:
         if hasattr(gm, "_in_spec"):
             in_spec = gm._in_spec
@@ -3355,9 +3389,7 @@ def _aoti_flatten_inputs(
         pytree.treespec_dumps(out_spec) if out_spec is not None else ""
     )
 
-    flat_args_with_path, received_spec = pytree.tree_flatten_with_path(
-        (args, kwargs or {})
-    )
+    flat_args_with_path, received_spec = pytree.tree_flatten_with_path((args, kwargs))
 
     if any(isinstance(x[1], torch.ScriptObject) for x in flat_args_with_path):
         from torch._dynamo.exc import UserError, UserErrorType
