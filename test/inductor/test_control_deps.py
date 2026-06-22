@@ -579,11 +579,13 @@ class TestControlDeps(InductorTestCase):
             "expected MutationOutput entries for pass-through values in control_deps",
         )
 
-    def test_stream_cache_setup_only_once_per_config(self):
-        """When codegen_device_guard_enter is called multiple times with the
-        same (device, num_streams, stream_map) config (e.g., forward + backward
-        sharing a wrapper), only the first call should set
-        setup_stream_cache=True.  A different config re-runs setup."""
+    def test_default_stream_setup_only_once_per_device(self):
+        """default_stream capture should only run once per device entry.
+
+        User streams (stream1, etc.) are always re-fetched from the registry
+        since they're idempotent lookups. Only default_stream = current_stream()
+        is dangerous to re-run (it can latch the offload stream).
+        """
         from torch._inductor.codegen.wrapper import (
             EnterDeviceContextManagerWithStreamInfoLine,
             PythonWrapperCodegen,
@@ -600,7 +602,7 @@ class TestControlDeps(InductorTestCase):
         orig_writeline = codegen.writeline
         codegen.writeline = capture_writeline
 
-        # First call for device 0: should setup
+        # First call for device 0: should setup default_stream
         codegen.codegen_device_guard_enter(
             device_idx=0,
             num_streams=2,
@@ -608,7 +610,7 @@ class TestControlDeps(InductorTestCase):
         )
         self.assertTrue(lines[0].setup_stream_cache)
 
-        # Same config again: should NOT setup
+        # Same device again: should NOT re-capture default_stream
         codegen.codegen_device_guard_enter(
             device_idx=0,
             num_streams=2,
@@ -616,10 +618,10 @@ class TestControlDeps(InductorTestCase):
         )
         self.assertFalse(
             lines[1].setup_stream_cache,
-            "Second entry with same config should skip stream cache setup",
+            "Second entry for same device should skip default_stream capture",
         )
 
-        # Different device: should setup
+        # Different device: should setup default_stream
         codegen.codegen_device_guard_enter(
             device_idx=1,
             num_streams=2,
@@ -627,11 +629,10 @@ class TestControlDeps(InductorTestCase):
         )
         self.assertTrue(
             lines[2].setup_stream_cache,
-            "Different device should setup stream cache",
+            "Different device should re-capture default_stream",
         )
 
-        # Re-enter device 0 after device 1: must re-setup because the flat
-        # DEFAULT_STREAM / stream1 variables now hold device 1's values.
+        # Re-enter device 0 after device 1: must re-capture
         codegen.codegen_device_guard_enter(
             device_idx=0,
             num_streams=2,
@@ -639,29 +640,7 @@ class TestControlDeps(InductorTestCase):
         )
         self.assertTrue(
             lines[3].setup_stream_cache,
-            "Re-entering device 0 after device 1 must re-setup stream cache",
-        )
-
-        # Same device, different stream map: must re-setup
-        codegen.codegen_device_guard_enter(
-            device_idx=0,
-            num_streams=2,
-            stream_idx_to_user_obj_idx={1: 20},
-        )
-        self.assertTrue(
-            lines[4].setup_stream_cache,
-            "Same device with different stream map must re-setup",
-        )
-
-        # Same device, more streams: must re-setup
-        codegen.codegen_device_guard_enter(
-            device_idx=0,
-            num_streams=3,
-            stream_idx_to_user_obj_idx={1: 20, 2: 30},
-        )
-        self.assertTrue(
-            lines[5].setup_stream_cache,
-            "Same device with more streams must re-setup",
+            "Re-entering device 0 after device 1 must re-capture default_stream",
         )
 
         codegen.writeline = orig_writeline
