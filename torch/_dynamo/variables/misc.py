@@ -1530,18 +1530,15 @@ class GetAttrVariable(VariableTracker):
         return super().mp_subscript_impl(tx, key)
 
 
-class MethodTrampolineVariable(VariableTracker):
-    """A method bound to a VT that dispatches through call_method.
+class BoundMethodVariable(VariableTracker):
+    """A method bound to a VT instance.
 
     Returned by object_generic_getattr when the MRO walk finds a method
-    on a VT that has custom call_method logic.  When handler is set,
-    call_function invokes handler directly instead of call_method,
-    allowing VTs to migrate individual methods off call_method.
+    on a VT that has custom call_method logic.
     """
 
     _nonvar_fields = {
         "method_name",
-        "handler",
         *VariableTracker._nonvar_fields,
     }
 
@@ -1549,27 +1546,39 @@ class MethodTrampolineVariable(VariableTracker):
         self,
         obj: VariableTracker,
         method_name: str,
-        handler: Any = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.obj = obj
         self.method_name = method_name
-        self.handler = handler
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.obj}, {self.method_name})"
+
+    def python_type(self) -> type:
+        try:
+            return type(self.as_python_constant())
+        except (AsPythonConstantNotImplementedError, AttributeError):
+            return types.MethodType
 
     def as_python_constant(self) -> Any:
         return getattr(self.obj.as_python_constant(), self.method_name)
 
     def hash_impl(self, tx: "InstructionTranslatorBase") -> tuple[int, bool]:
-        from .base import AsPythonConstantNotImplementedError
-
         try:
             return hash(self.as_python_constant()), False
         except AsPythonConstantNotImplementedError:
             return id(self), True
+
+    def richcompare_impl(
+        self,
+        tx: "InstructionTranslatorBase",
+        other: VariableTracker,
+        op: str,
+    ) -> VariableTracker:
+        from .object_protocol import object_richcompare
+
+        return object_richcompare(self, tx, other, op)
 
     def call_function(
         self,
@@ -1577,8 +1586,6 @@ class MethodTrampolineVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if self.handler is not None:
-            return self.handler(self.obj, tx, args, kwargs)
         return self.obj.call_method(tx, self.method_name, args, kwargs)
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
@@ -1612,12 +1619,6 @@ class PythonModuleVariable(VariableTracker):
 
     def __repr__(self) -> str:
         return f"PythonModuleVariable({self.value})"
-
-    def call_obj_hasattr(
-        self, tx: "InstructionTranslatorBase", name: str
-    ) -> "ConstantVariable":
-        result = hasattr(self.value, name)
-        return VariableTracker.build(tx, result)
 
     def getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
