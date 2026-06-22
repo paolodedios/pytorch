@@ -1,6 +1,7 @@
 # mypy: allow-untyped-defs
 import functools
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import Any
 from typing_extensions import TypeVarTuple
 
 import torch
@@ -24,12 +25,12 @@ from torch._higher_order_ops.utils import (
     HopInstance,
     materialize_as_graph,
     reenter_make_fx,
+    register_fake,
     save_values_for_backward,
     saved_values,
     split_into_chunks,
 )
 from torch._ops import HigherOrderOperator
-from torch._subclasses.fake_tensor import FakeTensorMode
 from torch._subclasses.functional_tensor import disable_functional_mode
 from torch.fx.experimental.proxy_tensor import (
     disable_proxy_modes_tracing,
@@ -42,14 +43,21 @@ class MapImpl(HigherOrderOperator):
     def __init__(self):
         super().__init__("map_impl")
 
-    def __call__(self, f, xs, pos_args, *, mutated_arg_indices: str = ""):
+    def __call__(
+        self,
+        f: Callable[..., Any],
+        xs: Sequence[torch.Tensor],
+        pos_args: Sequence[torch.fx.node.BaseArgumentTypes],
+        *,
+        mutated_arg_indices: str = "",
+    ) -> Any:
         # pyrefly: ignore [missing-attribute]
         return super().__call__(
             f, xs, pos_args, mutated_arg_indices=mutated_arg_indices
         )
 
     # pyrefly: ignore [bad-override]
-    def gen_schema(self, f, xs, pos_args, mutated_arg_indices:str = ""):
+    def gen_schema(self, f, xs, pos_args, mutated_arg_indices: str = ""):
         from torch._higher_order_ops.schema import HopSchemaGenerator
 
         all_inputs = tuple(
@@ -297,7 +305,14 @@ def _broadcast_to_batch(output, batch_size):
     return pytree.tree_map(expand_with_batch, output)
 
 
-def trace_map(proxy_mode, func_overload, f, xs, pos_args, mutated_arg_indices=""):
+def trace_map(
+    proxy_mode: ProxyTorchDispatchMode,
+    func_overload: HigherOrderOperator,
+    f: Callable[..., Any],
+    xs: Sequence[torch.Tensor],
+    pos_args: Sequence[torch.fx.node.BaseArgumentTypes],
+    mutated_arg_indices: str = "",
+) -> Any:
     with disable_proxy_modes_tracing():
         # Use first_slice_copy instead of _unstack_pytree to avoid
         # iterating over batch dim, which would guard on symbolic sizes.
@@ -346,18 +361,17 @@ def map_proxy_torch_dispatch_mode(mode, f, xs, pos_args, mutated_arg_indices="")
     )
 
 
-@map_impl.py_impl(FakeTensorMode)
-def map_fake_tensor_mode(mode, f, xs, pos_args, mutated_arg_indices=""):
-    with mode:
-        # Use first_slice_copy instead of _unstack_pytree to avoid
-        # iterating over batch dim, which would guard on symbolic sizes.
-        first_row = pytree.tree_map(first_slice_copy, xs)
-        example_output = f(*first_row, *pos_args)
+@register_fake(map_impl, skip_cache=True)
+def map_fake_tensor_mode(f, xs, pos_args, mutated_arg_indices=""):
+    # Use first_slice_copy instead of _unstack_pytree to avoid
+    # iterating over batch dim, which would guard on symbolic sizes.
+    first_row = pytree.tree_map(first_slice_copy, xs)
+    example_output = f(*first_row, *pos_args)
 
-        flat_xs, _ = pytree.tree_flatten(xs)
-        batch_size = flat_xs[0].shape[0]
+    flat_xs, _ = pytree.tree_flatten(xs)
+    batch_size = flat_xs[0].shape[0]
 
-        return _broadcast_to_batch(example_output, batch_size)
+    return _broadcast_to_batch(example_output, batch_size)
 
 
 @map_impl.py_functionalize_impl

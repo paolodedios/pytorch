@@ -3392,10 +3392,14 @@ class MapHigherOrderVariable(TorchHigherOrderOperatorVariable):
 
         # Mutation handling: map allows in-place writes only to xs
         # (each iteration sees a storage-disjoint slice). Mutations of
-        # pos_args are unsafe (see MapImpl.gen_schema for the contract)
+        # pos_args or captured freevars are unsafe (see MapImpl.gen_schema
+        # for the contract). Placeholder order is [xs, pos_args, freevars].
         n_xs = len(unpacked_xs)
+        n_pos = len(unpacked_args)
 
-        pos_args_mutated = sorted(i - n_xs for i in body_mutated_inputs if i >= n_xs)
+        pos_args_mutated = sorted(
+            i - n_xs for i in body_mutated_inputs if n_xs <= i < n_xs + n_pos
+        )
         if pos_args_mutated:
             unimplemented(
                 gb_type="torch.map: f mutates pos_args",
@@ -3409,6 +3413,28 @@ class MapHigherOrderVariable(TorchHigherOrderOperatorVariable):
                     "introducing a data race under any parallel lowering. "
                     "Use scan or while_loop if sequential buffer updates "
                     "are required."
+                ),
+                hints=[
+                    *graph_break_hints.USER_ERROR,
+                ],
+            )
+
+        freevars_mutated = sorted(
+            i - n_xs - n_pos for i in body_mutated_inputs if i >= n_xs + n_pos
+        )
+        if freevars_mutated:
+            unimplemented(
+                gb_type="torch.map: f mutates a captured tensor",
+                context=f"freevars={freevars_mutated}",
+                explanation=(
+                    "map only supports in-place mutation of xs. A tensor "
+                    "captured from the enclosing scope (lifted parameter) is loop-invariant: "
+                    "every iteration sees the same tensor, so a mutation "
+                    "makes iterations depend on each other, breaking map's "
+                    "independence contract and introducing a data race "
+                    "under any parallel lowering. Pass the buffer through "
+                    "xs, or use scan / while_loop if sequential buffer "
+                    "updates are required."
                 ),
                 hints=[
                     *graph_break_hints.USER_ERROR,
