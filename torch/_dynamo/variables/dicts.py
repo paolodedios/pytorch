@@ -1717,6 +1717,13 @@ class DunderDictVariable(ConstDictVariable):
         super().__init__({}, **kwargs)
         self.items = SideEffectsProxyDict(vt, tx)
 
+    def _maybe_getitem_runtime(
+        self, tx: "InstructionTranslatorBase", arg: VariableTracker
+    ) -> VariableTracker | None:
+        # SideEffectsProxyDict includes pending attribute writes that may not
+        # exist in the real object __dict__ yet.
+        return None
+
     def setitem(self, name: str, value: VariableTracker) -> None:
         self.items[name] = value
 

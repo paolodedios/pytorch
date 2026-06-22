@@ -422,6 +422,20 @@ class DictTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(x, torch.arange(4.0) + 1)
         self.assertEqual(cache3[2.0], torch.ones(4))
 
+    def test_const_dict_getitem_runtime_lookup_skips_pending_side_effect_dict_get(
+        self,
+    ):
+        class Output:
+            pass
+
+        def fn(output, x, key):
+            output.logits = x
+            return output.__dict__.get(key) + 1
+
+        x = torch.randn(4)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        self.assertEqual(opt_fn(Output(), x, "logits"), x + 1)
+
     def test_dict_torch_size_dynamic_key(self):
         class DynamicShapeModel(torch.nn.Module):
             def __init__(self):
