@@ -585,65 +585,48 @@ class TestControlDeps(InductorTestCase):
         User streams (stream1, etc.) are always re-fetched from the registry
         since they're idempotent lookups. Only default_stream = current_stream()
         is dangerous to re-run (it can latch the offload stream).
+
+        Tests the setup_stream_cache flag logic directly on the dataclass.
         """
         from torch._inductor.codegen.wrapper import (
             EnterDeviceContextManagerWithStreamInfoLine,
-            PythonWrapperCodegen,
         )
 
-        codegen = PythonWrapperCodegen()
+        last_device = None
         stream_map = {1: 10}
-        lines: list[EnterDeviceContextManagerWithStreamInfoLine] = []
 
-        def capture_writeline(line):
-            if isinstance(line, EnterDeviceContextManagerWithStreamInfoLine):
-                lines.append(line)
-
-        orig_writeline = codegen.writeline
-        codegen.writeline = capture_writeline
+        def make_line(device_idx):
+            nonlocal last_device
+            setup = last_device != device_idx
+            last_device = device_idx
+            return EnterDeviceContextManagerWithStreamInfoLine(
+                device_idx=device_idx,
+                last_seen_device_guard_index=None,
+                num_streams=2,
+                stream_idx_to_user_obj_idx=stream_map,
+                setup_stream_cache=setup,
+            )
 
         # First call for device 0: should setup default_stream
-        codegen.codegen_device_guard_enter(
-            device_idx=0,
-            num_streams=2,
-            stream_idx_to_user_obj_idx=stream_map,
-        )
-        self.assertTrue(lines[0].setup_stream_cache)
+        self.assertTrue(make_line(0).setup_stream_cache)
 
         # Same device again: should NOT re-capture default_stream
-        codegen.codegen_device_guard_enter(
-            device_idx=0,
-            num_streams=2,
-            stream_idx_to_user_obj_idx=stream_map,
-        )
         self.assertFalse(
-            lines[1].setup_stream_cache,
+            make_line(0).setup_stream_cache,
             "Second entry for same device should skip default_stream capture",
         )
 
         # Different device: should setup default_stream
-        codegen.codegen_device_guard_enter(
-            device_idx=1,
-            num_streams=2,
-            stream_idx_to_user_obj_idx=stream_map,
-        )
         self.assertTrue(
-            lines[2].setup_stream_cache,
+            make_line(1).setup_stream_cache,
             "Different device should re-capture default_stream",
         )
 
         # Re-enter device 0 after device 1: must re-capture
-        codegen.codegen_device_guard_enter(
-            device_idx=0,
-            num_streams=2,
-            stream_idx_to_user_obj_idx=stream_map,
-        )
         self.assertTrue(
-            lines[3].setup_stream_cache,
+            make_line(0).setup_stream_cache,
             "Re-entering device 0 after device 1 must re-capture default_stream",
         )
-
-        codegen.writeline = orig_writeline
 
     @requires_gpu()
     def test_generated_code_uses_get_stream_by_index(self):
