@@ -3383,6 +3383,42 @@ class FlexGemmTests(TestCase):
         FileCheck().check("aux_out=").check_not("extern_kernels.mm").run(code)
 
     @requires_cuda_and_triton
+    def test_cuda_inductor_quack_backend_tuple_epilogue_generic_aux_reads_captured_tensors(
+        self,
+    ):
+        def fn(a, b, col_bias, row_scale, tile_bias):
+            def epilogue(acc):
+                biased = (acc.float() + col_bias) * row_scale + tile_bias
+                return biased.relu(), acc.float() * row_scale + tile_bias
+
+            return flex_gemm(
+                torch.ops.aten.mm.default,
+                (a, b),
+                epilogue,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(128, 128, device="cuda", dtype=torch.float16)
+        b = torch.randn(128, 64, device="cuda", dtype=torch.float16)
+        col_bias = torch.randn(128, 1, device="cuda", dtype=torch.float32)
+        row_scale = torch.randn(1, 64, device="cuda", dtype=torch.float32)
+        tile_bias = torch.randn(128, 64, device="cuda", dtype=torch.float32)
+
+        self._assert_quack_tuple_epilogue(
+            fn,
+            a,
+            b,
+            col_bias,
+            row_scale,
+            tile_bias,
+            checks=(
+                "epilogue_args=",
+                "epilogue_arg_kinds=('col', 'row', 'tile')",
+                "aux_out=",
+            ),
+        )
+
+    @requires_cuda_and_triton
     def test_cuda_inductor_quack_backend_tuple_epilogue_local_amax_aux_fuses(self):
         M = 32
         N = 64

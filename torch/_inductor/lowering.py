@@ -8764,10 +8764,6 @@ def _validate_quack_aux_outputs(
             raise NotImplementedError(
                 "QUACK generic aux tuple epilogues currently support only aten.mm and aten.bmm"
             )
-        if epilogue_arg_indices:
-            raise NotImplementedError(
-                "QUACK generic aux tuple epilogues do not support captured tensor reads yet"
-            )
         if local_reduce is not None:
             raise NotImplementedError(
                 "QUACK generic aux tuple epilogues cannot be combined with local reduce"
