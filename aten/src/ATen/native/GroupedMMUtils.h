@@ -2,6 +2,7 @@
 
 #include <ATen/core/Tensor.h>
 #include <ATen/TensorUtils.h>
+#include <c10/util/strides.h>
 
 #include <utility>
 #include <vector>
@@ -73,16 +74,15 @@ c10::ScalarType out_dtype
 
   std::vector<int64_t> out_stride;
   #ifndef USE_ROCM
-  // For TMA transfers, strides of output tensor have to be either
-  // 1, or aligned to 16 bytes.
+  // For TMA transfers, strides of output tensor have to be either 1, or aligned
+  // to 16 bytes. Pad the last dim up to that alignment and take the contiguous
+  // strides of the padded shape (so the second-to-last stride picks up the pad).
   const auto last_dim = out_size.size() - 1;
   const auto alignment = 16 / c10::elementSize(out_dtype);
-  const int64_t size_padded = (out_size[last_dim] + alignment - 1) / alignment * alignment;
-  if (a_is_2d != b_is_2d) {
-    out_stride = {size_padded, 1};
-  } else {
-    out_stride = {out_size[1] * size_padded, size_padded, 1};
-  }
+  auto padded_size = out_size;
+  padded_size[last_dim] = (out_size[last_dim] + alignment - 1) / alignment * alignment;
+  const auto strides = c10::contiguous_strides(padded_size);
+  out_stride.assign(strides.begin(), strides.end());
   #endif
   return {out_size, out_stride};
 }

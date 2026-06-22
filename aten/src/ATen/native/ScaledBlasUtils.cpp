@@ -538,6 +538,7 @@ void validate_scaled_grouped_mm_v2_inputs(
 
   if (!a_is_2d || !b_is_2d) {
     if (!contraction_dim.empty()) {
+      TORCH_CHECK_VALUE(contraction_dim.size() == 2, "contraction_dim must have exactly 2 elements");
       const int dim_a = contraction_dim[0], dim_b = contraction_dim[1];
       TORCH_CHECK_VALUE(mat_a.sym_size(dim_a) == mat_b.sym_size(dim_b),
           "Contraction dimensions (", dim_a, ",", dim_b, ") of mat_a and mat_b must match, got: ",
