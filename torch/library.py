@@ -81,14 +81,6 @@ def _plain_int_schema_type(type_: Any) -> str | None:
     return None
 
 
-def _schema_type_contains_symint(type_: Any) -> bool:
-    if isinstance(type_, torch.SymIntType):
-        return True
-    if isinstance(type_, (torch.OptionalType, torch.ListType)):
-        return _schema_type_contains_symint(type_.getElementType())
-    return False
-
-
 def _schema_specialization_metadata(
     qualname: str, schema: torch._C.FunctionSchema
 ) -> _SchemaSpecializationWarnings | None:
@@ -109,27 +101,17 @@ def _schema_specialization_metadata(
 def _packet_schema_specialization_metadata(
     qualified_op_name: str, overload_names: list[str]
 ) -> _SchemaSpecializationWarnings | None:
-    warnings: list[_SchemaSpecializationWarning] = []
-    has_symint_overload = False
-    for overload_name in overload_names:
-        qualname = qualified_op_name
-        if overload_name:
-            qualname += "." + overload_name
-        if qualname not in _def_sources:
-            continue
-        schema = torch._C._get_schema(qualified_op_name, overload_name)
-        has_symint_overload = has_symint_overload or any(
-            _schema_type_contains_symint(arg.real_type) for arg in schema.arguments
-        )
-        metadata = _schema_specialization_metadata(qualname, schema)
-        if metadata is not None:
-            warnings.extend(metadata)
-
-    if not warnings:
+    # Packet calls do not expose the overload chosen by C++ dispatch. Warn only
+    # when the packet has one unambiguous overload; exact overload calls still
+    # use _schema_specialization_metadata directly.
+    if len(overload_names) != 1:
         return None
-    if len(overload_names) != 1 and has_symint_overload:
-        return None
-    return tuple(warnings)
+    overload_name = overload_names[0]
+    qualname = qualified_op_name
+    if overload_name:
+        qualname += "." + overload_name
+    schema = torch._C._get_schema(qualified_op_name, overload_name)
+    return _schema_specialization_metadata(qualname, schema)
 
 
 _MISSING = object()

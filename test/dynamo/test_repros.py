@@ -1128,7 +1128,7 @@ class CustomOpSchemaWarningTests(torch._dynamo.test_case.TestCase):
                         compiled(input_data, input_tensor), input_tensor + i + 20
                     )
 
-    def test_overloaded_packet_call_warns_without_symint_overload(self):
+    def test_overload_call_warns_without_symint_overload(self):
         torch._dynamo.reset()
         namespace = "test_custom_op_overloaded_int_schema_warning"
 
@@ -1153,7 +1153,7 @@ class CustomOpSchemaWarningTests(torch._dynamo.test_case.TestCase):
             class Holder:
                 pass
 
-            op = getattr(torch.ops, namespace).multi_input_op
+            op = getattr(torch.ops, namespace).multi_input_op.int
 
             def forward(input_data, input_tensor):
                 return op(input_data.input_int, input_tensor)
