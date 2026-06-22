@@ -1300,9 +1300,6 @@ static void ctc_loss_mps_check(const Tensor& log_probs,
                                IntArrayRef input_lengths,
                                IntArrayRef target_lengths,
                                int64_t BLANK) {
-  TORCH_CHECK(log_probs.scalar_type() == kFloat,
-              "ctc_loss on MPS only supports float32 log_probs, got ",
-              log_probs.scalar_type());
   TORCH_CHECK(log_probs.dim() == 3, "log_probs must be 3-D (T, N, C)");
   TORCH_CHECK(targets.dim() >= 1 && targets.dim() <= 2, "targets must have 1 or 2 dims");
   int64_t batch_size = log_probs.size(1);
@@ -1327,11 +1324,12 @@ std::tuple<Tensor, Tensor> ctc_loss_mps(const Tensor& log_probs,
   // Compute per-batch target offsets and max target length
   int64_t tg_target_stride = 0;
   int64_t max_target_length = 0;
-  std::vector<int64_t> tg_batch_offsets(batch_size);
+  std::vector<int64_t> target_batch_offsets(batch_size);
+
   if (targets.dim() == 1) {
     int64_t pos = 0;
     for (int64_t i = 0; i < batch_size; i++) {
-      tg_batch_offsets[i] = pos;
+      target_batch_offsets[i] = pos;
       pos += target_lengths[i];
       max_target_length = std::max(max_target_length, target_lengths[i]);
     }
@@ -1339,24 +1337,25 @@ std::tuple<Tensor, Tensor> ctc_loss_mps(const Tensor& log_probs,
   } else {
     int64_t tg_batch_stride = targets.stride(0);
     for (int64_t i = 0; i < batch_size; i++) {
-      tg_batch_offsets[i] = i * tg_batch_stride;
+      target_batch_offsets[i] = i * tg_batch_stride;
       max_target_length = std::max(max_target_length, target_lengths[i]);
     }
     tg_target_stride = targets.stride(1);
   }
+
   uint32_t max_input_length = log_probs.size(0);
 
-  Tensor neg_log_likelihood = at::empty({batch_size}, log_probs.options());
+  Tensor loss = at::empty({batch_size}, log_probs.options());
   Tensor log_alpha = at::empty({batch_size, log_probs.size(0), 2 * max_target_length + 1}, log_probs.options());
 
   if (batch_size == 0) {
-    return {neg_log_likelihood, log_alpha};
+    return {loss, log_alpha};
   }
 
   // Move metadata to MPS device
-  Tensor input_lengths_t = at::tensor(input_lengths, log_probs.options().dtype(kLong));
-  Tensor target_lengths_t = at::tensor(target_lengths, log_probs.options().dtype(kLong));
-  Tensor tg_batch_offsets_t = at::tensor(tg_batch_offsets, log_probs.options().dtype(kLong));
+  Tensor input_lengths_t = at::tensor(input_lengths, log_probs.options().dtype(kInt));
+  Tensor target_lengths_t = at::tensor(target_lengths, log_probs.options().dtype(kInt));
+  Tensor target_batch_offsets_t = at::tensor(target_batch_offsets, log_probs.options().dtype(kInt));
 
   const uint32_t TG_SIZE = std::min(uint32_t(1024), uint32_t(2 * max_target_length + 1));
   MPSStream* mpsStream = getCurrentMPSStream();
@@ -1364,7 +1363,7 @@ std::tuple<Tensor, Tensor> ctc_loss_mps(const Tensor& log_probs,
     @autoreleasepool {
       id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
       id<MTLComputePipelineState> pso = mps::lib.getPipelineStateForFunc(
-          fmt::format("ctc_loss_log_alpha_float_{}", scalarToMetalTypeString(targets.scalar_type())));
+          fmt::format("ctc_loss_{}_{}", scalarToMetalTypeString(log_probs), scalarToMetalTypeString(targets)));
       [computeEncoder setComputePipelineState:pso];
 
       CTCLossParams params;
@@ -1376,26 +1375,26 @@ std::tuple<Tensor, Tensor> ctc_loss_mps(const Tensor& log_probs,
       params.tg_target_stride = tg_target_stride;
       params.log_probs_time_stride = log_probs.stride(0);
       params.log_probs_batch_stride = log_probs.stride(1);
-      params.log_probs_char_stride = log_probs.stride(2);
+      params.log_probs_token_stride = log_probs.stride(2);
       params.log_alpha_batch_stride = log_alpha.stride(0);
       params.log_alpha_time_stride = log_alpha.stride(1);
       params.log_alpha_target_stride = log_alpha.stride(2);
 
       mtl_setArgs(computeEncoder,
+                  loss,
                   log_alpha,
                   log_probs,
+                  targets,
                   input_lengths_t,
                   target_lengths_t,
-                  targets,
-                  tg_batch_offsets_t,
-                  neg_log_likelihood,
+                  target_batch_offsets_t,
                   params);
       [computeEncoder dispatchThreadgroups:MTLSizeMake(batch_size, 1, 1)
                      threadsPerThreadgroup:MTLSizeMake(TG_SIZE, 1, 1)];
     }
   });
 
-  return {std::move(neg_log_likelihood), std::move(log_alpha)};
+  return {std::move(loss), std::move(log_alpha)};
 }
 
 } // namespace at::native

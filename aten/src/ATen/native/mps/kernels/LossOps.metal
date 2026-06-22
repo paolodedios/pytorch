@@ -1,54 +1,82 @@
 #include <ATen/native/mps/kernels/LossOps.h>
+#include <c10/metal/utils.h>
 #include <metal_stdlib>
 
 using namespace metal;
+using namespace c10::metal;
 
 // Augmented target lookup: l'[idx] is BLANK for even idx, l[idx/2] for odd.
-template <typename target_t>
-inline int get_target_prime(
-    const device target_t* targets,
-    long stride,
-    long idx,
-    int BLANK) {
-  return (idx % 2 == 0) ? BLANK : (int)targets[stride * (idx / 2)];
+template <typename T_target>
+inline int32_t get_target_prime(
+    constant T_target* targets,
+    uint32_t stride,
+    uint32_t idx,
+    int32_t BLANK) {
+  return (idx % 2 == 0) ? BLANK
+                        : static_cast<int32_t>(targets[stride * (idx / 2)]);
 }
 
-template <typename T, typename target_t>
-kernel void ctc_loss_log_alpha_kernel(
-    device T* log_alpha [[buffer(0)]],
-    const device T* log_probs [[buffer(1)]],
-    const device long* input_lengths [[buffer(2)]],
-    const device long* target_lengths [[buffer(3)]],
-    const device target_t* targets [[buffer(4)]],
-    const device long* tg_batch_offsets [[buffer(5)]],
-    device T* neg_log_likelihood [[buffer(6)]],
+// Calculate `logsumexp(A, ...) = m + logsumexp(A - m, ...)`,
+// where `m = max(A, ...)`.
+template <typename T, typename... Ts>
+static inline T logsumexp(T first, Ts... rest) {
+  constexpr T neginf = -numeric_limits<T>::infinity();
+  T args[] = {first, T(rest)...};
+  constexpr int N = 1 + sizeof...(Ts);
+
+  T m = args[0];
+#pragma unroll
+  for (int i = 1; i < N; i++) {
+    m = max(m, args[i]);
+  }
+  if (m == neginf) {
+    return neginf;
+  }
+
+  T s = 0;
+#pragma unroll
+  for (int i = 0; i < N; i++) {
+    s += precise::exp(args[i] - m);
+  }
+  return precise::log(s) + m;
+}
+
+template <typename T, typename T_target>
+kernel void ctc_loss(
+    device T* loss [[buffer(0)]],
+    device T* log_alpha [[buffer(1)]],
+    constant T* log_probs [[buffer(2)]],
+    constant T_target* targets [[buffer(3)]],
+    constant int32_t* input_lengths [[buffer(4)]],
+    constant int32_t* target_lengths [[buffer(5)]],
+    constant int32_t* target_batch_offsets [[buffer(6)]],
     constant CTCLossParams& params [[buffer(7)]],
     uint tid [[thread_position_in_threadgroup]],
     uint tgid [[threadgroup_position_in_grid]],
     uint tptg [[threads_per_threadgroup]]) {
+  using T_op = opmath_t<T>;
   constexpr T neginf = -numeric_limits<T>::infinity();
+  constexpr T_op neginf_op = -numeric_limits<T_op>::infinity();
 
-  long batch = (long)tgid;
-  if (batch >= (long)params.batch_size)
-    return;
-
-  long input_length = input_lengths[batch];
-  long target_length = target_lengths[batch];
-
-  targets += tg_batch_offsets[batch];
-  log_alpha += batch * params.log_alpha_batch_stride;
-  log_probs += batch * params.log_probs_batch_stride;
+  uint32_t input_length = input_lengths[tgid];
+  uint32_t target_length = target_lengths[tgid];
 
   if (input_length == 0) {
     if (tid == 0)
-      neg_log_likelihood[batch] = (target_length == 0) ? T(0) : T(INFINITY);
+      loss[tgid] = (target_length == 0) ? T(0) : T(INFINITY);
     return;
   }
 
-  long S_max = 2 * params.max_target_length + 1;
+  targets += target_batch_offsets[tgid];
+  log_alpha += tgid * params.log_alpha_batch_stride;
+  log_probs += tgid * params.log_probs_batch_stride;
 
-  // Initialize first time step
-  for (uint s = tid; s < S_max; s += tptg) {
+  uint32_t S_max = 2 * params.max_target_length + 1;
+  uint32_t S = 2 * target_length + 1;
+
+  // Initialize first time step for all the target tokens assigned to this
+  // thread.
+  for (uint32_t s = tid; s < S_max; s += tptg) {
     T la;
     switch (s) {
       case 0:
@@ -57,63 +85,63 @@ kernel void ctc_loss_log_alpha_kernel(
       case 1:
         la = (target_length == 0)
             ? neginf
-            : log_probs[params.log_probs_char_stride * targets[0]];
+            : log_probs[params.log_probs_token_stride * targets[0]];
         break;
       default:
         la = neginf;
     }
-    if (s < 2 * params.max_target_length + 1)
+    if (s < S_max) {
       log_alpha[params.log_alpha_target_stride * s] = la;
+    }
   }
 
-  for (uint s = tid; s < S_max; s += tptg) {
-    int current_char;
-    bool have_three;
+  // Iterate over the rest of the time steps, for each of the target tokens
+  // assigned to this thread.
+  for (uint32_t s = tid; s < S_max; s += tptg) {
+    int32_t target_token;
+    bool use_C;
 
-    if ((long)s < 2 * target_length + 1 && target_length > 0) {
-      current_char = get_target_prime(
-          targets, params.tg_target_stride, (long)s, params.BLANK);
-      have_three = ((long)s > 1) &&
+    if (s < S && target_length > 0) {
+      target_token =
+          get_target_prime(targets, params.tg_target_stride, s, params.BLANK);
+      use_C = (s >= 2) &&
           (get_target_prime(
-               targets, params.tg_target_stride, (long)s - 2, params.BLANK) !=
-           current_char);
+               targets, params.tg_target_stride, s - 2, params.BLANK) !=
+           target_token);
     } else {
-      current_char = params.BLANK;
-      have_three = false;
+      target_token = params.BLANK;
+      use_C = false;
     }
 
-    for (uint t = 1; t < params.max_input_length; t++) {
+    for (uint32_t t = 1; t < params.max_input_length; t++) {
       threadgroup_barrier(mem_flags::mem_device);
-      if ((long)t < input_length && (long)s < 2 * target_length + 1) {
-        T la1 = log_alpha
-            [params.log_alpha_time_stride * (t - 1) +
-             params.log_alpha_target_stride * s];
-        T lamax = la1;
-        T la2 = ((long)s > 0) ? log_alpha
+      if (t < input_length && s < S) {
+        // A = log(alpha[t-1, s])
+        auto A = static_cast<T_op>(log_alpha
+                                       [params.log_alpha_time_stride * (t - 1) +
+                                        params.log_alpha_target_stride * s]);
+        // B = log(alpha[t-1, s-1]), or 0 if s-1 is out of bounds
+        auto B = (s >= 1)
+            ? static_cast<T_op>(log_alpha
                                     [params.log_alpha_time_stride * (t - 1) +
-                                     params.log_alpha_target_stride * (s - 1)]
-                              : neginf;
-        T la3 = have_three ? log_alpha
-                                 [params.log_alpha_time_stride * (t - 1) +
-                                  params.log_alpha_target_stride * (s - 2)]
-                           : neginf;
-        if (la2 > lamax)
-          lamax = la2;
-        if (la3 > lamax)
-          lamax = la3;
-        if (lamax == neginf)
-          lamax = T(0);
+                                     params.log_alpha_target_stride * (s - 1)])
+            : neginf_op;
+        // C = log(alpha[t-1, s-2]), or 0 if !use_C
+        auto C = use_C
+            ? static_cast<T_op>(log_alpha
+                                    [params.log_alpha_time_stride * (t - 1) +
+                                     params.log_alpha_target_stride * (s - 2)])
+            : neginf_op;
+        auto y = static_cast<T_op>(
+            log_probs
+                [t * params.log_probs_time_stride +
+                 params.log_probs_token_stride * target_token]);
         log_alpha
             [params.log_alpha_time_stride * t +
              params.log_alpha_target_stride * s] =
-                precise::log(
-                    precise::exp(la1 - lamax) + precise::exp(la2 - lamax) +
-                    precise::exp(la3 - lamax)) +
-            lamax +
-            log_probs
-                [(long)t * params.log_probs_time_stride +
-                 params.log_probs_char_stride * current_char];
-      } else if (s < 2 * params.max_target_length + 1) {
+                static_cast<T>(logsumexp(A, B, C) + y);
+
+      } else if (s < S_max) {
         log_alpha
             [params.log_alpha_time_stride * t +
              params.log_alpha_target_stride * s] = neginf;
@@ -124,36 +152,39 @@ kernel void ctc_loss_log_alpha_kernel(
   threadgroup_barrier(mem_flags::mem_device);
 
   if (tid == 0) {
-    T l1 = log_alpha
-        [params.log_alpha_time_stride * (input_length - 1) +
-         params.log_alpha_target_stride * (target_length * 2)];
-    T l2 = (target_length > 0)
-        ? log_alpha
-              [params.log_alpha_time_stride * (input_length - 1) +
-               params.log_alpha_target_stride * (target_length * 2 - 1)]
-        : neginf;
-    T m = (l1 > l2) ? l1 : l2;
-    if (m == neginf)
-      m = T(0);
-    neg_log_likelihood[batch] =
-        -(precise::log(precise::exp(l1 - m) + precise::exp(l2 - m)) + m);
+    auto l1 = static_cast<T_op>(
+        log_alpha
+            [params.log_alpha_time_stride * (input_length - 1) +
+             params.log_alpha_target_stride * (target_length * 2)]);
+    auto l2 = (target_length > 0)
+        ? static_cast<T_op>(
+              log_alpha
+                  [params.log_alpha_time_stride * (input_length - 1) +
+                   params.log_alpha_target_stride * (target_length * 2 - 1)])
+        : neginf_op;
+    loss[tgid] = static_cast<T>(-logsumexp(l1, l2));
   }
 }
 
-#define INSTANTIATE_CTC_ALPHA(DTYPE, TTYPE)                       \
-  template [[host_name("ctc_loss_log_alpha_" #DTYPE "_" #TTYPE)]] \
-  kernel void ctc_loss_log_alpha_kernel<DTYPE, TTYPE>(            \
-      device DTYPE*,                                              \
-      const device DTYPE*,                                        \
-      const device long*,                                         \
-      const device long*,                                         \
-      const device TTYPE*,                                        \
-      const device long*,                                         \
-      device DTYPE*,                                              \
-      constant CTCLossParams&,                                    \
-      uint,                                                       \
-      uint,                                                       \
+#define INSTANTIATE_CTC_LOSS(T, T_target)              \
+  template [[host_name("ctc_loss_" #T "_" #T_target)]] \
+  kernel void ctc_loss<T, T_target>(                   \
+      device T*,                                       \
+      device T*,                                       \
+      constant T*,                                     \
+      constant T_target*,                              \
+      constant int32_t*,                               \
+      constant int32_t*,                               \
+      constant int32_t*,                               \
+      constant CTCLossParams&,                         \
+      uint,                                            \
+      uint,                                            \
       uint);
 
-INSTANTIATE_CTC_ALPHA(float, int);
-INSTANTIATE_CTC_ALPHA(float, long);
+#define INSTANTIATE_CTC_LOSS_TARGET_TYPES(T) \
+  INSTANTIATE_CTC_LOSS(T, int);              \
+  INSTANTIATE_CTC_LOSS(T, long);
+
+INSTANTIATE_CTC_LOSS_TARGET_TYPES(float);
+INSTANTIATE_CTC_LOSS_TARGET_TYPES(bfloat);
+INSTANTIATE_CTC_LOSS_TARGET_TYPES(half);
