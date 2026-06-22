@@ -251,6 +251,9 @@ inplace_buffers = True
 # reuse a buffer for an unrelated purpose
 allow_buffer_reuse = True
 
+# Allow reuse to extend a buffer lifetime across explicit fuse-region boundaries.
+allow_buffer_reuse_across_fuse_regions = False
+
 # Enable pooled allocations for non-output tensors
 memory_planning = os.environ.get("TORCHINDUCTOR_MEMORY_PLANNING", "0") == "1"
 
@@ -429,11 +432,10 @@ reorder_prefetch_limit: int | None = None
 reorder_for_peak_memory = True
 reorder_for_peak_memory_debug = False
 
-# In some cases, when all the nodes that can be scheduled are quite large,
-# it is beneficial to switch the scheduling strategy. So instead of using
-# size as the criterion, we choose a node that can unlock more nodes to
-# become schedulable by analyzing their successor nodes. The default value
-# is zero, which turns off this optimization.
+# When all schedulable nodes have allocations larger than this threshold and
+# at least one ready node unlocks a successor, prefer the node that unlocks the
+# earliest successor. The original LPMF memory key remains the fallback when
+# no successor information is available.
 size_threshold_for_succ_based_strategy: int = 0
 
 
@@ -952,6 +954,13 @@ loop_index_inversion_in_fusion: bool = True
 #
 # For the cases loop ordering after fusion does not help, we don't lose much.
 score_fusion_memory_threshold = 10
+
+# Allow choices that Inductor's peak-memory heuristics would otherwise block.
+# This is intentionally on by default so existing fusion behavior stays unchanged
+# unless a caller explicitly opts into peak-memory-aware restrictions.
+allow_peak_memory_increasing_fusion = (
+    os.environ.get("TORCHINDUCTOR_ALLOW_PEAK_MEMORY_INCREASING_FUSION", "1") == "1"
+)
 
 # For Triton Templates, select fastest of best template + epilogue vs best template + separate epilogue kernel
 benchmark_epilogue_fusion = (

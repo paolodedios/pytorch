@@ -70,6 +70,7 @@ from .comm_analysis import (
 )
 from .dependencies import Dep, MemoryDep, StarDep, WeakDep
 from .exc import GPUTooOldForTriton, TritonMissing
+from .fx_passes.fuse_regions import FUSE_REGION
 from .fx_utils import count_flops_fx
 from .ir import (
     assign_origin_node,
@@ -3756,6 +3757,9 @@ def pick_loop_order(
 def _replace_operation_buffer(
     orig_node: ir.MultiTemplateBuffer, new_node: ir.OperationBuffer
 ) -> None:
+    if FUSE_REGION in orig_node.annotations:
+        new_node.annotations[FUSE_REGION] = orig_node.annotations[FUSE_REGION]
+
     replaced_buf_name = new_node.get_name()
     orig_buf_name = orig_node.get_name()
     if not (isinstance(orig_buf_name, str) and isinstance(replaced_buf_name, str)):
@@ -4489,6 +4493,36 @@ class Scheduler:
         else:
             raise NotImplementedError(node)
 
+    @staticmethod
+    def get_fuse_region(
+        node: BaseSchedulerNode,
+    ) -> str | None:
+        region: str | None = None
+        seen_region = False
+        for snode in node.get_nodes():
+            op = snode.node
+            if op is None or not hasattr(op, "annotations"):
+                continue
+            op_region = op.annotations.get(FUSE_REGION)
+            if op_region is not None and not isinstance(op_region, str):
+                raise AssertionError(f"expected fuse_region to be str, got {op_region}")
+            if seen_region and region != op_region:
+                raise AssertionError(
+                    f"expected one fuse_region per scheduler node, got {region} and {op_region}"
+                )
+            region = op_region
+            seen_region = True
+        return region
+
+    def _group_by_fuse_region(
+        self,
+        nodes: list[BaseSchedulerNode],
+    ) -> list[list[BaseSchedulerNode]]:
+        groups: dict[str | None, list[BaseSchedulerNode]] = defaultdict(list)
+        for node in nodes:
+            groups[self.get_fuse_region(node)].append(node)
+        return list(groups.values())
+
     def create_foreach_nodes(self) -> None:
         removed_node_names: OrderedSet[str] = OrderedSet()
         fe_nodes = []
@@ -4505,21 +4539,32 @@ class Scheduler:
                 # All nodes eliminated
                 continue
 
-            removed_node_names.update(names)
-            snodes = [self.name_to_node[name] for name in names]
-
-            enable_autotune = config.combo_kernels_autotune > 1
-            fe_node = ForeachKernelSchedulerNode(
-                self,
-                snodes,
-                use_custom_partition_algo=False,
-                enable_autotune=enable_autotune,
-            )
-
-            fe_nodes.append(fe_node)
-
+            name_groups: dict[str | None, list[str]] = defaultdict(list)
             for name in names:
-                self.name_to_fused_node[name] = fe_node
+                name_groups[self.get_fuse_region(self.name_to_node[name])].append(name)
+
+            foreach_name_groups = (
+                [names] if len(name_groups) == 1 else list(name_groups.values())
+            )
+            for name_group in foreach_name_groups:
+                if len(name_group) < 2 and len(name_groups) != 1:
+                    continue
+
+                removed_node_names.update(name_group)
+                snodes = [self.name_to_node[name] for name in name_group]
+
+                enable_autotune = config.combo_kernels_autotune > 1
+                fe_node = ForeachKernelSchedulerNode(
+                    self,
+                    snodes,
+                    use_custom_partition_algo=False,
+                    enable_autotune=enable_autotune,
+                )
+
+                fe_nodes.append(fe_node)
+
+                for name in name_group:
+                    self.name_to_fused_node[name] = fe_node
 
         self.nodes = [
             node for node in self.nodes if node.get_name() not in removed_node_names
@@ -6367,34 +6412,39 @@ class Scheduler:
             if len(members) < 2:
                 continue
 
-            for window in Scheduler._distance_windows(
-                members, node_to_idx, max_distance
-            ):
+            for member_group in self._group_by_fuse_region(members):
                 if num_ck_nodes is not None and count > num_ck_nodes:
                     break
-                if len(window) < 2 or not self.speedup_by_combo_kernel(window):
-                    continue
-                if memory_check:
-                    if mem_ctx is None:
-                        raise AssertionError("expected mem_ctx to be set")
-                    sim_start = time.perf_counter()
-                    self._try_combo_with_halving(
-                        window,
-                        num,
-                        mem_ctx,
-                        enable_autotune=enable_autotune,
-                        on_accept=_register_accept,
-                    )
-                    memory_sim_time += time.perf_counter() - sim_start
-                else:
-                    combo_node = ForeachKernelSchedulerNode(
-                        window[0].scheduler,
-                        window,
-                        use_custom_partition_algo=True,
-                        enable_autotune=enable_autotune,
-                        per_subkernel_blocks=config.combo_kernel_per_subkernel_blocks,
-                    )
-                    _register_accept(combo_node, window, num)
+                for window in Scheduler._distance_windows(
+                    member_group, node_to_idx, max_distance
+                ):
+                    if num_ck_nodes is not None and count > num_ck_nodes:
+                        break
+                    if len(window) < 2 or not self.speedup_by_combo_kernel(window):
+                        continue
+                    if memory_check:
+                        if mem_ctx is None:
+                            raise AssertionError("expected mem_ctx to be set")
+                        sim_start = time.perf_counter()
+                        self._try_combo_with_halving(
+                            window,
+                            num,
+                            mem_ctx,
+                            enable_autotune=enable_autotune,
+                            on_accept=_register_accept,
+                        )
+                        memory_sim_time += time.perf_counter() - sim_start
+                    else:
+                        combo_node = ForeachKernelSchedulerNode(
+                            window[0].scheduler,
+                            window,
+                            use_custom_partition_algo=True,
+                            enable_autotune=enable_autotune,
+                            per_subkernel_blocks=(
+                                config.combo_kernel_per_subkernel_blocks
+                            ),
+                        )
+                        _register_accept(combo_node, window, num)
 
         self.nodes = sorted(fused_nodes, key=lambda x: x.min_order)
         self.nodes = self.topological_sort_schedule(self.nodes)
@@ -6838,6 +6888,286 @@ class Scheduler:
         unique_io_buffers = unique_reads | unique_writes
 
         return len(unique_io_buffers) > threshold
+
+    def fusion_would_materialize_disjoint_branches(
+        self,
+        node1: BaseSchedulerNode,
+        node2: BaseSchedulerNode,
+        shared_data_score: int,
+    ) -> bool:
+        if (
+            shared_data_score <= 0
+            or node1.is_reduction()
+            or node2.is_reduction()
+            or node1.is_template()
+            or node2.is_template()
+        ):
+            return False
+
+        fused_node_names = OrderedSet(
+            [node.get_name() for node in node1.get_nodes()]
+            + [node.get_name() for node in node2.get_nodes()]
+        )
+
+        node1_output_bytes, node1_external_users, node1_output_count = (
+            self._materialized_external_output_info(node1, fused_node_names)
+        )
+        node2_output_bytes, node2_external_users, node2_output_count = (
+            self._materialized_external_output_info(node2, fused_node_names)
+        )
+        if node1_output_count == 0 or node2_output_count == 0:
+            return False
+
+        if node1_external_users & node2_external_users:
+            return False
+
+        return min(node1_output_bytes, node2_output_bytes) >= shared_data_score
+
+    def _materialized_external_outputs(
+        self,
+        node: BaseSchedulerNode,
+        fused_node_names: OrderedSet[str],
+    ) -> list[tuple[int, OrderedSet[str]]]:
+        outputs: list[tuple[int, OrderedSet[str]]] = []
+        seen_writes: OrderedSet[str] = OrderedSet()
+        for snode in node.get_nodes():
+            for write in snode.read_writes.writes:
+                write_name = self.mutation_renames.get(write.name, write.name)
+                if write_name in seen_writes:
+                    continue
+                seen_writes.add(write_name)
+
+                if self.can_buffer_be_removed_through_fusion(
+                    write_name, fused_node_names
+                ):
+                    continue
+
+                buf = self.name_to_buf.get(write_name)
+                if buf is None:
+                    continue
+
+                users = OrderedSet(
+                    user.get_name()
+                    for user in buf.users
+                    if not user.is_weak
+                    and user.get_name() not in fused_node_names
+                    and not isinstance(user.node, OutputNode)
+                )
+                if not users:
+                    continue
+
+                output_bytes = self.dep_size_hint(write)
+                if output_bytes <= 0:
+                    return []
+
+                outputs.append((output_bytes, users))
+        return outputs
+
+    def _materialized_external_output_info(
+        self,
+        node: BaseSchedulerNode,
+        fused_node_names: OrderedSet[str],
+    ) -> tuple[int, OrderedSet[str], int]:
+        outputs = self._materialized_external_outputs(node, fused_node_names)
+        total_bytes = sum(output_bytes for output_bytes, _ in outputs)
+        external_users: OrderedSet[str] = OrderedSet()
+        for _, users in outputs:
+            external_users.update(users)
+        return total_bytes, external_users, len(outputs)
+
+    def _output_node_order(self) -> int:
+        return max((node.max_order for node in self.nodes), default=-1) + 1
+
+    def _materialized_external_output_orders(
+        self,
+        node: BaseSchedulerNode,
+        fused_node_names: OrderedSet[str],
+        *,
+        include_output_node: bool = False,
+    ) -> list[tuple[int, int, list[int], OrderedSet[str]]]:
+        outputs: list[tuple[int, int, list[int], OrderedSet[str]]] = []
+        seen_writes: OrderedSet[str] = OrderedSet()
+        output_node_order = self._output_node_order()
+        for snode in node.get_nodes():
+            for write in snode.read_writes.writes:
+                write_name = self.mutation_renames.get(write.name, write.name)
+                if write_name in seen_writes:
+                    continue
+                seen_writes.add(write_name)
+
+                if self.can_buffer_be_removed_through_fusion(
+                    write_name, fused_node_names
+                ):
+                    continue
+
+                buf = self.name_to_buf.get(write_name)
+                if buf is None:
+                    continue
+
+                users: OrderedSet[str] = OrderedSet()
+                user_orders: list[int] = []
+                for user in buf.users:
+                    user_name = user.get_name()
+                    if user.is_weak or user_name in fused_node_names:
+                        continue
+                    if isinstance(user.node, OutputNode):
+                        if include_output_node:
+                            users.add(user_name)
+                            user_orders.append(output_node_order)
+                        continue
+                    user_node = self.name_to_fused_node.get(user_name)
+                    if user_node is None:
+                        continue
+                    users.add(user_name)
+                    user_orders.append(user_node.min_order)
+
+                if not user_orders:
+                    continue
+
+                output_bytes = self.dep_size_hint(write)
+                if output_bytes <= 0:
+                    return []
+
+                outputs.append((output_bytes, snode.max_order, user_orders, users))
+        return outputs
+
+    def fusion_would_materialize_outputs_across_extern_branch(
+        self,
+        node1: BaseSchedulerNode,
+        node2: BaseSchedulerNode,
+    ) -> bool:
+        if node1.is_template() or node2.is_template():
+            return False
+
+        fused_node_names = OrderedSet(
+            [node.get_name() for node in node1.get_nodes()]
+            + [node.get_name() for node in node2.get_nodes()]
+        )
+        node1_outputs = self._materialized_external_outputs(node1, fused_node_names)
+        node2_outputs = self._materialized_external_outputs(node2, fused_node_names)
+        outputs = [
+            *((1, output_bytes, users) for output_bytes, users in node1_outputs),
+            *((2, output_bytes, users) for output_bytes, users in node2_outputs),
+        ]
+        if len(outputs) < 2:
+            return False
+
+        materialized_outputs: list[tuple[int, int, int, bool, OrderedSet[str]]] = []
+        for side, output_bytes, users in outputs:
+            user_nodes = [
+                self.name_to_fused_node[user_name]
+                for user_name in users
+                if user_name in self.name_to_fused_node
+            ]
+            if not user_nodes:
+                continue
+            first_user_order = min(user.min_order for user in user_nodes)
+            first_user_is_extern = any(
+                user.min_order == first_user_order and user.is_extern()
+                for user in user_nodes
+            )
+            materialized_outputs.append(
+                (side, output_bytes, first_user_order, first_user_is_extern, users)
+            )
+
+        for (
+            early_side,
+            early_bytes,
+            early_order,
+            early_is_extern,
+            early_users,
+        ) in materialized_outputs:
+            if not early_is_extern:
+                continue
+            if any(
+                later_side != early_side
+                and later_bytes >= early_bytes
+                and later_order > early_order
+                and not (early_users & later_users)
+                for (
+                    later_side,
+                    later_bytes,
+                    later_order,
+                    _,
+                    later_users,
+                ) in materialized_outputs
+            ):
+                return True
+        return False
+
+    def fusion_would_materialize_late_outputs_from_shared_producer(
+        self,
+        producer: BaseSchedulerNode,
+        consumer: BaseSchedulerNode,
+        shared_data_score: int,
+    ) -> bool:
+        if (
+            shared_data_score <= 0
+            or producer.is_template()
+            or consumer.is_template()
+            or not (producer.get_operation_names() & consumer.ancestors)
+        ):
+            return False
+
+        fused_node_names = OrderedSet(
+            [node.get_name() for node in producer.get_nodes()]
+            + [node.get_name() for node in consumer.get_nodes()]
+        )
+
+        consumer_read_names = OrderedSet(
+            self.mutation_renames.get(read.name, read.name)
+            for read in consumer.read_writes.reads
+        )
+        earliest_other_user_order = None
+        producer_output_bytes = 0
+        for write in producer.read_writes.writes:
+            write_name = self.mutation_renames.get(write.name, write.name)
+            if write_name not in consumer_read_names:
+                continue
+            buf = self.name_to_buf.get(write_name)
+            if buf is None:
+                continue
+            other_users = []
+            for user in buf.users:
+                user_name = user.get_name()
+                if (
+                    user.is_weak
+                    or user_name in fused_node_names
+                    or isinstance(user.node, OutputNode)
+                ):
+                    continue
+                other_users.append(self.name_to_fused_node.get(user_name, user.node))
+            if not other_users:
+                continue
+            user_order = min(user.min_order for user in other_users)
+            earliest_other_user_order = (
+                user_order
+                if earliest_other_user_order is None
+                else min(earliest_other_user_order, user_order)
+            )
+            output_bytes = self.dep_size_hint(write)
+            if output_bytes <= 0:
+                return False
+            producer_output_bytes += output_bytes
+
+        if earliest_other_user_order is None or producer_output_bytes <= 0:
+            return False
+
+        late_output_bytes = 0
+        for (
+            output_bytes,
+            output_order,
+            user_orders,
+            _,
+        ) in self._materialized_external_output_orders(
+            consumer, fused_node_names, include_output_node=True
+        ):
+            if (
+                output_order > earliest_other_user_order
+                and min(user_orders) > earliest_other_user_order
+            ):
+                late_output_bytes += output_bytes
+        return late_output_bytes >= producer_output_bytes
 
     def are_long_distant_nodes(
         self, node1: BaseSchedulerNode, node2: BaseSchedulerNode
@@ -7626,6 +7956,13 @@ class Scheduler:
             if stream1 is not None and stream2 is not None and stream1 != stream2:
                 return False
 
+        why = WhyNoFuse(node1, node2)
+        region1 = self.get_fuse_region(node1)
+        region2 = self.get_fuse_region(node2)
+        if region1 != region2:
+            why("fuse_region mismatch (%s vs %s)", region1, region2)
+            return False
+
         if isinstance(node1, FusedNestedReductions):
             return node1.can_fuse_with(node2, can_reorder=can_reorder)
         if isinstance(node2, FusedNestedReductions):
@@ -7637,8 +7974,6 @@ class Scheduler:
             # We don't fuse something before a FusedMixOrderReductions
             # right now
             return False
-
-        why = WhyNoFuse(node1, node2)
 
         if node1.is_template() and self.get_backend(
             node1.get_device()
