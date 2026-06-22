@@ -120,12 +120,6 @@ def output_plan(
             output_value = output_value[0]
         else:
             output, *aux_outputs = output_value
-            if not isinstance(output, torch.fx.Node) or any(
-                not isinstance(aux_output, torch.fx.Node) for aux_output in aux_outputs
-            ):
-                raise NotImplementedError(
-                    "FlexGEMM tuple epilogues expect tensor outputs"
-                )
             return FlexGemmOutputPlan(output, tuple(aux_outputs))
     if not isinstance(output_value, torch.fx.Node):
         raise NotImplementedError("FlexGEMM expects one tensor output")

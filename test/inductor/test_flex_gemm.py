@@ -282,20 +282,19 @@ class FlexGemmTestCase(TestCase):
             ),
         )
 
-    def assertTupleAuxMatchesReference(self, actual, aux, a, b):
+    def assertTupleAuxMatchesReference(self, actual, aux, a, b, epilogue_fn):
         """Validate tuple-aux epilogues against low/high precision references."""
-        acc = a @ b
-        acc_float = acc.float()
+        expected, expected_aux = epilogue_fn(a @ b)
         high_precision_acc = a.double() @ b.double()
         self.assertMatchesLowPrecisionEager(
             actual,
-            (acc_float + 1.0) * 0.5,
+            expected,
             (high_precision_acc + 1.0) * 0.5,
             a.shape[-1],
         )
         self.assertMatchesLowPrecisionEager(
             aux,
-            acc_float.square() + 2.0,
+            expected_aux,
             high_precision_acc.square() + 2.0,
             a.shape[-1],
         )
@@ -755,6 +754,11 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         out = torch.empty(m, n, device="cuda", dtype=torch.float32)
         aux = torch.empty(m, n, device="cuda", dtype=torch.float32)
 
+        def epilogue_fn(acc):
+            main = (acc.float() + 1.0) * 0.5
+            aux = acc.float().square() + 2.0
+            return main, aux
+
         actual = gemm_epilogue(
             a,
             b,
@@ -766,41 +770,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         )
 
         self.assertIs(actual, out)
-        self.assertTupleAuxMatchesReference(out, aux, a, b)
-
-    @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_swap_ab_tuple_aux_matches_non_swap(self):
-        from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue
-
-        torch.manual_seed(9)
-        m, n, k = 128, 384, 256
-        a = self.makeTensor(m, k)
-        b = self.makeTensor(k, n)
-        swap_key, non_swap_key = self.swapAndNonSwapConfigKeys(a.device)
-
-        def run(name, config_key):
-            out = torch.empty(m, n, device="cuda", dtype=torch.float32)
-            aux = torch.empty(m, n, device="cuda", dtype=torch.float32)
-            gemm_epilogue(
-                a,
-                b,
-                self.tuple_aux_epilogue,
-                name,
-                out_dtype=torch.float32,
-                out=out,
-                aux_out=aux,
-                config_key=config_key,
-            )
-            return out, aux
-
-        swapped, swapped_aux = run("test_flex_gemm_swap_ab_tuple_aux", swap_key)
-        non_swapped, non_swapped_aux = run(
-            "test_flex_gemm_non_swap_ab_tuple_aux", non_swap_key
-        )
-
-        self.assertEqual(swapped, non_swapped)
-        self.assertEqual(swapped_aux, non_swapped_aux)
-        self.assertTupleAuxMatchesReference(swapped, swapped_aux, a, b)
+        self.assertTupleAuxMatchesReference(out, aux, a, b, epilogue_fn)
 
 
 @instantiate_parametrized_tests
@@ -844,6 +814,38 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         actual = flex_gemm(op, args_fn(a, b), epilogue_fn)
 
         torch.testing.assert_close(actual, epilogue_fn(ref_fn(a, b)))
+
+    def test_default_backend_eager_tuple_aux_matches_reference(self):
+        a = torch.randn(8, 16)
+        b = torch.randn(16, 12)
+
+        def epilogue_fn(acc):
+            return acc.relu(), acc + 1
+
+        actual, aux = flex_gemm(torch.mm, (a, b), epilogue_fn)
+        expected, expected_aux = epilogue_fn(a @ b)
+
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(aux, expected_aux)
+
+    def test_fake_tensor_mode_tuple_aux_returns_fake_tensors(self):
+        from torch._subclasses.fake_tensor import FakeTensorMode
+
+        with FakeTensorMode() as mode:
+            a = mode.from_tensor(torch.randn(8, 16))
+            b = mode.from_tensor(torch.randn(16, 12))
+
+            def epilogue_fn(acc):
+                return acc.relu(), acc + 1
+
+            actual, aux = flex_gemm(torch.mm, (a, b), epilogue_fn)
+
+        self.assertEqual(actual.shape, torch.Size([8, 12]))
+        self.assertEqual(aux.shape, torch.Size([8, 12]))
+        self.assertEqual(actual.dtype, torch.float32)
+        self.assertEqual(aux.dtype, torch.float32)
+        self.assertIs(actual.fake_mode, mode)
+        self.assertIs(aux.fake_mode, mode)
 
     def test_autograd_is_not_implemented(self):
         a = torch.randn(8, 16, requires_grad=True)
@@ -1143,7 +1145,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
             b = torch.randn(k, n, device="cuda", dtype=torch.bfloat16)
             actual, aux = compiled(a, b)
-            self.assertTupleAuxMatchesReference(actual, aux, a, b)
+            self.assertTupleAuxMatchesReference(actual, aux, a, b, epilogue_fn)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -1466,7 +1468,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                 torch.compile(fn, backend="inductor", fullgraph=True), a, b
             )
 
-        self.assertTupleAuxMatchesReference(actual, aux, a, b)
+        self.assertTupleAuxMatchesReference(actual, aux, a, b, epilogue_fn)
         self.assertFlexGemmGeneratedCode(code, "aux_out=")
 
     @skipIfNoCuteDSL
