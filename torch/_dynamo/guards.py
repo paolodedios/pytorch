@@ -39,7 +39,7 @@ import weakref
 from contextlib import contextmanager
 from copy import deepcopy
 from inspect import currentframe
-from typing import Any, NamedTuple, NoReturn, TYPE_CHECKING
+from typing import Any, cast, NamedTuple, NoReturn, TYPE_CHECKING
 from typing_extensions import LiteralString, TypeAliasType, TypeVar
 from weakref import ReferenceType
 
@@ -798,9 +798,9 @@ strip_function_call = torch._C._dynamo.strip_function_call
 
 
 def _safe_type_repr(t: object) -> str:
-    if not isinstance(t, type):
+    if not issubclass(type(t), type):
         t = type(t)
-    return type.__repr__(t)
+    return type.__repr__(cast(type[Any], t))
 
 
 def get_verbose_code_part(code_part: str, guard: Guard | None) -> str:

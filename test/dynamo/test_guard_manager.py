@@ -109,6 +109,11 @@ class GuardManagerTests(torch._dynamo.test_case.TestCase):
         class CustomReprClass(metaclass=CustomReprMeta):
             pass
 
+        class SpoofedClass:
+            @property
+            def __class__(self):
+                return type
+
         self.assertEqual(
             torch._dynamo.guards._safe_type_repr(CustomReprClass),
             type.__repr__(CustomReprClass),
@@ -116,6 +121,11 @@ class GuardManagerTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(
             torch._dynamo.guards._safe_type_repr(list[int]),
             type.__repr__(type(list[int])),
+        )
+        self.assertIsInstance(SpoofedClass(), type)
+        self.assertEqual(
+            torch._dynamo.guards._safe_type_repr(SpoofedClass()),
+            type.__repr__(SpoofedClass),
         )
 
     def test_guard_debug_info_user_stack(self):

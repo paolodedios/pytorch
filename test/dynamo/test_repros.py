@@ -8361,6 +8361,9 @@ SavedForBackwardsAOTOutput(idx=5)""",
         class Color(Enum):
             RED = 1
 
+        if not hasattr(Color, "_new_member_"):
+            self.skipTest("Enum._new_member_ is not available on this Python version")
+
         @torch.compile(backend="eager", fullgraph=True)
         def f(x):
             if Color._new_member_ is not object.__new__:
