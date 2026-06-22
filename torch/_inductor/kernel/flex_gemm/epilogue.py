@@ -6,6 +6,7 @@ import torch
 from torch._inductor.codegen.cutedsl.cutedsl_op_overrides import (
     CuteDSLCSEVariable,
     CuteDSLOpOverrides,
+    upcast_compute_type,
 )
 from torch._inductor.virtualized import V
 from torch.utils._sympy.value_ranges import ValueRanges
@@ -179,12 +180,26 @@ def materialize_flex_gemm_epilogue(
             "acc", ValueRanges.unknown(), dtype=torch.float32, shape=(1,)
         )
     }
-    for index, node in enumerate(epilogue_arg_placeholders):
-        env[node] = CuteDSLCSEVariable(
-            f"aux{index}", ValueRanges.unknown(), dtype=torch.float32, shape=(1,)
-        )
-
     with V.set_kernel_handler(kernel), V.set_ops_handler(FlexGemmCuteDSLOpOverrides()):
+        for index, node in enumerate(epilogue_arg_placeholders):
+            epilogue_arg_meta = node.meta["val"]
+            physical_dtype = (
+                torch.uint8
+                if epilogue_arg_meta.dtype is torch.bool
+                else epilogue_arg_meta.dtype
+            )
+            logical_dtype = upcast_compute_type(epilogue_arg_meta.dtype)
+            env[node] = CuteDSLCSEVariable(
+                f"aux{index}",
+                ValueRanges.unknown(),
+                dtype=physical_dtype,
+                shape=(1,),
+            )
+            if logical_dtype != physical_dtype:
+                env[node] = FlexGemmCuteDSLOpOverrides.to_dtype(
+                    env[node], logical_dtype, use_compute_types=False
+                )
+
         for node in graph_module.graph.nodes:
             if node is gemm or node.op in ("placeholder", "output"):
                 continue
@@ -200,13 +215,15 @@ def materialize_flex_gemm_epilogue(
                     f"unsupported FlexGEMM epilogue node: {node.format_node()}"
                 )
 
-    key = hashlib.sha256(graph_module.code.encode()).hexdigest()[:16]
-    name = f"flex_gemm_epilogue_{key}"
     body = "\n".join(f"    {line}" for line in kernel.body.lines)
     if body:
         body += "\n"
     aux_args = [f"aux{index}" for index in range(len(epilogue_arg_placeholders))]
     epilogue_params = ", ".join(["acc", *aux_args])
+    result = _cute_arg(output, env)
+    key_payload = f"{graph_module.code}\n{body}\nreturn {result}"
+    key = hashlib.sha256(key_payload.encode()).hexdigest()[:16]
+    name = f"flex_gemm_epilogue_{key}"
     return (
         name,
         "import cutlass\n"
@@ -214,5 +231,5 @@ def materialize_flex_gemm_epilogue(
         "import operator\n"
         "from cutlass._mlir.dialects import math as mlir_math\n\n"
         f"@cute.jit\ndef {name}({epilogue_params}):\n"
-        f"{body}    return {_cute_arg(output, env)}\n",
+        f"{body}    return {result}\n",
     )
