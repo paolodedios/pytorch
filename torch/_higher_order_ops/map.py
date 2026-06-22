@@ -79,11 +79,7 @@ class MapImpl(HigherOrderOperator):
         #   shared mutable buffer should use scan / while_loop, where
         #   sequential iteration is part of the contract.
         outputs = get_graph_output_example_values(body_gm)
-        mutated_set = (
-            {int(i) for i in mutated_arg_indices.split(",") if i}
-            if mutated_arg_indices
-            else set()
-        )
+        mutated_set = {int(i) for i in mutated_arg_indices.split(",") if i}
 
         schema_gen = HopSchemaGenerator(self)
         schema_gen.add_arg("f", body_gm)
