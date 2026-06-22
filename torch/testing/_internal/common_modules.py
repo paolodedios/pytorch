@@ -1819,11 +1819,10 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
             )
 
     def sizes_and_options():
-        # (8, 5, 4) and (None, 8, 4) are budget regime (in_features >=
-        # num_classes) where the auto memory cap binds; (32, 4, 64) is vocab
-        # regime (num_classes >> in_features) where the cap is inert and
-        # aspect_ratio governs -- the LLM-head case.
-        for sizes in [(8, 5, 4), (None, 8, 4), (32, 4, 64)]:
+        # APPEND-ONLY: never reorder/insert/remove entries -- each consumes
+        # fixed RNG draws, so a mid-stream change shifts later samples and
+        # moves the cancellation-sensitive index-target ULP caps in test_nn.py.
+        for sizes in [(8, 5, 4), (None, 8, 4)]:
             yield sizes, None
             num_batches, in_features, num_classes = sizes
             if acc_dtype is not None:
@@ -1837,8 +1836,8 @@ def module_inputs_torch_nn_LinearCrossEntropyLoss(module_info, device, dtype, re
                 # fixed chunk size reduces memory usage but may reduce
                 # processing performance:
                 yield sizes, dict(batch_chunk_size=2)
-                # an explicit chunking method (aspect_ratio:N math is unit-tested
-                # in test_linear_cross_entropy_options_aspect_ratio_chunk_size):
+                # alternatively, chunk sizes via an explicit chunking method:
+                yield sizes, dict(chunking_method="aspect_ratio:2")
                 yield sizes, dict(chunking_method="aspect_ratio:4")
 
     def samples():
