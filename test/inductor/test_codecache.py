@@ -530,6 +530,55 @@ class TestFxGraphCache(TestCase):
         torch._dynamo.reset()
         clear_caches()
 
+    @config.patch({"fx_graph_cache": True})
+    @config.patch({"fx_graph_remote_cache": False})
+    @config.patch({"compile_threads": 1})
+    def test_cache_key_custom_op_schema(self):
+        # Custom ops registered under the same name but with different
+        # schemas (here, different mutates_args) must not share a cache
+        # entry, otherwise a stale graph is silently reused.
+        # https://github.com/pytorch/pytorch/issues/187319
+        def fn(x, y):
+            out = torch.empty_like(x)
+            torch.ops.test_schema_cache.foo(x, y, out=out)
+            return out
+
+        def register(lib, mutates_args):
+            def foo(x: torch.Tensor, y: torch.Tensor, *, out: torch.Tensor) -> None:
+                torch.mul(torch.mul(x, y), x, out=out)
+
+            def foo_fake(
+                x: torch.Tensor, y: torch.Tensor, *, out: torch.Tensor
+            ) -> None:
+                return None
+
+            schema = "foo" + torch.library.infer_schema(foo, mutates_args=mutates_args)
+            lib.define(schema)
+            lib.impl("foo", foo, "CPU")
+            lib._register_fake("foo", foo_fake)
+
+        x = torch.randn(8)
+        y = torch.randn(8)
+        expected = x * y * x
+
+        # First registration declares the op non-mutating, so Inductor may
+        # eliminate it. This populates the cache.
+        with torch.library._scoped_library("test_schema_cache", "FRAGMENT") as lib:
+            register(lib, [])
+            torch.compile(fn, fullgraph=True)(x, y)
+        self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 1)
+        self.assertEqual(counters["inductor"]["fxgraph_cache_hit"], 0)
+
+        # Re-register the same op as mutating out. The differing schema must
+        # force a recompile rather than reuse the stale cache entry.
+        torch._dynamo.reset()
+        with torch.library._scoped_library("test_schema_cache", "FRAGMENT") as lib:
+            register(lib, ["out"])
+            result = torch.compile(fn, fullgraph=True)(x, y)
+        self.assertEqual(counters["inductor"]["fxgraph_cache_miss"], 2)
+        self.assertEqual(counters["inductor"]["fxgraph_cache_hit"], 0)
+        self.assertEqual(result, expected)
+
     def _find_triton_kernel_binaries(self):
         found = []
         triton_dir = os.path.join(cache_dir(), "triton")

@@ -1489,6 +1489,29 @@ class FxGraphHashDetails:
                         (kernel_source, constant_args, configs)
                     )
 
+        # The op name recorded in the FX graph (e.g.
+        # "torch.ops.mylib.foo.default") does not capture the op's schema, so
+        # two custom ops registered under the same name but with different
+        # schemas (for example differing mutability / mutates_args) would
+        # otherwise produce the same graph and share a cache entry. Hash the
+        # schemas so such ops are distinguished. Handle both OpOverload (post
+        # AOTAutograd graphs) and OpOverloadPacket (pre-dispatch dynamo graphs).
+        op_schemas: OrderedSet[str] = OrderedSet()
+        if gm is not None:
+            for module in gm.modules():
+                if not isinstance(module, torch.fx.GraphModule):
+                    continue
+                for node in module.graph.nodes:
+                    if node.op != "call_function":
+                        continue
+                    target = node.target
+                    if isinstance(target, torch._ops.OpOverload):
+                        op_schemas.add(str(target._schema))
+                    elif isinstance(target, torch._ops.OpOverloadPacket):
+                        for overload in target.overloads():
+                            op_schemas.add(str(getattr(target, overload)._schema))
+        self.op_schemas = sorted(op_schemas)
+
         no_tensor_inputs = not any(isinstance(x, torch.Tensor) for x in example_inputs)
         # This device index is usually already encoded by the device of the inputs
         # but fx graphs don't necessarily have tensor inputs. If there aren't any,
