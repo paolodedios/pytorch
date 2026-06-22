@@ -341,6 +341,44 @@ bool is_onednn_matmul_strides(const at::Tensor& tensor) {
   return true;
 }
 
+bool is_onednn_conv_strides(const at::Tensor& tensor) {
+  // oneDNN convolution uses:
+  // - src/dst: 3D/4D/5D
+  // - weight: 3D/4D/5D
+  // - bias: 1D
+  auto sizes = tensor.sizes();
+  auto tensor_dim = sizes.size();
+  if (tensor_dim < 1 || tensor_dim > 5)
+    return false;
+
+  if (tensor.is_contiguous())
+    return true;
+
+  if (tensor.storage_offset() > 0 && !is_64_bytes_aligned(tensor)) {
+    return false;
+  }
+
+  // the overlapped cases are not supported
+  dnnl::memory::dims strides = get_onednn_strides(tensor);
+  int64_t storage_size = 1;
+  for (size_t dim = 0; dim < tensor_dim; ++dim) {
+    if (strides[dim] < 0)
+      return false;
+    storage_size += (sizes[dim] - 1) * strides[dim];
+  }
+  if (storage_size < tensor.numel())
+    return false;
+
+  // the broadcast cases are not supported
+  if (is_broadcast(tensor)) {
+    return false;
+  }
+
+  if (!onednn_strides_check(tensor))
+    return false;
+  return true;
+}
+
 bool is_broadcast_from_other_to_self(
     const at::Tensor& self,
     const at::Tensor& other) {
