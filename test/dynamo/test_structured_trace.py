@@ -236,11 +236,10 @@ class StructuredTraceTest(TestCase):
         trace_log.setLevel(self.old_level)
         super().tearDown()
 
-    def assertExpectedInline(self, actual, expected, skip=0):
+    def assertExpectedInline(self, actual, expected):
         super().assertExpectedInline(
             self._normalize_rank_field(self._normalize_describe_ids(actual)),
             self._normalize_rank_field(self._normalize_describe_ids(expected)),
-            skip=skip + 1,
         )
 
     @staticmethod
