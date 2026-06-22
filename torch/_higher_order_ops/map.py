@@ -45,14 +45,7 @@ class MapImpl(HigherOrderOperator):
     def __call__(self, f, xs, pos_args, *, mutated_arg_indices: str = ""):
         # pyrefly: ignore [missing-attribute]
         return super().__call__(
-            f,
-            xs,
-            pos_args,
-            **(
-                {"mutated_arg_indices": mutated_arg_indices}
-                if mutated_arg_indices
-                else {}
-            ),
+            f, xs, pos_args, mutated_arg_indices=mutated_arg_indices
         )
 
     # pyrefly: ignore [bad-override]
