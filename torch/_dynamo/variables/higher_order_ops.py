@@ -2360,12 +2360,6 @@ class TorchHigherOrderOperatorVariable(VariableTracker):
     def as_python_constant(self) -> HigherOrderOperator:
         return self.value
 
-    def is_python_equal(self, other: object) -> bool:
-        return (
-            isinstance(other, VariableTracker)
-            and self.as_python_constant() == other.as_python_constant()
-        )
-
 
 class CustomFunctionHigherOrderOperatorVariable(TorchHigherOrderOperatorVariable):
     """
@@ -5896,6 +5890,7 @@ class LocalMapWrappedHigherOrderVariable(WrapHigherOrderVariable):
             in_grad_placements,
             device_mesh,
             redistribute_inputs,
+            enable_spmd_types,
             *user_args,
         ) = args
 
