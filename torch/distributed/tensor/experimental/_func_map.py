@@ -168,9 +168,10 @@ def _out_spmd_types_to_grad_placements(
             axis = spmd.MeshAxis.of(device_mesh.get_group(dim_idx))
             actual = actual_type.get(axis)
             if actual is None:
-                mesh_dims = device_mesh.mesh_dim_names or tuple(
-                    range(device_mesh.ndim)
-                )  # pyrefly: ignore[bad-argument-type]
+                if device_mesh.mesh_dim_names is None:
+                    mesh_dims: Sequence[Any] = tuple(range(device_mesh.ndim))
+                else:
+                    mesh_dims = device_mesh.mesh_dim_names
                 annotated_dims = [
                     mesh_dims[i]
                     for i in range(device_mesh.ndim)
