@@ -1745,16 +1745,60 @@ class PallasKernel(SIMDKernel):
         red_numel.  Falls back to stride-direction analysis for
         gather/flatten loads.
         """
-        if not self.load_index_exprs:
-            return (-1,)
-
         r_vars = [v for v, e in self.range_tree_nodes.items() if e.is_reduction]
         pw_vars = [v for v, e in self.range_tree_nodes.items() if not e.is_reduction]
         if not r_vars or not pw_vars:
             return (-1,)
 
+        for buf_name, load_index in self.load_index_exprs.items():
+            info = self._get_buffer_info(buf_name)
+            if info is None:
+                continue
+            buf_obj, buf_size, _, _, _ = info
+            nd = len(buf_size)
+            if nd < len(r_vars):
+                continue
+            layout = getattr(buf_obj, "get_layout", lambda: None)()
+            raw_strides = getattr(layout, "stride", None) if layout else None
+            if raw_strides is not None and len(raw_strides) == nd:
+                axes = []
+                used_dims: OrderedSet[int] = OrderedSet()
+                for r_var in r_vars:
+                    r_coeff = V.graph.sizevars.simplify(load_index.coeff(r_var))
+                    matches = [
+                        i
+                        for i, stride in enumerate(raw_strides)
+                        if i not in used_dims
+                        and V.graph.sizevars.statically_known_equals(stride, r_coeff)
+                    ]
+                    if len(matches) != 1:
+                        break
+                    axes.append(matches[0])
+                    used_dims.add(matches[0])
+                else:
+                    return tuple(i - nd for i in sorted(axes))
+
+            axes = []
+            used_dims: OrderedSet[int] = OrderedSet()
+            for r_var in r_vars:
+                r_len = self.range_tree_nodes[r_var].length
+                matches = [
+                    i
+                    for i, dim in enumerate(buf_size)
+                    if i not in used_dims
+                    and V.graph.sizevars.statically_known_equals(dim, r_len)
+                ]
+                if len(matches) != 1:
+                    break
+                axes.append(matches[0])
+                used_dims.add(matches[0])
+            else:
+                return tuple(i - nd for i in sorted(axes))
+
         red_numel = self._compute_reduction_numel()
-        if not red_numel or red_numel <= 1:
+        if red_numel is None:
+            return (-1,)
+        if red_numel <= 1:
             return (-1,)
 
         for buf_name, load_index in self.load_index_exprs.items():

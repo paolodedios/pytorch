@@ -1217,6 +1217,29 @@ class PallasTestsMixin:
             check(2)
 
     @skip_if_cuda
+    def test_dynamic_symbolic_reduction_axes(self):
+        """Test dynamic reduction axes when warmup reduction extent is 1."""
+
+        cases = [
+            (-1, (3, 1), (3, 2)),
+            (0, (1, 4), (3, 4)),
+            (0, (1, 1), (3, 3)),
+        ]
+        for dim, first_shape, second_shape in cases:
+            with self.subTest(dim=dim):
+                torch._dynamo.reset()
+
+                def fn(x, dim=dim):
+                    return x.sum(dim=dim)
+
+                compiled = self._compile(fn, dynamic=True)
+                first = torch.randn(first_shape, device=self.DEVICE)
+                second = torch.randn(second_shape, device=self.DEVICE)
+                self.assertEqual(compiled(first), fn(first))
+                with torch._dynamo.config.patch(error_on_recompile=True):
+                    self.assertEqual(compiled(second), fn(second))
+
+    @skip_if_cuda
     def test_non_stride1_reduction(self):
         """Test reductions along non-innermost axis on square tensors.
 

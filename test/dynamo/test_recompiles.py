@@ -142,6 +142,46 @@ class RecompileTests(torch._dynamo.test_case.TestCase):
 
         self.assertTrue(torch.allclose(opt(x), foo(x), rtol=1e-5, atol=1e-5))
 
+    def test_dynamic_true_singleton_view_broadcast_inductor_correctness(self):
+        def foo(x, y):
+            return x.view(-1, 4) * y.view(-1, 4)
+
+        opt = torch.compile(foo, dynamic=True, backend="inductor")
+
+        x = torch.randn(4)
+        y = torch.randn(8)
+        self.assertEqual(opt(x, y), foo(x, y))
+
+        with torch._dynamo.config.patch(error_on_recompile=True):
+            x = torch.randn(8)
+            y = torch.randn(8)
+            self.assertEqual(opt(x, y), foo(x, y))
+
+    def test_dynamic_true_both_singleton_broadcast_inductor_correctness(self):
+        from torch.fx.experimental import _config as fx_config
+
+        def foo(x, y):
+            return x + y
+
+        with fx_config.patch(use_duck_shape=False):
+            opt = torch.compile(foo, dynamic=True, backend="inductor")
+
+            x = torch.arange(1.0)
+            y = torch.ones(1)
+            self.assertEqual(opt(x, y), foo(x, y))
+
+            with torch._dynamo.config.patch(error_on_recompile=True):
+                x = torch.arange(2.0)
+                y = torch.ones(1)
+                self.assertEqual(opt(x, y), foo(x, y))
+
+                x = torch.arange(2.0)
+                y = torch.ones(2)
+                self.assertEqual(opt(x, y), foo(x, y))
+
+                with self.assertRaises(torch._dynamo.exc.RecompileError):
+                    opt(torch.ones(1), torch.arange(2.0))
+
     def test_dynamic_true_singleton_nonstandard_stride_to_preserves_stride(self):
         def foo(x):
             return x.to(torch.float64).stride()
