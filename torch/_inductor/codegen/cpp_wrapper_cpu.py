@@ -46,6 +46,7 @@ from .cpp_utils import (
     LAYOUT_TO_ATEN,
 )
 from .wrapper import (
+    _rewrite_symbol_solution_for_int_codegen,
     codegen_reinterpret_view_helper,
     EnterSubgraphLine,
     ExitSubgraphLine,
@@ -54,18 +55,6 @@ from .wrapper import (
     SymbolicCallArg,
     WrapperLine,
 )
-
-
-def _rewrite_symbol_solution_for_int_codegen(expr: sympy.Expr) -> sympy.Expr:
-    """
-    Convert rational divisions in a solved integer symbol expression to exact
-    integer division before C++ printing.
-    """
-    expr = sympy.together(sympy.sympify(expr))
-    numerator, denominator = sympy.fraction(expr)
-    if denominator == 1:
-        return numerator
-    return CleanDiv(numerator, denominator)
 
 
 if TYPE_CHECKING:
@@ -741,10 +730,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
                     expr = _rewrite_symbol_solution_for_int_codegen(solution[1])
                     code.writeline(f"int64_t {free_symbol} = {cexpr(expr)};")
                     bound_vars.add(free_symbol)
-                else:
-                    raise AssertionError(
-                        str(sympy.Eq(sym_or_exp, size_symbol)) + " is not solvable"
-                    )
+                    maybe_emit_replacement_aliases(free_symbol)
 
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:
@@ -1632,6 +1618,8 @@ class CppWrapperCpu(PythonWrapperCodegen):
     def _codegen_entry_impl_prologue(self):
         """Hook for subclasses to emit code at the top of inductor_entry_impl,
         before the GIL is released. Default no-op."""
+        if config.triton.debug_sync_graph:
+            self.generate_debug_sync(self.prefix)
 
     def generate_before_suffix(self, result):
         # Close the entry function. In dual-wrapper-mode `result` is the JIT side;
@@ -2225,6 +2213,9 @@ class CppWrapperCpu(PythonWrapperCodegen):
 
     def codegen_exact_buffer_reuse(self, old_name: str, new_name: str, del_line: str):
         return f"auto {new_name} = std::move({old_name});  // reuse"
+
+    def generate_debug_sync(self, buffer):
+        pass
 
     def generate_profiler_mark_wrapper_call(self, stack):
         self.wrapper_call.writeline(
