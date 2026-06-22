@@ -151,6 +151,14 @@ static void sigmoid_backward_kernel(TensorIteratorBase& iter) {
   lib.exec_binary_kernel(iter, "sigmoid_backward");
 }
 
+static void glu_kernel(TensorIteratorBase& iter) {
+  lib.exec_binary_kernel(iter, "glu");
+}
+
+static void glu_backward_kernel(TensorIterator& iter) {
+  lib.exec_ternary_kernel(iter, "glu_backward");
+}
+
 std::tuple<Tensor&, Tensor&> log_sigmoid_forward_out_mps(const Tensor& self, Tensor& output, Tensor& buffer) {
   // NOTE: buffer is only used by CPU dispatch, we just ignore it here
   output.resize_as_(self);
@@ -206,5 +214,7 @@ REGISTER_DISPATCH(silu_backward_stub, silu_backward_kernel);
 REGISTER_DISPATCH(GeluKernel, gelu_kernel);
 REGISTER_DISPATCH(GeluBackwardKernel, gelu_backward_kernel);
 REGISTER_DISPATCH(sigmoid_backward_stub, sigmoid_backward_kernel);
+REGISTER_DISPATCH(glu_stub, glu_kernel);
+REGISTER_DISPATCH(glu_backward_stub, glu_backward_kernel);
 
 } // namespace at::native

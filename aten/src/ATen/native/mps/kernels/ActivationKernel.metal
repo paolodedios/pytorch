@@ -324,6 +324,34 @@ REGISTER_BINARY_OP(sigmoid_backward, bfloat, bfloat);
 REGISTER_BINARY_OP(sigmoid_backward, float2, float2);
 REGISTER_BINARY_OP(sigmoid_backward, half2, half2);
 
+struct glu_functor {
+  template <typename T>
+  inline T operator()(const T a, const T b) {
+    const float bf = float(b);
+    return static_cast<T>(float(a) / (1.0f + ::metal::precise::exp(-bf)));
+  }
+};
+
+REGISTER_BINARY_OP(glu, float, float);
+REGISTER_BINARY_OP(glu, half, half);
+REGISTER_BINARY_OP(glu, bfloat, bfloat);
+
+// Matches the CPU glu_backward functor signature:
+//   inputs are (sig_b, first_half, grad_output); output is grad of second
+//   half. The first-half gradient is produced separately via
+//   at::sigmoid_out + mul_, see glu_backward_cpu_out.
+struct glu_backward_functor {
+  template <typename T>
+  inline T operator()(const T a, const T b, const T c) {
+    const float af = float(a);
+    return static_cast<T>((1.0f - af) * af * float(b) * float(c));
+  }
+};
+
+REGISTER_TERNARY_OP(glu_backward, float, float);
+REGISTER_TERNARY_OP(glu_backward, half, half);
+REGISTER_TERNARY_OP(glu_backward, bfloat, bfloat);
+
 struct log_sigmoid_forward_functor {
   template <typename T>
   inline T operator()(const T self) {
