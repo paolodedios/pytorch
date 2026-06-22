@@ -1268,6 +1268,39 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
+    def test_mm_tuple_aux_supports_bool_mask_output(self):
+        def epilogue_fn(acc):
+            return acc.relu(), acc > 0
+
+        def fn(a, b):
+            return flex_gemm(
+                torch.mm,
+                (a, b),
+                epilogue_fn,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(128, 64, device="cuda", dtype=torch.bfloat16)
+        b = torch.randn(64, 128, device="cuda", dtype=torch.bfloat16)
+
+        (actual, aux), (code,) = run_and_get_code(
+            torch.compile(fn, backend="inductor", fullgraph=True), a, b
+        )
+
+        expected, expected_aux = epilogue_fn(a @ b)
+        self.assertEqual(aux.dtype, torch.bool)
+        self.assertMatchesLowPrecisionEager(
+            actual,
+            expected,
+            (a.double() @ b.double()).relu(),
+            a.shape[1],
+        )
+        torch.testing.assert_close(aux, expected_aux)
+        self.assertFlexGemmGeneratedCode(code, "aux_out=")
+
+    @skipIfNoCuteDSL
+    @unittest.skipIf(not TEST_CUDA, "CUDA required")
+    @unittest.skipIf(not SM100OrLater, "SM100+ required")
     def test_mm_epilogue_imports_generated_dependencies(self):
         a = torch.randn(128, 64, device="cuda", dtype=torch.bfloat16)
         b = torch.randn(64, 128, device="cuda", dtype=torch.bfloat16)

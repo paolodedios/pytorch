@@ -235,7 +235,7 @@ class GemmActMixin(ComposableEpiMixin):
             if const_expr(params.tensor_epilogue_returns_aux):
                 tRS_rD.store(epilogue_result[0])
                 tRS_rAuxOut = cute.make_rmem_tensor(
-                    epilogue_result[1].shape, self.acc_dtype
+                    epilogue_result[1].shape, epilogue_result[1].element_type
                 )
                 tRS_rAuxOut.store(epilogue_result[1])
             else:

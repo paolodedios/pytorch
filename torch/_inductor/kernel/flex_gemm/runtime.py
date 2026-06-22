@@ -209,6 +209,8 @@ def dispatch_gemm_act(
     quack_a = quack_a.unsqueeze(0) if quack_a.ndim == 2 else quack_a
     quack_b = quack_b.unsqueeze(0) if quack_b.ndim == 2 else quack_b
     quack_out = quack_out.unsqueeze(0) if quack_out.ndim == 2 else quack_out
+    if quack_aux_out is not None and quack_aux_out.dtype is torch.bool:
+        quack_aux_out = quack_aux_out.view(torch.uint8)
     if quack_aux_out is not None and quack_aux_out.ndim == 2:
         quack_aux_out = quack_aux_out.unsqueeze(0)
     if quack_c is not None and quack_c.ndim == 2:
