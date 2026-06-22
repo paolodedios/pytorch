@@ -388,21 +388,26 @@ class UniformValueConstantFolder(ConstantFolder):
             if storage is not None:
                 mutated_storages.add(storage)
 
-        for node in self.module.graph.nodes:  # type: ignore[union-attr]
+        graph = typing.cast(torch.fx.Graph, self.module.graph)
+        for op, target in graph._find_nodes_lookup_table.table:
             if (
-                node.op != "call_function"
-                or not isinstance(node.target, torch._ops.OpOverload)
-                or not node.target._schema.is_mutable
+                op != "call_function"
+                or not isinstance(target, torch._ops.OpOverload)
+                or not target._schema.is_mutable
             ):
                 continue
 
-            for schema_arg, arg in zip_schema(
-                node.target._schema, node.args, node.kwargs
-            ):
-                if schema_arg.alias_info is None or not schema_arg.alias_info.is_write:
-                    continue
+            for node in graph.find_nodes(op=op, target=target, sort=False):
+                for schema_arg, arg in zip_schema(
+                    target._schema, node.args, node.kwargs
+                ):
+                    if (
+                        schema_arg.alias_info is None
+                        or not schema_arg.alias_info.is_write
+                    ):
+                        continue
 
-                pytree.tree_map_only(torch.fx.Node, add_mutated_storage, arg)
+                    pytree.tree_map_only(torch.fx.Node, add_mutated_storage, arg)
 
         return mutated_storages
 
