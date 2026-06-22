@@ -251,6 +251,9 @@ inplace_buffers = True
 # reuse a buffer for an unrelated purpose
 allow_buffer_reuse = True
 
+# Allow reuse to extend a buffer lifetime across explicit fuse-region boundaries.
+allow_buffer_reuse_across_fuse_regions = False
+
 # Enable pooled allocations for non-output tensors
 memory_planning = os.environ.get("TORCHINDUCTOR_MEMORY_PLANNING", "0") == "1"
 
@@ -952,6 +955,13 @@ loop_index_inversion_in_fusion: bool = True
 #
 # For the cases loop ordering after fusion does not help, we don't lose much.
 score_fusion_memory_threshold = 10
+
+# Allow choices that Inductor's peak-memory heuristics would otherwise block.
+# This is intentionally on by default so existing fusion behavior stays unchanged
+# unless a caller explicitly opts into peak-memory-aware restrictions.
+allow_peak_memory_increasing_fusion = (
+    os.environ.get("TORCHINDUCTOR_ALLOW_PEAK_MEMORY_INCREASING_FUSION", "1") == "1"
+)
 
 # For Triton Templates, select fastest of best template + epilogue vs best template + separate epilogue kernel
 benchmark_epilogue_fusion = (
