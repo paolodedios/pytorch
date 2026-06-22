@@ -345,7 +345,7 @@ class BaseBuiltinVariable(VariableTracker):
     def getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
-        from .misc import MethodTrampolineVariable
+        from .misc import BoundMethodVariable
 
         source = self.source and AttrSource(self.source, name)
         try:
@@ -353,7 +353,7 @@ class BaseBuiltinVariable(VariableTracker):
         except AttributeError:
             raise_observed_exception(AttributeError, tx)
         if callable(attr):
-            return MethodTrampolineVariable(self, name, source=source)
+            return BoundMethodVariable(self, name, source=source)
         return VariableTracker.build(tx, attr, source)
 
     def call_obj_hasattr(
@@ -935,16 +935,12 @@ class BuiltinVariable(BaseBuiltinVariable):
     def tensor_args(self, *args: VariableTracker) -> bool:
         any_tensor = False
         for arg in args:
-            if isinstance(arg, variables.GetAttrVariable):
-                return False
             any_tensor = any_tensor or arg.is_tensor()
         return any_tensor
 
     def tensor_args_type(self, arg_types: list[type]) -> bool:
         any_tensor = False
         for arg_type in arg_types:
-            if issubclass(arg_type, variables.GetAttrVariable):
-                return False
             any_tensor = any_tensor or issubclass(arg_type, variables.TensorVariable)
         return any_tensor
 
@@ -2395,7 +2391,7 @@ class BuiltinVariable(BaseBuiltinVariable):
     def getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
-        from .misc import MethodTrampolineVariable
+        from .misc import BoundMethodVariable
 
         source = self.source and AttrSource(self.source, name)
         if name == "__name__":
@@ -2405,7 +2401,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         except AttributeError:
             raise_observed_exception(AttributeError, tx)
         if callable(attr):
-            return MethodTrampolineVariable(self, name, source=source)
+            return BoundMethodVariable(self, name, source=source)
         return VariableTracker.build(tx, attr, source)
 
     def call_delattr(

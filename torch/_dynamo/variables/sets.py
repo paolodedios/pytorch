@@ -751,13 +751,13 @@ class OrderedSetClassVariable(VariableTracker):
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
         if name == "__new__":
-            from .misc import MethodTrampolineVariable
+            from .misc import BoundMethodVariable
 
             if self.source:
                 attr_source = AttrSource(self.source, name)
             else:
                 attr_source = None
-            return MethodTrampolineVariable(self, name, source=attr_source)
+            return BoundMethodVariable(self, name, source=attr_source)
         else:
             return super().getattro_impl(tx, name)
 

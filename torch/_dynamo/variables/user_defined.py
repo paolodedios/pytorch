@@ -473,7 +473,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
         from .object_protocol import mro_lookup
 
         return mro_lookup(type(self.value), name)
-        return NO_SUCH_SUBOBJ
 
     def bool_impl(
         self,
@@ -580,7 +579,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             if result is not None:
                 return result
             if callable(meta_attr):
-                return variables.MethodTrampolineVariable(self, name, source=source)
+                return variables.BoundMethodVariable(self, name, source=source)
             return VariableTracker.build(tx, meta_attr, source)
 
         # __getattr__ on metaclass (not part of type_getattro proper —
@@ -705,7 +704,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if name in cmp_name_to_op_mapping and not isinstance(
             cls_attr, types.FunctionType
         ):
-            return variables.MethodTrampolineVariable(self, name, source=source)
+            return variables.BoundMethodVariable(self, name, source=source)
 
         # wrapperdescr_get/method_get with obj=NULL returns the
         # descriptor itself.
@@ -759,7 +758,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 )
             ):
                 return VariableTracker.build(tx, cls_attr, source)
-            return variables.MethodTrampolineVariable(self, name, source=source)
+            return variables.BoundMethodVariable(self, name, source=source)
 
         # Everything else: FunctionType, etc.
         return VariableTracker.build(tx, cls_attr, source)
@@ -775,9 +774,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if name == "__new__" and UserDefinedClassVariable.is_supported_new_method(
             cls_attr
         ):
-            return variables.MethodTrampolineVariable(self, name, source=source)
+            return variables.BoundMethodVariable(self, name, source=source)
         if self.value is collections.OrderedDict:
-            return variables.MethodTrampolineVariable(self, name)
+            return variables.BoundMethodVariable(self, name)
         return VariableTracker.build(tx, cls_attr, source)
 
     def invoke_cls_descriptor_get(
@@ -1853,7 +1852,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
         source = self.source and self.get_source_by_walking_mro(tx, "__repr__")
         method_var = self.resolve_type_attr(tx, "__repr__", type_attr, source)
-        if not isinstance(method_var, variables.MethodTrampolineVariable):
+        if not isinstance(method_var, variables.BoundMethodVariable):
             return method_var.call_function(tx, [], {})
 
         try:
@@ -2729,7 +2728,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             if not isinstance(
                 method_var,
                 (
-                    variables.MethodTrampolineVariable,
+                    variables.BoundMethodVariable,
                     variables.MethodWrapperVariable,
                 ),
             ):
@@ -3532,7 +3531,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             torch._C._dynamo.utils.is_instancemethod(type_attr)  # type: ignore[attr-defined]
             or is_cython_function(type_attr)
         ):
-            return variables.MethodTrampolineVariable(self, name, source=source)
+            return variables.BoundMethodVariable(self, name, source=source)
 
         # Plain class variable (or MethodType, C-level non-data descriptor
         # without __get__, etc.).

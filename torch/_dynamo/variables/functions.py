@@ -743,7 +743,7 @@ class UserFunctionVariable(BaseUserFunctionVariable):
             source = source and AttrSource(source, "__get__")
             return VariableTracker.build(tx, self.fn.__get__, source)
         elif name in cmp_name_to_op_mapping:
-            return variables.MethodTrampolineVariable(self, name)
+            return variables.BoundMethodVariable(self, name)
         source = self.get_source()
         return fn_getattro_impl(tx, self.fn, source, name)
 
@@ -2015,7 +2015,7 @@ class NestedUserFunctionVariable(BaseUserFunctionVariable):
             d = getattr(self, "defaults", None)
             return d.as_python_constant() if d else ConstantVariable.create(None)
         elif name in cmp_name_to_op_mapping:
-            return variables.MethodTrampolineVariable(self, name)
+            return variables.BoundMethodVariable(self, name)
         else:
             return super().getattro_impl(tx, name)
 
@@ -2463,7 +2463,7 @@ class SkipFunctionVariable(VariableTracker):
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
         if name in cmp_name_to_op_mapping:
-            return variables.MethodTrampolineVariable(self, name)
+            return variables.BoundMethodVariable(self, name)
 
         return fn_getattro_impl(tx, self.value, self.source, name)
 
@@ -2972,7 +2972,7 @@ class FunctoolsPartialVariable(VariableTracker):
             items = {VariableTracker.build(tx, k): v for k, v in self.keywords.items()}
             return variables.ConstDictVariable(items, source=source)
         if name in cmp_name_to_op_mapping:
-            return variables.MethodTrampolineVariable(self, name)
+            return variables.BoundMethodVariable(self, name)
         raise_observed_exception(AttributeError, tx)
 
     def as_python_constant(self) -> Any:

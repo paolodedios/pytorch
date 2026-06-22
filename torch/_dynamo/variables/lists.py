@@ -529,37 +529,6 @@ class BaseListVariable(VariableTracker):
         return super().call_method(tx, name, args, kwargs)
 
 
-def _range_count_handler(
-    obj: "RangeVariable",
-    tx: "InstructionTranslatorBase",
-    args: list[VariableTracker],
-    kwargs: dict[str, VariableTracker],
-) -> VariableTracker:
-    from .builder import SourcelessBuilder
-
-    return SourcelessBuilder.create(tx, obj.range_count(*args))
-
-
-def _range_index_handler(
-    obj: "RangeVariable",
-    tx: "InstructionTranslatorBase",
-    args: list[VariableTracker],
-    kwargs: dict[str, VariableTracker],
-) -> VariableTracker:
-    x = args[0].as_python_constant()
-    start, stop, step = obj.start(), obj.stop(), obj.step()
-    in_range = (start <= x < stop) if step > 0 else (stop < x <= start)
-    if in_range and ((x - start) % step) == 0:
-        return VariableTracker.build(tx, (x - start) // step)
-    raise_observed_exception(ValueError, tx, args=[f"{x} is not in range"])
-
-
-_RANGE_HANDLERS: dict[str, Any] = {
-    "count": _range_count_handler,
-    "index": _range_index_handler,
-}
-
-
 class RangeVariable(BaseListVariable):
     # PyRange_Type: https://github.com/python/cpython/blob/v3.13.0/Objects/rangeobject.c#L767
     _cpython_type = range
@@ -877,7 +846,11 @@ class RangeVariable(BaseListVariable):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if name == "__reversed__":
+        from .builder import SourcelessBuilder
+
+        if name == "count":
+            return SourcelessBuilder.create(tx, self.range_count(*args))
+        elif name == "__reversed__":
             # range.__reversed__: range_iterator with reversed bounds.
             # ref: https://github.com/python/cpython/blob/v3.13.0/Objects/rangeobject.c (range_reverse)
             if args or kwargs:
@@ -893,6 +866,17 @@ class RangeVariable(BaseListVariable):
             new_start = start + (length - 1) * step
             new_step = -step
             return RangeIteratorVariable(new_start, 0, new_step, length)
+        elif name == "index":
+            x = args[0].as_python_constant()
+            start, stop, step = self.start(), self.stop(), self.step()
+            in_range = (start <= x < stop) if step > 0 else (stop < x <= start)
+            if in_range and ((x - start) % step) == 0:
+                return VariableTracker.build(tx, (x - start) // step)
+            raise_observed_exception(
+                ValueError,
+                tx,
+                args=[f"{x} is not in range"],
+            )
         return super().call_method(tx, name, args, kwargs)
 
     def getattro_impl(
@@ -901,11 +885,6 @@ class RangeVariable(BaseListVariable):
         fields = ["start", "stop", "step"]
         if name in fields:
             return self.items[fields.index(name)]
-
-        if name in _RANGE_HANDLERS:
-            return variables.MethodTrampolineVariable(
-                self, name, handler=_RANGE_HANDLERS[name]
-            )
 
         return super().getattro_impl(tx, name)
 
@@ -1718,22 +1697,6 @@ class TupleVariable(BaseListVariable):
         )
 
 
-def _size_numel_handler(
-    obj: "SizeVariable",
-    tx: "InstructionTranslatorBase",
-    args: list[VariableTracker],
-    kwargs: dict[str, VariableTracker],
-) -> VariableTracker:
-    if args or kwargs:
-        raise_args_mismatch(
-            tx,
-            "numel",
-            "0 args and 0 kwargs",
-            f"{len(args)} args and {len(kwargs)} kwargs",
-        )
-    return obj.numel(tx)
-
-
 class SizeVariable(TupleVariable):
     """torch.Size(...)"""
 
@@ -1903,14 +1866,24 @@ class SizeVariable(TupleVariable):
             key = key.nb_index_impl(tx)
         return self.get_item_dyn(tx, key)
 
-    def getattro_impl(
-        self, tx: "InstructionTranslatorBase", name: str
+    def call_method(
+        self,
+        tx: "InstructionTranslatorBase",
+        name: str,
+        args: list[VariableTracker],
+        kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
         if name == "numel":
-            return variables.MethodTrampolineVariable(
-                self, name, handler=_size_numel_handler
-            )
-        return super().getattro_impl(tx, name)
+            if args or kwargs:
+                raise_args_mismatch(
+                    tx,
+                    name,
+                    "0 args and 0 kwargs",
+                    f"{len(args)} args and {len(kwargs)} kwargs",
+                )
+            return self.numel(tx)
+
+        return super().call_method(tx, name, args, kwargs)
 
     def get_item_dyn(
         self, tx: "InstructionTranslatorBase", arg: VariableTracker
@@ -2083,7 +2056,7 @@ class SliceVariable(VariableTracker):
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
         if name in cmp_name_to_op_mapping or name in ("__hash__", "indices"):
-            return variables.MethodTrampolineVariable(self, name)
+            return variables.BoundMethodVariable(self, name)
         fields = ["start", "stop", "step"]
         if name not in fields:
             unimplemented(

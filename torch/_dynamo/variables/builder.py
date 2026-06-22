@@ -259,7 +259,7 @@ from .misc import (
     IgnoredFunctionVariable,
     LambdaVariable,
     LoggingLoggerVariable,
-    MethodTrampolineVariable,
+    BoundMethodVariable,
     NumpyDTypeVariable,
     NumpyVariable,
     ObjectVariable,
@@ -1400,7 +1400,7 @@ class VariableBuilder:
                     GuardBuilder.CLOSURE_MATCH
                 )
             )
-            return MethodTrampolineVariable(
+            return BoundMethodVariable(
                 AutogradFunctionVariable(
                     value.__self__,
                     source=AttrSource(self.source, member="__self__"),
@@ -1712,7 +1712,7 @@ class VariableBuilder:
             return BoundBuiltinMethodVariable(descriptor, obj_vt, source=self.source)
         elif is_function(value) and value in (float.fromhex, float.hex):
             self.install_guards(GuardBuilder.ID_MATCH)
-            return MethodTrampolineVariable(
+            return BoundMethodVariable(
                 BuiltinVariable(float, source=self.source),
                 value.__name__,
             )
@@ -5070,7 +5070,7 @@ class SourcelessBuilder:
             # NamedTuple._make uses an alias of tuple.__new__
             # pyrefly: ignore[not-callable, bad-argument-count, missing-attribute]
             obj = trace_rules.lookup_callable(value.__self__)(value.__self__)
-            return MethodTrampolineVariable(obj, "__new__")
+            return BoundMethodVariable(obj, "__new__")
         elif is_function_or_wrapper(value):
             # pyrefly: ignore[not-callable, bad-argument-count]
             return trace_rules.lookup(value)(value)
