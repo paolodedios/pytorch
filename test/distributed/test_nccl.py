@@ -821,8 +821,8 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
 
 @requires_cuda_p2p_access()
 class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
-    """NCCL symmetric memory tests for the using Cuda Caching Allocator(CCA) with
-    expandable segments path.
+    """NCCL symmetric memory tests using the CUDA Caching Allocator (CCA)
+    expandable-segments path.
 
     When ``expandable_segments`` is enabled, ``NCCLSymmetricMemoryAllocator``
     allocates via ``raw_alloc``/``raw_delete`` instead of ``ncclMemAlloc``/
@@ -833,12 +833,13 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
     The whole class runs with ``PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True``
     set *before* the worker processes are spawned, so every worker uses
     expandable segments from its first allocation (matching how a user launches
-    the job, and avoiding per-test runtime toggling). It is a separate class so
-    that the configuration in this test doesn't pollute other test suites.
+    the job, and avoiding per-test runtime toggling). ``symm_mem.empty`` skips
+    the implicit MemPool automatically when expandable_segments is enabled (the
+    two are incompatible). It is a separate class so that the configuration in
+    this test doesn't pollute other test suites.
     """
 
     _prior_alloc_conf = None
-    _prior_implicit_pool = None
 
     @classmethod
     def setUpClass(cls):
@@ -846,12 +847,6 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
         # the dispatcher process) ensures the spawned workers inherit it.
         cls._prior_alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF")
         os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-        # The implicit symmetric-memory MemPool is incompatible with
-        # expandable_segments: its backing allocator is the caching allocator,
-        # so allocating expandable-segment memory through it recurses. Disable
-        # it for these tests (the allocator also raises if it is left enabled).
-        cls._prior_implicit_pool = os.environ.get("TORCH_SYMMMEM_IMPLICIT_POOL")
-        os.environ["TORCH_SYMMMEM_IMPLICIT_POOL"] = "0"
         super().setUpClass()
 
     @classmethod
@@ -861,10 +856,6 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
             os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
         else:
             os.environ["PYTORCH_CUDA_ALLOC_CONF"] = cls._prior_alloc_conf
-        if cls._prior_implicit_pool is None:
-            os.environ.pop("TORCH_SYMMMEM_IMPLICIT_POOL", None)
-        else:
-            os.environ["TORCH_SYMMMEM_IMPLICIT_POOL"] = cls._prior_implicit_pool
 
     @property
     def device(self) -> torch.device:
@@ -889,9 +880,6 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
             device_id=device,
         )
         cls.pg = c10d.distributed_c10d._get_default_group()
-
-    def _expected_all_reduce_sum(self, result):
-        return torch.full_like(result, (self.world_size - 1) * self.world_size / 2)
 
     def _expandable_segments_active(self) -> bool:
         settings = torch.cuda.memory._snapshot()["allocator_settings"]
@@ -923,7 +911,9 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
         TEST_WITH_ROCM, "expandable_segments is not supported on ROCm"
     )
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
-    @requires_nccl_version((2, 27), "NCCL Symmetric Memory support from nccl 2.27")
+    @requires_nccl_version(
+        (2, 30), "NCCL multi-segment symmetric memory support from nccl 2.30"
+    )
     @skip_if_lt_x_gpu(2)
     def test_nccl_symmem_alloc(self):
         # Functional check that the expandable segments CCA raw_alloc path,
@@ -938,13 +928,19 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
         result = torch.ops.symm_mem.one_shot_all_reduce(
             inp.fill_(self.rank), "sum", group_name
         )
-        self.assertEqual(result, self._expected_all_reduce_sum(result))
+        # Expected all-reduce sum: sum of ranks 0..world_size-1.
+        self.assertEqual(
+            result,
+            torch.full_like(result, (self.world_size - 1) * self.world_size / 2),
+        )
 
     @skip_but_pass_in_sandcastle_if(
         TEST_WITH_ROCM, "expandable_segments is not supported on ROCm"
     )
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
-    @requires_nccl_version((2, 27), "NCCL Symmetric Memory support from nccl 2.27")
+    @requires_nccl_version(
+        (2, 30), "NCCL multi-segment symmetric memory support from nccl 2.30"
+    )
     @skip_if_lt_x_gpu(2)
     def test_nccl_symmem_address_reuse_loop(self):
         # Repeated alloc -> rendezvous -> collective -> free of the SAME size.
@@ -963,15 +959,24 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
             result = torch.ops.symm_mem.one_shot_all_reduce(
                 t.fill_(self.rank), "sum", group_name
             )
-            self.assertEqual(result, self._expected_all_reduce_sum(result))
+            self.assertEqual(
+                result,
+                torch.full_like(result, (self.world_size - 1) * self.world_size / 2),
+            )
             del t
+        # Address reuse is deterministic here: `t` is freed before the next
+        # alloc and every allocation is the same size, so the caching allocator
+        # hands the single freed (and only outstanding) address back each
+        # iteration. Hence exactly one unique ptr across all iterations.
         self.assertEqual(len(seen_ptrs), 1)
 
     @skip_but_pass_in_sandcastle_if(
         TEST_WITH_ROCM, "expandable_segments is not supported on ROCm"
     )
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
-    @requires_nccl_version((2, 27), "NCCL Symmetric Memory support from nccl 2.27")
+    @requires_nccl_version(
+        (2, 30), "NCCL multi-segment symmetric memory support from nccl 2.30"
+    )
     @skip_if_lt_x_gpu(2)
     def test_nccl_symmem_address_reuse_grow(self):
         # Allocate a small symm tensor, rendezvous, free it, then allocate a
@@ -990,13 +995,21 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
 
         large = symm_mem.empty(large_numel, dtype=dtype, device=self.device)
         large_ptr = large.data_ptr()
+        # Address reuse is deterministic here: with expandable segments the
+        # symm-mem pool reserves one large virtual address range up front and
+        # grows the physical backing in place, so the base VA stays stable
+        # across free/realloc. Since `small` is the only outstanding allocation
+        # when it is freed, the larger `large` recycles the same base VA.
         self.assertEqual(small_ptr, large_ptr)
 
         handle = symm_mem.rendezvous(large, group=group_name)
         result = torch.ops.symm_mem.one_shot_all_reduce(
             large.fill_(self.rank), "sum", group_name
         )
-        self.assertEqual(result, self._expected_all_reduce_sum(result))
+        self.assertEqual(
+            result,
+            torch.full_like(result, (self.world_size - 1) * self.world_size / 2),
+        )
 
         # The full large buffer (not just a stale small window) must be visible
         # to peers.
