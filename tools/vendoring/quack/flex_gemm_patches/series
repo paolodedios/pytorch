@@ -4,6 +4,7 @@
 # below are ordered explicitly because they form one FlexGEMM feature series and
 # later patches may depend on earlier autotuner changes.
 0001-flex-gemm-epilogue-minimal.patch
+0001b-flex-gemm-captured-arg-dtypes.patch
 0002-flex-gemm-precompile-tensor-kwargs.patch
 0003-flex-gemm-autotune-precompile-toggle.patch
 0004-flex-gemm-device-capacity-override.patch
