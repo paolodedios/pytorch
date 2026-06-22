@@ -178,7 +178,9 @@ def fuse_as_graphmodule(
         input_node.op == "placeholder" for input_node in external_inputs
     ):
         # True graph placeholders have a stable original input order. Keep the
-        # historical encounter order for mixed or intermediate boundaries.
+        # historical encounter order for mixed or intermediate boundaries,
+        # because downstream lowering may derive its own call args from the
+        # submodule placeholder order.
         graph_order = {node: i for i, node in enumerate(gm.graph.nodes)}
         external_inputs.sort(key=lambda node: graph_order[node])
 
