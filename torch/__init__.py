@@ -2870,6 +2870,7 @@ class _TorchCompileInductorWrapper:
 
         import torch._dynamo.compiled_autograd as compiled_autograd
         import torch._dynamo.config as dynamo_config
+        import torch._functorch.config as functorch_config
         import torch._inductor.config as inductor_config
         from torch._inductor.compile_fx import fx_compile_mode, FxCompileMode
 
@@ -2882,6 +2883,18 @@ class _TorchCompileInductorWrapper:
         if self.config.get("fallback_by_default", inductor_config.fallback_by_default):
             return nullcontext()
         if self.config.get("triton.cudagraphs", inductor_config.triton.cudagraphs):
+            return nullcontext()
+        if functorch_config.enable_complex_wrapper:
+            return nullcontext()
+        if self.config.get(
+            "aten_distributed_optimizations.enable_overlap_scheduling",
+            inductor_config.aten_distributed_optimizations.enable_overlap_scheduling,
+        ):
+            return nullcontext()
+        if self.config.get(
+            "aten_distributed_optimizations.collective_bucketing",
+            inductor_config.aten_distributed_optimizations.collective_bucketing,
+        ):
             return nullcontext()
         if dynamo_config.enable_invoke_subgraph_regional_compile:
             return nullcontext()

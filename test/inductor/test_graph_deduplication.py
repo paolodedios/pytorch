@@ -133,6 +133,37 @@ class GraphDeduplicationInductorWrapperTests(TestCase):
                 0,
             )
 
+    def test_optimize_string_inductor_disables_graph_deduplication_for_complex_wrapper(
+        self,
+    ):
+        with torch._functorch.config.patch(enable_complex_wrapper=True):
+            self.assertEqual(
+                self._compile_string_inductor_and_count_invoke_subgraphs(),
+                0,
+            )
+
+    def test_optimize_string_inductor_disables_graph_deduplication_for_overlap_scheduling(
+        self,
+    ):
+        with torch._inductor.config.patch(
+            {"aten_distributed_optimizations.enable_overlap_scheduling": True}
+        ):
+            self.assertEqual(
+                self._compile_string_inductor_and_count_invoke_subgraphs(),
+                0,
+            )
+
+    def test_optimize_string_inductor_disables_graph_deduplication_for_collective_bucketing(
+        self,
+    ):
+        with torch._inductor.config.patch(
+            {"aten_distributed_optimizations.collective_bucketing": True}
+        ):
+            self.assertEqual(
+                self._compile_string_inductor_and_count_invoke_subgraphs(),
+                0,
+            )
+
     def test_inductor_wrapper_can_disable_graph_deduplication(self):
         self.assertEqual(
             self._compile_and_count_invoke_subgraphs(graph_deduplication=False),
