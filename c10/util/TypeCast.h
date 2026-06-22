@@ -58,10 +58,29 @@ struct maybe_bool<true, src_t> {
   }
 };
 
+template <typename T>
+using scalar_value_type_t = std::remove_cv_t<std::remove_reference_t<T>>;
+
+template <typename T>
+constexpr bool is_saturating_float_to_signed_int_source_v =
+    std::is_floating_point_v<scalar_value_type_t<T>> ||
+    std::is_same_v<scalar_value_type_t<T>, c10::Half> ||
+    std::is_same_v<scalar_value_type_t<T>, c10::BFloat16>;
+
+template <typename src_t>
+C10_HOST_DEVICE static inline auto signed_int_compare_value(src_t src) {
+  if constexpr (std::is_floating_point_v<scalar_value_type_t<src_t>>) {
+    return src;
+  } else {
+    return static_cast<float>(src);
+  }
+}
+
 // Float -> integer is UB on out-of-range/NaN values. For standard floating
-// sources and signed integer destinations, out-of-range values saturate and NaN
-// maps to 0 before casting below. Unsigned destinations and reduced floating
-// source types keep the platform-defined result for NumPy compatibility.
+// sources and CPU Half/BFloat16 sources to signed integer destinations on host,
+// out-of-range values saturate and NaN maps to 0 before casting below.
+// Device-compiled paths, unsigned destinations, and other reduced floating
+// source types keep the platform-defined result for compatibility.
 // Suppress UBSan only here, so the dispatching template below stays
 // UBSan-clean.
 template <typename dest_t, typename src_t>
@@ -72,22 +91,25 @@ unchecked_cast_to_int(src_t src) {
 
 template <typename dest_t, typename src_t>
 C10_HOST_DEVICE static inline dest_t saturated_cast_to_signed_int(src_t src) {
-  static_assert(std::is_floating_point_v<src_t>);
+  static_assert(is_saturating_float_to_signed_int_source_v<src_t>);
   static_assert(std::is_integral_v<dest_t>);
   static_assert(std::is_signed_v<dest_t>);
+  const auto src_for_compare = signed_int_compare_value(src);
+  using compare_t = decltype(src_for_compare);
   constexpr auto min =
-      static_cast<src_t>(std::numeric_limits<dest_t>::lowest());
-  constexpr auto max = static_cast<src_t>(std::numeric_limits<dest_t>::max());
-  if (src != src) {
+      static_cast<compare_t>(std::numeric_limits<dest_t>::lowest());
+  constexpr auto max =
+      static_cast<compare_t>(std::numeric_limits<dest_t>::max());
+  if (src_for_compare != src_for_compare) {
     return static_cast<dest_t>(0);
   }
-  if (src < min) {
+  if (src_for_compare < min) {
     return std::numeric_limits<dest_t>::lowest();
   }
-  if (src >= max) {
+  if (src_for_compare >= max) {
     return std::numeric_limits<dest_t>::max();
   }
-  return unchecked_cast_to_int<dest_t>(src);
+  return unchecked_cast_to_int<dest_t>(src_for_compare);
 }
 
 template <typename dest_t, typename src_t>
@@ -97,8 +119,13 @@ struct static_cast_with_inter_type {
     auto r = maybe_real<real, src_t>::apply(src);
     if constexpr (
         std::is_integral_v<dest_t> && std::is_signed_v<dest_t> &&
-        std::is_floating_point_v<decltype(r)>) {
+        is_saturating_float_to_signed_int_source_v<decltype(r)>) {
+#if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__) || \
+    defined(__HIP_ARCH__)
+      return unchecked_cast_to_int<dest_t>(r);
+#else
       return saturated_cast_to_signed_int<dest_t>(r);
+#endif
     } else if constexpr (
         std::is_integral_v<dest_t> && !std::is_integral_v<decltype(r)>) {
       return unchecked_cast_to_int<dest_t>(r);
@@ -207,6 +234,142 @@ struct static_cast_with_inter_type<
       c10::complex<double> src) {
     return static_cast<c10::complex<c10::Half>>(
         static_cast<c10::complex<float>>(src));
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<
+    c10::complex<c10::BFloat16>,
+    c10::Float8_e5m2> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::Float8_e5m2 src) {
+    return static_cast<c10::complex<c10::BFloat16>>(c10::complex<float>{src});
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<
+    c10::complex<c10::BFloat16>,
+    c10::Float8_e5m2fnuz> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::Float8_e5m2fnuz src) {
+    return static_cast<c10::complex<c10::BFloat16>>(c10::complex<float>{src});
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<
+    c10::complex<c10::BFloat16>,
+    c10::Float8_e4m3fn> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::Float8_e4m3fn src) {
+    return static_cast<c10::complex<c10::BFloat16>>(c10::complex<float>{src});
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<
+    c10::complex<c10::BFloat16>,
+    c10::Float8_e4m3fnuz> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::Float8_e4m3fnuz src) {
+    return static_cast<c10::complex<c10::BFloat16>>(c10::complex<float>{src});
+  }
+};
+
+// TODO(#146647): Can we make all these template specialization happen
+// based off our apply macros?
+template <>
+struct static_cast_with_inter_type<
+    c10::complex<c10::BFloat16>,
+    c10::Float8_e8m0fnu> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::Float8_e8m0fnu src) {
+    return static_cast<c10::complex<c10::BFloat16>>(c10::complex<float>{src});
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<c10::complex<c10::BFloat16>, c10::Half> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::Half src) {
+    return static_cast<c10::complex<c10::BFloat16>>(
+        static_cast<c10::complex<float>>(src));
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<
+    c10::complex<c10::BFloat16>,
+    c10::complex<double>> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::complex<double> src) {
+    return static_cast<c10::complex<c10::BFloat16>>(
+        static_cast<c10::complex<float>>(src));
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<
+    c10::complex<c10::BFloat16>,
+    c10::complex<c10::Half>> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::complex<c10::Half> src) {
+    return static_cast<c10::complex<c10::BFloat16>>(
+        static_cast<c10::complex<float>>(src));
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<
+    c10::complex<c10::Half>,
+    c10::complex<c10::BFloat16>> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::Half>
+  apply(c10::complex<c10::BFloat16> src) {
+    return static_cast<c10::complex<c10::Half>>(
+        static_cast<c10::complex<float>>(src));
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<c10::Half, c10::complex<c10::BFloat16>> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::Half apply(
+      c10::complex<c10::BFloat16> src) {
+    return static_cast<c10::Half>(static_cast<float>(src.real()));
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<c10::BFloat16, c10::complex<c10::Half>> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::BFloat16 apply(
+      c10::complex<c10::Half> src) {
+    return static_cast<c10::BFloat16>(static_cast<float>(src.real()));
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<c10::BFloat16, c10::complex<c10::BFloat16>> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::BFloat16 apply(
+      c10::complex<c10::BFloat16> src) {
+    return src.real();
+  }
+};
+
+template <>
+struct static_cast_with_inter_type<c10::complex<c10::BFloat16>, c10::BFloat16> {
+  C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline c10::complex<
+      c10::BFloat16>
+  apply(c10::BFloat16 src) {
+    return c10::complex<c10::BFloat16>{src, 0};
   }
 };
 

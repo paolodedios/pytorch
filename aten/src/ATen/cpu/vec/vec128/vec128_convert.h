@@ -150,6 +150,12 @@ CONVERT_FROM_BOOL_TEMPLATE(double)
     return convertImpl<float16_t, to_type>(srcPtr, dst, n);            \
   }
 
+#define CONVERT_FROM_FP16_TO_SIGNED_INT_TEMPLATE(to_type)                  \
+  template <>                                                              \
+  inline void convert(const at::Half* src, to_type* dst, int64_t n) {      \
+    return convertFloatingToSignedIntImpl<at::Half, to_type>(src, dst, n); \
+  }
+
 #define CONVERT_TO_FP16_TEMPLATE(from_type)                             \
   template <>                                                           \
   inline void convert(const from_type* src, at::Half* dst, int64_t n) { \
@@ -158,10 +164,10 @@ CONVERT_FROM_BOOL_TEMPLATE(double)
   }
 
 CONVERT_FROM_FP16_TEMPLATE(uint8_t)
-CONVERT_FROM_FP16_TEMPLATE(int8_t)
-CONVERT_FROM_FP16_TEMPLATE(int16_t)
-CONVERT_FROM_FP16_TEMPLATE(int32_t)
-CONVERT_FROM_FP16_TEMPLATE(int64_t)
+CONVERT_FROM_FP16_TO_SIGNED_INT_TEMPLATE(int8_t)
+CONVERT_FROM_FP16_TO_SIGNED_INT_TEMPLATE(int16_t)
+CONVERT_FROM_FP16_TO_SIGNED_INT_TEMPLATE(int32_t)
+CONVERT_FROM_FP16_TO_SIGNED_INT_TEMPLATE(int64_t)
 CONVERT_FROM_FP16_TEMPLATE(float16_t)
 CONVERT_FROM_FP16_TEMPLATE(float)
 CONVERT_FROM_FP16_TEMPLATE(double)
@@ -230,10 +236,10 @@ inline void convertFromBf16Impl(
   }
 
 CONVERT_FROM_BF16_TEMPLATE(uint8_t)
-CONVERT_FROM_BF16_TEMPLATE(int8_t)
-CONVERT_FROM_BF16_TEMPLATE(int16_t)
-CONVERT_FROM_BF16_TEMPLATE(int32_t)
-CONVERT_FROM_BF16_TEMPLATE(int64_t)
+CONVERT_FLOATING_TO_SIGNED_INT_TEMPLATE(c10::BFloat16, int8_t)
+CONVERT_FLOATING_TO_SIGNED_INT_TEMPLATE(c10::BFloat16, int16_t)
+CONVERT_FLOATING_TO_SIGNED_INT_TEMPLATE(c10::BFloat16, int32_t)
+CONVERT_FLOATING_TO_SIGNED_INT_TEMPLATE(c10::BFloat16, int64_t)
 CONVERT_FROM_BF16_TEMPLATE(float)
 CONVERT_FROM_BF16_TEMPLATE(double)
 #ifdef __ARM_FEATURE_FP16_VECTOR_ARITHMETIC
