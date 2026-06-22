@@ -306,7 +306,7 @@ def _broadcast_to_batch(output, batch_size):
 
 
 def trace_map(
-    proxy_mode: ProxyTorchDispatchMode,
+    proxy_mode,
     func_overload: HigherOrderOperator,
     f: Callable[..., Any],
     xs: Sequence[torch.Tensor],
