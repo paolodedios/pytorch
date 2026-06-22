@@ -348,7 +348,7 @@ bool is_onednn_conv_strides(const at::Tensor& tensor) {
   // - bias: 1D
   auto sizes = tensor.sizes();
   auto tensor_dim = sizes.size();
-  if (tensor_dim < 1 || tensor_dim > 5)
+  if (tensor_dim != 1 && (tensor_dim < 3 || tensor_dim > 5))
     return false;
 
   if (tensor.is_contiguous())
