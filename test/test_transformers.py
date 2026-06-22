@@ -31,7 +31,6 @@ from torch.testing._internal.common_utils import (
     TEST_FAIRSEQ,
     run_tests,
     parametrize,
-    subtest,
     freeze_rng_state,
     TEST_WITH_CROSSREF,
     slowTest,
