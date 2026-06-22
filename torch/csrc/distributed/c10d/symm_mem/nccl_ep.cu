@@ -217,7 +217,8 @@ void nccl_ep_dispatch(
     // ncclEpDispatch API doesn't take it as a per-call input.
     EpTensor in_tokens = make_ep_tensor(tokens, handle->group_name);
     EpTensor in_weights(topk_weights);
-    EpTensor out_tok(out_tokens);
+    // Output may also be symm_mem-backed (zero-copy RDMA write path).
+    EpTensor out_tok = make_ep_tensor(out_tokens, handle->group_name);
     std::optional<EpTensor> out_wts, out_idx;
     if (out_topk_weights) out_wts.emplace(*out_topk_weights);
     if (out_topk_idx) out_idx.emplace(*out_topk_idx);

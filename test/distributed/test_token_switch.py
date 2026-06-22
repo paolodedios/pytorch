@@ -12,6 +12,8 @@ from torch.testing._internal.common_distributed import (
     skip_if_lt_x_gpu,
 )
 from torch.testing._internal.common_utils import (
+    instantiate_parametrized_tests,
+    parametrize,
     run_tests,
     skip_but_pass_in_sandcastle_if,
 )
@@ -455,8 +457,14 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         self.assertEqual(combined.cpu(), expected)
 
     @skip_if_lt_x_gpu(2)
-    def test_dispatch_symm_mem_tokens(self):
-        """Dispatch with symm_mem-backed tokens exercises the zero-copy window path."""
+    @parametrize("explicit_rendezvous", [True, False])
+    def test_dispatch_symm_mem_tokens(self, explicit_rendezvous):
+        """Dispatch with symm_mem-backed input and output (zero-copy window path).
+
+        ``explicit_rendezvous`` toggles whether the caller rendezvous the symm_mem
+        tensors up front; when False, dispatch's ``make_ep_tensor`` establishes the
+        rendezvous implicitly on first use.
+        """
         self._init()
         ts = self.get_token_switch()
         pg = dist.distributed_c10d._get_default_group()
@@ -467,7 +475,8 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         symm_tokens = symm_mem.empty(
             NUM_TOKENS, HIDDEN, dtype=torch.bfloat16, device=self.device
         )
-        symm_mem.rendezvous(symm_tokens, group=pg)
+        if explicit_rendezvous:
+            symm_mem.rendezvous(symm_tokens, group=pg)
 
         token_val = float(self.rank + 1)
         symm_tokens.fill_(token_val)
@@ -477,10 +486,12 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         )
         routing = ts.create_routing(topk_idx, layout="flat")
 
+        # Output is also symm_mem-backed: dispatch writes into it via the window.
         out_tokens = symm_mem.empty(
             num_recv_tokens, HIDDEN, dtype=torch.bfloat16, device=self.device
         )
-        symm_mem.rendezvous(out_tokens, group=pg)
+        if explicit_rendezvous:
+            symm_mem.rendezvous(out_tokens, group=pg)
 
         out_topk_weights = torch.zeros(
             (num_recv_tokens, TOP_K), dtype=torch.float32, device=self.device
@@ -506,8 +517,14 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         )
 
     @skip_if_lt_x_gpu(2)
-    def test_combine_symm_mem_tokens(self):
-        """Combine with symm_mem-backed expert tokens exercises the zero-copy window path."""
+    @parametrize("explicit_rendezvous", [True, False])
+    def test_combine_symm_mem_tokens(self, explicit_rendezvous):
+        """Combine with symm_mem-backed expert tokens (zero-copy window path).
+
+        ``explicit_rendezvous`` toggles whether the caller rendezvous the symm_mem
+        tensor up front; when False, combine's ``make_ep_tensor`` establishes the
+        rendezvous implicitly on first use.
+        """
         self._init()
         ts = self.get_token_switch()
         pg = dist.distributed_c10d._get_default_group()
@@ -544,7 +561,8 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
         symm_expert_tokens = symm_mem.empty(
             NUM_TOKENS, HIDDEN, dtype=torch.bfloat16, device=self.device
         )
-        symm_mem.rendezvous(symm_expert_tokens, group=pg)
+        if explicit_rendezvous:
+            symm_mem.rendezvous(symm_expert_tokens, group=pg)
         symm_expert_tokens.copy_(out_tokens[:NUM_TOKENS])
 
         combined = torch.zeros(
@@ -618,6 +636,9 @@ class TokenSwitchNCCLTest(MultiProcContinuousTest):
             (NUM_TOKENS, HIDDEN), expected_val, dtype=torch.bfloat16, device=self.device
         )
         self.assertEqual(combined, expected)
+
+
+instantiate_parametrized_tests(TokenSwitchNCCLTest)
 
 
 if __name__ == "__main__":
