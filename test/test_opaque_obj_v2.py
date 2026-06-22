@@ -1259,6 +1259,7 @@ def forward(self, x_1, cfg_1):
         data_copy = copy.deepcopy(DataOpaque(5))
         self.assertEqual(data_copy.value, 5)
         self.assertIsInstance(data_copy, torch._C._OpaqueBase)
+        self.assertIsInstance(data_copy, OpaqueBase)
 
         @dataclass(frozen=True)
         class FrozenDataOpaque(OpaqueBase):
@@ -1270,17 +1271,20 @@ def forward(self, x_1, cfg_1):
         frozen_copy = copy.deepcopy(FrozenDataOpaque(6))
         self.assertEqual(frozen_copy.value, 6)
         self.assertIsInstance(frozen_copy, torch._C._OpaqueBase)
+        self.assertIsInstance(frozen_copy, OpaqueBase)
 
         size = SizeStore(4)
         size_roundtrip = pickle.loads(pickle.dumps(size))
         self.assertEqual(size_roundtrip, size)
         self.assertIsInstance(size_roundtrip, torch._C._OpaqueBase)
+        self.assertIsInstance(size_roundtrip, OpaqueBase)
 
         cyclic = SizeStore(7)
         cyclic.child = cyclic
         cyclic_roundtrip = pickle.loads(pickle.dumps(cyclic))
         self.assertIs(cyclic_roundtrip.child, cyclic_roundtrip)
         self.assertIsInstance(cyclic_roundtrip, torch._C._OpaqueBase)
+        self.assertIsInstance(cyclic_roundtrip, OpaqueBase)
 
         class SlottedOpaque(OpaqueBase):
             __slots__ = ("value",)
@@ -1291,6 +1295,7 @@ def forward(self, x_1, cfg_1):
         slotted_roundtrip = copy.deepcopy(SlottedOpaque(11))
         self.assertEqual(slotted_roundtrip.value, 11)
         self.assertIsInstance(slotted_roundtrip, torch._C._OpaqueBase)
+        self.assertIsInstance(slotted_roundtrip, OpaqueBase)
 
         class ModuleOpaque(OpaqueBase, torch.nn.Module):
             pass
@@ -1314,6 +1319,7 @@ def forward(self, x_1, cfg_1):
         module_copy = copy.deepcopy(module_with_init)
         self.assertEqual(next(iter(module_copy.named_parameters()))[0], "param")
         self.assertIsInstance(module_copy, torch._C._OpaqueBase)
+        self.assertIsInstance(module_copy, OpaqueBase)
 
         class OpaqueWithState(OpaqueBase):
             def __init__(self, value):
@@ -1331,6 +1337,7 @@ def forward(self, x_1, cfg_1):
         self.assertEqual(with_state_roundtrip.value, 8)
         self.assertTrue(with_state_roundtrip.setstate_called)
         self.assertIsInstance(with_state_roundtrip, torch._C._OpaqueBase)
+        self.assertIsInstance(with_state_roundtrip, OpaqueBase)
 
         class OpaqueWithNewArgs(OpaqueBase):
             def __new__(cls, value):
@@ -1348,6 +1355,7 @@ def forward(self, x_1, cfg_1):
         self.assertEqual(with_newargs_roundtrip.value, 9)
         self.assertEqual(with_newargs_roundtrip.value_from_new, 9)
         self.assertIsInstance(with_newargs_roundtrip, torch._C._OpaqueBase)
+        self.assertIsInstance(with_newargs_roundtrip, OpaqueBase)
 
         class NonInstanceNew(OpaqueBase):
             def __new__(cls):

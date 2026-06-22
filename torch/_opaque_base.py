@@ -18,12 +18,10 @@ def _maybe_skip_dynamo_code(fn):
     if code is None:
         return
 
-    try:
-        eval_frame.skip_code(code)
-    except Exception:
-        # Dynamo skip registration is best-effort here; construction must not
-        # fail just because Dynamo is partially initialized.
-        pass
+    skip_code = getattr(eval_frame, "skip_code", None)
+    if skip_code is None:
+        return
+    skip_code(code)
 
 
 def _get_pybind_opaque_base():
@@ -206,11 +204,12 @@ class OpaqueBase(metaclass=OpaqueBaseMeta):
 
 
 def _install_opaque_base(_PybindOpaqueBase: type) -> tuple[type, type]:
-    """Install OpaqueBase on top of a pybind-registered marker base.
+    """Install OpaqueBase on top of a pybind-compatible marker base.
 
     Pybind assumes explicit Python bases passed to py::class_ also have pybind
-    type information. The C extension calls this with a tiny pybind class so
-    pybinded opaque types can inherit from OpaqueBase directly.
+    type information. The C extension provides a synthetic pybind-compatible
+    base type with no C++ value holder so unrelated pybind classes can inherit
+    from OpaqueBase without adding a fake C++ base subobject.
     """
     global OpaqueBaseMeta, OpaqueBase
 
