@@ -1871,12 +1871,12 @@ def object_generic_getattr(
     # Step 4: Non-data descriptor with __get__.
     if type_attr is not NO_SUCH_SUBOBJ and hasattr(type(type_attr), "__get__"):
         # If the VT has custom call_method and this is a method, return a
-        # trampoline that dispatches through call_method instead of inlining
-        # the resolved method directly.  This preserves custom tracing logic
-        # (side effects, graph nodes, suppression) that MRO-based resolution
-        # via UserMethodVariable would bypass.
+        # BoundMethodVariable that dispatches through call_method instead of
+        # inlining the resolved method directly.  This preserves custom
+        # tracing logic (side effects, graph nodes, suppression) that
+        # MRO-based resolution via UserMethodVariable would bypass.
         if _is_method_type(type_attr) and _has_custom_call_method(obj):
-            return variables.MethodTrampolineVariable(obj, name)
+            return variables.BoundMethodVariable(obj, name)
 
         class_vt = VariableTracker.build(tx, py_type)
         result = _resolve_descriptor_get(tx, type_attr, obj, class_vt, source)
