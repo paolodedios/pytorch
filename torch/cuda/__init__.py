@@ -20,6 +20,7 @@ import warnings
 from collections.abc import Callable
 from functools import lru_cache
 from typing import Any, cast, NewType, Optional, TYPE_CHECKING
+from typing_extensions import deprecated
 
 import torch
 import torch._C
@@ -1382,6 +1383,15 @@ def clear_cublas_workspaces(device: Device = None) -> None:
     finally:
         if set_autograd_compiler is not None:
             set_autograd_compiler(prior_compiler, prior_dynamic)
+
+
+@deprecated(
+    "torch.cuda._clear_cublas_workspaces is deprecated; "
+    "use torch.cuda.clear_cublas_workspaces instead.",
+    category=FutureWarning,
+)
+def _clear_cublas_workspaces(device: Device = None) -> None:
+    return clear_cublas_workspaces(device)
 
 
 def set_sync_debug_mode(debug_mode: int | str) -> None:
