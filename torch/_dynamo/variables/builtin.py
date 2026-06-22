@@ -2021,7 +2021,8 @@ class BuiltinVariable(BaseBuiltinVariable):
             return variables.RangeVariable(list(args))
         elif self._dynamic_args(*args):
             return variables.RangeVariable(list(args))
-        # None no-ops this handler and lets the driving function proceed
+        # Any remaining __index__ result is neither constant/unspec nor
+        # symbolic; fall back to the generic unsupported-builtin path.
         return None
 
     def _dynamic_args(self, *args: VariableTracker, **kwargs: VariableTracker) -> bool:

@@ -229,26 +229,6 @@ class BaseListVariable(VariableTracker):
             length = vt_add(tx, length, symbolic_length)
         return length
 
-    def tp_iteritem_impl(
-        self, tx: "InstructionTranslatorBase", index: VariableTracker
-    ) -> tuple[VariableTracker, VariableTracker]:
-        # 3.15 _tp_iteritem slot.  list/tuple (and tuple subclasses like
-        # torch.Size) all share the same algorithm: index into self.items,
-        # bump the index, signal exhaustion with StopIteration.  Subclasses
-        # whose Python type does NOT install _tp_iteritem (range, deque)
-        # override this to fall back to the base "missing" behavior.
-        # ref: https://github.com/python/cpython/blob/f31a89bb9010/Objects/listobject.c#L3916-L3921 (list_iteritem)
-        # ref: https://github.com/python/cpython/blob/f31a89bb9010/Objects/tupleobject.c#L876-L885 (tuple_iteritem)
-        if not isinstance(self, (ListVariable, TupleVariable)):
-            return super().tp_iteritem_impl(tx, index)
-        self._check_no_symbolic_length("_tp_iteritem")
-        i = index.as_python_constant()
-        if i < 0:
-            raise AssertionError(f"Invalid index {i}")
-        if i >= len(self.items):
-            raise_observed_exception(IndexError, tx)
-        return self.items[i], ConstantVariable.create(i + 1)
-
     def sq_contains(
         self, tx: "InstructionTranslatorBase", item: VariableTracker
     ) -> VariableTracker:
@@ -367,6 +347,7 @@ class BaseListVariable(VariableTracker):
         tx: "InstructionTranslatorBase",
         key: VariableTracker,
     ) -> VariableTracker:
+        self._check_no_symbolic_length("__getitem__")
         # list_item: https://github.com/python/cpython/blob/62a6e898e01/Objects/listobject.c#L335-L351
         # tuple_item: https://github.com/python/cpython/blob/62a6e898e01/Objects/tupleobject.c#L421-L430
         # CPython's sq_item takes Py_ssize_t (already int from vt_getitem's
