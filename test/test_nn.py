@@ -15714,26 +15714,16 @@ if __name__ == '__main__':
             acc_dtype={torch.float16: torch.float32, torch.bfloat16: torch.float32}[dtype],
             prob_target=True)
 
-    def test_TEMP_mps_lce_calibration_dump(self, device):
+    def test_linear_cross_entropy_zz_mps_calibration_dump(self, device):
         # TEMP (chunking-heuristic ULP re-calibration): macOS CI does not upload
-        # the test-report artifact, so loop the calibration grid (each leg
-        # prints via the harness) then force an mps failure -- run_test.py dumps
-        # the captured log, surfacing the [lce calibration] prints. Self-
-        # contained (does not depend on the parametrized legs running first).
-        # Remove with the calibration scaffolding.
+        # the test-report artifact, so trigger run_test.py's dump-on-failure to
+        # surface the [lce calibration] prints. The ``zz`` name sorts this after
+        # every other linear_cross_entropy_* test, so they all run and print
+        # (the harness is print-only here) before this fails -- run_test.py then
+        # dumps the captured log with their prints. Remove with the scaffolding.
         if torch.device(device).type != "mps":
             self.skipTest("TEMP mps-only calibration dump")
-        for prob_target in (False, True):
-            for dtype in (torch.float32, torch.float16, torch.bfloat16):
-                acc_dtype = None if dtype == torch.float32 else torch.float32
-                for acc_policy in ("accurate", "balanced", "compact", "auto"):
-                    try:
-                        self._test_linear_cross_entropy_loss(
-                            device=device, dtype=dtype, acc_policy=acc_policy,
-                            acc_dtype=acc_dtype, prob_target=prob_target)
-                    except Exception:
-                        pass
-        self.fail("TEMP: dumped mps lce calibration; see [lce calibration] prints above")
+        self.fail("TEMP: dumping mps lce calibration; see [lce calibration] prints above")
 
     def test_linear_cross_entropy_prob_target_dispatch(self, device):
         """Probability-target dispatch edges. The harness covers the
