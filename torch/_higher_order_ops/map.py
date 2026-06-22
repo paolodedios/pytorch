@@ -56,7 +56,7 @@ class MapImpl(HigherOrderOperator):
         )
 
     # pyrefly: ignore [bad-override]
-    def gen_schema(self, f, xs, pos_args, mutated_arg_indices=""):
+    def gen_schema(self, f, xs, pos_args, mutated_arg_indices:str = ""):
         from torch._higher_order_ops.schema import HopSchemaGenerator
 
         all_inputs = tuple(
