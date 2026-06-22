@@ -587,7 +587,12 @@ class TestLocalMapSpmdTypes(TestCase):
         self.assertExpectedRaisesInline(
             ValueError,
             lambda: wrapped(X_dt),
-            """in_grad_placements=S(0) is incompatible with in_placements=R. Valid grad placements for R: Partial or Replicate""",
+            """local_map(spmd_types=True) cannot represent this forward/backward placement pair:
+in_placements=R, in_grad_placements=S(0).
+
+The local_map boundary assigns one SPMD type to each local tensor, which also fixes the expected backward placement. For in_placements=R, valid grad placements are Partial (spmd.R) or Replicate (spmd.I).
+
+If the forward and backward layouts intentionally diverge in a way not represented by one SPMD type, expand the local_map region to include that divergence, so the local_map region boundary respects tied FWD-BWD typing.""",
         )
 
     def test_output_spmd_type_mismatch(self):
@@ -674,34 +679,26 @@ class TestLocalMapSpmdTypes(TestCase):
             """Output tensor has no spmd_types annotation but out_placements expects one. Ensure the function's output is derived from annotated inputs or is explicitly annotated.""",
         )
 
-    def test_output_spmd_type_is_stripped(self):
-        from spmd_types._type_attr import _LOCAL_TYPE_ATTR
-
+    def test_output_tensor_requires_placements(self):
         X_dt = DTensor.from_local(
             torch.randn(4, 8), self.mesh, [Shard(0)], run_check=False
         )
-        outputs = []
-
-        def fn(X):
-            out = X * 2
-            self.assertTrue(hasattr(out, _LOCAL_TYPE_ATTR))
-            outputs.append(out)
-            return out
 
         wrapped = local_map(
-            fn,
-            out_placements=[Shard(0)],
+            lambda X: X * 2,
+            out_placements=None,
             in_placements=([Shard(0)],),
             device_mesh=self.mesh,
             spmd_types=True,
         )
 
-        wrapped(X_dt)
-        self.assertFalse(hasattr(outputs[0], _LOCAL_TYPE_ATTR))
+        self.assertExpectedRaisesInline(
+            ValueError,
+            lambda: wrapped(X_dt),
+            """out_placements has None for a Tensor output. Provide placements for Tensor outputs and use None only for non-Tensor outputs.""",
+        )
 
     def test_out_spmd_types_to_grad_placements(self):
-        from spmd_types._type_attr import _LOCAL_TYPE_ATTR
-
         from torch.distributed.tensor.experimental._func_map import (
             _out_spmd_types_to_grad_placements,
         )
@@ -735,8 +732,6 @@ class TestLocalMapSpmdTypes(TestCase):
                 (Replicate(),),
             ),
         )
-        for out in outs:
-            self.assertFalse(hasattr(out, _LOCAL_TYPE_ATTR))
 
     def test_unsupported_placement_type(self):
         """spmd_types=True should raise for unsupported placement types like _StridedShard."""
@@ -1081,7 +1076,7 @@ class TestLocalMapSpmdTypesMesh(TestCase):
         self.assertExpectedRaisesInline(
             ValueError,
             lambda: wrapped(X_dt),
-            """Output tensor has no spmd_types annotation on mesh_dp but out_placements expects S(0). Actual annotations are on: {default_pg}""",
+            """Output tensor has no spmd_types annotation on DeviceMesh dimension dp but out_placements expects S(0). Actual annotations on this DeviceMesh are: []""",
         )
 
 
