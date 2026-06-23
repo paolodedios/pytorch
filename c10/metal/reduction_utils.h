@@ -293,11 +293,14 @@ T threadgroup_max(threadgroup T* data, T val, unsigned idx, unsigned size) {
   }
   if (size > simdgroup_size) {
     ::metal::threadgroup_barrier(::metal::mem_flags::mem_threadgroup);
-    if (idx < ((size + simdgroup_size - 1) / simdgroup_size)) {
-      auto rc1 = simd_max(data[idx]);
-      if (idx == 0) {
-        data[0] = rc1;
-      }
+    const unsigned n_sg = (size + simdgroup_size - 1) / simdgroup_size;
+    // All lanes must call simd_max (it is simd-wide); pad out-of-range slots
+    // with the op identity so inactive in-range lanes cannot inject undefined
+    // 0 into the emulated long reduction.
+    auto rc1 =
+        simd_max(idx < n_sg ? data[idx] : ::metal::numeric_limits<T>::lowest());
+    if (idx == 0) {
+      data[0] = rc1;
     }
   }
   ::metal::threadgroup_barrier(::metal::mem_flags::mem_threadgroup);
@@ -312,11 +315,14 @@ T threadgroup_min(threadgroup T* data, T val, unsigned idx, unsigned size) {
   }
   if (size > simdgroup_size) {
     ::metal::threadgroup_barrier(::metal::mem_flags::mem_threadgroup);
-    if (idx < ((size + simdgroup_size - 1) / simdgroup_size)) {
-      auto rc1 = simd_min(data[idx]);
-      if (idx == 0) {
-        data[0] = rc1;
-      }
+    const unsigned n_sg = (size + simdgroup_size - 1) / simdgroup_size;
+    // All lanes must call simd_min (it is simd-wide); pad out-of-range slots
+    // with the op identity so inactive in-range lanes cannot inject undefined
+    // 0 into the emulated long reduction.
+    auto rc1 =
+        simd_min(idx < n_sg ? data[idx] : ::metal::numeric_limits<T>::max());
+    if (idx == 0) {
+      data[0] = rc1;
     }
   }
   ::metal::threadgroup_barrier(::metal::mem_flags::mem_threadgroup);

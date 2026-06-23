@@ -6286,6 +6286,21 @@ class TestMPS(TestCaseMPS):
             for keepdim in [False, True]:
                 helper((2, 8, 4, 5), dim, keepdim)
 
+    # Regression: int64 amax/amin returned 0 for reductions that land a partial
+    # second simdgroup (numel >= 33). threadgroup_max/min gated the
+    # cross-simdgroup combine, so the emulated simd_max/min<long> read inactive
+    # in-range lanes as undefined 0, which beats every all-negative max /
+    # all-positive min.
+    def test_amax_amin_int64_partial_simdgroup(self):
+        for n in [17, 32, 33, 48, 64, 65, 100, 257, 1000, 2049]:
+            for dtype in [torch.int64, torch.int32]:
+                neg = -torch.arange(1, n + 1, dtype=dtype)
+                pos = torch.arange(1, n + 1, dtype=dtype)
+                self.assertEqual(torch.amax(neg.to('mps')).cpu(), torch.amax(neg))
+                self.assertEqual(torch.amin(pos.to('mps')).cpu(), torch.amin(pos))
+                self.assertEqual(torch.amax(pos.to('mps')).cpu(), torch.amax(pos))
+                self.assertEqual(torch.amin(neg.to('mps')).cpu(), torch.amin(neg))
+
     # Test minimum and maximum
     def test_minimum_maximum(self):
         def helper(n, c, h, w):
