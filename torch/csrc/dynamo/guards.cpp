@@ -6075,8 +6075,9 @@ class IndexedGuardAccessor : public GuardAccessor {
   // child manager holds exactly that one leaf guard and no accessors. A
   // manager's leaf guards/accessors are fixed at construction (added before any
   // check runs), so this one-shot resolution can never become stale, and the
-  // cached raw pointer stays valid because the child manager (which owns the
-  // guard via shared_ptr) outlives this accessor.
+  // cached raw pointer stays valid for this accessor's lifetime: the child
+  // manager (which co-owns the guard via shared_ptr) is owned by and lives as
+  // long as this accessor.
   SYMBOLIC_SHAPE_GUARD* get_shape_guard() {
     if (!_shape_guard_resolved) {
       _shape_guard_resolved = true;
