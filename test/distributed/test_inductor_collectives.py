@@ -234,7 +234,7 @@ class TestSimpleOverlap(torch._dynamo.test_case.TestCase):
         def memory_tracking(snodes):
             return (
                 0,
-                {snode: (0, 0) for snode in snodes},
+                dict.fromkeys(snodes, (0, 0)),
                 {snode: SNodeMemory(0, 0) for snode in snodes},
                 {},
                 {},
