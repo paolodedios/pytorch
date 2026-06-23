@@ -109,7 +109,10 @@ from torch.testing._internal.optests import (
 )
 from torch.testing._internal.subclasses import WrapperSubclass
 from torch.testing._internal.two_tensor import TwoTensor, TwoTensorMode
-from torch.utils._python_dispatch import TorchDispatchMode
+from torch.utils._python_dispatch import (
+    is_traceable_wrapper_subclass,
+    TorchDispatchMode,
+)
 
 
 USE_TORCHVISION = False
@@ -225,7 +228,21 @@ def unpack_fp8_with_scale(packed):
 
 
 class AOTTestCase(TestCase):
-    pass
+    def assertTensorMetadataEqual(self, actual, expected):
+        self.assertEqual(tuple(actual.shape), tuple(expected.shape))
+        self.assertEqual(actual.stride(), expected.stride())
+        self.assertEqual(actual.storage_offset(), expected.storage_offset())
+
+        if is_traceable_wrapper_subclass(expected):
+            self.assertTrue(is_traceable_wrapper_subclass(actual))
+            expected_attrs, _ = expected.__tensor_flatten__()
+            actual_attrs, _ = actual.__tensor_flatten__()
+            self.assertEqual(actual_attrs, expected_attrs)
+            for attr in expected_attrs:
+                expected_inner = getattr(expected, attr)
+                actual_inner = getattr(actual, attr)
+                if isinstance(expected_inner, torch.Tensor):
+                    self.assertTensorMetadataEqual(actual_inner, expected_inner)
 
 
 class TestPythonKey(AOTTestCase):
@@ -2471,17 +2488,80 @@ def forward(self, primals_1):
             x = torch.ones(1, 2, 4, requires_grad=req_grad).clone()
             return [(x,), (x,)]
 
-        # See https://github.com/pytorch/pytorch/issues/114975
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "Metadata mutations are currently not allowed on tensor subclasses",
-        ):
-            self.verify_aot_autograd(
-                f,
-                partial(inp_callable, req_grad=req_grad),
-                test_mutation=True,
-                make_inputs_subclasses=True,
-            )
+        self.verify_aot_autograd(
+            f,
+            partial(inp_callable, req_grad=req_grad),
+            test_mutation=True,
+            make_inputs_subclasses=True,
+        )
+
+    def test_subclass_metadata_mutation_aot_function_metadata(self):
+        def f(a):
+            a.transpose_(1, 0)
+            tmp = a.mul(2)
+            return tmp.transpose(1, 0)
+
+        compiled_f = aot_function(
+            f,
+            fw_compiler=nop,
+            bw_compiler=nop,
+            decompositions=None,
+            keep_inference_input_mutations=True,
+            dynamic=False,
+        )
+
+        with TwoTensorMode():
+            ref_inp = torch.ones(1, 2, 4).clone()
+        with TwoTensorMode():
+            test_inp = torch.ones(1, 2, 4).clone()
+
+        ref_out = f(ref_inp)
+        test_out = compiled_f(test_inp)
+
+        self.assertEqual(test_inp, ref_inp)
+        self.assertEqual(test_out, ref_out)
+        self.assertTensorMetadataEqual(test_inp, ref_inp)
+        self.assertTensorMetadataEqual(test_out, ref_out)
+
+    @parametrize("req_grad", [False, True])
+    @skipIfDynamoInput("Dynamo fails to fakeify non-contiguous TwoTensor inputs")
+    def test_subclass_metadata_mutation_noncontiguous_input(self, req_grad):
+        def f(a):
+            a.transpose_(1, 0)
+            tmp = a.mul(2)
+            return tmp.transpose(1, 0)
+
+        def inp_callable(req_grad):
+            x = torch.ones(2, 4, requires_grad=req_grad).clone()[:, ::2]
+            return [(x,), (x,)]
+
+        self.verify_aot_autograd(
+            f,
+            partial(inp_callable, req_grad=req_grad),
+            test_mutation=True,
+            make_inputs_subclasses=True,
+        )
+
+        compiled_f = aot_function(
+            f,
+            fw_compiler=nop,
+            bw_compiler=nop,
+            decompositions=None,
+            keep_inference_input_mutations=True,
+            dynamic=False,
+        )
+        with TwoTensorMode():
+            ref_inp = torch.ones(2, 4, requires_grad=req_grad).clone()[:, ::2]
+        with TwoTensorMode():
+            test_inp = torch.ones(2, 4, requires_grad=req_grad).clone()[:, ::2]
+
+        ref_out = f(ref_inp)
+        test_out = compiled_f(test_inp)
+
+        self.assertEqual(test_inp, ref_inp)
+        self.assertEqual(test_out, ref_out)
+        self.assertTensorMetadataEqual(test_inp, ref_inp)
+        self.assertTensorMetadataEqual(test_out, ref_out)
 
     def test_input_data_and_metadata_mutation(self):
         def f(a):
@@ -3565,7 +3645,7 @@ def forward(self, primals_1, primals_2):
 
         with self.assertRaisesRegex(
             RuntimeError,
-            "Metadata mutations are currently not allowed on tensor subclasses",
+            "Encountered aliased inputs that are mutated in the graph",
         ):
             self.verify_aot_autograd(
                 f,
@@ -3596,6 +3676,27 @@ def forward(self, primals_1, primals_2, primals_3):
     as_strided_14 = torch.ops.aten.as_strided.default(as_strided_scatter, [4], [1], 0)
     view_2 = torch.ops.aten.view.default(as_strided_14, [-1]);  as_strided_14 = None
     return (as_strided_scatter, add_2, view_2, unsqueeze)""",
+        )
+
+    def test_input_mutation_unsqueeze_view_of_base_input(self):
+        # Regression test: when one input is the base tensor (._base is None)
+        # and another is an unsqueeze view of it, returning the base as output
+        # must be treated as alias_of_input (not is_input) in the synthetic
+        # base calling convention.
+        def f(a, b):
+            b.add_(1)
+            return a
+
+        def inp_callable(req_grad):
+            base = torch.ones(4, requires_grad=req_grad)
+            x = base.add(1)
+            return [base], [x, x.unsqueeze(0)]
+
+        self.verify_aot_autograd(
+            f, partial(inp_callable, req_grad=False), test_mutation=True
+        )
+        self.verify_aot_autograd(
+            f, partial(inp_callable, req_grad=True), test_mutation=True
         )
 
     @unittest.skipIf(not torch.cuda.is_available(), "CUDA is unavailable")
@@ -5046,14 +5147,16 @@ class TestAOTExport(AOTTestCase):
         ):
             aot_export_module(mod, [inp], trace_joint=False, pre_dispatch=True)
 
-        gm, _ = aot_export_module(mod, [inp], trace_joint=False, pre_dispatch=False)
+        gm, graph_sig = aot_export_module(
+            mod, [inp], trace_joint=False, pre_dispatch=False
+        )
+        self.assertEqual(graph_sig.user_inputs_to_mutate, {"add": "arg1_1"})
         self.assertExpectedInline(
             str(gm.code).strip(),
             """\
 def forward(self, arg0_1, arg1_1):
-    clone = torch.ops.aten.clone.default(arg1_1);  arg1_1 = None
-    add = torch.ops.aten.add.Tensor(clone, 1);  clone = None
-    return (add,)""",
+    add = torch.ops.aten.add.Tensor(arg1_1, 1);  arg1_1 = None
+    return (add, add)""",
         )
 
         fw_graph_cell = [None]
@@ -5073,9 +5176,8 @@ def forward(self, arg0_1, arg1_1):
             str(fw_graph.code).strip(),
             """\
 def forward(self, arg0_1, arg1_1):
-    clone = torch.ops.aten.clone.default(arg1_1);  arg1_1 = None
-    add = torch.ops.aten.add.Tensor(clone, 1);  clone = None
-    return (add,)""",
+    add = torch.ops.aten.add.Tensor(arg1_1, 1);  arg1_1 = None
+    return (add, add)""",
         )
 
     def test_aot_export_predispatch_func_simple(self):
@@ -5816,12 +5918,94 @@ class <lambda>(torch.nn.Module):
         )
         self.assertEqual(signature.backward_signature.gradients_to_user_inputs, {})
         self.assertEqual(
-            set(signature.backward_signature.gradients_to_parameters.values()), {"p2"}
+            signature.backward_signature.gradients_to_parameters,
+            {output_node.args[0][1].name: "p2"},
         )
 
         loss, p2_grad = fx_g(mod.p1, mod.p2)
         self.assertEqual(loss, (mod.p1.detach() * mod.p2).sum())
         self.assertEqual(p2_grad, mod.p1.detach())
+
+    def test_aot_export_module_joint_unused_user_input_gradient(self):
+        class M(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.p = torch.nn.Parameter(torch.randn(3))
+
+            def forward(self, used, unused):
+                return ((used * self.p + unused.detach()).sum(),)
+
+        mod = M()
+        used = torch.randn(3, requires_grad=True)
+        unused = torch.randn(3, requires_grad=True)
+        fx_g, signature = aot_export_module(
+            mod, (used, unused), trace_joint=True, output_loss_index=0
+        )
+
+        output_node = next(n for n in fx_g.graph.nodes if n.op == "output")
+        self.assertEqual(len(output_node.args[0]), 3)
+        self.assertEqual(signature.user_inputs, ["arg1_1", "arg2_1"])
+        self.assertEqual(
+            signature.backward_signature.loss_output, output_node.args[0][0].name
+        )
+        self.assertEqual(
+            signature.backward_signature.gradients_to_parameters,
+            {output_node.args[0][1].name: "p"},
+        )
+        self.assertEqual(
+            signature.backward_signature.gradients_to_user_inputs,
+            {output_node.args[0][2].name: "arg1_1"},
+        )
+
+        loss, p_grad, used_grad = fx_g(mod.p, used, unused)
+        self.assertEqual(loss, (used * mod.p + unused.detach()).sum())
+        self.assertEqual(p_grad, used)
+        self.assertEqual(used_grad, mod.p)
+
+    def test_aot_export_module_joint_unused_parameter_gradient_with_mutation(self):
+        class M(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.p1 = torch.nn.Parameter(torch.randn(3))
+                self.p2 = torch.nn.Parameter(torch.randn(3))
+                self.buffer = torch.nn.Buffer(torch.ones(3))
+
+            def forward(self, x):
+                self.buffer.add_(x.detach())
+                loss = (self.p1.detach() * self.p2 + x * self.p2).sum()
+                return loss, self.buffer.detach()
+
+        mod = M()
+        x = torch.randn(3, requires_grad=True)
+        fx_g, signature = aot_export_module(
+            mod, (x,), trace_joint=True, output_loss_index=0
+        )
+
+        output_node = next(n for n in fx_g.graph.nodes if n.op == "output")
+        self.assertEqual(len(output_node.args[0]), 5)
+        self.assertEqual(signature.buffers, ["buffer"])
+        self.assertEqual(signature.buffers_to_mutate, {"add": "buffer"})
+        self.assertEqual(
+            signature.backward_signature.loss_output, output_node.args[0][1].name
+        )
+        self.assertEqual(
+            signature.backward_signature.gradients_to_parameters,
+            {output_node.args[0][3].name: "p2"},
+        )
+        self.assertEqual(
+            signature.backward_signature.gradients_to_user_inputs,
+            {output_node.args[0][4].name: "arg3_1"},
+        )
+
+        buffer = mod.buffer.clone()
+        updated_buffer, loss, buffer_out, p2_grad, x_grad = fx_g(
+            mod.p1, mod.p2, buffer, x
+        )
+        self.assertEqual(updated_buffer, buffer + x.detach())
+        self.assertEqual(buffer_out, updated_buffer.detach())
+        self.assertEqual(loss, (mod.p1.detach() * mod.p2 + x * mod.p2).sum())
+        self.assertEqual(p2_grad, mod.p1.detach() + x)
+        self.assertEqual(x_grad, mod.p2)
 
     def test_aot_export_simplified_basic(self):
         def f(x, y):
@@ -9330,7 +9514,7 @@ def forward(self, primals_1, tangents_1):
             enable_log=False,
         )
         fake_mode, shape_env = construct_fake_mode(flat_args, aot_config)
-        fake_flat_args, act_input_indices = process_inputs(
+        fake_flat_args, act_input_paths = process_inputs(
             flat_args, aot_config, fake_mode, shape_env
         )
         flat_args_descs = [PlainAOTInput(i) for i in range(len(fake_flat_args))]
@@ -9345,7 +9529,7 @@ def forward(self, primals_1, tangents_1):
                 fake_mode,
                 shape_env,
             )
-            aot_state.fw_metadata.act_input_indices = act_input_indices
+            aot_state.fw_metadata.act_input_paths = act_input_paths
             aot_config_before_stage2 = aot_state.aot_config
             aot_graph_capture = aot_stage1_graph_capture(aot_state, flat_fn)
             compiled_fn, _ = aot_stage2_compile(
@@ -9641,6 +9825,24 @@ class TestAOTDispatch(AOTTestCase):
     # - metadata mutation? (TBD)
     # - guard tests (fw guards *and* bw guards)
     # - subclass test involving _indices_of_inps_to_detach
+    def test_aminmax_out_dtype_mismatch_errors(self):
+        def f(inp, out_min, out_max):
+            return torch.aminmax(inp, dim=-1, out=(out_min, out_max))
+
+        inp = torch.rand(10, 10)
+        out_min = torch.empty(10, dtype=torch.float64)
+        out_max = torch.empty(10, dtype=torch.float64)
+
+        with self.assertRaisesRegex(RuntimeError, "Expected out tensor to have dtype"):
+            f(inp, out_min, out_max)
+
+        compiled_f = torch.compile(f, backend="aot_eager", fullgraph=True)
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.TorchRuntimeError,
+            "Expected out tensor to have dtype",
+        ):
+            compiled_f(inp, out_min, out_max)
+
     def test_aot_dispatch_simple(self):
         # a is a subclass, b is not
         def f(a, b):
@@ -9872,6 +10074,9 @@ metadata incorrectly.
         self.assertEqual(a_test, a_ref)
         self.assertEqual(b_test.a, b_ref.a)
         self.assertEqual(b_test.b, b_ref.b)
+        self.assertTensorMetadataEqual(a_test, a_ref)
+        self.assertTensorMetadataEqual(b_test, b_ref)
+        self.assertTensorMetadataEqual(out_test, out_ref)
 
         # NOTE: we need to use b in our gradient compute. Otherwise we will need to recompile the backward.
         (b_ref * out_ref).sum().backward()
@@ -9882,9 +10087,6 @@ metadata incorrectly.
         self.assertEqual(b_ref_base.grad.a, b_test_base.grad.a)
         self.assertEqual(b_ref_base.grad.b, b_test_base.grad.b)
 
-    # NB: Metadata mutation for subclasses is currently broken and disabled
-    # See https://github.com/pytorch/pytorch/issues/114975
-    @unittest.expectedFailure
     def test_aot_dispatch_input_metadata_mutation(self):
         def f(a, b):
             a.t_()
@@ -9925,6 +10127,9 @@ metadata incorrectly.
         self.assertEqual(a_test, a_ref)
         self.assertEqual(b_test.a, b_ref.a)
         self.assertEqual(b_test.b, b_ref.b)
+        self.assertTensorMetadataEqual(a_test, a_ref)
+        self.assertTensorMetadataEqual(b_test, b_ref)
+        self.assertTensorMetadataEqual(out_test, out_ref)
 
         # NOTE: we need to use b in our gradient compute. Otherwise we will need to recompile the backward.
         (b_ref * out_ref).sum().backward()
@@ -9935,8 +10140,7 @@ metadata incorrectly.
         self.assertEqual(b_ref_base.grad.a, b_test_base.grad.a)
         self.assertEqual(b_ref_base.grad.b, b_test_base.grad.b)
 
-    # NB: Metadata mutation for subclasses is currently broken and disabled
-    # See https://github.com/pytorch/pytorch/issues/114975
+    # NB: Mixed data and metadata mutations still need tangent metadata support.
     @unittest.expectedFailure
     def test_aot_dispatch_input_data_and_metadata_mutation(self):
         def f(a, b):
@@ -11789,8 +11993,6 @@ instantiate_device_type_tests(TestEagerFusionModuleInfo, globals(), only_for=onl
 @xfail_inherited_tests(
     [
         "test_set__and_data_mutation_bad",
-        "test_subclass_metadata_mutation_req_grad_True",
-        "test_subclass_metadata_mutation_req_grad_False",
     ]
 )
 class TestAOTAutogradWithDynamo(TestAOTAutograd):

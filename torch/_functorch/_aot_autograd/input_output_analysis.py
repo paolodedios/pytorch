@@ -23,7 +23,6 @@ from torch.fx.experimental.symbolic_shapes import is_concrete_int
 
 from .collect_metadata_analysis import coerce_tangent_and_suggest_memory_format
 from .descriptors import AOTInput, InputMutationAOTOutput, TangentAOTInput
-from .functional_utils import has_same_metadata
 from .schemas import (
     AOTConfig,
     BackwardSignature,
@@ -243,24 +242,14 @@ def create_synthetic_base_metadata(
                 else synthetic_base_info_for_output[0]  # type: ignore[index]
             )
         )
-        is_input_replaced_by_synthetic_base_view = (
-            o.base_idx is not None
-            and new_base_idx is not None
-            and isinstance(synthetic_base_info_for_output, tuple)
-            and (
-                outer_args[o.base_idx]._base is not None
-                or not has_same_metadata(
-                    outer_args[o.base_idx], inner_args[new_base_idx]
-                )
-            )
+        # If the original input was merged into a synthetic base, then an
+        # output that was literally that input is now a view of the base.
+        input_merged = o.base_idx is not None and isinstance(
+            synthetic_base_info[o.base_idx], tuple
         )
-        # If OutputType.is_input is remapped to another base, including a
-        # synthetic base replacing the original input view, the output must be
-        # regenerated as an alias of that base.
         new_output_type = (
             OutputType.alias_of_input
-            if o.output_type == OutputType.is_input
-            and (o.base_idx != new_base_idx or is_input_replaced_by_synthetic_base_view)
+            if o.output_type == OutputType.is_input and input_merged
             else o.output_type
         )
         existing_output_infos.append(
@@ -437,7 +426,7 @@ def create_graph_signature(
     trace_joint: bool,
     num_user_fw_outs: int | None,
     loss_index: int | None,
-    traced_gradient_input_indices: list[int] | None = None,
+    traced_gradient_input_indices: list[int] | None,
 ) -> GraphSignature:
     # Retrieve graph input names
     graph_input_names = _graph_input_names(fx_g)
@@ -461,15 +450,9 @@ def create_graph_signature(
         backward_output_names = graph_output_names[num_fw_outs:]
 
         if traced_gradient_input_indices is None:
-            traced_gradient_input_indices = [
-                i
-                for i, param in enumerate(params_and_buffers_flat)
-                if isinstance(param, Tensor) and param.requires_grad
-            ] + [
-                len(params_and_buffers_flat) + i
-                for i, user_input in enumerate(user_args_flat)
-                if isinstance(user_input, Tensor) and user_input.requires_grad
-            ]
+            raise AssertionError(
+                "traced_gradient_input_indices must be provided when trace_joint=True"
+            )
 
         if len(traced_gradient_input_indices) != len(backward_output_names):
             raise AssertionError(
