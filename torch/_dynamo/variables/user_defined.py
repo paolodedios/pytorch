@@ -1203,6 +1203,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
             if "maxlen" in bound_args.arguments:
                 maxlen = bound_args.arguments["maxlen"]
 
+            variables.lists.DequeVariable.validate_maxlen(tx, maxlen)
             return variables.lists.DequeVariable(
                 items, maxlen=maxlen, mutation_type=ValueMutationNew()
             )
@@ -3743,6 +3744,23 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                     functools.partial(GuardBuilder.HASATTR, attr=name)
                 )
             )
+
+        if not self._object_has_getattribute:
+            type_attr = self.lookup_class_mro_attr(name)
+            if (
+                (type_attr is NO_SUCH_SUBOBJ or not is_data_descriptor(type_attr))
+                and hasattr(self.value, "__dict__")
+                and not tx.output.side_effects.has_pending_mutation_of_attr(
+                    self,
+                    name,
+                    (AttrMutationKind.INSTANCE_DICT, AttrMutationKind.GENERIC_SETATTR),
+                )
+                and not tx.output.side_effects.has_pending_mutation_of_attr(
+                    self, "__dict__", AttrMutationKind.GENERIC_SETATTR
+                )
+                and self.has_key_in_generic_dict(tx, name)
+            ):
+                return variables.ConstantVariable.create(True)
 
         try:
             var_vt = self.var_getattr(tx, name)
