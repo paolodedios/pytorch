@@ -2244,13 +2244,10 @@ the output has the same batch dimensions.
           a negative eigenvalue is complex, so this function raises a runtime error when
           :attr:`A` has a materially negative eigenvalue.
 
-.. note:: The first-order gradient uses a backward based on the Daleckii-Krein formula
-          whose denominator :math:`\sqrt{\lambda_i} + \sqrt{\lambda_j}` stays well-defined
-          at repeated eigenvalues, so it is numerically stable there, unlike
-          differentiating through :func:`torch.linalg.eigh`. Computing the gradient
-          requires :attr:`A` to be positive-definite. Higher-order derivatives are computed
-          by differentiating through :func:`torch.linalg.eigh` and are not stable at
-          repeated eigenvalues.
+.. note:: The first-order gradient is numerically stable even when :attr:`A` has repeated
+          eigenvalues, unlike differentiating through :func:`torch.linalg.eigh`, but requires
+          :attr:`A` to be positive-definite. Higher-order derivatives differentiate through
+          :func:`torch.linalg.eigh` and are not stable at repeated eigenvalues.
 
 .. seealso::
 
