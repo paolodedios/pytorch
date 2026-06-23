@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Install build-time dependencies for the macOS arm64 wheel build.
+
+Usage: build_install_deps.py <package_dir>
+
+Mirrors .ci/manywheel/build_install_deps.py. macOS pins numpy by Python version
+and, when the conda-forge libomp is not staged at /opt/llvm-openmp, installs
+libomp from Homebrew (matching the fallback in the previous shell build).
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+# NumPy build-time pin selected by Python version (3.14 -> 2.3.4,
+# 3.13 -> 2.1.0, everything else -> 2.0.2).
+NUMPY_PINS: list[tuple[str, str]] = [
+    ("cp314", "2.3.4"),
+    ("cp313", "2.1.0"),
+]
+DEFAULT_NUMPY = "2.0.2"
+
+OMP_PREFIX = Path("/opt/llvm-openmp")
+
+
+def retry(cmd: list[str], delays: tuple[int, ...] = (1, 2, 4, 8)) -> None:
+    """Run cmd, retrying with backoff on failure (mirrors the shell retry helper)."""
+    last_rc = 0
+    for delay in (0, *delays):
+        if delay:
+            time.sleep(delay)
+        result = subprocess.run(cmd)
+        if result.returncode == 0:
+            return
+        last_rc = result.returncode
+    sys.exit(last_rc)
+
+
+def pip_install(*args: str) -> None:
+    retry([sys.executable, "-m", "pip", "install", *args])
+
+
+def numpy_pin() -> str:
+    tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    for prefix, version in NUMPY_PINS:
+        if tag.startswith(prefix):
+            return version
+    return DEFAULT_NUMPY
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("package_dir", type=Path)
+    args = parser.parse_args()
+
+    os.chdir(args.package_dir)
+    # requirements-build.txt supplies the build backend for `python -m build
+    # --no-isolation` (the previous shell build relied on it being preinstalled).
+    pip_install("-qU", "-r", "requirements-build.txt")
+    # Skip when sharing build/ across Pythons in the per-host loop -- the
+    # per-Python bits (libtorch_python, _C.so) are invalidated by
+    # tools/setup_helpers/cmake.py, so libtorch_cpu is reused.
+    if not os.environ.get("SKIP_SETUP_CLEAN"):
+        subprocess.run([sys.executable, "setup.py", "clean"], check=True)
+    pip_install("-q", "-r", "requirements.txt")
+    pip_install("-q", f"numpy=={numpy_pin()}")
+
+    # OpenMP: prefer the conda-forge libomp staged at /opt/llvm-openmp (set up
+    # by install_libomp.sh as a separate step). Otherwise fall back to Homebrew,
+    # which only supports the build machine's macOS version or higher.
+    if not OMP_PREFIX.is_dir():
+        if shutil.which("brew") is None:
+            sys.exit("libomp not staged at /opt/llvm-openmp and brew not available")
+        print("libomp not found at /opt/llvm-openmp, installing via brew")
+        retry(["brew", "install", "libomp"])
+
+
+if __name__ == "__main__":
+    main()
