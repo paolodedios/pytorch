@@ -4005,6 +4005,44 @@ class FakeTensorViewCopy(TestCase):
                 fake_x.permute(0, 2, 1)
 
     @unittest.skipIf(not torch.backends.mkldnn.is_available(), "requires MKLDNN")
+    def test_mkldnn_unsupported_ops_error_during_fake_prop(self):
+        x = torch.randn(3, 4, 5, dtype=torch.float32).to_mkldnn()
+
+        with FakeTensorMode() as fake_mode:
+            fake_x = fake_mode.from_tensor(x)
+
+            error_cases = (
+                (lambda x: torch.sin(x), NotImplementedError, "aten::sin.*MkldnnCPU"),
+                (lambda x: torch.sum(x), NotImplementedError, "aten::sum.*MkldnnCPU"),
+                (
+                    lambda x: x + 1,
+                    RuntimeError,
+                    "itensor_from_mkldnn expects MKL-DNN tensor input",
+                ),
+            )
+            for fn, error_type, error in error_cases:
+                with self.assertRaisesRegex(error_type, error):
+                    fn(fake_x)
+
+        def sin_case(x):
+            return torch.sin(x)
+
+        def add_scalar_case(x):
+            return x + 1
+
+        for fn, error_type, error in (
+            (sin_case, torch._dynamo.exc.Unsupported, "aten::sin.*MkldnnCPU"),
+            (
+                add_scalar_case,
+                torch._dynamo.exc.TorchRuntimeError,
+                "itensor_from_mkldnn expects MKL-DNN tensor input",
+            ),
+        ):
+            torch._dynamo.reset()
+            with self.assertRaisesRegex(error_type, error):
+                torch.compile(fn, backend="eager", fullgraph=True)(x)
+
+    @unittest.skipIf(not torch.backends.mkldnn.is_available(), "requires MKLDNN")
     def test_mkldnn_is_contiguous_matches_eager(self):
         x = torch.randn(2, 3, 4, 5, dtype=torch.float32).to_mkldnn()
 
@@ -4021,6 +4059,18 @@ class FakeTensorViewCopy(TestCase):
                     fake_x.is_contiguous(memory_format=memory_format),
                     x.is_contiguous(memory_format=memory_format),
                 )
+                self.assertEqual(
+                    torch.ops.aten.is_contiguous.memory_format(fake_x, memory_format),
+                    torch.ops.aten.is_contiguous.memory_format(x, memory_format),
+                )
+            self.assertEqual(
+                torch.ops.aten.is_contiguous.default(fake_x),
+                torch.ops.aten.is_contiguous.default(x),
+            )
+            self.assertEqual(
+                torch.ops.aten.is_non_overlapping_and_dense.default(fake_x),
+                torch.ops.aten.is_non_overlapping_and_dense.default(x),
+            )
 
         def branch_on_contiguous(x):
             if x.is_contiguous():

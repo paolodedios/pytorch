@@ -94,6 +94,27 @@ _MKLDNN_DENSE_OUTPUT_OPS = {
     aten._to_dense.default,
     aten.to_dense.default,
 }
+_MKLDNN_METADATA_OPS = {
+    aten.dim.default,
+    aten.is_contiguous.default,
+    aten.is_contiguous.memory_format,
+    aten.is_non_overlapping_and_dense.default,
+    aten.is_strides_like_format.default,
+    aten.numel.default,
+    aten.size.default,
+    aten.size.int,
+    aten.stride.default,
+    aten.stride.int,
+    aten.sym_numel.default,
+    aten.sym_size.default,
+    aten.sym_size.int,
+    aten.sym_stride.default,
+    aten.sym_stride.int,
+}
+_MKLDNN_SCALAR_ERROR_OPS = {
+    aten.add.Tensor,
+    aten.add_.Tensor,
+}
 _MKLDNN_AUXILIARY_TENSOR_NAMESPACES = {
     "mkldnn",
     "mkl",
@@ -914,7 +935,15 @@ def _should_propagate_mkldnn(func: OpOverload, flat_args: Sequence[object]) -> b
         raise RuntimeError("itensor_from_mkldnn expects MKL-DNN tensor input")
     if func in _MKLDNN_DENSE_OUTPUT_OPS:
         return False
-    return func in _MKLDNN_PROPAGATE_OPS or _has_mkldnn_kernel(func)
+    if func in _MKLDNN_METADATA_OPS:
+        return False
+    if func in _MKLDNN_SCALAR_ERROR_OPS and len(tensor_args) == 1:
+        raise RuntimeError("itensor_from_mkldnn expects MKL-DNN tensor input")
+    if func in _MKLDNN_PROPAGATE_OPS or _has_mkldnn_kernel(func):
+        return True
+    raise NotImplementedError(
+        f"Could not run '{func.name()}' with arguments from the 'MkldnnCPU' backend."
+    )
 
 
 @functools.cache
@@ -1325,12 +1354,19 @@ class FakeTensor(Tensor):
             if func in (torch.Tensor.permute, torch.permute, aten.permute.default):
                 raise NotImplementedError("aten::as_strided")
 
-            if func is torch.Tensor.is_contiguous:
+            if func in (
+                torch.Tensor.is_contiguous,
+                aten.is_contiguous.default,
+                aten.is_contiguous.memory_format,
+            ):
                 memory_format = get_arg(1, ("memory_format",), torch.contiguous_format)
                 return memory_format in (
                     torch.contiguous_format,
                     torch.preserve_format,
                 )
+
+            if func is aten.is_non_overlapping_and_dense.default:
+                return True
 
             if func in (torch.Tensor.sigmoid, torch.sigmoid):
                 with torch._C.DisableTorchFunctionSubclass():
