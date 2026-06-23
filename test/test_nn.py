@@ -15748,20 +15748,17 @@ if __name__ == '__main__':
             )
         self.assertEqual(out.dtype, torch.float32)
 
-        # auto heuristic, below the crossing region (num_classes >>
-        # in_features): probability targets resolve to aspect_ratio
-        # factor 1, index targets to aspect_ratio:2.
+        # auto heuristic resolves chunking_method to aspect_ratio (factor 1)
+        # for both probability and index targets; below the crossing region
+        # (num_classes >> in_features) the N*V/4D cap is inert, so the
+        # resolved batch_chunk_size is the plain aspect_ratio chunk.
         if "cuda" in device:
-            adjusted = nn.LinearCrossEntropyOptions()._adjust(
-                num_batches=4096, in_features=2048, num_classes=32000,
-                dtype=torch.float16, device=inp.device, prob_target=True,
-            )
-            self.assertEqual(adjusted.chunking_method, "aspect_ratio")
-            adjusted = nn.LinearCrossEntropyOptions()._adjust(
-                num_batches=4096, in_features=2048, num_classes=32000,
-                dtype=torch.float16, device=inp.device, prob_target=False,
-            )
-            self.assertEqual(adjusted.chunking_method, "aspect_ratio:2")
+            for prob in (True, False):
+                adjusted = nn.LinearCrossEntropyOptions()._adjust(
+                    num_batches=4096, in_features=2048, num_classes=32000,
+                    dtype=torch.float16, device=inp.device, prob_target=prob,
+                )
+                self.assertEqual(adjusted.chunking_method, "aspect_ratio")
 
         # Empty batch on the chunked path: mean is NaN, sum is 0
         # (matches the reference).
