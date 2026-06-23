@@ -121,6 +121,7 @@ from .utils import (
     _set_error_on_graph_break,
     cleanup_guarded_eager_fallback_code,
     cleanup_guarded_eager_fallback_codes_for_code,
+    CleanupManager,
     common_constant_types,
     compile_times,
     is_guarded_eager_fallback_code,
@@ -382,14 +383,28 @@ def _reset_guarded_backend_cache() -> None:
     cached_backends.clear()
 
 
+def _active_code_ids() -> set[int]:
+    active_code_ids: set[int] = set()
+    frame = sys._getframe()
+    while frame is not None:
+        active_code_ids.add(id(frame.f_code))
+        frame = frame.f_back
+    return active_code_ids
+
+
 def reset_code(code: types.CodeType) -> None:
+    active_code_ids = _active_code_ids()
     cleanup_guarded_eager_fallback_codes_for_code(code)
     for entry in _debug_get_cache_entry_list(code):
+        if id(entry.code) in active_code_ids:
+            continue
         if is_guarded_eager_fallback_code(entry.code) or getattr(
             entry, "trace_annotation", ""
         ).startswith("Torch-Compiled Eager Fallback"):
             cleanup_guarded_eager_fallback_code(entry.code)
-    if is_guarded_eager_fallback_code(code):
+        else:
+            CleanupManager.instance.cleanup(entry.code)
+    if is_guarded_eager_fallback_code(code) and id(code) not in active_code_ids:
         cleanup_guarded_eager_fallback_code(code)
     _reset_code(code)
 
@@ -1871,7 +1886,7 @@ def explain(f: Callable[..., Any], *extra_args: Any, **extra_kwargs: Any) -> Any
         opt_f(*args, **kwargs)
 
         graph_count = len(graphs)
-        graph_break_count = len(break_reasons)
+        graph_break_count = min(len(break_reasons), max(graph_count - 1, 0))
         compile_time = compile_times(repr="str")
 
         # TODO(voz): Do we want a decorator for this?

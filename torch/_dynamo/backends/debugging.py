@@ -732,7 +732,7 @@ class ExplainWithBackend:
         output = ExplainOutput(
             self.graphs,
             graph_count,
-            len(self.break_reasons),
+            min(len(self.break_reasons), max(graph_count - 1, 0)),
             self.break_reasons,
             self.op_count,
         )

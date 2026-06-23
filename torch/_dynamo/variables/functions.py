@@ -2507,6 +2507,8 @@ class SkipFunctionVariable(VariableTracker):
                 from ..trace_rules import get_skip_reason
 
                 reason = get_skip_reason(self.value)
+            # clone_inputs is internal benchmarking/debug plumbing, not a user
+            # graph break, so keep it out of diagnostic counters.
             record_graph_break = not (
                 module_name == "torch._dynamo.utils" and qualname == "clone_inputs"
             )

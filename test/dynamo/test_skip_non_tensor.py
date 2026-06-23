@@ -221,6 +221,40 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
             preexisting_builtins_keys,
         )
 
+    def test_condition_dependent_skip_reset_cleans_held_cache_entry_codes(self):
+        def fn(x, n):
+            if n == 0:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return x + 1
+            return x - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, dynamic=False)
+        x = torch.ones(3)
+        preexisting_builtins_keys = {
+            name for name in fn.__globals__ if name.startswith("__builtins_dict___")
+        }
+
+        self.assertEqual(opt_fn(x, 0), x - 1)
+        self.assertEqual(opt_fn(x, 1), x + 1)
+        held_codes = [entry.code for entry in _debug_get_cache_entry_list(fn.__code__)]
+        self.assertEqual(counter.frame_count, 1)
+        self.assertTrue(
+            {name for name in fn.__globals__ if name.startswith("__builtins_dict___")}
+            - preexisting_builtins_keys
+        )
+
+        torch._dynamo.reset()
+        self.assertEqual(
+            {name for name in fn.__globals__ if name.startswith("__builtins_dict___")},
+            preexisting_builtins_keys,
+        )
+        self.assertTrue(held_codes)
+
     def test_condition_dependent_empty_graph_skip_does_not_poison_code(self):
         def fn(x, flag):
             if flag:
@@ -350,6 +384,16 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         explain_output = torch._dynamo.explain(fn)(x)
         self.assertEqual(explain_output.graph_break_count, 0)
         self.assertEqual(explain_output.break_reasons, [])
+
+    def test_terminal_dynamic_shape_graph_break_not_counted_as_split(self):
+        def fn(x):
+            y = x + 1
+            return torch.bincount(y, minlength=10)
+
+        explain_output = torch._dynamo.explain(fn)(torch.randint(0, 9, (30,)))
+        self.assertEqual(explain_output.graph_count, 1)
+        self.assertEqual(explain_output.graph_break_count, 0)
+        self.assertEqual(len(explain_output.break_reasons), 1)
 
     def test_condition_dependent_skip_cleanup_hooks_are_idempotent(self):
         def fn():

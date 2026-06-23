@@ -472,6 +472,8 @@ def _has_condition_dependent_skip_guards(
 def _is_condition_dependent_embedded_guard(
     name: str, output: OutputGraphCommon
 ) -> bool:
+    # These parsers should stay conservative about which guards they exclude:
+    # returning False here can fall back to a persistent code-object skip.
     for prefix, scope in (("G[", output.global_scope), ("L[", output.local_scope)):
         scope_start = name.find(prefix)
         if scope_start == -1:
