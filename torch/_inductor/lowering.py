@@ -31,7 +31,7 @@ from torch._higher_order_ops.associative_scan import associative_scan_op
 from torch._higher_order_ops.flex_gemm import (
     _SUPPORTED_FLEX_GEMM_OP_NAMES,
     flex_gemm_hop,
-    FLEX_GEMM_OP_INPUT_INDICES,
+    FLEX_GEMM_OP_SPECS,
 )
 from torch._higher_order_ops.triton_kernel_wrap import triton_kernel_wrapper_mutation
 from torch._library.fake_class_registry import FakeScriptObject
@@ -71,7 +71,6 @@ from torch.utils._sympy.functions import (
 from .._dynamo.utils import import_submodule
 from . import config, inductor_prims, ir, test_operators  # NOQA: F401
 from .decomposition import decompositions, get_decompositions
-from .fx_passes.fuse_regions import FUSE_REGION
 from .ir import (
     BaseView,
     DtypeView,
@@ -295,8 +294,8 @@ def decode_dtype(dtype: int | torch.dtype) -> torch.dtype:
     return dtype
 
 
-def is_integer_type(x: Any) -> TypeGuard[TensorBox | sympy.Expr | int]:
-    if isinstance(x, TensorBox):
+def is_integer_type(x: Any) -> TypeGuard[TensorBox | IRNode | sympy.Expr | int]:
+    if isinstance(x, (TensorBox, IRNode)):
         return is_integer_dtype(x.get_dtype()) or is_boolean_dtype(x.get_dtype())
     elif isinstance(x, sympy.Expr):
         return x.is_integer is True  # type: ignore[attr-defined]
@@ -304,8 +303,8 @@ def is_integer_type(x: Any) -> TypeGuard[TensorBox | sympy.Expr | int]:
         return isinstance(x, int)
 
 
-def is_boolean_type(x: Any) -> TypeGuard[TensorBox | bool]:
-    if isinstance(x, TensorBox):
+def is_boolean_type(x: Any) -> TypeGuard[TensorBox | IRNode | bool]:
+    if isinstance(x, (TensorBox, IRNode)):
         return is_boolean_dtype(x.get_dtype())
     else:
         return isinstance(x, bool)
@@ -8835,39 +8834,6 @@ register_lowering(
 
 @register_lowering(torch.ops.higher_order.invoke_subgraph, type_promotion_kind=None)
 def invoke_subgraph(subgraph_fn: ir.Subgraph, identifier: str, *operands):
-    region = V.graph.current_node.meta.get(FUSE_REGION)
-    if region is not None:
-        if not isinstance(region, str):
-            raise AssertionError(f"expected fuse_region to be str, got {region}")
-
-        # Boundary inputs must be materialized before operation_len so their
-        # producer ops stay outside the annotated region.
-        for operand in operands:
-            operand_ir_nodes = [
-                operand_leaf
-                for operand_leaf in pytree.tree_leaves(operand)
-                if isinstance(operand_leaf, IRNode)
-            ]
-            for operand_ir_node in operand_ir_nodes:
-                operand_ir_node.realize()
-
-        operation_len = len(V.graph.operations)
-        placeholders = subgraph_fn.graph_module.graph.find_nodes(op="placeholder")
-        if len(placeholders) != len(operands):
-            raise AssertionError("expected placeholder count to match operands")
-
-        output = process_subgraph_nodes(subgraph_fn.graph_module, list(operands))
-        for op in V.graph.operations[operation_len:]:
-            if not hasattr(op, "annotations"):
-                continue
-            existing_region = op.annotations.get(FUSE_REGION)
-            if existing_region is not None and existing_region != region:
-                raise AssertionError(
-                    f"expected one fuse_region per op, got {existing_region} and {region}"
-                )
-            op.annotations[FUSE_REGION] = region
-        return output
-
     result = ir.InvokeSubgraph.create(subgraph_fn, *operands)
     return list(map(TensorBox.create, result))  # type: ignore[call-overload]
 
@@ -8917,15 +8883,11 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
     """Lower FlexGEMM to the regular subgraph path or the QUACK template."""
     if kernel_options.get("backend", "TRITON") != "QUACK":
         return process_subgraph_nodes(subgraph.graph_module, list(args))
-    if gemm_op not in FLEX_GEMM_OP_INPUT_INDICES:
+    if gemm_op not in FLEX_GEMM_OP_SPECS:
         raise NotImplementedError(
             f"FlexGEMM QUACK backend currently supports only aten.{_SUPPORTED_FLEX_GEMM_OP_NAMES}"
         )
     tuned = kernel_options.get("tuned", False)
-    if tuned:
-        raise NotImplementedError(
-            "FlexGEMM generated epilogues do not support tuned=True yet"
-        )
     unsupported_options = OrderedSet(kernel_options) - OrderedSet(["backend", "tuned"])
     if unsupported_options:
         raise NotImplementedError(
@@ -8937,10 +8899,14 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
         materialize_flex_gemm_epilogue,
         output_node as flex_gemm_output_node,
     )
-    from torch._inductor.kernel.flex_gemm.template import flex_gemm_epilogue_template
+    from torch._inductor.kernel.flex_gemm.template import (
+        flex_gemm_epilogue_template,
+        FlexGemmEpilogueConfig,
+    )
     from torch._inductor.select_algorithm import autotune_select_algorithm
 
-    mat1_index, _ = FLEX_GEMM_OP_INPUT_INDICES[gemm_op]
+    op_spec = FLEX_GEMM_OP_SPECS[gemm_op]
+    mat1_index, mat2_index = op_spec.mat1_index, op_spec.mat2_index
     unsupported_gemm_kwargs = OrderedSet(gemm_kwargs) - OrderedSet(["alpha", "beta"])
     if unsupported_gemm_kwargs:
         raise NotImplementedError(
@@ -8976,23 +8942,46 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
         subgraph.graph_module, gemm_op
     )
     input_nodes = [ir.TemplateBuffer.realize_template_input(arg) for arg in gemm_args]
+    if tuned:
+        from torch._inductor.template_heuristics.flex_gemm import (
+            candidate_gemm_configs_for_device,
+            gemm_config_key,
+        )
+
+        quack_config_keys = tuple(
+            gemm_config_key(config)
+            for config in candidate_gemm_configs_for_device(layout.device)
+        )
+    else:
+        from torch._inductor.template_heuristics.flex_gemm import (
+            default_gemm_config_key,
+        )
+
+        quack_config_keys = (
+            default_gemm_config_key(
+                layout.device,
+                gemm_args[mat1_index].get_size()[-2],
+                gemm_args[mat2_index].get_size()[-1],
+            ),
+        )
     choices: list[Any] = []
-    error = flex_gemm_epilogue_template.maybe_append_choice(
-        choices,
-        input_nodes=input_nodes,
-        layout=layout,
-        config=ir.FlexGemmEpilogueConfig(
-            epilogue_name=epilogue_name,
-            epilogue_source=epilogue_source,
-            gemm_op=gemm_op.name().removeprefix("aten::"),
-            alpha=float(alpha),
-            beta=float(beta),
-            tuned=tuned,
-            out_dtype=output_meta.dtype,
-        ),
-    )
-    if error is not None:
-        raise error
+    for quack_config_key in quack_config_keys:
+        error = flex_gemm_epilogue_template.maybe_append_choice(
+            choices,
+            input_nodes=input_nodes,
+            layout=layout,
+            config=FlexGemmEpilogueConfig(
+                epilogue_name=epilogue_name,
+                epilogue_source=epilogue_source,
+                gemm_op=op_spec,
+                alpha=float(alpha),
+                beta=float(beta),
+                out_dtype=output_meta.dtype,
+                quack_config_key=quack_config_key,
+            ),
+        )
+        if error is not None:
+            raise error
     result, _ = autotune_select_algorithm(
         "flex_gemm_epilogue", choices, input_nodes, layout
     )

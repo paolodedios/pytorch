@@ -101,6 +101,31 @@ def build_collective_info(graph, hiding_annotations):
     return collective_info
 
 
+class TestProcessGroupNameResolution(TestCase):
+    def test_evaluate_compile_time_process_group_get_attr_without_meta_val(self):
+        from torch._inductor.fx_passes.bucketing import _resolve_group_name
+        from torch._inductor.fx_utils import evaluate_compile_time_value
+
+        class ProcessGroupLike:
+            group_name = "fake_group"
+
+        class Root(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self._test_pg = ProcessGroupLike()
+
+        graph = torch.fx.Graph()
+        pg_node = graph.get_attr("_test_pg")
+        graph.output(pg_node)
+        torch.fx.GraphModule(Root(), graph)
+
+        self.assertNotIn("val", pg_node.meta)
+        self.assertIs(
+            evaluate_compile_time_value(pg_node), graph.owning_module._test_pg
+        )
+        self.assertEqual(_resolve_group_name(pg_node), "fake_group")
+
+
 @requires_accelerator_dist_backend()
 @unittest.skipIf(not HAS_GPU, "Inductor+gpu needs triton and recent GPU arch")
 @instantiate_parametrized_tests
@@ -999,44 +1024,6 @@ class TestOverlapPreservingBucketing(InductorTestCase):
 
         # Should not error in deterministic mode (would have errored before fix)
         schedule_overlap_bucketing(gm)
-
-    @torch._inductor.config.patch(deterministic=True)
-    def test_overlap_scheduler_resolves_get_attr_process_group(self):
-        """
-        Functionalized eager collectives can pass ProcessGroup get_attr nodes to
-        _c10d_functional ops. Overlap scheduling should resolve those without
-        requiring node.meta["val"] on the get_attr node.
-        """
-        from torch._inductor.fx_passes.overlap_scheduling import (
-            schedule_overlap_bucketing,
-        )
-
-        def func(a, b):
-            group_name = "0"
-            ar = torch.ops._c10d_functional.all_reduce(a.sum(), "sum", group_name)
-            mm_result = torch.mm(a, b)
-            ar_out = torch.ops._c10d_functional.wait_tensor(ar)
-            return mm_result + ar_out
-
-        with FakeTensorMode():
-            a = torch.randn(16, 16, device=self.device)
-            b = torch.randn(16, 16, device=self.device)
-            gm = make_fx(func)(a, b)
-
-        ar = gm.graph.find_nodes(
-            op="call_function",
-            target=torch.ops._c10d_functional.all_reduce.default,
-        )[0]
-        gm._test_pg = dist.distributed_c10d._get_default_group()
-        with gm.graph.inserting_before(ar):
-            pg_node = gm.graph.create_node("get_attr", "_test_pg")
-        ar.args = (ar.args[0], ar.args[1], pg_node)
-
-        self.assertNotIn("val", pg_node.meta)
-        gm.graph.lint()
-        gm.recompile()
-
-        schedule_overlap_bucketing(gm, pre_bucketing_fsdp_collectives=False)
 
     def test_assume_bucketed_latency_exceeds_exposed_time(self):
         """
