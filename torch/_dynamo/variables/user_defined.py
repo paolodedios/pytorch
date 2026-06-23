@@ -3761,6 +3761,23 @@ class UserDefinedObjectVariable(UserDefinedVariable):
                 )
             )
 
+        if not self._object_has_getattribute:
+            type_attr = self.lookup_class_mro_attr(name)
+            if (
+                (type_attr is NO_SUCH_SUBOBJ or not is_data_descriptor(type_attr))
+                and hasattr(self.value, "__dict__")
+                and not tx.output.side_effects.has_pending_mutation_of_attr(
+                    self,
+                    name,
+                    (AttrMutationKind.INSTANCE_DICT, AttrMutationKind.GENERIC_SETATTR),
+                )
+                and not tx.output.side_effects.has_pending_mutation_of_attr(
+                    self, "__dict__", AttrMutationKind.GENERIC_SETATTR
+                )
+                and self.has_key_in_generic_dict(tx, name)
+            ):
+                return variables.ConstantVariable.create(True)
+
         try:
             var_vt = self.var_getattr(tx, name)
             return VariableTracker.build(
@@ -4426,7 +4443,6 @@ class IntWrapperVariable(UserDefinedObjectVariable):
 
 
 class RemovableHandleIdVariable(VariableTracker):
-    _dynamo_is_removable_handle_id = True
     _nonvar_fields = {
         "handle_id",
         *VariableTracker._nonvar_fields,
@@ -4477,6 +4493,16 @@ class RemovableHandleIdVariable(VariableTracker):
         self, tx: "InstructionTranslatorBase"
     ) -> tuple[int, bool]:
         return self.handle_id.container_key_hash_impl(tx)
+
+    def is_removable_handle_id_key(self) -> bool:
+        return True
+
+    def removable_handle_id_value(self) -> int | None:
+        if self.handle_id.is_python_constant():
+            value = self.handle_id.as_python_constant()
+            if isinstance(value, int):
+                return value
+        return None
 
     def _handle_id_as_constant(self) -> int:
         if self.handle_id.is_python_constant():

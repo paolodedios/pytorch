@@ -521,6 +521,12 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         """Hash for Dynamo's internal dict/set key bookkeeping."""
         return self.hash_impl(tx)
 
+    def is_removable_handle_id_key(self) -> bool:
+        return False
+
+    def removable_handle_id_value(self) -> int | None:
+        return None
+
     def richcompare_impl(
         self,
         tx: InstructionTranslatorBase,

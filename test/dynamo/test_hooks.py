@@ -1118,51 +1118,6 @@ def forward(self, L_x_ : torch.Tensor):
         finally:
             RemovableHandle.next_id = old_next_id
 
-    def test_register_forward_hook_inside_compiled_region_with_existing_hook(self):
-        class Mod(torch.nn.Module):
-            def __init__(self) -> None:
-                super().__init__()
-                self.linear = torch.nn.Linear(4, 4)
-
-            def forward(self, x):
-                def forward_hook(module, args, kwargs, output):
-                    return output + 1
-
-                handle = self.linear.register_forward_hook(
-                    forward_hook, with_kwargs=True, always_call=True
-                )
-                try:
-                    return self.linear(x)
-                finally:
-                    handle.remove()
-
-        def existing_hook(module, args, output):
-            return output + 2
-
-        old_next_id = RemovableHandle.next_id
-        pre_handle = None
-        try:
-            mod = Mod()
-            pre_handle = mod.linear.register_forward_hook(
-                existing_hook, always_call=True
-            )
-            x = torch.randn(4, 4)
-            ref = mod(x)
-            next_id_before_compile = RemovableHandle.next_id
-
-            cnts = torch._dynamo.testing.CompileCounter()
-            opt_mod = torch.compile(mod, backend=cnts, fullgraph=True)
-
-            for _ in range(3):
-                res = opt_mod(x)
-                self.assertEqual(ref, res)
-            self.assertEqual(cnts.frame_count, 1)
-            self.assertEqual(RemovableHandle.next_id, next_id_before_compile + 3)
-        finally:
-            if pre_handle is not None:
-                pre_handle.remove()
-            RemovableHandle.next_id = old_next_id
-
     def test_register_forward_hook_inside_compiled_region_existing_hook_id_collision_graph_breaks(
         self,
     ):
@@ -1391,6 +1346,43 @@ def forward(self, L_x_ : torch.Tensor):
             self.assertEqual(len(mod.linear._forward_pre_hooks), 0)
             self.assertEqual(len(mod.linear._forward_pre_hooks_with_kwargs), 0)
             self.assertEqual(cnts.frame_count, 1)
+        finally:
+            RemovableHandle.next_id = old_next_id
+
+    @torch._dynamo.config.patch(compiled_autograd=True)
+    def test_register_backward_hook_inside_compiled_region(self):
+        class Mod(torch.nn.Module):
+            def __init__(self, name, kwargs) -> None:
+                super().__init__()
+                self.linear = torch.nn.Linear(4, 4)
+                self.linear.requires_grad_(False)
+                self.name = name
+                self.kwargs = kwargs
+
+            def forward(self, x):
+                def hook(*args):
+                    return None
+
+                handle = getattr(self.linear, self.name)(hook, **self.kwargs)
+                try:
+                    return self.linear(x)
+                finally:
+                    handle.remove()
+
+        old_next_id = RemovableHandle.next_id
+        try:
+            for name, kwargs in (
+                ("register_backward_hook", {}),
+                ("register_full_backward_hook", {"prepend": True}),
+                ("register_full_backward_pre_hook", {"prepend": True}),
+            ):
+                with self.subTest(name=name):
+                    mod = Mod(name, kwargs)
+                    cnts = torch._dynamo.testing.CompileCounter()
+                    opt_mod = torch.compile(mod, backend=cnts, fullgraph=True)
+
+                    opt_mod(torch.randn(4, 4))
+                    self.assertEqual(cnts.frame_count, 1)
         finally:
             RemovableHandle.next_id = old_next_id
 

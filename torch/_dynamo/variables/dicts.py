@@ -99,7 +99,7 @@ def _is_removable_handle_id_key(vt: VariableTracker) -> bool:
             return False
         vt = vt.realize()
 
-    return bool(getattr(vt, "_dynamo_is_removable_handle_id", False))
+    return vt.is_removable_handle_id_key()
 
 
 def _removable_handle_id_value(vt: VariableTracker) -> int | None:
@@ -108,13 +108,9 @@ def _removable_handle_id_value(vt: VariableTracker) -> int | None:
             return None
         vt = vt.realize()
 
-    if not getattr(vt, "_dynamo_is_removable_handle_id", False):
+    if not vt.is_removable_handle_id_key():
         return None
-    handle_id = getattr(vt, "handle_id", None)
-    if not isinstance(handle_id, VariableTracker) or not handle_id.is_python_constant():
-        return None
-    value = handle_id.as_python_constant()
-    return value if isinstance(value, int) else None
+    return vt.removable_handle_id_value()
 
 
 def _graph_break_removable_handle_id(tx: "InstructionTranslatorBase") -> NoReturn:
@@ -141,8 +137,16 @@ def _iter_code_objects(code: types.CodeType) -> Iterator[types.CodeType]:
 def _nn_module_call_impl_code_ids() -> frozenset[int]:
     import torch.nn
 
-    call_impl_code = torch.nn.Module._call_impl.__code__
-    return frozenset(id(code) for code in _iter_code_objects(call_impl_code))
+    internal_hook_dispatch_codes = (
+        torch.nn.Module._call_impl.__code__,
+        torch.nn.Module._get_backward_hooks.__code__,
+        torch.nn.Module._get_backward_pre_hooks.__code__,
+    )
+    return frozenset(
+        id(code)
+        for root in internal_hook_dispatch_codes
+        for code in _iter_code_objects(root)
+    )
 
 
 def _is_internal_nn_module_call_impl_tx(tx: "InstructionTranslatorBase") -> bool:
