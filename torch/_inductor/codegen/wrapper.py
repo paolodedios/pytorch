@@ -926,16 +926,6 @@ class AllocateLine(MemoryPlanningLine):
             return True
         if free_line.scheduler_node_index + 1 == self.scheduler_node_index:
             return True
-        if not config.allow_buffer_reuse_across_fuse_regions:
-            scheduler = V.graph.scheduler
-            free_region = scheduler.get_fuse_region(
-                scheduler.nodes[free_line.scheduler_node_index]
-            )
-            alloc_region = scheduler.get_fuse_region(
-                scheduler.nodes[self.scheduler_node_index]
-            )
-            if free_region != alloc_region:
-                return False
         overall_peak_memory = self.wrapper.estimate_peak.overall_peak_memory
         peak_memory_in_range = self.wrapper.estimate_peak.peak_between(free_line, self)
         new_peak_memory = size + peak_memory_in_range
@@ -2480,33 +2470,24 @@ class PythonWrapperCodegen(CodeGen):
             return f"{name}_stride"
 
         def maybe_emit_replacement_aliases(sym: sympy.Symbol) -> None:
-            # Deferred runtime asserts and graph input metadata can reference
-            # either side of a backed-symbol replacement. Emit aliases so both
-            # the pre-replacement and canonical names are defined.
+            # Deferred runtime asserts reference pre-replacement backed
+            # symbols (e.g. s77) that were replaced to this canonical
+            # symbol (s31) during constraint solving. Emit aliases so
+            # the asserts compile. Skip unbacked symbols — they are
+            # defined separately by the unbacked symbol codegen path.
             from torch.utils._sympy.symbol import symbol_is_type, SymT
-
-            def is_backed_symbol(s: sympy.Symbol) -> bool:
-                return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
 
             for src, tgt in V.graph.sizevars.shape_env.replacements.items():
                 if (
                     tgt == sym
                     and isinstance(src, sympy.Symbol)
                     and src not in bound_vars
-                    and is_backed_symbol(src)
-                    and is_backed_symbol(sym)
+                    and not symbol_is_type(
+                        src, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
+                    )
                 ):
                     code.writeline(f"{src} = {sym}")
                     bound_vars.add(src)
-                elif (
-                    src == sym
-                    and isinstance(tgt, sympy.Symbol)
-                    and tgt not in bound_vars
-                    and is_backed_symbol(sym)
-                    and is_backed_symbol(tgt)
-                ):
-                    code.writeline(f"{tgt} = {sym}")
-                    bound_vars.add(tgt)
 
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:
