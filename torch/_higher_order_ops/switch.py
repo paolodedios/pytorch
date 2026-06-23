@@ -74,7 +74,9 @@ def switch(
 
     Restrictions:
         - Each branch must have the same signature as operands and return the same
-          output structure (shape, dtype, etc.).
+          output structure (shape, dtype, etc.). Constant ``int`` and ``None`` leaves
+          are also permitted in branch outputs and are merged across branches (an
+          unbacked SymInt is introduced when ``int`` leaves differ between branches).
         - Branches cannot have in-place mutations on inputs or global variables.
         - Autograd is not supported in this prototype: the autograd dispatch
           key is a no-op that redispatches below autograd, so gradients will
