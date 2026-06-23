@@ -7482,6 +7482,23 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
         with self.assertRaisesRegex(RuntimeError, "must be batches of square matrices"):
             torch.linalg.matrix_sqrt(torch.randn(2, 3, device=device, dtype=dtype))
 
+        # The real square root of an indefinite matrix is complex, so a materially
+        # negative eigenvalue is rejected rather than silently projected away.
+        indefinite = torch.diag(torch.tensor([1.0, -2.0], device=device)).to(dtype)
+        with self.assertRaisesRegex(RuntimeError, "positive semi-definite"):
+            torch.linalg.matrix_sqrt(indefinite)
+
+    @skipCUDAIfNoMagmaAndNoLinalgsolver
+    @skipCPUIfNoLapack
+    @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
+    def test_linalg_matrix_sqrt_psd_boundary(self, device, dtype):
+        # A singular PSD input (a zero eigenvalue) is accepted: the roundoff clamp
+        # keeps the result finite and X @ X reproduces A.
+        a = torch.diag(torch.tensor([0.0, 4.0], device=device)).to(dtype)
+        x = torch.linalg.matrix_sqrt(a)
+        self.assertTrue(torch.isfinite(x).all())
+        self.assertEqual(x @ x, a, atol=2e-4, rtol=2e-4)
+
     @skipCUDAIfNoMagmaAndNoLinalgsolver
     @skipCPUIfNoLapack
     @dtypes(torch.float, torch.double, torch.complex64, torch.complex128)
