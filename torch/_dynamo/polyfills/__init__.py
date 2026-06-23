@@ -397,8 +397,8 @@ def instantiate_user_defined_class_object(
         if init is object.__init__:
             return obj
         if (
-            not args
-            and not kwargs
+            len(args) == 0
+            and len(kwargs) == 0
             and init in (BaseException.__init__, Exception.__init__)
         ):
             if cls.__new__ in (BaseException.__new__, Exception.__new__):
