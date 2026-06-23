@@ -463,10 +463,13 @@ coverage_ignore_functions = [
     "recv",
     "reduce",
     "reduce_scatter",
+    # deprecated aliases of all_gather_single / reduce_scatter_single
+    "all_gather_into_tensor",
     "reduce_scatter_tensor",
     "scatter",
     "scatter_object_list",
     "send",
+    "set_timeout",
     "supports_complex",
     # torch.distributed.elastic.events.handlers
     "get_logging_handler",
@@ -529,7 +532,6 @@ coverage_ignore_functions = [
     # torch.distributed.rendezvous
     "rendezvous",
     # torch.distributed.rpc.api
-    "get_worker_info",
     "method_factory",
     "new_method",
     "remote",
@@ -537,10 +539,8 @@ coverage_ignore_functions = [
     "rpc_sync",
     "shutdown",
     # torch.distributed.rpc.backend_registry
-    "backend_registered",
     "construct_rpc_backend_options",
     "init_backend",
-    "register_backend",
     # torch.distributed.rpc.internal
     "deserialize",
     "serialize",
@@ -915,18 +915,9 @@ coverage_ignore_functions = [
     "storage_to_tensor_type",
     "validate_cuda_device",
     "validate_hpu_device",
-    # torch.signal.windows.windows
-    "bartlett",
-    "blackman",
-    "cosine",
-    "exponential",
-    "gaussian",
-    "general_cosine",
-    "general_hamming",
-    "hamming",
-    "hann",
-    "kaiser",
-    "nuttall",
+    # torch.utils.backend_registration
+    "generate_methods_for_privateuse1_backend",
+    "rename_privateuse1_backend",
     # torch.utils.benchmark.examples.op_benchmark
     # torch.utils.benchmark.op_fuzzers.spectral
     "power_range",
@@ -1908,6 +1899,8 @@ coverage_ignore_classes = [
     # torch.torch_version
     "TorchVersion",
     # torch.types
+    "SymBool",
+    "SymFloat",
     "SymInt",
     # torch.utils.benchmark.examples.compare
     "FauxTorch",

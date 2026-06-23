@@ -25,6 +25,7 @@ except ImportError:
 if TYPE_CHECKING:
     # importing _POOL_HANDLE at runtime toplevel causes an import cycle
     from torch.cuda import _POOL_HANDLE
+    from torch.utils._cuda_debug import _CUDAGraphInputLivenessTracker
 
 from .._utils import _dummy_type
 
@@ -101,11 +102,53 @@ class CUDAGraph(_CUDAGraph):
 
     """
 
+    _tracker: _CUDAGraphInputLivenessTracker | None
+    # Read-only property exposed from the C++ _CUDAGraph base via pybind;
+    # annotated (not assigned) so the type checker sees it without shadowing it.
+    _has_graph_exec: bool
+    # Stays None unless maybe_stamp_capture_graph_id stamps it during capture_end
+    # (requires annotations enabled and cudaGraphNodeGetToolsId available).
+    _capture_graph_id: int | None
+    # Exec graph id the recorded annotations are currently keyed to, or None
+    # before the first remap. Lets a re-instantiate (which produces a fresh exec
+    # id) rekey annotations from the previous exec id to the new one.
+    _remapped_exec_id: int | None
+    _keep_graph: bool
+
     def __new__(cls, keep_graph: bool = False) -> Self:
-        return super().__new__(cls, keep_graph)
+        instance = super().__new__(cls, keep_graph)
+        instance._tracker = None
+        instance._capture_graph_id = None
+        instance._remapped_exec_id = None
+        instance._keep_graph = keep_graph
+        return instance
+
+    def _maybe_remap_annotations(self) -> None:
+        # Remap recorded kernel annotations to the current exec graph id. No-op
+        # unless a capture id was stamped (annotations enabled). Called from
+        # instantiate() -- which replay() routes through for keep_graph=True --
+        # so every fresh exec graph (each instantiate() produces a new exec id)
+        # rekeys the annotations; remap_to_exec_graph self-skips when the exec id
+        # is unchanged.
+        if self._capture_graph_id is None:
+            return
+        from torch.cuda._graph_annotations import remap_to_exec_graph
+
+        remap_to_exec_graph(self)
+
+    def __del__(self) -> None:
+        try:
+            tracker, self._tracker = self._tracker, None
+            if tracker is not None:
+                tracker.stop()
+        except Exception:
+            pass  # don't raise under GC
 
     def capture_begin(
-        self, pool: _POOL_HANDLE | None = None, capture_error_mode: str = "global"
+        self,
+        pool: _POOL_HANDLE | None = None,
+        capture_error_mode: str = "global",
+        check_input_liveness: bool = False,
     ) -> None:
         r"""Begin capturing CUDA work on the current stream.
 
@@ -122,8 +165,37 @@ class CUDAGraph(_CUDAGraph):
                 may be unsafe. "global" will error on actions in other threads, "thread_local" will only error for
                 actions in the current thread, and "relaxed" will not error on these actions. Do NOT change this setting
                 unless you're familiar with `cudaStreamCaptureMode <https://docs.nvidia.com/cuda/cuda-runtime-api/group__CUDART__STREAM.html#group__CUDART__STREAM_1g9d0535d93a214cbf126835257b16ba85>`_
+            check_input_liveness (bool, optional):
+                If ``True``, tracks external tensor inputs during graph capture and
+                raises an error if any are deallocated before replay. This helps debug "use after free" errors
+                where input tensors are garbage collected between capture and replay. Default: ``False``.
+
+                .. note::
+                    Custom CUDA kernels added outside PyTorch (e.g., via cuLaunchKernel or DLPack) are not
+                    tracked by this mechanism.
         """
+        if self._tracker is not None:
+            self._tracker.stop()
+            self._tracker = None
         super().capture_begin(pool=pool, capture_error_mode=capture_error_mode)
+        if check_input_liveness:
+            from torch.utils._cuda_debug import _CUDAGraphInputLivenessTracker
+
+            self._tracker = _CUDAGraphInputLivenessTracker()
+            self._tracker.start()
+
+    def capture_end_pre(self) -> None:
+        r"""End capture but do not finalize: leaves the captured ``cudaGraph_t``
+        live (for both ``keep_graph`` modes) so it can be inspected before
+        :meth:`capture_end_post` instantiates and/or destroys it."""
+        super().capture_end_pre()
+
+    def capture_end_post(self) -> None:
+        r"""Finalize a capture started by :meth:`capture_end_pre`: instantiate
+        and destroy the template when ``keep_graph=False``."""
+        super().capture_end_post()
+        if self._tracker is not None:
+            self._tracker.stop()
 
     def capture_end(self) -> None:
         r"""End CUDA graph capture on the current stream.
@@ -134,7 +206,16 @@ class CUDAGraph(_CUDAGraph):
         Use :class:`~torch.cuda.graph` or :func:`~torch.cuda.make_graphed_callables`,
         which call ``capture_end`` internally.
         """
-        super().capture_end()
+        self.capture_end_pre()
+        # Stamp the capture graph id while the template is live (both keep_graph
+        # modes); self-gates on annotations being enabled. An error here is
+        # unexpected and propagates -- we deliberately don't wrap this in a
+        # finally that calls capture_end_post(), since a failing finalize would
+        # mask the real (stamp) error.
+        from torch.cuda._graph_annotations import maybe_stamp_capture_graph_id
+
+        maybe_stamp_capture_graph_id(self)
+        self.capture_end_post()
 
     def instantiate(self) -> None:
         r"""Instantiate the CUDA graph. Will be called by
@@ -144,13 +225,26 @@ class CUDAGraph(_CUDAGraph):
         by ``raw_cuda_graph``.
         """
         super().instantiate()
+        self._maybe_remap_annotations()
 
     def replay(self) -> None:
         r"""Replay the CUDA work captured by this graph."""
+        if self._tracker is not None:
+            self._tracker.check_alive(self.pool())
+        # With keep_graph=True the exec graph is instantiated on demand here on
+        # the first replay; the C++ replay() requires it to already exist. The
+        # annotation remap rides on instantiate(), so it is handled by that call.
+        if not self._has_graph_exec:
+            self.instantiate()
         super().replay()
 
     def reset(self) -> None:
         r"""Delete the graph currently held by this instance."""
+        if self._tracker is not None:
+            self._tracker.stop()
+            self._tracker = None
+        self._capture_graph_id = None
+        self._remapped_exec_id = None
         super().reset()
 
     def pool(self) -> _POOL_HANDLE:
@@ -347,6 +441,13 @@ class graph:
             the capture ends.  Annotations are **not** cleared on exit so that multiple
             graphs in the same workload can accumulate annotations.
             Requires ``cuda.bindings`` package and cuda-compat >= 13.1 or CUDA driver >= 13.1.
+        check_input_liveness (bool, optional): If ``True``, tracks external tensor inputs during graph capture and
+            raises an error if any are deallocated before replay. This helps debug "use after free" errors
+            where input tensors are garbage collected between capture and replay. Default: ``False``.
+
+            .. note::
+                Custom CUDA kernels added outside PyTorch (e.g., via cuLaunchKernel or DLPack) are not
+                tracked by this mechanism.
 
     .. note::
         For effective memory sharing, if you pass a ``pool`` used by a previous capture and the previous capture
@@ -368,6 +469,7 @@ class graph:
         stream: torch.cuda.Stream | None = None,
         capture_error_mode: str = "global",
         enable_annotations: bool = False,
+        check_input_liveness: bool = False,
     ):
         # Lazy-init of default_capture_stream helps avoid circular-import errors.
         # Not thread safe, but graphs already have the general (explicitly documented)
@@ -385,6 +487,7 @@ class graph:
         self.cuda_graph = cuda_graph
         self.capture_error_mode = capture_error_mode
         self._enable_annotations = enable_annotations
+        self.check_input_liveness = check_input_liveness
 
     def __enter__(self) -> None:
         # Free as much memory as we can for the graph
@@ -416,6 +519,8 @@ class graph:
             *self.pool,
             # pyrefly: ignore [bad-keyword-argument]
             capture_error_mode=self.capture_error_mode,
+            # pyrefly: ignore [bad-keyword-argument]
+            check_input_liveness=self.check_input_liveness,
         )
 
     def __exit__(self, *args: object) -> None:
@@ -427,7 +532,10 @@ class graph:
         self.cuda_graph.capture_end()
         self.stream_ctx.__exit__(*args)
 
-        if self._enable_annotations:
+        # With keep_graph=True the exec graph is not instantiated by
+        # capture_end(), so there is no exec graph id to remap against yet. The
+        # remap is deferred to the graph's instantiate()/replay() in that case.
+        if self._enable_annotations and not self.cuda_graph._keep_graph:
             from torch.cuda._graph_annotations import remap_to_exec_graph
 
             remap_to_exec_graph(self.cuda_graph)
@@ -496,6 +604,7 @@ def make_graphed_callables(
         pool (optional): Token (returned by :func:`~torch.cuda.graph_pool_handle` or
             :meth:`other_Graph_instance.pool()<torch.cuda.CUDAGraph.pool>`) that hints this graph may share memory
             with the indicated pool.  See :ref:`Graph memory management<graph-memory-management>`.
+
     .. note::
         The ``requires_grad`` state of each Tensor in ``sample_args`` must match the state
         that's expected for the corresponding real input in the training loop.
@@ -593,7 +702,10 @@ def make_graphed_callables(
     # Hopefully prevents cudnn benchmarking and other lazy-initialization cuda work
     # from ending up in any captures.
     torch.cuda.synchronize()
-    with torch.cuda.stream(torch.cuda.Stream()):
+    # hipBLASLt handles are per-(device, stream) on ROCm and lazily created.
+    # Need to use the same stream for warmup and capture to avoid capture errors.
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
         for func, args, static_input_surface in zip(
             callables, _sample_args, per_callable_static_input_surfaces
         ):
@@ -626,7 +738,7 @@ def make_graphed_callables(
     per_callable_static_outputs = []
     per_callable_output_unflatten_spec = []
     for func, args, fwd_graph in zip(callables, _sample_args, fwd_graphs):
-        with torch.cuda.graph(fwd_graph, pool=mempool):
+        with torch.cuda.graph(fwd_graph, stream=stream, pool=mempool):
             func_outputs = func(*args)
 
         flatten_outputs, spec = torch.utils._pytree.tree_flatten(func_outputs)
@@ -650,7 +762,7 @@ def make_graphed_callables(
         outputs_grad = tuple(o for o in static_outputs if o.requires_grad)
         grad_inputs = None
         if len(outputs_grad) > 0:
-            with torch.cuda.graph(bwd_graph, pool=mempool):
+            with torch.cuda.graph(bwd_graph, stream=stream, pool=mempool):
                 grad_inputs = torch.autograd.grad(
                     outputs=outputs_grad,
                     inputs=tuple(i for i in static_input_surface if i.requires_grad),

@@ -172,7 +172,7 @@ class CUDAAllocator : public DeviceAllocator {
   virtual void createOrIncrefPool(
       c10::DeviceIndex /*device*/,
       MempoolId_t /*mempool_id*/,
-      std::shared_ptr<CUDAAllocator> allocator = nullptr) {
+      const std::shared_ptr<CUDAAllocator>& allocator = nullptr) {
     TORCH_CHECK(
         false,
         name(),
@@ -276,6 +276,13 @@ class CUDAAllocator : public DeviceAllocator {
   virtual CheckpointDelta setCheckpointPoolState(
       c10::DeviceIndex device,
       std::shared_ptr<AllocatorState> pps) = 0;
+  virtual DataPtr allocateWithAddress(size_t size, void* addr) {
+    TORCH_CHECK(
+        false,
+        name(),
+        " does not yet support allocateWithAddress. "
+        "If you need it, please file an issue describing your use case.");
+  }
   virtual std::string name() = 0;
   std::pair<size_t, size_t> getMemoryInfo(c10::DeviceIndex device) override {
     c10::DeviceGuard device_guard({at::kCUDA, device});
@@ -382,6 +389,10 @@ inline CheckpointDelta setCheckpointPoolState(
   return get()->setCheckpointPoolState(device, std::move(pps));
 }
 
+inline DataPtr allocateWithAddress(size_t size, void* addr) {
+  return get()->allocateWithAddress(size, addr);
+}
+
 // CUDAGraph interactions
 inline void beginAllocateToPool(
     c10::DeviceIndex device,
@@ -465,8 +476,8 @@ inline void releasePool(c10::DeviceIndex device, MempoolId_t mempool_id) {
 inline void createOrIncrefPool(
     c10::DeviceIndex device,
     MempoolId_t mempool_id,
-    std::shared_ptr<CUDAAllocator> allocator_ptr = nullptr) {
-  get()->createOrIncrefPool(device, mempool_id, std::move(allocator_ptr));
+    const std::shared_ptr<CUDAAllocator>& allocator_ptr = nullptr) {
+  get()->createOrIncrefPool(device, mempool_id, allocator_ptr);
 }
 inline void setUseOnOOM(
     c10::DeviceIndex device,
