@@ -2465,6 +2465,7 @@ class PythonWrapperCodegen(CodeGen):
         name: str,
         value: ir.TensorBox,
         bound_vars: OrderedSet[sympy.Symbol],
+        deferred_symbol_assignments=None,
     ):
         """Assign symbolic graph inputs and tensor size/stride symbols to locals."""
         code = self.prefix
@@ -2513,13 +2514,15 @@ class PythonWrapperCodegen(CodeGen):
             base_name: str,
             name_fn: Callable[[str], str],
             dim: int,
-        ) -> None:
+            deferred_symbol_assignments=None,
+        ) -> bool:
             if isinstance(sym_or_exp, sympy.Symbol):
                 if sym_or_exp in bound_vars:
-                    return
+                    return False
                 code.writeline(f"{sym_or_exp} = {name_fn(base_name)}[{dim}]")
                 bound_vars.add(sym_or_exp)
                 maybe_emit_replacement_aliases(sym_or_exp)
+                return True
             elif isinstance(sym_or_exp, sympy.Expr):
                 undefined_symbols = [
                     sym for sym in sym_or_exp.free_symbols if sym not in bound_vars
@@ -2527,7 +2530,22 @@ class PythonWrapperCodegen(CodeGen):
                 if len(undefined_symbols) != 1:
                     # Skip constants and underdetermined expressions; a later
                     # input may define the remaining symbols directly.
-                    return
+                    if (
+                        len(undefined_symbols) > 1
+                        and deferred_symbol_assignments is not None
+                    ):
+
+                        def retry(deferred_symbol_assignments):
+                            return codegen_symbol(
+                                sym_or_exp,
+                                base_name,
+                                name_fn,
+                                dim,
+                                deferred_symbol_assignments,
+                            )
+
+                        deferred_symbol_assignments.append(retry)
+                    return False
 
                 free_symbol = undefined_symbols.pop()
                 base_size_or_stride = name_fn(base_name)
@@ -2535,12 +2553,14 @@ class PythonWrapperCodegen(CodeGen):
                 code.writeline(f"{dim_value} = {base_size_or_stride}[{dim}]")
                 solution = try_solve(sympy.Eq(sym_or_exp, dim_value), free_symbol)
                 if solution is None:
-                    return
+                    return False
 
                 expr = _rewrite_symbol_solution_for_int_codegen(solution[1])
                 code.writeline(f"{free_symbol} = {pexpr(expr)}")
                 bound_vars.add(free_symbol)
                 maybe_emit_replacement_aliases(free_symbol)
+                return True
+            return False
 
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:
@@ -2550,9 +2570,9 @@ class PythonWrapperCodegen(CodeGen):
             maybe_emit_replacement_aliases(value)
         elif isinstance(value, ir.TensorBox):
             for dim, size in enumerate(value.get_size()):
-                codegen_symbol(size, name, sizeof, dim)
+                codegen_symbol(size, name, sizeof, dim, deferred_symbol_assignments)
             for dim, stride in enumerate(value.get_stride()):
-                codegen_symbol(stride, name, strideof, dim)
+                codegen_symbol(stride, name, strideof, dim, deferred_symbol_assignments)
         elif isinstance(
             value, (ir.TorchBindObject, ir.GeneratorState, ir.OpaqueObjectState)
         ):
@@ -2562,6 +2582,16 @@ class PythonWrapperCodegen(CodeGen):
                 pass
             else:
                 raise AssertionError(f"Unknown value type: {type(value)}")
+
+    def _retry_deferred_symbol_assignments(self, deferred_symbol_assignments) -> None:
+        while deferred_symbol_assignments:
+            next_deferred_symbol_assignments = []
+            progress = False
+            for assignment in deferred_symbol_assignments:
+                progress = assignment(next_deferred_symbol_assignments) or progress
+            if not progress:
+                break
+            deferred_symbol_assignments = next_deferred_symbol_assignments
 
     def codegen_inputs(self):
         """Assign all symbolic shapes to locals"""
@@ -2577,8 +2607,12 @@ class PythonWrapperCodegen(CodeGen):
         inputs = [
             (k, v) for k, v in graph_inputs.items() if isinstance(v, sympy.Symbol)
         ] + [(k, v) for k, v in graph_inputs.items() if not isinstance(v, sympy.Symbol)]
+        deferred_symbol_assignments = []
         for name, value in inputs:
-            self.codegen_input_symbol_assignment(name, value, bound_vars)
+            self.codegen_input_symbol_assignment(
+                name, value, bound_vars, deferred_symbol_assignments
+            )
+        self._retry_deferred_symbol_assignments(deferred_symbol_assignments)
 
         def _verify_input_symbol_assignment(
             value: ir.TensorBox,

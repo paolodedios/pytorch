@@ -646,6 +646,7 @@ class CppWrapperCpu(PythonWrapperCodegen):
         name: str,
         value: ir.TensorBox,
         bound_vars: OrderedSet[sympy.Symbol],
+        deferred_symbol_assignments=None,
     ):
         """Assign symbolic shapes to C++ locals, with replacement aliases."""
         code = self.prefix
@@ -699,15 +700,17 @@ class CppWrapperCpu(PythonWrapperCodegen):
             base_name: str,
             name_fn: Callable[[str], str],
             dim: int,
-        ):
+            deferred_symbol_assignments=None,
+        ) -> bool:
             if isinstance(sym_or_exp, sympy.Symbol):
                 if sym_or_exp in bound_vars:
-                    return
+                    return False
                 code.writeline(f"int64_t {sym_or_exp} = {name_fn(base_name)}[{dim}];")
                 bound_vars.add(sym_or_exp)
                 if symbol_is_type(sym_or_exp, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)):
                     self.unbacked_symbol_decls.add(str(sym_or_exp))
                 maybe_emit_replacement_aliases(sym_or_exp)
+                return True
             elif isinstance(sym_or_exp, sympy.Expr):
                 undefined_symbols = [
                     sym for sym in sym_or_exp.free_symbols if sym not in bound_vars
@@ -716,7 +719,22 @@ class CppWrapperCpu(PythonWrapperCodegen):
                     # Skip if expression contains no symbols or if multiple
                     # symbols exists since we assume each base symbol is defined
                     # by other codegen_symbol calls.
-                    return
+                    if (
+                        len(undefined_symbols) > 1
+                        and deferred_symbol_assignments is not None
+                    ):
+
+                        def retry(deferred_symbol_assignments):
+                            return codegen_symbol(
+                                sym_or_exp,
+                                base_name,
+                                name_fn,
+                                dim,
+                                deferred_symbol_assignments,
+                            )
+
+                        deferred_symbol_assignments.append(retry)
+                    return False
 
                 from torch.utils._sympy.solve import try_solve
 
@@ -730,7 +748,14 @@ class CppWrapperCpu(PythonWrapperCodegen):
                     expr = _rewrite_symbol_solution_for_int_codegen(solution[1])
                     code.writeline(f"int64_t {free_symbol} = {cexpr(expr)};")
                     bound_vars.add(free_symbol)
+                    if symbol_is_type(
+                        free_symbol, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT)
+                    ):
+                        self.unbacked_symbol_decls.add(str(free_symbol))
                     maybe_emit_replacement_aliases(free_symbol)
+                    return True
+                return False
+            return False
 
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:
@@ -748,9 +773,9 @@ class CppWrapperCpu(PythonWrapperCodegen):
             maybe_emit_replacement_aliases(value)
         elif isinstance(value, ir.TensorBox):
             for dim, size in enumerate(value.get_size()):
-                codegen_symbol(size, name, sizeof, dim)
+                codegen_symbol(size, name, sizeof, dim, deferred_symbol_assignments)
             for dim, stride in enumerate(value.get_stride()):
-                codegen_symbol(stride, name, strideof, dim)
+                codegen_symbol(stride, name, strideof, dim, deferred_symbol_assignments)
         elif isinstance(value, ir.TorchBindObject):
             # torchbind objects are loaded in proxy executor
             pass

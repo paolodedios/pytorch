@@ -24,6 +24,7 @@ from torch.testing._internal.common_device_type import (
 )
 from torch.testing._internal.common_utils import parametrize, skipIfXpu
 from torch.testing._internal.inductor_utils import HAS_GPU
+from torch.utils._ordered_set import OrderedSet
 
 
 class TestUnbackedSymints(InductorTestCase):
@@ -1116,6 +1117,7 @@ class TestUnbackedSymints(InductorTestCase):
         s1 = sympy.Symbol("s1", integer=True)
         s2 = sympy.Symbol("s2", integer=True)
         shape_env = ShapeEnv()
+        u0 = shape_env.create_unbacked_symint().node.expr
         shape_env.replacements[s0] = s2
         sizevars = SizeVarAllocator(shape_env)
         graph_inputs = {}
@@ -1127,8 +1129,8 @@ class TestUnbackedSymints(InductorTestCase):
                 layout=ir.FixedLayout(
                     torch.device(device),
                     torch.float32,
-                    size=[s0 + 1, 2 * s1],
-                    stride=[2 * s1, 1],
+                    size=[s0 + 1, 2 * s1, u0 + 1],
+                    stride=[2 * s1, 1, 1],
                 ),
             )
         )
@@ -1147,9 +1149,11 @@ class TestUnbackedSymints(InductorTestCase):
         self.assertRegex(code, r"s0 = .*arg0_1_size_0")
         self.assertIn("s2 = s0", code)
         self.assertIn("s1 = arg0_1_size_1 // 2", code)
+        self.assertRegex(code, r"u0 = .*arg0_1_size_2")
 
         cpp_wrapper = CppWrapperCpu.__new__(CppWrapperCpu)
         cpp_wrapper.prefix = IndentedBuffer()
+        cpp_wrapper.unbacked_symbol_decls = OrderedSet()
         with V.set_graph_handler(graph):
             cpp_wrapper.codegen_inputs()
 
@@ -1160,6 +1164,10 @@ class TestUnbackedSymints(InductorTestCase):
         self.assertIn("int64_t s2 = s0;", cpp_code)
         self.assertIn("int64_t s1 = c10::div_floor_integer", cpp_code)
         self.assertIn("arg0_1_size_1", cpp_code)
+        self.assertRegex(cpp_code, r"int64_t u0 = .*arg0_1_size_2")
+        self.assertIn(str(u0), cpp_wrapper.unbacked_symbol_decls)
+        cpp_wrapper.declare = "auto "
+        self.assertEqual(str(u0), cpp_wrapper.codegen_unbacked_symbol_decl(u0))
 
         from torch.utils._sympy.functions import FloorDiv
 
@@ -1202,11 +1210,48 @@ class TestUnbackedSymints(InductorTestCase):
 
         cpp_wrapper = CppWrapperCpu.__new__(CppWrapperCpu)
         cpp_wrapper.prefix = IndentedBuffer()
+        cpp_wrapper.unbacked_symbol_decls = OrderedSet()
         with V.set_graph_handler(graph):
             cpp_wrapper.codegen_inputs()
         cpp_code = cpp_wrapper.prefix.getvalue()
         self.assertIn("int64_t arg0_1_size_0 = arg0_1_size[0];", cpp_code)
         self.assertIn("int64_t s3 = arg1_1_size[0];", cpp_code)
+
+        s4 = sympy.Symbol("s4", integer=True)
+        s5 = sympy.Symbol("s5", integer=True)
+        graph_inputs = {
+            "arg0_1": ir.TensorBox.create(
+                ir.InputBuffer(
+                    name="arg0_1",
+                    layout=ir.FixedLayout(
+                        torch.device(device),
+                        torch.float32,
+                        size=[s4 + s5, s4],
+                        stride=[1, 1],
+                    ),
+                )
+            ),
+        }
+        graph = mock.Mock(
+            sizevars=SizeVarAllocator(ShapeEnv()), graph_inputs=graph_inputs
+        )
+
+        wrapper = PythonWrapperCodegen.__new__(PythonWrapperCodegen)
+        wrapper.prefix = IndentedBuffer()
+        with V.set_graph_handler(graph):
+            wrapper.codegen_inputs()
+        code = wrapper.prefix.getvalue()
+        self.assertIn("s4 = arg0_1_size[1]", code)
+        self.assertRegex(code, r"s5 = .*arg0_1_size_0")
+
+        cpp_wrapper = CppWrapperCpu.__new__(CppWrapperCpu)
+        cpp_wrapper.prefix = IndentedBuffer()
+        cpp_wrapper.unbacked_symbol_decls = OrderedSet()
+        with V.set_graph_handler(graph):
+            cpp_wrapper.codegen_inputs()
+        cpp_code = cpp_wrapper.prefix.getvalue()
+        self.assertIn("int64_t s4 = arg0_1_size[1];", cpp_code)
+        self.assertRegex(cpp_code, r"int64_t s5 = .*arg0_1_size_0")
 
     @skipGPUIf(not HAS_GPU, "requires gpu and triton")
     @dynamo_config.patch({"capture_dynamic_output_shape_ops": True})
