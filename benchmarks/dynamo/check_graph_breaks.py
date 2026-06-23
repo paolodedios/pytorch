@@ -27,6 +27,7 @@ def check_graph_breaks(actual_csv, expected_csv, expected_filename):
     failed = []
     improved = []
     expected_flaky_models = set(flaky_models)
+    expected_eager_nondeterministic_models = set()
 
     if "rocm" in expected_filename:
         expected_flaky_models.update(
@@ -66,12 +67,27 @@ def check_graph_breaks(actual_csv, expected_csv, expected_filename):
     if "timm_training" in expected_filename:
         # Accuracy can return before the optimized run when eager training is
         # nondeterministic, leaving graph-break counters at zero.
-        expected_flaky_models.add("mobilenetv2_100")
+        expected_eager_nondeterministic_models.add("mobilenetv2_100")
+
+    if "torchbench_training" in expected_filename:
+        # Accuracy can return before the optimized run when eager training is
+        # nondeterministic, leaving graph-break counters at zero.
+        expected_eager_nondeterministic_models.update(
+            {
+                "mnasnet1_0",
+                "mobilenet_v2",
+                "shufflenet_v2_x1_0",
+            }
+        )
 
     for model in actual_csv["name"]:
+        accuracy = get_field(actual_csv, model, "accuracy")
         graph_breaks = get_field(actual_csv, model, "graph_breaks")
         expected_graph_breaks = get_field(expected_csv, model, "graph_breaks")
-        flaky = model in expected_flaky_models
+        flaky = model in expected_flaky_models or (
+            accuracy == "eager_two_runs_differ"
+            and model in expected_eager_nondeterministic_models
+        )
 
         if expected_graph_breaks is None:
             status = "MISSING:"
