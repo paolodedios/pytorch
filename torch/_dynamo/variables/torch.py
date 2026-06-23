@@ -1720,10 +1720,17 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             *args: VariableTracker,
             **kwargs: VariableTracker,
         ) -> VariableTracker | None:
-            # Decompose via addcmul_ so tensor weights (e.g. 0-dim tensor
-            # from tensor betas in Adam) stay in tensor arguments instead of
-            # hitting float() in the native lerp_scalar lowering.
-            if len(args) == 3 and not isinstance(args[2], ListVariable) and not kwargs:
+            # Decompose via addcmul_ only when the weight is a tensor, so
+            # tensor weights (e.g. 0-dim tensor from tensor betas in Adam) stay
+            # in tensor arguments instead of hitting float() in the native
+            # lerp_scalar lowering.  Python scalar weights can use the native
+            # foreach op directly, avoiding extra full-size weight tensors.
+            if (
+                config.enable_dynamo_decompositions
+                and len(args) == 3
+                and args[2].is_tensor()
+                and not kwargs
+            ):
                 return tx.inline_user_function_return(
                     VariableTracker.build(tx, polyfills.foreach_lerp_inplace),
                     list(args),
@@ -3135,13 +3142,13 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 context=f"fn={self.value}, args={args}, kwargs={kwargs}",
                 explanation=(
                     "Dynamo does not support tracing direct `torch.ops.aten.set` "
-                    "calls. Use `Tensor.set_(source)` for the source-tensor "
-                    "overload, or move the storage aliasing operation outside "
-                    "`torch.compile`. Direct `aten.set` aliases storage in ways "
-                    "that downstream functionalization cannot safely model."
+                    "calls. Direct `aten.set` returns a tensor that aliases "
+                    "storage in ways that downstream functionalization cannot "
+                    "safely model."
                 ),
                 hints=[
-                    "Use `tensor.set_(source)` instead of direct `torch.ops.aten.set`.",
+                    "If mutating the original tensor is intended, use `tensor.set_(source)` instead of direct `torch.ops.aten.set`.",
+                    "Otherwise, move the storage aliasing operation outside `torch.compile`.",
                     *graph_break_hints.SUPPORTABLE,
                 ],
             )
