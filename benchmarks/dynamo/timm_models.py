@@ -10,8 +10,10 @@ import warnings
 
 
 try:
+    from . import common as benchmark_common
     from .common import BenchmarkRunner, download_retry_decorator, load_yaml_file, main
 except ImportError:
+    import common as benchmark_common
     from common import BenchmarkRunner, download_retry_decorator, load_yaml_file, main
 
 import torch
@@ -208,7 +210,24 @@ class TimmRunner(BenchmarkRunner):
     @property
     def skip_accuracy_check_as_eager_non_deterministic(self):
         if self.args.accuracy and self.args.training:
-            return self._accuracy["skip"]["eager_not_deterministic"]
+            skip_models = set(self._accuracy["skip"]["eager_not_deterministic"])
+            active_device = benchmark_common.current_device
+            if not active_device and self.args.devices is not None:
+                devices = self.args.devices
+                if len(devices) == 1:
+                    active_device = devices[0]
+            if (
+                self.args.backend == "inductor"
+                and self.args.amp
+                and torch.version.hip is None
+                and active_device == "cuda"
+            ):
+                skip_models.update(
+                    self._accuracy["skip"].get(
+                        "cuda_inductor_amp_eager_not_deterministic", set()
+                    )
+                )
+            return skip_models
         return set()
 
     @property

@@ -84,3 +84,8 @@ dtype:
 accuracy:
   skip:
     eager_not_deterministic: []
+    cuda_inductor_amp_eager_not_deterministic:
+      # Eager train-mode AMP is not bitwise deterministic for these models on
+      # CUDA, so the benchmark still compiles them but skips the accuracy diff.
+      - mobilenetv2_100
+      - tf_efficientnet_b0

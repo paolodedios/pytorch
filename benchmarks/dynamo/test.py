@@ -98,6 +98,75 @@ class TestDynamoBenchmark(unittest.TestCase):
             output.getvalue(),
         )
 
+    def test_timm_cuda_inductor_amp_skips_eager_nondeterministic_models(
+        self,
+    ) -> None:
+        module_name = "benchmarks.dynamo._timm_models_skip_test"
+        module_path = os.path.join(os.path.dirname(__file__), "timm_models.py")
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec is None:
+            self.fail("could not load timm_models.py spec")
+        if spec.loader is None:
+            self.fail("could not load timm_models.py loader")
+
+        fake_timm = types.ModuleType("timm")
+        fake_timm.__version__ = "1.0.0"
+        fake_timm_data = types.ModuleType("timm.data")
+        fake_timm_data.resolve_data_config = lambda *args, **kwargs: {}
+        fake_timm_models = types.ModuleType("timm.models")
+        fake_timm_models.create_model = lambda *args, **kwargs: None
+        fake_timm_models.list_models = lambda *args, **kwargs: []
+
+        module = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "timm": fake_timm,
+                "timm.data": fake_timm_data,
+                "timm.models": fake_timm_models,
+            },
+        ):
+            sys.modules[module_name] = module
+            try:
+                spec.loader.exec_module(module)
+            finally:
+                sys.modules.pop(module_name, None)
+
+        runner = module.TimmRunner()
+        runner.args = types.SimpleNamespace(
+            accuracy=True,
+            amp=True,
+            backend="inductor",
+            devices=["cpu", "cuda"],
+            training=True,
+        )
+        original_device = module.benchmark_common.current_device
+        try:
+            module.benchmark_common.current_device = "cuda"
+            self.assertIn(
+                "mobilenetv2_100",
+                runner.skip_accuracy_check_as_eager_non_deterministic,
+            )
+            self.assertIn(
+                "tf_efficientnet_b0",
+                runner.skip_accuracy_check_as_eager_non_deterministic,
+            )
+
+            module.benchmark_common.current_device = "cpu"
+            self.assertNotIn(
+                "mobilenetv2_100",
+                runner.skip_accuracy_check_as_eager_non_deterministic,
+            )
+
+            runner.args.amp = False
+            module.benchmark_common.current_device = "cuda"
+            self.assertNotIn(
+                "mobilenetv2_100",
+                runner.skip_accuracy_check_as_eager_non_deterministic,
+            )
+        finally:
+            module.benchmark_common.current_device = original_device
+
     def test_dashboard_performance_uses_warm_peak_memory(self) -> None:
         args = parse_args(
             [
