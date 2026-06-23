@@ -17,6 +17,7 @@ C10_DEFINE_REGISTRY(MPSAllocatorCallbacksRegistry, IMpsAllocatorCallback)
 namespace HeapAllocator {
 
 uint64_t BufferBlock::buffer_counter = 0;
+uint64_t BufferBlock::block_counter = 0;
 uint64_t HeapBlock::heap_counter = 0;
 
 // Set once the heap allocator singleton has been constructed (i.e. MPS/Metal is
@@ -210,35 +211,48 @@ bool MPSHeapAllocatorImpl::get_free_buffer(AllocParams& params) {
   if (it != pool.available_buffers.end()) {
     BufferBlock* buffer_block = *it;
 
-    // the logic in here is simple: keep reusing existing heaps capacity as long as possible (by splitting
-    // or releasing oversize buffers, if required), and avoid 'new' heap allocations as much as possible.
-    if (buffer_block->size <= params.size() + kLargeHeap) {
-      // return the existing buffer if it already fits the requested size (i.e., not oversize)
-      params.buffer_block = buffer_block;
-    } else {
-      HeapBlock search_key(params.size());
-      // if there's an 'existing' heap with enough capacity, then don't
-      // return the oversize buffer and sub-allocate from that existing heap.
-      if (pool.heaps.lower_bound(&search_key) != pool.heaps.end()) {
-        params.buffer_block = nullptr;
-      } else if (buffer_block->retainCount() <= 1) {
-        // otherwise if buffer is releasable immediately, we make room by releasing the
-        // buffer and reuse the new space within its heap container for the new smaller buffer allocation
-        release_buffer(buffer_block, false);
-        // this will skip unnecessary garbage collection as we'll reuse the newly released space
-        params.has_memory_pressure = false;
-      } else if (params.has_memory_pressure) {
-        // the oversized buffer is busy and not reusable at the moment. So release it (and potentially its heap
-        // container) in allocator, and ARC will later free up its backing memory when the busy command buffer finishes.
-        release_buffer(buffer_block, true);
-      } else {
-        // only if there's no memory pressure, we'll reuse the oversized buffer
+    if (buffer_block->heap->is_placement) {
+      // Reusing the same MTLBuffer stays hazard-tracked (safe even in-flight); only
+      // re-cut aliases a new buffer and needs gating. Pure ranges (buffer==nil) and
+      // oversize blocks fall through to get_placement_block.
+      if (params.placement && buffer_block->buffer != nil && buffer_block->size <= params.size() + kLargeHeap) {
         params.buffer_block = buffer_block;
+      }
+    } else if (!params.placement) {
+      // the logic in here is simple: keep reusing existing heaps capacity as long as possible (by splitting
+      // or releasing oversize buffers, if required), and avoid 'new' heap allocations as much as possible.
+      if (buffer_block->size <= params.size() + kLargeHeap) {
+        // return the existing buffer if it already fits the requested size (i.e., not oversize)
+        params.buffer_block = buffer_block;
+      } else {
+        HeapBlock search_key(params.size());
+        // if there's an 'existing' heap with enough capacity, then don't
+        // return the oversize buffer and sub-allocate from that existing heap.
+        if (pool.heaps.lower_bound(&search_key) != pool.heaps.end()) {
+          params.buffer_block = nullptr;
+        } else if (buffer_block->retainCount() <= 1) {
+          // otherwise if buffer is releasable immediately, we make room by releasing the
+          // buffer and reuse the new space within its heap container for the new smaller buffer allocation
+          release_buffer(buffer_block, false);
+          // this will skip unnecessary garbage collection as we'll reuse the newly released space
+          params.has_memory_pressure = false;
+        } else if (params.has_memory_pressure) {
+          // the oversized buffer is busy and not reusable at the moment. So release it (and potentially its heap
+          // container) in allocator, and ARC will later free up its backing memory when the busy command buffer
+          // finishes.
+          release_buffer(buffer_block, true);
+        } else {
+          // only if there's no memory pressure, we'll reuse the oversized buffer
+          params.buffer_block = buffer_block;
+        }
       }
     }
   }
 
   if (!params.buffer_block) {
+    if (params.placement && get_placement_block(params)) {
+      return true;
+    }
     // A bucketed allocation that crossed into a larger bucket (see
     // get_allocation_size) can no longer reuse the previous bucket's cached
     // buffers. Release the largest one within kNearFitReuseDenom (1/8) of the
@@ -247,7 +261,8 @@ bool MPSHeapAllocatorImpl::get_free_buffer(AllocParams& params) {
     if (no_larger_buffer && !(pool.usage & UsageFlags::SMALL) && !pool.available_buffers.empty()) {
       constexpr size_t kNearFitReuseDenom = 8;
       BufferBlock* nearest = *pool.available_buffers.rbegin();
-      if (nearest->size >= params.size() - params.size() / kNearFitReuseDenom && nearest->retainCount() <= 1) {
+      if (!nearest->heap->is_placement && nearest->size >= params.size() - params.size() / kNearFitReuseDenom &&
+          nearest->retainCount() <= 1) {
         release_buffer(nearest, /*remove_empty_heap=*/true);
       }
     }
@@ -257,6 +272,9 @@ bool MPSHeapAllocatorImpl::get_free_buffer(AllocParams& params) {
   params.buffer_block->requested_size = params.requested_size;
   params.buffer_block->gc_count = 0;
   pool.available_size -= params.buffer_block->size;
+  if (params.buffer_block->heap->is_placement) {
+    params.buffer_block->heap->free_bytes -= params.buffer_block->size;
+  }
 
   if ((m_debug_verbosity & DebugVerbosity::RECYCLES) &&
       (!(m_debug_verbosity & DebugVerbosity::LARGE_ONLY) || !(pool.usage & UsageFlags::SMALL))) {
@@ -270,6 +288,212 @@ bool MPSHeapAllocatorImpl::get_free_buffer(AllocParams& params) {
   return true;
 }
 
+// `fb` must be out of available_buffers, with its bytes still counted in
+// available_size/free_bytes, and its stale buffer (if any) releasable.
+BufferBlock* MPSHeapAllocatorImpl::cut_block(AllocParams& params, BufferBlock* fb) {
+  BufferPool& pool = *params.pool;
+  HeapBlock* heap = fb->heap;
+  const size_t total = fb->size;
+  TORCH_INTERNAL_ASSERT(total >= params.size());
+  // Placement heaps don't track aliasing, so a bookkeeping slip would silently
+  // overlap neighbors; this in-bounds check plus page-aligned sizes keep every
+  // block's byte range disjoint.
+  TORCH_INTERNAL_ASSERT_DEBUG_ONLY(fb->offset + total <= heap->size.total);
+  pool.available_size -= total;
+  heap->free_bytes -= total;
+  if (fb->buffer != nil) {
+    m_allocated_buffers.erase(fb->buffer);
+    heap->releaseMTLBuffer(fb->buffer);
+    fb->cpu_ptr = nullptr;
+  }
+
+  size_t alloc_size = params.size();
+  const size_t remainder = total - alloc_size;
+  // split off the remainder only if it is worth its own block (CUDA should_split)
+  if (remainder >= kMaxSmallAlloc) {
+    BufferBlock* rem = new BufferBlock(remainder, 0, nil, heap);
+    rem->offset = fb->offset + alloc_size;
+    rem->in_use = false;
+    rem->prev = fb;
+    rem->next = fb->next;
+    if (fb->next) {
+      fb->next->prev = rem;
+    }
+    fb->next = rem;
+    pool.available_buffers.insert(rem);
+    pool.available_size += remainder;
+    heap->free_bytes += remainder;
+  } else {
+    alloc_size = total;
+  }
+
+  fb->size = alloc_size;
+  fb->buffer = heap->newMTLBufferPlaced(alloc_size, pool.usage, fb->offset);
+  TORCH_INTERNAL_ASSERT(fb->buffer);
+  fb->buf_id = ++BufferBlock::buffer_counter;
+  fb->requested_size = params.requested_size;
+  fb->gc_count = 0;
+  m_allocated_buffers[fb->buffer] = fb;
+  return fb;
+}
+
+// Coalesce the free run [first..last] into `first`. Byte totals stay counted in
+// available_size/free_bytes; `first` is returned out of available_buffers for the
+// caller to cut from.
+BufferBlock* MPSHeapAllocatorImpl::merge_free_run(BufferPool& pool, BufferBlock* first, BufferBlock* last) {
+  HeapBlock* heap = first->heap;
+  BufferBlock* after = last->next;
+  // erase before mutating size, else the size-ordered set corrupts
+  pool.available_buffers.erase(first);
+  if (first->buffer != nil) {
+    m_allocated_buffers.erase(first->buffer);
+    heap->releaseMTLBuffer(first->buffer);
+    first->cpu_ptr = nullptr;
+  }
+  size_t merged_size = first->size;
+  // `after` is the exclusive end, so a single-block run absorbs nothing
+  for (BufferBlock* b = first->next; b != after;) {
+    BufferBlock* nxt = b->next;
+    pool.available_buffers.erase(b);
+    if (b->buffer != nil) {
+      m_allocated_buffers.erase(b->buffer);
+      heap->releaseMTLBuffer(b->buffer);
+    }
+    merged_size += b->size;
+    delete b;
+    b = nxt;
+  }
+  first->size = merged_size;
+  first->next = after;
+  if (after) {
+    after->prev = first;
+  }
+  return first;
+}
+
+bool MPSHeapAllocatorImpl::get_placement_block(AllocParams& params) {
+  BufferPool& pool = *params.pool;
+  const size_t need = params.size();
+  auto releasable = [](BufferBlock* x) { return !x->in_use && (x->buffer == nil || x->retainCount() <= 1); };
+  for (HeapBlock* heap : pool.placement_heaps) {
+    if (heap->free_bytes < need) {
+      continue;
+    }
+    BufferBlock* b = heap->first_block;
+    while (b != nullptr) {
+      if (!releasable(b)) {
+        b = b->next;
+        continue;
+      }
+      BufferBlock* run_start = b;
+      BufferBlock* run_last = b;
+      size_t run = 0;
+      while (b != nullptr && releasable(b)) {
+        run += b->size;
+        run_last = b;
+        b = b->next;
+      }
+      if (run >= need) {
+        params.buffer_block = cut_block(params, merge_free_run(pool, run_start, run_last));
+        return params.buffer_block != nullptr;
+      }
+    }
+  }
+  return false;
+}
+
+bool MPSHeapAllocatorImpl::alloc_placement_heap(AllocParams& params) {
+  if (m_max_total_allowed_size != std::numeric_limits<size_t>::max() &&
+      current_allocated_size() + params.size() > m_max_total_allowed_size) {
+    return false;
+  }
+  BufferPool& pool = *params.pool;
+  HeapBlock* heap = HeapBlock::createHeapBlock(params, pool.device, pool.usage);
+  if (!heap) {
+    return false;
+  }
+  TORCH_INTERNAL_ASSERT(heap->is_placement);
+  m_total_allocated_memory.increase(heap->size.total);
+  pool.placement_heaps.insert(heap);
+  BufferBlock* full = new BufferBlock(heap->free_bytes, 0, nil, heap);
+  full->offset = 0;
+  full->in_use = false;
+  heap->first_block = full;
+  pool.available_size += full->size; // cut_block expects the bytes already counted
+  if (m_debug_verbosity & DebugVerbosity::ALLOCATIONS) {
+    LOG(INFO) << "Allocated placement heap #" << heap->heap_id << " of size " << format_size(heap->size.total)
+              << " (#placement heaps: " << pool.placement_heaps.size()
+              << ", current allocated: " << format_size(current_allocated_size()) << ")";
+  }
+  params.buffer_block = cut_block(params, full);
+  return params.buffer_block != nullptr;
+}
+
+void MPSHeapAllocatorImpl::release_placement_heap(BufferPool& pool, HeapBlock* heap) {
+  BufferBlock* b = heap->first_block;
+  while (b != nullptr) {
+    BufferBlock* nxt = b->next;
+    TORCH_INTERNAL_ASSERT(!b->in_use);
+    pool.available_buffers.erase(b);
+    pool.available_size -= b->size;
+    if (b->buffer != nil) {
+      m_allocated_buffers.erase(b->buffer);
+      heap->releaseMTLBuffer(b->buffer);
+    }
+    delete b;
+    b = nxt;
+  }
+  heap->first_block = nullptr;
+  heap->free_bytes = 0;
+  pool.placement_heaps.erase(heap);
+  m_total_allocated_memory.decrease(heap->size.total);
+  const uint32_t retainCount = heap->releaseMTLHeap();
+  if (m_debug_verbosity & DebugVerbosity::RELEASES) {
+    LOG(INFO) << "Released placement heap #" << heap->heap_id << " of size " << format_size(heap->size.total)
+              << " (current allocated: " << format_size(current_allocated_size()) << ", retain#: " << retainCount
+              << ")";
+  }
+  delete heap;
+}
+
+size_t MPSHeapAllocatorImpl::placement_cache_cap() const {
+  const size_t live = m_current_allocated_memory.current;
+  const auto slack = static_cast<size_t>(kCacheSlackRatio * static_cast<double>(live));
+  return std::max(kCacheFloorBytes, slack);
+}
+
+size_t MPSHeapAllocatorImpl::trim_placement_heaps(BufferPool& pool, size_t keep_free_bytes, uint32_t min_gc_age) {
+  // snapshot candidates first: release_placement_heap mutates placement_heaps.
+  std::vector<HeapBlock*> fully_free;
+  for (HeapBlock* heap : pool.placement_heaps) {
+    if (heap->free_bytes != heap->size.total) {
+      continue; // has in-use blocks; the segment is pinned
+    }
+    bool releasable = true;
+    for (BufferBlock* b = heap->first_block; b != nullptr; b = b->next) {
+      // skip if a block is still in-flight (retainCount > 1), or the heap is too
+      // young (age gate avoids thrashing heap creation on hot alloc/free loops)
+      if ((b->buffer != nil && b->retainCount() > 1) || b->gc_count < min_gc_age) {
+        releasable = false;
+        break;
+      }
+    }
+    if (releasable) {
+      fully_free.push_back(heap);
+    }
+  }
+  size_t released = 0;
+  for (HeapBlock* heap : fully_free) {
+    if (pool.available_size <= keep_free_bytes) {
+      break;
+    }
+    const size_t total = heap->size.total;
+    release_placement_heap(pool, heap);
+    released += total;
+  }
+  return released;
+}
+
 BufferBlock* MPSHeapAllocatorImpl::alloc_buffer_block(size_t size, uint32_t usage) {
   TORCH_CHECK(size < m_max_buffer_size, "Invalid buffer size: ", format_size(size));
 
@@ -279,26 +503,39 @@ BufferBlock* MPSHeapAllocatorImpl::alloc_buffer_block(size_t size, uint32_t usag
   // we care about memory pressure if only we're allocating large buffers when the
   // low watermark limit has been reached
   params.has_memory_pressure = !(pool.usage & UsageFlags::SMALL) && getLowWatermarkValue() <= 0;
+  // placement covers the splittable large tiers; under pressure they fall back to
+  // OVERSIZE (see getHeapTier) and disengage placement
+  const HeapTier tier = getHeapTier(alloc_size, params.has_memory_pressure);
+  params.placement =
+      !(pool.usage & (UsageFlags::SMALL | UsageFlags::SCALAR)) && (tier == HeapTier::LARGE || tier == HeapTier::XLARGE);
 
-  // first, try to get a block from the existing pool.
+  // first, try to satisfy the request from existing pool space
   bool block_found = get_free_buffer(params);
   if (!block_found) {
     // do garbage collection if memory pressure is high and there's enough memory in pool
-    if (params.has_memory_pressure && alloc_size < pool.available_size) {
+    if (params.has_memory_pressure && (params.placement || alloc_size < pool.available_size)) {
       garbage_collect_cached_buffers(params);
     }
 
-    block_found =
-        // Attempt allocate
-        alloc_buffer(params) ||
-        // Callbacks might release more memory (eg. by forcing a GC in the host language) thus
-        // we can retry getting a free buffer in the pool, before trying to alloc again.
-        (trigger_memory_callbacks(nullptr, IMpsAllocatorCallback::EventType::ALLOCATION_FAILED) &&
-         get_free_buffer(params)) ||
-        // Free enough available cached blocks to satisfy alloc and retry alloc.
-        (release_available_cached_buffers(params) && alloc_buffer(params)) ||
-        // Free all cached buffers and retry alloc.
-        (release_cached_buffers() && alloc_buffer(params));
+    if (params.placement) {
+      block_found = alloc_placement_heap(params) ||
+          (trigger_memory_callbacks(nullptr, IMpsAllocatorCallback::EventType::ALLOCATION_FAILED) &&
+           get_free_buffer(params)) ||
+          (release_available_cached_buffers(params) && (get_free_buffer(params) || alloc_placement_heap(params))) ||
+          (release_cached_buffers() && alloc_placement_heap(params));
+    } else {
+      block_found =
+          // Attempt allocate
+          alloc_buffer(params) ||
+          // Callbacks might release more memory (eg. by forcing a GC in the host language) thus
+          // we can retry getting a free buffer in the pool, before trying to alloc again.
+          (trigger_memory_callbacks(nullptr, IMpsAllocatorCallback::EventType::ALLOCATION_FAILED) &&
+           get_free_buffer(params)) ||
+          // Free enough available cached blocks to satisfy alloc and retry alloc.
+          (release_available_cached_buffers(params) && alloc_buffer(params)) ||
+          // Free all cached buffers and retry alloc.
+          (release_cached_buffers() && alloc_buffer(params));
+    }
   }
 
   BufferBlock* buffer_block = params.buffer_block;
@@ -357,6 +594,24 @@ void MPSHeapAllocatorImpl::free_buffer(BufferBlock* buffer_block) {
     buffer_block->event.reset(nullptr);
   }
   buffer_block->in_use = false;
+  // A freed block stays a free-with-buffer entry (reusable same-size, hazard-
+  // tracked); its buffer is only released later when a re-cut or trim needs the
+  // range. The trim is amortized + age-gated so it never thrashes heap creation.
+  if (buffer_block->heap->is_placement) {
+    buffer_block->heap->free_bytes += buffer_block->size;
+    if (m_placement_trim_countdown > 0) {
+      --m_placement_trim_countdown;
+    } else {
+      constexpr uint32_t kPlacementColdAge = 64;
+      const size_t cap = placement_cache_cap();
+      if (pool.available_size > cap) {
+        // NOTE: this may release buffer_block's heap and delete buffer_block.
+        trim_placement_heaps(pool, cap, kPlacementColdAge);
+      }
+      constexpr uint32_t kPlacementTrimInterval = 256;
+      m_placement_trim_countdown = kPlacementTrimInterval;
+    }
+  }
 }
 
 BufferBlock* MPSHeapAllocatorImpl::get_allocated_buffer_block(const void* ptr) {
@@ -369,6 +624,9 @@ BufferBlock* MPSHeapAllocatorImpl::get_allocated_buffer_block(const void* ptr) {
 
 bool MPSHeapAllocatorImpl::release_buffer(BufferBlock* buffer_block, bool remove_empty_heap) {
   HeapBlock* heap_block = buffer_block->heap;
+  // placement blocks are released whole-segment via release_placement_heap; this
+  // legacy per-buffer path would delete a block without fixing its prev/next.
+  TORCH_INTERNAL_ASSERT_DEBUG_ONLY(!heap_block->is_placement);
   BufferPool& pool = *heap_block->pool;
   pool.allocated_size -= buffer_block->size;
   pool.available_size -= buffer_block->size;
@@ -423,6 +681,11 @@ bool MPSHeapAllocatorImpl::release_buffer(BufferBlock* buffer_block, bool remove
 }
 
 void MPSHeapAllocatorImpl::release_buffers(BufferPool& pool) {
+  // release every fully-free segment (callers COMMIT_AND_WAIT first, so cached
+  // buffers are idle); segments with in-use blocks stay pinned
+  if (!pool.placement_heaps.empty()) {
+    trim_placement_heaps(pool, 0);
+  }
   if (pool.available_buffers.empty()) {
     return;
   }
@@ -437,12 +700,40 @@ void MPSHeapAllocatorImpl::release_buffers(BufferPool& pool) {
   while (it != pool.available_buffers.end()) {
     BufferBlock* buffer_block = *it;
     ++it;
+    // placement blocks are managed via trim_placement_heaps, not per-buffer
+    if (buffer_block->heap->is_placement) {
+      continue;
+    }
     release_buffer(buffer_block);
   }
 }
 
 bool MPSHeapAllocatorImpl::release_available_cached_buffers(AllocParams& params) {
   BufferPool& pool = *params.pool;
+
+  // placement reserved memory lives in whole segments: free fully-free ones,
+  // then (if still short) any non-placement oversize cached buffers
+  if (!pool.placement_heaps.empty()) {
+    const size_t need = params.search_key.size;
+    size_t released = trim_placement_heaps(pool, 0);
+    if (released < need && !pool.available_buffers.empty()) {
+      std::vector<BufferBlock*> to_release;
+      size_t planned = released;
+      for (auto rit = pool.available_buffers.rbegin(); rit != pool.available_buffers.rend() && planned < need; ++rit) {
+        BufferBlock* b = *rit;
+        if (b->heap->is_placement || b->retainCount() > 1) {
+          continue;
+        }
+        to_release.push_back(b);
+        planned += b->size;
+      }
+      for (BufferBlock* b : to_release) {
+        released += b->size;
+        release_buffer(b);
+      }
+    }
+    return released >= need;
+  }
 
   if (pool.available_buffers.empty()) {
     return false;
@@ -501,14 +792,18 @@ void MPSHeapAllocatorImpl::garbage_collect_cached_buffers(AllocParams& params) {
   }
   // attempt to collect garbage until we reach below low watermark limit
   const auto target_size = current_allocated_size() - m_low_watermark_limit;
-  const BufferPool& pool = *params.pool;
+  BufferPool& pool = *params.pool;
+  // under pressure, release fully-free placement segments (whole-heap, not per-block)
+  if (!pool.placement_heaps.empty()) {
+    trim_placement_heaps(pool, 0);
+  }
   // calculate the total age of the free-able blocks. We'll use it later to get the average age threshold.
   double total_age = 0.0;
   unsigned int freeable_block_count = 0, freed_count = 0;
   size_t gc_reclaimed = 0;
 
   for (auto& b : pool.available_buffers) {
-    if (b->retainCount() <= 1) {
+    if (!b->heap->is_placement && b->retainCount() <= 1) {
       total_age += b->gc_count;
       ++freeable_block_count;
     }
@@ -528,6 +823,10 @@ void MPSHeapAllocatorImpl::garbage_collect_cached_buffers(AllocParams& params) {
     auto it = pool.available_buffers.begin();
     while (it != pool.available_buffers.end() && gc_reclaimed < target_size) {
       BufferBlock* buffer_block = *it++;
+      // placement blocks are reclaimed whole-heap above, not individually
+      if (buffer_block->heap->is_placement) {
+        continue;
+      }
       if (buffer_block->gc_count >= age_threshold && buffer_block->retainCount() <= 1) {
         block_freed = true;
         gc_reclaimed += buffer_block->size;
