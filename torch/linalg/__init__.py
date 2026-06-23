@@ -2240,10 +2240,17 @@ the output has the same batch dimensions.
 .. note:: Only the lower triangular part of :attr:`A` is used in the computation, and
           :attr:`A` is assumed to be symmetric (resp. Hermitian). See :func:`torch.linalg.eigh`.
 
-.. note:: The gradient is computed with a numerically stable backward based on the
-          Daleckii-Krein formula, which remains well-defined even when :attr:`A` has
-          repeated eigenvalues. Computing the gradient requires :attr:`A` to be
-          positive-definite.
+.. note:: :attr:`A` must be positive semi-definite. The real square root of a matrix with
+          a negative eigenvalue is complex, so this function raises a runtime error when
+          :attr:`A` has a materially negative eigenvalue.
+
+.. note:: The first-order gradient uses a backward based on the Daleckii-Krein formula
+          whose denominator :math:`\sqrt{\lambda_i} + \sqrt{\lambda_j}` stays well-defined
+          at repeated eigenvalues, so it is numerically stable there, unlike
+          differentiating through :func:`torch.linalg.eigh`. Computing the gradient
+          requires :attr:`A` to be positive-definite. Higher-order derivatives are computed
+          by differentiating through :func:`torch.linalg.eigh` and are not stable at
+          repeated eigenvalues.
 
 .. seealso::
 
