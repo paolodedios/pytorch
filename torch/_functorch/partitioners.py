@@ -15,7 +15,7 @@ import warnings
 from collections import defaultdict, deque
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 
 import torch
 import torch._inductor.inductor_prims
@@ -182,11 +182,15 @@ def get_schema_arg_idx(target: object, arg_name: str) -> int | None:
 
 def is_nonzero_dropout_sdpa(node: fx.Node) -> bool:
     """Return True unless SDPA-family dropout is statically known to be disabled."""
-    dropout_arg_idx = get_schema_arg_idx(node.target, "dropout_p")
+    target = node.target
+    if not isinstance(target, torch._ops.OpOverload):
+        return True
+
+    dropout_arg_idx = get_schema_arg_idx(target, "dropout_p")
     if dropout_arg_idx is None:
         return True
 
-    dropout_arg = node.target._schema.arguments[dropout_arg_idx]
+    dropout_arg = target._schema.arguments[dropout_arg_idx]
     if len(node.args) > dropout_arg_idx:
         dropout_p = node.args[dropout_arg_idx]
     elif "dropout_p" in node.kwargs:
@@ -195,7 +199,8 @@ def is_nonzero_dropout_sdpa(node: fx.Node) -> bool:
         dropout_p = dropout_arg.default_value
     else:
         return True
-    return not statically_known_true(dropout_p == 0.0)
+
+    return not statically_known_true(cast(bool | torch.SymBool, dropout_p == 0.0))
 
 
 def is_rng_op(node: fx.Node) -> bool:
