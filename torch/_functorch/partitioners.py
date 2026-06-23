@@ -170,14 +170,6 @@ def must_recompute(node: fx.Node) -> bool:
     ]
 
 
-def is_tagged_nondeterministic_seeded(node: fx.Node) -> bool:
-    """Return True for operators tagged as consuming seeded randomness."""
-    return (
-        hasattr(node.target, "tags")
-        and torch.Tag.nondeterministic_seeded in node.target.tags
-    )
-
-
 def get_schema_arg_idx(target: object, arg_name: str) -> int | None:
     """Return the positional schema index for an operator argument name."""
     if not isinstance(target, torch._ops.OpOverload):
@@ -210,7 +202,10 @@ def is_nonzero_dropout_sdpa(node: fx.Node) -> bool:
 
 def is_rng_op(node: fx.Node) -> bool:
     """Return True when a node's seeded nondeterminism cannot be statically ruled out."""
-    if not is_tagged_nondeterministic_seeded(node):
+    if not (
+        hasattr(node.target, "tags")
+        and torch.Tag.nondeterministic_seeded in node.target.tags
+    ):
         return False
 
     if get_schema_arg_idx(node.target, "dropout_p") is not None:
