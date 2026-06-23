@@ -608,7 +608,6 @@ class graph:
     """
 
     default_capture_stream: torch.cuda.Stream | None = None
-    _pool_ref: _GraphPool | None
 
     def __init__(
         self,
@@ -625,7 +624,6 @@ class graph:
         if stream is None and self.__class__.default_capture_stream is None:
             self.__class__.default_capture_stream = torch.cuda.Stream()
 
-        self._pool_ref = pool if _is_mem_pool(pool) else None
         pool_id = _get_pool_id(pool)
         self.pool: tuple[()] | tuple[_POOL_HANDLE] = (
             () if pool_id is None else (pool_id,)

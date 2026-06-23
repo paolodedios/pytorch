@@ -3729,8 +3729,6 @@ exit(2)
 
         g_default_pool = torch.cuda.MemPool()
         g_side_pool = torch.cuda.MemPool()
-        default_id = g_default_pool.id
-        workspace_id = g_side_pool.id
 
         x = torch.ones((4,), device="cuda")
         g = torch.cuda.CUDAGraph()
@@ -3744,8 +3742,8 @@ exit(2)
             z = tmp + 3
         torch.cuda.current_stream().wait_stream(stream)
 
-        self.assertEqual(g.pool(), default_id)
-        self.assertEqual(set(g.pools()), {default_id, workspace_id})
+        self.assertEqual(g.pool(), g_default_pool.id)
+        self.assertEqual(set(g.pools()), {g_default_pool.id, g_side_pool.id})
         self.assertEqual(g_default_pool.use_count(), 2)
         self.assertEqual(g_side_pool.use_count(), 2)
 
