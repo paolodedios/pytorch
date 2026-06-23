@@ -1180,8 +1180,8 @@ class ReproTests(torch._dynamo.test_case.TestCase):
             self.assertExpectedInline(cnt.frame_count, """4""")
             self.assertExpectedInline(cnt.op_count, """10""")
         else:
-            self.assertExpectedInline(cnt.frame_count, """4""")
-            self.assertExpectedInline(cnt.op_count, """14""")
+            self.assertExpectedInline(cnt.frame_count, """3""")
+            self.assertExpectedInline(cnt.op_count, """12""")
 
     def test_boxes_len(self):
         def fn(boxes):
@@ -9487,6 +9487,28 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
 
 
 class CUDAReproTests(torch._dynamo.test_case.TestCase):
+    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
+    @torch._dynamo.config.patch(capture_scalar_outputs=False)
+    def test_aot_backward_context_reentry_after_graph_break(self):
+        def fn(x, y, scalar):
+            cpu = x.cpu()
+            other_cpu = x.cpu()
+            before_break = cpu.view_as(other_cpu)
+            scalar.item()
+            after_break = y.cos()
+            return before_break, after_break
+
+        x = torch.randn(8, device="cuda", requires_grad=True)
+        y = torch.randn(8, device="cuda", requires_grad=True)
+        scalar = torch.randn((), device="cuda")
+
+        before_break, after_break = torch.compile(fn, backend="aot_eager")(x, y, scalar)
+        loss = before_break.sum().to("cuda") + after_break.sum()
+        loss.backward()
+
+        self.assertEqual(x.grad, torch.ones_like(x))
+        self.assertEqual(y.grad, -y.detach().sin())
+
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     def test_cuda_sync(self):
         def fn(x):

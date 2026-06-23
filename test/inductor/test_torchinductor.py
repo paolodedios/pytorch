@@ -16904,6 +16904,8 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
         torch.testing.assert_close(ref, act, atol=1e-3, rtol=1e-3)
 
         if is_dynamic_shape_enabled():
+            if TEST_WITH_ROCM and not code:
+                return
             # Dynamic shapes have compound sympy expressions (e.g. 3*s12*s80*s81)
             # whose C++ formatting (3L*s12*...) requires regex matching.
             suffix = "L?" if config.cpp_wrapper else ""

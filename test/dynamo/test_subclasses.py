@@ -3148,7 +3148,7 @@ class GraphModule(torch.nn.Module):
         clone: "f32[s47, s16]" = torch.ops.aten.clone.default(primals_5);  primals_5 = None
         clone_1: "f32[s47, s16]" = torch.ops.aten.clone.default(primals_10);  primals_10 = None
 
-        mul_6: "Sym(s16*s47)" = primals_7 * primals_4
+        mul_6: "Sym(s16*s47)" = primals_7 * primals_4;  primals_4 = None
         view: "f32[s16*s47]" = torch.ops.aten.view.default(clone, [mul_6])
         view_1: "f32[s16*s47]" = torch.ops.aten.view.default(clone_1, [mul_6]);  clone_1 = None
         return (
@@ -3158,7 +3158,6 @@ class GraphModule(torch.nn.Module):
             mul_6,  # SubclassSizeAOTOutput(base=PlainAOTOutput(idx=1), idx=0)
             primals_7,  # SavedForBackwardsAOTOutput(idx=0)
             primals_9,  # SavedForBackwardsAOTOutput(idx=1)
-            primals_4,  # SavedForBackwardsAOTOutput(idx=2)
         )
 """,
         )
@@ -3171,7 +3170,6 @@ class GraphModule(torch.nn.Module):
         self,
         primals_7: "Sym(s47)",  # SubclassSizeAOTInput(base=PlainAOTInput(idx=4), idx=0)
         primals_9: "Sym(s16)",  # SubclassStrideAOTInput(base=PlainAOTInput(idx=4), idx=0)
-        primals_4: "Sym(s16)",  # PlainAOTInput(idx=3)
         tangents_1: "f32[s16*s47]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=1)), attr='a')
         tangents_2: "f32[s16*s47]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=1)), attr='b')
     ):
