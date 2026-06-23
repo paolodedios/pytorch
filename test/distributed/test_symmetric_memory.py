@@ -1968,7 +1968,9 @@ class SymmMemPoolTest(MultiProcContinuousTest):
         ptr2 = t2.data_ptr()
 
         self.assertEqual(
-            ptr1, ptr2, "MemPool should return the same storage block for same-size re-allocation"
+            ptr1,
+            ptr2,
+            "MemPool should return the same storage block for same-size re-allocation",
         )
 
     @skipIf(TEST_WITH_ROCM, "https://github.com/pytorch/pytorch/issues/180464")
@@ -1991,7 +1993,9 @@ class SymmMemPoolTest(MultiProcContinuousTest):
         ptr2 = t2.data_ptr()
 
         self.assertEqual(
-            ptr1, ptr2, "symm_mem.empty() should reuse the same storage block via the implicit MemPool"
+            ptr1,
+            ptr2,
+            "symm_mem.empty() should reuse the same storage block via the implicit MemPool",
         )
 
 
