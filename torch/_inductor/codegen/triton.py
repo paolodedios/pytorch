@@ -4762,10 +4762,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                     and reduction_type == "sum"
                     and has_triton_reduction_ordering()
                 ):
-                    # Force a deterministic, layout-independent reduction order so
-                    # the result is bitwise-reproducible across Triton configs.
-                    # Wrap in tl.constexpr so Triton treats the inline value as a
-                    # compile-time constant rather than a runtime tensor arg.
+                    # Force a deterministic, layout-independent reduction order.
                     reduction_ordering = (
                         ", reduction_ordering="
                         "tl.constexpr(tl.ReductionOrdering.INNER_TREE)"
