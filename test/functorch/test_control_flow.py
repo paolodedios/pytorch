@@ -23,7 +23,7 @@ from torch._higher_order_ops.cudagraph_conditional_nodes import (
 from torch._higher_order_ops.map import _fake_map
 from torch._higher_order_ops.scan import _fake_scan, scan
 from torch._higher_order_ops.schema import HopSchemaGenerator
-from torch._higher_order_ops.while_loop import while_loop
+from torch._higher_order_ops.while_loop import while_loop, while_loop_op
 from torch._subclasses.functional_tensor import (
     CppFunctionalizeAPI,
     FunctionalTensor,
@@ -8652,6 +8652,21 @@ def forward(self, L_init_ : torch.Tensor, L_xs_ : torch.Tensor, L_add_closure_0_
         # elems 0 and 1 converge below threshold
         self.assertTrue(result[0][0].abs().sum() <= 0.1)
         self.assertTrue(result[0][1].abs().sum() <= 0.1)
+
+    def test_while_loop_in_vmap_batched_additional_inputs(self):
+        def fn(x, step):
+            def cond_fn(x, step):
+                return x < 5
+
+            def body_fn(x, step):
+                return (x + step,)
+
+            return while_loop_op(cond_fn, body_fn, (x,), (step,))
+
+        x = torch.zeros(3)
+        step = torch.tensor([1.0, 2.0, 3.0])
+        result = torch.vmap(fn)(x, step)
+        self.assertEqual(result[0], torch.tensor([5.0, 6.0, 6.0]))
 
     def test_while_loop_in_vmap_int_carry_unsupported(self):
         # vmap of while_loop with an int/SymInt carry is not supported because

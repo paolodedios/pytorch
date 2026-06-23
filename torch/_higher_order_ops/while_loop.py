@@ -232,6 +232,7 @@ def while_loop(cond_fn, body_fn, carried_inputs):
         # fakification path raises `NotImplementedError: Cannot access storage of
         # BatchedTensorImpl` on these. Skip the dynamo validation step and dispatch
         # to `while_loop_op` directly so the Vmap py_impl below picks them up.
+        # TODO: remove this once Dynamo can fakify BatchedTensor inputs directly.
         return while_loop_op(flat_cond_fn, flat_body_fn, tuple(flat_inputs), tuple())
 
     def _validate_input(cond_fn, body_fn, carried_inputs):
@@ -776,6 +777,7 @@ def while_loop_vmap(
             # Re-evaluate cond_fn to get the per-element active mask. This means
             # cond_fn is evaluated twice per iteration (once here, once in
             # wrapped_cond_fn), but avoids threading state between the two.
+            # Stateful or random cond_fn implementations are unsupported here.
             cond_result, _ = restore_vmap(
                 lambda *args: (cond_fn(*args[:n_carried], *args[n_carried:]),),
                 all_in_dims,
