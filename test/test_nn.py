@@ -13,7 +13,6 @@ import warnings
 import os
 import pickle
 import re
-import sys
 import dataclasses
 from copy import deepcopy
 from itertools import product
@@ -15197,24 +15196,6 @@ if __name__ == '__main__':
                     maximal_linear_bias_grad_err = err
                     worst_linear_bias_grad_err_kwargs = dict(module_kwargs)
 
-        # TEMP (chunking-heuristic ULP re-calibration): factor-1 + the N*V/4D
-        # cap changed cuda/mps index+prob chunk sizes, so re-measure observed
-        # ULP. ``sys.__stdout__`` bypasses pytest capture (reaches CI artifact
-        # logs and a direct run's console); the early ``return`` skips the
-        # now-stale caps so every leg prints. Remove with the cap finalization.
-        print(
-            f"\n[lce calibration] target="
-            f"{'prob' if prob_target else 'none' if none_reduction else 'index'}"
-            f" policy={_resolved_policy!r} dtype={dtype} device={device} bias={bias}\n"
-            f"  output:        observed={maximal_output_max_ulp_diff:6d}  cap={expected_max_ulp_diff:6d}\n"
-            f"  input_grad:    observed={maximal_input_grad_max_ulp_diff:6d}  cap={expected_input_grad_max_ulp_diff:6d}\n"
-            f"  linear_weight: observed={maximal_linear_weight_grad_max_ulp_diff:6d}  cap={expected_weight_grad_max_ulp_diff:6d}\n"
-            f"  linear_bias:   observed={maximal_linear_bias_grad_max_ulp_diff:6d}  cap={expected_linear_bias_grad_max_ulp_diff:6d}",
-            file=sys.__stdout__,
-            flush=True,
-        )
-        return
-
         self.assertLessEqual(maximal_input_grad_err, feps,
                              msg=f"worst input-grad err {maximal_input_grad_err} from kwargs={worst_input_grad_err_kwargs}")
         self.assertLessEqual(maximal_linear_weight_grad_err, feps,
@@ -15713,17 +15694,6 @@ if __name__ == '__main__':
             device=device, dtype=dtype, acc_policy=acc_policy,
             acc_dtype={torch.float16: torch.float32, torch.bfloat16: torch.float32}[dtype],
             prob_target=True)
-
-    def test_linear_cross_entropy_zz_mps_calibration_dump(self, device):
-        # TEMP (chunking-heuristic ULP re-calibration): macOS CI does not upload
-        # the test-report artifact, so trigger run_test.py's dump-on-failure to
-        # surface the [lce calibration] prints. The ``zz`` name sorts this after
-        # every other linear_cross_entropy_* test, so they all run and print
-        # (the harness is print-only here) before this fails -- run_test.py then
-        # dumps the captured log with their prints. Remove with the scaffolding.
-        if torch.device(device).type != "mps":
-            self.skipTest("TEMP mps-only calibration dump")
-        self.fail("TEMP: dumping mps lce calibration; see [lce calibration] prints above")
 
     def test_linear_cross_entropy_prob_target_dispatch(self, device):
         """Probability-target dispatch edges. The harness covers the
