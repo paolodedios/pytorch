@@ -158,6 +158,54 @@ class GuardManagerTests(torch._dynamo.test_case.TestCase):
             # Still correct after a failing check (no state corruption).
             self.assertTrue(manager.check(mk([3, 4, 5, 6])))
 
+    def test_cpp_symbolic_shape_guard_relational_index_correctness(self):
+        # Strengthens index-correctness of accumulate(_index_val, obj): an
+        # *asymmetric* relation between two symbols (s_b == 2 * s_a) means a
+        # value fed to the wrong symbol slot would change the guard result, so
+        # the matching-input assertion below would fail if the index mapping
+        # were wrong. Skips when the C++ shape guard is not installed.
+        import torch._dynamo.guards as dynamo_guards
+        from torch._inductor.codecache import CppCodeCache
+
+        CppCodeCache.cache_clear()
+        torch._dynamo.reset()
+
+        def fn(a, b):
+            # cat([a, a]) has size 2 * a.shape[0]; the add forces
+            # b.shape[0] == 2 * a.shape[0].
+            return torch.cat([a, a]) + b
+
+        installed = []
+        orig_install = dynamo_guards.install_symbolic_shape_guard
+
+        def spy(*args, **kwargs):
+            installed.append(True)
+            return orig_install(*args, **kwargs)
+
+        with (
+            torch._dynamo.config.patch(enable_cpp_symbolic_shape_guards=True),
+            mock.patch.object(dynamo_guards, "install_symbolic_shape_guard", spy),
+        ):
+            torch.compile(fn, backend="eager", dynamic=True)(
+                torch.randn(3), torch.randn(6)
+            )
+
+        if not installed:
+            self.skipTest("C++ symbolic shape guard not installed (no C++ compiler)")
+
+        root = _debug_get_cache_entry_list(fn.__code__)[0].guard_manager.root
+
+        def mk(na, nb):
+            return {"a": torch.randn(na), "b": torch.randn(nb)}
+
+        # Satisfies b == 2 * a (also catches a swapped index mapping: with a=4,
+        # b=8 a wrong mapping would evaluate 4 == 2 * 8 and fail this assert).
+        self.assertTrue(root.check(mk(4, 8)))
+        # Violates the relation.
+        self.assertFalse(root.check(mk(4, 7)))
+        # Swapped sizes do not satisfy the asymmetric relation (4 != 2 * 8).
+        self.assertFalse(root.check(mk(8, 4)))
+
     def test_guard_debug_info_user_stack(self):
         """Test that GuardDebugInfo can store user stack trace information."""
         import traceback
