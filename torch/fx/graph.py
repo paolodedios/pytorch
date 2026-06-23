@@ -31,7 +31,14 @@ from torch.utils._dtype_abbrs import dtype_abbrs
 from . import _pytree as fx_pytree
 from ._compatibility import compatibility
 from .immutable_collections import immutable_dict
-from .node import _get_qualified_name, _type_repr, Argument, Node, Target
+from .node import (
+    _device_annotation,
+    _get_qualified_name,
+    _type_repr,
+    Argument,
+    Node,
+    Target,
+)
 from .tensor_type import TensorType
 
 
@@ -782,7 +789,7 @@ class CodeGen:
 
                 def _tensor_annotation(t: torch.Tensor) -> str:
                     stride = stringify_shape(t.stride()) if include_stride else ""
-                    device = f"{t.device}" if include_device else ""
+                    device = _device_annotation(t.device) if include_device else ""
                     return (
                         f"{red(dtype_abbrs[t.dtype])}"
                         f"{blue(stringify_shape(t.shape))}"
@@ -2474,7 +2481,7 @@ class Graph:
         # When generating Python code, we need to make sure to name things
         # appropriately. In particular:
         # - All names should be unique, to avoid weird shadowing bugs.
-        # - These names need to be consistent, e.g. a object should always be
+        # - These names need to be consistent, e.g. an object should always be
         #   referenced by the same name.
         #
         # To do this, we create a new namespace just for this source. All names

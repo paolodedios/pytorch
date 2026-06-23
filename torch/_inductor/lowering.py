@@ -28,11 +28,6 @@ from torch._functorch._aot_autograd.descriptors import (
     SavedForBackwardsNoVcCheckAOTOutput,
 )
 from torch._higher_order_ops.associative_scan import associative_scan_op
-from torch._higher_order_ops.flex_gemm import (
-    _SUPPORTED_FLEX_GEMM_OP_NAMES,
-    flex_gemm_hop,
-    FLEX_GEMM_OP_INPUT_INDICES,
-)
 from torch._higher_order_ops.triton_kernel_wrap import triton_kernel_wrapper_mutation
 from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.opaque_object import is_opaque_value
@@ -294,8 +289,8 @@ def decode_dtype(dtype: int | torch.dtype) -> torch.dtype:
     return dtype
 
 
-def is_integer_type(x: Any) -> TypeGuard[TensorBox | sympy.Expr | int]:
-    if isinstance(x, TensorBox):
+def is_integer_type(x: Any) -> TypeGuard[TensorBox | IRNode | sympy.Expr | int]:
+    if isinstance(x, (TensorBox, IRNode)):
         return is_integer_dtype(x.get_dtype()) or is_boolean_dtype(x.get_dtype())
     elif isinstance(x, sympy.Expr):
         return x.is_integer is True  # type: ignore[attr-defined]
@@ -303,8 +298,8 @@ def is_integer_type(x: Any) -> TypeGuard[TensorBox | sympy.Expr | int]:
         return isinstance(x, int)
 
 
-def is_boolean_type(x: Any) -> TypeGuard[TensorBox | bool]:
-    if isinstance(x, TensorBox):
+def is_boolean_type(x: Any) -> TypeGuard[TensorBox | IRNode | bool]:
+    if isinstance(x, (TensorBox, IRNode)):
         return is_boolean_dtype(x.get_dtype())
     else:
         return isinstance(x, bool)
@@ -8878,93 +8873,6 @@ def process_subgraph_nodes(graph_module: torch.fx.GraphModule, args: list[Any]):
     return output
 
 
-@register_lowering(flex_gemm_hop, type_promotion_kind=None)
-def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
-    """Lower FlexGEMM to the regular subgraph path or the QUACK template."""
-    if kernel_options.get("backend", "TRITON") != "QUACK":
-        return process_subgraph_nodes(subgraph.graph_module, list(args))
-    if gemm_op not in FLEX_GEMM_OP_INPUT_INDICES:
-        raise NotImplementedError(
-            f"FlexGEMM QUACK backend currently supports only aten.{_SUPPORTED_FLEX_GEMM_OP_NAMES}"
-        )
-    tuned = kernel_options.get("tuned", False)
-    if tuned:
-        raise NotImplementedError(
-            "FlexGEMM generated epilogues do not support tuned=True yet"
-        )
-    unsupported_options = OrderedSet(kernel_options) - OrderedSet(["backend", "tuned"])
-    if unsupported_options:
-        raise NotImplementedError(
-            f"unsupported FlexGEMM kernel options: {sorted(unsupported_options)}"
-        )
-
-    from torch._inductor.kernel.flex_gemm.epilogue import (
-        gemm_node as flex_gemm_node,
-        materialize_flex_gemm_epilogue,
-        output_node as flex_gemm_output_node,
-    )
-    from torch._inductor.kernel.flex_gemm.template import flex_gemm_epilogue_template
-    from torch._inductor.select_algorithm import autotune_select_algorithm
-
-    mat1_index, _ = FLEX_GEMM_OP_INPUT_INDICES[gemm_op]
-    unsupported_gemm_kwargs = OrderedSet(gemm_kwargs) - OrderedSet(["alpha", "beta"])
-    if unsupported_gemm_kwargs:
-        raise NotImplementedError(
-            f"unsupported FlexGEMM GEMM kwargs: {sorted(unsupported_gemm_kwargs)}"
-        )
-    gemm_fx_node = flex_gemm_node(subgraph.graph_module, gemm_op)
-    placeholders = [
-        node for node in subgraph.graph_module.graph.nodes if node.op == "placeholder"
-    ]
-    placeholder_args = dict(zip(placeholders, args, strict=True))
-    gemm_args: list[TensorBox] = []
-    for arg in gemm_fx_node.args:
-        gemm_arg = placeholder_args[arg] if isinstance(arg, torch.fx.Node) else arg
-        if not isinstance(gemm_arg, TensorBox):
-            raise NotImplementedError("FlexGEMM lowering expects tensor GEMM operands")
-        gemm_args.append(gemm_arg)
-    alpha = gemm_fx_node.kwargs.get("alpha", gemm_kwargs.get("alpha", 1.0))
-    beta = gemm_fx_node.kwargs.get("beta", gemm_kwargs.get("beta", 1.0))
-    if not isinstance(alpha, (int, float)) or not isinstance(beta, (int, float)):
-        raise NotImplementedError("FlexGEMM alpha/beta must be static scalars")
-    output_meta = flex_gemm_output_node(subgraph.graph_module).meta.get("val")
-    if output_meta is None:
-        raise NotImplementedError(
-            "FlexGEMM generated epilogues require output metadata"
-        )
-    layout = ir.FixedLayout(
-        gemm_args[mat1_index].get_device_or_error(),
-        output_meta.dtype,
-        ir.convert_shape_to_inductor(output_meta.shape),
-        ir.convert_shape_to_inductor(output_meta.stride()),
-    )
-    epilogue_name, epilogue_source = materialize_flex_gemm_epilogue(
-        subgraph.graph_module, gemm_op
-    )
-    input_nodes = [ir.TemplateBuffer.realize_template_input(arg) for arg in gemm_args]
-    choices: list[Any] = []
-    error = flex_gemm_epilogue_template.maybe_append_choice(
-        choices,
-        input_nodes=input_nodes,
-        layout=layout,
-        config=ir.FlexGemmEpilogueConfig(
-            epilogue_name=epilogue_name,
-            epilogue_source=epilogue_source,
-            gemm_op=gemm_op.name().removeprefix("aten::"),
-            alpha=float(alpha),
-            beta=float(beta),
-            tuned=tuned,
-            out_dtype=output_meta.dtype,
-        ),
-    )
-    if error is not None:
-        raise error
-    result, _ = autotune_select_algorithm(
-        "flex_gemm_epilogue", choices, input_nodes, layout
-    )
-    return (result,)
-
-
 # Import the control_deps_op HOP for lowering
 from torch._inductor.fx_passes.control_dependencies import control_deps
 
@@ -9134,15 +9042,18 @@ def invoke_quant_tracer(subgraph_fn: ir.Subgraph, *operands, scheme=None):
 def associative_scan(combine_fn: ir.Subgraph, xs, additional_inputs: tuple[Any, ...]):
     from .subgraph_lowering import InputDescriptor, lower_pointwise_subgraph
 
-    # pointwise associative_scan codegen requires CUDA/XPU; the eager wrapper
-    # skips its device check while compiling/exporting, so re-check it here. See
-    # https://github.com/pytorch/pytorch/issues/186594.
+    # combine_mode="pointwise" codegen requires a backend with scan support
+    # (e.g. Triton on CUDA/XPU). The eager wrapper no longer enforces a device
+    # requirement, so check every leaf here -- before lower_pointwise_subgraph
+    # runs -- to raise a clear device-specific error. ir.Scan.create re-checks
+    # the same feature on xs[0] below and otherwise fails with a generic "Unable
+    # to generate code" error. See https://github.com/pytorch/pytorch/issues/186594.
     for x in xs:
         device = x.get_device()
-        if device is not None and device.type not in ("cuda", "xpu"):
-            raise ValueError(
-                "associative_scan with combine_mode='pointwise' only supports "
-                f"CUDA or XPU tensors, but got an input on device '{device.type}'."
+        if not V.graph.has_feature(device, BackendFeature.SCAN):
+            raise RuntimeError(
+                "associative_scan with combine_mode='pointwise' is not supported "
+                f"on {device.type if device is not None else device}"
             )
 
     num_scan_inputs = 2 * len(xs)
