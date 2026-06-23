@@ -438,6 +438,7 @@ TORCH_LIBRARY_IMPL(aten, AutocastCPU, m) {
   KERNEL_CPU(linalg_svdvals, fp32)
   KERNEL_CPU(linalg_eigvals, fp32)
   KERNEL_CPU(linalg_eigvalsh, fp32)
+  KERNEL_CPU(linalg_matrix_sqrt, fp32)
   KERNEL_CPU(linalg_inv, fp32)
   KERNEL_CPU(linalg_householder_product, fp32)
   KERNEL_CPU(linalg_tensorinv, fp32)
