@@ -475,16 +475,16 @@ def _python_scalar_tensor_dtype(value: Any) -> torch.dtype | None:
     return None
 
 
-def _scalar_tensor_value(value: Any, dtype: torch.dtype, device: torch.device) -> Any:
-    fake_mode = detect_fake_mode()
+def _scalar_tensor_value(value: Any, dtype: torch.dtype, rhs: torch.Tensor) -> Any:
+    fake_mode = rhs.fake_mode if isinstance(rhs, FakeTensor) else detect_fake_mode()
     if fake_mode is not None:
         with fake_mode:
             return torch.ops.aten.scalar_tensor.default(
                 value,
                 dtype=dtype,
-                device=device,
+                device=rhs.device,
             )
-    return torch.ops.aten.scalar_tensor.default(value, dtype=dtype, device=device)
+    return torch.ops.aten.scalar_tensor.default(value, dtype=dtype, device=rhs.device)
 
 
 def _tensorify_scalar_lhs_floor_divide(
@@ -525,7 +525,7 @@ def _tensorify_scalar_lhs_floor_divide(
                 "device": rhs.device,
             },
         )
-    lhs_tensor.meta["val"] = _scalar_tensor_value(lhs, dtype, rhs.device)
+    lhs_tensor.meta["val"] = _scalar_tensor_value(lhs, dtype, rhs)
 
     new_args = list(node.args)
     new_args[0] = lhs_tensor
@@ -546,6 +546,7 @@ def _apply_python_scalar_overload_resolution_to_subgraph(
                 args = map_arg(node.args, env.__getitem__)
                 kwargs = map_arg(node.kwargs, env.__getitem__)
             except KeyError:
+                # Conservatively skip overload resolution if an input lacks meta["val"].
                 pass
             else:
                 new_target = _resolve_python_scalar_aten_overload(

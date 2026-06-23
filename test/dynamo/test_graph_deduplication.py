@@ -136,9 +136,9 @@ class GraphModule(torch.nn.Module):
 
     class partitioned_fw_subgraph_0_0(torch.nn.Module):
         def forward(self, primals_0: "f32[10, 10]", primals_1: "f32[10, 20]"):
-            add: "f32[10, 10]" = torch.ops.aten.add.Tensor(primals_0, 1);  primals_0 = None
+            add: "f32[10, 10]" = torch.ops.aten.add.Scalar(primals_0, 1);  primals_0 = None
 
-            add_1: "f32[10, 20]" = torch.ops.aten.add.Tensor(primals_1, 2);  primals_1 = None
+            add_1: "f32[10, 20]" = torch.ops.aten.add.Scalar(primals_1, 2);  primals_1 = None
 
             sum_1: "f32[]" = torch.ops.aten.sum.default(add);  add = None
             sum_2: "f32[]" = torch.ops.aten.sum.default(add_1);  add_1 = None

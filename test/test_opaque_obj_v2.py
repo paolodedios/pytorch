@@ -2957,7 +2957,7 @@ def forward(self, L_x_ : torch.Tensor, L_scale_obj_ : {_illegal_char_regex.sub("
             """\
 def forward(self, primals_1, primals_2):
     mul_with_scale = torch.ops._TestOpaqueObject.mul_with_scale.default(primals_2, primals_1);  primals_1 = None
-    mul = torch.ops.aten.mul.Tensor(mul_with_scale, 2);  mul_with_scale = None
+    mul = torch.ops.aten.mul.Scalar(mul_with_scale, 2);  mul_with_scale = None
     return (mul, primals_2)""",
         )
         self.assertTrue(len(backend.bw_graphs) > 0)
@@ -2966,7 +2966,7 @@ def forward(self, primals_1, primals_2):
             bw_graph.code.strip(),
             """\
 def forward(self, primals_2, tangents_1):
-    mul_1 = torch.ops.aten.mul.Tensor(tangents_1, 2);  tangents_1 = None
+    mul_1 = torch.ops.aten.mul.Scalar(tangents_1, 2);  tangents_1 = None
     get_multiplier_tensor = torch.ops._TestOpaqueObject.get_multiplier_tensor.default(primals_2, mul_1);  primals_2 = mul_1 = None
     return (get_multiplier_tensor, None)""",
         )

@@ -1011,8 +1011,11 @@ def _sfdp_extra_check(scale_factor_op=None, disable_cuda=False):
                 else (scale_factor_op,)
             )
             scale_factor_node = next(
-                node for node in match.nodes if node.target in scale_factor_ops
+                (node for node in match.nodes if node.target in scale_factor_ops),
+                None,
             )
+            if scale_factor_node is None:
+                return False
             # Note: args[1] of the scale_factor_node is always the scale_factor for the current patterns.
             scale_factor = scale_factor_node.args[1]
             # make sure the scale_factor is a Python or symbolic scalar.

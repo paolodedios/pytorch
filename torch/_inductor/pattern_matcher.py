@@ -2527,6 +2527,8 @@ def fx_to_pattern(
     if len(inv_scalar_workaround) != len(scalar_workaround):
         raise AssertionError("scalar_workaround has duplicate values")
     scalar_tensor_overload_aliases: dict[Any, Any] = {
+        # These are the ops that currently appear with scalar_workaround
+        # arguments in serialized SDPA patterns.
         aten.div.Tensor: aten.div.Scalar,
         aten.mul.Tensor: aten.mul.Scalar,
     }
