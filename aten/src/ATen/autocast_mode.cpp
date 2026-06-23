@@ -191,7 +191,6 @@ TORCH_LIBRARY_IMPL(aten, Autocast, m) {
 #define _KERNEL_CUDA_FP32(...) KERNEL_CUDA(__VA_ARGS__, fp32)
 
   AT_FORALL_FP32(_KERNEL_CUDA_FP32)
-  KERNEL_CUDA(linalg_matrix_sqrt, fp32)
 
   // fp32_set_opt_dtype
 #define _KERNEL_CUDA_FP32_SET_OPT_DTYPE(...) \
