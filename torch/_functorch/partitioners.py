@@ -170,6 +170,55 @@ def must_recompute(node: fx.Node) -> bool:
     ]
 
 
+def is_tagged_nondeterministic_seeded(node: fx.Node) -> bool:
+    """Return True for operators tagged as consuming seeded randomness."""
+    return (
+        hasattr(node.target, "tags")
+        and torch.Tag.nondeterministic_seeded in node.target.tags
+    )
+
+
+def get_schema_arg_idx(target: object, arg_name: str) -> int | None:
+    """Return the positional schema index for an operator argument name."""
+    if not isinstance(target, torch._ops.OpOverload):
+        return None
+    for idx, arg in enumerate(target._schema.arguments):
+        if arg.name == arg_name:
+            return idx
+    return None
+
+
+def get_sdpa_dropout_p(node: fx.Node) -> object | None:
+    """Return an SDPA-family op's schema-level dropout_p value when it has one."""
+    dropout_arg_idx = get_schema_arg_idx(node.target, "dropout_p")
+    if dropout_arg_idx is None:
+        return None
+
+    dropout_arg = node.target._schema.arguments[dropout_arg_idx]
+    if len(node.args) > dropout_arg_idx:
+        return node.args[dropout_arg_idx]
+    if "dropout_p" in node.kwargs:
+        return node.kwargs["dropout_p"]
+    return dropout_arg.default_value
+
+
+def is_nonzero_dropout_sdpa(node: fx.Node) -> bool:
+    """Return True unless SDPA-family dropout is statically known to be disabled."""
+    dropout_p = get_sdpa_dropout_p(node)
+    return dropout_p is None or not statically_known_true(dropout_p == 0.0)
+
+
+def is_rng_op(node: fx.Node) -> bool:
+    """Return True when a node's seeded nondeterminism cannot be statically ruled out."""
+    if not is_tagged_nondeterministic_seeded(node):
+        return False
+
+    if get_schema_arg_idx(node.target, "dropout_p") is not None:
+        return is_nonzero_dropout_sdpa(node)
+
+    return True
+
+
 def _is_assert_only_symbool(node: fx.Node) -> bool:
     return (
         isinstance(node.meta.get("val"), torch.SymBool)
@@ -189,11 +238,7 @@ def has_recomputable_ops(fx_g: fx.GraphModule) -> bool:
 
 def has_recomputable_rng_ops(fx_g: fx.GraphModule) -> bool:
     for node in fx_g.graph.nodes:
-        if (
-            must_recompute(node)
-            and hasattr(node.target, "tags")
-            and torch.Tag.nondeterministic_seeded in node.target.tags
-        ):
+        if must_recompute(node) and is_rng_op(node):
             return True
     return False
 
@@ -1772,11 +1817,7 @@ def functionalize_rng_ops(
     def get_rng_ops(gmod: fx.GraphModule) -> dict[str, fx.Node]:
         random_nodes: dict[str, fx.Node] = {}
         for node in gmod.graph.nodes:
-            if (
-                node.op == "call_function"
-                and hasattr(node.target, "tags")
-                and torch.Tag.nondeterministic_seeded in node.target.tags
-            ):
+            if node.op == "call_function" and is_rng_op(node):
                 random_nodes[node.name] = node
         return random_nodes
 
@@ -1815,11 +1856,7 @@ def functionalize_rng_ops(
     bw_graph_rng_ops = get_rng_ops(bw_module)
     recomputable_rng_ops_map = {}
     for node in joint_module.graph.nodes:
-        if (
-            must_recompute(node)
-            and hasattr(node.target, "tags")
-            and torch.Tag.nondeterministic_seeded in node.target.tags
-        ):
+        if must_recompute(node) and is_rng_op(node):
             # Skip if the node doesn't exist in both forward and backward graphs.
             # This can happen when the RNG op's output is not needed for gradient
             # computation and gets eliminated by dead code elimination.
