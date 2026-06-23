@@ -11,7 +11,7 @@ handoff the exports made here die with this process.
 Environment variables read:
     OMP_PREFIX - optional; if /opt/llvm-openmp exists it is exported so the
                  build links the conda-forge libomp (supports older macOS than
-                 the Homebrew build). See .ci/wheel/install_libomp.sh.
+                 the Homebrew build). See .ci/macwheel/install_libomp.sh.
 """
 
 import argparse

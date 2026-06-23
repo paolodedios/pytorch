@@ -62,13 +62,15 @@ def main() -> None:
     # requirements-build.txt supplies the build backend for `python -m build
     # --no-isolation` (the previous shell build relied on it being preinstalled).
     pip_install("-qU", "-r", "requirements-build.txt")
-    # Skip when sharing build/ across Pythons in the per-host loop -- the
-    # per-Python bits (libtorch_python, _C.so) are invalidated by
-    # tools/setup_helpers/cmake.py, so libtorch_cpu is reused.
-    if not os.environ.get("SKIP_SETUP_CLEAN"):
-        subprocess.run([sys.executable, "setup.py", "clean"], check=True)
     pip_install("-q", "-r", "requirements.txt")
     pip_install("-q", f"numpy=={numpy_pin()}")
+    # Skip when sharing build/ across Pythons in the per-host loop -- the
+    # per-Python bits (libtorch_python, _C.so) are invalidated by
+    # tools/setup_helpers/cmake.py, so libtorch_cpu is reused. spin (from
+    # requirements.txt above) wraps tools/clean.py and, unlike setup.py clean,
+    # survives the setup.py removal in the scikit-build-core migration.
+    if not os.environ.get("SKIP_SETUP_CLEAN"):
+        subprocess.run([sys.executable, "-m", "spin", "clean"], check=True)
 
     # OpenMP: prefer the conda-forge libomp staged at /opt/llvm-openmp (set up
     # by install_libomp.sh as a separate step). Otherwise fall back to Homebrew,
