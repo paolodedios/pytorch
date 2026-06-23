@@ -251,16 +251,17 @@ class LoggingTests(LoggingTestCase):
             "[file_path]",
             "\n".join(r.getMessage() for r in records),
         )
+        record_str = re.sub(r"line \d+", "line [line]", record_str)
         self.assertIn(
             """\
     - User stack trace:
-    -   File [file_path], line 201, in outmost_fn
+    -   File [file_path], line [line], in outmost_fn
     -     return outer_fn(x, ys, zs)
-    -   File [file_path], line 204, in outer_fn
+    -   File [file_path], line [line], in outer_fn
     -     return fn(x, ys, zs)
-    -   File [file_path], line 207, in fn
+    -   File [file_path], line [line], in fn
     -     return inner(x, ys, zs)
-    -   File [file_path], line 210, in inner
+    -   File [file_path], line [line], in inner
     -     for y, z in zip(ys, zs):""",
             record_str,
         )

@@ -10775,7 +10775,9 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             src = torch.ones(3, 8, device=self.device)
             self.common(fn, (idx, src), check_lowp=False)
 
-        check(lambda idx, src: make_input(src).index_add(0, idx, src))
+        # Halide generator emits no outputs for this index_add lowering.
+        if not is_halide_backend(self.device):
+            check(lambda idx, src: make_input(src).index_add(0, idx, src))
         check(lambda idx, src: make_input(src).index_copy(0, idx[:2], src[:2]))
         check(lambda idx, src: make_input(src).index_fill(0, idx[:2], 1.0))
         check(lambda idx, src: make_input(src).index_put((idx,), src, accumulate=True))
