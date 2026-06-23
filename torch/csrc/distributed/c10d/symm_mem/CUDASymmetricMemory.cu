@@ -503,6 +503,14 @@ struct RendezvousRequest {
   char hostname[HOST_NAME_MAX + 1];
 };
 
+static void reset_signal_pad(const c10::intrusive_ptr<Block>& block) {
+  c10::cuda::CUDAGuard guard(block->device_idx);
+  auto base_addr = reinterpret_cast<uintptr_t>(block->alloc_ref->ptr);
+  auto* signal_pad =
+      reinterpret_cast<void*>(base_addr + block->signal_pad_offset);
+  AT_CUDA_CHECK(cudaMemset(signal_pad, 0, get_signal_pad_size()));
+}
+
 static std::string import_err_msg(
     int rank,
     int peer,
@@ -930,9 +938,25 @@ c10::intrusive_ptr<SymmetricMemory> CUDASymmetricMemoryAllocator::rendezvous(
     group_name_ = *block->default_group_name;
   }
 
-  // If found, this block has been rendezvous by the given group
-  auto it = block->symm_mems.find(group_name_);
-  if (it == block->symm_mems.end()) {
+  reset_signal_pad(block);
+
+  // MemPool reuse can leave the per-block rendezvous cache populated on only a
+  // subset of ranks. Make the cached-vs-new decision collective so all ranks
+  // either enter make_peer_alloc_info() or all ranks reuse the cached metadata.
+  auto group = resolve_process_group(group_name_);
+  bool use_pg = group->hasBackendForDeviceType(c10::DeviceType::CUDA) &&
+      group->getBackend(c10::DeviceType::CUDA)->getUsePgForSymmMemRendezvous();
+  auto cache_key = group_name_ + (use_pg ? "#pg" : "#store");
+  auto it = block->symm_mems.find(cache_key);
+  uint8_t need_rendezvous = it == block->symm_mems.end();
+  auto peer_needs = storeExchange.all_gather(
+      group->getStore(), group->getRank(), group->getSize(), need_rendezvous);
+  bool should_rendezvous = false;
+  for (auto peer_need : peer_needs) {
+    should_rendezvous |= peer_need != 0;
+  }
+
+  if (should_rendezvous) {
     // Create PeerAllocInfo for this block (this is the costly part)
     TORCH_INTERNAL_ASSERT(
         handle_type_ != Expandable_Segments_Handle_Type::UNSPECIFIED)
@@ -941,8 +965,8 @@ c10::intrusive_ptr<SymmetricMemory> CUDASymmetricMemoryAllocator::rendezvous(
     // PeerAllocInfo captures this block's rendezvous info
     auto pai = use_fabric ? make_peer_alloc_info<true>(ptr, block, group_name_)
                           : make_peer_alloc_info<false>(ptr, block, group_name_);
-    // Cache it with the group name
-    it = block->symm_mems.emplace(group_name_, pai).first;
+    // Cache it with the group name and rendezvous transport.
+    it = block->symm_mems.insert_or_assign(cache_key, pai).first;
   }
 
   // Create symm mem handle for this tensor, specified by its offset
