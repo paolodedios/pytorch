@@ -2278,6 +2278,19 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         x = torch.tensor([1.0, 2.0, 3.0])
         self.assertEqual(f(x), x + 1)
 
+    def test_check_tensor_predicate_raises_clear_error(self):
+        @torch.compile(backend="eager")
+        def f(x):
+            torch._check(x > 0)
+            return torch.log(x)
+
+        with self.assertRaisesRegex(
+            TypeError, r"cond must be a bool.*torch[.]_check_tensor_all"
+        ) as cm:
+            f(torch.rand(1))
+
+        self.assertNotIn("FakeTensor", str(cm.exception))
+
     def test_check_with_closure_constant(self):
         @torch.compile(backend="eager", fullgraph=True)
         def f(x):
@@ -8222,7 +8235,11 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             opt_fn(x, obj)
             self.assertFalse(True)
         except TypeError as e:
-            self.assertIn("__bool__ should return bool, returned float", str(e))
+            if sys.version_info >= (3, 15):
+                msg = "__bool__() must return a bool, not float"
+            else:
+                msg = "__bool__ should return bool, returned float"
+            self.assertIn(msg, str(e))
 
     def test_unpack_tensor_shape_mismatch(self):
         @torch.compile(backend="eager")
@@ -8348,7 +8365,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             self.assertTrue(same(ref, res))
 
         torch._dynamo.reset()
-        with self.assertRaisesRegex(Unsupported, "custom __instancecheck__"):
+        with self.assertRaisesRegex(Unsupported, "custom type check"):
             torch.compile(fn, backend="eager", fullgraph=True)(x)
 
         def fn_union(x):
@@ -8357,8 +8374,22 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             return x - 1
 
         torch._dynamo.reset()
-        with self.assertRaisesRegex(Unsupported, "custom __instancecheck__"):
-            torch.compile(fn_union, backend="eager", fullgraph=True)(x)
+        opt_fn_union = torch.compile(fn_union, backend="eager")
+        for expected_shape in [(2, 3), (2, 4)]:
+            shape_context.value = expected_shape
+            self.assertTrue(same(fn_union(x), opt_fn_union(x)))
+
+        torch._dynamo.reset()
+        if sys.version_info >= (3, 12):
+            with self.assertRaisesRegex(Unsupported, "custom type check"):
+                torch.compile(fn_union, backend="eager", fullgraph=True)(x)
+        else:
+            self.assertTrue(
+                same(
+                    fn_union(x),
+                    torch.compile(fn_union, backend="eager", fullgraph=True)(x),
+                )
+            )
 
         def fn_union_type(x):
             if isinstance(x, TensorWithShape | int):
@@ -8366,8 +8397,44 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             return x - 1
 
         torch._dynamo.reset()
-        with self.assertRaisesRegex(Unsupported, "custom __instancecheck__"):
+        with self.assertRaisesRegex(Unsupported, "custom type check"):
             torch.compile(fn_union_type, backend="eager", fullgraph=True)(x)
+
+        class TensorSubclassCheckMeta(type):
+            def __subclasscheck__(cls, subclass):
+                return getattr(shape_context, "allow_subclass", False)
+
+        class TensorSubclassCheck(metaclass=TensorSubclassCheckMeta):
+            pass
+
+        def fn_subclasscheck(x):
+            if isinstance(x, TensorSubclassCheck):
+                return x + 1
+            return x - 1
+
+        shape_context.allow_subclass = True
+        self.assertTrue(issubclass(torch.Tensor, TensorSubclassCheck))
+        self.assertFalse(isinstance(x, TensorSubclassCheck))
+        torch._dynamo.reset()
+        self.assertTrue(
+            same(
+                fn_subclasscheck(x),
+                torch.compile(fn_subclasscheck, backend="eager")(x),
+            )
+        )
+
+        torch._dynamo.reset()
+        with self.assertRaisesRegex(Unsupported, "custom type check"):
+            torch.compile(fn_subclasscheck, backend="eager", fullgraph=True)(x)
+
+        def fn_union_subclasscheck(x):
+            if isinstance(x, typing.Union[TensorSubclassCheck, int]):
+                return x + 1
+            return x - 1
+
+        torch._dynamo.reset()
+        with self.assertRaisesRegex(Unsupported, "custom type check"):
+            torch.compile(fn_union_subclasscheck, backend="eager", fullgraph=True)(x)
 
         class TensorSubclassMeta(type(torch.Tensor)):
             def __instancecheck__(cls, instance):
@@ -8384,7 +8451,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             return x - 1
 
         torch._dynamo.reset()
-        with self.assertRaisesRegex(Unsupported, "custom __instancecheck__"):
+        with self.assertRaisesRegex(Unsupported, "custom type check"):
             torch.compile(fn_tensor_subclass, backend="eager", fullgraph=True)(x)
 
     def test_tensor_isinstance_supported_tensor_types_no_graph_break(self):
@@ -15351,6 +15418,71 @@ fn
             "Reconstruct user defined class without a source",
         ):
             fn(t)
+
+    @expectedFailureDynamic
+    @torch._dynamo.config.patch(enable_trace_load_build_class=True)
+    def test_build_class_closure_over_nonconstant(self):
+        class Outer:
+            def __init__(self):
+                self.scale = 3
+
+        outer = Outer()
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt, fullgraph=True)
+        def fn(t):
+            class Wrapper:
+                def __init__(self, t):
+                    self.t = t
+
+                def compute(self):
+                    return self.t.sin() * outer.scale
+
+            obj = Wrapper(t)
+            return obj.compute()
+
+        t = torch.randn(2)
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        # Same value: the EQUALS_MATCH guard on outer.scale holds, no recompile.
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        self.assertEqual(cnt.frame_count, 1)
+        # Mutating the closed-over non-constant trips the guard -> recompile with
+        # the new value (proves scale is guarded, not baked in as a constant).
+        outer.scale = 5
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        self.assertEqual(cnt.frame_count, 2)
+
+    @expectedFailureDynamic
+    @torch._dynamo.config.patch(enable_trace_load_build_class=True)
+    def test_build_class_closure_over_nonconstant_method(self):
+        class Outer:
+            def __init__(self):
+                self.scale = 2
+
+            def get_scale(self):
+                return self.scale
+
+        outer = Outer()
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt, fullgraph=True)
+        def fn(t):
+            class Wrapper:
+                def keys(self):
+                    return outer.get_scale()
+
+            return Wrapper().keys() + t.sum()
+
+        t = torch.randn(2)
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(cnt.frame_count, 1)
+        # Mutating the closed-over value re-guards and recompiles.
+        outer.scale = 7
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(cnt.frame_count, 2)
 
     def test_dunder_weakref(self):
         class Foo:
