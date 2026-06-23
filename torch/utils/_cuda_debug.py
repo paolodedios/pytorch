@@ -3,7 +3,6 @@ from __future__ import annotations
 import textwrap
 import traceback
 import weakref
-from collections.abc import Iterable
 from typing import Any, TYPE_CHECKING
 
 import torch
@@ -84,7 +83,7 @@ class _CUDAGraphInputLivenessTracker:
         if data_ptr not in self._external_inputs:
             self._internal_outputs.add(data_ptr)
 
-    def check_alive(self, capture_pools: Iterable[_POOL_HANDLE]) -> None:
+    def check_alive(self, capture_pools: list[_POOL_HANDLE]) -> None:
         dead = [
             i
             for i in self._external_inputs.values()
