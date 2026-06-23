@@ -583,6 +583,14 @@ class FakeTensorUpdater:
                 )
             )
 
+        def invalidate_fake_metadata(node: torch.fx.Node) -> bool:
+            removed = False
+            for key in ("val", "example_value", "unbacked_bindings"):
+                if key in node.meta:
+                    del node.meta[key]
+                    removed = True
+            return removed
+
         # Update self.processed_hashes every time.  This allows us to account for
         # situations where a node gets modified, updated, then reverted to its original
         # state.  Without doing this, we wouldn't update downstream nodes, because the
@@ -601,6 +609,9 @@ class FakeTensorUpdater:
             hash = self.hash_node(node)
             is_valid, args, kwargs = get_fake_args_kwargs(node, self.gm)
             if not is_valid:
+                if invalidate_fake_metadata(node):
+                    nodes_updated += 1
+                    to_process.update(id(user) for user in node.users)
                 continue
             current_graph_hashes.add(hash)
             node_needs_update = (

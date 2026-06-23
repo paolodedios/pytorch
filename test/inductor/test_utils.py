@@ -1123,6 +1123,60 @@ class TestFakeTensorUpdater(TestCase):
             self.assertIn("val", add.meta)
             self.assertEqual(updater.incremental_update(), 0)
 
+    def test_invalid_update_clears_stale_meta(self):
+        class Root(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.register_buffer("buf", torch.ones(4))
+
+        root = Root()
+        graph = torch.fx.Graph()
+        x = graph.placeholder("x")
+        y = graph.placeholder("y")
+        add = graph.call_function(torch.ops.aten.add.Tensor, (x, y))
+        mul = graph.call_function(torch.ops.aten.mul.Tensor, (add, x))
+        graph.output(mul)
+        graph_module = torch.fx.GraphModule(root, graph)
+        if not hasattr(graph_module, "buf"):
+            graph_module.register_buffer("buf", root.buf)
+
+        fake_mode = torch._subclasses.FakeTensorMode()
+        with fake_mode:
+            x.meta["val"] = torch.empty(4)
+            y.meta["val"] = torch.empty(4)
+            add_fake = add.target(get_fake(x, graph_module), get_fake(y, graph_module))
+            mul_fake = mul.target(add_fake, get_fake(x, graph_module))
+
+        for node, fake in ((add, add_fake), (mul, mul_fake)):
+            node.meta["val"] = fake
+            node.meta["example_value"] = fake
+            node.meta["unbacked_bindings"] = {"stale": "binding"}
+
+        updater = FakeTensorUpdater(graph_module)
+        with graph.inserting_before(add):
+            buf = graph.get_attr("buf")
+        add.args = (x, buf)
+        graph.lint()
+
+        with V.set_fake_mode(fake_mode):
+            self.assertEqual(updater.incremental_update(), 2)
+            self.assertNotIn("val", add.meta)
+            self.assertNotIn("val", mul.meta)
+            self.assertNotIn("example_value", add.meta)
+            self.assertNotIn("example_value", mul.meta)
+            self.assertNotIn("unbacked_bindings", add.meta)
+            self.assertNotIn("unbacked_bindings", mul.meta)
+            self.assertEqual(updater.incremental_update(), 0)
+
+        with fake_mode:
+            buf.meta["val"] = fake_mode.from_tensor(graph_module.buf)
+
+        with V.set_fake_mode(fake_mode):
+            self.assertEqual(updater.incremental_update(), 2)
+            self.assertIn("val", add.meta)
+            self.assertIn("val", mul.meta)
+            self.assertEqual(updater.incremental_update(), 0)
+
     def test_get_fake_args_kwargs_tensor_container_get_attr_is_invalid(self):
         class Root(torch.nn.Module):
             def __init__(self) -> None:
