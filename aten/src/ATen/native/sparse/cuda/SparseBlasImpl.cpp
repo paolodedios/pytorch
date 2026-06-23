@@ -1336,30 +1336,34 @@ void sampled_addmm_out_sparse_csr(
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(batchCount(A) == batchCount(B));
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(batchCount(A) == batchCount(C));
 
+  // cuSPARSE SDDMM has a native float16 kernel (with float32 accumulation) but
+  // no bfloat16 kernel: cusparseSDDMM_bufferSize returns
+  // CUSPARSE_STATUS_NOT_SUPPORTED for bfloat16 even on Ampere/Ada (e.g. sm_89),
+  // so this is not a compute-capability gate. Run bfloat16 in float32 -- which
+  // is already its opmath/accumulation type, so the only rounding is the
+  // bfloat16 input/output itself -- and copy the result back into the bfloat16
+  // output. float16 keeps its native cuSPARSE path below.
+  if (C.scalar_type() == kBFloat16) {
+    Tensor C_f32 = C.to(kFloat);
+    sampled_addmm_out_sparse_csr(A.to(kFloat), B.to(kFloat), beta, alpha, C_f32);
+    C.values().copy_(C_f32.values());
+    return;
+  }
+
   cusparseOperation_t opA = CUSPARSE_OPERATION_NON_TRANSPOSE;
   cusparseOperation_t opB = CUSPARSE_OPERATION_NON_TRANSPOSE;
 
   c10::MaybeOwned<Tensor> A_ = prepare_dense_matrix_for_cusparse(A);
   c10::MaybeOwned<Tensor> B_ = prepare_dense_matrix_for_cusparse(B);
 
-  const auto st = C.scalar_type();
-  if (st == kHalf || st == kBFloat16) {
-    TORCH_CHECK(
-        at::cuda::getCurrentDeviceProperties()->major >= 8,
-        "sampled_addmm: float16/bfloat16 inputs are only supported on GPUs with "
-        "compute capability >= 8.0 (Ampere or newer); got sm_",
-        at::cuda::getCurrentDeviceProperties()->major,
-        at::cuda::getCurrentDeviceProperties()->minor);
-  }
-
-  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND2(
-      kHalf, kBFloat16,
-      st,
+  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES_AND1(
+      kHalf,
+      C.scalar_type(),
       "sampled_addmm_out_sparse_csr",
       [&] {
-        // cuSPARSE SDDMM supports float16 and bfloat16 with float32 accumulation
-        // on Ampere and newer (CC >= 8.0). opmath_type<half/bfloat16> == float,
-        // so alpha/beta and compute_type correctly select fp32 accumulation.
+        // cuSPARSE SDDMM has a native float16 kernel that accumulates in
+        // float32. opmath_type<Half> == float, so alpha/beta and compute_type
+        // select the float32 accumulation path automatically.
         using opmath_t = at::opmath_type<scalar_t>;
         // CUDA 11.6 doesn't support batched inputs, it raises an error:
         // ** On entry to cusparseSDDMM_bufferSize(): batched SDDMM is not supported

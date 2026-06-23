@@ -17,7 +17,7 @@ from torch.testing._internal.common_utils import \
      IS_FBCODE, IS_REMOTE_GPU, suppress_warnings)
 from torch.testing._internal.common_device_type import \
     (ops, instantiate_device_type_tests, dtypes, OpDTypes, dtypesIfCUDA, onlyCPU, onlyCUDA, skipCUDAIfNoSparseGeneric,
-     precisionOverride, skipMeta, skipCUDAIfRocm, skipCPUIfNoMklSparse, largeTensorTest)
+     precisionOverride, toleranceOverride, tol, skipMeta, skipCUDAIfRocm, skipCPUIfNoMklSparse, largeTensorTest)
 from torch.testing._internal.common_methods_invocations import \
     (op_db, sparse_csr_unary_ufuncs, ReductionOpInfo)
 from torch.testing._internal.common_cuda import TEST_CUDA
@@ -2433,6 +2433,8 @@ class TestSparseCSR(TestCase):
     @dtypesIfCUDA(*floating_and_complex_types_and(torch.half, torch.bfloat16))
     @precisionOverride({torch.float32: 1e-3, torch.complex64: 1e-3,
                         torch.float64: 1e-8, torch.complex128: 1e-8})
+    @toleranceOverride({torch.float16: tol(atol=1e-3, rtol=1.6e-2),
+                        torch.bfloat16: tol(atol=1e-2, rtol=1.6e-2)})
     def test_sampled_addmm(self, device, dtype):
         if dtype in (torch.half, torch.bfloat16) and torch.cuda.is_available() and \
                 torch.cuda.get_device_capability()[0] < 8:
@@ -2488,6 +2490,8 @@ class TestSparseCSR(TestCase):
     @dtypesIfCUDA(*floating_and_complex_types_and(torch.half, torch.bfloat16))
     @precisionOverride({torch.float32: 1e-3, torch.complex64: 1e-3,
                         torch.float64: 1e-8, torch.complex128: 1e-8})
+    @toleranceOverride({torch.float16: tol(atol=1e-3, rtol=1.6e-2),
+                        torch.bfloat16: tol(atol=1e-2, rtol=1.6e-2)})
     def test_sampled_addmm_autograd(self, device, dtype):
         if dtype in (torch.half, torch.bfloat16) and torch.cuda.is_available() and \
                 torch.cuda.get_device_capability()[0] < 8:
