@@ -798,6 +798,7 @@ class ShardingPropagator:
                 try:
                     op_strategy = self.decomp_strategy.propagate_strategy(
                         op_schema,
+                        out_tensor_meta,
                     )
                 except Exception as e:
                     decomp_exception = e

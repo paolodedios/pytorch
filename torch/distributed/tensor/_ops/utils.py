@@ -627,11 +627,9 @@ def expand_to_full_mesh_op_strategy(
                 continue
 
         output_specs: tuple[DTensorSpec | None, ...] | DTensorSpec | None
-        if (
-            op_schema.return_type_list_tensor_like()
-            and isinstance(output_tensor_meta, Sequence)
-            and not isinstance(output_tensor_meta, TensorMeta)
-        ):
+        if op_schema.return_type_list_tensor_like():
+            # Tensor[] outputs must stay container-shaped even when there is
+            # only one output spec, so they are distinguishable from Tensor.
             output_specs = tuple(spec_list[:input_index])
         elif input_index == 0:
             # No outputs (e.g., _linalg_check_errors)
