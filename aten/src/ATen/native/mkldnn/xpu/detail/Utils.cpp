@@ -369,9 +369,12 @@ bool is_onednn_conv_strides(const at::Tensor& tensor) {
   if (storage_size < tensor.numel())
     return false;
 
-  // the broadcast cases are not supported
-  if (is_broadcast(tensor)) {
-    return false;
+  // Expanded broadcasted dimensions are not supported for conv descriptors.
+  // Keep size-1 dimensions with stride 0, as they are semantically safe.
+  for (const auto d : c10::irange(tensor_dim)) {
+    if (strides[d] == 0 && sizes[d] > 1) {
+      return false;
+    }
   }
 
   if (!onednn_strides_check(tensor))
