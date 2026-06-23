@@ -2233,10 +2233,9 @@ class FxGraphCache(GuardedCache[CompiledFxGraph]):
             )
         except Exception:
             pass
-        disk_compiled_graph = copy(compiled_graph)
-        disk_compiled_graph.prepare_for_serialization()
-
         try:
+            disk_compiled_graph = copy(compiled_graph)
+            disk_compiled_graph.prepare_for_serialization()
             content = pickle.dumps(disk_compiled_graph)
         except Exception:
             log.warning(
