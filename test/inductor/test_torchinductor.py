@@ -18772,7 +18772,7 @@ if RUN_GPU:
             # Flag off: no kwarg emitted, and the default order differs from
             # the canonical INNER_TREE result (proving the flag drives numerics).
             torch._dynamo.reset()
-            with config.patch({"strict_numerics": False}):
+            with config.patch({"numerics": "default"}):
                 compiled = torch.compile(fn)
                 code_off = run_and_get_triton_code(compiled, x)
                 out_default = compiled(x)
@@ -18782,7 +18782,7 @@ if RUN_GPU:
             # Flag on: kwarg emitted (constexpr-wrapped), kernel compiles, and the
             # result is bitwise identical to the canonical INNER_TREE reduction.
             torch._dynamo.reset()
-            with config.patch({"strict_numerics": True}):
+            with config.patch({"numerics": "strict"}):
                 compiled = torch.compile(fn)
                 code_on = run_and_get_triton_code(compiled, x)
                 out_inner_tree = compiled(x)

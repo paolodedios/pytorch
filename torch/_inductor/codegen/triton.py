@@ -4758,7 +4758,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             else:
                 reduction_ordering = ""
                 if (
-                    config.strict_numerics
+                    config.numerics == "strict"
                     and reduction_type == "sum"
                     and has_triton_reduction_ordering()
                 ):
