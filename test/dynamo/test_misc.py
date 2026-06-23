@@ -5867,6 +5867,20 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         self.assertTrue(same(ref, res))
 
+    def _check_torch_size_reshape_graph(self, graph):
+        call_nodes = [node for node in graph.graph.nodes if node.op == "call_function"]
+        if torch._dynamo.config.assume_static_by_default:
+            self.assertEqual([node.target for node in call_nodes], [torch.reshape])
+            self.assertEqual(call_nodes[0].args[1], (4, 64))
+        else:
+            self.assertEqual(
+                [node.target for node in call_nodes], [torch.Size, torch.reshape]
+            )
+            size_args = call_nodes[0].args[0]
+            self.assertEqual(len(size_args), 2)
+            self.assertTrue(all(isinstance(arg, torch.fx.Node) for arg in size_args))
+            self.assertIs(call_nodes[1].args[1], call_nodes[0])
+
     def test_torch_size_from_tensor_buffer(self):
         class Mod(torch.nn.Module):
             def __init__(self) -> None:
@@ -5885,16 +5899,8 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         res = opt_mod(x)
 
         self.assertTrue(same(ref, res))
-        if not torch._dynamo.config.assume_static_by_default:
-            self.assertEqual(len(backend.graphs), 0)
-            return
-
         self.assertEqual(len(backend.graphs), 1)
-        call_nodes = [
-            node for node in backend.graphs[0].graph.nodes if node.op == "call_function"
-        ]
-        self.assertEqual([node.target for node in call_nodes], [torch.reshape])
-        self.assertEqual(call_nodes[0].args[1], (4, 64))
+        self._check_torch_size_reshape_graph(backend.graphs[0])
 
     def test_torch_size_from_tensor_buffer_negative_dim_preemptive_graph_break(self):
         class Mod(torch.nn.Module):
@@ -5950,18 +5956,14 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             [node.target for node in graph.graph.nodes if node.op == "call_function"]
             for graph in backend.graphs
         ]
-        if not torch._dynamo.config.assume_static_by_default:
-            self.assertEqual(call_targets, [[operator.eq, torch.any]])
-            return
-
         self.assertEqual(len(backend.graphs), 2)
-        self.assertEqual(call_targets, [[operator.eq, torch.any], [torch.reshape]])
-        reshape_node = next(
-            node
-            for node in backend.graphs[1].graph.nodes
-            if node.op == "call_function" and node.target is torch.reshape
-        )
-        self.assertEqual(reshape_node.args[1], (4, 64))
+        if torch._dynamo.config.assume_static_by_default:
+            self.assertEqual(call_targets, [[operator.eq, torch.any], [torch.reshape]])
+        else:
+            self.assertEqual(
+                call_targets, [[operator.eq, torch.any], [torch.Size, torch.reshape]]
+            )
+        self._check_torch_size_reshape_graph(backend.graphs[1])
 
     def test_torch_size_item_example_from_constant_tensor(self):
         from torch._dynamo.variables.lists import SizeVariable
