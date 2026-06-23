@@ -359,6 +359,25 @@ std::tuple<Tensor, Tensor, Tensor> mps_linear_backward(const Tensor& input,
                                                        const Tensor& grad_output,
                                                        const Tensor& weight,
                                                        std::array<bool, 3> output_mask) {
+  // A 1-D weight makes linear() contract the last input dimension and drop it
+  // from the output (it is the out_features == 1 case with the trailing output
+  // dimension squeezed; see mps_linear above). The backward graphs below assume
+  // a 2-D weight, so feeding a 1-D weight straight through lowers grad_input and
+  // grad_weight to invalid vector-by-vector matmuls that fail MPSGraph
+  // verification ('mps.matmul' op contracting dimensions differ -> SIGABRT).
+  // Mirror the forward unsqueeze here so the gradients are computed against a
+  // 2-D weight, then restore the original 1-D weight shape for grad_weight.
+  if (weight.dim() == 1) {
+    auto [grad_input, grad_weight, grad_bias] =
+        mps_linear_backward(input, grad_output.unsqueeze(-1), weight.unsqueeze(0), output_mask);
+    if (grad_weight.defined()) {
+      grad_weight = grad_weight.squeeze(0);
+    }
+    // grad_bias is intentionally left as-is (no squeeze): a 1-D weight only takes
+    // a scalar bias, and autograd reduces the returned gradient to the bias shape.
+    return std::tuple<Tensor, Tensor, Tensor>{grad_input, grad_weight, grad_bias};
+  }
+
   Tensor grad_input, grad_weight, grad_bias;
   if (output_mask[0]) {
     grad_input = _mps_linear_backward_input(input.sizes(), grad_output, weight);
