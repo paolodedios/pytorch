@@ -2196,7 +2196,8 @@ class OutputGraph(OutputGraphCommon):
                     v = v.unwrap()
                 else:
                     return False
-            elif not v.is_tensor():
+
+            if not v.is_tensor():
                 return False
 
             return not any(
