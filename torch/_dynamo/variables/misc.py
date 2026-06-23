@@ -1016,6 +1016,18 @@ class AutogradFunctionVariable(VariableTracker):
                     ],
                 )
             if not self.fn_cls.generate_vmap_rule:
+                if has_custom_vmap:
+                    unimplemented(
+                        gb_type="Unsupported custom autograd.Function vmap",
+                        context=f"call_apply {self} {args} {kwargs}",
+                        explanation="Dynamo does not support tracing "
+                        "`torch.autograd.Function` subclasses that define "
+                        "a custom `vmap` staticmethod.",
+                        hints=[
+                            "Use eager mode for this autograd.Function, or remove the custom `vmap` staticmethod and set `generate_vmap_rule=True` only if generated vmap rules are valid for it.",
+                            *graph_break_hints.SUPPORTABLE,
+                        ],
+                    )
                 unimplemented(
                     gb_type="Unsupported autograd.Function vmap",
                     context=f"call_apply {self} {args} {kwargs}",

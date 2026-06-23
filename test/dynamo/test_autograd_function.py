@@ -3021,9 +3021,38 @@ class AutogradFunctionFunctorchTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4, 3, requires_grad=True)
         compiled_fn(x[0])
         with self.assertRaisesRegex(
-            torch._dynamo.exc.Unsupported, "generate_vmap_rule=True"
+            torch._dynamo.exc.Unsupported, "custom.*vmap.*staticmethod"
         ):
             torch.vmap(compiled_fn)(x)
+
+    def test_autograd_function_without_vmap_support_replayed_under_vmap(self):
+        class NewStyleOp(torch.autograd.Function):
+            @staticmethod
+            def forward(x):
+                return x * 2
+
+            @staticmethod
+            def setup_context(ctx, inputs, output):
+                pass
+
+            @staticmethod
+            def backward(ctx, grad_output):
+                return grad_output * 2
+
+        def fn(x):
+            return NewStyleOp.apply(x)
+
+        backend = AotEagerAndRecordGraphs()
+        compiled_fn = torch.compile(fn, backend=backend, fullgraph=True)
+
+        compiled_fn(torch.randn(3, requires_grad=True))
+        graph = backend.graphs[0]
+        self.assertTrue(
+            "autograd_function_apply" in graph.print_readable(print_output=False)
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "does not have vmap support"):
+            torch.vmap(graph)(torch.randn(4, 3, requires_grad=True))
 
     def test_old_style_autograd_function_with_grad_compiled(self):
         """Old-style autograd.Function compiled should work with torch.func.grad.
