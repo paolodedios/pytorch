@@ -2215,6 +2215,61 @@ Example::
 )
 
 
+matrix_sqrt = _add_docstr(
+    _linalg.linalg_matrix_sqrt,
+    r"""
+linalg.matrix_sqrt(A) -> Tensor
+
+Computes the principal square root of a symmetric (resp. Hermitian) positive-definite matrix.
+
+Letting :math:`\mathbb{K}` be :math:`\mathbb{R}` or :math:`\mathbb{C}`,
+for a symmetric (resp. Hermitian) positive-definite matrix :math:`A \in \mathbb{K}^{n \times n}`,
+this function returns the unique symmetric (resp. Hermitian) positive-definite matrix
+:math:`X \in \mathbb{K}^{n \times n}` such that
+
+.. math::
+    XX = A.
+
+The result is computed from the eigendecomposition :math:`A = Q \operatorname{diag}(\lambda) Q^H`
+as :math:`X = Q \operatorname{diag}(\sqrt{\lambda}) Q^H`.
+
+Supports input of float, double, cfloat and cdouble dtypes.
+Also supports batches of matrices, and if :attr:`A` is a batch of matrices then
+the output has the same batch dimensions.
+
+.. note:: Only the lower triangular part of :attr:`A` is used in the computation, and
+          :attr:`A` is assumed to be symmetric (resp. Hermitian). See :func:`torch.linalg.eigh`.
+
+.. note:: The gradient is computed with a numerically stable backward based on the
+          Daleckii-Krein formula, which remains well-defined even when :attr:`A` has
+          repeated eigenvalues. Computing the gradient requires :attr:`A` to be
+          positive-definite.
+
+.. seealso::
+
+        :func:`torch.linalg.cholesky` computes a different factorization of a symmetric
+        (resp. Hermitian) positive-definite matrix.
+
+Args:
+    A (Tensor): tensor of shape `(*, n, n)` where `*` is zero or more batch dimensions
+                consisting of symmetric (resp. Hermitian) positive-definite matrices.
+
+Examples::
+
+    >>> A = torch.tensor([[2., 0.], [0., 9.]])
+    >>> torch.linalg.matrix_sqrt(A)
+    tensor([[1.4142, 0.0000],
+            [0.0000, 3.0000]])
+
+    >>> A = torch.randn(2, 3, 3)
+    >>> A = A @ A.mT + 3 * torch.eye(3)  # batch of symmetric positive-definite matrices
+    >>> X = torch.linalg.matrix_sqrt(A)
+    >>> torch.allclose(X @ X, A, atol=1e-5)
+    True
+""",
+)
+
+
 solve = _add_docstr(
     _linalg.linalg_solve,
     r"""
