@@ -17,7 +17,8 @@ Counting semantics
 * Counts are produced by formulas in ``flop_registry``. Operators without a
   formula may be decomposed into registered operators; otherwise they add zero
   FLOPs.
-* Formulas receive tensor shapes by default. Use
+* Formula inputs have tensor arguments replaced by their shapes by default.
+  Non-tensor arguments pass through unchanged. Use
   ``register_flop_formula(..., get_raw=True)`` only when the formula needs the
   original tensor arguments or metadata.
 * Forward and backward operations are counted only if they execute while the
@@ -27,6 +28,8 @@ Counting semantics
 * Counts do not automatically adjust for dtype-specific throughput, Tensor
   Cores, sparsity, quantization, masking, skipped elements, memory movement, or
   data-dependent early exits. A formula must explicitly model those semantics.
+  For example, the built-in attention formulas are upper bounds for causal or
+  otherwise masked attention unless the formula explicitly models the mask.
 * Higher-order operators and ``torch.compile`` may expose decomposed or fused
   work differently from eager execution. Custom operators and custom Triton
   kernels need a formula or a decomposition if they should contribute FLOPs.
@@ -55,6 +58,9 @@ Example
 
 Registering a formula for a custom op
 -------------------------------------
+
+Register custom FLOP formulas before constructing ``FlopCounterMode``. The
+mode snapshots the global registry during initialization.
 
 .. code-block:: python
 
