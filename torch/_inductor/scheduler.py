@@ -4136,6 +4136,10 @@ class Scheduler:
         with dynamo_timed("Scheduler.__init__"):
             self._init(nodes)
 
+    @staticmethod
+    def count_kernel_nodes(nodes: Sequence[BaseSchedulerNode]) -> int:
+        return sum(1 for node in nodes if not isinstance(node, NopKernelSchedulerNode))
+
     def _init(self, nodes: list[ir.Operation]) -> None:
         super().__init__()
         V.graph.scheduler = self
@@ -7679,10 +7683,24 @@ class Scheduler:
                 )
             written_buffer_name = node1.node.mutation_outputs[0].name
 
-            # The epilogue can only read from the output buffer.
+            # The epilogue must be an in-place, unary pointwise operation.
             # Any other tensor/s would require additional load expressions.
-            if any(dep.name != written_buffer_name for dep in node2.read_writes.reads):
-                why("epilogue reads from buffers other than the mutated output")
+            epilogue_reads = list(node2.read_writes.reads)
+            epilogue_writes = list(node2.read_writes.writes)
+            if (
+                len(epilogue_reads) != 1
+                or len(epilogue_writes) != 1
+                or epilogue_reads[0].name != written_buffer_name
+            ):
+                why("epilogue is not a unary read of the output buffer")
+                return False
+
+            write_dep = epilogue_writes[0]
+            read_dep = epilogue_reads[0]
+            assert isinstance(read_dep, MemoryDep)  # noqa: S101
+            assert isinstance(write_dep, MemoryDep)  # noqa: S101
+            if read_dep.index != write_dep.index or read_dep.size != write_dep.size:
+                why("epilogue's read and write indices differ")
                 return False
 
             # the epilogue depends on expressions which may not available in the user triton kernel
@@ -9394,12 +9412,7 @@ class Scheduler:
         if min_size > 0:
             for i, (partition, skip) in enumerate(zip(partitions, skip_cudagraphs)):
                 if not skip:
-                    # Count kernels excluding NopKernelSchedulerNode
-                    kernel_count = sum(
-                        1
-                        for n in partition
-                        if not isinstance(n, NopKernelSchedulerNode)
-                    )
+                    kernel_count = self.count_kernel_nodes(partition)
                     if kernel_count < min_size:
                         skip_cudagraphs[i] = True
                         cudagraphs_log.debug(
