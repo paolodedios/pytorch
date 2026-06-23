@@ -3,6 +3,7 @@ from __future__ import annotations
 import textwrap
 import traceback
 import weakref
+from collections.abc import Iterable
 from typing import Any, TYPE_CHECKING
 
 import torch
@@ -58,7 +59,7 @@ class _CUDAGraphInputLivenessTracker:
     def __init__(self) -> None:
         self._external_inputs: dict[int, _TrackedTensorInfo] = {}
         self._internal_outputs: set[int] = set()
-        self._memory_snapshot: list[dict[str, Any]] | None = None
+        self._memory_snapshots: dict[_POOL_HANDLE, list[dict[str, Any]]] = {}
         self._dispatch_mode: _TensorTrackingMode | None = None
 
     def start(self) -> None:
@@ -83,12 +84,15 @@ class _CUDAGraphInputLivenessTracker:
         if data_ptr not in self._external_inputs:
             self._internal_outputs.add(data_ptr)
 
-    def check_alive(self, capture_pool: _POOL_HANDLE) -> None:
+    def check_alive(self, capture_pools: Iterable[_POOL_HANDLE]) -> None:
+        pools = tuple(capture_pools)
         dead = [
             i
             for i in self._external_inputs.values()
             if not i.is_alive()
-            and not self._is_tensor_from_capture_pool(i, capture_pool)
+            and not any(
+                self._is_tensor_from_capture_pool(i, pool) for pool in pools
+            )
         ]
         if not dead:
             return
@@ -110,11 +114,11 @@ class _CUDAGraphInputLivenessTracker:
         raise RuntimeError("".join(parts))
 
     def _get_memory_snapshot(self, capture_pool: _POOL_HANDLE) -> list[dict[str, Any]]:
-        if self._memory_snapshot is None:
-            self._memory_snapshot = torch.cuda.memory.memory_snapshot(
+        if capture_pool not in self._memory_snapshots:
+            self._memory_snapshots[capture_pool] = torch.cuda.memory.memory_snapshot(
                 capture_pool, include_traces=False
             )
-        return self._memory_snapshot
+        return self._memory_snapshots[capture_pool]
 
     def _is_tensor_from_capture_pool(
         self, tensor: _TrackedTensorInfo, capture_pool: _POOL_HANDLE
