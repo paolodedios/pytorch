@@ -14,7 +14,6 @@ import importlib
 import inspect
 import itertools
 import logging
-import operator
 import os
 import random
 import sys
@@ -5458,7 +5457,7 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
     #         )
     #         self.assertEqual(out_ref, out_test)
 
-    def test_foreach_input_mutation_emits_foreach_copy(self):
+    def test_foreach_input_mutation_aot_keeps_copy_epilogue(self):
         fw_graph[0] = None
 
         @torch.compile(backend=aot_graph_capture_backend, fullgraph=True)
@@ -5483,15 +5482,10 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
             )
         )
 
-        self.assertEqual(len(foreach_copy_nodes), 1)
-        self.assertEqual(len(copy_nodes), 0)
+        self.assertEqual(len(foreach_copy_nodes), 0)
+        self.assertEqual(len(copy_nodes), len(inps))
 
-        foreach_copy = foreach_copy_nodes[0]
-        dsts, srcs = foreach_copy.args[:2]
-        self.assertEqual(len(dsts), len(inps))
-        self.assertEqual([src.args[1] for src in srcs], list(range(len(inps))))
-
-    def test_foreach_input_mutation_does_not_fold_used_copy_result(self):
+    def test_foreach_input_mutation_aot_keeps_used_copy_result(self):
         fw_graph[0] = None
 
         @torch.compile(backend=aot_graph_capture_backend, fullgraph=True)
@@ -5504,8 +5498,6 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
 
         self.assertEqual(out, torch.full((10,), 2.0))
         self.assertIsNotNone(fw_graph[0])
-        # Folding only the unused copies would create a shorter foreach_copy_
-        # than its producer foreach op, which can block foreach fusion.
         self.assertEqual(
             len(
                 list(
@@ -5527,104 +5519,6 @@ def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
             ),
             len(inps),
         )
-
-    def test_foreach_input_mutation_does_not_fold_aliased_group(self):
-        from torch._functorch._aot_autograd.functional_utils import (
-            fold_foreach_input_mutation_ops,
-        )
-
-        graph = torch.fx.Graph()
-        x = graph.placeholder("x")
-        y = graph.placeholder("y")
-        foreach_mul = graph.call_function(
-            torch.ops.aten._foreach_mul.Scalar, args=([x, y], 2)
-        )
-        getitem = graph.call_function(operator.getitem, args=(foreach_mul, 0))
-        getitem_1 = graph.call_function(operator.getitem, args=(foreach_mul, 1))
-        copy_ = graph.call_function(torch.ops.aten.copy_.default, args=(x, getitem))
-        copy__1 = graph.call_function(torch.ops.aten.copy_.default, args=(y, getitem_1))
-        graph.output(())
-
-        base = torch.ones(4)
-        x.meta["val"] = base[:2]
-        y.meta["val"] = base[1:3]
-        getitem.meta["val"] = torch.ones(2)
-        getitem_1.meta["val"] = torch.ones(2)
-        copy_.meta["val"] = x.meta["val"]
-        copy__1.meta["val"] = y.meta["val"]
-
-        fold_foreach_input_mutation_ops(graph)
-
-        self.assertEqual(
-            len(
-                list(
-                    graph.find_nodes(
-                        op="call_function",
-                        target=torch.ops.aten._foreach_copy_.default,
-                    )
-                )
-            ),
-            0,
-        )
-        self.assertEqual(
-            len(
-                list(
-                    graph.find_nodes(
-                        op="call_function", target=torch.ops.aten.copy_.default
-                    )
-                )
-            ),
-            2,
-        )
-
-    def test_foreach_input_mutation_does_not_fold_interleaved_getitems(self):
-        from torch._functorch._aot_autograd.functional_utils import (
-            fold_foreach_input_mutation_ops,
-        )
-
-        graph = torch.fx.Graph()
-        x = graph.placeholder("x")
-        y = graph.placeholder("y")
-        foreach_mul = graph.call_function(
-            torch.ops.aten._foreach_mul.Scalar, args=([x, y], 2)
-        )
-        getitem = graph.call_function(operator.getitem, args=(foreach_mul, 0))
-        copy_ = graph.call_function(torch.ops.aten.copy_.default, args=(x, getitem))
-        getitem_1 = graph.call_function(operator.getitem, args=(foreach_mul, 1))
-        copy__1 = graph.call_function(torch.ops.aten.copy_.default, args=(y, getitem_1))
-        graph.output(())
-
-        x.meta["val"] = torch.ones(2)
-        y.meta["val"] = torch.ones(2)
-        getitem.meta["val"] = torch.ones(2)
-        getitem_1.meta["val"] = torch.ones(2)
-        copy_.meta["val"] = x.meta["val"]
-        copy__1.meta["val"] = y.meta["val"]
-
-        fold_foreach_input_mutation_ops(graph)
-
-        self.assertEqual(
-            len(
-                list(
-                    graph.find_nodes(
-                        op="call_function",
-                        target=torch.ops.aten._foreach_copy_.default,
-                    )
-                )
-            ),
-            0,
-        )
-        self.assertEqual(
-            len(
-                list(
-                    graph.find_nodes(
-                        op="call_function", target=torch.ops.aten.copy_.default
-                    )
-                )
-            ),
-            2,
-        )
-        torch.fx.GraphModule({}, graph)
 
     def test_super_in_staticmethod(self):
         class A:
@@ -9655,6 +9549,28 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
 
 
 class CUDAReproTests(torch._dynamo.test_case.TestCase):
+    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
+    @torch._dynamo.config.patch(capture_scalar_outputs=False)
+    def test_aot_backward_context_reentry_after_graph_break(self):
+        def fn(x, y, scalar):
+            cpu = x.cpu()
+            other_cpu = x.cpu()
+            before_break = cpu.view_as(other_cpu)
+            scalar.item()
+            after_break = y.cos()
+            return before_break, after_break
+
+        x = torch.randn(8, device="cuda", requires_grad=True)
+        y = torch.randn(8, device="cuda", requires_grad=True)
+        scalar = torch.randn((), device="cuda")
+
+        before_break, after_break = torch.compile(fn, backend="aot_eager")(x, y, scalar)
+        loss = before_break.sum().to("cuda") + after_break.sum()
+        loss.backward()
+
+        self.assertEqual(x.grad, torch.ones_like(x))
+        self.assertEqual(y.grad, -y.detach().sin())
+
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     def test_cuda_sync(self):
         def fn(x):
