@@ -180,24 +180,22 @@ def get_schema_arg_idx(target: object, arg_name: str) -> int | None:
     return None
 
 
-def get_sdpa_dropout_p(node: fx.Node) -> object | None:
-    """Return an SDPA-family op's schema-level dropout_p value when it has one."""
+def is_nonzero_dropout_sdpa(node: fx.Node) -> bool:
+    """Return True unless SDPA-family dropout is statically known to be disabled."""
     dropout_arg_idx = get_schema_arg_idx(node.target, "dropout_p")
     if dropout_arg_idx is None:
-        return None
+        return True
 
     dropout_arg = node.target._schema.arguments[dropout_arg_idx]
     if len(node.args) > dropout_arg_idx:
-        return node.args[dropout_arg_idx]
-    if "dropout_p" in node.kwargs:
-        return node.kwargs["dropout_p"]
-    return dropout_arg.default_value
-
-
-def is_nonzero_dropout_sdpa(node: fx.Node) -> bool:
-    """Return True unless SDPA-family dropout is statically known to be disabled."""
-    dropout_p = get_sdpa_dropout_p(node)
-    return dropout_p is None or not statically_known_true(dropout_p == 0.0)
+        dropout_p = node.args[dropout_arg_idx]
+    elif "dropout_p" in node.kwargs:
+        dropout_p = node.kwargs["dropout_p"]
+    elif dropout_arg.default_value is not None:
+        dropout_p = dropout_arg.default_value
+    else:
+        return True
+    return not statically_known_true(dropout_p == 0.0)
 
 
 def is_rng_op(node: fx.Node) -> bool:
