@@ -4223,8 +4223,6 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
         make_non_contiguous_tensor_and_test(49)
         self.assertEqual(cnt.frame_count, 1)
 
-        # Pass in a contiguous tensor. The unbacked stride keeps this on the
-        # same value-only graph instead of specializing on stride 1.
         x = torch.arange(100)
         torch._dynamo.decorators.mark_unbacked(x, 0)
 
@@ -4319,8 +4317,6 @@ def forward(self, arg0_1: "i64[2][1]cpu", arg1_1: "Sym(u2)", arg2_1: "Sym(u3)", 
         self.assertEqual(result_compiled, result_eager)
         self.assertEqual(cnt.frame_count, 1)
 
-        # Pass a contiguous tensor. The alias/copy branch is not observable
-        # here, so this can keep using the same value-only graph.
         x = torch.randn(10, 10)
         torch._dynamo.decorators.mark_unbacked(x, 0)
         torch._dynamo.decorators.mark_unbacked(x, 1)
@@ -5299,8 +5295,6 @@ def forward(self, arg0_1: "i64[1][1]cpu", arg1_1: "Sym(u1)", arg2_1: "Sym(u2)", 
         make_non_contiguous_tensor_and_test(49)
         self.assertEqual(cnt.frame_count, 1)
 
-        # Pass in a contiguous tensor. The unbacked stride keeps this on the
-        # non-contiguous graph instead of specializing on stride 1.
         x = torch.arange(100)
         torch._dynamo.decorators.mark_unbacked(x, 0)
 
