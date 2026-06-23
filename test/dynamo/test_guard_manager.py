@@ -101,6 +101,63 @@ class GuardManagerTests(torch._dynamo.test_case.TestCase):
 
         self.assertEqual(actual, fn(x))
 
+    def test_cpp_symbolic_shape_guard_indexed_fast_path(self):
+        # Regression test for the IndexedGuardAccessor fast path that feeds
+        # SYMBOLIC_SHAPE_GUARD::accumulate directly (no per-symbol tuple). Skips
+        # when the C++ shape guard does not get installed (e.g. no working C++
+        # compiler), in which case Dynamo falls back to a Python shape guard.
+        import torch._dynamo.guards as dynamo_guards
+        from torch._inductor.codecache import CppCodeCache
+
+        CppCodeCache.cache_clear()
+        torch._dynamo.reset()
+
+        # A function over several tensors whose dim0 sizes flow into the result
+        # -> a C++ symbolic shape guard with one IndexedSource per symbol.
+        names = [f"x{i}" for i in range(4)]
+        body = " + ".join(f"{n}.shape[0]" for n in names)
+        src = f"def fn({', '.join(names)}):\n    return x0 + {body}\n"
+        ns: dict = {}
+        exec(src, ns)
+        fn = ns["fn"]
+        inps = [torch.randn(i + 2) for i in range(4)]
+
+        # The C++ shape guard is installed via install_symbolic_shape_guard only
+        # when the C++ compile succeeds; spy on it to detect engagement.
+        installed = []
+        orig_install = dynamo_guards.install_symbolic_shape_guard
+
+        def spy(*args, **kwargs):
+            installed.append(True)
+            return orig_install(*args, **kwargs)
+
+        with (
+            torch._dynamo.config.patch(enable_cpp_symbolic_shape_guards=True),
+            mock.patch.object(dynamo_guards, "install_symbolic_shape_guard", spy),
+        ):
+            torch.compile(fn, backend="eager", dynamic=True)(*inps)
+
+        if not installed:
+            self.skipTest("C++ symbolic shape guard not installed (no C++ compiler)")
+
+        root = _debug_get_cache_entry_list(fn.__code__)[0].guard_manager.root
+
+        def mk(sizes):
+            return {f"x{i}": torch.randn(s) for i, s in enumerate(sizes)}
+
+        # Run on both the original tree and a clone (the clone forces the
+        # IndexedGuardAccessor fast-path pointer to re-resolve against the
+        # cloned SYMBOLIC_SHAPE_GUARD).
+        for manager in (root, root.clone_manager(lambda _: True)):
+            # Repeated evals catch any accumulated-state leak across checks via
+            # the shared SYMBOLIC_SHAPE_GUARD reset path. In-range sizes (>= 2)
+            # satisfy the guard; a size-1 dim violates it (0/1 specialization).
+            for _ in range(3):
+                self.assertTrue(manager.check(mk([3, 4, 5, 6])))
+                self.assertFalse(manager.check(mk([1, 4, 5, 6])))
+            # Still correct after a failing check (no state corruption).
+            self.assertTrue(manager.check(mk([3, 4, 5, 6])))
+
     def test_guard_debug_info_user_stack(self):
         """Test that GuardDebugInfo can store user stack trace information."""
         import traceback

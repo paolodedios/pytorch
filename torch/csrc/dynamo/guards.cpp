@@ -6022,7 +6022,10 @@ class IndexedGuardAccessor : public GuardAccessor {
     // IndexedSource is only ever used to feed a single shared
     // SYMBOLIC_SHAPE_GUARD. When the child manager is exactly that, hand the
     // value to it directly by index, avoiding a (index, value) tuple
-    // allocation per symbol on every guard evaluation.
+    // allocation per symbol on every guard evaluation. NB: this bypasses the
+    // child manager, so its _fail_count is not bumped on failure; that is fine
+    // here because all symbols must be accumulated before the guard evaluates,
+    // so fail-fast reordering of the indexed siblings has no early-exit value.
     SYMBOLIC_SHAPE_GUARD* shape_guard = get_shape_guard();
     if (shape_guard != nullptr) {
       return shape_guard->accumulate(_index_val, obj);
@@ -6069,7 +6072,11 @@ class IndexedGuardAccessor : public GuardAccessor {
  private:
   // Resolve (once) the shared SYMBOLIC_SHAPE_GUARD that this accessor feeds, if
   // any. IndexedSource is only used for the C++ symbolic shape guard, whose
-  // child manager holds exactly that one leaf guard and no accessors.
+  // child manager holds exactly that one leaf guard and no accessors. A
+  // manager's leaf guards/accessors are fixed at construction (added before any
+  // check runs), so this one-shot resolution can never become stale, and the
+  // cached raw pointer stays valid because the child manager (which owns the
+  // guard via shared_ptr) outlives this accessor.
   SYMBOLIC_SHAPE_GUARD* get_shape_guard() {
     if (!_shape_guard_resolved) {
       _shape_guard_resolved = true;
