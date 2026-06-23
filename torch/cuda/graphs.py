@@ -5,8 +5,8 @@ import gc
 import typing
 from collections import OrderedDict
 from collections.abc import Callable
-from typing import overload, TYPE_CHECKING, TypeAlias, Union
-from typing_extensions import ParamSpec, Self, TypeGuard, TypeVar
+from typing import overload, TYPE_CHECKING, TypeAlias, TypeGuard, Union
+from typing_extensions import ParamSpec, Self, TypeVar
 
 import torch
 from torch import Tensor
@@ -337,9 +337,9 @@ class CUDAGraph(_CUDAGraph):
         """
         return torch.cuda._POOL_HANDLE(super().pool())
 
-    def pools(self) -> tuple[_POOL_HANDLE, ...]:
+    def pools(self) -> list[_POOL_HANDLE]:
         r"""Return opaque tokens for all memory pools retained by this graph."""
-        return tuple(torch.cuda._POOL_HANDLE(pool) for pool in super().pools())
+        return [torch.cuda._POOL_HANDLE(pool) for pool in super().pools()]
 
     def _retain_pool(self, pool: _GraphPool) -> None:
         pool_id = _get_pool_id(pool)

@@ -85,13 +85,12 @@ class _CUDAGraphInputLivenessTracker:
             self._internal_outputs.add(data_ptr)
 
     def check_alive(self, capture_pools: Iterable[_POOL_HANDLE]) -> None:
-        pools = tuple(capture_pools)
         dead = [
             i
             for i in self._external_inputs.values()
             if not i.is_alive()
             and not any(
-                self._is_tensor_from_capture_pool(i, pool) for pool in pools
+                self._is_tensor_from_capture_pool(i, pool) for pool in capture_pools
             )
         ]
         if not dead:

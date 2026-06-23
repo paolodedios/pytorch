@@ -1359,7 +1359,7 @@ def use_mem_pool(pool: MemPool, device: "Device" = None):
     try:
         if torch.cuda.is_current_stream_capturing():
             graph = torch.cuda.CUDAGraph.get_currently_capturing_graph()
-            graph._retain_pool(pool.id)
+            graph._retain_pool(pool)
         yield
     finally:
         _cuda_endAllocateToPool(device_index, pool.id)
