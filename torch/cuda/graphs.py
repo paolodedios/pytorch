@@ -103,6 +103,9 @@ class CUDAGraph(_CUDAGraph):
     """
 
     _tracker: _CUDAGraphInputLivenessTracker | None
+    # Read-only property exposed from the C++ _CUDAGraph base via pybind;
+    # annotated (not assigned) so the type checker sees it without shadowing it.
+    _has_graph_exec: bool
     # Stays None unless mark_kernels stamps it during capture (requires
     # annotations enabled and cudaGraphNodeGetToolsId available).
     _capture_graph_id: int | None
@@ -187,6 +190,10 @@ class CUDAGraph(_CUDAGraph):
         r"""Replay the CUDA work captured by this graph."""
         if self._tracker is not None:
             self._tracker.check_alive(self.pool())
+        # With keep_graph=True the exec graph is instantiated on demand here on
+        # the first replay; the C++ replay() requires it to already exist.
+        if not self._has_graph_exec:
+            self.instantiate()
         super().replay()
 
     def reset(self) -> None:
@@ -649,7 +656,10 @@ def make_graphed_callables(
     # Hopefully prevents cudnn benchmarking and other lazy-initialization cuda work
     # from ending up in any captures.
     torch.cuda.synchronize()
-    with torch.cuda.stream(torch.cuda.Stream()):
+    # hipBLASLt handles are per-(device, stream) on ROCm and lazily created.
+    # Need to use the same stream for warmup and capture to avoid capture errors.
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
         for func, args, static_input_surface in zip(
             callables, _sample_args, per_callable_static_input_surfaces
         ):
@@ -682,7 +692,7 @@ def make_graphed_callables(
     per_callable_static_outputs = []
     per_callable_output_unflatten_spec = []
     for func, args, fwd_graph in zip(callables, _sample_args, fwd_graphs):
-        with torch.cuda.graph(fwd_graph, pool=mempool):
+        with torch.cuda.graph(fwd_graph, stream=stream, pool=mempool):
             func_outputs = func(*args)
 
         flatten_outputs, spec = torch.utils._pytree.tree_flatten(func_outputs)
@@ -706,7 +716,7 @@ def make_graphed_callables(
         outputs_grad = tuple(o for o in static_outputs if o.requires_grad)
         grad_inputs = None
         if len(outputs_grad) > 0:
-            with torch.cuda.graph(bwd_graph, pool=mempool):
+            with torch.cuda.graph(bwd_graph, stream=stream, pool=mempool):
                 grad_inputs = torch.autograd.grad(
                     outputs=outputs_grad,
                     inputs=tuple(i for i in static_input_surface if i.requires_grad),
