@@ -523,7 +523,7 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
           ptr,
           std::make_unique<NCCLAllocation>(
               ptr, size, signal_pad_size, device_idx, use_expandable_segments));
-    // }
+    }
     return ptr;
   }
 
