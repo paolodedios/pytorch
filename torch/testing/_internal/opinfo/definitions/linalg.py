@@ -1239,6 +1239,10 @@ op_db: list[OpInfo] = [
         # autogen .out exists but is not exercised here (mirrors linalg.matrix_exp).
         supports_out=False,
         decorators=[skipCUDAIfNoMagma, skipCPUIfNoLapack, with_tf32_off],
+        skips=(
+            # The operator 'aten::linalg_matrix_sqrt' is not implemented for MPS.
+            DecorateInfo(unittest.expectedFailure, "TestCommon", device_type="mps"),
+        ),
     ),
     OpInfo(
         "linalg.cholesky",
