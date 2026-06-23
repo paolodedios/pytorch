@@ -25,6 +25,7 @@ namespace {
 // TODO: Decouple and improve error handling and messages.
 bool available(
     const Tensor& weight,
+    // NOLINTNEXTLINE(facebook-hte-ConstantArgumentPassByValue)
     const at::OptionalIntArrayRef bias_sizes_opt,
     const IntArrayRef padding,
     const IntArrayRef stride,

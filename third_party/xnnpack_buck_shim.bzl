@@ -8,10 +8,6 @@ load(
 load("//xplat/third-party/XNNPACK/XNNPACK/gen:microkernels.bzl", "prod_srcs_for_arch")
 load("//tools/build_defs:glob_defs.bzl", "subdir_glob")
 
-# Upstream's build_srcs.bzl no longer exports the base (non-microkernel) source
-# list. These are the per-config sources that CMakeLists.txt lists in its
-# XNNPACK_SRCS variable (src/configs/*.c, excluding hardware-config.c which is
-# compiled separately). Keep this in sync with CMakeLists.txt on each update.
 _XNNPACK_SRCS = [
     "src/configs/argmaxpool-config.c",
     "src/configs/avgpool-config.c",
@@ -49,10 +45,6 @@ def prod_srcs_for_arch_wrapper(arch):
     return define_xnnpack_build_src(prod_srcs)
 
 def get_xnnpack_headers():
-    # Upstream includes headers using repo-root-relative paths, e.g.
-    # #include "include/xnnpack.h" and #include "src/xnnpack/common.h", so the
-    # header keys must keep their "src/" and "include/" prefixes (only strip the
-    # vendored "XNNPACK/" directory).
     src_headers = subdir_glob([
         ("XNNPACK", "src/**/*.h"),
         # Microkernel definitions are textually included (.inc) by the

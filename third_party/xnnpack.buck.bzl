@@ -18,14 +18,11 @@ XNN_COMMON_PREPROCESSOR_FLAGS = [
     "-DXNN_INTERNAL=",
     "-DXNN_LOG_LEVEL=0",
 ] + select({
-    # MSVC cl rejects this GCC/Clang flag (D8021).
     "DEFAULT": ["-Werror=implicit-fallthrough"],
     "ovr_config//os:windows": [],
 })
 
-# Zip microkernels, restored to keep the channel-shuffle operator (removed
-# upstream) available for ATen. Channel shuffle dispatches to these via
-# zip-config.c: SSE2 on x86, NEON on ARM, WASMSIMD on wasm, scalar otherwise.
+# Zip kernels are patched back in internally.
 ZIP_SCALAR_SRCS = [
     "XNNPACK/src/x8-zip/x8-zip-x2-scalar.c",
     "XNNPACK/src/x8-zip/x8-zip-x3-scalar.c",
@@ -209,7 +206,6 @@ def define_xnnpack(third_party, labels = [], XNNPACK_WINDOWS_AVX512F_ENABLED = F
             "ovr_config//cpu:arm64": ZIP_NEON_SRCS,
             "ovr_config//cpu:x86_32": ZIP_SSE2_SRCS,
             "ovr_config//cpu:x86_64": ZIP_SSE2_SRCS,
-            # Scalar wasm build (no simd128); zip-config uses scalar x32 kernels here.
             "ovr_config//runtime:wasm-emscripten": ZIP_SCALAR_SRCS,
         }),
         headers = get_xnnpack_headers(),
