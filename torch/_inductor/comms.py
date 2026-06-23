@@ -2232,9 +2232,9 @@ def simple_overlap(snodes: list[BaseSchedulerNode]) -> list[BaseSchedulerNode]:
     outputs_of: dict[BaseSchedulerNode, frozenset[str]] = {
         s: frozenset(o.get_name() for o in s.get_outputs()) for s in snodes
     }
+    # Fake WeakDeps encode ordering-only constraints, such as collective order.
     deps_of: dict[BaseSchedulerNode, frozenset[str]] = {
-        s: frozenset(d.name for d in s.unmet_dependencies if not _is_fake_dep(d))
-        for s in snodes
+        s: frozenset(d.name for d in s.unmet_dependencies) for s in snodes
     }
 
     _prev, _next, _head = _initialize_double_linked_list(snodes)
