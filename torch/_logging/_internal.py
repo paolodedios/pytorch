@@ -1081,10 +1081,12 @@ def _is_torch_handler(handler):
 
 
 # clears all torch handlers on specified loggers
-def _clear_handlers(log) -> None:
+def _clear_handlers(log, *, close: bool = True) -> None:
     to_remove = [handler for handler in log.handlers if _is_torch_handler(handler)]
     for handler in to_remove:
         log.removeHandler(handler)
+        if close:
+            handler.close()
 
 
 def _reset_logs() -> None:
@@ -1104,7 +1106,9 @@ def _reset_logs() -> None:
         log.propagate = True
 
     trace_log.propagate = False
-    _clear_handlers(trace_log)
+    # LOG_TRACE_HANDLER is a reusable singleton.  Keep its stream lifecycle
+    # unchanged when _init_logs temporarily removes it from trace_log.
+    _clear_handlers(trace_log, close=False)
 
 
 def _get_log_state():
