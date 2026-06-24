@@ -870,6 +870,11 @@ def _has_tensor_outside_fake_mode(value: Any, fake_mode: FakeTensorMode) -> bool
     )
 
 
+def _fake_mode_can_track_new_fakes(fake_mode: FakeTensorMode) -> bool:
+    shape_env = fake_mode.shape_env
+    return shape_env is not None and shape_env.tracked_fakes is not None
+
+
 def _root_nn_module_stack(mod: torch.nn.Module) -> dict[str, tuple[str, str]]:
     root_cls = type(mod)
     return {
@@ -2611,9 +2616,13 @@ def _strict_export(
             )
             gm_torch_level.graph._codegen = torch.fx.graph.CodeGen()
             gm_torch_level.recompile()
+            # Some export graphs only keep lifted SymInt placeholders. In that
+            # case, the active fake mode cannot accept newly tracked public
+            # inputs, and the TensorPropertySource path below recovers the
+            # owning tensor fake from the lifted symbol's ShapeEnv instead.
             if _has_tensor_outside_fake_mode(
                 (public_fake_args, public_fake_kwargs), dynamo_fake_mode
-            ):
+            ) and _fake_mode_can_track_new_fakes(dynamo_fake_mode):
                 # Unused public tensor inputs may not survive as Dynamo
                 # placeholders, so _extract_fake_inputs leaves them as real
                 # tensors. Re-fakify the public signature in the existing fake

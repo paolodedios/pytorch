@@ -3116,51 +3116,76 @@ def _compile_fx_main(
             # the original Parameter/Buffer objects for AOTI unlift.
             named_parameters = list(model_.named_parameters(remove_duplicate=False))
             named_buffers = list(model_.named_buffers(remove_duplicate=False))
-
-            with functorch_config.patch(
-                unlift_effect_tokens=True,
-                selective_decompose=config.selective_decompose,
-            ):
-                gm, graph_signature = aot_export_module(
-                    model_,
-                    example_inputs_,
-                    trace_joint=False,
-                    decompositions=decompositions,
-                )
-                if not isinstance(gm, GraphModule):
-                    raise AssertionError(
-                        f"Expected GraphModule from aot_export_module, got {type(gm)}"
+            non_persistent_buffers = OrderedSet(
+                [
+                    f"{module_name}.{buffer_name}" if module_name else buffer_name
+                    for module_name, module in model_.named_modules(
+                        remove_duplicate=False
                     )
-                from torch._export.utils import _detect_fake_mode_from_gm
+                    for buffer_name in module._non_persistent_buffers_set
+                ]
+            )
+            from torch.export.unflatten import _assign_attr, _AttrKind
 
-                fake_mode = _detect_fake_mode_from_gm(gm)  # type: ignore[assignment]
-                # aot_export_module doesn't account for constant tensor attributes
-                # so we end up having tensors that don't have fake vals attached.
-                # This can happen when upstream export is non-strict where we
-                # preserve the original module params/buffers. Once AOTI switches
-                # to ep.run_decompositions() flow to lower to post-autograd opset
-                # this will go away.
-                for node in gm.graph.nodes:
-                    if node.op == "get_attr" and "val" not in node.meta:
-                        target = attrgetter(node.target)(gm)
-                        if isinstance(target, torch.Tensor):
-                            if fake_mode is None:
-                                raise AssertionError(
-                                    "Expected fake_mode to be set for get_attr tensor node"
+            try:
+                with functorch_config.patch(
+                    unlift_effect_tokens=True,
+                    selective_decompose=config.selective_decompose,
+                ):
+                    gm, graph_signature = aot_export_module(
+                        model_,
+                        example_inputs_,
+                        trace_joint=False,
+                        decompositions=decompositions,
+                    )
+                    if not isinstance(gm, GraphModule):
+                        raise AssertionError(
+                            f"Expected GraphModule from aot_export_module, got {type(gm)}"
+                        )
+                    from torch._export.utils import _detect_fake_mode_from_gm
+
+                    fake_mode = _detect_fake_mode_from_gm(gm)  # type: ignore[assignment]
+                    # aot_export_module doesn't account for constant tensor attributes
+                    # so we end up having tensors that don't have fake vals attached.
+                    # This can happen when upstream export is non-strict where we
+                    # preserve the original module params/buffers. Once AOTI switches
+                    # to ep.run_decompositions() flow to lower to post-autograd opset
+                    # this will go away.
+                    for node in gm.graph.nodes:
+                        if node.op == "get_attr" and "val" not in node.meta:
+                            target = attrgetter(node.target)(gm)
+                            if isinstance(target, torch.Tensor):
+                                if fake_mode is None:
+                                    raise AssertionError(
+                                        "Expected fake_mode to be set for get_attr tensor node"
+                                    )
+                                node.meta["val"] = fake_mode.from_tensor(
+                                    target, static_shapes=True
                                 )
-                            node.meta["val"] = fake_mode.from_tensor(
-                                target, static_shapes=True
-                            )
-                        elif isinstance(target, torch.ScriptObject) or is_opaque_type(
-                            type(target)
-                        ):
-                            node.meta["val"] = (
-                                torch._library.fake_class_registry.maybe_to_fake_obj(
-                                    fake_mode, target
+                            elif isinstance(
+                                target, torch.ScriptObject
+                            ) or is_opaque_type(type(target)):
+                                node.meta["val"] = (
+                                    torch._library.fake_class_registry.maybe_to_fake_obj(
+                                        fake_mode, target
+                                    )
                                 )
-                            )
-                        elif isinstance(target, FakeScriptObject):
-                            node.meta["val"] = target
+                            elif isinstance(target, FakeScriptObject):
+                                node.meta["val"] = target
+            finally:
+                # aot_export_module can leave FunctionalTensor attrs installed
+                # on the module it traced. Restore the real attrs so callers
+                # can still run the original module after AOTI compilation.
+                for name, param in named_parameters:
+                    _assign_attr(param, model_, name, attr_kind=_AttrKind.PARAMETER)
+                for name, buffer in named_buffers:
+                    _assign_attr(
+                        buffer,
+                        model_,
+                        name,
+                        attr_kind=_AttrKind.BUFFER,
+                        persistent=name not in non_persistent_buffers,
+                    )
 
             unlifted_gm = _unlift_graph(
                 model_, gm, graph_signature, named_parameters, named_buffers
