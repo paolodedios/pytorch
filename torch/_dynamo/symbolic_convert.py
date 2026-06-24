@@ -248,6 +248,25 @@ def _import_module(name: str) -> types.ModuleType:
     return importlib.import_module(name)
 
 
+def _registered_module_for_globals(
+    module_name: object, f_globals: dict[str, Any]
+) -> tuple[str, types.ModuleType] | None:
+    if not isinstance(module_name, str) or module_name.startswith("namedtuple_"):
+        return None
+
+    if "torch_package" in module_name:
+        module = torch.package.package_importer._package_imported_modules.get(
+            module_name
+        )
+    else:
+        module = sys.modules.get(module_name)
+
+    if isinstance(module, types.ModuleType) and module.__dict__ is f_globals:
+        return module_name, module
+
+    return None
+
+
 @dataclasses.dataclass
 class SpeculationEntry:
     filename: str
@@ -1344,6 +1363,13 @@ class InstructionTranslatorBase(
 ):
     output: OutputGraph
     symbolic_locals: dict[str, VariableTracker]
+    # Cell/free variables that share a name with a fast local (e.g. an inlined
+    # comprehension iteration variable shadowing an enclosing `nonlocal`). In
+    # CPython these occupy distinct `localsplus` offsets; keying both on a name
+    # in `symbolic_locals` would let fast-local ops (LOAD_FAST_AND_CLEAR) clobber
+    # the cell, so the colliding cell lives here instead. Non-colliding cells
+    # stay in `symbolic_locals`.
+    symbolic_cellvars: dict[str, VariableTracker]
     symbolic_globals: dict[str, VariableTracker]
     symbolic_torch_function_state: SymbolicTorchFunctionState
     symbolic_stream_state: SymbolicStreamState
@@ -1446,6 +1472,19 @@ class InstructionTranslatorBase(
             self._cell_and_freevars = self.cellvars() + self.freevars()
         return self._cell_and_freevars
 
+    def _split_colliding_cells(self) -> None:
+        # Move any free var that shares its name with a fast local into
+        # symbolic_cellvars. CPython gives such names two distinct localsplus
+        # slots (e.g. an inlined comprehension iteration variable shadowing an
+        # enclosing `nonlocal`); keeping the cell out of symbolic_locals stops
+        # fast-local ops (LOAD_FAST_AND_CLEAR) from clobbering it. Cellvars that
+        # match a fast local are merged into one slot by CPython and need no
+        # split. Idempotent: a second call finds the names already moved.
+        fastlocals = set(self.f_code.co_varnames)
+        for name in self.f_code.co_freevars:
+            if name in fastlocals and name in self.symbolic_locals:
+                self.symbolic_cellvars[name] = self.symbolic_locals.pop(name)
+
     def prune_dead_locals(self) -> None:
         # keep cell and freevar references alive
         self.post_prune_cell_and_freevars = {
@@ -1453,6 +1492,8 @@ class InstructionTranslatorBase(
             for k, v in self.symbolic_locals.items()
             if k in self.cell_and_freevars()
         }
+        # Colliding cells live in symbolic_cellvars rather than symbolic_locals.
+        self.post_prune_cell_and_freevars.update(self.symbolic_cellvars)
         # Only keep the locals that must remain on the stack.
         reads = livevars_analysis(self.instructions, self.current_instruction)
         self.symbolic_locals = {
@@ -2083,12 +2124,19 @@ class InstructionTranslatorBase(
         if name.startswith("__stack"):
             self.symbolic_locals.pop(name)
 
+    def _cellvar(self, name: str) -> VariableTracker:
+        # A colliding cell lives in `symbolic_cellvars`; otherwise it shares the
+        # `symbolic_locals` slot with no same-named fast local.
+        if name in self.symbolic_cellvars:
+            return self.symbolic_cellvars[name]
+        return self.symbolic_locals[name]
+
     def LOAD_DEREF(self, inst: Instruction) -> None:
         if inst.argval not in self.cell_and_freevars():
             raise AssertionError(
                 "expected inst.argval in self.cell_and_freevars() to be true"
             )
-        cell = self.symbolic_locals[inst.argval]
+        cell = self._cellvar(inst.argval)
         contents_var = self.output.side_effects.load_cell(cell)
         self.push(contents_var)
 
@@ -2161,7 +2209,7 @@ class InstructionTranslatorBase(
             raise AssertionError(
                 "expected inst.argval in self.cell_and_freevars() to be true"
             )
-        cell = self.symbolic_locals[inst.argval]
+        cell = self._cellvar(inst.argval)
         val = self.pop()
         self.output.side_effects.store_cell(cell, val)
 
@@ -2172,7 +2220,15 @@ class InstructionTranslatorBase(
         if cell.local_name is not None:
             val.set_name_hint(cell.local_name)  # type: ignore[attr-defined]
 
-    LOAD_CLOSURE = LOAD_FAST
+    def LOAD_CLOSURE(self, inst: Instruction) -> None:
+        # LOAD_CLOSURE pushes the cell object itself. A colliding cell is in
+        # symbolic_cellvars; otherwise it shares the symbolic_locals slot, so
+        # fall back to LOAD_FAST.
+        name = inst.argval
+        if name in self.symbolic_cellvars:
+            self.push(self.symbolic_cellvars[name])
+        else:
+            self.LOAD_FAST(inst)
 
     def _load_const(self, inst: Instruction) -> VariableTracker:
         i = inst.arg
@@ -4187,7 +4243,8 @@ class InstructionTranslatorBase(
                     self.push(str_result)
                     return
                 except Unsupported:
-                    pass
+                    if self.output.should_exit:
+                        raise
 
         fmt_var = VariableTracker.build(
             self, "{:" + fmt_spec.as_python_constant() + "}"
@@ -4643,13 +4700,19 @@ class InstructionTranslatorBase(
         if sys.version_info >= (3, 12) and not self.accept_prefix_inst:
             # In 3.12+, MAKE_CELL is not longer necessarily a prefix instruction.
             # It can be generated by inlined comprehensions.
-            if not isinstance(self.symbolic_locals[inst.argval], NullVariable):
+            name = inst.argval
+            if not isinstance(self.symbolic_locals[name], NullVariable):
                 raise AssertionError(
                     "expected isinstance(self.symbolic_locals[inst.argval], NullVariable) to be true"
                 )
-            self.symbolic_locals[inst.argval] = (
-                self.output.side_effects.track_cell_new()
-            )
+            cell_var = self.output.side_effects.track_cell_new()
+            cell_var.local_name = name  # type: ignore[attr-defined]
+            # If the name also names a fast local, keep the cell out of
+            # symbolic_locals so fast-local ops can't clobber it.
+            if name in self.f_code.co_varnames:
+                self.symbolic_cellvars[name] = cell_var
+            else:
+                self.symbolic_locals[name] = cell_var
         else:
             self.append_prefix_inst(inst)
 
@@ -5200,6 +5263,7 @@ class InstructionTranslatorBase(
         # Mutable state checkpointed by copy_graphstate()
         self.output = output
         self.symbolic_locals = symbolic_locals
+        self.symbolic_cellvars = {}
         self.symbolic_globals = symbolic_globals
         self.symbolic_torch_function_state = symbolic_torch_function_state
         self.symbolic_stream_state = symbolic_stream_state
@@ -5243,6 +5307,10 @@ class InstructionTranslatorBase(
         self.code_options: CodeOptions = code_options
         self.f_code: types.CodeType = f_code
         self.closure = closure
+        # Inlined frames receive a fully-populated symbolic_locals (cells
+        # included); split out any colliding cells now. Root frames populate
+        # symbolic_locals after super().__init__ and split again there.
+        self._split_colliding_cells()
 
         # Execution record for replaying errors
         if closure is not None and config.replay_record_enabled:
@@ -5499,6 +5567,10 @@ class InstructionTranslator(InstructionTranslatorBase):
                 )
                 cell_var.local_name = name  # type: ignore[attr-defined]
                 self.symbolic_locals[name] = cell_var
+
+            # symbolic_locals is now fully populated; move colliding cells into
+            # symbolic_cellvars (base __init__ ran before this population).
+            self._split_colliding_cells()
 
             self.symbolic_torch_function_state = SymbolicTorchFunctionState(
                 torch_function_mode_stack,
@@ -6182,22 +6254,12 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
     def get_globals_source_and_value(
         self, name: str
     ) -> tuple[Any, VariableTracker, Source]:
-        # NamedTuple's `__new__` has a fake global scope that's not an actual
-        # module. TODO generalize the check for other non-importable cases.
-        # https://github.com/python/cpython/blob/8421b03b16a4852a527256cb7cdce2ab2d318548/Lib/collections/__init__.py#L441-L447
-        if "__name__" in self.f_globals and not self.f_globals["__name__"].startswith(
-            "namedtuple_"
-        ):
-            module_name = self.f_globals["__name__"]
+        registered_module = _registered_module_for_globals(
+            self.f_globals.get("__name__"), self.f_globals
+        )
+        if registered_module is not None:
+            module_name, fglobals_value = registered_module
             module_source = self.import_source(module_name)
-            if "torch_package" in module_name:
-                fglobals_value = (
-                    torch.package.package_importer._package_imported_modules[
-                        module_name
-                    ]
-                )  # type: ignore[assignment]
-            else:
-                fglobals_value = _import_module(module_name)
             # Don't use lazy vt because we will do a setattr afterwards
             # TODO: fix InstructionTranslator -> InstructionTranslatorBase
             # pyrefly: ignore[bad-argument-type]
@@ -6253,7 +6315,20 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
                     hints=[],
                 )
             name = inst.argval
-            _fglobals_value, fglobals_vt, _ = self.get_globals_source_and_value(name)
+            _fglobals_value, fglobals_vt, global_source = (
+                self.get_globals_source_and_value(name)
+            )
+            if isinstance(global_source, DictGetItemSource):
+                unimplemented(
+                    gb_type="STORE_GLOBAL in non-module globals",
+                    context=name,
+                    explanation=(
+                        "Dynamo cannot safely replay global writes for an inlined "
+                        "function whose globals dict is not the registered module "
+                        "__dict__."
+                    ),
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                )
             self.output.side_effects.store_attr(fglobals_vt, name, value)
 
 
