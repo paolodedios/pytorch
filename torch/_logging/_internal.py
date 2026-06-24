@@ -258,6 +258,7 @@ def set_logs(
     cudagraph_static_inputs: bool = False,
     benchmarking: bool = False,
     autotuning: bool = False,
+    autotuning_inputs: bool = False,
     incremental: bool = False,
     graph_region_expansion: bool = False,
     inductor_metrics: bool = False,
@@ -459,6 +460,9 @@ def set_logs(
         autotuning (:class:`bool`):
             Autotuning choice logs, such as kernel source, perf, and tuning parameters. Default: ``False``
 
+        autotuning_inputs (:class:`bool`):
+            Per-kernel input tensor shapes/dtypes/strides logged during autotuning. Default: ``False``
+
         incremental (:class:`bool`):
             Incremental autotuning logs. Default: ``False``
 
@@ -590,6 +594,7 @@ def set_logs(
         cudagraph_static_inputs=cudagraph_static_inputs,
         benchmarking=benchmarking,
         autotuning=autotuning,
+        autotuning_inputs=autotuning_inputs,
         incremental=incremental,
         graph_region_expansion=graph_region_expansion,
         inductor_metrics=inductor_metrics,
@@ -1065,17 +1070,19 @@ def _setup_handlers(create_handler_fn, log) -> None:
 
 
 handlers = WeakSet()  # type: ignore[var-annotated]
+TORCH_HANDLER_MARK = "_torch_logging_internal_handler"
 
 
 # mark handlers that we've created
 # so we don't modify user handlers
 def _track_handler(handler):
+    setattr(handler, TORCH_HANDLER_MARK, True)
     handlers.add(handler)
     return handler
 
 
 def _is_torch_handler(handler):
-    return handler in handlers
+    return handler in handlers or getattr(handler, TORCH_HANDLER_MARK, False)
 
 
 # clears all torch handlers on specified loggers
