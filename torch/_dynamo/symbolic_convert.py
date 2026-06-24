@@ -237,16 +237,9 @@ compare_op_handlers["not in"] = lambda tx, args, _: handle_not(
     tx, [handle_contains(tx, [*reversed(args)], {})], {}
 )
 
-# TODO(dynamo-team): Rename this to ExceptionTypes or something more accurate
 ExceptionVals: TypeAlias = (
     variables.ExceptionVariable
-    | variables.BuiltinVariable
     | UserDefinedExceptionClassVariable
-    | UserDefinedExceptionObjectVariable
-)
-
-ExceptionInstanceTypes: TypeAlias = (
-    variables.ExceptionVariable
     | UserDefinedExceptionObjectVariable
 )
 
@@ -1256,7 +1249,7 @@ class Segment:
     """
 
     items: list[ExceptionVals] = dataclasses.field(default_factory=list)
-    prev: "Segment | None" = dataclasses.field(default=None)
+    prev: Segment | None = dataclasses.field(default=None)
 
 
 @dataclasses.dataclass
@@ -1296,14 +1289,12 @@ class ExceptionStack:
     def clear_current_exception(self) -> None:
         self._current_exception = None
 
-    def set_current_exception(self, val: ExceptionVals, set_context: bool = True) -> None:
+    def set_current_exception(
+        self, val: ExceptionVals, set_context: bool = True
+    ) -> None:
         # Mirrors CPython's PyErr_SetObject
         if set_context:
             self._set_context_and_break_context_reference_cycle(val)
-        self._current_exception = val
-
-    def set_raised_exception(self, val: ExceptionInstanceTypes) -> None:
-        # Mirrors CPython's PyErr_SetRaisedException
         self._current_exception = val
 
     def move_current_exception_to_stack(self) -> None:
@@ -1394,7 +1385,8 @@ class ExceptionStack:
         segment = self._exc_stack
         base = n - len(segment.items)
         while index < base:
-            assert segment.prev is not None
+            if segment.prev is None:
+                raise AssertionError("expected segment.prev to not be None")
             segment = segment.prev
             base -= len(segment.items)
         return segment.items[index - base]

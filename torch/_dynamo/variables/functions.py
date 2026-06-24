@@ -1312,8 +1312,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
             val = exc.call_function(tx, [], {})
         if not isinstance(val, ExceptionVals):
             raise AssertionError(f"Expected an exception variable, got {val}")
-        # self.inline_tracer.exn_vt_stack.set_current_exception(val, set_context=False)
-        self.inline_tracer.exn_vt_stack.set_raised_exception(val)
+        self.inline_tracer.exn_vt_stack.set_current_exception(val, set_context=False)
 
     def _frame_state_created(self) -> bool:
         return self.inline_tracer.frame_state == FrameState.FRAME_CREATED
