@@ -8,10 +8,10 @@ import unittest.mock as mock
 import torch
 import torch._inductor
 from torch._higher_order_ops import foreach_map
-from torch._inductor import config
+from torch._inductor import config, fx_passes
 from torch._inductor.fx_passes.post_grad import fold_foreach_input_mutation_ops
 from torch._inductor.test_case import TestCase
-from torch._inductor.utils import run_fw_bw_and_get_code
+from torch._inductor.utils import run_and_get_code, run_fw_bw_and_get_code
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     IS_FBCODE,
@@ -359,6 +359,35 @@ class ForeachTests(TestCase):
             self._count_nodes(graph, torch.ops.aten._foreach_copy_.default), 0
         )
         self.assertEqual(self._count_nodes(graph, torch.ops.aten.copy_.default), 2)
+
+    def test_foreach_input_mutation_fold_runs_in_inductor_compile(self):
+        pass_counts = []
+        orig_fold = fx_passes.post_grad.fold_foreach_input_mutation_ops
+
+        def counting_fold(graph):
+            before_copy = self._count_nodes(graph, torch.ops.aten.copy_.default)
+            orig_fold(graph)
+            pass_counts.append(
+                (
+                    before_copy,
+                    self._count_nodes(graph, torch.ops.aten.copy_.default),
+                    self._count_nodes(graph, torch.ops.aten._foreach_copy_.default),
+                )
+            )
+
+        def fn(args):
+            torch._foreach_mul_(args, 2)
+
+        inps = [torch.ones(13) for _ in range(4)]
+        with mock.patch.object(
+            fx_passes.post_grad, "fold_foreach_input_mutation_ops", counting_fold
+        ):
+            _, code = run_and_get_code(torch.compile(fn, fullgraph=True), inps)
+
+        for inp in inps:
+            self.assertEqual(inp, torch.full((13,), 2.0))
+        self.assertIn((len(inps), 0, 1), pass_counts)
+        self.assertIn("foreach", "\n".join(code))
 
     def _test_single_list(self, op):
         if op in un_ops_under_test:
