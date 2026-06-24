@@ -34,7 +34,9 @@ from torch.nn.attention.flex_attention import (
     _compute_dq_write_order_from_block_mask,
     _create_empty_block_mask,
     _DEFAULT_SPARSE_BLOCK_SIZE,
+    _detect_blocks_are_contiguous,
     _identity,
+    _indices_are_consecutive,
     _mask_mod_signature,
     _score_mod_signature,
     and_masks,
@@ -7029,6 +7031,76 @@ class TestBlockMask(InductorTestCase):
         self.assertEqual(block_mask.sparsity(), 29.1015625)
         self.assertTrue(block_mask.sparsity() < block_mask[0].sparsity())
         self.assertTrue(block_mask[0].sparsity() > block_mask[1].sparsity())
+
+    @supported_platform
+    def test_indices_are_consecutive_predicate(self, device):
+        # Platform-independent predicate: only the first num_blocks entries of
+        # each row must form a consecutive run (offsets allowed).
+        def t(rows):
+            return torch.tensor([[rows]], device=device, dtype=torch.int32)
+
+        def n(vals):
+            return torch.tensor([[vals]], device=device, dtype=torch.int32)
+
+        # consecutive from 0 (trailing garbage past num_blocks is ignored)
+        self.assertTrue(_indices_are_consecutive(n([3]), t([[0, 1, 2, 99]])))
+        # consecutive but offset from a non-zero base
+        self.assertTrue(_indices_are_consecutive(n([3]), t([[5, 6, 7, 0]])))
+        # gap in the valid region -> not consecutive
+        self.assertFalse(_indices_are_consecutive(n([3]), t([[0, 2, 4, 0]])))
+        # empty rows are trivially consecutive
+        self.assertTrue(_indices_are_consecutive(n([0]), t([[7, 1, 4, 2]])))
+
+    @supported_platform
+    def test_blocks_are_contiguous_detection(self, device):
+        B, H, S = 1, 1, 1024
+        BLK = _DEFAULT_SPARSE_BLOCK_SIZE
+
+        def checkerboard(b, h, q_idx, kv_idx):
+            return ((q_idx // BLK) + (kv_idx // BLK)) % 2 == 0
+
+        def strided(b, h, q_idx, kv_idx):
+            # only even KV blocks attended -> blocks are not physically adjacent
+            return ((kv_idx // BLK) % 2 == 0) & (q_idx >= kv_idx)
+
+        bm_noop = create_block_mask(noop_mask, B, H, S, S, device=device)
+        bm_causal = create_block_mask(
+            lambda b, h, q, kv: q >= kv, B, H, S, S, device=device
+        )
+        bm_checker = create_block_mask(checkerboard, B, H, S, S, device=device)
+        bm_strided = create_block_mask(strided, B, H, S, S, device=device)
+
+        # The eager attribute (and the full detector, which validates both KV-
+        # and Q-side indices) is only populated on ROCm, where the kernel fast
+        # path pays off; elsewhere it stays at the conservative default False.
+        if TEST_WITH_ROCM:
+            self.assertTrue(bm_noop._blocks_are_contiguous)
+            self.assertTrue(bm_causal._blocks_are_contiguous)
+            self.assertTrue(_detect_blocks_are_contiguous(bm_causal))
+            self.assertFalse(bm_checker._blocks_are_contiguous)
+            self.assertFalse(bm_strided._blocks_are_contiguous)
+        else:
+            self.assertFalse(bm_causal._blocks_are_contiguous)
+            self.assertFalse(_detect_blocks_are_contiguous(bm_causal))
+
+    @supported_platform
+    def test_prescale_qk_default_gating(self, device):
+        # PRESCALE_QK must only be auto-enabled (ROCm) when no additive score_mod
+        # is present; an additive bias would be exponentiated in the wrong base.
+        q, k, v = (
+            torch.randn(1, 1, 256, 64, device=device, dtype=torch.float16)
+            for _ in range(3)
+        )
+
+        opts_identity = _apply_kernel_options(q, k, v, False, None)
+        # _apply_kernel_options itself keeps the conservative default; the ROCm
+        # opt-in happens at the flex_attention call site, so the default here is
+        # always False regardless of platform.
+        self.assertFalse(opts_identity["PRESCALE_QK"])
+
+        # An explicitly pinned value is always respected.
+        opts_pinned = _apply_kernel_options(q, k, v, False, {"PRESCALE_QK": True})
+        self.assertTrue(opts_pinned["PRESCALE_QK"])
 
     @supported_platform
     @common_utils.parametrize("BLOCK_SIZE", [32, 64, 128, 256, (32, 64), (64, 32)])
