@@ -696,10 +696,14 @@ class _ChunkContext:
         return weight.dot(x.gather(1, indices.unsqueeze(1)).squeeze(1).to(weight.dtype))
 
     def sumexp_(self, x: torch.Tensor, dim: int) -> torch.Tensor:
-        # Result always in acc_dtype: fp16 softmax_denom can underflow
-        # on rows with widely-spread logits, after which log(0)=-inf
-        # poisons the loss and 1/0 the gradient.
-        return x.exp_().sum(dim, dtype=self.acc_dtype)
+        # Accumulate the normalizer in fp32 for fp16 input, like softmax /
+        # cross_entropy (which always reduce in acc_type): the denom sums
+        # num_classes terms in (0, 1] and overflows fp16 (>65504) for a large
+        # vocabulary. bf16 shares fp32's exponent range so it cannot overflow,
+        # and fp32/fp64 already suffice -- so the widening is fp16-only,
+        # keeping the fp32 radius minimal.
+        reduce_dtype = torch.float32 if self.dtype == torch.float16 else self.acc_dtype
+        return x.exp_().sum(dim, dtype=reduce_dtype)
 
     def sum(self, x: torch.Tensor, dim: int) -> torch.Tensor:
         # Reduce ``x`` along ``dim`` at acc_dtype on mixed-precision
@@ -892,16 +896,21 @@ def _linear_cross_entropy_batch_chunked_accumulator(
         for chunk in ctx.chunks():
             logits = ctx.shifted_logits(chunk)
             wt = chunk.prob_wt
-            # Loss target term: the scalar reduction only needs the total
-            # sum_{n,c} (w*t) * x_shifted -- one flat dot, no per-row
-            # temp. Read BEFORE ``sumexp_`` (it ``exp_``s logits in place).
-            # Both dot operands (``wt`` and ``logits``) are at logits_buf_dtype,
-            # which is fp16/bf16 only on the CUDA memory-like policies
-            # (balanced/compact) -- where torch.dot accumulates in fp32 -- and
-            # acc_dtype (fp32) otherwise (accurate / CPU). So this (B, V)
-            # reduction is fp32-accumulated on every path it runs; upcasting
-            # here would cost a (B, V) temp for no accuracy gain.
-            output.sub_(torch.dot(wt.reshape(-1), logits.reshape(-1)), alpha=loss_scale)
+            # Loss target term sum_{n,c} (w*t)*x_shifted, read BEFORE
+            # ``sumexp_`` (it ``exp_``s logits in place). torch.dot returns its
+            # scalar at the operand dtype, so when the logits buffer is fp16
+            # (CUDA balanced/compact) the sum overflows fp16 (>65504) for a
+            # large batch of max-shifted (<=0) logits. Reduce per row (each
+            # row's sum stays small) then across rows in fp32 -- a fused
+            # einsum, same time and footprint as the dot. bf16/fp32 operands
+            # return a wide-enough scalar, so keep the flat dot there.
+            if logits.dtype == torch.float16:
+                loss_term = torch.einsum("bv,bv->b", wt, logits).sum(
+                    dtype=torch.float32
+                )
+            else:
+                loss_term = torch.dot(wt.reshape(-1), logits.reshape(-1))
+            output.sub_(loss_term, alpha=loss_scale)
             # Per-row weight mass with the reduction factor folded in.
             s = wt.sum(1, dtype=ctx.weight_chunk_dtype).mul_(loss_scale)
             softmax_denom = ctx.sumexp_(logits, dim=1)

@@ -15657,6 +15657,57 @@ if __name__ == '__main__':
             acc_dtype={torch.float16: torch.float32, torch.bfloat16: torch.float32}[dtype],
             prob_target=True)
 
+    @parametrize_test("acc_policy", ["auto", "compact", "balanced", "accurate"])
+    def test_linear_cross_entropy_prob_large_vocab_fp16_denom(self, device, acc_policy):
+        # Regression: the softmax denominator sum_v exp(shifted) sums
+        # ~num_classes terms near 1, so for a large vocabulary it overflows
+        # fp16's 65504. sumexp_ reduces in acc_dtype, which is fp16 on the
+        # non-auto policies (and on MPS even for auto), so the loss went
+        # +inf; sumexp_ now floors that reduction to fp32 for fp16 input.
+        torch.manual_seed(0)
+        dtype = torch.float16
+        N, D, V = 4, 8, 1 << 17  # 131072 > fp16 max (65504)
+        x = torch.randn(N, D, device=device, dtype=dtype) * 0.05
+        w = torch.randn(V, D, device=device, dtype=dtype) * 0.05
+        # Normalize in fp64 then cast: an fp16 row-sum over this V would
+        # itself overflow and yield a degenerate (non-normalized) target.
+        p = torch.rand(N, V, device=device, dtype=torch.float64)
+        p = (p / p.sum(1, keepdim=True)).to(dtype)
+        options = nn.LinearCrossEntropyOptions(acc_policy=acc_policy)
+        loss = nn.functional.linear_cross_entropy(
+            x, w, p, reduction="mean", options=options)
+        self.assertTrue(torch.isfinite(loss).item(),
+                        f"prob loss not finite for acc_policy={acc_policy}: {loss}")
+        z = x.double() @ w.double().t()
+        ref = (torch.logsumexp(z, 1) - (p.double() * z).sum(1)).mean()
+        self.assertEqual(loss.double(), ref, atol=0.05, rtol=5e-3)
+
+    @parametrize_test("acc_policy", ["compact", "balanced", "auto"])
+    def test_linear_cross_entropy_prob_large_magnitude_fp16_loss_term(self, device, acc_policy):
+        # Regression: the prob loss target term sum_{n,c} (w*t)*x_shifted was a
+        # flat torch.dot whose fp16 result overflows (>65504) mid-accumulation
+        # for a large batch of widely-spread (early-training) max-shifted
+        # logits on the fp16 memory-like path -> -inf, poisoning the mean loss
+        # even though the mean itself fits fp16. The per-row einsum reduction
+        # summed across rows in fp32 keeps it finite. reduction='mean' (so the
+        # final value fits fp16, isolating the per-chunk overflow); one big
+        # chunk so that chunk's dot sees the whole batch.
+        torch.manual_seed(0)
+        dtype = torch.float16
+        N, D, V = 4096, 16, 2048
+        x = torch.randn(N, D, device=device, dtype=dtype) * 8.0
+        w = torch.randn(V, D, device=device, dtype=dtype) * 8.0
+        p = torch.rand(N, V, device=device, dtype=torch.float64)
+        p = (p / p.sum(1, keepdim=True)).to(dtype)
+        options = nn.LinearCrossEntropyOptions(acc_policy=acc_policy, batch_chunk_size=N)
+        loss = nn.functional.linear_cross_entropy(
+            x, w, p, reduction="mean", options=options)
+        self.assertTrue(torch.isfinite(loss).item(),
+                        f"prob loss not finite for acc_policy={acc_policy}: {loss}")
+        z = x.double() @ w.double().t()
+        ref = (torch.logsumexp(z, 1) - (p.double() * z).sum(1)).mean()
+        self.assertEqual(loss.double(), ref, rtol=5e-3, atol=0.5)
+
     def test_linear_cross_entropy_prob_target_dispatch(self, device):
         """Probability-target dispatch edges. The harness covers the
         supported configurations; this covers the gate itself: supported
