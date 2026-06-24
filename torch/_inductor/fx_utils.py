@@ -39,22 +39,18 @@ from .virtualized import V
 
 
 def evaluate_compile_time_value(value: Any) -> Any:
-    """Evaluate an FX value that represents a compile-time Python object.
-
-    This intentionally does not execute arbitrary FX nodes. It only reads values
-    that tracing/fake propagation already materialized in node metadata or that
-    FX stores as GraphModule attributes.
+    """Resolve the compile-time Python value behind an FX node argument: its
+    ``meta["val"]`` or, for a ``get_attr`` node, the GraphModule attribute. Never
+    executes arbitrary FX nodes; non-Node or unresolved inputs pass through.
     """
     if not isinstance(value, torch.fx.Node):
         return value
     if "val" in value.meta:
         return value.meta["val"]
-    if value.op == "get_attr":
-        gm = value.graph.owning_module
-        if gm is not None:
-            from torch.fx.graph_module import _get_attr
+    if value.op == "get_attr" and value.graph.owning_module is not None:
+        from torch.fx.graph_module import _get_attr
 
-            return _get_attr(gm, value.target)  # type: ignore[arg-type]
+        return _get_attr(value.graph.owning_module, value.target)  # type: ignore[arg-type]
     return value
 
 
