@@ -645,10 +645,15 @@ class UserFunctionVariable(BaseUserFunctionVariable):
         return self.fn.__globals__
 
     def should_allow_nested_graph_breaks(self) -> bool:
-        from torch._dynamo.trace_rules import BUILTIN_INLINE_WHEN_CALLED
+        from torch._dynamo.trace_rules import (
+            BUILTIN_INLINE_WHEN_CALLED,
+            is_ngb_suppressed_inline,
+        )
 
         filename = self.get_filename()
         if any(filename.startswith(d) for d in BUILTIN_INLINE_WHEN_CALLED):
+            return False
+        if is_ngb_suppressed_inline(filename):
             return False
         return True
 
@@ -1050,9 +1055,6 @@ class UserFunctionVariable(BaseUserFunctionVariable):
             return collected
         return None
 
-    def is_python_equal(self, other: object) -> bool:
-        return isinstance(other, variables.UserFunctionVariable) and self.fn is other.fn
-
 
 class InspectSignatureVariable(UserFunctionVariable):
     """
@@ -1197,12 +1199,20 @@ class LocalGeneratorObjectVariable(VariableTracker):
     def python_type(self) -> type:
         return types.GeneratorType
 
+    def richcompare_impl(
+        self, tx: "InstructionTranslatorBase", other: VariableTracker, op: str
+    ) -> VariableTracker:
+        # Generators have no tp_richcompare: identity for ==/!=, TypeError for
+        # ordering.
+        from .object_protocol import object_richcompare
+
+        return object_richcompare(self, tx, other, op)
+
     def gen_send_ex2(
         self,
         tx: "InstructionTranslatorBase",
         arg: VariableTracker,
         exc: bool,
-        closing: bool,
     ) -> VariableTracker:
         # https://github.com/python/cpython/blob/f31a89bb901067dd105b00cfa90523cf7ffdbbdd/Objects/genobject.c#L259
         tracer = self.inline_tracer
@@ -1263,14 +1273,13 @@ class LocalGeneratorObjectVariable(VariableTracker):
         tx: "InstructionTranslatorBase",
         arg: VariableTracker,
         exc: bool,
-        closing: bool,
     ) -> VariableTracker:
         # rule of thumb for gen_send_ex2:
         # - PYGEN_RETURN => No exception raised
         # - PYGEN_ERROR => Exception raised
         # - PYGEN_NEXT => yielded - frame suspended
         # gen_send_ex raises StopIteration if gen_send_ex2 returns PYGEN_RETURN
-        result = self.gen_send_ex2(tx, arg, exc, closing)
+        result = self.gen_send_ex2(tx, arg, exc)
         if self._frame_state_suspended():
             # PYGEN_NEXT
             return result
@@ -1284,7 +1293,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
 
     def tp_iternext_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/genobject.c#L832
-        return self.gen_send_ex2(tx, ConstantVariable.create(None), False, False)
+        return self.gen_send_ex2(tx, ConstantVariable.create(None), False)
 
     def call_obj_hasattr(
         self, tx: "InstructionTranslatorBase", name: str
@@ -1335,7 +1344,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         # Sends a value into the generator function. Returns the next value
         # yielded by the generator, or raises StopIteration if the generator
         # exits without yielding another value
-        return self.gen_send_ex(tx, arg, False, False)
+        return self.gen_send_ex(tx, arg, False)
 
     def gen_close(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         # * Raises a GeneratorExit at the point where the generator function was paused.
@@ -1362,7 +1371,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         self._setup_exception(tx, VariableTracker.build(tx, GeneratorExit))
 
         try:
-            self.gen_send_ex(tx, ConstantVariable.create(None), True, True)
+            self.gen_send_ex(tx, ConstantVariable.create(None), True)
         except ObservedGeneratorExit:
             return ConstantVariable.create(None)
         except ObservedUserStopIteration:
@@ -1403,7 +1412,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         # or raises a different exception, then that exception propagates to the caller.
 
         self._setup_exception(tx, arg)
-        return self.gen_send_ex(tx, ConstantVariable.create(None), True, False)
+        return self.gen_send_ex(tx, ConstantVariable.create(None), True)
 
     def call_method(
         self,
@@ -1492,6 +1501,14 @@ class LocalGeneratorFunctionVariable(BaseUserFunctionVariable):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
+        if isinstance(self.vt, SkipFunctionVariable):
+            unimplemented(
+                gb_type="generator function over a skipped function",
+                context=str(self.vt),
+                explanation="Cannot trace a generator whose underlying function is skipped by Dynamo "
+                "(e.g. defined in a skip-listed module), since its body cannot be symbolically traced.",
+                hints=[*graph_break_hints.FUNDAMENTAL],
+            )
         if not is_generator(self.vt.get_code()):
             unimplemented(
                 gb_type="non-generator contextlib.contextmanager",
@@ -2480,12 +2497,6 @@ class SkipFunctionVariable(VariableTracker):
 
         return fn_var_getattr(tx, self.value, self.source, name)
 
-    def is_python_equal(self, other: object) -> bool:
-        return (
-            isinstance(other, VariableTracker)
-            and self.as_python_constant() == other.as_python_constant()
-        )
-
 
 class WrappedSkipFunctionVariable(SkipFunctionVariable):
     def __init__(
@@ -3008,22 +3019,6 @@ class FunctoolsPartialVariable(VariableTracker):
         if self.original_cache_hash is not None:
             result.cache_hash = self.original_cache_hash  # type: ignore[missing-attribute]
         return result
-
-    def is_python_equal(self, other: object) -> bool:
-        return (
-            isinstance(other, FunctoolsPartialVariable)
-            and self.func.is_python_equal(other.func)
-            and all(
-                arg_a.is_python_equal(arg_b)
-                for (arg_a, arg_b) in zip(self.args, other.args)
-            )
-            and all(
-                value_a.is_python_equal(value_b)
-                for (value_a, value_b) in zip(
-                    self.keywords.values(), other.keywords.values()
-                )
-            )
-        )
 
 
 class PolyfilledFunctionVariable(VariableTracker):
@@ -3989,24 +3984,26 @@ class MethodWrapperVariable(VariableTracker):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        try:
-            method_wrapper = self.as_python_constant()
-        except NotImplementedError:
-            method_wrapper = None
-        if (
-            method_wrapper is not None
-            and is_tensor_base_attr_getter(method_wrapper)
-            and args
-            and isinstance(args[0], variables.TensorVariable)
-        ):
-            if not (len(args) == 1 and len(kwargs) == 0):
-                raise_type_error(
-                    tx, "tensor attribute getter takes exactly one argument"
-                )
-            # Avoid the generic descriptor path's implicit owner lookup, which
-            # would read __class__ on tensor subclasses during __torch_function__.
-            descriptor = cast(Any, method_wrapper.__self__)
-            return args[0].var_getattr(tx, descriptor.__name__)
+        # Only materialize the wrapper (which forces self.obj's python constant)
+        # for the tensor-getter special case; the generic path below dispatches
+        # via call_method and must not require a constant self.obj (e.g. a set /
+        # frozenset whose as_python_constant() re-hashes its keys).
+        if args and isinstance(args[0], variables.TensorVariable):
+            try:
+                method_wrapper = self.as_python_constant()
+            except NotImplementedError:
+                method_wrapper = None
+            if method_wrapper is not None and is_tensor_base_attr_getter(
+                method_wrapper
+            ):
+                if not (len(args) == 1 and len(kwargs) == 0):
+                    raise_type_error(
+                        tx, "tensor attribute getter takes exactly one argument"
+                    )
+                # Avoid the generic descriptor path's implicit owner lookup, which
+                # would read __class__ on tensor subclasses during __torch_function__.
+                descriptor = cast(Any, method_wrapper.__self__)
+                return args[0].var_getattr(tx, descriptor.__name__)
 
         return self.obj.call_method(tx, self.descriptor.__name__, list(args), kwargs)
 
@@ -4028,14 +4025,6 @@ class MethodWrapperVariable(VariableTracker):
         from .object_protocol import python_constant_richcompare_impl
 
         return python_constant_richcompare_impl(self, tx, other, op)
-
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, VariableTracker):
-            return False
-        try:
-            return self.as_python_constant() == other.as_python_constant()
-        except NotImplementedError:
-            return False
 
 
 class MethodDescriptorVariable(VariableTracker):
@@ -4424,7 +4413,7 @@ class MemberDescriptorVariable(VariableTracker):
                 return obj.var_getattr(tx, attr_name)
         try:
             resolved = self.descriptor.__get__(obj_value)
-        except AttributeError:
+        except (AttributeError, TypeError):
             raise_observed_exception(
                 AttributeError,
                 tx,
@@ -4511,7 +4500,7 @@ class GetSetDescriptorVariable(VariableTracker):
                 return obj.var_getattr(tx, attr_name)
         try:
             resolved = self.descriptor.__get__(obj_value)
-        except AttributeError:
+        except (AttributeError, TypeError):
             raise_observed_exception(
                 AttributeError,
                 tx,
