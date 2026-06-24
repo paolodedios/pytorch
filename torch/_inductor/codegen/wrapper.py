@@ -40,11 +40,12 @@ from torch.fx.experimental.symbolic_shapes import (
 from torch.fx.node import _get_qualified_name
 from torch.multiprocessing.reductions import StorageWeakRef
 from torch.utils._ordered_set import OrderedSet
-from torch.utils._sympy.functions import Max, Min
+from torch.utils._sympy.functions import FloorDiv, Max, Min
 from torch.utils._sympy.singleton_int import SingletonInt
+from torch.utils._sympy.solve import try_solve
 from torch.utils._sympy.symbol import symbol_is_type, SymT
 
-from .. import async_compile, config, ir
+from .. import async_compile, config, debug as inductor_debug, ir
 from ..codecache import output_code_log
 from ..ir import IRNode, ReinterpretView
 from ..runtime import triton_heuristics
@@ -101,6 +102,32 @@ ReuseKey = tuple[torch.device, torch.dtype, str, bool, int]
 CommBufferReuseKey = tuple[torch.device, torch.dtype, str, "ir.CommBufferType", str]
 BufferLike = ir.Buffer | WorkspaceArg
 FxConversionFunc = Callable[["WrapperLine"], None]
+
+
+def _replace_floor_div(expr: sympy.Expr) -> sympy.Expr:
+    """
+    Replace sympy.floor with FloorDiv.
+    """
+
+    def replace(expr: sympy.Expr) -> sympy.Expr:
+        expr = sympy.together(expr)
+
+        # Division is represented as a Mul with a Rational factor or a Pow with
+        # negative exponent. Convert floor(Mul(...)) to FloorDiv(numerator,
+        # denominator) by partitioning factors into the numerator and denominator.
+        numerator, denominator = (sympy.S.One,) * 2
+        for arg in sympy.Mul.make_args(expr):
+            if isinstance(arg, sympy.Rational):
+                numerator *= arg.numerator
+                denominator *= arg.denominator
+            elif isinstance(arg, sympy.Pow) and arg.exp.is_negative:
+                denominator *= arg.base**-arg.exp
+            else:
+                numerator *= arg
+
+        return FloorDiv(numerator, denominator)
+
+    return expr.replace(sympy.floor, replace)
 
 
 @dataclasses.dataclass
@@ -1736,7 +1763,7 @@ class PythonWrapperCodegen(CodeGen):
 
         with self.prefix.indent(prefix_indent):
             if config.triton.debug_sync_graph:
-                self.prefix.writeline(V.graph.device_ops.synchronize())
+                self.generate_debug_sync(self.prefix)
             phase = V.graph.get_training_phase()
             if config.annotate_training:
                 self.prefix.writeline(
@@ -2037,11 +2064,18 @@ class PythonWrapperCodegen(CodeGen):
             # doesn't know the memory is still needed and might reuse it.
             ending = f".clone(){ending}"
 
+        if config.trace.provenance_tracking_to_timeline:
+            wrapper_name = self.define_extern_kernel_profile_wrapper(
+                kernel_name, self.next_kernel_suffix()
+            )
+        else:
+            wrapper_name = kernel_name
+
         if no_return:
-            self.writeline(f"{self.declare}{kernel_name}({', '.join(args)}){ending}")
+            self.writeline(f"{self.declare}{wrapper_name}({', '.join(args)}){ending}")
         else:
             self.writeline(
-                f"{self.declare}{output_name} = {kernel_name}({', '.join(args)}){ending}"
+                f"{self.declare}{output_name} = {wrapper_name}({', '.join(args)}){ending}"
             )
             if (
                 self.supports_intermediate_hooks
@@ -2072,9 +2106,15 @@ class PythonWrapperCodegen(CodeGen):
         # add debug printer code for triton kernel calls at (jit) inductor level
         debug_printer_manager = V.graph.wrapper_code.debug_printer
         debug_printer_manager.set_printer_args(args, kernel, None, None, "extern")
-        args.append(f"out={out_view if out_view else out}")
+        args.append(f"out={out_view or out}")
         with debug_printer_manager:
-            self.writeline(f"{kernel}({', '.join(args)})")
+            if config.trace.provenance_tracking_to_timeline:
+                wrapper_name = self.define_extern_kernel_profile_wrapper(
+                    kernel, self.next_kernel_suffix()
+                )
+            else:
+                wrapper_name = kernel
+            self.writeline(f"{wrapper_name}({', '.join(args)})")
 
     def _generate_tma_descriptor_call_experimental(self, desc, apply_size_hints=False):
         dims = desc.dims
@@ -2136,14 +2176,35 @@ class PythonWrapperCodegen(CodeGen):
         kwargs,
         device,
     ):
+        orig_python_kernel_name = python_kernel_name
+        if config.trace.provenance_tracking_to_timeline:
+            python_kernel_name = self.define_extern_kernel_profile_wrapper(
+                python_kernel_name, self.next_kernel_suffix()
+            )
         line = f"{python_kernel_name}({','.join(map(str, inputs))}"
-        if python_kernel_name.startswith("aten.scatter_reduce"):
+        if orig_python_kernel_name.startswith("aten.scatter_reduce"):
             line += ", ".join([""] + kwargs)
         else:
             if reduce:
                 line += f", reduce={repr(reduce)}"
         line += ")"
         self.writeline(line)
+
+    def define_extern_kernel_profile_wrapper(self, kernel_name: str, suffix: str):
+        """Wrap extern calls so profiler events use names with provenance metadata."""
+        wrapper_kernel_name = re.sub(
+            r"\W",
+            "_",
+            f"extern_kernels_{kernel_name}_{suffix}",
+        )
+        inductor_debug.alias_kernel_provenance(kernel_name, wrapper_kernel_name)
+        self.header.splice(f"def {wrapper_kernel_name}(*args, **kwargs):")
+        with self.header.indent():
+            self.header.splice(
+                "# Extra indirection is only enabled for profiler timeline provenance."
+            )
+            self.header.splice(f"return {kernel_name}(*args, **kwargs)")
+        return wrapper_kernel_name
 
     def generate_index_put_fallback(self, node: ir.IndexPutFallback) -> None:
         # Collect index tensors into a list.
@@ -2251,7 +2312,7 @@ class PythonWrapperCodegen(CodeGen):
             output_refs = self.get_output_refs()
             self.mark_output_type()
             if config.triton.debug_sync_graph:
-                self.wrapper_call.writeline(V.graph.device_ops.synchronize())
+                self.generate_debug_sync(self.wrapper_call)
 
             if config.profile_bandwidth:
                 self.generate_end_graph()
@@ -2420,9 +2481,10 @@ class PythonWrapperCodegen(CodeGen):
     def codegen_input_symbol_assignment(
         self,
         name: str,
-        value: ir.TensorBox,
+        value: ir.TensorBox | sympy.Expr,
         bound_vars: OrderedSet[sympy.Symbol],
     ):
+        """Assign wrapper locals for symbolic input sizes and strides."""
         code = self.prefix
 
         @functools.cache
@@ -2441,8 +2503,6 @@ class PythonWrapperCodegen(CodeGen):
             # symbol (s31) during constraint solving. Emit aliases so
             # the asserts compile. Skip unbacked symbols — they are
             # defined separately by the unbacked symbol codegen path.
-            from torch.utils._sympy.symbol import symbol_is_type, SymT
-
             for src, tgt in V.graph.sizevars.shape_env.replacements.items():
                 if (
                     tgt == sym
@@ -2455,6 +2515,51 @@ class PythonWrapperCodegen(CodeGen):
                     code.writeline(f"{src} = {sym}")
                     bound_vars.add(src)
 
+        def codegen_symbol(
+            sym_or_exp: object,
+            name: str,
+            accessor: Callable[[str], str],
+            dim: int,
+            bound_vars: OrderedSet[sympy.Symbol],
+        ) -> None:
+            if isinstance(sym_or_exp, sympy.Symbol):
+                if sym_or_exp in bound_vars:
+                    return
+                code.writeline(f"{sym_or_exp} = {accessor(name)}[{dim}]")
+                bound_vars.add(sym_or_exp)
+                maybe_emit_replacement_aliases(sym_or_exp)
+                return
+
+            if not isinstance(sym_or_exp, sympy.Expr):
+                return
+
+            undefined_symbols = [
+                sym for sym in sym_or_exp.free_symbols if sym not in bound_vars
+            ]
+            if not undefined_symbols:
+                return
+            if len(undefined_symbols) > 1:
+                return
+
+            runtime_symbol = sympy.Symbol(
+                f"{accessor(name)}_{dim}", integer=True, nonnegative=True
+            )
+
+            undefined_symbol = undefined_symbols[0]
+            solution = try_solve(sympy.Eq(sym_or_exp, runtime_symbol), undefined_symbol)
+            if solution is None:
+                return
+
+            code.writeline(f"{runtime_symbol} = {accessor(name)}[{dim}]")
+            undefined_symbol_expr = solution[1]
+            if undefined_symbol.is_integer:
+                undefined_symbol_expr = _replace_floor_div(
+                    sympy.floor(undefined_symbol_expr)
+                )
+            code.writeline(f"{undefined_symbol} = {pexpr(undefined_symbol_expr)}")
+            bound_vars.add(undefined_symbol)
+            maybe_emit_replacement_aliases(undefined_symbol)
+
         if isinstance(value, sympy.Expr):
             if not isinstance(value, sympy.Symbol) or value in bound_vars:
                 return
@@ -2463,14 +2568,9 @@ class PythonWrapperCodegen(CodeGen):
             maybe_emit_replacement_aliases(value)
         elif isinstance(value, ir.TensorBox):
             for dim, size in enumerate(value.get_size()):
-                if isinstance(size, sympy.Symbol) and size not in bound_vars:
-                    code.writeline(f"{size} = {sizeof(name)}[{dim}]")
-                    bound_vars.add(size)
-                    maybe_emit_replacement_aliases(size)
+                codegen_symbol(size, name, sizeof, dim, bound_vars)
             for dim, stride in enumerate(value.get_stride()):
-                if isinstance(stride, sympy.Symbol) and stride not in bound_vars:
-                    code.writeline(f"{stride} = {strideof(name)}[{dim}]")
-                    bound_vars.add(stride)
+                codegen_symbol(stride, name, strideof, dim, bound_vars)
         elif isinstance(
             value, (ir.TorchBindObject, ir.GeneratorState, ir.OpaqueObjectState)
         ):
@@ -3347,6 +3447,9 @@ class PythonWrapperCodegen(CodeGen):
 
     def wrap_kernel_call(self, name, call_args):
         return f"{name}({', '.join(call_args)}){self.ending}"
+
+    def generate_debug_sync(self, buffer):
+        buffer.writeline(V.graph.device_ops.synchronize())
 
     def generate_profiler_mark_wrapper_call(self, stack):
         self.wrapper_call.writeline("from torch.profiler import record_function")
