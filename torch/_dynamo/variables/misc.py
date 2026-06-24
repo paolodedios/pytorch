@@ -72,7 +72,12 @@ from ..utils import (
     raise_args_mismatch,
     unpack_iterable,
 )
-from .base import AsPythonConstantNotImplementedError, NO_SUCH_SUBOBJ, VariableTracker
+from .base import (
+    AsPythonConstantNotImplementedError,
+    AttrMutationKind,
+    NO_SUCH_SUBOBJ,
+    VariableTracker,
+)
 from .constant import ConstantVariable
 from .functions import NestedUserFunctionVariable, UserFunctionVariable
 from .user_defined import call_random_fn, is_standard_setattr, UserDefinedObjectVariable
@@ -597,6 +602,10 @@ class ExceptionVariable(VariableTracker):
         # The user stack at the time this exception was first raised.
         # Used to preserve the original exception location when re-raising.
         self.python_stack: traceback.StackSummary | None = None
+        # Lazily-created view of the instance __dict__. Custom (user-set)
+        # attributes live in the side effects table, keyed by this VT; the
+        # C-level slots above are stored as fields and handled separately.
+        self.dict_vt: variables.DunderDictVariable | None = None
 
     def set_context(self, context: VariableTracker) -> None:
         self.__context__ = context
@@ -624,6 +633,11 @@ class ExceptionVariable(VariableTracker):
         codegen_attr("__context__")
         codegen_attr("__cause__")
         codegen_attr("__suppress_context__")
+
+    def get_dict_vt(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+        if self.dict_vt is None:
+            self.dict_vt = variables.DunderDictVariable.create(tx, self)
+        return self.dict_vt
 
     def python_type(self) -> type:
         return self.exc_type
@@ -658,7 +672,10 @@ class ExceptionVariable(VariableTracker):
                         ),
                     )
                 ):
-                    raise AssertionError(f"{val} is not a valid exception context")
+                    raise_type_error(
+                        tx,
+                        "exception context must be None or derive from BaseException",
+                    )
                 self.set_context(val)
             elif name == "__cause__":
                 if val.is_constant_none() or isinstance(
@@ -685,24 +702,37 @@ class ExceptionVariable(VariableTracker):
                     )
             elif name == "__traceback__":
                 if not TracebackVariable.is_valid_traceback(val):
-                    raise_type_error(
-                        tx, "__traceback__ must be a traceback object or None"
-                    )
+                    raise_type_error(tx, "__traceback__ must be a traceback or None")
                 self.__traceback__ = val
+            elif name == "args":
+                # CPython coerces any iterable to a tuple (PySequence_Tuple).
+                try:
+                    self.args = val.unpack_var_sequence(tx)
+                except NotImplementedError:
+                    raise_type_error(
+                        tx, f"'{val.python_type().__name__}' object is not iterable"
+                    )
             else:
-                unimplemented(
-                    gb_type="Unsupported attribute assignment on Exception object",
-                    context=f"call_setattr {self} {name}",
-                    explanation="Dynamo does not support setting the attribute "
-                    f"'{name}' on tracked exception objects. Only `__context__`, "
-                    "`__cause__`, `__suppress_context__`, and `__traceback__` are supported.",
-                    hints=[*graph_break_hints.SUPPORTABLE],
+                # Arbitrary user attribute -> store in the instance __dict__
+                # via the side effects table.
+                se = tx.output.side_effects
+                if not se.is_attribute_mutation(self):
+                    se.track_attribute_mutation_new(self)
+                se.store_instance_dict_attr(self, name, val)
+            return variables.ConstantVariable.create(None)
+        elif name == "__setstate__":
+            [state] = args
+            if not isinstance(state, variables.ConstDictVariable):
+                raise_type_error(tx, "state is not a dictionary")
+            for key, value in state.keys_as_python_constant().items():
+                self.call_method(
+                    tx, "__setattr__", [ConstantVariable.create(key), value], {}
                 )
             return variables.ConstantVariable.create(None)
         elif name == "with_traceback":
             [tb] = args
             if not TracebackVariable.is_valid_traceback(tb):
-                raise_type_error(tx, "__traceback__ must be a traceback object or None")
+                raise_type_error(tx, "__traceback__ must be a traceback or None")
             self.__traceback__ = tb
             return self
         else:
@@ -727,6 +757,17 @@ class ExceptionVariable(VariableTracker):
                 tuple(self.args),
                 source=self.source and AttrSource(self.source, "args"),
             )
+        elif name == "__dict__":
+            return self.get_dict_vt(tx)
+        se = tx.output.side_effects
+        if se.is_attribute_mutation(self) and se.has_pending_mutation_of_attr(
+            self, name, AttrMutationKind.INSTANCE_DICT
+        ):
+            return se.load_attr(self, name)
+        if not hasattr(self.exc_type, name):
+            # Reading an instance attribute that was never set and is absent
+            # from the type. A real exception raises AttributeError here.
+            raise_observed_exception(AttributeError, tx, args=[name])
         return super().var_getattr(tx, name)
 
     def __str__(self) -> str:
