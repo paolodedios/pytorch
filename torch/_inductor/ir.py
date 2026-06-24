@@ -8056,6 +8056,43 @@ class MutationOutput(Buffer):
         ]
 
 
+class OrderingOutput(Buffer):
+    """A rename-only ordering edge with no mutation side effects.
+
+    Like MutationOutput but uses WeakDep (is_fake=True) instead of StarDep,
+    and does not call mark_buffer_mutated.  This gives us the rename chain
+    (so future readers of the source buffer are ordered after this node)
+    without forced realization, mutated_buffers tracking, or lifetime extension.
+    """
+
+    ordering_only = True
+
+    def __init__(
+        self, layout: OutputSpec, source_node: IRNode, ordering_node: Operation
+    ) -> None:
+        super().__init__(name=None, layout=layout)
+        self.mutation_names = [source_node.get_name()]
+        self.mutating_node: Operation = ordering_node
+        self.name = V.graph.register_buffer(self)
+
+    def get_defining_op(self) -> Operation:
+        return self.mutating_node
+
+    def get_mutation_names(self) -> Sequence[str]:
+        return self.mutation_names
+
+    def should_allocate(self) -> bool:
+        return False
+
+    def get_mutation_buffers(self) -> Sequence[IRNode]:
+        mutation_names = self.get_mutation_names()
+        return [
+            buf
+            for buf in (V.graph.try_get_buffer(name) for name in mutation_names)
+            if buf is not None
+        ]
+
+
 class TMADescriptor(ExternKernel):
     """
     An IR node representing a generic host-side TMA descriptor in the Triton API
