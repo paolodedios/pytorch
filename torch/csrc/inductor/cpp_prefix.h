@@ -811,7 +811,8 @@ Welford<scalar_t> welford_vec_reduce_all(
 }
 #endif
 
-inline void inductor_cpu_note_integer_div_by_zero(std::atomic<int>* err = nullptr) {
+inline void inductor_cpu_note_integer_div_by_zero(
+  std::atomic<int>* err = nullptr) {
   if (err != nullptr) {
     err->store(1, std::memory_order_relaxed);
   } else {
@@ -826,7 +827,10 @@ inline void inductor_cpu_throw_if_integer_div_error(std::atomic<int>& err) {
 }
 
 template <typename T, typename U>
-inline std::common_type_t<T, U> floor_divide_integral(T a, U b, std::atomic<int>* err = nullptr) {
+inline std::common_type_t<T, U> floor_divide_integral(
+  T a,
+  U b,
+  std::atomic<int>* err = nullptr) {
   using C = std::common_type_t<T, U>;
   static_assert(
       std::is_integral_v<C>,
@@ -841,7 +845,10 @@ inline std::common_type_t<T, U> floor_divide_integral(T a, U b, std::atomic<int>
 }
 
 template <typename T, typename U>
-inline std::common_type_t<T, U> trunc_divide_integral(T a, U b, std::atomic<int>* err = nullptr) {
+inline std::common_type_t<T, U> trunc_divide_integral(
+  T a,
+  U b,
+  std::atomic<int>* err = nullptr) {
   using C = std::common_type_t<T, U>;
   static_assert(
       std::is_integral_v<C>,

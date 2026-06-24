@@ -2478,7 +2478,7 @@ class CPUReproTests(TestCase):
         x3 = torch.tensor([-32768, -32768, -32768, -32768], dtype=torch.int16)
         y3 = torch.tensor([-1, -1, -1, -1], dtype=torch.int16)
         ret = run_division(x3, y3, rounding_mode="trunc")
-        self.assertTrue(ret[0] == 0 and ret[1] == 0 and ret[2] == 0 and ret[3] == 0)
+        self.assertTrue(torch.equal(ret, x3))
 
         x4 = torch.randint(0, 10, size=(1,))
         ret = run_division(x4, 1, rounding_mode="trunc")

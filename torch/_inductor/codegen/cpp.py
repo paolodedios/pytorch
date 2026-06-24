@@ -639,8 +639,67 @@ def decltype_promoted(*args):
     else:
         return f"decltype({args[0]})"
 
-def is_nonzero_divisor(b):
-    return isinstance(b, CppCSEVariable) and 0 not in b.bounds
+
+def is_const_and_nonzero(x) -> bool:
+    """
+    Check whether `x` is provably != 0 at codegen time by tracing its source.
+
+    A value is considered a "const" (compile-time known) if:
+      - It is a Python int/float literal
+      - It is a sympy numeric expression (no free symbols)
+      - It is a CppCSEVariable whose `dependent_itervars` is empty, meaning it
+        does not depend on any loop iteration variable and is therefore a
+        compile-time constant.
+
+    For const values, we then check whether 0 falls outside the known value
+    range.  For CppCSEVariable this uses the `bounds` attribute (a
+    ValueRanges object with `.lower` and `.upper`).  If the entire range is
+    strictly positive (lower > 0) or strictly negative (upper < 0), we can
+    safely conclude x != 0.
+
+    Returns True if we can prove x != 0, False otherwise (conservative).
+    """
+    if isinstance(x, (int, float)):
+        return x != 0
+
+    if isinstance(x, sympy.Expr):
+        if x.is_number:
+            try:
+                return int(x) != 0
+            except Exception:
+                return False
+        try:
+            return V.graph.sizevars.guard_or_false(sympy.Ne(x, 0))
+        except Exception:
+            return False
+
+    if isinstance(x, OpsValue):
+        return is_const_and_nonzero(x.value)
+
+    if isinstance(x, CppCSEVariable):
+        if x.dependent_itervars:
+            return False
+
+        def _try_numeric(val):
+            if isinstance(val, (int, float)):
+                return val
+            if isinstance(val, sympy.Expr) and val.is_number:
+                try:
+                    return int(val)
+                except Exception:
+                    try:
+                        return float(val)
+                    except Exception:
+                        return None
+            return None
+
+        lo = _try_numeric(x.bounds.lower)
+        hi = _try_numeric(x.bounds.upper)
+        if lo is not None and hi is not None:
+            return lo > 0 or hi < 0
+        return False
+    return False
+
 
 class CppOverrides(OpOverrides):
     """Map element-wise ops to C++"""
@@ -857,7 +916,7 @@ class CppOverrides(OpOverrides):
     @staticmethod
     def floordiv(a, b):
         # a and b are integer type
-        if is_nonzero_divisor(b):
+        if is_const_and_nonzero(b):
             return f"c10::div_floor_integer({a}, {b})"
         return f"floor_divide_integral({a}, {b}, &inductor_cpu_integer_div_error)"
 
@@ -875,7 +934,7 @@ class CppOverrides(OpOverrides):
     # pyrefly: ignore [bad-override]
     def truncdiv(a, b):
         # a and b are integer type
-        if is_nonzero_divisor(b):
+        if is_const_and_nonzero(b):
             return f"c10::trunc_floor_integer({a}, {b})"
         return f"trunc_divide_integral({a}, {b}, &inductor_cpu_integer_div_error)"
 
@@ -1023,7 +1082,7 @@ class CppOverrides(OpOverrides):
 
     @staticmethod
     def mod(a, b):
-        if is_nonzero_divisor(b):
+        if is_const_and_nonzero(b):
             return f"mod({a}, {b})"
         return f"mod({a}, {b}, &inductor_cpu_integer_div_error)"
 
