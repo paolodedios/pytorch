@@ -3,6 +3,7 @@
 import functools
 import gc
 import json
+import math
 import os
 import random
 import string
@@ -4962,6 +4963,7 @@ def forward(self, arg0_1, arg1_1, arg2_1, arg3_1, arg4_1):
             )
 
     @supported_platform
+    @skip_on_cpu
     def test_block_mask_non_divisible(self, device):
         seq = torch.arange(1023, device=device) // 128
 
@@ -7529,6 +7531,47 @@ BlockMask(shape=(1,s1,s2048,s2048),ssparsity=46.88%,s
             self.assertIsNone(block_mask.full_q_indices)
 
     @supported_platform
+    def test_from_kv_blocks_unpadded_kv_indices_with_seq_lengths(self, device):
+        kv_num_blocks = torch.ones((1, 1, 3), dtype=torch.int32, device=device)
+        kv_indices = torch.arange(3, dtype=torch.int32, device=device).view(1, 1, 3, 1)
+
+        block_mask = BlockMask.from_kv_blocks(
+            kv_num_blocks,
+            kv_indices,
+            BLOCK_SIZE=32,
+            seq_lengths=(96, 96),
+        )
+
+        self.assertEqual(block_mask.shape, (1, 1, 96, 96))
+        torch.testing.assert_close(block_mask.kv_num_blocks, kv_num_blocks)
+        torch.testing.assert_close(block_mask.kv_indices, kv_indices)
+        torch.testing.assert_close(block_mask.q_num_blocks, kv_num_blocks)
+        torch.testing.assert_close(block_mask.q_indices[..., :1], kv_indices)
+
+    @supported_platform
+    def test_from_kv_blocks_fullgraph_compile_with_inferred_seq_lengths(self, device):
+        def from_kv_blocks_q_metadata(kv_num_blocks, kv_indices):
+            block_mask = BlockMask.from_kv_blocks(kv_num_blocks, kv_indices)
+            return block_mask.q_num_blocks, block_mask.q_indices
+
+        kv_num_blocks, kv_indices, _, _ = self.generate_test_inputs(False, device)
+        counter = CompileCounterWithBackend("aot_eager")
+        q_num_blocks, q_indices = torch.compile(
+            from_kv_blocks_q_metadata, backend=counter, fullgraph=True
+        )(kv_num_blocks, kv_indices)
+
+        self.assertEqual(counter.frame_count, 1)
+        self.assertEqual(len(counter.graphs), 1)
+        torch.testing.assert_close(
+            q_num_blocks,
+            torch.tensor([1, 1], dtype=torch.int32, device=device).view(1, 1, 2),
+        )
+        torch.testing.assert_close(
+            q_indices,
+            torch.tensor([0, 0], dtype=torch.int32, device=device).view(1, 1, 2, 1),
+        )
+
+    @supported_platform
     def test_block_size(self, device):
         kv_num_blocks, kv_indices, _, _ = self.generate_test_inputs(False, device)
         block_mask = BlockMask.from_kv_blocks(kv_num_blocks, kv_indices)
@@ -8796,6 +8839,36 @@ def get_params(dtypes: list[torch.dtype]) -> list[Params]:
     return params
 
 
+ROCM_FLAKY_LEARNABLE_BIAS_CASES = {
+    "head_specific_gate": {
+        (2, 4, 37, 16, torch.float16, "max-autotune-no-cudagraphs"),
+        (2, 4, 37, 16, torch.float32, "max-autotune-no-cudagraphs"),
+        (2, 4, 256, 16, torch.bfloat16, "max-autotune-no-cudagraphs"),
+        (2, 4, 256, 16, torch.float16, "max-autotune-no-cudagraphs"),
+        (2, 4, 256, 16, torch.float32, "max-autotune-no-cudagraphs"),
+        (2, 4, 277, 16, torch.bfloat16, "max-autotune-no-cudagraphs"),
+        (2, 4, 277, 16, torch.float32, "max-autotune-no-cudagraphs"),
+    },
+    "relative_1d_bias": {
+        (2, 4, 37, 16, torch.bfloat16, "max-autotune-no-cudagraphs"),
+        (2, 4, 256, 16, torch.bfloat16, "max-autotune-no-cudagraphs"),
+        (2, 4, 256, 16, torch.float16, "max-autotune-no-cudagraphs"),
+        (2, 4, 277, 16, torch.bfloat16, "max-autotune-no-cudagraphs"),
+        (2, 4, 277, 16, torch.float16, "max-autotune-no-cudagraphs"),
+        (2, 4, 277, 16, torch.float32, "max-autotune-no-cudagraphs"),
+    },
+    "symmetric_bias": {
+        (2, 4, 37, 16, torch.bfloat16, "max-autotune-no-cudagraphs"),
+        (2, 4, 37, 16, torch.float16, "max-autotune-no-cudagraphs"),
+        (2, 4, 37, 16, torch.float32, "max-autotune-no-cudagraphs"),
+        (2, 4, 256, 16, torch.float16, "max-autotune-no-cudagraphs"),
+        (2, 4, 277, 16, torch.bfloat16, "max-autotune-no-cudagraphs"),
+        (2, 4, 277, 16, torch.float16, "max-autotune-no-cudagraphs"),
+        (2, 4, 277, 16, torch.float32, "max-autotune-no-cudagraphs"),
+    },
+}
+
+
 supports_learnable_bias = unittest.skipUnless(
     (
         (torch.xpu.is_available() and has_triton())
@@ -8828,6 +8901,23 @@ class TestLearnableBiases(InductorTestCase):
             requires_grad=True,
         )
         return (make_tensor(), make_tensor(), make_tensor())
+
+    def skip_rocm_flaky_learnable_bias_case(
+        self, test_name: str, params: Params, mode: str
+    ):
+        """Skips parameterized ROCm flakes tracked by disabled-test issues."""
+        case = (
+            params.batch_size,
+            params.num_heads,
+            params.seq_length,
+            params.head_dim,
+            params.dtype,
+            mode,
+        )
+        if TEST_WITH_ROCM and case in ROCM_FLAKY_LEARNABLE_BIAS_CASES[test_name]:
+            self.skipTest(
+                "Flaky on ROCm: https://github.com/pytorch/pytorch/issues/167271 and https://github.com/pytorch/pytorch/issues/167296"
+            )
 
     @torch.no_grad()
     def _gold_check(self, eager, compiled, gold, tensor_name, fudge_factor=1.35):
@@ -8886,6 +8976,7 @@ class TestLearnableBiases(InductorTestCase):
     )
     @common_utils.parametrize("mode", ["default", "max-autotune-no-cudagraphs"])
     def test_relative_1d_bias(self, device, params, mode: str):
+        self.skip_rocm_flaky_learnable_bias_case("relative_1d_bias", params, mode)
         query, key, value = self._init_tensors(params, device=device)
         bias = torch.randn(
             2 * params.seq_length,
@@ -9203,6 +9294,7 @@ class TestLearnableBiases(InductorTestCase):
     )
     @common_utils.parametrize("mode", ["default", "max-autotune-no-cudagraphs"])
     def test_symmetric_bias(self, device, params, mode: str):
+        self.skip_rocm_flaky_learnable_bias_case("symmetric_bias", params, mode)
         query, key, value = self._init_tensors(params, device=device)
         bias = torch.randn(
             params.seq_length,
@@ -9275,6 +9367,7 @@ class TestLearnableBiases(InductorTestCase):
     )
     @common_utils.parametrize("mode", ["default", "max-autotune-no-cudagraphs"])
     def test_head_specific_gate(self, device, params, mode: str):
+        self.skip_rocm_flaky_learnable_bias_case("head_specific_gate", params, mode)
         query, key, value = self._init_tensors(params, device=device)
         gate_score = torch.randn(
             params.num_heads,
@@ -9724,6 +9817,67 @@ class TestLearnableBiases(InductorTestCase):
             bias_sdpa_gold,
             device,
         )
+
+    @supported_platform
+    @skip_on_cpu
+    @skip_on_mps
+    def test_captured_scalar_score_mod_requires_grad(self, device):
+        B, H, S, D = 1, 1, 128, 64
+        torch.manual_seed(0)
+        q_base, k_base, v_base = [
+            torch.randn(B, H, S, D, device=device, dtype=torch.float16)
+            for _ in range(3)
+        ]
+
+        def run_flex(indexed):
+            q, k, v = [
+                x.detach().clone().requires_grad_(True)
+                for x in (q_base, k_base, v_base)
+            ]
+            captured = torch.randn(
+                (1,) if indexed else (),
+                device=device,
+                dtype=torch.float32,
+                requires_grad=True,
+            )
+
+            if indexed:
+
+                def score_mod(score, b, h, q_idx, kv_idx):
+                    return score * captured[score.new_zeros((), dtype=torch.int)]
+
+            else:
+
+                def score_mod(score, b, h, q_idx, kv_idx):
+                    return score * captured
+
+            out = torch.compile(flex_attention, dynamic=False)(
+                q, k, v, score_mod=score_mod
+            )
+            out.sum().backward()
+            return out, q.grad, k.grad, v.grad, captured, captured.grad
+
+        def run_ref(captured):
+            q, k, v = [
+                x.detach().clone().to(torch.float64).requires_grad_(True)
+                for x in (q_base, k_base, v_base)
+            ]
+            captured_ref = captured.detach().clone().to(torch.float64)
+            captured_ref.requires_grad_(True)
+            scores = torch.matmul(q, k.transpose(-2, -1)) * (1.0 / math.sqrt(D))
+            scores = scores * (captured_ref[0] if captured_ref.ndim else captured_ref)
+            out = torch.matmul(torch.softmax(scores, dim=-1), v)
+            out.sum().backward()
+            return out, q.grad, k.grad, v.grad, captured_ref.grad
+
+        for indexed in (False, True):
+            with self.subTest(indexed=indexed):
+                out, dq, dk, dv, captured, d_captured = run_flex(indexed)
+                ref = run_ref(captured)
+                for actual, expected in zip((out, dq, dk, dv, d_captured), ref):
+                    torch.testing.assert_close(
+                        actual.float(), expected.float(), atol=1e-2, rtol=1e-2
+                    )
 
     @supported_platform
     @skip_on_cpu

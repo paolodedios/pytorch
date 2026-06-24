@@ -599,12 +599,14 @@ def insert_deferred_runtime_asserts(
                     # TODO: some CSE when generating these nodes can probably
                     # help reduce graph size and improve compile time
                     def _lower_symint_divisor(d: torch.SymInt) -> fx.Node | int:
-                        try:
-                            p = _sympy_interp(expr_to_proxy, d.node.expr)
-                        except KeyError:
+                        if any(
+                            sym not in expr_to_proxy
+                            for sym in free_symbols(d.node.expr)
+                        ):
                             # Without duck sizing, a divisor symbol may not have
                             # been lowered yet; materialize it from its producers.
                             return graph.materialize_symint(d)
+                        p = _sympy_interp(expr_to_proxy, d.node.expr)
                         return p.node if isinstance(p, fx.Proxy) else p
 
                     if s not in expr_to_proxy:
