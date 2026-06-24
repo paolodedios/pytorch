@@ -1710,7 +1710,32 @@ class CppWrapperCpu(PythonWrapperCodegen):
             )
             """)
 
-        wrapper_body = "input_tensors = [arg if isinstance(arg, torch.Tensor) else torch.tensor(arg, device='cpu') for arg in args]"
+        input_python_indices = [
+            idx
+            for idx, value in enumerate(V.graph.graph_inputs.values())
+            if isinstance(
+                value,
+                (ir.TorchBindObject, ir.GeneratorState, ir.OpaqueObjectState),
+            )
+        ]
+        python_only_input_indices = (
+            "set()"
+            if not input_python_indices
+            else "{" + ", ".join(map(str, input_python_indices)) + "}"
+        )
+        wrapper_body = f"""
+                    python_only_input_indices = {python_only_input_indices}
+                    input_tensors = []
+                    input_handle_positions = []
+                    input_handles = [None] * len(args)
+                    for idx, arg in enumerate(args):
+                        if idx in python_only_input_indices:
+                            continue
+                        input_handle_positions.append(idx)
+                        input_tensors.append(
+                            arg if isinstance(arg, torch.Tensor) else torch.tensor(arg, device='cpu')
+                        )
+        """
         if V.graph.constants:
             # Append constants to the input args for cpp wrapper.
             # Python wrapper directly gets the value inside the wrapper call
@@ -1723,16 +1748,22 @@ class CppWrapperCpu(PythonWrapperCodegen):
             constants_str = f"[{', '.join(V.graph.constants.keys())}]"
             wrapper_body += f"""
                     constants_tensor = {constants_str}
+                    input_handle_positions.extend(range(len(input_handles), len(input_handles) + len(constants_tensor)))
+                    input_handles.extend([None] * len(constants_tensor))
                     input_tensors.extend(constants_tensor)
             """
         # Convert vector of at::Tensor to vector of AtenTensorHandle.
         # If we pass at::Tensor, the compilation will be too slow.
         wrapper_body += """
-                    input_handles = torch._C._aoti.unsafe_alloc_void_ptrs_from_tensors(input_tensors)
+                    packed_input_handles = torch._C._aoti.unsafe_alloc_void_ptrs_from_tensors(input_tensors)
+                    for idx, handle in zip(input_handle_positions, packed_input_handles):
+                        input_handles[idx] = handle
         """
         # Release the inputs for memory reuse.
         wrapper_body += """
                     args.clear()
+                    del input_handle_positions
+                    del packed_input_handles
                     del input_tensors
         """
 
