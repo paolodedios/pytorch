@@ -37,21 +37,13 @@ overlap_log = torch._logging.getArtifactLogger(__name__, "overlap")
 
 
 def _resolve_group_name(group_name: Any) -> "GroupName":
-    """Resolve group_name to a GroupName string.
-
-    In compile-on-one-rank graphs, collective ops receive their
-    group_name argument as an FX Node reference (pointing to a
-    mesh_get_process_group call) rather than a string literal. For
-    bucketing key purposes we evaluate compile-time FX values to get
-    the underlying ProcessGroup object or group-name string.
+    """Resolve group_name to a GroupName string. In compile-on-one-rank graphs
+    collective ops can receive group_name as an FX node (a ProcessGroup via
+    meta["val"] or a get_attr) rather than a string literal.
     """
     group_name = evaluate_compile_time_value(group_name)
     if isinstance(group_name, str):
         return group_name  # pyrefly: ignore [bad-return]
-    if not hasattr(group_name, "group_name"):
-        raise AssertionError(
-            f"could not resolve collective group name from {group_name!r}"
-        )
     return group_name.group_name
 
 
