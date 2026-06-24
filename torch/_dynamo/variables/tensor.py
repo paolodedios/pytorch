@@ -268,9 +268,9 @@ class TensorVariable(VariableTracker):
         specialized_props = get_specialized_props(
             target_cls, tx, example_value, infer_subclass_type(example_value)
         )
-        # These fields are cached only when they can be specialized. If fake
-        # execution changes them to symbolic values, get_specialized_props()
-        # omits them and the old cache must be invalidated.
+        # These fields match the conditionally specialized metadata in
+        # get_specialized_props(). If fake execution changes them to symbolic
+        # values, they are omitted and the old cache must be invalidated.
         for k in ("_size", "stride", "is_contiguous"):
             if k not in specialized_props:
                 setattr(self, k, None)
