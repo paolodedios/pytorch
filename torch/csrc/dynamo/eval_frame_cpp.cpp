@@ -680,9 +680,18 @@ PyObject* dynamo__custom_eval_frame(
   // possibly apply frame strategy to future frames with same code object
   if (apply_to_code) {
     // An explicit torch.compile target may temporarily bypass a deliberate
-    // SKIP, but the callback's DEFAULT result must not clear that marker.
-    FrameExecStrategy strategy_to_apply =
-        skip_overridden ? original_strategy : new_strategy;
+    // SKIP, but the callback's DEFAULT result must not clear that marker. If
+    // the callback asks for a concrete action like RUN_ONLY, keep it so
+    // recompile-limit state still persists for explicit skipped targets.
+    FrameExecStrategy strategy_to_apply = new_strategy;
+    if (skip_overridden) {
+      if (strategy_to_apply.cur_action == FrameAction::DEFAULT) {
+        strategy_to_apply.cur_action = original_strategy.cur_action;
+      }
+      if (strategy_to_apply.recursive_action == FrameAction::DEFAULT) {
+        strategy_to_apply.recursive_action = original_strategy.recursive_action;
+      }
+    }
     if (strategy_to_apply.cur_action != FrameAction::DEFAULT) {
       DEBUG_TRACE("create action: %d\n", strategy_to_apply.cur_action);
     }

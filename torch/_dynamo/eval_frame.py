@@ -461,7 +461,7 @@ def _temporarily_unskip_code(
 def _skipped_forward_code_for_call_impl(
     fn: Callable[..., Any],
 ) -> tuple[types.CodeType | None, bool]:
-    if getattr(fn, "__name__", None) != "_call_impl":
+    if getattr(fn, "__name__", None) not in {"_call_impl", "_wrapped_call_impl"}:
         return None, False
 
     mod = getattr(fn, "__self__", None)
