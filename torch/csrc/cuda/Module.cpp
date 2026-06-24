@@ -52,6 +52,9 @@
 #include <sstream>
 #include <thread>
 #include <unordered_map>
+#include <vector>
+
+// NOLINTBEGIN(misc-use-internal-linkage,readability-container-contains,cppcoreguidelines-init-variables,modernize-use-nullptr,bugprone-casting-through-void,modernize-use-designated-initializers)
 
 namespace at::native {
 void* getCurrentCUDASolverDnHandleLazy();
@@ -451,6 +454,77 @@ PyObject* THCPModule_cudaCachingAllocator_raw_delete(
     c10::cuda::CUDACachingAllocator::raw_delete(mem_ptr);
   }
   Py_RETURN_NONE;
+  END_HANDLE_TH_ERRORS
+}
+
+PyObject* THCPModule_cudaBatchEmptyInt8(PyObject* _unused, PyObject* args) {
+  HANDLE_TH_ERRORS
+  PyObject* sizes_obj = nullptr;
+  PyObject* device_indices_obj = nullptr;
+  if (!PyArg_ParseTuple(args, "OO", &sizes_obj, &device_indices_obj)) {
+    return nullptr;
+  }
+
+  THPObjectPtr sizes_fast(
+      PySequence_Fast(sizes_obj, "expected sizes to be a sequence"));
+  if (!sizes_fast) {
+    return nullptr;
+  }
+  THPObjectPtr device_indices_fast(PySequence_Fast(
+      device_indices_obj, "expected device_indices to be a sequence"));
+  if (!device_indices_fast) {
+    return nullptr;
+  }
+
+  const Py_ssize_t num_tensors = PySequence_Fast_GET_SIZE(sizes_fast.get());
+  TORCH_CHECK(
+      PySequence_Fast_GET_SIZE(device_indices_fast.get()) == num_tensors,
+      "sizes and device_indices must have the same length");
+
+  std::vector<int64_t> sizes;
+  std::vector<c10::DeviceIndex> device_indices;
+  sizes.reserve(static_cast<size_t>(num_tensors));
+  device_indices.reserve(static_cast<size_t>(num_tensors));
+  for (const auto i : c10::irange(num_tensors)) {
+    PyObject* size_obj = PySequence_Fast_GET_ITEM(sizes_fast.get(), i);
+    PyObject* device_index_obj =
+        PySequence_Fast_GET_ITEM(device_indices_fast.get(), i);
+    TORCH_CHECK(THPUtils_checkLong(size_obj), "size ", i, " must be an int");
+    TORCH_CHECK(
+        THPUtils_checkLong(device_index_obj),
+        "device index ",
+        i,
+        " must be an int");
+    const auto size = THPUtils_unpackLong(size_obj);
+    TORCH_CHECK(size >= 0, "size ", i, " must be non-negative");
+    sizes.push_back(size);
+    device_indices.push_back(THPUtils_unpackDeviceIndex(device_index_obj));
+  }
+
+  std::vector<at::Tensor> tensors;
+  tensors.reserve(static_cast<size_t>(num_tensors));
+  {
+    pybind11::gil_scoped_release no_gil;
+    for (const auto i : c10::irange(num_tensors)) {
+      tensors.emplace_back(at::empty(
+          {sizes[i]},
+          at::TensorOptions().dtype(at::kChar).device(
+              at::kCUDA, device_indices[i])));
+    }
+  }
+
+  THPObjectPtr result(PyList_New(num_tensors));
+  if (!result) {
+    return nullptr;
+  }
+  for (const auto i : c10::irange(num_tensors)) {
+    PyObject* tensor_obj = THPVariable_Wrap(tensors[i]);
+    if (!tensor_obj) {
+      return nullptr;
+    }
+    PyList_SET_ITEM(result.get(), i, tensor_obj);
+  }
+  return result.release();
   END_HANDLE_TH_ERRORS
 }
 
@@ -2250,6 +2324,10 @@ static struct PyMethodDef _THCPModule_methods[] = {
      THCPModule_cudaCachingAllocator_raw_delete,
      METH_O,
      nullptr},
+    {"_cuda_batch_empty_int8",
+     THCPModule_cudaBatchEmptyInt8,
+     METH_VARARGS,
+     nullptr},
     {"_cuda_cudaCachingAllocator_enable",
      THCPModule_cudaCachingAllocator_enable,
      METH_O,
@@ -2417,3 +2495,5 @@ void initModule(PyObject* module) {
 }
 
 } // namespace torch::cuda
+
+// NOLINTEND(misc-use-internal-linkage,readability-container-contains,cppcoreguidelines-init-variables,modernize-use-nullptr,bugprone-casting-through-void,modernize-use-designated-initializers)

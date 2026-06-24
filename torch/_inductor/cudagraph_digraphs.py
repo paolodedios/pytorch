@@ -10,7 +10,7 @@ import os
 import pprint
 import sys
 import time
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 
 import cuda.bindings.driver as cuda_driver  # pyrefly: ignore [missing-import]
 import cuda.bindings.nvrtc as nvrtc  # pyrefly: ignore [missing-import]
@@ -1159,23 +1159,49 @@ def cudagraphify(
         f"delta_gb={reserved_mem_delta_after_capture_cleanup / 10**9}"
     )
 
+    empty_segment_indices = tuple(
+        sorted(
+            (
+                segment_idx
+                for segment_idx, input_idx in enumerate(segment_input_idxs)
+                if input_idx is None
+            ),
+            key=lambda segment_idx: segment_sizes[segment_idx],
+            reverse=True,
+        )
+    )
+    empty_segment_sizes = tuple(segment_sizes[idx] for idx in empty_segment_indices)
+    empty_segment_device_indices = tuple(
+        segment_devices[idx].index
+        if segment_devices[idx].index is not None
+        else device_index
+        for idx in empty_segment_indices
+    )
+    input_segment_entries = tuple(
+        (segment_idx, input_idx)
+        for segment_idx, input_idx in enumerate(segment_input_idxs)
+        if input_idx is not None
+    )
+    num_dynamic_tensors = len(segment_sizes)
+
     @nvtx.annotate()
     def run(new_inputs: list[InputType]) -> OutputType:
         """Replay the graph with new input and output storage pointers."""
         assert num_inputs == len(new_inputs)
 
-        dynamic_tensors: list[torch.Tensor] = []
+        dynamic_tensors_with_none: list[torch.Tensor | None] = [
+            None
+        ] * num_dynamic_tensors
 
         rng = nvtx.start_range(message="build dynamic_tensors", color="green")
-        for size, device, input_idx in zip(
-            segment_sizes, segment_devices, segment_input_idxs
-        ):
-            if input_idx is None:
-                with nvtx.annotate("torch.empty() calls"):
-                    dynamic_tensors.append(
-                        torch.empty(size, dtype=torch.int8, device=device)
-                    )
-                continue
+        if empty_segment_sizes:
+            with nvtx.annotate("torch._C._cuda_batch_empty_int8"):
+                empty_tensors = torch._C._cuda_batch_empty_int8(  # pyrefly: ignore[missing-attribute]
+                    empty_segment_sizes, empty_segment_device_indices
+                )
+            for segment_idx, empty_tensor in zip(empty_segment_indices, empty_tensors):
+                dynamic_tensors_with_none[segment_idx] = empty_tensor
+        for segment_idx, input_idx in input_segment_entries:
             new_input = new_inputs[input_idx]
             # These checks are in the critical path to launching the
             # cuda graph, so comment them out for now.
@@ -1191,7 +1217,8 @@ def cudagraphify(
             #         f"captured input storage for input {input_idx}: "
             #         f"{nbytes_underlying_storage(new_input)} < {size}"
             #     )
-            dynamic_tensors.append(new_input)
+            dynamic_tensors_with_none[segment_idx] = cast(torch.Tensor, new_input)
+        dynamic_tensors = cast(list[torch.Tensor], dynamic_tensors_with_none)
         nvtx.end_range(rng)
 
         copy_dsts: list[torch.Tensor] = []
@@ -1608,7 +1635,7 @@ class PythonDynamicCUDAGraph:
             ]
             # This error check is in the critical path and expensive,
             # so comment it out for now.
-            
+
             # for idx, tensor in zip(
             #     self.device_dynamic_tensor_indices, device_dynamic_tensors
             # ):
