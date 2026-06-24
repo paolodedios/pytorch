@@ -214,6 +214,7 @@ def _replace_collective(
             if target is symm_mem._low_contention_all_gather_ce_multicast.default:
                 target = symm_mem._low_contention_all_gather_ce_multicast_out.default
             else:
+                # The existing low-contention all-gather has no out variant.
                 return False
             args = (input_node, group_name, out)
         else:

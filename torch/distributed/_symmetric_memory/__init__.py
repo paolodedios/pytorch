@@ -478,9 +478,11 @@ lib.define("_low_contention_all_gather(Tensor tensor, str group_name) -> Tensor"
 lib.define(
     "_low_contention_reduce_scatter(Tensor tensor, str reduce_op, str group_name) -> Tensor"
 )
+# Copy-engine multicast low-contention all-gather that allocates symm_mem output.
 lib.define(
     "_low_contention_all_gather_ce_multicast(Tensor tensor, str group_name) -> Tensor"
 )
+# Out variant for preallocated symm_mem output, including CUDA graph capture.
 lib.define(
     "_low_contention_all_gather_ce_multicast_out("
     "Tensor tensor, str group_name, Tensor(a!) out) -> Tensor(a!)"
@@ -1752,6 +1754,7 @@ def _require_multicast(device_index: int, op_name: str) -> None:
         raise RuntimeError(f"{op_name} requires multicast support (NVSwitch / NVLS).")
 
 
+# Separate channels from existing low-contention collectives sharing signal pad.
 _CE_MULTICAST_BARRIER_CHANNEL_1 = 3
 _CE_MULTICAST_BARRIER_CHANNEL_2 = 4
 
@@ -1872,22 +1875,13 @@ def _low_contention_all_gather_ce_multicast_impl(
 
     rank = symm_mem.rank
     shard_bytes = tensor.numel() * tensor.element_size()
-    backend_stream = _get_backend_stream()
-    current_stream = torch.cuda.current_stream()
-    is_capturing = torch.cuda.is_current_stream_capturing()
 
-    backend_stream.wait_stream(current_stream)
-    with backend_stream:
-        ag_input = tensor if tensor.is_contiguous() else tensor.contiguous()
-        ag_input.record_stream(backend_stream)
-        symm_mem.barrier(channel=_CE_MULTICAST_BARRIER_CHANNEL_1)
-        torch.ops.symm_mem.memcpy_async_to_multicast(
-            output, ag_input, rank * shard_bytes, group_name
-        )
-        symm_mem.barrier(channel=_CE_MULTICAST_BARRIER_CHANNEL_2)
-        if not is_capturing:
-            output.record_stream(backend_stream)
-        torch._C._distributed_c10d._register_work(output, Work())
+    ag_input = tensor if tensor.is_contiguous() else tensor.contiguous()
+    symm_mem.barrier(channel=_CE_MULTICAST_BARRIER_CHANNEL_1)
+    torch.ops.symm_mem.memcpy_to_multicast_(
+        output, ag_input, rank * shard_bytes, group_name
+    )
+    symm_mem.barrier(channel=_CE_MULTICAST_BARRIER_CHANNEL_2)
     return output
 
 

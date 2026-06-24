@@ -470,7 +470,7 @@ at::Tensor multimem_all_gather_out(
 }
 
 // Copy a source tensor's bytes into a symm_mem allocation's multicast address
-// at a given byte offset, using the CUDA Copy Engine (cudaMemcpyAsync).
+// at a given byte offset, using the CUDA Copy Engine on the current stream.
 //
 // Writing to the multicast pointer causes the NVSwitch to broadcast the write
 // to all peers' backing memory. Used by the copy-engine multicast all-gather.
@@ -479,37 +479,37 @@ at::Tensor multimem_all_gather_out(
 // empty_strided_p2p() and the underlying SymmetricMemory handle has multicast
 // support. `byte_offset` is in bytes and is relative to the base of the
 // multicast region (not the tensor's storage_offset).
-at::Tensor memcpy_async_to_multicast(
+at::Tensor memcpy_to_multicast_(
     at::Tensor& symm_mem_out,
     const at::Tensor& src,
     int64_t byte_offset,
     std::string group_name) {
   TORCH_CHECK(
       src.is_contiguous(),
-      "symm_mem::memcpy_async_to_multicast: src must be contiguous.");
+      "symm_mem::memcpy_to_multicast_: src must be contiguous.");
   TORCH_CHECK(
       src.device().is_cuda() && symm_mem_out.device().is_cuda(),
-      "symm_mem::memcpy_async_to_multicast: src and dst must be CUDA tensors.");
+      "symm_mem::memcpy_to_multicast_: src and dst must be CUDA tensors.");
   TORCH_CHECK(
       byte_offset >= 0,
-      "symm_mem::memcpy_async_to_multicast: byte_offset must be >= 0 (got ",
+      "symm_mem::memcpy_to_multicast_: byte_offset must be >= 0 (got ",
       byte_offset,
       ").");
 
   auto symm_mem = c10d::symmetric_memory::rendezvous(symm_mem_out, group_name);
   TORCH_CHECK(
       symm_mem != nullptr,
-      "symm_mem::memcpy_async_to_multicast: dst must be allocated with "
+      "symm_mem::memcpy_to_multicast_: dst must be allocated with "
       "empty_strided_p2p().");
   TORCH_CHECK(
       symm_mem->has_multicast_support(),
-      "symm_mem::memcpy_async_to_multicast: dst must have multicast support.");
+      "symm_mem::memcpy_to_multicast_: dst must have multicast support.");
 
   const size_t bytes = src.numel() * src.element_size();
   const size_t buffer_bytes = symm_mem->get_buffer_size();
   TORCH_CHECK(
       static_cast<size_t>(byte_offset) + bytes <= buffer_bytes,
-      "symm_mem::memcpy_async_to_multicast: byte_offset (",
+      "symm_mem::memcpy_to_multicast_: byte_offset (",
       byte_offset,
       ") + src bytes (",
       bytes,
@@ -1172,12 +1172,12 @@ at::Tensor multimem_all_gather_out(
   return out;
 }
 
-at::Tensor memcpy_async_to_multicast(
+at::Tensor memcpy_to_multicast_(
     at::Tensor& symm_mem_out,
     const at::Tensor& src,
     int64_t byte_offset,
     std::string group_name) {
-  TORCH_CHECK(false, "memcpy_async_to_multicast: requires CUDA 12.3+.");
+  TORCH_CHECK(false, "memcpy_to_multicast_: requires CUDA 12.3+.");
   return symm_mem_out;
 }
 
@@ -1404,7 +1404,7 @@ TORCH_LIBRARY_IMPL(symm_mem, CUDA, m) {
   m.impl(
       "multimem_one_shot_reduce_out", ::multimem_one_shot_reduce_out);
   m.impl("multimem_all_gather_out", ::multimem_all_gather_out);
-  m.impl("memcpy_async_to_multicast", ::memcpy_async_to_multicast);
+  m.impl("memcpy_to_multicast_", ::memcpy_to_multicast_);
 #endif
   m.impl("stream_write_value32_", ::stream_write_value32_);
   m.impl("memset32_", ::memset32_);

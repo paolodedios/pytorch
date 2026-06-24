@@ -936,10 +936,10 @@ def register_symm_mem_lowerings():
         if can_realize_as_comm_buffer(out, ir.CommBufferType.SYMM_MEM):
             realize_as_comm_buffer(out, ir.CommBufferType.SYMM_MEM, group_name)
         else:
-            raise AssertionError(
+            raise RuntimeError(
                 "_low_contention_all_gather_ce_multicast_out requires an "
                 "Inductor-owned output buffer that can be realized as symmetric "
-                "memory."
+                "memory; this indicates an invalid lowering."
             )
         return pytree.tree_map(
             ir.TensorBox.create,

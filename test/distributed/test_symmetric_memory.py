@@ -461,9 +461,7 @@ class SymmetricMemoryTest(MultiProcContinuousTest):
                     (64, 64), self.rank, dtype=torch.float32, device=self.device
                 )
 
-            dist.barrier(device_ids=[self.device.index])
             res = torch.ops.symm_mem._low_contention_all_gather_ce_multicast(t, "0")
-            res = torch.ops._c10d_functional.wait_tensor(res)
             self.assertEqual(res.shape, (64 * self.world_size, 64))
 
             chunks = res.chunk(self.world_size)
@@ -498,12 +496,10 @@ class SymmetricMemoryTest(MultiProcContinuousTest):
                 group_name="0",
             )
 
-            dist.barrier(device_ids=[self.device.index])
             res = torch.ops.symm_mem._low_contention_all_gather_ce_multicast_out(
                 t, "0", out
             )
             self.assertEqual(res.data_ptr(), out.data_ptr())
-            res = torch.ops._c10d_functional.wait_tensor(res)
             self.assertEqual(res.shape, (64 * self.world_size, 64))
 
             chunks = res.chunk(self.world_size)
@@ -1600,12 +1596,10 @@ class SymmetricMemoryTestCudaGraph(MultiProcContinuousTest):
                 inp, group_name, out
             )
 
-        dist.barrier(device_ids=[self.device.index])
         s = torch.cuda.Stream()
         s.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(s):
             warmup = run_op()
-            torch.ops._c10d_functional.wait_tensor(warmup)
         torch.cuda.current_stream().wait_stream(s)
         torch.cuda.synchronize()
 
@@ -1617,7 +1611,6 @@ class SymmetricMemoryTestCudaGraph(MultiProcContinuousTest):
                 # Skew one rank so replay catches missing CE multicast ordering.
                 torch.cuda._sleep(20_000_000)
             res = run_op()
-            res = torch.ops._c10d_functional.wait_tensor(res)
             observed.copy_(res)
 
         for _ in range(4):
@@ -1926,8 +1919,9 @@ class LoweringTest(MultiProcContinuousTest):
         with _enable_multicast_for_test(self, self.device.index):
 
             def func(x):
-                res = torch.ops.symm_mem._low_contention_all_gather_ce_multicast(x, "0")
-                return torch.ops._c10d_functional.wait_tensor(res)
+                return torch.ops.symm_mem._low_contention_all_gather_ce_multicast(
+                    x, "0"
+                )
 
             x = torch.full((8, 8), self.rank, dtype=torch.float32, device=self.device)
             compiled = torch.compile(func, fullgraph=True)
