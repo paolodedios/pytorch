@@ -2051,7 +2051,7 @@ def forward(self, arg0_1):
 def forward(self, arg0_1):
     ones = torch.ops.aten.ones.default([3], device = device(type='cpu'), pin_memory = False)
     cat = torch.ops.aten.cat.default([arg0_1, ones]);  arg0_1 = ones = None
-    add = torch.ops.aten.add.Tensor(cat, 3);  cat = None
+    add = torch.ops.aten.add.Scalar(cat, 3);  cat = None
     return (add,)""",
         )
 

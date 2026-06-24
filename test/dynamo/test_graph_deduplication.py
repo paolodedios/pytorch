@@ -210,7 +210,7 @@ class GraphModule(torch.nn.Module):
             """\
 class GraphModule(torch.nn.Module):
     def forward(self, primals_1: "f32[10, 10]"):
-        add: "f32[10, 10]" = torch.ops.aten.add.Tensor(primals_1, 2);  primals_1 = None
+        add: "f32[10, 10]" = torch.ops.aten.add.Scalar(primals_1, 2);  primals_1 = None
 
         partitioned_fw_subgraph_0_0 = self.partitioned_fw_subgraph_0_0
 
@@ -235,11 +235,11 @@ class GraphModule(torch.nn.Module):
 
     class partitioned_fw_subgraph_0_0(torch.nn.Module):
         def forward(self, primals_0: "f32[10, 10]"):
-            mul: "f32[10, 10]" = torch.ops.aten.mul.Tensor(primals_0, 7);  primals_0 = None
+            mul: "f32[10, 10]" = torch.ops.aten.mul.Scalar(primals_0, 7);  primals_0 = None
 
-            add: "f32[10, 10]" = torch.ops.aten.add.Tensor(mul, 1);  mul = None
+            add: "f32[10, 10]" = torch.ops.aten.add.Scalar(mul, 1);  mul = None
 
-            add_1: "f32[10, 10]" = torch.ops.aten.add.Tensor(add, 2);  add = None
+            add_1: "f32[10, 10]" = torch.ops.aten.add.Scalar(add, 2);  add = None
             return (add_1,)
 """,
         )
