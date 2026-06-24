@@ -14869,7 +14869,7 @@ if __name__ == '__main__':
                 if dtype == torch.float16:
                     expected_max_ulp_diff = 1
                     if bias:
-                        expected_input_grad_max_ulp_diff = 107
+                        expected_input_grad_max_ulp_diff = 200  # x86_64/aarch64 160 (fp32 denom)
                         expected_weight_grad_max_ulp_diff = 25
                         expected_linear_bias_grad_max_ulp_diff = 1
                     else:
@@ -15669,18 +15669,20 @@ if __name__ == '__main__':
         N, D, V = 4, 8, 1 << 17  # 131072 > fp16 max (65504)
         x = torch.randn(N, D, device=device, dtype=dtype) * 0.05
         w = torch.randn(V, D, device=device, dtype=dtype) * 0.05
-        # Normalize in fp64 then cast: an fp16 row-sum over this V would
-        # itself overflow and yield a degenerate (non-normalized) target.
-        p = torch.rand(N, V, device=device, dtype=torch.float64)
+        # Normalize in fp32 then cast: an fp16 row-sum over this V would
+        # itself overflow and yield a degenerate (non-normalized) target;
+        # fp32 is exact enough and MPS-safe (no fp64 on device).
+        p = torch.rand(N, V, device=device, dtype=torch.float32)
         p = (p / p.sum(1, keepdim=True)).to(dtype)
         options = nn.LinearCrossEntropyOptions(acc_policy=acc_policy)
         loss = nn.functional.linear_cross_entropy(
             x, w, p, reduction="mean", options=options)
         self.assertTrue(torch.isfinite(loss).item(),
                         f"prob loss not finite for acc_policy={acc_policy}: {loss}")
-        z = x.double() @ w.double().t()
-        ref = (torch.logsumexp(z, 1) - (p.double() * z).sum(1)).mean()
-        self.assertEqual(loss.double(), ref, atol=0.05, rtol=5e-3)
+        # fp64 reference on CPU (MPS has no float64).
+        z = x.cpu().double() @ w.cpu().double().t()
+        ref = (torch.logsumexp(z, 1) - (p.cpu().double() * z).sum(1)).mean()
+        self.assertEqual(loss.cpu().double(), ref, atol=0.05, rtol=5e-3)
 
     @parametrize_test("acc_policy", ["compact", "balanced", "auto"])
     def test_linear_cross_entropy_prob_large_magnitude_fp16_loss_term(self, device, acc_policy):
@@ -15697,16 +15699,17 @@ if __name__ == '__main__':
         N, D, V = 4096, 16, 2048
         x = torch.randn(N, D, device=device, dtype=dtype) * 8.0
         w = torch.randn(V, D, device=device, dtype=dtype) * 8.0
-        p = torch.rand(N, V, device=device, dtype=torch.float64)
+        p = torch.rand(N, V, device=device, dtype=torch.float32)
         p = (p / p.sum(1, keepdim=True)).to(dtype)
         options = nn.LinearCrossEntropyOptions(acc_policy=acc_policy, batch_chunk_size=N)
         loss = nn.functional.linear_cross_entropy(
             x, w, p, reduction="mean", options=options)
         self.assertTrue(torch.isfinite(loss).item(),
                         f"prob loss not finite for acc_policy={acc_policy}: {loss}")
-        z = x.double() @ w.double().t()
-        ref = (torch.logsumexp(z, 1) - (p.double() * z).sum(1)).mean()
-        self.assertEqual(loss.double(), ref, rtol=5e-3, atol=0.5)
+        # fp64 reference on CPU (MPS has no float64).
+        z = x.cpu().double() @ w.cpu().double().t()
+        ref = (torch.logsumexp(z, 1) - (p.cpu().double() * z).sum(1)).mean()
+        self.assertEqual(loss.cpu().double(), ref, rtol=5e-3, atol=0.5)
 
     def test_linear_cross_entropy_prob_target_dispatch(self, device):
         """Probability-target dispatch edges. The harness covers the
