@@ -22,19 +22,68 @@ if _TEST_ROOT not in sys.path:
 from conftest import MinGpuFilterPlugin
 
 
-class _FakeMP(MultiProcessTestCase):
-    pass
+# The resolver reads ``world_size`` / ``device`` / ``device_type`` off the class
+# via ``cls.__new__(cls)`` (no ``__init__``), so these fakes expose them as the
+# same constant-returning properties / attributes the real distributed test
+# classes use.
+class _MPws4(MultiProcessTestCase):
+    @property
+    def world_size(self):
+        return 4
 
 
-class _FakeMTT(MultiThreadedTestCase):
-    pass
+class _MPws2(MultiProcessTestCase):
+    @property
+    def world_size(self):
+        return 2
+
+
+class _MPws1(MultiProcessTestCase):
+    @property
+    def world_size(self):
+        return 1
+
+
+class _MPcpuDevWs4(MultiProcessTestCase):
+    @property
+    def world_size(self):
+        return 4
+
+    @property
+    def device(self):
+        return "cpu"
+
+
+class _MPcpuDevWs2(MultiProcessTestCase):
+    @property
+    def world_size(self):
+        return 2
+
+    @property
+    def device(self):
+        return torch.device("cpu")
+
+
+class _MPbroken(MultiProcessTestCase):
+    @property
+    def world_size(self):
+        raise RuntimeError("world_size not resolvable at collection time")
+
+
+class _MTTws4(MultiThreadedTestCase):
+    @property
+    def world_size(self):
+        return 4
+
+
+class _MTTws2(MultiThreadedTestCase):
+    @property
+    def world_size(self):
+        return 2
 
 
 class _FakePlain(unittest.TestCase):
     pass
-
-
-_UNSET = object()
 
 
 def _func(min_gpus=None, required_world_size=None):
@@ -48,29 +97,13 @@ def _func(min_gpus=None, required_world_size=None):
     return f
 
 
-def _item(
-    *,
-    cls=None,
-    obj=None,
-    world_size=None,
-    name="test_x",
-    module_name="test_foo",
-    device=_UNSET,
-    device_type=_UNSET,
-):
-    inst = types.SimpleNamespace()
-    if world_size is not None:
-        inst.world_size = world_size
-    if device is not _UNSET:
-        inst.device = device
-    if device_type is not _UNSET:
-        inst.device_type = device_type
+def _item(*, cls=None, obj=None, name="test_x", module_name="test_foo"):
     return types.SimpleNamespace(
         obj=obj if obj is not None else _func(),
         cls=cls,
-        instance=inst,
         name=name,
         module=types.SimpleNamespace(__name__=module_name),
+        nodeid=f"{module_name}.py::{name}",
     )
 
 
@@ -79,73 +112,95 @@ class TestMinGpuFilter(TestCase):
 
     def setUp(self):
         self.plugin = MinGpuFilterPlugin(self.THRESHOLD)
-        # Pin the accelerator token so the thread-based heuristic is
-        # deterministic regardless of the host's available accelerators.
+        # Pin host-dependent state so the resolver is deterministic regardless
+        # of the accelerators / device count of the machine running this test.
         self.plugin._accel_tokens = ("cuda",)
+        self.plugin._default_world_size = 4
 
     def _keep(self, item):
         return self.plugin._required_gpus(item) >= self.THRESHOLD
 
-    # --- process-based ---
-    def test_process_world_size_below_threshold_dropped(self):
-        item = _item(cls=_FakeMP, world_size=2, module_name="test_c10d_nccl")
-        self.assertFalse(self._keep(item))
-
+    # --- process-based: world_size ---
     def test_process_world_size_at_threshold_kept(self):
-        item = _item(cls=_FakeMP, world_size=4, module_name="test_c10d_nccl")
+        item = _item(cls=_MPws4, module_name="test_c10d_nccl")
         self.assertTrue(self._keep(item))
 
-    def test_process_gpu_device_index_kept(self):
-        # NCCL-style `device` returning a rank int -> treated as accelerator.
-        item = _item(cls=_FakeMP, world_size=4, device=0, module_name="test_c10d_nccl")
+    def test_process_world_size_below_threshold_dropped(self):
+        item = _item(cls=_MPws2, module_name="test_c10d_nccl")
+        self.assertFalse(self._keep(item))
+
+    def test_process_world_size_one_dropped(self):
+        item = _item(cls=_MPws1, module_name="test_c10d_gloo")
+        self.assertFalse(self._keep(item))
+
+    # --- process-based: CPU / gloo gate ---
+    def test_gloo_cpu_module_world_size_4_dropped(self):
+        # Undecorated gloo test (e.g. test_gloo_backend_cpu_module): the file is
+        # gloo-backed so it is treated as CPU and dropped.
+        item = _item(cls=_MPws4, module_name="test_c10d_gloo")
+        self.assertFalse(self._keep(item))
+
+    def test_gloo_1gpu_decorator_2_dropped(self):
+        item = _item(cls=_MPws4, obj=_func(min_gpus=2), module_name="test_c10d_gloo")
+        self.assertFalse(self._keep(item))
+
+    def test_gloo_2gpu_decorator_4_kept(self):
+        # test_gloo_backend_2gpu_module is @skip_if_lt_x_gpu(4): a real 4-GPU test.
+        item = _item(cls=_MPws4, obj=_func(min_gpus=4), module_name="test_c10d_gloo")
         self.assertTrue(self._keep(item))
 
-    # --- process-based, CPU-backed gate ---
-    def test_cpu_device_world_size_4_dropped(self):
-        item = _item(cls=_FakeMP, world_size=4, device=torch.device("cpu"))
+    def test_cpu_device_property_world_size_4_dropped(self):
+        item = _item(cls=_MPcpuDevWs4, module_name="test_c10d_nccl")
         self.assertFalse(self._keep(item))
 
-    def test_cpu_device_type_world_size_4_dropped(self):
-        item = _item(cls=_FakeMP, world_size=4, device_type="cpu")
+    def test_cpu_device_property_world_size_2_dropped(self):
+        # CommTest-style: device property returns cpu, world_size == 2.
+        item = _item(cls=_MPcpuDevWs2, module_name="test_c10d_gloo")
         self.assertFalse(self._keep(item))
 
-    def test_gloo_module_world_size_4_dropped(self):
-        item = _item(cls=_FakeMP, world_size=4, module_name="test_c10d_gloo")
+    def test_cpu_suffix_module_dropped(self):
+        # e.g. distributed/checkpoint/test_file_system_checkpoint_cpu.
+        item = _item(cls=_MPws4, module_name="test_file_system_checkpoint_cpu")
         self.assertFalse(self._keep(item))
 
     def test_cpu_backed_with_decorator_kept(self):
-        # An explicit decorator overrides the backend/device gate.
-        item = _item(
-            cls=_FakeMP,
-            obj=_func(min_gpus=4),
-            world_size=4,
-            device=torch.device("cpu"),
-        )
+        # An explicit >= threshold decorator overrides the CPU gate.
+        item = _item(cls=_MPcpuDevWs4, obj=_func(min_gpus=4))
+        self.assertTrue(self._keep(item))
+
+    # --- process-based: robustness when introspection fails ---
+    def test_unresolvable_world_size_gloo_dropped(self):
+        # world_size property raises -> fall back to default world size, then the
+        # gloo module gate drops it.
+        item = _item(cls=_MPbroken, module_name="test_c10d_gloo")
+        self.assertFalse(self._keep(item))
+
+    def test_unresolvable_world_size_accelerator_kept(self):
+        # world_size property raises -> default world size (4) on an
+        # accelerator-backed module keeps the test.
+        item = _item(cls=_MPbroken, module_name="test_c10d_nccl")
         self.assertTrue(self._keep(item))
 
     # --- thread-based (MultiThreadedTestCase) ---
     def test_thread_accelerator_variant_world_size_4_kept(self):
-        item = _item(cls=_FakeMTT, world_size=4, name="test_broadcast_device_cuda")
+        item = _item(cls=_MTTws4, name="test_broadcast_device_cuda")
         self.assertTrue(self._keep(item))
 
     def test_thread_cpu_variant_dropped(self):
-        item = _item(cls=_FakeMTT, world_size=4, name="test_broadcast_device_cpu")
+        item = _item(cls=_MTTws4, name="test_broadcast_device_cpu")
         self.assertFalse(self._keep(item))
 
     def test_thread_no_device_variant_dropped(self):
-        item = _item(cls=_FakeMTT, world_size=4, name="test_expand_1d_rank_list")
+        item = _item(cls=_MTTws4, name="test_expand_1d_rank_list")
         self.assertFalse(self._keep(item))
 
     def test_thread_accelerator_variant_world_size_2_dropped(self):
-        item = _item(cls=_FakeMTT, world_size=2, name="test_broadcast_device_cuda")
+        item = _item(cls=_MTTws2, name="test_broadcast_device_cuda")
         self.assertFalse(self._keep(item))
 
     def test_thread_with_decorator_below_threshold_dropped(self):
         item = _item(
-            cls=_FakeMTT,
-            obj=_func(min_gpus=2),
-            world_size=4,
-            name="test_broadcast_device_cuda",
+            cls=_MTTws4, obj=_func(min_gpus=2), name="test_broadcast_device_cuda"
         )
         self.assertFalse(self._keep(item))
 

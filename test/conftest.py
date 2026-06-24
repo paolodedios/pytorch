@@ -393,6 +393,7 @@ class MinGpuFilterPlugin:
     def __init__(self, threshold: int) -> None:
         import torch
         from torch.testing._internal.common_distributed import (
+            DEFAULT_WORLD_SIZE,
             MultiProcContinuousTest,
             MultiProcessTestCase,
             MultiThreadedTestCase,
@@ -403,6 +404,7 @@ class MinGpuFilterPlugin:
         self._torch = torch
         self._process_based = (MultiProcessTestCase, MultiProcContinuousTest)
         self._thread_based = MultiThreadedTestCase
+        self._default_world_size = int(DEFAULT_WORLD_SIZE)
         tokens = []
         if TEST_CUDA:
             tokens.append("cuda")
@@ -411,6 +413,8 @@ class MinGpuFilterPlugin:
         if TEST_HPU:
             tokens.append("hpu")
         self._accel_tokens = tuple(tokens)
+        self._kept_count = 0
+        self._deselected_ids: list[str] = []
 
     def pytest_collection_modifyitems(self, config: Config, items: list[Any]) -> None:
         deselected = []
@@ -420,16 +424,29 @@ class MinGpuFilterPlugin:
                 kept.append(item)
             else:
                 deselected.append(item)
+        self._kept_count = len(kept)
+        self._deselected_ids = [item.nodeid for item in deselected]
         if deselected:
             config.hook.pytest_deselected(items=deselected)
             items[:] = kept
+
+    def pytest_report_collectionfinish(self) -> list[str]:
+        total = self._kept_count + len(self._deselected_ids)
+        lines = [
+            f"MinGpuFilter (PYTORCH_TEST_MIN_GPU={self.threshold}): kept "
+            f"{self._kept_count}/{total}, deselected {len(self._deselected_ids)} "
+            f"test(s) needing <{self.threshold} accelerators"
+        ]
+        lines += [f"  deselected: {nodeid}" for nodeid in self._deselected_ids]
+        return lines
 
     def _required_gpus(self, item: Any) -> int:
         try:
             return self._resolve(item)
         except Exception:
-            # Uncertain at collection time -> keep (favor coverage).
-            return self.threshold
+            # Introspection failed; fall back to a deterministic guess rather
+            # than blindly keeping the test.
+            return self._fallback(item)
 
     def _resolve(self, item: Any) -> int:
         func = getattr(item, "obj", None)
@@ -442,13 +459,13 @@ class MinGpuFilterPlugin:
             # Not a class-based test; rely on an explicit decorator, else keep.
             return dec if dec else self.threshold
         if issubclass(cls, self._process_based):
-            required = max(dec, self._world_size(item))
+            required = max(dec, self._world_size(cls))
             # A CPU-backed multi-process test uses ranks, not GPUs; drop it
             # unless an explicit decorator asserts the GPU requirement.
             if (
                 required >= self.threshold
                 and dec < self.threshold
-                and self._is_cpu_backed(item)
+                and self._is_cpu_backed(item, cls)
             ):
                 return 0
             return required
@@ -459,15 +476,38 @@ class MinGpuFilterPlugin:
             # variants that also spawn at least `threshold` ranks.
             if (
                 self._id_targets_accelerator(item)
-                and self._world_size(item) >= self.threshold
+                and self._world_size(cls) >= self.threshold
             ):
                 return self.threshold
             return 0
         # Plain TestCase: needs an explicit decorator to qualify as multi-GPU.
         return dec if dec else 1
 
-    def _world_size(self, item: Any) -> int:
-        return int(item.instance.world_size)
+    def _fallback(self, item: Any) -> int:
+        cls = getattr(item, "cls", None)
+        if cls is not None and issubclass(cls, self._process_based):
+            return 0 if self._module_is_cpu(item) else self._default_world_size
+        return self.threshold
+
+    def _probe_attr(self, cls: Any, name: str) -> Any:
+        # Read a class attribute / constant-returning ``@property`` without
+        # running ``__init__`` (which spawns/initializes processes at runtime,
+        # not at collection). Returns None when the value cannot be obtained.
+        try:
+            probe = cls.__new__(cls)
+        except Exception:
+            return None
+        try:
+            return getattr(probe, name)
+        except Exception:
+            return None
+
+    def _world_size(self, cls: Any) -> int:
+        val = self._probe_attr(cls, "world_size")
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return self._default_world_size
 
     def _id_targets_accelerator(self, item: Any) -> bool:
         if not self._accel_tokens:
@@ -475,21 +515,32 @@ class MinGpuFilterPlugin:
         parts = item.name.lower().split("_")
         return any(tok in parts for tok in self._accel_tokens)
 
-    def _is_cpu_backed(self, item: Any) -> bool:
-        inst = item.instance
-        try:
-            dev = inst.device
-        except Exception:
-            dev = None
-        verdict = self._device_is_cpu(dev)
+    def _is_cpu_backed(self, item: Any, cls: Any) -> bool:
+        verdict = self._device_is_cpu(self._probe_attr(cls, "device"))
         if verdict is not None:
             return verdict
-        dtype = getattr(inst, "device_type", None)
-        if isinstance(dtype, str):
-            return dtype.lower() == "cpu"
+        dtype = self._coerce_str(self._probe_attr(cls, "device_type"))
+        if dtype is not None:
+            return dtype.lower().split(":")[0] == "cpu"
+        return self._module_is_cpu(item)
+
+    def _module_is_cpu(self, item: Any) -> bool:
         module = getattr(item, "module", None)
         base = (getattr(module, "__name__", "") or "").rsplit(".", 1)[-1].lower()
-        return any(b in base for b in self._CPU_BACKEND_MODULES)
+        if any(b in base for b in self._CPU_BACKEND_MODULES):
+            return True
+        return base.endswith("_cpu")
+
+    def _coerce_str(self, val: Any) -> "str | None":
+        if isinstance(val, str):
+            return val
+        if callable(val):
+            try:
+                result = val()
+            except Exception:
+                return None
+            return result if isinstance(result, str) else None
+        return None
 
     def _device_is_cpu(self, dev: Any) -> "bool | None":
         if dev is None:
