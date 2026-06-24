@@ -1866,12 +1866,9 @@ def maybe_enable_local_tracker(
     return None
 
 
-def get_generator_seed_for_device_type(device_type: str):
+def get_accelerator_rng_seed():
     """
-    Gets the generator seed for a specific device type, handling LocalTensor mode appropriately.
-
-    Args:
-        device_type: The device type (e.g., "cuda", "cpu")
+    Gets the generator seed for current :ref:`accelerator<accelerators>`, handling LocalTensor mode appropriately.
 
     Returns:
         If in LocalTensor mode with per-rank RNG states:
