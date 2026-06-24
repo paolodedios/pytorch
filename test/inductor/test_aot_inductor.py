@@ -74,7 +74,6 @@ from torch.testing._internal.common_quantization import (
 )
 from torch.testing._internal.common_utils import (
     DeterministicGuard,
-    IS_ARM64,
     IS_CI,
     IS_FBCODE,
     IS_MACOS,
@@ -91,7 +90,6 @@ from torch.testing._internal.common_utils import (
     skipIfXpu,
     TEST_MPS,
     TEST_WITH_ROCM,
-    xfailIf,
 )
 from torch.testing._internal.custom_tensor import CustomTensorPlainOut
 from torch.testing._internal.inductor_utils import (
@@ -2069,8 +2067,6 @@ class AOTInductorTestsTemplate:
         with config.patch({"aot_inductor.use_runtime_constant_folding": True}):
             self.check_model(Model(self.device), example_inputs)
 
-    @xfailIf(IS_ARM64)
-    # see https://github.com/pytorch/pytorch/issues/177254
     @skipIfNoFBGEMM
     def test_quanatized_int8_linear(self):
         class Model(torch.nn.Module):
@@ -9290,6 +9286,17 @@ GPU_LAZY_AUTOTUNE_TEST_FAILURES = {
         ("cuda", "xpu"), is_skip=True
     ),
 }
+
+if TEST_WITH_ROCM:
+    GPU_LAZY_AUTOTUNE_TEST_FAILURES.update(
+        {
+            # Lazy autotune dual-wrapper mode runs a generated JIT wrapper
+            # during compile, which currently hits a ROCm device assert in
+            # this unbacked-symbol repeat/index_select case before reaching
+            # the AOTI package path.
+            "test_size_with_unbacked_add_expr": fail_gpu(("cuda",)),
+        }
+    )
 
 
 @unittest.skipIf(sys.platform == "darwin", "No CUDA on MacOS")
