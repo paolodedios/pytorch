@@ -9018,12 +9018,8 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
                 raise AssertionError("expected: op_name is not None")
             V.graph.additional_buffer_deps[op_name].add(dep_name)
 
-    # Pass-through outputs are the same IR nodes as inputs, so downstream
-    # consumers see the original buffer and have no scheduling dependency on
-    # the subgraph ops (e.g. record_event, wait_event).  Use OrderingOutput
-    # to create a rename chain that redirects future readers through a WeakDep
-    # on the void op, enforcing order without mutation side effects or
-    # lifetime extension.
+    # TODO: if control_deps ever wraps ops that truly mutate a pass-through
+    # (not just ordering), this needs MutationOutput instead of OrderingOutput.
     input_ids = OrderedSet([id(a) for a in args])
 
     def _add_passthrough_ordering(val, op):
