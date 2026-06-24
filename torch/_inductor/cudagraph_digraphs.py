@@ -16,6 +16,8 @@ import cuda.bindings.driver as cuda_driver  # pyrefly: ignore [missing-import]
 import cuda.bindings.nvrtc as nvrtc  # pyrefly: ignore [missing-import]
 import cuda.bindings.runtime as cuda_runtime  # pyrefly: ignore [missing-import]
 
+import nvtx  # pyrefly: ignore [missing-import]
+
 import torch
 from torch._dynamo.utils import preserve_rng_state
 from torch._inductor import config
@@ -35,6 +37,9 @@ from torch._inductor.cudagraph_utils import (
     PlaceholderInfo,
 )
 from torch.utils._ordered_set import OrderedSet
+
+
+# ruff: noqa: S101
 
 
 if TYPE_CHECKING:
@@ -556,11 +561,6 @@ def cudagraphify(
         ):
             model_outputs = model(capture_inputs)
 
-        if not config.triton.cudagraphs_preserve_memops:
-            replace_memops_with_kernels(
-                cuda_runtime.cudaGraph_t(init_value=graph.raw_cuda_graph())
-            )
-
         if not isinstance(model_outputs, (list, tuple)):
             static_outputs = (model_outputs,)
         else:
@@ -985,11 +985,36 @@ def cudagraphify(
     find_overlaps(dynamic_tensors_list[0], True)
     find_overlaps(dynamic_tensors_list[1], True)
     find_overlaps(dynamic_tensors_list[0] + dynamic_tensors_list[1], True)
+    extra_host_pointer_table_updates: list[HostPointerTableSlotUpdate] = []
+    extra_host_pointer_table_keepalive: list[torch.Tensor] = []
+    if config.triton.cudagraphs_preserve_memops:
+        (
+            extra_host_pointer_table_updates,
+            extra_host_pointer_table_keepalive,
+        ) = replace_memops_with_kernels(
+            cuda_runtime.cudaGraph_t(init_value=graphs[1].raw_cuda_graph()),
+            cuda_runtime.cudaGraph_t(init_value=graphs[0].raw_cuda_graph()),
+            dynamic_tensors_list[1],
+            dynamic_tensors_list[0],
+            dynamic_device_memcpy_only=True,
+        )
+    else:
+        (
+            extra_host_pointer_table_updates,
+            extra_host_pointer_table_keepalive,
+        ) = replace_memops_with_kernels(
+            cuda_runtime.cudaGraph_t(init_value=graphs[1].raw_cuda_graph()),
+            cuda_runtime.cudaGraph_t(init_value=graphs[0].raw_cuda_graph()),
+            dynamic_tensors_list[1],
+            dynamic_tensors_list[0],
+        )
     graph_runner = make_dynamic_graph_runner(
         graph,
         dynamic_tensors_list[1],
         graphs[0],
         dynamic_tensors_list[0],
+        extra_host_pointer_table_updates,
+        extra_host_pointer_table_keepalive,
     )
 
     num_inputs = len(inputs)
@@ -1134,33 +1159,40 @@ def cudagraphify(
         f"delta_gb={reserved_mem_delta_after_capture_cleanup / 10**9}"
     )
 
+    @nvtx.annotate()
     def run(new_inputs: list[InputType]) -> OutputType:
         """Replay the graph with new input and output storage pointers."""
         assert num_inputs == len(new_inputs)
 
         dynamic_tensors: list[torch.Tensor] = []
 
+        rng = nvtx.start_range(message="build dynamic_tensors", color="green")
         for size, device, input_idx in zip(
             segment_sizes, segment_devices, segment_input_idxs
         ):
             if input_idx is None:
-                dynamic_tensors.append(
-                    torch.empty(size, dtype=torch.int8, device=device)
-                )
+                with nvtx.annotate("torch.empty() calls"):
+                    dynamic_tensors.append(
+                        torch.empty(size, dtype=torch.int8, device=device)
+                    )
                 continue
             new_input = new_inputs[input_idx]
-            if not isinstance(new_input, torch.Tensor) or not new_input.is_cuda:
-                raise RuntimeError(
-                    "CUDA graph input pointer update expected replay input "
-                    f"{input_idx} to be a CUDA tensor, got {new_input!r}"
-                )
-            if nbytes_underlying_storage(new_input) < size:
-                raise RuntimeError(
-                    "CUDA graph replay input storage is smaller than the "
-                    f"captured input storage for input {input_idx}: "
-                    f"{nbytes_underlying_storage(new_input)} < {size}"
-                )
+            # These checks are in the critical path to launching the
+            # cuda graph, so comment them out for now.
+
+            # if not isinstance(new_input, torch.Tensor) or not new_input.is_cuda:
+            #     raise RuntimeError(
+            #         "CUDA graph input pointer update expected replay input "
+            #         f"{input_idx} to be a CUDA tensor, got {new_input!r}"
+            #     )
+            # if nbytes_underlying_storage(new_input) < size:
+            #     raise RuntimeError(
+            #         "CUDA graph replay input storage is smaller than the "
+            #         f"captured input storage for input {input_idx}: "
+            #         f"{nbytes_underlying_storage(new_input)} < {size}"
+            #     )
             dynamic_tensors.append(new_input)
+        nvtx.end_range(rng)
 
         copy_dsts: list[torch.Tensor] = []
         copy_srcs: list[torch.Tensor] = []
@@ -1198,14 +1230,18 @@ def cudagraphify(
             if input_slot_spec.input_idx in copyback_input_idxs:
                 copyback_dsts.append(input_copy_src)
                 copyback_srcs.append(input_copy_dst)
+        torch.cuda.nvtx.range_pop()
+        rng = nvtx.start_range(message="foreach_copy", color="red")
         if copy_dsts:
             torch._foreach_copy_(copy_dsts, copy_srcs)
-        torch.cuda.nvtx.range_pop()
+        nvtx.end_range(rng)
 
         graph_runner.replay(dynamic_tensors)
 
+        rng = nvtx.start_range(message="foreach_copy2", color="red")
         if copyback_dsts:
             torch._foreach_copy_(copyback_dsts, copyback_srcs)
+        nvtx.end_range(rng)
 
         output_reconstruction_start = (
             time.perf_counter() if debug_output_reconstruction else None
@@ -1238,6 +1274,7 @@ def cudagraphify(
             cache[cache_key] = base_tensor
             return base_tensor
 
+        rng = nvtx.start_range(message="reconstruct outputs", color="blue")
         for output_spec in output_specs:
             if isinstance(output_spec, NonTensorOutputSpec):
                 outputs.append(output_spec.value)
@@ -1255,31 +1292,50 @@ def cudagraphify(
             if isinstance(output_spec, InputAliasOutputSpec):
                 input_tensor = new_inputs[output_spec.input_idx]
                 assert isinstance(input_tensor, torch.Tensor)
-                input_base_tensor = get_typed_base_tensor(
-                    input_tensor,
-                    output_spec.dtype,
-                    output_spec.device,
-                    (output_spec.input_idx, output_spec.dtype),
-                    input_base_tensors,
-                )
-                input_offset_from_storage_bytes = (
-                    input_tensor.data_ptr() - input_tensor.untyped_storage().data_ptr()
-                )
-                assert (
-                    input_offset_from_storage_bytes % input_base_tensor.element_size()
-                    == 0
-                )
-                input_offset_from_storage = input_offset_from_storage_bytes // (
-                    input_base_tensor.element_size()
-                )
-                true_output_tensor = torch.as_strided(
-                    input_base_tensor,
-                    size=output_spec.size,
-                    stride=output_spec.stride,
-                    storage_offset=(
-                        output_spec.offset_from_input + input_offset_from_storage
-                    ),
-                )
+                if input_tensor.dtype == output_spec.dtype:
+                    if (
+                        output_spec.offset_from_input == 0
+                        and tuple(input_tensor.size()) == output_spec.size
+                        and tuple(input_tensor.stride()) == output_spec.stride
+                    ):
+                        true_output_tensor = input_tensor
+                    else:
+                        true_output_tensor = input_tensor.detach().as_strided(
+                            size=output_spec.size,
+                            stride=output_spec.stride,
+                            storage_offset=(
+                                output_spec.offset_from_input
+                                + input_tensor.storage_offset()
+                            ),
+                        )
+                else:
+                    input_base_tensor = get_typed_base_tensor(
+                        input_tensor,
+                        output_spec.dtype,
+                        output_spec.device,
+                        (output_spec.input_idx, output_spec.dtype),
+                        input_base_tensors,
+                    )
+                    input_offset_from_storage_bytes = (
+                        input_tensor.data_ptr()
+                        - input_tensor.untyped_storage().data_ptr()
+                    )
+                    assert (
+                        input_offset_from_storage_bytes
+                        % input_base_tensor.element_size()
+                        == 0
+                    )
+                    input_offset_from_storage = input_offset_from_storage_bytes // (
+                        input_base_tensor.element_size()
+                    )
+                    true_output_tensor = torch.as_strided(
+                        input_base_tensor,
+                        size=output_spec.size,
+                        stride=output_spec.stride,
+                        storage_offset=(
+                            output_spec.offset_from_input + input_offset_from_storage
+                        ),
+                    )
 
                 outputs.append(true_output_tensor)
                 continue
@@ -1308,6 +1364,8 @@ def cudagraphify(
                 compact_output_tensor.copy_(true_output_tensor)
                 true_output_tensor = compact_output_tensor
             outputs.append(true_output_tensor)
+
+        nvtx.end_range(rng)
 
         if output_reconstruction_start is not None:
             output_reconstruction_ms = (
@@ -1377,8 +1435,23 @@ class GraphPointerUpdate:
 
 
 @dataclasses.dataclass(frozen=True)
+class HostPointerTableSlotUpdate:
+    slot_ptr: int
+    alloc_idx: int
+    alloc_offset: int
+
+    def apply(self, actual_data_ptrs: list[int]) -> None:
+        ctypes.c_uint64.from_address(self.slot_ptr).value = (
+            actual_data_ptrs[self.alloc_idx] + self.alloc_offset
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class MemcpyNodeUpdate:
-    node: int
+    node: Any
+    kind: cuda_runtime.cudaMemcpyKind
+    host_staging_buffer: torch.Tensor | None
+    device_staging_buffer: torch.Tensor | None
     src_ptr: int
     src_pitch: int
     src_xsize: int
@@ -1392,6 +1465,7 @@ class MemcpyNodeUpdate:
     extent: tuple[int, int, int]
     src_update: GraphPointerUpdate | None
     dst_update: GraphPointerUpdate | None
+    host_pointer_table_updates: list[HostPointerTableSlotUpdate]
 
     def to_params(self, actual_data_ptrs: list[int]) -> Any:
         src_ptr = self.src_ptr
@@ -1407,24 +1481,63 @@ class MemcpyNodeUpdate:
                 + self.dst_update.alloc_offset
             )
 
-        params = cuda_driver.CUDA_MEMCPY3D()
-        params.srcXInBytes, params.srcY, params.srcZ = self.src_pos
-        params.srcMemoryType = cuda_driver.CUmemorytype.CU_MEMORYTYPE_DEVICE
-        params.srcDevice = cuda_driver.CUdeviceptr(init_value=src_ptr)
-        params.srcPitch = self.src_pitch
-        params.srcHeight = self.src_ysize
-        params.dstXInBytes, params.dstY, params.dstZ = self.dst_pos
-        params.dstMemoryType = cuda_driver.CUmemorytype.CU_MEMORYTYPE_DEVICE
-        params.dstDevice = cuda_driver.CUdeviceptr(init_value=dst_ptr)
-        params.dstPitch = self.dst_pitch
-        params.dstHeight = self.dst_ysize
-        params.WidthInBytes, params.Height, params.Depth = self.extent
+        params = cuda_runtime.cudaMemcpy3DParms()
+        params.kind = self.kind
+        if self.host_staging_buffer is not None:
+            assert self.kind in (
+                cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                cuda_runtime.cudaMemcpyKind.cudaMemcpyDefault,
+            )
+            src_ptr = self.host_staging_buffer.data_ptr()
+            dst_ptr += self.dst_pos[0]
+            params.srcPos.x, params.srcPos.y, params.srcPos.z = (0, 0, 0)
+            params.dstPos.x, params.dstPos.y, params.dstPos.z = (0, 0, 0)
+        else:
+            params.srcPos.x, params.srcPos.y, params.srcPos.z = self.src_pos
+            params.dstPos.x, params.dstPos.y, params.dstPos.z = self.dst_pos
+        params.srcPtr.ptr = src_ptr
+        params.srcPtr.pitch = self.src_pitch or self.extent[0]
+        params.srcPtr.xsize = self.src_xsize or self.extent[0]
+        params.srcPtr.ysize = self.src_ysize or self.extent[1]
+        params.dstPtr.ptr = dst_ptr
+        params.dstPtr.pitch = self.dst_pitch or self.extent[0]
+        params.dstPtr.xsize = self.dst_xsize or self.extent[0]
+        params.dstPtr.ysize = self.dst_ysize or self.extent[1]
+        params.extent.width, params.extent.height, params.extent.depth = self.extent
         return params
+
+    def to_1d_params(
+        self, actual_data_ptrs: list[int]
+    ) -> tuple[int, int, int, cuda_runtime.cudaMemcpyKind]:
+        src_ptr = self.src_ptr
+        if self.src_update is not None:
+            src_ptr = (
+                actual_data_ptrs[self.src_update.alloc_idx]
+                + self.src_update.alloc_offset
+            )
+        dst_ptr = self.dst_ptr
+        if self.dst_update is not None:
+            dst_ptr = (
+                actual_data_ptrs[self.dst_update.alloc_idx]
+                + self.dst_update.alloc_offset
+            )
+        return (
+            dst_ptr + self.dst_pos[0],
+            self.host_staging_buffer.data_ptr()
+            if self.host_staging_buffer is not None
+            else src_ptr + self.src_pos[0],
+            self.extent[0],
+            self.kind,
+        )
+
+    def patch_host_pointer_table(self, actual_data_ptrs: list[int]) -> None:
+        for update in self.host_pointer_table_updates:
+            update.apply(actual_data_ptrs)
 
 
 @dataclasses.dataclass(frozen=True)
 class MemsetNodeUpdate:
-    node: int
+    node: Any
     dst: int
     pitch: int
     value: int
@@ -1434,12 +1547,9 @@ class MemsetNodeUpdate:
     dst_update: GraphPointerUpdate
 
     def to_params(self, actual_data_ptrs: list[int]) -> Any:
-        params = cuda_driver.CUDA_MEMSET_NODE_PARAMS()
-        params.dst = cuda_driver.CUdeviceptr(
-            init_value=(
-                actual_data_ptrs[self.dst_update.alloc_idx]
-                + self.dst_update.alloc_offset
-            )
+        params = cuda_runtime.cudaMemsetParams()
+        params.dst = (
+            actual_data_ptrs[self.dst_update.alloc_idx] + self.dst_update.alloc_offset
         )
         params.pitch = self.pitch
         params.value = self.value
@@ -1450,6 +1560,8 @@ class MemsetNodeUpdate:
 
 
 class PythonDynamicCUDAGraph:
+    """Replay helper for parameterized CUDA graph pointer updates."""
+
     def __init__(
         self,
         graph: torch.cuda.CUDAGraph,
@@ -1459,6 +1571,8 @@ class PythonDynamicCUDAGraph:
         alloc_offsets: list[int],
         memcpy_node_updates: list[MemcpyNodeUpdate],
         memset_node_updates: list[MemsetNodeUpdate],
+        host_pointer_table_updates: list[HostPointerTableSlotUpdate] | None = None,
+        host_pointer_table_keepalive: list[torch.Tensor] | None = None,
     ) -> None:
         self.graph = graph
         device_dynamic_tensor_indices = sorted(OrderedSet(alloc_indices))
@@ -1481,45 +1595,29 @@ class PythonDynamicCUDAGraph:
         self.device_dynamic_tensor_indices = device_dynamic_tensor_indices
         self.memcpy_node_updates = memcpy_node_updates
         self.memset_node_updates = memset_node_updates
+        self.host_pointer_table_updates = host_pointer_table_updates or []
+        self.host_pointer_table_keepalive = host_pointer_table_keepalive or []
 
     def replay(self, dynamic_tensors: list[torch.Tensor]) -> None:
-        if self.memcpy_node_updates or self.memset_node_updates:
-            actual_data_ptrs = [tensor.data_ptr() for tensor in dynamic_tensors]
-            graph_exec = cuda_driver.CUgraphExec(
-                init_value=self.graph.raw_cuda_graph_exec()
-            )
-            ctx = cuda_python_error_check(cuda_driver.cuCtxGetCurrent())
-            for update in self.memcpy_node_updates:
-                cuda_python_error_check(
-                    cuda_driver.cuGraphExecMemcpyNodeSetParams(
-                        graph_exec,
-                        cuda_driver.CUgraphNode(init_value=update.node),
-                        update.to_params(actual_data_ptrs),
-                        ctx,
-                    )
-                )
-            for update in self.memset_node_updates:
-                cuda_python_error_check(
-                    cuda_driver.cuGraphExecMemsetNodeSetParams(
-                        graph_exec,
-                        cuda_driver.CUgraphNode(init_value=update.node),
-                        update.to_params(actual_data_ptrs),
-                        ctx,
-                    )
-                )
+        actual_data_ptrs = [tensor.data_ptr() for tensor in dynamic_tensors]
+        for update in self.host_pointer_table_updates:
+            update.apply(actual_data_ptrs)
         if self.device_nodes.numel():
             device_dynamic_tensors = [
                 dynamic_tensors[idx] for idx in self.device_dynamic_tensor_indices
             ]
-            for idx, tensor in zip(
-                self.device_dynamic_tensor_indices, device_dynamic_tensors
-            ):
-                if not tensor.is_cuda:
-                    raise RuntimeError(
-                        "CUDA graph kernel pointer update references dynamic "
-                        f"tensor allocation {idx}, but replay tensor is on "
-                        f"{tensor.device}"
-                    )
+            # This error check is in the critical path and expensive,
+            # so comment it out for now.
+            
+            # for idx, tensor in zip(
+            #     self.device_dynamic_tensor_indices, device_dynamic_tensors
+            # ):
+            #     if not tensor.is_cuda:
+            #         raise RuntimeError(
+            #             "CUDA graph kernel pointer update references dynamic "
+            #             f"tensor allocation {idx}, but replay tensor is on "
+            #             f"{tensor.device}"
+            #         )
             torch._C._cuda_graph_apply_device_kernel_node_updates(
                 self.device_nodes,
                 self.param_offsets,
@@ -1527,6 +1625,51 @@ class PythonDynamicCUDAGraph:
                 self.alloc_offsets,
                 device_dynamic_tensors,
             )
+        if self.memcpy_node_updates or self.memset_node_updates:
+            graph_exec = cuda_runtime.cudaGraphExec_t(
+                init_value=self.graph.raw_cuda_graph_exec()
+            )
+            for update in self.memcpy_node_updates:
+                update.patch_host_pointer_table(actual_data_ptrs)
+                dst_ptr, src_ptr, count, kind = update.to_1d_params(actual_data_ptrs)
+                if (
+                    os.environ.get("TORCHINDUCTOR_CUDAGRAPHS_DEBUG_MEMCPY_UPDATES")
+                    == "1"
+                ):
+                    print(
+                        "GALVEZ: cudagraph_digraphs memcpy update "
+                        f"node={update.node} "
+                        f"host_pointer_table_updates="
+                        f"{len(update.host_pointer_table_updates)}"
+                    )
+                    print(
+                        f"1d dst=0x{dst_ptr:x} "
+                        f"dst_type={_cuda_pointer_memory_type(dst_ptr)} "
+                        f"src=0x{src_ptr:x} "
+                        f"src_type={_cuda_pointer_memory_type(src_ptr)} "
+                        f"count={count} kind={kind}"
+                    )
+                    memcpy_params = update.to_params(actual_data_ptrs)
+                    print(memcpy_params)
+                cuda_python_error_check(
+                    cuda_runtime.cudaGraphExecMemcpyNodeSetParams1D(
+                        graph_exec,
+                        update.node,
+                        dst_ptr,
+                        src_ptr,
+                        count,
+                        kind,
+                    )
+                )
+            if self.memset_node_updates:
+                for update in self.memset_node_updates:
+                    cuda_python_error_check(
+                        cuda_runtime.cudaGraphExecMemsetNodeSetParams(
+                            graph_exec,
+                            update.node,
+                            update.to_params(actual_data_ptrs),
+                        )
+                    )
         self.graph.replay()
 
 
@@ -1560,6 +1703,84 @@ def _check_allocation_within_graph(
     return None
 
 
+def _cuda_pointer_memory_type(ptr: int) -> str:
+    try:
+        error, attributes = cuda_runtime.cudaPointerGetAttributes(ptr)
+    except Exception as e:
+        return f"<cudaPointerGetAttributes raised {type(e).__name__}: {e}>"
+
+    if error != cuda_runtime.cudaError_t.cudaSuccess:
+        try:
+            cuda_runtime.cudaGetLastError()
+        except Exception:
+            pass
+        return f"<cudaPointerGetAttributes returned {error}>"
+
+    memory_type = getattr(attributes, "type", None)
+    if memory_type is None:
+        memory_type = getattr(attributes, "memoryType", None)
+    if memory_type is None:
+        return "<unknown>"
+    return getattr(memory_type, "name", str(memory_type))
+
+
+def _cuda_pointer_memory_type_value(ptr: int) -> Any:
+    error, attributes = cuda_runtime.cudaPointerGetAttributes(ptr)
+    if error != cuda_runtime.cudaError_t.cudaSuccess:
+        try:
+            cuda_runtime.cudaGetLastError()
+        except Exception:
+            pass
+        return None
+
+    memory_type = getattr(attributes, "type", None)
+    if memory_type is None:
+        memory_type = getattr(attributes, "memoryType", None)
+    return memory_type
+
+
+def _is_host_memcpy_source(params: Any, other_params: Any) -> bool:
+    src_ptr = int(params.srcPtr.ptr) + int(params.srcPos.x)
+    other_src_ptr = int(other_params.srcPtr.ptr) + int(other_params.srcPos.x)
+    src_memory_type = _cuda_pointer_memory_type_value(src_ptr)
+    other_src_memory_type = _cuda_pointer_memory_type_value(other_src_ptr)
+    host_memory_types = (
+        cuda_runtime.cudaMemoryType.cudaMemoryTypeHost,
+        cuda_runtime.cudaMemoryType.cudaMemoryTypeUnregistered,
+    )
+    if src_memory_type != other_src_memory_type:
+        assert not (
+            src_memory_type in host_memory_types
+            or other_src_memory_type in host_memory_types
+        ), (
+            "Expected matching CUDA memcpy source pointer memory types, got "
+            f"{src_memory_type=} and {other_src_memory_type=}"
+        )
+        return False
+    return src_memory_type in host_memory_types
+
+
+def _is_host_memcpy_dest(params: Any, other_params: Any) -> bool:
+    dst_ptr = int(params.dstPtr.ptr) + int(params.dstPos.x)
+    other_dst_ptr = int(other_params.dstPtr.ptr) + int(other_params.dstPos.x)
+    dst_memory_type = _cuda_pointer_memory_type_value(dst_ptr)
+    other_dst_memory_type = _cuda_pointer_memory_type_value(other_dst_ptr)
+    host_memory_types = (
+        cuda_runtime.cudaMemoryType.cudaMemoryTypeHost,
+        cuda_runtime.cudaMemoryType.cudaMemoryTypeUnregistered,
+    )
+    if dst_memory_type != other_dst_memory_type:
+        assert not (
+            dst_memory_type in host_memory_types
+            or other_dst_memory_type in host_memory_types
+        ), (
+            "Expected matching CUDA memcpy destination pointer memory types, got "
+            f"{dst_memory_type=} and {other_dst_memory_type=}"
+        )
+        return False
+    return dst_memory_type in host_memory_types
+
+
 def _dynamic_update_for_graph_pointer(
     ptr: int,
     other_ptr: int,
@@ -1581,6 +1802,14 @@ def _dynamic_update_for_graph_pointer(
             "CUDA graph pointer did not map consistently across captures"
         )
     alloc_idx, alloc_offset = result
+    ptr_memory_type = _cuda_pointer_memory_type(ptr)
+    other_ptr_memory_type = _cuda_pointer_memory_type(other_ptr)
+    print(
+        "GALVEZ: "
+        f"{(alloc_idx, alloc_offset)=} "
+        f"ptr=0x{ptr:x} ptr_memory_type={ptr_memory_type} "
+        f"other_ptr=0x{other_ptr:x} other_ptr_memory_type={other_ptr_memory_type}"
+    )
     return GraphPointerUpdate(alloc_idx=alloc_idx, alloc_offset=alloc_offset)
 
 
@@ -1915,9 +2144,12 @@ def _check_memcpy_params_supported(params: Any) -> None:
         raise RuntimeError("CUDA array memcpy nodes are not supported")
     if params.kind not in (
         cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToDevice,
+        cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
+        cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToHost,
         cuda_runtime.cudaMemcpyKind.cudaMemcpyDefault,
     ):
         raise RuntimeError(f"Unsupported CUDA graph memcpy kind: {params.kind}")
+    # TODO: We could also inspect the individual pointers here.
     assert params.extent.height == 1 and params.extent.depth == 1, (
         "Expected 1D CUDA graph memcpy node, got "
         f"width={params.extent.width}, "
@@ -1958,6 +2190,77 @@ def _memcpy_metadata_key(params: Any) -> tuple[Any, ...]:
     )
 
 
+def _aligned_8byte_offsets(start_ptr: int, size: int) -> range:
+    pointer_size = ctypes.sizeof(ctypes.c_void_p)
+    if pointer_size != 8:
+        raise RuntimeError(
+            "CUDA graph host pointer table updates require 64-bit pointers"
+        )
+    first_offset = (-(start_ptr)) % pointer_size
+    return range(first_offset, size - pointer_size + 1, pointer_size)
+
+
+def _host_staging_buffer_and_pointer_table_updates_for_memcpy(
+    params: Any,
+    other_params: Any,
+    sorted_allocations: list[DynamicAllocation],
+    allocation_starts: list[int],
+    other_sorted_allocations: list[DynamicAllocation],
+    other_allocation_starts: list[int],
+) -> tuple[torch.Tensor | None, list[HostPointerTableSlotUpdate]]:
+    src_ptr = int(params.srcPtr.ptr) + int(params.srcPos.x)
+    other_src_ptr = int(other_params.srcPtr.ptr) + int(other_params.srcPos.x)
+    size = int(params.extent.width)
+    host_staging_buffer = _copy_host_memcpy_source_to_staging_buffer(params)
+    staging_ptr = host_staging_buffer.data_ptr()
+    updates: list[HostPointerTableSlotUpdate] = []
+
+    for offset in _aligned_8byte_offsets(src_ptr, size):
+        slot_ptr = staging_ptr + offset
+        other_slot_ptr = other_src_ptr + offset
+        ptr = ctypes.c_uint64.from_address(slot_ptr).value
+        other_ptr = ctypes.c_uint64.from_address(other_slot_ptr).value
+        result = _check_allocation_within_graph(
+            ptr, sorted_allocations, allocation_starts
+        )
+        other_result = _check_allocation_within_graph(
+            other_ptr, other_sorted_allocations, other_allocation_starts
+        )
+        if result is None and other_result is None:
+            continue
+        if result is None or other_result is None or result != other_result:
+            raise RuntimeError(
+                "CUDA graph host pointer table value did not map consistently "
+                "across captures: "
+                f"slot_offset={offset} "
+                f"ptr=0x{ptr:x} other_ptr=0x{other_ptr:x} "
+                f"match={result} other_match={other_result}"
+            )
+        alloc_idx, alloc_offset = result
+        updates.append(
+            HostPointerTableSlotUpdate(
+                slot_ptr=slot_ptr,
+                alloc_idx=alloc_idx,
+                alloc_offset=alloc_offset,
+            )
+        )
+
+    return host_staging_buffer, updates
+
+
+def _copy_host_memcpy_source_to_staging_buffer(params: Any) -> torch.Tensor:
+    src_ptr = int(params.srcPtr.ptr) + int(params.srcPos.x)
+    size = int(params.extent.width)
+    host_staging_buffer = torch.empty(
+        (size,),
+        dtype=torch.uint8,
+        device="cpu",
+        pin_memory=True,
+    )
+    ctypes.memmove(host_staging_buffer.data_ptr(), src_ptr, size)
+    return host_staging_buffer
+
+
 def _memcpy_node_update(
     node: Any,
     params: Any,
@@ -1972,26 +2275,79 @@ def _memcpy_node_update(
     if _memcpy_metadata_key(params) != _memcpy_metadata_key(other_params):
         raise RuntimeError("Captured CUDA graph memcpy params differ")
 
-    src_update = _dynamic_update_for_graph_pointer(
-        int(params.srcPtr.ptr),
-        int(other_params.srcPtr.ptr),
-        sorted_allocations,
-        allocation_starts,
-        other_sorted_allocations,
-        other_allocation_starts,
-    )
-    dst_update = _dynamic_update_for_graph_pointer(
-        int(params.dstPtr.ptr),
-        int(other_params.dstPtr.ptr),
-        sorted_allocations,
-        allocation_starts,
-        other_sorted_allocations,
-        other_allocation_starts,
-    )
-    if src_update is None and dst_update is None:
+    is_host_memcpy_source = _is_host_memcpy_source(params, other_params)
+    if is_host_memcpy_source:
+        assert params.kind in (
+            cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
+            cuda_runtime.cudaMemcpyKind.cudaMemcpyDefault,
+        )
+        assert other_params.kind in (
+            cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
+            cuda_runtime.cudaMemcpyKind.cudaMemcpyDefault,
+        )
+        src_update = None
+        (
+            host_staging_buffer,
+            host_pointer_table_updates,
+        ) = _host_staging_buffer_and_pointer_table_updates_for_memcpy(
+            params,
+            other_params,
+            sorted_allocations,
+            allocation_starts,
+            other_sorted_allocations,
+            other_allocation_starts,
+        )
+    else:
+        src_update = _dynamic_update_for_graph_pointer(
+            int(params.srcPtr.ptr),
+            int(other_params.srcPtr.ptr),
+            sorted_allocations,
+            allocation_starts,
+            other_sorted_allocations,
+            other_allocation_starts,
+        )
+        host_pointer_table_updates = []
+        host_staging_buffer = None
+
+    is_host_memcpy_dest = _is_host_memcpy_dest(params, other_params)
+
+    if is_host_memcpy_dest:
+        dst_update = None
+    else:
+        dst_update = _dynamic_update_for_graph_pointer(
+            int(params.dstPtr.ptr),
+            int(other_params.dstPtr.ptr),
+            sorted_allocations,
+            allocation_starts,
+            other_sorted_allocations,
+            other_allocation_starts,
+        )
+    if src_update is None and dst_update is None and not host_pointer_table_updates:
         return None
+    if is_host_memcpy_source:
+        assert host_staging_buffer is not None
+        device_staging_buffer_ = torch.empty(
+            (int(params.extent.width),),
+            dtype=torch.uint8,
+            device=torch.device("cuda", torch.cuda.current_device()),
+        )
+        cuda_python_error_check(
+            cuda_runtime.cudaGraphMemcpyNodeSetParams1D(
+                node,
+                device_staging_buffer_.data_ptr(),
+                host_staging_buffer.data_ptr(),
+                int(params.extent.width),
+                params.kind,
+            )
+        )
+        device_staging_buffer: torch.Tensor | None = device_staging_buffer_
+    else:
+        device_staging_buffer = None
     return MemcpyNodeUpdate(
-        node=int(node),
+        node=node,
+        kind=params.kind,
+        host_staging_buffer=host_staging_buffer,
+        device_staging_buffer=device_staging_buffer,
         src_ptr=int(params.srcPtr.ptr),
         src_pitch=params.srcPtr.pitch,
         src_xsize=params.srcPtr.xsize,
@@ -2005,6 +2361,7 @@ def _memcpy_node_update(
         extent=(params.extent.width, params.extent.height, params.extent.depth),
         src_update=src_update,
         dst_update=dst_update,
+        host_pointer_table_updates=host_pointer_table_updates,
     )
 
 
@@ -2055,7 +2412,7 @@ def _memset_node_update(
     if dst_update is None:
         return None
     return MemsetNodeUpdate(
-        node=int(node),
+        node=node,
         dst=int(params.dst),
         pitch=params.pitch,
         value=params.value,
@@ -2071,6 +2428,8 @@ def make_dynamic_graph_runner(
     dynamic_tensors: list[tuple[int, int]],
     other_graph: torch.cuda.CUDAGraph,
     other_dynamic_tensors: list[tuple[int, int]],
+    host_pointer_table_updates: list[HostPointerTableSlotUpdate] | None = None,
+    host_pointer_table_keepalive: list[torch.Tensor] | None = None,
 ) -> PythonDynamicCUDAGraph:
     """Build a replay helper that updates dynamic pointers in a captured graph."""
     _, sorted_allocations, allocation_starts = _create_and_sort_allocations(
@@ -2249,6 +2608,8 @@ def make_dynamic_graph_runner(
         alloc_offsets,
         memcpy_node_updates,
         memset_node_updates,
+        host_pointer_table_updates,
+        host_pointer_table_keepalive,
     )
 
 
@@ -2256,7 +2617,14 @@ memcpy_kernel = None
 memset_kernel = None
 
 
-def replace_memops_with_kernels(graph: cuda_runtime.cudaGraph_t) -> None:
+def replace_memops_with_kernels(
+    graph: cuda_runtime.cudaGraph_t,
+    other_graph: cuda_runtime.cudaGraph_t | None = None,
+    dynamic_tensors: list[tuple[int, int]] | None = None,
+    other_dynamic_tensors: list[tuple[int, int]] | None = None,
+    *,
+    dynamic_device_memcpy_only: bool = False,
+) -> tuple[list[HostPointerTableSlotUpdate], list[torch.Tensor]]:
     """
     Replace all memcpy and memset nodes in a CUDA graph with equivalent kernel implementations.
 
@@ -2264,10 +2632,34 @@ def replace_memops_with_kernels(graph: cuda_runtime.cudaGraph_t) -> None:
         graph: The CUDA graph to modify
     """
     # Get all nodes in the graph
-    _, num_nodes = cuda_python_error_check(cuda_runtime.cudaGraphGetNodes(graph))
-    if num_nodes == 0:
-        return
-    nodes, _ = cuda_python_error_check(cuda_runtime.cudaGraphGetNodes(graph, num_nodes))
+    nodes = _graph_nodes(graph)
+    if not nodes:
+        return [], []
+    if other_graph is not None:
+        other_nodes = _graph_nodes(other_graph)
+        if len(nodes) != len(other_nodes):
+            raise RuntimeError("Captured CUDA graphs are not topologically identical")
+        if dynamic_tensors is None or other_dynamic_tensors is None:
+            raise RuntimeError(
+                "Dynamic tensor allocation metadata is required when replacing "
+                "paired CUDA graph memcpy nodes"
+            )
+        _, sorted_allocations, allocation_starts = _create_and_sort_allocations(
+            dynamic_tensors
+        )
+        (
+            _,
+            other_sorted_allocations,
+            other_allocation_starts,
+        ) = _create_and_sort_allocations(other_dynamic_tensors)
+    else:
+        other_nodes = None
+        sorted_allocations = []
+        allocation_starts = []
+        other_sorted_allocations = []
+        other_allocation_starts = []
+    host_pointer_table_updates: list[HostPointerTableSlotUpdate] = []
+    host_pointer_table_keepalive: list[torch.Tensor] = []
 
     # Compile kernels for memcpy and memset
     global memcpy_kernel
@@ -2278,15 +2670,97 @@ def replace_memops_with_kernels(graph: cuda_runtime.cudaGraph_t) -> None:
         memset_kernel, _ = compile_memset_kernel()
 
     # Process each node in the graph
-    for node in nodes:
+    for node_idx, node in enumerate(nodes):
         # Get node type
         node_type = cuda_python_error_check(cuda_runtime.cudaGraphNodeGetType(node))
+        other_node = None
+        if other_nodes is not None:
+            other_node = other_nodes[node_idx]
+            other_node_type = cuda_python_error_check(
+                cuda_runtime.cudaGraphNodeGetType(other_node)
+            )
+            if node_type != other_node_type:
+                raise RuntimeError("Captured CUDA graphs have different node types")
 
         if node_type == cuda_runtime.cudaGraphNodeType.cudaGraphNodeTypeMemcpy:
-            replace_memcpy_with_kernel(graph, node, memcpy_kernel)
+            host_staging_buffer = None
+            other_host_staging_buffer = None
+            if other_node is not None:
+                params = cuda_python_error_check(
+                    cuda_runtime.cudaGraphMemcpyNodeGetParams(node)
+                )
+                other_params = cuda_python_error_check(
+                    cuda_runtime.cudaGraphMemcpyNodeGetParams(other_node)
+                )
+                _check_memcpy_params_supported(params)
+                _check_memcpy_params_supported(other_params)
+                if _memcpy_metadata_key(params) != _memcpy_metadata_key(other_params):
+                    raise RuntimeError("Captured CUDA graph memcpy params differ")
+                if dynamic_device_memcpy_only:
+                    if _is_host_memcpy_source(
+                        params, other_params
+                    ) or _is_host_memcpy_dest(params, other_params):
+                        continue
+                    src_update = _dynamic_update_for_graph_pointer(
+                        int(params.srcPtr.ptr),
+                        int(other_params.srcPtr.ptr),
+                        sorted_allocations,
+                        allocation_starts,
+                        other_sorted_allocations,
+                        other_allocation_starts,
+                    )
+                    dst_update = _dynamic_update_for_graph_pointer(
+                        int(params.dstPtr.ptr),
+                        int(other_params.dstPtr.ptr),
+                        sorted_allocations,
+                        allocation_starts,
+                        other_sorted_allocations,
+                        other_allocation_starts,
+                    )
+                    if src_update is None and dst_update is None:
+                        continue
+                if _is_host_memcpy_source(params, other_params):
+                    assert params.kind in (
+                        cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                        cuda_runtime.cudaMemcpyKind.cudaMemcpyDefault,
+                    )
+                    assert other_params.kind in (
+                        cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
+                        cuda_runtime.cudaMemcpyKind.cudaMemcpyDefault,
+                    )
+                    (
+                        host_staging_buffer,
+                        updates,
+                    ) = _host_staging_buffer_and_pointer_table_updates_for_memcpy(
+                        params,
+                        other_params,
+                        sorted_allocations,
+                        allocation_starts,
+                        other_sorted_allocations,
+                        other_allocation_starts,
+                    )
+                    other_host_staging_buffer = (
+                        _copy_host_memcpy_source_to_staging_buffer(other_params)
+                    )
+                    host_pointer_table_updates.extend(updates)
+                    assert host_staging_buffer is not None
+                    host_pointer_table_keepalive.append(host_staging_buffer)
+            replace_memcpy_with_kernel(graph, node, memcpy_kernel, host_staging_buffer)
+            if other_node is not None:
+                assert other_graph is not None
+                replace_memcpy_with_kernel(
+                    other_graph, other_node, memcpy_kernel, other_host_staging_buffer
+                )
 
         elif node_type == cuda_runtime.cudaGraphNodeType.cudaGraphNodeTypeMemset:
+            if dynamic_device_memcpy_only:
+                continue
             replace_memset_with_kernel(graph, node, memset_kernel)
+            if other_node is not None:
+                assert other_graph is not None
+                replace_memset_with_kernel(other_graph, other_node, memset_kernel)
+
+    return host_pointer_table_updates, host_pointer_table_keepalive
 
 
 def compile_memcpy_kernel() -> tuple[cuda_runtime.cudaFunction_t, str]:
@@ -2391,7 +2865,12 @@ def compile_memset_kernel() -> tuple[cuda_runtime.cudaFunction_t, str]:
     return kernel, "custom_memset_kernel"
 
 
-def replace_memcpy_with_kernel(graph, memcpy_node, kernel):
+def replace_memcpy_with_kernel(
+    graph,
+    memcpy_node,
+    kernel,
+    host_staging_buffer: torch.Tensor | None = None,
+):
     """Replace a memcpy node with an equivalent kernel node"""
     # Get the memcpy node parameters
     memcpy_params = cuda_python_error_check(
@@ -2399,11 +2878,13 @@ def replace_memcpy_with_kernel(graph, memcpy_node, kernel):
     )
     if int(memcpy_params.srcArray) != 0 or int(memcpy_params.dstArray) != 0:
         raise RuntimeError("CUDA array memcpy nodes are not supported")
-    if memcpy_params.kind not in (
-        cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToDevice,
-        cuda_runtime.cudaMemcpyKind.cudaMemcpyDefault,
-    ):
-        raise RuntimeError(f"Unsupported CUDA graph memcpy kind: {memcpy_params.kind}")
+    # if memcpy_params.kind not in (
+    #     cuda_runtime.cudaMemcpyKind.cudaMemcpyDeviceToDevice,
+    #     cuda_runtime.cudaMemcpyKind.cudaMemcpyDefault,
+    #     cuda_runtime.cudaMemcpyKind.cudaMemcpyHostToDevice,
+    # ):
+    #     raise RuntimeError(f"Unsupported CUDA graph memcpy kind: {memcpy_params.kind}")
+
     assert memcpy_params.extent.height == 1 and memcpy_params.extent.depth == 1, (
         "Expected 1D CUDA graph memcpy node, got "
         f"width={memcpy_params.extent.width}, "
@@ -2457,12 +2938,26 @@ def replace_memcpy_with_kernel(graph, memcpy_node, kernel):
         + memcpy_params.dstPos.y * dst_pitch
         + memcpy_params.dstPos.z * dst_slice_pitch
     )
-    src_ptr = (
-        int(memcpy_params.srcPtr.ptr)
-        + memcpy_params.srcPos.x
-        + memcpy_params.srcPos.y * src_pitch
-        + memcpy_params.srcPos.z * src_slice_pitch
-    )
+    if host_staging_buffer is not None:
+        src_ptr = host_staging_buffer.data_ptr()
+    else:
+        src_ptr = (
+            int(memcpy_params.srcPtr.ptr)
+            + memcpy_params.srcPos.x
+            + memcpy_params.srcPos.y * src_pitch
+            + memcpy_params.srcPos.z * src_slice_pitch
+        )
+    for pointer_name, pointer_value in (("dst", dst_ptr), ("src", src_ptr)):
+        pointer_memory_type = _cuda_pointer_memory_type_value(pointer_value)
+        if (
+            pointer_memory_type
+            == cuda_runtime.cudaMemoryType.cudaMemoryTypeUnregistered
+        ):
+            raise RuntimeError(
+                "Cannot replace CUDA graph memcpy node with a kernel when "
+                f"the {pointer_name} pointer is unregistered host memory: "
+                f"0x{pointer_value:x}"
+            )
 
     kernel_params.kernelParams = (
         (
