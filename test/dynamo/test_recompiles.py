@@ -291,13 +291,13 @@ class RecompileTests(torch._dynamo.test_case.TestCase):
             self.assertIn(exception_type, reasons[1])
 
         manager.no_tensor_aliasing_sources = ["len(1)"]
-        with self.assertRaises(TypeError):
+        with self.assertRaisesRegex(TypeError, "has no len"):
             torch._dynamo.guards.recompilation_reason_for_no_tensor_aliasing_guard(
                 manager, scope
             )
 
         manager.no_tensor_aliasing_sources = ["1 / 0"]
-        with self.assertRaises(ZeroDivisionError):
+        with self.assertRaisesRegex(ZeroDivisionError, "division by zero"):
             torch._dynamo.guards.recompilation_reason_for_no_tensor_aliasing_guard(
                 manager, scope
             )
