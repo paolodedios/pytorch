@@ -3158,6 +3158,13 @@ def compile(
         if isinstance(dynamic_shapes, ParamsSpec):
             dynamic_shapes = ShapesSpec(dynamic_shapes)
 
+    # If ``model`` carries an ``@dynamic_spec(...)`` decorator, the attached
+    # ``ShapesSpec`` is used as ``shapes_spec``. Passing both raises.
+    if model is not None:
+        from torch.fx.experimental.dynamic_spec import _resolve_dynamic_shapes
+
+        shapes_spec = _resolve_dynamic_shapes(model, shapes_spec)
+
     # Decorator mode
     if model is None:
 
