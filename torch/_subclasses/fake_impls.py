@@ -1569,6 +1569,35 @@ def _mkldnn_reshape(
     return fake_output
 
 
+@register_pre_decomposition_op_impl(aten.flatten.using_ints)
+def _mkldnn_flatten(
+    fake_mode: FakeTensorMode,
+    func: OpOverload,
+    input_: FakeTensor,
+    start_dim: int = 0,
+    end_dim: int = -1,
+) -> FakeTensor | None:
+    if not input_.is_mkldnn:
+        return NotImplemented
+
+    start_dim = canonicalize_dim(input_.dim(), start_dim)
+    end_dim = canonicalize_dim(input_.dim(), end_dim)
+    if start_dim > end_dim:
+        raise RuntimeError(
+            "flatten() has invalid args: start_dim cannot come after end_dim"
+        )
+    if start_dim == end_dim and input_.dim() != 0:
+        return input_
+
+    flattened = functools.reduce(operator.mul, input_.shape[start_dim : end_dim + 1], 1)
+    shape = (
+        tuple(input_.shape[:start_dim])
+        + (flattened,)
+        + tuple(input_.shape[end_dim + 1 :])
+    )
+    return _mkldnn_reshape(fake_mode, aten._mkldnn_reshape.default, input_, shape)
+
+
 @register_op_impl(aten.to_dense.default)
 def _mkldnn_to_dense_default(
     fake_mode: FakeTensorMode,

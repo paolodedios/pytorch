@@ -26,7 +26,7 @@ from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.fake_profile import MissingOpProfile
 from torch._logging import dtrace_structured
 from torch._opaque_base import OpaqueBase
-from torch._prims_common import suggest_memory_format
+from torch._prims_common import canonicalize_dim, suggest_memory_format
 from torch._subclasses.meta_utils import (
     assert_eq,
     assert_metadata_eq,
@@ -112,6 +112,8 @@ _MKLDNN_METADATA_OPS = {
     aten.sym_stride.int,
 }
 _MKLDNN_SCALAR_ERROR_OPS = {
+    # Eager mkldnn scalar add lowers through a dense scalar path and fails while
+    # converting that scalar back to ideep. Scalar mul has a native mkldnn path.
     aten.add.Tensor,
     aten.add_.Tensor,
 }
@@ -1310,9 +1312,42 @@ class FakeTensor(Tensor):
                         )
 
             if func in (torch.reshape, torch.Tensor.reshape, aten.reshape.default):
-                shape = args[1:] if len(args) > 1 else (get_arg(1, ("shape",)),)
+                if len(args) > 1:
+                    shape = args[1:]
+                else:
+                    shape_arg = get_arg(1, ("shape",))
+                    if shape_arg is missing:
+                        return super().__torch_function__(func, types, args, kwargs)
+                    shape = (shape_arg,)
                 if len(shape) == 1 and isinstance(shape[0], (list, tuple, torch.Size)):
                     shape = tuple(shape[0])
+                with torch._C.DisableTorchFunctionSubclass():
+                    return aten._mkldnn_reshape.default(input_, shape)
+
+            if func in (torch.flatten, torch.Tensor.flatten, aten.flatten.using_ints):
+                # Calling aten.flatten here would decompose through view before
+                # FakeTensor sees the pre-decomposition mkldnn handler.
+                start_dim = canonicalize_dim(
+                    input_.dim(), cast(int, get_arg(1, ("start_dim",), 0))
+                )
+                end_dim = canonicalize_dim(
+                    input_.dim(), cast(int, get_arg(2, ("end_dim",), -1))
+                )
+                if start_dim > end_dim:
+                    raise RuntimeError(
+                        "flatten() has invalid args: "
+                        "start_dim cannot come after end_dim"
+                    )
+                if start_dim == end_dim and input_.dim() != 0:
+                    return input_
+                flattened: IntLikeType = 1
+                for size in input_.shape[start_dim : end_dim + 1]:
+                    flattened = flattened * size
+                shape = (
+                    tuple(input_.shape[:start_dim])
+                    + (flattened,)
+                    + tuple(input_.shape[end_dim + 1 :])
+                )
                 with torch._C.DisableTorchFunctionSubclass():
                     return aten._mkldnn_reshape.default(input_, shape)
 
