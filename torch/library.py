@@ -64,7 +64,6 @@ _reserved_namespaces = ["prim"]
 
 
 _SchemaSpecializationWarning = tuple[str, str, str, tuple[tuple[int, str, str], ...]]
-_SchemaSpecializationWarnings = tuple[_SchemaSpecializationWarning, ...]
 
 
 def _plain_int_schema_type(type_: Any) -> str | None:
@@ -83,7 +82,7 @@ def _plain_int_schema_type(type_: Any) -> str | None:
 
 def _schema_specialization_metadata(
     qualname: str, schema: torch._C.FunctionSchema
-) -> _SchemaSpecializationWarnings | None:
+) -> _SchemaSpecializationWarning | None:
     source = _def_sources.get(qualname)
     if source is None:
         return None
@@ -95,12 +94,12 @@ def _schema_specialization_metadata(
     )
     if not int_args:
         return None
-    return ((qualname, source, str(schema), int_args),)
+    return qualname, source, str(schema), int_args
 
 
 def _packet_schema_specialization_metadata(
     qualified_op_name: str, overload_names: list[str]
-) -> _SchemaSpecializationWarnings | None:
+) -> _SchemaSpecializationWarning | None:
     # Packet calls do not expose the overload chosen by C++ dispatch. Warn only
     # when the packet has one unambiguous overload; exact overload calls still
     # use _schema_specialization_metadata directly.
@@ -126,39 +125,39 @@ def _contains_symint(value: object) -> bool:
 
 
 def _maybe_warn_for_schema_specialization(
-    warnings: _SchemaSpecializationWarnings,
+    warning: _SchemaSpecializationWarning,
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> None:
-    for qualname, source, schema, int_args in warnings:
-        if _def_sources.get(qualname) != source:
+    qualname, source, schema, int_args = warning
+    if _def_sources.get(qualname) != source:
+        return
+
+    for idx, arg_name, arg_type in int_args:
+        warning_key = (qualname, arg_name)
+        if warning_key in _warned_schema_symint_args:
             continue
 
-        for idx, arg_name, arg_type in int_args:
-            warning_key = (qualname, arg_name)
-            if warning_key in _warned_schema_symint_args:
-                continue
+        value = args[idx] if idx < len(args) else kwargs.get(arg_name, _MISSING)
+        if value is _MISSING or not _contains_symint(value):
+            continue
 
-            value = args[idx] if idx < len(args) else kwargs.get(arg_name, _MISSING)
-            if value is _MISSING or not _contains_symint(value):
-                continue
+        _warned_schema_symint_args.add(warning_key)
 
-            _warned_schema_symint_args.add(warning_key)
-
-            suggested_type = arg_type.replace("int", "SymInt", 1)
-            _ops_log.warning(
-                "Operator %s was called with a SymInt value for argument %r but "
-                "its schema defines this argument as %s. This forces the "
-                "symbolic value to be specialized and can cause torch.compile "
-                "recompilation. Use %s in the operator schema for shape-like "
-                "values. The operator schema was defined at %s: %s",
-                qualname,
-                arg_name,
-                arg_type,
-                suggested_type,
-                source,
-                schema,
-            )
+        suggested_type = arg_type.replace("int", "SymInt", 1)
+        _ops_log.warning(
+            "Operator %s was called with a SymInt value for argument %r but "
+            "its schema defines this argument as %s. This forces the "
+            "symbolic value to be specialized and can cause torch.compile "
+            "recompilation. Use %s in the operator schema for shape-like "
+            "values. The operator schema was defined at %s: %s",
+            qualname,
+            arg_name,
+            arg_type,
+            suggested_type,
+            source,
+            schema,
+        )
 
 
 def _clear_schema_definition_sources(
