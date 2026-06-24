@@ -461,6 +461,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         result = torch.compile(m, backend=cnt)(torch.randn(3))
         self.assertEqual(result.shape, torch.Size([4]))
+        self.assertEqual(cnt.frame_count, 1)
 
     # --- object_generic_getattr on converted VTs ---
 
