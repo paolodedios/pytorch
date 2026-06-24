@@ -282,6 +282,12 @@ def type_implements_tp_repr(obj_type: type) -> bool:
     return has_slot(type_slot, PyTypeSlots.TP_REPR)
 
 
+def type_implements_tp_str(obj_type: type) -> bool:
+    """Check whether obj_type implements the tp_str slot."""
+    _, _, _, type_slot = _get_cached_slots(obj_type)
+    return has_slot(type_slot, PyTypeSlots.TP_STR)
+
+
 def pyiter_check(obj_type: type) -> bool:
     # ref: https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L2891-L2897
     # CPython checks if tp_iternext != _PyObject_NextNotImplemented
@@ -316,29 +322,6 @@ def maybe_get_python_type(obj: VariableTracker) -> type:
                 *graph_break_hints.DYNAMO_BUG,
             ],
         )
-
-
-def validate_sequence_index(
-    tx: "InstructionTranslatorBase",
-    key: VariableTracker,
-    container_name: str,
-) -> VariableTracker:
-    """_PyIndex_Check → nb_index path used by list/tuple/range/str/bytes subscript.
-
-    ref: https://github.com/python/cpython/blob/v3.13.3/Include/internal/pycore_abstract.h (_PyIndex_Check)
-    """
-    key_type = maybe_get_python_type(key)
-    if key_type not in (int, bool, slice):
-        if not type_implements_nb_index(key_type):
-            raise_observed_exception(
-                TypeError,
-                tx,
-                args=[
-                    f"{container_name} indices must be integers or slices, not {key.python_type_name()}"
-                ],
-            )
-        key = key.nb_index_impl(tx)
-    return key
 
 
 def vt_mapping_size(
@@ -447,6 +430,36 @@ def generic_repr(
     raise_type_error(tx, f"object of type '{obj.python_type_name()}' has no repr")
 
 
+def generic_str(
+    tx: "InstructionTranslatorBase", obj: "VariableTracker"
+) -> "VariableTracker":
+    """Mirrors PyObject_Str semantics in Dynamo.
+
+    https://github.com/python/cpython/blob/v3.13.3/Objects/object.c#L781-L829
+
+    Resolution order: str identity check -> tp_str (str_impl) -> tp_repr fallback.
+    """
+    if maybe_get_python_type(obj) is str:
+        return obj
+
+    obj_type = maybe_get_python_type(obj)
+    if (
+        type_implements_tp_str(obj_type)
+        and type(obj).str_impl is not VariableTracker.str_impl
+    ):
+        result = obj.str_impl(tx)
+    else:
+        result = generic_repr(tx, obj)
+
+    result_type = maybe_get_python_type(result)
+    if not issubclass(result_type, str):
+        raise_type_error(
+            tx,
+            f"__str__ returned non-string (type {result_type.__name__})",
+        )
+    return result
+
+
 def vt_getitem(
     tx: "InstructionTranslatorBase",
     obj: VariableTracker,
@@ -475,7 +488,7 @@ def vt_getitem(
     if type_implements_sq_item(obj_type):
         key_type = maybe_get_python_type(key)
         if type_implements_nb_index(key_type):
-            key = key.nb_index_impl(tx)
+            key = pynumber_as_ssize_t(tx, key, IndexError)
             return vt_sequence_getitem(tx, obj, key)
         raise_type_error(
             tx,
@@ -563,8 +576,8 @@ def generic_setitem(
     if type_implements_sq_ass_item(o_type):
         key_type = maybe_get_python_type(key)
         if pyindex_check(key_type):
-            key = key.nb_index_impl(tx)
-            return vt_sequence_setitem(tx, o, key, value)
+            key_value = pynumber_as_ssize_t(tx, key, err=IndexError)
+            return vt_sequence_setitem(tx, o, key_value, value)
         raise_type_error(
             tx, f"sequence index must be integer, not '{key.python_type_name()}'"
         )
@@ -704,6 +717,87 @@ def generic_float(
     )
 
 
+def pylong_as_ssize_t(tx: "InstructionTranslatorBase", obj: VariableTracker) -> int:
+    """Mirrors PyLong_AsSsize_t: requires an int (or subclass).
+    values outside the Py_ssize_t range raise OverflowError.
+
+    https://github.com/python/cpython/blob/60403a5409ff2c3f3b07dd2ca91a7a3e096839c7/Objects/longobject.c#L576
+    """
+    # Starting on Python 3.16, this will explicitly require an integer instance
+    # https://docs.python.org/3/deprecations/index.html#pending-removal-in-python-3-16
+    if not issubclass(obj.python_type(), int):
+        raise_type_error(tx, "an integer is required")
+    val = obj.as_python_constant()
+    if not -sys.maxsize - 1 <= val <= sys.maxsize:
+        raise_observed_exception(
+            OverflowError,
+            tx,
+            args=["Python int too large to convert to C ssize_t"],
+        )
+    return val
+
+
+def pynumber_as_ssize_t(
+    tx: "InstructionTranslatorBase",
+    item: VariableTracker,
+    err: type[Exception] | None = IndexError,
+) -> VariableTracker:
+    """Mirrors PyNumber_AsSsize_t: _PyNumber_Index(item) then PyLong_AsSsize_t.
+
+    On overflow (value outside the Py_ssize_t range) CPython remaps the
+    OverflowError to `err`, or clips to the Py_ssize_t bounds when err is None.
+
+    https://github.com/python/cpython/blob/60403a5409ff2c3f3b07dd2ca91a7a3e096839c7/Objects/abstract.c#L1469
+    """
+    from .tensor import SymNodeVariable
+
+    value = pynumber_index(tx, item)
+
+    # PyLong_AsSsize_t: a symbolic int must be specialized to a concrete
+    # ssize_t (with guard) to be usable as a C index.
+    if isinstance(value, SymNodeVariable):
+        val = value.evaluate_expr(tx.output)
+    else:
+        val = value.as_python_constant()
+
+    if not isinstance(val, int):
+        raise AssertionError("pynumber_index did not return an int-like value")
+
+    if -sys.maxsize - 1 <= val <= sys.maxsize:
+        return ConstantVariable.create(int(val))
+    if err is None:
+        r = sys.maxsize if val > 0 else -sys.maxsize - 1
+        return ConstantVariable.create(r)
+    raise_observed_exception(
+        err,
+        tx,
+        args=[f"cannot fit '{item.python_type_name()}' into an index-sized integer"],
+    )
+
+
+def pynumber_index(
+    tx: "InstructionTranslatorBase", obj: VariableTracker
+) -> "VariableTracker":
+    """Mirrors PyNumber_Index (index(x) dispatch)."""
+    obj_type = maybe_get_python_type(obj)
+
+    if not type_implements_nb_index(obj_type):
+        raise_type_error(
+            tx,
+            f"'{obj.python_type_name()}' object cannot be interpreted as an integer",
+        )
+
+    result = obj.nb_index_impl(tx)
+
+    if not issubclass(result.python_type(), int):
+        raise_type_error(
+            tx,
+            f"__index__ returned non-int (type {result.python_type_name()})",
+        )
+
+    return result
+
+
 def generic_iternext(
     tx: "InstructionTranslatorBase", obj: VariableTracker
 ) -> "VariableTracker":
@@ -795,6 +889,28 @@ def vt_is_iterable(obj: VariableTracker) -> bool:
     return type_implements_tp_iter(T) or pysequence_check(T)
 
 
+def generic_invert(
+    tx: "InstructionTranslatorBase", obj: VariableTracker
+) -> VariableTracker:
+    """Mirrors PyNumber_Invert.
+
+    https://github.com/python/cpython/blob/v3.13.0/Objects/abstract.c#L1375-L1394
+
+    Algorithm:
+    1. If type has nb_invert slot, call obj.nb_invert_impl(tx)
+    2. Otherwise, raise TypeError
+    """
+    obj_type = maybe_get_python_type(obj)
+
+    if type_implements_nb_invert(obj_type):
+        return obj.nb_invert_impl(tx)
+
+    raise_type_error(
+        tx,
+        f"bad operand type for unary ~: '{obj.python_type_name()}'",
+    )
+
+
 def generic_getiter(
     tx: "InstructionTranslatorBase", obj: VariableTracker
 ) -> "VariableTracker":
@@ -860,6 +976,8 @@ NB_SLOT_MAPPING = {
     "nb_remainder": PyNumberSlots.NB_REMAINDER,
     "nb_inplace_remainder": PyNumberSlots.NB_INPLACE_REMAINDER,
     "nb_divmod": PyNumberSlots.NB_DIVMOD,
+    "nb_power": PyNumberSlots.NB_POWER,
+    "nb_inplace_power": PyNumberSlots.NB_INPLACE_POWER,
 }
 
 
@@ -972,6 +1090,91 @@ def binary_op(
     if is_nb_not_implemented(result):
         binop_type_error(tx, v, w, op_symbol)
     return result
+
+
+def ternary_op(
+    tx: "InstructionTranslatorBase",
+    v: VariableTracker,
+    w: VariableTracker,
+    z: VariableTracker | None,
+    op_slot: str,
+    op_name: str,
+) -> VariableTracker:
+    impl_attr = f"{op_slot}_impl"
+    nb_slot_bit = NB_SLOT_MAPPING[op_slot]
+
+    v_type = maybe_get_python_type(v)
+    w_type = maybe_get_python_type(w)
+
+    v_slot = (
+        getattr(type(v), impl_attr, None)
+        if type_implements_nb_slot(v_type, nb_slot_bit)
+        else None
+    )
+
+    w_slot = (
+        getattr(type(w), impl_attr, None)
+        if type_implements_nb_slot(w_type, nb_slot_bit)
+        else None
+    )
+
+    if v_slot is w_slot:
+        w_slot = None
+
+    if v_slot:
+        if w_slot and is_python_subtype(w, v):
+            result = w_slot(w, tx, v, z, True)
+            if not is_nb_not_implemented(result):
+                return result
+            w_slot = None
+        result = v_slot(v, tx, w, z, False)
+        if not is_nb_not_implemented(result):
+            return result
+    if w_slot:
+        result = w_slot(w, tx, v, z, True)
+        if not is_nb_not_implemented(result):
+            return result
+
+    if z:
+        z_type = maybe_get_python_type(z)
+        if type_implements_nb_slot(z_type, nb_slot_bit):
+            z_impl_attr = f"{op_slot}_z_impl"
+            z_slot = getattr(type(z), z_impl_attr, None)
+            if z_slot in (v_slot, w_slot):
+                z_slot = None
+            if z_slot:
+                result = z_slot(z, tx, v, w)
+                if not is_nb_not_implemented(result):
+                    return result
+
+    if z is None:
+        binop_type_error(tx, v, w, op_name)
+    else:
+        raise_type_error(
+            tx,
+            f"unsupported operand type(s) for {op_name}: "
+            f"'{v.python_type_name()}', '{w.python_type_name()}', '{z.python_type_name()}'",
+        )
+
+
+def ternary_iop(
+    tx: "InstructionTranslatorBase",
+    v: VariableTracker,
+    w: VariableTracker,
+    z: VariableTracker | None,
+    iop_slot: str,
+    op_slot: str,
+    op_name: str,
+) -> VariableTracker:
+    v_type = maybe_get_python_type(v)
+    if type_implements_nb_slot(v_type, NB_SLOT_MAPPING[iop_slot]):
+        impl_attr = f"{iop_slot}_impl"
+        slot = getattr(type(v), impl_attr)
+        result = slot(v, tx, w, z)
+        if not is_nb_not_implemented(result):
+            return result
+
+    return ternary_op(tx, v, w, z, op_slot, op_name)
 
 
 #  Binary in-place operators
@@ -1876,7 +2079,7 @@ def object_generic_getattr(
         # tracing logic (side effects, graph nodes, suppression) that
         # MRO-based resolution via UserMethodVariable would bypass.
         if _is_method_type(type_attr) and _has_custom_call_method(obj):
-            return variables.BoundMethodVariable(obj, name)
+            return variables.BoundMethodVariable(obj, name, source=source)
 
         class_vt = VariableTracker.build(tx, py_type)
         result = _resolve_descriptor_get(tx, type_attr, obj, class_vt, source)
@@ -1914,7 +2117,7 @@ def generic_getattr(
     to obj.getattro_impl(tx, name).  On NotImplementedError, graph-breaks.
     """
     from .. import variables
-    from ..source import AttrSource, GetItemSource
+    from ..source import AttrSource
     from .base import AttrMutationKind
     from .user_defined import is_data_descriptor
 
@@ -1939,38 +2142,15 @@ def generic_getattr(
     # Handle default for getattr(obj, name, default).
     if default is not _NO_DEFAULT:
         hasattr_var = obj.call_obj_hasattr(tx, name)
-        if hasattr_var is not None:
-            if not hasattr_var.is_constant_match(True, False):
-                raise AssertionError(
-                    f"hasattr_var must be a constant True or False, got {hasattr_var}"
-                )
-            if not hasattr_var.as_python_constant():
-                return default  # type: ignore[return-value]
-        else:
+        if not hasattr_var.is_constant_match(True, False):
+            raise AssertionError(
+                f"hasattr_var must be a constant True or False, got {hasattr_var}"
+            )
+        if not hasattr_var.as_python_constant():
             return default  # type: ignore[return-value]
 
-    # __bases__, __base__, __flags__ shortcut for type objects.
-    source = obj.source and AttrSource(obj.source, name)
-    if name in {"__bases__", "__base__", "__flags__"}:
-        try:
-            value = obj.as_python_constant()
-            if isinstance(value, type):
-                if name == "__bases__":
-                    tuple_args = [
-                        VariableTracker.build(
-                            tx, b, source and GetItemSource(source, i)
-                        )
-                        for i, b in enumerate(value.__bases__)
-                    ]
-                    return variables.TupleVariable(tuple_args, source=source)
-                if name == "__base__":
-                    return VariableTracker.build(tx, value.__base__, source)
-                if name == "__flags__":
-                    return VariableTracker.build(tx, value.__flags__)
-        except NotImplementedError:
-            pass
-
     # Core dispatch: call the VT's getattro_impl (tp_getattro).
+    source = obj.source and AttrSource(obj.source, name)
     try:
         return obj.getattro_impl(tx, name)
     except AsPythonConstantNotImplementedError:

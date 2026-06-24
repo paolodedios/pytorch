@@ -54,7 +54,6 @@ from ..exc import (
     TorchRuntimeError,
     unimplemented,
     UnknownPropertiesDuringBackwardTrace,
-    Unsupported,
     UserError,
     UserErrorType,
 )
@@ -610,15 +609,17 @@ class TensorVariable(VariableTracker):
     def call_obj_hasattr(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> ConstantVariable:
+        # Fast path: all_tensor_attrs covers standard tensor attributes.
+        # This also ensures getattro_impl exceptions we don't catch here
+        # (e.g. UnknownPropertiesDuringBackwardTrace for strict-mode banned
+        # ops) are unreachable, since those ops are all in all_tensor_attrs.
         if name in all_tensor_attrs:
             return ConstantVariable.create(True)
 
         try:
-            VariableTracker.build(tx, getattr).call_function(
-                tx, [self, VariableTracker.build(tx, name)], {}
-            )
+            self.getattro_impl(tx, name)
             ret_val = True
-        except (AttributeError, ObservedAttributeError, Unsupported):
+        except (NotImplementedError, AttributeError, ObservedAttributeError):
             ret_val = False
 
         if self.source:
@@ -695,6 +696,14 @@ class TensorVariable(VariableTracker):
                 return variables.misc.DelayGraphBreakVariable(
                     source=AttrSource(self.source, name),
                     msg="Getting an inplace view on a graph input is not supported",
+                    hints=[
+                        "Avoid mutating a graph input's tensor metadata with in-place view ops. "
+                        "If the mutation is only needed inside the compiled region, replace the in-place call "
+                        "with an out-of-place view, for example `x = x.transpose(1, 2)` instead of "
+                        "`x.transpose_(1, 2)`.",
+                        "If you need to mutate the input tensor's metadata, move the in-place view call outside "
+                        "`torch.compile`.",
+                    ],
                 )
 
         # For attributes (not methods) that were not caught in the special handling above,
@@ -742,21 +751,18 @@ class TensorVariable(VariableTracker):
                 return BoundMethodVariable(
                     self, name, source=self.source and AttrSource(self.source, name)
                 )
-            # For tensor subclasses (e.g. NestedTensor), check the actual type
-            # for methods not on base Tensor.
-            example_value = self.proxy.node.meta.get("example_value")
-            if example_value is not None:
-                check_type = type(example_value)
-                if check_type is not torch.Tensor:
-                    subclass_attr = getattr(check_type, name, None)
-                    if subclass_attr is not None and callable(subclass_attr):
-                        from .misc import BoundMethodVariable
+            # For tensor subclasses, check the actual type for methods
+            # not on base Tensor.
+            if self.class_type is not torch.Tensor:
+                subclass_attr = getattr(self.class_type, name, None)
+                if subclass_attr is not None and callable(subclass_attr):
+                    from .misc import BoundMethodVariable
 
-                        return BoundMethodVariable(
-                            self,
-                            name,
-                            source=self.source and AttrSource(self.source, name),
-                        )
+                    return BoundMethodVariable(
+                        self,
+                        name,
+                        source=self.source and AttrSource(self.source, name),
+                    )
             raise NotImplementedError
         return result
 
@@ -1004,13 +1010,7 @@ class TensorVariable(VariableTracker):
                     from_exc=e,
                 )
 
-        # Guard against unknown methods reaching the generic proxy path.
-        # For traceable wrapper subclasses (DTensor, NestedTensor), class_type
-        # is torch.Tensor, so check the example_value's actual type instead.
-        example_value = self.proxy.node.meta.get("example_value")
-        check_type = (
-            type(example_value) if example_value is not None else self.class_type
-        )
+        check_type = self.class_type
         if not hasattr(check_type, name):
             unimplemented(
                 gb_type="Unhandled tensor method",
@@ -1264,7 +1264,7 @@ class TensorVariable(VariableTracker):
             context=f"{self}.as_subclass({cls})",
             explanation="Currently not supported",
             hints=[
-                "Avoid this call or move it outside `torch.compile` regione",
+                "Avoid this call or move it outside `torch.compile` region",
                 *graph_break_hints.SUPPORTABLE,
             ],
         )
@@ -1744,6 +1744,25 @@ class TensorVariable(VariableTracker):
 
     def method___abs__(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         return self.nb_absolute_impl(tx)
+
+    def nb_invert_impl(
+        self,
+        tx: "InstructionTranslatorBase",
+    ) -> VariableTracker:
+        from .builder import wrap_fx_proxy
+
+        return wrap_fx_proxy(
+            tx,
+            tx.output.create_proxy(
+                "call_function",
+                operator.invert,
+                (self.as_proxy(),),
+                {},
+            ),
+        )
+
+    def method___invert__(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+        return self.nb_invert_impl(tx)
 
     def method___getitem__(
         self,
@@ -2514,12 +2533,27 @@ class TensorVariable(VariableTracker):
             sym_num=None,
         )
 
-    def is_python_equal(self, other: object) -> bool:
-        if not isinstance(other, VariableTracker):
-            return False
-        a = self.as_proxy().node.meta["example_value"]
-        b = other.as_proxy().node.meta["example_value"]
-        return a is b
+    def nb_power_impl(
+        self,
+        tx: "InstructionTranslatorBase",
+        other: VariableTracker,
+        z: VariableTracker | None,
+        reverse: bool = False,
+    ) -> VariableTracker:
+        # Reaches here only via direct ``tensor.__pow__(x)`` calls — the
+        # ``operator.pow`` path goes through ``_handle_insert_op_in_graph``
+        # in ``BuiltinVariable``.  Build the same FX proxy.
+        if not (isinstance(other, TensorVariable) or _is_sym_arith_operand(other)) or z:
+            return VariableTracker.build(tx, NotImplemented)
+        from .builder import wrap_fx_proxy
+
+        lhs, rhs = (other, self) if reverse else (self, other)
+        return wrap_fx_proxy(
+            tx,
+            tx.output.create_proxy(
+                "call_function", operator.pow, *proxy_args_kwargs([lhs, rhs], {})
+            ),
+        )
 
 
 class SymNodeVariable(VariableTracker):
@@ -2946,6 +2980,26 @@ class SymNodeVariable(VariableTracker):
             sym_num=None,
         )
 
+    def nb_power_impl(
+        self,
+        tx: "InstructionTranslatorBase",
+        other: VariableTracker,
+        z: VariableTracker | None,
+        reverse: bool = False,
+    ) -> VariableTracker:
+        if z is not None:
+            return VariableTracker.build(tx, NotImplemented)
+        if not _is_sym_arith_operand(other):
+            return VariableTracker.build(tx, NotImplemented)
+        lhs, rhs = (other, self) if reverse else (self, other)
+        return SymNodeVariable.create(
+            tx,
+            tx.output.create_proxy(
+                "call_function", operator.pow, *proxy_args_kwargs([lhs, rhs], {})
+            ),
+            sym_num=None,
+        )
+
     def method___abs__(
         self, tx: "InstructionTranslatorBase", *args: Any, **kwargs: Any
     ) -> VariableTracker:
@@ -2958,15 +3012,6 @@ class SymNodeVariable(VariableTracker):
         # Essentially convert the SymNode to a constant variable whenever its
         # searched for a dict key.
         return hash(self.evaluate_expr())
-
-    def is_python_equal(self, other: object) -> bool:
-        if isinstance(other, SymNodeVariable):
-            return self.evaluate_expr() == other.evaluate_expr()
-        # could be constant variable as well
-        return (
-            isinstance(other, VariableTracker)
-            and self.evaluate_expr() == other.as_python_constant()
-        )
 
 
 class NumpyNdarrayVariable(TensorVariable):
@@ -3250,7 +3295,7 @@ class TensorSubclassVariable(UserDefinedClassVariable):
                     explanation="Currently not supported",
                     hints=[
                         "Avoid this constructor call or move it outside "
-                        "`torch.compile` regione",
+                        "`torch.compile` region",
                         *graph_break_hints.SUPPORTABLE,
                     ],
                 )
