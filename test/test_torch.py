@@ -2849,6 +2849,11 @@ class TestTorchDeviceType(TestCase):
                                                        [0, 0, 0],
                                                        [0, 0, 0]]), expected_out)
 
+        for op in [torch.cummax, torch.cummin]:
+            x = torch.randn(5, dtype=torch.complex64, device=device)
+            with self.assertRaisesRegex(RuntimeError, "not implemented for 'ComplexFloat'"):
+                op(x, 0)
+
     def test_logcumsumexp(self, device):
         def logcumsumexp(a, axis):
             return torch.cumsum(a.exp(), axis=axis).log_()
