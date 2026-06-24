@@ -139,6 +139,38 @@ def from_dlpack(
         # Get source device first (we need it to detect cross-device transfers)
         ext_device = ext_tensor.__dlpack_device__()
 
+        # Negative strides (produced by e.g. numpy arr[::-1]) cannot be
+        # represented as PyTorch tensors; the C++ layer raises ValueError via
+        # TORCH_CHECK_VALUE and, without that guard, would call std::terminate().
+        # Handle them at the Python boundary so copy=None/True transparently
+        # materialises a contiguous copy instead of raising or aborting.
+        if hasattr(ext_tensor, 'strides') and any(s < 0 for s in ext_tensor.strides):
+            if copy is False:
+                raise ValueError(
+                    "Cannot import DLPack tensor with negative strides when "
+                    "copy=False.  Pass copy=True or copy=None to allow a "
+                    "contiguous copy, or call numpy.ascontiguousarray() / "
+                    "tensor.contiguous() on the source first."
+                )
+            # copy=None or copy=True: materialise a C-contiguous copy so the
+            # capsule the producer returns carries only non-negative strides.
+            if hasattr(ext_tensor, '__array_namespace__'):
+                xp = ext_tensor.__array_namespace__()
+                ext_tensor = xp.asarray(ext_tensor, copy=True)
+            elif hasattr(ext_tensor, 'copy'):
+                # NumPy and most CPU array libraries expose copy(order='C').
+                ext_tensor = ext_tensor.copy(order='C')
+            else:
+                raise ValueError(
+                    "Cannot import DLPack tensor with negative strides: the "
+                    "source does not expose a recognised copy path.  Call "
+                    "numpy.ascontiguousarray() or an equivalent function first."
+                )
+            # Copy already produced; suppress the per-producer copy kwarg to
+            # avoid a redundant tensor.clone() at the end of this function.
+            kwargs.pop("copy", None)
+            requested_copy = True
+
         if device is not None:
             if isinstance(device, str):
                 device = torch.device(device)

@@ -413,38 +413,47 @@ class TestTorchDlPack(TestCase):
     @skipMeta
     @onlyCPU
     def test_from_dlpack_negative_strides(self, device):
-        # Negative strides arise from ordinary NumPy slices such as arr[::-1].
-        # Before this fix, passing such an array to torch.from_dlpack() reached
-        # TensorMaker::computeStorageSize() which is declared noexcept; the
-        # TORCH_CHECK inside computeStorageNbytes() then triggered std::terminate()
-        # instead of raising a catchable Python RuntimeError, aborting the process.
-        # See https://github.com/pytorch/pytorch/issues/188023.
+        # Negative strides (e.g. numpy arr[::-1]) cannot be represented as
+        # PyTorch tensors.  Before this fix, passing such an array to
+        # torch.from_dlpack() caused TensorMaker::computeStorageSize() — which
+        # is declared noexcept — to invoke std::terminate() when the internal
+        # TORCH_CHECK fired, aborting the process instead of raising a Python
+        # exception.  See https://github.com/pytorch/pytorch/issues/188023.
         import numpy as np
 
-        # 1-D: single negative stride
-        a1 = np.arange(8.0)[::-1]
-        self.assertEqual(a1.strides, (-8,))
-        with self.assertRaisesRegex(RuntimeError, "Negative strides"):
-            torch.from_dlpack(a1)
+        # --- copy=None (default): must succeed and return a contiguous result ---
+        a1 = np.arange(8.0)[::-1]  # 1-D negative stride
+        self.assertLess(a1.strides[0], 0)
+        t1 = torch.from_dlpack(a1)
+        self.assertEqual(t1.tolist(), a1.tolist())
+        self.assertTrue(t1.is_contiguous())
 
-        # 2-D: negative stride on one axis
-        a2 = np.arange(12.0).reshape(3, 4)[:, ::-1]
+        a2 = np.arange(12.0).reshape(3, 4)[:, ::-1]  # 2-D, one negative axis
         self.assertLess(a2.strides[1], 0)
-        with self.assertRaisesRegex(RuntimeError, "Negative strides"):
-            torch.from_dlpack(a2)
+        t2 = torch.from_dlpack(a2)
+        self.assertEqual(t2.tolist(), a2.tolist())
+        self.assertTrue(t2.is_contiguous())
 
-        # 2-D: negative stride on both axes
-        a3 = np.arange(12.0).reshape(3, 4)[::-1, ::-1]
-        self.assertLess(a3.strides[0], 0)
-        with self.assertRaisesRegex(RuntimeError, "Negative strides"):
-            torch.from_dlpack(a3)
+        a3 = np.arange(12.0).reshape(3, 4)[::-1, ::-1]  # both axes negative
+        t3 = torch.from_dlpack(a3)
+        self.assertEqual(t3.tolist(), a3.tolist())
+        self.assertTrue(t3.is_contiguous())
 
-        # Regression guard: positive non-unit strides must still work.
-        a4 = np.arange(16.0)[::2]  # stride +8 bytes -> +2 elements
+        # --- copy=True: must also succeed ---
+        t1_copy = torch.from_dlpack(a1, copy=True)
+        self.assertEqual(t1_copy.tolist(), a1.tolist())
+        self.assertTrue(t1_copy.is_contiguous())
+
+        # --- copy=False: must raise ValueError (cannot flip without a copy) ---
+        with self.assertRaisesRegex(ValueError, "negative strides"):
+            torch.from_dlpack(a1, copy=False)
+
+        # --- Regression: positive non-unit strides must still work (no copy) ---
+        a4 = np.arange(16.0)[::2]  # stride +8 bytes
         t4 = torch.from_dlpack(a4)
         self.assertEqual(t4.tolist(), a4.tolist())
 
-        # Regression guard: Fortran-order (positive non-contiguous) must still work.
+        # --- Regression: Fortran-order (positive, non-C-contiguous) must work ---
         a5 = np.asfortranarray(np.arange(12.0).reshape(3, 4))
         t5 = torch.from_dlpack(a5)
         self.assertEqual(t5.tolist(), a5.tolist())
