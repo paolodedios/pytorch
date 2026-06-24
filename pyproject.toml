@@ -70,18 +70,24 @@ cmake.build-type = "Debug"
 # the parent shell didn't pre-set CC/CXX matches what .ci/pytorch/common.sh
 # already does for *gcc* build environments; if a *clang* build environment
 # pre-sets CC=clang/CXX=clang++, the env-backed lookup respects that.
-#
-# Fire when either signal is present: ANACONDA_PYTHON_VERSION covers the conda
-# CI images, and CC being set covers the venv-based images (e.g. aarch64, which
-# is not conda and so has ANACONDA_PYTHON_VERSION unset). Without the latter,
-# scikit-build-core leaks sysconfig's CC -- the older compiler that built the
-# venv Python (gcc 11 on the aarch64 image) -- which fails the SVE feature
-# probe in FindARM.cmake even though the image ships a newer gcc on PATH.
 if.platform-system = "linux"
-if.any.env.ANACONDA_PYTHON_VERSION = true
-if.any.env.CC = true
+if.env.ANACONDA_PYTHON_VERSION = true
 cmake.define.CMAKE_C_COMPILER = { env = "CC", default = "gcc" }
 cmake.define.CMAKE_CXX_COMPILER = { env = "CXX", default = "g++" }
+
+[[tool.scikit-build.overrides]]
+# The aarch64 CI image is a venv (no ANACONDA_PYTHON_VERSION), and its build env
+# name has no "gcc" tag, so .ci/pytorch/common.sh exports no CC/CXX. With CC
+# unset, scikit-build-core's set_environment_for_gen() leaks the venv Python's
+# sysconfig compiler (aarch64-linux-gnu-gcc 11.4), which fails FindARM.cmake's
+# SVE bf16 probe -- the image actually ships gcc 15. Pin the generic cc/c++
+# names: green setup.py builds compile via /opt/cache/bin/c++ (the sccache shim
+# resolving the image's gcc 15), which is exactly what CMake's default search
+# picks before scikit-build-core overrides it. Respect CC/CXX if set.
+if.platform-system = "linux"
+if.env.BUILD_ENVIRONMENT = "aarch64"
+cmake.define.CMAKE_C_COMPILER = { env = "CC", default = "cc" }
+cmake.define.CMAKE_CXX_COMPILER = { env = "CXX", default = "c++" }
 
 [[tool.scikit-build.overrides]]
 # On Windows with the Ninja generator, CMake does not default to MSVC. With the
