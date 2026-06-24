@@ -14902,6 +14902,21 @@ fn
 
         self.assertEqual(expected, actual)
 
+    def test_data_ptr_equality_after_storage_resize_fullgraph(self):
+        def f(x):
+            ptr_before = x.data_ptr()
+            view = x[1:]
+            view.untyped_storage().resize_(view.untyped_storage().size() * 8 + 1024)
+            ptr_after = x.data_ptr()
+            return torch.tensor([ptr_before == ptr_after], dtype=torch.long)
+
+        x = torch.randn(4)
+
+        expected = f(x.clone())
+        actual = torch.compile(f, backend="eager", fullgraph=True)(x.clone())
+
+        self.assertEqual(expected, actual)
+
     def test_data_ptr_constant_comparison_graph_break(self):
         def ptr_eq_zero(x):
             return x.data_ptr() == 0
