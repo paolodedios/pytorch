@@ -764,25 +764,6 @@ user_stack=None)
             guard_str,
         )
 
-    @torch._dynamo.config.patch(enable_cpp_framelocals_guard_eval=False)
-    def test_framelocals_guard_config_flag(self):
-        def fn(x):
-            return x + 1
-
-        opt_fn = torch.compile(fn, backend="eager")
-        ref = opt_fn(torch.ones(3))
-        with torch._dynamo.set_stance("fail_on_recompile"):
-            res = opt_fn(torch.ones(3))
-        self.assertEqual(ref, res)
-
-        c1 = _debug_get_cache_entry_list(fn.__code__)
-        self.assertEqual(len(c1), 1)
-        guard_str = str(c1[0].guard_manager)
-        self.assertIn(
-            "source=L['x'], accessed_by=FrameLocalsGuardAccessor(key='x'",
-            guard_str,
-        )
-
     def test_guard_last_success_receipt_default_disabled(self):
         def fn(x):
             return x + 1

@@ -7941,26 +7941,18 @@ static bool run_root_guard_manager(
     return false;
   }
 
-  py::object config_module = py::module_::import("torch._dynamo.config");
-  bool enable_cpp_framelocals_guard_eval =
-      config_module.attr("enable_cpp_framelocals_guard_eval").cast<bool>();
   auto check_root = [&]() {
-    bool result;
-    if (enable_cpp_framelocals_guard_eval) {
 #ifdef GUARD_INSTRUCTION_COUNT
-      auto n = count_instructions([&] {
-        result = ((RootGuardManager*)root)->check_nopybind(f_locals);
-      });
-      std::cout << "#instructions in guard eval = " << n << std::endl
-                << std::flush;
-#else
+    bool result;
+    auto n = count_instructions([&] {
       result = ((RootGuardManager*)root)->check_nopybind(f_locals);
-#endif
-    } else {
-      result = ((RootGuardManager*)root)
-                   ->check_nopybind((PyObject*)f_locals->to_dict());
-    }
+    });
+    std::cout << "#instructions in guard eval = " << n << std::endl
+              << std::flush;
     return result;
+#else
+    return ((RootGuardManager*)root)->check_nopybind(f_locals);
+#endif
   };
 
   if (receipt == nullptr) {
@@ -9252,28 +9244,9 @@ PyObject* torch_c_dynamo_guards_init() {
           &DictGuardManager::get_key_value_managers,
           py::return_value_policy::reference)
       // Skipped leaf guards
+      .def("add_type_match_guard", &DictGuardManager::skip_adding_guard)
       .def(
-          "add_type_match_guard",
-          [](DictGuardManager& self,
-             py::object value,
-             py::object verbose_code_parts,
-             py::object user_stack) -> void {
-            self.skip_adding_guard(
-                std::move(value),
-                std::move(verbose_code_parts),
-                std::move(user_stack));
-          })
-      .def(
-          "add_dict_length_check_guard",
-          [](DictGuardManager& self,
-             py::object value,
-             py::object verbose_code_parts,
-             py::object user_stack) -> void {
-            self.skip_adding_guard(
-                std::move(value),
-                std::move(verbose_code_parts),
-                std::move(user_stack));
-          })
+          "add_dict_length_check_guard", &DictGuardManager::skip_adding_guard)
       // Permitted leaf guards
       .def(
           "add_dict_contains_guard",
