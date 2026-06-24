@@ -3499,9 +3499,14 @@ class SIMDScheduling(BaseScheduling):
         V.graph.wrapper_code.generate_debug_sync(V.graph.wrapper_code)
 
     def _codegen_standalone_kernel(
-        self, node_info: NodeInfo, only_gen_src_code: bool
+        self,
+        node_info: NodeInfo,
+        only_gen_src_code: bool,
+        is_combo_subkernel: bool = False,
     ) -> tuple[str, TritonKernel]:
         kernel_kwargs: dict[str, Any] = {}
+        if is_combo_subkernel:
+            kernel_kwargs["override_cooperative_reduction"] = False
         self.kernel_type.apply_feature_required_overrides(
             node_info.features, kernel_kwargs
         )
@@ -3644,7 +3649,7 @@ class SIMDScheduling(BaseScheduling):
             # keeps this throwaway kernel out of the real wrapper / graph buffer state.
             with config.patch(benchmark_kernel=True):
                 src_code, _ = self._codegen_standalone_kernel(
-                    node_info, only_gen_src_code=True
+                    node_info, only_gen_src_code=True, is_combo_subkernel=True
                 )
             src_code = src_code.replace(str(Placeholder.KERNEL_NAME), "triton_")
             mod = PyCodeCache.load(src_code)
