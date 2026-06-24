@@ -421,42 +421,60 @@ class TestTorchDlPack(TestCase):
         # exception.  See https://github.com/pytorch/pytorch/issues/188023.
         import numpy as np
 
-        # --- copy=None (default): must succeed and return a contiguous result ---
-        a1 = np.arange(8.0)[::-1]  # 1-D negative stride
+        # Negative strides, copy=None (default): must succeed, return a
+        # contiguous copy, and NOT share memory with the source (a copy was made).
+        a1 = np.arange(8.0)[::-1]
         self.assertLess(a1.strides[0], 0)
         t1 = torch.from_dlpack(a1)
         self.assertEqual(t1.tolist(), a1.tolist())
         self.assertTrue(t1.is_contiguous())
+        self.assertNotEqual(t1.data_ptr(), a1.ctypes.data)  # copy, not a view
 
-        a2 = np.arange(12.0).reshape(3, 4)[:, ::-1]  # 2-D, one negative axis
+        a2 = np.arange(12.0).reshape(3, 4)[:, ::-1]
         self.assertLess(a2.strides[1], 0)
         t2 = torch.from_dlpack(a2)
         self.assertEqual(t2.tolist(), a2.tolist())
         self.assertTrue(t2.is_contiguous())
+        self.assertNotEqual(t2.data_ptr(), a2.ctypes.data)
 
-        a3 = np.arange(12.0).reshape(3, 4)[::-1, ::-1]  # both axes negative
+        a3 = np.arange(12.0).reshape(3, 4)[::-1, ::-1]
         t3 = torch.from_dlpack(a3)
         self.assertEqual(t3.tolist(), a3.tolist())
         self.assertTrue(t3.is_contiguous())
+        self.assertNotEqual(t3.data_ptr(), a3.ctypes.data)
 
-        # --- copy=True: must also succeed ---
-        t1_copy = torch.from_dlpack(a1, copy=True)
-        self.assertEqual(t1_copy.tolist(), a1.tolist())
-        self.assertTrue(t1_copy.is_contiguous())
+        # Negative strides, copy=True: must also succeed and not share memory.
+        t1_true = torch.from_dlpack(a1, copy=True)
+        self.assertEqual(t1_true.tolist(), a1.tolist())
+        self.assertTrue(t1_true.is_contiguous())
+        self.assertNotEqual(t1_true.data_ptr(), a1.ctypes.data)
 
-        # --- copy=False: must raise ValueError (cannot flip without a copy) ---
+        # Negative strides, copy=False: must raise ValueError immediately —
+        # cannot represent a reversed view without copying.
         with self.assertRaisesRegex(ValueError, "negative strides"):
             torch.from_dlpack(a1, copy=False)
 
-        # --- Regression: positive non-unit strides must still work (no copy) ---
-        a4 = np.arange(16.0)[::2]  # stride +8 bytes
-        t4 = torch.from_dlpack(a4)
-        self.assertEqual(t4.tolist(), a4.tolist())
+        # Positive non-contiguous (stride > 1), copy=None/False: zero-copy path;
+        # the tensor must share memory with the NumPy array.
+        a4 = np.arange(16.0)[::2]
+        t4_none = torch.from_dlpack(a4)
+        self.assertEqual(t4_none.tolist(), a4.tolist())
+        self.assertEqual(t4_none.data_ptr(), a4.ctypes.data)  # shared memory
 
-        # --- Regression: Fortran-order (positive, non-C-contiguous) must work ---
+        t4_false = torch.from_dlpack(a4, copy=False)
+        self.assertEqual(t4_false.tolist(), a4.tolist())
+        self.assertEqual(t4_false.data_ptr(), a4.ctypes.data)  # shared memory
+
+        # Positive non-contiguous, copy=True: values equal but independent memory.
+        t4_true = torch.from_dlpack(a4, copy=True)
+        self.assertEqual(t4_true.tolist(), a4.tolist())
+        self.assertNotEqual(t4_true.data_ptr(), a4.ctypes.data)
+
+        # Fortran-order (positive, non-C-contiguous): zero-copy path preserved.
         a5 = np.asfortranarray(np.arange(12.0).reshape(3, 4))
         t5 = torch.from_dlpack(a5)
         self.assertEqual(t5.tolist(), a5.tolist())
+        self.assertEqual(t5.data_ptr(), a5.ctypes.data)  # shared memory
 
     @skipMeta
     @onlyNativeDeviceTypes
