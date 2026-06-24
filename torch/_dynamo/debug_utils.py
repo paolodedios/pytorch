@@ -480,8 +480,8 @@ def _initialized_cuda_system_info_comment() -> str:
 
 
 def _cuda_system_info_comment() -> str:
-    if not torch.cuda.is_available():
-        return "# torch.cuda.is_available()==False, no GPU info collected\n"
+    if not torch.cuda._is_compiled():
+        return "# torch.cuda._is_compiled()==False, no GPU info collected\n"
     if not torch.cuda.is_initialized():
         return "# torch.cuda.is_initialized()==False, no GPU info collected\n"
     return _initialized_cuda_system_info_comment()

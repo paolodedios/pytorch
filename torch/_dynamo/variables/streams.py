@@ -51,8 +51,10 @@ def _device_module_is_initialized(device: torch.device) -> bool:
 def _reserve_current_stream_index_if_needed() -> None:
     if index_to_bytecode_constructor:
         return
-    current_accelerator = torch.accelerator.current_accelerator(check_available=True)
+    current_accelerator = torch.accelerator.current_accelerator()
     if current_accelerator is None:
+        return
+    if not _device_module_is_initialized(current_accelerator):
         return
     source = CurrentStreamSource(current_accelerator)
     reserve_user_object_index(CURRENT_STREAM_INDEX, lambda cg: cg(source))
@@ -292,9 +294,7 @@ class SymbolicStreamState:
 
     def __init__(self) -> None:
         cur_stack: list[StreamVariable] = []
-        current_accelerator = torch.accelerator.current_accelerator(
-            check_available=True
-        )
+        current_accelerator = torch.accelerator.current_accelerator()
         if current_accelerator is not None and _device_module_is_initialized(
             current_accelerator
         ):

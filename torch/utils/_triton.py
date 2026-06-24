@@ -46,7 +46,7 @@ def has_triton_package() -> bool:
 def has_initialized_accelerator() -> bool:
     import torch
 
-    accelerator = torch.accelerator.current_accelerator(check_available=True)
+    accelerator = torch.accelerator.current_accelerator()
     if accelerator is None:
         return False
 
