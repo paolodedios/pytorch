@@ -3658,10 +3658,24 @@ class SIMDScheduling(BaseScheduling):
                 None if already_tuned else async_compile.triton("triton_", src_code)
             )
 
+        # Coordinate-descent search space for the per-subkernel autotune: with max-autotune also
+        # on, coordesc refines block sizes + warps; with only coordinate_descent_tuning on it
+        # refines just the warp knobs (num_warps, and waves_per_eu on AMD), leaving blocks at the
+        # heuristic default.
+        cdt_warps_only = config.coordinate_descent_tuning and not (
+            config.max_autotune or config.max_autotune_pointwise
+        )
+        warp_fields = ("num_warps", "waves_per_eu")
+
         def benchmark(mod: Any, future: Any, already_tuned: bool) -> Any:
             if future is not None and hasattr(future, "result"):
                 future.result()  # attaches the worker-compiled configs to mod.triton_
             autotuner = mod.triton_
+            if cdt_warps_only:
+                ct = autotuner.coordesc_tuner
+                ct.frozen_fields = OrderedSet(
+                    f for f in ct.tunable_fields if f not in warp_fields
+                )
             # call() -> autotuner.run() benchmarks every compiled config and selects the best.
             mod.call(mod.get_args())  # CachingAutotuner.bench clones args internally
             # already_tuned => config reused from an in-memory autotuner; state "hit" => from the
