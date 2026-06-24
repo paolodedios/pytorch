@@ -2943,8 +2943,8 @@ def forward(self, arg0_1, arg1_1):
                             use_reentrant=False,
                             context_fn=context_fn,
                         )
-                    loss = z.sum()
-                    dq, dk, dv = _grad(loss, (q, k, v))
+                        loss = z.sum()
+                        dq, dk, dv = _grad(loss, (q, k, v))
 
                     return z.detach(), dq, dk, dv
 

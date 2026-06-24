@@ -2255,7 +2255,9 @@ main()
 
     def test_trace_run_with_rng_state(self):
         def sdpa(xq, xk):
-            return F.scaled_dot_product_attention(xq, xk, xk, is_causal=True)
+            return F.scaled_dot_product_attention(
+                xq, xk, xk, dropout_p=0.1, is_causal=True
+            )
 
         def g(xq_1, xk_1, xq_2, xk_2):
             # xq: (bs, n_local_heads, seqlen, head_dim)
@@ -2308,7 +2310,7 @@ main()
                 run_with_rng_state = torch.ops.higher_order.run_with_rng_state(
                     getitem_8,
                     torch.ops.aten._scaled_dot_product_flash_attention_for_cpu.default,
-                    getitem_3, getitem_4, getitem_4, 0.0, True,
+                    getitem_3, getitem_4, getitem_4, 0.1, True,
                 )
                 ...
         ```
