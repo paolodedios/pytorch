@@ -585,15 +585,11 @@ class AlgoIterator {
       }
     }
 
-    auto perfResults = only_use_default
-        ? onlyDefaultAlgorithm(args)
-        : search::findAlgorithms(args, benchmark);
-
-    auto try_perf_results = [&](std::vector<perf_t>& perfResults) {
-      for (auto& algoPerf : perfResults) {
+    auto try_perf_results = [&](auto perf_begin, auto perf_end) {
+      for (auto perf_iter = perf_begin; perf_iter != perf_end; ++perf_iter) {
         try {
-          f(algoPerf);
-          cache.insert(args.params, algoPerf);
+          f(*perf_iter);
+          cache.insert(args.params, *perf_iter);
           return true;
         } catch (c10::OutOfMemoryError&) {
           std::ignore = cudaGetLastError(); // clear CUDA error
@@ -604,13 +600,21 @@ class AlgoIterator {
       return false;
     };
 
-    if (try_perf_results(perfResults)) {
+    auto perfResults = only_use_default
+        ? onlyDefaultAlgorithm(args)
+        : search::findAlgorithms(args, benchmark);
+
+    if (try_perf_results(perfResults.begin(), perfResults.end())) {
       return;
     }
 
-    if (!only_use_default && !benchmark) {
+    if (!only_use_default && !benchmark && !perfResults.empty()) {
       auto fallbackPerfResults = search::findAlgorithms(args, benchmark, true);
-      if (try_perf_results(fallbackPerfResults)) {
+      auto perf_begin = fallbackPerfResults.begin();
+      if (perf_begin != fallbackPerfResults.end()) {
+        perf_begin = std::next(perf_begin);
+      }
+      if (try_perf_results(perf_begin, fallbackPerfResults.end())) {
         return;
       }
     }

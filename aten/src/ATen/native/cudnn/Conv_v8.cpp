@@ -974,7 +974,8 @@ void try_plans_fused(
 }
 
 bool try_configs(
-    cudnn_frontend::EngineConfigList& configs,
+    cudnn_frontend::EngineConfigList::iterator configs_begin,
+    cudnn_frontend::EngineConfigList::iterator configs_end,
     const std::string& opgraph_tag,
     const CacheKeyWrapper& key,
     const cudnnHandle_t handle,
@@ -982,8 +983,10 @@ bool try_configs(
     const Tensor& y,
     const Tensor& w,
     const cudnnBackendDescriptorType_t operation) {
-  for (auto& config : configs) {
+  for (auto config_iter = configs_begin; config_iter != configs_end;
+       ++config_iter) {
     try {
+      auto& config = *config_iter;
       auto plan = cudnn_frontend::ExecutionPlanBuilder()
                       .setHandle(handle)
                       .setEngineConfig(config, opgraph_tag)
@@ -1004,7 +1007,8 @@ bool try_configs(
 }
 
 bool try_configs_fused(
-    cudnn_frontend::EngineConfigList& configs,
+    cudnn_frontend::EngineConfigList::iterator configs_begin,
+    cudnn_frontend::EngineConfigList::iterator configs_end,
     const std::string& opgraph_tag,
     const CacheKeyFusedWrapper& key,
     const cudnnHandle_t handle,
@@ -1013,8 +1017,10 @@ bool try_configs_fused(
     const Tensor& w,
     const Tensor& z,
     const Tensor& b) {
-  for (auto& config : configs) {
+  for (auto config_iter = configs_begin; config_iter != configs_end;
+       ++config_iter) {
     try {
+      auto& config = *config_iter;
       auto plan = cudnn_frontend::ExecutionPlanBuilder()
                       .setHandle(handle)
                       .setEngineConfig(config, opgraph_tag)
@@ -1032,6 +1038,41 @@ bool try_configs_fused(
     }
   }
   return false;
+}
+
+bool try_configs(
+    cudnn_frontend::EngineConfigList& configs,
+    const std::string& opgraph_tag,
+    const CacheKeyWrapper& key,
+    const cudnnHandle_t handle,
+    const Tensor& x,
+    const Tensor& y,
+    const Tensor& w,
+    const cudnnBackendDescriptorType_t operation) {
+  return try_configs(
+      configs.begin(),
+      configs.end(),
+      opgraph_tag,
+      key,
+      handle,
+      x,
+      y,
+      w,
+      operation);
+}
+
+bool try_configs_fused(
+    cudnn_frontend::EngineConfigList& configs,
+    const std::string& opgraph_tag,
+    const CacheKeyFusedWrapper& key,
+    const cudnnHandle_t handle,
+    const Tensor& x,
+    const Tensor& y,
+    const Tensor& w,
+    const Tensor& z,
+    const Tensor& b) {
+  return try_configs_fused(
+      configs.begin(), configs.end(), opgraph_tag, key, handle, x, y, w, z, b);
 }
 
 void run_single_conv(
@@ -1085,27 +1126,43 @@ void run_single_conv(
         deterministic,
         allow_tf32,
         false);
-    if (try_configs(configs, opgraph_tag, key, handle, x, y, w, operation)) {
-      return;
-    }
-    // all heuristic configs
-    configs = get_configs_from_heuristics(
-        handle,
-        operation,
-        opgraph_tag,
-        x,
-        y,
-        w,
-        key,
-        padding,
-        stride,
-        dilation,
-        deterministic,
-        allow_tf32,
-        false,
-        true);
-    if (try_configs(configs, opgraph_tag, key, handle, x, y, w, operation)) {
-      return;
+    if (!configs.empty()) {
+      if (try_configs(configs, opgraph_tag, key, handle, x, y, w, operation)) {
+        return;
+      }
+      // all heuristic configs
+      configs = get_configs_from_heuristics(
+          handle,
+          operation,
+          opgraph_tag,
+          x,
+          y,
+          w,
+          key,
+          padding,
+          stride,
+          dilation,
+          deterministic,
+          allow_tf32,
+          false,
+          true);
+      auto configs_begin = configs.begin();
+      // The top-config path already tried the first filtered heuristic config.
+      if (configs_begin != configs.end()) {
+        configs_begin += 1;
+      }
+      if (try_configs(
+              configs_begin,
+              configs.end(),
+              opgraph_tag,
+              key,
+              handle,
+              x,
+              y,
+              w,
+              operation)) {
+        return;
+      }
     }
     // fallback configs
     configs = get_configs_from_heuristics(
@@ -1207,29 +1264,46 @@ void run_fused_conv(
             deterministic,
             allow_tf32,
             false);
-    if (try_configs_fused(configs, opgraph_tag, key, handle, x, y, w, z, b)) {
-      return;
-    }
-    // all heuristic configs
-    configs = get_configs_from_heuristics_fused(
-        handle,
-        opgraph_tag,
-        x,
-        y,
-        w,
-        z,
-        b,
-        alpha,
-        key,
-        padding,
-        stride,
-        dilation,
-        deterministic,
-        allow_tf32,
-        false,
-        true);
-    if (try_configs_fused(configs, opgraph_tag, key, handle, x, y, w, z, b)) {
-      return;
+    if (!configs.empty()) {
+      if (try_configs_fused(configs, opgraph_tag, key, handle, x, y, w, z, b)) {
+        return;
+      }
+      // all heuristic configs
+      configs = get_configs_from_heuristics_fused(
+          handle,
+          opgraph_tag,
+          x,
+          y,
+          w,
+          z,
+          b,
+          alpha,
+          key,
+          padding,
+          stride,
+          dilation,
+          deterministic,
+          allow_tf32,
+          false,
+          true);
+      auto configs_begin = configs.begin();
+      // The top-config path already tried the first filtered heuristic config.
+      if (configs_begin != configs.end()) {
+        configs_begin += 1;
+      }
+      if (try_configs_fused(
+              configs_begin,
+              configs.end(),
+              opgraph_tag,
+              key,
+              handle,
+              x,
+              y,
+              w,
+              z,
+              b)) {
+        return;
+      }
     }
     // fallback configs
     configs = get_configs_from_heuristics_fused(
