@@ -142,6 +142,26 @@ class GraphDeduplicationInductorWrapperTests(TestCase):
                 0,
             )
 
+    def test_optimize_string_inductor_disables_graph_deduplication_for_custom_passes(
+        self,
+    ):
+        def custom_pass(gm):
+            return None
+
+        for config_name in (
+            "post_grad_custom_pre_pass",
+            "post_grad_custom_post_pass",
+            "joint_custom_pre_pass",
+            "joint_custom_post_pass",
+            "pre_grad_custom_pass",
+        ):
+            with self.subTest(config_name=config_name):
+                with torch._inductor.config.patch({config_name: custom_pass}):
+                    self.assertEqual(
+                        self._compile_string_inductor_and_count_invoke_subgraphs(),
+                        0,
+                    )
+
     def test_optimize_string_inductor_disables_graph_deduplication_for_overlap_scheduling(
         self,
     ):

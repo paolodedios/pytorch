@@ -2887,6 +2887,26 @@ class _TorchCompileInductorWrapper:
         if functorch_config.enable_complex_wrapper:
             return nullcontext()
         if self.config.get(
+            "post_grad_custom_pre_pass", inductor_config.post_grad_custom_pre_pass
+        ):
+            return nullcontext()
+        if self.config.get(
+            "post_grad_custom_post_pass", inductor_config.post_grad_custom_post_pass
+        ):
+            return nullcontext()
+        if self.config.get(
+            "joint_custom_pre_pass", inductor_config.joint_custom_pre_pass
+        ):
+            return nullcontext()
+        if self.config.get(
+            "joint_custom_post_pass", inductor_config.joint_custom_post_pass
+        ):
+            return nullcontext()
+        if self.config.get(
+            "pre_grad_custom_pass", inductor_config.pre_grad_custom_pass
+        ):
+            return nullcontext()
+        if self.config.get(
             "aten_distributed_optimizations.enable_overlap_scheduling",
             inductor_config.aten_distributed_optimizations.enable_overlap_scheduling,
         ):
@@ -3200,6 +3220,13 @@ def compile(
 
         if isinstance(shapes_spec, ParamsSpec):
             shapes_spec = ShapesSpec(shapes_spec)
+
+    # If ``model`` carries an ``@dynamic_spec(...)`` decorator, the attached
+    # ``ShapesSpec`` is used as ``shapes_spec``. Passing both raises.
+    if model is not None:
+        from torch.fx.experimental.dynamic_spec import _resolve_dynamic_shapes
+
+        shapes_spec = _resolve_dynamic_shapes(model, shapes_spec)
 
     # Decorator mode
     if model is None:

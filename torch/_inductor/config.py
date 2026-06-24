@@ -583,11 +583,12 @@ graph_partition: bool = (
 # overhead is not always worthwhile for inference. The torch.compile Inductor
 # wrapper ignores this option when grad mode is disabled, cpp_wrapper is active,
 # dynamic=True is set, fallback_by_default is active, cudagraphs are active,
-# complex wrapper is active, invoke_subgraph regional compile is active,
-# autograd ops are traced into the graph, distributed overlap/bucketing passes
-# are active, or compiled autograd is compiling the backward graph. It is also
-# disabled for the Inductor subprocess compile mode because nested GraphModule
-# subgraphs are not yet supported across that compile-worker boundary.
+# complex wrapper is active, a custom Inductor graph pass is configured,
+# invoke_subgraph regional compile is active, autograd ops are traced into the
+# graph, distributed overlap/bucketing passes are active, or compiled autograd
+# is compiling the backward graph. It is also disabled for the Inductor
+# subprocess compile mode because nested GraphModule subgraphs are not yet
+# supported across that compile-worker boundary.
 graph_deduplication: bool = (
     os.environ.get("TORCHINDUCTOR_GRAPH_DEDUPLICATION", "1") == "1"
 )
