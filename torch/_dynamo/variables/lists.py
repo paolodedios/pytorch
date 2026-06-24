@@ -37,6 +37,8 @@ from ..exc import (
     raise_type_error,
     unimplemented,
     Unsupported,
+    UserError,
+    UserErrorType,
 )
 from ..source import AttrSource
 from ..utils import (
@@ -627,8 +629,12 @@ class RangeVariable(BaseListVariable):
 
     def repr_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         # ref: range_repr in https://github.com/python/cpython/blob/6280bb547840b609feedb78887c6491af75548e8/Objects/rangeobject.c#L673-L691
-        self._check_concrete_bounds("repr")
-        return VariableTracker.build(tx, self.debug_repr())
+        start, stop, step = self._concrete_bounds("repr")
+        repr = f"range({start}, {stop}"
+        if step != 1:
+            repr += f", {step}"
+        repr += ")"
+        return VariableTracker.build(tx, repr)
 
     def python_type(self) -> type:
         return range
@@ -636,34 +642,53 @@ class RangeVariable(BaseListVariable):
     def _has_concrete_bounds(self) -> bool:
         return all(var.is_python_constant() for var in self.items)
 
+    def _graph_break_symbolic_materialized(self, action: str) -> None:
+        unimplemented(
+            gb_type="range_symbolic_materialized",
+            context=f"{action} on {self.debug_repr()}",
+            explanation=(
+                "Dynamo can track len(range(...)) for simple symbolic "
+                "ranges, but cannot materialize or inspect the individual "
+                "range elements without concrete bounds."
+            ),
+            hints=[*graph_break_hints.SUPPORTABLE],
+        )
+
+    def _guarded_bounds(self) -> tuple[int, int, int] | None:
+        bounds: list[int] = []
+        for var in self.items:
+            try:
+                bound = guard_if_dyn(var)
+            except UserError as exc:
+                if exc.error_type is not UserErrorType.ANTI_PATTERN:
+                    raise
+                return None
+            if isinstance(bound, VariableTracker):
+                return None
+            bounds.append(bound)
+        start, stop, step = bounds
+        return start, stop, step
+
+    def _concrete_bounds(self, action: str) -> tuple[int, int, int]:
+        bounds = self._guarded_bounds()
+        if bounds is None:
+            self._graph_break_symbolic_materialized(action)
+            raise AssertionError("unreachable")
+        return bounds
+
     def _check_concrete_bounds(self, action: str) -> None:
-        if not self._has_concrete_bounds():
-            unimplemented(
-                gb_type="range_symbolic_materialized",
-                context=f"{action} on {self.debug_repr()}",
-                explanation=(
-                    "Dynamo can track len(range(...)) for simple symbolic "
-                    "ranges, but cannot materialize or inspect the individual "
-                    "range elements without concrete bounds."
-                ),
-                hints=[*graph_break_hints.SUPPORTABLE],
-            )
+        self._concrete_bounds(action)
 
     def start(self) -> Any:
-        return self.items[0].as_python_constant()
+        return self._concrete_bounds("start")[0]
 
     def stop(self) -> Any:
-        return self.items[1].as_python_constant()
+        return self._concrete_bounds("stop")[1]
 
     def step(self) -> Any:
-        return self.items[2].as_python_constant()
+        return self._concrete_bounds("step")[2]
 
-    def range_length(self) -> int:
-        self._check_concrete_bounds("range_length")
-        lo = self.start()
-        hi = self.stop()
-        step = self.step()
-
+    def _range_length_from_bounds(self, lo: int, hi: int, step: int) -> int:
         if step == 0:
             raise AssertionError("step must not be zero")
         if step > 0 and lo < hi:
@@ -672,6 +697,9 @@ class RangeVariable(BaseListVariable):
             return 1 + (lo - 1 - hi) // (0 - step)
         else:
             return 0
+
+    def range_length(self) -> int:
+        return self._range_length_from_bounds(*self._concrete_bounds("range_length"))
 
     def _get_slice_indices(self, length: int, slice: slice) -> list[int]:
         step_is_negative = 0
@@ -760,8 +788,7 @@ class RangeVariable(BaseListVariable):
         return result
 
     def as_python_constant(self) -> range:
-        self._check_concrete_bounds("as_python_constant")
-        return range(*[x.as_python_constant() for x in self.items])
+        return range(*self._concrete_bounds("as_python_constant"))
 
     def _symbolic_range_length(
         self, tx: "InstructionTranslatorBase"
@@ -815,29 +842,44 @@ class RangeVariable(BaseListVariable):
         )
 
     def as_proxy(self) -> range:
-        self._check_concrete_bounds("as_proxy")
-        return self.python_type()(*self._as_proxy())
+        return self.python_type()(*self._concrete_bounds("as_proxy"))
 
     def unpack_var_sequence(
         self, tx: Optional["InstructionTranslatorBase"] = None
     ) -> list[VariableTracker]:
         if not all(var.is_python_constant() for var in self.items):
-            unimplemented(
-                gb_type="range_symbolic_unpack",
-                context=f"unpack {self.debug_repr()}",
-                explanation=(
-                    "Dynamo cannot materialize the individual elements of a "
-                    "range with symbolic bounds."
-                ),
-                hints=[*graph_break_hints.SUPPORTABLE],
-            )
+            bounds = self._guarded_bounds()
+            if bounds is None:
+                unimplemented(
+                    gb_type="range_symbolic_unpack",
+                    context=f"unpack {self.debug_repr()}",
+                    explanation=(
+                        "Dynamo cannot materialize the individual elements of a "
+                        "range with symbolic bounds."
+                    ),
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                )
+                raise AssertionError("unreachable")
+            return [variables.ConstantVariable.create(x) for x in range(*bounds)]
         return [variables.ConstantVariable.create(x) for x in self.as_python_constant()]
 
     def sq_length(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         """Sequence length for range objects."""
         if not self._has_concrete_bounds():
-            return self._symbolic_range_length(tx)
-        length = self.range_length()
+            start, stop, step = self.items
+            if (
+                start.is_python_constant()
+                and start.as_python_constant() == 0
+                and step.is_python_constant()
+                and step.as_python_constant() == 1
+            ):
+                return self._symbolic_range_length(tx)
+            bounds = self._guarded_bounds()
+            if bounds is None:
+                return self._symbolic_range_length(tx)
+            length = self._range_length_from_bounds(*bounds)
+        else:
+            length = self.range_length()
         if length > sys.maxsize:
             raise_observed_exception(OverflowError, tx)
         return VariableTracker.build(tx, length)
@@ -913,13 +955,15 @@ class RangeVariable(BaseListVariable):
 
     def tp_iter_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/rangeobject.c#L896-L927
-        if not all(var.is_python_constant() for var in self.items):
+        bounds = self._guarded_bounds()
+        if bounds is None:
             # Can't represent a `range_iterator` without well defined bounds
             return variables.misc.DelayGraphBreakVariable(
                 msg="Cannot create range_iterator: bounds (start, stop, step) must be fully defined as concrete constants.",
             )
+        start, stop, step = bounds
         return RangeIteratorVariable(
-            self.start(), self.stop(), self.step(), self.range_length()
+            start, stop, step, self._range_length_from_bounds(start, stop, step)
         )
 
     def sq_item_impl(
@@ -1022,14 +1066,7 @@ class RangeVariable(BaseListVariable):
     def is_python_equal(self, other: object) -> bool:
         if not isinstance(other, variables.RangeVariable):
             return False
-        self._check_concrete_bounds("is_python_equal")
-        other._check_concrete_bounds("is_python_equal")
-
-        return (
-            self.start() == other.start()
-            and self.step() == other.step()
-            and self.stop() == other.stop()
-        )
+        return self.range_equals(other)
 
 
 class CommonListMethodsVariable(BaseListVariable):
@@ -1095,8 +1132,15 @@ class CommonListMethodsVariable(BaseListVariable):
                 and isinstance(args[0], RangeVariable)
                 and not all(item.is_python_constant() for item in args[0].items)
             ):
-                tx.output.side_effects.mutation(self)
-                self.symbolic_lengths.append(args[0].sq_length(tx))
+                bounds = args[0]._guarded_bounds()
+                if bounds is None:
+                    tx.output.side_effects.mutation(self)
+                    self.symbolic_lengths.append(args[0].sq_length(tx))
+                else:
+                    self.items.extend(
+                        variables.ConstantVariable.create(item)
+                        for item in range(*bounds)
+                    )
             elif (
                 isinstance(self, ListVariable)
                 and isinstance(args[0], TensorVariable)
