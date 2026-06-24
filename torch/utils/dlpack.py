@@ -140,20 +140,10 @@ def from_dlpack(
         ext_device = ext_tensor.__dlpack_device__()
 
         # Negative strides (produced by e.g. numpy arr[::-1]) cannot be
-        # represented as PyTorch tensors.  The C++ layer in fromDLPackImpl
-        # raises ValueError via TORCH_CHECK_VALUE as a hard safety net, but we
-        # also handle the case at the Python boundary so that copy=None/True
-        # can transparently resolve it by materialising a contiguous copy.
-        #
-        # We precheck before calling __dlpack__() rather than retrying after
-        # the C++ ValueError because DLPack capsules are single-use: once
-        # consumed by _from_dlpack the producer marks the capsule as used and
-        # it cannot be re-exported.  We need the copy before the first call.
-        #
-        # The copy is made via __array_namespace__ (array API standard) when
-        # available, falling back to .copy(order='C') for NumPy and libraries
-        # that expose the same interface.  Both paths produce a same-device
-        # copy so cross-device semantics are not affected.
+        # represented as PyTorch tensors.  Check here before calling
+        # __dlpack__() so copy=None/True can transparently resolve it by
+        # materialising a contiguous copy.  We cannot retry after the C++
+        # ValueError because DLPack capsules are single-use once consumed.
         if hasattr(ext_tensor, 'strides') and any(s < 0 for s in ext_tensor.strides):
             if copy is False:
                 raise ValueError(
