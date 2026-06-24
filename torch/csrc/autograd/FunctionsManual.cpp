@@ -4337,6 +4337,9 @@ Tensor linalg_matrix_exp_differential(
 // serves the VJP and the JVP. Requires positive-definite input (the denominator
 // vanishes at a zero eigenvalue).
 Tensor linalg_matrix_sqrt_differential(const Tensor& self, const Tensor& grad) {
+  if (!grad.defined()) {
+    return {};
+  }
   at::NoTF32Guard disable_tf32;
   auto [eigvals, eigvecs] = at::linalg_eigh(self);
   auto sqrt_eigvals = eigvals.clamp_min(0).sqrt();
