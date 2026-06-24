@@ -3702,9 +3702,6 @@ class SIMDScheduling(BaseScheduling):
         for idx, fut in enumerate(futures):
             raw = getattr(fut, "future", None)
             if raw is not None:
-                # Byte-identical subkernels share one source, so async_compile returns one cached
-                # future (and PyCodeCache one module) for all of them; collect every index waiting
-                # on it so none is left unbenchmarked (a missed index would crash stitching).
                 pending.setdefault(raw, []).append(idx)
             else:
                 winners[idx] = benchmark(mods[idx], fut, tuned_flags[idx])
