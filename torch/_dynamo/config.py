@@ -599,6 +599,10 @@ install_free_tensors_for_export = True
 # Use C++ FrameLocalsMapping (raw array view of Python frame fastlocals) (deprecated: always True)
 enable_cpp_framelocals_guard_eval = True
 
+# Enable the experimental Last Successful Guard Memo / token-plan fast path for
+# stable guard subtrees. Default off while the protocol is evaluated upstream.
+enable_guard_lookup_memo = False
+
 # Whether to automatically find and replace identical graph
 # regions with a call to invoke_subgraph
 use_graph_deduplication = False

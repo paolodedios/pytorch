@@ -783,7 +783,7 @@ user_stack=None)
             guard_str,
         )
 
-    def test_guard_last_success_receipt_initializes(self):
+    def test_guard_last_success_receipt_default_disabled(self):
         def fn(x):
             return x + 1
 
@@ -794,9 +794,34 @@ user_stack=None)
         self.assertEqual(len(cache_entries), 1)
 
         guard_manager = cache_entries[0].guard_manager
-        guard_manager.reset_guard_lookup_stats()
         stats = guard_manager.get_guard_lookup_stats()
         self.assertIn("actual_partial_receipt_created", stats)
+        self.assertFalse(stats["actual_partial_receipt_created"])
+        self.assertEqual(stats["actual_partial_enabled"], 0)
+        self.assertEqual(stats["actual_partial_shadow_passes"], 0)
+        self.assertEqual(stats["actual_partial_candidate"], 0)
+        self.assertEqual(stats["actual_partial_token_count"], 0)
+        self.assertEqual(stats["actual_partial_hit"], 0)
+        self.assertEqual(stats["actual_partial_miss"], 0)
+        self.assertEqual(stats["slow_guard_fallback"], 0)
+        self.assertIn("actual_partial_disabled_reasons", stats)
+        self.assertEqual(stats["actual_partial_disabled_reasons"], {})
+
+    @torch._dynamo.config.patch(enable_guard_lookup_memo=True)
+    def test_guard_last_success_receipt_initializes_when_enabled(self):
+        def fn(x):
+            return x + 1
+
+        opt_fn = torch.compile(fn, backend="eager")
+        opt_fn(torch.ones(3))
+
+        cache_entries = _debug_get_cache_entry_list(fn.__code__)
+        self.assertEqual(len(cache_entries), 1)
+
+        guard_manager = cache_entries[0].guard_manager
+        stats = guard_manager.get_guard_lookup_stats()
+        self.assertIn("actual_partial_receipt_created", stats)
+        self.assertTrue(stats["actual_partial_receipt_created"])
         self.assertEqual(stats["actual_partial_enabled"], 0)
         self.assertEqual(stats["actual_partial_shadow_passes"], 0)
         self.assertEqual(stats["actual_partial_candidate"], 0)

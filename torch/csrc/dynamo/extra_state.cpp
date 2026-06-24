@@ -41,6 +41,11 @@ ExtraState* get_live_extra_state_from_guard_manager(
   return extra_state.cast<ExtraState*>();
 }
 
+bool enable_guard_lookup_memo() {
+  py::object config_module = py::module_::import("torch._dynamo.config");
+  return config_module.attr("enable_guard_lookup_memo").cast<bool>();
+}
+
 } // namespace
 
 CacheEntry* ExtraState::get_first_entry() {
@@ -58,9 +63,10 @@ CacheEntry* ExtraState::get_first_entry() {
   return nullptr;
 }
 
-ExtraState::ExtraState(PyCodeObject* orig_code_arg)
-    : orig_code(orig_code_arg),
-      last_success_receipt(torch::dynamo::create_guard_last_success_receipt()) {
+ExtraState::ExtraState(PyCodeObject* orig_code_arg) : orig_code(orig_code_arg) {
+  if (enable_guard_lookup_memo()) {
+    last_success_receipt = torch::dynamo::create_guard_last_success_receipt();
+  }
 }
 
 py::dict ExtraState::get_guard_lookup_stats() const {
@@ -159,7 +165,9 @@ void ExtraState::invalidate(
 
   CHECK(cache_entry->_owner == this);
   CHECK(cache_entry == &*cache_entry->_owner_loc);
-  reset_guard_lookup_stats();
+  if (this->last_success_receipt != nullptr) {
+    reset_guard_lookup_stats();
+  }
   cache_entry->invalidate(std::move(deleted_guard_manager));
   // Move the cache entry to the end of the list because these will always
   // return False.
@@ -318,9 +326,12 @@ static CacheEntry* lookup_in_list(
               torch::dynamo::run_root_guard_manager(
                       cache_entry.diff_guard_root_mgr, f_locals);
         } else {
+          auto* receipt = extra_state == nullptr
+              ? nullptr
+              : extra_state->last_success_receipt.get();
           valid =
               torch::dynamo::run_root_guard_manager_with_last_success_receipt(
-                  extra_state->last_success_receipt.get(),
+                  receipt,
                   &cache_entry,
                   cache_entry.root_mgr,
                   f_locals,

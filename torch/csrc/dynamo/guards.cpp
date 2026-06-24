@@ -7941,25 +7941,35 @@ static bool run_root_guard_manager(
     return false;
   }
 
-  ActiveGuardReceiptScope receipt_scope(
-      receipt, entry_key, root, guard_last_success_current_self(f_locals));
   py::object config_module = py::module_::import("torch._dynamo.config");
   bool enable_cpp_framelocals_guard_eval =
       config_module.attr("enable_cpp_framelocals_guard_eval").cast<bool>();
-  bool result;
-  if (enable_cpp_framelocals_guard_eval) {
+  auto check_root = [&]() {
+    bool result;
+    if (enable_cpp_framelocals_guard_eval) {
 #ifdef GUARD_INSTRUCTION_COUNT
-    auto n = count_instructions(
-        [&] { result = ((RootGuardManager*)root)->check_nopybind(f_locals); });
-    std::cout << "#instructions in guard eval = " << n << std::endl
-              << std::flush;
+      auto n = count_instructions([&] {
+        result = ((RootGuardManager*)root)->check_nopybind(f_locals);
+      });
+      std::cout << "#instructions in guard eval = " << n << std::endl
+                << std::flush;
 #else
-    result = ((RootGuardManager*)root)->check_nopybind(f_locals);
+      result = ((RootGuardManager*)root)->check_nopybind(f_locals);
 #endif
-  } else {
-    result = ((RootGuardManager*)root)
-                 ->check_nopybind((PyObject*)f_locals->to_dict());
+    } else {
+      result = ((RootGuardManager*)root)
+                   ->check_nopybind((PyObject*)f_locals->to_dict());
+    }
+    return result;
+  };
+
+  if (receipt == nullptr) {
+    return check_root();
   }
+
+  ActiveGuardReceiptScope receipt_scope(
+      receipt, entry_key, root, guard_last_success_current_self(f_locals));
+  bool result = check_root();
   if (result) {
     receipt_scope.commit();
   }

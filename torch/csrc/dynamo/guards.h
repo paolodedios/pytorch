@@ -44,7 +44,6 @@ bool run_root_guard_manager_with_last_success_receipt(
 enum class GuardPartialMemoState : uint8_t {
   Training = 0,
   Enabled = 1,
-  Disabled = 2,
 };
 
 enum class GuardSubtreeTokenKind : uint8_t {
@@ -52,7 +51,6 @@ enum class GuardSubtreeTokenKind : uint8_t {
   ObjectType,
   DictVersion,
   SequenceSize,
-  TensorMetadata,
 };
 
 enum class ActualPartialReplayFailureReason : uint8_t {
@@ -78,6 +76,8 @@ inline bool operator==(
 }
 
 struct GuardLastSuccessReceipt {
+  // Borrowed identities used only as memo fences. They are never dereferenced
+  // after storage; any mismatch falls back to the full slow guard path.
   void* actual_partial_entry_key = nullptr;
   void* actual_partial_root_key = nullptr;
   PyObject* actual_partial_self_object = nullptr;
