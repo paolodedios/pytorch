@@ -1522,6 +1522,8 @@ class TestFxGraphCache(TestCase):
     def test_cache_hit_replays_custom_guard_evaluator(self):
         class CacheEntry:
             guards_expr = "exact_guard_expr"
+            guards_expr_with_source = [object()]
+            guards_expr_with_source_arg_count = 0
             extern_libs_key = None
 
         shape_env = ShapeEnv()
