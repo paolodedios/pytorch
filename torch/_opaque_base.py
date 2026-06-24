@@ -6,6 +6,7 @@ from functools import wraps
 # module load (FakeScriptObject's module imports torch, which imports us).
 _FakeScriptObject_cls: type | None = None
 _MISSING = object()
+_skipped_dynamo_codes: set[object] = set()
 
 
 def _maybe_skip_dynamo_code(fn):
@@ -17,11 +18,14 @@ def _maybe_skip_dynamo_code(fn):
     code = getattr(fn, "__code__", None)
     if code is None:
         return
+    if code in _skipped_dynamo_codes:
+        return
 
     skip_code = getattr(eval_frame, "skip_code", None)
     if skip_code is None:
         return
     skip_code(code)
+    _skipped_dynamo_codes.add(code)
 
 
 def _get_pybind_opaque_base():
@@ -207,9 +211,9 @@ def _install_opaque_base(_PybindOpaqueBase: type) -> tuple[type, type]:
     """Install OpaqueBase on top of a pybind-compatible marker base.
 
     Pybind assumes explicit Python bases passed to py::class_ also have pybind
-    type information. The C extension provides a synthetic pybind-compatible
-    base type with no C++ value holder so unrelated pybind classes can inherit
-    from OpaqueBase without adding a fake C++ base subobject.
+    type information. The C extension provides a hidden pybind marker type so
+    unrelated pybind classes can inherit from OpaqueBase while pybind owns the
+    marker's normal value and holder lifecycle.
     """
     global OpaqueBaseMeta, OpaqueBase
 

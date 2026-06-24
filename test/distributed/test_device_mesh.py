@@ -2041,6 +2041,13 @@ class ProcessGroupOpaqueTypeTest(TestCase):
 
         self.assertTrue(issubclass(ProcessGroup, OpaqueBase))
         self.assertIsInstance(ProcessGroup(0, 1), OpaqueBase)
+        for _ in range(1000):
+            process_group = ProcessGroup(0, 1)
+            self.assertIsInstance(process_group, OpaqueBase)
+            self.assertEqual(
+                ProcessGroup.unbox(process_group.boxed()).rank(),
+                process_group.rank(),
+            )
 
     def test_process_group_python_subclass_must_initialize_pybind_base(self):
         class BadProcessGroup(ProcessGroup):

@@ -41,7 +41,6 @@
 #include <torch/csrc/utils/pybind.h>
 #include <cstdlib>
 #include <iostream>
-#include <typeindex>
 #include <unordered_map>
 
 #include <ATen/ThreadLocalPythonObjects.h>
@@ -165,107 +164,19 @@ namespace {
 
 struct THPOpaqueBasePybindShim {};
 
-void opaqueBaseNoopDealloc(py::detail::value_and_holder& vh) {
-  (void)vh;
-}
-
-void markOpaqueBaseHolderConstructed(PyObject* self) {
-  auto* inst = reinterpret_cast<py::detail::instance*>(self);
-  py::detail::values_and_holders vhs(inst);
-  for (auto& vh : vhs) {
-    if (vh.type != nullptr &&
-        *vh.type->cpptype == typeid(THPOpaqueBasePybindShim)) {
-      vh.set_holder_constructed();
-      return;
-    }
-  }
-}
-
-void opaqueBaseInitInstance(
-    py::detail::instance* inst,
-    const void* holder_ptr) {
-  (void)holder_ptr;
-  markOpaqueBaseHolderConstructed(reinterpret_cast<PyObject*>(inst));
-}
-
-PyObject* opaqueBaseNew(PyTypeObject* type, PyObject* args, PyObject* kwargs) {
-  (void)args;
-  (void)kwargs;
-  auto* self = py::detail::make_new_instance(type);
-  markOpaqueBaseHolderConstructed(self);
-  return self;
-}
-
-int opaqueBaseInit(PyObject* self, PyObject* args, PyObject* kwargs) {
-  (void)args;
-  (void)kwargs;
-  markOpaqueBaseHolderConstructed(self);
-  return 0;
-}
-
-void registerOpaqueBasePybindTypeInfo(PyTypeObject* type) {
-  auto* tinfo = new py::detail::type_info();
-  tinfo->type = type;
-  tinfo->cpptype = &typeid(THPOpaqueBasePybindShim);
-  tinfo->type_size = sizeof(THPOpaqueBasePybindShim);
-  tinfo->type_align = alignof(THPOpaqueBasePybindShim);
-  tinfo->holder_size_in_ptrs = 0;
-  tinfo->operator_new = nullptr;
-  tinfo->init_instance = opaqueBaseInitInstance;
-  tinfo->dealloc = opaqueBaseNoopDealloc;
-  tinfo->simple_type = true;
-  tinfo->simple_ancestors = true;
-  tinfo->module_local = false;
-  tinfo->holder_enum_v = py::detail::holder_enum_t::undefined;
-
-  py::detail::with_internals([&](py::detail::internals& internals) {
-    tinfo->direct_conversions = &internals.direct_conversions[std::type_index(
-        typeid(THPOpaqueBasePybindShim))];
-    internals.registered_types_py[type] = {tinfo};
-  });
-}
-
-py::object createOpaqueBasePybindType() {
-  auto& internals = py::detail::get_internals();
-  auto name =
-      py::reinterpret_steal<py::object>(PYBIND11_FROM_STRING("_OpaqueBase"));
-  auto* heap_type = reinterpret_cast<PyHeapTypeObject*>(
-      internals.default_metaclass->tp_alloc(internals.default_metaclass, 0));
-  if (heap_type == nullptr) {
-    pybind11::pybind11_fail("_OpaqueBase: error allocating type");
-  }
-
-  heap_type->ht_name = name.inc_ref().ptr();
-#ifdef PYBIND11_BUILTIN_QUALNAME
-  heap_type->ht_qualname = name.inc_ref().ptr();
-#endif
-
-  auto* type = &heap_type->ht_type;
-  type->tp_name = "torch._C._OpaqueBase";
-  type->tp_base = py::detail::type_incref(
-      reinterpret_cast<PyTypeObject*>(internals.instance_base));
-  type->tp_basicsize = static_cast<ssize_t>(sizeof(py::detail::instance));
-  type->tp_flags =
-      Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HEAPTYPE;
-  type->tp_new = opaqueBaseNew;
-  type->tp_init = opaqueBaseInit;
-  type->tp_dealloc = py::detail::pybind11_object_dealloc;
-  type->tp_weaklistoffset = offsetof(py::detail::instance, weakrefs);
-
-  if (PyType_Ready(type) < 0) {
-    pybind11::pybind11_fail("_OpaqueBase: PyType_Ready failed");
-  }
-
-  auto result =
-      py::reinterpret_steal<py::object>(reinterpret_cast<PyObject*>(heap_type));
-  result.attr("__module__") = "torch._C";
-  registerOpaqueBasePybindTypeInfo(type);
-  return result;
+py::object createOpaqueBasePybindType(PyObject* module) {
+  auto py_module = py::reinterpret_borrow<py::module>(module);
+  // Use a normal hidden pybind type so pybind owns the value/holder lifecycle.
+  // The Python-level OpaqueBase inherits from this marker and can therefore be
+  // passed as an explicit Python base to unrelated py::class_ bindings.
+  py::class_<THPOpaqueBasePybindShim>(py_module, "_OpaqueBase")
+      .def(py::init<>());
+  return py_module.attr("_OpaqueBase");
 }
 
 void installOpaqueBase(PyObject* module) {
   auto py_module = py::reinterpret_borrow<py::module>(module);
-  auto pybind_opaque_base = createOpaqueBasePybindType();
+  auto pybind_opaque_base = createOpaqueBasePybindType(module);
   py_module.attr("_OpaqueBase") = pybind_opaque_base;
   auto opaque_base_module = py::module_::import("torch._opaque_base");
   opaque_base_module.attr("_install_opaque_base")(pybind_opaque_base);
@@ -2396,7 +2307,6 @@ void THCPStream_init(PyObject* module);
 void THCPEvent_init(PyObject* module);
 void THCPGraph_init(PyObject* module);
 void THCPMemPool_init(PyObject* module);
-void THCPGreenContext_init(PyObject* module);
 PyMethodDef* THCPModule_methods();
 namespace torch::cuda {
 void initModule(PyObject* module);
@@ -2635,7 +2545,6 @@ PyObject* initModule() {
   THCPEvent_init(module);
   THCPGraph_init(module);
   THCPMemPool_init(module);
-  THCPGreenContext_init(module);
 #endif
 
 #ifdef USE_XPU

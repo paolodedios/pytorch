@@ -38,6 +38,10 @@ class PlacementTypesTestCase(TestCase):
         self.assertIsInstance(Shard(0), OpaqueBase)
         self.assertIsInstance(Replicate(), OpaqueBase)
         self.assertIsInstance(Partial(), OpaqueBase)
+        for _ in range(1000):
+            self.assertIsInstance(Shard(0), OpaqueBase)
+            self.assertIsInstance(Replicate(), OpaqueBase)
+            self.assertIsInstance(Partial(), OpaqueBase)
 
     def test_placement_python_subclass_must_initialize_pybind_base(self):
         class BadPlacement(Placement):

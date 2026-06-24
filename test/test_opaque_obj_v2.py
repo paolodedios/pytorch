@@ -8,6 +8,7 @@ import pickle
 import random
 import re
 import unittest
+import weakref
 from contextlib import ExitStack
 from dataclasses import dataclass
 
@@ -1285,6 +1286,11 @@ def forward(self, x_1, cfg_1):
         self.assertIs(cyclic_roundtrip.child, cyclic_roundtrip)
         self.assertIsInstance(cyclic_roundtrip, torch._C._OpaqueBase)
         self.assertIsInstance(cyclic_roundtrip, OpaqueBase)
+        cyclic_ref = weakref.ref(cyclic)
+        self.assertTrue(gc.is_tracked(cyclic))
+        del cyclic
+        gc.collect()
+        self.assertIsNone(cyclic_ref())
 
         class SlottedOpaque(OpaqueBase):
             __slots__ = ("value",)
