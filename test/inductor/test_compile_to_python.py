@@ -4,8 +4,15 @@ import textwrap
 
 import torch
 import torch.utils._pytree as pytree
-from torch._inductor import compile_to_python
-from torch._inductor.standalone_compile import NoRunnableInductorModuleError
+from torch._dynamo.utils import counters
+from torch._functorch import config as functorch_config
+from torch._inductor import compile_to_python, config
+from torch._inductor.standalone_compile import (
+    _defines_module_level_call,
+    _extract_runnable_module,
+    NoRunnableInductorModuleError,
+)
+from torch._inductor.utils import fresh_cache
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.nn.utils import stateless
 from torch.testing._internal.common_utils import run_tests, TestCase
@@ -334,10 +341,150 @@ def call(args):
         self.assertIn("@triton.jit", src)
         self.assertIn("@triton_heuristics.persistent_reduction", src)
         self.assertIn("tl.sum", src)  # the denominator reduction
-        self.assertIn("libdevice.exp", src)  # the numerator
+        # the exp numerator: libdevice.exp / tl_math.exp / tl.exp depending on fast-math
+        self.assertIn(".exp(", src)
         self.assertNotIn("extern_kernels", call_src)
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+
+class TestInductorCompileToPythonContract(TestCase):
+    # Contract + branch coverage the codegen-golden classes above do not exercise: the
+    # option pin-override, the cache return value, the structural module detector's two
+    # forms, the error paths, and warm-cache capture. All CPU, so no GPU is required.
+    def test_rejects_non_graphmodule(self):
+        with self.assertRaises(TypeError):
+            compile_to_python("not a graph module", [])
+
+    def test_defines_module_level_call_both_forms(self):
+        # graph_partition off emits a top-level ``def call``; on emits ``call = runner.call``.
+        # Both must be recognized; a ``def call`` inside a string literal and unparsable
+        # source must not be.
+        self.assertTrue(
+            _defines_module_level_call("def call(args):\n    return args\n")
+        )
+        self.assertTrue(
+            _defines_module_level_call(
+                "class Runner:\n    def call(self):\n        pass\ncall = runner.call\n"
+            )
+        )
+        self.assertFalse(_defines_module_level_call("x = 1\ndef other():\n    pass\n"))
+        self.assertFalse(
+            _defines_module_level_call('s = """\ndef call(a):\n    pass\n"""\n')
+        )
+        self.assertFalse(_defines_module_level_call("def (:\n"))
+
+    def test_extract_runnable_module_zero_and_multiple(self):
+        # 0 runnable modules is the expected no-compute case (typed exception callers
+        # special-case); >1 is an unexpected invariant violation (plain RuntimeError).
+        with self.assertRaises(NoRunnableInductorModuleError):
+            _extract_runnable_module([])
+        # >1 raises a plain RuntimeError, NOT the NoRunnableInductorModuleError subclass,
+        # so distinguish them (NoRunnableInductorModuleError is itself a RuntimeError).
+        with self.assertRaises(RuntimeError) as cm:
+            _extract_runnable_module(
+                ["def call(a):\n    pass", "def call(b):\n    pass"]
+            )
+        self.assertNotIsInstance(cm.exception, NoRunnableInductorModuleError)
+
+    def test_pins_override_conflicting_user_options(self):
+        # The benchmark_harness/cpp_wrapper pins must beat conflicting user options so the
+        # captured module stays the runnable python wrapper rather than a C++ wrapper or a
+        # profiling harness.
+        m = torch.nn.Linear(4, 3).eval()
+        x = torch.randn(5, 4)
+        src, _cache = compile_to_python(
+            _capture(m, x),
+            _flat_inputs(m, x),
+            options={
+                "graph_partition": False,
+                "cpp_wrapper": True,
+                "benchmark_harness": True,
+            },
+        )
+        self.assertIn("def call(args):", src)
+        self.assertNotIn('extern "C"', src)
+        self.assertNotIn("AOTInductorModel", src)
+        self.assertNotIn("benchmark_compiled_module", src)
+        with torch.no_grad():
+            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_cache_bytes_returned_for_cacheable_graph(self):
+        # The bytes come from the AOTAutograd cache artifact, so they require both
+        # force_disable_caches off AND enable_autograd_cache on. These flags are
+        # env-authoritative on PyTorch CI's cache-disabled shards (cannot be patched back
+        # on), where compile_to_python correctly returns None; skip there --
+        # test_no_cache_when_caches_disabled covers the None path.
+        if (
+            config.force_disable_caches
+            or not config.fx_graph_cache
+            or not functorch_config.enable_autograd_cache
+        ):
+            self.skipTest("requires inductor + autograd caches enabled")
+        m = torch.nn.Linear(4, 3).eval()
+        x = torch.randn(5, 4)
+        _src, cache = compile_to_python(
+            _capture(m, x), _flat_inputs(m, x), options={"graph_partition": False}
+        )
+        self.assertIsInstance(cache, bytes)
+        self.assertGreater(len(cache), 0)
+
+    def test_no_cache_when_caches_disabled(self):
+        # With caches disabled there is no saveable artifact, so cache is None; the source
+        # still runs (the kernels JIT-compile from it on first call).
+        m = torch.nn.Linear(4, 3).eval()
+        x = torch.randn(5, 4)
+        src, cache = compile_to_python(
+            _capture(m, x),
+            _flat_inputs(m, x),
+            options={"graph_partition": False, "force_disable_caches": True},
+        )
+        self.assertIsNone(cache)
+        with torch.no_grad():
+            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_graph_partition_runner_call_form(self):
+        # graph_partition=True emits the Runner form (``call = runner.call``) instead of a
+        # top-level ``def call``; _extract_runnable_module must recognize it and the emitted
+        # module must still run.
+        m = torch.nn.Linear(4, 3).eval()
+        x = torch.randn(5, 4)
+        src, _cache = compile_to_python(
+            _capture(m, x), _flat_inputs(m, x), options={"graph_partition": True}
+        )
+        self.assertIn("call = runner.call", src)
+        with torch.no_grad():
+            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    @config.patch({"compile_threads": 1})
+    def test_warm_cache_still_captures_source(self):
+        # The capture hook also fires on cache restore, so a second compile of the same
+        # graph (warm FxGraphCache) still yields a runnable module even though no fresh
+        # codegen happens. fresh_cache isolates an empty cache dir so the first compile is a
+        # guaranteed miss and the second a guaranteed hit; compile_threads=1 keeps codegen
+        # in-process so the hit counter is deterministic. The warm path needs caching, which
+        # is env-disabled on some CI shards (force_disable_caches cannot be patched back on),
+        # so skip there.
+        if config.force_disable_caches or not config.fx_graph_cache:
+            self.skipTest("requires inductor FxGraphCache enabled")
+        m = torch.nn.Linear(4, 3).eval()
+        x = torch.randn(5, 4)
+        with fresh_cache():
+            counters.clear()
+            src1, _ = compile_to_python(
+                _capture(m, x), _flat_inputs(m, x), options={"graph_partition": False}
+            )
+            hits_after_first = counters["inductor"]["fxgraph_cache_hit"]
+            src2, _ = compile_to_python(
+                _capture(m, x), _flat_inputs(m, x), options={"graph_partition": False}
+            )
+            hits_after_second = counters["inductor"]["fxgraph_cache_hit"]
+        self.assertEqual(hits_after_first, 0)
+        self.assertEqual(hits_after_second, 1)
+        self.assertIn("def call(args):", src1)
+        self.assertIn("def call(args):", src2)
+        with torch.no_grad():
+            self.assertEqual(_exec(src2)(_flat_inputs(m, x))[0], m(x))
 
 
 if __name__ == "__main__":

@@ -48,11 +48,11 @@ log = logging.getLogger(__name__)
 # ``CacheArtifactManager.with_fresh_cache`` (process-global cache state), so two
 # threads running it concurrently would clobber each other's hook and cache.
 # ``compile_to_python`` is in ``torch._inductor.__all__``, so direct callers must
-# be protected here rather than relying on a higher-layer lock. The AOT-level
-# ``compile_to_python`` (torch._functorch.aot_autograd) holds its own distinct
-# ``_COMPILE_LOCK`` and only ever calls into this layer while holding it, so the
-# acquisition order is always AOT-then-inductor and these two locks never deadlock
-# (they are different locks and there is no reverse nesting).
+# be protected here rather than relying on a higher-layer lock. The AOT layer that
+# will wrap this entry point (``torch._functorch.aot_autograd``, in a companion
+# change) takes its own distinct lock before calling in, so the intended acquisition
+# order is AOT-then-inductor: the two locks are different and never nest in reverse,
+# so they cannot deadlock.
 #
 # This is an RLock, not a plain Lock, because the inductor compile that runs while
 # the lock is held can itself re-enter ``compile_to_python`` on the SAME thread: an
@@ -749,8 +749,8 @@ def compile_to_python(
     for the post-AOTAutograd inner graph (dense, functionalized). It is the inductor
     piece only: it carries NO prelude/epilogue (subclass flatten/unflatten, input-
     mutation copy-back, output-alias regen, grad disabling). Those belong to the AOT
-    layer -- see ``torch._functorch.aot_autograd.compile_to_python``, which calls
-    this and composes AOTAutograd's codegen'd runtime wrappers around the result.
+    layer -- a companion change in ``torch._functorch.aot_autograd`` wraps this and
+    composes AOTAutograd's codegen'd runtime wrappers around the result.
     Callers must run ``call`` under ``torch.no_grad()`` (the kernels use out= ops).
 
     Caller preconditions (this layer does not re-derive them; passing a graph that
@@ -795,9 +795,9 @@ def compile_to_python(
     two ``compile_to_python`` calls against each other (so their hook install/restore
     and the ``with_fresh_cache`` process-global cache state do not interleave); it does
     NOT, by itself, block a concurrent ``torch.compile`` (the owner-thread check does).
-    The AOT-level caller holds its own distinct ``_COMPILE_LOCK`` (see
-    ``torch._functorch.aot_autograd.compile_to_python``) and always acquires it before
-    reaching here, so the order is AOT-then-inductor and the two locks never deadlock.
+    The AOT layer that will wrap this (a companion change in
+    ``torch._functorch.aot_autograd``) takes its own distinct lock before reaching
+    here, so the intended order is AOT-then-inductor and the two locks never deadlock.
     The hook is restored in a ``finally`` so it does not leak to other
     ``save_output_code`` users.
     """
@@ -818,7 +818,8 @@ def compile_to_python(
     # The thread that installed the hook (set inside the lock below). The hook lives on
     # the PROCESS-GLOBAL GraphLowering.save_output_code, so it also fires for an ordinary
     # torch.compile running concurrently on ANOTHER thread; we only capture codegen on
-    # the owning thread (mirroring the AOT capture sink, which is thread-local).
+    # the owning thread. The AOT layer that will wrap this (a companion change) uses its
+    # own thread-local capture sink for the same reason.
     owner_thread: int | None = None
 
     def capture_hook(src: str) -> None:
@@ -832,9 +833,11 @@ def compile_to_python(
         # process-global hook with their own ``def call(`` while compiling the
         # outer graph. Those benchmark lowerings are named ``benchmark_*`` (see
         # codegen/subgraph.py); skip them so only the OUTERMOST runnable module is
-        # captured. ``V.graph`` is the GraphLowering currently being codegen'd when
-        # the hook fires (set via ``V.set_graph_handler``), so its ``name`` tells us
-        # whether this is a nested benchmark lowering.
+        # captured. On the fresh-codegen firing ``V.graph`` is the GraphLowering being
+        # codegen'd (set via ``V.set_graph_handler``), so its ``name`` flags a nested
+        # benchmark lowering. On the cache-restore firings no GraphLowering is installed,
+        # so ``V.graph`` is a ``NullHandler`` and ``name`` is None -- which correctly
+        # keeps the module (restore only ever replays the already-filtered outer module).
         graph = V.graph
         name = getattr(graph, "name", None)
         if isinstance(name, str) and name.startswith("benchmark_"):
@@ -842,20 +845,16 @@ def compile_to_python(
         captured.append(src)
 
     with _COMPILE_TO_PYTHON_LOCK:
-        # Read the ambient hook INSIDE the lock: on the precompile path compile_to_python
-        # is the only writer and is serialized by this lock, so a concurrent caller has
-        # already restored its own hook before we read here. Reading outside the lock is a
-        # TOCTOU that would leak another caller's dead capture_hook into the process-global.
-        #
-        # ``_COMPILE_TO_PYTHON_LOCK`` only serializes ``compile_to_python`` against itself;
-        # it does NOT block an ordinary ``torch.compile`` (or the test-only
+        # ``_COMPILE_TO_PYTHON_LOCK`` serializes ``compile_to_python`` against itself only;
+        # it does NOT block an ordinary ``torch.compile`` or the test-only
         # ``run_and_get_code`` / ``get_code`` helpers, which patch the same process-global
-        # hook without this lock) running on another thread. The owner-thread check in
+        # ``save_output_code`` hook without this lock. The owner-thread check in
         # ``capture_hook`` is what keeps a concurrent foreign compile's source out of our
         # capture; the lock just keeps two ``compile_to_python`` calls from interleaving
-        # their hook install/restore. Read the ambient hook INSIDE the lock so a concurrent
-        # compile_to_python has already restored its own hook (reading outside is a TOCTOU
-        # that would leak a dead capture_hook into the process-global).
+        # their hook install/restore. Read the ambient hook INSIDE the lock so a peer
+        # ``compile_to_python`` has already restored its own hook before we snapshot it;
+        # reading outside would be a TOCTOU that leaks a dead ``capture_hook`` into the
+        # process-global slot.
         owner_thread = threading.get_ident()
         prev_hook = GraphLowering.save_output_code
         GraphLowering.save_output_code = staticmethod(capture_hook)
