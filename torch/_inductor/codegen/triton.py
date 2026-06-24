@@ -6381,12 +6381,10 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             out["min_rblock"] = self.min_rblock
         if self.cooperative_reduction:
             out["persistent_reduction"] = self.persistent_reduction
-            xnumel = (
-                V.graph.sizevars.optimization_hint(self.numels["x"])
-                if "x" in self.numels
-                else 1
-            )
-            out["real_xnumel"] = xnumel
+            if not self.no_x_dim:
+                out["real_xnumel"] = V.graph.sizevars.optimization_hint(
+                    self.numels["x"]
+                )
         if (rblock := self._get_native_matmul_persistent_rblock()) is not None:
             out["native_matmul_persistent_rblock"] = rblock
         if self.add_persistent_rblock:
@@ -6624,9 +6622,17 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         if torch.version.hip is not None and (
             self.atomic_add_found or not config.triton.emit_pointer_range_32
         ):
-            triton_meta["configs"] = [config_of(signature, pointer_range_override=())]
+            triton_meta["configs"] = [
+                config_of(
+                    signature,
+                    pointer_range_override=(),
+                    skip_cpp_wrapper_input_tensor_alignment=True,
+                )
+            ]
         else:
-            triton_meta["configs"] = [config_of(signature)]
+            triton_meta["configs"] = [
+                config_of(signature, skip_cpp_wrapper_input_tensor_alignment=True)
+            ]
 
         for helper in self.helper_functions:
             code.writeline("")
