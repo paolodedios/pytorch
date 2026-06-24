@@ -3693,8 +3693,8 @@ class SIMDScheduling(BaseScheduling):
 
         # Benchmark in completion order: subkernels whose worker precompile is still in flight go
         # through as_completed (whichever finishes first), so we never block on a slow compile
-        # while ready ones wait. The rest (in-memory reuse / cache hit / serial fallback) have no
-        # pending future and are benchmarked immediately. Store by index to keep stitch order.
+        # while ready ones wait. The rest have no pending future and are benchmarked immediately.
+        # Store by index to keep stitch order.
         winners: list[Any] = [None] * len(mods)
         pending: dict[
             Any, list[int]
