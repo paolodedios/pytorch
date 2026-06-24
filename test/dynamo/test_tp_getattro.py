@@ -637,6 +637,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         result = torch.compile(m, backend=cnt)(torch.randn(3))
         self.assertEqual(result.shape, torch.Size([4]))
+        self.assertEqual(cnt.frame_count, 1)
 
     # --- object_generic_getattr on converted VTs ---
 
@@ -751,6 +752,46 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager")()
         self.assertTrue(result)
 
+    def test_bmv_load_then_call(self):
+        """Load a method into a variable, then call it through BMV."""
+
+        def fn():
+            r = range(10)
+            m = r.count
+            return m(5)
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        self.assertEqual(result, 1)
+
+    def test_bmv_defers_graph_break_to_call_time(self):
+        """BoundMethodVariable defers graph breaks from LOAD_ATTR to CALL.
+
+        When a method exists on the type (MRO walk finds it) but the VT's
+        call_method doesn't handle it, BMV is returned at load time and
+        the graph break happens at call time, not at attribute access time.
+        """
+
+        # Loading the method succeeds (BMV returned, no graph break).
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn_load(x):
+            r = range(10)
+            r.__reduce__
+            return x + 1
+
+        x = torch.randn(3)
+        self.assertEqual(fn_load(x), x + 1)
+
+        torch._dynamo.reset()
+
+        # Calling it graph-breaks (call_method doesn't handle __reduce__).
+        def fn_call(x):
+            r = range(10)
+            r.__reduce__()
+            return x + 1
+
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(fn_call, backend="eager", fullgraph=True)(x)
+
     # --- ConstantVariable: trampoline methods (format/join have call_method) ---
 
     def test_str_format_via_trampoline(self):
@@ -846,6 +887,47 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = opt_fn(torch.tensor(1))
         self.assertEqual(result, torch.tensor(2))
         self.assertEqual(target.my_attr, 99)
+
+    def test_function_setattr_tensor_value(self):
+        def target():
+            return 0
+
+        def fn(x):
+            target.data = x + 1
+            return target.data
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(5))
+        self.assertEqual(result, torch.tensor(6))
+        self.assertEqual(target.data, torch.tensor(6))
+
+    def test_function_setattr_cross_compilation(self):
+        def target():
+            return 0
+
+        def fn1():
+            target.x = 42
+
+        def fn2():
+            return target.x
+
+        torch.compile(fn1, backend="eager", fullgraph=True)()
+        self.assertEqual(target.x, 42)
+        result = torch.compile(fn2, backend="eager", fullgraph=True)()
+        self.assertEqual(result, 42)
+
+    def test_function_overwrite_preexisting_attr(self):
+        def target():
+            return 0
+
+        target.x = 10
+
+        def fn():
+            target.x = 42
+            return target.x
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        self.assertEqual(result, 42)
+        self.assertEqual(target.x, 42)
 
     # --- PythonModuleVariable attribute mutation ---
 
@@ -1041,6 +1123,63 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         finally:
             if hasattr(my_polyfill, "_my_attr"):
                 del my_polyfill._my_attr
+
+    # --- Mutation opt-in guard tests ---
+
+    def test_torch_internal_class_setattr_graph_breaks(self):
+        """setattr on torch-internal classes should graph break."""
+
+        def fn(x):
+            torch.nn.Linear.my_attr = 42
+            return x + 1
+
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(1))
+
+    def test_torch_toplevel_class_setattr_graph_breaks(self):
+        """setattr on classes with __module__=='torch' should graph break."""
+
+        def fn(x):
+            torch.Size.my_attr = 42
+            return x + 1
+
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(1))
+
+    def test_metaclass_setattr_works(self):
+        """setattr on class with custom metaclass __setattr__ works because
+        side-effect replay calls setattr() which goes through the metaclass.
+        """
+
+        class Meta(type):
+            def __setattr__(cls, name, value):
+                super().__setattr__(name, value)
+
+        class MyClass(metaclass=Meta):
+            pass
+
+        def fn(x):
+            MyClass.my_attr = 42
+            return x + 1
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(1))
+        self.assertEqual(result, torch.tensor(2))
+        self.assertEqual(MyClass.my_attr, 42)
+
+    def test_class_delattr(self):
+        """delattr on a class works (graph breaks at the del, but replays)."""
+
+        class MyClass:
+            pass
+
+        def fn(x):
+            MyClass.y = 42
+            del MyClass.y
+            return x + 1
+
+        result = torch.compile(fn, backend="eager")(torch.tensor(1))
+        self.assertEqual(result, torch.tensor(2))
+        self.assertFalse(hasattr(MyClass, "y"))
 
 
 if __name__ == "__main__":
