@@ -461,6 +461,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         result = torch.compile(m, backend=cnt)(torch.randn(3))
         self.assertEqual(result.shape, torch.Size([4]))
+        self.assertEqual(cnt.frame_count, 1)
 
     # --- object_generic_getattr on converted VTs ---
 
@@ -574,6 +575,46 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
 
         result = torch.compile(fn, backend="eager")()
         self.assertTrue(result)
+
+    def test_bmv_load_then_call(self):
+        """Load a method into a variable, then call it through BMV."""
+
+        def fn():
+            r = range(10)
+            m = r.count
+            return m(5)
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        self.assertEqual(result, 1)
+
+    def test_bmv_defers_graph_break_to_call_time(self):
+        """BoundMethodVariable defers graph breaks from LOAD_ATTR to CALL.
+
+        When a method exists on the type (MRO walk finds it) but the VT's
+        call_method doesn't handle it, BMV is returned at load time and
+        the graph break happens at call time, not at attribute access time.
+        """
+
+        # Loading the method succeeds (BMV returned, no graph break).
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn_load(x):
+            r = range(10)
+            r.__reduce__
+            return x + 1
+
+        x = torch.randn(3)
+        self.assertEqual(fn_load(x), x + 1)
+
+        torch._dynamo.reset()
+
+        # Calling it graph-breaks (call_method doesn't handle __reduce__).
+        def fn_call(x):
+            r = range(10)
+            r.__reduce__()
+            return x + 1
+
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(fn_call, backend="eager", fullgraph=True)(x)
 
     # --- ConstantVariable: trampoline methods (format/join have call_method) ---
 
