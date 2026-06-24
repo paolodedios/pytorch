@@ -1307,12 +1307,11 @@ class LocalGeneratorObjectVariable(VariableTracker):
         # Set up the exception to be raised in the generator frame
         from torch._dynamo.symbolic_convert import ExceptionVals
 
-        val = exc
-        if isinstance(exc, variables.BuiltinVariable):
-            val = exc.call_function(tx, [], {})
+        # Instantiate if an exception type was passed (builtin or user-defined).
+        val = tx._create_exception_instance(exc)
         if not isinstance(val, ExceptionVals):
             raise AssertionError(f"Expected an exception variable, got {val}")
-        self.inline_tracer.exn_vt_stack.set_current_exception(val, set_context=False)
+        self.inline_tracer.exn_vt_stack.set_raised_exception(val)
 
     def _frame_state_created(self) -> bool:
         return self.inline_tracer.frame_state == FrameState.FRAME_CREATED
@@ -1368,7 +1367,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         except ObservedUserStopIteration:
             # generator returned a value while closing. gen_send_ex() raises
             # StopIteration with the value returned
-            curr_exc = tracer.exn_vt_stack.get_current_exception()
+            curr_exc = tracer.exn_vt_stack.get_raised_exception()
             if not isinstance(curr_exc, variables.ExceptionVariable):
                 # make pyrefly happy
                 raise AssertionError(
@@ -1387,10 +1386,10 @@ class LocalGeneratorObjectVariable(VariableTracker):
 
     def throw_pending(self) -> None:
         tracer = self.inline_tracer
-        curr_exc = tracer.exn_vt_stack.get_current_exception()
+        curr_exc = tracer.exn_vt_stack.get_raised_exception()
         observed = get_dynamo_observed_exception(curr_exc.python_type())()
-        # TODO: This is a temporary workaround
-        tracer.exn_vt_stack.set_current_exception(curr_exc)
+        curr_type = VariableTracker.build(tracer, curr_exc.exc_type)
+        tracer.set_exception_obj(curr_type, curr_exc)
         tracer.exception_handler(observed)
 
     def gen_throw(
