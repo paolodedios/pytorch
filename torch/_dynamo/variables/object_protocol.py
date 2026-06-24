@@ -1787,7 +1787,7 @@ def generic_issubclass(
         )
     cls_type = maybe_get_python_type(cls)
 
-    # Step 1: PyType_CheckExact fast path -- abstract.c L2772
+    # Step 1: PyType_CheckExact fast path — abstract.c L2772
     if cls_type is type:
         try:
             return ConstantVariable.create(
@@ -1799,7 +1799,7 @@ def generic_issubclass(
         except TypeError as e:
             raise_observed_exception(TypeError, tx, args=list(e.args))
 
-    # Step 2: PEP 604 Union (e.g. ``int | str``) -- abstract.c L2779-2781.
+    # Step 2: PEP 604 Union (e.g. ``int | str``) — abstract.c L2779-2781.
     union_types = {types.UnionType}
     if sys.version_info < (3, 14):
         union_types.add(
@@ -1810,7 +1810,7 @@ def generic_issubclass(
         args = typing.get_args(cls_py)
         cls = VariableTracker.build(tx, args)
 
-    # Step 3: tuple of classes -- abstract.c L2783-2799.  Check for
+    # Step 3: tuple of classes — abstract.c L2783-2799.  Check for
     # TupleVariable instead of tuple to make the type checker happy.
     from .lists import TupleVariable
 
@@ -1851,42 +1851,12 @@ def generic_issubclass(
             "issubclass() arg 2 must be a class, a tuple of classes, or a union",
         )
 
-    # Step 4: general case -- call ``__subclasscheck__`` on cls's metaclass
+    # Step 4: general case — call ``__subclasscheck__`` on cls's metaclass
     # (abstract.c L2801-2815).  Runs user code on a custom metaclass.
     result = cls.call_method(tx, "__subclasscheck__", [derived], {})
 
     # Coerce to bool (PyObject_IsTrue, abstract.c L2812).
     return generic_bool(tx, result)
-
-
-def virtual_iterator_next(
-    tx: "InstructionTranslatorBase",
-    iter_: VariableTracker,
-    null_or_idx: VariableTracker,
-) -> tuple[VariableTracker, VariableTracker]:
-    """
-    Mirrors _PyForIter_VirtualIteratorNext.
-
-    When ``null_or_idx`` is a tagged int (3.15+ virtual-iter path), dispatch
-    to the iterable's ``_tp_iteritem`` slot via ``tp_iteritem_impl`` and
-    return ``(value, next_index)``.  Otherwise fall back to the standard
-    iterator protocol (``tp_iternext``) and return ``(value, NULL)``.
-
-    Iterator exhaustion is signaled by ``ObservedUserStopIteration``
-    propagating out of the slot impl, matching the rest of Dynamo's
-    iterator protocol.
-
-    https://github.com/python/cpython/blob/f31a89bb901067dd105b00cfa90523cf7ffdbbdd/Python/ceval.c#L3733
-    """
-    from .misc import NullVariable
-
-    if (
-        not isinstance(null_or_idx, NullVariable)
-        and maybe_get_python_type(null_or_idx) is int
-    ):
-        return iter_.tp_iteritem_impl(tx, null_or_idx)
-    next_ = generic_iternext(tx, iter_)
-    return next_, NullVariable()
 
 
 # ── tp_getattro ──────────────────────────────────────────────────────
