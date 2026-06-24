@@ -305,6 +305,10 @@ def _recursive_record_user_visible_output_idxs(gm: GraphModule) -> None:
         _recursive_record_user_visible_output_idxs(subgraph)
 
 
+def _cudagraph_trees_clone_live_user_outputs() -> bool:
+    return config.triton.cudagraph_trees_generation_cloning == "user_visible_outputs"
+
+
 @functools.lru_cache(None)
 def _step_logger() -> Callable[..., None]:
     return dynamo_logging.get_step_logger(log)
@@ -1892,6 +1896,7 @@ def cudagraphify(
     constants: tuple[torch.Tensor, ...] = (),
     placeholders: Sequence[PlaceholderInfo] = (),
     mutated_input_idxs: tuple[int, ...] = (),
+    user_visible_output_idxs: tuple[int, ...] = (),
 ) -> Callable[..., Any]:
     from torch._inductor.cudagraph_trees import (
         cudagraphify_impl as new_cudagraphify_impl,
@@ -1908,6 +1913,7 @@ def cudagraphify(
             constants=constants,
             placeholders=placeholders,
             mutated_input_idxs=mutated_input_idxs,
+            user_visible_output_idxs=user_visible_output_idxs,
             compile_id=torch._guards.CompileContext.current_compile_id(),
         )
     else:
@@ -2485,7 +2491,10 @@ def compile_fx_forward(
     )
 
     model_outputs_node = output_node(gm)
-    if config.keep_output_stride:
+    clone_live_user_outputs = _cudagraph_trees_clone_live_user_outputs()
+    model_outputs = None
+    user_visible_output_idxs: list[int] = []
+    if config.keep_output_stride or clone_live_user_outputs:
         model_outputs = pytree.arg_tree_leaves(*model_outputs_node.args)
         num_model_outputs = len(model_outputs)
 
@@ -2518,11 +2527,14 @@ def compile_fx_forward(
         # of "graph" outputs. Make sure we're within bounds.
         assert orig_output_end_idx <= num_model_outputs
 
-        model_outputs_node.meta["user_visible_output_idxs"] = [
+        user_visible_output_idxs = [
             idx
             for idx in range(original_output_start_index, orig_output_end_idx)
             if isinstance(model_outputs[idx], torch.fx.Node)
         ]
+
+    if config.keep_output_stride or clone_live_user_outputs:
+        model_outputs_node.meta["user_visible_output_idxs"] = user_visible_output_idxs
     else:
         model_outputs_node.meta["user_visible_output_idxs"] = []
 

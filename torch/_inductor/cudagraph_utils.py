@@ -171,6 +171,7 @@ class WrappedFunction:
     constants: tuple[torch.Tensor, ...]
     placeholders: Sequence[PlaceholderInfo]
     mutated_input_idxs: Sequence[int]
+    user_visible_output_idxs: frozenset[int]
 
 
 def get_mutating_use_stack_trace_from_node(
@@ -527,6 +528,7 @@ class CudagraphCachedInfo:
 
     placeholders: Sequence[PlaceholderInfo]
     stack_traces: list[str | None]
+    user_visible_output_idxs: Sequence[int]
     cudagraph_fail_reasons: list[str]
 
 
@@ -540,6 +542,7 @@ class CudagraphMetadata:
     static_input_idxs: OrderedSet[int]
     mutated_input_idxs: OrderedSet[int]
     stack_traces: list[str | None]
+    user_visible_output_idxs: OrderedSet[int]
     constants: dict[str, torch.Tensor]
 
 
@@ -578,11 +581,29 @@ def get_partition_cudagraph_metadata(
         partition_placeholders.append(placeholder)
 
     partition_stack_traces = []
-    for graph_output_idx in partition_map.output_index_mapping:
-        if graph_output_idx is not None:
-            partition_stack_traces.append(metadata.stack_traces[graph_output_idx])
-        else:
+    partition_user_visible_output_idxs: OrderedSet[int] = OrderedSet()
+    # Graph output metadata must be remapped to the partition output indices
+    # passed to cudagraphify.
+    for partition_output_idx, graph_output_idxs in enumerate(
+        partition_map.output_index_mapping
+    ):
+        if not graph_output_idxs:
             partition_stack_traces.append(None)
+            continue
+
+        user_visible_graph_output_idxs = [
+            graph_output_idx
+            for graph_output_idx in graph_output_idxs
+            if graph_output_idx in metadata.user_visible_output_idxs
+        ]
+        stack_trace_idx = (
+            user_visible_graph_output_idxs[0]
+            if user_visible_graph_output_idxs
+            else graph_output_idxs[0]
+        )
+        partition_stack_traces.append(metadata.stack_traces[stack_trace_idx])
+        if user_visible_graph_output_idxs:
+            partition_user_visible_output_idxs.add(partition_output_idx)
 
     partition_constants = {
         name: metadata.constants[name] for name in partition_map.constant_names
@@ -593,6 +614,7 @@ def get_partition_cudagraph_metadata(
         partition_static_input_idxs,
         partition_mutated_input_idxs,
         partition_stack_traces,
+        partition_user_visible_output_idxs,
         partition_constants,
     )
 
