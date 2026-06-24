@@ -4,6 +4,7 @@ import os
 import time
 import unittest
 import weakref
+from datetime import timedelta
 
 import test_c10d_common
 
@@ -11,7 +12,11 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from torch._C._distributed_c10d import _create_work_from_future
-from torch.distributed.distributed_c10d import _coalescing_manager, _get_default_group
+from torch.distributed.distributed_c10d import (
+    _coalescing_manager,
+    _get_default_group,
+    ReconfigureOptions,
+)
 from torch.futures import Future
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.testing._internal.common_cuda import TEST_CUDA
@@ -163,6 +168,47 @@ class CoalescingProcessGroup(test_c10d_common.DummyProcessGroup):
         return create_work([])
 
 
+class ReconfigurableProcessGroup(dist.ProcessGroup):
+    """
+    A Python ProcessGroup that records reconfigure calls. Used to verify the
+    torch.distributed reconfigure helpers delegate to ProcessGroup.
+    """
+
+    def __init__(self, rank, world):
+        super().__init__(rank, world)
+        self.reconfigure_opts = None
+
+    @property
+    def supports_reconfigure(self):
+        return True
+
+    def get_reconfigure_handle(self):
+        return "handle-for-rank-0"
+
+    def reconfigure(self, opts):
+        self.reconfigure_opts = opts
+        return create_work(None)
+
+
+class WindowProcessGroup(dist.ProcessGroup):
+    """
+    A Python ProcessGroup that records new_window calls. Used to verify the
+    torch.distributed window helpers delegate to ProcessGroup.
+    """
+
+    def __init__(self, rank, world):
+        super().__init__(rank, world)
+        self.new_window_tensor = "unset"
+
+    @property
+    def supports_window(self):
+        return True
+
+    def new_window(self, tensor=None):
+        self.new_window_tensor = tensor
+        return "fake-window"
+
+
 # We cannot use parametrize as some tests are defined on the base class and use _get_process_group
 class AbstractDDPSingleRank(test_c10d_common.CommonDistributedDataParallelTest):
     def setUp(self):
@@ -272,6 +318,8 @@ class TestPyProcessGroup(TestCase):
         # dispatches back into Python; a raw C++ ProcessGroup would return the
         # base backend name ("undefined") instead.
         self.assertEqual(pg.name(), "store-pg")
+        self.assertEqual(pg.rank(), 0)
+        self.assertEqual(pg.size(), 1)
 
     def test_coalescing_manager(self):
         # The coalescing manager calls _start_coalescing / _end_coalescing, which
@@ -293,6 +341,57 @@ class TestPyProcessGroup(TestCase):
         pg = DummyAttrProcessGroup(0, 1)
         pg.abort()
         pg.shutdown()
+
+    def test_reconfigure_delegation(self) -> None:
+        pg = ReconfigurableProcessGroup(0, 1)
+
+        self.assertTrue(dist._supports_reconfigure(group=pg))
+        self.assertEqual(dist._get_reconfigure_handle(group=pg), "handle-for-rank-0")
+
+        timeout = timedelta(seconds=30)
+        work = dist._reconfigure(
+            uuid=7,
+            handles=["a", "b"],
+            group=pg,
+            timeout=timeout,
+            hints={"k": "v"},
+        )
+        self.assertIsNotNone(work)
+
+        # The helper builds a ReconfigureOptions and forwards it unchanged.
+        opts = pg.reconfigure_opts
+        self.assertIsNotNone(opts)
+        self.assertEqual(opts.uuid, 7)
+        self.assertEqual(opts.handles, ["a", "b"])
+        self.assertEqual(opts.timeout, timeout)
+        self.assertEqual(opts.hints, {"k": "v"})
+
+    def test_reconfigure_rejects_multiple_backends(self) -> None:
+        pg = dist.ProcessGroup(0, 1)
+        pg._register_backend(torch.device("cpu"), dist.ProcessGroup.BackendType.GLOO)
+        pg._register_backend(torch.device("cuda"), dist.ProcessGroup.BackendType.NCCL)
+
+        msg = "multiple backends"
+        with self.assertRaisesRegex(RuntimeError, msg):
+            pg.supports_reconfigure
+        with self.assertRaisesRegex(RuntimeError, msg):
+            pg.get_reconfigure_handle()
+        with self.assertRaisesRegex(RuntimeError, msg):
+            pg.reconfigure(ReconfigureOptions())
+
+    def test_window_delegation(self) -> None:
+        pg = WindowProcessGroup(0, 1)
+
+        self.assertTrue(dist._supports_window(group=pg))
+
+        # With no tensor, new_window is called with tensor=None.
+        self.assertEqual(dist._new_window(group=pg), "fake-window")
+        self.assertIsNone(pg.new_window_tensor)
+
+        # A tensor is forwarded through to ProcessGroup.new_window.
+        t = torch.zeros(4)
+        self.assertEqual(dist._new_window(t, group=pg), "fake-window")
+        self.assertIs(pg.new_window_tensor, t)
 
     @unittest.skipIf(not TEST_CUDA, "no cuda/xpu")
     def test_block_current_stream(self) -> None:
