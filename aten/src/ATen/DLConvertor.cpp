@@ -461,6 +461,12 @@ at::Tensor fromDLPackImpl(T* src, std::function<void(void*)> deleter) {
         {device});
   }
 
+  for (auto i = 0; i < dl_tensor.ndim; ++i) {
+    TORCH_CHECK_VALUE(
+        dl_tensor.strides[i] >= 0,
+        "Negative strides are not supported in DLPack tensors.");
+  }
+
   return at::from_blob(
       dl_tensor.data,
       IntArrayRef(dl_tensor.shape, dl_tensor.ndim),
