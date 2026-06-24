@@ -411,6 +411,45 @@ class TestTorchDlPack(TestCase):
         self.assertEqual(z.stride(), (3,))
 
     @skipMeta
+    @onlyCPU
+    def test_from_dlpack_negative_strides(self, device):
+        # Negative strides arise from ordinary NumPy slices such as arr[::-1].
+        # Before this fix, passing such an array to torch.from_dlpack() reached
+        # TensorMaker::computeStorageSize() which is declared noexcept; the
+        # TORCH_CHECK inside computeStorageNbytes() then triggered std::terminate()
+        # instead of raising a catchable Python RuntimeError, aborting the process.
+        # See https://github.com/pytorch/pytorch/issues/188023.
+        import numpy as np
+
+        # 1-D: single negative stride
+        a1 = np.arange(8.0)[::-1]
+        self.assertEqual(a1.strides, (-8,))
+        with self.assertRaisesRegex(RuntimeError, "Negative strides"):
+            torch.from_dlpack(a1)
+
+        # 2-D: negative stride on one axis
+        a2 = np.arange(12.0).reshape(3, 4)[:, ::-1]
+        self.assertLess(a2.strides[1], 0)
+        with self.assertRaisesRegex(RuntimeError, "Negative strides"):
+            torch.from_dlpack(a2)
+
+        # 2-D: negative stride on both axes
+        a3 = np.arange(12.0).reshape(3, 4)[::-1, ::-1]
+        self.assertLess(a3.strides[0], 0)
+        with self.assertRaisesRegex(RuntimeError, "Negative strides"):
+            torch.from_dlpack(a3)
+
+        # Regression guard: positive non-unit strides must still work.
+        a4 = np.arange(16.0)[::2]  # stride +8 bytes -> +2 elements
+        t4 = torch.from_dlpack(a4)
+        self.assertEqual(t4.tolist(), a4.tolist())
+
+        # Regression guard: Fortran-order (positive non-contiguous) must still work.
+        a5 = np.asfortranarray(np.arange(12.0).reshape(3, 4))
+        t5 = torch.from_dlpack(a5)
+        self.assertEqual(t5.tolist(), a5.tolist())
+
+    @skipMeta
     @onlyNativeDeviceTypes
     def test_automatically_select_in_creation(self, device):
         # Create a new tensor, and wrap it using TensorDLPackWrapper.

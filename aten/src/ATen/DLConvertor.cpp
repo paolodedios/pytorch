@@ -460,6 +460,21 @@ at::Tensor fromDLPackImpl(T* src, std::function<void(void*)> deleter) {
         at::device(device).dtype(stype),
         {device});
   }
+
+  // Negative strides are not representable as PyTorch tensors.  Passing them
+  // to from_blob would reach computeStorageSize() which is declared noexcept;
+  // a TORCH_CHECK inside it would then call std::terminate() instead of
+  // propagating a catchable Python exception.  Validate here so callers get a
+  // proper RuntimeError rather than a process abort.
+  for (auto i = 0; i < dl_tensor.ndim; ++i) {
+    TORCH_CHECK(
+        dl_tensor.strides[i] >= 0,
+        "Negative strides are not supported in DLPack tensors. "
+        "Got stride ", dl_tensor.strides[i], " in dimension ", i, ". "
+        "Consider calling numpy.ascontiguousarray() or tensor.contiguous() "
+        "to create a copy with positive strides.");
+  }
+
   return at::from_blob(
       dl_tensor.data,
       IntArrayRef(dl_tensor.shape, dl_tensor.ndim),
