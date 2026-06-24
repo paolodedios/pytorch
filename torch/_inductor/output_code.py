@@ -81,7 +81,10 @@ log = logging.getLogger(__name__)
 
 
 def _boxed_inputs_have_forward_grad(inputs: Sequence[Any]) -> bool:
-    if torch.autograd.forward_ad._current_level < 0:
+    if (
+        torch.autograd.forward_ad._current_level < 0
+        or torch.is_inference_mode_enabled()
+    ):
         return False
 
     for value in inputs:

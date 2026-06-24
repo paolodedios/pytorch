@@ -6267,6 +6267,24 @@ class GraphModule(torch.nn.Module):
             self.assertFalse(is_fake(tangent))
             self.assertEqual(tangent, expected)
 
+    def test_forward_ad_level_inference_mode_inductor(self):
+        if not torch._dynamo.is_inductor_supported():
+            raise unittest.SkipTest("requires inductor")
+
+        def wrapped_fn(x):
+            return (x + 1).sin()
+
+        x = torch.randn(3)
+        compiled_fn = torch.compile(backend="inductor", fullgraph=True)(wrapped_fn)
+        self.assertEqual(compiled_fn(x), wrapped_fn(x))
+
+        counters.clear()
+        with torch.autograd.forward_ad.dual_level():
+            with torch.inference_mode():
+                self.assertEqual(compiled_fn(x), wrapped_fn(x))
+
+        self.assertEqual(counters["inductor"]["forward_ad_fallback"], 0)
+
     @config.patch(error_on_recompile=True)
     def test_grad_recompile(self):
         @torch.compile(backend="eager")
