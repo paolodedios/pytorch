@@ -461,14 +461,14 @@ at::Tensor fromDLPackImpl(T* src, std::function<void(void*)> deleter) {
         {device});
   }
 
-  // Negative strides are not representable as PyTorch tensors.  Passing them
-  // to from_blob would reach computeStorageSize() which is declared noexcept;
-  // a TORCH_CHECK inside it would then call std::terminate() instead of
-  // propagating a catchable Python/C++ exception.  Validate here so callers
-  // get a proper ValueError (matching the array API standard) instead of a
-  // process abort.  Callers that allow copying should call
-  // numpy.ascontiguousarray() / tensor.contiguous() first; the Python-level
-  // from_dlpack wrapper handles this automatically when copy=True or copy=None.
+  // Negative strides are not representable as PyTorch tensors.  Historically,
+  // passing them to from_blob caused std::terminate() because
+  // computeStorageSize() was declared noexcept while internally calling
+  // TORCH_CHECK (fixed elsewhere in this PR).  Validate here as an explicit
+  // guard so any negative-stride capsule raises ValueError (matching the array
+  // API standard) before reaching from_blob, regardless of noexcept state.
+  // The Python-level from_dlpack wrapper materialises a contiguous copy
+  // automatically when copy=True or copy=None.
   for (auto i = 0; i < dl_tensor.ndim; ++i) {
     TORCH_CHECK_VALUE(
         dl_tensor.strides[i] >= 0,
