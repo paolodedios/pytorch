@@ -900,25 +900,22 @@ def _linear_cross_entropy_batch_chunked_accumulator(
             # ``sumexp_`` (it ``exp_``s logits in place). torch.dot returns its
             # scalar at the operand dtype, so when the logits buffer is fp16
             # (CUDA balanced/compact) the sum overflows fp16 (>65504) for a
-            # large batch of max-shifted (<=0) logits. Reduce per row (each
-            # row's sum stays small) then across rows in fp32 -- a fused
-            # einsum, same time and footprint as the dot. bf16/fp32 operands
-            # return a wide-enough scalar, so keep the flat dot there.
+            # large batch of max-shifted (<=0) logits; a per-row einsum summed
+            # across rows in fp32 stays finite (same cost as the dot). bf16/fp32
+            # operands return a wide-enough scalar, so keep the flat dot.
             if logits.dtype == torch.float16:
                 per_row = torch.einsum("bv,bv->b", wt, logits)
-                # MPS reductions accumulate in the operand dtype regardless of
-                # the ``dtype=`` kwarg (contrary to its documented contract), so
-                # ``sum(dtype=float32)`` of the fp16 per-row vector still
-                # overflows fp16 for a large batch; upcast first to force fp32.
-                # Other backends honor ``dtype=`` and accumulate in fp32, where
-                # the upcast-then-sum is numerically identical but skips a temp.
-                if logits.device.type == "mps":
-                    loss_term = per_row.float().sum()
-                else:
-                    loss_term = per_row.sum(dtype=torch.float32)
+                loss_term = per_row.sum(dtype=torch.float32)
             else:
                 loss_term = torch.dot(wt.reshape(-1), logits.reshape(-1))
-            output.sub_(loss_term, alpha=loss_scale)
+            # ``output`` is fp16 when acc_dtype is fp16 (e.g. MPS). MPS narrows
+            # the large fp32 loss_term to fp16 (-> inf) BEFORE applying alpha,
+            # unlike the documented type-promoted in-place subtract other
+            # backends do; scale first there so the operand stays in fp16 range.
+            if output.device.type == "mps":
+                output.sub_(loss_term * loss_scale)
+            else:
+                output.sub_(loss_term, alpha=loss_scale)
             # Per-row weight mass with the reduction factor folded in.
             s = wt.sum(1, dtype=ctx.weight_chunk_dtype).mul_(loss_scale)
             softmax_denom = ctx.sumexp_(logits, dim=1)
