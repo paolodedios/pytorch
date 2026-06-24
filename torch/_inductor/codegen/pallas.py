@@ -1749,6 +1749,9 @@ class PallasKernel(SIMDKernel):
         pw_vars = [v for v, e in self.range_tree_nodes.items() if not e.is_reduction]
         if not r_vars or not pw_vars:
             return (-1,)
+        if not self.load_index_exprs:
+            return (-1,)
+        red_numel = self._compute_reduction_numel()
 
         for buf_name, load_index in self.load_index_exprs.items():
             info = self._get_buffer_info(buf_name)
@@ -1776,6 +1779,11 @@ class PallasKernel(SIMDKernel):
                     axes.append(matches[0])
                     used_dims.add(matches[0])
                 else:
+                    if (
+                        red_numel is not None
+                        and self._compute_axes_numel(buf_size, axes) != red_numel
+                    ):
+                        continue
                     return tuple(i - nd for i in sorted(axes))
 
             axes = []
@@ -1793,9 +1801,13 @@ class PallasKernel(SIMDKernel):
                 axes.append(matches[0])
                 used_dims.add(matches[0])
             else:
+                if (
+                    red_numel is not None
+                    and self._compute_axes_numel(buf_size, axes) != red_numel
+                ):
+                    continue
                 return tuple(i - nd for i in sorted(axes))
 
-        red_numel = self._compute_reduction_numel()
         if red_numel is None:
             return (-1,)
         if red_numel <= 1:
@@ -1881,6 +1893,15 @@ class PallasKernel(SIMDKernel):
         if r_stride > pw_stride:
             return (0,)
         return (-1,)
+
+    def _compute_axes_numel(self, sizes: Sequence[Any], axes: list[int]) -> int | None:
+        result = 1
+        for axis in axes:
+            dim = self._safe_int(sizes[axis])
+            if dim is None:
+                return None
+            result *= dim
+        return result
 
     def _compute_prefix_numel(self, prefixes: OrderedSet) -> int | None:
         """Compute total numel for given prefixes (e.g., pointwise prefixes)."""
