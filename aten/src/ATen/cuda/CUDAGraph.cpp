@@ -80,13 +80,6 @@ void CUDAGraph::register_generator_state(
   captured_generator_states_[std::move(state)] = 0;
 }
 
-void CUDAGraph::register_generator_state(const at::Generator& generator) {
-  c10::intrusive_ptr<CUDAGeneratorImpl> cuda_gen =
-      dynamic_intrusive_pointer_cast<CUDAGeneratorImpl>(
-          generator.getIntrusivePtr());
-  cuda_gen->register_graph(this);
-}
-
 bool CUDAGraph::has_retained_pool(MempoolId_t pool) const {
   for (const auto& retained_pool : retained_mempool_ids_) {
     if (retained_pool == pool) {
