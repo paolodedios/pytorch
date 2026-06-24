@@ -637,6 +637,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         cnt = torch._dynamo.testing.CompileCounter()
         result = torch.compile(m, backend=cnt)(torch.randn(3))
         self.assertEqual(result.shape, torch.Size([4]))
+        self.assertEqual(cnt.frame_count, 1)
 
     # --- object_generic_getattr on converted VTs ---
 
@@ -740,7 +741,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         def fn(obj):
             return obj.__getattr__("x")
 
-        result = torch.compile(fn, backend="eager")(MyObj())
+        result = torch.compile(fn, backend="eager", fullgraph=True)(MyObj())
         self.assertEqual(result, "from_getattr")
 
     def test_dunder_getattr_no_fallback_raises(self):
@@ -756,8 +757,40 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
             except AttributeError:
                 return True
 
-        result = torch.compile(fn, backend="eager")(MyObj())
+        result = torch.compile(fn, backend="eager", fullgraph=True)(MyObj())
         self.assertTrue(result)
+
+    def test_dunder_getattr_inherited(self):
+        """obj.__getattr__("x") finds __getattr__ on a parent class."""
+
+        class Base:
+            def __getattr__(self, name):
+                return "from_base"
+
+        class Child(Base):
+            pass
+
+        def fn(obj):
+            return obj.__getattr__("x")
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(Child())
+        self.assertEqual(result, "from_base")
+
+    def test_dunder_getattr_non_attribute_error_propagates(self):
+        """obj.__getattr__("x") raising non-AttributeError should propagate."""
+
+        class MyObj:
+            def __getattr__(self, name):
+                raise ValueError("custom error")
+
+        def fn(obj):
+            try:
+                return obj.__getattr__("x")
+            except ValueError:
+                return "caught"
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(MyObj())
+        self.assertEqual(result, "caught")
 
     def test_dunder_getattribute_skips_getattr_fallback(self):
         """obj.__getattribute__("x") should NOT fall back to __getattr__."""
@@ -773,7 +806,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
             except AttributeError:
                 return True
 
-        result = torch.compile(fn, backend="eager")(MyObj())
+        result = torch.compile(fn, backend="eager", fullgraph=True)(MyObj())
         self.assertTrue(result)
 
     def test_dunder_getattribute_finds_instance_attr(self):
@@ -786,8 +819,22 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         def fn(obj):
             return obj.__getattribute__("x")
 
-        result = torch.compile(fn, backend="eager")(MyObj())
+        result = torch.compile(fn, backend="eager", fullgraph=True)(MyObj())
         self.assertEqual(result, 42)
+
+    def test_dunder_getattribute_resolves_property(self):
+        """obj.__getattribute__("x") should resolve data descriptors."""
+
+        class MyObj:
+            @property
+            def x(self):
+                return 99
+
+        def fn(obj):
+            return obj.__getattribute__("x")
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(MyObj())
+        self.assertEqual(result, 99)
 
     def test_super_getattribute_skips_getattr(self):
         """super().__getattribute__("x") should NOT fall back to __getattr__."""
@@ -807,8 +854,57 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
             except AttributeError:
                 return True
 
-        result = torch.compile(fn, backend="eager")(Child())
+        result = torch.compile(fn, backend="eager", fullgraph=True)(Child())
         self.assertTrue(result)
+
+    def test_custom_getattribute_skips_getattr(self):
+        """obj.__getattribute__("x") with custom __getattribute__ should NOT
+        fall back to __getattr__, even though normal attribute access does."""
+
+        class WithBoth:
+            def __getattribute__(self, name):
+                return super().__getattribute__(name)
+
+            def __getattr__(self, name):
+                return "fallback"
+
+        obj = WithBoth()
+
+        def fn_normal():
+            return obj.nonexistent
+
+        def fn_dunder():
+            try:
+                return obj.__getattribute__("nonexistent")
+            except AttributeError:
+                return "raised"
+
+        normal = torch.compile(fn_normal, backend="eager", fullgraph=True)()
+        self.assertEqual(normal, "fallback")
+        result = torch.compile(fn_dunder, backend="eager", fullgraph=True)()
+        self.assertEqual(result, "raised")
+
+    def test_custom_getattribute_non_attribute_error_propagates(self):
+        """Non-AttributeError from __getattribute__ propagates without
+        falling back to __getattr__."""
+
+        class MyObj:
+            def __getattribute__(self, name):
+                if name.startswith("_"):
+                    return super().__getattribute__(name)
+                raise RuntimeError("boom")
+
+            def __getattr__(self, name):
+                return "should_not_reach"
+
+        def fn(obj):
+            try:
+                return obj.x
+            except RuntimeError:
+                return "caught"
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(MyObj())
+        self.assertEqual(result, "caught")
 
     # --- BoundBuiltinMethodVariable slots ---
 
@@ -834,6 +930,46 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
 
         result = torch.compile(fn, backend="eager")()
         self.assertTrue(result)
+
+    def test_bmv_load_then_call(self):
+        """Load a method into a variable, then call it through BMV."""
+
+        def fn():
+            r = range(10)
+            m = r.count
+            return m(5)
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        self.assertEqual(result, 1)
+
+    def test_bmv_defers_graph_break_to_call_time(self):
+        """BoundMethodVariable defers graph breaks from LOAD_ATTR to CALL.
+
+        When a method exists on the type (MRO walk finds it) but the VT's
+        call_method doesn't handle it, BMV is returned at load time and
+        the graph break happens at call time, not at attribute access time.
+        """
+
+        # Loading the method succeeds (BMV returned, no graph break).
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn_load(x):
+            r = range(10)
+            r.__reduce__
+            return x + 1
+
+        x = torch.randn(3)
+        self.assertEqual(fn_load(x), x + 1)
+
+        torch._dynamo.reset()
+
+        # Calling it graph-breaks (call_method doesn't handle __reduce__).
+        def fn_call(x):
+            r = range(10)
+            r.__reduce__()
+            return x + 1
+
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(fn_call, backend="eager", fullgraph=True)(x)
 
     # --- ConstantVariable: trampoline methods (format/join have call_method) ---
 
@@ -930,6 +1066,47 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = opt_fn(torch.tensor(1))
         self.assertEqual(result, torch.tensor(2))
         self.assertEqual(target.my_attr, 99)
+
+    def test_function_setattr_tensor_value(self):
+        def target():
+            return 0
+
+        def fn(x):
+            target.data = x + 1
+            return target.data
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(5))
+        self.assertEqual(result, torch.tensor(6))
+        self.assertEqual(target.data, torch.tensor(6))
+
+    def test_function_setattr_cross_compilation(self):
+        def target():
+            return 0
+
+        def fn1():
+            target.x = 42
+
+        def fn2():
+            return target.x
+
+        torch.compile(fn1, backend="eager", fullgraph=True)()
+        self.assertEqual(target.x, 42)
+        result = torch.compile(fn2, backend="eager", fullgraph=True)()
+        self.assertEqual(result, 42)
+
+    def test_function_overwrite_preexisting_attr(self):
+        def target():
+            return 0
+
+        target.x = 10
+
+        def fn():
+            target.x = 42
+            return target.x
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        self.assertEqual(result, 42)
+        self.assertEqual(target.x, 42)
 
     # --- PythonModuleVariable attribute mutation ---
 
@@ -1125,6 +1302,63 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         finally:
             if hasattr(my_polyfill, "_my_attr"):
                 del my_polyfill._my_attr
+
+    # --- Mutation opt-in guard tests ---
+
+    def test_torch_internal_class_setattr_graph_breaks(self):
+        """setattr on torch-internal classes should graph break."""
+
+        def fn(x):
+            torch.nn.Linear.my_attr = 42
+            return x + 1
+
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(1))
+
+    def test_torch_toplevel_class_setattr_graph_breaks(self):
+        """setattr on classes with __module__=='torch' should graph break."""
+
+        def fn(x):
+            torch.Size.my_attr = 42
+            return x + 1
+
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(1))
+
+    def test_metaclass_setattr_works(self):
+        """setattr on class with custom metaclass __setattr__ works because
+        side-effect replay calls setattr() which goes through the metaclass.
+        """
+
+        class Meta(type):
+            def __setattr__(cls, name, value):
+                super().__setattr__(name, value)
+
+        class MyClass(metaclass=Meta):
+            pass
+
+        def fn(x):
+            MyClass.my_attr = 42
+            return x + 1
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)(torch.tensor(1))
+        self.assertEqual(result, torch.tensor(2))
+        self.assertEqual(MyClass.my_attr, 42)
+
+    def test_class_delattr(self):
+        """delattr on a class works (graph breaks at the del, but replays)."""
+
+        class MyClass:
+            pass
+
+        def fn(x):
+            MyClass.y = 42
+            del MyClass.y
+            return x + 1
+
+        result = torch.compile(fn, backend="eager")(torch.tensor(1))
+        self.assertEqual(result, torch.tensor(2))
+        self.assertFalse(hasattr(MyClass, "y"))
 
 
 if __name__ == "__main__":
