@@ -535,23 +535,35 @@ class TestControlDeps(InductorTestCase):
         self.assertFalse(_is_control_deps_ordering_only_use(add, view))
 
     @requires_gpu()
-    def test_control_deps_passthrough_creates_mutation_output(self):
-        """Pass-through values in control_deps must create MutationOutput.
+    def test_control_deps_passthrough_uses_ordering_output(self):
+        """Pass-through values in control_deps use OrderingOutput.
 
-        When an input passes through control_deps unchanged, the subgraph
-        operations add MutationOutput entries so the scheduler's mutation
-        rename chain forces consumers after the subgraph boundary.
+        OrderingOutput creates a rename chain for scheduling order (so future
+        readers depend on the void op) without mutation side effects: no
+        mark_buffer_mutated, no forced realization, no lifetime extension.
         """
+        from torch._inductor import ir
         from torch._inductor.virtualized import V
 
         captured: list[dict] = []
 
         def capture(nodes):
+            ordering_count = 0
             mutation_count = 0
             for op in V.graph.operations:
                 if hasattr(op, "mutation_outputs"):
-                    mutation_count += len(op.mutation_outputs)
-            captured.append({"mutation_count": mutation_count})
+                    for m in op.mutation_outputs:
+                        if isinstance(m, ir.OrderingOutput):
+                            ordering_count += 1
+                        else:
+                            mutation_count += 1
+            captured.append(
+                {
+                    "ordering_count": ordering_count,
+                    "mutation_count": mutation_count,
+                    "mutated_buffers": set(V.graph.mutated_buffers),
+                }
+            )
             return nodes
 
         def fn(x):
@@ -572,12 +584,52 @@ class TestControlDeps(InductorTestCase):
         torch.testing.assert_close(result, expected)
 
         self.assertTrue(captured, "expected at least one Inductor compile")
-        total_mutations = sum(c["mutation_count"] for c in captured)
-        self.assertGreater(
-            total_mutations,
-            0,
-            "expected MutationOutput entries for pass-through values in control_deps",
-        )
+        total_ordering = sum(c["ordering_count"] for c in captured)
+        self.assertGreater(total_ordering, 0, "expected OrderingOutput entries")
+
+    @requires_gpu()
+    def test_ordering_output_does_not_mark_graph_input_mutated(self):
+        """OrderingOutput must not mark graph inputs as mutated.
+
+        When a graph input passes through control_deps unchanged, the old
+        MutationOutput approach would call mark_buffer_mutated, causing the
+        scheduler to add the input to mutated_inputs -- advertising a phantom
+        mutation that changes the calling convention. OrderingOutput avoids
+        this by not calling mark_buffer_mutated at all.
+        """
+        from torch._inductor.virtualized import V
+
+        captured_mutated_inputs: list[set[str]] = []
+
+        def capture(nodes):
+            captured_mutated_inputs.append(set(V.graph.mutated_buffers))
+            return nodes
+
+        def fn(x):
+            s = torch.Stream(device=GPU_TYPE)
+            e = torch.Event()
+            with s:
+                e.record()
+            e.wait()
+            # x passes through control_deps unchanged (it's a graph input)
+            return x + 1
+
+        torch._dynamo.reset()
+        with config.patch(_pre_fusion_custom_pass=capture):
+            x = torch.ones(4, device=GPU_TYPE)
+            result = torch.compile(fn)(x)
+
+        expected = fn(torch.ones(4, device=GPU_TYPE))
+        torch.testing.assert_close(result, expected)
+
+        # The graph input buffer should NOT appear in mutated_buffers
+        self.assertTrue(captured_mutated_inputs, "expected at least one compile")
+        graph_input_names = {"arg0_1", "primals_1"}
+        for mutated in captured_mutated_inputs:
+            self.assertFalse(
+                mutated & graph_input_names,
+                f"graph inputs should not be in mutated_buffers: {mutated & graph_input_names}",
+            )
 
     def test_default_stream_setup_only_once_per_device(self):
         """default_stream capture should only run once per device entry.
