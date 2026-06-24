@@ -193,10 +193,6 @@ class PartitionState:
 
 @dataclass
 class ComboLaunchConfig:
-    """A combo-wide launch config (kernel-level knobs) for the combo's compile-time autotune.
-    ``kwargs`` holds non-block kernel kwargs such as ``waves_per_eu`` on HIP; block sizes are
-    baked per-subkernel separately."""
-
     kwargs: dict[str, int]
     num_warps: int
     num_stages: int
@@ -504,9 +500,7 @@ class ComboKernel(Kernel):
         self.dynamic_shape_args: list[str] = []
         self.no_bench_stitched_config: triton.Config | None = None
         self.combo_compile_time_autotune = False
-        # Distinct winner launch configs across the subkernels; seeds the combo's kernel-level
-        # autotune. Collapses to one entry when the subkernels agree (e.g. num_stages always 1),
-        # expands when they differ (e.g. num_warps, or waves_per_eu on HIP).
+        # Distinct winner launch configs across the subkernels; seeds the combo's kernel-level autotune.
         self.combo_launch_candidates: list[ComboLaunchConfig] = []
 
     @property

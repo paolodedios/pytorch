@@ -1630,6 +1630,37 @@ class ComboKernelCompileTimeAutotuneTests(TestCase):
             warm_cached = counters["inductor"]["combo_subkernel_autotune_cached"]
             self.assertEqual(warm_cached, cold)
 
+    @requires_gpu_and_triton
+    def test_compile_time_autotune_cdt_search_space(self):
+        # coordinate_descent_tuning only -> the per-subkernel CDT refines just the warp knobs;
+        # with max-autotune too -> it also refines block size
+        def f(a, b, c, d, e, g):
+            return a + b, c * d, e.sum(-1), g.amax(-1)
+
+        inps = [
+            torch.randn(8192, device=GPU_TYPE),
+            torch.randn(8192, device=GPU_TYPE),
+            torch.randn(4096, device=GPU_TYPE),
+            torch.randn(4096, device=GPU_TYPE),
+            torch.randn(1024, 512, device=GPU_TYPE),
+            torch.randn(1024, 768, device=GPU_TYPE),
+        ]
+
+        def coordesc_benches(extra):
+            torch._dynamo.reset()
+            counters.clear()
+            with torch._inductor.config.patch(
+                {"coordinate_descent_tuning": True, **extra}
+            ):
+                out = torch.compile(f)(*inps)
+            self.assertEqual(out, f(*inps))
+            return counters["inductor"]["coordesc_tuning_bench"]
+
+        warps_only = coordesc_benches({})
+        blocks_and_warps = coordesc_benches({"max_autotune": True})
+        self.assertGreater(warps_only, 0)
+        self.assertGreater(blocks_and_warps, warps_only)
+
 
 @instantiate_parametrized_tests
 class ComboKernelPDLTests(TestCase):

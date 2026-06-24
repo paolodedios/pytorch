@@ -3673,9 +3673,10 @@ class SIMDScheduling(BaseScheduling):
             autotuner = mod.triton_
             if cdt_warps_only:
                 ct = autotuner.coordesc_tuner
-                ct.frozen_fields = OrderedSet(
-                    f for f in ct.tunable_fields if f not in warp_fields
-                )
+                if not ct.frozen_fields:
+                    ct.frozen_fields = OrderedSet(
+                        f for f in ct.tunable_fields if f not in warp_fields
+                    )
             # call() -> autotuner.run() benchmarks every compiled config and selects the best.
             mod.call(mod.get_args())  # CachingAutotuner.bench clones args internally
             # already_tuned => config reused from an in-memory autotuner; state "hit" => from the
