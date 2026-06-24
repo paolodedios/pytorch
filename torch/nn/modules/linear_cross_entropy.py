@@ -905,9 +905,17 @@ def _linear_cross_entropy_batch_chunked_accumulator(
             # einsum, same time and footprint as the dot. bf16/fp32 operands
             # return a wide-enough scalar, so keep the flat dot there.
             if logits.dtype == torch.float16:
-                loss_term = torch.einsum("bv,bv->b", wt, logits).sum(
-                    dtype=torch.float32
-                )
+                per_row = torch.einsum("bv,bv->b", wt, logits)
+                # MPS reductions accumulate in the operand dtype regardless of
+                # the ``dtype=`` kwarg (contrary to its documented contract), so
+                # ``sum(dtype=float32)`` of the fp16 per-row vector still
+                # overflows fp16 for a large batch; upcast first to force fp32.
+                # Other backends honor ``dtype=`` and accumulate in fp32, where
+                # the upcast-then-sum is numerically identical but skips a temp.
+                if logits.device.type == "mps":
+                    loss_term = per_row.float().sum()
+                else:
+                    loss_term = per_row.sum(dtype=torch.float32)
             else:
                 loss_term = torch.dot(wt.reshape(-1), logits.reshape(-1))
             output.sub_(loss_term, alpha=loss_scale)
