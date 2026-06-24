@@ -502,9 +502,12 @@ class InductorChoices:
                 return 1
             # based on sum(x[N]) on GB200, split reduction provides higher performance when N >= 1M
             # TODO: test more hardwares
-            no_split_threshold = (
-                524288 if props.major is not None and props.major >= 10 else 8192
-            )
+            if config.numerics == "strict":
+                no_split_threshold = 8192  # match eager's kInnerTreeThreshold
+            else:
+                no_split_threshold = (
+                    524288 if props.major is not None and props.major >= 10 else 8192
+                )
             if reduction_numel_hint <= no_split_threshold:
                 return 1
             if reduction_numel_hint * numel_hint <= min_elements_per_device:

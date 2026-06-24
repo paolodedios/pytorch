@@ -18741,6 +18741,23 @@ if RUN_GPU:
 
             return kernels
 
+        @unittest.expectedFailure  # eager INNER_TREE not landed yet (pytorch#182986)
+        @skip_if_not_triton
+        @unittest.skipUnless(
+            has_triton_reduction_ordering(),
+            "requires a Triton build that exposes tl.ReductionOrdering",
+        )
+        @config.patch(
+            {"force_disable_caches": True, "triton.persistent_reductions": True}
+        )
+        def test_strict_numerics_sum_matches_eager(self):
+            torch.manual_seed(0)
+            x = torch.randn(8, 256, device=GPU_TYPE)
+            eager = x.sum(dim=1)
+            with config.patch({"numerics": "strict"}):
+                compiled = torch.compile(lambda z: torch.sum(z, dim=1))(x)
+            self.assertTrue(torch.equal(eager, compiled))
+
         @skip_if_not_triton
         @unittest.skipUnless(
             has_triton_reduction_ordering(),
@@ -18791,6 +18808,50 @@ if RUN_GPU:
                 code_on,
             )
             self.assertTrue(torch.equal(out_inner_tree, ref))
+
+        @unittest.expectedFailure  # eager INNER_TREE not landed yet (pytorch#182986)
+        @skip_if_not_triton
+        @unittest.skipUnless(
+            has_triton_reduction_ordering(),
+            "requires a Triton build that exposes tl.ReductionOrdering",
+        )
+        @config.patch({"force_disable_caches": True})
+        def test_strict_numerics_split_reduction(self):
+            torch.manual_seed(0)
+            x = torch.randn(1, 2**20, device=GPU_TYPE)
+
+            def fn(z):
+                return torch.sum(z, dim=1)
+
+            torch._dynamo.reset()
+            with config.patch({"numerics": "strict"}):
+                compiled = torch.compile(fn)
+                code = run_and_get_triton_code(compiled, x)
+                out = compiled(x)
+
+            # A split reduction emits >= 2 reduction kernels; the ordering flag must
+            # be applied in each stage of the split path.
+            self.assertGreaterEqual(
+                code.count(
+                    "reduction_ordering=tl.constexpr(tl.ReductionOrdering.INNER_TREE)"
+                ),
+                2,
+            )
+            self.assertTrue(torch.equal(out, x.sum(dim=1)))
+
+        @skip_if_not_triton
+        def test_strict_numerics_split_threshold(self):
+            # strict mode lowers the split threshold to eager's 8192, so a reduction
+            # larger than 8192 splits into a two-stage (multi-kernel) reduction
+            def fn(z):
+                return torch.sum(z, dim=1)
+
+            x = torch.randn(1, 16384, device=GPU_TYPE)  # >8192, <524288
+            torch._dynamo.reset()
+            with config.patch({"numerics": "strict"}):
+                code = run_and_get_triton_code(torch.compile(fn), x)
+            # a split reduction emits >= 2 triton kernels (partials + combine)
+            self.assertGreaterEqual(code.count("async_compile.triton("), 2)
 
         # On Blackwell+, #179729 raised the split-reduction no-split threshold to 524288,
         # so the 256*256=65536-element reduction below no longer splits and produces 1 kernel
