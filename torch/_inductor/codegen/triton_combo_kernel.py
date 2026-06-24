@@ -172,6 +172,18 @@ def _default_custom_combo_kernel_horizontal_partition(
             if V.graph.sizevars.optimization_hint(n.group[-1][-1], fallback=1) > 2048  # type: ignore[arg-type]
         ]
         short_reduction = [n for n in reduction if n not in long_reduction]
+        very_large_reduction = [
+            n
+            for n in long_reduction
+            if (
+                V.graph.sizevars.optimization_hint(node_info_map[n].numel, fallback=1)
+                * V.graph.sizevars.optimization_hint(
+                    node_info_map[n].rnumel, fallback=1
+                )
+            )
+            > LARGE_NUMELS
+        ]
+        long_reduction = [n for n in long_reduction if n not in very_large_reduction]
         if long_reduction:
             _log_partition_separation(
                 "ComboKernels: %d long reduction nodes are separated",
@@ -179,6 +191,12 @@ def _default_custom_combo_kernel_horizontal_partition(
                 not_reduction + short_reduction,
                 node_info_map,
             )
+        if very_large_reduction:
+            log.debug(
+                "ComboKernels: %d very large reduction nodes are separated",
+                len(very_large_reduction),
+            )
+            nodes_per_ndim.extend([node] for node in very_large_reduction)
         large_pointwise = [
             n
             for n in not_reduction
@@ -835,7 +853,9 @@ class ComboKernel(Kernel):
         for arg_num in equal_1_arg_indices(signature):
             triton_meta["constants"][signature[arg_num].name] = 1  # type: ignore[index,union-attr]
 
-        triton_meta["configs"] = [config_of(signature)]
+        triton_meta["configs"] = [
+            config_of(signature, skip_cpp_wrapper_input_tensor_alignment=True)
+        ]
 
         mutated_args = self.get_mutated_args_sub_kernels()
         dispatch = self.dispatch_class
