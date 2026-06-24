@@ -45,6 +45,20 @@ cmake.build-type = "Debug"
 if.env.REL_WITH_DEB_INFO = true
 cmake.build-type = "RelWithDebInfo"
 
+# .ci/pytorch/build.sh exports CMAKE_BUILD_TYPE directly for the debug CI
+# images (RelWithAssert for *-debug, Debug for *-full-debug). scikit-build-core
+# manages the build type itself and passes -DCMAKE_BUILD_TYPE=Release on the
+# command line, which pre-defines the cache variable and blocks the env value
+# forwarded by EnvVarForwarding.cmake. Honor these explicitly so the *-debug
+# job keeps NDEBUG-free asserts (test.sh's _crash_if_debug_asserts_fail check).
+[[tool.scikit-build.overrides]]
+if.env.CMAKE_BUILD_TYPE = "RelWithAssert"
+cmake.build-type = "RelWithAssert"
+
+[[tool.scikit-build.overrides]]
+if.env.CMAKE_BUILD_TYPE = "Debug"
+cmake.build-type = "Debug"
+
 [[tool.scikit-build.overrides]]
 # PyTorch CI uses a /opt/conda-installed Python whose sysconfig CC includes
 # "-B <prefix>/compiler_compat" (a too-narrow sysroot). When CC is unset in
@@ -56,10 +70,31 @@ cmake.build-type = "RelWithDebInfo"
 # the parent shell didn't pre-set CC/CXX matches what .ci/pytorch/common.sh
 # already does for *gcc* build environments; if a *clang* build environment
 # pre-sets CC=clang/CXX=clang++, the env-backed lookup respects that.
+#
+# Fire when either signal is present: ANACONDA_PYTHON_VERSION covers the conda
+# CI images, and CC being set covers the venv-based images (e.g. aarch64, which
+# is not conda and so has ANACONDA_PYTHON_VERSION unset). Without the latter,
+# scikit-build-core leaks sysconfig's CC -- the older compiler that built the
+# venv Python (gcc 11 on the aarch64 image) -- which fails the SVE feature
+# probe in FindARM.cmake even though the image ships a newer gcc on PATH.
 if.platform-system = "linux"
-if.env.ANACONDA_PYTHON_VERSION = true
+if.any.env.ANACONDA_PYTHON_VERSION = true
+if.any.env.CC = true
 cmake.define.CMAKE_C_COMPILER = { env = "CC", default = "gcc" }
 cmake.define.CMAKE_CXX_COMPILER = { env = "CXX", default = "g++" }
+
+[[tool.scikit-build.overrides]]
+# On Windows with the Ninja generator, CMake does not default to MSVC. With the
+# Intel oneAPI environment active (XPU builds), icx is on PATH and gets picked
+# up as the host compiler, which miscompiles CPU code: icx passes sleef's
+# __float128 cmake probe but then cannot compile sleefqp.c on the Windows target
+# (ENABLEFLOAT128 gets set, the build fails). setup.py defaulted CC/CXX=cl for
+# Windows+Ninja builds (tools/build_pytorch_libs.py); replicate that so the host
+# build stays on MSVC while the XPU sub-projects keep using icx. Respect CC/CXX
+# if explicitly set (e.g. clang-cl). platform-system matches sys.platform.
+if.platform-system = "win32"
+cmake.define.CMAKE_C_COMPILER = { env = "CC", default = "cl" }
+cmake.define.CMAKE_CXX_COMPILER = { env = "CXX", default = "cl" }
 
 # Other than CMAKE_C/CXX_COMPILER above, cmake.define is intentionally absent
 # -- all BUILD_*/USE_* env vars and additional passthrough variables are
