@@ -364,6 +364,7 @@ if torch.backends.mps.is_available():
             "linalg.matrix_norm": [torch.float32],
             "linalg.norm": [torch.float32],
             "linalg.normsubgradients_at_zero": [torch.float32],
+            "linalg.polar": None,
             "linalg.svdvals": None,
             "masked.median": None,
             "matrix_exp": None,
@@ -886,6 +887,9 @@ if torch.backends.mps.is_available():
             "_upsample_bicubic2d_aa": None,  # `_upsample_bilinear2d_aa_backward_out` not implemented for MPS
             "sparse.mmreduce": [torch.float32],  # csr not supported
             "linalg.householder_product": None,
+            # No MPS kernel for linalg_polar.out; the grad test still runs the
+            # forward leg, which raises NotImplementedError on MPS.
+            "linalg.polar": None,
             "unique_consecutive": [torch.float16, torch.float32],
             "scalar_tensor": [torch.float16, torch.float32],
             "masked.scatter": [torch.float16, torch.float32],
