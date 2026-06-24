@@ -6381,6 +6381,12 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             out["min_rblock"] = self.min_rblock
         if self.cooperative_reduction:
             out["persistent_reduction"] = self.persistent_reduction
+            xnumel = (
+                V.graph.sizevars.optimization_hint(self.numels["x"])
+                if "x" in self.numels
+                else 1
+            )
+            out["real_xnumel"] = xnumel
         if (rblock := self._get_native_matmul_persistent_rblock()) is not None:
             out["native_matmul_persistent_rblock"] = rblock
         if self.add_persistent_rblock:

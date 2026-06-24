@@ -71,7 +71,6 @@ from .runtime_utils import (
     get_first_attr,
     get_max_y_grid,
     get_num_bytes,
-    last_power_of_2,
     next_power_of_2,
     triton_cache_dir,
     triton_config_to_hashable,
@@ -1592,8 +1591,18 @@ class CachingAutotuner(KernelInterface):
             timings = {}
             best_launcher = None
             best_timing = float("inf")
-            for launcher in self.launchers:
-                timing = self.bench(launcher, *args, **kwargs)
+            for i, launcher in enumerate(self.launchers):
+                try:
+                    timing = self.bench(launcher, *args, **kwargs)
+                except Exception:
+                    self._close_static_launcher(launcher)
+                    # If we've got a working launcher or there are other launchers to
+                    # try, skip this one.
+                    if best_launcher is not None or i < (len(self.launchers) - 1):
+                        continue
+                    else:
+                        raise
+
                 timings[launcher] = timing
                 # Close losing static launchers eagerly so exhaustive autotuning
                 # keeps only the current winner and candidate modules loaded.
@@ -4404,12 +4413,7 @@ def _reduction_configs(
         num_warps = None
 
         # Try to use all SMs with small x
-        if triton_meta.get("launch_cooperative_grid", False):
-            # Cooperative launches are 2-D and have x <= 16.  We gain memory access
-            # efficiency by accessing all the x elements contiguously in a single block.
-            x_block = x
-            outer_r_block = max(1, min(rnumel, 512))
-        elif x <= 1024:
+        if x <= 1024:
             x_block = max(min(x // 128, 8), 2)
             outer_r_block = min(rnumel, 64)
         # Lower bound x = 1024, 1024 // 16 = 128 around # of SMs
@@ -4466,8 +4470,8 @@ def _reduction_configs(
     )
 
     outer_config = make_config(64, 8, register_intensive=register_intensive)
-
-    # TODO (paulzhan): Test heuristic on AMD and internal testing for correctness
+    # TODO (paulzhan): Test heuristic on AMD and internal testing
+    # for correctness
     if not torch.version.hip:
         outer_config = outer_config_opt()
 
@@ -4819,14 +4823,17 @@ def cooperative_reduction(
             "Cooperative reductions don't support tiling reduction dims"
         )
     xnumel, rnumel = size_hints["x"], size_hints["r0_"]
+    # The xnumel size hint is rounded up to the nearest power of 2.  For a normal
+    # reduction that doesn't matter, but in a cooperative reduction that can result in
+    # spawning completely empty blocks and thus underutilizing the GPU.  inductor_meta
+    # contains the actual xnumel, specifically for this.
+    real_xnumel = inductor_meta.get("real_xnumel")
 
-    # Note that we must never create more CTAs than there are SMs, because we
-    # depend on synchronizing between the CTAs in x_grid_barrier, and that will
-    # deadlock if some of the CTAs are not running. In order to maximize use of
-    # the GPU, we want to create as many CTAs as possible, while keeping things
-    # in powers of 2.
-    target = last_power_of_2(triton_meta["device"].multi_processor_count)
-    split = max(1, min(rnumel, target // xnumel))
+    def get_valid_rsplit(desired_rsplit: int) -> int:
+        return max(1, min((desired_rsplit, rnumel, TRITON_MAX_RSPLIT)))
+
+    target = triton_meta["device"].multi_processor_count
+    split = get_valid_rsplit(target // real_xnumel)
     if inductor_meta["persistent_reduction"]:
         configs = _persistent_reduction_configs(
             {"x": xnumel, "r0_": rnumel // split},
@@ -4840,12 +4847,22 @@ def cooperative_reduction(
             inductor_meta=inductor_meta,
             triton_meta=triton_meta,
         )
-    for config in configs:
-        # Compensate for XBLOCK > 1.  For very small reductions, this will spawn more
-        # threads than needed, but those reductions should complete quickly anyway.
-        config.kwargs["RSPLIT"] = min(
-            split * config.kwargs["XBLOCK"], TRITON_MAX_RSPLIT
-        )
+
+    max_autotune_enabled: bool = inductor_meta.get("max_autotune") or inductor_meta.get(
+        "max_autotune_pointwise"
+    )
+    for config in list(configs):
+        # If XBLOCK > 1, increase the number of splits to get closer to the target value.
+        xblock: int = config.kwargs["XBLOCK"]
+        xsplit = (real_xnumel + xblock - 1) // xblock
+        config.kwargs["RSPLIT"] = get_valid_rsplit(target // xsplit)
+
+        # Basic guess at max autotune: less complex cooperative reductions can launch
+        # more blocks than SMs, but the APIs for checking aren't useful for Triton.
+        # Try doubling the number of blocks and seeing if it succeeds.
+        if max_autotune_enabled:
+            configs.append(copy.deepcopy(config))
+            configs[-1].kwargs["RSPLIT"] *= 2
 
     configs = _maybe_filter_configs_for_tma_restrictions(inductor_meta, configs)
     configs = filter_reduction_configs_for_determinism(inductor_meta, configs)
