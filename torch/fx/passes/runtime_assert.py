@@ -493,11 +493,6 @@ def insert_deferred_runtime_asserts(
                 if (
                     cond == True  # noqa: E712
                     or (isinstance(cond, fx.Node) and is_self_equality(cond))
-                    or (
-                        assert_expr is not None
-                        and assert_expr in expr_to_proxy
-                        and assert_expr in added_asserts
-                    )
                 ):
                     arg = cond
                     gm.graph.erase_node(node)
