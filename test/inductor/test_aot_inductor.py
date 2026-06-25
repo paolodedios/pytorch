@@ -9287,17 +9287,6 @@ GPU_LAZY_AUTOTUNE_TEST_FAILURES = {
     ),
 }
 
-if TEST_WITH_ROCM:
-    GPU_LAZY_AUTOTUNE_TEST_FAILURES.update(
-        {
-            # Lazy autotune dual-wrapper mode runs a generated JIT wrapper
-            # during compile, which currently hits a ROCm device assert in
-            # this unbacked-symbol repeat/index_select case before reaching
-            # the AOTI package path.
-            "test_size_with_unbacked_add_expr": fail_gpu(("cuda",)),
-        }
-    )
-
 
 @unittest.skipIf(sys.platform == "darwin", "No CUDA on MacOS")
 class AOTInductorTestDualWrapper(TestCase):
