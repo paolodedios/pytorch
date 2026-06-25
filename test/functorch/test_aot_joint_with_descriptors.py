@@ -37,6 +37,7 @@ from torch._functorch.aot_autograd import (
     aot_export_joint_with_descriptors,
 )
 from torch._guards import tracing, TracingContext
+from torch._higher_order_ops.associative_scan import associative_scan
 from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 from torch.testing._internal.common_utils import (
     requires_cuda,
@@ -854,6 +855,32 @@ class inner_f(torch.nn.Module):
             )
 
         self.assertEqual(backend_calls, [])
+
+    @requires_cuda
+    def test_export_preserves_hop_internal_compile(self):
+        class ModuleWithAssociativeScan(nn.Module):
+            def combine(self, x, y):
+                return x + y
+
+            def forward(self, x):
+                return associative_scan(
+                    self.combine, x, 1, combine_mode="pointwise"
+                ).sum()
+
+        with ExitStack() as stack:
+            joint_with_descriptors = aot_export_joint_with_descriptors(
+                stack,
+                ModuleWithAssociativeScan(),
+                (torch.randn(3, 10, 2, device="cuda"),),
+            )
+
+        self.assertTrue(
+            any(
+                node.op == "call_function"
+                and node.target == torch.ops.higher_order.associative_scan
+                for node in joint_with_descriptors.graph_module.graph.nodes
+            )
+        )
 
     def test_preserve_annotate_simple(self):
         """Test basic linear module with aot_export_joint_with_descriptors"""
