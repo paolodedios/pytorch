@@ -150,9 +150,29 @@ fusion_log = torch._logging.getArtifactLogger(__name__, "fusion")
 async_compile = AsyncCompile()
 
 
-# Threshold for detecting inner reductions based on tiling score ratio.
-# If r0_tiling_score / x_tiling_score >= this value, upgrade DEFAULT hint to INNER.
-INNER_REDUCTION_RATIO_THRESHOLD = 8
+INNER_REDUCTION_RATIO_THRESHOLD = 32
+INNER_REDUCTION_SMALL_RBLOCK_RATIO_THRESHOLD = 16
+INNER_REDUCTION_SMALL_RBLOCK_MAX = 512
+
+
+def tiling_scores_suggest_inner_reduction(
+    tiling_scores: dict[str, sympy.Expr], reduction_numel: sympy.Expr
+) -> bool:
+    """Return whether tiling scores justify treating a reduction as inner."""
+    x_score = max(V.graph.sizevars.optimization_hint(tiling_scores["x"], fallback=1), 1)
+    r_score = V.graph.sizevars.optimization_hint(tiling_scores["r0_"], fallback=0)
+    r_coalesce_ratio = r_score / x_score
+    if r_coalesce_ratio >= INNER_REDUCTION_RATIO_THRESHOLD:
+        return True
+    if r_coalesce_ratio < INNER_REDUCTION_SMALL_RBLOCK_RATIO_THRESHOLD:
+        return False
+
+    # Persistent reductions use the full reduction extent as RBLOCK.  Moderate
+    # score ratios are enough only while configs can still keep XBLOCK=8.
+    rblock_hint = next_power_of_2(
+        max(V.graph.sizevars.optimization_hint(reduction_numel, fallback=1), 1)
+    )
+    return rblock_hint <= INNER_REDUCTION_SMALL_RBLOCK_MAX
 
 
 def get_triton_reduction_function(reduction_type):
@@ -3370,7 +3390,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
 
     def should_use_persistent_reduction(self) -> bool:
         return self.inside_reduction and V.choices.should_use_persistent_reduction(
-            self.features, self.cooperative_reduction
+            self.features, self.cooperative_reduction, self.tiling_scores
         )
 
     def want_no_x_dim(self):
@@ -6415,10 +6435,9 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 and "x" in tiling_scores
                 and "r0_" in tiling_scores
             ):
-                # large rblock inhibits xblock size, don't attempt if there is a decent amount of
-                # reads coalesced by xblock
-                r_coalesce_ratio = tiling_scores["r0_"] / max(tiling_scores["x"], 1)
-                contiguous_red = r_coalesce_ratio >= INNER_REDUCTION_RATIO_THRESHOLD
+                contiguous_red = tiling_scores_suggest_inner_reduction(
+                    tiling_scores, self.features.reduction_numel
+                )
             else:
                 contiguous_red = (
                     self.features.get_reduction_hint(tiling_scores)
