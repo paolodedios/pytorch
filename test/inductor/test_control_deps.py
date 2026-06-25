@@ -550,6 +550,11 @@ class TestControlDeps(InductorTestCase):
 
         self.assertTrue(captured, "expected at least one compile")
         for c in captured:
+            self.assertGreater(
+                len(c["barriers_allocate"]),
+                0,
+                "expected OrderingBarrier nodes (precondition)",
+            )
             self.assertTrue(
                 all(not a for a in c["barriers_allocate"]),
                 "OrderingBarrier should_allocate() must be False",
