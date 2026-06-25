@@ -16,8 +16,6 @@ import cuda.bindings.driver as cuda_driver  # pyrefly: ignore [missing-import]
 import cuda.bindings.nvrtc as nvrtc  # pyrefly: ignore [missing-import]
 import cuda.bindings.runtime as cuda_runtime  # pyrefly: ignore [missing-import]
 
-import nvtx  # pyrefly: ignore [missing-import]
-
 import torch
 from torch._dynamo.utils import preserve_rng_state
 from torch._inductor import config
@@ -1184,7 +1182,6 @@ def cudagraphify(
     )
     num_dynamic_tensors = len(segment_sizes)
 
-    @nvtx.annotate()
     def run(new_inputs: list[InputType]) -> OutputType:
         """Replay the graph with new input and output storage pointers."""
         assert num_inputs == len(new_inputs)
@@ -1193,12 +1190,15 @@ def cudagraphify(
             None
         ] * num_dynamic_tensors
 
-        rng = nvtx.start_range(message="build dynamic_tensors", color="green")
+        torch.cuda.nvtx.range_push("build dynamic_tensors")
         if empty_segment_sizes:
-            with nvtx.annotate("torch._C._cuda_batch_empty_int8"):
-                empty_tensors = torch._C._cuda_batch_empty_int8(  # pyrefly: ignore[missing-attribute]
+            torch.cuda.nvtx.range_push("torch._C._cuda_batch_empty_int8")
+            empty_tensors = (
+                torch._C._cuda_batch_empty_int8(  # pyrefly: ignore[missing-attribute]
                     empty_segment_sizes, empty_segment_device_indices
                 )
+            )
+            torch.cuda.nvtx.range_pop()
             for segment_idx, empty_tensor in zip(empty_segment_indices, empty_tensors):
                 dynamic_tensors_with_none[segment_idx] = empty_tensor
         for segment_idx, input_idx in input_segment_entries:
@@ -1219,7 +1219,7 @@ def cudagraphify(
             #     )
             dynamic_tensors_with_none[segment_idx] = cast(torch.Tensor, new_input)
         dynamic_tensors = cast(list[torch.Tensor], dynamic_tensors_with_none)
-        nvtx.end_range(rng)
+        torch.cuda.nvtx.range_pop()
 
         copy_dsts: list[torch.Tensor] = []
         copy_srcs: list[torch.Tensor] = []
@@ -1258,17 +1258,17 @@ def cudagraphify(
                 copyback_dsts.append(input_copy_src)
                 copyback_srcs.append(input_copy_dst)
         torch.cuda.nvtx.range_pop()
-        rng = nvtx.start_range(message="foreach_copy", color="red")
+        torch.cuda.nvtx.range_push("foreach_copy")
         if copy_dsts:
             torch._foreach_copy_(copy_dsts, copy_srcs)
-        nvtx.end_range(rng)
+        torch.cuda.nvtx.range_pop()
 
         graph_runner.replay(dynamic_tensors)
 
-        rng = nvtx.start_range(message="foreach_copy2", color="red")
+        torch.cuda.nvtx.range_push("foreach_copy2")
         if copyback_dsts:
             torch._foreach_copy_(copyback_dsts, copyback_srcs)
-        nvtx.end_range(rng)
+        torch.cuda.nvtx.range_pop()
 
         output_reconstruction_start = (
             time.perf_counter() if debug_output_reconstruction else None
@@ -1301,7 +1301,7 @@ def cudagraphify(
             cache[cache_key] = base_tensor
             return base_tensor
 
-        rng = nvtx.start_range(message="reconstruct outputs", color="blue")
+        torch.cuda.nvtx.range_push("reconstruct outputs")
         for output_spec in output_specs:
             if isinstance(output_spec, NonTensorOutputSpec):
                 outputs.append(output_spec.value)
@@ -1392,7 +1392,7 @@ def cudagraphify(
                 true_output_tensor = compact_output_tensor
             outputs.append(true_output_tensor)
 
-        nvtx.end_range(rng)
+        torch.cuda.nvtx.range_pop()
 
         if output_reconstruction_start is not None:
             output_reconstruction_ms = (
