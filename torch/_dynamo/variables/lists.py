@@ -59,6 +59,7 @@ from .iter import IteratorVariable
 from .object_protocol import (
     generic_richcompare_bool,
     maybe_get_python_type,
+    object_generic_getattr,
     pyindex_check,
     pylong_as_ssize_t,
     pynumber_as_ssize_t,
@@ -877,8 +878,6 @@ class RangeVariable(BaseListVariable):
         fields = ["start", "stop", "step"]
         if name in fields:
             return self.items[fields.index(name)]
-
-        from .object_protocol import object_generic_getattr
 
         return object_generic_getattr(tx, self, name)
 
