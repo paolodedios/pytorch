@@ -1186,7 +1186,6 @@ _cupti_monitor.enable_hes_early()
         self.assertGreater(len(shaped_cpu_ops(record_shapes=True)), 0)
 
     @unittest.skipIf(not TEST_CUPTI_V13_3, "requires libcupti >= 13.3")
-    @_isolated
     def test_cupti_monitor_matches_stock_op_and_kernel_names(self):
         # Run in a FRESH process. This test needs a stock (Kineto) CUDA baseline and
         # then a cupti_monitor session, so it must start from a process that hasn't
@@ -1264,7 +1263,6 @@ _cupti_monitor.enable_hes_early()
         self.assertIn("OK", p.stdout)
 
     @unittest.skipIf(not TEST_CUPTI_V13_3, "requires libcupti >= 13.3")
-    @_isolated
     def test_cupti_monitor_kineto_parity(self):
         # In a FRESH process (clean CUPTI), profile a couple of representative models
         # under stock (Kineto) and then the cupti_monitor backend, eager AND graphed,
@@ -1366,7 +1364,16 @@ _cupti_monitor.enable_hes_early()
                 launch = {"launches": launches, "arrows": arrows, "gpu_ops": len(gpu_ops)}
                 return aten, meta, launch
 
-            MODES = ("eager", "graphed")
+            # Graphed mode profiles CUDA-graph replay, which needs
+            # cudaGraphNodeGetToolsId (cuda-compat / new driver): without it node
+            # correlation no-ops and, with HES on, cudaDeviceSynchronize wedges.
+            # Run eager-only when the tools-id API is unusable.
+            from torch.cuda._graph_annotations import _is_tools_id_unavailable
+            if _is_tools_id_unavailable():
+                print("SKIP_GRAPHED")
+                MODES = ("eager",)
+            else:
+                MODES = ("eager", "graphed")
             models = make_models()
 
             def nkernels(meta):
@@ -1457,7 +1464,6 @@ _cupti_monitor.enable_hes_early()
             )
 
     @unittest.skipIf(not TEST_CUPTI_V13_3, "requires libcupti >= 13.3")
-    @_isolated
     def test_cupti_monitor_observed_kinds_present(self):
         # Every activity kind the ProfilerObserver subscribes to must surface in the
         # exported chrome trace. One workload exercises kernels, H2D/D2H memcpy, memset,
