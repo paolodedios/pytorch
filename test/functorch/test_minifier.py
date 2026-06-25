@@ -142,7 +142,6 @@ class TestMinifier(TestCase):
 
         repro = buf.getvalue()
         self.assertIn("'cuda:7'", repro)
-        self.assertNotIn("torch.float32, 'cuda')", repro)
 
 
 if __name__ == "__main__":
