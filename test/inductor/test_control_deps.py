@@ -535,12 +535,13 @@ class TestControlDeps(InductorTestCase):
         self.assertFalse(_is_control_deps_ordering_only_use(add, view))
 
     @requires_gpu()
-    def test_control_deps_passthrough_uses_ordering_output(self):
-        """Pass-through values in control_deps use OrderingOutput.
+    def test_control_deps_passthrough_creates_ordering_barrier(self):
+        """Pass-through values in control_deps create OrderingBarrier nodes.
 
-        OrderingOutput creates a rename chain for scheduling order (so future
-        readers depend on the void op) without mutation side effects: no
-        mark_buffer_mutated, no forced realization, no lifetime extension.
+        Verifies that OrderingBarrier:
+        - is created for pass-through buffers
+        - has ordering_only=True (so scheduler uses WeakDep, not StarDep)
+        - does not add pass-through buffers to mutated_buffers
         """
         from torch._inductor import ir
         from torch._inductor.virtualized import V
@@ -548,19 +549,14 @@ class TestControlDeps(InductorTestCase):
         captured: list[dict] = []
 
         def capture(nodes):
-            ordering_count = 0
-            mutation_count = 0
-            for op in V.graph.operations:
-                if hasattr(op, "mutation_outputs"):
-                    for m in op.mutation_outputs:
-                        if isinstance(m, ir.OrderingOutput):
-                            ordering_count += 1
-                        else:
-                            mutation_count += 1
+            barriers = [
+                op for op in V.graph.operations if isinstance(op, ir.OrderingBarrier)
+            ]
             captured.append(
                 {
-                    "ordering_count": ordering_count,
-                    "mutation_count": mutation_count,
+                    "barriers": barriers,
+                    "barrier_source_names": [b.mutation_names[0] for b in barriers],
+                    "ordering_only_flags": [b.ordering_only for b in barriers],
                     "mutated_buffers": set(V.graph.mutated_buffers),
                 }
             )
@@ -584,35 +580,50 @@ class TestControlDeps(InductorTestCase):
         torch.testing.assert_close(result, expected)
 
         self.assertTrue(captured, "expected at least one Inductor compile")
-        total_ordering = sum(c["ordering_count"] for c in captured)
-        self.assertGreater(total_ordering, 0, "expected OrderingOutput entries")
+        for c in captured:
+            self.assertGreater(len(c["barriers"]), 0, "expected OrderingBarrier nodes")
+            self.assertTrue(
+                all(c["ordering_only_flags"]),
+                "all OrderingBarrier nodes must have ordering_only=True",
+            )
+            for source_name in c["barrier_source_names"]:
+                self.assertNotIn(
+                    source_name,
+                    c["mutated_buffers"],
+                    f"barrier source {source_name} should not be in mutated_buffers",
+                )
 
     @requires_gpu()
-    def test_ordering_output_does_not_mark_graph_input_mutated(self):
-        """OrderingOutput must not mark graph inputs as mutated.
+    def test_ordering_barrier_is_nop(self):
+        """OrderingBarrier must not allocate or generate code.
 
-        When a graph input passes through control_deps unchanged, the old
-        MutationOutput approach would call mark_buffer_mutated, causing the
-        scheduler to add the input to mutated_inputs -- advertising a phantom
-        mutation that changes the calling convention. OrderingOutput avoids
-        this by not calling mark_buffer_mutated at all.
+        Verifies should_allocate() and is_no_op() on the actual IR node.
         """
+        from torch._inductor import ir
         from torch._inductor.virtualized import V
 
-        captured_mutated_inputs: list[set[str]] = []
+        captured: list[dict] = []
 
         def capture(nodes):
-            captured_mutated_inputs.append(set(V.graph.mutated_buffers))
+            barriers = [
+                op for op in V.graph.operations if isinstance(op, ir.OrderingBarrier)
+            ]
+            captured.append(
+                {
+                    "barriers_allocate": [b.should_allocate() for b in barriers],
+                    "barriers_nop": [b.is_no_op() for b in barriers],
+                }
+            )
             return nodes
 
         def fn(x):
             s = torch.Stream(device=GPU_TYPE)
             e = torch.Event()
             with s:
+                y = x + 1
                 e.record()
             e.wait()
-            # x passes through control_deps unchanged (it's a graph input)
-            return x + 1
+            return y * 2
 
         torch._dynamo.reset()
         with config.patch(_pre_fusion_custom_pass=capture):
@@ -622,13 +633,15 @@ class TestControlDeps(InductorTestCase):
         expected = fn(torch.ones(4, device=GPU_TYPE))
         torch.testing.assert_close(result, expected)
 
-        # The graph input buffer should NOT appear in mutated_buffers
-        self.assertTrue(captured_mutated_inputs, "expected at least one compile")
-        graph_input_names = {"arg0_1", "primals_1"}
-        for mutated in captured_mutated_inputs:
-            self.assertFalse(
-                mutated & graph_input_names,
-                f"graph inputs should not be in mutated_buffers: {mutated & graph_input_names}",
+        self.assertTrue(captured, "expected at least one compile")
+        for c in captured:
+            self.assertTrue(
+                all(not a for a in c["barriers_allocate"]),
+                "OrderingBarrier should_allocate() must be False",
+            )
+            self.assertTrue(
+                all(c["barriers_nop"]),
+                "OrderingBarrier is_no_op() must be True",
             )
 
     def test_default_stream_setup_only_once_per_device(self):

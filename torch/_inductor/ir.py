@@ -8071,45 +8071,36 @@ class MutationOutput(Buffer):
         ]
 
 
-class OrderingOutput(Buffer):
-    """A pure ordering edge that reuses the scheduler's rename chain.
+class OrderingBarrier(NopKernel):
+    """A no-op that creates a rename chain for scheduling order.
 
-    Registers a rename (source_name -> self.name) so that future readers of
-    the source buffer are redirected through this node, creating a scheduling
-    dependency.  The scheduler checks ``ordering_only`` and uses
-    WeakDep(is_fake=True) instead of StarDep, avoiding lifetime extension
-    and mark_buffer_mutated side effects.
+    Takes a source buffer and produces a new buffer name. The scheduler
+    sees this as a node with a rename (source -> self), so future readers
+    of the source are redirected through this barrier.
 
-    Uses ``get_mutation_names`` / ``mutation_names`` to plug into the existing
-    rename chain infrastructure -- no actual mutation occurs.
+    Uses WeakDep(is_fake=True) instead of StarDep via the ``ordering_only``
+    flag, avoiding lifetime extension and mark_buffer_mutated side effects.
+    No kernel is generated and no allocation occurs.
     """
 
     ordering_only = True
 
-    def __init__(
-        self, layout: OutputSpec, source_node: IRNode, ordering_node: Operation
-    ) -> None:
-        super().__init__(name=None, layout=layout)
+    def __init__(self, source_node: IRNode) -> None:
+        source_node.realize()
+        super().__init__(
+            name=None,
+            layout=NoneLayout(device=source_node.get_device()),
+            inputs=[source_node],
+        )
         self.mutation_names = [source_node.get_name()]
-        self.mutating_node: Operation = ordering_node
         self.name = V.graph.register_buffer(self)
-
-    def get_defining_op(self) -> Operation:
-        return self.mutating_node
+        V.graph.register_operation(self)
 
     def get_mutation_names(self) -> Sequence[str]:
         return self.mutation_names
 
     def should_allocate(self) -> bool:
         return False
-
-    def get_mutation_buffers(self) -> Sequence[IRNode]:
-        mutation_names = self.get_mutation_names()
-        return [
-            buf
-            for buf in (V.graph.try_get_buffer(name) for name in mutation_names)
-            if buf is not None
-        ]
 
 
 class TMADescriptor(ExternKernel):
