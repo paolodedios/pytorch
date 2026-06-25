@@ -656,8 +656,8 @@ class GraphModule(torch.nn.Module):
                 """\
 class GraphModule(torch.nn.Module):
     def forward(self, args_list):
-        s41 = args_list[0]
-        L_torch_dynamo_resume_args_3_ = args_list[1]
+        L_torch_dynamo_resume_args_3_ = args_list[0]
+        s41 = args_list[1]
         L_torch_dynamo_resume_args_4_ = args_list[2]
         args_list.clear()
         l_torch_dynamo_resume_args_3_ = L_torch_dynamo_resume_args_3_
@@ -665,7 +665,7 @@ class GraphModule(torch.nn.Module):
         l_torch_dynamo_resume_args_4_ = L_torch_dynamo_resume_args_4_
         L_torch_dynamo_resume_args_4_ = None
 
-        x: "bf16[s41, s41]" = l_torch_dynamo_resume_args_3_ @ l_torch_dynamo_resume_args_4_;  l_torch_dynamo_resume_args_3_ = l_torch_dynamo_resume_args_4_ = None
+        matmul: "bf16[s41, s41]" = l_torch_dynamo_resume_args_3_ @ l_torch_dynamo_resume_args_4_;  l_torch_dynamo_resume_args_3_ = l_torch_dynamo_resume_args_4_ = None
 
         autocast_decrement_nesting = torch.autocast_decrement_nesting();  autocast_decrement_nesting = None
 
@@ -676,7 +676,7 @@ class GraphModule(torch.nn.Module):
         set_autocast_dtype = torch.set_autocast_dtype('cpu', torch.bfloat16);  set_autocast_dtype = None
 
         set_autocast_cache_enabled = torch.set_autocast_cache_enabled(True);  set_autocast_cache_enabled = None
-        return (x,)
+        return (matmul,)
 """,
             )
         else:
