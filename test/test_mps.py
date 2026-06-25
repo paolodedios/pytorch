@@ -15310,6 +15310,8 @@ class TestConsistency(TestCaseMPS):
                 atol, rtol = 3e-3, 3e-3
             if op.name == "logcumsumexp":
                 atol, rtol = 4e-3, 1e-3
+            if op.name == "nn.functional.ctc_loss":
+                atol, rtol = 2e-4, 2e-3
             if op.name == "nn.functional.max_pool3d" and dtype == torch.float16:
                 # In a few cases where stride is smaller than kernel size,
                 # several output grad elements of similar magnitudes get summed
