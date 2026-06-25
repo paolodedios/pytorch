@@ -183,7 +183,6 @@ from .variables.lists import (
 from .variables.misc import (
     CellVariable,
     ExceptionVariable,
-    GetAttrVariable,
     NullVariable,
     PythonModuleVariable,
     TracebackVariable,
@@ -247,6 +246,25 @@ def _import_module(name: str) -> types.ModuleType:
     this can be slow.
     """
     return importlib.import_module(name)
+
+
+def _registered_module_for_globals(
+    module_name: object, f_globals: dict[str, Any]
+) -> tuple[str, types.ModuleType] | None:
+    if not isinstance(module_name, str) or module_name.startswith("namedtuple_"):
+        return None
+
+    if "torch_package" in module_name:
+        module = torch.package.package_importer._package_imported_modules.get(
+            module_name
+        )
+    else:
+        module = sys.modules.get(module_name)
+
+    if isinstance(module, types.ModuleType) and module.__dict__ is f_globals:
+        return module_name, module
+
+    return None
 
 
 @dataclasses.dataclass
@@ -945,11 +963,6 @@ def generic_jump(
                     "object with non-constant truthiness.",
                     hints=[],
                 )
-        elif not value.is_tensor() and value.has_unpack_var_sequence(self):
-            if truth_fn(len(value.unpack_var_sequence(self))):
-                if push:
-                    self.push(value)
-                self.jump(inst)
         elif isinstance(value, SymNodeVariable):
             try:
                 # if the user is branching on a SymBool, guard on it
@@ -966,6 +979,12 @@ def generic_jump(
                     return jump_graph_break(self, inst, value, extra_msg=f"\n{e}")
                 raise
             if truth_fn(eval_result):
+                if push:
+                    self.push(value)
+                self.jump(inst)
+        elif not value.is_tensor():
+            result = generic_bool(self, value)  # type: ignore[arg-type]
+            if truth_fn(result):
                 if push:
                     self.push(value)
                 self.jump(inst)
@@ -1505,6 +1524,7 @@ class InstructionTranslatorBase(
         fn: BaseUserFunctionVariable,
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
+        allow_nested_graph_breaks: bool = False,
     ) -> Any:
         """
         A call to some user defined function by inlining it.
@@ -1512,7 +1532,13 @@ class InstructionTranslatorBase(
         if config.enable_faithful_generator_behavior and is_generator(fn.get_code()):
             return self.inline_generator_function(fn, args, kwargs)
         else:
-            return InliningInstructionTranslator.inline_call(self, fn, args, kwargs)
+            return InliningInstructionTranslator.inline_call(
+                self,
+                fn,
+                args,
+                kwargs,
+                allow_nested_graph_breaks=allow_nested_graph_breaks,
+            )
 
     def get_line_of_code_header(self, lineno: int | None = None) -> str:
         if lineno is None:
@@ -1833,7 +1859,7 @@ class InstructionTranslatorBase(
             cg.extend_output(
                 [
                     *create_swap(2),
-                    create_instruction("LIST_APPEND", arg=1),
+                    *cg.create_list_append(),
                 ]
             )
             self.parent.push(UnknownVariable())
@@ -2100,10 +2126,11 @@ class InstructionTranslatorBase(
             self.is_tracing_resume_prologue = val
 
     def DELETE_FAST(self, inst: Instruction) -> None:
-        var = self.symbolic_locals.get(inst.argval)
+        name = inst.argval
+        var = self.symbolic_locals.get(name)
         if isinstance(var, TensorVariable):
             self._maybe_emit_sync_dealloc(var)
-        del self.symbolic_locals[inst.argval]
+        del self.symbolic_locals[name]
 
     def _maybe_emit_sync_dealloc(self, var: TensorVariable) -> None:
         from .variables.streams import get_current_stream, new_event
@@ -2450,13 +2477,22 @@ class InstructionTranslatorBase(
         self.block_stack.append(BlockStackEntry(inst, inst.target, len(self.stack)))
 
     def FOR_ITER(self, inst: Instruction) -> None:
+        # in 3.15+, make sure TOS remains a null
+        if sys.version_info >= (3, 15):
+            null = self.pop()
         it = self.pop().realize()
         self.push(it)
+        if sys.version_info >= (3, 15):
+            self.push(null)
         try:
             val = it.next_variable(self)
             self.push(val)
-        except (StopIteration, exc.ObservedUserStopIteration) as e:
-            if isinstance(e, exc.ObservedUserStopIteration):
+        except (
+            StopIteration,
+            exc.ObservedUserStopIteration,
+            exc.ObservedIndexError,
+        ) as e:
+            if isinstance(e, (exc.ObservedUserStopIteration, exc.ObservedIndexError)):
                 exc.handle_observed_exception(self)
 
             if sys.version_info >= (3, 12):
@@ -2977,7 +3013,15 @@ class InstructionTranslatorBase(
             self.push(compare_op_handlers[inst.argval](self, self.popn(2), {}))
 
     def GET_ITER(self, inst: Instruction) -> None:
-        self.call_function(VariableTracker.build(self, iter), [self.pop()], {})
+        # This is intentionally different from cpython 3.15+.  Cpython creates virtual iterators for certain types
+        # (i.e. lists/tuples), represented on the stack by the iterable + an integer index.  Other types call the
+        # builtin iter and are represented by iterator + null.  We could mimic this in dynamo, but it becomes
+        # problematic for resuming from graph breaks in list comprehensions.  Cpython uses tagged ints (not PyObject) to
+        # represent the index, and we can only restore boxed ints, which creates an invalid stack state.  So instead of
+        # trying, we just always create a true iterator.
+        self.push(generic_getiter(self, self.pop()))
+        if sys.version_info >= (3, 15):
+            self.push(NullVariable())
 
     @break_graph_if_unsupported(
         push=True,
@@ -3696,7 +3740,8 @@ class InstructionTranslatorBase(
         #         frame N stack + locals,
         #         ...,
         #         frame 2 stack + locals,
-        #     ], *(frame 1 stack + locals)
+        #     ],
+        #     [frame 1 stack + locals],
         # ]
         cg.extend_output(
             [
@@ -3714,17 +3759,25 @@ class InstructionTranslatorBase(
         )
 
         # TOS: resume 1, remaining resumes, frames (popped), frame 1 stack + locals
-        cg.extend_output(
-            [
-                *create_rot_n(3),
-                create_instruction("BUILD_LIST", arg=2),
-                *create_swap(2),
-                # [resumes, frames (popped)], frame 1 stack + locals
-                create_instruction("LIST_EXTEND", arg=1),
-            ]
-        )
+        if ContinueExecutionCache.uses_boxed_call(resume_codes[-1]):
+            cg.extend_output(
+                [
+                    # [remaining resumes, frames, [frame 1 stack + locals]]
+                    create_instruction("BUILD_LIST", arg=3),
+                ]
+            )
+        else:
+            cg.extend_output(
+                [
+                    *create_rot_n(3),
+                    create_instruction("BUILD_LIST", arg=2),
+                    *create_swap(2),
+                    # [remaining resumes, frames], frame 1 stack + locals
+                    create_instruction("LIST_EXTEND", arg=1),
+                ]
+            )
 
-        # TOS: resume 1, [remaining resumes, frames, *(frame 1 stack + locals)]
+        # TOS: resume 1, resume call args
         cg.extend_output(create_call_function_ex(False, True))
 
     def should_compile_partial_graph(self) -> bool:
@@ -3768,6 +3821,8 @@ class InstructionTranslatorBase(
     ) -> None:
         from .variables.dicts import ConstDictVariable
         from .variables.lists import BaseListVariable
+
+        # TODO(dynamo-team): Refactor this to use sq_item / mp_ass_subscript
 
         item_var = None
         try:
@@ -3998,14 +4053,7 @@ class InstructionTranslatorBase(
 
     def UNPACK_SEQUENCE(self, inst: Instruction) -> None:
         seq = self.pop()
-        if seq.is_tensor():
-            val = seq.unpack_var_sequence(self, idxes=range(inst.argval))  # type: ignore[arg-type]
-        elif isinstance(seq, GetAttrVariable) and seq.obj.is_tensor():
-            # x, y = a.shape
-            proxy = getattr(seq.obj.as_proxy(), seq.name)
-            val = [wrap_fx_proxy(self, proxy[i]) for i in range(inst.argval)]
-        else:
-            val = unpack_iterable(self, seq)
+        val = unpack_iterable(self, seq)
         if len(val) < inst.argval:
             raise_value_error(
                 self,
@@ -4132,6 +4180,34 @@ class InstructionTranslatorBase(
             return
 
         value = self._convert_value(value, flags & 0x03)
+
+        # For plain f"{obj}" (no conversion, empty format spec, default
+        # __format__), eagerly evaluate str() via generic_str to capture
+        # the current symbolic state.  This avoids deferring to
+        # StringFormatVariable whose reconstruct runs before mutations
+        # are replayed in the epilogue.
+        # Skip when __format__ is overridden since format(obj, "") may
+        # differ from str(obj) in that case.
+        if (
+            (flags & 0x03) == 0
+            and fmt_spec.is_python_constant()
+            and fmt_spec.as_python_constant() == ""
+        ):
+            realized = value.realize()
+            try:
+                py_type = realized.python_type()
+            except NotImplementedError:
+                py_type = None
+            if py_type is not None and py_type.__format__ is object.__format__:
+                try:
+                    from .variables.object_protocol import generic_str
+
+                    str_result = generic_str(self, realized)
+                    self.push(str_result)
+                    return
+                except Unsupported:
+                    if self.output.should_exit:
+                        raise
 
         fmt_var = VariableTracker.build(
             self, "{:" + fmt_spec.as_python_constant() + "}"
@@ -4382,6 +4458,9 @@ class InstructionTranslatorBase(
         if inst.arg == 0:
             self.append_prefix_inst(inst)
             self.accept_prefix_inst = False
+        elif sys.version_info >= (3, 15) and inst.arg == 4:
+            # https://github.com/python/cpython/blob/f31a89bb901067dd105b00cfa90523cf7ffdbbdd/Include/internal/pycore_opcode_utils.h#L90
+            self.append_prefix_inst(inst)
         else:
             if self.accept_prefix_inst:
                 raise AssertionError("expected not self.accept_prefix_inst to be true")
@@ -4695,6 +4774,8 @@ class InstructionTranslatorBase(
     def END_SEND(self, inst: Instruction) -> None:
         tos = self.pop()
         self.pop()
+        if sys.version_info >= (3, 15):
+            self.pop()
         self.push(tos)
 
     # 3.13 opcodes
@@ -4783,7 +4864,11 @@ class InstructionTranslatorBase(
     # 3.14 opcodes
     LOAD_FAST_BORROW = LOAD_FAST
     NOT_TAKEN = NOP
-    POP_ITER = POP_TOP
+
+    def POP_ITER(self, inst: Instruction) -> None:
+        self.pop()
+        if sys.version_info >= (3, 15):
+            self.pop()
 
     # See
     # https://github.com/python/cpython/blob/805e3368d6d07e58430654d1365283924fdf4143/Python/ceval.c#L559
@@ -5658,12 +5743,19 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
         func: BaseUserFunctionVariable,
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
+        allow_nested_graph_breaks: bool = False,
     ) -> VariableTracker:
         tracer = None
         with profile_inline_call(
             parent.output, func.get_code(), lambda: parent.inline_depth + 1
         ):
-            tracer = cls.build_inline_tracer(parent, func, args, kwargs)
+            tracer = cls.build_inline_tracer(
+                parent,
+                func,
+                args,
+                kwargs,
+                allow_nested_graph_breaks=allow_nested_graph_breaks,
+            )
             return tracer.inline_call_()
 
     @staticmethod
@@ -5738,6 +5830,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
         func: BaseUserFunctionVariable,
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
+        allow_nested_graph_breaks: bool = False,
     ) -> InliningInstructionTranslator:
         if not isinstance(
             func,
@@ -5880,6 +5973,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
                 parent.symbolic_torch_function_state,
                 parent.symbolic_stream_state,
                 func,
+                allow_nested_graph_breaks=allow_nested_graph_breaks,
             )
         else:
             tracer = InliningInstructionTranslator(
@@ -5890,6 +5984,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
                 parent.symbolic_torch_function_state,
                 parent.symbolic_stream_state,
                 func,
+                allow_nested_graph_breaks=allow_nested_graph_breaks,
             )
         return tracer
 
@@ -5989,6 +6084,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
         symbolic_torch_function_state: SymbolicTorchFunctionState,
         symbolic_stream_state: SymbolicStreamState,
         funcvar: BaseUserFunctionVariable | LocalGeneratorObjectVariable,
+        allow_nested_graph_breaks: bool = False,
     ) -> None:
         f_globals = funcvar.get_globals()
         f_builtins = f_globals["__builtins__"]
@@ -6044,6 +6140,7 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
         self.symbolic_result = None
         self.nn_module_stack = parent.nn_module_stack.copy()
         self.one_graph = parent.one_graph
+        self._allow_nested_graph_breaks = allow_nested_graph_breaks
 
     @property
     def fake_mode(self) -> FakeTensorMode | None:
@@ -6059,6 +6156,8 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
         """
         if not config.nested_graph_breaks:
             return False
+        if not self._allow_nested_graph_breaks:
+            return False
         if not self.funcvar.should_allow_nested_graph_breaks():
             return False
         if not self.parent.should_compile_partial_graph():
@@ -6067,6 +6166,8 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
 
     def should_compile_partial_graph(self) -> bool:
         if config.nested_graph_breaks:
+            if not self._allow_nested_graph_breaks:
+                return False
             if not self.funcvar.should_allow_nested_graph_breaks():
                 return False
             if not self.parent.should_compile_partial_graph():
@@ -6101,22 +6202,12 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
     def get_globals_source_and_value(
         self, name: str
     ) -> tuple[Any, VariableTracker, Source]:
-        # NamedTuple's `__new__` has a fake global scope that's not an actual
-        # module. TODO generalize the check for other non-importable cases.
-        # https://github.com/python/cpython/blob/8421b03b16a4852a527256cb7cdce2ab2d318548/Lib/collections/__init__.py#L441-L447
-        if "__name__" in self.f_globals and not self.f_globals["__name__"].startswith(
-            "namedtuple_"
-        ):
-            module_name = self.f_globals["__name__"]
+        registered_module = _registered_module_for_globals(
+            self.f_globals.get("__name__"), self.f_globals
+        )
+        if registered_module is not None:
+            module_name, fglobals_value = registered_module
             module_source = self.import_source(module_name)
-            if "torch_package" in module_name:
-                fglobals_value = (
-                    torch.package.package_importer._package_imported_modules[
-                        module_name
-                    ]
-                )  # type: ignore[assignment]
-            else:
-                fglobals_value = _import_module(module_name)
             # Don't use lazy vt because we will do a setattr afterwards
             # TODO: fix InstructionTranslator -> InstructionTranslatorBase
             # pyrefly: ignore[bad-argument-type]
@@ -6172,7 +6263,20 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
                     hints=[],
                 )
             name = inst.argval
-            _fglobals_value, fglobals_vt, _ = self.get_globals_source_and_value(name)
+            _fglobals_value, fglobals_vt, global_source = (
+                self.get_globals_source_and_value(name)
+            )
+            if isinstance(global_source, DictGetItemSource):
+                unimplemented(
+                    gb_type="STORE_GLOBAL in non-module globals",
+                    context=name,
+                    explanation=(
+                        "Dynamo cannot safely replay global writes for an inlined "
+                        "function whose globals dict is not the registered module "
+                        "__dict__."
+                    ),
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                )
             self.output.side_effects.store_attr(fglobals_vt, name, value)
 
 
@@ -6271,15 +6375,22 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
         if not (len(self.stack) >= 2):
             raise AssertionError("expected len(self.stack) >= 2 to be true")
         val = self.pop()
-        tos = self.stack[-1]
-        if isinstance(tos, (IteratorVariable, LocalGeneratorObjectVariable)) or (
-            isinstance(tos, UserDefinedObjectVariable)
-            and isinstance(tos.value, collections.abc.Iterator)
+        if sys.version_info >= (3, 15):
+            receiver = self.stack[-2]
+        else:
+            receiver = self.stack[-1]
+        if isinstance(receiver, (IteratorVariable, LocalGeneratorObjectVariable)) or (
+            isinstance(receiver, UserDefinedObjectVariable)
+            and isinstance(receiver.value, collections.abc.Iterator)
         ):
             if val.is_constant_none():
                 try:
-                    val = tos.next_variable(self)  # type: ignore[arg-type]
-                except (StopIteration, exc.ObservedUserStopIteration) as ex:
+                    val = receiver.next_variable(self)  # type: ignore[arg-type]
+                except (
+                    StopIteration,
+                    exc.ObservedUserStopIteration,
+                    exc.ObservedIndexError,
+                ):
                     # To implement SEND, we have to look at the implementation
                     # when the iterator returns StopIteration. This translates to this code
                     # 3.11: https://github.com/python/cpython/blob/3.11/Python/ceval.c#L2613-L2619
@@ -6288,7 +6399,7 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
                     # on END_SEND to clean up. In 3.11, SEND does the cleanup as well.
                     if sys.version_info < (3, 12):
                         self.pop()  # Python 3.12 uses new opcode END_SEND
-                    self.push(ConstantVariable.create(ex.value))
+                    self.push(val)
                     self.jump(inst)
                 else:
                     self.push(val)
@@ -6307,7 +6418,7 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
         else:
             unimplemented(
                 gb_type="SEND with bad type",
-                context=f"TOS type: {typestr(tos)}",
-                explanation=f"Attempted to SEND with unsupported type {typestr(tos)}.",
+                context=f"TOS type: {typestr(receiver)}",
+                explanation=f"Attempted to SEND with unsupported type {typestr(receiver)}.",
                 hints=[],
             )
