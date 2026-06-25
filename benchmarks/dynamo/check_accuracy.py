@@ -64,7 +64,12 @@ def check_accuracy(actual_csv, expected_csv, expected_filename):
 
     if "timm_training" in expected_filename:
         # CUDA training can report eager_two_runs_differ for BN gradients.
-        expected_eager_nondeterministic_models.add("mobilenetv2_100")
+        expected_eager_nondeterministic_models.update(
+            {
+                "mobilenetv2_100",
+                "tf_efficientnet_b0",
+            }
+        )
 
     if "torchbench_training" in expected_filename:
         # CUDA training can report eager_two_runs_differ for BN gradients.

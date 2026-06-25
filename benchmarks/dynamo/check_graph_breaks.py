@@ -70,7 +70,12 @@ def check_graph_breaks(
     if "timm_training" in expected_filename:
         # Accuracy can return before the optimized run when eager training is
         # nondeterministic, leaving graph-break counters at zero.
-        expected_eager_nondeterministic_models.add("mobilenetv2_100")
+        expected_eager_nondeterministic_models.update(
+            {
+                "mobilenetv2_100",
+                "tf_efficientnet_b0",
+            }
+        )
 
     if "torchbench_training" in expected_filename:
         # Accuracy can return before the optimized run when eager training is

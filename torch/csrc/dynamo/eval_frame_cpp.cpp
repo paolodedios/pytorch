@@ -682,7 +682,10 @@ PyObject* dynamo__custom_eval_frame(
     // An explicit torch.compile target may temporarily bypass a deliberate
     // SKIP, but the callback's DEFAULT result must not clear that marker. If
     // the callback asks for a concrete action like RUN_ONLY, keep it so
-    // recompile-limit state still persists for explicit skipped targets.
+    // recompile-limit state still persists for explicit skipped targets. This
+    // can replace the persisted SKIP for all future callers of the code object;
+    // once explicitly compiled, the target owns that strategy, and RUN_ONLY
+    // behaves like SKIP when no cache entries match.
     FrameExecStrategy strategy_to_apply = new_strategy;
     if (skip_overridden) {
       if (strategy_to_apply.cur_action == FrameAction::DEFAULT) {
