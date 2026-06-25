@@ -52,7 +52,7 @@ from ..source import (
     TypeSource,
 )
 from ..utils import istype
-from .base import NO_SUCH_SUBOBJ, VariableTracker
+from .base import AttrMutationKind, NO_SUCH_SUBOBJ, VariableTracker
 from .constant import ConstantVariable
 
 
@@ -248,7 +248,7 @@ def vt_identity_compare(
     # Local import avoids a module cycle with variables.functions.
     from .functions import BoundBuiltinMethodVariable, UserMethodVariable
     from .misc import GetAttrVariable, TracebackVariable, WeakRefVariable
-    from .user_defined import UserDefinedClassVariable
+    from .user_defined import UserDefinedClassVariable, UserDefinedObjectVariable
 
     def is_stable_builtin_function(var: VariableTracker) -> bool:
         return isinstance(var, BoundBuiltinMethodVariable) and isinstance(
@@ -302,6 +302,38 @@ def vt_identity_compare(
     def install_bound_builtin_method_lookup_guards(
         var: BoundBuiltinMethodVariable,
     ) -> bool:
+        name = var.descriptor.__name__
+        if (
+            not is_fresh_bound_builtin_method(var)
+            and isinstance(var.obj, UserDefinedObjectVariable)
+            and var.obj.source is None
+            and var.obj.cls_source is not None
+            and not tx.output.side_effects.has_pending_mutation_of_attr(
+                var.obj,
+                name,
+                (AttrMutationKind.INSTANCE_DICT, AttrMutationKind.GENERIC_SETATTR),
+            )
+            and not tx.output.side_effects.has_pending_mutation_of_attr(
+                var.obj, "__dict__", AttrMutationKind.GENERIC_SETATTR
+            )
+            and (
+                not hasattr(var.obj.value, "__dict__")
+                or name not in var.obj.value.__dict__
+            )
+        ):
+            class_attr_source = AttrSource(var.obj.cls_source, name)
+            if resolve_source_value(class_attr_source) is not var.descriptor:
+                return False
+            descriptor_source = var.obj.get_source_by_walking_mro(tx, name)
+            if resolve_source_value(descriptor_source) is not var.descriptor:
+                return False
+            try:
+                install_guard(class_attr_source.make_guard(GuardBuilder.ID_MATCH))
+                install_guard(descriptor_source.make_guard(GuardBuilder.ID_MATCH))
+            except NotImplementedError:
+                return False
+            return True
+
         if not is_fresh_bound_builtin_method(var):
             return False
         obj_source = var.obj.source
@@ -783,6 +815,12 @@ def type_implements_tp_str(obj_type: type) -> bool:
     return has_slot(type_slot, PyTypeSlots.TP_STR)
 
 
+def type_implements_tp_call(obj_type: type) -> bool:
+    """Check whether obj_type implements the tp_call slot."""
+    _, _, _, type_slot = _get_cached_slots(obj_type)
+    return has_slot(type_slot, PyTypeSlots.TP_CALL)
+
+
 def pyiter_check(obj_type: type) -> bool:
     # ref: https://github.com/python/cpython/blob/3.13/Objects/abstract.c#L2891-L2897
     # CPython checks if tp_iternext != _PyObject_NextNotImplemented
@@ -802,6 +840,17 @@ def pyindex_check(obj_type: type) -> bool:
     """Implements _PyIndex_Check semantics for VariableTracker objects."""
     # ref: https://github.com/python/cpython/blob/3.13/Include/internal/pycore_abstract.h#L11-L17
     return type_implements_nb_index(obj_type)
+
+
+def pycallable_check(obj_type: type) -> bool:
+    """Implements PyCallable_Check: type(x)->tp_call != NULL.
+
+    obj_type is the object's Python type (Py_TYPE(x)); a non-NULL tp_call
+    slot on it means instances are callable.
+
+    ref: https://github.com/python/cpython/blob/v3.13.0/Objects/call.c#L52-L57
+    """
+    return type_implements_tp_call(obj_type)
 
 
 def maybe_get_python_type(obj: VariableTracker) -> type:

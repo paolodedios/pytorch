@@ -1011,6 +1011,7 @@ class LRUCacheWarningTests(LoggingTestCase):
 
 class ReproTests(torch._dynamo.test_case.TestCase):
     def setUp(self) -> None:
+        super().setUp()
         try:
             from .utils import install_guard_manager_testing_hook
         except ImportError:
@@ -1020,7 +1021,6 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         self.exit_stack.enter_context(
             install_guard_manager_testing_hook(self.guard_manager_clone_hook_fn)
         )
-        super().setUp()
 
     def tearDown(self) -> None:
         self.exit_stack.close()
@@ -3621,7 +3621,8 @@ class ReproTests(torch._dynamo.test_case.TestCase):
 
     def test_inplace_unsqueeze_input(self):
         def backend(gm, example_inputs):
-            self.assertEqual(example_inputs[-1].size(), torch.Size([1, 3, 4]))
+            tensor_inputs = [x for x in example_inputs if isinstance(x, torch.Tensor)]
+            self.assertEqual(tensor_inputs[-1].size(), torch.Size([1, 3, 4]))
             return gm
 
         @torch.compile(backend=backend)
@@ -5114,12 +5115,12 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         self.assertExpectedInline(
             generated_code,
             """\
-def forward(self, s77 : torch.SymInt, s27 : torch.SymInt, L_x_ : torch.Tensor):
+def forward(self, L_x_ : torch.Tensor, s77 : torch.SymInt, s27 : torch.SymInt):
     l_x_ = L_x_
-    getitem_2 = l_x_[0]
-    sum_1 = getitem_2.sum();  getitem_2 = None
-    gt_1 = sum_1 > 0;  sum_1 = None
-    _assert_async = torch._assert_async(gt_1, 'assertion error');  gt_1 = _assert_async = None
+    getitem = l_x_[0]
+    sum_1 = getitem.sum();  getitem = None
+    gt = sum_1 > 0;  sum_1 = None
+    _assert_async = torch._assert_async(gt, 'assertion error');  gt = _assert_async = None
     cos = l_x_.cos();  l_x_ = None
     return (cos,)""",
         )
@@ -8259,6 +8260,55 @@ SavedForBackwardsAOTOutput(idx=5)""",
 
         result = f(torch.tensor(0.0))
         self.assertEqual(result.item(), 1.0)
+
+    def test_deepcopy_recursive_user_object(self):
+        class Node:
+            pass
+
+        counter = CompileCounter()
+
+        @torch.compile(backend=counter, fullgraph=True)
+        def f(x):
+            a = Node()
+            b = Node()
+            a.b = b
+            b.a = a
+            copy.deepcopy(a)
+            return x + 1.0
+
+        result = f(torch.tensor(0.0))
+        self.assertEqual(result.item(), 1.0)
+
+        @torch.compile(backend=counter, fullgraph=True)
+        def has_reductor(x):
+            obj = Node()
+            reductor = getattr(obj, "__reduce_ex__", None)
+            if reductor is not None:
+                return x + 1.0
+            return x + 2.0
+
+        result = has_reductor(torch.tensor(0.0))
+        self.assertEqual(result.item(), 1.0)
+
+        Node.__reduce_ex__ = None
+        try:
+            result = has_reductor(torch.tensor(0.0))
+            self.assertEqual(result.item(), 2.0)
+            self.assertEqual(counter.frame_count, 3)
+        finally:
+            del Node.__reduce_ex__
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def shadows_reductor(x):
+            obj = Node()
+            obj.__reduce_ex__ = None
+            reductor = getattr(obj, "__reduce_ex__", None)
+            if reductor is not None:
+                return x + 1.0
+            return x + 2.0
+
+        result = shadows_reductor(torch.tensor(0.0))
+        self.assertEqual(result.item(), 2.0)
 
     def test_is_with_sourceless_container_and_dunder_dict(self):
         class Holder:
