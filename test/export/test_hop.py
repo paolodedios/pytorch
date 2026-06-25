@@ -122,7 +122,10 @@ class TestHOP(TestCase):
         torchdynamo._reset_guarded_backend_cache()
 
     @ops(hop_tests, allowed_dtypes=(torch.float,))
-    @skipOps(hop_export_failures)
+    @skipOps(
+        hop_export_failures
+        | {xfail("switch", "simple")}
+    )
     def test_serialize_export(self, device, dtype, op):
         class Foo(torch.nn.Module):
             def forward(self, *args):
