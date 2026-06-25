@@ -32,6 +32,7 @@ from ..exc import (
     ObservedTypeError,
     raise_observed_exception,
     raise_type_error,
+    UnhandledDescriptorError,
     unimplemented,
 )
 from ..utils import istype
@@ -1891,14 +1892,7 @@ def generic_issubclass(
 _NO_DEFAULT = object()
 
 
-class _UnhandledDescriptorError(NotImplementedError):
-    """Raised by object_generic_getattr when a descriptor type is not
-    recognized by _resolve_descriptor_get.  Subclasses NotImplementedError
-    so callers that catch NotImplementedError (e.g., generic_getattr's
-    GetAttrVariable fallback) still work, but callers that want to
-    distinguish unhandled descriptors from other NotImplementedErrors can
-    catch this specifically.
-    """
+_UnhandledDescriptorError = UnhandledDescriptorError
 
 
 def mro_lookup(py_type: type, name: str) -> object:
@@ -2044,12 +2038,12 @@ def object_generic_getattr(
     # Step 4: Non-data descriptor with __get__.
     if type_attr is not NO_SUCH_SUBOBJ and hasattr(type(type_attr), "__get__"):
         # If the VT has custom call_method and this is a method, return a
-        # BoundMethodVariable that dispatches through call_method instead of
+        # CallMethodVariable that dispatches through call_method instead of
         # inlining the resolved method directly.  This preserves custom
         # tracing logic (side effects, graph nodes, suppression) that
         # MRO-based resolution via UserMethodVariable would bypass.
         if _is_method_type(type_attr) and _has_custom_call_method(obj):
-            return variables.BoundMethodVariable(obj, name, source=source)
+            return variables.CallMethodVariable(obj, name, source=source)
 
         class_vt = VariableTracker.build(tx, py_type)
         result = _resolve_descriptor_get(tx, type_attr, obj, class_vt, source)
