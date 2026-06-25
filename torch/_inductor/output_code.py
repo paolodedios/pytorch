@@ -89,7 +89,16 @@ def _boxed_inputs_have_forward_grad(inputs: Sequence[Any]) -> bool:
 
     for value in inputs:
         if isinstance(value, torch.Tensor):
-            tangent = torch.autograd.forward_ad.unpack_dual(value).tangent
+            try:
+                tangent = torch.autograd.forward_ad.unpack_dual(value).tangent
+            except RuntimeError as err:
+                # AOTAutograd's custom-op aliasing analyzer can dispatch
+                # unpack_dual through an internal inference-mode path that
+                # asserts on non-inference tensors.  Do not let the probe
+                # change observable behavior for that wrapper-only case.
+                if "_fw_primal" not in str(err):
+                    raise
+                return False
             if tangent is not None:
                 return True
     return False
