@@ -531,6 +531,9 @@ inline void validate_sdpa_input(
       "Expected query, key, and value to all be  at least 2 dimensional, but got query.dim: ",
       query_.dim(), " key.dim: ", key.dim(), " and value.dim: ", value.dim(), " instead.");
   if (attn_mask_.has_value()){
+    TORCH_CHECK(
+      !is_causal,
+      "_scaled_dot_product_attention: Explicit attn_mask should not be set when is_causal=True");
     auto mask_dtype = attn_mask_->dtype();
     TORCH_CHECK(mask_dtype == at::kBool || mask_dtype == at::kFloat || mask_dtype == query_.dtype(),
       "Expected attn_mask dtype to be bool or float or to match query dtype, but got attn_mask.dtype: ",
@@ -613,18 +616,13 @@ at::Tensor preprocess_mask(
 // This causes the kernel to maybe alias query, key, value
 // So instead we pad the head_dimensions to be a multiple of 8 in the composite
 // region
-template <bool slice>
 at::Tensor pad_last_dim(const at::Tensor& attn_bias, int alignment_size) {
   auto last_dim_size = attn_bias.sym_size(-1);
   if (last_dim_size % alignment_size == 0) {
     return attn_bias;
   }
   auto pad_count = alignment_size - (last_dim_size % alignment_size);
-  auto padded_bias = at::pad_symint(attn_bias, {c10::SymInt(0), pad_count});
-  if (slice) {
-    return padded_bias.slice_symint(-1, 0, last_dim_size);
-  }
-  return padded_bias;
+  return at::pad_symint(attn_bias, {c10::SymInt(0), pad_count});
 }
 
 at::Tensor post_process_flash_output(
@@ -768,10 +766,10 @@ Tensor scaled_dot_product_attention(
       if(query_device_type == DeviceType::CUDA ||
          query_device_type == DeviceType::XPU) {
         c10::SymInt og_size = query_.sym_size(-1);
-        int alignment_size = (query_device_type == DeviceType::XPU) ? 64 : 8;
-        Tensor query_padded = pad_last_dim<false>(query_, alignment_size);
-        Tensor key_padded = pad_last_dim<false>(key, alignment_size);
-        Tensor value_padded = pad_last_dim<false>(value, alignment_size);
+        int alignment_size = (query_device_type == DeviceType::XPU) ? 1 : 8;
+        Tensor query_padded = pad_last_dim(query_, alignment_size);
+        Tensor key_padded = pad_last_dim(key, alignment_size);
+        Tensor value_padded = pad_last_dim(value, alignment_size);
         // We need to calculate the scale based off the OG head dim size
         auto og_scale = sdp::calculate_scale(query_, scale);
         auto out_lse_softmax = at::_scaled_dot_product_flash_attention(
