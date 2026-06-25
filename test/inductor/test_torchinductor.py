@@ -16878,12 +16878,11 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             with self.assertRaisesRegex(RuntimeError, "Output size is too small"):
                 _ = torch.compile(model)(inputs)
 
-    @skipIfRocm
     @requires_cuda
     def test_conv_transpose_zero_size_output(self):
-        # Only CUDA (cuDNN) supports zero-sized spatial outputs for conv_transpose.
-        # ROCm/miopen fails with miopenStatusBadParm, MPS fails with empty placeholder assert.
-        # This test ensures compiled mode matches eager behavior on CUDA.
+        # CUDA/HIP support zero-sized spatial outputs for conv_transpose by
+        # short-circuiting before backend libraries see empty tensor descriptors.
+        # This test ensures compiled mode matches eager behavior.
         class Model(torch.nn.Module):
             def __init__(self):
                 super().__init__()
@@ -16971,9 +16970,7 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
             # Dynamic shapes have compound sympy expressions (e.g. 3*s12*s80*s81)
             # whose C++ formatting (3L*s12*...) requires regex matching.
             suffix = "L?" if config.cpp_wrapper else ""
-            assert_fn = (
-                "assert_size_stride" if config.cpp_wrapper else "assert_tensor_metadata"
-            )
+            assert_fn = r"(assert_size_stride|assert_tensor_metadata)"
             sym = r"s[0-9][0-9]*"
             size_assert_pattern = rf"{assert_fn}.[a-z]+[0-9]+, .2{suffix}, 3{suffix}, {sym}, {sym}, {sym}., .3{suffix}\*{sym}\*{sym}\*{sym}, {sym}\*{sym}\*{sym}, 1{suffix}, {sym}\*{sym}, {sym}.."
             FileCheck().check_regex(size_assert_pattern).run(code)

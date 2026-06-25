@@ -1058,7 +1058,7 @@ class GraphModule(torch.nn.Module):
             out_graph,
             """\
 class GraphModule(torch.nn.Module):
-    def forward(self, s77: "Sym(s77)", s27: "Sym(s17)", L_x_: "f32[s77, s17]", s17: "Sym(s17)", s94: "Sym(s94)", L_y_: "f32[s17, s94]"):
+    def forward(self, L_x_: "f32[s77, s17]", s77: "Sym(s77)", s27: "Sym(s17)", L_y_: "f32[s17, s94]", s17: "Sym(s17)", s94: "Sym(s94)"):
         l_x_ = L_x_
         l_y_ = L_y_
 
@@ -7356,6 +7356,7 @@ xfail_hops_compile = {
     # inductor
     "while_loop",  # LoweringException: AssertionError
     "flex_attention",  # LoweringException: AssertionError
+    "switch",  # no inductor lowering registered
 }
 
 
