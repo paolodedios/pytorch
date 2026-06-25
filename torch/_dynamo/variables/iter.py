@@ -13,6 +13,7 @@ These classes integrate with Dynamo's variable tracking system to enable proper
 handling of iterator operations during code transformation and optimization.
 """
 
+import inspect
 import itertools
 import sys
 from typing import Any, TYPE_CHECKING
@@ -42,6 +43,18 @@ from .object_protocol import generic_getiter, generic_iternext
 # attribute access (a is b → False). Capture once at import time for stable
 # identity comparisons in ItertoolsVariable.call_function.
 _CHAIN_FROM_ITERABLE = itertools.chain.from_iterable
+
+# repeat(object, times=-1); itertools.repeat has no introspectable signature, so
+# declare one to bind args/kwargs. `times` defaults to None to mark the unbounded
+# form (CPython's cnt == -1).
+_REPEAT_SIGNATURE = inspect.Signature(
+    [
+        inspect.Parameter("object", inspect.Parameter.POSITIONAL_OR_KEYWORD),
+        inspect.Parameter(
+            "times", inspect.Parameter.POSITIONAL_OR_KEYWORD, default=None
+        ),
+    ]
+)
 
 
 if TYPE_CHECKING:
@@ -237,18 +250,14 @@ class ItertoolsVariable(VariableTracker):
                 mutation_type=ValueMutationNew(),
             )
         elif self.value is itertools.repeat:
-            # ref: repeat_new in itertoolsmodule.c. Signature repeat(object, times=-1);
-            # a user-supplied negative `times` is clamped to 0.
-            bound: dict[str, VariableTracker] = dict(kwargs)
-            names = ("object", "times")
-            for name, arg in zip(names, args):
-                if name in bound:
-                    raise_args_mismatch(tx, "repeat")
-                bound[name] = arg
-            if "object" not in bound or len(args) > 2 or bound.keys() - set(names):
+            # ref: repeat_new in itertoolsmodule.c. A user-supplied negative
+            # `times` is clamped to 0; an absent `times` means unbounded.
+            try:
+                bound = _REPEAT_SIGNATURE.bind(*args, **kwargs)
+            except TypeError:
                 raise_args_mismatch(tx, "repeat")
-            item = bound["object"]
-            times = bound.get("times")
+            item = bound.arguments["object"]
+            times = bound.arguments.get("times")
             if times is None:
                 return RepeatIteratorVariable(item, mutation_type=ValueMutationNew())
             if not times.is_python_constant():
