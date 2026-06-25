@@ -6,7 +6,7 @@ import math
 import operator
 
 import torch
-from torch._dynamo.utils import counters
+from torch._dynamo.utils import counters, detect_fake_mode
 from torch.fx.node import map_arg
 
 from .. import config
@@ -1100,9 +1100,14 @@ def _register_quantized_reshape_lowering(
     pattern,
     computation_op,
 ):
+    def qreshape_output_metadata(*args, **kwargs):
+        return aten.reshape.default(kwargs["x"], kwargs["shape"])
+
     @register_lowering_pattern(
         pattern,
         extra_check=_is_input_output_same_scale_zp(aten.reshape.default),
+        output_metadata_ignores_input_storage=False,
+        output_metadata_fn=qreshape_output_metadata,
     )
     def qreshape(match: Match, *args, **kwargs):
         qx = kwargs["x"]
@@ -1513,6 +1518,7 @@ def concat_linear_woq_int4(gm: torch.fx.GraphModule):
                     repack_w, concat_scale_zp = concat_wgt(
                         packed_wgts, scale_zps, group_size, act.meta.get("val").dtype
                     )
+                    fake_mode = detect_fake_mode(act.meta.get("val"))
                     repack_w_node_name = computation_node_0.args[1].target + "_concat"
                     concat_scale_zp_node_name = (
                         computation_node_0.args[3].target + "_concat"
@@ -1525,10 +1531,18 @@ def concat_linear_woq_int4(gm: torch.fx.GraphModule):
                     repack_w_node = graph.create_node(
                         "get_attr", repack_w_node_name, (), {}
                     )
+                    if fake_mode is not None:
+                        repack_w_node.meta["val"] = fake_mode.from_tensor(
+                            repack_w, static_shapes=True
+                        )
                     with graph.inserting_after(repack_w_node):
                         concat_scale_zp_node = graph.create_node(
                             "get_attr", concat_scale_zp_node_name, (), {}
                         )
+                        if fake_mode is not None:
+                            concat_scale_zp_node.meta["val"] = fake_mode.from_tensor(
+                                concat_scale_zp, static_shapes=True
+                            )
 
                     with graph.inserting_after(concat_scale_zp_node):
                         concat_int4_gemm_node = graph.create_node(
