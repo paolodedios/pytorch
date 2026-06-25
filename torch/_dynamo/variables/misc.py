@@ -602,10 +602,6 @@ class ExceptionVariable(VariableTracker):
         # The user stack at the time this exception was first raised.
         # Used to preserve the original exception location when re-raising.
         self.python_stack: traceback.StackSummary | None = None
-        # Lazily-created view of the instance __dict__. Custom (user-set)
-        # attributes live in the side effects table, keyed by this VT; the
-        # C-level slots above are stored as fields and handled separately.
-        self.dict_vt: variables.DunderDictVariable | None = None
 
     def set_context(self, context: VariableTracker) -> None:
         self.__context__ = context
@@ -633,11 +629,6 @@ class ExceptionVariable(VariableTracker):
         codegen_attr("__context__")
         codegen_attr("__cause__")
         codegen_attr("__suppress_context__")
-
-    def get_dict_vt(self, tx: "InstructionTranslatorBase") -> VariableTracker:
-        if self.dict_vt is None:
-            self.dict_vt = variables.DunderDictVariable.create(tx, self)
-        return self.dict_vt
 
     def python_type(self) -> type:
         return self.exc_type
