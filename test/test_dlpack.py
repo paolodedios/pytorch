@@ -26,6 +26,7 @@ from torch.testing._internal.common_utils import (
     skipIfTorchDynamo,
     TEST_WITH_ROCM,
     TestCase,
+    xfailIfTorchDynamo,
 )
 from torch.utils.dlpack import DLDeviceType, from_dlpack, to_dlpack
 
@@ -410,6 +411,7 @@ class TestTorchDlPack(TestCase):
         # Stride normalization has been removed, strides should be preserved
         self.assertEqual(z.stride(), (3,))
 
+    @xfailIfTorchDynamo("negative stride check not yet supported under dynamo")
     @skipMeta
     @onlyCPU
     def test_from_dlpack_negative_strides(self, device):
