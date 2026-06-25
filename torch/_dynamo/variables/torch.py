@@ -3124,8 +3124,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
         try:
             member = getattr(self.value, name)
         except AttributeError:
-            from ..exc import raise_observed_exception
-
             raise_observed_exception(AttributeError, tx)
             raise
 
