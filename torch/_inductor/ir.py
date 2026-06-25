@@ -8057,12 +8057,16 @@ class MutationOutput(Buffer):
 
 
 class OrderingOutput(Buffer):
-    """A rename-only ordering edge with no mutation side effects.
+    """A pure ordering edge that reuses the scheduler's rename chain.
 
-    Like MutationOutput but uses WeakDep (is_fake=True) instead of StarDep,
-    and does not call mark_buffer_mutated.  This gives us the rename chain
-    (so future readers of the source buffer are ordered after this node)
-    without forced realization, mutated_buffers tracking, or lifetime extension.
+    Registers a rename (source_name -> self.name) so that future readers of
+    the source buffer are redirected through this node, creating a scheduling
+    dependency.  The scheduler checks ``ordering_only`` and uses
+    WeakDep(is_fake=True) instead of StarDep, avoiding lifetime extension
+    and mark_buffer_mutated side effects.
+
+    Uses ``get_mutation_names`` / ``mutation_names`` to plug into the existing
+    rename chain infrastructure -- no actual mutation occurs.
     """
 
     ordering_only = True
