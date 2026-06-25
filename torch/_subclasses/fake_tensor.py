@@ -2575,7 +2575,12 @@ class FakeTensorMode(TorchDispatchMode):
                 # in this case we can default to inferring non-aliasing fake kernels from the real outputs.
                 _clear_pending_unbacked()
                 return tree_map(
-                    lambda x: _infer_fake_from_real_tensor(self, func, x), real_out
+                    lambda x: (
+                        None
+                        if x is None
+                        else _infer_fake_from_real_tensor(self, func, x)
+                    ),
+                    real_out,
                 )
             else:
                 raise MetadataMismatchError(

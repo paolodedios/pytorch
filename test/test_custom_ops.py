@@ -4024,8 +4024,6 @@ class TestCustomOpAPI(TestCase):
     def test_supports_tensorlist_optional_output(self):
         # Tensor?[] output with a None hole: the present tensors must still be
         # tracked by autograd and receive gradients.
-        test = self
-
         @torch._library.autograd.supports_tensorlist
         class Foo(torch.autograd.Function):
             @staticmethod
@@ -4036,7 +4034,7 @@ class TestCustomOpAPI(TestCase):
             @staticmethod
             def backward(ctx, grads):
                 g0, gnone, g2 = grads
-                test.assertIsNone(gnone)
+                self.assertIsNone(gnone)
                 x0, x1 = ctx.saved_tensors
                 return [g0 * x0.cos(), -g2 * x1.sin()]
 
@@ -4052,11 +4050,14 @@ class TestCustomOpAPI(TestCase):
         self.assertEqual(g0, x0.cos())
         self.assertEqual(g1, -x1.sin())
 
-    @skipIfTorchDynamo("Expected to fail due to no FakeTensor support; not a bug")
     def test_library_register_autograd_optional_tensorlist_output(self):
         @torch.library.custom_op("mylib::sin_with_hole", mutates_args=())
         def sin_with_hole(x: Tensor) -> List[Optional[Tensor]]:
             return [x.sin(), None]
+
+        @sin_with_hole.register_fake
+        def _(x: Tensor) -> List[Optional[Tensor]]:
+            return [torch.empty_like(x), None]
 
         def setup_context(ctx, inputs, output):
             (x,) = inputs
