@@ -4079,11 +4079,14 @@ class TestCustomOpAPI(TestCase):
         (grad_x,) = torch.autograd.grad(out[0].sum(), x)
         self.assertEqual(grad_x, x.cos())
 
-    @skipIfTorchDynamo("Expected to fail due to no FakeTensor support; not a bug")
     def test_library_register_autograd_optional_tensorlist_all_none_output(self):
         # All-None output: no tensor to differentiate through, op must still run.
         @torch.library.custom_op("mylib::all_none", mutates_args=())
         def all_none(x: Tensor) -> List[Optional[Tensor]]:
+            return [None, None]
+
+        @all_none.register_fake
+        def _(x: Tensor) -> List[Optional[Tensor]]:
             return [None, None]
 
         def setup_context(ctx, inputs, output):
