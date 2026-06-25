@@ -9660,6 +9660,16 @@ torch.testing.assert_close(actual, expected)
         )
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
+    def test_preserve_rng_state_under_functorch_grad(self):
+        torch.rand(1, device="cuda")
+
+        def fn(x):
+            with torch._dynamo.utils.preserve_rng_state():
+                return x.sin().sum()
+
+        torch.func.grad(fn)(torch.randn(3, 4))
+
+    @unittest.skipIf(not torch.cuda.is_available(), "requires cuda")
     def test_preserve_global_state_handles_lazy_cuda_init(self):
         script = """\
 import torch

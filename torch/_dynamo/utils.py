@@ -1105,12 +1105,6 @@ class ExactWeakKeyDictionary:
 def istype(obj: object, allowed_types: type[T]) -> TypeIs[T]: ...
 
 
-@overload
-def istype(
-    obj: object, allowed_types: tuple[type[list[T]], type[tuple[T, ...]]]
-) -> TypeIs[T]: ...
-
-
 # This can be simplified once TypeVarTuple objects can be expanded into TypeIs.
 @overload
 def istype(
@@ -2757,7 +2751,7 @@ def preserve_rng_state() -> Generator[None, None, None]:
     try:
         yield
     finally:
-        with torch.utils._python_dispatch._disable_current_modes():
+        with disable_current_modes(), disable_functorch():
             torch.random.set_rng_state(rng_state)
             cuda_rng_state.restore()
             xpu_rng_state.restore()
@@ -2886,7 +2880,11 @@ def checkpoint_params(gm: torch.fx.GraphModule) -> Callable[[], None]:
         ]
 
     def restore() -> None:
-        with torch.no_grad():
+        with (
+            torch.no_grad(),
+            torch.utils._python_dispatch._disable_current_modes(),
+            torch._C._DisableFuncTorch(),
+        ):
             torch.random.set_rng_state(rng_state)
             cuda_rng_state.restore()
             for param, version, original_value in saved_state:

@@ -25,7 +25,7 @@ i32 = torch.int32
 class TestDebugUtils(TestCase):
     def test_cuda_system_info_comment_uninitialized_is_not_cached(self):
         with (
-            patch.object(torch.cuda, "is_available", return_value=True),
+            patch.object(torch.cuda, "_is_compiled", return_value=True),
             patch.object(torch.cuda, "is_initialized", return_value=False),
         ):
             self.assertIn(
@@ -34,7 +34,7 @@ class TestDebugUtils(TestCase):
             )
 
         with (
-            patch.object(torch.cuda, "is_available", return_value=True),
+            patch.object(torch.cuda, "_is_compiled", return_value=True),
             patch.object(torch.cuda, "is_initialized", return_value=True),
             patch.object(
                 debug_utils,
@@ -143,7 +143,7 @@ def forward(self, x_1):
             with self.subTest(error=type(error).__name__):
                 debug_utils._cuda_system_info_comment.cache_clear()
                 with (
-                    patch.object(torch.cuda, "is_available", return_value=True),
+                    patch.object(torch.cuda, "_is_compiled", return_value=True),
                     patch.object(torch.cuda, "is_initialized", return_value=True),
                     patch.object(torch.version, "hip", None),
                     patch.object(
