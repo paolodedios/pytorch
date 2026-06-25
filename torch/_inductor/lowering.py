@@ -9018,38 +9018,40 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
                 raise AssertionError("expected: op_name is not None")
             V.graph.additional_buffer_deps[op_name].add(dep_name)
 
+    # Pass-through versioning: inputs that are also outputs get an
+    # OrderingOutput so future readers are ordered after all subgraph ops.
     # TODO: if control_deps ever wraps ops that truly mutate a pass-through
     # (not just ordering), this needs MutationOutput instead of OrderingOutput.
     input_names = OrderedSet(
         a.get_name() for a in args if isinstance(a, IRNode) and a.get_name() is not None
     )
-
-    def _add_passthrough_ordering(val, op):
-        if not isinstance(val, IRNode) or val.get_name() not in input_names:
-            return
-        val.realize()
-        op.mutation_outputs.append(
-            ir.OrderingOutput(
-                ir.NoneLayout(device=val.get_device()),
-                val,
-                op,
-            )
-        )
-
-    void_ops = [
-        op
-        for op in subgraph_ops
-        if isinstance(op, ir.ExternKernel)
-        and isinstance(op, ir.Buffer)
-        and op.name is not None
-        and isinstance(op.layout, ir.NoneLayout)
+    output_leaves = list(pytree.tree_leaves(output)) if output is not None else []
+    passthrough_vals = [
+        v
+        for v in output_leaves
+        if isinstance(v, IRNode) and v.get_name() in input_names
     ]
-    for op in void_ops:
-        if isinstance(output, (list, tuple)):
-            for v in output:
-                _add_passthrough_ordering(v, op)
-        else:
-            _add_passthrough_ordering(output, op)
+    if passthrough_vals and subgraph_ops:
+        ordering_op = subgraph_ops[-1]
+        if not isinstance(ordering_op, ir.ExternKernel):
+            ordering_op = next(
+                (
+                    op
+                    for op in reversed(subgraph_ops)
+                    if isinstance(op, ir.ExternKernel)
+                ),
+                None,
+            )
+        if ordering_op is not None:
+            for val in passthrough_vals:
+                val.realize()
+                ordering_op.mutation_outputs.append(
+                    ir.OrderingOutput(
+                        ir.NoneLayout(device=val.get_device()),
+                        val,
+                        ordering_op,
+                    )
+                )
 
     return output
 
