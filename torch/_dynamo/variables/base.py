@@ -599,8 +599,8 @@ class VariableTracker(metaclass=VariableTrackerMeta):
     ) -> VariableTracker | None:
         """Look up *name* in the instance __dict__ (tp_dictoffset equivalent).
 
-        Returns a VT if the attribute exists in the instance dict, None
-        otherwise.  The base returns None (most VTs have no instance dict).
+        Returns a VT if the attribute exists in the instance dict, None if
+        the attribute is absent or the VT has no instance dict at all.
         UDOV overrides to check self.value.__dict__ + side effects.
         """
         return None
