@@ -782,8 +782,9 @@ def compile_to_python(
 
     The kernels JIT-compile from the inlined source on first call, so ``inner_python``
     needs no cache. ``cache`` is an opaque acceleration (or ``None`` when the graph
-    is not serializable, e.g. some input-mutating graphs, or when caches are disabled
-    via ``force_disable_caches`` / ``fx_graph_cache=False``).
+    is not serializable, e.g. some input-mutating graphs, or when caches are disabled --
+    the bytes come from the AOTAutograd cache, so any of ``force_disable_caches``,
+    ``fx_graph_cache=False``, or ``enable_autograd_cache=False`` yields ``None``).
 
     The source is captured directly off codegen via the process-global
     ``GraphLowering.save_output_code`` hook, decoupled from the cache: it produces
@@ -804,8 +805,8 @@ def compile_to_python(
     if not isinstance(gm, torch.fx.GraphModule):
         raise TypeError(
             f"compile_to_python expects a post-AOTAutograd torch.fx.GraphModule, "
-            f"got {type(gm)}. This is an internal entry point; call "
-            f"torch.compiler.precompile instead."
+            f"got {type(gm)}. This is an internal entry point wrapped by a higher AOT "
+            f"layer and is not meant to be called directly."
         )
     from .graph import GraphLowering
     from .virtualized import V
@@ -856,12 +857,13 @@ def compile_to_python(
         # reading outside would be a TOCTOU that leaks a dead ``capture_hook`` into the
         # process-global slot.
         owner_thread = threading.get_ident()
-        prev_hook = GraphLowering.save_output_code
-        GraphLowering.save_output_code = staticmethod(capture_hook)
         # Treat ``options`` as inductor config overrides and fold them into the same
         # ``config.patch`` we already enter for the capture-critical pins. The pins are
         # applied AFTER the user options so they override any conflicting key: the
         # source-capture contract depends on them and must not be user-overridable.
+        # Build this BEFORE installing the hook: a malformed ``options`` makes ``dict()``
+        # raise, and the hook must not already be installed (it would leak into the
+        # process-global slot, since the install lives inside the try/finally below).
         config_patches: dict[str, Any] = dict(options or {})
         config_patches.update(
             {
@@ -873,7 +875,11 @@ def compile_to_python(
                 "cpp_wrapper": False,
             }
         )
+        prev_hook = GraphLowering.save_output_code
         try:
+            # Install the hook as the first thing in the try so the finally always
+            # restores it, even if config.patch or standalone_compile raises.
+            GraphLowering.save_output_code = staticmethod(capture_hook)
             with torch.no_grad(), config.patch(config_patches):
                 # ``options`` are already applied above as config, so pass none down
                 # to ``standalone_compile`` (it forwards options as ``compile_fx``

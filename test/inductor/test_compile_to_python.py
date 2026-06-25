@@ -1,5 +1,6 @@
 # Owner(s): ["module: inductor"]
 import ast
+import re
 import textwrap
 
 import torch
@@ -19,11 +20,11 @@ from torch.testing._internal.common_utils import run_tests, TestCase
 from torch.testing._internal.triton_utils import requires_cuda_and_triton
 
 
-def _capture(m, x):
+def _capture(m, x, tracing_mode="real"):
     """Trace ``m(x)`` into a flat-input ATen graph (params+buffers then ``x`` lifted to
     inputs), mirroring how ``torch.compiler.precompile`` feeds a post-AOTAutograd inner
     graph to ``torch._inductor.compile_to_python``. Tracing runs ``m(x)`` once, so pass
-    a throwaway module."""
+    a throwaway module. ``tracing_mode="symbolic"`` produces a graph with dynamic dims."""
     pnames = [n for n, _ in m.named_parameters()]
     bnames = [n for n, _ in m.named_buffers()]
     pb = [p for _, p in m.named_parameters()] + [b for _, b in m.named_buffers()]
@@ -39,7 +40,7 @@ def _capture(m, x):
         return pytree.tree_flatten(out)[0]
 
     with torch.enable_grad():
-        return make_fx(flat_fn)(pb + [x])
+        return make_fx(flat_fn, tracing_mode=tracing_mode)(pb + [x])
 
 
 def _flat_inputs(m, x):
@@ -73,17 +74,13 @@ def _normalize_device(src):
     Inductor bakes the input tensor's device index into the emitted wrapper
     (``_DeviceGuard(N)``, ``set_device(N)``, ``get_raw_stream(N)``, ``raw_streamN``).
     The CUDA goldens run on whatever single GPU the test process is pinned to, so
-    normalize that ordinal to 0 to keep the golden independent of which visible device
-    the test lands on. A no-op when the current device is already 0."""
-    idx = torch.cuda.current_device()
-    if idx == 0:
-        return src
-    return (
-        src.replace(f"_DeviceGuard({idx})", "_DeviceGuard(0)")
-        .replace(f"set_device({idx})", "set_device(0)")
-        .replace(f"get_raw_stream({idx})", "get_raw_stream(0)")
-        .replace(f"raw_stream{idx}", "raw_stream0")
-    )
+    normalize whatever ordinal actually appears to 0 (regex on the emitted ordinal, not
+    on current_device(), so an explicitly non-current device would still normalize)."""
+    src = re.sub(r"_DeviceGuard\(\d+\)", "_DeviceGuard(0)", src)
+    src = re.sub(r"set_device\(\d+\)", "set_device(0)", src)
+    src = re.sub(r"get_raw_stream\(\d+\)", "get_raw_stream(0)", src)
+    src = re.sub(r"raw_stream\d+", "raw_stream0", src)
+    return src
 
 
 class _Pointwise(torch.nn.Module):
@@ -105,11 +102,19 @@ class TestInductorCompileToPythonCodegen(TestCase):
     # graph_partition is pinned off so the entry point is the stable top-level
     # ``def call(args)`` rather than the default ``Runner.call`` method wrapper. The
     # extern-kernel / CPU codegen the goldens lock is identical either way and does not
-    # depend on whether torch was built with CUDA (these are CPU tensors).
+    # depend on whether torch was built with CUDA (these are CPU tensors). size_asserts /
+    # nan_asserts are pinned so the goldened assert_size_stride lines do not drift with the
+    # ambient TORCHINDUCTOR_SIZE_ASSERTS / TORCHINDUCTOR_NAN_ASSERTS env.
     def _inner_call(self, m, x):
         gm = _capture(m, x)
         src, _cache = compile_to_python(
-            gm, _flat_inputs(m, x), options={"graph_partition": False}
+            gm,
+            _flat_inputs(m, x),
+            options={
+                "graph_partition": False,
+                "size_asserts": True,
+                "nan_asserts": False,
+            },
         )
         return src, _extract_call(src)
 
@@ -218,12 +223,19 @@ class TestInductorCompileToPythonCudaCodegen(TestCase):
     # artifacts -- XBLOCK / num_warps are chosen inside ``.run`` at launch time and the
     # arch-specific DeviceProperties live in the kernel decorator, not in ``call``. The
     # hardware- and Triton-version-dependent kernel body is therefore checked
-    # structurally (assertIn), matching the inductor-suite convention. graph_partition
-    # is pinned off so the entry point is the stable top-level ``def call(args)``.
+    # structurally (assertIn), matching the inductor-suite convention. graph_partition is
+    # pinned off for a stable top-level ``def call(args)``, and size_asserts / nan_asserts
+    # are pinned so the goldened assert_size_stride lines do not drift with the ambient env.
     def _inner_call(self, m, x):
         gm = _capture(m, x)
         src, _cache = compile_to_python(
-            gm, _flat_inputs(m, x), options={"graph_partition": False}
+            gm,
+            _flat_inputs(m, x),
+            options={
+                "graph_partition": False,
+                "size_asserts": True,
+                "nan_asserts": False,
+            },
         )
         return src, _normalize_device(_extract_call(src))
 
@@ -347,6 +359,36 @@ def call(args):
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
+    def test_max_autotune_single_runnable_module(self):
+        # Integration check that compile_to_python works under max_autotune, which drives
+        # the GEMM autotuning machinery (Triton templates plus the SubgraphChoiceCaller
+        # decompose_k path, a candidate when k >= 32*m and k >= 32*n). The contract under
+        # test is that exactly ONE runnable module is still captured and runs correctly
+        # under that machinery; a regression that let a nested benchmark lowering leak into
+        # the capture would trip the >1-module RuntimeError here.
+        m = (
+            torch.nn.Sequential(torch.nn.Linear(2048, 8, bias=False), torch.nn.ReLU())
+            .eval()
+            .cuda()
+        )
+        x = torch.randn(8, 2048, device="cuda")
+        gm = _capture(m, x)
+        src, _cache = compile_to_python(
+            gm,
+            _flat_inputs(m, x),
+            options={
+                "graph_partition": False,
+                "max_autotune": True,
+                "max_autotune_gemm_backends": "TRITON",
+            },
+        )
+        self.assertTrue(_defines_module_level_call(src))
+        self.assertNotIn("benchmark_", src)  # no nested benchmark lowering leaked
+        with torch.no_grad():
+            self.assertEqual(
+                _exec(src)(_flat_inputs(m, x))[0], m(x), atol=1e-2, rtol=1e-2
+            )
+
 
 class TestInductorCompileToPythonContract(TestCase):
     # Contract + branch coverage the codegen-golden classes above do not exercise: the
@@ -455,6 +497,30 @@ class TestInductorCompileToPythonContract(TestCase):
         self.assertIn("call = runner.call", src)
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_dynamic_shapes_emits_symbolic_codegen(self):
+        # dynamic_shapes="from_graph" on a symbolically-traced graph emits a call() keyed
+        # on symbolic sizes (sN) rather than baked constants, and the single module runs at
+        # multiple shapes. (The default "from_example_inputs" specializes instead -- the
+        # other tests exercise that static path.) Symbol names are non-deterministic, so
+        # assert structure + multi-shape numerics rather than goldening.
+        m = _Pointwise().eval()
+        x = torch.randn(8, 4)
+        gm = _capture(m, x, tracing_mode="symbolic")
+        src, _cache = compile_to_python(
+            gm,
+            _flat_inputs(m, x),
+            dynamic_shapes="from_graph",
+            options={"graph_partition": False},
+        )
+        call_src = _extract_call(src)
+        self.assertRegex(call_src, r"\bs\d+\b")  # a symbolic size symbol is present
+        self.assertNotIn("(8, 4)", call_src)  # the input shape is not baked in
+        fn = _exec(src)
+        for n in (8, 16, 5):
+            xi = torch.randn(n, 4)
+            with torch.no_grad():
+                self.assertEqual(fn(_flat_inputs(m, xi))[0], m(xi))
 
     @config.patch({"compile_threads": 1})
     def test_warm_cache_still_captures_source(self):
