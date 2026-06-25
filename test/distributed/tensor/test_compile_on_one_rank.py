@@ -408,7 +408,7 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
         self.assertEqual(code0, code1)
         self.assertNotIn("cuda:", code0)
 
-    # ---- (B) inductor codegen must be device-agnostic across ranks (currently failing) --
+    # ---- inductor codegen and launcher must be device-agnostic across ranks ----
     # A device-derived factory + a reduction, so inductor emits a real kernel.
     @staticmethod
     def _coor_inductor_fn(x):
@@ -418,15 +418,21 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
     @compiler_config.patch(compile_on_one_rank=True)
     def test_inductor_compiles_under_coor(self):
-        # Problem 1 (lowering): the current_accelerator() device node must lower through
-        # inductor. Today it is a bare function (not an OpOverload), so inductor's
-        # call_function lowering rejects it ("is not an OpOverload").
+        # The current_device() node must lower through inductor, and the generated code
+        # must be device-agnostic: the device is resolved at runtime with no baked
+        # rank-specific index, so one compiled artifact is shareable across ranks.
+        from torch._C import FileCheck
+        from torch._inductor.utils import run_and_get_code
+
         torch._dynamo.reset()
         compiled = torch.compile(
             self._coor_inductor_fn, backend="inductor", fullgraph=True
         )
-        out = compiled(torch.randn(2, 8, device="cuda"))
+        out, codes = run_and_get_code(compiled, torch.randn(2, 8, device="cuda"))
         self.assertEqual(out.device.type, "cuda")
+        code = "\n".join(codes)
+        FileCheck().check("torch.cuda.current_device()").run(code)
+        self.assertNotRegex(code, r"cuda:\d")
 
     @unittest.skipIf(torch.cuda.device_count() < 2, "requires >= 2 GPUs")
     @compiler_config.patch(compile_on_one_rank=True)

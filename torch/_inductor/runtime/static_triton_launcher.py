@@ -314,7 +314,7 @@ class StaticallyLaunchedTritonKernel:
             function = self.function
 
         # Assert load_kernel() has been called and args match
-        if self.function is None:
+        if function is None:
             raise AssertionError("load_kernel() must be called before run()")
 
         # TODO: actually, if the args *don't* match, we probably should

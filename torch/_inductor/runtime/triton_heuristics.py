@@ -2482,6 +2482,11 @@ class CachingAutotuner(KernelInterface):
             if not callable(runner):
                 return None
             kernel = runner.__self__
+            # compile-on-one-rank kernels keep their loaded handles per device, so
+            # kernel.function is None; the fast launcher binds a single device's
+            # function pointer, so fall back to the per-device static launcher.
+            if getattr(kernel, "device_agnostic", False):
+                return None
             cu_function = kernel.function
             num_warps = kernel.num_warps
             shared = kernel.shared
