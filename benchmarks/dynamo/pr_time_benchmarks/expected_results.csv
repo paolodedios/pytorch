@@ -122,8 +122,8 @@ dtensor_dispatch_custom_handler,instruction_count,34910,0.1
 
 
 
-nn_module_guard_eval,instruction_count,82620,0.1
+nn_module_guard_eval,instruction_count,80120,0.1
 
 
 
-nn_module_guard_eval_dynamic,instruction_count,98899,0.1
+nn_module_guard_eval_dynamic,instruction_count,111714,0.1
