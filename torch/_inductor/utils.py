@@ -4741,12 +4741,13 @@ def patch_subprocess_env(
         yield
         return
 
-    old_env = {key: os.environ.get(key) for key in extra_env}
+    old_env = dict(os.environ)
     apply_subprocess_env(extra_env)
     try:
         yield
     finally:
-        apply_subprocess_env(old_env)
+        os.environ.clear()
+        os.environ.update(old_env)
 
 
 @dataclasses.dataclass(frozen=True)

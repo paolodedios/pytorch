@@ -389,8 +389,11 @@ class TestSubprocessEnv(TestCase):
         from torch._inductor.compile_fx_ext import _SerializedFxCompile
 
         key = "TEST_INDUCTOR_SUBPROCESS_ENV"
+        mutated_key = "TEST_INDUCTOR_SUBPROCESS_ENV_MUTATED"
         old_env = os.environ.get(key)
+        old_mutated_env = os.environ.get(mutated_key)
         os.environ[key] = "parent-value"
+        os.environ.pop(mutated_key, None)
 
         class StopAfterEnvCheck(Exception):
             pass
@@ -400,17 +403,23 @@ class TestSubprocessEnv(TestCase):
         class Input:
             def deserialize(self):
                 testcase.assertNotIn(key, os.environ)
+                os.environ[mutated_key] = "child-value"
                 raise StopAfterEnvCheck
 
         try:
             with self.assertRaises(StopAfterEnvCheck):
                 _SerializedFxCompile._run_in_child(Input(), {key: None})
             self.assertEqual(os.environ[key], "parent-value")
+            self.assertNotIn(mutated_key, os.environ)
         finally:
             if old_env is None:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = old_env
+            if old_mutated_env is None:
+                os.environ.pop(mutated_key, None)
+            else:
+                os.environ[mutated_key] = old_mutated_env
 
 
 class TestSetTritonLibdevicePath(TestCase):
