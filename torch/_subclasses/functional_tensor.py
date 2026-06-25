@@ -384,6 +384,20 @@ class FunctionalTensor(torch.Tensor):
     ) -> torch.Tensor:
         if self.layout == torch.strided:
             return self.to(dtype=dtype) if dtype is not None else self
+
+        inner = torch._from_functional_tensor(self.elem)
+        if not isinstance(inner, torch._subclasses.FakeTensor):
+            out = self.elem.to_dense(dtype=dtype, masked_grad=masked_grad)
+            if isinstance(out, torch.Tensor) and torch._is_functional_tensor(out):
+                functional_mode = _detect_infra_mode(
+                    torch._C._TorchDispatchModeKey.FUNCTIONAL
+                )
+                if functional_mode is None:
+                    raise AssertionError("functional_mode must not be None")
+                with functional_mode:
+                    return FunctionalTensor(out, functional_mode)
+            return out
+
         return torch.ops.aten.to_dense.default(
             self, dtype=dtype, masked_grad=masked_grad
         )
