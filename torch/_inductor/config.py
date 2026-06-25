@@ -1043,7 +1043,7 @@ compute_all_bounds = False
 
 # enable the combo kernel that combines data-independent kernels (additional
 # to foreach kernels) into a single one (Experimental)
-combo_kernels = True
+combo_kernels = False
 # benchmark combo kernels and only allow ones with perf gains
 benchmark_combo_kernel = False
 # combo_kernel autotuning options: 0 - disable, 1 - enable except for foreach,
@@ -1069,7 +1069,7 @@ combo_kernel_per_subkernel_blocks: bool = Config(
 # When True, each combo sub-kernel autotunes its block sizes standalone at compile time;
 # the winners are stitched and baked into the combo kernel. Requires
 # combo_kernel_per_subkernel_blocks.
-combo_kernel_compile_time_autotune = False
+combo_kernel_compile_time_autotune = True
 # When True, combo-kernel autotuning groups sub-kernels that share the same
 # candidate config set and kernel-analysis signature. Disabled by default.
 combo_kernel_autotune_grouping = True
