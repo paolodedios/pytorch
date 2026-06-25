@@ -388,6 +388,13 @@ void CUDAGraph::reset() {
     has_graph_ = false;
   }
   if (has_graph_exec_) {
+    // in extremely rare circumstances, garbage collection can occur
+    // during the stream capture of a cuda graph. This can recycle
+    // CompiledFxGraph instances, which can contain CUDAGraph
+    // intances. The destruction of these cuda graphs will run this
+    // destructor, thus invalidating the current stream capture unless
+    // we set the thread capture mode to relaxed.
+    at::cuda::CUDAStreamCaptureModeGuard g{cudaStreamCaptureModeRelaxed};
     C10_CUDA_CHECK_WARN(cudaGraphExecDestroy(graph_exec_));
     has_graph_exec_ = false;
   }
