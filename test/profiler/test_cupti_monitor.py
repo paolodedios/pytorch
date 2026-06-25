@@ -79,6 +79,7 @@ _cupti_monitor.enable_hes_early()
         )
 
     @unittest.skipIf(not TEST_CUPTI_PYTHON, "requires cupti-python")
+    @unittest.skip("requires raw CUPTI monitor collection API")
     def test_cupti_monitor_collection_raw_dump_smoke(self):
         from torch.profiler._cupti import monitor as _cupti_monitor
 
@@ -117,6 +118,7 @@ _cupti_monitor.enable_hes_early()
             )
 
     @unittest.skipIf(not TEST_CUPTI_PYTHON, "requires cupti-python")
+    @unittest.skip("requires raw CUPTI monitor collection API")
     def test_cupti_monitor_collection_repeated_lifecycle(self):
         from torch.profiler._cupti import monitor as _cupti_monitor
 
