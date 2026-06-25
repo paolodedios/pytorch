@@ -1,10 +1,14 @@
 # Owner(s): ["module: dynamo"]
 import dataclasses
+import gc
 import json
 import os
 import pprint
 import sys
+import unittest
+import weakref
 from unittest import mock
+from unittest.mock import patch
 
 import torch
 import torch._dynamo.config as dynamo_config
@@ -12,18 +16,65 @@ import torch._inductor.config as inductor_config
 import torch.compiler.config as compiler_config
 from torch._dynamo import utils
 from torch._inductor.test_case import TestCase
+from torch.testing._internal.common_device_type import instantiate_device_type_tests
+from torch.testing._internal.common_utils import (
+    IS_LINUX,
+    IS_MACOS,
+    TEST_WITH_ASAN,
+    TEST_WITH_ROCM,
+    TEST_WITH_SLOW,
+)
 
 
 _IS_WINDOWS = sys.platform == "win32"
 
 
 class TestUtils(TestCase):
+    def test_exact_weak_key_dictionary_uses_identity(self):
+        class EqualObject:
+            def __eq__(self, other):
+                return isinstance(other, EqualObject)
+
+        first = EqualObject()
+        second = EqualObject()
+        first_ref = weakref.ref(first)
+        mapping = utils.ExactWeakKeyDictionary()
+
+        mapping[first] = "first"
+        mapping[second] = "second"
+
+        self.assertIn(first, mapping)
+        self.assertIn(second, mapping)
+        self.assertEqual(mapping[first], "first")
+        self.assertEqual(mapping[second], "second")
+        self.assertEqual(mapping.key_ids(), {id(first), id(second)})
+
+        self.assertEqual(mapping.pop(first), "first")
+        self.assertNotIn(first, mapping)
+        self.assertIn(second, mapping)
+
+        del first
+        gc.collect()
+        self.assertIsNone(first_ref())
+        self.assertEqual(mapping.key_ids(), {id(second)})
+
     def test_nan(self):
         a = torch.Tensor([float("nan")])
         b = torch.Tensor([float("nan")])
         fp64_ref = torch.DoubleTensor([5.0])
         res = utils.same(a, b, fp64_ref=fp64_ref, equal_nan=True)
         self.assertTrue(res)
+
+    def test_same_iou_for_bool_propagates_to_instances(self):
+        Instances = type("Instances", (), {})
+        ref = Instances()
+        res = Instances()
+        ref.pred_masks = torch.ones((4, 16, 16), dtype=torch.bool)
+        res.pred_masks = ref.pred_masks.clone()
+        res.pred_masks[0, 0, 0] = False
+
+        self.assertFalse(utils.same(ref, res))
+        self.assertTrue(utils.same(ref, res, use_iou_for_bool=True))
 
     def test_larger_multiplier_for_smaller_tensor(self):
         """
@@ -451,6 +502,10 @@ class TestDynamoTimed(TestCase):
             "'Dynamo does not know how to trace builtin operator `print`'",
         )
 
+    @unittest.skipIf(
+        TEST_WITH_ASAN or IS_LINUX or IS_MACOS or TEST_WITH_ROCM or TEST_WITH_SLOW,
+        "https://github.com/pytorch/pytorch/issues/148093",
+    )
     @dynamo_config.patch(
         {
             "log_compilation_metrics": True,
@@ -540,6 +595,7 @@ class TestDynamoTimed(TestCase):
  'pass.post_grad_passes.decompose_map_to_while_loop': [0.0, 0.0],
  'pass.post_grad_passes.decompose_scan_to_while_loop': [0.0, 0.0],
  'pass.post_grad_passes.decompose_triton_kernel_wrapper_functional': [0.0, 0.0],
+ 'pass.post_grad_passes.fix_auto_functionalized_dtype_views': [0.0, 0.0],
  'pass.post_grad_passes.move_constructors_to_cuda': [0.0, 0.0],
  'pass.post_grad_passes.pass_pattern_0': [0.0, 0.0],
  'pass.post_grad_passes.pass_pattern_1': [0.0, 0.0],
@@ -595,6 +651,7 @@ class TestDynamoTimed(TestCase):
  'pass.post_grad_passes.decompose_map_to_while_loop': [0.0, 0.0],
  'pass.post_grad_passes.decompose_scan_to_while_loop': [0.0, 0.0],
  'pass.post_grad_passes.decompose_triton_kernel_wrapper_functional': [0.0, 0.0],
+ 'pass.post_grad_passes.fix_auto_functionalized_dtype_views': [0.0, 0.0],
  'pass.post_grad_passes.move_constructors_to_cuda': [0.0, 0.0],
  'pass.post_grad_passes.pass_pattern_0': [0.0, 0.0],
  'pass.post_grad_passes.pass_pattern_1': [0.0, 0.0],
@@ -1256,6 +1313,29 @@ class TestDynamoTimed(TestCase):
         self.assertEqual(compilation_events[0].param_numel, 24)
         self.assertEqual(compilation_events[0].param_bytes, 4 * 24)
         self.assertEqual(compilation_events[0].param_count, 3)
+
+
+class TestTimedSync(TestCase):
+    def test_timed_syncs_on_accelerator(self, device):
+        if torch.device(device).type == "cpu":
+            self.skipTest("sync only triggered for non-CPU devices")
+
+        from torch._dynamo.utils import timed
+
+        called = []
+        gm = torch.fx.symbolic_trace(torch.nn.Identity())
+        inputs = [torch.randn(4, device=device)]
+
+        with patch(
+            "torch.accelerator.synchronize", side_effect=lambda: called.append(1)
+        ):
+            timed(gm, inputs, times=1)
+
+        # once before loop + once per iteration for times=1
+        self.assertEqual(len(called), 2)
+
+
+instantiate_device_type_tests(TestTimedSync, globals(), allow_xpu=True)
 
 
 class TestInductorConfigParsingForLogging(TestCase):

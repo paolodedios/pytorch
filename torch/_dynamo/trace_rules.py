@@ -36,7 +36,6 @@ import sys
 import types
 import typing
 import unittest
-import weakref
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -52,6 +51,7 @@ from torch.utils import _config_module
 from . import config
 from .resume_execution import TORCH_DYNAMO_RESUME_IN_PREFIX
 from .utils import (
+    ExactWeakKeyDictionary,
     getfile,
     hashable,
     is_lru_cache_wrapped_function,
@@ -188,6 +188,8 @@ manual_torch_name_rule_map: dict[
     "torch._utils._maybe_view_chunk_cat": UserFunctionVariable,
     "torch.fx._symbolic_trace.is_fx_tracing": TorchInGraphFunctionVariable,
     "torch.fx._symbolic_trace.is_fx_symbolic_tracing": TorchInGraphFunctionVariable,
+    "torch.mps.is_available": TorchInGraphFunctionVariable,
+    "torch.mtia.is_available": TorchInGraphFunctionVariable,
     "torch._dynamo.external_utils.is_compiling": TorchInGraphFunctionVariable,
     "torch._dynamo.utils._disable_side_effect_safety_checks_for_current_subtracer": UserFunctionVariable,
     "torch.compiler.is_compiling": TorchInGraphFunctionVariable,
@@ -217,10 +219,16 @@ manual_torch_name_rule_map: dict[
     "torch.cuda.get_rng_state": SkipFunctionVariable,
     "torch.set_rng_state": SkipFunctionVariable,
     "torch.cuda.set_rng_state": SkipFunctionVariable,
+    "torch.cuda.manual_seed": SkipFunctionVariable,
+    "torch.cuda.manual_seed_all": SkipFunctionVariable,
+    "torch.cuda.random.manual_seed": SkipFunctionVariable,
+    "torch.cuda.random.manual_seed_all": SkipFunctionVariable,
     # https://github.com/pytorch/pytorch/issues/107187
     "torch.manual_seed": SkipFunctionVariable,
     # https://github.com/pytorch/pytorch/issues/93501
     "torch.nn.utils.rnn.pack_padded_sequence": SkipFunctionVariable,
+    # https://github.com/pytorch/pytorch/issues/162374
+    "torch.nn.utils.rnn.pad_packed_sequence": SkipFunctionVariable,
     "torch.nn.Parameter": TorchInGraphFunctionVariable,
     "torch.nn.Buffer": TorchInGraphFunctionVariable,
     "torch._nested_tensor_from_mask": SkipFunctionVariable,
@@ -248,9 +256,12 @@ manual_torch_name_rule_map: dict[
     "torch.Tensor#_make_wrapper_subclass": SkipFunctionVariable,
     "torch.Tensor#__init__": SkipFunctionVariable,
     "torch.Tensor#split": TorchInGraphFunctionVariable,
+    "torch.cuda._clear_cublas_workspaces": SkipFunctionVariable,
     "torch.cuda.set_device": SkipFunctionVariable,
     "torch.cuda.current_device": TorchInGraphFunctionVariable,
     "torch.autograd.grad": TorchInGraphFunctionVariable,
+    "torch.autograd.grad_mode._enter_inference_mode": TorchInGraphFunctionVariable,
+    "torch.autograd.grad_mode._exit_inference_mode": TorchInGraphFunctionVariable,
     "torch.autograd.backward": SkipFunctionVariable,
     "torch.distributions.constraints.is_dependent": SkipFunctionVariable,
     "torch.jit.isinstance": SkipFunctionVariable,
@@ -324,6 +335,7 @@ manual_torch_name_rule_map: dict[
     "torch.autograd.forward_ad.exit_dual_level": UserFunctionVariable,
     "torch.autograd.forward_ad.make_dual": UserFunctionVariable,
     "torch.autograd.forward_ad.unpack_dual": UserFunctionVariable,
+    "torch.autograd.graph.region_activation_memory_budget": UserFunctionVariable,
     # functorch/linearize
     "torch._functorch.eager_transforms.linearize": FunctorchHigherOrderVariable,
     # functorch/jacfwd
@@ -413,6 +425,9 @@ manual_torch_name_rule_map: dict[
     f"torch/testing/_internal/common_distributed.py#{TORCH_DYNAMO_RESUME_IN_PREFIX}": UserFunctionVariable,
     "torch.utils._pytree._get_node_type": PyTreeGetNodeTypeFunctionVariable,
     "torch.utils._pytree.tree_is_leaf": PyTreeTreeIsLeafFunctionVariable,
+    # torch.utils._python_dispatch is in MOD_INLINELIST; override so the handler
+    # in variables/torch.py fires instead of graph-breaking on _len_torch_dispatch_stack.
+    "torch.utils._python_dispatch._get_current_dispatch_mode_stack": TorchInGraphFunctionVariable,
     "torch._utils_internal.justknobs_check": UserFunctionVariable,
     "inspect.signature": InspectSignatureVariable,
 }
@@ -1866,7 +1881,6 @@ torch_c_binding_in_graph_functions = dict.fromkeys(
         "torch.channel_shuffle",
         "torch.cholesky_inverse",
         "torch.cholesky_solve",
-        "torch.cholesky",
         "torch.choose_qparams_optimized",
         "torch.chunk",
         "torch.clamp_",
@@ -2494,7 +2508,6 @@ torch_non_c_binding_in_graph_functions = dict.fromkeys(
         "torch.accelerator.is_available",
         "torch.accelerator.set_stream",
         "torch.accelerator.synchronize",
-        "torch.align_tensors",
         "torch.amp.autocast_mode.autocast_decorator",
         "torch.amp.autocast_mode.custom_bwd",
         "torch.amp.autocast_mode.custom_fwd",
@@ -2537,8 +2550,6 @@ torch_non_c_binding_in_graph_functions = dict.fromkeys(
         "torch.autograd.functional.jvp",
         "torch.autograd.functional.vhp",
         "torch.autograd.functional.vjp",
-        "torch.autograd.grad_mode._enter_inference_mode",
-        "torch.autograd.grad_mode._exit_inference_mode",
         "torch.autograd.graph._get_sid",
         "torch.autograd.graph._get_tid",
         "torch.autograd.graph.allow_mutation_on_saved_tensors",
@@ -2742,8 +2753,6 @@ torch_non_c_binding_in_graph_functions = dict.fromkeys(
         "torch.cuda.profiler.stop",
         "torch.cuda.random.get_rng_state_all",
         "torch.cuda.random.initial_seed",
-        "torch.cuda.random.manual_seed_all",
-        "torch.cuda.random.manual_seed",
         "torch.cuda.random.seed_all",
         "torch.cuda.random.seed",
         "torch.cuda.random.set_rng_state_all",
@@ -3120,6 +3129,19 @@ def get_tensor_method() -> frozenset[Any]:
             and name not in disallowed_tensor_methods
         ):
             s.add(method)
+    for name, method in torch._C.TensorBase.__dict__.items():
+        if (
+            isinstance(
+                method,
+                (
+                    types.MethodDescriptorType,
+                    types.WrapperDescriptorType,
+                    types.BuiltinFunctionType,
+                ),
+            )
+            and name not in disallowed_tensor_methods
+        ):
+            s.add(method)
 
     # mlazos: these are functions which we handle specially in TensorVariable
     s.add(torch.Tensor.__contains__)  # type: ignore[arg-type]
@@ -3149,27 +3171,21 @@ class FunctionIdSet:
     added to the graph and what will cause a graph break.
     """
 
-    weakrefs: dict[int, weakref.ReferenceType[Any]]
-    strongrefs: dict[int, Any]
-    function_names: dict[int, str] | None
+    _MISSING = object()
+
+    weak_entries: ExactWeakKeyDictionary
+    strong_entries: dict[int, tuple[Any, str | None]]
+    has_function_names: bool | None
     initialized: bool
 
     def __init__(
         self, lazy_initializer: Callable[[], dict[Any, str] | set[Any]]
     ) -> None:
         self.lazy_initializer = lazy_initializer
-        self.weakrefs = {}
-        self.strongrefs = {}
-        self.function_names = None
+        self.weak_entries = ExactWeakKeyDictionary()
+        self.strong_entries = {}
+        self.has_function_names = None
         self.initialized = False
-
-    def _remove_id(
-        self, idx: int, ref: weakref.ReferenceType[Any] | None = None
-    ) -> None:
-        if ref is None or self.weakrefs.get(idx) is ref:
-            self.weakrefs.pop(idx, None)
-            if self.function_names is not None:
-                self.function_names.pop(idx, None)
 
     @staticmethod
     def _idx(obj: Any) -> int:
@@ -3178,17 +3194,19 @@ class FunctionIdSet:
     def _add(self, item: Any, name: str | None = None) -> None:
         idx = self._idx(item)
         try:
-            ref = weakref.ref(item, lambda ref: self._remove_id(idx, ref))
+            value = name
+            if value is None:
+                existing = self.weak_entries.get(item, self._MISSING)
+                if existing is not self._MISSING:
+                    value = existing
+            self.weak_entries[item] = value
         except TypeError:
-            self.strongrefs[idx] = item
+            existing = self.strong_entries.get(idx)
+            if name is None and existing is not None and existing[0] is item:
+                name = existing[1]
+            self.strong_entries[idx] = (item, name)
         else:
-            self.weakrefs[idx] = ref
-            self.strongrefs.pop(idx, None)
-
-        if name is not None:
-            if self.function_names is None:
-                self.function_names = {}
-            self.function_names[idx] = name
+            self.strong_entries.pop(idx, None)
 
     def _lazy_init(self) -> None:
         if self.initialized:
@@ -3197,7 +3215,7 @@ class FunctionIdSet:
         self.initialized = True
         value = self.lazy_initializer()
         if isinstance(value, dict):
-            self.function_names = {}
+            self.has_function_names = True
             for item, name in value.items():
                 self._add(item, name)
         else:
@@ -3205,25 +3223,27 @@ class FunctionIdSet:
                 raise AssertionError(
                     f"expected lazy_initializer to return a dict or set, got {type(value)}"
                 )
+            self.has_function_names = False
             for item in value:
                 self._add(item)
 
     def __call__(self) -> set[int]:
         self._lazy_init()
-        for idx, ref in list(self.weakrefs.items()):
-            if ref() is None:
-                self._remove_id(idx, ref)
-        return set(self.weakrefs) | set(self.strongrefs)
+        return self.weak_entries.key_ids() | set(self.strong_entries)
 
     def get_name(self, item: Any, default: str) -> str:
         self._lazy_init()
-        if self.function_names is None:
+        if not self.has_function_names:
             raise AssertionError(
                 "function_names is None; lazy_initializer returned a set, not a dict"
             )
-        if item not in self:
-            return default
-        return self.function_names.get(self._idx(item), default)
+        name = self.weak_entries.get(item, self._MISSING)
+        if name is self._MISSING:
+            entry = self.strong_entries.get(self._idx(item))
+            if entry is None or entry[0] is not item:
+                return default
+            name = entry[1]
+        return name if name is not None else default
 
     def add(self, item: Any) -> None:
         self._lazy_init()
@@ -3231,37 +3251,18 @@ class FunctionIdSet:
 
     def remove(self, item: Any) -> None:
         self._lazy_init()
-        idx = self._idx(item)
-        removed = False
-        ref = self.weakrefs.get(idx)
-        if ref is not None:
-            obj = ref()
-            if obj is None or obj is item:
-                self.weakrefs.pop(idx, None)
-                removed = True
-
-        if idx in self.strongrefs and self.strongrefs[idx] is item:
-            self.strongrefs.pop(idx, None)
-            removed = True
-
-        if removed and self.function_names is not None:
-            self.function_names.pop(idx, None)
+        self.weak_entries.pop(item)
+        entry = self.strong_entries.get(self._idx(item))
+        if entry is not None and entry[0] is item:
+            self.strong_entries.pop(self._idx(item), None)
 
     def __contains__(self, item: Any) -> bool:
         self._lazy_init()
         idx = self._idx(item)
-        if idx in self.strongrefs:
-            return self.strongrefs[idx] is item
-
-        ref = self.weakrefs.get(idx)
-        if ref is None:
-            return False
-
-        obj = ref()
-        if obj is None:
-            self._remove_id(idx, ref)
-            return False
-        return obj is item
+        entry = self.strong_entries.get(idx)
+        if entry is not None:
+            return entry[0] is item
+        return item in self.weak_entries
 
 
 @FunctionIdSet
@@ -3576,6 +3577,7 @@ MOD_INLINELIST = [
     "torch._tensor",
     "torch.amp.autocast_mode",
     "torch.ao.nn",
+    "torch.ao.quantization.fx._decomposed",
     "torch.autograd.function",
     "torch.backends.cuda",
     "torch.cuda.amp.autocast_mode",
@@ -3612,6 +3614,20 @@ MOD_INLINELIST = set(MOD_INLINELIST)
 
 if torch.distributed.is_available():
     MOD_INLINELIST.add("torch.distributed")
+
+# Modules in MOD_INLINELIST where nested graph breaks should be suppressed.
+# These are large internal modules that are inlined for correctness but whose
+# internal operations are not worth compiling as separate NGB subgraphs.
+NGB_SUPPRESS_INLINELIST: set[str] = set()
+
+if torch.distributed.is_available():
+    NGB_SUPPRESS_INLINELIST.add("torch.distributed")
+
+if not NGB_SUPPRESS_INLINELIST <= MOD_INLINELIST:
+    raise AssertionError(
+        "NGB_SUPPRESS_INLINELIST entries must also be in MOD_INLINELIST: "
+        f"{NGB_SUPPRESS_INLINELIST - MOD_INLINELIST}"
+    )
 
 
 # By default, all functions under these modules are skipped.
@@ -3655,7 +3671,6 @@ MOD_SKIPLIST = [
     "torch._logging",
     "torch._lowrank",
     "torch._meta_registrations",
-    "torch._namedtensor_internals",
     "torch._numpy",
     "torch._ops",
     "torch._prims",
@@ -4095,6 +4110,21 @@ def is_torch_inline_allowed(filename: str) -> bool:
 
 
 @functools.cache
+def get_ngb_suppress_inlinelist() -> set[str]:
+    torch_dir = _module_dir(torch)
+    if torch_dir is None:
+        return set()
+    return {
+        _as_posix_path(torch_dir + m[len("torch.") :].replace(".", "/"))
+        for m in NGB_SUPPRESS_INLINELIST
+    }
+
+
+def is_ngb_suppressed_inline(filename: str) -> bool:
+    return any(filename.startswith(d) for d in get_ngb_suppress_inlinelist())
+
+
+@functools.cache
 def dynamo_dir() -> str | None:
     import torch._dynamo
 
@@ -4304,4 +4334,5 @@ def clear_lru_cache() -> None:
     torch._dynamo.trace_rules.get_tensor_method.cache_clear()
     torch._dynamo.trace_rules.get_legacy_mod_inlinelist.cache_clear()
     torch._dynamo.trace_rules.get_mod_inlinelist.cache_clear()
+    torch._dynamo.trace_rules.get_ngb_suppress_inlinelist.cache_clear()
     torch._dynamo.trace_rules.dynamo_dir.cache_clear()
