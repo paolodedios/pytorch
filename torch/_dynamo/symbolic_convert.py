@@ -2731,7 +2731,7 @@ class InstructionTranslatorBase(
             val = self.exn_vt_stack.get_topmost_exception()
             if not _exception_instance_check(val):
                 raise AssertionError(val)
-            self.do_raise(val, None)
+            self.do_raise(None, None)
         elif inst.arg == 1:
             # raise TOS
             val = self.stack[-1]  # type: ignore[assignment]
