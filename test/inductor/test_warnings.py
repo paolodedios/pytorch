@@ -7,6 +7,10 @@ import torch
 import torch._inductor.compile_fx as inductor_compile_fx
 import torch._inductor.fx_passes.fuse_attention as fuse_attention
 from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.logging_utils import logs_to_string
+
+
+TF32_ADVISORY = "TensorFloat32 tensor cores for float32 matrix multiplication available but not enabled."
 
 
 def _has_cuda_sm80() -> bool:
@@ -28,7 +32,8 @@ class InductorWarningTests(TestCase):
             torch._dynamo.reset()
 
             x = torch.eye(2, device="cuda")
-            with warnings.catch_warnings(record=True) as caught:
+            log_stream, ctx = logs_to_string("torch._inductor.compile_fx", "perf_hints")
+            with ctx(), warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("ignore")
                 warnings.simplefilter("always", UserWarning)
                 actual = torch.compile(
@@ -38,6 +43,7 @@ class InductorWarningTests(TestCase):
 
             self.assertEqual(actual, x)
             self.assertEqual([str(w.message) for w in caught], [])
+            self.assertIn(TF32_ADVISORY, log_stream.getvalue())
         finally:
             torch.set_float32_matmul_precision(orig_matmul_precision)
             torch.backends.cuda.matmul.fp32_precision = orig_cuda_precision
@@ -51,12 +57,16 @@ class InductorWarningTests(TestCase):
             torch.set_float32_matmul_precision("highest")
             fuse_attention._warn_tf32_disabled.cache_clear()
 
-            with warnings.catch_warnings(record=True) as caught:
+            log_stream, ctx = logs_to_string(
+                "torch._inductor.fx_passes.fuse_attention", "perf_hints"
+            )
+            with ctx(), warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("ignore")
                 warnings.simplefilter("always", UserWarning)
                 fuse_attention._warn_tf32_disabled()
 
             self.assertEqual([str(w.message) for w in caught], [])
+            self.assertIn(TF32_ADVISORY, log_stream.getvalue())
         finally:
             torch.set_float32_matmul_precision(orig_matmul_precision)
             torch.backends.cuda.matmul.fp32_precision = orig_cuda_precision
