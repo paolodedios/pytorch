@@ -88,11 +88,13 @@ from .lists import (
 )
 from .misc import NullVariable, StringFormatVariable
 from .object_protocol import (
+    _NO_DEFAULT,
     binary_iop,
     binary_op,
     generic_abs,
     generic_bool,
     generic_float,
+    generic_getattr,
     generic_getiter,
     generic_hash,
     generic_inplace_multiply,
@@ -348,7 +350,7 @@ class BaseBuiltinVariable(VariableTracker):
     def getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
-        from .misc import BoundMethodVariable
+        from .misc import CallMethodVariable
 
         source = self.source and AttrSource(self.source, name)
         try:
@@ -356,7 +358,7 @@ class BaseBuiltinVariable(VariableTracker):
         except AttributeError:
             raise_observed_exception(AttributeError, tx)
         if callable(attr):
-            return BoundMethodVariable(self, name, source=source)
+            return CallMethodVariable(self, name, source=source)
         return VariableTracker.build(tx, attr, source)
 
     def call_obj_hasattr(
@@ -2420,7 +2422,7 @@ class BuiltinVariable(BaseBuiltinVariable):
     def getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
-        from .misc import BoundMethodVariable
+        from .misc import CallMethodVariable
 
         source = self.source and AttrSource(self.source, name)
         if name == "__name__":
@@ -2430,7 +2432,7 @@ class BuiltinVariable(BaseBuiltinVariable):
         except AttributeError:
             raise_observed_exception(AttributeError, tx)
         if callable(attr):
-            return BoundMethodVariable(self, name, source=source)
+            return CallMethodVariable(self, name, source=source)
         return VariableTracker.build(tx, attr, source)
 
     def call_delattr(
@@ -3120,8 +3122,6 @@ class GetAttrBuiltinVariable(BaseBuiltinVariable):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        from .object_protocol import _NO_DEFAULT, generic_getattr
-
         obj = args[0]
         name_var = args[1]
         default = args[2] if len(args) > 2 else _NO_DEFAULT

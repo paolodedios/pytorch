@@ -932,7 +932,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         self.assertTrue(result)
 
     def test_bmv_load_then_call(self):
-        """Load a method into a variable, then call it through BMV."""
+        """Load a method into a variable, then call it through CMV."""
 
         def fn():
             r = range(10)
@@ -943,14 +943,14 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(result, 1)
 
     def test_bmv_defers_graph_break_to_call_time(self):
-        """BoundMethodVariable defers graph breaks from LOAD_ATTR to CALL.
+        """CallMethodVariable defers graph breaks from LOAD_ATTR to CALL.
 
         When a method exists on the type (MRO walk finds it) but the VT's
-        call_method doesn't handle it, BMV is returned at load time and
+        call_method doesn't handle it, CMV is returned at load time and
         the graph break happens at call time, not at attribute access time.
         """
 
-        # Loading the method succeeds (BMV returned, no graph break).
+        # Loading the method succeeds (CMV returned, no graph break).
         @torch.compile(backend="eager", fullgraph=True)
         def fn_load(x):
             r = range(10)
@@ -971,16 +971,16 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         with self.assertRaises(torch._dynamo.exc.Unsupported):
             torch.compile(fn_call, backend="eager", fullgraph=True)(x)
 
-    # --- ConstantVariable: trampoline methods (format/join have call_method) ---
+    # --- ConstantVariable: CallMethodVariable (format/join have call_method) ---
 
-    def test_str_format_via_trampoline(self):
+    def test_str_format_via_bound_method(self):
         def fn():
             return "hello {}".format("world")
 
         result = torch.compile(fn, backend="eager", fullgraph=True)()
         self.assertEqual(result, "hello world")
 
-    def test_str_join_via_trampoline(self):
+    def test_str_join_via_bound_method(self):
         def fn():
             return ", ".join(["a", "b", "c"])
 
@@ -1360,7 +1360,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(result, torch.tensor(2))
         self.assertFalse(hasattr(MyClass, "y"))
 
-    # --- Explicit comparison dunder access (BoundMethodVariable) ---
+    # --- Explicit comparison dunder access (CallMethodVariable) ---
 
     def test_function_explicit_dunder_eq(self):
         """Accessing __eq__ on a function and calling it routes through call_method."""
@@ -1475,10 +1475,10 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager", fullgraph=True)(len)
         self.assertTrue(result)
 
-    # --- Eager attribute resolution (VT.build / BoundMethodVariable) ---
+    # --- Eager attribute resolution (VT.build / CallMethodVariable) ---
 
     def test_autograd_function_apply_alias(self):
-        """Aliased autograd Function.apply routes through BoundMethodVariable."""
+        """Aliased autograd Function.apply routes through CallMethodVariable."""
 
         class MyFunc(torch.autograd.Function):
             @staticmethod
@@ -1527,7 +1527,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(result, "builtins")
 
     def test_builtin_callable_attr_as_constant(self):
-        """Callable builtin attribute accessible as python constant via MTV."""
+        """Callable builtin attribute accessible as python constant via BMV."""
 
         def fn():
             return len.__class__
@@ -1569,10 +1569,10 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager", fullgraph=True)()
         self.assertEqual(result, (MyBase,))
 
-    # --- bound tensor methods (MTV replacement) ---
+    # --- bound tensor methods (via CallMethodVariable) ---
 
     def test_bound_tensor_method_call(self):
-        """Bound tensor method dispatches through MTV's call_function."""
+        """Bound tensor method dispatches through BMV's call_function."""
 
         def fn(x):
             return x.add(x)
@@ -1592,7 +1592,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager", fullgraph=True)(x)
         self.assertEqual(result, x * x)
 
-    # --- UDCV metaclass non-data descriptor (MTV replacement) ---
+    # --- UDCV metaclass non-data descriptor (via CallMethodVariable) ---
 
     def test_metaclass_function_method_call(self):
         """FunctionType on metaclass is resolved by _resolve_descriptor_get."""
@@ -1612,7 +1612,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
 
     def test_metaclass_builtin_callable_attr(self):
         """BuiltinFunctionType on metaclass falls through _resolve_descriptor_get
-        to the callable MTV path."""
+        to the callable BMV path."""
 
         class Meta(type):
             action = len
@@ -1641,11 +1641,11 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager", fullgraph=True)()
         self.assertEqual(result, "default")
 
-    # --- UDCV C-level method descriptor (MTV replacement) ---
+    # --- UDCV C-level method descriptor (via CallMethodVariable) ---
 
     def test_inherited_dunder_get_descriptor(self):
         """__get__ inherited from a C parent bypasses WrapperDescriptorVariable
-        (name exclusion) and reaches the ismethoddescriptor MTV fallback."""
+        (name exclusion) and reaches the ismethoddescriptor BMV fallback."""
 
         class MyProp(property):
             pass
@@ -1668,7 +1668,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
             torch.compile(fn, backend="eager", fullgraph=True)()
 
     def test_autograd_function_apply_call(self):
-        """AutogradFunctionVariable.apply resolves via getattro_impl MTV."""
+        """AutogradFunctionVariable.apply resolves via getattro_impl BMV."""
 
         class MyFunc(torch.autograd.Function):
             @staticmethod
@@ -1686,8 +1686,8 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager", fullgraph=True)(x)
         self.assertEqual(result, x * 2)
 
-    def test_tensor_subclass_method_via_trampoline(self):
-        """Tensor subclass methods not in all_tensor_attrs resolve via MTV."""
+    def test_tensor_subclass_method_via_bound_method(self):
+        """Tensor subclass methods not in all_tensor_attrs resolve via BMV."""
         import torch.nested
 
         def fn(values, offsets):

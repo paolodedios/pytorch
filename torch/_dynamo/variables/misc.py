@@ -7,7 +7,7 @@ Key classes include:
 - SuperVariable: Handles super() calls and method resolution
 - ExceptionVariable: Tracks exception objects
 - RandomVariable: Manages random number generators
-- BoundMethodVariable: Bridges getattro_impl to call_method dispatch
+- CallMethodVariable: Bridges getattro_impl to call_method dispatch
 - MethodWrapperVariable: Handles method wrappers
 - PythonModuleVariable: Tracks Python modules
 - NumpyVariable: Handles numpy functions and types
@@ -193,7 +193,7 @@ class SuperVariable(VariableTracker):
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
         # Check if getattr is a constant. If not, delay the actual work by
-        # wrapping the result in BoundMethodVariable. Mostly super is
+        # wrapping the result in CallMethodVariable. Mostly super is
         # called with a method, so the work is delayed to call_function.
         #
         # We could have just implemented a const_getattr. However, super is
@@ -202,7 +202,7 @@ class SuperVariable(VariableTracker):
         # not just AttrSource).
         value, source = self._resolved_getattr_and_source(tx, name)
         if not variables.ConstantVariable.is_literal(value):
-            return BoundMethodVariable(self, name)
+            return CallMethodVariable(self, name)
         if source:
             install_guard(source.make_guard(GuardBuilder.CONSTANT_MATCH))
         return variables.ConstantVariable.create(value, source=source)
@@ -918,7 +918,7 @@ class AutogradFunctionVariable(VariableTracker):
     ) -> "VariableTracker":
         if name in ("apply", "backward"):
             source = self.source and AttrSource(self.source, name)
-            return BoundMethodVariable(self, name, source=source)
+            return CallMethodVariable(self, name, source=source)
         return super().getattro_impl(tx, name)
 
     def _resolve_kwargs(
@@ -1433,7 +1433,7 @@ class LambdaVariable(VariableTracker):
         return self.fn(*args, **kwargs)
 
 
-class BoundMethodVariable(VariableTracker):
+class CallMethodVariable(VariableTracker):
     """A method bound to a VT instance.
 
     Returned by object_generic_getattr when the MRO walk finds a method
@@ -1622,7 +1622,7 @@ class TypingVariable(VariableTracker):
         from .builder import SourcelessBuilder, VariableBuilder
 
         if name in cmp_name_to_op_mapping:
-            return BoundMethodVariable(self, name)
+            return CallMethodVariable(self, name)
 
         if tx.output.side_effects.has_pending_mutation_of_attr(self, name):
             return tx.output.side_effects.load_attr(self, name)
@@ -2265,7 +2265,7 @@ class ConstantLikeVariable(VariableTracker):
         if variables.ConstantVariable.is_literal(result):
             return VariableTracker.build(tx, result)
         if callable(result):
-            return BoundMethodVariable(self, name)
+            return CallMethodVariable(self, name)
         return VariableTracker.build(tx, result)
 
 

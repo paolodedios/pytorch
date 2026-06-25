@@ -480,9 +480,9 @@ class TensorVariable(VariableTracker):
         # but unfortunately id(real_value.__self__) is not id(<original value>)
         if is_bound_tensor_method(real_value):
             # No need to install the guard because its a bound tensor method
-            from .misc import BoundMethodVariable
+            from .misc import CallMethodVariable
 
-            return BoundMethodVariable(self, name, source=attr_source)
+            return CallMethodVariable(self, name, source=attr_source)
 
         install_guard(
             self.source.make_guard(functools.partial(GuardBuilder.HASATTR, attr=name))
@@ -746,9 +746,9 @@ class TensorVariable(VariableTracker):
         if result is None:
             static_attr = all_tensor_attrs.get(name, None)
             if static_attr is not None and callable(static_attr):
-                from .misc import BoundMethodVariable
+                from .misc import CallMethodVariable
 
-                return BoundMethodVariable(
+                return CallMethodVariable(
                     self, name, source=self.source and AttrSource(self.source, name)
                 )
             # For tensor subclasses, check the actual type for methods
@@ -756,9 +756,9 @@ class TensorVariable(VariableTracker):
             if self.class_type is not torch.Tensor:
                 subclass_attr = getattr(self.class_type, name, None)
                 if subclass_attr is not None and callable(subclass_attr):
-                    from .misc import BoundMethodVariable
+                    from .misc import CallMethodVariable
 
-                    return BoundMethodVariable(
+                    return CallMethodVariable(
                         self,
                         name,
                         source=self.source and AttrSource(self.source, name),
@@ -3133,9 +3133,9 @@ class NumpyNdarrayVariable(TensorVariable):
         if result is None:
             attr = getattr(np.ndarray, name, None)
             if attr is not None and callable(attr):
-                from .misc import BoundMethodVariable
+                from .misc import CallMethodVariable
 
-                return BoundMethodVariable(
+                return CallMethodVariable(
                     self, name, source=self.source and AttrSource(self.source, name)
                 )
             raise NotImplementedError

@@ -34,7 +34,6 @@ import sys
 import threading
 import traceback
 import types
-import unittest
 import warnings
 import weakref
 from collections.abc import Callable, Iterable, Sequence
@@ -112,7 +111,12 @@ from .base import (
 )
 from .dicts import ConstDictVariable, pydict_check
 from .hashable import HashableTracker
-from .object_protocol import is_nb_not_implemented, type_implements_nb_slot
+from .object_protocol import (
+    _resolve_descriptor_get,
+    is_nb_not_implemented,
+    mro_lookup,
+    type_implements_nb_slot,
+)
 from .sets import SetVariable
 
 
@@ -421,8 +425,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
 
     def lookup_cls_mro_attr(self, name: str) -> object:
         """Walk cls.__mro__ only (not the metaclass chain) to find *name*."""
-        from .object_protocol import mro_lookup
-
         return mro_lookup(self.value, name)
 
     def get_source_by_walking_mro(
@@ -470,8 +472,6 @@ class UserDefinedClassVariable(UserDefinedVariable):
 
     def lookup_metaclass_attr(self, name: str) -> object:
         """Walk type(cls).__mro__ (the metaclass chain) to find *name*."""
-        from .object_protocol import mro_lookup
-
         return mro_lookup(type(self.value), name)
 
     def bool_impl(
@@ -571,15 +571,13 @@ class UserDefinedClassVariable(UserDefinedVariable):
         # produce a bound method. Callable fallbacks get MTV (routes
         # call_function through call_method); non-callable get VT.build.
         if meta_attr is not NO_SUCH_SUBOBJ:
-            from .object_protocol import _resolve_descriptor_get
-
             metacls_source = TypeSource(self.source) if self.source else None
             metacls_vt = VariableTracker.build(tx, type(self.value), metacls_source)
             result = _resolve_descriptor_get(tx, meta_attr, self, metacls_vt, source)
             if result is not None:
                 return result
             if callable(meta_attr):
-                return variables.BoundMethodVariable(self, name, source=source)
+                return variables.CallMethodVariable(self, name, source=source)
             return VariableTracker.build(tx, meta_attr, source)
 
         # __getattr__ on metaclass (not part of type_getattro proper —
@@ -704,7 +702,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if name in cmp_name_to_op_mapping and not isinstance(
             cls_attr, types.FunctionType
         ):
-            return variables.BoundMethodVariable(self, name, source=source)
+            return variables.CallMethodVariable(self, name, source=source)
 
         # wrapperdescr_get/method_get with obj=NULL returns the
         # descriptor itself.
@@ -758,7 +756,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
                 )
             ):
                 return VariableTracker.build(tx, cls_attr, source)
-            return variables.BoundMethodVariable(self, name, source=source)
+            return variables.CallMethodVariable(self, name, source=source)
 
         # Everything else: FunctionType, etc.
         return VariableTracker.build(tx, cls_attr, source)
@@ -774,9 +772,9 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if name == "__new__" and UserDefinedClassVariable.is_supported_new_method(
             cls_attr
         ):
-            return variables.BoundMethodVariable(self, name, source=source)
+            return variables.CallMethodVariable(self, name, source=source)
         if self.value is collections.OrderedDict:
-            return variables.BoundMethodVariable(self, name)
+            return variables.CallMethodVariable(self, name)
         return VariableTracker.build(tx, cls_attr, source)
 
     def invoke_cls_descriptor_get(
@@ -2839,7 +2837,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             if not isinstance(
                 method_var,
                 (
-                    variables.BoundMethodVariable,
+                    variables.CallMethodVariable,
                     variables.MethodWrapperVariable,
                 ),
             ):
@@ -3199,7 +3197,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
         """
         if name in self._subobj_from_class:
             return self._subobj_from_class[name]
-        from .object_protocol import mro_lookup
 
         result = mro_lookup(type(self.value), name)
         self._subobj_from_class[name] = result
@@ -3418,26 +3415,6 @@ class UserDefinedObjectVariable(UserDefinedVariable):
     def getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
-        if (
-            issubclass(self.value.__class__, unittest.TestCase)
-            and config.enable_trace_unittest
-            and name
-            in (
-                "assertNotWarns",
-                "assertWarnsRegex",
-                "assertWarns",
-            )
-        ):
-            unimplemented(
-                gb_type="Failed to trace unittest method",
-                context=f"function: unittest.TestCase.{name}",
-                explanation=f"Dynamo does not know how to trace unittest method `{name}` ",
-                hints=[
-                    f"Avoid calling `TestCase.{name}`. "
-                    "Please report an issue to PyTorch.",
-                ],
-            )
-
         if self._object_has_getattribute:
             getattribute_fn = inspect.getattr_static(
                 type(self.value), "__getattribute__"
@@ -3642,7 +3619,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
             torch._C._dynamo.utils.is_instancemethod(type_attr)  # type: ignore[attr-defined]
             or is_cython_function(type_attr)
         ):
-            return variables.BoundMethodVariable(self, name, source=source)
+            return variables.CallMethodVariable(self, name, source=source)
 
         # Plain class variable (or MethodType, C-level non-data descriptor
         # without __get__, etc.).
