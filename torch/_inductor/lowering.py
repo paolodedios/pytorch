@@ -9020,10 +9020,12 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
 
     # TODO: if control_deps ever wraps ops that truly mutate a pass-through
     # (not just ordering), this needs MutationOutput instead of OrderingOutput.
-    input_ids = OrderedSet([id(a) for a in args])
+    input_names = OrderedSet(
+        a.get_name() for a in args if isinstance(a, IRNode) and a.get_name() is not None
+    )
 
     def _add_passthrough_ordering(val, op):
-        if id(val) not in input_ids or not isinstance(val, IRNode):
+        if not isinstance(val, IRNode) or val.get_name() not in input_names:
             return
         val.realize()
         op.mutation_outputs.append(
