@@ -5,7 +5,7 @@ import inspect
 import re
 import sys
 import weakref
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Sequence
 from typing import Any, overload, TYPE_CHECKING, TypeVar, Union
 from typing_extensions import deprecated, ParamSpec
 
@@ -668,7 +668,7 @@ def _del_library(
 
 
 @contextlib.contextmanager
-def _scoped_library(*args, **kwargs):
+def _scoped_library(*args, **kwargs) -> Generator[Library, None, None]:
     try:
         lib = Library(*args, **kwargs)
         yield lib
