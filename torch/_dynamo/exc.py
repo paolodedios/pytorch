@@ -510,15 +510,6 @@ def raise_observed_exception(
         tx, args_, kwargs or {}
     )
     tx.do_raise(exception_vt, None)
-    # if not isinstance(exception_vt, ExceptionVals):
-    #     raise AssertionError(f"expected ExceptionVals, got {type(exception_vt)}")
-    # tx._attach_traceback_to_exception(exception_vt)
-    # tx.set_exception_obj(exception_vt, None)  # type: ignore[arg-type]
-    # raised_exc = get_dynamo_observed_exception(exc_type)
-    # # Store the original exception arguments for better error messages
-    # if args:
-    #     raise raised_exc(*args_)
-    # raise raised_exc
 
 
 def raise_type_error(tx: InstructionTranslatorBase, msg: str) -> NoReturn:

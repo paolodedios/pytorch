@@ -1252,13 +1252,15 @@ class BytecodeDispatchTableMeta(type):
         cls.dispatch_table = [dispatch_table.get(i) for i in range(2**8)]
 
 
-def _exception_class_check(val: VariableTracker) -> TypeIs[ExceptionTypes]:
+def pyexception_class_check(val: VariableTracker) -> TypeIs[ExceptionTypes]:
+    # Mirror's CPython PyExceptionClass_Check
     return isinstance(
         val, (variables.BuiltinVariable, UserDefinedExceptionClassVariable)
     )
 
 
-def _exception_instance_check(val: VariableTracker) -> TypeIs[ExceptionVals]:
+def pyexception_instance_check(val: VariableTracker) -> TypeIs[ExceptionVals]:
+    # Mirror's CPython PyExceptionInstance_Check
     return isinstance(
         val, (variables.ExceptionVariable, UserDefinedExceptionObjectVariable)
     )
@@ -2590,7 +2592,7 @@ class InstructionTranslatorBase(
                     self,
                     f"calling {type_name} should have returned an instance of BaseException, not {val.python_type_name()}",
                 )
-        if not _exception_instance_check(val):
+        if not pyexception_instance_check(val):
             raise AssertionError("expected _exception_instance_check(val) to be true")
         return val
 
@@ -2610,7 +2612,7 @@ class InstructionTranslatorBase(
 
         if (
             value
-            and _exception_instance_check(value)
+            and pyexception_instance_check(value)
             and issubclass(value.exc_type, exception.fn)
         ):
             instance = value
@@ -2660,6 +2662,7 @@ class InstructionTranslatorBase(
         cause: VariableTracker | None,
     ) -> NoReturn:
         # Mirrors CPython's `do_raise`
+        # https://github.com/python/cpython/blob/704c4c79e8485c20fb59cea1acec005f365a4fca/Python/ceval.c#L1900
 
         # User can raise exception in 3 ways
         #   1) raise
@@ -2678,10 +2681,10 @@ class InstructionTranslatorBase(
             self._raise_observed_exception(val)
 
         # normalize type/value
-        if _exception_class_check(val):
+        if pyexception_class_check(val):
             type_ = val
             value = self._create_exception_instance(val)
-        elif _exception_instance_check(val):
+        elif pyexception_instance_check(val):
             value = val
             type_ = VariableTracker.build(self, val.python_type())
         else:
@@ -2690,9 +2693,9 @@ class InstructionTranslatorBase(
 
         # normalize cause (`raise <val> from <cause>`)
         if cause:
-            if _exception_class_check(cause):
+            if pyexception_class_check(cause):
                 fixed_cause = self._create_exception_instance(cause)
-            elif _exception_instance_check(cause) or cause.is_constant_none():
+            elif pyexception_instance_check(cause) or cause.is_constant_none():
                 fixed_cause = cause
             else:
                 exc.raise_type_error(
@@ -2729,7 +2732,7 @@ class InstructionTranslatorBase(
             if not len(self.exn_vt_stack):
                 raise AssertionError("expected len(self.exn_vt_stack) to be true")
             val = self.exn_vt_stack.get_topmost_exception()
-            if not _exception_instance_check(val):
+            if not pyexception_instance_check(val):
                 raise AssertionError(val)
             self.do_raise(None, None)
         elif inst.arg == 1:
@@ -2768,7 +2771,7 @@ class InstructionTranslatorBase(
         if sys.version_info >= (3, 11):
             # RERAISE is currently supported in a narrow case of `raise ... from None`
             val = self.pop()
-            if not _exception_instance_check(val):
+            if not pyexception_instance_check(val):
                 raise AssertionError(
                     "expected _exception_instance_check(val) to be true"
                 )
@@ -2785,7 +2788,7 @@ class InstructionTranslatorBase(
             _exc = self.pop()
             val = self.pop()
             _tb = self.pop()
-            if not _exception_instance_check(val):
+            if not pyexception_instance_check(val):
                 raise AssertionError(
                     "expected _exception_instance_check(val) to be true"
                 )
@@ -2809,7 +2812,7 @@ class InstructionTranslatorBase(
                 raise AssertionError("expected len(self.stack) >= fn_loc to be true")
             fn = self.stack[-fn_loc]
             val = self.stack[-1]
-            if not _exception_instance_check(val):
+            if not pyexception_instance_check(val):
                 raise AssertionError(
                     "expected _exception_instance_check(val) to be true"
                 )
@@ -2827,7 +2830,7 @@ class InstructionTranslatorBase(
                 raise AssertionError("expected len(self.stack) >= 7 to be true")
             fn = self.stack[-7]
             val = self.stack[-2]
-            if not _exception_instance_check(val):
+            if not pyexception_instance_check(val):
                 raise AssertionError(
                     "expected _exception_instance_check(val) to be true"
                 )
@@ -3065,7 +3068,7 @@ class InstructionTranslatorBase(
             )
 
         if sys.version_info >= (3, 11):
-            if not _exception_instance_check(exc_instance):
+            if not pyexception_instance_check(exc_instance):
                 unimplemented(
                     gb_type="Caught non-Exception value",
                     context=str(exc_instance),
@@ -3095,7 +3098,7 @@ class InstructionTranslatorBase(
                     explanation=f"`except ...` expects a non-type: {expected_type}.",
                     hints=[*graph_break_hints.USER_ERROR],
                 )
-            if _exception_instance_check(exc_instance) and issubclass(
+            if pyexception_instance_check(exc_instance) and issubclass(
                 exc_instance.exc_type,  # type: ignore[union-attr]
                 expected_type.fn,  # type: ignore[attr-defined]
             ):
@@ -4417,7 +4420,7 @@ class InstructionTranslatorBase(
         # https://github.com/python/cpython/pull/99006
         # https://github.com/python/cpython/commit/28187141cc34063ef857976ddbca87ba09a882c2
         val = self.stack[-1]
-        if not _exception_instance_check(val):
+        if not pyexception_instance_check(val):
             raise AssertionError(
                 f"expected _exception_instance_check(val) to be true, got {val}"
             )
