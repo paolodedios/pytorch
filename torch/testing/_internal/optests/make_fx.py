@@ -60,16 +60,18 @@ def make_fx_cpp_fake(f, tracing_mode, decomposition_table=None, **kwargs):
     symbolic = tracing_mode == "symbolic"
 
     def wrapped(*args):
-        with cpp_fake_tensor_mode():
+        with cpp_fake_tensor_mode() as shape_env:
             if symbolic:
                 args = pytree.tree_map_only(torch.Tensor, to_cpp_fake_symbolic, args)
                 with enable_python_dispatcher():
-                    return make_fx(
+                    gm = make_fx(
                         f,
                         decomposition_table=decomposition_table,
                         tracing_mode="real",
                         **kwargs,
                     )(*args)
+                gm.shape_env = shape_env
+                return gm
             return make_fx(
                 f,
                 decomposition_table=decomposition_table,

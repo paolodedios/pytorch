@@ -9,160 +9,12 @@
 #include <torch/library.h>
 
 #include <algorithm>
-#include <array>
-#include <atomic>
-#include <chrono>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
-#include <iostream>
 #include <string>
 #include <unordered_set>
 #include <utility>
 
 namespace {
-
-// Per-phase timing for the fake fallback, gated by env vars so it is fully
-// zero-cost when disabled:
-//   FAKE_FALLBACK_TIMING=1        enable aggregate timing (dumped at exit)
-//   FAKE_FALLBACK_TIMING_OP=...   restrict timing to a single op (e.g. aten::mm)
-enum FallbackPhase {
-  PHASE_HAS_SYMINTS = 0,
-  PHASE_COLLECT_FAKE_ARGS,
-  PHASE_LIFT_OR_NUMBERS,
-  PHASE_VALIDATE_CONVERT,
-  PHASE_CONST_PROP,
-  PHASE_INVALIDATE_CONSTANTS,
-  PHASE_FIND_COMMON_DEVICE,
-  PHASE_SYMINT_DECOMP,
-  PHASE_PRIMS_META,
-  PHASE_OP_IMPL,
-  PHASE_META_KERNEL,
-  PHASE_UNSAFE_FALLBACK,
-  PHASE_TOTAL,
-  NUM_FALLBACK_PHASES,
-};
-
-const char* fallback_phase_name(int p) {
-  switch (p) {
-    case PHASE_HAS_SYMINTS:
-      return "has_symbolic_sizes";
-    case PHASE_COLLECT_FAKE_ARGS:
-      return "collect_fake_args";
-    case PHASE_LIFT_OR_NUMBERS:
-      return "lift/numbers_branch";
-    case PHASE_VALIDATE_CONVERT:
-      return "validate_and_convert";
-    case PHASE_CONST_PROP:
-      return "constant_prop";
-    case PHASE_INVALIDATE_CONSTANTS:
-      return "invalidate_constants";
-    case PHASE_FIND_COMMON_DEVICE:
-      return "find_common_device";
-    case PHASE_SYMINT_DECOMP:
-      return "symint_decomp";
-    case PHASE_PRIMS_META:
-      return "prims_meta";
-    case PHASE_OP_IMPL:
-      return "fake_try_op_impl(py)";
-    case PHASE_META_KERNEL:
-      return "meta_kernel";
-    case PHASE_UNSAFE_FALLBACK:
-      return "unsafe_fallback";
-    case PHASE_TOTAL:
-      return "TOTAL";
-    default:
-      return "?";
-  }
-}
-
-struct FallbackTiming {
-  std::array<std::atomic<uint64_t>, NUM_FALLBACK_PHASES> ns{};
-  std::array<std::atomic<uint64_t>, NUM_FALLBACK_PHASES> calls{};
-  bool enabled = false;
-  bool has_filter = false;
-  std::string op_filter;
-
-  FallbackTiming() {
-    const char* e = std::getenv("FAKE_FALLBACK_TIMING");
-    enabled = e != nullptr && std::string(e) != "0";
-    const char* f = std::getenv("FAKE_FALLBACK_TIMING_OP");
-    if (f != nullptr) {
-      has_filter = true;
-      op_filter = f;
-    }
-  }
-
-  void add(int p, uint64_t n) {
-    ns[p].fetch_add(n, std::memory_order_relaxed);
-    calls[p].fetch_add(1, std::memory_order_relaxed);
-  }
-
-  ~FallbackTiming() {
-    if (!enabled)
-      return;
-    uint64_t total = ns[PHASE_TOTAL].load();
-    fprintf(stderr, "\n===== C++ FakeTensor fallback timing");
-    if (has_filter)
-      fprintf(stderr, " (op=%s)", op_filter.c_str());
-    fprintf(stderr, " =====\n");
-    fprintf(
-        stderr,
-        "%-24s %12s %10s %12s %7s\n",
-        "phase",
-        "total_ms",
-        "calls",
-        "avg_us",
-        "%tot");
-    std::array<int, NUM_FALLBACK_PHASES - 1> order{};
-    for (int i = 0; i < NUM_FALLBACK_PHASES - 1; ++i)
-      order[i] = i;
-    std::sort(order.begin(), order.end(), [&](int a, int b) {
-      return ns[a].load() > ns[b].load();
-    });
-    for (int idx : order) {
-      uint64_t n = ns[idx].load();
-      uint64_t c = calls[idx].load();
-      if (c == 0)
-        continue;
-      double pct = total ? 100.0 * static_cast<double>(n) / total : 0.0;
-      fprintf(
-          stderr,
-          "%-24s %12.3f %10llu %12.3f %6.1f%%\n",
-          fallback_phase_name(idx),
-          n / 1e6,
-          static_cast<unsigned long long>(c),
-          (n / 1e3) / c,
-          pct);
-    }
-    fprintf(
-        stderr,
-        "%-24s %12.3f %10llu\n",
-        fallback_phase_name(PHASE_TOTAL),
-        total / 1e6,
-        static_cast<unsigned long long>(calls[PHASE_TOTAL].load()));
-    fprintf(stderr, "=========================================\n");
-  }
-};
-
-FallbackTiming g_fallback_timing;
-
-struct ScopedFallbackTotal {
-  bool timed;
-  std::chrono::steady_clock::time_point start;
-  explicit ScopedFallbackTotal(bool t) : timed(t) {
-    if (timed)
-      start = std::chrono::steady_clock::now();
-  }
-  ~ScopedFallbackTotal() {
-    if (timed)
-      g_fallback_timing.add(
-          PHASE_TOTAL,
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now() - start)
-              .count());
-  }
-};
 
 // copied from fake_tensor.py _cpp_meta_supports_symint
 bool cpp_meta_supports_symint(const c10::OperatorHandle& op) {
@@ -264,13 +116,42 @@ bool has_symbolic_sizes(
   return false;
 }
 
+bool bypass_zero_dim_cpu_tensor_check(const c10::OperatorHandle& op) {
+  static const c10::OperatorHandle nextafter =
+      c10::Dispatcher::singleton().findSchemaOrThrow("aten::nextafter", "");
+  return op == nextafter;
+}
+
+// list of ops which can have args(tensor/tensorList) in mixed device
+bool mixed_device_fns(const c10::OperatorHandle& op) {
+  static const c10::OperatorHandle foreach_copy =
+      c10::Dispatcher::singleton().findSchemaOrThrow("aten::_foreach_copy", "");
+  return op == foreach_copy;
+}
+
+// These in-place ops keep the destination tensor's device even if the
+// rhs was explicitly constructed on meta.
+bool meta_rhs_mixed_device_fns(const c10::OperatorHandle& op) {
+  static const c10::OperatorHandle add_ =
+      c10::Dispatcher::singleton().findSchemaOrThrow("aten::add_", "Tensor");
+  return op == add_;
+}
+
 std::optional<c10::Device> _find_common_device(
+    const c10::OperatorHandle& op,
     torch::jit::Stack* stack,
     size_t begin,
     size_t num_arguments,
+    const std::shared_ptr<c10::FakeTensorMode>& mode,
     std::optional<std::pair<c10::Device, c10::Device>>& mismatch_out) {
   std::optional<c10::Device> common_device;
   bool is_cpu_zero_dim = false;
+  const bool is_bypass_zero_dim_cpu_tensor_check_op =
+      bypass_zero_dim_cpu_tensor_check(op);
+  const bool mixed_device = mixed_device_fns(op);
+  const bool meta_rhs_mixed_device = meta_rhs_mixed_device_fns(op);
+  const std::optional<std::string> prefer_device_type =
+      mode ? mode->prefer_device_type : std::nullopt;
 
   for_each_tensor(
       stack,
@@ -290,14 +171,45 @@ std::optional<c10::Device> _find_common_device(
             is_cpu_zero_dim = t_is_cpu_zero_dim;
           return std::nullopt;
         }
-        // current tensor is cpu 0-dim: defer to the existing device
-        if (t_is_cpu_zero_dim)
+        // mismatching devices !
+        // if current tensor is cpu 0 dim, defer to existing device
+        if (t_is_cpu_zero_dim && !is_bypass_zero_dim_cpu_tensor_check_op)
           return std::nullopt;
-        // existing device came from a cpu 0-dim tensor: overwrite with this one
-        if (is_cpu_zero_dim) {
+        // current device is from cpu 0 dim tensor, overwrite
+        if (is_cpu_zero_dim && !is_bypass_zero_dim_cpu_tensor_check_op) {
           common_device = t.device();
           is_cpu_zero_dim = false;
           return std::nullopt;
+        }
+
+        if (mixed_device &&
+            (common_device->is_cpu() || t.device().is_cpu())) {
+          return std::nullopt;
+        }
+
+        if (meta_rhs_mixed_device &&
+            (common_device->type() == c10::DeviceType::Meta ||
+             t.device().type() == c10::DeviceType::Meta)) {
+          return std::nullopt;
+        }
+        // if prefer_device_type is set, prefer that device type over others
+        if (prefer_device_type.has_value()) {
+          auto common_name = c10::DeviceTypeName(common_device->type(), true);
+          auto t_name = c10::DeviceTypeName(t.device().type(), true);
+          bool common_has_preferred =
+              common_name.find(*prefer_device_type) != std::string::npos;
+          bool t_has_preferred =
+              t_name.find(*prefer_device_type) != std::string::npos;
+          if (!common_has_preferred && t_has_preferred) {
+            // Switch to the preferred device type
+            common_device = t.device();
+            is_cpu_zero_dim = t_is_cpu_zero_dim;
+            return std::nullopt;
+          }
+          if (common_has_preferred && !t_has_preferred) {
+            // Keep the existing preferred device type
+            return std::nullopt;
+          }
         }
         // genuine mismatch of non-zero-dim tensors: record (don't raise)
         if (!mismatch_out.has_value())
@@ -366,22 +278,15 @@ void transmute_to_fake(
 
 // Takes a real tensor and creates a corresponding fake (meta) tensor
 // stamped with the original device.
-at::Tensor real_tensor_to_fake(
+at::Tensor from_real_tensor(
     const at::Tensor& t,
     const std::shared_ptr<c10::FakeTensorMode>& mode) {
-  auto original_device = t.device();
-  at::Tensor meta_t;
-  {
-    c10::impl::ExcludeDispatchKeyGuard guard{
-        c10::DispatchKeySet(c10::DispatchKey::Fake)};
-    meta_t = at::empty_strided(
-        t.sizes(), t.strides(), t.options().device(c10::DeviceType::Meta));
-  }
-  if (t.requires_grad()) {
-    meta_t.set_requires_grad(true);
-  }
-  transmute_to_fake(meta_t, original_device, mode);
-  return meta_t;
+  // Delegate to the mode's Python converter (to_meta_tensor) so storage
+  // memoization aliases the meta storage for real tensors that share storage
+  // (e.g. a constant tensor and its views).
+  (void)mode;
+  auto* interp = c10::impl::getGlobalPyInterpreter();
+  return at::Tensor((*interp)->to_meta_tensor(t.getIntrusivePtr()));
 }
 
 bool can_generate_trivial_fake_impl(const c10::FunctionSchema& schema) {
@@ -510,9 +415,10 @@ std::vector<at::Tensor> validate_and_convert_non_fake_tensors(
           // TODO: allow non fake inputs
           // TODO: if not allow non fake inputs checks
 
-          // TODO: change to call converter
-          // return converter.from_real_tensor(t);
-          auto out = real_tensor_to_fake(t, mode);
+          auto out = from_real_tensor(t, mode);
+          if (t.unsafeGetTensorImpl()->is_wrapped_number()) {
+            set_constant_on_mode(out, std::make_shared<at::Tensor>(t), mode);
+          }
           flat_arg_fake_tensors.push_back(out);
           return out;
         }
@@ -578,29 +484,26 @@ void maybe_run_unsafe_fallback(
       num_returns,
       [&](const at::Tensor& t) -> std::optional<at::Tensor> {
         if (t.defined() && !t.is_fake())
-          return real_tensor_to_fake(t, mode);
+          return from_real_tensor(t, mode);
         return std::nullopt;
       });
 }
 
-// Mirrors contains_tensor_types in fake_impls.py.
-bool type_contains_tensor(const c10::TypePtr& type) {
+bool contains_tensor_types(const c10::TypePtr& type) {
   if (type->isSubtypeOf(*c10::TensorType::get())) {
     return true;
   }
   for (const auto& contained : type->containedTypes()) {
-    if (type_contains_tensor(contained)) {
+    if (contains_tensor_types(contained)) {
       return true;
     }
   }
   return false;
 }
 
-// Mirrors _is_tensor_constructor in fake_impls.py: no tensor inputs and a
-// single tensor output.
-bool is_tensor_constructor(const c10::FunctionSchema& schema) {
+bool _is_tensor_constructor(const c10::FunctionSchema& schema) {
   for (const auto& arg : schema.arguments()) {
-    if (type_contains_tensor(arg.type())) {
+    if (contains_tensor_types(arg.type())) {
       return false;
     }
   }
@@ -620,13 +523,19 @@ bool may_have_op_impl(
       op.hasTag(at::Tag::data_dependent_output)) {
     return true;
   }
-  if (is_tensor_constructor(schema)) {
+  if (_is_tensor_constructor(schema)) {
     return true;
   }
   const auto& name = op.operator_name().name;
   return name.rfind("aten::_foreach_", 0) == 0 &&
       op.hasKernelForDispatchKey(c10::DispatchKey::Meta);
 }
+
+struct RestoreInactiveFakeMode {
+  ~RestoreInactiveFakeMode() {
+    c10::impl::FakeTensorModeTLS::reset_state();
+  }
+};
 
 void fakeFallback(
     const c10::OperatorHandle& op,
@@ -638,24 +547,26 @@ void fakeFallback(
 
   auto mode = c10::impl::FakeTensorModeTLS::get_state();
 
-  bool timed = g_fallback_timing.enabled &&
-      (!g_fallback_timing.has_filter ||
-       op.operator_name().name == g_fallback_timing.op_filter);
-  ScopedFallbackTotal scoped_total(timed);
-  auto tp_last = std::chrono::steady_clock::now();
-  auto checkpoint = [&](int phase) {
-    if (!timed)
-      return;
-    auto now = std::chrono::steady_clock::now();
-    g_fallback_timing.add(
-        phase,
-        std::chrono::duration_cast<std::chrono::nanoseconds>(now - tp_last)
-            .count());
-    tp_last = now;
-  };
+  // same as python FakeTensor dispatch re-entering FakeTensorMode dispatchs
+  std::optional<RestoreInactiveFakeMode> restore_fake_mode;
+  if (mode == nullptr) {
+    for_each_tensor(
+        stack,
+        arguments_begin,
+        num_arguments,
+        [&](const at::Tensor& t) -> std::optional<at::Tensor> {
+          if (mode == nullptr && t.defined() && t.is_fake()) {
+            mode = t.unsafeGetTensorImpl()->fake_tensor_mode();
+          }
+          return std::nullopt;
+        });
+    if (mode != nullptr) {
+      restore_fake_mode.emplace();
+      c10::impl::FakeTensorModeTLS::set_state(mode);
+    }
+  }
 
   bool has_symints = has_symbolic_sizes(stack, arguments_begin, num_arguments);
-  checkpoint(PHASE_HAS_SYMINTS);
 
   std::vector<at::Tensor> flat_arg_fake_tensors;
   for_each_tensor(
@@ -667,7 +578,6 @@ void fakeFallback(
           flat_arg_fake_tensors.push_back(t);
         return std::nullopt;
       });
-  checkpoint(PHASE_COLLECT_FAKE_ARGS);
 
   // skip constant prop for _to_copy when the input is already on meta device
   // TODO: implement avoiding_device_init (requires avoid_device_init on C++
@@ -697,15 +607,9 @@ void fakeFallback(
         [&](const at::Tensor& t) -> std::optional<at::Tensor> {
           if (!t.defined() || t.is_fake())
             return std::nullopt;
-          auto fake = real_tensor_to_fake(t, mode);
+          auto fake = from_real_tensor(t, mode);
           if (may_turn_const(t)) {
-            std::shared_ptr<at::Tensor> cloned;
-            {
-              c10::impl::ExcludeDispatchKeyGuard clone_guard{
-                  c10::DispatchKeySet(c10::DispatchKey::Fake)};
-              cloned = std::make_shared<at::Tensor>(t.clone());
-            }
-            set_constant_on_mode(fake, std::move(cloned), mode);
+            set_constant_on_mode(fake, std::make_shared<at::Tensor>(t), mode);
           }
           return fake;
         });
@@ -721,7 +625,7 @@ void fakeFallback(
         num_arguments,
         [&](const at::Tensor& t) -> std::optional<at::Tensor> {
           if (t.defined() && !t.is_fake())
-            return real_tensor_to_fake(t, mode);
+            return from_real_tensor(t, mode);
           return std::nullopt;
         });
     return;
@@ -731,11 +635,9 @@ void fakeFallback(
   // (requires access to torch::should_allow_numbers_as_tensors from Python
   // layer)
 
-  checkpoint(PHASE_LIFT_OR_NUMBERS);
 
   flat_arg_fake_tensors = validate_and_convert_non_fake_tensors(
       stack, arguments_begin, num_arguments, mode);
-  checkpoint(PHASE_VALIDATE_CONVERT);
 
   // constant prop, if every fake-tensor argument carries a backing
   // constant, run the real op on those constants
@@ -810,16 +712,15 @@ void fakeFallback(
             [&](const at::Tensor& t) -> std::optional<at::Tensor> {
               if (!may_turn_const(t))
                 return std::nullopt;
-              auto cloned = std::make_shared<at::Tensor>(t.clone());
-
+              auto constant = std::make_shared<at::Tensor>(t);
               auto memo_it = tensor_memo.find(t.unsafeGetTensorImpl());
               if (memo_it != tensor_memo.end()) {
                 auto& orig_fake = memo_it->second;
-                set_constant_on_mode(orig_fake, std::move(cloned), mode);
+                set_constant_on_mode(orig_fake, std::move(constant), mode);
                 return orig_fake;
               }
-              auto fake = real_tensor_to_fake(t, mode);
-              set_constant_on_mode(fake, std::move(cloned), mode);
+              auto fake = from_real_tensor(t, mode);
+              set_constant_on_mode(fake, std::move(constant), mode);
               return fake;
             });
         return;
@@ -846,7 +747,6 @@ void fakeFallback(
     }
   }
 
-  checkpoint(PHASE_CONST_PROP);
 
   // HOPs
   // this is already taken care of by adding @py_impl(DispatchKey.Fake) to all
@@ -856,7 +756,6 @@ void fakeFallback(
 
   invalidate_written_to_constants(
       op, stack, arguments_begin, num_arguments, flat_arg_fake_tensors, mode);
-  checkpoint(PHASE_INVALIDATE_CONSTANTS);
 
   // TODO: propagate_real_tensors
   /*if propagate_real_tensors {
@@ -866,8 +765,7 @@ void fakeFallback(
 
   std::optional<std::pair<c10::Device, c10::Device>> device_mismatch;
   auto common_device = _find_common_device(
-      stack, arguments_begin, num_arguments, device_mismatch);
-  checkpoint(PHASE_FIND_COMMON_DEVICE);
+      op, stack, arguments_begin, num_arguments, mode, device_mismatch);
 
   // doing this in place (talked about this at the beginning, richard thinks
   // this is ok)
@@ -875,9 +773,11 @@ void fakeFallback(
     if (device_mismatch.has_value()) {
       TORCH_CHECK(
           false,
-          "Unhandled FakeTensor device propagation: ",
+          "Unhandled FakeTensor Device Propagation for ",
+          c10::toString(op.operator_name()),
+          ", found two different devices ",
           device_mismatch->first,
-          " vs ",
+          ", ",
           device_mismatch->second);
     }
     if (!common_device.has_value()) {
@@ -927,7 +827,6 @@ void fakeFallback(
       return;
     }
   }
-  checkpoint(PHASE_SYMINT_DECOMP);
 
   // Prims: call prim_meta_impl directly via Python callback, matching
   // Python FakeTensorMode's `with self: func.prim_meta_impl(*args, **kwargs)`.
@@ -987,7 +886,6 @@ void fakeFallback(
       return;
     }
   }
-  checkpoint(PHASE_PRIMS_META);
 
   // TODO: profiles
 
@@ -1003,7 +901,6 @@ void fakeFallback(
   if (mode && interp && may_have_op_impl(op, schema, fake_op_key(), mode)) {
     bool op_impl_handled = (*interp)->fake_try_op_impl(
         op, stack, common_device.value_or(c10::Device(c10::DeviceType::CPU)));
-    checkpoint(PHASE_OP_IMPL);
     if (op_impl_handled) {
       return;
     }
@@ -1037,9 +934,7 @@ void fakeFallback(
     c10::impl::IncludeDispatchKeyGuard meta_guard(c10::DispatchKey::Meta);
     op.callBoxed(stack);
     wrap_meta_outputs_with_default_device_logic();
-    checkpoint(PHASE_META_KERNEL);
   } catch (...) {
-    checkpoint(PHASE_META_KERNEL);
     auto eptr = std::current_exception();
 
     // For NotImplementedError, try the unsafe fallback.
@@ -1053,7 +948,6 @@ void fakeFallback(
       }
       maybe_run_unsafe_fallback(
           op, stack, arguments_begin, num_arguments, has_symints, mode);
-      checkpoint(PHASE_UNSAFE_FALLBACK);
     }
   }
 }

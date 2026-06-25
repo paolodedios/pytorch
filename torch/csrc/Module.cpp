@@ -2439,6 +2439,22 @@ void cpp_fake_set_metadata(
   }
 }
 
+void cpp_fake_propagate_grad_dtype(
+    const at::Tensor& real,
+    const at::Tensor& meta) {
+  at::Tensor inner = real;
+  if (auto unwrapped = maybe_unwrap_functorch(real)) {
+    inner = *unwrapped;
+  }
+  if (!inner.requires_grad() || !inner.is_leaf() || !meta.is_leaf()) {
+    return;
+  }
+  auto grad_dtype = inner.grad_dtype();
+  if (!grad_dtype.has_value() || grad_dtype.value() != inner.scalar_type()) {
+    meta.set_grad_dtype(grad_dtype);
+  }
+}
+
 } // anonymous namespace
 
 extern "C" TORCH_PYTHON_API PyObject* initModule();
@@ -3174,7 +3190,7 @@ Call this whenever a new thread is created in order to propagate values from
   });
 
   py_module.def(
-      "_cpp_fake_from_tensor",
+      "from_tensor",
       [](const at::Tensor& real,
          const py::object& source,
          const py::object& symbolic_context) -> at::Tensor {
@@ -3200,11 +3216,24 @@ Call this whenever a new thread is created in order to propagate values from
         }
 
         cpp_fake_set_metadata(mode, real, meta_tensor);
+        cpp_fake_propagate_grad_dtype(real, meta_tensor);
         return meta_tensor;
       },
       py::arg("real"),
       py::arg("source") = py::none(),
       py::arg("symbolic_context") = py::none());
+
+  py_module.def(
+      "from_meta_and_device",
+      [](const at::Tensor& meta, c10::Device device) -> at::Tensor {
+        auto mode = c10::impl::FakeTensorModeTLS::get_state();
+        TORCH_CHECK(mode != nullptr, "No C++ FakeTensorMode is active");
+        meta.unsafeGetTensorImpl()->set_and_normalize_fake_device(device);
+        meta.unsafeGetTensorImpl()->set_fake_tensor_mode(mode);
+        return meta;
+      },
+      py::arg("meta"),
+      py::arg("device"));
 
   py_module.def("_get_active_cpp_fake_tensor_mode", []() -> py::object {
     auto mode = c10::impl::FakeTensorModeTLS::get_state();
@@ -3227,6 +3256,21 @@ Call this whenever a new thread is created in order to propagate values from
         mode->fake_mode_pyobj_->ptr(getPyInterpreter()));
   });
 
+  py_module.def("_get_fake_constant", [](const at::Tensor& t) -> py::object {
+    if (!t.defined() || !t.is_fake()) {
+      return py::none();
+    }
+    auto mode = t.unsafeGetTensorImpl()->fake_tensor_mode();
+    if (mode == nullptr) {
+      return py::none();
+    }
+    auto constant = mode->get_constant(t.unsafeGetTensorImpl());
+    if (!constant) {
+      return py::none();
+    }
+    return py::cast(*constant);
+  });
+
   py_module.def(
       "_create_cpp_fake_tensor_mode",
       [](const py::object& converter,
@@ -3239,6 +3283,14 @@ Call this whenever a new thread is created in order to propagate values from
                 shape_env.ptr(), getPyInterpreter()),
             std::make_shared<c10::SafePyObject>(
                 converter.ptr(), getPyInterpreter()));
+
+        auto functorch_config = py::module::import("torch._functorch.config");
+        mode->allow_meta_ =
+            functorch_config.attr("fake_tensor_allow_meta").cast<bool>();
+        if (auto prefer = functorch_config.attr("fake_tensor_prefer_device_type");
+            !prefer.is_none()) {
+          mode->prefer_device_type = prefer.cast<std::string>();
+        }
 
         auto keys = py::module::import("torch._subclasses.fake_impls")
                         .attr("_cpp_fake_dispatch_op_keys")()

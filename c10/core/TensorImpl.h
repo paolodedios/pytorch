@@ -247,6 +247,10 @@ struct C10_API FakeTensorMode {
   std::unordered_set<std::string> prim_meta_ops_;
   std::unordered_set<std::string> op_impl_ops_;
 
+  bool allow_meta_ = true;
+
+  std::optional<std::string> prefer_device_type = std::nullopt;
+
   FakeTensorMode(
       std::shared_ptr<c10::SafePyObject> shape_env,
       std::shared_ptr<c10::SafePyObject> converter)

@@ -159,6 +159,10 @@ struct NoopPyInterpreterVTable final : public PyInterpreterVTable {
       torch::jit::Stack* /*stack*/) const override {
     return false;
   }
+  c10::intrusive_ptr<TensorImpl> to_meta_tensor(
+      const c10::intrusive_ptr<TensorImpl>& /*real*/) const override {
+    PANIC(to_meta_tensor);
+  }
 };
 
 // Construct this in Global scope instead of within `disarm`

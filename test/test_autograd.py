@@ -4356,7 +4356,6 @@ class TestAutograd(TestCase):
 
             torch._dynamo.reset()
 
-            prev = torch.get_default_device()
             try:
                 # Using torch.device("cuda") directly doesn't work here because
                 # it has some issues. In particular, unlike set_default_device or
@@ -4367,7 +4366,7 @@ class TestAutograd(TestCase):
                 out = torch.utils.checkpoint.checkpoint(fn, x, use_reentrant=False)
                 out.sum().backward()
             finally:
-                torch.set_default_device(prev)
+                torch.set_default_device(None)
 
         with unittest.mock.patch("torch._dynamo.config.error_on_recompile", True):
             if expect_fail:
@@ -4378,22 +4377,13 @@ class TestAutograd(TestCase):
 
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA")
     def test_checkpoint_device_context_fn(self):
-        @contextlib.contextmanager
-        def apply_device(device):
-            try:
-                prev = torch.get_default_device()
-                torch.set_default_device(device)
-                yield
-            finally:
-                torch.set_default_device(prev)
-
         def context_fn():
-            return contextlib.nullcontext(), apply_device("cuda")
+            return contextlib.nullcontext(), torch.device("cuda")
 
         def fn(x):
             return x.sin().cos()
 
-        with apply_device("cuda"):
+        with torch.device("cuda"):
             a = torch.tensor(1.0, requires_grad=True)
             out = torch.utils.checkpoint.checkpoint(
                 fn, a, context_fn=context_fn, use_reentrant=False

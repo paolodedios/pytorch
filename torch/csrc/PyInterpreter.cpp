@@ -163,6 +163,8 @@ struct ConcretePyInterpreterVTable final
   bool fake_try_prim_meta(
       const c10::OperatorHandle& op,
       torch::jit::Stack* stack) const override;
+  c10::intrusive_ptr<c10::TensorImpl> to_meta_tensor(
+      const c10::intrusive_ptr<c10::TensorImpl>& real) const override;
 
   static ConcretePyInterpreterVTable* instance() {
     static ConcretePyInterpreterVTable s;
@@ -1114,6 +1116,28 @@ bool ConcretePyInterpreterVTable::fake_try_prim_meta(
   auto result = prim_meta_impl(*args_kwargs.first, **args_kwargs.second);
   pushPyOutToStack(op, stack, std::move(result), "prim_meta_impl");
   return true;
+}
+
+c10::intrusive_ptr<c10::TensorImpl> ConcretePyInterpreterVTable::to_meta_tensor(
+    const c10::intrusive_ptr<c10::TensorImpl>& real_impl) const {
+  py::gil_scoped_acquire gil;
+  at::Tensor real(real_impl);
+  auto mode = c10::impl::FakeTensorModeTLS::get_state();
+  TORCH_CHECK(mode != nullptr, "No C++ FakeTensorMode is active");
+  auto converter = py::reinterpret_borrow<py::object>(
+      mode->fake_tensor_converter_->ptr(getPyInterpreter()));
+
+  at::Tensor meta_tensor;
+  {
+    c10::impl::ExcludeDispatchKeyGuard exclude_fake(
+        {c10::DispatchKeySet(c10::DispatchKey::Fake)});
+    c10::impl::IncludeDispatchKeyGuard include_meta(c10::DispatchKey::Meta);
+    auto meta_obj = converter.attr("to_meta_tensor")(real);
+    meta_tensor = py::cast<at::Tensor>(meta_obj);
+  }
+  meta_tensor.unsafeGetTensorImpl()->set_and_normalize_fake_device(real.device());
+  meta_tensor.unsafeGetTensorImpl()->set_fake_tensor_mode(mode);
+  return meta_tensor.getIntrusivePtr();
 }
 
 PyInterpreterHolder self_interpreter;

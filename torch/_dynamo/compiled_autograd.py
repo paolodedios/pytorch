@@ -47,7 +47,7 @@ from torch._functorch._aot_autograd.runtime_wrappers import (
 from torch._guards import compile_context, CompileContext, CompileId, Source
 from torch._logging import getArtifactLogger, trace_structured
 from torch._prims_common import clone_preserve_strides
-from torch._subclasses import FakeTensorMode
+from torch._subclasses import CppFakeTensorMode, FakeTensorMode
 from torch._subclasses.fake_tensor import FakeTensor
 from torch.fx import GraphModule
 from torch.fx.experimental._backward_state import BackwardState
@@ -313,6 +313,16 @@ class AutogradCompilerInstance:
             allow_non_fake_inputs=True,
             shape_env=self.shape_env,
         )
+        self.cpp_fake_mode = None
+        if torch._dynamo.config.use_cpp_fake_tensor:
+            self.cpp_fake_mode = (
+                CppFakeTensorMode.create_cpp_fake_tensor_mode(
+                    self.fake_tensor_mode.fake_tensor_converter, self.shape_env
+                )
+            )
+            self.cpp_fake_mode.set_allow_fallback_kernels(
+                self.fake_tensor_mode.allow_fallback_kernels
+            )
         self.fx_tracer = PythonKeyTracer()
         self.proxy_mode = ProxyTorchDispatchMode(self.fx_tracer, "symbolic")
         self.hooks_proxy: Proxy | None = None
@@ -320,6 +330,8 @@ class AutogradCompilerInstance:
     def wrap_fake(self, x: torch.Tensor, source: Source | None) -> FakeTensor:
         if not isinstance(x, torch.Tensor):
             raise AssertionError(f"Expected torch.Tensor, got {type(x)}")
+        if self.cpp_fake_mode is not None:
+            return self.cpp_fake_mode.from_tensor(x, source=source)
         return self.fake_tensor_mode.from_tensor(x, source=source)
 
     @staticmethod
@@ -431,7 +443,11 @@ class AutogradCompilerInstance:
             self.symnode_proxy_lookup[symval.node] = self.scalars_proxy[i]  # type: ignore[union-attr]
 
         # TODO(jansel): are all these modes needed?
-        self.stack.enter_context(self.fake_tensor_mode)
+        if self.cpp_fake_mode is not None:
+            self.stack.callback(torch._C._exit_fake_tensor_mode)
+            self.stack.enter_context(self.cpp_fake_mode.activated())
+        else:
+            self.stack.enter_context(self.fake_tensor_mode)
         self.stack.enter_context(self.proxy_mode)
         self.stack.enter_context(disable_autocast_cache())
         # Needed to make sure we don't accidentally specialize any symbols

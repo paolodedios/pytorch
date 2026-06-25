@@ -237,6 +237,9 @@ struct C10_API PyInterpreterVTable {
   virtual bool fake_try_prim_meta(
       const c10::OperatorHandle& op,
       torch::jit::Stack* stack) const = 0;
+// use converter
+  virtual c10::intrusive_ptr<TensorImpl> to_meta_tensor(
+      const c10::intrusive_ptr<TensorImpl>& real) const = 0;
 };
 
 struct C10_API PyInterpreter {
