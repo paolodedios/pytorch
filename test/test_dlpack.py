@@ -411,7 +411,7 @@ class TestTorchDlPack(TestCase):
         # Stride normalization has been removed, strides should be preserved
         self.assertEqual(z.stride(), (3,))
 
-    @xfailIfTorchDynamo("negative stride check not yet supported under dynamo")
+    @xfailIfTorchDynamo
     @skipMeta
     @onlyCPU
     def test_from_dlpack_negative_strides(self, device):
