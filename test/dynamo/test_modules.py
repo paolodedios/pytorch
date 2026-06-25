@@ -1896,6 +1896,21 @@ class NNModuleTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(opt_mod(x), mod(x))
         self.assertEqual(len(graphs), 2)
 
+    def test_numpy_longlong_module_attr_specialized(self):
+        class Mod(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.scale = np.longlong(2)
+
+            def forward(self, x):
+                return x * self.scale
+
+        mod = Mod()
+        opt_mod = torch.compile(mod, backend="eager", fullgraph=True)
+        x = torch.randn(4)
+
+        self.assertEqual(opt_mod(x), mod(x))
+
     def test_numpy_float_module_attr_comparison_result_preserves_semantics(self):
         class Mod(torch.nn.Module):
             def __init__(self) -> None:
@@ -1976,6 +1991,64 @@ class NNModuleTests(torch._dynamo.test_case.TestCase):
         x = torch.randn(4)
 
         self.assertEqual(opt_mod(x), mod(x))
+
+    def test_numpy_float_module_attr_scalar_methods(self):
+        class Mod(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.scale = np.float64(2.25)
+
+            def forward(self, x):
+                return (
+                    x * self.scale.astype(np.float32),
+                    x + self.scale.mean(),
+                    x + self.scale.sum(),
+                    x + self.scale.round(),
+                    x + self.scale.tolist(),
+                )
+
+        graphs = []
+
+        def backend(gm, example_inputs):
+            graphs.append((gm, example_inputs))
+            return gm.forward
+
+        mod = Mod()
+        opt_mod = torch.compile(mod, backend=backend, fullgraph=True)
+        x = torch.randn(4)
+
+        self.assertEqual(opt_mod(x), mod(x))
+        self.assertEqual(len(graphs), 1)
+        data_inputs = [inp for inp in graphs[0][1] if not isinstance(inp, torch.SymInt)]
+        self.assertEqual(len(data_inputs), 1)
+        self.assertIsInstance(data_inputs[0], torch.Tensor)
+        self.assertNotIn("self_scale", graphs[0][0].code)
+
+        mod.scale = np.float64(3.25)
+        self.assertEqual(opt_mod(x), mod(x))
+        self.assertEqual(len(graphs), 2)
+
+    def test_numpy_float_module_attr_array_method_graph_break(self):
+        class Mod(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.scale = np.float64(2.0)
+
+            def forward(self, x):
+                return x * self.scale.reshape((1,)).sum()
+
+        mod = Mod()
+        opt_mod = torch.compile(mod, backend="eager")
+        x = torch.randn(4)
+
+        self.assertEqual(opt_mod(x), mod(x))
+
+        torch._dynamo.reset()
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.Unsupported,
+            "numpy_scalar_method_result",
+        ):
+            torch.compile(Mod(), backend="eager", fullgraph=True)(x)
 
     def test_numpy_float_module_attr_real_imag(self):
         class Mod(torch.nn.Module):
@@ -2692,6 +2765,41 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
             )
         )
 
+    def test_celu_matches_eager(self):
+        for alpha, inplace in itertools.product((0.5, 1.0, 2.0), (False, True)):
+            with self.subTest(alpha=alpha, inplace=inplace):
+
+                def fn(x):
+                    if inplace:
+                        return torch.celu_(x, alpha=alpha)
+                    return torch.celu(x, alpha=alpha)
+
+                eager_inp = torch.linspace(-2, 2, 17)
+                compiled_inp = eager_inp.clone()
+                opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+
+                self.assertEqual(fn(eager_inp), opt_fn(compiled_inp))
+                self.assertEqual(eager_inp, compiled_inp)
+
+    def test_celu_zero_alpha_raises(self):
+        for inplace in (False, True):
+            with self.subTest(inplace=inplace):
+
+                def fn(x):
+                    if inplace:
+                        return torch.celu_(x, alpha=0.0)
+                    return torch.celu(x, alpha=0.0)
+
+                with self.assertRaisesRegex(
+                    RuntimeError, "ZeroDivisionError: alpha cannot be 0 for CELU"
+                ):
+                    fn(torch.randn(8))
+
+                with self.assertRaisesRegex(
+                    RuntimeError, "ZeroDivisionError: alpha cannot be 0 for CELU"
+                ):
+                    torch.compile(fn, backend="eager", fullgraph=True)(torch.randn(8))
+
     @patch.object(torch._dynamo.config, "skip_nnmodule_hook_guards", False)
     def test_hooks_outer(self):
         class TestModule(torch.nn.Module):
@@ -2804,6 +2912,33 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
         m._forward_hooks[handle.id] = new_forward_hook
         self.assertEqual(compiled_func(inp), outer_func(inp))
         self.assertEqual(compiled_func(inp).item(), 16)
+
+    def test_forward_hook_handle_attr_in_hasattr(self):
+        class TestModule(torch.nn.Module):
+            def __init__(self) -> None:
+                super().__init__()
+                self.encoder = torch.nn.Linear(8, 4)
+                self.decoder = torch.nn.Linear(4, 8)
+
+            def forward(self, x):
+                if not hasattr(self, "_forward_hook"):
+                    self._forward_hook = self.register_forward_hook(
+                        lambda module, inputs, output: output + 1
+                    )
+                return self.decoder(self.encoder(x))
+
+        model = TestModule().eval()
+        x = torch.randn(2, 8)
+
+        with torch.no_grad():
+            model(x)
+            expected = model(x)
+
+        compiled_model = torch.compile(model, backend="eager", fullgraph=True)
+        with torch.no_grad():
+            actual = compiled_model(x)
+
+        self.assertEqual(actual, expected)
 
     def _forward_hook_test_helper(self, model):
         forward_handles = {}
