@@ -677,7 +677,7 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         self.assertTrue(result)
 
     def test_bmv_load_then_call(self):
-        """Load a method into a variable, then call it through BMV."""
+        """Load a method into a variable, then call it through CMV."""
 
         def fn():
             r = range(10)
@@ -688,14 +688,14 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(result, 1)
 
     def test_bmv_defers_graph_break_to_call_time(self):
-        """BoundMethodVariable defers graph breaks from LOAD_ATTR to CALL.
+        """CallMethodVariable defers graph breaks from LOAD_ATTR to CALL.
 
         When a method exists on the type (MRO walk finds it) but the VT's
-        call_method doesn't handle it, BMV is returned at load time and
+        call_method doesn't handle it, CMV is returned at load time and
         the graph break happens at call time, not at attribute access time.
         """
 
-        # Loading the method succeeds (BMV returned, no graph break).
+        # Loading the method succeeds (CMV returned, no graph break).
         @torch.compile(backend="eager", fullgraph=True)
         def fn_load(x):
             r = range(10)
@@ -716,16 +716,16 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         with self.assertRaises(torch._dynamo.exc.Unsupported):
             torch.compile(fn_call, backend="eager", fullgraph=True)(x)
 
-    # --- ConstantVariable: trampoline methods (format/join have call_method) ---
+    # --- ConstantVariable: CallMethodVariable (format/join have call_method) ---
 
-    def test_str_format_via_trampoline(self):
+    def test_str_format_via_bound_method(self):
         def fn():
             return "hello {}".format("world")
 
         result = torch.compile(fn, backend="eager", fullgraph=True)()
         self.assertEqual(result, "hello world")
 
-    def test_str_join_via_trampoline(self):
+    def test_str_join_via_bound_method(self):
         def fn():
             return ", ".join(["a", "b", "c"])
 
