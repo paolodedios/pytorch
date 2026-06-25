@@ -29,12 +29,14 @@ Error Formatting:
 import json
 import logging
 import re
+import sys
 import textwrap
+import types
 import typing
 from enum import auto, Enum
 from functools import lru_cache
 from pathlib import Path
-from traceback import extract_stack, format_exc, format_list, FrameSummary, StackSummary
+from traceback import format_exc, format_list, FrameSummary, StackSummary
 from typing import Any, NoReturn, TYPE_CHECKING
 
 import torch._guards
@@ -45,8 +47,6 @@ from .utils import counters
 
 
 if TYPE_CHECKING:
-    import types
-
     from torch._dynamo.variables import VariableTracker
     from torch._guards import CompileId
 
@@ -67,6 +67,53 @@ log = logging.getLogger(__name__)
 graph_breaks_log = torch._logging.getArtifactLogger(__name__, "graph_breaks")
 
 
+_EXCEPTION_STATE_ATTRS_TO_DROP = frozenset(
+    (
+        "_torch_dynamo_tracer_output",
+        "first_useful_frame",
+        "frame_exec_strategy",
+    )
+)
+
+
+def _safe_exception_args(args: tuple[Any, ...]) -> tuple[Any, ...]:
+    return args
+
+
+class _SerializedException(RuntimeError):
+    _dynamo_original_exception_type: str
+
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__(str(exc))
+        self._dynamo_original_exception_type = (
+            f"{type(exc).__module__}.{type(exc).__qualname__}"
+        )
+
+
+def _safe_inner_exception(exc: BaseException) -> _SerializedException:
+    return _SerializedException(exc)
+
+
+def _safe_exception_state(state: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for name, value in state.items():
+        if name in _EXCEPTION_STATE_ATTRS_TO_DROP or isinstance(value, types.FrameType):
+            result[name] = None
+        elif name == "inner_exception" and isinstance(value, BaseException):
+            result[name] = _safe_inner_exception(value)
+        else:
+            result[name] = value
+    return result
+
+
+def _reconstruct_torch_dynamo_exception(
+    exc_type: type[TorchDynamoException], args: tuple[Any, ...]
+) -> TorchDynamoException:
+    exc = exc_type.__new__(exc_type)
+    BaseException.__init__(exc, *args)
+    return exc
+
+
 class TorchDynamoException(RuntimeError):
     """Base exception class for all TorchDynamo-specific exceptions.
 
@@ -83,6 +130,20 @@ class TorchDynamoException(RuntimeError):
         super().__init__(*args, **kwargs)
         self._torch_dynamo_tracer_output: DynamoTracerOutput | None = None
         self.frame_exec_strategy: FrameExecStrategy | None = None
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (
+            _reconstruct_torch_dynamo_exception,
+            (type(self), _safe_exception_args(self.args)),
+            self.__getstate__(),
+        )
+
+    def __getstate__(self) -> dict[str, Any]:
+        return _safe_exception_state(self.__dict__)
+
+    def __setstate__(self, state: dict[str, Any] | None, /) -> None:
+        if state is not None:
+            self.__dict__.update(state)
 
 
 class InternalTorchDynamoError(TorchDynamoException):
@@ -752,8 +813,39 @@ def get_exc_message(
     return filename, lineno
 
 
+def _extract_stack_with_positions() -> StackSummary:
+    # traceback.extract_stack() does not populate colno/end_colno on
+    # FrameSummary, even though the data is available on live frames via
+    # f_lasti + co_positions(). This means traceback.format_list() never
+    # renders caret annotations for stacks captured this way. We do it
+    # manually here so that "stack above dynamo" frames get carets.
+    stack = StackSummary()
+    frame = sys._getframe(1)
+    while frame is not None:
+        code = frame.f_code
+        # colno/end_colno kwargs were added to FrameSummary in 3.11
+        kwargs: dict[str, Any] = {}
+        if sys.version_info >= (3, 11) and frame.f_lasti >= 0:
+            positions = list(code.co_positions())
+            idx = frame.f_lasti // 2
+            if idx < len(positions):
+                _, _, kwargs["colno"], kwargs["end_colno"] = positions[idx]
+        stack.append(
+            FrameSummary(
+                code.co_filename,
+                frame.f_lineno,
+                code.co_name,
+                lookup_line=False,
+                **kwargs,
+            )
+        )
+        frame = frame.f_back
+    stack.reverse()
+    return stack
+
+
 def get_stack_above_dynamo() -> StackSummary:
-    return filter_stack(extract_stack())
+    return filter_stack(_extract_stack_with_positions())
 
 
 def get_real_stack(
