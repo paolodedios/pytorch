@@ -9031,27 +9031,12 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
         for v in output_leaves
         if isinstance(v, IRNode) and v.get_name() in input_names
     ]
-    if passthrough_vals and subgraph_ops:
-        ordering_op = subgraph_ops[-1]
-        if not isinstance(ordering_op, ir.ExternKernel):
-            ordering_op = next(
-                (
-                    op
-                    for op in reversed(subgraph_ops)
-                    if isinstance(op, ir.ExternKernel)
-                ),
-                None,
-            )
-        if ordering_op is not None:
-            for val in passthrough_vals:
-                val.realize()
-                ordering_op.mutation_outputs.append(
-                    ir.OrderingOutput(
-                        ir.NoneLayout(device=val.get_device()),
-                        val,
-                        ordering_op,
-                    )
-                )
+    for val in passthrough_vals:
+        barrier = ir.OrderingBarrier(val)
+        for op in subgraph_ops:
+            op_name = op.operation_name
+            if op_name is not None:
+                V.graph.additional_buffer_deps[barrier.get_name()].add(op_name)
 
     return output
 
