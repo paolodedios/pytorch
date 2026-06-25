@@ -551,6 +551,29 @@ class EnumTests(torch._dynamo.test_case.TestCase):
         res = compiled_fn(x)
         self.assertEqual(ref, res)
 
+    def test_metaclass_custom_call_source_inherited(self):
+        class BaseMeta(type):
+            def __call__(cls, scale=(7,)):
+                obj = cls.__new__(cls)
+                obj.scaled = scale[0]
+                return obj
+
+        class ScalingMeta(BaseMeta):
+            pass
+
+        class Scaled(metaclass=ScalingMeta):
+            pass
+
+        def fn(x):
+            obj = Scaled()
+            return x * obj.scaled
+
+        x = torch.tensor([1.0, 2.0])
+        ref = fn(x)
+        compiled_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        res = compiled_fn(x)
+        self.assertEqual(ref, res)
+
     def test_enum_construction_no_extra_init(self):
         # Real-world instance of the metaclass __call__ issue above.
         # EnumMeta.__call__ only calls __new__ (value lookup), NOT __init__.
@@ -657,6 +680,24 @@ class EnumTests(torch._dynamo.test_case.TestCase):
         res = opt_fn(x, dist.ReduceOp.SUM)
         self.assertEqual(ref, res)
 
+    def test_flag_enum_invert(self):
+        class Permission(enum.Flag):
+            READ = 1
+            WRITE = 2
+            EXECUTE = 4
+
+        def fn(x, perm):
+            inverted = ~perm
+            if Permission.WRITE in inverted:
+                return x + 1
+            return x - 1
+
+        x = torch.randn(4)
+        ref = fn(x, Permission.READ)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        res = opt_fn(x, Permission.READ)
+        self.assertEqual(ref, res)
+
     def test_dispatch_key_as_dict_key(self):
         """Test DispatchKey (also a pybind11 enum) works as dict key."""
         d = {
@@ -671,6 +712,25 @@ class EnumTests(torch._dynamo.test_case.TestCase):
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         ref = fn(x, torch.DispatchKey.CPU)
         res = opt_fn(x, torch.DispatchKey.CPU)
+        self.assertEqual(ref, res)
+
+    def test_dispatch_key_sourceless(self):
+        """Test DispatchKey used as a literal inside the compiled function."""
+
+        def fn(x):
+            if x.device.type == "cpu":
+                key = torch.DispatchKey.CPU
+            else:
+                key = torch.DispatchKey.CUDA
+            # Use the key in a branch to ensure it's traced, not eliminated.
+            if key == torch.DispatchKey.CPU:
+                return x + 1
+            return x - 1
+
+        x = torch.randn(4)
+        ref = fn(x)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        res = opt_fn(x)
         self.assertEqual(ref, res)
 
 
