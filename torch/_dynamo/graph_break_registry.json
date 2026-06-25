@@ -882,17 +882,6 @@
       ]
     }
   ],
-  "GB0060": [
-    {
-      "Gb_type": "Failed to trace unittest method",
-      "Context": "function: unittest.TestCase.{name}",
-      "Explanation": "Dynamo does not know how to trace unittest method `{name}` ",
-      "Hints": [
-        "Avoid calling `TestCase.{name}`. ",
-        "Please report an issue to PyTorch."
-      ]
-    }
-  ],
   "GB8656": [
     {
       "Gb_type": "Opaque object with custom __getattr__ not supported",
