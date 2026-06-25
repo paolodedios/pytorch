@@ -1614,10 +1614,10 @@ def _get_process_group_uid(pg: ProcessGroup) -> int:
         backend = pg._get_backend(
             torch.accelerator.current_accelerator() or torch.device("cpu")
         )
-        if is_backend_available(pg._get_backend_name()) and hasattr(backend, "uid"):
-            return backend.uid
     except RuntimeError:
         pass
+    if is_nccl_available() and isinstance(backend, ProcessGroupNCCL):
+        return backend.uid
     return -1
 
 
