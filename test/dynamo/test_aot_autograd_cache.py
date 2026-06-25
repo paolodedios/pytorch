@@ -392,6 +392,62 @@ class AOTAutogradCacheTests(CacheKeyEquivalenceMixin, InductorTestCase):
             {("a", "b"), ("a", "c")},
         )
 
+    def test_cache_hit_many_unaliased_mutated_inputs_use_single_guard(self):
+        from torch._dynamo.source import LocalSource
+
+        def input_alias_info() -> InputAliasInfo:
+            return InputAliasInfo(
+                is_leaf=False,
+                mutates_data=True,
+                mutates_metadata=False,
+                mutations_hidden_from_autograd=False,
+                mutations_under_no_grad_or_inference_mode=False,
+                mutation_inductor_storage_resize=False,
+                mutates_storage_metadata=False,
+                requires_grad=False,
+                keep_input_mutations=False,
+            )
+
+        num_args = 16
+        aot_config = AOTConfig(
+            fw_compiler=None,
+            bw_compiler=None,
+            inference_compiler=None,
+            partition_fn=None,
+            decompositions={},
+            num_params_buffers=0,
+            aot_id=0,
+            keep_inference_input_mutations=False,
+            dynamic_shapes=True,
+            aot_autograd_arg_pos_to_source=[
+                LocalSource(f"arg{i}", is_input=True) for i in range(num_args)
+            ],
+            is_export=False,
+            no_tangents=False,
+            enable_log=False,
+            precompile_backend_id=None,
+        )
+
+        tracing_context = TracingContext(None)
+        with torch._guards.tracing(tracing_context):
+            AOTAutogradCache._install_cache_hit_guards(
+                [torch.ones(2) + i for i in range(num_args)],
+                aot_config,
+                [input_alias_info() for _ in range(num_args)],
+            )
+
+        overlap_guards = [
+            guard
+            for guard in tracing_context.guards_context.aotautograd_guards
+            if isinstance(guard, StorageOverlap)
+        ]
+        self.assertEqual(len(overlap_guards), 1)
+        self.assertEqual(overlap_guards[0].overlapping_sources, [])
+        self.assertEqual(
+            len(overlap_guards[0].non_overlapping_sources),
+            num_args,
+        )
+
     def test_cache_hit_storage_overlap_guards_with_synthetic_base_metadata(self):
         from torch._dynamo.source import LocalSource
 

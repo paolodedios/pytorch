@@ -1597,6 +1597,25 @@ SeqNr|OrigAten|SrcFn|FwdSrcFn
             """0/0: check_overlapping(overlapping=[a, b], non_overlapping=[c, d])""",
         )
 
+    def test_mutated_input_overlaps_unmutated_input_recompile(self):
+        def f(a, b):
+            a.add_(1)
+            return a + b
+
+        def non_overlapping_args(x):
+            return x[:5], x[5:10]
+
+        def overlapping_args(x):
+            return x[:5], x[4:9]
+
+        guard_failure = self._get_guard_failure_on_overlapping_view_inputs(
+            f, non_overlapping_args, overlapping_args
+        )
+        self.assertExpectedInline(
+            guard_failure,
+            """0/0: check_overlapping(overlapping=[], non_overlapping=[a, b])""",
+        )
+
     def test_compute_overlapping_tensors_separate_storages(self):
         from torch._C._dynamo.guards import compute_overlapping_tensors
 
@@ -1745,6 +1764,30 @@ SeqNr|OrigAten|SrcFn|FwdSrcFn
             },
             {"a", "b"},
         )
+
+    def test_many_unaliased_mutated_inputs_use_single_storage_overlap_guard(self):
+        def f(*args):
+            for arg in args:
+                arg.add_(1)
+            return args[0]
+
+        class Compiler:
+            def __init__(self):
+                self.counter = CompileCounterWithBackend("aot_eager")
+
+            def __call__(self, *args, **kwargs):
+                self.guards = TracingContext.get().guards_context.aotautograd_guards
+                return self.counter(*args, **kwargs)
+
+        compiler = Compiler()
+        args = tuple(torch.arange(4) + i for i in range(16))
+
+        torch.compile(f, backend=compiler, dynamic=True)(*args)
+
+        overlap_guards = [g for g in compiler.guards if isinstance(g, StorageOverlap)]
+        self.assertEqual(len(overlap_guards), 1)
+        self.assertEqual(overlap_guards[0].overlapping_sources, [])
+        self.assertEqual(len(overlap_guards[0].non_overlapping_sources), len(args))
 
     def test_inputs_overlapping_with_mutation_stress(self):
         # Stress test for StorageOverlap guard.

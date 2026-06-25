@@ -1345,6 +1345,16 @@ class AOTAutogradCache(GuardedCache[GenericAOTAutogradResult[Any, Any]]):
         )
         overlapping_input_pairs = set(storage_overlapping_input_pairs)
         input_info_matches_args = len(input_info) == len(args)
+        if (
+            input_info_matches_args
+            and not overlapping_input_pairs
+            and all(input_info[pos].mutates_data for pos in tensor_input_positions)
+        ):
+            tracing_context.guards_context.aotautograd_guards.append(
+                StorageOverlap([], tensor_input_sources)
+            )
+            return
+
         for left_pos, left_input_position in enumerate(tensor_input_positions):
             for right_input_position in tensor_input_positions[left_pos + 1 :]:
                 if input_info_matches_args:
