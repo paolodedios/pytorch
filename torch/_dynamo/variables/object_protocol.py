@@ -32,6 +32,7 @@ from ..exc import (
     ObservedTypeError,
     raise_observed_exception,
     raise_type_error,
+    UnhandledDescriptorError,
     unimplemented,
 )
 from ..utils import istype
@@ -1892,14 +1893,7 @@ def generic_issubclass(
 _NO_DEFAULT = object()
 
 
-class _UnhandledDescriptorError(NotImplementedError):
-    """Raised by object_generic_getattr when a descriptor type is not
-    recognized by _resolve_descriptor_get.  Subclasses NotImplementedError
-    so callers that catch NotImplementedError (e.g., generic_getattr's
-    GetAttrVariable fallback) still work, but callers that want to
-    distinguish unhandled descriptors from other NotImplementedErrors can
-    catch this specifically.
-    """
+_UnhandledDescriptorError = UnhandledDescriptorError
 
 
 def mro_lookup(py_type: type, name: str) -> object:
