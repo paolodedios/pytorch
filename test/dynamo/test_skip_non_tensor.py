@@ -511,6 +511,46 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(opt_fn(1).shape, (3,))
         self.assertEqual(counter.frame_count, 1)
 
+    def test_condition_dependent_skip_with_nested_torch_module_attr(self):
+        def fn(n):
+            if n == 0:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return torch.nn.Linear(1, 1).weight + 1
+            return n - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, dynamic=False)
+
+        self.assertEqual(opt_fn(0), -1)
+        self.assertEqual(counter.frame_count, 0)
+
+        self.assertEqual(opt_fn(1).shape, (1, 1))
+        self.assertEqual(counter.frame_count, 1)
+
+    def test_condition_dependent_skip_with_nested_torch_factory_attr(self):
+        def fn(n):
+            if n == 0:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            if torch.compiler.is_compiling():
+                return torch.fft.fftfreq(2) + 1
+            return n - 1
+
+        counter = CompileCounter()
+        opt_fn = torch.compile(fn, backend=counter, dynamic=False)
+
+        self.assertEqual(opt_fn(0), -1)
+        self.assertEqual(counter.frame_count, 0)
+
+        self.assertEqual(opt_fn(1), torch.tensor([1.0, 0.5]))
+        self.assertEqual(counter.frame_count, 1)
+
     def test_condition_dependent_skip_with_tensor_constructor(self):
         def fn(n):
             if n == 0:

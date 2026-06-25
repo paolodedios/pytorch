@@ -395,6 +395,8 @@ def _active_code_ids() -> set[int]:
 def reset_code(code: types.CodeType) -> None:
     active_code_ids = _active_code_ids()
     cleanup_guarded_eager_fallback_codes_for_code(code)
+    # Reset eagerly runs cache-entry cleanups that otherwise depend on code
+    # object finalizers, while avoiding compiled frames currently on the stack.
     for entry in _debug_get_cache_entry_list(code):
         if id(entry.code) in active_code_ids:
             continue
@@ -1886,6 +1888,8 @@ def explain(f: Callable[..., Any], *extra_args: Any, **extra_kwargs: Any) -> Any
         opt_f(*args, **kwargs)
 
         graph_count = len(graphs)
+        # Count recorded graph-break splits. A terminal recorded reason has no
+        # split, while internal unrecorded splits should not affect diagnostics.
         graph_break_count = min(len(break_reasons), max(graph_count - 1, 0))
         compile_time = compile_times(repr="str")
 

@@ -729,6 +729,8 @@ class ExplainWithBackend:
 
     def output(self) -> ExplainOutput:
         graph_count = len(self.graphs)
+        # Count recorded graph-break splits. A terminal recorded reason has no
+        # split, while internal unrecorded splits should not affect diagnostics.
         output = ExplainOutput(
             self.graphs,
             graph_count,

@@ -61,6 +61,7 @@ from torch._dynamo.callback import CallbackTrigger
 from torch._dynamo.distributed import get_compile_pg
 from torch._dynamo.symbolic_convert import TensorifyState
 from torch._guards import compile_context, CompileContext, CompileId, tracing
+from torch._higher_order_ops.utils import _in_hop_compile
 from torch._logging import structured
 from torch._utils_internal import (
     compile_time_strobelight_meta,
@@ -585,6 +586,8 @@ def _has_tensor_related_state(code: CodeType, output: OutputGraphCommon) -> bool
             if isinstance(obj, ModuleType) and (
                 obj.__name__.startswith("torch.") or obj is torch
             ):
+                if _has_torch_tensor_related_attr_load(code, co_name, obj):
+                    return True
                 if any(
                     _is_torch_tensor_related_callable(vars(obj).get(name))
                     for name in co_names - torch_skip_only_names
@@ -601,6 +604,43 @@ def _has_tensor_related_state(code: CodeType, output: OutputGraphCommon) -> bool
         or _is_torch_tensor_related_callable(value)
         for value in output.local_scope.values()
     )
+
+
+def _has_torch_tensor_related_attr_load(
+    code: CodeType, root_name: str, root_obj: ModuleType
+) -> bool:
+    instructions = list(dis.get_instructions(code))
+    for idx, inst in enumerate(instructions):
+        if inst.opname not in {"LOAD_GLOBAL", "LOAD_NAME"} or inst.argval != root_name:
+            continue
+        obj: object = root_obj
+        attr_chain: list[str] = []
+        for attr_inst in instructions[idx + 1 :]:
+            if attr_inst.opname not in {"LOAD_ATTR", "LOAD_METHOD"}:
+                break
+            try:
+                obj = inspect.getattr_static(obj, attr_inst.argval)
+            except AttributeError:
+                break
+            attr_chain.append(attr_inst.argval)
+            if (
+                _contains_tensor_related_value(obj)
+                or _is_torch_tensor_related_callable(obj)
+                or _is_torch_namespace_tensor_related_callable(obj, attr_chain)
+            ):
+                return True
+    return False
+
+
+def _is_torch_namespace_tensor_related_callable(
+    value: object, attr_chain: list[str]
+) -> bool:
+    if not callable(value) or not attr_chain:
+        return False
+    if attr_chain[0] in {"_dynamo", "compiler"}:
+        return False
+    module_name = getattr(value, "__module__", "")
+    return module_name == "torch" or module_name.startswith("torch.")
 
 
 def _is_torch_tensor_related_callable(value: object) -> bool:
@@ -1239,6 +1279,19 @@ def trace_frame(
     package: CompilePackage | None = None,
 ) -> DynamoTracerOutput:
     from torch.fx.experimental.validator import bisect, translation_validation_enabled
+
+    if (
+        torch.cuda.is_available()
+        and hasattr(torch._C, "_cuda_isCurrentStreamCapturing")
+        and not isinstance(torch._C._cuda_isCurrentStreamCapturing, type)
+        and torch.cuda.is_current_stream_capturing()
+        and not _in_hop_compile()
+    ):
+        raise exc.TorchRuntimeError(
+            "torch.compile cannot JIT compile during CUDA graph capture. "
+            "Execute warmup iterations outside of CUDA graph capture to trigger "
+            "compilation, then capture the graph after compilation has completed."
+        )
 
     speculation_log.restart()  # type: ignore[has-type]
     exn_vt_stack = ExceptionStack()
