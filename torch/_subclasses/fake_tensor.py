@@ -913,6 +913,30 @@ def _is_mkldnn_tensor_arg(arg: Tensor) -> bool:
     return arg.is_mkldnn
 
 
+def _mkldnn_flatten_shape(
+    input_: Tensor,
+    start_dim: int = 0,
+    end_dim: int = -1,
+) -> tuple[IntLikeType, ...] | None:
+    start_dim = canonicalize_dim(input_.dim(), start_dim)
+    end_dim = canonicalize_dim(input_.dim(), end_dim)
+    if start_dim > end_dim:
+        raise RuntimeError(
+            "flatten() has invalid args: start_dim cannot come after end_dim"
+        )
+    if start_dim == end_dim and input_.dim() != 0:
+        return None
+
+    flattened: IntLikeType = 1
+    for size in input_.shape[start_dim : end_dim + 1]:
+        flattened = flattened * size
+    return (
+        tuple(input_.shape[:start_dim])
+        + (flattened,)
+        + tuple(input_.shape[end_dim + 1 :])
+    )
+
+
 def _allows_mkldnn_auxiliary_tensors(func: OpOverload) -> bool:
     return (
         func in _MKLDNN_AUXILIARY_TENSOR_OPS
@@ -921,12 +945,14 @@ def _allows_mkldnn_auxiliary_tensors(func: OpOverload) -> bool:
 
 
 def _should_propagate_mkldnn(func: OpOverload, flat_args: Sequence[object]) -> bool:
-    tensor_args = [
-        arg for arg in pytree.tree_leaves(flat_args) if isinstance(arg, Tensor)
-    ]
-    mkldnn_args = [_is_mkldnn_tensor_arg(arg) for arg in tensor_args]
-    if not any(mkldnn_args):
+    leaves = pytree.tree_leaves(flat_args)
+    if not any(
+        isinstance(arg, Tensor) and _is_mkldnn_tensor_arg(arg) for arg in leaves
+    ):
         return False
+
+    tensor_args = [arg for arg in leaves if isinstance(arg, Tensor)]
+    mkldnn_args = [_is_mkldnn_tensor_arg(arg) for arg in tensor_args]
     if not mkldnn_args[0]:
         if _allows_mkldnn_auxiliary_tensors(func):
             return False
@@ -1327,27 +1353,13 @@ class FakeTensor(Tensor):
             if func in (torch.flatten, torch.Tensor.flatten, aten.flatten.using_ints):
                 # Calling aten.flatten here would decompose through view before
                 # FakeTensor sees the pre-decomposition mkldnn handler.
-                start_dim = canonicalize_dim(
-                    input_.dim(), cast(int, get_arg(1, ("start_dim",), 0))
+                shape = _mkldnn_flatten_shape(
+                    input_,
+                    cast(int, get_arg(1, ("start_dim",), 0)),
+                    cast(int, get_arg(2, ("end_dim",), -1)),
                 )
-                end_dim = canonicalize_dim(
-                    input_.dim(), cast(int, get_arg(2, ("end_dim",), -1))
-                )
-                if start_dim > end_dim:
-                    raise RuntimeError(
-                        "flatten() has invalid args: "
-                        "start_dim cannot come after end_dim"
-                    )
-                if start_dim == end_dim and input_.dim() != 0:
+                if shape is None:
                     return input_
-                flattened: IntLikeType = 1
-                for size in input_.shape[start_dim : end_dim + 1]:
-                    flattened = flattened * size
-                shape = (
-                    tuple(input_.shape[:start_dim])
-                    + (flattened,)
-                    + tuple(input_.shape[end_dim + 1 :])
-                )
                 with torch._C.DisableTorchFunctionSubclass():
                     return aten._mkldnn_reshape.default(input_, shape)
 

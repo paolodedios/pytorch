@@ -30,6 +30,7 @@ from torch._prims_common import (
 )
 from torch._subclasses.fake_tensor import (
     _mark_fake_tensor_mkldnn,
+    _mkldnn_flatten_shape,
     DataDependentOutputException,
     DynamicOutputShapeException,
     FakeTensor,
@@ -1550,13 +1551,12 @@ def _mkldnn_reshape(
     fake_mode: FakeTensorMode,
     func: OpOverload,
     input_: FakeTensor,
-    shape: Sequence[int],
+    shape: Sequence[IntLikeType],
 ) -> FakeTensor | None:
     if not input_.is_mkldnn:
         return NotImplemented
 
-    shape = typing_cast(tuple[int, ...], tuple(shape))
-    shape = utils.infer_size(shape, input_.numel())
+    shape = utils.infer_size(typing_cast(Any, tuple(shape)), input_.numel())
     with in_kernel_invocation_manager(fake_mode):
         output = torch.empty_strided(
             shape,
@@ -1580,21 +1580,9 @@ def _mkldnn_flatten(
     if not input_.is_mkldnn:
         return NotImplemented
 
-    start_dim = canonicalize_dim(input_.dim(), start_dim)
-    end_dim = canonicalize_dim(input_.dim(), end_dim)
-    if start_dim > end_dim:
-        raise RuntimeError(
-            "flatten() has invalid args: start_dim cannot come after end_dim"
-        )
-    if start_dim == end_dim and input_.dim() != 0:
+    shape = _mkldnn_flatten_shape(input_, start_dim, end_dim)
+    if shape is None:
         return input_
-
-    flattened = functools.reduce(operator.mul, input_.shape[start_dim : end_dim + 1], 1)
-    shape = (
-        tuple(input_.shape[:start_dim])
-        + (flattened,)
-        + tuple(input_.shape[end_dim + 1 :])
-    )
     return _mkldnn_reshape(fake_mode, aten._mkldnn_reshape.default, input_, shape)
 
 
