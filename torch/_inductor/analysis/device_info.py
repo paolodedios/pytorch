@@ -30,7 +30,7 @@ class DeviceInfo:
     tops_sparsity_factor: int = 1
 
 
-# Indexing is based on `torch.cuda.get_device_name()`
+# Indexing is based on `torch.cuda.get_device_name()`, normalized to upper-case.
 # TODO investigate profiler support for tf32 and allow device to report correct number when it's turned on.
 _device_mapping: dict[str, DeviceInfo] = {
     # Source:
@@ -180,10 +180,56 @@ _device_mapping: dict[str, DeviceInfo] = {
         dram_bw_gbs=1600.0,
         dram_gb=64.0,
     ),
+    # Source:
+    # @lint-ignore https://www.intel.com/content/www/us/en/products/sku/241598/
+    # intel-arc-b580-graphics/specifications.html
+    "INTEL B580": DeviceInfo(
+        tops={
+            # Estimated from published single-precision throughput.
+            torch.float64: 6.83,
+            torch.float32: 13.67,
+            "torch.tf32": 116.5,
+            torch.bfloat16: 116.5,
+            torch.float16: 116.5,
+            # not specified, fall back to fp16 matrix throughput
+            torch.float8_e8m0fnu: 116.5,
+            torch.float8_e4m3fnuz: 116.5,
+            torch.float8_e5m2: 116.5,
+            torch.float8_e5m2fnuz: 116.5,
+            torch.int8: 233,
+        },
+        dram_bw_gbs=456.0,
+        dram_gb=12.0,
+    ),
+    # Source:
+    # @lint-ignore https://www.intel.com/content/www/us/en/products/sku/245797/
+    # intel-arc-pro-b70-graphics/specifications.html
+    "INTEL B70": DeviceInfo(
+        tops={
+            torch.float64: 11.47,
+            torch.float32: 22.94,
+            "torch.tf32": 183.5,
+            torch.bfloat16: 183.5,
+            torch.float16: 183.5,
+            torch.float8_e8m0fnu: 183.5,
+            torch.float8_e4m3fnuz: 183.5,
+            torch.float8_e5m2: 183.5,
+            torch.float8_e5m2fnuz: 183.5,
+            torch.int8: 367,
+        },
+        dram_bw_gbs=608.0,
+        dram_gb=32.0,
+    ),
 }
 _device_mapping["AMD INSTINCT MI350X"] = _device_mapping["AMD MI350X"]
 _device_mapping["AMD INSTINCT MI300X"] = _device_mapping["AMD MI300X"]
 _device_mapping["AMD INSTINCT MI210X"] = _device_mapping["AMD MI210X"]
+_device_mapping["Intel(R) Arc(TM) B580 Graphics"] = _device_mapping["INTEL B580"]
+_device_mapping["Intel(R) Arc(TM) Pro B70 Graphics"] = _device_mapping["INTEL B70"]
+
+# Enforce the upper-case-key invariant so entries cannot silently miss
+# `lookup_device_info` (which upper-cases the query before lookup).
+_device_mapping = {k.upper(): v for k, v in _device_mapping.items()}
 
 
 def lookup_device_info(name: str) -> DeviceInfo | None:
@@ -193,8 +239,9 @@ def lookup_device_info(name: str) -> DeviceInfo | None:
     to the recorded device. Therefore, _device_mapping statically contains the information for lots of devices.
     If one is missing, please run DeviceInfo.get_device_info() and add it to _device_mapping.
       name (str): name of the device to lookup. Should map onto torch.cuda.get_device_name().
+      Will be upper-cased before lookup.
     """
-    return _device_mapping.get(name)
+    return _device_mapping.get(name.upper())
 
 
 def datasheet_tops(dtype: torch.dtype, is_tf32: bool = False) -> float | None:
@@ -206,7 +253,14 @@ def datasheet_tops(dtype: torch.dtype, is_tf32: bool = False) -> float | None:
     callers always receive the throughput achievable by cuBLAS/cuDNN on
     non-sparse data.
     """
-    name: str | None = torch.cuda.get_device_name()
+    if torch.cuda.is_available():
+        name: str | None = torch.cuda.get_device_name()
+    elif torch.xpu.is_available():
+        name: str | None = torch.xpu.get_device_name()
+    else:
+        log.info("No supported device available, skipping datasheet lookup")
+        return None
+
     if name is None:
         log.info("No device found, returning None")
         return None

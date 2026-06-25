@@ -1900,10 +1900,14 @@ def is_invalid_cancel(
     ):
         return False
 
-    # If a job is cancelled and not listed as a failure by Dr.CI, it's an
-    # invalid signal and can be ignored
+    # If a job is cancelled and not listed as a failure or unclassified failure
+    # by Dr.CI, it's an invalid signal and can be ignored. UNKNOWN covers jobs
+    # whose workflow did not run on the merge base, so Dr.CI has no signal to
+    # tell whether the failure is pre-existing -- those should still block merge.
     return all(
-        name != failure["name"] for failure in drci_classifications.get("FAILED", [])
+        name != failure["name"]
+        for failure in drci_classifications.get("FAILED", [])
+        + drci_classifications.get("UNKNOWN", [])
     )
 
 
@@ -2058,6 +2062,7 @@ def validate_revert(
     allowed_apps = {
         "https://github.com/apps/pytorch-auto-revert",
         "https://github.com/apps/facebook-github-tools",
+        "https://github.com/apps/meta-codesync",
     }
     if comment.author_url in allowed_apps:
         allowed_reverters.append("NONE")
