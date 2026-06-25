@@ -274,6 +274,47 @@ with torch.xpu._DeviceGuard(0):
         # The exit just unindents, verify no error
         self.assertIsNotNone(code.getvalue())
 
+    def test_default_stream_setup_only_once_per_device(self):
+        """default_stream capture should only run once per device entry."""
+        from torch._inductor.codegen.wrapper import (
+            EnterDeviceContextManagerWithStreamInfoLine,
+        )
+
+        last_device = None
+        stream_map = {1: 10}
+
+        def make_line(device_idx):
+            nonlocal last_device
+            setup = last_device != device_idx
+            last_device = device_idx
+            return EnterDeviceContextManagerWithStreamInfoLine(
+                device_idx=device_idx,
+                last_seen_device_guard_index=None,
+                num_streams=2,
+                stream_idx_to_user_obj_idx=stream_map,
+                setup_stream_cache=setup,
+            )
+
+        self.assertTrue(make_line(0).setup_stream_cache)
+        self.assertFalse(make_line(0).setup_stream_cache)
+        self.assertTrue(make_line(1).setup_stream_cache)
+        self.assertTrue(make_line(0).setup_stream_cache)
+
+    @unittest.skipIf(not TEST_CUDA, "requires CUDA")
+    def test_generated_code_uses_get_stream_by_index(self):
+        """Generated inductor code should use _get_stream_by_index."""
+
+        def fn(x):
+            s = torch.Stream(device="cuda")
+            with s:
+                return x + 1
+
+        x = torch.ones(4, 4, device="cuda")
+        result, code = run_and_get_code(torch.compile(fn), x)
+        FileCheck().check("_get_stream_by_index").run(code[0])
+        expected = fn(torch.ones(4, 4, device="cuda"))
+        torch.testing.assert_close(result, expected)
+
 
 @unittest.skipIf(not TEST_CUDA, "requires CUDA")
 @xfailIfNoAcceleratorTriton
@@ -2608,6 +2649,26 @@ instantiate_parametrized_tests(TestGenericStreamCompile)
 instantiate_parametrized_tests(TestStreamIdentity)
 instantiate_parametrized_tests(TestPDLWithMultiStream)
 instantiate_parametrized_tests(TestStreamCudagraphInteraction)
+
+
+@unittest.skipIf(not TEST_CUDA, "requires CUDA")
+class TestStreamExternalObjectRestore(InductorTestCase):
+    def test_restore_external_objects_before_backward(self):
+        """Forward snapshots external object registry, backward restores it."""
+        from torch._dynamo.graph_bytecode_inputs import store_user_object_weakrefs
+
+        def fn(x):
+            s = torch.Stream(device="cuda")
+            with s:
+                return x * 2 + 1
+
+        compiled_fn = torch.compile(fn)
+        x = torch.randn(4, 4, device="cuda", requires_grad=True)
+        out = compiled_fn(x)
+        store_user_object_weakrefs(torch.cuda.Stream())
+        out.sum().backward()
+        self.assertIsNotNone(x.grad)
+        torch.testing.assert_close(x.grad, torch.full_like(x, 2.0))
 
 
 if __name__ == "__main__":
