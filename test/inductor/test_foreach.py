@@ -360,7 +360,7 @@ class ForeachTests(TestCase):
         )
         self.assertEqual(self._count_nodes(graph, torch.ops.aten.copy_.default), 2)
 
-    def test_foreach_input_mutation_fold_runs_in_inductor_compile(self):
+    def test_foreach_input_mutation_inductor_prefers_reinplace(self):
         pass_counts = []
         orig_fold = fx_passes.post_grad.fold_foreach_input_mutation_ops
 
@@ -379,15 +379,53 @@ class ForeachTests(TestCase):
             torch._foreach_mul_(args, 2)
 
         inps = [torch.ones(13) for _ in range(4)]
-        with mock.patch.object(
-            fx_passes.post_grad, "fold_foreach_input_mutation_ops", counting_fold
+        torch._dynamo.reset()
+        with (
+            config.patch({"fx_graph_cache": False}),
+            mock.patch.object(
+                fx_passes.post_grad, "fold_foreach_input_mutation_ops", counting_fold
+            ),
         ):
             _, code = run_and_get_code(torch.compile(fn, fullgraph=True), inps)
 
         for inp in inps:
             self.assertEqual(inp, torch.full((13,), 2.0))
-        self.assertIn((len(inps), 0, 1), pass_counts)
+        self.assertIn((0, 0, 0), pass_counts)
+        self.assertNotIn((len(inps), 0, 1), pass_counts)
         self.assertIn("foreach", "\n".join(code))
+
+    def test_foreach_input_mutation_fold_runs_after_reinplace(self):
+        pass_counts = []
+        orig_fold = fx_passes.post_grad.fold_foreach_input_mutation_ops
+
+        def counting_fold(graph):
+            before_copy = self._count_nodes(graph, torch.ops.aten.copy_.default)
+            orig_fold(graph)
+            pass_counts.append(
+                (
+                    before_copy,
+                    self._count_nodes(graph, torch.ops.aten.copy_.default),
+                    self._count_nodes(graph, torch.ops.aten._foreach_copy_.default),
+                )
+            )
+
+        def fn(args):
+            torch._foreach_sub_(args, 2)
+
+        inps = [torch.ones(13) for _ in range(4)]
+        torch._dynamo.reset()
+        with (
+            config.patch({"fx_graph_cache": False}),
+            mock.patch.object(
+                fx_passes.post_grad, "fold_foreach_input_mutation_ops", counting_fold
+            ),
+        ):
+            _, code = run_and_get_code(torch.compile(fn, fullgraph=True), inps)
+
+        for inp in inps:
+            self.assertEqual(inp, torch.full((13,), -1.0))
+        self.assertIn((len(inps), 0, 1), pass_counts)
+        self.assertIn("_foreach_copy", "\n".join(code))
 
     def _test_single_list(self, op):
         if op in un_ops_under_test:

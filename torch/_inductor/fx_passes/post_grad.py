@@ -608,11 +608,11 @@ def post_grad_passes(gm: torch.fx.GraphModule, is_inference: bool):
 
     # Keep these last, since they introduce mutation. Look at
     # ./fx_passes/README.md for a discussion of mutation invariants.
-    GraphTransformObserver(gm, "fold_foreach_input_mutation_ops").apply_graph_pass(
-        fold_foreach_input_mutation_ops
-    )
     GraphTransformObserver(gm, "reinplace_inplaceable_ops").apply_graph_pass(
         functools.partial(reinplace_inplaceable_ops, fake_tensor_updater),
+    )
+    GraphTransformObserver(gm, "fold_foreach_input_mutation_ops").apply_graph_pass(
+        fold_foreach_input_mutation_ops
     )
 
     # Fix aliasing detection for dtype views AFTER reinplace determines cloning needs
