@@ -981,23 +981,23 @@ class GraphModule(torch.nn.Module):
                 normalize_gm(backend.graphs[0].print_readable(print_output=False)),
                 """\
 class GraphModule(torch.nn.Module):
-    def forward(self, L_x_: "f32[10, 10]", L_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_: "f32[10, 10]", L_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_: "f32[10]"):
+    def forward(self, L_x_: "f32[10, 10]", L_gn_closure_0_cell_contents_closure_1_cell_contents_bias_: "f32[10]", L_gn_closure_0_cell_contents_closure_1_cell_contents_weight_: "f32[10, 10]"):
         l_x_ = L_x_
-        l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_ = L_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_
-        l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_ = L_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_
+        l_gn_closure_0_cell_contents_closure_1_cell_contents_bias_ = L_gn_closure_0_cell_contents_closure_1_cell_contents_bias_
+        l_gn_closure_0_cell_contents_closure_1_cell_contents_weight_ = L_gn_closure_0_cell_contents_closure_1_cell_contents_weight_
 
         subgraph_0 = self.subgraph_0
-        invoke_subgraph = torch.ops.higher_order.invoke_subgraph(subgraph_0, 'subgraph_0', l_x_, l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_, l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_);  subgraph_0 = None
+        invoke_subgraph = torch.ops.higher_order.invoke_subgraph(subgraph_0, 'subgraph_0', l_x_, l_gn_closure_0_cell_contents_closure_1_cell_contents_weight_, l_gn_closure_0_cell_contents_closure_1_cell_contents_bias_);  subgraph_0 = None
         getitem: "f32[10, 10]" = invoke_subgraph[0];  invoke_subgraph = None
         subgraph_1 = self.subgraph_0
-        invoke_subgraph_1 = torch.ops.higher_order.invoke_subgraph(subgraph_1, 'subgraph_0', l_x_, l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_, l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_);  subgraph_1 = l_x_ = l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_ = l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_ = None
+        invoke_subgraph_1 = torch.ops.higher_order.invoke_subgraph(subgraph_1, 'subgraph_0', l_x_, l_gn_closure_0_cell_contents_closure_1_cell_contents_weight_, l_gn_closure_0_cell_contents_closure_1_cell_contents_bias_);  subgraph_1 = l_x_ = l_gn_closure_0_cell_contents_closure_1_cell_contents_weight_ = l_gn_closure_0_cell_contents_closure_1_cell_contents_bias_ = None
         getitem_1: "f32[10, 10]" = invoke_subgraph_1[0];  invoke_subgraph_1 = None
         add: "f32[10, 10]" = getitem + getitem_1;  getitem = getitem_1 = None
         return (add,)
 
     class subgraph_0(torch.nn.Module):
-        def forward(self, l_x_: "f32[10, 10]", l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_: "f32[10, 10]", l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_: "f32[10]"):
-            linear: "f32[10, 10]" = torch._C._nn.linear(l_x_, l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_, l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_);  l_x_ = l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_weight_ = l_gn_closure_0_cell_contents_closure_0_cell_contents_parameters_bias_ = None
+        def forward(self, l_x_: "f32[10, 10]", l_gn_closure_0_cell_contents_closure_1_cell_contents_weight_: "f32[10, 10]", l_gn_closure_0_cell_contents_closure_1_cell_contents_bias_: "f32[10]"):
+            linear: "f32[10, 10]" = torch._C._nn.linear(l_x_, l_gn_closure_0_cell_contents_closure_1_cell_contents_weight_, l_gn_closure_0_cell_contents_closure_1_cell_contents_bias_);  l_x_ = l_gn_closure_0_cell_contents_closure_1_cell_contents_weight_ = l_gn_closure_0_cell_contents_closure_1_cell_contents_bias_ = None
             return (linear,)
 """,
             )
@@ -1006,13 +1006,13 @@ class GraphModule(torch.nn.Module):
             normalize_gm(backend.fw_graphs[0].print_readable(print_output=False)),
             """\
 class GraphModule(torch.nn.Module):
-    def forward(self, primals_1: "f32[10, 10]", primals_2: "f32[10, 10]", primals_3: "f32[10]"):
+    def forward(self, primals_1: "f32[10, 10]", primals_2: "f32[10]", primals_3: "f32[10, 10]"):
         partitioned_fw_subgraph_0_0 = self.partitioned_fw_subgraph_0_0
-        invoke_subgraph_4 = torch.ops.higher_order.invoke_subgraph(partitioned_fw_subgraph_0_0, 'partitioned_fw_subgraph_0_0', primals_1, primals_2, primals_3);  partitioned_fw_subgraph_0_0 = None
+        invoke_subgraph_4 = torch.ops.higher_order.invoke_subgraph(partitioned_fw_subgraph_0_0, 'partitioned_fw_subgraph_0_0', primals_1, primals_3, primals_2);  partitioned_fw_subgraph_0_0 = None
         getitem_10: "f32[10, 10]" = invoke_subgraph_4[1]
         getitem: "f32[10, 10]" = invoke_subgraph_4[0];  invoke_subgraph_4 = None
         partitioned_fw_subgraph_0_1 = self.partitioned_fw_subgraph_0_0
-        invoke_subgraph_6 = torch.ops.higher_order.invoke_subgraph(partitioned_fw_subgraph_0_1, 'partitioned_fw_subgraph_0_0', primals_1, primals_2, primals_3);  partitioned_fw_subgraph_0_1 = primals_1 = primals_2 = primals_3 = None
+        invoke_subgraph_6 = torch.ops.higher_order.invoke_subgraph(partitioned_fw_subgraph_0_1, 'partitioned_fw_subgraph_0_0', primals_1, primals_3, primals_2);  partitioned_fw_subgraph_0_1 = primals_1 = primals_3 = primals_2 = None
         getitem_11: "f32[10, 10]" = invoke_subgraph_6[1]
         getitem_1: "f32[10, 10]" = invoke_subgraph_6[0];  invoke_subgraph_6 = None
         add: "f32[10, 10]" = torch.ops.aten.add.Tensor(getitem, getitem_1);  getitem = getitem_1 = None
@@ -2569,7 +2569,7 @@ class GraphModule(torch.nn.Module):
         def forward(self, x: "f32[5]", y: "f32[5]"):
             o: "f32[5]" = torch.zeros_like(x)
 
-            triton_kernel_wrapper_mutation = torch.ops.higher_order.triton_kernel_wrapper_mutation(kernel_idx = 0, constant_args_idx = 0, grid = [(5, 1, 1)], tma_descriptor_metadata = {}, kwargs = {'in_ptr0': x, 'in_ptr1': y, 'out_ptr': o});  x = y = triton_kernel_wrapper_mutation = None
+            triton_kernel_wrapper_mutation = torch.ops.higher_order.triton_kernel_wrapper_mutation(kernel_idx = 0, constant_args_idx = 0, grid = [(5, 1, 1)], tma_descriptor_metadata = {}, kwargs = {'in_ptr0': x, 'in_ptr1': y, 'out_ptr': o}, launch_kwargs = ('BLOCK_SIZE',));  x = y = triton_kernel_wrapper_mutation = None
 
             sin: "f32[5]" = o.sin();  o = None
             return (sin,)
