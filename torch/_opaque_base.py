@@ -227,6 +227,8 @@ def _install_opaque_base(_PybindOpaqueBase: type) -> tuple[type, type]:
             return _is_opaque_base_instance(cls, instance, super().__instancecheck__)
 
     def _wrap_python_construction_method(cls, name):
+        if _needs_pybind_meta_call(cls):
+            return
         method = cls.__dict__.get(name)
         if method is None or not callable(method):
             return

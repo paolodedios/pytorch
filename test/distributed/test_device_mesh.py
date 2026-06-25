@@ -2057,6 +2057,17 @@ class ProcessGroupOpaqueTypeTest(TestCase):
         with self.assertRaisesRegex(TypeError, "must be called"):
             BadProcessGroup()
 
+    def test_process_group_python_subclass_initializes_pybind_base(self):
+        class GoodProcessGroup(ProcessGroup):
+            def __init__(self):
+                super().__init__(0, 1)
+                self.initialized = True
+
+        process_group = GoodProcessGroup()
+        self.assertTrue(process_group.initialized)
+        self.assertEqual(process_group.rank(), 0)
+        self.assertEqual(process_group.size(), 1)
+
     def test_registered_members_exist_on_process_group(self):
         from torch._library.opaque_object import get_member_type
 
