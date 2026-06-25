@@ -2071,7 +2071,7 @@ def forward(self, arg0_1):
             backend.fw_graphs[0].code.strip(),
             """\
 def forward(self, arg0_1):
-    add = torch.ops.aten.add.Tensor(arg0_1, 6);  arg0_1 = None
+    add = torch.ops.aten.add.Scalar(arg0_1, 6);  arg0_1 = None
     return (add,)""",
         )
 
