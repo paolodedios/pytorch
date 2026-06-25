@@ -2233,6 +2233,426 @@ if HAS_CUDA_AND_TRITON:
             self.assertEqual(self.get_root_children(), [2])
 
         @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 2
+        )
+        def test_demote_changing_cudagraph_managed_input_to_copy(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(5))
+
+            def consumer(args):
+                x = args[0]
+                args.clear()
+                return [x * x + 1]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(consumer, [inp], ())
+
+            def run_pair(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                producer_outputs = producer_cg([inp])
+                result = consumer_cg([producer_outputs[idx]])[0]
+                self.assertEqual(result, consumer([producer_outputs[idx]])[0])
+                del result, producer_outputs
+
+            for idx in range(3):
+                run_pair(idx)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 3)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [])
+            self.assertEqual(children[-1].non_static_input_idx, [0])
+
+            for idx in range(3, 5):
+                run_pair(idx)
+
+            self.assertEqual(len(children), 3)
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 1
+        )
+        def test_demote_only_changing_cudagraph_managed_input(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(4))
+
+            def consumer(args):
+                changing, stable = args
+                args.clear()
+                return [changing + stable]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(consumer, [inp, inp], ())
+
+            def run_pair(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                producer_outputs = producer_cg([inp])
+                consumer_inputs = [producer_outputs[idx], producer_outputs[-1]]
+                result = consumer_cg(consumer_inputs)[0]
+                self.assertEqual(
+                    result, consumer([producer_outputs[idx], producer_outputs[-1]])[0]
+                )
+                del result, producer_outputs
+
+            run_pair(0)
+            run_pair(1)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 2)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [1])
+            self.assertEqual(children[-1].non_static_input_idx, [0])
+
+            run_pair(2)
+            self.assertEqual(len(children), 2)
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 1
+        )
+        def test_does_not_demote_static_cudagraph_pool_input(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(3))
+
+            def consumer(args):
+                x = args[0]
+                args.clear()
+                return [x * 2]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(consumer, [inp], (0,))
+
+            def run_pair(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                producer_outputs = producer_cg([inp])
+                result = consumer_cg([producer_outputs[idx]])[0]
+                self.assertEqual(result, producer_outputs[idx] * 2)
+                del result, producer_outputs
+
+            for idx in range(3):
+                run_pair(idx)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 3)
+            for child in children:
+                self.assertEqual(child.non_static_input_idx, [])
+                self.assertTrue(0 in child.static_input_idxs)
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 1
+        )
+        def test_demoted_input_replays_without_extra_source_refs(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(3))
+
+            def consumer(args):
+                x = args[0]
+                args.clear()
+                return [x * x + 1]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(consumer, [inp], ())
+
+            def consumer_inputs(idx):
+                producer_outputs = producer_cg([inp])
+                source = producer_outputs[idx]
+                del producer_outputs
+                return [source]
+
+            def run_pair(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                result = consumer_cg(consumer_inputs(idx))[0]
+                expected = (inp + idx) * (inp + idx) + 1
+                self.assertEqual(result, expected)
+                del result
+
+            run_pair(0)
+            run_pair(1)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 2)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [])
+            self.assertEqual(children[-1].non_static_input_idx, [0])
+
+            gc.collect()
+            run_pair(2)
+            self.assertLessEqual(len(children), 3)
+            num_children = len(children)
+
+            run_pair(2)
+            self.assertEqual(len(children), num_children)
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 1
+        )
+        def test_demoted_input_rerecords_when_source_liveness_changes(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(3))
+
+            def consumer(args):
+                x = args[0]
+                args.clear()
+                return [x * x + 1]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(consumer, [inp], ())
+
+            def consumer_inputs(idx):
+                producer_outputs = producer_cg([inp])
+                source = producer_outputs[idx]
+                del producer_outputs
+                return [source]
+
+            def run_ephemeral(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                result = consumer_cg(consumer_inputs(idx))[0]
+                expected = (inp + idx) * (inp + idx) + 1
+                self.assertEqual(result, expected)
+                del result
+
+            def run_with_live_outputs(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                producer_outputs = producer_cg([inp])
+                result = consumer_cg([producer_outputs[idx]])[0]
+                expected = (inp + idx) * (inp + idx) + 1
+                self.assertEqual(result, expected)
+                for output_idx, output in enumerate(producer_outputs):
+                    self.assertEqual(output, inp + output_idx)
+                del result, producer_outputs
+
+            run_ephemeral(0)
+            run_ephemeral(1)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 2)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [])
+            self.assertEqual(children[-1].non_static_input_idx, [0])
+
+            run_with_live_outputs(2)
+            self.assertEqual(len(children), 3)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [])
+            self.assertEqual(children[-1].non_static_input_idx, [0])
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 1
+        )
+        def test_demoted_input_rerecords_when_only_source_stays_live(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(3))
+
+            def consumer(args):
+                x = args[0]
+                args.clear()
+                return [x * x + 1]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(consumer, [inp], ())
+
+            def consumer_inputs(idx):
+                producer_outputs = producer_cg([inp])
+                source = producer_outputs[idx]
+                del producer_outputs
+                return [source]
+
+            def run_ephemeral(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                result = consumer_cg(consumer_inputs(idx))[0]
+                expected = (inp + idx) * (inp + idx) + 1
+                self.assertEqual(result, expected)
+                del result
+
+            def run_with_live_source(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                producer_outputs = producer_cg([inp])
+                source = producer_outputs[idx]
+                del producer_outputs
+                result = consumer_cg([source])[0]
+                expected = (inp + idx) * (inp + idx) + 1
+                self.assertEqual(result, expected)
+                self.assertEqual(source, inp + idx)
+                del result, source
+
+            run_ephemeral(0)
+            run_ephemeral(1)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 2)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [])
+            self.assertEqual(children[-1].non_static_input_idx, [0])
+
+            run_with_live_source(2)
+            self.assertEqual(len(children), 3)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [])
+            self.assertEqual(children[-1].non_static_input_idx, [0])
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 1
+        )
+        def test_demoted_input_rerecords_when_recorded_source_stays_live(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(3))
+
+            def consumer(args):
+                x = args[0]
+                args.clear()
+                return [x * x + 1]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(consumer, [inp], ())
+
+            def consumer_inputs(idx):
+                producer_outputs = producer_cg([inp])
+                source = producer_outputs[idx]
+                del producer_outputs
+                return [source]
+
+            def run_ephemeral(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                result = consumer_cg(consumer_inputs(idx))[0]
+                expected = (inp + idx) * (inp + idx) + 1
+                self.assertEqual(result, expected)
+                del result
+
+            def run_with_live_source(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                producer_outputs = producer_cg([inp])
+                source = producer_outputs[idx]
+                del producer_outputs
+                result = consumer_cg([source])[0]
+                expected = (inp + idx) * (inp + idx) + 1
+                self.assertEqual(result, expected)
+                self.assertEqual(source, inp + idx)
+                del result, source
+
+            run_ephemeral(0)
+            run_ephemeral(1)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 2)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [])
+            self.assertEqual(children[-1].non_static_input_idx, [0])
+
+            run_with_live_source(1)
+            self.assertEqual(len(children), 2)
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 1
+        )
+        def test_does_not_demote_input_aliasing_mutated_managed_input(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(3))
+
+            def consumer(args):
+                x, y = args
+                args.clear()
+                y.add_(1)
+                return [x + y]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(
+                consumer,
+                [inp, inp],
+                (),
+                mutated_input_idxs=(1,),
+            )
+
+            def run_pair(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                producer_outputs = producer_cg([inp])
+                x = producer_outputs[idx]
+                y = producer_outputs[-1]
+                x_expected = x.detach().clone()
+                y_expected = y.detach().clone() + 1
+                if x.untyped_storage().data_ptr() == y.untyped_storage().data_ptr():
+                    x_expected = y_expected
+                expected = x_expected + y_expected
+                result = consumer_cg([x, y])[0]
+                self.assertEqual(result, expected)
+                self.assertEqual(y, y_expected)
+                del result, producer_outputs
+
+            run_pair(0)
+            run_pair(1)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 2)
+            self.assertEqual(children[-1].cudagraph_managed_idxs, [0, 1])
+            self.assertEqual(children[-1].non_static_input_idx, [])
+
+            run_pair(-1)
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
+        @torch._inductor.config.patch(
+            "triton.cudagraph_managed_input_rerecord_limit", 1
+        )
+        def test_does_not_demote_aliased_cudagraph_managed_input(self):
+            def producer(args):
+                x = args[0]
+                args.clear()
+                return tuple(x + i for i in range(3))
+
+            def consumer(args):
+                x = args[0]
+                args.clear()
+                return [x]
+
+            inp = torch.rand([4], device="cuda")
+            producer_cg = self.cudagraphify_impl(producer, [inp], ())
+            consumer_cg = self.cudagraphify_impl(consumer, [inp], ())
+
+            def run_pair(idx):
+                torch.compiler.cudagraph_mark_step_begin()
+                producer_outputs = producer_cg([inp])
+                result = consumer_cg([producer_outputs[idx]])[0]
+                self.assertEqual(result, producer_outputs[idx])
+                del result, producer_outputs
+
+            for idx in range(3):
+                run_pair(idx)
+
+            root = next(self.get_roots())
+            children = next(iter(root.children.values()))
+            self.assertEqual(len(children), 3)
+            for child in children:
+                self.assertEqual(child.cudagraph_managed_idxs, [0])
+
+        @torch._inductor.config.patch("triton.skip_cudagraph_warmup", True)
         def test_rerecording_logs_reason(self):
             import logging
 
