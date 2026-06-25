@@ -179,7 +179,7 @@ class SIMDKernelFeatures:
         return False
 
     def get_reduction_hint(
-        self, tiling_scores: dict[str, int] | None = None
+        self, tiling_scores: dict[str, sympy.Expr] | None = None
     ) -> ReductionHint:
         reductions = self.reduction_nodes()
         if len(reductions) > 0:
@@ -202,13 +202,11 @@ class SIMDKernelFeatures:
                 and "x" in tiling_scores
                 and "r0_" in tiling_scores
             ):
-                # If reduction dimension has much better coalescing than non-reduction dimensions,
-                # this is an inner reduction
-                from ..codegen.triton import INNER_REDUCTION_RATIO_THRESHOLD
+                from ..codegen.triton import tiling_scores_suggest_inner_reduction
 
-                r_coalesce_ratio = tiling_scores["r0_"] / max(tiling_scores["x"], 1)
-                contiguous_red = r_coalesce_ratio >= INNER_REDUCTION_RATIO_THRESHOLD
-                if contiguous_red:
+                if tiling_scores_suggest_inner_reduction(
+                    tiling_scores, self.reduction_numel
+                ):
                     reduction_hint_val = ReductionHint.INNER
         else:
             reduction_hint_val = ReductionHint.DEFAULT

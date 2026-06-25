@@ -411,18 +411,23 @@ class InductorChoices:
 
     @staticmethod
     def should_use_persistent_reduction(
-        features: SIMDKernelFeatures, cooperative_reduction: bool
+        features: SIMDKernelFeatures,
+        cooperative_reduction: bool,
+        tiling_scores: dict[str, sympy.Expr] | None = None,
     ) -> bool:
         """
         Heuristic to decide if a persistent reduction should be used.
         """
         if not config.triton.persistent_reductions:
             return False
+        # Keep persistent selection aligned with the reduction hint emitted in
+        # generated Triton code, including tiling-score based INNER upgrades.
+        reduction_hint = features.get_reduction_hint(tiling_scores)
         threshold = {
             ReductionHint.INNER: 1024,
-        }.get(features.get_reduction_hint(), 64)
+        }.get(reduction_hint, 64)
 
-        if features.get_reduction_hint() not in (
+        if reduction_hint not in (
             ReductionHint.INNER,
             ReductionHint.OUTER_TINY,
         ):
