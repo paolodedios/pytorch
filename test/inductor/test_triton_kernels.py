@@ -277,11 +277,16 @@ class KernelTests(torch._inductor.test_case.TestCase):
             tmp = tl.load(tmp_ptr + offsets, mask=mask)
             tl.store(z + offsets, x + y + tmp, mask=mask)
 
-        def f(x, y, block_size):
+        def f(x, y, block_size, use_offset_views):
             tmp = x + y
-            x_view = x[1:]
-            y_view = y[1:]
-            tmp_view = tmp[1:]
+            if use_offset_views:
+                x_view = x[1:]
+                y_view = y[1:]
+                tmp_view = tmp[1:]
+            else:
+                x_view = x
+                y_view = y
+                tmp_view = tmp
             xy = torch.tensor(
                 [x_view.data_ptr(), y_view.data_ptr(), tmp_view.data_ptr()],
                 dtype=torch.long,
@@ -297,12 +302,12 @@ class KernelTests(torch._inductor.test_case.TestCase):
         y = torch.randn(18, device=GPU_TYPE)
         with inductor_config.patch(cpp_wrapper=cpp_wrapper):
             compiled = torch.compile(f, fullgraph=True)
-            (actual, packed_ptrs), codes = run_and_get_code(compiled, x, y, 4)
+            (actual, packed_ptrs), codes = run_and_get_code(compiled, x, y, 4, False)
             torch.accelerator.synchronize()
-            self.assertEqual(actual, x[1:] + y[1:] + (x + y)[1:])
+            self.assertEqual(actual, x + y + (x + y))
             self.assertEqual(
                 packed_ptrs[:2].cpu(),
-                torch.tensor([x[1:].data_ptr(), y[1:].data_ptr()], dtype=torch.long),
+                torch.tensor([x.data_ptr(), y.data_ptr()], dtype=torch.long),
             )
             self.assertNotEqual(packed_ptrs[2].item(), 0)
             unaligned_x = torch.randn(19, device=GPU_TYPE)[1:]
@@ -311,7 +316,7 @@ class KernelTests(torch._inductor.test_case.TestCase):
             # alignment-copy avoidance, but use scalar loads when dereferencing
             # escaped raw pointers so the test does not depend on vector load
             # behavior for unaligned addresses.
-            actual, packed_ptrs = compiled(unaligned_x, unaligned_y, 1)
+            actual, packed_ptrs = compiled(unaligned_x, unaligned_y, 1, True)
             torch.accelerator.synchronize()
             self.assertEqual(
                 actual,
@@ -347,20 +352,17 @@ class KernelTests(torch._inductor.test_case.TestCase):
 
                     def f_stream(x, y):
                         tmp = x + y
-                        x_view = x[1:]
-                        y_view = y[1:]
-                        tmp_view = tmp[1:]
                         xy = torch.tensor(
                             [
-                                x_view.data_ptr(),
-                                y_view.data_ptr(),
-                                tmp_view.data_ptr(),
+                                x.data_ptr(),
+                                y.data_ptr(),
+                                tmp.data_ptr(),
                             ],
                             dtype=torch.long,
                             pin_memory=True,
                         ).to(device=x.device, non_blocking=True)
-                        z = torch.empty_like(x_view)
-                        n_elements = x_view.numel()
+                        z = torch.empty_like(x)
+                        n_elements = x.numel()
                         grid = (triton.cdiv(n_elements, 4),)
                         side_stream.wait_stream(torch.cuda.current_stream())
                         with torch.cuda.stream(side_stream):

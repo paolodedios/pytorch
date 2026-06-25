@@ -3430,6 +3430,8 @@ class DataPtrVariable(VariableTracker):
     def current_storage_version(cls, node: torch.fx.Node) -> int:
         example_value = node.meta.get("example_value")
         if isinstance(example_value, torch.Tensor):
+            # FakeTensor returns a stable storage wrapper for aliases, so this
+            # is the shared identity we can use to observe resize_ through views.
             storage = example_value.untyped_storage()
             return getattr(storage, cls._DATA_PTR_STORAGE_VERSION_KEY, 0)
         root = cls._strip_data_ptr_preserving_aliases(node)
@@ -3439,6 +3441,9 @@ class DataPtrVariable(VariableTracker):
     def bump_storage_version(cls, node: torch.fx.Node) -> None:
         example_value = node.meta.get("example_value")
         if isinstance(example_value, torch.Tensor):
+            # Store the epoch on the storage wrapper rather than node.meta so a
+            # resize_ through one alias invalidates data_ptr() equality for all
+            # aliases sharing the same fake storage.
             storage = example_value.untyped_storage()
             setattr(
                 storage,
