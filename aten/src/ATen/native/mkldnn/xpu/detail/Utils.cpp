@@ -351,7 +351,15 @@ bool is_onednn_conv_strides(const at::Tensor& tensor) {
   if (tensor_dim != 1 && (tensor_dim < 3 || tensor_dim > 5))
     return false;
 
-  if (tensor.is_contiguous())
+  // Keep the same safety contract as make_contiguous_and_aligned().
+  // If current data pointer is not 64-byte aligned, force fallback copy.
+  if (!is_64_bytes_aligned(tensor)) {
+    return false;
+  }
+
+  if (tensor.is_contiguous() ||
+      tensor.is_contiguous(at::MemoryFormat::ChannelsLast) ||
+      tensor.is_contiguous(at::MemoryFormat::ChannelsLast3d))
     return true;
 
   if (tensor.storage_offset() > 0 && !is_64_bytes_aligned(tensor)) {
