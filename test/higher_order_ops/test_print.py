@@ -41,6 +41,7 @@ class TestHopPrint(TestCase):
     def tearDownClass(cls):
         torch._dynamo.config.canonicalize_output_graph_node_order = False
         super().tearDownClass()
+
     def test_base_print(self):
         def f(x):
             x = x + x
