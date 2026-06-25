@@ -580,12 +580,12 @@ def _constant_values_equal(a: Any, b: Any) -> bool:
         try:
             with unset_fake_temporarily():
                 return _tensor_values_equal(a_constant, b_constant)
-        except Exception:
+        except (RuntimeError, TypeError, ValueError):
             return False
 
     try:
         result = a == b
-    except Exception:
+    except (RuntimeError, TypeError, ValueError):
         return False
     return result if isinstance(result, bool) else False
 
@@ -614,7 +614,7 @@ def _tensor_constant_repr(value: torch.Tensor) -> str:
     dtype = value.dtype
     device = value.device
     if isinstance(value, FakeTensor):
-        constant = getattr(value, "constant", None)
+        constant = value.constant
         if constant is None:
             raise NotImplementedError("NYI: serializing fake get_attr tensor")
         data_value = constant
@@ -2252,6 +2252,9 @@ def register_lowering_pattern(
     *,
     pass_dict: _PassDictsType,
     prepend: bool = False,
+    output_metadata_ignores_input_storage: bool = True,
+    output_metadata_is_input: int | str | None = None,
+    output_metadata_fn: Callable[..., Any] | None = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """
     Register an aten to inductor IR replacement pattern.  The decorated
@@ -2266,6 +2269,13 @@ def register_lowering_pattern(
             pattern=pattern, extra_check=extra_check, handler=handler
         ).register(pass_dict, prepend=prepend)
         handler._inductor_lowering_function = True  # type: ignore[attr-defined]
+        handler._inductor_lowering_output_metadata_ignores_input_storage = (  # type: ignore[attr-defined]
+            output_metadata_ignores_input_storage
+        )
+        handler._inductor_lowering_output_metadata_is_input = (  # type: ignore[attr-defined]
+            output_metadata_is_input
+        )
+        handler._inductor_lowering_output_metadata_fn = output_metadata_fn  # type: ignore[attr-defined]
         return handler
 
     return decorator
