@@ -1557,7 +1557,7 @@ class GetAttrVariable(VariableTracker):
         return super().mp_subscript_impl(tx, key)
 
 
-class BoundMethodVariable(VariableTracker):
+class CallMethodVariable(VariableTracker):
     """A method bound to a VT instance.
 
     Returned by object_generic_getattr when the MRO walk finds a method
