@@ -88,11 +88,13 @@ from .lists import (
 )
 from .misc import NullVariable, StringFormatVariable
 from .object_protocol import (
+    _NO_DEFAULT,
     binary_iop,
     binary_op,
     generic_abs,
     generic_bool,
     generic_float,
+    generic_getattr,
     generic_getiter,
     generic_hash,
     generic_inplace_multiply,
@@ -3122,8 +3124,6 @@ class GetAttrBuiltinVariable(BaseBuiltinVariable):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        from .object_protocol import _NO_DEFAULT, generic_getattr
-
         obj = args[0]
         name_var = args[1]
         default = args[2] if len(args) > 2 else _NO_DEFAULT
