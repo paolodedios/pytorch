@@ -165,13 +165,16 @@ class GraphDeduplicationInductorWrapperTests(TestCase):
     def test_optimize_string_inductor_disables_graph_deduplication_for_overlap_scheduling(
         self,
     ):
-        with torch._inductor.config.patch(
-            {"aten_distributed_optimizations.enable_overlap_scheduling": True}
+        for config_name in (
+            "reorder_for_compute_comm_overlap",
+            "aten_distributed_optimizations.enable_overlap_scheduling",
         ):
-            self.assertEqual(
-                self._compile_string_inductor_and_count_invoke_subgraphs(),
-                0,
-            )
+            with self.subTest(config_name=config_name):
+                with torch._inductor.config.patch({config_name: True}):
+                    self.assertEqual(
+                        self._compile_string_inductor_and_count_invoke_subgraphs(),
+                        0,
+                    )
 
     def test_optimize_string_inductor_disables_graph_deduplication_for_collective_bucketing(
         self,

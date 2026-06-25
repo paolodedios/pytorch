@@ -585,10 +585,11 @@ graph_partition: bool = (
 # dynamic=True is set, fallback_by_default is active, cudagraphs are active,
 # complex wrapper is active, a custom Inductor graph pass is configured,
 # invoke_subgraph regional compile is active, autograd ops are traced into the
-# graph, distributed overlap/bucketing passes are active, or compiled autograd
-# is compiling the backward graph. It is also disabled for the Inductor
-# subprocess compile mode because nested GraphModule subgraphs are not yet
-# supported across that compile-worker boundary.
+# graph, distributed overlap/bucketing passes or legacy compute/communication
+# overlap reordering are active, or compiled autograd is compiling the backward
+# graph. It is also disabled for the Inductor subprocess compile mode because
+# nested GraphModule subgraphs are not yet supported across that compile-worker
+# boundary.
 graph_deduplication: bool = (
     os.environ.get("TORCHINDUCTOR_GRAPH_DEDUPLICATION", "1") == "1"
 )
@@ -1216,6 +1217,15 @@ class _collective:
 class aten_distributed_optimizations:
     """Configuration for distributed optimization passes on ATen FX graphs."""
 
+    # Move collectives earlier and waits later in the inductor schedule
+    # to overlap communication with compute.
+    #
+    # Guarantees:
+    #   - No collective reordering (preserves NCCL stream ordering)
+    #   - No memory regression (each move verified individually)
+    #   - Predictable (no runtime estimation, no heuristics)
+    enable_simple_overlap: bool = True
+
     # Enable overlap scheduling pass
     enable_overlap_scheduling: bool = False
 
@@ -1836,6 +1846,11 @@ class triton:
     """
     Config specific to codegen/triton.py
     """
+
+    # Select the two-pass variance algorithm for CUDA inputs whose total input
+    # working set is no larger than this fraction of the device L2 cache.
+    # Set to 0 to disable the L2-aware heuristic.
+    two_pass_variance_l2_fraction = 0.5
 
     # Use cudagraphs on output code
     cudagraphs = os.environ.get("TORCHINDUCTOR_CUDAGRAPHS") == "1"
@@ -2683,7 +2698,7 @@ class rocm:
     # Side-effect: when this is True, choices._need_to_fix_layout() returns True
     # so flexible layouts are disabled. Origami's grid/workgroup mappings depend
     # on exact strides and would mis-compile under flexible layouts.
-    origami: bool = os.environ.get("TORCHINDUCTOR_ORIGAMI") == "1"
+    origami: bool = os.environ.get("TORCHINDUCTOR_ORIGAMI") in (None, "1")
 
     # Number of top configs origami selects per GEMM. Read once from
     # TORCHINDUCTOR_ORIGAMI_TOPK; defaults to 6 (sweet spot between compile
