@@ -2725,6 +2725,7 @@ if HAS_CUDA_AND_TRITON:
                     self.assertTrue(torch._C._is_cached_tensor(replay_out))
                     replay_old_data_ptr = replay_out.untyped_storage().data_ptr()
                     self.save_live_outputs(live_outputs, replay_out)
+                    # Exercise a second replay after cloning live outputs.
                     next_out = self.replay_next_generation(foo, inputs[3])
                     self.save_live_outputs(live_outputs, next_out)
                     self.assertEqual(free_calls, 2)
