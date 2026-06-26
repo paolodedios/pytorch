@@ -2105,16 +2105,21 @@ class MetaConverter(Generic[_TensorT]):
                             # pyrefly: ignore [bad-argument-type]
                             r = self._backward_error(r)
 
-                    s = t.storage
-                    from torch.fx.experimental.symbolic_shapes import (
-                        guard_or_false,
-                        sym_eq,
-                    )
-
-                    if s is None:
-                        if t.device.type != torch._C._get_privateuse1_backend_name():
+                    # Storage aliasing for traceable wrapper subclasses is tracked
+                    # through their inner tensors. Memoizing the wrapper placeholder
+                    # storage can later force a cross-device set_ on the wrapper.
+                    if not t.is_traceable_wrapper_subclass and (
+                        t.storage is not None
+                        or t.device.type != torch._C._get_privateuse1_backend_name()
+                    ):
+                        s = t.storage
+                        if s is None:
                             raise AssertionError("t.storage must not be None")
-                    else:
+                        from torch.fx.experimental.symbolic_shapes import (
+                            guard_or_false,
+                            sym_eq,
+                        )
+
                         storage_needs_resize = False
                         source_storage_size = s.size
                         source_storage_is_zero = (
@@ -2357,7 +2362,7 @@ class MetaConverter(Generic[_TensorT]):
                 t.is_quantized
                 or
                 # Views out of sparse tensors not currently supported (plain
-                # sparse is supported htough)
+                # sparse is supported though)
                 (t._is_view() and t._base is not None and t._base.is_sparse)
             ):
                 self.miss += 1
