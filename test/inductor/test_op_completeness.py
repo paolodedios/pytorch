@@ -122,10 +122,10 @@ class TestOpCompleteness(TestCase):
                 patch("torch.__config__.show", return_value=config),
                 V.set_kernel_handler(SimpleNamespace(tail_size=3)),
             ):
-                code = CppVecOverrides.addcmul_aten("self", "value_times_t1", "t2")
-                self.assertIn('asm volatile("" : "+m"(product));', code)
-                self.assertIn("return self + product;", code)
-                self.assertNotIn("fmadd", code)
+                self.assertEqual(
+                    CppVecOverrides.addcmul_aten("self", "value_times_t1", "t2"),
+                    "fmadd(value_times_t1, t2, self)",
+                )
         _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
 
     def test_halide_overrides(self):

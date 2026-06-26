@@ -1314,7 +1314,10 @@ def _addcmul_no_fma(self_value: str, value_times_tensor1: str, tensor2: str) -> 
 def _addcmul_aten_cppvec(
     self_value: str, value_times_tensor1: str, tensor2: str
 ) -> str:
-    if _pytorch_cpu_vec_intrinsics_contract_addcmul():
+    if (
+        getattr(V.kernel, "tail_size", None) is not None
+        or _pytorch_cpu_vec_intrinsics_contract_addcmul()
+    ):
         return f"fmadd({value_times_tensor1}, {tensor2}, {self_value})"
     return _addcmul_no_fma(self_value, value_times_tensor1, tensor2)
 
