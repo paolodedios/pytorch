@@ -717,7 +717,10 @@ class _RuntimeForwardEpilogue:
                         )
                     updated_inpt = updated_inpt.alias
                 with torch.no_grad():
-                    original_inpt.set_(updated_inpt)
+                    if meta.mutation_is_shallow_copy_data:
+                        torch.ops.aten.shallow_copy_data_(original_inpt, updated_inpt)
+                    else:
+                        original_inpt.set_(updated_inpt)
                 continue
             if meta.mutates_metadata and not meta.mutates_data:
                 if self.trace_joint:
@@ -2940,7 +2943,7 @@ class _AutogradBackwardCompiler:
                 # we compile the backward lazily at backward runtime, meaning that we will first compile
                 # backward graph N, N-1, ..., 1.
                 # We need to ensure that at the time inductor compiles bw graph N-1, it can access
-                # the corresponding fw_metadta for graph N-1.
+                # the corresponding fw_metadata for graph N-1.
                 #
                 # We do this by stashing a DDPOptimizerContext, which tracks:
                 # - the metadata of all N graphs
