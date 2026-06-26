@@ -12,8 +12,10 @@ from __future__ import annotations
 import hashlib
 import importlib
 import logging
+import threading
 from typing import Any, TYPE_CHECKING
 
+from torch._inductor.cache import InMemoryCache
 from torch._inductor.codegen.common import (
     IndentedBuffer,
     Kernel,
@@ -41,6 +43,16 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger(__name__)
+
+# Process-level cache for compiled NVGEMM artifacts, shared between
+# autotuning (NVUniversalGemmBenchmarkRequest) and the codegen runtime
+# (_nvgemm_run). Keyed by (kernel_name, tensor_cache_key, device_index).
+_global_compiled_cache: InMemoryCache = InMemoryCache()
+
+# CuTeDSL's DSLPreprocessor singleton and cuda_dialect_init_library_once are
+# not thread-safe. Serializes all cutlass_api operations (argument creation,
+# kernel lookup, compilation) so precompile threads don't race.
+_cutedsl_compile_lock = threading.Lock()
 
 
 # ── Runtime helpers (imported by generated wrapper code at runtime) ───────────
@@ -220,19 +232,20 @@ def _nvgemm_run(
 
     from torch._inductor.runtime.cutedsl_cache import disk_cache_get, disk_cache_set
 
-    args = _create_gemm_arguments(
-        variant_name,
-        input_tensors,
-        out,
-        accumulator_type,
-        epilogue=epilogue_args,
-        **(variant_kwargs or {}),
-    )
-    kernel = _lookup_gemm_kernel(
-        kernel_name,
-        epilogue_args=epilogue_args,
-        epilogue_source=epilogue_source,
-    )
+    with _cutedsl_compile_lock:
+        args = _create_gemm_arguments(
+            variant_name,
+            input_tensors,
+            out,
+            accumulator_type,
+            epilogue=epilogue_args,
+            **(variant_kwargs or {}),
+        )
+        kernel = _lookup_gemm_kernel(
+            kernel_name,
+            epilogue_args=epilogue_args,
+            epilogue_source=epilogue_source,
+        )
 
     cache_key = _create_gemm_cache_key(
         input_tensors,
@@ -244,22 +257,27 @@ def _nvgemm_run(
     mem_key = (cache_key, dev_idx)
     artifact = compiled_cache.get(mem_key)
     if artifact is None:
-        compiled_fn = disk_cache_get(
-            disk_fn_cache, module_path, disk_config_key, cache_key, dev_idx
-        )
-        if compiled_fn is not None:
-            compiled_fn = _rewrap_efc_compiled_obj(compiled_fn, kernel)
-            artifact = CompiledArtifact(compiled_fn, kernel)
-        else:
-            artifact = kernel.compile(args)
-            disk_cache_set(
-                disk_fn_cache,
-                module_path,
-                disk_config_key,
-                cache_key,
-                _unwrap_efc_compiled_obj(artifact.compiled_obj),
-                dev_idx,
+        global_key = (kernel_name, cache_key, dev_idx)
+        artifact = _global_compiled_cache.get(global_key)
+        if artifact is None:
+            compiled_fn = disk_cache_get(
+                disk_fn_cache, module_path, disk_config_key, cache_key, dev_idx
             )
+            if compiled_fn is not None:
+                compiled_fn = _rewrap_efc_compiled_obj(compiled_fn, kernel)
+                artifact = CompiledArtifact(compiled_fn, kernel)
+            else:
+                with _cutedsl_compile_lock:
+                    artifact = kernel.compile(args)
+                disk_cache_set(
+                    disk_fn_cache,
+                    module_path,
+                    disk_config_key,
+                    cache_key,
+                    _unwrap_efc_compiled_obj(artifact.compiled_obj),
+                    dev_idx,
+                )
+            _global_compiled_cache.insert(global_key, artifact)
         compiled_cache[mem_key] = artifact
 
     kernel.run(

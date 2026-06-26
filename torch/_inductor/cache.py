@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 # only take tuples of other Key types: tuple[Key, ...]. this is
 # a known shortcoming of torch's typing
 Key = TypeVar("Key", str, int, tuple[Any, ...])
-Value = TypeVar("Value", str, int, tuple[Any, ...], bytes, dict[Any, Any], list[Any])
+Value = TypeVar("Value")
 
 
 class CacheError(ValueError):

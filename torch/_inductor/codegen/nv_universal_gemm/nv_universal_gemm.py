@@ -21,7 +21,10 @@ from torch._inductor.autotune_process import (
 from torch._inductor.codegen.cuda.cuda_env import get_cuda_arch
 from torch._inductor.codegen.nv_universal_gemm.nv_universal_gemm_kernel import (
     _create_gemm_arguments,
+    _create_gemm_cache_key,
+    _cutedsl_compile_lock,
     _get_scaled_gemm_modes,
+    _global_compiled_cache,
 )
 from torch._inductor.ir import Buffer, ChoiceCaller, Layout, TensorBox
 from torch._inductor.kernel_inputs import MMKernelInputs
@@ -117,37 +120,44 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
 
     def make_run_fn(self, *input_tensors: torch.Tensor, out: torch.Tensor):
         """Create a function to run the NVIDIA Universal GEMM kernel."""
-        helper_kwargs: dict[str, Any] = {}
-        if self.variant == GemmVariant.SCALED_GEMM:
-            scale_mode_a, swizzle_mode_a, scale_mode_b, swizzle_mode_b = (
-                _get_scaled_gemm_modes(
-                    self.scale_type_a,
-                    self.swizzle_type_a,
-                    self.scale_type_b,
-                    self.swizzle_type_b,
-                )
-            )
-            helper_kwargs = {
-                "scale_mode_a": scale_mode_a,
-                "swizzle_mode_a": swizzle_mode_a,
-                "scale_mode_b": scale_mode_b,
-                "swizzle_mode_b": swizzle_mode_b,
-            }
-
         from torch._inductor.utils import _ensure_fp4_dtype_registered
 
         _ensure_fp4_dtype_registered()
 
-        args = _create_gemm_arguments(
-            self.variant.name,
-            input_tensors,
-            out,
-            self.accumulator_type,
-            **helper_kwargs,
-        )
+        with _cutedsl_compile_lock:
+            helper_kwargs: dict[str, Any] = {}
+            if self.variant == GemmVariant.SCALED_GEMM:
+                scale_mode_a, swizzle_mode_a, scale_mode_b, swizzle_mode_b = (
+                    _get_scaled_gemm_modes(
+                        self.scale_type_a,
+                        self.swizzle_type_a,
+                        self.scale_type_b,
+                        self.swizzle_type_b,
+                    )
+                )
+                helper_kwargs = {
+                    "scale_mode_a": scale_mode_a,
+                    "swizzle_mode_a": swizzle_mode_a,
+                    "scale_mode_b": scale_mode_b,
+                    "swizzle_mode_b": swizzle_mode_b,
+                }
 
-        if self._compiled_artifact is None:
-            self._compiled_artifact = self.kernel.compile(args)
+            args = _create_gemm_arguments(
+                self.variant.name,
+                input_tensors,
+                out,
+                self.accumulator_type,
+                **helper_kwargs,
+            )
+
+            if self._compiled_artifact is None:
+                cache_key = _create_gemm_cache_key(input_tensors, out)
+                dev_idx = input_tensors[0].device.index or 0
+                global_key = (self.kernel.metadata.kernel_name, cache_key, dev_idx)
+                self._compiled_artifact = _global_compiled_cache.get(global_key)
+                if self._compiled_artifact is None:
+                    self._compiled_artifact = self.kernel.compile(args)
+                    _global_compiled_cache.insert(global_key, self._compiled_artifact)
         artifact = self._compiled_artifact
         kernel = self.kernel
 
@@ -172,6 +182,12 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
             )
 
         return run_kernel
+
+    def precompile(self):
+        input_tensors = tuple(x.to_tensor() for x in self.input_tensor_meta)
+        out = self.output_tensor_meta.to_tensor()
+        self.make_run_fn(*input_tensors, out=out)
+        self.cleanup_run_fn()
 
     def cleanup_run_fn(self) -> None:
         self._workspace = None
@@ -236,6 +252,9 @@ class NVUniversalGemmCaller(ChoiceCaller):
 
     def __str__(self) -> str:
         return f"NVUniversalGemmCaller({self.kernel.metadata.kernel_name})"
+
+    def precompile(self):
+        self.bmreq.precompile()
 
     def benchmark(self, *args, out) -> float:
         self.bmreq.benchmark_with_cudagraphs = self._benchmark_with_cudagraphs
