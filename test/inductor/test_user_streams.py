@@ -303,6 +303,7 @@ with torch.xpu._DeviceGuard(0):
     @unittest.skipIf(not TEST_CUDA, "requires CUDA")
     def test_generated_code_uses_get_stream_by_index(self):
         """Generated inductor code should use _get_stream_by_index."""
+        from torch._inductor.utils import run_and_get_code
 
         def fn(x):
             s = torch.Stream(device="cuda")
