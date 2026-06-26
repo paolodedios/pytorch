@@ -337,10 +337,23 @@ def _emit_value(
     # hands back fresh copies), so match by value via the type's __members__ map.
     members = getattr(type(obj), "__members__", None)
     name = getattr(obj, "name", None)
-    if isinstance(obj, enum.Enum) or (
+    is_enum_like = isinstance(obj, enum.Enum) or (
         members is not None and name in members and members[name] == obj
-    ):
-        return f"{_emit_importable(type(obj), imports)}.{name}"
+    )
+    if is_enum_like:
+        if name is not None and members is not None and name in members:
+            return f"{_emit_importable(type(obj), imports)}.{name}"
+        # A combined Flag/IntFlag member (A | B) has no single member name, so emit by
+        # value -- ``Type(value)`` reproduces the same combined member. A non-Flag enum
+        # with no resolvable name is not source-expressible, so reject it rather than
+        # emit ``Type.None`` (a SyntaxError that would break the whole module).
+        if isinstance(obj, enum.Flag):
+            cls = _emit_importable(type(obj), imports)
+            return f"{cls}({_emit_value(obj.value, imports)})"
+        raise NotImplementedError(
+            f"compile_to_python cannot bake enum member {obj!r}: it has no resolvable "
+            "member name and is not a Flag."
+        )
 
     if isinstance(obj, functools.partial):
         parts = [_emit_value(obj.func, imports)]
@@ -371,16 +384,21 @@ def _emit_value(
             )
         return f"{_emit_importable(SymIntEqByExpr, imports)}({int(obj.val)})"
 
-    # namedtuple before plain tuple (it has a richer, by-name constructor).
+    # namedtuple before plain tuple (it has a richer, by-name constructor). The plain
+    # container branches match EXACT builtin types only (like the scalar branch above): a
+    # container SUBCLASS (e.g. a ``list`` subclass carrying extra state) would otherwise be
+    # silently downcast to its base type, dropping the subclass and its state. Subclasses
+    # fall through to _emit_via_reduce, which reconstructs them faithfully or rejects them
+    # (its listitems/dictitems guard fires for list/dict subclasses).
     if isinstance(obj, tuple) and hasattr(obj, "_fields"):
         cls = _emit_importable(type(obj), imports)
         return f"{cls}({', '.join(_emit_value(x, imports) for x in obj)})"
-    if isinstance(obj, tuple):
+    if type(obj) is tuple:
         items = [_emit_value(x, imports) for x in obj]
         return f"({items[0]},)" if len(items) == 1 else f"({', '.join(items)})"
-    if isinstance(obj, list):
+    if type(obj) is list:
         return f"[{', '.join(_emit_value(x, imports) for x in obj)}]"
-    if isinstance(obj, (set, frozenset)):
+    if type(obj) is set or type(obj) is frozenset:
         ctor = "frozenset" if isinstance(obj, frozenset) else "set"
         # Iteration order of a set is not byte-stable across processes, so emit the
         # elements in a canonical order: sort them when they are mutually orderable
@@ -400,7 +418,7 @@ def _emit_value(
         except TypeError:
             elems = sorted(elems, key=lambda x: _emit_value(x, set()))
         return f"{ctor}([{', '.join(_emit_value(x, imports) for x in elems)}])"
-    if isinstance(obj, dict):
+    if type(obj) is dict:
         items = [
             f"{_emit_value(k, imports)}: {_emit_value(v, imports)}"
             for k, v in obj.items()

@@ -89,6 +89,17 @@ class _IColor(enum.IntEnum):
     BLUE = 2
 
 
+class _Flag(enum.IntFlag):
+    A = 1
+    B = 2
+
+
+class _MyList(list):
+    # A builtin-container subclass; emitting it as a plain list would silently drop the
+    # subclass, so it must be rejected (via _emit_via_reduce's listitems guard).
+    pass
+
+
 _Point = collections.namedtuple("_Point", ["x", "y"])
 
 
@@ -186,6 +197,11 @@ class _SumDim1(torch.nn.Module):
         return x.sum(dim=1)
 
 
+class _MultiOut(torch.nn.Module):
+    def forward(self, x):
+        return x * 2.0, x.sum(dim=1), torch.relu(x)
+
+
 class _BufferMutate(torch.nn.Module):
     def __init__(self):
         super().__init__()
@@ -271,6 +287,20 @@ class TestAOTCompileToPython(TestCase):
             xi = torch.randn(n, 4)
             with torch.no_grad():
                 self.assertEqual(fn(_flat_inputs(m, xi))[0], m(xi))
+
+    def test_multi_output_runs_like_eager(self):
+        # Exercises the output epilogue's multi-output count/ordering: the composed module
+        # must return all outputs in the captured order, each equal to eager.
+        m = _MultiOut().eval()
+        x = torch.randn(6, 7)
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
+        eager = m(x)
+        with torch.no_grad():
+            out = _exec(src)(_flat_inputs(m, x))
+        self.assertEqual(len(out), len(eager))
+        for got, want in zip(out, eager):
+            self.assertEqual(got, want)
 
     def test_input_mutation_copy_back_runs_like_eager(self):
         # A buffer mutated in place exercises AOTAutograd's mutation epilogue (input copy-
@@ -424,6 +454,14 @@ class TestAOTCompileToPythonHelpers(TestCase):
         # branch, not the repr branch.
         self.assertIs(_roundtrip(_IColor.RED), _IColor.RED)
 
+    def test_combined_flag_emits_by_value(self):
+        # A combined Flag member (A | B) has no single member name; emitting by name would
+        # produce "Type.None" (a SyntaxError). It must reconstruct by value instead.
+        combined = _Flag.A | _Flag.B
+        self.assertEqual(_roundtrip(combined), combined)
+        self.assertIs(_roundtrip(_Flag.A), _Flag.A)  # singleton still by-name
+        self.assertEqual(_roundtrip(_Flag(0)), _Flag(0))  # empty flag
+
     def test_functools_partial(self):
         # _roundtrip rebuilds the partial object itself; invoking it then applies the
         # baked func/args/keywords.
@@ -506,10 +544,19 @@ class TestAOTCompileToPythonHelpers(TestCase):
         with self.assertRaisesRegex(NotImplementedError, "self-referential"):
             _emit(d)
 
-    def test_repeated_scalar_is_not_a_cycle(self):
-        # Scalars are exempt from the identity cycle guard, so a list repeating a scalar
-        # must still emit.
+    def test_repeated_leaf_is_not_a_cycle(self):
+        # The cycle guard tracks only ancestors on the recursion path, not siblings, so a
+        # leaf repeated across sibling positions is not a false cycle -- for a scalar...
         self.assertEqual(_emit([0, 0, 0]), ("[0, 0, 0]", []))
+        # ...and for a shared non-scalar object repeated as siblings.
+        inner = (1, 2)
+        self.assertEqual(_emit([inner, inner]), ("[(1, 2), (1, 2)]", []))
+
+    def test_container_subclass_rejected(self):
+        # A builtin-container subclass must not be silently downcast to its base type; it
+        # falls through to _emit_via_reduce, whose listitems guard rejects it.
+        with self.assertRaisesRegex(NotImplementedError, "container subclass"):
+            _emit(_MyList([1, 2]))
 
     def test_emit_via_reduce_round_trips_opaque_object(self):
         # An opaque value object with a copyreg.__newobj__ reduce + dict state rebuilds via
@@ -563,6 +610,24 @@ class TestAOTCompileToPythonHelpers(TestCase):
         root = torch.nn.Module()
         root.sub = child_gm
         parent_gm = fx.GraphModule(root, parent)
+        self.assertIs(
+            _find_effectful_op(parent_gm, _get_effect), torch.ops.aten._print.default
+        )
+
+    def test_find_effectful_op_nested_in_container_arg(self):
+        # A child GraphModule reached via a container-nested node ARG (not get_attr) -- the
+        # form HOPs use to pass a body callable -- must still be scanned for effects.
+        child = fx.Graph()
+        ca = child.placeholder("a")
+        child.call_function(torch.ops.aten._print.default, ("hi",))
+        child.output((ca,))
+        child_gm = fx.GraphModule(torch.nn.Module(), child)
+
+        parent = fx.Graph()
+        pa = parent.placeholder("a")
+        parent.call_function(torch.relu, (pa,), {"bodies": [child_gm]})
+        parent.output((pa,))
+        parent_gm = fx.GraphModule(torch.nn.Module(), parent)
         self.assertIs(
             _find_effectful_op(parent_gm, _get_effect), torch.ops.aten._print.default
         )
