@@ -464,6 +464,7 @@ def output_signpost(data, args, suite, error=None):
         "disable_output",
         "export_profiler_trace",
         "profiler_trace_name",
+        "profile_details",
         "explain",
         "stats",
         "print_memory",
