@@ -4336,7 +4336,9 @@ Tensor linalg_matrix_exp_differential(
 // self-adjoint w.r.t. the real trace inner product; hence the same operator
 // serves the VJP and the JVP. Requires positive-definite input (the denominator
 // vanishes at a zero eigenvalue).
-Tensor linalg_matrix_sqrth_differential(const Tensor& self, const Tensor& grad) {
+Tensor linalg_matrix_sqrth_differential(
+    const Tensor& self,
+    const Tensor& grad) {
   if (!grad.defined()) {
     return {};
   }

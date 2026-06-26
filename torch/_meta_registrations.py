@@ -265,7 +265,9 @@ def linalg_matrix_exp(self):
 @out_wrapper()
 def linalg_matrix_sqrth(self):
     squareCheckInputs(self, "linalg.matrix_sqrth")
-    checkFloatingOrComplex(self, "linalg.matrix_sqrth", allow_low_precision_dtypes=False)
+    checkFloatingOrComplex(
+        self, "linalg.matrix_sqrth", allow_low_precision_dtypes=False
+    )
     return torch.empty_like(self, memory_format=torch.contiguous_format)
 
 
