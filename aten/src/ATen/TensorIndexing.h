@@ -397,6 +397,28 @@ inline Tensor scalarToTensor(
   }
 }
 
+template <typename T>
+inline Tensor asTensor(const T& value, const Tensor& target) {
+  static_assert(
+      std::is_same_v<T, Tensor> || std::is_same_v<T, Scalar>,
+      "T must be either at::Tensor or at::Scalar");
+  if constexpr (std::is_same_v<T, Scalar>) {
+    at::AutoDispatchBelowADInplaceOrView guard;
+    at::Device target_device = target.device();
+    // TODO: This qint special case looks very suspicious...
+    if (isQIntType(target.scalar_type())) {
+      return scalarToTensor(
+          value, device(kCPU).dtype(kFloat), at::Device(kCPU));
+    } else if (target_device.is_cuda()) {
+      return scalarToTensor(value, target.options(), at::Device(kCPU));
+    } else {
+      return scalarToTensor(value, target.options(), target_device);
+    }
+  } else {
+    return value;
+  }
+}
+
 // To match numpy semantics:
 // As a special case for backwards compatibility,
 // strip away unit dimensions from the left of 'src'
@@ -444,6 +466,10 @@ inline void copy_to(const Tensor& dst, const Tensor& src) {
   auto src_view = src.view_symint(slicePrefix1sSize(src.sym_sizes()));
   c10::MaybeOwned<Tensor> b_src = expand_inplace(dst, src_view, "setitem");
   dst.copy_(*b_src);
+}
+
+inline void copy_to(const Tensor& dst, const Scalar& src) {
+  dst.fill_(src);
 }
 
 // See NOTE [ Setting `disable_slice_optimization` when calling C++ tensor
@@ -710,11 +736,15 @@ inline Tensor get_item(
 // torch/csrc/autograd/python_variable_indexing.cpp for "the assigned value is a
 // Tensor" case See NOTE [ Setting `disable_slice_optimization` when calling C++
 // tensor indexing functions from Python ]
+template <typename T>
 inline void set_item(
     const Tensor& self,
     const ArrayRef<TensorIndex>& indices,
-    const Tensor& value,
+    const T& value,
     bool disable_slice_optimization = false) {
+  static_assert(
+      std::is_same_v<T, Tensor> || std::is_same_v<T, Scalar>,
+      "T must be either at::Tensor or at::Scalar");
   at::Device self_device = self.device();
   SymIntArrayRef self_sizes = self.sym_sizes();
 
@@ -766,13 +796,14 @@ inline void set_item(
     return;
   }
 
-  SymIntArrayRef valueSizes = value.sym_sizes();
+  Tensor valueTensor = asTensor(value, self);
+  SymIntArrayRef valueSizes = valueTensor.sym_sizes();
   SymIntArrayRef slicedValueSizes = slicePrefix1sSize(valueSizes);
   Tensor valuesSliced;
   if (!valueSizes.equals(slicedValueSizes)) {
-    valuesSliced = value.view_symint(slicedValueSizes);
+    valuesSliced = valueTensor.view_symint(slicedValueSizes);
   } else {
-    valuesSliced = value;
+    valuesSliced = valueTensor;
   }
   dispatch_index_put_(sliced, std::move(tensorIndices), valuesSliced);
   return;
