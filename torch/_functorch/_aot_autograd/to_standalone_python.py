@@ -36,6 +36,7 @@ from .subclass_codegen import capture_generated_sources, GeneratedSource
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+    from torch._inductor.standalone_compile import DynamicShapesType
     from torch.fx import GraphModule
 
 
@@ -60,7 +61,7 @@ class CompileToPythonBackend(Protocol):
         gm: GraphModule,
         example_inputs: Sequence[Any],
         *,
-        dynamic_shapes: str = ...,
+        dynamic_shapes: DynamicShapesType = ...,
         options: Any = ...,
     ) -> tuple[str, bytes | None]: ...
 
@@ -238,9 +239,15 @@ def _emit_importable(obj: Any, imports: set[str]) -> str:
     return f"{module}.{qualname}"
 
 
-def _emit_value(
-    obj: Any, imports: set[str], _in_progress: set[int] | None = None
-) -> str:
+# Realistic baked metadata (tensor-subclass specs, view-replay recipes) is shallow --
+# single-digit nesting. A structure deeper than this is almost certainly unintended,
+# and recursing it would hit Python's RecursionError (an opaque failure) rather than
+# this module's clean typed contract; bound the depth and raise NotImplementedError
+# like every other non-source-expressible case.
+_MAX_EMIT_DEPTH = 100
+
+
+def _emit_value(obj: Any, imports: set[str]) -> str:
     """Emit a Python expression (valid in the generated module) that rebuilds ``obj``
     from source -- the pickle-free replacement for embedding a base64 blob.
 
@@ -248,12 +255,17 @@ def _emit_value(
     exec'ing it never runs ``pickle.loads``. Bottoms out for opaque value objects (e.g.
     tensor-subclass placement objects) at the pickle reduce protocol, but EMITTED AS
     SOURCE via ``_rebuild`` (see ``_emit_via_reduce``). Raises NotImplementedError at
-    any leaf that cannot be expressed as source (e.g. a live tensor or a lambda).
+    any leaf that cannot be expressed as source (e.g. a live tensor or a lambda)."""
+    return _emit_value_impl(obj, imports, set())
 
-    ``_in_progress`` is an identity-keyed set of the objects currently being emitted
-    on this recursion path; revisiting one means the metadata is self-referential,
-    which cannot be expressed as a source literal, so we raise rather than recurse
-    forever (otherwise a cyclic structure would blow the stack with RecursionError)."""
+
+def _emit_value_impl(obj: Any, imports: set[str], in_progress: set[int]) -> str:
+    """Recursive core of ``_emit_value``. ``in_progress`` is an identity-keyed set of
+    the objects currently being emitted on this recursion path: revisiting one means
+    the metadata is self-referential (not expressible as a source literal), and its
+    size bounds the nesting depth -- both raise NotImplementedError rather than
+    recursing until RecursionError. ``_emit_via_reduce`` calls back here with the same
+    set so the guard spans the reduce-state recursion too."""
     import dataclasses
     import enum
     import functools
@@ -292,26 +304,28 @@ def _emit_value(
             "raw bytes and require pickle.loads at exec time."
         )
 
-    # Cycle / depth guard: thread an identity-keyed in-progress set down the recursion
-    # so a self-referential metadata object raises NotImplementedError naming the
-    # offending type instead of recursing until RecursionError.
-    if _in_progress is None:
-        _in_progress = set()
-    if id(obj) in _in_progress and not isinstance(
+    # Cycle / depth guard: a self-referential metadata object (its id already on the
+    # path) or one nested past _MAX_EMIT_DEPTH raises NotImplementedError naming the
+    # cause rather than recursing until RecursionError.
+    if id(obj) in in_progress and not isinstance(
         obj, (bool, int, float, complex, str, bytes, bytearray, type(None))
     ):
         raise NotImplementedError(
             f"compile_to_python cannot bake {type(obj).__qualname__}: it is "
             "self-referential, which is not expressible as source."
         )
+    if len(in_progress) > _MAX_EMIT_DEPTH:
+        raise NotImplementedError(
+            f"compile_to_python cannot bake metadata nested deeper than "
+            f"{_MAX_EMIT_DEPTH}: it is too deeply nested to express as source."
+        )
 
-    _child = _in_progress | {id(obj)}
+    child = in_progress | {id(obj)}
 
-    def _emit_value(obj: Any, imports: set[str]) -> str:
-        # Shadow the module-level recursion entry point so every recursive call in
-        # this function body automatically threads the current in-progress set
-        # (with the parent ``obj`` added) without touching each call site.
-        return _emit_value_recurse(obj, imports, _child)
+    def _emit(x: Any) -> str:
+        # Recurse on a child value, threading the same imports and in-progress set
+        # (with the current ``obj`` added) so the cycle/depth guard spans the subtree.
+        return _emit_value_impl(x, imports, child)
 
     # Non-finite floats: repr() gives bare ``inf`` / ``-inf`` / ``nan``, which are
     # NameErrors in the generated module (it imports no such names). Emit a
@@ -324,8 +338,8 @@ def _emit_value(
     if isinstance(obj, complex) and not (
         math.isfinite(obj.real) and math.isfinite(obj.imag)
     ):
-        real = _emit_value(obj.real, imports)
-        imag = _emit_value(obj.imag, imports)
+        real = _emit(obj.real)
+        imag = _emit(obj.imag)
         return f"complex({real}, {imag})"
 
     # Plain constants reproduce via repr (but not IntEnum/StrEnum members, whose repr
@@ -349,7 +363,7 @@ def _emit_value(
         return f"torch.device({str(obj)!r})"
     if isinstance(obj, torch.Size):
         imports.add("import torch")
-        return f"torch.Size([{', '.join(_emit_value(x, imports) for x in obj)}])"
+        return f"torch.Size([{', '.join(_emit(x) for x in obj)}])"
     if isinstance(obj, torch.SymInt):
         concrete = obj.node.maybe_as_int()
         if concrete is None:
@@ -377,11 +391,9 @@ def _emit_value(
         return f"{_emit_importable(type(obj), imports)}.{name}"
 
     if isinstance(obj, functools.partial):
-        parts = [_emit_value(obj.func, imports)]
-        parts += [_emit_value(a, imports) for a in obj.args]
-        parts += [
-            f"{k}={_emit_value(v, imports)}" for k, v in (obj.keywords or {}).items()
-        ]
+        parts = [_emit(obj.func)]
+        parts += [_emit(a) for a in obj.args]
+        parts += [f"{k}={_emit(v)}" for k, v in (obj.keywords or {}).items()]
         imports.add("import functools")
         return f"functools.partial({', '.join(parts)})"
 
@@ -392,11 +404,11 @@ def _emit_value(
         # as_tuple lives on the ViewMeta subclass bindings (create_binding_with_pickle),
         # not on the base ViewMeta stub, so pyrefly cannot see it on the isinstance type.
         tup = obj.as_tuple()  # pyrefly: ignore[missing-attribute]
-        return f"{_emit_importable(type(obj), imports)}({_emit_value(tuple(tup), imports)})"
+        return f"{_emit_importable(type(obj), imports)}({_emit(tuple(tup))})"
     if isinstance(obj, ViewMetaSequence):
         cls = _emit_importable(ViewMetaSequence, imports)
-        seq = _emit_value(list(obj.sequence), imports)
-        return f"{cls}._from_parts({seq}, {_emit_value(obj.metadata, imports)})"
+        seq = _emit(list(obj.sequence))
+        return f"{cls}._from_parts({seq}, {_emit(obj.metadata)})"
     if isinstance(obj, SymIntEqByExpr):
         if not getattr(obj.val, "is_Integer", False):
             raise NotImplementedError(
@@ -408,12 +420,12 @@ def _emit_value(
     # namedtuple before plain tuple (it has a richer, by-name constructor).
     if isinstance(obj, tuple) and hasattr(obj, "_fields"):
         cls = _emit_importable(type(obj), imports)
-        return f"{cls}({', '.join(_emit_value(x, imports) for x in obj)})"
+        return f"{cls}({', '.join(_emit(x) for x in obj)})"
     if isinstance(obj, tuple):
-        items = [_emit_value(x, imports) for x in obj]
+        items = [_emit(x) for x in obj]
         return f"({items[0]},)" if len(items) == 1 else f"({', '.join(items)})"
     if isinstance(obj, list):
-        return f"[{', '.join(_emit_value(x, imports) for x in obj)}]"
+        return f"[{', '.join(_emit(x) for x in obj)}]"
     if isinstance(obj, (set, frozenset)):
         ctor = "frozenset" if isinstance(obj, frozenset) else "set"
         # Iteration order of a set is not byte-stable across processes, so emit the
@@ -424,7 +436,7 @@ def _emit_value(
         # key guaranteed to be byte-stable across processes. A ``repr``-keyed sort
         # would silently admit a custom-but-nondeterministic ``__repr__`` (e.g. one
         # embedding ``id(self)``), making the emitted source differ run to run.
-        # Building the key via ``_emit_value`` also forces each element through the
+        # Building the key via ``_emit_value_impl`` also forces each element through the
         # same source-expressibility gate, so a non-source-expressible element raises
         # here exactly as it would when finally emitted (into a throwaway imports set
         # so the keying pass never leaks an import the final emit would not).
@@ -432,26 +444,26 @@ def _emit_value(
         try:
             elems = sorted(elems)
         except TypeError:
-            elems = sorted(elems, key=lambda x: _emit_value(x, set()))
-        return f"{ctor}([{', '.join(_emit_value(x, imports) for x in elems)}])"
+            elems = sorted(elems, key=lambda x: _emit_value_impl(x, set(), child))
+        return f"{ctor}([{', '.join(_emit(x) for x in elems)}])"
     if isinstance(obj, dict):
-        items = [
-            f"{_emit_value(k, imports)}: {_emit_value(v, imports)}"
-            for k, v in obj.items()
-        ]
+        items = [f"{_emit(k)}: {_emit(v)}" for k, v in obj.items()]
         return f"{{{', '.join(items)}}}"
 
     # Dataclasses (e.g. MetadataKey, SubclassViewMetaSequence) reproduce field-by-field
-    # through their generated constructor, passing only the init fields. That path is
-    # faithful ONLY when the object carries no state outside those init fields: a
-    # non-init field (init=False) holding state, or a __post_init__ that derives state
-    # the constructor call would not reproduce, would be silently dropped. Guard it the
-    # same way the rest of this module guards opaque leaves -- reject rather than emit a
-    # subtly-wrong artifact -- by round-tripping through the constructor and requiring
-    # the rebuilt instance to compare equal to the original. The in-scope metadata
-    # types (MetadataKey, SubclassViewMetaSequence, ...) are plain value dataclasses, so
-    # they round-trip and keep working; a type with hidden/derived state does not and
-    # raises NotImplementedError naming itself.
+    # through their generated constructor, passing only the init fields. That is faithful
+    # ONLY when the object carries no state outside those init fields. Guard it the same
+    # way the rest of this module guards opaque leaves -- reject rather than emit a
+    # subtly-wrong artifact -- by rebuilding from the init fields and requiring every
+    # field (init and non-init) to match the original BY VALUE. Comparing fields directly
+    # rather than via ``rebuilt == obj`` is deliberate: it catches a non-init field that
+    # holds state the constructor would not reproduce even when that field is hidden from
+    # the generated ``__eq__`` (``compare=False``), and it does not spuriously reject a
+    # plain value dataclass declared ``eq=False`` (whose ``==`` falls back to identity).
+    # A field whose ``==`` is not decidable as a bool (e.g. a live tensor's elementwise
+    # compare) is left to the emit step below, which raises the precise leaf error rather
+    # than this gate's vaguer dropped-state message. The in-scope metadata types are
+    # plain value dataclasses, so they keep working.
     if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
         cls = _emit_importable(type(obj), imports)
         fields = dataclasses.fields(obj)
@@ -460,42 +472,45 @@ def _emit_value(
             # type(obj) is the concrete dataclass at runtime, not the protocol pyrefly
             # infers from the is_dataclass narrowing; the call is correct.
             rebuilt = type(obj)(**init_kwargs)  # pyrefly: ignore[bad-instantiation]
-            round_trips = rebuilt == obj
         except Exception:
-            round_trips = False
-        if not round_trips:
+            rebuilt = None
+        dropped_state = rebuilt is None
+        for f in fields if rebuilt is not None else ():
+            try:
+                fields_match = bool(getattr(rebuilt, f.name) == getattr(obj, f.name))
+            except Exception:
+                # Undecidable compare (e.g. a live tensor field): defer to the emit step,
+                # which raises the precise non-source-expressible error for that leaf.
+                continue
+            if not fields_match:
+                dropped_state = True
+                break
+        if dropped_state:
             raise NotImplementedError(
-                f"compile_to_python cannot bake dataclass {type(obj).__qualname__}: it "
-                "does not round-trip through its constructor from its init fields alone "
-                "(it likely has a stateful non-init field or a __post_init__ deriving "
-                "state the constructor call would not reproduce), so emitting only the "
-                "init fields would silently drop that state."
+                f"compile_to_python cannot bake dataclass {type(obj).__qualname__}: "
+                "rebuilding it from its init fields does not reproduce every field (it "
+                "likely has a stateful non-init field or a __post_init__ deriving state "
+                "the constructor call would not reproduce), so emitting only the init "
+                "fields would silently drop that state."
             )
-        kw = [f"{k}={_emit_value(v, imports)}" for k, v in init_kwargs.items()]
+        kw = [f"{k}={_emit(v)}" for k, v in init_kwargs.items()]
         return f"{cls}({', '.join(kw)})"
 
-    return _emit_via_reduce(obj, imports, _child)
+    return _emit_via_reduce(obj, imports, child)
 
 
-# The recursion entry point used by the in-body shadow of ``_emit_value`` and by
-# ``_emit_via_reduce`` to thread the identity-keyed in-progress set (finding 4).
-_emit_value_recurse = _emit_value
-
-
-def _emit_via_reduce(
-    obj: Any, imports: set[str], _in_progress: set[int] | None = None
-) -> str:
+def _emit_via_reduce(obj: Any, imports: set[str], in_progress: set[int]) -> str:
     """Last resort for opaque value objects (e.g. DTensor placements, which are C++
     objects with no source-friendly constructor): reconstruct from the pickle reduce
     protocol, but EMITTED AS SOURCE -- ``cls.__new__(cls)`` plus ``_rebuild`` applying
     the reduce state -- so there is no ``pickle.loads`` at exec time and the bytes
-    are readable. The reduce state recurses back through ``_emit_value``, so any
-    non-source-expressible leaf inside it still raises."""
+    are readable. The reduce state recurses back through ``_emit_value_impl`` (with the
+    caller's in-progress set), so any non-source-expressible leaf inside it still
+    raises and the cycle/depth guard spans it."""
     import copyreg
 
-    def _emit_value(obj: Any, imports: set[str]) -> str:
-        # Continue threading the cycle guard through the reduce-state recursion.
-        return _emit_value_recurse(obj, imports, _in_progress)
+    def _emit(x: Any) -> str:
+        return _emit_value_impl(x, imports, in_progress)
 
     try:
         reduced = obj.__reduce_ex__(2)
@@ -520,22 +535,22 @@ def _emit_via_reduce(
             "produced list/dict items (container subclass)."
         )
     if func is getattr(copyreg, "__newobj__", None):
-        cls = _emit_value(args[0], imports)
-        extra = ", ".join(_emit_value(a, imports) for a in args[1:])
+        cls = _emit(args[0])
+        extra = ", ".join(_emit(a) for a in args[1:])
         base = f"{cls}.__new__({cls}{', ' + extra if extra else ''})"
     elif func is getattr(copyreg, "__newobj_ex__", None):
         cls_obj, new_args, new_kwargs = args
-        cls = _emit_value(cls_obj, imports)
-        pos = ", ".join(_emit_value(a, imports) for a in new_args)
-        kw = ", ".join(f"{k}={_emit_value(v, imports)}" for k, v in new_kwargs.items())
+        cls = _emit(cls_obj)
+        pos = ", ".join(_emit(a) for a in new_args)
+        kw = ", ".join(f"{k}={_emit(v)}" for k, v in new_kwargs.items())
         joined = ", ".join(p for p in (pos, kw) if p)
         base = f"{cls}.__new__({cls}{', ' + joined if joined else ''})"
     else:
-        func_expr = _emit_value(func, imports)
-        base = f"{func_expr}({', '.join(_emit_value(a, imports) for a in args)})"
+        func_expr = _emit(func)
+        base = f"{func_expr}({', '.join(_emit(a) for a in args)})"
     if state is None:
         return base
-    return f"_rebuild({base}, {_emit_value(state, imports)})"
+    return f"_rebuild({base}, {_emit(state)})"
 
 
 def _compose_standalone_module(
@@ -582,6 +597,18 @@ def _compose_standalone_module(
     orchestration = [
         g for g in captured if g.artifact_name == "runtime_wrapper_orchestration"
     ]
+    if not orchestration:
+        # Zero captured wrappers is the signature failure of a custom backend that did
+        # not drive AOTAutograd's lowering during its call (see the LOAD-BEARING
+        # CONTRACT on CompileToPythonBackend): nothing was codegen'd to capture, so the
+        # composer has no prelude/epilogue to wrap. Name the contract rather than the
+        # internal invariant so a backend author knows what they broke.
+        raise NotImplementedError(
+            "aot_autograd.compile_to_python captured no AOTAutograd runtime wrappers: "
+            "the backend did not drive AOTAutograd's lowering during its call, so the "
+            "prelude/epilogue could not be composed. A backend must run AOTAutograd "
+            "lowering of the graph within its call (see CompileToPythonBackend)."
+        )
     if len(orchestration) != 1:
         raise NotImplementedError(
             "aot_autograd.compile_to_python expected exactly one forward "
@@ -793,7 +820,7 @@ def compile_to_python(
     example_inputs: Sequence[Any],
     *,
     backend: CompileToPythonBackend | None = None,
-    dynamic_shapes: str = "from_example_inputs",
+    dynamic_shapes: DynamicShapesType = "from_example_inputs",
     options: Any = None,
 ) -> tuple[str, bytes | None]:
     """Compile ``gm`` to ``(python_code, cache)`` via ``backend``; see the module docstring.
@@ -815,7 +842,7 @@ def compile_to_python(
     if backend is None:
         from torch._inductor import compile_to_python as _default_backend
 
-        backend = _default_backend  # type: ignore[assignment]
+        backend = _default_backend
 
     # Effectful ops thread effect tokens through a calling convention the standalone
     # composition does not reproduce (and their with_effects HOP is non-cacheable);
