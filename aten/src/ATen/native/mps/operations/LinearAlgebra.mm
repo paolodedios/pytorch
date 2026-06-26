@@ -426,6 +426,7 @@ static void linalg_lu_factor_ex_out_mps_impl(const Tensor& A,
 
   dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
     @autoreleasepool {
+      mpsStream->endKernelCoalescing();
       id<MTLCommandBuffer> commandBuffer = mpsStream->commandBuffer();
       auto filter = [[[MPSMatrixDecompositionLU alloc] initWithDevice:device rows:aRows columns:aCols] autorelease];
 
@@ -571,6 +572,7 @@ static void linalg_solve_out_mps_impl(const Tensor& A,
 
   dispatch_sync_with_rethrow(mpsStream->queue(), ^() {
     @autoreleasepool {
+      mpsStream->endKernelCoalescing();
       id<MTLCommandBuffer> commandBuffer = mpsStream->commandBuffer();
 
       auto lu_decomp = [[[MPSMatrixDecompositionLU alloc] initWithDevice:device rows:aRows columns:aCols] autorelease];
