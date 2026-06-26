@@ -7,10 +7,11 @@ a straight-line function where all metadata (indices, attr names,
 subclass types, symint positions) is baked in at compile time.
 """
 
+import contextlib
 import functools
 import keyword
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 
 import torch
 from torch import SymInt
@@ -44,53 +45,92 @@ def _safe_attr_access(var: str, attr: str) -> str:
     return f"getattr({var}, {attr!r})"
 
 
-class _CodegenState:
-    """Accumulates lines of generated source and global bindings."""
+class PySourceBuilder:
+    """Builds indented Python source for compile/exec, along with the globals
+    the generated code closes over and a monotonic fresh-name counter.
 
-    def __init__(self) -> None:
+    Body lines are written WITHOUT leading whitespace; indentation is managed
+    by the ``indent()`` context manager so call sites read as plain code. Pass
+    ``fn_name``/``artifact_name`` to emit a ``def`` header and enable
+    ``build()``, which routes through _compile_and_exec_source.
+    """
+
+    def __init__(
+        self,
+        fn_name: str | None = None,
+        *,
+        args: str = "args",
+        artifact_name: str | None = None,
+    ) -> None:
         self.lines: list[str] = []
         self.globals: dict[str, object] = {}
         self._name_counter: int = 0
+        self._indent: int = 0
+        self._fn_name = fn_name
+        self._artifact_name = artifact_name
+        if fn_name is not None:
+            self.writeline(f"def {fn_name}({args}):")
 
-    def emit(self, line: str, indent: int = 1) -> None:
-        self.lines.append("    " * indent + line)
+    @contextlib.contextmanager
+    def indent(self, offset: int = 1) -> Iterator[None]:
+        self._indent += offset
+        try:
+            yield
+        finally:
+            self._indent -= offset
+
+    def writeline(self, line: str) -> None:
+        self.lines.append("    " * self._indent + line)
 
     def fresh_name(self, prefix: str) -> str:
         name = f"{prefix}_{self._name_counter}"
         self._name_counter += 1
         return name
 
-    def add_global(self, name: str, value: object) -> str:
+    def bind(self, **values: object) -> None:
+        """Bind live objects into the exec globals by keyword, by reference."""
+        self.globals.update(values)
+
+    def bind_value(self, prefix: str, value: object) -> str:
+        """Bind a value under a fresh unique name and return that name."""
+        name = self.fresh_name(prefix)
         self.globals[name] = value
         return name
 
+    def getvalue(self) -> str:
+        return "\n".join(self.lines)
+
+    def build(
+        self, *, wrapped_fn: Callable[..., object] | None = None
+    ) -> Callable[..., object]:
+        assert self._fn_name is not None and self._artifact_name is not None, (  # noqa: S101
+            "build() requires fn_name and artifact_name"
+        )
+        return _compile_and_exec_source(
+            self.getvalue(),
+            self.globals,
+            self._fn_name,
+            self._artifact_name,
+            wrapped_fn=wrapped_fn,
+        )
+
 
 def _codegen_unwrap_subclass(
-    state: _CodegenState,
+    buf: PySourceBuilder,
     meta: SubclassCreationMeta,
     var: str,
-    indent: int = 1,
     include_symints: bool = True,
 ) -> None:
     """Emit code to recursively unwrap a single subclass input."""
     for attr, attr_meta in meta.attrs.items():
         match attr_meta:
             case PlainTensorMeta() | OpaqueMeta():
-                state.emit(
-                    f"unwrapped_args.append({_safe_attr_access(var, attr)})",
-                    indent=indent,
-                )
+                buf.writeline(f"unwrapped_args.append({_safe_attr_access(var, attr)})")
             case SubclassCreationMeta():
-                inner_var = state.fresh_name("_inner")
-                state.emit(
-                    f"{inner_var} = {_safe_attr_access(var, attr)}", indent=indent
-                )
+                inner_var = buf.fresh_name("_inner")
+                buf.writeline(f"{inner_var} = {_safe_attr_access(var, attr)}")
                 _codegen_unwrap_subclass(
-                    state,
-                    attr_meta,
-                    inner_var,
-                    indent=indent,
-                    include_symints=include_symints,
+                    buf, attr_meta, inner_var, include_symints=include_symints
                 )
 
     # Emit symint extraction
@@ -101,19 +141,17 @@ def _codegen_unwrap_subclass(
         has_stride_symints = any(stride_placeholders)
 
         if has_size_symints or has_stride_symints:
-            size_var = state.fresh_name("_size")
-            state.emit(f"{size_var} = {var}.size()", indent=indent)
+            size_var = buf.fresh_name("_size")
+            buf.writeline(f"{size_var} = {var}.size()")
             for i, is_sym in enumerate(size_placeholders):
                 if is_sym:
-                    state.emit(f"unwrapped_args.append({size_var}[{i}])", indent=indent)
+                    buf.writeline(f"unwrapped_args.append({size_var}[{i}])")
 
-            stride_var = state.fresh_name("_stride")
-            state.emit(f"{stride_var} = {var}.stride()", indent=indent)
+            stride_var = buf.fresh_name("_stride")
+            buf.writeline(f"{stride_var} = {var}.stride()")
             for i, is_sym in enumerate(stride_placeholders):
                 if is_sym:
-                    state.emit(
-                        f"unwrapped_args.append({stride_var}[{i}])", indent=indent
-                    )
+                    buf.writeline(f"unwrapped_args.append({stride_var}[{i}])")
 
 
 def _concrete_value(val: None | int | SymInt) -> int:
@@ -132,12 +170,12 @@ def _concrete_value(val: None | int | SymInt) -> int:
 
 
 def _codegen_wrap_subclass(
-    state: _CodegenState,
+    buf: PySourceBuilder,
     meta: SubclassCreationMeta,
     out_idx_ref: list[int],
 ) -> str:
     """Emit code to reconstruct one subclass output. Returns the variable name."""
-    inner_dict_var = state.fresh_name("_out_inner")
+    inner_dict_var = buf.fresh_name("_out_inner")
     entries: list[str] = []
 
     for attr, attr_meta in meta.attrs.items():
@@ -147,10 +185,10 @@ def _codegen_wrap_subclass(
                 out_idx_ref[0] += 1
                 entries.append(f"{attr!r}: unwrapped_outs[{idx}]")
             case SubclassCreationMeta():
-                nested_var = _codegen_wrap_subclass(state, attr_meta, out_idx_ref)
+                nested_var = _codegen_wrap_subclass(buf, attr_meta, out_idx_ref)
                 entries.append(f"{attr!r}: {nested_var}")
 
-    state.emit(f"{inner_dict_var} = {{{', '.join(entries)}}}")
+    buf.writeline(f"{inner_dict_var} = {{{', '.join(entries)}}}")
 
     # Reconstruct outer_size and outer_stride
     size_placeholders = _compute_placeholders(meta.outer_size)
@@ -174,14 +212,14 @@ def _codegen_wrap_subclass(
     size_expr = _build_tuple(meta.outer_size, size_placeholders)
     stride_expr = _build_tuple(meta.outer_stride, stride_placeholders)
 
-    type_name = state.add_global(
-        state.fresh_name("_subclass_type"),
+    type_name = buf.bind_value(
+        "_subclass_type",
         meta.original_subclass_type or type(meta.original_subclass),
     )
-    meta_name = state.add_global(state.fresh_name("_meta"), meta.meta)
+    meta_name = buf.bind_value("_meta", meta.meta)
 
-    result_var = state.fresh_name("_out")
-    state.emit(
+    result_var = buf.fresh_name("_out")
+    buf.writeline(
         f"{result_var} = {type_name}.__tensor_unflatten__("
         f"{inner_dict_var}, {meta_name}, {size_expr}, {stride_expr})"
     )
@@ -189,7 +227,7 @@ def _codegen_wrap_subclass(
 
 
 def _emit_output_wrapping(
-    state: _CodegenState,
+    buf: PySourceBuilder,
     out_metas: list[PlainTensorMeta | SubclassCreationMeta],
 ) -> tuple[list[str], int]:
     """Emit wrapping code for output metas.
@@ -207,7 +245,7 @@ def _emit_output_wrapping(
             num_args_tallied += 1
             out_idx_ref[0] = max(out_idx_ref[0], meta.unwrapped_idx + 1)
         else:
-            result_var = _codegen_wrap_subclass(state, meta, out_idx_ref)
+            result_var = _codegen_wrap_subclass(buf, meta, out_idx_ref)
             result_exprs.append(result_var)
             num_args_tallied += meta.arg_count
 
@@ -215,7 +253,7 @@ def _emit_output_wrapping(
 
 
 def _emit_input_unwrapping(
-    state: _CodegenState,
+    buf: PySourceBuilder,
     inp_metas: list[PlainTensorMeta | SubclassCreationMeta],
     frozen_inp_indices: frozenset[int] = frozenset(),
     include_symints: bool = True,
@@ -226,23 +264,23 @@ def _emit_input_unwrapping(
     """
     for i, meta in enumerate(inp_metas):
         if isinstance(meta, PlainTensorMeta):
-            state.emit(f"unwrapped_args.append(args[{i}])")
+            buf.writeline(f"unwrapped_args.append(args[{i}])")
         elif i in frozen_inp_indices:
             # Frozen by inductor freezing: constant already baked into graph.
-            state.emit("unwrapped_args.append(None)")
+            buf.writeline("unwrapped_args.append(None)")
         else:
-            inp_var = state.fresh_name("_inp")
-            type_name = state.add_global(
-                state.fresh_name("_expected_type"),
+            inp_var = buf.fresh_name("_inp")
+            type_name = buf.bind_value(
+                "_expected_type",
                 meta.original_subclass_type or type(meta.original_subclass),
             )
-            state.emit(f"{inp_var} = args[{i}]")
-            state.emit(
+            buf.writeline(f"{inp_var} = args[{i}]")
+            buf.writeline(
                 f"assert type({inp_var}) is {type_name}, "
                 f"f'expected {{{type_name}}}, got {{type({inp_var})}}'",
             )
             _codegen_unwrap_subclass(
-                state, meta, inp_var, indent=1, include_symints=include_symints
+                buf, meta, inp_var, include_symints=include_symints
             )
 
 
@@ -258,43 +296,41 @@ def _codegen_subclass_wrapper_source(
     Returns (source, globals_dict).  The globals_dict will NOT contain
     ``compiled_fn`` — the caller is responsible for adding it before exec.
     """
-    state = _CodegenState()
+    buf = PySourceBuilder("inner_fn", args="args")
 
-    state.emit("def inner_fn(args):", indent=0)
+    with buf.indent():
+        # --- Resolve AsyncCollectiveTensors ---
+        # ACTs are transient eager-mode wrappers for async collective overlap.
+        # Inductor triton kernels bypass __torch_dispatch__, so we must call
+        # trigger_wait() before the compiled graph uses the data.
+        if act_input_indices:
+            for i in act_input_indices:
+                buf.writeline(f"args[{i}] = args[{i}].trigger_wait()")
 
-    # --- Resolve AsyncCollectiveTensors ---
-    # ACTs are transient eager-mode wrappers for async collective overlap.
-    # Inductor triton kernels bypass __torch_dispatch__, so we must call
-    # trigger_wait() before the compiled graph uses the data.
-    if act_input_indices:
-        for i in act_input_indices:
-            state.emit(f"args[{i}] = args[{i}].trigger_wait()")
+        # --- Input unwrapping ---
+        buf.writeline("unwrapped_args = []")
+        _emit_input_unwrapping(buf, inp_metas, frozen_inp_indices=frozen_inp_indices)
 
-    # --- Input unwrapping ---
-    state.emit("unwrapped_args = []")
-    _emit_input_unwrapping(state, inp_metas, frozen_inp_indices=frozen_inp_indices)
+        # Pass through any trailing args not covered by inp_metas
+        # (e.g. rng seed/offset added by FunctionalizedRngRuntimeWrapper).
+        num_inp_metas = len(inp_metas)
+        buf.writeline(f"unwrapped_args.extend(args[{num_inp_metas}:])")
+        buf.writeline("args.clear()")
 
-    # Pass through any trailing args not covered by inp_metas
-    # (e.g. rng seed/offset added by FunctionalizedRngRuntimeWrapper).
-    num_inp_metas = len(inp_metas)
-    state.emit(f"unwrapped_args.extend(args[{num_inp_metas}:])")
-    state.emit("args.clear()")
+        # --- Call compiled function ---
+        buf.writeline("unwrapped_outs = compiled_fn(unwrapped_args)")
 
-    # --- Call compiled function ---
-    state.emit("unwrapped_outs = compiled_fn(unwrapped_args)")
+        # --- Output wrapping ---
+        result_exprs, num_args_tallied = _emit_output_wrapping(buf, out_metas)
+        result_tuple = f"({', '.join(result_exprs)},)" if result_exprs else "()"
+        if num_fw_outs_saved_for_bw is not None:
+            buf.writeline(
+                f"return {result_tuple} + tuple(unwrapped_outs[{num_args_tallied}:])"
+            )
+        else:
+            buf.writeline(f"return {result_tuple}")
 
-    # --- Output wrapping ---
-    result_exprs, num_args_tallied = _emit_output_wrapping(state, out_metas)
-    result_tuple = f"({', '.join(result_exprs)},)" if result_exprs else "()"
-    if num_fw_outs_saved_for_bw is not None:
-        state.emit(
-            f"return {result_tuple} + tuple(unwrapped_outs[{num_args_tallied}:])"
-        )
-    else:
-        state.emit(f"return {result_tuple}")
-
-    source = "\n".join(state.lines)
-    return source, state.globals
+    return buf.getvalue(), buf.globals
 
 
 def _codegen_subclass_wrap_source(
@@ -305,13 +341,12 @@ def _codegen_subclass_wrap_source(
     Used for the backward epilogue. Shares output-wrapping logic with
     _codegen_subclass_wrapper_source via _emit_output_wrapping.
     """
-    state = _CodegenState()
-    state.emit("def wrap_fn(unwrapped_outs):", indent=0)
-    result_exprs, _ = _emit_output_wrapping(state, out_metas)
-    result_tuple = f"({', '.join(result_exprs)},)" if result_exprs else "()"
-    state.emit(f"return {result_tuple}")
-    source = "\n".join(state.lines)
-    return source, state.globals
+    buf = PySourceBuilder("wrap_fn", args="unwrapped_outs")
+    with buf.indent():
+        result_exprs, _ = _emit_output_wrapping(buf, out_metas)
+        result_tuple = f"({', '.join(result_exprs)},)" if result_exprs else "()"
+        buf.writeline(f"return {result_tuple}")
+    return buf.getvalue(), buf.globals
 
 
 def _compile_and_exec_source(
