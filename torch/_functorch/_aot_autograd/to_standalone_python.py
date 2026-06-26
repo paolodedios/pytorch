@@ -24,6 +24,7 @@ falling back to an opaque embedding.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import re
 import threading
@@ -35,6 +36,7 @@ from .subclass_codegen import capture_generated_sources, GeneratedSource
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
+    from torch._inductor.standalone_compile import DynamicShapesType
     from torch.fx import GraphModule
 
 
@@ -244,6 +246,9 @@ def _emit_value(
     # raw weight bytes and invokes ``pickle.loads`` at exec time -- violating the
     # module's no-weights-baked / never-pickle.loads / fully-auditable guarantees.
     # Reject them explicitly here, before they can fall through to _emit_via_reduce.
+    # A non-Tensor object whose reduce IS ``_load_from_bytes`` (a wrapper that
+    # delegates pickling to a storage's bytes) is caught at the reduce callable in
+    # _emit_via_reduce, where that callable is actually visible.
     if isinstance(
         obj, (torch.Tensor, torch.storage.TypedStorage, torch.UntypedStorage)
     ):
@@ -251,18 +256,6 @@ def _emit_value(
             f"compile_to_python cannot bake a live {type(obj).__qualname__} into "
             "standalone source: that would embed raw tensor bytes and require "
             "pickle.loads at exec time. The standalone artifact bakes no weights."
-        )
-    reduce_func = getattr(getattr(obj, "__reduce_ex__", None), "__func__", None)
-    if reduce_func is None:
-        try:
-            reduce_func = type(obj).__reduce_ex__
-        except Exception:
-            reduce_func = None
-    if reduce_func is getattr(torch.storage, "_load_from_bytes", None):
-        raise NotImplementedError(
-            f"compile_to_python cannot bake {type(obj).__qualname__} into standalone "
-            "source: its reduce is torch.storage._load_from_bytes, which would embed "
-            "raw bytes and require pickle.loads at exec time."
         )
 
     # Cycle / depth guard: thread an identity-keyed in-progress set down the recursion
@@ -466,6 +459,8 @@ def _emit_via_reduce(
     non-source-expressible leaf inside it still raises."""
     import copyreg
 
+    import torch
+
     def _emit_value(obj: Any, imports: set[str]) -> str:
         # Continue threading the cycle guard through the reduce-state recursion.
         return _emit_value_recurse(obj, imports, _in_progress)
@@ -487,10 +482,31 @@ def _emit_via_reduce(
     state = reduced[2] if len(reduced) > 2 else None
     listitems = reduced[3] if len(reduced) > 3 else None
     dictitems = reduced[4] if len(reduced) > 4 else None
+    # A reduce whose callable is ``torch.storage._load_from_bytes`` would embed raw
+    # bytes and require a pickle.loads-equivalent at exec time. This is the ONLY place
+    # that callable is visible (it is the reduce result's func, not the object's
+    # __reduce_ex__ method), so reject it here to uphold the no-bytes / fully-auditable
+    # guarantee for any non-Tensor wrapper that delegates pickling to storage bytes.
+    if func is getattr(torch.storage, "_load_from_bytes", None):
+        raise NotImplementedError(
+            f"compile_to_python cannot bake {type(obj).__qualname__} into standalone "
+            "source: its reduce is torch.storage._load_from_bytes, which would embed "
+            "raw bytes and require pickle.loads at exec time."
+        )
     if listitems is not None or dictitems is not None:
         raise NotImplementedError(
             f"compile_to_python cannot reconstruct {type(obj).__qualname__}: reduce "
             "produced list/dict items (container subclass)."
+        )
+    # A non-None 6th element is a protocol-5 ``state_setter``: the object opted out of
+    # the default __setstate__/__dict__ install that ``_rebuild`` implements, so applying
+    # state via _rebuild would silently use the wrong mechanism. Reject rather than emit
+    # a subtly-wrong object.
+    state_setter = reduced[5] if len(reduced) > 5 else None
+    if state_setter is not None:
+        raise NotImplementedError(
+            f"compile_to_python cannot reconstruct {type(obj).__qualname__}: reduce "
+            "produced a state_setter (protocol-5 form) that _rebuild cannot apply."
         )
     if func is getattr(copyreg, "__newobj__", None):
         cls = _emit_value(args[0], imports)
@@ -563,6 +579,29 @@ def _compose_standalone_module(
     orch = orchestration[0]
     non_orch = [g for g in captured if g is not orch]
 
+    # The generated ``call`` invokes the orchestration POSITIONALLY (see the bottom of
+    # this function): _orchestration(chain_head, contextlib.nullcontext, lambda: None,
+    # flat_inputs). That mapping is hardcoded to the codegen'd signature in
+    # runtime_wrappers.py (``def _runtime_wrapper(_compiled_fn_, _first_ctx_,
+    # _on_before_call_, args)``). Verify the captured signature still matches so a future
+    # rename/reorder fails loudly here instead of silently passing wrong arguments.
+    expected_orch_params = ["_compiled_fn_", "_first_ctx_", "_on_before_call_", "args"]
+    orch_def = next(
+        (
+            n
+            for n in ast.walk(ast.parse(orch.source))
+            if isinstance(n, ast.FunctionDef) and n.name == orch.fn_name
+        ),
+        None,
+    )
+    orch_params = [a.arg for a in orch_def.args.args] if orch_def is not None else None
+    if orch_params != expected_orch_params:
+        raise NotImplementedError(
+            "aot_autograd.compile_to_python: the orchestration wrapper signature "
+            f"changed (expected {expected_orch_params}, got {orch_params}); the "
+            "standalone module invokes it positionally and must be updated to match."
+        )
+
     helper_table = _known_helper_table()
     fn_id_to_name = {id(g.fn): f"_wrapper_{i}" for i, g in enumerate(non_orch)}
 
@@ -632,9 +671,28 @@ def _compose_standalone_module(
     # Chain head passed to the orchestration: the outermost InductorWrapper (last
     # non-orch wrapper that wraps via an inner reference), else the inner call.
     chain_head = "_inner_call"
+    chain_head_g: GeneratedSource | None = None
     for g in non_orch:
         if _inner_ref(g) is not None:
             chain_head = fn_id_to_name[id(g.fn)]
+            chain_head_g = g
+
+    # "Last with an inner-ref == outermost" holds only when capture order is
+    # innermost-to-outermost (it is today: subclass before functionalized-RNG). Back that
+    # assumption with a guard: the true outermost wrapper is the one NO other wrapper
+    # wraps, i.e. whose fn is not referenced as another wrapper's inner. If the chosen
+    # head is itself wrapped, capture order inverted and the chain would be mis-ordered --
+    # reject rather than silently emit a wrong chain (the wiring guard below would not
+    # catch this, since every wrapper is still referenced somewhere).
+    referenced_inner_ids = {
+        id(_inner_ref(g)) for g in non_orch if _inner_ref(g) is not None
+    }
+    if chain_head_g is not None and id(chain_head_g.fn) in referenced_inner_ids:
+        raise NotImplementedError(
+            "aot_autograd.compile_to_python: the selected chain head is itself wrapped "
+            "by another captured wrapper, so capture order is not innermost-to-outermost "
+            "as assumed; refusing to emit a mis-ordered runtime-wrapper chain."
+        )
 
     # _INNER_NAMES detection is a hardcoded allowlist (see above). If AOTAutograd adds
     # a forward wrapper that names its inner via an unrecognized global, that wrapper
@@ -765,8 +823,8 @@ def compile_to_python(
     gm: GraphModule,
     example_inputs: Sequence[Any],
     *,
-    dynamic_shapes: str = "from_example_inputs",
-    options: Any = None,
+    dynamic_shapes: DynamicShapesType = "from_example_inputs",
+    options: dict[str, Any] | None = None,
 ) -> tuple[str, bytes | None]:
     """Compile ``gm`` to ``(python_code, cache)``; see the module docstring.
 
@@ -777,8 +835,18 @@ def compile_to_python(
     artifacts, so concurrent calls (including via ``torch.compiler.precompile``) are serialized
     rather than run in parallel.
     """
+    import torch
     from torch._higher_order_ops.effects import _get_effect
     from torch._inductor import compile_to_python as _inductor_compile_to_python
+
+    # Validate up front: this layer dereferences ``gm.graph`` (the effectful-op scan
+    # below) before reaching inductor's own type-check, so a non-GraphModule would
+    # otherwise surface as an opaque AttributeError instead of this clear contract error.
+    if not isinstance(gm, torch.fx.GraphModule):
+        raise TypeError(
+            "aot_autograd.compile_to_python expects a post-AOTAutograd "
+            f"torch.fx.GraphModule, got {type(gm)}."
+        )
 
     # Effectful ops thread effect tokens through a calling convention the standalone
     # composition does not reproduce (and their with_effects HOP is non-cacheable);
@@ -802,7 +870,7 @@ def compile_to_python(
             inner_python, cache = _inductor_compile_to_python(
                 gm,
                 example_inputs,
-                dynamic_shapes=dynamic_shapes,  # type: ignore[arg-type]
+                dynamic_shapes=dynamic_shapes,
                 options=options,
             )
         source = _compose_standalone_module(inner_python, captured)
