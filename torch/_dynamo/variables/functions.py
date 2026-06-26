@@ -91,6 +91,7 @@ from ..utils import (
 from .base import (
     AsPythonConstantNotImplementedError,
     AttributeMutationNew,
+    NO_SUCH_SUBOBJ,
     ValueMutationNew,
     VariableTracker,
 )
@@ -4480,8 +4481,6 @@ class MemberDescriptorVariable(VariableTracker):
         # C struct field.
         # https://github.com/python/cpython/blob/3.13/Objects/descrobject.c#L162-L180
         attr_name = self.descriptor.__name__
-        from .base import NO_SUCH_SUBOBJ
-
         obj_value = obj.get_real_python_backed_value()
         if obj_value is NO_SUCH_SUBOBJ:
             return obj.getattro_impl(tx, attr_name)
@@ -4566,8 +4565,6 @@ class GetSetDescriptorVariable(VariableTracker):
         # concrete Python object (UDOV.value, or as_python_constant
         # for classes/constants). Fall back to getattro_impl for
         # proxy-based VTs like TensorVariable.
-        from .base import NO_SUCH_SUBOBJ
-
         obj_value = obj.get_real_python_backed_value()
         if obj_value is NO_SUCH_SUBOBJ:
             return obj.getattro_impl(tx, attr_name)
