@@ -220,14 +220,6 @@ class FlexGemmLocalReduceContract:
         )
 
 
-@dataclasses.dataclass(frozen=True)
-class FlexGemmFeedMainBinaryCandidate:
-    """Bind the grouped source operand to the value expression that consumes it."""
-
-    grouped_source: Any
-    value: Any
-
-
 @dataclasses.dataclass
 class FlexGemmLocalReduceAnalysis:
     """Track grouped TensorSSA provenance and derived local-reduce contracts."""
@@ -575,24 +567,20 @@ def is_local_reduce_feed_main_binary_source(source: torch.fx.Node) -> bool:
 
 def local_reduce_feed_main_binary_candidates(
     source: torch.fx.Node,
-) -> tuple[FlexGemmFeedMainBinaryCandidate, ...]:
+) -> tuple[tuple[Any, Any], ...]:
     """Return current feed-main binary source/value candidates."""
     if len(source.args) < 2 or not is_local_reduce_feed_main_binary_source(source):
         return ()
     lhs, rhs = source.args[:2]
-    return (
-        FlexGemmFeedMainBinaryCandidate(lhs, rhs),
-        FlexGemmFeedMainBinaryCandidate(rhs, lhs),
-    )
+    return ((lhs, rhs), (rhs, lhs))
 
 
 def local_reduce_feed_main_candidate_contract(
-    candidate: FlexGemmFeedMainBinaryCandidate,
+    grouped_source: Any,
+    value: Any,
     output_meta: Any,
 ) -> FlexGemmLocalReduceContract | None:
     """Validate the grouped source before matching its physical reduce value."""
-    grouped_source = candidate.grouped_source
-    value = candidate.value
     if not isinstance(grouped_source, torch.fx.Node) or not isinstance(
         value, torch.fx.Node
     ):
@@ -619,9 +607,11 @@ def local_reduce_feed_main_source_contract(
     """Find one physical feed-main value inside a shape-preserving expression."""
     contracts = [
         contract
-        for candidate in local_reduce_feed_main_binary_candidates(source)
+        for grouped_source, value in local_reduce_feed_main_binary_candidates(source)
         for contract in (
-            local_reduce_feed_main_candidate_contract(candidate, output_meta),
+            local_reduce_feed_main_candidate_contract(
+                grouped_source, value, output_meta
+            ),
         )
         if contract is not None
     ]
@@ -910,21 +900,6 @@ def tuple_output_plan(
     return FlexGemmOutputPlan(output, aux_outputs)
 
 
-def tuple_output_local_reduce_analysis(
-    graph_module: torch.fx.GraphModule,
-    output: Any,
-    aux_outputs: tuple[Any, ...],
-) -> FlexGemmLocalReduceAnalysis | None:
-    """Return compressed-aux analysis only for tuple outputs that can use it."""
-    if (
-        isinstance(output, torch.fx.Node)
-        and len(aux_outputs) == 1
-        and isinstance(aux_outputs[0], torch.fx.Node)
-    ):
-        return local_reduce_analysis(graph_module)
-    return None
-
-
 def output_plan(
     graph_module: torch.fx.GraphModule,
 ) -> FlexGemmOutputPlan:
@@ -939,11 +914,14 @@ def output_plan(
         else:
             output, *aux_outputs = output_value
             aux_outputs = tuple(aux_outputs)
-            return tuple_output_plan(
-                output,
-                aux_outputs,
-                tuple_output_local_reduce_analysis(graph_module, output, aux_outputs),
-            )
+            analysis = None
+            if (
+                isinstance(output, torch.fx.Node)
+                and len(aux_outputs) == 1
+                and isinstance(aux_outputs[0], torch.fx.Node)
+            ):
+                analysis = local_reduce_analysis(graph_module)
+            return tuple_output_plan(output, aux_outputs, analysis)
     if not isinstance(output_value, torch.fx.Node):
         raise NotImplementedError("FlexGEMM expects one tensor output")
     return single_output_plan(output_value)

@@ -650,6 +650,68 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                         beta,
                     )
 
+    @skipIfNoCuteDSL
+    def test_quack_feed_main_host_guards_match_runtime_contract(self):
+        from torch._vendor.quack.gemm_act import gemm_act
+
+        a = torch.empty(1, 4, 8, dtype=torch.bfloat16)
+        b = torch.empty(1, 8, 8, dtype=torch.bfloat16)
+        out = torch.empty(1, 4, 8, dtype=torch.bfloat16)
+        c = torch.empty(1, 4, 8, dtype=torch.bfloat16)
+
+        def tensor_epilogue(acc, local_reduce0):
+            return acc
+
+        def call_gemm(C=None, **kwargs):
+            return gemm_act(
+                a,
+                b,
+                None,
+                C,
+                out,
+                None,
+                None,
+                128,
+                128,
+                1,
+                1,
+                tensor_epilogue_fn=tensor_epilogue,
+                local_reduce_feeds_main=True,
+                local_reduce_group=8,
+                local_reduce_axis=0,
+                local_reduce_combine_key="combine",
+                local_reduce_finalize_key="finalize",
+                device_capacity_override=(10, 0),
+                **kwargs,
+            )
+
+        for kwargs in ({"C": c}, {"alpha": 0.5}, {"beta": 0.5}):
+            with self.assertRaisesRegex(NotImplementedError, "C/alpha/beta"):
+                call_gemm(**kwargs)
+
+        with self.assertRaisesRegex(
+            RuntimeError, "requires tensor_epilogue_fn or tensor_epilogue_key"
+        ):
+            gemm_act(
+                a,
+                b,
+                None,
+                None,
+                out,
+                None,
+                None,
+                128,
+                128,
+                1,
+                1,
+                local_reduce_feeds_main=True,
+                local_reduce_group=8,
+                local_reduce_axis=0,
+                local_reduce_combine_key="combine",
+                local_reduce_finalize_key="finalize",
+                device_capacity_override=(10, 0),
+            )
+
     def test_local_reduce_plan_rejects_invalid_consumer_kind(self):
         from torch._inductor.kernel.flex_gemm.epilogue import (
             FlexGemmOutputLocalReducePlan,
@@ -782,11 +844,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         for target in ("add", "div", "mul", "sub"):
             node = graph.call_method(target, (lhs, rhs), {})
             candidates = local_reduce_feed_main_binary_candidates(node)
-            self.assertEqual(len(candidates), 2)
-            self.assertIs(candidates[0].grouped_source, lhs)
-            self.assertIs(candidates[0].value, rhs)
-            self.assertIs(candidates[1].grouped_source, rhs)
-            self.assertIs(candidates[1].value, lhs)
+            self.assertEqual(candidates, ((lhs, rhs), (rhs, lhs)))
 
     def test_local_reduce_materialization_rejects_invalid_state(self):
         from torch._inductor.kernel.flex_gemm.epilogue import (
@@ -1265,6 +1323,21 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         with self.assertRaisesRegex(Exception, "partial-output contract"):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
+    def test_generated_tuple_aux_rejects_multiple_aux_outputs(self):
+        def fn(a, b):
+            return flex_gemm(
+                torch.mm,
+                (a, b),
+                lambda acc: (acc.relu(), acc + 1, acc * 2),
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(4, 8)
+        b = torch.randn(8, 5)
+
+        with self.assertRaisesRegex(Exception, "at most one aux output"):
+            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
+
     def test_generated_local_reduce_aux_rejects_addmm_scope(self):
         def fn(bias, a, b):
             def epilogue(acc):
@@ -1325,12 +1398,46 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         with self.assertRaisesRegex(Exception, "currently support only aten.mm"):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
-    def test_generated_local_reduce_rejects_grouped_non_innermost_dim(self):
-        def fn(a, b):
-            def epilogue(acc):
-                x = acc.float().view(4, -1, 4)
-                return acc.relu(), x.sum(1)
+    @parametrize(
+        "case",
+        (
+            (
+                "non_innermost",
+                lambda acc: (acc.relu(), acc.float().view(4, -1, 4).sum(1)),
+                8,
+                "innermost grouped dimension",
+            ),
+            (
+                "fragment_unsupported",
+                lambda acc: (acc.relu(), acc.float().view(4, -1, 7).sum(-1)),
+                14,
+                "fragment width 32",
+            ),
+            (
+                "fragment_not_dividing",
+                lambda acc: (acc.relu(), acc.float().view(4, -1, 24).sum(-1)),
+                48,
+                "fragment width 32",
+            ),
+            (
+                "large_group",
+                lambda acc: (acc.relu(), acc.float().view(4, -1, 48).sum(-1)),
+                96,
+                "fragment width 32",
+            ),
+            (
+                "degenerate_group",
+                lambda acc: (acc.relu(), acc.float().view(4, -1, 1).sum(-1)),
+                8,
+                "group size greater than 1",
+            ),
+        ),
+        name_fn=lambda case: case[0],
+    )
+    def test_generated_local_reduce_rejects_invalid_group(self, case):
+        _, epilogue, n, error = case
 
+        def fn(a, b):
             return flex_gemm(
                 torch.mm,
                 (a, b),
@@ -1339,85 +1446,9 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             )
 
         a = torch.randn(4, 8)
-        b = torch.randn(8, 8)
+        b = torch.randn(8, n)
 
-        with self.assertRaisesRegex(Exception, "innermost grouped dimension"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    def test_generated_local_reduce_rejects_group_not_supported_by_fragment(self):
-        def fn(a, b):
-            def epilogue(acc):
-                x = acc.float().view(4, -1, 7)
-                return acc.relu(), x.sum(-1)
-
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue,
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.randn(4, 8)
-        b = torch.randn(8, 14)
-
-        with self.assertRaisesRegex(Exception, "fragment width 32"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    def test_generated_local_reduce_rejects_group_not_dividing_fragment(self):
-        def fn(a, b):
-            def epilogue(acc):
-                x = acc.float().view(4, -1, 24)
-                return acc.relu(), x.sum(-1)
-
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue,
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.randn(4, 8)
-        b = torch.randn(8, 48)
-
-        with self.assertRaisesRegex(Exception, "fragment width 32"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    def test_generated_local_reduce_rejects_large_group_not_multiple_of_fragment(self):
-        def fn(a, b):
-            def epilogue(acc):
-                x = acc.float().view(4, -1, 48)
-                return acc.relu(), x.sum(-1)
-
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue,
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.randn(4, 8)
-        b = torch.randn(8, 96)
-
-        with self.assertRaisesRegex(Exception, "fragment width 32"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    def test_generated_local_reduce_rejects_degenerate_group(self):
-        def fn(a, b):
-            def epilogue(acc):
-                x = acc.float().view(4, -1, 1)
-                return acc.relu(), x.sum(-1)
-
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue,
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.randn(4, 8)
-        b = torch.randn(8, 8)
-
-        with self.assertRaisesRegex(Exception, "group size greater than 1"):
+        with self.assertRaisesRegex(Exception, error):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
     @parametrize(
@@ -1485,21 +1516,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         with self.assertRaisesRegex(Exception, "does not map to a CuTe TensorSSA"):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
-    def test_generated_tuple_aux_rejects_multiple_aux_outputs(self):
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                lambda acc: (acc.relu(), acc + 1, acc * 2),
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.randn(4, 8)
-        b = torch.randn(8, 5)
-
-        with self.assertRaisesRegex(Exception, "at most one aux output"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
     @parametrize(
         "case",
         (
@@ -1510,6 +1526,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                     * (acc.float().view(-1, 4, 8).sum(1, keepdim=True) + 1.0)
                 ).view(4, 8),
                 (4, 8),
+                "one generated physical reduction",
             ),
             (
                 "m_reduce_feeds_same_shape_aux",
@@ -1521,6 +1538,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                     ).view(4, 8),
                 ),
                 (4, 8),
+                "one generated physical reduction",
             ),
             (
                 "large_n_reduce_feeds_main",
@@ -1529,6 +1547,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                     * (acc.float().view(4, -1, 64).sum(-1, keepdim=True) + 1.0)
                 ).view(4, 128),
                 (4, 128),
+                "post-reduction pointwise transforms",
             ),
             (
                 "large_n_reduce_feeds_same_shape_aux",
@@ -1540,6 +1559,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                     ).view(4, 128),
                 ),
                 (4, 128),
+                "post-reduction pointwise transforms",
             ),
         ),
         name_fn=lambda case: case[0],
@@ -1547,7 +1567,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     def test_generated_local_reduce_rejects_physical_result_feeding_pointwise(
         self, case
     ):
-        _, epilogue_fn, shape = case
+        _, epilogue_fn, shape, error = case
 
         def fn(a, b):
             return flex_gemm(
@@ -1561,10 +1581,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         a = torch.randn(m, 8)
         b = torch.randn(8, n)
 
-        with self.assertRaisesRegex(
-            Exception,
-            "physical local reduction: post-reduction pointwise transforms|one generated physical reduction",
-        ):
+        with self.assertRaisesRegex(Exception, error):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
     @parametrize(
@@ -1577,7 +1594,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                     acc.float().view(-1, 4, 8).sum(1).view(1, -1, 4).sum(-1),
                 ),
                 (4, 8),
-                "physical local reduction|partial-output contract|innermost grouped dimension|local-reduce output contract",
+                "local-reduce output contract",
             ),
             (
                 "n_then_m",
@@ -1586,7 +1603,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                     acc.float().view(4, -1, 4).sum(-1).view(-1, 4, 2).sum(1),
                 ),
                 (4, 8),
-                "partial-output contract|innermost grouped dimension|physical local reduction|local-reduce output contract",
+                "local-reduce output contract",
             ),
             (
                 "direct_block",
@@ -1595,7 +1612,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                     acc.float().view(-1, 4, 2, 4).sum((1, 3)),
                 ),
                 (4, 8),
-                "partial-output contract|innermost grouped dimension|physical local reduction|local-reduce output contract",
+                "local-reduce output contract",
             ),
         ),
         name_fn=lambda case: case[0],

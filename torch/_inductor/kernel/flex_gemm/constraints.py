@@ -438,16 +438,6 @@ def validate_flex_gemm_local_reduce_config(config: Any, group: int, axis: int) -
     tile = tile_n if axis == 1 else tile_m
     if tile % group != 0:
         return False
-    if axis == 0:
-        if group <= 32:
-            return 32 % group == 0 and group < tile
-        return (
-            group % 32 == 0
-            and group <= tile
-            and tile_m == 128
-            and cluster_m == 1
-            and cluster_n == 1
-        )
     if group <= 32:
         return 32 % group == 0 and group < tile
     return (

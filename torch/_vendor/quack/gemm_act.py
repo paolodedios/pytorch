@@ -827,9 +827,12 @@ def gemm_act(
     )
     alpha_mode = 2 if isinstance(alpha, Tensor) else (1 if alpha != 1.0 else 0)
     beta_mode = 2 if isinstance(beta, Tensor) else (1 if beta != 1.0 else 0)
-    if tensor_epilogue_arg_kinds and (C is not None or alpha_mode != 0 or beta_mode != 0):
+    if (tensor_epilogue_arg_kinds or local_reduce_feeds_main) and (
+        C is not None or alpha_mode != 0 or beta_mode != 0
+    ):
         raise NotImplementedError(
-            "QUACK tensor epilogue aux args cannot be combined with C/alpha/beta yet"
+            "QUACK tensor epilogues with aux args or feed-main local reductions "
+            "cannot be combined with C/alpha/beta yet"
         )
     if tensor_epilogue_returns_local_reduce != (local_reduce_out is not None):
         raise RuntimeError(
@@ -846,6 +849,10 @@ def gemm_act(
             raise NotImplementedError(
                 "local_reduce_feeds_main currently supports only same-warp axis-0 "
                 f"groups <= {MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP}"
+            )
+        if tensor_epilogue_fn is None and tensor_epilogue_key is None:
+            raise RuntimeError(
+                "local_reduce_feeds_main requires tensor_epilogue_fn or tensor_epilogue_key"
             )
         if local_reduce_combine_key is None or local_reduce_finalize_key is None:
             raise RuntimeError(
