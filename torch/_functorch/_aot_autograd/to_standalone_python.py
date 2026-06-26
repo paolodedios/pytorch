@@ -4,8 +4,9 @@ This is the AOT half of the backend contract behind ``torch.compiler.precompile`
 
     python_code, cache = compile_to_python(gm, example_inputs)
 
-``inductor.compile_to_python`` produces only the inner Inductor ``call`` (kernels
-for the post-AOTAutograd dense graph). This module wraps that with the prelude /
+The inner backend (``torch._inductor.compile_to_python`` by default, but any
+``CompileToPythonBackend``) produces only the inner ``call`` (kernels for the
+post-AOTAutograd dense graph). This module wraps that with the prelude /
 epilogue (input-mutation reflection, output-alias regen, subclass wrap/unwrap,
 ...) by COMPOSING AOTAutograd's own codegen'd runtime-wrapper source -- captured
 during compile -- rather than reimplementing it. Each wrapper is re-exec'd with its
@@ -27,7 +28,7 @@ from __future__ import annotations
 import inspect
 import re
 import threading
-from typing import Any, TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING
 
 from .subclass_codegen import capture_generated_sources, GeneratedSource
 
@@ -36,6 +37,32 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     from torch.fx import GraphModule
+
+
+class CompileToPythonBackend(Protocol):
+    """Inner-compiler contract for ``compile_to_python``.
+
+    A backend lowers the post-AOTAutograd dense graph to a self-contained Python
+    source string defining ``call(flat_inputs) -> outputs`` (the inner kernels), plus
+    an opaque acceleration cache or ``None``. ``torch._inductor.compile_to_python`` is
+    the default; any callable matching this signature qualifies, so the standalone
+    lowering is not tied to Inductor.
+
+    LOAD-BEARING CONTRACT: the backend MUST drive AOTAutograd's lowering of ``gm``
+    within this call, so the prelude/epilogue runtime wrappers are codegen'd while
+    ``capture_generated_sources`` is active. ``compile_to_python`` composes those
+    captured wrappers around the returned inner ``call``; a backend that returns an
+    inner ``call`` without triggering AOTAutograd codegen yields an incomplete module.
+    """
+
+    def __call__(
+        self,
+        gm: GraphModule,
+        example_inputs: Sequence[Any],
+        *,
+        dynamic_shapes: str = ...,
+        options: Any = ...,
+    ) -> tuple[str, bytes | None]: ...
 
 
 # Serializes compile_to_python: the wrapper-source capture is thread-local, but the
@@ -765,20 +792,30 @@ def compile_to_python(
     gm: GraphModule,
     example_inputs: Sequence[Any],
     *,
+    backend: CompileToPythonBackend | None = None,
     dynamic_shapes: str = "from_example_inputs",
     options: Any = None,
 ) -> tuple[str, bytes | None]:
-    """Compile ``gm`` to ``(python_code, cache)``; see the module docstring.
+    """Compile ``gm`` to ``(python_code, cache)`` via ``backend``; see the module docstring.
+
+    ``backend`` is the inner compiler that lowers the dense graph to source (a
+    ``CompileToPythonBackend``); it defaults to ``torch._inductor.compile_to_python``.
+    It MUST drive AOTAutograd's lowering within its call so the runtime wrappers are
+    captured and composed around its inner ``call`` (see ``CompileToPythonBackend``).
 
     THREADING: serialized by a process-global lock (``_COMPILE_LOCK``). The wrapper-
-    source capture is thread-local, but the underlying ``standalone_compile`` enters
-    ``CacheArtifactManager.with_fresh_cache()``, which swaps process-global class
-    state; a concurrent compile on another thread would corrupt the captured cache
-    artifacts, so concurrent calls (including via ``torch.compiler.precompile``) are serialized
-    rather than run in parallel.
+    source capture is thread-local, but the default inductor backend's
+    ``standalone_compile`` enters ``CacheArtifactManager.with_fresh_cache()``, which
+    swaps process-global class state; a concurrent compile on another thread would
+    corrupt the captured cache artifacts, so concurrent calls (including via
+    ``torch.compiler.precompile``) are serialized rather than run in parallel.
     """
     from torch._higher_order_ops.effects import _get_effect
-    from torch._inductor import compile_to_python as _inductor_compile_to_python
+
+    if backend is None:
+        from torch._inductor import compile_to_python as _default_backend
+
+        backend = _default_backend  # type: ignore[assignment]
 
     # Effectful ops thread effect tokens through a calling convention the standalone
     # composition does not reproduce (and their with_effects HOP is non-cacheable);
@@ -799,10 +836,10 @@ def compile_to_python(
     with _COMPILE_LOCK:
         captured: list[GeneratedSource] = []
         with capture_generated_sources(captured):
-            inner_python, cache = _inductor_compile_to_python(
+            inner_python, cache = backend(
                 gm,
                 example_inputs,
-                dynamic_shapes=dynamic_shapes,  # type: ignore[arg-type]
+                dynamic_shapes=dynamic_shapes,
                 options=options,
             )
         source = _compose_standalone_module(inner_python, captured)
