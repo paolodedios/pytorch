@@ -18,6 +18,7 @@ from torch._inductor.utils import (
     fresh_inductor_cache,
     run_and_get_triton_code,
 )
+from torch._prims_common import make_contiguous_strides_for
 from torch.distributed._functional_collectives import all_gather_single
 from torch.distributed._symmetric_memory import (
     _fused_all_gather_matmul_fallback,
@@ -77,6 +78,12 @@ def _enable_multicast_for_test(test_case: TestCase, device_index: int):
     finally:
         if old_disable_multicast is not None:
             os.environ["TORCH_SYMM_MEM_DISABLE_MULTICAST"] = old_disable_multicast
+
+
+def _lc_ag_output_shape(shape: tuple[int, ...], world_size: int) -> tuple[int, ...]:
+    if len(shape) == 0:
+        return (world_size,)
+    return (shape[0] * world_size, *shape[1:])
 
 
 # So that tests are written in device-agnostic way
@@ -444,53 +451,62 @@ class SymmetricMemoryTest(MultiProcContinuousTest):
         for r in range(self.world_size):
             self.assertTrue(chunks[r].eq(r).all())
 
-    def _run_lc_ag_ce_multicast_correctness(self, symm_mem_input: bool) -> None:
+    def _run_lc_ag_ce_multicast_correctness(
+        self, symm_mem_input: bool, shape: tuple[int, ...]
+    ) -> None:
         self._init_process()
 
         with _enable_multicast_for_test(self, self.device.index):
             if symm_mem_input:
                 t = _SymmetricMemory.empty_strided_p2p(
-                    size=(64, 64),
-                    stride=(64, 1),
+                    size=shape,
+                    stride=make_contiguous_strides_for(shape),
                     dtype=torch.float32,
                     device=self.device,
                     group_name="0",
                 ).fill_(self.rank)
             else:
                 t = torch.full(
-                    (64, 64), self.rank, dtype=torch.float32, device=self.device
+                    shape, self.rank, dtype=torch.float32, device=self.device
                 )
 
             res = torch.ops.symm_mem._low_contention_all_gather_ce_multicast(t, "0")
-            self.assertEqual(res.shape, (64 * self.world_size, 64))
+            self.assertEqual(res.shape, _lc_ag_output_shape(shape, self.world_size))
 
             chunks = res.chunk(self.world_size)
             for r in range(self.world_size):
                 self.assertTrue(
                     chunks[r].eq(r).all(),
-                    f"rank {self.rank} chunk {r} value {chunks[r][0, 0].item()}",
+                    f"rank {self.rank} chunk {r} value {chunks[r].flatten()[0].item()}",
                 )
 
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
     )
     @skip_if_lt_x_gpu(2)
+    @parametrize("shape", [(), (64, 64)])
     @parametrize("symm_mem_input", [True, False])
-    def test_low_contention_all_gather_ce_multicast(self, symm_mem_input: bool) -> None:
-        self._run_lc_ag_ce_multicast_correctness(symm_mem_input)
+    def test_low_contention_all_gather_ce_multicast(
+        self, symm_mem_input: bool, shape: tuple[int, ...]
+    ) -> None:
+        self._run_lc_ag_ce_multicast_correctness(symm_mem_input, shape)
 
     @skipIf(
         not PLATFORM_SUPPORTS_SYMM_MEM, "SymmMem is not supported on this ROCm arch"
     )
     @skip_if_lt_x_gpu(2)
-    def test_low_contention_all_gather_ce_multicast_out(self) -> None:
+    @parametrize("shape", [(), (64, 64)])
+    def test_low_contention_all_gather_ce_multicast_out(
+        self, shape: tuple[int, ...]
+    ) -> None:
         self._init_process()
 
         with _enable_multicast_for_test(self, self.device.index):
-            t = torch.full((64, 64), self.rank, dtype=torch.float32, device=self.device)
+            t = torch.full(shape, self.rank, dtype=torch.float32, device=self.device)
+            out_shape = _lc_ag_output_shape(shape, self.world_size)
             out = _SymmetricMemory.empty_strided_p2p(
-                size=(64 * self.world_size, 64),
-                stride=(64, 1),
+                size=out_shape,
+                stride=make_contiguous_strides_for(out_shape),
                 dtype=torch.float32,
                 device=self.device,
                 group_name="0",
@@ -500,13 +516,31 @@ class SymmetricMemoryTest(MultiProcContinuousTest):
                 t, "0", out
             )
             self.assertEqual(res.data_ptr(), out.data_ptr())
-            self.assertEqual(res.shape, (64 * self.world_size, 64))
+            self.assertEqual(res.shape, out_shape)
 
             chunks = res.chunk(self.world_size)
             for r in range(self.world_size):
                 self.assertTrue(
                     chunks[r].eq(r).all(),
-                    f"rank {self.rank} chunk {r} value {chunks[r][0, 0].item()}",
+                    f"rank {self.rank} chunk {r} value {chunks[r].flatten()[0].item()}",
+                )
+
+            meta_t = torch.empty(shape, dtype=torch.float32, device="meta")
+            meta_out = torch.empty(out_shape, dtype=torch.float32, device="meta")
+            meta_res = torch.ops.symm_mem._low_contention_all_gather_ce_multicast_out(
+                meta_t, "0", meta_out
+            )
+            self.assertEqual(meta_res.shape, out_shape)
+            self.assertEqual(meta_res.dtype, meta_out.dtype)
+            self.assertEqual(meta_res.device, meta_out.device)
+
+            bad_out_shape = (out_shape[0] + 1, *out_shape[1:])
+            bad_meta_out = torch.empty(
+                bad_out_shape, dtype=torch.float32, device="meta"
+            )
+            with self.assertRaisesRegex(RuntimeError, "expected out shape"):
+                torch.ops.symm_mem._low_contention_all_gather_ce_multicast_out(
+                    meta_t, "0", bad_meta_out
                 )
 
     @skipIf(

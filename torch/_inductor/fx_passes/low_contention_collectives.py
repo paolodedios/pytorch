@@ -208,7 +208,8 @@ def _replace_collective(
 ) -> bool:
     input_node = node.args[0]
     if is_ag:
-        assert target is not None
+        if target is None:
+            return False
         if node.target is torch.ops._c10d_functional.all_gather_into_tensor_out.default:
             out = node.kwargs["out"]
             if target is symm_mem._low_contention_all_gather_ce_multicast.default:

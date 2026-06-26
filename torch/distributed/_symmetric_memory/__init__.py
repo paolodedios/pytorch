@@ -1754,9 +1754,17 @@ def _require_multicast(device_index: int, op_name: str) -> None:
         raise RuntimeError(f"{op_name} requires multicast support (NVSwitch / NVLS).")
 
 
-# Separate channels from existing low-contention collectives sharing signal pad.
-_CE_MULTICAST_BARRIER_CHANNEL_1 = 3
-_CE_MULTICAST_BARRIER_CHANNEL_2 = 4
+# Use one dedicated signal-pad channel for CE multicast, separate from existing
+# low-contention collectives. Its two barriers are ordered on the same stream;
+# if a peer has not consumed the first signal yet, the second barrier's CAS put
+# spins until that peer slot is cleared.
+_CE_MULTICAST_BARRIER_CHANNEL = 3
+
+
+def _lc_ag_out_shape(tensor: torch.Tensor, world_size: int) -> tuple[int, ...]:
+    if tensor.dim() == 0:
+        return (world_size,)
+    return (tensor.shape[0] * world_size, *tensor.shape[1:])
 
 
 def _check_lc_ag_out(
@@ -1765,7 +1773,7 @@ def _check_lc_ag_out(
     world_size: int,
     op_name: str,
 ) -> None:
-    expected_shape = (tensor.shape[0] * world_size, *tensor.shape[1:])
+    expected_shape = _lc_ag_out_shape(tensor, world_size)
     if tuple(output.shape) != expected_shape:
         raise RuntimeError(
             f"{op_name}: expected out shape {expected_shape}, "
@@ -1784,7 +1792,7 @@ def _check_lc_ag_out(
 
 
 def _check_lc_signal_pad_capacity(symm_mem: _SymmetricMemory) -> None:
-    required_bytes = (_CE_MULTICAST_BARRIER_CHANNEL_2 + 1) * symm_mem.world_size * 4
+    required_bytes = (_CE_MULTICAST_BARRIER_CHANNEL + 1) * symm_mem.world_size * 4
     actual_bytes = _SymmetricMemory.signal_pad_size
     if actual_bytes < required_bytes:
         raise RuntimeError(
@@ -1800,7 +1808,7 @@ def _low_contention_all_gather_ce_multicast_meta(
     group_name: c10d.GroupName,
 ) -> torch.Tensor:
     world_size = c10d._get_group_size_by_name(group_name)
-    return tensor.new_empty(tensor.shape[0] * world_size, *tensor.shape[1:])
+    return tensor.new_empty(_lc_ag_out_shape(tensor, world_size))
 
 
 @torch.library.impl(lib, "_low_contention_all_gather_ce_multicast", "CUDA")
@@ -1816,7 +1824,7 @@ def _low_contention_all_gather_ce_multicast(
     )
     _require_multicast(device_index, "_low_contention_all_gather_ce_multicast")
     world_size = c10d._get_group_size_by_name(group_name)
-    out_shape = (tensor.shape[0] * world_size, *tensor.shape[1:])
+    out_shape = _lc_ag_out_shape(tensor, world_size)
     if torch.cuda.is_current_stream_capturing():
         raise RuntimeError(
             "_low_contention_all_gather_ce_multicast cannot allocate its output "
@@ -1824,13 +1832,14 @@ def _low_contention_all_gather_ce_multicast(
             "_low_contention_all_gather_ce_multicast_out with a preallocated "
             "symmetric-memory output."
         )
-    output = _SymmetricMemory.empty_strided_p2p(
-        size=out_shape,
-        stride=make_contiguous_strides_for(out_shape),
-        dtype=tensor.dtype,
-        device=torch.device("cuda", device_index),
-        group_name=group_name,
-    )
+    device = torch.device("cuda", device_index)
+    with torch.cuda.use_mem_pool(get_mem_pool(device)):
+        output = torch.empty_strided(
+            out_shape,
+            make_contiguous_strides_for(out_shape),
+            dtype=tensor.dtype,
+            device=device,
+        )
     return _low_contention_all_gather_ce_multicast_impl(tensor, group_name, output)
 
 
@@ -1840,6 +1849,8 @@ def _low_contention_all_gather_ce_multicast_out_meta(
     group_name: c10d.GroupName,
     out: torch.Tensor,
 ) -> torch.Tensor:
+    world_size = c10d._get_group_size_by_name(group_name)
+    _check_lc_ag_out(tensor, out, world_size, "_low_contention_all_gather_ce_multicast")
     return out
 
 
@@ -1877,11 +1888,11 @@ def _low_contention_all_gather_ce_multicast_impl(
     shard_bytes = tensor.numel() * tensor.element_size()
 
     ag_input = tensor if tensor.is_contiguous() else tensor.contiguous()
-    symm_mem.barrier(channel=_CE_MULTICAST_BARRIER_CHANNEL_1)
+    symm_mem.barrier(channel=_CE_MULTICAST_BARRIER_CHANNEL)
     torch.ops.symm_mem.memcpy_to_multicast_(
         output, ag_input, rank * shard_bytes, group_name
     )
-    symm_mem.barrier(channel=_CE_MULTICAST_BARRIER_CHANNEL_2)
+    symm_mem.barrier(channel=_CE_MULTICAST_BARRIER_CHANNEL)
     return output
 
 
