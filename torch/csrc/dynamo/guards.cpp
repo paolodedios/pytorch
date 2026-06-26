@@ -3500,20 +3500,33 @@ class GuardManager {
     return this->check_accessors_nopybind(value);
   }
 
-  bool dict_watchers_installed() {
-    // Only fast-path recursive dict-tag matching when dict watchers are
-    // installed (3.12+ with a successful PyDict_Watch). The watcher callback
-    // sets _disable_dict_tag_matching on ANY change to a recorded dict, and the
-    // caller only invokes this when !_disable_dict_tag_matching, so reaching
-    // here means no recorded dict changed -- no per-dict version check (and no
-    // dict dereference) is needed.
-    //
-    // Without watchers we would have to read versions off the RAW recorded dict
-    // pointers in _dict_pointers. Those interior dicts can be freed while the
-    // tag-safe-root `value` is still alive (the value weakref callback only
-    // protects `value` itself, not nested dicts), so dereferencing them is a
-    // use-after-free. In that case bail and let the full guard check run.
+  bool check_dict_pointer_tags(PyObject* value) {
+#if IS_PYTHON_3_12_PLUS
+    // 3.12+: a successful PyDict_Watch installs callbacks that flip
+    // _disable_dict_tag_matching on ANY change to a recorded dict, and the
+    // caller only reaches here while !_disable_dict_tag_matching -- so an
+    // installed watcher already proves no recorded dict changed, with no dict
+    // dereference. If the watcher failed to install we bail (return false)
+    // rather than fall through to the raw-pointer read below, keeping the
+    // on-by-default 3.12+ path safe.
+    (void)value;
     return _dict_callback_installed;
+#else
+    // Pre-3.12: no PyDict_Watch. Read the version tag off each RAW recorded
+    // dict pointer. This is a use-after-free if an interior dict is freed while
+    // the tag-safe-root `value` is still alive (the value weakref only protects
+    // the root, not the nested dicts), which is why the optimization is off by
+    // default below 3.12 -- opt-in only, for callers who accept the risk.
+    for (auto& kv : _dict_pointers[value]) {
+      PyObject* dict_pointer = kv.first;
+      uint64_t old_tag = kv.second;
+      uint64_t new_tag = get_dict_version_unchecked(dict_pointer);
+      if (old_tag != new_tag) {
+        return false;
+      }
+    }
+    return true;
+#endif
   }
 
   bool check_tensor_metadata_fast(PyObject* value) {
@@ -3623,7 +3636,8 @@ class GuardManager {
         // Check if the `value` object was recorded earlier
         if (_dict_pointers.find(value) != _dict_pointers.end()) {
           // Check for fast path
-          if (dict_watchers_installed() && check_tensor_metadata_fast(value)) {
+          if (check_dict_pointer_tags(value) &&
+              check_tensor_metadata_fast(value)) {
             if (check_no_tensor_aliasing_guards_fast(value)) {
               return true;
             } else {
