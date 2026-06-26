@@ -102,6 +102,10 @@ class InMemoryCache(Cache[Key, Value]):
             self._cache[key] = value
             return True
 
+    def cache_clear(self: Self) -> None:
+        with self._lock:
+            self._cache.clear()
+
     @classmethod
     def from_env_var(cls, env_var: str) -> Self:
         """

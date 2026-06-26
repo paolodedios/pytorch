@@ -46,12 +46,38 @@ log = logging.getLogger(__name__)
 
 # Process-level cache for compiled NVGEMM artifacts, shared between
 # autotuning (NVUniversalGemmBenchmarkRequest) and the codegen runtime
-# (_nvgemm_run). Keyed by (kernel_name, tensor_cache_key, device_index).
+# (_nvgemm_run). Keyed by _make_global_compiled_key().
 _global_compiled_cache: InMemoryCache = InMemoryCache()
 
-# CuTeDSL's DSLPreprocessor singleton and cuda_dialect_init_library_once are
-# not thread-safe. Serializes all cutlass_api operations (argument creation,
-# kernel lookup, compilation) so precompile threads don't race.
+from torch._inductor.utils import clear_on_fresh_cache
+
+
+clear_on_fresh_cache(_global_compiled_cache)
+
+
+def _make_global_compiled_key(
+    kernel_name,
+    variant_name,
+    accumulator_type,
+    tensor_cache_key,
+    dev_idx,
+    epilogue_source="",
+    has_epilogue=False,
+):
+    return (
+        kernel_name,
+        variant_name,
+        accumulator_type,
+        epilogue_source,
+        has_epilogue,
+        tensor_cache_key,
+        dev_idx,
+    )
+
+
+# CuTeDSL's BaseDSL singleton (compilation state), DSLPreprocessor, and
+# cuda_dialect_init_library_once are not thread-safe. Serializes all
+# cutlass_api operations so precompile threads don't race.
 _cutedsl_compile_lock = threading.Lock()
 
 
@@ -232,6 +258,27 @@ def _nvgemm_run(
 
     from torch._inductor.runtime.cutedsl_cache import disk_cache_get, disk_cache_set
 
+    cache_key = _create_gemm_cache_key(
+        input_tensors,
+        out,
+        has_epilogue=has_epilogue,
+        aux_tensors=aux_tensors,
+    )
+    dev_idx = input_tensors[0].device.index or 0
+    mem_key = (cache_key, dev_idx)
+    global_key = _make_global_compiled_key(
+        kernel_name,
+        variant_name,
+        accumulator_type,
+        cache_key,
+        dev_idx,
+        epilogue_source=epilogue_source,
+        has_epilogue=has_epilogue,
+    )
+    artifact = compiled_cache.get(mem_key)
+    if artifact is None:
+        artifact = _global_compiled_cache.get(global_key)
+
     with _cutedsl_compile_lock:
         args = _create_gemm_arguments(
             variant_name,
@@ -246,19 +293,6 @@ def _nvgemm_run(
             epilogue_args=epilogue_args,
             epilogue_source=epilogue_source,
         )
-
-    cache_key = _create_gemm_cache_key(
-        input_tensors,
-        out,
-        has_epilogue=has_epilogue,
-        aux_tensors=aux_tensors,
-    )
-    dev_idx = input_tensors[0].device.index or 0
-    mem_key = (cache_key, dev_idx)
-    artifact = compiled_cache.get(mem_key)
-    if artifact is None:
-        global_key = (kernel_name, cache_key, dev_idx)
-        artifact = _global_compiled_cache.get(global_key)
         if artifact is None:
             compiled_fn = disk_cache_get(
                 disk_fn_cache, module_path, disk_config_key, cache_key, dev_idx
@@ -267,8 +301,7 @@ def _nvgemm_run(
                 compiled_fn = _rewrap_efc_compiled_obj(compiled_fn, kernel)
                 artifact = CompiledArtifact(compiled_fn, kernel)
             else:
-                with _cutedsl_compile_lock:
-                    artifact = kernel.compile(args)
+                artifact = kernel.compile(args)
                 disk_cache_set(
                     disk_fn_cache,
                     module_path,
@@ -357,18 +390,29 @@ def _nvgemm_precompile(
             m.get_max_active_clusters = mac_fn  # pyrefly: ignore [missing-attribute]
 
     try:
-        args = _create_gemm_arguments(
-            variant_name,
-            input_tensors,
-            out,
-            accumulator_type,
-            **(variant_kwargs or {}),
-        )
-        kernel = _lookup_gemm_kernel(kernel_name)
         cache_key = _create_gemm_cache_key(input_tensors, out)
         mem_key = (cache_key, device_index)
         if mem_key not in compiled_cache:
-            artifact = kernel.compile(args)
+            global_key = _make_global_compiled_key(
+                kernel_name,
+                variant_name,
+                accumulator_type,
+                cache_key,
+                device_index,
+            )
+            artifact = _global_compiled_cache.get(global_key)
+            if artifact is None:
+                with _cutedsl_compile_lock:
+                    args = _create_gemm_arguments(
+                        variant_name,
+                        input_tensors,
+                        out,
+                        accumulator_type,
+                        **(variant_kwargs or {}),
+                    )
+                    kernel = _lookup_gemm_kernel(kernel_name)
+                    artifact = kernel.compile(args)
+                _global_compiled_cache.insert(global_key, artifact)
             disk_cache_set(
                 disk_fn_cache,
                 module_path,

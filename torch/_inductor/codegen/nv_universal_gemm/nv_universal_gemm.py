@@ -25,6 +25,7 @@ from torch._inductor.codegen.nv_universal_gemm.nv_universal_gemm_kernel import (
     _cutedsl_compile_lock,
     _get_scaled_gemm_modes,
     _global_compiled_cache,
+    _make_global_compiled_key,
 )
 from torch._inductor.ir import Buffer, ChoiceCaller, Layout, TensorBox
 from torch._inductor.kernel_inputs import MMKernelInputs
@@ -153,7 +154,13 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
             if self._compiled_artifact is None:
                 cache_key = _create_gemm_cache_key(input_tensors, out)
                 dev_idx = input_tensors[0].device.index or 0
-                global_key = (self.kernel.metadata.kernel_name, cache_key, dev_idx)
+                global_key = _make_global_compiled_key(
+                    self.kernel.metadata.kernel_name,
+                    self.variant.name,
+                    self.accumulator_type,
+                    cache_key,
+                    dev_idx,
+                )
                 self._compiled_artifact = _global_compiled_cache.get(global_key)
                 if self._compiled_artifact is None:
                     self._compiled_artifact = self.kernel.compile(args)
