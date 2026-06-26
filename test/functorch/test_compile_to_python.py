@@ -182,6 +182,19 @@ class _NewObjEx:
         return isinstance(other, _NewObjEx) and self.a == other.a and self.b == other.b
 
 
+class _SlotObj:
+    # __slots__ only -> __reduce_ex__(2) yields a (dict_state, slot_state) 2-tuple state,
+    # exercising _rebuild's slotstate branch (setattr per slot) -- distinct from the plain
+    # __dict__.update branch _NewObjEx hits and the __setstate__ branch a Shard hits.
+    __slots__ = ("x",)
+
+    def __init__(self, x):
+        self.x = x
+
+    def __eq__(self, other):
+        return isinstance(other, _SlotObj) and self.x == other.x
+
+
 class _Pointwise(torch.nn.Module):
     def forward(self, x):
         return torch.relu(x * 2.0 + 1.0)
@@ -608,6 +621,14 @@ class TestAOTCompileToPythonHelpers(TestCase):
         rt = _roundtrip(_NewObjEx(1, b=2))
         self.assertEqual(rt, _NewObjEx(1, b=2))
 
+    def test_emit_via_reduce_slots_state(self):
+        # A __slots__ object reduces to a (dict, slots) 2-tuple state, exercising _rebuild's
+        # slotstate branch. _SlotObj.__new__ does NOT set x, so the round-trip is correct
+        # only if _rebuild applies the slotstate -- making that branch load-bearing here.
+        rt = _roundtrip(_SlotObj(5))
+        self.assertEqual(rt, _SlotObj(5))
+        self.assertEqual(rt.x, 5)
+
     def test_emit_importable_rejects_non_round_tripping(self):
         # torch.add is a builtin whose __qualname__ does not round-trip via importlib.
         with self.assertRaisesRegex(NotImplementedError, "does not.*round-trip"):
@@ -749,6 +770,29 @@ class TestAOTComposeGuards(TestCase):
             NotImplementedError, "exactly one forward orchestration wrapper"
         ):
             _compose_standalone_module("def call(args):\n    return args\n", [])
+
+    def test_rebuild_helper_spliced_and_runs_in_composed_module(self):
+        # When a baked global reconstructs via the pickle-reduce-as-source path (_NewObjEx
+        # emits ``_rebuild(...)``), the composer must splice the _rebuild helper into the
+        # module (needs_rebuild) AND _rebuild must actually run at module-exec time to
+        # reconstruct the value. The _emit_via_reduce unit tests cover the _rebuild logic in
+        # isolation; this is the only coverage of the splice + in-module execution.
+        baked = _NewObjEx(1, b=2)
+        orch = GeneratedSource(
+            "runtime_wrapper_orchestration",
+            "_runtime_wrapper",
+            "def _runtime_wrapper(_compiled_fn_, _first_ctx_, _on_before_call_, args):\n"
+            "    return [_baked]\n",
+            {"_baked": baked},
+            lambda: None,
+        )
+        src = _compose_standalone_module("def call(args):\n    return args\n", [orch])
+        self.assertIn("def _rebuild", src)  # helper spliced (needs_rebuild=True)
+        self.assertIn("_rebuild(", src)
+        out = _exec(src)(
+            []
+        )  # exec the module; _rebuild runs to rebuild the baked value
+        self.assertEqual(out[0], baked)
 
     def test_chain_head_order_inversion_guard(self):
         # Capture order is assumed innermost-to-outermost. Feed it OUTER-first (inverted):
