@@ -1,6 +1,5 @@
 # Owner(s): ["module: inductor"]
 import ast
-import re
 import textwrap
 from unittest import mock
 
@@ -63,21 +62,6 @@ def _extract_call(src):
             body = "\n".join(src.split("\n")[node.lineno - 1 : node.end_lineno])
             return textwrap.dedent(body)
     raise AssertionError("generated module has no module-level def call")
-
-
-def _normalize_device(src):
-    """Rewrite the baked-in CUDA device ordinal in a captured wrapper to 0.
-
-    Inductor bakes the input tensor's device index into the emitted wrapper
-    (``_DeviceGuard(N)``, ``set_device(N)``, ``get_raw_stream(N)``, ``raw_streamN``).
-    The CUDA goldens run on whatever single GPU the test process is pinned to, so
-    normalize whatever ordinal actually appears to 0 (regex on the emitted ordinal, not
-    on current_device(), so an explicitly non-current device would still normalize)."""
-    src = re.sub(r"_DeviceGuard\(\d+\)", "_DeviceGuard(0)", src)
-    src = re.sub(r"set_device\(\d+\)", "set_device(0)", src)
-    src = re.sub(r"get_raw_stream\(\d+\)", "get_raw_stream(0)", src)
-    src = re.sub(r"raw_stream\d+", "raw_stream0", src)
-    return src
 
 
 class _Pointwise(torch.nn.Module):
@@ -214,15 +198,15 @@ def call(args):
 @requires_cuda_and_triton
 class TestInductorCompileToPythonCudaCodegen(TestCase):
     # On CUDA, compile_to_python emits actual @triton.jit kernels rather than the CPU
-    # extern_kernels / cpp_fused path the sibling class goldens. The expect goldens
-    # lock the device-independent ``call()`` body only: its grid launch, the
-    # empty_strided_cuda allocations, and the stream plumbing carry NO autotuning
-    # artifacts -- XBLOCK / num_warps are chosen inside ``.run`` at launch time and the
-    # arch-specific DeviceProperties live in the kernel decorator, not in ``call``. The
-    # hardware- and Triton-version-dependent kernel body is therefore checked
-    # structurally (assertIn), matching the inductor-suite convention. graph_partition is
-    # pinned off for a stable top-level ``def call(args)``, and size_asserts / nan_asserts
-    # are pinned so the goldened assert_size_stride lines do not drift with the ambient env.
+    # extern_kernels / cpp_fused path the sibling class goldens. The expect goldens lock
+    # the ``call()`` body only: it carries NO autotuning artifacts -- XBLOCK / num_warps
+    # are chosen inside ``.run`` at launch time and the arch-specific DeviceProperties
+    # live in the kernel decorator, not in ``call`` -- so it is arch-independent. The
+    # hardware- and Triton-version-dependent kernel body is instead checked structurally
+    # (assertIn). The device ordinal is hardcoded to 0 (these tests run on device 0, as
+    # the rest of the inductor codegen-golden suite does). graph_partition is pinned off
+    # for a stable top-level ``def call(args)``, and size_asserts / nan_asserts are pinned
+    # so the goldened assert_size_stride lines do not drift with the ambient env.
     def _inner_call(self, m, x):
         gm = _capture(m, x)
         src, _cache = compile_to_python(
@@ -234,7 +218,7 @@ class TestInductorCompileToPythonCudaCodegen(TestCase):
                 "nan_asserts": False,
             },
         )
-        return src, _normalize_device(_extract_call(src))
+        return src, _extract_call(src)
 
     def test_pointwise_triton_kernel_codegen(self):
         m = _Pointwise().eval().cuda()
