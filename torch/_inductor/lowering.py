@@ -9022,15 +9022,18 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
     # OrderingOutput so future readers are ordered after all subgraph ops.
     # TODO: if control_deps ever wraps ops that truly mutate a pass-through
     # (not just ordering), this needs MutationOutput instead of OrderingOutput.
-    input_names = OrderedSet(
-        a.get_name() for a in args if isinstance(a, IRNode) and a.get_name() is not None
-    )
+    input_names = OrderedSet()
+    for a in args:
+        if isinstance(a, IRNode):
+            a.realize()
+            input_names.add(a.get_name())
     output_leaves = list(pytree.tree_leaves(output)) if output is not None else []
-    passthrough_vals = [
-        v
-        for v in output_leaves
-        if isinstance(v, IRNode) and v.get_name() in input_names
-    ]
+    passthrough_vals = []
+    for v in output_leaves:
+        if isinstance(v, IRNode):
+            v.realize()
+            if v.get_name() in input_names:
+                passthrough_vals.append(v)
     for val in passthrough_vals:
         barrier = ir.OrderingBarrier(val)
         for op in subgraph_ops:
