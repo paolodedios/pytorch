@@ -1401,11 +1401,12 @@ print(t.is_pinned())
 
     @serialTest()
     def test_stream_pool_size_and_wrap(self):
-        # For each priority pool, the first pool_size streams are distinct
+        # For each supported priority pool, the first pool_size streams are distinct
         # underlying streams and the (pool_size + 1)-th wraps back onto the first.
         # On ROCm with the cap active this confirms each pooled stream is a
         # distinct hipStream (and, by construction, a distinct hsa_queue).
-        for priority in (0, -1):
+        least, greatest = torch.cuda.Stream.priority_range()
+        for priority in range(least, greatest - 1, -1):
             pool_size = torch.cuda._get_stream_pool_size(priority)
             self.assertGreaterEqual(pool_size, 1)
             streams = [
