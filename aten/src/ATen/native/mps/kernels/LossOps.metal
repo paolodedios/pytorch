@@ -123,6 +123,8 @@ static void calc_log_alpha_beta(
       auto t = beta ? (params.max_input_length - (t_base + 1)) : t_base;
       auto t_prev = beta ? (t + 1) : (t - 1);
       threadgroup_barrier(mem_flags::mem_device);
+      if (beta && t == input_length - 1)
+        continue;
       if (t < input_length && s < S) {
         // A = log(alpha[t_prev, s])
         auto A = static_cast<T_op>(log_alpha

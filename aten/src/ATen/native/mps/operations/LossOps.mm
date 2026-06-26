@@ -1310,7 +1310,7 @@ std::string_view get_index_type_str() {
 }
 
 template <typename index_t, bool beta = false>
-static void ctc_loss_mps_kernel(std::optional<Tensor> loss,
+static void ctc_loss_mps_kernel(const std::optional<Tensor>& loss,
                                 Tensor& log_alpha,
                                 const Tensor& log_probs,
                                 const Tensor& targets,
