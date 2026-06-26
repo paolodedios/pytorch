@@ -77,11 +77,11 @@ from torch.sparse import SparseSemiStructuredTensor, to_sparse_semi_structured
 from torch.testing import FileCheck
 from torch.testing._internal.common_cuda import (
     PLATFORM_SUPPORTS_FP8,
+    skipIfSM103,
     SM100OrLater,
     SM120OrLater,
     SM80OrLater,
     SM90OrLater,
-    skipIfSM103,
     xfailIfSM120OrLater,
 )
 from torch.testing._internal.common_device_type import skipCUDAIf, skipXPUIf
@@ -332,11 +332,7 @@ class TestCutlassBackend(TestCase):
 
         ops = pytree.tree_flatten(_gen_ops_cached("103", "13.3", "cuda"))[0]
         cutlass_ops = [op for op in ops if hasattr(op, "configuration_name")]
-        int8_ops = [
-            op
-            for op in cutlass_ops
-            if "s8_s8_s32" in op.configuration_name()
-        ]
+        int8_ops = [op for op in cutlass_ops if "s8_s8_s32" in op.configuration_name()]
         self.assertGreater(len(cutlass_ops), 0)
         self.assertEqual(int8_ops, [])
 
