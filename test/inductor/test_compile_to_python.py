@@ -2,6 +2,7 @@
 import ast
 import re
 import textwrap
+from unittest import mock
 
 import torch
 import torch.utils._pytree as pytree
@@ -359,31 +360,51 @@ def call(args):
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
-    def test_max_autotune_single_runnable_module(self):
-        # Integration check that compile_to_python works under max_autotune, which drives
-        # the GEMM autotuning machinery (Triton templates plus the SubgraphChoiceCaller
-        # decompose_k path, a candidate when k >= 32*m and k >= 32*n). The contract under
-        # test is that exactly ONE runnable module is still captured and runs correctly
-        # under that machinery; a regression that let a nested benchmark lowering leak into
-        # the capture would trip the >1-module RuntimeError here.
+    def test_max_autotune_filters_benchmark_lowerings(self):
+        # max_autotune's decompose_k GEMM choice compiles each k-split as a nested
+        # SubgraphChoiceCaller GraphLowering named benchmark_* that fires the same
+        # process-global capture hook; capture_hook's name filter drops them so exactly ONE
+        # runnable module is captured (without the filter, _extract_runnable_module raises
+        # the >1-module RuntimeError -- verified out-of-band). fresh_cache forces a cold
+        # autotune cache so the benchmark compiles actually run (a warm cache skips them),
+        # and the spy asserts they did, so the test cannot silently degrade into a no-op.
+        # k >= 32*m and k >= 32*n makes decompose_k a candidate.
+        from torch._inductor.codegen.subgraph import SubgraphChoiceCaller
+
         m = (
-            torch.nn.Sequential(torch.nn.Linear(2048, 8, bias=False), torch.nn.ReLU())
+            torch.nn.Sequential(torch.nn.Linear(8192, 64, bias=False), torch.nn.ReLU())
             .eval()
             .cuda()
         )
-        x = torch.randn(8, 2048, device="cuda")
+        x = torch.randn(64, 8192, device="cuda")
         gm = _capture(m, x)
-        src, _cache = compile_to_python(
-            gm,
-            _flat_inputs(m, x),
-            options={
-                "graph_partition": False,
-                "max_autotune": True,
-                "max_autotune_gemm_backends": "TRITON",
-            },
-        )
-        self.assertTrue(_defines_module_level_call(src))
-        self.assertNotIn("benchmark_", src)  # no nested benchmark lowering leaked
+        orig = SubgraphChoiceCaller._compile_for_benchmarking
+        bench_calls = []
+
+        def _spy(choice, *args, **kwargs):
+            bench_calls.append(1)
+            return orig(choice, *args, **kwargs)
+
+        with fresh_cache():
+            with mock.patch.object(
+                SubgraphChoiceCaller, "_compile_for_benchmarking", _spy
+            ):
+                src, _cache = compile_to_python(
+                    gm,
+                    _flat_inputs(m, x),
+                    options={
+                        "graph_partition": False,
+                        "max_autotune": True,
+                        "max_autotune_gemm_backends": "TRITON",
+                    },
+                )
+        self.assertGreater(len(bench_calls), 0)  # benchmark lowerings actually fired
+        self.assertTrue(
+            _defines_module_level_call(src)
+        )  # filter left exactly one module
+        self.assertNotIn(
+            "benchmark_", src
+        )  # none of them leaked into the captured module
         with torch.no_grad():
             self.assertEqual(
                 _exec(src)(_flat_inputs(m, x))[0], m(x), atol=1e-2, rtol=1e-2
