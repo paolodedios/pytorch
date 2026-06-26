@@ -450,16 +450,6 @@ class ConstantVariable(VariableTracker):
     def reconstruct_pycode(self, codegen) -> str:
         return repr(self.value)
 
-    def is_python_equal(self, other: object) -> bool:
-        from .tensor import SymNodeVariable
-
-        if isinstance(other, SymNodeVariable):
-            return self.as_python_constant() == other.evaluate_expr()
-        return (
-            isinstance(other, VariableTracker)
-            and self.as_python_constant() == other.as_python_constant()
-        )
-
     def get_id(self, tx: InstructionTranslatorBase) -> int | None:
         # Singletons have guaranteed stable identity across the process lifetime.
         if self.value is None or self.value is True or self.value is False:
