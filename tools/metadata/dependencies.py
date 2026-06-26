@@ -20,7 +20,7 @@ __all__ = ["dynamic_metadata"]
 BASE_DEPENDENCIES = [
     "filelock",
     "typing-extensions>=4.10.0",
-    "setuptools<82",
+    "setuptools>=77.0.3",
     "sympy>=1.13.3",
     "networkx>=2.5.1",
     "jinja2",

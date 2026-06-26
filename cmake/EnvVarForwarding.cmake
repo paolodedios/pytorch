@@ -160,11 +160,6 @@ if(Python_EXECUTABLE)
   endif()
 endif()
 
-# MAX_JOBS -> CMAKE_BUILD_PARALLEL_LEVEL (scikit-build-core respects this)
-if(DEFINED ENV{MAX_JOBS} AND NOT DEFINED CMAKE_BUILD_PARALLEL_LEVEL)
-  set(ENV{CMAKE_BUILD_PARALLEL_LEVEL} "$ENV{MAX_JOBS}")
-endif()
-
 # BUILD_PYTHON_ONLY implies BUILD_LIBTORCHLESS=ON. This matches setup.py
 # behavior where BUILD_PYTHON_ONLY unconditionally forces BUILD_LIBTORCHLESS.
 if(BUILD_PYTHON_ONLY)
