@@ -269,6 +269,7 @@ Tensor _convolution_out(
     int64_t groups_,
     Attr attr,
     IntArrayRef pad_nd = IntArrayRef({})) {
+  std::cout << "debug: _convolution_out" << std::endl;
   CheckedFrom c = "xpu_convolution";
   TensorArg input_t{input_r, "input", 1}, weight_t{weight_r, "weight", 2};
   checkAllSameType(c, {input_t, weight_t});
@@ -281,6 +282,7 @@ Tensor _convolution_out(
   Tensor input = input_r, weight = weight_r;
   // PyTorch does not support ChannelsLast1D case,
   // thus we need the transformation here
+  std::cout << "debug: _convolution_out: ndim: " << ndim << std::endl;
   if (ndim == 3) {
     input = view4d(input_r);
     weight = view4d(weight_r);
