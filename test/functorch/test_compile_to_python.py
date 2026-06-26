@@ -21,6 +21,7 @@ from torch._higher_order_ops.effects import _get_effect
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.nn.utils import stateless
 from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.triton_utils import requires_cuda_and_triton
 
 
 def _capture(m, x, tracing_mode="real"):
@@ -195,33 +196,33 @@ class _BufferMutate(torch.nn.Module):
         return x + self.b
 
 
+def _compose(m, x):
+    gm = _capture(m, x)
+    return compile_to_python(gm, _flat_inputs(m, x), options={"graph_partition": False})
+
+
+def _assert_composed(test, src):
+    # Structural markers proving this is the COMPOSED module (not just the inner inductor
+    # output): the outer entry takes flat_inputs, the inner call is captured as
+    # _inner_call, and each wrapper is re-exec'd via _exec_wrapper / _orchestration.
+    test.assertIn("def call(flat_inputs):", src)
+    test.assertIn("_inner_call = call", src)
+    test.assertIn("def _exec_wrapper(", src)
+    test.assertIn("_orchestration", src)
+    # Auditability guarantee: no pickle.loads / base64 blob in the emitted module.
+    test.assertNotIn("pickle.loads", src)
+
+
 class TestAOTCompileToPython(TestCase):
     # End-to-end coverage of the functorch composition layer: compile_to_python composes
     # AOTAutograd's codegen'd runtime wrappers (prelude/epilogue) around the inner Inductor
     # call into one standalone module, and the emitted module must match eager. All CPU.
-    def _compose(self, m, x):
-        gm = _capture(m, x)
-        src, cache = compile_to_python(
-            gm, _flat_inputs(m, x), options={"graph_partition": False}
-        )
-        return src, cache
-
-    def _assert_composed(self, src):
-        # Structural markers proving this is the COMPOSED module (not just the inner
-        # inductor output): the outer entry takes flat_inputs, the inner call is captured
-        # as _inner_call, and each wrapper is re-exec'd via _exec_wrapper / _orchestration.
-        self.assertIn("def call(flat_inputs):", src)
-        self.assertIn("_inner_call = call", src)
-        self.assertIn("def _exec_wrapper(", src)
-        self.assertIn("_orchestration", src)
-        # Auditability guarantee: no pickle.loads / base64 blob in the emitted module.
-        self.assertNotIn("pickle.loads", src)
 
     def test_pointwise_runs_like_eager(self):
         m = _Pointwise().eval()
         x = torch.randn(8, 4)
-        src, cache = self._compose(m, x)
-        self._assert_composed(src)
+        src, cache = _compose(m, x)
+        _assert_composed(self, src)
         # Return contract: cache is the opaque acceleration bytes or None.
         self.assertIsInstance(cache, (bytes, type(None)))
         with torch.no_grad():
@@ -230,24 +231,24 @@ class TestAOTCompileToPython(TestCase):
     def test_linear_addmm_runs_like_eager(self):
         m = torch.nn.Linear(4, 3).eval()
         x = torch.randn(5, 4)
-        src, _cache = self._compose(m, x)
-        self._assert_composed(src)
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
     def test_sequential_linear_relu_runs_like_eager(self):
         m = torch.nn.Sequential(torch.nn.Linear(4, 3), torch.nn.ReLU()).eval()
         x = torch.randn(5, 4)
-        src, _cache = self._compose(m, x)
-        self._assert_composed(src)
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
     def test_reduction_runs_like_eager(self):
         m = _SumDim1().eval()
         x = torch.randn(6, 7)
-        src, _cache = self._compose(m, x)
-        self._assert_composed(src)
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
@@ -264,7 +265,7 @@ class TestAOTCompileToPython(TestCase):
             dynamic_shapes="from_graph",
             options={"graph_partition": False},
         )
-        self._assert_composed(src)
+        _assert_composed(self, src)
         fn = _exec(src)
         for n in (8, 16, 5):
             xi = torch.randn(n, 4)
@@ -278,8 +279,8 @@ class TestAOTCompileToPython(TestCase):
         # input.
         m = _BufferMutate().eval()
         x = torch.randn(4)
-        src, _cache = self._compose(m, x)
-        self._assert_composed(src)
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
 
         eager = _BufferMutate().eval()
         eager_out = eager(x)
@@ -297,8 +298,8 @@ class TestAOTCompileToPython(TestCase):
         # equal eager AND alias the input's storage, exactly as eager's view does.
         m = _ViewAlias().eval()
         x = torch.randn(4, 4)
-        src, _cache = self._compose(m, x)
-        self._assert_composed(src)
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
         self.assertIn("gen_alias_from_base", src)
         xc = x.clone()
         with torch.no_grad():
@@ -321,7 +322,7 @@ class TestAOTCompileToPython(TestCase):
         tt = TwoTensor(torch.randn(4, 4), torch.randn(4, 4))
         gm = make_fx(f, tracing_mode="real")(tt)
         src, _cache = compile_to_python(gm, [tt], options={"graph_partition": False})
-        self._assert_composed(src)
+        _assert_composed(self, src)
         with torch.no_grad():
             out = _exec(src)([tt])[0]
         eager = f(tt)
@@ -407,13 +408,13 @@ class TestAOTCompileToPythonHelpers(TestCase):
         self.assertEqual(_emit(math), ("math", ["import math"]))
 
     def test_importable_rejects_lambda_and_local(self):
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaisesRegex(NotImplementedError, "local definition"):
             _emit(lambda x: x)
 
         def _local():
             pass
 
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaisesRegex(NotImplementedError, "local definition"):
             _emit(_local)
 
     def test_enums(self):
@@ -534,7 +535,7 @@ class TestAOTCompileToPythonHelpers(TestCase):
 
     def test_emit_importable_rejects_non_round_tripping(self):
         # torch.add is a builtin whose __qualname__ does not round-trip via importlib.
-        with self.assertRaises(NotImplementedError):
+        with self.assertRaisesRegex(NotImplementedError, "does not.*round-trip"):
             _emit_importable(torch.add, set())
 
     def test_find_effectful_op_top_level(self):
@@ -570,6 +571,55 @@ class TestAOTCompileToPythonHelpers(TestCase):
         m = _Pointwise().eval()
         gm = _capture(m, torch.randn(4, 4))
         self.assertIsNone(_find_effectful_op(gm, _get_effect))
+
+
+@requires_cuda_and_triton
+class TestAOTCompileToPythonCuda(TestCase):
+    # The composition is device-agnostic source manipulation, but its wrappers must also
+    # compose correctly around Inductor's @triton.jit kernels and on CUDA tensors. Mirror
+    # the key e2e cases on CUDA; the inner-kernel codegen itself is covered by
+    # test/inductor/test_compile_to_python.py's CUDA class.
+    def test_pointwise_runs_like_eager(self):
+        m = _Pointwise().eval().cuda()
+        x = torch.randn(8, 4, device="cuda")
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
+        self.assertIn("@triton.jit", src)
+        with torch.no_grad():
+            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_output_alias_regen_runs_like_eager(self):
+        m = _ViewAlias().eval().cuda()
+        x = torch.randn(4, 4, device="cuda")
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
+        self.assertIn("gen_alias_from_base", src)
+        xc = x.clone()
+        with torch.no_grad():
+            out = _exec(src)([xc])[0]
+        self.assertEqual(out, m(x))
+        self.assertEqual(
+            out.untyped_storage().data_ptr(), xc.untyped_storage().data_ptr()
+        )
+
+    def test_tensor_subclass_wrap_unwrap_runs_like_eager(self):
+        from torch.testing._internal.two_tensor import TwoTensor
+
+        def f(x):
+            return x * 2.0 + 1.0
+
+        tt = TwoTensor(
+            torch.randn(4, 4, device="cuda"), torch.randn(4, 4, device="cuda")
+        )
+        gm = make_fx(f, tracing_mode="real")(tt)
+        src, _cache = compile_to_python(gm, [tt], options={"graph_partition": False})
+        _assert_composed(self, src)
+        with torch.no_grad():
+            out = _exec(src)([tt])[0]
+        eager = f(tt)
+        self.assertIsInstance(out, TwoTensor)
+        self.assertEqual(out.a, eager.a)
+        self.assertEqual(out.b, eager.b)
 
 
 class TestAOTComposeGuards(TestCase):
