@@ -51,7 +51,14 @@ from ..exc import (
     UserErrorType,
 )
 from ..guards import GuardBuilder, install_guard
-from ..source import AttrSource, GetItemSource, GlobalSource, is_constant_source, Source, TypeSource
+from ..source import (
+    AttrSource,
+    GetItemSource,
+    GlobalSource,
+    is_constant_source,
+    Source,
+    TypeSource,
+)
 from ..utils import (
     check_constant_args,
     check_numpy_ndarray_args,
