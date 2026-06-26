@@ -890,6 +890,15 @@ class ConstDictVariable(VariableTracker):
     def getattro_impl(self, tx: "InstructionTranslatorBase", name: str):
         if name == "__class__":
             return VariableTracker.build(tx, self.python_type())
+        # DictGuardManager does not support getattr_manager for plain dicts,
+        # so AttrSource chains through a dict source break guard creation.
+        # Return CallMethodVariable directly for methods, bypassing the
+        # MRO walk in object_generic_getattr that would create that chain.
+        from .object_protocol import _is_method_type, mro_lookup, NO_SUCH_SUBOBJ
+
+        type_attr = mro_lookup(self.python_type(), name)
+        if type_attr is not NO_SUCH_SUBOBJ and _is_method_type(type_attr):
+            return variables.CallMethodVariable(self, name)
         return super().getattro_impl(tx, name)
 
 
