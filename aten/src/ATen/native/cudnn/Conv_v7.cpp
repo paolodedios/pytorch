@@ -265,6 +265,12 @@ std::vector<perf_t> getValidAlgorithms(
   return result;
 }
 
+template <typename perf_t>
+struct AlgorithmSearchResult {
+  std::vector<perf_t> perfResults;
+  int perf_count;
+};
+
 template <>
 struct algorithm_search<cudnnConvolutionFwdAlgoPerf_t> {
   using perf_t = cudnnConvolutionFwdAlgoPerf_t;
@@ -276,7 +282,7 @@ struct algorithm_search<cudnnConvolutionFwdAlgoPerf_t> {
     return fwd_algos;
   }
 
-  static std::vector<perf_t> findAlgorithms(
+  static AlgorithmSearchResult<perf_t> findAlgorithms(
       const ConvolutionArgs& args,
       bool benchmark,
       bool get_all_algorithms = false) {
@@ -335,11 +341,13 @@ struct algorithm_search<cudnnConvolutionFwdAlgoPerf_t> {
       // memory, e.g. a few GBs.
       c10::cuda::CUDACachingAllocator::emptyCache();
     }
-    return getValidAlgorithms<perf_t>(
-        perf_results.data(),
-        args,
-        perf_count,
-        !benchmark && !get_all_algorithms);
+    return AlgorithmSearchResult<perf_t>{
+        getValidAlgorithms<perf_t>(
+            perf_results.data(),
+            args,
+            perf_count,
+            !benchmark && !get_all_algorithms),
+        perf_count};
   }
 
   static void getWorkspaceSize(
@@ -369,7 +377,7 @@ struct algorithm_search<cudnnConvolutionBwdDataAlgoPerf_t> {
     return bwd_data_algos;
   }
 
-  static std::vector<perf_t> findAlgorithms(
+  static AlgorithmSearchResult<perf_t> findAlgorithms(
       const ConvolutionArgs& args,
       bool benchmark,
       bool get_all_algorithms = false) {
@@ -426,11 +434,13 @@ struct algorithm_search<cudnnConvolutionBwdDataAlgoPerf_t> {
       // memory, e.g. a few GBs.
       c10::cuda::CUDACachingAllocator::emptyCache();
     }
-    return getValidAlgorithms<perf_t>(
-        perf_results.data(),
-        args,
-        perf_count,
-        !benchmark && !get_all_algorithms);
+    return AlgorithmSearchResult<perf_t>{
+        getValidAlgorithms<perf_t>(
+            perf_results.data(),
+            args,
+            perf_count,
+            !benchmark && !get_all_algorithms),
+        perf_count};
   }
 
   static void getWorkspaceSize(
@@ -461,7 +471,7 @@ struct algorithm_search<cudnnConvolutionBwdFilterAlgoPerf_t> {
     return bwd_filter_algos;
   }
 
-  static std::vector<perf_t> findAlgorithms(
+  static AlgorithmSearchResult<perf_t> findAlgorithms(
       const ConvolutionArgs& args,
       bool benchmark,
       bool get_all_algorithms = false) {
@@ -521,11 +531,13 @@ struct algorithm_search<cudnnConvolutionBwdFilterAlgoPerf_t> {
       // memory, e.g. a few GBs.
       c10::cuda::CUDACachingAllocator::emptyCache();
     }
-    return getValidAlgorithms<perf_t>(
-        perf_results.data(),
-        args,
-        perf_count,
-        !benchmark && !get_all_algorithms);
+    return AlgorithmSearchResult<perf_t>{
+        getValidAlgorithms<perf_t>(
+            perf_results.data(),
+            args,
+            perf_count,
+            !benchmark && !get_all_algorithms),
+        perf_count};
   }
 
   static void getWorkspaceSize(
@@ -600,18 +612,22 @@ class AlgoIterator {
       return false;
     };
 
-    auto perfResults = only_use_default
-        ? onlyDefaultAlgorithm(args)
+    auto searchResult = only_use_default
+        ? AlgorithmSearchResult<perf_t>{onlyDefaultAlgorithm(args), 1}
         : search::findAlgorithms(args, benchmark);
+    auto& perfResults = searchResult.perfResults;
 
-    if (try_perf_results(perfResults.begin(), perfResults.end())) {
-      return;
+    if (!perfResults.empty()) {
+      if (try_perf_results(perfResults.begin(), perfResults.end())) {
+        return;
+      }
     }
 
-    if (!only_use_default && !benchmark && !perfResults.empty()) {
-      auto fallbackPerfResults = search::findAlgorithms(args, benchmark, true);
+    if (!only_use_default && !benchmark && searchResult.perf_count > 0) {
+      auto fallbackSearchResult = search::findAlgorithms(args, benchmark, true);
+      auto& fallbackPerfResults = fallbackSearchResult.perfResults;
       auto perf_begin = fallbackPerfResults.begin();
-      if (perf_begin != fallbackPerfResults.end()) {
+      if (!perfResults.empty() && perf_begin != fallbackPerfResults.end()) {
         perf_begin = std::next(perf_begin);
       }
       if (try_perf_results(perf_begin, fallbackPerfResults.end())) {

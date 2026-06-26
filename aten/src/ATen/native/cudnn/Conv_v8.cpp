@@ -583,14 +583,16 @@ auto get_generator_sources(
     const cudnnBackendHeurMode_t heur_mode,
     const bool heuristic,
     const bool fallback,
-    const bool get_all_heuristic_configs = false) {
+    const bool get_all_heuristic_configs = false,
+    int64_t* heuristic_config_count = nullptr) {
   // Method for engine config generator based on heuristics
   const auto heurgen_method =
       [/*&desc,*/ &x,
        deterministic,
        allow_tf32,
        heur_mode,
-       get_all_heuristic_configs](cudnn_frontend::OperationGraph& opGraph)
+       get_all_heuristic_configs,
+       heuristic_config_count](cudnn_frontend::OperationGraph& opGraph)
       -> cudnn_frontend::EngineConfigList {
     auto heuristics = cudnn_frontend::EngineHeuristicsBuilder()
                           .setOperationGraph(opGraph)
@@ -598,6 +600,9 @@ auto get_generator_sources(
                           .build();
     auto& engine_configs = heuristics.getEngineConfig(
         get_all_heuristic_configs ? heuristics.getEngineConfigCount() : 1);
+    if (heuristic_config_count != nullptr) {
+      *heuristic_config_count = engine_configs.size();
+    }
     cudnn_frontend::EngineConfigList filtered_configs;
     filterEngineConfigs(
         engine_configs,
@@ -637,6 +642,11 @@ auto get_generator_sources(
     return sources;
   }
 }
+
+struct EngineConfigResult {
+  cudnn_frontend::EngineConfigList configs;
+  int64_t heuristic_config_count;
+};
 
 int64_t get_available_workspace() {
   c10::DeviceIndex device = 0;
@@ -872,6 +882,7 @@ auto get_configs_from_heuristics(
   auto heuristic_mode = at::native::cudnnv8_use_heur_mode_b()
       ? CUDNN_HEUR_MODE_B
       : CUDNN_HEUR_MODE_INSTANT;
+  int64_t heuristic_config_count = -1;
   auto sources = get_generator_sources(
       desc,
       x,
@@ -880,11 +891,13 @@ auto get_configs_from_heuristics(
       heuristic_mode,
       !fallback,
       fallback,
-      get_all_heuristic_configs);
+      get_all_heuristic_configs,
+      &heuristic_config_count);
 
   cudnn_frontend::EngineConfigGenerator generator(
       sources.size(), sources.data());
-  return generator.generate_engine_config(opGraph);
+  auto configs = generator.generate_engine_config(opGraph);
+  return EngineConfigResult{std::move(configs), heuristic_config_count};
 }
 
 auto get_configs_from_heuristics_fused(
@@ -910,6 +923,7 @@ auto get_configs_from_heuristics_fused(
   auto heuristic_mode = at::native::cudnnv8_use_heur_mode_b()
       ? CUDNN_HEUR_MODE_B
       : CUDNN_HEUR_MODE_INSTANT;
+  int64_t heuristic_config_count = -1;
   auto sources = get_generator_sources(
       CUDNN_BACKEND_OPERATION_CONVOLUTION_FORWARD_DESCRIPTOR,
       x,
@@ -918,12 +932,13 @@ auto get_configs_from_heuristics_fused(
       heuristic_mode,
       !fallback,
       fallback,
-      get_all_heuristic_configs);
+      get_all_heuristic_configs,
+      &heuristic_config_count);
 
   cudnn_frontend::EngineConfigGenerator generator(
       sources.size(), sources.data());
   auto configs = generator.generate_engine_config(opGraph);
-  return configs;
+  return EngineConfigResult{std::move(configs), heuristic_config_count};
 }
 
 void try_plans(
@@ -1112,7 +1127,7 @@ void run_single_conv(
   if (!benchmark) {
     std::string opgraph_tag; // extra data needed for errata filter
     // top config from heuristic
-    cudnn_frontend::EngineConfigList configs = get_configs_from_heuristics(
+    auto engine_config_result = get_configs_from_heuristics(
         handle,
         operation,
         opgraph_tag,
@@ -1126,12 +1141,23 @@ void run_single_conv(
         deterministic,
         allow_tf32,
         false);
-    if (!configs.empty()) {
-      if (try_configs(configs, opgraph_tag, key, handle, x, y, w, operation)) {
+    const bool tried_top_config = !engine_config_result.configs.empty();
+    if (tried_top_config) {
+      if (try_configs(
+              engine_config_result.configs,
+              opgraph_tag,
+              key,
+              handle,
+              x,
+              y,
+              w,
+              operation)) {
         return;
       }
+    }
+    if (engine_config_result.heuristic_config_count > 0) {
       // all heuristic configs
-      configs = get_configs_from_heuristics(
+      engine_config_result = get_configs_from_heuristics(
           handle,
           operation,
           opgraph_tag,
@@ -1146,14 +1172,15 @@ void run_single_conv(
           allow_tf32,
           false,
           true);
-      auto configs_begin = configs.begin();
+      auto configs_begin = engine_config_result.configs.begin();
       // The top-config path already tried the first filtered heuristic config.
-      if (configs_begin != configs.end()) {
+      if (tried_top_config &&
+          configs_begin != engine_config_result.configs.end()) {
         configs_begin += 1;
       }
       if (try_configs(
               configs_begin,
-              configs.end(),
+              engine_config_result.configs.end(),
               opgraph_tag,
               key,
               handle,
@@ -1165,7 +1192,7 @@ void run_single_conv(
       }
     }
     // fallback configs
-    configs = get_configs_from_heuristics(
+    engine_config_result = get_configs_from_heuristics(
         handle,
         operation,
         opgraph_tag,
@@ -1179,7 +1206,15 @@ void run_single_conv(
         deterministic,
         allow_tf32,
         true);
-    if (try_configs(configs, opgraph_tag, key, handle, x, y, w, operation)) {
+    if (try_configs(
+            engine_config_result.configs,
+            opgraph_tag,
+            key,
+            handle,
+            x,
+            y,
+            w,
+            operation)) {
       return;
     }
     TORCH_CHECK(
@@ -1247,29 +1282,40 @@ void run_fused_conv(
   if (!benchmark) {
     std::string opgraph_tag; // extra data needed for errata filter
     // top heuristic config
-    cudnn_frontend::EngineConfigList configs =
-        get_configs_from_heuristics_fused(
-            handle,
-            opgraph_tag,
-            x,
-            y,
-            w,
-            z,
-            b,
-            alpha,
-            key,
-            padding,
-            stride,
-            dilation,
-            deterministic,
-            allow_tf32,
-            false);
-    if (!configs.empty()) {
-      if (try_configs_fused(configs, opgraph_tag, key, handle, x, y, w, z, b)) {
+    auto engine_config_result = get_configs_from_heuristics_fused(
+        handle,
+        opgraph_tag,
+        x,
+        y,
+        w,
+        z,
+        b,
+        alpha,
+        key,
+        padding,
+        stride,
+        dilation,
+        deterministic,
+        allow_tf32,
+        false);
+    const bool tried_top_config = !engine_config_result.configs.empty();
+    if (tried_top_config) {
+      if (try_configs_fused(
+              engine_config_result.configs,
+              opgraph_tag,
+              key,
+              handle,
+              x,
+              y,
+              w,
+              z,
+              b)) {
         return;
       }
+    }
+    if (engine_config_result.heuristic_config_count > 0) {
       // all heuristic configs
-      configs = get_configs_from_heuristics_fused(
+      engine_config_result = get_configs_from_heuristics_fused(
           handle,
           opgraph_tag,
           x,
@@ -1286,14 +1332,15 @@ void run_fused_conv(
           allow_tf32,
           false,
           true);
-      auto configs_begin = configs.begin();
+      auto configs_begin = engine_config_result.configs.begin();
       // The top-config path already tried the first filtered heuristic config.
-      if (configs_begin != configs.end()) {
+      if (tried_top_config &&
+          configs_begin != engine_config_result.configs.end()) {
         configs_begin += 1;
       }
       if (try_configs_fused(
               configs_begin,
-              configs.end(),
+              engine_config_result.configs.end(),
               opgraph_tag,
               key,
               handle,
@@ -1306,7 +1353,7 @@ void run_fused_conv(
       }
     }
     // fallback configs
-    configs = get_configs_from_heuristics_fused(
+    engine_config_result = get_configs_from_heuristics_fused(
         handle,
         opgraph_tag,
         x,
@@ -1322,7 +1369,16 @@ void run_fused_conv(
         deterministic,
         allow_tf32,
         true);
-    if (try_configs_fused(configs, opgraph_tag, key, handle, x, y, w, z, b)) {
+    if (try_configs_fused(
+            engine_config_result.configs,
+            opgraph_tag,
+            key,
+            handle,
+            x,
+            y,
+            w,
+            z,
+            b)) {
       return;
     }
     TORCH_CHECK(
