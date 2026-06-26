@@ -125,7 +125,7 @@ void apply_ldl_solve_cusolver(
   TORCH_CHECK(
       false,
       "Calling torch.linalg.ldl_solve on a CUDA tensor requires compiling ",
-      "PyTorch with cuSOLVER. Please use PyTorch built with cuSOLVER 11.1.2+ (CUDA 11.3.1+) support.");
+      "PyTorch with cuSOLVER/hipSOLVER. Please use PyTorch built with cuSOLVER 11.1.2+ (CUDA 11.3.1+) or hipSOLVER (ROCm 7.14+) support.");
 #else
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(batchCount(A) > 0);
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(batchCount(pivots.unsqueeze(-1)) > 0);
