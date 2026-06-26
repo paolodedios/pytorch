@@ -50,9 +50,14 @@ from typing_extensions import (
 # wheel-file import in the same process starts a fresh cmake cycle (cascade).
 # Also, pytest --capture=sys replaces sys.stderr with a capture object that
 # lacks fileno(), crashing the subprocess.run(stdout=sys.stderr) call.
-# Patch rebuild() to: (1) restore real stderr for the subprocess, and
-# (2) propagate SKBUILD_EDITABLE_SKIP to the current process env so
-# subsequent wheel-file imports skip the rebuild.
+# Patch rebuild() to: (1) restore real stderr for the subprocess,
+# (2) propagate SKBUILD_EDITABLE_SKIP to the current process env so subsequent
+# wheel-file imports skip the rebuild, and (3) alias MAX_JOBS to
+# CMAKE_BUILD_PARALLEL_LEVEL so the rebuild's `cmake --build` honors PyTorch's
+# build-parallelism knob. rebuild() copies os.environ for the subprocess, so the
+# alias must be set before it runs. The install path does the same aliasing in
+# the build backend; the import-time rebuild bypasses that, hence it is repeated
+# here.
 def _patch_skbuild_editable_rebuild() -> None:
     _MARKER = "SKBUILD_EDITABLE_SKIP"
     for _finder in sys.meta_path:
@@ -69,6 +74,9 @@ def _patch_skbuild_editable_rebuild() -> None:
             def _rebuild_once(
                 _orig: _Callable[[], None] = _orig, _path: str = _path
             ) -> None:
+                _max_jobs = os.environ.get("MAX_JOBS")
+                if _max_jobs and "CMAKE_BUILD_PARALLEL_LEVEL" not in os.environ:
+                    os.environ["CMAKE_BUILD_PARALLEL_LEVEL"] = _max_jobs
                 _real_stderr = getattr(sys, "__stderr__", None)
                 _saved_stderr = sys.stderr
                 if _real_stderr is not None:
@@ -1858,6 +1866,7 @@ def use_deterministic_algorithms(
         * :func:`torch.Tensor.scatter` when `src` type is Tensor and called on CUDA tensor
         * :func:`torch.Tensor.scatter_reduce` when ``reduce='sum'`` or ``reduce='mean'`` and called on CUDA tensor
         * :class:`torch.nn.MaxPool3d` when attempting to differentiate a CUDA tensor
+        * :class:`torch.nn.Embedding` when attempting to differentiate a CUDA tensor
 
     The following normally-nondeterministic operations will throw a
     :class:`RuntimeError` when ``mode=True``:
@@ -3066,7 +3075,7 @@ def compile(
     | None = None,
     name: str | None = None,
     disable: builtins.bool = False,
-    shapes_spec: _Any = None,
+    dynamic_shapes: _Any = None,
 ) -> _Callable[_InputT, _RetT]: ...
 
 
@@ -3082,7 +3091,7 @@ def compile(
     | None = None,
     name: str | None = None,
     disable: builtins.bool = False,
-    shapes_spec: _Any = None,
+    dynamic_shapes: _Any = None,
 ) -> _Callable[[_Callable[_InputT, _RetT]], _Callable[_InputT, _RetT]]: ...
 
 
@@ -3099,7 +3108,7 @@ def compile(
     disable: builtins.bool = False,
     recompile_limit: builtins.int | None = None,
     isolate_recompiles: builtins.bool = False,
-    shapes_spec: _Any = None,
+    dynamic_shapes: _Any = None,
 ) -> (
     _Callable[[_Callable[_InputT, _RetT]], _Callable[_InputT, _RetT]]
     | _Callable[_InputT, _RetT]
@@ -3240,18 +3249,18 @@ def compile(
         backend = get_default_backend()
 
     # Auto-wrap ParamsSpec → ShapesSpec for convenience
-    if shapes_spec is not None:
+    if dynamic_shapes is not None:
         from torch.fx.experimental.dynamic_spec import ParamsSpec, ShapesSpec
 
-        if isinstance(shapes_spec, ParamsSpec):
-            shapes_spec = ShapesSpec(shapes_spec)
+        if isinstance(dynamic_shapes, ParamsSpec):
+            dynamic_shapes = ShapesSpec(dynamic_shapes)
 
     # If ``model`` carries an ``@dynamic_spec(...)`` decorator, the attached
-    # ``ShapesSpec`` is used as ``shapes_spec``. Passing both raises.
+    # ``ShapesSpec`` is used as ``dynamic_shapes``. Passing both raises.
     if model is not None:
         from torch.fx.experimental.dynamic_spec import _resolve_dynamic_shapes
 
-        shapes_spec = _resolve_dynamic_shapes(model, shapes_spec)
+        dynamic_shapes = _resolve_dynamic_shapes(model, dynamic_shapes)
 
     # Decorator mode
     if model is None:
@@ -3270,7 +3279,7 @@ def compile(
                 disable=disable,
                 recompile_limit=recompile_limit,
                 isolate_recompiles=isolate_recompiles,
-                shapes_spec=shapes_spec,
+                dynamic_shapes=dynamic_shapes,
             )
 
         return fn
@@ -3329,7 +3338,7 @@ def compile(
         guard_filter_fn=guard_filter_fn,
         recompile_limit=recompile_limit,
         isolate_recompiles=isolate_recompiles,
-        shapes_spec=shapes_spec,
+        dynamic_shapes=dynamic_shapes,
     )(model)  # type: ignore[return-value]
 
 

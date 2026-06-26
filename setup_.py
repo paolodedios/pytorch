@@ -12,8 +12,66 @@ Usage examples (all produce the same result as before):
     python setup_.py build            -> pip install -e . -v --no-build-isolation
 """
 
+import os
 import subprocess
 import sys
+
+
+def _check_build_requires() -> None:
+    """Verify build-system.requires is satisfied before a no-isolation build.
+
+    The build commands below pass --no-build-isolation / --no-isolation, which
+    means pip does not enforce the build-system.requires pins; a missing or
+    too-old build dependency (e.g. scikit-build-core) then surfaces as a deep
+    BackendUnavailable traceback. Check the pins up front and fail with an
+    actionable message instead. Best-effort: if the tooling needed to run the
+    check is itself absent, skip rather than block the build.
+    """
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            return
+    try:
+        from importlib.metadata import (
+            PackageNotFoundError,
+            version as installed_version,
+        )
+
+        from packaging.requirements import Requirement
+    except ModuleNotFoundError:
+        return
+
+    pyproject = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "pyproject.toml"
+    )
+    with open(pyproject, "rb") as f:
+        requires = tomllib.load(f).get("build-system", {}).get("requires", [])
+
+    problems = []
+    for spec in requires:
+        req = Requirement(spec)
+        if req.marker is not None and not req.marker.evaluate():
+            continue
+        try:
+            found = installed_version(req.name)
+        except PackageNotFoundError:
+            problems.append(f"{spec} (not installed)")
+            continue
+        if not req.specifier.contains(found, prereleases=True):
+            problems.append(f"{spec} (found {found})")
+
+    if problems:
+        listing = "\n  ".join(problems)
+        sys.exit(
+            "ERROR: build dependencies are missing or too old for a "
+            "--no-build-isolation build:\n  "
+            f"{listing}\n\n"
+            "Install them first:\n"
+            "  python -m pip install -r requirements-build.txt"
+        )
 
 
 _PIP_INSTALL = [
@@ -68,6 +126,8 @@ def main() -> None:
         f"Forwarding to: {' '.join(cmd)}\n",
         file=sys.stderr,
     )
+    if any(flag in cmd for flag in ("--no-build-isolation", "--no-isolation")):
+        _check_build_requires()
     result = subprocess.run(cmd)
     sys.exit(result.returncode)
 
