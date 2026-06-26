@@ -1669,24 +1669,8 @@ class CachingAutotuner(KernelInterface):
             timings = {}
             best_launcher = None
             best_timing = float("inf")
-            for i, launcher in enumerate(self.launchers):
-                try:
-                    timing = self.bench(launcher, *args, **kwargs)
-                except RuntimeError as e:
-                    cooperative_launch_error = (
-                        "too many blocks in cooperative launch" in str(e)
-                    )
-                    # Cooperative launches deliberately autotune configs that may fail.
-                    # Catch that and continue unless this is the last launcher and we've
-                    # found nothing else.
-                    if cooperative_launch_error and (
-                        best_launcher is not None or i < (len(self.launchers) - 1)
-                    ):
-                        self._close_static_launcher(launcher)
-                        continue
-                    else:
-                        raise
-
+            for launcher in self.launchers:
+                timing = self.bench(launcher, *args, **kwargs)
                 timings[launcher] = timing
                 # Close losing static launchers eagerly so exhaustive autotuning
                 # keeps only the current winner and candidate modules loaded.
@@ -4919,6 +4903,10 @@ def cooperative_reduction(
     def get_valid_rsplit(desired_rsplit: int) -> int:
         return max(1, min((desired_rsplit, rnumel, TRITON_MAX_RSPLIT)))
 
+    # Note that we must never create more CTAs than there are SMs, because we
+    # depend on synchronizing between the CTAs in x_grid_barrier, and that will
+    # deadlock if some of the CTAs are not running. In order to maximize use of
+    # the GPU, we want to create as many CTAs as possible.
     target = triton_meta["device"].multi_processor_count
     split = get_valid_rsplit(target // real_xnumel)
     if inductor_meta["persistent_reduction"]:
@@ -4935,23 +4923,12 @@ def cooperative_reduction(
             triton_meta=triton_meta,
         )
 
-    max_autotune_enabled: bool = inductor_meta.get(
-        "max_autotune", False
-    ) or inductor_meta.get("max_autotune_pointwise", False)
-    for config in list(configs):
+    for config in configs:
         # If XBLOCK > 1, increase the number of splits to get closer to the target value.
         xblock: int = config.kwargs["XBLOCK"]
         xsplit = (real_xnumel + xblock - 1) // xblock
-        updated_split = target // xsplit
-        config.kwargs["RSPLIT"] = get_valid_rsplit(updated_split)
-
-        # Basic guess at max autotune: less complex cooperative reductions can launch
-        # more blocks than SMs, but the APIs for checking aren't useful for Triton.
-        # Try doubling the number of blocks and seeing if it succeeds, but only if we're
-        # not already maxed out.
-        if max_autotune_enabled and config.kwargs["RSPLIT"] == updated_split:
-            configs.append(copy.deepcopy(config))
-            configs[-1].kwargs["RSPLIT"] = get_valid_rsplit(2 * updated_split)
+        config.kwargs["RSPLIT"] = get_valid_rsplit(target // xsplit)
+    # TODO(jansel): add more configs in max_autotune
 
     configs = _maybe_filter_configs_for_tma_restrictions(inductor_meta, configs)
     configs = filter_reduction_configs_for_determinism(inductor_meta, configs)
