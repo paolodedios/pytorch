@@ -425,11 +425,13 @@ def get_caching_autotuner_plugins(
     return plugins
 
 
-def _resolve_load_device(device: int | None, device_type: str) -> int:
+def _resolve_load_device(device: int | None, device_type: str) -> int | None:
     # compile-on-one-rank: a None device is the rank-agnostic marker; resolve it to the
     # current device at load time so a shared kernel's cubin loads on the running rank's
-    # GPU rather than a baked compile-time index.
-    if device is not None:
+    # GPU rather than a baked compile-time index. CPU has no device index and its
+    # DeviceGuard is a no-op -- resolving its None to 0 makes the guard call
+    # exchange_device, which CPU does not implement -- so leave CPU as-is.
+    if device is not None or device_type == "cpu":
         return device
     from torch._dynamo.device_interface import get_interface_for_device
 
