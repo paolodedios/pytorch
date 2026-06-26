@@ -26,7 +26,7 @@ from torch._C._dynamo import (
     PyTypeSlots,
 )
 
-from .. import graph_break_hints, polyfills
+from .. import graph_break_hints, polyfills, variables
 from ..exc import (
     handle_observed_exception,
     ObservedTypeError,
@@ -35,13 +35,18 @@ from ..exc import (
     UnhandledDescriptorError,
     unimplemented,
 )
+from ..source import AttrSource, Source
 from ..utils import istype
-from .base import AsPythonConstantNotImplementedError, NO_SUCH_SUBOBJ, VariableTracker
+from .base import (
+    AsPythonConstantNotImplementedError,
+    AttrMutationKind,
+    NO_SUCH_SUBOBJ,
+    VariableTracker,
+)
 from .constant import ConstantVariable
 
 
 if TYPE_CHECKING:
-    from ..source import Source
     from ..symbolic_convert import InstructionTranslatorBase
 
 
@@ -93,8 +98,6 @@ def vt_identity_compare(
         pass
 
     # Different exception types are never identical.
-    from .. import variables
-
     if (
         istype(left, variables.ExceptionVariable)
         and istype(right, variables.ExceptionVariable)
@@ -1942,8 +1945,6 @@ def _resolve_descriptor_get(
     """
     import types as _types
 
-    from .. import variables
-
     if isinstance(type_attr, property):
         prop_vt = variables.PropertyVariable(type_attr, source=source)
         return prop_vt.tp_descr_get_impl(tx, obj, class_vt)
@@ -2027,8 +2028,6 @@ def object_generic_getattr(
       6. __getattr__ fallback -> obj.call_getattr_fallback(tx, name)
       7. AttributeError
     """
-    from .. import variables
-    from ..source import AttrSource
     from .user_defined import is_data_descriptor
 
     py_type = obj.python_type()
@@ -2101,9 +2100,6 @@ def generic_getattr(
     to obj.getattro_impl(tx, name).  On NotImplementedError, falls back
     to GetAttrVariable (deferred resolution).
     """
-    from .. import variables
-    from ..source import AttrSource
-    from .base import AttrMutationKind
     from .user_defined import is_data_descriptor
 
     # NOTE [Tensor "grad" and "_grad" attr]
