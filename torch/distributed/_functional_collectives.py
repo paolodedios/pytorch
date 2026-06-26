@@ -1998,3 +1998,35 @@ traceable_collective_remaps = {
     legacy_irecv: _remapped_irecv,
     legacy_batch_p2p_ops: _remapped_batch_p2p_ops,
 }
+
+
+class _LegacyToFunctionalCollectiveMode(torch.overrides.TorchFunctionMode):
+    """Redirect legacy ``torch.distributed`` collectives to functional collectives
+    while tracing, mirroring Dynamo and non-strict export.
+
+    Used by ``make_fx`` under ``compile_on_one_rank``: the in-place ``c10d.*`` ops
+    bind the ProcessGroup as a torchbind constant that cannot be serialized,
+    whereas the functional collectives take the group as an op argument, so the
+    group (e.g. a ``DeviceMesh.get_group()`` -> ``mesh_get_process_group`` output)
+    flows into the graph instead of being baked in.
+    """
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        kwargs = kwargs or {}
+        if func in traceable_collective_remaps:
+            import inspect
+
+            # Adaptation of CollectiveFunctionRewriteVariable / non-strict
+            # export's _NonStrictTorchFunctionHandler.
+            mapped_func = traceable_collective_remaps[func]
+            bound = dict(inspect.signature(func).bind(*args, **kwargs).arguments)
+            if func in (
+                torch.distributed.all_reduce,
+                torch.distributed.reduce_scatter_single,
+                torch.distributed.reduce_scatter_tensor,
+                torch.distributed._reduce_scatter_base,
+            ):
+                if "op" in bound:
+                    bound["op"] = REDUCE_OP_TO_STR[bound["op"]]
+            return mapped_func(**bound)
+        return func(*args, **kwargs)
