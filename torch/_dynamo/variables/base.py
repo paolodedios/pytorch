@@ -28,7 +28,13 @@ from typing import Any, NoReturn, TYPE_CHECKING
 
 from .. import graph_break_hints, variables
 from ..current_scope_id import current_scope_id
-from ..exc import raise_observed_exception, raise_type_error, unimplemented
+from ..exc import (
+    ObservedAttributeError,
+    raise_observed_exception,
+    raise_type_error,
+    unimplemented,
+    Unsupported,
+)
 from ..guards import GuardBuilder, install_guard
 from ..source import AttrSource, Source
 from ..utils import format_source_range, istype, raise_args_mismatch
@@ -699,8 +705,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         attribute access including descriptors/__getattr__), suppress
         AttributeError, return True/False.
         """
-        from ..exc import ObservedAttributeError, Unsupported
-
         saved_exc = tx.exn_vt_stack.fetch_current_exception()
         try:
             try:

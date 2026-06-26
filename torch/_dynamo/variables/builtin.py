@@ -51,7 +51,7 @@ from ..exc import (
     UserErrorType,
 )
 from ..guards import GuardBuilder, install_guard
-from ..source import AttrSource, GlobalSource, is_constant_source, Source, TypeSource
+from ..source import AttrSource, GetItemSource, GlobalSource, is_constant_source, Source, TypeSource
 from ..utils import (
     check_constant_args,
     check_numpy_ndarray_args,
@@ -345,8 +345,18 @@ class BaseBuiltinVariable(VariableTracker):
     def getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> VariableTracker:
+        fn = self.as_python_constant()
         source = self.source and AttrSource(self.source, name)
-        attr = getattr(self._fn, name, None)
+        if isinstance(fn, type) and name in {"__bases__", "__base__", "__flags__"}:
+            if name == "__bases__":
+                bases = fn.__bases__
+                items = [
+                    VariableTracker.build(tx, b, source and GetItemSource(source, i))
+                    for i, b in enumerate(bases)
+                ]
+                return variables.TupleVariable(items, source=source)
+            return VariableTracker.build(tx, getattr(fn, name), source)
+        attr = getattr(fn, name, None)
         return variables.GetAttrVariable(
             self, name, py_type=type(attr) if attr is not None else None, source=source
         )
@@ -2396,6 +2406,15 @@ class BuiltinVariable(BaseBuiltinVariable):
         source = self.source and AttrSource(self.source, name)
         if name == "__name__":
             return VariableTracker.build(tx, self.fn.__name__, source)
+        if isinstance(self.fn, type) and name in {"__bases__", "__base__", "__flags__"}:
+            if name == "__bases__":
+                bases = self.fn.__bases__
+                items = [
+                    VariableTracker.build(tx, b, source and GetItemSource(source, i))
+                    for i, b in enumerate(bases)
+                ]
+                return variables.TupleVariable(items, source=source)
+            return VariableTracker.build(tx, getattr(self.fn, name), source)
         if self.fn is object:
             # for object, we can just directly read the attribute
             try:
