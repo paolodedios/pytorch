@@ -903,7 +903,7 @@ def _create_runtime_wrapper(
     # with all handler branches resolved at compile time.
     if runtime_metadata.num_outputs_aliased > 0:
         output_handlers = runtime_epilogue.output_handlers
-        from .subclass_codegen import PySourceBuilder
+        from .codegen_utils import PySourceBuilder
 
         buf = PySourceBuilder(
             "_alias_fn",
@@ -993,7 +993,7 @@ def _create_runtime_wrapper(
     # Codegen mutation epilogue: emit straight-line code per mutated input
     # with all branches resolved at compile time.
     if runtime_metadata.num_mutated_inp_runtime_indices > 0:
-        from .subclass_codegen import PySourceBuilder
+        from .codegen_utils import PySourceBuilder
 
         buf = PySourceBuilder(
             "_apply_mutations",
@@ -1067,7 +1067,7 @@ def _create_runtime_wrapper(
             runtime_epilogue,
         )
 
-    from .subclass_codegen import PySourceBuilder
+    from .codegen_utils import PySourceBuilder
 
     epilogue_args_idx = runtime_epilogue.epilogue_args_idx
     num_mutated_runtime_inps = runtime_metadata.num_mutated_inp_runtime_indices
@@ -1189,7 +1189,7 @@ class FunctionalizedRngRuntimeWrapper(InductorWrapper):
                 f"expected num_outputs_rng_offset == 1, got {runtime_metadata.num_outputs_rng_offset}"
             )
 
-        from .subclass_codegen import PySourceBuilder
+        from .codegen_utils import PySourceBuilder
 
         offset_index = runtime_metadata.num_forward_returns
         buf = PySourceBuilder(
@@ -1413,7 +1413,7 @@ class EffectTokensWrapper(CompilerWrapper):
         if num_tokens == 0:
             return compiled_fn
 
-        from .subclass_codegen import PySourceBuilder
+        from .codegen_utils import PySourceBuilder
 
         buf = PySourceBuilder(
             "_effect_tokens_wrapper", args="args", artifact_name="effect_tokens_wrapper"
@@ -1709,7 +1709,7 @@ class AOTDedupeWrapper(CompilerWrapper):
 
         keep_indices = [i for i, keep in enumerate(self.keep_arg_mask) if keep]
         idx_list = ", ".join(f"args[{i}]" for i in keep_indices)
-        from .subclass_codegen import PySourceBuilder
+        from .codegen_utils import PySourceBuilder
 
         buf = PySourceBuilder("inner_fn", args="args", artifact_name="dedup_wrapper")
         buf.bind(compiled_fn=compiled_fn)
@@ -1959,7 +1959,7 @@ class AOTSyntheticBaseWrapper(CompilerWrapper):
         if not self.needs_post_compile:
             return compiled_fn
 
-        from .subclass_codegen import PySourceBuilder
+        from .codegen_utils import PySourceBuilder
 
         base_groups = self.base_groups
         other_indices = self.other_arg_indices
@@ -2925,7 +2925,7 @@ def _codegen_backward_prologue(
     maybe_subclass_meta: SubclassMeta | None,
     codegen_unwrap_fn: Callable[..., Any] | None,
 ) -> Callable[..., Any]:
-    from .subclass_codegen import PySourceBuilder
+    from .codegen_utils import PySourceBuilder
 
     num_mutated_runtime_inps = fw_metadata.num_mutated_inp_runtime_indices
     num_outputs = fw_metadata.num_outputs
@@ -3083,7 +3083,7 @@ def _codegen_backward_epilogue(
     maybe_subclass_meta: SubclassMeta | None,
     codegen_wrap_fn: Callable[..., Any] | None,
 ) -> Callable[..., Any]:
-    from .subclass_codegen import PySourceBuilder
+    from .codegen_utils import PySourceBuilder
 
     num_bw_tokens = fw_metadata.num_backward_tokens
     is_rng = fw_metadata.is_rng_op_functionalized
@@ -3146,7 +3146,7 @@ def _codegen_compiled_forward(
     disable_amp: bool,
     num_rng: int,
 ) -> Callable[..., Any]:
-    from .subclass_codegen import PySourceBuilder
+    from .codegen_utils import PySourceBuilder
 
     buf = PySourceBuilder(
         "_compiled_forward",
@@ -3190,7 +3190,7 @@ def _codegen_compiled_backward(
     num_rng: int,
     num_tensors_no_vc_check: int | None,
 ) -> Callable[..., Any]:
-    from .subclass_codegen import PySourceBuilder
+    from .codegen_utils import PySourceBuilder
 
     buf = PySourceBuilder(
         "_compiled_backward",
@@ -3328,7 +3328,7 @@ class _AOTDispatchAutogradFunctionFactory:
         num_outputs = fw_metadata.num_outputs
         num_outputs_aliased = fw_metadata.num_outputs_aliased
 
-        from .subclass_codegen import PySourceBuilder
+        from .codegen_utils import PySourceBuilder
 
         buf = PySourceBuilder(
             "_transform_raw_returns",
@@ -3734,7 +3734,7 @@ class DebugAssertWrapper(CompilerWrapper):
         *,
         runtime_metadata: ViewAndMutationMeta,
     ) -> Callable[..., Any]:
-        from .subclass_codegen import PySourceBuilder
+        from .codegen_utils import PySourceBuilder
 
         buf = PySourceBuilder(
             "inner_fn", args="args", artifact_name="debug_assert_wrapper"
