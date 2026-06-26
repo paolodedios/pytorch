@@ -1940,6 +1940,543 @@ def forward(self, pred_1, x_1):
             expected = fn(operands[0])
             self.assertEqual(result, expected)
 
+    def test_switch_autograd_simple(self):
+        # Basic autograd test mirroring test_cond_autograd_simple but with
+        # three branches. Iterate over each branch and check gradients match
+        # an eager call of the selected branch.
+        def branch0(x):
+            return x.sin()
+
+        def branch1(x):
+            return x.cos()
+
+        def branch2(x):
+            return x.tanh()
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            idx = torch.tensor(i)
+            result = switch(idx, branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+        def f(idx, x):
+            result = switch(idx, branches, (x,))
+            grad_out = torch.ones_like(result)
+            return torch.autograd.grad(result, (x,), grad_out)
+
+        # Smoke-check that make_fx traces both forward and backward switches.
+        gm = make_fx(f)(torch.tensor(1), x)
+        # Two switches in the graph: one for forward and one for backward.
+        switch_calls = [
+            n
+            for n in gm.graph.nodes
+            if n.op == "call_function" and "switch" in str(n.target)
+        ]
+        self.assertEqual(len(switch_calls), 2)
+
+    def test_switch_autograd_complex(self):
+        # Non-trivial computations within branches; checks that gradients
+        # are correctly threaded through the selected branch only.
+        def branch0(x):
+            return torch.abs((x**2).sin())
+
+        def branch1(x):
+            return (x + 42).cos()
+
+        def branch2(x):
+            return (x * 3.14).tanh() + x
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            idx = torch.tensor(i)
+            result = switch(idx, branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_int_index(self):
+        # Tensor scalar index is the canonical autograd case; this exercises
+        # the Python-int index path, which the autograd dispatch should also
+        # cover (the eager constant-index shortcut bypasses the
+        # SwitchAutogradOp.apply path, so we additionally check Python int
+        # against a small int tensor).
+        def branch0(x):
+            return x.sin()
+
+        def branch1(x):
+            return x.cos()
+
+        branches = (branch0, branch1)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            # Python int index -- eager shortcut directly calls the branch,
+            # so the gradient is still well-defined.
+            result = switch(i, branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_constant_index_specialization(self):
+        # When the index is a Python constant under torch.compile, dynamo
+        # specializes on the corresponding branch. The HOP never enters the
+        # graph and gradients should flow through that branch alone.
+        def branch0(x):
+            return x.sin()
+
+        def branch1(x):
+            return x.cos()
+
+        def branch2(x):
+            return x.tanh()
+
+        branches = (branch0, branch1, branch2)
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def f1(x):
+            return switch(1, branches, (x,))
+
+        x = torch.randn(4, requires_grad=True)
+        result = f1(x)
+        self.assertEqual(result, branch1(x))
+
+        grad_out = torch.ones_like(result)
+        grads = torch.autograd.grad(result, (x,), grad_out)
+        expected_grads = torch.autograd.grad(branch1(x), (x,), grad_out)
+        self.assertEqual(expected_grads, grads)
+
+        # Clamped out-of-range index picks the last branch.
+        @torch.compile(backend="eager", fullgraph=True)
+        def f_huge(x):
+            return switch(99, branches, (x,))
+
+        x = torch.randn(4, requires_grad=True)
+        result = f_huge(x)
+        self.assertEqual(result, branch2(x))
+
+        grad_out = torch.ones_like(result)
+        grads = torch.autograd.grad(result, (x,), grad_out)
+        expected_grads = torch.autograd.grad(branch2(x), (x,), grad_out)
+        self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_out_of_range_index_clamped(self):
+        # Out-of-range tensor index is clamped to [0, N-1]. Gradients must
+        # match the clamped branch.
+        def branch0(x):
+            return x.sin()
+
+        def branch1(x):
+            return x.cos()
+
+        def branch2(x):
+            return x.tanh()
+
+        branches = (branch0, branch1, branch2)
+        x = torch.randn(4, requires_grad=True)
+
+        # Below range -- clamp to branch 0.
+        result = switch(torch.tensor(-5), branches, (x,))
+        self.assertEqual(result, branch0(x))
+        grad_out = torch.ones_like(result)
+        grads = torch.autograd.grad(result, (x,), grad_out)
+        expected_grads = torch.autograd.grad(branch0(x), (x,), grad_out)
+        self.assertEqual(expected_grads, grads)
+
+        # Above range -- clamp to branch N-1.
+        result = switch(torch.tensor(99), branches, (x,))
+        self.assertEqual(result, branch2(x))
+        grad_out = torch.ones_like(result)
+        grads = torch.autograd.grad(result, (x,), grad_out)
+        expected_grads = torch.autograd.grad(branch2(x), (x,), grad_out)
+        self.assertEqual(expected_grads, grads)
+
+    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
+    def test_switch_autograd_nested(self):
+        # Nested switch with three outer branches, each containing an inner
+        # switch with its own three branches. Exercises the recursive
+        # autograd dispatch.
+        def true_fn(x):
+            def inner0(y):
+                return (y * 2).sin()
+
+            def inner1(y):
+                return (y + 1).cos()
+
+            def inner2(y):
+                return y.tanh()
+
+            return switch(torch.tensor(1), (inner0, inner1, inner2), (x,))
+
+        def mid_fn(x):
+            def inner0(y):
+                return (y + 3).sin()
+
+            def inner1(y):
+                return (y * 0.5).cos()
+
+            return switch(torch.tensor(0), (inner0, inner1), (x,))
+
+        def false_fn(x):
+            def inner0(y):
+                return y.relu()
+
+            def inner1(y):
+                return (y - 1).sigmoid()
+
+            def inner2(y):
+                return (y**2).cos()
+
+            return switch(torch.tensor(2), (inner0, inner1, inner2), (x,))
+
+        branches = (true_fn, mid_fn, false_fn)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            result = switch(torch.tensor(i), branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
+    def test_switch_autograd_mixed_require_grad(self):
+        # Some operands require grad, others don't. Gradients should only
+        # flow through the requires_grad=True operands.
+        def branch0(x, y, z):
+            return x * y * z
+
+        def branch1(x, y, z):
+            return x + y + z
+
+        def branch2(x, y, z):
+            return (x - y) * z
+
+        x = torch.randn(4, requires_grad=True)
+        y = torch.randn(4, requires_grad=False)
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            result = switch(torch.tensor(i), branches, (x, y, x))
+            self.assertEqual(result, fn(x, y, x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(fn(x, y, x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
+    def test_switch_autograd_pytree_input(self):
+        # Pytree operands: each branch reads tensors out of a nested
+        # dict/list/tuple structure.
+        def branch0(x):
+            return x["t"][0] + x["t"][1]["b"] * x["t"][2][0]
+
+        def branch1(x):
+            return x["t"][0] * (x["t"][2][0] / x["t"][1]["b"])
+
+        def branch2(x):
+            return x["t"][0] - x["t"][1]["b"] + x["t"][2][0]
+
+        a = torch.randn(4, requires_grad=True)
+        b = torch.randn(4, requires_grad=True)
+        c = torch.randn(4, requires_grad=True)
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            operands = ({"t": [a, {"b": b}, (c,)]},)
+            result = switch(torch.tensor(i), branches, operands)
+            self.assertEqual(result, fn(operands[0]))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (a, b, c), grad_out)
+            expected_grads = torch.autograd.grad(fn(operands[0]), (a, b, c), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
+    def test_switch_autograd_pytree_not_all_inputs_used(self):
+        # Pytree input where each branch consumes a different subset of the
+        # leaves. switch's backward materializes zero gradients for unused
+        # inputs (create_bw_fn fills None grads with zeros_like), whereas
+        # eager autograd returns None. Use materialize_grads=True on the
+        # expected side to align both representations.
+        def branch0(x):
+            return x["t"][0] + x["t"][1]["b"]
+
+        def branch1(x):
+            return x["t"][0] * (x["t"][2][0] / x["t"][1]["b"])
+
+        def branch2(x):
+            return x["t"][2][0].clone()
+
+        a = torch.randn(4, requires_grad=True)
+        b = torch.randn(4, requires_grad=True)
+        c = torch.randn(4, requires_grad=True)
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            operands = ({"t": [a, {"b": b}, (c,)]},)
+            result = switch(torch.tensor(i), branches, operands)
+            self.assertEqual(result, fn(operands[0]))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (a, b, c), grad_out, allow_unused=True)
+            expected_grads = torch.autograd.grad(
+                fn(operands[0]),
+                (a, b, c),
+                grad_out,
+                allow_unused=True,
+                materialize_grads=True,
+            )
+            self.assertEqual(expected_grads, grads)
+
+    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
+    def test_switch_autograd_pytree_output(self):
+        # Branches return a pytree of tensors (dict). All branches must
+        # return the same pytree spec.
+        def branch0(x):
+            return {"res": [x.sin(), (x.cos(),)]}
+
+        def branch1(x):
+            return {"res": [x.cos(), (x.tanh(),)]}
+
+        def branch2(x):
+            return {"res": [x.tanh(), (x.sin(),)]}
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            result = switch(torch.tensor(i), branches, (x,))
+            expected = fn(x)
+            self.assertEqual(result, expected)
+
+            result_flat, _ = pytree.tree_flatten(result)
+            expected_flat, _ = pytree.tree_flatten(expected)
+            grad_out = [torch.ones_like(g) for g in result_flat]
+            grads = torch.autograd.grad(result_flat, (x,), grad_out)
+            expected_grads = torch.autograd.grad(expected_flat, (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_torch_nn_module(self):
+        # Each branch is a different torch.nn.Module whose parameters are
+        # captured as free variables. Gradients should flow back through
+        # the selected module only.
+        linear0 = torch.nn.Linear(4, 4)
+        linear1 = torch.nn.Linear(4, 4)
+        linear2 = torch.nn.Linear(4, 4)
+
+        def branch0(x):
+            return linear0(torch.abs((x**2).sin()))
+
+        def branch1(x):
+            return linear1((x + 42).cos())
+
+        def branch2(x):
+            return linear2(x.tanh())
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            result = switch(torch.tensor(i), branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
+    def test_switch_autograd_grad_through_params(self):
+        # Gradients are taken with respect to a parameter captured by all
+        # branches. Each branch contributes a different function of the
+        # parameter.
+        nn_module = torch.nn.Linear(4, 4)
+
+        def branch0(x):
+            return nn_module(x)
+
+        def branch1(x):
+            return x * nn_module(x)
+
+        def branch2(x):
+            return nn_module(x).relu()
+
+        branches = (branch0, branch1, branch2)
+        x = torch.randn(4, requires_grad=True)
+        for i, fn in enumerate(branches):
+            result = switch(torch.tensor(i), branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(
+                result, (nn_module.weight,), grad_out, retain_graph=True
+            )
+            expected_grads = torch.autograd.grad(
+                fn(x), (nn_module.weight,), grad_out, retain_graph=True
+            )
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_inner_tensor(self):
+        # Branches close over local tensors created inside the branch
+        # function. These should not need to be tracked as inputs.
+        def branch0(x):
+            return torch.abs((x**2).sin())
+
+        def branch1(x):
+            y = torch.ones(4, requires_grad=False) * 42
+            return (x * y).cos()
+
+        def branch2(x):
+            z = torch.full((4,), 0.5, requires_grad=False)
+            return (x + z).tanh()
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            result = switch(torch.tensor(i), branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_tensor_closure(self):
+        # Branches close over external tensors that don't require grad and
+        # tensors that do. Gradients should be computed correctly for all
+        # captured tensors that require grad.
+        bias0 = torch.ones(4, requires_grad=True)
+        bias1 = torch.zeros(4, requires_grad=True)
+        scale = torch.full((4,), 2.0, requires_grad=False)
+
+        def branch0(x):
+            return x + bias0
+
+        def branch1(x):
+            return x * bias1
+
+        def branch2(x):
+            return x * scale + bias0
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            result = switch(torch.tensor(i), branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out, retain_graph=True)
+            expected_grads = torch.autograd.grad(
+                fn(x), (x,), grad_out, retain_graph=True
+            )
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_many_branches(self):
+        # Validate that the autograd implementation scales to a large
+        # number of branches (it materializes one bw graph per branch).
+        N = 8
+
+        def make_branch(k):
+            def branch(x):
+                return x * float(k + 1)
+
+            return branch
+
+        branches = tuple(make_branch(k) for k in range(N))
+
+        for i in range(N):
+            x = torch.randn(4, requires_grad=True)
+            result = switch(torch.tensor(i), branches, (x,))
+            self.assertEqual(result, branches[i](x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(branches[i](x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_multiple_tensor_outputs(self):
+        # Each branch returns multiple tensor outputs. All outputs should
+        # be differentiable and contribute to the gradient when summed.
+        def branch0(x):
+            return x.sin(), x.cos()
+
+        def branch1(x):
+            return x.tanh(), x.relu()
+
+        def branch2(x):
+            return x.sigmoid(), (x**2).sin()
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            outs = switch(torch.tensor(i), branches, (x,))
+            expected = fn(x)
+            self.assertEqual(outs, expected)
+
+            grad_outs = [torch.ones_like(o) for o in outs]
+            expected_grad_outs = [torch.ones_like(o) for o in expected]
+            grads = torch.autograd.grad(list(outs), (x,), grad_outs)
+            expected_grads = torch.autograd.grad(
+                list(expected), (x,), expected_grad_outs
+            )
+            self.assertEqual(expected_grads, grads)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
+    def test_switch_autograd_gpu(self):
+        # GPU device variant. Index is a CUDA tensor; operands are CUDA
+        # tensors; all branches and gradients should stay on device.
+        def branch0(x):
+            return x.sin()
+
+        def branch1(x):
+            return x.cos()
+
+        def branch2(x):
+            return x.tanh()
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True, device="cuda")
+            result = switch(torch.tensor(i, device="cuda"), branches, (x,))
+            self.assertEqual(result, fn(x))
+
+            grad_out = torch.ones_like(result)
+            grads = torch.autograd.grad(result, (x,), grad_out)
+            expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_cond_equivalence(self):
+        # switch(int(pred), [false_fn, true_fn], ops) gradients must match
+        # cond(pred, true_fn, false_fn, ops) gradients.
+        def true_fn(x):
+            return (x**2).sin()
+
+        def false_fn(x):
+            return (x + 1).cos()
+
+        for pred in [torch.tensor(False), torch.tensor(True)]:
+            x = torch.randn(4, requires_grad=True)
+            cond_out = cond(pred, true_fn, false_fn, (x,))
+            switch_out = switch(int(pred), (false_fn, true_fn), (x,))
+            self.assertEqual(cond_out, switch_out)
+
+            grad_out = torch.ones_like(cond_out)
+            cond_grads = torch.autograd.grad(cond_out, (x,), grad_out)
+            switch_grads = torch.autograd.grad(switch_out, (x,), grad_out)
+            self.assertEqual(cond_grads, switch_grads)
+
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     def test_map_gpu(self):
         def f(x, y):

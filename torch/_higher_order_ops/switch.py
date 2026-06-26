@@ -12,7 +12,13 @@ from torch._functorch.utils import exposed_in
 from torch._higher_order_ops.utils import (
     _maybe_compile_and_run_fn,
     _maybe_run_with_interpreter,
+    create_bw_fn,
+    fill_none_with_masks,
+    filter_with_masks,
+    materialize_as_graph,
     reenter_make_fx,
+    save_values_for_backward,
+    saved_values,
     unique_graph_id,
     validate_subgraph_args_types,
 )
@@ -213,10 +219,87 @@ def switch_op_dense(index, branches, operands):
     return branches[clamped_idx](*operands)
 
 
+class SwitchAutogradOp(torch.autograd.Function):
+    @staticmethod
+    # pyrefly: ignore [bad-override]
+    def forward(
+        ctx,
+        index,
+        branches,
+        *operands,
+    ):
+        ctx._index = index
+        ctx._n_branches = len(branches)
+
+        for branch_idx, branch in enumerate(branches):
+            setattr(
+                ctx,
+                f"branch_{branch_idx}",
+                create_bw_fn(
+                    branch,
+                    operands,
+                ),
+            )
+        # We snapshot the dispatch keys in forward for materializing the
+        # the bw_graph in backward.
+        ctx._fw_include_key_set = torch._C._dispatch_tls_local_include_set()
+        ctx._fw_exclude_key_set = torch._C._dispatch_tls_local_exclude_set()
+        save_values_for_backward(ctx, operands)
+
+        with torch._C._AutoDispatchBelowAutograd():
+            return switch_op(index, branches, operands)
+
+    @staticmethod
+    def backward(ctx, *flat_grads):
+        operands = saved_values(ctx)
+        args = operands + flat_grads
+        # TODO: we need to materialize the bw graphs because dynamo is unable to
+        # trace through the joint function when torch.compile torch.autograd.grad.
+
+        grads_tensor_masks = []
+
+        def create_fn_remove_none(fn):
+            @functools.wraps(fn)
+            def wrapped(*args):
+                nonlocal grads_tensor_masks
+
+                true_outputs = fn(*args)
+                grads_tensor_masks = [
+                    bool(isinstance(out, torch.Tensor)) for out in true_outputs
+                ]
+                return filter_with_masks(true_outputs, grads_tensor_masks)
+
+            return wrapped
+
+        branches_bw_gm = []
+        n_branches = ctx._n_branches
+
+        for branch_idx in range(n_branches):
+            branches_bw_gm.append(
+                materialize_as_graph(
+                    create_fn_remove_none(getattr(ctx, f"branch_{branch_idx}")),
+                    args,
+                    ctx._fw_include_key_set,
+                    ctx._fw_exclude_key_set,
+                    force_enable_grad=True,
+                )
+            )
+
+        grads = switch_op(
+            ctx._index,
+            branches_bw_gm,
+            args,
+        )
+        return None, None, *fill_none_with_masks(grads, grads_tensor_masks)
+
+
 @switch_op.py_autograd_impl
 def switch_autograd(index, branches, operands):
-    with torch._C._AutoDispatchBelowAutograd():
-        return switch_op(index, branches, operands)
+    return SwitchAutogradOp.apply(
+        index,
+        branches,
+        *operands,
+    )
 
 
 @switch_op.py_impl(ProxyTorchDispatchMode)
