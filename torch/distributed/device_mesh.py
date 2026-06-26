@@ -93,6 +93,40 @@ else:
         else:
             return _resolve_process_group(name)  # pyrefly: ignore[bad-argument-type]
 
+    def _maybe_traced_group(mesh: "DeviceMesh", mesh_dim: int) -> ProcessGroup | None:
+        """Resolve the group via an in-graph op when tracing under CooR.
+
+        Under compile_on_one_rank and an active make_fx/proxy trace, return the
+        group as the output of _dtensor.mesh_get_process_group so the
+        ProcessGroup is extracted from the (graph-input) mesh at runtime instead
+        of being baked into the graph as an unserializable torchbind constant.
+        Returns None to take the eager path otherwise. Mirrors
+        _functional_collectives._resolve_group, but also covers eager collectives
+        (dist.all_reduce -> c10d.allreduce_) that bind the ProcessGroup directly.
+
+        This is a module-level helper rather than a DeviceMesh method so that
+        Dynamo does not reject it as an unregistered opaque-object member.
+        """
+        if not torch.compiler.config.compile_on_one_rank:
+            return None
+        # Under torch.compile, Dynamo lifts the ProcessGroup from the mesh's
+        # _pg_registry itself (see _get_pg_from_name); the op-emitting path here
+        # is only for make_fx tracing. is_compiling() folds to a constant under
+        # Dynamo, so this returns cleanly without tracing the op below.
+        if torch.compiler.is_compiling():
+            return None
+        from torch.fx.experimental.proxy_tensor import get_proxy_mode
+
+        # get_proxy_mode() is None in eager and inside the op's own fake/eager
+        # impl (the proxy mode is popped while dispatching), so this does not
+        # recurse.
+        if get_proxy_mode() is None:
+            return None
+        # Ensure the op is registered without a module-level circular import.
+        from torch.distributed.tensor import _collective_utils  # noqa: F401
+
+        return torch.ops._dtensor.mesh_get_process_group(mesh, mesh_dim)
+
     class _MeshEnv(threading.local):
         def __init__(self) -> None:
             self.mesh_stack: list[DeviceMesh] = []
@@ -780,31 +814,6 @@ else:
                     submesh = self._create_sub_mesh(sliced_mesh_layout, mesh_dim_names)
                 return submesh
 
-        def _maybe_traced_group(self, mesh_dim: int) -> ProcessGroup | None:
-            """Resolve the group via an in-graph op when tracing under CooR.
-
-            Under ``compile_on_one_rank`` and an active make_fx/proxy trace,
-            return the group as the output of ``_dtensor.mesh_get_process_group``
-            so the ProcessGroup is extracted from the (graph-input) mesh at
-            runtime instead of being baked into the graph as an unserializable
-            torchbind constant. Returns None to take the eager path otherwise.
-            This mirrors ``_functional_collectives._resolve_group`` but also
-            covers eager collectives (``dist.all_reduce`` -> ``c10d.allreduce_``)
-            that bind the ProcessGroup directly.
-            """
-            if not torch.compiler.config.compile_on_one_rank:
-                return None
-            from torch.fx.experimental.proxy_tensor import get_proxy_mode
-
-            # get_proxy_mode() is None inside the op's own fake/eager impl (the
-            # proxy mode is popped while dispatching), so this does not recurse.
-            if get_proxy_mode() is None:
-                return None
-            # Ensure the op is registered without a module-level circular import.
-            from torch.distributed.tensor import _collective_utils  # noqa: F401
-
-            return torch.ops._dtensor.mesh_get_process_group(self, mesh_dim)
-
         def get_group(self, mesh_dim: int | str | None = None) -> ProcessGroup:
             """
             Returns the single ProcessGroup specified by mesh_dim, or, if mesh_dim is not specified and the
@@ -832,7 +841,7 @@ else:
 
             # Quick return if the current device_mesh is a 1D mesh.
             if len(self._layout) == 1 and mesh_dim is None:
-                traced = self._maybe_traced_group(0)
+                traced = _maybe_traced_group(self, 0)
                 if traced is not None:
                     return traced
                 return not_none(_get_pg_from_name(root_mesh, self._dim_group_names[0]))
@@ -853,7 +862,7 @@ else:
                     raise AssertionError(
                         f"mesh_dim must be an int, got {type(mesh_dim)}"
                     )
-                traced = self._maybe_traced_group(mesh_dim)
+                traced = _maybe_traced_group(self, mesh_dim)
                 if traced is not None:
                     return traced
                 return not_none(
