@@ -2215,10 +2215,10 @@ Example::
 )
 
 
-matrix_sqrt = _add_docstr(
-    _linalg.linalg_matrix_sqrt,
+matrix_sqrth = _add_docstr(
+    _linalg.linalg_matrix_sqrth,
     r"""
-linalg.matrix_sqrt(A) -> Tensor
+linalg.matrix_sqrth(A) -> Tensor
 
 Computes the principal square root of a symmetric (resp. Hermitian) positive-definite matrix.
 
@@ -2261,13 +2261,13 @@ Args:
 Examples::
 
     >>> A = torch.tensor([[2., 0.], [0., 9.]])
-    >>> torch.linalg.matrix_sqrt(A)
+    >>> torch.linalg.matrix_sqrth(A)
     tensor([[1.4142, 0.0000],
             [0.0000, 3.0000]])
 
     >>> A = torch.randn(2, 3, 3)
     >>> A = A @ A.mT + 3 * torch.eye(3)  # batch of symmetric positive-definite matrices
-    >>> X = torch.linalg.matrix_sqrt(A)
+    >>> X = torch.linalg.matrix_sqrth(A)
     >>> torch.allclose(X @ X, A, atol=1e-5)
     True
 """,

@@ -261,11 +261,11 @@ def linalg_matrix_exp(self):
     return torch.empty_like(self, memory_format=torch.contiguous_format)
 
 
-@register_meta(aten.linalg_matrix_sqrt)
+@register_meta(aten.linalg_matrix_sqrth)
 @out_wrapper()
-def linalg_matrix_sqrt(self):
-    squareCheckInputs(self, "linalg.matrix_sqrt")
-    checkFloatingOrComplex(self, "linalg.matrix_sqrt", allow_low_precision_dtypes=False)
+def linalg_matrix_sqrth(self):
+    squareCheckInputs(self, "linalg.matrix_sqrth")
+    checkFloatingOrComplex(self, "linalg.matrix_sqrth", allow_low_precision_dtypes=False)
     return torch.empty_like(self, memory_format=torch.contiguous_format)
 
 

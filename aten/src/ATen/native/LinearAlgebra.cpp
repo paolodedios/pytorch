@@ -97,7 +97,7 @@
 #include <ATen/ops/linalg_matrix_power_native.h>
 #include <ATen/ops/linalg_matrix_rank.h>
 #include <ATen/ops/linalg_matrix_rank_native.h>
-#include <ATen/ops/linalg_matrix_sqrt_native.h>
+#include <ATen/ops/linalg_matrix_sqrth_native.h>
 #include <ATen/ops/linalg_multi_dot_native.h>
 #include <ATen/ops/linalg_norm.h>
 #include <ATen/ops/linalg_norm_native.h>
@@ -2812,13 +2812,13 @@ Tensor matrix_exp(const Tensor& a) {
 // Computed from the eigendecomposition A = Q diag(lambda) Q^H as
 // A^{1/2} = Q diag(sqrt(lambda)) Q^H. Only the lower triangle of `a` is read
 // (via linalg_eigh, UPLO="L"); `a` is assumed Hermitian. The custom backward in
-// FunctionsManual.cpp (linalg_matrix_sqrt_differential) uses the Daleckii-Krein
+// FunctionsManual.cpp (linalg_matrix_sqrth_differential) uses the Daleckii-Krein
 // formula, whose denominator sqrt(lambda_i) + sqrt(lambda_j) stays well-defined
 // even at degenerate eigenvalues.
-Tensor linalg_matrix_sqrt(const Tensor& a) {
-  squareCheckInputs(a, "linalg.matrix_sqrt");
+Tensor linalg_matrix_sqrth(const Tensor& a) {
+  squareCheckInputs(a, "linalg.matrix_sqrth");
   checkFloatingOrComplex(
-      a, "linalg.matrix_sqrt", /*allow_low_precision_dtypes=*/false);
+      a, "linalg.matrix_sqrth", /*allow_low_precision_dtypes=*/false);
 
   NoTF32Guard disable_tf32;
 
@@ -2841,7 +2841,7 @@ Tensor linalg_matrix_sqrt(const Tensor& a) {
     auto tol = max_abs_eigval * eps * static_cast<double>(a.size(-1));
     TORCH_CHECK(
         min_eigval >= -tol,
-        "linalg.matrix_sqrt: A must be positive semi-definite, but its smallest "
+        "linalg.matrix_sqrth: A must be positive semi-definite, but its smallest "
         "eigenvalue is ",
         min_eigval);
   }

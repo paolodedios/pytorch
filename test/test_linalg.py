@@ -7638,25 +7638,25 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
     @skipCUDAIfNoMagmaAndNoLinalgsolver
     @skipCPUIfNoLapack
     @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
-    def test_linalg_matrix_sqrt(self, device, dtype):
+    def test_linalg_matrix_sqrth(self, device, dtype):
         from torch.testing._internal.common_utils import random_hermitian_pd_matrix
 
         for n, batch in itertools.product([0, 1, 5], [(), (3,), (2, 2)]):
             a = random_hermitian_pd_matrix(n, *batch, dtype=dtype, device=device)
-            x = torch.linalg.matrix_sqrt(a)
+            x = torch.linalg.matrix_sqrth(a)
             self.assertEqual(x, x.mH)
             self.assertEqual(x @ x, a, atol=2e-4, rtol=2e-4)
 
     @skipCUDAIfNoMagmaAndNoLinalgsolver
     @skipCPUIfNoLapack
     @dtypes(torch.double, torch.cdouble)
-    def test_linalg_matrix_sqrt_autograd(self, device, dtype):
+    def test_linalg_matrix_sqrth_autograd(self, device, dtype):
         from torch.testing._internal.common_utils import random_hermitian_pd_matrix
 
-        # matrix_sqrt reads one triangle and assumes the input is Hermitian, so keep
+        # matrix_sqrth reads one triangle and assumes the input is Hermitian, so keep
         # the gradcheck input Hermitian via a + a.mH (which stays positive-definite).
         def f(a):
-            return torch.linalg.matrix_sqrt(a + a.mH)
+            return torch.linalg.matrix_sqrth(a + a.mH)
 
         a = random_hermitian_pd_matrix(4, dtype=dtype, device=device).requires_grad_(True)
         # check_undefined_grad=False: compiled autograd (dynamo_wrapped) traces the
@@ -7667,7 +7667,7 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
     @skipCUDAIfNoMagmaAndNoLinalgsolver
     @skipCPUIfNoLapack
     @dtypes(torch.double, torch.cdouble)
-    def test_linalg_matrix_sqrt_grad_stable_at_degeneracy(self, device, dtype):
+    def test_linalg_matrix_sqrth_grad_stable_at_degeneracy(self, device, dtype):
         # The Daleckii-Krein backward divides by sqrt(l_i) + sqrt(l_j) (a sum), so it
         # stays finite at repeated eigenvalues, where differentiating through eigh
         # (which divides by l_i - l_j) would blow up.
@@ -7676,7 +7676,7 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
         evals = torch.tensor([2.0, 2.0, 2.0, 5.0, 7.0], dtype=q.real.dtype, device=device)
         a = (q * evals.to(dtype)) @ q.mH
         a = (0.5 * (a + a.mH)).detach().requires_grad_(True)
-        x = torch.linalg.matrix_sqrt(a)
+        x = torch.linalg.matrix_sqrth(a)
         # An asymmetric upstream cotangent exercises the off-diagonal Loewner terms.
         x.backward(torch.randn(n, n, dtype=dtype, device=device))
         self.assertTrue(torch.isfinite(a.grad).all())
@@ -7684,24 +7684,24 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
     @skipCUDAIfNoMagmaAndNoLinalgsolver
     @skipCPUIfNoLapack
     @dtypes(torch.float, torch.cfloat)
-    def test_linalg_matrix_sqrt_errors(self, device, dtype):
+    def test_linalg_matrix_sqrth_errors(self, device, dtype):
         with self.assertRaisesRegex(RuntimeError, "must be batches of square matrices"):
-            torch.linalg.matrix_sqrt(torch.randn(2, 3, device=device, dtype=dtype))
+            torch.linalg.matrix_sqrth(torch.randn(2, 3, device=device, dtype=dtype))
 
         # The real square root of an indefinite matrix is complex, so a materially
         # negative eigenvalue is rejected rather than silently projected away.
         indefinite = torch.diag(torch.tensor([1.0, -2.0], device=device)).to(dtype)
         with self.assertRaisesRegex(RuntimeError, "positive semi-definite"):
-            torch.linalg.matrix_sqrt(indefinite)
+            torch.linalg.matrix_sqrth(indefinite)
 
     @skipCUDAIfNoMagmaAndNoLinalgsolver
     @skipCPUIfNoLapack
     @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
-    def test_linalg_matrix_sqrt_psd_boundary(self, device, dtype):
+    def test_linalg_matrix_sqrth_psd_boundary(self, device, dtype):
         # A singular PSD input (a zero eigenvalue) is accepted: the roundoff clamp
         # keeps the result finite and X @ X reproduces A.
         a = torch.diag(torch.tensor([0.0, 4.0], device=device)).to(dtype)
-        x = torch.linalg.matrix_sqrt(a)
+        x = torch.linalg.matrix_sqrth(a)
         self.assertTrue(torch.isfinite(x).all())
         self.assertEqual(x @ x, a, atol=2e-4, rtol=2e-4)
 
