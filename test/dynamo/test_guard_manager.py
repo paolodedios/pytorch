@@ -1502,6 +1502,13 @@ class TagSafetyChecks(RecursiveDictTagTests):
 
 
 class RecursiveDictGuardTests(RecursiveDictTagTests):
+    # The recursive dict-tag fast path only engages on 3.12+ (it needs
+    # PyDict_Watch); below that it is gated off and stays disabled, so the
+    # runtime enable/disable transitions this test asserts do not apply.
+    @unittest.skipIf(
+        sys.version_info < (3, 12),
+        "recursive dict-tag fast path requires 3.12+ dict watchers",
+    )
     def test_disabling(self):
         class Mod(torch.nn.Module):
             def __init__(self):
