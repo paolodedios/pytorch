@@ -617,7 +617,18 @@ class UserDefinedClassVariable(UserDefinedVariable):
             else:
                 attr_source = source
             return VariableTracker.build(tx, self.value.__mro__, attr_source)
-        # __name__, __qualname__, __doc__, __module__, __bases__,
+        if name == "__bases__":
+            bases = self.value.__bases__
+            items = [
+                VariableTracker.build(
+                    tx, b, source and GetItemSource(source, i)
+                )
+                for i, b in enumerate(bases)
+            ]
+            return variables.TupleVariable(items, source=source)
+        if name == "__base__":
+            return VariableTracker.build(tx, self.value.__base__, source)
+        # __name__, __qualname__, __doc__, __module__,
         # __abstractmethods__, etc. — all C-level getset descriptors on type.
         resolved = type.__getattribute__(self.value, name)
         if source:
