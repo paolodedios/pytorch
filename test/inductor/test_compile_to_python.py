@@ -1,5 +1,7 @@
 # Owner(s): ["module: inductor"]
 import ast
+import os
+import tempfile
 import textwrap
 from unittest import mock
 
@@ -7,7 +9,7 @@ import torch
 import torch.utils._pytree as pytree
 from torch._dynamo.utils import counters
 from torch._functorch import config as functorch_config
-from torch._inductor import compile_to_python, config
+from torch._inductor import compile_to_python, CompiledArtifact, config
 from torch._inductor.standalone_compile import NoRunnableInductorModuleError
 from torch._inductor.utils import fresh_cache
 from torch.fx.experimental.proxy_tensor import make_fx
@@ -418,12 +420,14 @@ class TestInductorCompileToPythonContract(TestCase):
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
-    def test_cache_bytes_returned_for_cacheable_graph(self):
-        # The bytes come from the AOTAutograd cache artifact, so they require both
-        # force_disable_caches off AND enable_autograd_cache on. These flags are
-        # env-authoritative on PyTorch CI's cache-disabled shards (cannot be patched back
-        # on), where compile_to_python correctly returns None; skip there --
-        # test_no_cache_when_caches_disabled covers the None path.
+    def test_returned_cache_loads_and_runs(self):
+        # End-to-end: the returned cache IS the binary CompiledArtifact format, so loading
+        # it back (in a fresh cache dir, so nothing comes from the ambient warm cache) must
+        # yield a runnable artifact that matches eager. The bytes come from the AOTAutograd
+        # cache artifact, requiring force_disable_caches off AND enable_autograd_cache on;
+        # those flags are env-authoritative on PyTorch CI's cache-disabled shards (cannot be
+        # patched back on), where compile_to_python correctly returns None -- skip there
+        # (test_no_cache_when_caches_disabled covers the None path).
         if (
             config.force_disable_caches
             or not config.fx_graph_cache
@@ -436,7 +440,15 @@ class TestInductorCompileToPythonContract(TestCase):
             _capture(m, x), _flat_inputs(m, x), options={"graph_partition": False}
         )
         self.assertIsInstance(cache, bytes)
-        self.assertGreater(len(cache), 0)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "artifact.bin")
+            with open(path, "wb") as f:
+                f.write(cache)
+            with fresh_cache():
+                loaded = CompiledArtifact.load(path=path, format="binary")
+                with torch.no_grad():
+                    out = loaded(*_flat_inputs(m, x))
+        self.assertEqual(out[0], m(x))
 
     def test_no_cache_when_caches_disabled(self):
         # With caches disabled there is no saveable artifact, so cache is None; the source
