@@ -1082,6 +1082,8 @@ def power_draw(device: Device = None) -> float:
         sampling interval required to compute an accurate power reading.
 
     .. note:: This API may require elevated privileges (e.g. ``sudo``) to access GPU power information.
+
+    .. note:: This API is currently only supported on Intel Xe2 and newer GPUs.
     """
     power_handle = _get_zes_power_handle(device)
 
