@@ -229,7 +229,9 @@ struct Vectorized {
     return vector;
   }
 // Workaround for https: //gcc.gnu.org/bugzilla/show_bug.cgi?id=117001
-#if __GNUC__ <= 12 && !defined(__clang__) && defined(__ARM_FEATURE_SVE)
+// Not seen with GCC 13.3 https://gcc.gnu.org/bugzilla/show_bug.cgi?id=117001#c6
+// but GCC 15 ICEs again on this SVE fallback path
+#if !defined(__clang__) && defined(__ARM_FEATURE_SVE)
   static Vectorized<T> __attribute__((optimize("-fno-tree-loop-vectorize")))
   blendv(
       const Vectorized<T>& a,
