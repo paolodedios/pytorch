@@ -19816,7 +19816,7 @@ if RUN_GPU:
         )
         @unittest.skipIf(
             not IS_BIG_GPU,
-            "requires >= 68 SMs for max_autotune_gemm kernel fusion; kernel count differs on low-SM devices",
+            "reduction kernel count (triton_red_ vs triton_per_) differs on low-SM devices; IS_BIG_GPU (>= 68 SMs) used as the gating proxy",
         )
         def test_red_followed_by_transposed_pointwise(self):
             bs = 26624
