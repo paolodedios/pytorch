@@ -1137,6 +1137,23 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
             torch.full_like(result, (self.world_size - 1) * self.world_size / 2),
         )
 
+        # all_gather over the grown buffer via standard c10d, which dispatches
+        # to NCCL's symmetric-memory (window-registered) collective kernels
+        # (network-capable, runs over IB on multi-node) rather than the
+        # intra-node one_shot_all_reduce above. Validates the full multi-chunk
+        # window is registered and usable by a real NCCL collective.
+        large.fill_(self.rank)
+        gathered = symm_mem.empty(
+            large_numel * self.world_size, dtype=dtype, device=self.device
+        )
+        symm_mem.rendezvous(gathered, group=group_name)
+        c10d.all_gather_into_tensor(gathered, large)
+        torch.cuda.synchronize()
+        expected = gathered.new_empty(large_numel * self.world_size)
+        for r in range(self.world_size):
+            expected[r * large_numel : (r + 1) * large_numel] = r
+        self.assertEqual(gathered, expected)
+
         # The full large buffer (not just a stale small window) must be visible
         # to peers.
         large.fill_(self.rank)
