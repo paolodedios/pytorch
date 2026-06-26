@@ -1043,11 +1043,14 @@ def _get_zes_power_handle(device: Device = None) -> c_void_p:
     for pwr_handle in power_handles:
         pwr_props = pyzes.zes_power_properties_t()
         pwr_props.stype = pyzes.ZES_STRUCTURE_TYPE_POWER_PROPERTIES
+        ext_pwr_props = pyzes.zes_power_ext_properties_t()
+        ext_pwr_props.stype = pyzes.ZES_STRUCTURE_TYPE_POWER_EXT_PROPERTIES
+        pwr_props.pNext = cast(pointer(ext_pwr_props), c_void_p)
         _zes_check(
             pyzes.zesPowerGetProperties(pwr_handle, byref(pwr_props)),
             "Can't get Level Zero Sysman power properties.",
         )
-        if pwr_props.type != pyzes.ZES_POWER_DOMAIN_CARD:
+        if ext_pwr_props.domain != pyzes.ZES_POWER_DOMAIN_CARD:
             continue
         if subdevice_id is not None:
             if pwr_props.onSubdevice and pwr_props.subdeviceId == subdevice_id:
