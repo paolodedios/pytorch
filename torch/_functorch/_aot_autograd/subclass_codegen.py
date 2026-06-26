@@ -81,19 +81,21 @@ def capture_generated_sources(into: "list[GeneratedSource]") -> "Iterator[None]"
     """Within this context, record every codegen'd runtime-wrapper function's source
     into ``into`` (in codegen order). A no-op when not entered.
 
-    THREAD-LOCAL: the sink is thread-local, so ONLY wrappers codegen'd on the thread
-    that entered this context are captured. Codegen on any other thread during the
-    window (e.g. a concurrent normal compile) sees no sink and is correctly ignored --
-    it cannot splice its wrappers into ``into``. The corollary is a constraint on this
-    module: were wrapper codegen for the captured graph ever offloaded to a worker
-    thread, it would silently not be captured, so keep it on the entering thread.
+    LOAD-BEARING THREADING INVARIANT: the sink is thread-local, so every wrapper that
+    must be captured into ``into`` has to be codegen'd ON THIS SAME THREAD. The owning
+    thread id is recorded here and checked in ``_compile_and_exec_source`` so that a
+    future change offloading wrapper codegen to a worker thread fails loudly (it would
+    otherwise see no sink, silently capture nothing, and yield an incomplete module).
     """
     prev = getattr(_capture_tls, "sink", None)
+    prev_owner = getattr(_capture_tls, "sink_owner_thread", None)
     _capture_tls.sink = into
+    _capture_tls.sink_owner_thread = threading.get_ident()
     try:
         yield
     finally:
         _capture_tls.sink = prev
+        _capture_tls.sink_owner_thread = prev_owner
 
 
 def _is_symint_placeholder(x: None | int | SymInt) -> bool:
@@ -553,11 +555,22 @@ def _compile_and_exec_source(
         functools.update_wrapper(fn, wrapped_fn)  # type: ignore[arg-type]
 
     if sink is not None:
-        # Reaching here means a sink is installed on THIS thread (the capture is
-        # thread-local; see capture_generated_sources), so this wrapper belongs to the
-        # active capture. Tag it with the current TracingContext identity so the
-        # composer can drop any wrapper a re-entrant lowering appended during the
-        # capture window (see the origin_id note on GeneratedSource).
+        # LOAD-BEARING: the sink is thread-local, so this codegen MUST run on the
+        # thread that installed it (see capture_generated_sources). We only reach this
+        # branch because ``_current_capture_sink()`` saw a sink on THIS thread; a future
+        # change that offloads wrapper codegen to a worker thread would observe no sink
+        # there, silently capture nothing, and emit an incomplete standalone module.
+        # Assert thread identity here so such a refactor is forced to revisit capture.
+        owner = getattr(_capture_tls, "sink_owner_thread", None)
+        if owner is not None and owner != threading.get_ident():
+            raise RuntimeError(
+                "runtime-wrapper codegen ran off the capture-owning thread; the capture "
+                "sink is thread-local and would miss this wrapper (see "
+                "capture_generated_sources)"
+            )
+        # Tag with the current TracingContext identity so the composer can drop any
+        # wrapper a re-entrant lowering appended during the capture window (see the
+        # origin_id note on GeneratedSource).
         ctx = torch._guards.TracingContext.try_get()
         origin_id = id(ctx) if ctx is not None else None
         sink.append(
