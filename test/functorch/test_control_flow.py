@@ -2406,6 +2406,86 @@ def forward(self, pred_1, x_1):
             expected_grads = torch.autograd.grad(branches[i](x), (x,), grad_out)
             self.assertEqual(expected_grads, grads)
 
+    def test_switch_autograd_branch_returns_none(self):
+        # Branches return (tensor, None). The autograd path records a
+        # non-Tensor output mask in forward and uses it to drop the None
+        # tangent slot in backward.
+        def branch0(x):
+            return x.sin(), None
+
+        def branch1(x):
+            return x.cos(), None
+
+        def branch2(x):
+            return x.tanh(), None
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            t, n = switch(torch.tensor(i), branches, (x,))
+            expected_t, expected_n = fn(x)
+            self.assertEqual(t, expected_t)
+            self.assertIsNone(n)
+            self.assertIsNone(expected_n)
+
+            grad_out = torch.ones_like(t)
+            grads = torch.autograd.grad(t, (x,), grad_out)
+            expected_grads = torch.autograd.grad(expected_t, (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_branch_returns_equal_int_leaves(self):
+        # All branches return the same int leaf -- the int is preserved
+        # exactly (no unbacked symbol). Autograd should still flow through
+        # the tensor portion; the int output is masked out in backward.
+        def branch0(x):
+            return x.sin(), 7
+
+        def branch1(x):
+            return x.cos(), 7
+
+        def branch2(x):
+            return x.tanh(), 7
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            t, n = switch(torch.tensor(i), branches, (x,))
+            expected_t, expected_n = fn(x)
+            self.assertEqual(t, expected_t)
+            self.assertEqual(n, expected_n)
+
+            grad_out = torch.ones_like(t)
+            grads = torch.autograd.grad(t, (x,), grad_out)
+            expected_grads = torch.autograd.grad(expected_t, (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    def test_switch_autograd_branch_returns_divergent_int_leaves(self):
+        # Branches return different int leaves; switch emits an unbacked
+        # SymInt for the int portion. Gradient flow through the tensor
+        # portion should be unaffected, and the SymInt output is masked
+        # out in backward.
+        def branch0(x):
+            return x.sin(), 0
+
+        def branch1(x):
+            return x.cos(), 1
+
+        def branch2(x):
+            return x.tanh(), 2
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            t, n = switch(torch.tensor(i), branches, (x,))
+            expected_t, expected_n = fn(x)
+            self.assertEqual(t, expected_t)
+            self.assertEqual(n, expected_n)
+
+            grad_out = torch.ones_like(t)
+            grads = torch.autograd.grad(t, (x,), grad_out)
+            expected_grads = torch.autograd.grad(expected_t, (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
     def test_switch_autograd_multiple_tensor_outputs(self):
         # Each branch returns multiple tensor outputs. All outputs should
         # be differentiable and contribute to the gradient when summed.

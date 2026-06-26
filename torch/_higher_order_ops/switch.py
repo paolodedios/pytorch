@@ -231,15 +231,6 @@ class SwitchAutogradOp(torch.autograd.Function):
         ctx._index = index
         ctx._n_branches = len(branches)
 
-        for branch_idx, branch in enumerate(branches):
-            setattr(
-                ctx,
-                f"branch_{branch_idx}",
-                create_bw_fn(
-                    branch,
-                    operands,
-                ),
-            )
         # We snapshot the dispatch keys in forward for materializing the
         # the bw_graph in backward.
         ctx._fw_include_key_set = torch._C._dispatch_tls_local_include_set()
@@ -247,12 +238,46 @@ class SwitchAutogradOp(torch.autograd.Function):
         save_values_for_backward(ctx, operands)
 
         with torch._C._AutoDispatchBelowAutograd():
-            return switch_op(index, branches, operands)
+            outs = switch_op(index, branches, operands)
+
+        # Branches may return non-Tensor leaves (None, int/SymInt) at
+        # positions where all branches agree. create_bw_fn's underlying
+        # create_joint expects one tangent per flat branch output, but
+        # autograd only delivers tangents for Tensor outputs. Wrap each
+        # branch to drop non-Tensor leaves before tracing the joint, and
+        # record the mask so backward can drop the matching slots from
+        # flat_grads.
+        flat_outs = outs if isinstance(outs, (tuple, list)) else (outs,)
+        ctx._output_tensor_mask = [isinstance(o, torch.Tensor) for o in flat_outs]
+
+        def tensor_only(branch):
+            @functools.wraps(branch)
+            def wrapped(*args):
+                branch_outs = branch(*args)
+                if not isinstance(branch_outs, (tuple, list)):
+                    branch_outs = (branch_outs,)
+                return tuple(o for o in branch_outs if isinstance(o, torch.Tensor))
+
+            return wrapped
+
+        for branch_idx, branch in enumerate(branches):
+            setattr(
+                ctx,
+                f"branch_{branch_idx}",
+                create_bw_fn(tensor_only(branch), operands),
+            )
+
+        return outs
 
     @staticmethod
     def backward(ctx, *flat_grads):
         operands = saved_values(ctx)
-        args = operands + flat_grads
+        # Drop tangents at non-Tensor output positions so the saved bw fn
+        # signature matches what create_bw_fn was set up with.
+        tensor_grads = tuple(
+            g for g, keep in zip(flat_grads, ctx._output_tensor_mask) if keep
+        )
+        args = operands + tensor_grads
         # TODO: we need to materialize the bw graphs because dynamo is unable to
         # trace through the joint function when torch.compile torch.autograd.grad.
 
