@@ -91,12 +91,6 @@ def print_fake_tensor_mode(format_str: str, *args: object, **kwargs: object):
     return None
 
 
-@print.py_impl(DispatchKey.Fake)
-# pyre-ignore
-def print_fake_dispatch(format_str: str, *args: object, **kwargs: object):
-    return None
-
-
 @print.py_impl(torch._C.DispatchKey.CompositeExplicitAutograd)
 # pyre-ignore
 def print_impl(format_str: str, *args: object, **kwargs: object) -> None:

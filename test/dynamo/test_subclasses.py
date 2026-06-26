@@ -3197,18 +3197,18 @@ class GraphModule(torch.nn.Module):
 class GraphModule(torch.nn.Module):
     def forward(
         self,
-        primals_1: "Sym(s13)",  # PlainAOTInput(idx=0)
-        primals_2: "Sym(s21)",  # PlainAOTInput(idx=1)
-        primals_3: "f32[s13, s21]",  # PlainAOTInput(idx=2)
+        primals_1: "f32[s13, s21]",  # PlainAOTInput(idx=0)
+        primals_2: "Sym(s13)",  # PlainAOTInput(idx=1)
+        primals_3: "Sym(s21)",  # PlainAOTInput(idx=2)
     ):
-        clone: "f32[s13, s21]" = torch.ops.aten.clone.default(primals_3);  primals_3 = None
+        clone: "f32[s13, s21]" = torch.ops.aten.clone.default(primals_1);  primals_1 = None
 
-        mul_4: "Sym(s13*s21)" = primals_1 * primals_2
+        mul_4: "Sym(s13*s21)" = primals_2 * primals_3
         view: "f32[s13*s21]" = torch.ops.aten.view.default(clone, [mul_4]);  clone = mul_4 = None
         return (
             view,  # PlainAOTOutput(idx=0)
-            primals_1,  # SavedForBackwardsAOTOutput(idx=0)
-            primals_2,  # SavedForBackwardsAOTOutput(idx=1)
+            primals_2,  # SavedForBackwardsAOTOutput(idx=0)
+            primals_3,  # SavedForBackwardsAOTOutput(idx=1)
         )
 """,
             )
@@ -3219,18 +3219,18 @@ class GraphModule(torch.nn.Module):
 class GraphModule(torch.nn.Module):
     def forward(
         self,
-        primals_1: "Sym(s13)",  # PlainAOTInput(idx=0)
-        primals_2: "Sym(s21)",  # PlainAOTInput(idx=1)
-        primals_3: "f32[s13, s21]",  # PlainAOTInput(idx=2)
+        primals_1: "f32[s13, s21]",  # PlainAOTInput(idx=0)
+        primals_2: "Sym(s13)",  # PlainAOTInput(idx=1)
+        primals_3: "Sym(s21)",  # PlainAOTInput(idx=2)
     ):
-        clone: "f32[s13, s21]" = torch.ops.aten.clone.default(primals_3);  primals_3 = None
+        clone: "f32[s13, s21]" = torch.ops.aten.clone.default(primals_1);  primals_1 = None
 
-        mul_2: "Sym(s13*s21)" = primals_1 * primals_2
+        mul_2: "Sym(s13*s21)" = primals_2 * primals_3
         view: "f32[s13*s21]" = torch.ops.aten.view.default(clone, [mul_2]);  clone = mul_2 = None
         return (
             view,  # PlainAOTOutput(idx=0)
-            primals_1,  # SavedForBackwardsAOTOutput(idx=0)
-            primals_2,  # SavedForBackwardsAOTOutput(idx=1)
+            primals_2,  # SavedForBackwardsAOTOutput(idx=0)
+            primals_3,  # SavedForBackwardsAOTOutput(idx=1)
         )
 """,
             )
@@ -3241,19 +3241,13 @@ class GraphModule(torch.nn.Module):
 class GraphModule(torch.nn.Module):
     def forward(
         self,
-        primals_6: "Sym(s47)",  # PlainAOTInput(idx=1)
-        primals_7: "Sym(s16)",  # PlainAOTInput(idx=2)
-        tangents_1: "f32[s16*s47]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='a')
-        tangents_2: "f32[s16*s47]",  # SubclassGetAttrAOTInput(base=TangentAOTInput(output=PlainAOTOutput(idx=0)), attr='b')
+        primals_2: "Sym(s13)",  # PlainAOTInput(idx=1)
+        primals_3: "Sym(s21)",  # PlainAOTInput(idx=2)
+        tangents_1: "f32[s13*s21]",  # TangentAOTInput(output=PlainAOTOutput(idx=0))
     ):
-        view_2: "f32[s47, s16]" = torch.ops.aten.view.default(tangents_1, [primals_6, primals_7]);  tangents_1 = None
-        view_3: "f32[s47, s16]" = torch.ops.aten.view.default(tangents_2, [primals_6, primals_7]);  tangents_2 = None
+        view_1: "f32[s13, s21]" = torch.ops.aten.view.default(tangents_1, [primals_2, primals_3]);  tangents_1 = primals_2 = primals_3 = None
         return (
-            view_2,  # SubclassGetAttrAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=0)), attr='a')
-            view_3,  # SubclassGetAttrAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=0)), attr='b')
-            primals_6,  # SubclassSizeAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=0)), idx=0)
-            primals_7,  # SubclassSizeAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=0)), idx=1)
-            primals_7,  # SubclassStrideAOTOutput(base=GradAOTOutput(grad_of=PlainAOTInput(idx=0)), idx=0)
+            view_1,  # GradAOTOutput(grad_of=PlainAOTInput(idx=0))
             None,  # None
             None,  # None
         )
@@ -4108,6 +4102,7 @@ class TestIssubclass(torch._dynamo.test_case.TestCase):
         self.assertEqual(result_eager, result_compiled)
 
 
+@skipIfCppFakeTensor
 class TestNestedTensor(
     _SubclassCompileCheckMixin,
     torch._dynamo.test_case.TestCase,

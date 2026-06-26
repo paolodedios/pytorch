@@ -2401,6 +2401,10 @@ void cpp_fake_set_metadata(
   meta.unsafeGetTensorImpl()->set_and_normalize_fake_device(real.device());
   meta.unsafeGetTensorImpl()->set_fake_tensor_mode(mode);
 
+  if (real.grad().defined() && meta.grad().defined()) {
+    cpp_fake_set_metadata(mode, real.grad(), meta.grad());
+  }
+
   if (auto meta_inner = maybe_unwrap_functorch(meta)) {
     cpp_fake_set_metadata(
         mode, maybe_unwrap_functorch(real).value(), *meta_inner);
@@ -3206,7 +3210,6 @@ Call this whenever a new thread is created in order to propagate values from
 
           c10::impl::ExcludeDispatchKeyGuard exclude_fake(
               {c10::DispatchKeySet(c10::DispatchKey::Fake)});
-          c10::impl::IncludeDispatchKeyGuard include_meta(c10::DispatchKey::Meta);
           auto meta_obj = converter.attr("to_meta_tensor")(
               real,
               py::arg("shape_env") = shape_env,
@@ -3270,6 +3273,22 @@ Call this whenever a new thread is created in order to propagate values from
     }
     return py::cast(*constant);
   });
+
+  py_module.def(
+      "_set_fake_constant",
+      [](const at::Tensor& fake, const at::Tensor& constant) {
+        auto mode = c10::impl::FakeTensorModeTLS::get_state();
+        TORCH_CHECK(mode != nullptr, "No C++ FakeTensorMode is active");
+        c10::StorageImpl* constant_storage = constant.has_storage()
+            ? constant.storage().unsafeGetStorageImpl()
+            : nullptr;
+        mode->set_constant(
+            fake.getIntrusivePtr(),
+            std::make_shared<at::Tensor>(constant),
+            constant_storage);
+      },
+      py::arg("fake"),
+      py::arg("constant"));
 
   py_module.def(
       "_create_cpp_fake_tensor_mode",

@@ -631,6 +631,10 @@ class FakeTensorConverter:
             # for which it is not strictly necessary to use the
             # invocation manager (I think!)
             with no_dispatch():
+                if isinstance(fake_mode, CppFakeTensorMode):
+                    return torch._C.from_meta_and_device(
+                        make_meta_t(), torch.device(device)
+                    )
                 return FakeTensor(
                     fake_mode,
                     # pyrefly: ignore [bad-argument-type]
@@ -764,7 +768,11 @@ class FakeTensorConverter:
                             source=item_source,
                         )
         if make_constant:
-            self.add_constant_storage_mapping(out)
+            if isinstance(fake_mode, CppFakeTensorMode):
+                # C++ mode stores constants (and their storage aliases) itself.
+                torch._C._set_fake_constant(out, constant)
+            else:
+                self.add_constant_storage_mapping(out)
         # NB: meta_converter set the memo
         return out
 
@@ -806,9 +814,12 @@ class FakeTensorConverter:
         maybe_memo = self._get_memo(t)
         if maybe_memo is not None:
             return maybe_memo
-        out = FakeTensor(
-            fake_mode, t, device, pytype=pytype, dispatch_keys=dispatch_keys
-        )
+        if isinstance(fake_mode, CppFakeTensorMode):
+            out = torch._C.from_meta_and_device(t, torch.device(device))
+        else:
+            out = FakeTensor(
+                fake_mode, t, device, pytype=pytype, dispatch_keys=dispatch_keys
+            )
         self.set_tensor_memo(t, out)
         return out
 

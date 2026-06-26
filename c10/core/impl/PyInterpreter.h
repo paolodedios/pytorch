@@ -234,6 +234,10 @@ struct C10_API PyInterpreterVTable {
       const c10::OperatorHandle& op,
       torch::jit::Stack* stack,
       c10::Device common_device) const = 0;
+  virtual bool fake_try_fast_op_impls(
+      const c10::OperatorHandle& op,
+      torch::jit::Stack* stack,
+      c10::Device common_device) const = 0;
   virtual bool fake_try_prim_meta(
       const c10::OperatorHandle& op,
       torch::jit::Stack* stack) const = 0;

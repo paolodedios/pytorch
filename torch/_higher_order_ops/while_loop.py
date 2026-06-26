@@ -614,15 +614,28 @@ def while_loop_fake_dispatch(
             "while_loop with stack_output=True requires symbolic shapes (ShapeEnv), "
             "which is not supported under C++ fake tensor mode."
         )
-    body_outs = body_fn(*carried_inputs, *additional_inputs)
-    check_meta_consistency(
-        carried_inputs,
+    fake_mode = _find_or_create_fake_mode()
+    with fake_mode.shape_env.ignore_fresh_unbacked_symbols():
+        body_outs = body_fn(*carried_inputs, *additional_inputs)
+        check_meta_consistency(
+            carried_inputs,
+            body_outs,
+            "carried_inputs",
+            "body_output",
+            include_contiguity=False,
+        )
+
+    # See NOTE [unspecialize int carry with unbacked symints]. Mirror the
+    # Python FakeTensorMode impl: int/SymInt carry outputs must become fresh
+    # unbacked symints bound to while_loop's output, otherwise Dynamo wraps
+    # them as constants and they fail to match the traced subgraph's symints.
+    return pytree.tree_map_only(
+        (int, torch.SymInt),
+        lambda _: _create_unbacked_symint(
+            fake_mode, ignore_fresh_unbacked_symbols=False
+        ),
         body_outs,
-        "carried_inputs",
-        "body_output",
-        include_contiguity=False,
     )
-    return body_outs
 
 
 @while_loop_op.py_functionalize_impl

@@ -242,9 +242,12 @@ std::optional<c10::Device> find_and_rewrite_device_args(
     if (ivalue.isDevice()) {
       auto dev = ivalue.toDevice();
       if (rewrite_to_meta) {
-        TORCH_CHECK(
-            dev.type() != c10::DeviceType::Meta,
-            "FakeTensor does not support meta device inputs");
+        if (dev.type() == c10::DeviceType::Meta) {
+          auto mode = c10::impl::FakeTensorModeTLS::get_state();
+          TORCH_CHECK(
+              mode == nullptr || mode->allow_meta_,
+              "device.type must not be 'meta' when allow_meta is False");
+        }
         ivalue = c10::IValue(c10::Device(c10::DeviceType::Meta));
       }
       if (!original_device.has_value())
@@ -415,10 +418,10 @@ std::vector<at::Tensor> validate_and_convert_non_fake_tensors(
           // TODO: allow non fake inputs
           // TODO: if not allow non fake inputs checks
 
-          auto out = from_real_tensor(t, mode);
           if (t.unsafeGetTensorImpl()->is_wrapped_number()) {
-            set_constant_on_mode(out, std::make_shared<at::Tensor>(t), mode);
+            return std::nullopt;
           }
+          auto out = from_real_tensor(t, mode);
           flat_arg_fake_tensors.push_back(out);
           return out;
         }
@@ -749,15 +752,11 @@ void fakeFallback(
 
 
   // HOPs
-  // this is already taken care of by adding @py_impl(DispatchKey.Fake) to all
-  // HOPs when the dispatcher for HOPs is hit (which happens before fake
-  // fallback), it will route to the proper fake kernel THIS BEHAVIOUR IS
-  // DIFFERENT THAN TODAY'S PYTHON IMPL
-
+  // this is already taken care of by adding @register_fake
   invalidate_written_to_constants(
       op, stack, arguments_begin, num_arguments, flat_arg_fake_tensors, mode);
 
-  // TODO: propagate_real_tensors
+  // TODO: propagate_real_tensors (richard says add this at the very end)
   /*if propagate_real_tensors {
       TORCH_CHECK(false, "propagate_real_tensors not implemented in C++
   faketensor");
@@ -773,12 +772,12 @@ void fakeFallback(
     if (device_mismatch.has_value()) {
       TORCH_CHECK(
           false,
-          "Unhandled FakeTensor Device Propagation for ",
-          c10::toString(op.operator_name()),
-          ", found two different devices ",
+          "Expected all tensors to be on the same device, but found at least "
+          "two devices, ",
           device_mismatch->first,
-          ", ",
-          device_mismatch->second);
+          " and ",
+          device_mismatch->second,
+          "!");
     }
     if (!common_device.has_value()) {
       common_device = c10::Device(c10::DeviceType::CPU);
@@ -805,6 +804,15 @@ void fakeFallback(
     }
     return *op_key_cache;
   };
+
+  if (has_symints && mode && interp) {
+    if ((*interp)->fake_try_fast_op_impls(
+            op,
+            stack,
+            common_device.value_or(c10::Device(c10::DeviceType::CPU)))) {
+      return;
+    }
+  }
 
   // for ops with symbolic sizes, try decompositions before the meta kernel.
   if (has_symints && !cpp_meta_supports_symint(op) &&

@@ -2037,27 +2037,27 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
    */
   c10::AutogradMetaInterface* autograd_meta() const;
 
-  /**
-   * Set the pointer to named tensor metadata.
-   */
-  void set_named_tensor_meta(
-      std::unique_ptr<c10::NamedTensorMetaInterface> named_tensor_meta) {
-    TORCH_WARN_ONCE(
-        "Named tensors and all their associated APIs are an experimental feature ",
-        "and subject to change. Please do not use them for anything important ",
-        "until they are released as stable.");
-#ifdef DEBUG
-    if (named_tensor_meta) {
-      TORCH_INTERNAL_ASSERT(named_tensor_meta->slow_dim() == dim());
-    }
-#endif
-    if (named_tensor_meta) {
-      get_extra_meta().named_tensor_meta_ = std::move(named_tensor_meta);
-      key_set_ = key_set_.add(DispatchKey::Named);
+  void set_python_dispatch(bool k) {
+    if (k) {
+      key_set_ = key_set_.add(c10::python_ks);
     } else {
-      if (extra_meta_) {
-        extra_meta_->named_tensor_meta_ = nullptr;
-      }
+      key_set_ = key_set_ - c10::python_ks;
+    }
+  }
+
+  bool is_python_dispatch() const {
+    return key_set_.has_all(c10::python_ks);
+  }
+
+  // NOTE [ TensorImpl Shallow-Copying ]
+  //
+  // TensorImpl shallow-copying is used when we want to have two Variables share
+  // the same tensor metadata (e.g. sizes / strides / storage pointer /
+  // storage_offset), but each with a different autograd history. Example call
+  // sites:
+  //
+  // 1. `var_detached = var.detach()` uses `shallow_copy_and_detach()` to create
+  // `var_detached` that shares the same tensor metadata with `var`, but with a
   // completely new autograd history.
   // 2. `var.set_data(tensor)` uses `shallow_copy_from()` to copy tensor
   // metadata from `tensor` into `var`, while keeping `var`'s original
@@ -2600,6 +2600,7 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
 
   bool SetDims(const int64_t d0, const int64_t d1, const int64_t d2) {
     return SetDims(IntArrayRef{d0, d1, d2});
+  }
 
   bool SetDims(
       const int64_t d0,
@@ -2608,6 +2609,9 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
       const int64_t d3) {
     return SetDims(IntArrayRef{d0, d1, d2, d3});
   }
+
+  /**
+   * Compute the number of elements based on the sizes of a tensor.
    */
   // NB: This is ONLY called when sizes_and_strides_ is used directly; if
   // we are virtualizing, then numel calls are virtualized as well, and this
@@ -2997,6 +3001,34 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
   // Channels last 3d contiguous tensor is channel last 3d tensor which occupies
   // contiguous memory block.
   bool is_channels_last_3d_contiguous_ : 1 = false;
+
+  // Dense tensor is the tensor that store values in a contiguous block of
+  // memory. Non-overlapping tensor is the tensor in which elements occupy
+  // individual non-repetitive memory.
+  bool is_non_overlapping_and_dense_ : 1 = true;
+
+  bool is_wrapped_number_ : 1 = false;
+
+  // NOTE [ Metadata Change for a Detached Tensor ]
+  //
+  // Normally, a user is allowed to change the tensor metadata
+  // (e.g. sizes / strides / storage / storage_offset) of a tensor.
+  // However, if the tensor is created by `t1_detached = t1.data` in Python
+  // or `t1_detached = t1.detach()` in Python/C++, those changes to the
+  // tensor metadata of `t1_detached` will not be propagated back to the
+  // original tensor `t1`. In order to make such changes explicitly illegal,
+  // we created the `allow_tensor_metadata_change_` flag, to prevent users
+  // from changing metadata of the detached tensor and expecting the original
+  // tensor to also be updated.
+  //
+  // NOTE: For a full list of tensor metadata fields, please see
+  // `copy_tensor_metadata()` in TensorImpl and its subclasses to find
+  // which fields are copied by value.
+  bool allow_tensor_metadata_change_ : 1 = true;
+
+  // we decide to keep reserved_ and it will
+  // live in Tensor after the split
+  // The logic is that if Extend() or ReserveSpace() were ever called,
   // then subsequent Resize()s will not free up Storage.
   bool reserved_ : 1 = false;
 

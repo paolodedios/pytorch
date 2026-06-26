@@ -35,6 +35,7 @@ from torch._subclasses.fake_tensor import (
     DynamicOutputShapeException,
     FakeTensor,
     in_kernel_invocation_manager as _py_in_kernel_invocation_manager,
+    is_fake,
     run_fallback_kernel,
     UnsupportedOperatorException,
 )
@@ -444,11 +445,21 @@ def _spdiags_static_offsets(offsets: FakeTensorLike) -> list[int] | None:
     constant = getattr(offsets, "constant", None)
     if constant is None:
         constant = getattr(offsets, "real_tensor", None)
+    cpp_mode = None
+    if constant is None and is_fake(offsets) and not isinstance(offsets, FakeTensor):
+        cpp_mode = CppFakeTensorMode._get_active_cpp_fake_tensor_mode()
+        constant = torch._C._get_fake_constant(offsets)
     if isinstance(constant, FakeTensor):
         return None
     if constant is None or constant.device.type != "cpu":
         return None
-    return [int(offset) for offset in constant.reshape(-1).tolist()]
+    if cpp_mode is not None:
+        cpp_mode.deactivate()
+    try:
+        return [int(offset) for offset in constant.reshape(-1).tolist()]
+    finally:
+        if cpp_mode is not None:
+            cpp_mode.activate()
 
 
 def _spdiags_nnz(offsets: list[int], rows: int, cols: int, diag_cols: int) -> int:
