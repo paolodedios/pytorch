@@ -431,6 +431,9 @@ inline SymIntArrayRef slicePrefix1sSize(const SymIntArrayRef& sizes) {
   return sizes.slice(first_non1_src);
 }
 
+inline void copy_to(const Tensor& dst, const Scalar& src) {
+  dst.fill_(src);
+}
 inline void copy_to(const Tensor& dst, const Tensor& src) {
   // Use TORCH_GUARD_OR_FALSE with sym_eq to avoid data-dependent-expression
   // errors with unbacked symbolic sizes.  When we can't prove equality,
@@ -460,10 +463,6 @@ inline void copy_to(const Tensor& dst, const Tensor& src) {
   auto src_view = src.view_symint(slicePrefix1sSize(src.sym_sizes()));
   c10::MaybeOwned<Tensor> b_src = expand_inplace(dst, src_view, "setitem");
   dst.copy_(*b_src);
-}
-
-inline void copy_to(const Tensor& dst, const Scalar& src) {
-  dst.fill_(src);
 }
 
 // See NOTE [ Setting `disable_slice_optimization` when calling C++ tensor
