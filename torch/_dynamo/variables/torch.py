@@ -3122,8 +3122,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
     def getattro_impl(
         self, tx: "InstructionTranslatorBase", name: str
     ) -> "VariableTracker":
-        from ..source import AttrSource
-
         source = self.source and AttrSource(self.source, name)
         try:
             member = getattr(self.value, name)

@@ -77,6 +77,7 @@ from ..utils import (
 from .base import AttributeMutationNew, ValueMutationNew, VariableTracker
 from .constant import ConstantVariable
 from .lists import ListIteratorVariable, SizeVariable
+from .misc import CallMethodVariable
 from .script_object import TorchScriptObjectVariable
 from .user_defined import UserDefinedClassVariable
 
@@ -480,7 +481,6 @@ class TensorVariable(VariableTracker):
         # but unfortunately id(real_value.__self__) is not id(<original value>)
         if is_bound_tensor_method(real_value):
             # No need to install the guard because its a bound tensor method
-            from .misc import CallMethodVariable
 
             return CallMethodVariable(self, name, source=attr_source)
 
@@ -746,7 +746,6 @@ class TensorVariable(VariableTracker):
         if result is None:
             static_attr = all_tensor_attrs.get(name, None)
             if static_attr is not None and callable(static_attr):
-                from .misc import CallMethodVariable
 
                 return CallMethodVariable(
                     self, name, source=self.source and AttrSource(self.source, name)
@@ -756,7 +755,6 @@ class TensorVariable(VariableTracker):
             if self.class_type is not torch.Tensor:
                 subclass_attr = getattr(self.class_type, name, None)
                 if subclass_attr is not None and callable(subclass_attr):
-                    from .misc import CallMethodVariable
 
                     return CallMethodVariable(
                         self,
@@ -3133,7 +3131,6 @@ class NumpyNdarrayVariable(TensorVariable):
         if result is None:
             attr = getattr(np.ndarray, name, None)
             if attr is not None and callable(attr):
-                from .misc import CallMethodVariable
 
                 return CallMethodVariable(
                     self, name, source=self.source and AttrSource(self.source, name)
