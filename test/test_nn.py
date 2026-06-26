@@ -14844,7 +14844,35 @@ if __name__ == '__main__':
         # input/weight matmuls), so the cap is generally tighter than
         # the input/weight caps for the same combo.
         expected_linear_bias_grad_max_ulp_diff = 0
-        if prob_target:
+        if prob_target and none_reduction:
+            # prob + reduction='none' (per-sample loss + recompute backward).
+            # Caps are drift trip-wires; grad_error is the correctness guard.
+            # CPU x86_64 observed (input_grad / weight): fp32 149/38, fp16
+            # compact 93/23, bf16 & accurate ~0. CUDA/MPS/ROCm seeded from the
+            # mean/sum prob ceilings below as priors (none <= mean/sum there);
+            # tighten from a CI sweep if a leg has large slack.
+            expected_max_ulp_diff = 8
+            if dtype == torch.float32:
+                if "cpu" in device:
+                    expected_input_grad_max_ulp_diff = 512  # x86_64 149
+                    expected_weight_grad_max_ulp_diff = 128  # x86_64 38
+                elif "mps" in device:
+                    expected_input_grad_max_ulp_diff = 256
+                    expected_weight_grad_max_ulp_diff = 64
+                else:  # cuda / rocm
+                    expected_input_grad_max_ulp_diff = 512
+                    expected_weight_grad_max_ulp_diff = 256
+            elif _resolved_policy == "accurate":
+                expected_input_grad_max_ulp_diff = 4
+                expected_weight_grad_max_ulp_diff = 4
+            elif dtype == torch.bfloat16:  # compact, bf16
+                expected_input_grad_max_ulp_diff = 16
+                expected_weight_grad_max_ulp_diff = 8
+            else:  # compact, fp16
+                expected_input_grad_max_ulp_diff = 192  # cpu 93
+                expected_weight_grad_max_ulp_diff = 128  # cpu 23
+            expected_linear_bias_grad_max_ulp_diff = 0
+        elif prob_target:
             # Probability-target caps with the near-zero ULP floor (see
             # ``grad_max_ulp``). fp32 takes the all-input-dtype path, so
             # its caps are policy-independent and the ULP counts run larger
@@ -15696,6 +15724,30 @@ if __name__ == '__main__':
             acc_dtype={torch.float16: torch.float32, torch.bfloat16: torch.float32}[dtype],
             prob_target=True)
 
+    @parametrize_test("acc_policy", ["accurate", "compact", "auto"])
+    @dtypes(torch.float32)
+    def test_linear_cross_entropy_loss_prob_target_none_reduction(
+        self, device, dtype, acc_policy
+    ):
+        # reduction='none' probability-target leg: per-sample prob loss +
+        # recompute backward against the fp64 reference. See the prob_target
+        # none_reduction cap block in _test_linear_cross_entropy_loss.
+        self._test_linear_cross_entropy_loss(
+            device=device, dtype=dtype, acc_policy=acc_policy,
+            prob_target=True, none_reduction=True)
+
+    @parametrize_test("dtype", [torch.float16, torch.bfloat16])
+    @parametrize_test("acc_policy", ["accurate", "compact", "auto"])
+    def test_linear_cross_entropy_loss_prob_target_none_reduction_with_acc_dtype(
+        self, device, dtype, acc_policy
+    ):
+        if dtype == torch.bfloat16 and "cuda" in device and not SM80OrLater:
+            self.skipTest("bf16 requires SM80+ on CUDA")
+        self._test_linear_cross_entropy_loss(
+            device=device, dtype=dtype, acc_policy=acc_policy,
+            acc_dtype={torch.float16: torch.float32, torch.bfloat16: torch.float32}[dtype],
+            prob_target=True, none_reduction=True)
+
     @parametrize_test("acc_policy", ["auto", "compact", "balanced", "accurate"])
     def test_linear_cross_entropy_prob_large_vocab_fp16_denom(self, device, acc_policy):
         # Regression: the softmax denominator sum_v exp(shifted) sums
@@ -15787,12 +15839,18 @@ if __name__ == '__main__':
         (grad_target,) = torch.autograd.grad(out, [target_g])
         self.assertGreater(grad_target.norm().item(), 0.0)
 
-        # reduction='none' with a probability target: falls back.
-        with self.assertWarnsRegex(UserWarning, "options.*ignored"):
+        # reduction='none' with a probability target: now chunks (no fallback).
+        with warnings.catch_warnings(record=True) as ws:
+            warnings.simplefilter("always")
             out = nn.functional.linear_cross_entropy(
                 inp, lw, target, reduction="none", options=options,
             )
+        self.assertFalse(ws, "prob+none unexpectedly fell back to the reference")
         self.assertEqual(out.shape, (N,))
+        ref = nn.functional.cross_entropy(
+            nn.functional.linear(inp, lw), target, reduction="none",
+        )
+        self.assertEqual(out, ref)
 
         # dtype mismatch: falls back (the reference type-promotes, so
         # the loss carries the promoted dtype).

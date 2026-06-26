@@ -85,6 +85,12 @@ class _ChunkViews:
             torch.mul(self.target_chunk, ctx.weight_row, out=out)
         else:
             out.copy_(self.target_chunk)
+        if ctx.loss_grad_output is not None:
+            # reduction="none" backward: fold the per-sample upstream grad in
+            # (the prob analogue of neg_weight_target), so the shared grad
+            # loop emits grad_output[n] * (softmax * s_n - w*t).
+            g = ctx.loss_grad_output.narrow(0, self.bchunk_start, self.bchunk_size)
+            out.mul_(g.unsqueeze(1))
         return out
 
     @property
@@ -441,11 +447,6 @@ class _ChunkContext:
                     "linear_cross_entropy: probability target shape must be "
                     f"{(input.shape[0], linear_weight.shape[0])}, got {tuple(target.shape)}."
                 )
-            if reduction not in {"mean", "sum"}:
-                raise NotImplementedError(
-                    "linear_cross_entropy: probability target requires"
-                    f" reduction in {{'mean', 'sum'}}, got {reduction!r}"
-                )
         elif target.dtype != torch.int64:
             raise TypeError(
                 f"linear_cross_entropy: target dtype must be torch.int64, got {target.dtype}."
@@ -558,7 +559,11 @@ class _ChunkContext:
         # logits dtype. Skipped when target_chunk can be used directly
         # (no class weight and dtype already matches).
         alloc_prob_target_buf = is_prob_target and (
-            weight is not None or dtype != logits_buf_dtype
+            weight is not None
+            or dtype != logits_buf_dtype
+            # none backward folds the per-sample upstream grad into prob_wt,
+            # which must be a writable scratch (not the target view).
+            or (reduction == "none" and loss_grad_output is not None)
         )
         if is_prob_target and reduction == "mean":
             loss_scale = 1.0 / num_batches if num_batches else float("nan")
@@ -847,21 +852,29 @@ def _linear_cross_entropy_batch_chunked_accumulator(
     )
     dtype = ctx.dtype
     # reduction='none' forward (no upstream grad yet): per-sample loss
-    # into an (N,) output, no gradient precompute. ``chunk.weight_chunk``
-    # is the unsigned masked class weight here (neg_weight_target's "none"
-    # forward form), so each row's loss is W[T[n]] * (log denom -
-    # shifted_logit[T[n]]) = W[T[n]] * (-log_softmax). The "none" backward
-    # (loss_grad_output set) routes through the grad loop below instead.
+    # into an (N,) output, no gradient precompute. Index: ``weight_chunk``
+    # is the unsigned masked class weight (neg_weight_target's "none" forward
+    # form), so each row's loss is W[T[n]] * (log denom - shifted[T[n]]) =
+    # W[T[n]] * (-log_softmax). Prob: each row's loss is
+    # s_n * log denom_n - <(w*t)_n, shifted_n>, s_n = sum_v (w*t)[n, v]. The
+    # "none" backward (loss_grad_output set) routes through the grad loop below.
     if reduction == "none" and loss_grad_output is None:
         out = torch.empty(ctx.num_batches, dtype=dtype, device=ctx.input.device)
         for chunk in ctx.chunks():
             logits = ctx.shifted_logits(chunk)
-            # Read the target logit BEFORE ``sumexp_`` -- it does ``exp_()``
+            # Read the target term BEFORE ``sumexp_`` -- it does ``exp_()``
             # in place, overwriting logits with exp(shifted).
-            ls_target = logits.gather(1, chunk.target_chunk.unsqueeze(1)).squeeze(1)
-            softmax_denom = ctx.sumexp_(logits, dim=1)
-            loss_chunk = softmax_denom.log_().sub_(ls_target.to(softmax_denom.dtype))
-            loss_chunk.mul_(chunk.weight_chunk.to(softmax_denom.dtype))
+            if ctx.is_prob_target:
+                wt = chunk.prob_wt
+                per_row = torch.einsum("bv,bv->b", wt, logits)
+                s = wt.sum(1, dtype=ctx.weight_chunk_dtype)
+                softmax_denom = ctx.sumexp_(logits, dim=1)
+                loss_chunk = softmax_denom.log_().mul_(s).sub_(per_row)
+            else:
+                ls_target = logits.gather(1, chunk.target_chunk.unsqueeze(1)).squeeze(1)
+                softmax_denom = ctx.sumexp_(logits, dim=1)
+                loss_chunk = softmax_denom.log_().sub_(ls_target)
+                loss_chunk.mul_(chunk.weight_chunk)
             out.narrow(0, chunk.bchunk_start, chunk.bchunk_size).copy_(loss_chunk)
         return (
             out,
