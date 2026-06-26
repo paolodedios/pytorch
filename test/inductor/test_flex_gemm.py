@@ -2055,6 +2055,49 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
+    def test_mm_coda_rmsnorm_rewrite_rejects_group_above_config_limit(self):
+        m, k, n, p = 64, 32, 512, 48
+        group = 512
+        eps = 1e-5
+
+        def fn(a, b1, gamma, b2):
+            def first_epilogue(acc):
+                x = acc.float().view(m, -1, group)
+                h2 = (acc.float() * gamma).to(torch.bfloat16)
+                return h2, x.square().mean(-1)
+
+            h2, partial_mean_square = flex_gemm(
+                torch.mm,
+                (a, b1),
+                first_epilogue,
+                kernel_options={"backend": "QUACK"},
+            )
+            rstd = (partial_mean_square.mean(-1, keepdim=True) + eps).rsqrt()
+
+            def second_epilogue(acc):
+                return acc.float() * rstd
+
+            return flex_gemm(
+                torch.mm,
+                (h2, b2),
+                second_epilogue,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = self.makeTensor(m, k)
+        b1 = self.makeTensor(k, n)
+        gamma = self.makeTensor(1, n)
+        b2 = self.makeTensor(n, p)
+
+        with self.assertRaisesRegex(
+            Exception,
+            "requested group=512, max supported group=256 for axis=1",
+        ):
+            torch.compile(fn, backend="inductor", fullgraph=True)(a, b1, gamma, b2)
+
+    @skipIfNoCuteDSL
+    @unittest.skipIf(not TEST_CUDA, "CUDA required")
+    @unittest.skipIf(not SM100OrLater, "SM100+ required")
     @parametrize("group", (2, 16, 32))
     @parametrize(
         "case",

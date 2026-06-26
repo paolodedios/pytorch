@@ -16,11 +16,11 @@ from ... import ir
 from ...ir import IRNode, TensorBox
 from ...lowering import empty_strided, process_subgraph_nodes, register_lowering
 from .constraints import (
+    flex_gemm_local_reduce_config_error,
     is_flex_gemm_partial_reduction_shape,
     LOCAL_REDUCE_AUX_METADATA_ERROR,
     LOCAL_REDUCE_AUX_OUTPUT_CONTRACT_ERROR,
     LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR,
-    LOCAL_REDUCE_CONFIG_ERROR,
     LOCAL_REDUCE_DENSE_MM_SCOPE_ERROR,
     local_reduce_partial_output_contract_error,
     validate_flex_gemm_local_reduce_config,
@@ -180,15 +180,22 @@ def flex_gemm_config_keys_for_local_reduce(
 
         candidate_configs = candidate_gemm_configs_for_device(device)
         if local_reduce is not None:
-            candidate_configs = tuple(
+            local_reduce_configs = tuple(
                 config
                 for config in candidate_configs
                 if validate_flex_gemm_local_reduce_config(
                     config, local_reduce.group, local_reduce.axis
                 )
             )
-            if not candidate_configs:
-                raise NotImplementedError(LOCAL_REDUCE_CONFIG_ERROR)
+            if not local_reduce_configs:
+                raise NotImplementedError(
+                    flex_gemm_local_reduce_config_error(
+                        candidate_configs,
+                        local_reduce.group,
+                        local_reduce.axis,
+                    )
+                )
+            candidate_configs = local_reduce_configs
         return tuple(gemm_config_key(config) for config in candidate_configs)
 
     from torch._inductor.template_heuristics.flex_gemm import (
@@ -216,7 +223,13 @@ def flex_gemm_config_keys_for_local_reduce(
         None,
     )
     if candidate_config is None:
-        raise NotImplementedError(LOCAL_REDUCE_CONFIG_ERROR)
+        raise NotImplementedError(
+            flex_gemm_local_reduce_config_error(
+                candidate_gemm_configs_for_device(device),
+                local_reduce.group,
+                local_reduce.axis,
+            )
+        )
     return (gemm_config_key(candidate_config),)
 
 

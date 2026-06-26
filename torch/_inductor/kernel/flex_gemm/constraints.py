@@ -2,6 +2,8 @@
 from collections.abc import Sequence
 from typing import Any, Final, Literal, TypeAlias
 
+from torch.utils._ordered_set import OrderedSet
+
 
 LOCAL_REDUCE_COMPRESSED_AUX: Final = "compressed_aux"
 LOCAL_REDUCE_FEED_MAIN: Final = "feed_main"
@@ -417,20 +419,32 @@ def validate_local_reduce_no_aux_out_composition(aux_out: Any | None) -> None:
         raise NotImplementedError(LOCAL_REDUCE_AUX_OUT_COMPOSITION_ERROR)
 
 
+def flex_gemm_local_reduce_config_fields(
+    config: Any,
+) -> tuple[bool, int, int, int, int]:
+    """Normalize config objects and keys for local-reduce capability checks."""
+    if isinstance(config, dict):
+        return (
+            config["swap_ab"],
+            config["tile_m"],
+            config["tile_n"],
+            config["cluster_m"],
+            config["cluster_n"],
+        )
+    return (
+        config.swap_ab,
+        config.tile_m,
+        config.tile_n,
+        config.cluster_m,
+        config.cluster_n,
+    )
+
+
 def validate_flex_gemm_local_reduce_config(config: Any, group: int, axis: int) -> bool:
     """Return whether a QuACK config can keep grouped reductions inside one CTA."""
-    if isinstance(config, dict):
-        swap_ab = config["swap_ab"]
-        tile_m = config["tile_m"]
-        tile_n = config["tile_n"]
-        cluster_m = config["cluster_m"]
-        cluster_n = config["cluster_n"]
-    else:
-        swap_ab = config.swap_ab
-        tile_m = config.tile_m
-        tile_n = config.tile_n
-        cluster_m = config.cluster_m
-        cluster_n = config.cluster_n
+    swap_ab, tile_m, tile_n, cluster_m, cluster_n = (
+        flex_gemm_local_reduce_config_fields(config)
+    )
     if axis not in (0, 1) or swap_ab:
         return False
     if tile_n < 128 or tile_n % 64 != 0:
@@ -446,6 +460,41 @@ def validate_flex_gemm_local_reduce_config(config: Any, group: int, axis: int) -
         and tile_m == 128
         and cluster_m == 1
         and cluster_n == 1
+    )
+
+
+def max_flex_gemm_local_reduce_group_for_configs(
+    configs: Sequence[Any], axis: int
+) -> int | None:
+    """Return the largest group accepted by the current local-reduce config gate."""
+    candidates: OrderedSet[int] = OrderedSet()
+    for config in configs:
+        swap_ab, tile_m, tile_n, cluster_m, cluster_n = (
+            flex_gemm_local_reduce_config_fields(config)
+        )
+        if axis not in (0, 1) or swap_ab or tile_n < 128 or tile_n % 64 != 0:
+            continue
+        tile = tile_n if axis == 1 else tile_m
+        for group in (2, 4, 8, 16, 32):
+            if group < tile and tile % group == 0:
+                candidates.add(group)
+        if tile_m == 128 and cluster_m == 1 and cluster_n == 1:
+            for group in range(64, tile + 1, 32):
+                if tile % group == 0:
+                    candidates.add(group)
+    return max(candidates) if candidates else None
+
+
+def flex_gemm_local_reduce_config_error(
+    configs: Sequence[Any], group: int, axis: int
+) -> str:
+    """Explain the current config-filter frontier for local-reduce groups."""
+    max_group = max_flex_gemm_local_reduce_group_for_configs(configs, axis)
+    if max_group is None:
+        return LOCAL_REDUCE_CONFIG_ERROR
+    return (
+        f"{LOCAL_REDUCE_CONFIG_ERROR}; requested group={group}, "
+        f"max supported group={max_group} for axis={axis}"
     )
 
 
