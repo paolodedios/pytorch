@@ -2087,7 +2087,6 @@ def forward(self, pred_1, x_1):
         expected_grads = torch.autograd.grad(branch2(x), (x,), grad_out)
         self.assertEqual(expected_grads, grads)
 
-    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_nested(self):
         def true_fn(x):
             def inner0(y):
@@ -2133,7 +2132,6 @@ def forward(self, pred_1, x_1):
             expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
             self.assertEqual(expected_grads, grads)
 
-    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_mixed_require_grad(self):
         def branch0(x, y, z):
             return x * y * z
@@ -2157,7 +2155,6 @@ def forward(self, pred_1, x_1):
             expected_grads = torch.autograd.grad(fn(x, y, x), (x,), grad_out)
             self.assertEqual(expected_grads, grads)
 
-    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_pytree_input(self):
         def branch0(x):
             return x["t"][0] + x["t"][1]["b"] * x["t"][2][0]
@@ -2215,7 +2212,6 @@ def forward(self, pred_1, x_1):
             )
             self.assertEqual(expected_grads, grads)
 
-    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_pytree_output(self):
         def branch0(x):
             return {"res": [x.sin(), (x.cos(),)]}
@@ -2265,7 +2261,6 @@ def forward(self, pred_1, x_1):
             expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
             self.assertEqual(expected_grads, grads)
 
-    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_grad_through_params(self):
         nn_module = torch.nn.Linear(4, 4)
 
@@ -2316,6 +2311,7 @@ def forward(self, pred_1, x_1):
             expected_grads = torch.autograd.grad(fn(x), (x,), grad_out)
             self.assertEqual(expected_grads, grads)
 
+    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_tensor_closure(self):
         # captured tensors that require grad.
         bias0 = torch.ones(4, requires_grad=True)
@@ -2459,7 +2455,6 @@ def forward(self, pred_1, x_1):
             expected_grads = torch.autograd.grad(expected_t, (x,), grad_out)
             self.assertEqual(expected_grads, grads)
 
-    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_pytree_input_make_fx(self):
         def branch0(d):
             return d["a"] + d["b"]
