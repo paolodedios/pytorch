@@ -1941,9 +1941,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(result, expected)
 
     def test_switch_autograd_simple(self):
-        # Basic autograd test mirroring test_cond_autograd_simple but with
-        # three branches. Iterate over each branch and check gradients match
-        # an eager call of the selected branch.
         def branch0(x):
             return x.sin()
 
@@ -1981,8 +1978,6 @@ def forward(self, pred_1, x_1):
         self.assertEqual(len(switch_calls), 2)
 
     def test_switch_autograd_complex(self):
-        # Non-trivial computations within branches; checks that gradients
-        # are correctly threaded through the selected branch only.
         def branch0(x):
             return torch.abs((x**2).sin())
 
@@ -2005,11 +2000,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_int_index(self):
-        # Tensor scalar index is the canonical autograd case; this exercises
-        # the Python-int index path, which the autograd dispatch should also
-        # cover (the eager constant-index shortcut bypasses the
-        # SwitchAutogradOp.apply path, so we additionally check Python int
-        # against a small int tensor).
         def branch0(x):
             return x.sin()
 
@@ -2030,9 +2020,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_constant_index_specialization(self):
-        # When the index is a Python constant under torch.compile, dynamo
-        # specializes on the corresponding branch. The HOP never enters the
-        # graph and gradients should flow through that branch alone.
         def branch0(x):
             return x.sin()
 
@@ -2072,8 +2059,6 @@ def forward(self, pred_1, x_1):
         self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_out_of_range_index_clamped(self):
-        # Out-of-range tensor index is clamped to [0, N-1]. Gradients must
-        # match the clamped branch.
         def branch0(x):
             return x.sin()
 
@@ -2104,9 +2089,6 @@ def forward(self, pred_1, x_1):
 
     @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_nested(self):
-        # Nested switch with three outer branches, each containing an inner
-        # switch with its own three branches. Exercises the recursive
-        # autograd dispatch.
         def true_fn(x):
             def inner0(y):
                 return (y * 2).sin()
@@ -2153,8 +2135,6 @@ def forward(self, pred_1, x_1):
 
     @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_mixed_require_grad(self):
-        # Some operands require grad, others don't. Gradients should only
-        # flow through the requires_grad=True operands.
         def branch0(x, y, z):
             return x * y * z
 
@@ -2179,8 +2159,6 @@ def forward(self, pred_1, x_1):
 
     @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_pytree_input(self):
-        # Pytree operands: each branch reads tensors out of a nested
-        # dict/list/tuple structure.
         def branch0(x):
             return x["t"][0] + x["t"][1]["b"] * x["t"][2][0]
 
@@ -2207,11 +2185,6 @@ def forward(self, pred_1, x_1):
 
     @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_pytree_not_all_inputs_used(self):
-        # Pytree input where each branch consumes a different subset of the
-        # leaves. switch's backward materializes zero gradients for unused
-        # inputs (create_bw_fn fills None grads with zeros_like), whereas
-        # eager autograd returns None. Use materialize_grads=True on the
-        # expected side to align both representations.
         def branch0(x):
             return x["t"][0] + x["t"][1]["b"]
 
@@ -2244,8 +2217,6 @@ def forward(self, pred_1, x_1):
 
     @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_pytree_output(self):
-        # Branches return a pytree of tensors (dict). All branches must
-        # return the same pytree spec.
         def branch0(x):
             return {"res": [x.sin(), (x.cos(),)]}
 
@@ -2270,9 +2241,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_torch_nn_module(self):
-        # Each branch is a different torch.nn.Module whose parameters are
-        # captured as free variables. Gradients should flow back through
-        # the selected module only.
         linear0 = torch.nn.Linear(4, 4)
         linear1 = torch.nn.Linear(4, 4)
         linear2 = torch.nn.Linear(4, 4)
@@ -2299,9 +2267,6 @@ def forward(self, pred_1, x_1):
 
     @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
     def test_switch_autograd_grad_through_params(self):
-        # Gradients are taken with respect to a parameter captured by all
-        # branches. Each branch contributes a different function of the
-        # parameter.
         nn_module = torch.nn.Linear(4, 4)
 
         def branch0(x):
@@ -2329,8 +2294,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_inner_tensor(self):
-        # Branches close over local tensors created inside the branch
-        # function. These should not need to be tracked as inputs.
         def branch0(x):
             return torch.abs((x**2).sin())
 
@@ -2354,8 +2317,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_tensor_closure(self):
-        # Branches close over external tensors that don't require grad and
-        # tensors that do. Gradients should be computed correctly for all
         # captured tensors that require grad.
         bias0 = torch.ones(4, requires_grad=True)
         bias1 = torch.zeros(4, requires_grad=True)
@@ -2384,8 +2345,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_many_branches(self):
-        # Validate that the autograd implementation scales to a large
-        # number of branches (it materializes one bw graph per branch).
         N = 8
 
         def make_branch(k):
@@ -2407,9 +2366,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_branch_returns_none(self):
-        # Branches return (tensor, None). The autograd path records a
-        # non-Tensor output mask in forward and uses it to drop the None
-        # tangent slot in backward.
         def branch0(x):
             return x.sin(), None
 
@@ -2434,9 +2390,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_branch_returns_equal_int_leaves(self):
-        # All branches return the same int leaf -- the int is preserved
-        # exactly (no unbacked symbol). Autograd should still flow through
-        # the tensor portion; the int output is masked out in backward.
         def branch0(x):
             return x.sin(), 7
 
@@ -2460,10 +2413,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_branch_returns_divergent_int_leaves(self):
-        # Branches return different int leaves; switch emits an unbacked
-        # SymInt for the int portion. Gradient flow through the tensor
-        # portion should be unaffected, and the SymInt output is masked
-        # out in backward.
         def branch0(x):
             return x.sin(), 0
 
@@ -2486,9 +2435,58 @@ def forward(self, pred_1, x_1):
             expected_grads = torch.autograd.grad(expected_t, (x,), grad_out)
             self.assertEqual(expected_grads, grads)
 
+    def test_switch_autograd_branch_returns_list_with_none(self):
+        def branch0(x):
+            return [x.sin(), None]
+
+        def branch1(x):
+            return [x.cos(), None]
+
+        def branch2(x):
+            return [x.tanh(), None]
+
+        branches = (branch0, branch1, branch2)
+        for i, fn in enumerate(branches):
+            x = torch.randn(4, requires_grad=True)
+            t, n = switch(torch.tensor(i), branches, (x,))
+            expected_t, expected_n = fn(x)
+            self.assertEqual(t, expected_t)
+            self.assertIsNone(n)
+            self.assertIsNone(expected_n)
+
+            grad_out = torch.ones_like(t)
+            grads = torch.autograd.grad(t, (x,), grad_out)
+            expected_grads = torch.autograd.grad(expected_t, (x,), grad_out)
+            self.assertEqual(expected_grads, grads)
+
+    @skipIfTorchDynamo("Skip due to graph break when run with dynamo")
+    def test_switch_autograd_pytree_input_make_fx(self):
+        def branch0(d):
+            return d["a"] + d["b"]
+
+        def branch1(d):
+            return d["a"] * d["b"]
+
+        branches = (branch0, branch1)
+
+        def f(idx, a, b):
+            operands = ({"a": a, "b": b},)
+            res = switch(idx, branches, operands)
+            grad_out = torch.ones_like(res)
+            return torch.autograd.grad(res, (a, b), grad_out)
+
+        a = torch.randn(4, requires_grad=True)
+        b = torch.randn(4, requires_grad=True)
+        gm = make_fx(f)(torch.tensor(0), a, b)
+        switch_calls = [
+            n
+            for n in gm.graph.nodes
+            if n.op == "call_function" and "switch" in str(n.target)
+        ]
+        # One forward switch, one backward switch.
+        self.assertEqual(len(switch_calls), 2)
+
     def test_switch_autograd_multiple_tensor_outputs(self):
-        # Each branch returns multiple tensor outputs. All outputs should
-        # be differentiable and contribute to the gradient when summed.
         def branch0(x):
             return x.sin(), x.cos()
 
@@ -2515,8 +2513,6 @@ def forward(self, pred_1, x_1):
 
     @unittest.skipIf(not torch.cuda.is_available(), "Test requires CUDA.")
     def test_switch_autograd_gpu(self):
-        # GPU device variant. Index is a CUDA tensor; operands are CUDA
-        # tensors; all branches and gradients should stay on device.
         def branch0(x):
             return x.sin()
 
@@ -2538,8 +2534,6 @@ def forward(self, pred_1, x_1):
             self.assertEqual(expected_grads, grads)
 
     def test_switch_autograd_cond_equivalence(self):
-        # switch(int(pred), [false_fn, true_fn], ops) gradients must match
-        # cond(pred, true_fn, false_fn, ops) gradients.
         def true_fn(x):
             return (x**2).sin()
 
