@@ -21,7 +21,10 @@ requires = [
     # default (USE_NNPACK=ON); isolated PEP 517 builds need six available.
     "six",
 ]
-build-backend = "scikit_build_core.build"
+# Thin local wrapper around scikit_build_core.build that aliases MAX_JOBS to
+# CMAKE_BUILD_PARALLEL_LEVEL (see tools/build_backend/pytorch_build_backend.py).
+build-backend = "pytorch_build_backend"
+backend-path = ["tools/build_backend"]
 
 [tool.scikit-build]
 # experimental = true is required for the metadata.version / metadata.dependencies
@@ -360,6 +363,13 @@ torchfrtrace = "torch.distributed.flight_recorder.fr_trace:main"
 
 [project.entry-points."torchrun.logs_specs"]
 default = "torch.distributed.elastic.multiprocessing:DefaultLogsSpecs"
+
+[project.entry-points."torch.distributed.backends"]
+mpi = "torch.distributed.distributed_c10d:_register_builtin_mpi_backend"
+gloo = "torch.distributed.distributed_c10d:_register_builtin_gloo_backend"
+nccl = "torch.distributed.distributed_c10d:_register_builtin_nccl_backend"
+ucc = "torch.distributed.distributed_c10d:_register_builtin_ucc_backend"
+xccl = "torch.distributed.distributed_c10d:_register_builtin_xccl_backend"
 
 [project.urls]
 Homepage = "https://pytorch.org"
