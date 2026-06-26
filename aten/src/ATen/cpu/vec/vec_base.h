@@ -199,9 +199,8 @@ struct Vectorized {
       typename = std::enable_if_t<(sizeof...(Args) == size())>>
   Vectorized(Args... vals) : values{vals...} {}
   Vectorized(const T (&arr)[kSize]) { // NOLINT(*-avoid-c-arrays)
-    std::memcpy(values.data(), arr, values.size());
+    std::memcpy(values.data(), arr, sizeof(values));
   }
-  Vectorized(const std::array<T, kSize>& arr) : values{arr} {}
   // This also implies const T& operator[](int idx) const
   inline operator const T*() const {
     return values.data();
