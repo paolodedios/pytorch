@@ -735,6 +735,14 @@ def compile_to_python(
             "cpp_wrapper": False,
         }
     )
+    # Compile under no_grad so AOTAutograd takes the inference (forward-only) path.
+    # compile_fx re-enters AOTAutograd, and with grad-requiring inputs it would otherwise
+    # build a JOINT graph and emit BOTH a forward and a backward output module, leaving
+    # "the" runnable module ambiguous. The contract feeds one dense post-AOTAutograd inner
+    # graph at a time (the AOT layer drives forward and backward as separate calls), so
+    # pinning inference is the explicit choice: it yields exactly one module whose outputs
+    # are this graph's own, and we never have to second-guess the strides or tensor
+    # subclasses of a backward AOTAutograd would otherwise synthesize.
     with torch.no_grad(), config.patch(config_patches):
         # ``options`` are already applied above as config, so pass none down to
         # ``standalone_compile`` (it forwards options as ``compile_fx`` kwargs, which a
