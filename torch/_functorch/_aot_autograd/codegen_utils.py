@@ -54,11 +54,25 @@ class PySourceBuilder:
             self._indent -= offset
 
     def writeline(self, line: str) -> None:
+        """Append one line at the current indent level (paired with indent())."""
         self.lines.append("    " * self._indent + line)
+
+    def emit(self, line: str, indent: int = 1) -> None:
+        """Append one line at an explicit absolute indent level.
+
+        Convenient for recursive generators that thread an indent depth instead
+        of nesting indent() context managers.
+        """
+        self.lines.append("    " * indent + line)
 
     def fresh_name(self, prefix: str) -> str:
         name = f"{prefix}_{self._name_counter}"
         self._name_counter += 1
+        return name
+
+    def add_global(self, name: str, value: object) -> str:
+        """Bind a live object into the exec globals under ``name``, by reference."""
+        self.globals[name] = value
         return name
 
     def bind(self, **values: object) -> None:
@@ -67,9 +81,7 @@ class PySourceBuilder:
 
     def bind_value(self, prefix: str, value: object) -> str:
         """Bind a value under a fresh unique name and return that name."""
-        name = self.fresh_name(prefix)
-        self.globals[name] = value
-        return name
+        return self.add_global(self.fresh_name(prefix), value)
 
     def getvalue(self) -> str:
         return "\n".join(self.lines)
