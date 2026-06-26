@@ -1770,7 +1770,7 @@ Vectorized<int16_t> inline shift_256_16(
   // element with the same index in output pair, while the other
   // element in output pair will be set to all 0s.
   __m256i keep_0 = _mm256_set1_epi32(0xFFFF);
-  __m256i keep_1 = _mm256_set1_epi32(-0x01000000); // 0xFF000000
+  __m256i keep_1 = _mm256_set1_epi32(-0x00010000); // 0xFFFF0000
 
   // Take each 16-bit element with idx%2==0 from input array to be
   // shifted and extend it to 32 bits so that 0s are added to the

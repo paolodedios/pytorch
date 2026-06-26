@@ -54,7 +54,7 @@ struct Vectorizedqi {
 
  public:
   Vectorizedqi() = default;
-  Vectorizedqi(__m256i v) : vals(v) {}
+  Vectorizedqi(__m256i v) : vals{v} {}
   operator __m256i() const {
     return vals;
   }
@@ -361,17 +361,10 @@ struct Vectorized<c10::qint32> : public Vectorizedqi {
 
  public:
   using Vectorizedqi::Vectorizedqi;
-  Vectorized() = default;
-
-  Vectorized(__m256i vals_) {
-    vals = vals_;
-  }
 
   // Broadcast constructor
-  Vectorized(const c10::qint32& val) {
-    value_type uw = val.val_;
-    vals = _mm256_set1_epi32(uw);
-  }
+  Vectorized(const c10::qint32& val)
+      : Vectorizedqi{_mm256_set1_epi32(val.val_)} {}
 
   void store(void* ptr, int count = size()) const {
     if (count >= size()) {
@@ -467,9 +460,9 @@ struct Vectorized<c10::qint32> : public Vectorizedqi {
 
  private:
   // Load from memory constructor
-  Vectorized(const void* ptr) {
-    vals = _mm256_loadu_si256((const __m256i*)ptr);
-  }
+  Vectorized(const void* ptr)
+      : Vectorizedqi{
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ptr))} {}
 };
 
 template <>
@@ -585,7 +578,6 @@ struct Vectorized<c10::qint8> : public Vectorizedqi {
   static Vectorized<c10::qint8> loadu(const void* ptr, int64_t count) {
     // Zero tail past `count`.
     __at_align__ std::array<value_type, size()> tmp_values{};
-    tmp_values.fill(0);
     std::memcpy(
         tmp_values.data(),
         reinterpret_cast<const value_type*>(ptr),
@@ -718,9 +710,9 @@ struct Vectorized<c10::qint8> : public Vectorizedqi {
 
  private:
   // Load from memory constructor
-  Vectorized(const void* ptr) {
-    vals = _mm256_loadu_si256((const __m256i*)ptr);
-  }
+  Vectorized(const void* ptr)
+      : Vectorizedqi{
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ptr))} {}
 };
 
 template <>
@@ -776,7 +768,6 @@ struct Vectorized<c10::quint8> : public Vectorizedqi {
   static Vectorized<c10::quint8> loadu(const void* ptr, int64_t count) {
     // Zero tail past `count`.
     __at_align__ std::array<value_type, size()> tmp_values{};
-    tmp_values.fill(0);
     std::memcpy(
         tmp_values.data(),
         reinterpret_cast<const value_type*>(ptr),
@@ -908,9 +899,9 @@ struct Vectorized<c10::quint8> : public Vectorizedqi {
 
  private:
   // Load from memory constructor
-  Vectorized(const void* ptr) {
-    vals = _mm256_loadu_si256((const __m256i*)ptr);
-  }
+  Vectorized(const void* ptr)
+      : Vectorizedqi{
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(ptr))} {}
 };
 
 template <>
@@ -955,9 +946,7 @@ struct VectorizedQuantizedConverter {
   std::array<value_type, size_> vals;
 
   VectorizedQuantizedConverter(T val) {
-    for (const auto i : c10::irange(size())) {
-      vals[i] = val.val_;
-    }
+    vals.fill(val.val_);
   }
 
   VectorizedQuantizedConverter(const void* ptr) {
@@ -1015,7 +1004,6 @@ struct Vectorized<c10::qint32> : public VectorizedQuantizedConverter<
   static Vectorized<c10::qint32> loadu(const void* ptr, int64_t count) {
     // Zero tail past `count`.
     __at_align__ std::array<value_type, size()> tmp_values{};
-    tmp_values.fill(0);
     std::memcpy(
         tmp_values.data(),
         reinterpret_cast<const value_type*>(ptr),
@@ -1148,7 +1136,6 @@ struct Vectorized<c10::qint8> : public VectorizedQuantizedConverter<
   static Vectorized<c10::qint8> loadu(const void* ptr, int64_t count) {
     // Zero tail past `count`.
     __at_align__ std::array<value_type, size()> tmp_values{};
-    tmp_values.fill(0);
     std::memcpy(
         tmp_values.data(),
         reinterpret_cast<const value_type*>(ptr),
@@ -1271,7 +1258,6 @@ struct Vectorized<c10::quint8> : public VectorizedQuantizedConverter<
   static Vectorized<c10::quint8> loadu(const void* ptr, int64_t count) {
     // Zero tail past `count`.
     __at_align__ std::array<value_type, size()> tmp_values{};
-    tmp_values.fill(0);
     std::memcpy(
         tmp_values.data(),
         reinterpret_cast<const value_type*>(ptr),
