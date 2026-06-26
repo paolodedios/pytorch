@@ -397,25 +397,19 @@ inline Tensor scalarToTensor(
   }
 }
 
-template <typename T>
-inline Tensor asTensor(const T& value, const Tensor& target) {
-  static_assert(
-      std::is_same_v<T, Tensor> || std::is_same_v<T, Scalar>,
-      "T must be either at::Tensor or at::Scalar");
-  if constexpr (std::is_same_v<T, Scalar>) {
-    at::AutoDispatchBelowADInplaceOrView guard;
-    at::Device target_device = target.device();
-    // TODO: This qint special case looks very suspicious...
-    if (isQIntType(target.scalar_type())) {
-      return scalarToTensor(
-          value, device(kCPU).dtype(kFloat), at::Device(kCPU));
-    } else if (target_device.is_cuda()) {
-      return scalarToTensor(value, target.options(), at::Device(kCPU));
-    } else {
-      return scalarToTensor(value, target.options(), target_device);
-    }
+inline Tensor asTensor(const Tensor& value, const Tensor& target) {
+  return value;
+}
+inline Tensor asTensor(const Scalar& value, const Tensor& target) {
+  at::AutoDispatchBelowADInplaceOrView guard;
+  at::Device target_device = target.device();
+  // TODO: This qint special case looks very suspicious...
+  if (isQIntType(target.scalar_type())) {
+    return scalarToTensor(value, device(kCPU).dtype(kFloat), at::Device(kCPU));
+  } else if (target_device.is_cuda()) {
+    return scalarToTensor(value, target.options(), at::Device(kCPU));
   } else {
-    return value;
+    return scalarToTensor(value, target.options(), target_device);
   }
 }
 

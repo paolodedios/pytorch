@@ -189,22 +189,17 @@ Variable valueToTensor(
   }
 }
 
-template <typename T>
-static inline Tensor asTensor(const T& value, const Tensor& self) {
-  static_assert(
-      std::is_same_v<T, Tensor> || std::is_same_v<T, Scalar>,
-      "T must be either at::Tensor or at::Scalar");
-  if constexpr (std::is_same_v<T, Scalar>) {
-    at::AutoDispatchBelowADInplaceOrView guard;
-    at::tracer::impl::NoTracerDispatchMode tracer_guard;
-    Tensor tensor = at::indexing::asTensor(value, self);
-    if (tensor.device() == at::kCPU && !value.isSymbolic()) {
-      return at::lift_fresh(tensor);
-    }
-    return tensor;
-  } else {
-    return value;
+static inline Tensor asTensor(const Tensor& value, const Tensor& target) {
+  return value;
+}
+static inline Tensor asTensor(const Scalar& value, const Tensor& self) {
+  at::AutoDispatchBelowADInplaceOrView guard;
+  at::tracer::impl::NoTracerDispatchMode tracer_guard;
+  Tensor tensor = at::indexing::asTensor(value, self);
+  if (tensor.device() == at::kCPU && !value.isSymbolic()) {
+    return at::lift_fresh(tensor);
   }
+  return tensor;
 }
 
 static void recordSliceTrace(PyObject* obj) {
