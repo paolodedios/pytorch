@@ -46,6 +46,13 @@ class DecoratorTests(PytreeRegisteringTestCase):
         self.assertEqual(cnts.frame_count, 2)
         self.assertEqual(cnts.op_count, 4)
 
+    def test_disallow_in_graph_is_idempotent(self):
+        try:
+            torch._dynamo.disallow_in_graph(torch.sub)
+            torch._dynamo.disallow_in_graph(torch.sub)
+        finally:
+            torch._dynamo.allow_in_graph(torch.sub)
+
     def test_disable_for_custom_op(self):
         import torch.library
 
@@ -255,6 +262,25 @@ class DecoratorTests(PytreeRegisteringTestCase):
 
     def test_nonstrict_trace_tensor_args(self):
         @torch._dynamo.nonstrict_trace
+        def trace_me(x, y, z):
+            torch._dynamo.graph_break()
+            return x * y + z
+
+        def fn(x, y):
+            t0 = x + 1
+            t1 = trace_me(x, y, t0)
+            t2 = t1 + y
+            return t0 * t2
+
+        x, y = torch.randn(10), torch.randn(10)
+        opt_fn = torch.compile(fn, fullgraph=True, backend="aot_eager")
+
+        ref = fn(x, y)
+        res = opt_fn(x, y)
+        self.assertEqual(ref, res)
+
+    def test_nonstrict_trace_from_torch_compiler(self):
+        @torch.compiler.nonstrict_trace
         def trace_me(x, y, z):
             torch._dynamo.graph_break()
             return x * y + z

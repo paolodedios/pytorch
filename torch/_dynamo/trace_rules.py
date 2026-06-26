@@ -4192,6 +4192,9 @@ E.g, the lookup result of `torch.sin` is `TorchInGraphFunctionVariable`.
 
 
 def lookup(obj: Any) -> type[VariableTracker] | None:
+    rule = _lookup_custom_callable_rule(obj)
+    if rule is not None:
+        return rule
     return lookup_inner(obj)
 
 
@@ -4244,10 +4247,6 @@ def _lookup_inner(
     is_direct_call: bool = True,
     reasons: set[str] | None = None,
 ) -> type[VariableTracker] | None:
-    rule = _lookup_custom_callable_rule(obj, reasons)
-    if rule is not None:
-        return rule
-
     # Step 1: lookup obj's tracing rule in `torch_name_rule_map`.
     # The rules defined in `torch_name_rule_map` mainly includes two parts:
     # - Manually defined rules for any functions.
