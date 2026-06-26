@@ -612,9 +612,7 @@ class UserDefinedClassVariable(UserDefinedVariable):
         if name == "__bases__":
             bases = self.value.__bases__
             items = [
-                VariableTracker.build(
-                    tx, b, source and GetItemSource(source, i)
-                )
+                VariableTracker.build(tx, b, source and GetItemSource(source, i))
                 for i, b in enumerate(bases)
             ]
             return variables.TupleVariable(items, source=source)
