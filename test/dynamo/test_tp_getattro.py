@@ -877,6 +877,17 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager", fullgraph=True)()
         self.assertEqual(result, "hello")
 
+    def test_dict_method_as_standalone_attr(self):
+        # Regression test: accessing d.keys as a standalone value (not
+        # immediately called) must not create an AttrSource chain through
+        # the DictGuardManager, which doesn't support getattr_manager.
+        def fn(d):
+            m = d.keys
+            return m.__name__
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)({"a": 1})
+        self.assertEqual(result, "keys")
+
     # --- UserFunctionVariable attribute mutation ---
 
     def test_function_setattr_then_getattr(self):
