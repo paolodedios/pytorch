@@ -190,6 +190,44 @@ class TpGetattroTests(torch._dynamo.test_case.TestCase):
         result = torch.compile(fn, backend="eager", fullgraph=True)()
         self.assertIs(result, A)
 
+    def test_builtin_type_bases(self):
+        """__bases__ on a BuiltinVariable type returns a proper TupleVariable."""
+
+        def fn():
+            return ArithmeticError.__bases__
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        self.assertEqual(result, ArithmeticError.__bases__)
+
+    def test_builtin_type_bases_len(self):
+        """len() on __bases__ of a builtin type works (regression for test_c_classes)."""
+
+        def fn():
+            return len(ArithmeticError.__bases__)
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        self.assertEqual(result, len(ArithmeticError.__bases__))
+
+    def test_builtin_type_bases_reversed(self):
+        """reversed() over __bases__ works (the original test_c_classes failure path)."""
+
+        def fn():
+            return list(reversed(ArithmeticError.__bases__))
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        self.assertEqual(result, list(reversed(ArithmeticError.__bases__)))
+
+    def test_builtin_type_bases_slicing(self):
+        """Slicing __bases__ works (used by functools._c3_mro)."""
+
+        def fn():
+            bases = OSError.__bases__
+            return bases[:1], bases[1:]
+
+        result = torch.compile(fn, backend="eager", fullgraph=True)()
+        expected = OSError.__bases__[:1], OSError.__bases__[1:]
+        self.assertEqual(result, expected)
+
     # --- Module attributes ---
 
     def test_nn_module_forward(self):
