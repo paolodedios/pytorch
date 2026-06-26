@@ -277,6 +277,32 @@ def _cute_arg(value: Any, env: dict[torch.fx.Node, Any]) -> Any:
     raise NotImplementedError(f"unsupported FlexGEMM epilogue constant: {value!r}")
 
 
+def _generate_like(
+    kernel: Any, expr: str, ref: Any, shape_ref: Any | None = None
+) -> Any:
+    """Emit CuTeDSL while preserving dtype and shape metadata from references."""
+    if shape_ref is None:
+        shape_ref = ref
+    return kernel.cse.generate(
+        kernel.body,
+        expr,
+        dtype=getattr(ref, "dtype", None),
+        shape=getattr(shape_ref, "shape", None),
+    )
+
+
+def _keepdim_and_broadcast(
+    kernel: Any, reduced: Any, info: GroupedTensorSSAInfo, source: Any
+) -> tuple[Any, Any]:
+    """Materialize keepdim and store-shaped forms of a grouped reduction."""
+    keepdim_source = _generate_like(
+        kernel, f"{reduced}.reshape({info.layout.keepdim_shape})", reduced
+    )
+    return keepdim_source, _generate_like(
+        kernel, f"{keepdim_source}.broadcast_to({source}.shape)", keepdim_source, source
+    )
+
+
 def _cute_call(target: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     op_name = _cute_op_name(target)
     if op_name in {
@@ -404,11 +430,8 @@ def lower_view_or_reshape(
     grouped_tensors[node] = GroupedTensorSSAInfo(grouped_layout)
     if preserve_value_layout:
         return source
-    return kernel.cse.generate(
-        kernel.body,
-        f"{source}.reshape({grouped_layout.tensorssa_shape})",
-        dtype=getattr(source, "dtype", None),
-        shape=getattr(source, "shape", None),
+    return _generate_like(
+        kernel, f"{source}.reshape({grouped_layout.tensorssa_shape})", source
     )
 
 
@@ -621,49 +644,20 @@ def lower_prepare_softmax_online(
     if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
         raise NotImplementedError(LOCAL_REDUCE_PREPARE_SOFTMAX_GROUPED_DIM_ERROR)
     source = _cute_arg(input_node, env)
-    max_reduced = kernel.cse.generate(
-        kernel.body,
+    max_reduced = _generate_like(
+        kernel,
         f'{source}.reduce(cute.ReductionOp.MAX, init_val=float("-inf"), reduction_profile={info.layout.reduction_profile})',
-        dtype=getattr(source, "dtype", None),
-        shape=getattr(source, "shape", None),
+        source,
     )
-    max_keepdim = kernel.cse.generate(
-        kernel.body,
-        f"{max_reduced}.reshape({info.layout.keepdim_shape})",
-        dtype=getattr(max_reduced, "dtype", None),
-        shape=getattr(max_reduced, "shape", None),
-    )
-    max_store = kernel.cse.generate(
-        kernel.body,
-        f"{max_keepdim}.broadcast_to({source}.shape)",
-        dtype=getattr(max_keepdim, "dtype", None),
-        shape=getattr(source, "shape", None),
-    )
-    centered = kernel.cse.generate(
-        kernel.body,
-        f"({source} - {max_store})",
-        dtype=getattr(source, "dtype", None),
-        shape=getattr(source, "shape", None),
-    )
+    _, max_store = _keepdim_and_broadcast(kernel, max_reduced, info, source)
+    centered = _generate_like(kernel, f"({source} - {max_store})", source)
     exp_centered = CuteDSLOpOverrides.exp(centered)
-    sum_reduced = kernel.cse.generate(
-        kernel.body,
+    sum_reduced = _generate_like(
+        kernel,
         f"{exp_centered}.reduce(cute.ReductionOp.ADD, init_val=0.0, reduction_profile={info.layout.reduction_profile})",
-        dtype=getattr(exp_centered, "dtype", None),
-        shape=getattr(exp_centered, "shape", None),
+        exp_centered,
     )
-    sum_keepdim = kernel.cse.generate(
-        kernel.body,
-        f"{sum_reduced}.reshape({info.layout.keepdim_shape})",
-        dtype=getattr(sum_reduced, "dtype", None),
-        shape=getattr(sum_reduced, "shape", None),
-    )
-    sum_store = kernel.cse.generate(
-        kernel.body,
-        f"{sum_keepdim}.broadcast_to({source}.shape)",
-        dtype=getattr(sum_keepdim, "dtype", None),
-        shape=getattr(source, "shape", None),
-    )
+    _, sum_store = _keepdim_and_broadcast(kernel, sum_reduced, info, source)
     local_reduce_store_sources[node] = (max_store, sum_store)
     return max_store, sum_store
 
@@ -697,68 +691,28 @@ def lower_tensorssa_moment_reduce(
     if denominator <= 0:
         raise NotImplementedError(LOCAL_REDUCE_MOMENT_CORRECTION_RANGE_ERROR)
     source = _cute_arg(input_node, env)
-    sum_reduced = kernel.cse.generate(
-        kernel.body,
+    sum_reduced = _generate_like(
+        kernel,
         f"{source}.reduce(cute.ReductionOp.ADD, init_val=0.0, reduction_profile={info.layout.reduction_profile})",
-        dtype=getattr(source, "dtype", None),
-        shape=getattr(source, "shape", None),
+        source,
     )
-    mean_reduced = kernel.cse.generate(
-        kernel.body,
-        f"{sum_reduced} / {float(info.group_size)!r}",
-        dtype=getattr(sum_reduced, "dtype", None),
-        shape=getattr(sum_reduced, "shape", None),
+    mean_reduced = _generate_like(
+        kernel, f"{sum_reduced} / {float(info.group_size)!r}", sum_reduced
     )
-    mean_keepdim = kernel.cse.generate(
-        kernel.body,
-        f"{mean_reduced}.reshape({info.layout.keepdim_shape})",
-        dtype=getattr(mean_reduced, "dtype", None),
-        shape=getattr(mean_reduced, "shape", None),
-    )
-    mean_store = kernel.cse.generate(
-        kernel.body,
-        f"{mean_keepdim}.broadcast_to({source}.shape)",
-        dtype=getattr(mean_keepdim, "dtype", None),
-        shape=getattr(source, "shape", None),
-    )
-    centered = kernel.cse.generate(
-        kernel.body,
-        f"({source} - {mean_store})",
-        dtype=getattr(source, "dtype", None),
-        shape=getattr(source, "shape", None),
-    )
-    squared = kernel.cse.generate(
-        kernel.body,
-        f"({centered} * {centered})",
-        dtype=getattr(centered, "dtype", None),
-        shape=getattr(centered, "shape", None),
-    )
-    var_reduced = kernel.cse.generate(
-        kernel.body,
+    _, mean_store = _keepdim_and_broadcast(kernel, mean_reduced, info, source)
+    centered = _generate_like(kernel, f"({source} - {mean_store})", source)
+    squared = _generate_like(kernel, f"({centered} * {centered})", centered)
+    var_reduced = _generate_like(
+        kernel,
         f"{squared}.reduce(cute.ReductionOp.ADD, init_val=0.0, reduction_profile={info.layout.reduction_profile}) / {float(denominator)!r}",
-        dtype=getattr(squared, "dtype", None),
-        shape=getattr(squared, "shape", None),
+        squared,
     )
     if reduction_type == "std":
-        result = kernel.cse.generate(
-            kernel.body,
-            f"cute.math.sqrt({var_reduced})",
-            dtype=getattr(var_reduced, "dtype", None),
-            shape=getattr(var_reduced, "shape", None),
-        )
+        result = _generate_like(kernel, f"cute.math.sqrt({var_reduced})", var_reduced)
     else:
         result = var_reduced
-    keepdim_source = kernel.cse.generate(
-        kernel.body,
-        f"{result}.reshape({info.layout.keepdim_shape})",
-        dtype=getattr(result, "dtype", None),
-        shape=getattr(result, "shape", None),
-    )
-    local_reduce_store_sources[node] = kernel.cse.generate(
-        kernel.body,
-        f"{keepdim_source}.broadcast_to({source}.shape)",
-        dtype=getattr(keepdim_source, "dtype", None),
-        shape=getattr(source, "shape", None),
+    keepdim_source, local_reduce_store_sources[node] = _keepdim_and_broadcast(
+        kernel, result, info, source
     )
     if keepdim:
         return keepdim_source
@@ -806,30 +760,17 @@ def lower_tensorssa_reduce(
         if info.axis == 0:
             local_reduce_store_sources[node] = source
             return source
-    reduced = kernel.cse.generate(
-        kernel.body,
+    reduced = _generate_like(
+        kernel,
         f"{source}.reduce({desc.cute_op}, init_val={desc.init_val}, reduction_profile={info.layout.reduction_profile})",
-        dtype=getattr(source, "dtype", None),
-        shape=getattr(source, "shape", None),
+        source,
     )
     if desc.scale_by_group_size and not info.layout.needs_physical_combine:
-        reduced = kernel.cse.generate(
-            kernel.body,
-            f"{reduced} / {float(info.group_size)!r}",
-            dtype=getattr(reduced, "dtype", None),
-            shape=getattr(reduced, "shape", None),
+        reduced = _generate_like(
+            kernel, f"{reduced} / {float(info.group_size)!r}", reduced
         )
-    keepdim_source = kernel.cse.generate(
-        kernel.body,
-        f"{reduced}.reshape({info.layout.keepdim_shape})",
-        dtype=getattr(reduced, "dtype", None),
-        shape=getattr(reduced, "shape", None),
-    )
-    local_reduce_store_sources[node] = kernel.cse.generate(
-        kernel.body,
-        f"{keepdim_source}.broadcast_to({source}.shape)",
-        dtype=getattr(keepdim_source, "dtype", None),
-        shape=getattr(source, "shape", None),
+    keepdim_source, local_reduce_store_sources[node] = _keepdim_and_broadcast(
+        kernel, reduced, info, source
     )
     if keepdim:
         return keepdim_source

@@ -160,12 +160,6 @@ FLEX_GEMM_OUTPUT_PLAN_NODE_ERROR = "FlexGEMM output plans require tensor output 
 FLEX_GEMM_OUTPUT_TENSOR_ERROR = "FlexGEMM expects tensor outputs"
 LOCAL_REDUCE_CONTRACT_NODE_ERROR = "local-reduce contracts require tensor nodes"
 LOCAL_REDUCE_OUTPUT_PLAN_NODE_ERROR = "local-reduce output plans require tensor nodes"
-LOCAL_REDUCE_MATERIALIZATION_CONSUMER_ERROR = (
-    "local-reduce materialization supports one consumer"
-)
-LOCAL_REDUCE_MATERIALIZATION_FEED_MAIN_INPUT_ERROR = (
-    "feed_main_input requires feed_main"
-)
 LOCAL_REDUCE_RUNTIME_OUT_ERROR = "compressed local reductions require local_reduce_out"
 LOCAL_REDUCE_RUNTIME_FEED_MAIN_OUT_ERROR = (
     "feed-main local reductions cannot store local_reduce_out"
@@ -381,11 +375,6 @@ def validate_local_reduce_feed_main_same_warp_group(group: int) -> None:
     """Gate current feed-main value availability to same-warp grouped-M cases."""
     if group > MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP:
         raise NotImplementedError(LOCAL_REDUCE_FEED_MAIN_SAME_WARP_ERROR)
-
-
-def local_reduce_feed_main_supported(axis: int, group: int) -> bool:
-    """Return whether current single-pass physical feed-main can produce a value."""
-    return axis == 0 and group <= MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP
 
 
 def validate_local_reduce_feed_main_capability(axis: int, group: int) -> None:

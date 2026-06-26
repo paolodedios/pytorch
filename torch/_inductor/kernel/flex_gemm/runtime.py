@@ -330,15 +330,7 @@ def local_reduce_gemm_act_kwargs(
 ) -> dict[str, Any]:
     """Map a tagged runtime plan onto QuACK's public local-reduce kwargs."""
     if local_reduce is None:
-        return {
-            LOCAL_REDUCE_RETURNS_KWARG: False,
-            LOCAL_REDUCE_FEEDS_MAIN_KWARG: False,
-            LOCAL_REDUCE_OUT_KWARG: None,
-            LOCAL_REDUCE_GROUP_KWARG: 0,
-            LOCAL_REDUCE_AXIS_KWARG: 1,
-            LOCAL_REDUCE_COMBINE_KEY_KWARG: None,
-            LOCAL_REDUCE_FINALIZE_KEY_KWARG: None,
-        }
+        return {}
     return {
         LOCAL_REDUCE_RETURNS_KWARG: local_reduce_out is not None,
         LOCAL_REDUCE_FEEDS_MAIN_KWARG: local_reduce.feeds_main,

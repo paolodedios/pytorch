@@ -341,6 +341,25 @@ class FlexGemmTestCase(TestCase):
             actual, expected, high_precision_expected, reduction_size
         )
 
+    def assertLocalReduceAuxMatches(self, actual, aux, a, b, epilogue_fn):
+        """Validate compressed local-reduce aux output against high precision GEMM."""
+        expected, _ = epilogue_fn(a @ b)
+        high_precision_expected, high_precision_aux = epilogue_fn(
+            a.double() @ b.double()
+        )
+        self.assertMatchesLowPrecisionEager(
+            actual,
+            expected,
+            high_precision_expected,
+            a.shape[1],
+        )
+        torch.testing.assert_close(
+            aux,
+            high_precision_aux.float(),
+            atol=1e-3,
+            rtol=1e-3,
+        )
+
     def assertPhysicalFeedMainCode(self, code, group=None):
         """Check generated code uses the current physical feed-main ABI."""
         file_check = FileCheck()
@@ -877,18 +896,6 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             node = graph.call_method(target, (lhs, rhs), {})
             candidates = local_reduce_feed_main_binary_candidates(node)
             self.assertEqual(candidates, ((lhs, rhs), (rhs, lhs)))
-
-    def test_local_reduce_materialization_rejects_invalid_state(self):
-        from torch._inductor.kernel.flex_gemm.epilogue import (
-            FlexGemmLocalReduceMaterialization,
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "supports one consumer"):
-            FlexGemmLocalReduceMaterialization(
-                feed_main=object(), compressed_aux=object()
-            )
-        with self.assertRaisesRegex(RuntimeError, "requires feed_main"):
-            FlexGemmLocalReduceMaterialization(feed_main_input=object())
 
     def test_local_reduce_aux_result_requires_grouped_source(self):
         from torch._inductor.kernel.flex_gemm.epilogue import local_reduce_aux_result
@@ -1999,20 +2006,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                 torch.compile(fn, backend="inductor", fullgraph=True), a, b
             )
 
-            expected, _ = epilogue_fn(a @ b)
-            high_precision_acc = a.double() @ b.double()
-            self.assertMatchesLowPrecisionEager(
-                actual,
-                expected,
-                high_precision_acc.relu(),
-                a.shape[1],
-            )
-            torch.testing.assert_close(
-                aux,
-                epilogue_fn(high_precision_acc)[1].float(),
-                atol=1e-3,
-                rtol=1e-3,
-            )
+            self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
             FileCheck().check(cute_op).check("local_reduce_out=").check(
                 f"local_reduce_group={group}"
             ).check_not("local_reduce_op").run(code)
@@ -2166,17 +2160,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, _ = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_acc.relu(),
-            a.shape[1],
-        )
-        torch.testing.assert_close(
-            aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
-        )
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         FileCheck().check(code_check).check("local_reduce_out=").check(
             f"local_reduce_group={group}, local_reduce_axis=0"
         ).check_not("local_reduce_op").run(code)
@@ -2207,17 +2191,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, _ = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_acc.relu(),
-            a.shape[1],
-        )
-        torch.testing.assert_close(
-            aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
-        )
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         FileCheck().check("cute.arch.fmax").check("cute.math.sqrt").check(
             "local_reduce_out="
         ).check("local_reduce_finalize_fn").check_not("local_reduce_op").run(code)
@@ -2327,17 +2301,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, _ = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_acc.relu(),
-            a.shape[1],
-        )
-        torch.testing.assert_close(
-            aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
-        )
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         FileCheck().check(code_check).check("local_reduce_out=").check(
             f"local_reduce_group={group}, local_reduce_axis=0"
         ).check_not("local_reduce_op").run(code)
@@ -2366,17 +2330,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         b = torch.randn(64, n, device="cuda", dtype=torch.bfloat16)
         actual, aux = torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
-        expected, _ = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_acc.relu(),
-            a.shape[1],
-        )
-        torch.testing.assert_close(
-            aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
-        )
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2404,17 +2358,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, _ = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_acc.relu(),
-            a.shape[1],
-        )
-        torch.testing.assert_close(
-            aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
-        )
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2467,17 +2411,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, _ = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_acc.relu(),
-            a.shape[1],
-        )
-        torch.testing.assert_close(
-            aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
-        )
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         FileCheck().check("cute.ReductionOp.ADD").check("local_reduce_out=").check(
             f"local_reduce_group={group}"
         ).check_not("local_reduce_op").run(code)
@@ -2517,17 +2451,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, _ = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_acc.relu(),
-            a.shape[1],
-        )
-        torch.testing.assert_close(
-            aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
-        )
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         self.assertIn(code_check, code)
         self.assertIn("local_reduce_combine_fn", code)
         self.assertIn("local_reduce_out=", code)
@@ -2658,17 +2582,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, _ = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_acc.relu(),
-            a.shape[1],
-        )
-        torch.testing.assert_close(
-            aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
-        )
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         file_check = FileCheck()
         if checks_max:
             file_check = file_check.check("cute.ReductionOp.MAX")

@@ -26,13 +26,10 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     LOCAL_REDUCE_FEED_MAIN,
     LOCAL_REDUCE_FEED_MAIN_ARG_NAME,
     LOCAL_REDUCE_FEED_MAIN_MIXED_CONTRACT_ERROR,
-    local_reduce_feed_main_supported,
     local_reduce_feeds_main,
     local_reduce_finalize_fn_name,
     LOCAL_REDUCE_FINALIZE_SCALAR_ONLY_ERROR,
     LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR,
-    LOCAL_REDUCE_MATERIALIZATION_CONSUMER_ERROR,
-    LOCAL_REDUCE_MATERIALIZATION_FEED_MAIN_INPUT_ERROR,
     LOCAL_REDUCE_MIXED_CONTRACT_ERROR,
     LOCAL_REDUCE_ONE_PHYSICAL_VALUE_ERROR,
     LOCAL_REDUCE_OUTPUT_PLAN_NODE_ERROR,
@@ -314,39 +311,6 @@ class FlexGemmLocalReduceAnalysis:
         return True
 
 
-@dataclasses.dataclass(frozen=True)
-class FlexGemmLocalReduceMaterialization:
-    """Expose the traced FX nodes needed to lower a tagged local-reduce plan."""
-
-    feed_main: torch.fx.Node | None = None
-    compressed_aux: torch.fx.Node | None = None
-    feed_main_input: torch.fx.Node | None = None
-
-    def __post_init__(self) -> None:
-        """Keep materialization as a single-consumer view of the tagged plan."""
-        if self.feed_main is not None and self.compressed_aux is not None:
-            raise RuntimeError(LOCAL_REDUCE_MATERIALIZATION_CONSUMER_ERROR)
-        if self.feed_main is None and self.feed_main_input is not None:
-            raise RuntimeError(LOCAL_REDUCE_MATERIALIZATION_FEED_MAIN_INPUT_ERROR)
-
-
-def local_reduce_materialization(
-    plan: FlexGemmOutputLocalReducePlan | None,
-) -> FlexGemmLocalReduceMaterialization:
-    """Resolve consumer-specific FX nodes from a tagged local-reduce plan."""
-    if plan is None:
-        return FlexGemmLocalReduceMaterialization()
-    if plan.feeds_main:
-        reduction = reduction_from_node(plan.node)
-        return FlexGemmLocalReduceMaterialization(
-            feed_main=plan.node,
-            feed_main_input=reduction[0] if reduction is not None else None,
-        )
-    if plan.stores_compressed_aux:
-        return FlexGemmLocalReduceMaterialization(compressed_aux=plan.node)
-    raise AssertionError(f"unhandled local-reduce consumer kind: {plan.kind}")
-
-
 def fx_node_depends_on(
     value: Any,
     target: torch.fx.Node,
@@ -535,14 +499,6 @@ def validate_feed_main_source_contract(
     return contract
 
 
-def physical_feed_main_layout_supported(layout) -> bool:
-    """Gate current feed-main value availability to same-warp grouped-M cases."""
-    if layout.axis != 0:
-        return False
-    validate_local_reduce_feed_main_capability(layout.axis, layout.group_size)
-    return local_reduce_feed_main_supported(layout.axis, layout.group_size)
-
-
 def is_local_reduce_feed_main_binary_source(source: torch.fx.Node) -> bool:
     """Identify binary expressions whose operands may bind one feed-main value."""
     match source.op:
@@ -589,8 +545,9 @@ def local_reduce_feed_main_candidate_contract(
     if input_shape is None:
         return None
     layout = grouped_tensor_layout(input_shape)
-    if layout is None or not physical_feed_main_layout_supported(layout):
+    if layout is None or layout.axis != 0:
         return None
+    validate_local_reduce_feed_main_capability(layout.axis, layout.group_size)
     source_node = grouped_source.args[0]
     if not isinstance(source_node, torch.fx.Node):
         return None
@@ -960,10 +917,22 @@ def materialize_flex_gemm_epilogue(
         torch.fx.Node, FlexGemmPhysicalReduction
     ] = {}
     local_reduce = outputs.local_reduce
-    materialized_local_reduce = local_reduce_materialization(local_reduce)
-    local_reduce_feed_main = materialized_local_reduce.feed_main
-    local_reduce_aux = materialized_local_reduce.compressed_aux
-    local_reduce_feed_main_input = materialized_local_reduce.feed_main_input
+    local_reduce_feed_main = None
+    local_reduce_aux = None
+    local_reduce_feed_main_input = None
+    if local_reduce is not None:
+        if local_reduce.feeds_main:
+            local_reduce_feed_main = local_reduce.node
+            reduction = reduction_from_node(local_reduce.node)
+            local_reduce_feed_main_input = (
+                reduction[0] if reduction is not None else None
+            )
+        elif local_reduce.stores_compressed_aux:
+            local_reduce_aux = local_reduce.node
+        else:
+            raise AssertionError(
+                f"unhandled local-reduce consumer kind: {local_reduce.kind}"
+            )
     with V.set_kernel_handler(kernel), V.set_ops_handler(FlexGemmCuteDSLOpOverrides()):
         for index, node in enumerate(epilogue_arg_placeholders):
             epilogue_arg_meta = node.meta["val"]
