@@ -320,6 +320,38 @@ class FlexGemmTestCase(TestCase):
             a.shape[-1],
         )
 
+    def assertMatchesEpilogue(
+        self, actual, expected, high_precision_expected, reduction_size
+    ):
+        """Compare one or multiple epilogue outputs against eager references."""
+        if isinstance(expected, tuple):
+            self.assertEqual(len(actual), len(expected))
+            self.assertEqual(len(expected), len(high_precision_expected))
+            for actual_item, expected_item, high_precision_item in zip(
+                actual, expected, high_precision_expected
+            ):
+                self.assertMatchesLowPrecisionEager(
+                    actual_item,
+                    expected_item,
+                    high_precision_item,
+                    reduction_size,
+                )
+            return
+        self.assertMatchesLowPrecisionEager(
+            actual, expected, high_precision_expected, reduction_size
+        )
+
+    def assertPhysicalFeedMainCode(self, code, group=None):
+        """Check generated code uses the current physical feed-main ABI."""
+        file_check = FileCheck()
+        if group is not None:
+            file_check = file_check.check(f"local_reduce_group={group}")
+        file_check.check("local_reduce_axis=0").check(
+            "local_reduce_feeds_main=True"
+        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
+            "local_reduce_op"
+        ).run(code)
+
 
 @skipIfNoCuteDSL
 @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2720,11 +2752,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             epilogue_fn(high_precision_acc),
             a.shape[1],
         )
-        FileCheck().check(f"local_reduce_group={group}").check(
-            "local_reduce_axis=0"
-        ).check("local_reduce_feeds_main=True").check(
-            "local_reduce_combine_fn"
-        ).check_not("local_reduce_op").run(code)
+        self.assertPhysicalFeedMainCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2761,11 +2789,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             epilogue_fn(high_precision_acc),
             a.shape[1],
         )
-        FileCheck().check("local_reduce_group=8").check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        self.assertPhysicalFeedMainCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2798,33 +2822,13 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected = epilogue_fn(a @ b)
-        high_precision_expected = epilogue_fn(a.double() @ b.double())
-        if consumer == "main":
-            self.assertMatchesLowPrecisionEager(
-                actual,
-                expected,
-                high_precision_expected,
-                a.shape[1],
-            )
-        else:
-            self.assertMatchesLowPrecisionEager(
-                actual[0],
-                expected[0],
-                high_precision_expected[0],
-                a.shape[1],
-            )
-            self.assertMatchesLowPrecisionEager(
-                actual[1],
-                expected[1],
-                high_precision_expected[1],
-                a.shape[1],
-            )
-        FileCheck().check("local_reduce_group=8").check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        self.assertMatchesEpilogue(
+            actual,
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
+            a.shape[1],
+        )
+        self.assertPhysicalFeedMainCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2857,33 +2861,13 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected = epilogue_fn(a @ b)
-        high_precision_expected = epilogue_fn(a.double() @ b.double())
-        if consumer == "main":
-            self.assertMatchesLowPrecisionEager(
-                actual,
-                expected,
-                high_precision_expected,
-                a.shape[1],
-            )
-        else:
-            self.assertMatchesLowPrecisionEager(
-                actual[0],
-                expected[0],
-                high_precision_expected[0],
-                a.shape[1],
-            )
-            self.assertMatchesLowPrecisionEager(
-                actual[1],
-                expected[1],
-                high_precision_expected[1],
-                a.shape[1],
-            )
-        FileCheck().check("local_reduce_group=8").check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        self.assertMatchesEpilogue(
+            actual,
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
+            a.shape[1],
+        )
+        self.assertPhysicalFeedMainCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2916,33 +2900,13 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected = epilogue_fn(a @ b)
-        high_precision_expected = epilogue_fn(a.double() @ b.double())
-        if consumer == "main":
-            self.assertMatchesLowPrecisionEager(
-                actual,
-                expected,
-                high_precision_expected,
-                a.shape[1],
-            )
-        else:
-            self.assertMatchesLowPrecisionEager(
-                actual[0],
-                expected[0],
-                high_precision_expected[0],
-                a.shape[1],
-            )
-            self.assertMatchesLowPrecisionEager(
-                actual[1],
-                expected[1],
-                high_precision_expected[1],
-                a.shape[1],
-            )
-        FileCheck().check("local_reduce_group=8").check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        self.assertMatchesEpilogue(
+            actual,
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
+            a.shape[1],
+        )
+        self.assertPhysicalFeedMainCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -3003,33 +2967,13 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected = epilogue_fn(a @ b)
-        high_precision_expected = epilogue_fn(a.double() @ b.double())
-        if consumer == "main":
-            self.assertMatchesLowPrecisionEager(
-                actual,
-                expected,
-                high_precision_expected,
-                a.shape[1],
-            )
-        else:
-            self.assertMatchesLowPrecisionEager(
-                actual[0],
-                expected[0],
-                high_precision_expected[0],
-                a.shape[1],
-            )
-            self.assertMatchesLowPrecisionEager(
-                actual[1],
-                expected[1],
-                high_precision_expected[1],
-                a.shape[1],
-            )
-        FileCheck().check("local_reduce_group=8").check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        self.assertMatchesEpilogue(
+            actual,
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
+            a.shape[1],
+        )
+        self.assertPhysicalFeedMainCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -3061,41 +3005,24 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_mm_local_m_reduce_feed_main_rejects_cross_warp_group(self):
-        m = 128
+    @parametrize("case", ("cross_warp", "boundary"))
+    def test_mm_local_m_reduce_feed_main_rejects_unsupported_group(self, case):
         n = 64
-        group = 32
+        if case == "cross_warp":
+            m = 128
 
-        def epilogue_fn(acc):
-            x = acc.float().view(-1, group, n)
-            scale = x.sum(1, keepdim=True)
-            return (x * scale.reciprocal()).view(m, n)
+            def epilogue_fn(acc):
+                x = acc.float().view(-1, 32, n)
+                scale = x.sum(1, keepdim=True)
+                return (x * scale.reciprocal()).view(128, n)
 
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue_fn,
-                kernel_options={"backend": "QUACK"},
-            )
+        else:
+            m = 136
 
-        a = torch.rand(m, 64, device="cuda", dtype=torch.bfloat16)
-        b = torch.rand(64, n, device="cuda", dtype=torch.bfloat16)
-        with self.assertRaisesRegex(Exception, "same-warp axis-0 groups <= 16"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    @skipIfNoCuteDSL
-    @unittest.skipIf(not TEST_CUDA, "CUDA required")
-    @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_mm_local_m_reduce_feed_main_rejects_boundary_group(self):
-        m = 136
-        n = 64
-        group = 17
-
-        def epilogue_fn(acc):
-            x = acc.float().view(-1, group, n)
-            scale = x.sum(1, keepdim=True)
-            return (x * scale.reciprocal()).view(m, n)
+            def epilogue_fn(acc):
+                x = acc.float().view(-1, 17, n)
+                scale = x.sum(1, keepdim=True)
+                return (x * scale.reciprocal()).view(136, n)
 
         def fn(a, b):
             return flex_gemm(
@@ -3137,19 +3064,10 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, expected_aux = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        high_precision_expected, high_precision_aux = epilogue_fn(high_precision_acc)
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_expected,
-            a.shape[1],
-        )
-        self.assertMatchesLowPrecisionEager(
-            aux,
-            expected_aux,
-            high_precision_aux,
+        self.assertMatchesEpilogue(
+            (actual, aux),
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
             a.shape[1],
         )
         FileCheck().check("cute.ReductionOp.ADD").check(" / 16.0").check_not(
@@ -3183,26 +3101,13 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, expected_aux = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        high_precision_expected, high_precision_aux = epilogue_fn(high_precision_acc)
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_expected,
+        self.assertMatchesEpilogue(
+            (actual, aux),
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
             a.shape[1],
         )
-        self.assertMatchesLowPrecisionEager(
-            aux,
-            expected_aux,
-            high_precision_aux,
-            a.shape[1],
-        )
-        FileCheck().check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        self.assertPhysicalFeedMainCode(code)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -3231,26 +3136,13 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, expected_aux = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        high_precision_expected, high_precision_aux = epilogue_fn(high_precision_acc)
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_expected,
+        self.assertMatchesEpilogue(
+            (actual, aux),
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
             a.shape[1],
         )
-        self.assertMatchesLowPrecisionEager(
-            aux,
-            expected_aux,
-            high_precision_aux,
-            a.shape[1],
-        )
-        FileCheck().check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        self.assertPhysicalFeedMainCode(code)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -3281,26 +3173,13 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             torch.compile(fn, backend="inductor", fullgraph=True), a, b
         )
 
-        expected, expected_aux = epilogue_fn(a @ b)
-        high_precision_acc = a.double() @ b.double()
-        high_precision_expected, high_precision_aux = epilogue_fn(high_precision_acc)
-        self.assertMatchesLowPrecisionEager(
-            actual,
-            expected,
-            high_precision_expected,
+        self.assertMatchesEpilogue(
+            (actual, aux),
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
             a.shape[1],
         )
-        self.assertMatchesLowPrecisionEager(
-            aux,
-            expected_aux,
-            high_precision_aux,
-            a.shape[1],
-        )
-        FileCheck().check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        self.assertPhysicalFeedMainCode(code)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -3376,9 +3255,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             high_precision_aux,
             a.shape[1],
         )
-        FileCheck().check("local_reduce_axis=0").check(
-            "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").run(code)
+        self.assertPhysicalFeedMainCode(code)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -3498,72 +3375,29 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    @parametrize("consumer", ("main", "aux"))
-    def test_mm_local_m_reduce_feed_main_rejects_source_expression(self, consumer):
+    @parametrize(
+        "case",
+        ("rms_main", "rms_aux", "centered", "moment"),
+    )
+    def test_mm_local_m_reduce_feed_main_rejects_source_expression(self, case):
         m = 128
         n = 64
         group = 8
 
         def epilogue_fn(acc):
             x = acc.float().view(-1, group, n)
+            if case == "centered":
+                mean = x.mean(1, keepdim=True)
+                rstd = (x.square().mean(1, keepdim=True) + 1e-5).rsqrt()
+                return ((x - mean) * rstd).view(m, n)
+            if case == "moment":
+                rstd = (x.var(1, unbiased=False, keepdim=True) + 1e-5).rsqrt()
+                return (x * rstd).view(m, n)
             rstd = (x.square().mean(1, keepdim=True) + 1e-5).rsqrt()
             normalized = (x * rstd).view(m, n)
-            if consumer == "main":
+            if case == "rms_main":
                 return normalized
             return acc.relu(), normalized
-
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue_fn,
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.rand(m, 64, device="cuda", dtype=torch.bfloat16)
-        b = torch.rand(64, n, device="cuda", dtype=torch.bfloat16)
-        with self.assertRaisesRegex(Exception, "two-phase local-reduce source"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    @skipIfNoCuteDSL
-    @unittest.skipIf(not TEST_CUDA, "CUDA required")
-    @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_mm_local_m_reduce_feed_main_rejects_centered_source_expression(self):
-        m = 128
-        n = 64
-        group = 8
-
-        def epilogue_fn(acc):
-            x = acc.float().view(-1, group, n)
-            mean = x.mean(1, keepdim=True)
-            rstd = (x.square().mean(1, keepdim=True) + 1e-5).rsqrt()
-            return ((x - mean) * rstd).view(m, n)
-
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue_fn,
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.rand(m, 64, device="cuda", dtype=torch.bfloat16)
-        b = torch.rand(64, n, device="cuda", dtype=torch.bfloat16)
-        with self.assertRaisesRegex(Exception, "two-phase local-reduce source"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    @skipIfNoCuteDSL
-    @unittest.skipIf(not TEST_CUDA, "CUDA required")
-    @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_mm_local_m_reduce_feed_main_rejects_moment_source_expression(self):
-        m = 128
-        n = 64
-        group = 8
-
-        def epilogue_fn(acc):
-            x = acc.float().view(-1, group, n)
-            rstd = (x.var(1, unbiased=False, keepdim=True) + 1e-5).rsqrt()
-            return (x * rstd).view(m, n)
 
         def fn(a, b):
             return flex_gemm(
