@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import ast
 import contextlib
 import copy
 import logging
 import os
 import pickle
 import shutil
-import threading
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager, nullcontext
 from typing import Any, Literal, TYPE_CHECKING
@@ -41,27 +39,6 @@ if TYPE_CHECKING:
 
 
 log = logging.getLogger(__name__)
-
-
-# Serializes ``compile_to_python``. That function mutates the process-global
-# ``GraphLowering.save_output_code`` hook and enters
-# ``CacheArtifactManager.with_fresh_cache`` (process-global cache state), so two
-# threads running it concurrently would clobber each other's hook and cache.
-# ``compile_to_python`` is in ``torch._inductor.__all__``, so direct callers must
-# be protected here rather than relying on a higher-layer lock. The AOT layer that
-# will wrap this entry point (``torch._functorch.aot_autograd``, in a companion
-# change) takes its own distinct lock before calling in, so the intended acquisition
-# order is AOT-then-inductor: the two locks are different and never nest in reverse,
-# so they cannot deadlock.
-#
-# This is an RLock, not a plain Lock, because the inductor compile that runs while
-# the lock is held can itself re-enter ``compile_to_python`` on the SAME thread: an
-# inductor pass or custom backend may compile a subgraph to python during lowering.
-# Same-thread re-entry is safe here because the inner call saves and restores the
-# (now ``capture_hook``) ambient hook around its own region and uses its own fresh
-# cache scope, so the nested capture is self-contained and the outer hook is intact
-# on return; a plain Lock would self-deadlock on that re-entry instead.
-_COMPILE_TO_PYTHON_LOCK = threading.RLock()
 
 
 class CompiledArtifact(ABC):
@@ -619,88 +596,34 @@ def standalone_compile(
     return CacheCompiledArtifact(compiled_fn, artifacts)
 
 
-def _defines_module_level_call(src: str) -> bool:
-    """Whether ``src`` is the runnable Inductor output module (vs a kernel-only one).
-
-    The module-level ``call`` entry point is codegen'd in two forms: when
-    ``config.graph_partition`` is on it is ``call = runner.call`` (the ``def call`` is
-    an indented ``Runner`` method); otherwise it is a top-level ``def call(args):``.
-    graph_partition defaults off in fbcode, so both forms must be recognized.
-
-    Detection is structural: we AST-parse the module and look for a top-level
-    ``def call`` or a top-level ``call = runner.call`` assignment. This avoids the
-    false positives a raw substring scan hits, where an embedded triton-kernel
-    string, comment, or docstring (even one whose ``def call(`` text sits at column 0
-    inside a triple-quoted literal) would match. The partition form's actual ``def
-    call`` method is nested inside a class and is intentionally NOT matched directly;
-    it is recognized only via the top-level ``call = runner.call`` binding, exactly as
-    before. If ``src`` does not parse (it always should, being codegen'd python), we
-    conservatively report no module-level ``call``.
-    """
-    try:
-        module = ast.parse(src)
-    except SyntaxError:
-        return False
-    for stmt in module.body:
-        if isinstance(stmt, ast.FunctionDef) and stmt.name == "call":
-            return True
-        if isinstance(stmt, ast.Assign):
-            targets_call = any(
-                isinstance(t, ast.Name) and t.id == "call" for t in stmt.targets
-            )
-            value = stmt.value
-            is_runner_call = (
-                isinstance(value, ast.Attribute)
-                and value.attr == "call"
-                and isinstance(value.value, ast.Name)
-                and value.value.id == "runner"
-            )
-            if targets_call and is_runner_call:
-                return True
-    return False
-
-
 class NoRunnableInductorModuleError(RuntimeError):
     """Raised by ``compile_to_python`` when the graph yields no runnable Inductor
     output module -- it has no compute to lower (returns inputs/constants unchanged),
-    so there is no module-level ``call`` to inline. Distinct from an unexpected
-    multiple-module case; callers (e.g. torch.compiler.precompile) convert this to a clear
-    user-facing error suggesting an alternative.
+    so the compiled artifact carries no output-module source. Callers (e.g.
+    torch.compiler.precompile) convert this to a clear user-facing error suggesting an
+    alternative.
     """
 
 
-def _extract_runnable_module(captured: list[str]) -> str:
-    """Return the single Inductor output-code module that defines the runnable
-    module-level ``call`` entry point, from the sources captured via the
-    ``GraphLowering.save_output_code`` hook during codegen.
+def _runnable_source(artifact: CompiledArtifact) -> str:
+    """Return the final Inductor output-module source for a compiled ``artifact``.
 
-    No post-hoc stripping is needed: ``compile_to_python`` disables the benchmark
-    harness at codegen time, so each captured module is the runnable kernels plus
-    ``call``. The compile-time auto-tuning block (a harmless inert raw-string
-    docstring; the real auto-tuning already ran during codegen) is retained at the top
-    of the captured module and does not affect ``call`` detection. A standalone compile
-    of an Inductor-approved graph yields exactly one such module, whether the source
-    comes from fresh codegen or a cache-restore path (both fire the hook).
-
-    Nested benchmark lowerings (max_autotune SubgraphChoiceCaller) also define a
-    ``call`` but are already filtered out by ``compile_to_python``'s capture hook
-    (they are named ``benchmark_*``), so ``len(runnable) > 1`` here means a genuine
-    unexpected multi-module case, not a benchmark lowering leaking through.
+    Inductor stashes the wrapper-module source on the compiled callable as
+    ``source_code`` (a field of the underlying ``CompiledFxGraph`` propagated onto the
+    returned callable), populated identically whether the graph was freshly codegen'd
+    or restored from a warm in-process / out-of-process cache. It is the FINAL selected
+    module only: the throwaway max_autotune benchmark lowerings compile to their own
+    modules during autotuning and never become the returned artifact, so no filtering
+    is needed. A graph with no compute (returns inputs/constants unchanged) produces no
+    such source, which we surface as ``NoRunnableInductorModuleError``.
     """
-    runnable = [s for s in captured if _defines_module_level_call(s)]
-    if len(runnable) == 0:
-        # No module defines ``call`` -- the graph has no compute to lower (it returns
-        # inputs/constants unchanged, e.g. ``lambda x: x``, ``x.detach()``, ``return 7``).
+    source = getattr(artifact._compiled_fn, "source_code", None)
+    if not isinstance(source, str) or not source:
         raise NoRunnableInductorModuleError(
             "the compiled graph produced no runnable Inductor output module: it has no "
             "compute to lower (returns inputs/constants unchanged)."
         )
-    if len(runnable) > 1:
-        raise RuntimeError(
-            f"expected exactly one runnable Inductor output module, found "
-            f"{len(runnable)}; compile_to_python cannot inline this artifact."
-        )
-    return runnable[0]
+    return source
 
 
 def _binary_cache_bytes(artifact: CompiledArtifact) -> bytes | None:
@@ -759,9 +682,8 @@ def compile_to_python(
     - ``gm`` is a post-AOTAutograd dense, functionalized inner graph (the dense
       forward/backward AOTAutograd hands to its inductor backend), NOT a raw Dynamo
       or pre-dispatch graph still carrying subclasses or autograd.
-    - ``gm`` lowers to exactly ONE runnable inductor output module (one module-level
-      ``call``). A graph with no compute raises ``NoRunnableInductorModuleError``; an
-      unexpected multi-module lowering raises ``RuntimeError``.
+    - ``gm`` lowers to a runnable inductor output module. A graph with no compute
+      raises ``NoRunnableInductorModuleError``.
 
     ``dynamic_shapes`` defaults to ``"from_example_inputs"`` here, which DIFFERS from
     the sibling ``torch._inductor.standalone_compile`` default of ``"from_graph"``.
@@ -786,21 +708,13 @@ def compile_to_python(
     the bytes come from the AOTAutograd cache, so any of ``force_disable_caches``,
     ``fx_graph_cache=False``, or ``enable_autograd_cache=False`` yields ``None``).
 
-    The source is captured directly off codegen via the process-global
-    ``GraphLowering.save_output_code`` hook, decoupled from the cache: it produces
-    valid ``inner_python`` even when no cacheable artifact exists (the ``cache`` is
-    then ``None``). Because the hook is process-global it also fires for an ordinary
-    ``torch.compile`` running concurrently on ANOTHER thread, so the hook only captures
-    codegen on the installing (owner) thread -- this is what keeps a foreign compile's
-    source out of the capture. The module-level ``_COMPILE_TO_PYTHON_LOCK`` serializes
-    two ``compile_to_python`` calls against each other (so their hook install/restore
-    and the ``with_fresh_cache`` process-global cache state do not interleave); it does
-    NOT, by itself, block a concurrent ``torch.compile`` (the owner-thread check does).
-    The AOT layer that will wrap this (a companion change in
-    ``torch._functorch.aot_autograd``) takes its own distinct lock before reaching
-    here, so the intended order is AOT-then-inductor and the two locks never deadlock.
-    The hook is restored in a ``finally`` so it does not leak to other
-    ``save_output_code`` users.
+    ``inner_python`` is read off the compiled artifact -- Inductor stashes the final
+    wrapper-module source on the returned callable as ``source_code`` -- so it reflects
+    the FINAL selected module and is valid on a cold compile, a warm in-process or
+    out-of-process cache restore, or with caches disabled. No process-global codegen
+    hook is involved, and the throwaway max_autotune benchmark lowerings (which compile
+    to their own modules during autotuning) never reach the artifact, so nothing needs
+    to be filtered out.
     """
     if not isinstance(gm, torch.fx.GraphModule):
         raise TypeError(
@@ -808,91 +722,30 @@ def compile_to_python(
             f"got {type(gm)}. This is an internal entry point wrapped by a higher AOT "
             f"layer and is not meant to be called directly."
         )
-    from .graph import GraphLowering
-    from .virtualized import V
-
-    # Suppress the benchmark harness at codegen time rather than stripping it out of
-    # the emitted source afterward (the export artifact is meant to run, not be
-    # profiled): benchmark_harness emits get_args()/benchmark_compiled_module()/
-    # __main__.
-    captured: list[str] = []
-    # The thread that installed the hook (set inside the lock below). The hook lives on
-    # the PROCESS-GLOBAL GraphLowering.save_output_code, so it also fires for an ordinary
-    # torch.compile running concurrently on ANOTHER thread; we only capture codegen on
-    # the owning thread. The AOT layer that will wrap this (a companion change) uses its
-    # own thread-local capture sink for the same reason.
-    owner_thread: int | None = None
-
-    def capture_hook(src: str) -> None:
-        # Ignore codegen from any other thread: a concurrent normal torch.compile (or
-        # another foreign lowering) on a different thread would otherwise append its
-        # module here and trip the single-module check in _extract_runnable_module.
-        if threading.get_ident() != owner_thread:
-            return
-        # Under max_autotune, nested benchmark GraphLowerings (e.g.
-        # SubgraphChoiceCaller._compile_for_benchmarking) fire this same
-        # process-global hook with their own ``def call(`` while compiling the
-        # outer graph. Those benchmark lowerings are named ``benchmark_*`` (see
-        # codegen/subgraph.py); skip them so only the OUTERMOST runnable module is
-        # captured. On the fresh-codegen firing ``V.graph`` is the GraphLowering being
-        # codegen'd (set via ``V.set_graph_handler``), so its ``name`` flags a nested
-        # benchmark lowering. On the cache-restore firings no GraphLowering is installed,
-        # so ``V.graph`` is a ``NullHandler`` and ``name`` is None -- which correctly
-        # keeps the module (restore only ever replays the already-filtered outer module).
-        graph = V.graph
-        name = getattr(graph, "name", None)
-        if isinstance(name, str) and name.startswith("benchmark_"):
-            return
-        captured.append(src)
-
-    with _COMPILE_TO_PYTHON_LOCK:
-        # ``_COMPILE_TO_PYTHON_LOCK`` serializes ``compile_to_python`` against itself only;
-        # it does NOT block an ordinary ``torch.compile`` or the test-only
-        # ``run_and_get_code`` / ``get_code`` helpers, which patch the same process-global
-        # ``save_output_code`` hook without this lock. The owner-thread check in
-        # ``capture_hook`` is what keeps a concurrent foreign compile's source out of our
-        # capture; the lock just keeps two ``compile_to_python`` calls from interleaving
-        # their hook install/restore. Read the ambient hook INSIDE the lock so a peer
-        # ``compile_to_python`` has already restored its own hook before we snapshot it;
-        # reading outside would be a TOCTOU that leaks a dead ``capture_hook`` into the
-        # process-global slot.
-        owner_thread = threading.get_ident()
-        # Treat ``options`` as inductor config overrides and fold them into the same
-        # ``config.patch`` we already enter for the capture-critical pins. The pins are
-        # applied AFTER the user options so they override any conflicting key: the
-        # source-capture contract depends on them and must not be user-overridable.
-        # Build this BEFORE installing the hook: a malformed ``options`` makes ``dict()``
-        # raise, and the hook must not already be installed (it would leak into the
-        # process-global slot, since the install lives inside the try/finally below).
-        config_patches: dict[str, Any] = dict(options or {})
-        config_patches.update(
-            {
-                "benchmark_harness": False,
-                # The C++ wrapper backend emits a C++ ``call``, not the python
-                # ``def call(args)`` this lowering extracts and inlines, so a python
-                # artifact cannot come from it. Pin it off regardless of the ambient
-                # config so the captured module is always the python one.
-                "cpp_wrapper": False,
-            }
+    # Treat ``options`` as inductor config overrides and fold them into the same
+    # ``config.patch`` we wrap the compile in. The two output pins are applied AFTER the
+    # user options so they override any conflicting key: benchmark_harness=False keeps
+    # the emitted module runnable (no get_args()/benchmark_compiled_module()/__main__),
+    # and cpp_wrapper=False keeps it a python wrapper (the C++ backend emits a C++
+    # ``call`` we cannot inline). A caller must not be able to break either.
+    config_patches: dict[str, Any] = dict(options or {})
+    config_patches.update(
+        {
+            "benchmark_harness": False,
+            "cpp_wrapper": False,
+        }
+    )
+    with torch.no_grad(), config.patch(config_patches):
+        # ``options`` are already applied above as config, so pass none down to
+        # ``standalone_compile`` (it forwards options as ``compile_fx`` kwargs, which a
+        # config key like ``max_autotune`` is not).
+        artifact = standalone_compile(
+            gm,
+            example_inputs,
+            dynamic_shapes=dynamic_shapes,
+            options={},
         )
-        prev_hook = GraphLowering.save_output_code
-        try:
-            # Install the hook as the first thing in the try so the finally always
-            # restores it, even if config.patch or standalone_compile raises.
-            GraphLowering.save_output_code = staticmethod(capture_hook)
-            with torch.no_grad(), config.patch(config_patches):
-                # ``options`` are already applied above as config, so pass none down
-                # to ``standalone_compile`` (it forwards options as ``compile_fx``
-                # kwargs, which a config key like ``max_autotune`` is not).
-                artifact = standalone_compile(
-                    gm,
-                    example_inputs,
-                    dynamic_shapes=dynamic_shapes,
-                    options={},
-                )
-        finally:
-            GraphLowering.save_output_code = prev_hook
-    inner_python = _extract_runnable_module(captured)
+    inner_python = _runnable_source(artifact)
     cache = _binary_cache_bytes(artifact)
     return inner_python, cache
 

@@ -9,11 +9,7 @@ import torch.utils._pytree as pytree
 from torch._dynamo.utils import counters
 from torch._functorch import config as functorch_config
 from torch._inductor import compile_to_python, config
-from torch._inductor.standalone_compile import (
-    _defines_module_level_call,
-    _extract_runnable_module,
-    NoRunnableInductorModuleError,
-)
+from torch._inductor.standalone_compile import NoRunnableInductorModuleError
 from torch._inductor.utils import fresh_cache
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.nn.utils import stateless
@@ -360,15 +356,14 @@ def call(args):
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
-    def test_max_autotune_filters_benchmark_lowerings(self):
+    def test_max_autotune_excludes_benchmark_lowerings(self):
         # max_autotune's decompose_k GEMM choice compiles each k-split as a nested
-        # SubgraphChoiceCaller GraphLowering named benchmark_* that fires the same
-        # process-global capture hook; capture_hook's name filter drops them so exactly ONE
-        # runnable module is captured (without the filter, _extract_runnable_module raises
-        # the >1-module RuntimeError -- verified out-of-band). fresh_cache forces a cold
-        # autotune cache so the benchmark compiles actually run (a warm cache skips them),
-        # and the spy asserts they did, so the test cannot silently degrade into a no-op.
-        # k >= 32*m and k >= 32*n makes decompose_k a candidate.
+        # SubgraphChoiceCaller benchmark GraphLowering during autotuning. compile_to_python
+        # reads the FINAL module's source off the compiled artifact, so those benchmark
+        # modules are excluded by construction -- they never become the artifact, no
+        # filtering needed. fresh_cache forces a cold autotune cache so the benchmark
+        # compiles actually run, and the spy asserts they did, so the test cannot silently
+        # degrade into a no-op. k >= 32*m and k >= 32*n makes decompose_k a candidate.
         from torch._inductor.codegen.subgraph import SubgraphChoiceCaller
 
         m = (
@@ -398,13 +393,11 @@ def call(args):
                         "max_autotune_gemm_backends": "TRITON",
                     },
                 )
-        self.assertGreater(len(bench_calls), 0)  # benchmark lowerings actually fired
-        self.assertTrue(
-            _defines_module_level_call(src)
-        )  # filter left exactly one module
+        self.assertGreater(len(bench_calls), 0)  # benchmark lowerings actually ran
+        self.assertIn("def call(", src)  # the final runnable module
         self.assertNotIn(
             "benchmark_", src
-        )  # none of them leaked into the captured module
+        )  # excluded by construction, never in the artifact
         with torch.no_grad():
             self.assertEqual(
                 _exec(src)(_flat_inputs(m, x))[0], m(x), atol=1e-2, rtol=1e-2
@@ -413,42 +406,11 @@ def call(args):
 
 class TestInductorCompileToPythonContract(TestCase):
     # Contract + branch coverage the codegen-golden classes above do not exercise: the
-    # option pin-override, the cache return value, the structural module detector's two
-    # forms, the error paths, and warm-cache capture. All CPU, so no GPU is required.
+    # option pin-override, the cache return value, the graph_partition runner form, the
+    # no-compute error path, and warm-cache reuse. All CPU, so no GPU is required.
     def test_rejects_non_graphmodule(self):
         with self.assertRaises(TypeError):
             compile_to_python("not a graph module", [])
-
-    def test_defines_module_level_call_both_forms(self):
-        # graph_partition off emits a top-level ``def call``; on emits ``call = runner.call``.
-        # Both must be recognized; a ``def call`` inside a string literal and unparsable
-        # source must not be.
-        self.assertTrue(
-            _defines_module_level_call("def call(args):\n    return args\n")
-        )
-        self.assertTrue(
-            _defines_module_level_call(
-                "class Runner:\n    def call(self):\n        pass\ncall = runner.call\n"
-            )
-        )
-        self.assertFalse(_defines_module_level_call("x = 1\ndef other():\n    pass\n"))
-        self.assertFalse(
-            _defines_module_level_call('s = """\ndef call(a):\n    pass\n"""\n')
-        )
-        self.assertFalse(_defines_module_level_call("def (:\n"))
-
-    def test_extract_runnable_module_zero_and_multiple(self):
-        # 0 runnable modules is the expected no-compute case (typed exception callers
-        # special-case); >1 is an unexpected invariant violation (plain RuntimeError).
-        with self.assertRaises(NoRunnableInductorModuleError):
-            _extract_runnable_module([])
-        # >1 raises a plain RuntimeError, NOT the NoRunnableInductorModuleError subclass,
-        # so distinguish them (NoRunnableInductorModuleError is itself a RuntimeError).
-        with self.assertRaises(RuntimeError) as cm:
-            _extract_runnable_module(
-                ["def call(a):\n    pass", "def call(b):\n    pass"]
-            )
-        self.assertNotIsInstance(cm.exception, NoRunnableInductorModuleError)
 
     def test_pins_override_conflicting_user_options(self):
         # The benchmark_harness/cpp_wrapper pins must beat conflicting user options so the
@@ -508,8 +470,8 @@ class TestInductorCompileToPythonContract(TestCase):
 
     def test_graph_partition_runner_call_form(self):
         # graph_partition=True emits the Runner form (``call = runner.call``) instead of a
-        # top-level ``def call``; _extract_runnable_module must recognize it and the emitted
-        # module must still run.
+        # top-level ``def call``; the returned source must carry it and the emitted module
+        # must still run.
         m = torch.nn.Linear(4, 3).eval()
         x = torch.randn(5, 4)
         src, _cache = compile_to_python(
@@ -544,14 +506,14 @@ class TestInductorCompileToPythonContract(TestCase):
                 self.assertEqual(fn(_flat_inputs(m, xi))[0], m(xi))
 
     @config.patch({"compile_threads": 1})
-    def test_warm_cache_still_captures_source(self):
-        # The capture hook also fires on cache restore, so a second compile of the same
-        # graph (warm FxGraphCache) still yields a runnable module even though no fresh
-        # codegen happens. fresh_cache isolates an empty cache dir so the first compile is a
-        # guaranteed miss and the second a guaranteed hit; compile_threads=1 keeps codegen
-        # in-process so the hit counter is deterministic. The warm path needs caching, which
-        # is env-disabled on some CI shards (force_disable_caches cannot be patched back on),
-        # so skip there.
+    def test_warm_cache_still_yields_source(self):
+        # On a warm cache the 2nd compile of the same graph is an FxGraphCache hit (no fresh
+        # codegen), yet compile_to_python still returns a runnable module: Inductor
+        # populates source_code on the restored artifact too. fresh_cache isolates an empty
+        # cache dir so the first compile is a guaranteed miss and the second a guaranteed
+        # hit; compile_threads=1 keeps codegen in-process so the hit counter is
+        # deterministic. The warm path needs caching, env-disabled on some CI shards
+        # (force_disable_caches cannot be patched back on), so skip there.
         if config.force_disable_caches or not config.fx_graph_cache:
             self.skipTest("requires inductor FxGraphCache enabled")
         m = torch.nn.Linear(4, 3).eval()
