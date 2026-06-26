@@ -94,6 +94,19 @@ class TestImportLinter(unittest.TestCase):
         self.assertEqual(messages[0].name, "Disallowed import-time call")
         self.assertEqual(messages[0].line, 4)
 
+    def test_disallows_import_time_has_triton_package_lambda_default_arg(self) -> None:
+        messages = self.check_contents(
+            """
+            from torch.utils._triton import has_triton_package
+
+            fn = lambda has_triton=has_triton_package(): None
+            """
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].name, "Disallowed import-time call")
+        self.assertEqual(messages[0].line, 4)
+
     def test_allows_local_optional_import(self) -> None:
         messages = self.check_contents(
             """

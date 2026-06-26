@@ -158,8 +158,9 @@ class ImportTimeVisitor(ast.NodeVisitor):
         self._visit_function(node)
 
     def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit(node.args)
         self._function_depth += 1
-        self.generic_visit(node)
+        self.visit(node.body)
         self._function_depth -= 1
 
     def visit_Import(self, node: ast.Import) -> None:

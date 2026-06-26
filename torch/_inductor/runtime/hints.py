@@ -65,19 +65,28 @@ _FallbackAttrsDescriptor: typing.Any = collections.namedtuple(
     ["divisible_by_16", "equal_to_1", "pointer_range_32"],
     defaults=[(), (), ()],
 )
+_attrs_descriptor_default = object()
 
 
 def AttrsDescriptorWrapper(
-    divisible_by_16=None,
-    equal_to_1=None,
-    pointer_range_32=None,
+    divisible_by_16: typing.Any = _attrs_descriptor_default,
+    equal_to_1: typing.Any = _attrs_descriptor_default,
+    pointer_range_32: typing.Any = _attrs_descriptor_default,
 ):
     if not has_triton_package():
         return _FallbackAttrsDescriptor(
-            divisible_by_16,
-            equal_to_1,
-            pointer_range_32,
+            () if divisible_by_16 is _attrs_descriptor_default else divisible_by_16,
+            () if equal_to_1 is _attrs_descriptor_default else equal_to_1,
+            () if pointer_range_32 is _attrs_descriptor_default else pointer_range_32,
         )
+
+    divisible_by_16 = (
+        None if divisible_by_16 is _attrs_descriptor_default else divisible_by_16
+    )
+    equal_to_1 = None if equal_to_1 is _attrs_descriptor_default else equal_to_1
+    pointer_range_32 = (
+        None if pointer_range_32 is _attrs_descriptor_default else pointer_range_32
+    )
 
     import triton
     import triton.backends.compiler
