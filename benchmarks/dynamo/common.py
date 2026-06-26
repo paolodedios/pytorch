@@ -423,7 +423,7 @@ def output_json(filename, headers, row):
                     "benchmark_values": [value],
                 }
 
-            print(json.dumps(record), file=f)
+            print(json.dumps(record, default=str), file=f)
 
 
 def get_suite_from_model_iter_fn(model_iter_fn):
