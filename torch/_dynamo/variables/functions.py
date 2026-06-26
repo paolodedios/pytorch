@@ -117,7 +117,6 @@ if TYPE_CHECKING:
         TritonKernelType,
     )
 
-    from .dicts import DunderDictVariable
     from .lists import BaseListVariable, ListVariable
     from .tensor import TensorVariable
 

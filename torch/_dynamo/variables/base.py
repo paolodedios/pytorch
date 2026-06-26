@@ -347,7 +347,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
     # Lazily-created view of the instance __dict__, backed by the side effects
     # table. Only meaningful for VTs whose represented type has an instance
     # dict (see has_instance_dict); None otherwise.
-    dict_vt: "variables.DunderDictVariable | None" = None
+    dict_vt: variables.DunderDictVariable | None = None
 
     def clone(self, **kwargs: Any) -> VariableTracker:
         """Shallow copy with some (optional) changes"""
@@ -594,7 +594,9 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         """
         return type(self)
 
-    def get_dict_vt(self, tx: InstructionTranslatorBase) -> VariableTracker:
+    def get_dict_vt(
+        self, tx: InstructionTranslatorBase
+    ) -> variables.DunderDictVariable:
         # Callers gate this on the object actually having an instance __dict__
         # (e.g. the per-VT `__dict__` attribute branches). If a VT without a
         # real instance dict reaches here, DunderDictVariable's example-value
@@ -602,9 +604,6 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         if self.dict_vt is None:
             self.dict_vt = variables.DunderDictVariable.create(tx, self)
         return self.dict_vt
-
-    def invalidate_dict_vt(self) -> None:
-        self.dict_vt = None
 
     def var_getattr(self, tx: InstructionTranslatorBase, name: str) -> VariableTracker:
         """getattr(self, name) returning a new variable"""
@@ -1808,7 +1807,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         source: Source | None = None,
         mutation_type: MutationType | None = None,
         source_location: SourceLocation | None = None,
-        dict_vt: "variables.DunderDictVariable | None" = None,
+        dict_vt: variables.DunderDictVariable | None = None,
     ) -> None:
         super().__init__()
         self.source = source

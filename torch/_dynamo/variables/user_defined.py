@@ -169,7 +169,6 @@ if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslatorBase
     from torch._dynamo.variables.constant import ConstantVariable
 
-    from .dicts import DunderDictVariable
     from .lists import ListVariable, TupleVariable
 
 
@@ -3011,7 +3010,7 @@ class UserDefinedObjectVariable(UserDefinedVariable):
 
             if isinstance(descriptor, types.GetSetDescriptorType):
                 if name_str == "__dict__":
-                    self.invalidate_dict_vt()
+                    self.dict_vt = None
                 # C get/set descriptors are applied by STORE_ATTR itself, so
                 # replay must stay descriptor-aware rather than using the
                 # descriptor-bypassing instance-dict or slot paths.

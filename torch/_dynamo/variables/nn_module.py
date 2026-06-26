@@ -81,7 +81,6 @@ if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslatorBase
 
     from .constant import ConstantVariable
-    from .dicts import DunderDictVariable
 
 
 def initialize_lazy_module(
