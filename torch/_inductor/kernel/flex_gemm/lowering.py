@@ -15,6 +15,16 @@ from torch.utils._ordered_set import OrderedSet
 from ... import ir
 from ...ir import IRNode, TensorBox
 from ...lowering import empty_strided, process_subgraph_nodes, register_lowering
+from .constraints import (
+    is_flex_gemm_partial_reduction_shape,
+    LOCAL_REDUCE_AUX_METADATA_ERROR,
+    LOCAL_REDUCE_AUX_OUTPUT_CONTRACT_ERROR,
+    LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR,
+    LOCAL_REDUCE_CONFIG_ERROR,
+    LOCAL_REDUCE_DENSE_MM_SCOPE_ERROR,
+    local_reduce_partial_output_contract_error,
+    validate_flex_gemm_local_reduce_config,
+)
 
 
 def flex_gemm_tensor_placeholders(
@@ -80,40 +90,6 @@ def infer_flex_gemm_epilogue_arg_kinds(
     return tuple(epilogue_arg_kinds)
 
 
-def is_flex_gemm_partial_reduction_shape(
-    aux_size: list[Any], output_size: list[Any]
-) -> bool:
-    """Recognize final M/N reductions that are not QuACK partial outputs."""
-    if len(output_size) != 2:
-        return False
-    m, n = output_size
-    if aux_size in ([], [m], [n], [1, 1], [m, 1], [1, n]):
-        return True
-    if not all(isinstance(dim, int) for dim in (*aux_size, m, n)):
-        return False
-    if len(aux_size) != 2:
-        return False
-    aux_m, aux_n = aux_size
-    return (
-        aux_m > 0
-        and aux_n > 0
-        and aux_m <= m
-        and aux_n <= n
-        and (aux_m < m or aux_n < n)
-        and m % aux_m == 0
-        and n % aux_n == 0
-    )
-
-
-def raise_flex_gemm_partial_reduction_error() -> None:
-    raise NotImplementedError(
-        "unsupported FlexGEMM epilogue partial-output contract: reductions "
-        "over GEMM M/N dimensions require an explicit partial-output contract; "
-        "QuACK row/column partial reductions produce CTA-tiled partial shapes, "
-        "not final PyTorch reduction tensors"
-    )
-
-
 def validate_flex_gemm_aux_outputs(
     gemm_op: torch._ops.OpOverload,
     aux_outputs: tuple[torch.fx.Node, ...],
@@ -140,13 +116,8 @@ def validate_flex_gemm_aux_outputs(
         aux_size = ir.convert_shape_to_inductor(aux_meta.shape)
         if aux_size != output_size:
             if is_flex_gemm_partial_reduction_shape(aux_size, output_size):
-                raise_flex_gemm_partial_reduction_error()
-            raise NotImplementedError(
-                "FlexGEMM generic aux tuple epilogues currently require aux "
-                "output shapes to match the GEMM output shape; compressed or "
-                "block reductions across GEMM M/N dimensions require an explicit "
-                "local-reduce output contract"
-            )
+                raise local_reduce_partial_output_contract_error()
+            raise NotImplementedError(LOCAL_REDUCE_AUX_OUTPUT_CONTRACT_ERROR)
         aux_metas.append(aux_meta)
     return tuple(aux_metas)
 
@@ -166,46 +137,87 @@ def allocate_flex_gemm_aux_outs(
     )
 
 
-def validate_flex_gemm_local_reduce_config(config, group: int, axis: int) -> bool:
-    """Return whether a QuACK config can keep grouped reductions inside one CTA."""
-    if isinstance(config, dict):
-        swap_ab = config["swap_ab"]
-        tile_m = config["tile_m"]
-        tile_n = config["tile_n"]
-        cluster_m = config["cluster_m"]
-        cluster_n = config["cluster_n"]
-    else:
-        swap_ab = config.swap_ab
-        tile_m = config.tile_m
-        tile_n = config.tile_n
-        cluster_m = config.cluster_m
-        cluster_n = config.cluster_n
-    if axis not in (0, 1) or swap_ab:
-        return False
-    if tile_n < 128 or tile_n % 64 != 0:
-        return False
-    tile = tile_n if axis == 1 else tile_m
-    if tile % group != 0:
-        return False
-    if axis == 0:
-        if group <= 32:
-            return 32 % group == 0 and group < tile
-        return (
-            group % 32 == 0
-            and group <= tile
-            and tile_m == 128
-            and cluster_m == 1
-            and cluster_n == 1
+def validate_flex_gemm_local_reduce_scope(
+    gemm_op: torch._ops.OpOverload, local_reduce
+) -> None:
+    """Keep generated local-reduce support scoped to dense mm."""
+    if local_reduce is None:
+        return
+    if gemm_op is not torch.ops.aten.mm.default:
+        raise NotImplementedError(LOCAL_REDUCE_DENSE_MM_SCOPE_ERROR)
+
+
+def flex_gemm_local_reduce_metas(
+    gemm_op: torch._ops.OpOverload,
+    local_reduce,
+    aux_metas: tuple[Any, ...],
+) -> tuple[Any, ...]:
+    """Return local-reduce output metadata after validating consumer compatibility."""
+    validate_flex_gemm_local_reduce_scope(gemm_op, local_reduce)
+    if local_reduce is None or not local_reduce.stores_compressed_aux:
+        return ()
+    if aux_metas:
+        raise NotImplementedError(LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR)
+    local_reduce_meta = local_reduce.node.meta.get("val")
+    if local_reduce_meta is None:
+        raise NotImplementedError(LOCAL_REDUCE_AUX_METADATA_ERROR)
+    return (local_reduce_meta,)
+
+
+def flex_gemm_config_keys_for_local_reduce(
+    device,
+    m: int,
+    n: int,
+    local_reduce,
+    tuned: bool,
+) -> tuple[tuple[Any, ...], ...]:
+    """Select QuACK config keys after applying local-reduce layout constraints."""
+    if tuned:
+        from torch._inductor.template_heuristics.flex_gemm import (
+            candidate_gemm_configs_for_device,
+            gemm_config_key,
         )
-    if group <= 32:
-        return 32 % group == 0 and group < tile
-    return (
-        group % 32 == 0
-        and group <= tile
-        and tile_m == 128
-        and cluster_m == 1
-        and cluster_n == 1
+
+        candidate_configs = candidate_gemm_configs_for_device(device)
+        if local_reduce is not None:
+            candidate_configs = tuple(
+                config
+                for config in candidate_configs
+                if validate_flex_gemm_local_reduce_config(
+                    config, local_reduce.group, local_reduce.axis
+                )
+            )
+            if not candidate_configs:
+                raise NotImplementedError(LOCAL_REDUCE_CONFIG_ERROR)
+        return tuple(gemm_config_key(config) for config in candidate_configs)
+
+    from torch._inductor.template_heuristics.flex_gemm import (
+        candidate_gemm_configs_for_device,
+        default_gemm_config_key,
+        gemm_config_key,
     )
+
+    default_key = default_gemm_config_key(device, m, n)
+    if local_reduce is None:
+        return (default_key,)
+    default_config = dict(default_key)
+    if validate_flex_gemm_local_reduce_config(
+        default_config, local_reduce.group, local_reduce.axis
+    ):
+        return (default_key,)
+    candidate_config = next(
+        (
+            config
+            for config in candidate_gemm_configs_for_device(device)
+            if validate_flex_gemm_local_reduce_config(
+                config, local_reduce.group, local_reduce.axis
+            )
+        ),
+        None,
+    )
+    if candidate_config is None:
+        raise NotImplementedError(LOCAL_REDUCE_CONFIG_ERROR)
+    return (gemm_config_key(candidate_config),)
 
 
 @register_lowering(flex_gemm_hop, type_promotion_kind=None)
@@ -232,6 +244,7 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
     from torch._inductor.kernel.flex_gemm.template import (
         flex_gemm_epilogue_template,
         FlexGemmEpilogueConfig,
+        FlexGemmEpilogueLocalReduceConfig,
     )
     from torch._inductor.select_algorithm import autotune_select_algorithm
 
@@ -278,22 +291,9 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
     aux_metas = validate_flex_gemm_aux_outputs(
         gemm_op, outputs.aux_outputs, output_size
     )
-    local_reduce_metas = ()
-    if outputs.local_reduce_aux is not None:
-        if aux_metas:
-            raise NotImplementedError(
-                "FlexGEMM local-reduce aux outputs cannot be combined with same-shape aux outputs yet"
-            )
-        if gemm_op is not torch.ops.aten.mm.default:
-            raise NotImplementedError(
-                "FlexGEMM local-reduce aux outputs currently support only aten.mm"
-            )
-        local_reduce_meta = outputs.local_reduce_aux.meta.get("val")
-        if local_reduce_meta is None:
-            raise NotImplementedError(
-                "FlexGEMM local-reduce aux outputs require aux output metadata"
-            )
-        local_reduce_metas = (local_reduce_meta,)
+    local_reduce_metas = flex_gemm_local_reduce_metas(
+        gemm_op, outputs.local_reduce, aux_metas
+    )
     layout = ir.FixedLayout(
         gemm_args[mat1_index].get_device_or_error(),
         output_meta.dtype,
@@ -334,72 +334,19 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
     epilogue_arg_kinds = infer_flex_gemm_epilogue_arg_kinds(
         gemm_op, epilogue_input_nodes, output_size
     )
-    epilogue_name, epilogue_source = materialize_flex_gemm_epilogue(
-        subgraph.graph_module, gemm_op, epilogue_arg_placeholders
+    template_local_reduce = FlexGemmEpilogueLocalReduceConfig.from_output_plan(
+        outputs.local_reduce, local_reduce_out_index
     )
-    if tuned:
-        from torch._inductor.template_heuristics.flex_gemm import (
-            candidate_gemm_configs_for_device,
-            gemm_config_key,
-        )
-
-        candidate_configs = candidate_gemm_configs_for_device(layout.device)
-        if outputs.local_reduce_group is not None:
-            local_reduce_axis = outputs.local_reduce_axis
-            if local_reduce_axis is None:
-                raise RuntimeError("FlexGEMM local-reduce axis must be set")
-            candidate_configs = tuple(
-                config
-                for config in candidate_configs
-                if validate_flex_gemm_local_reduce_config(
-                    config, outputs.local_reduce_group, local_reduce_axis
-                )
-            )
-            if not candidate_configs:
-                raise NotImplementedError(
-                    "FlexGEMM local-reduce aux outputs require a non-swap_ab "
-                    "32-lane epilogue-fragment config whose CTA tile axis is divisible by group"
-                )
-        quack_config_keys = tuple(
-            gemm_config_key(config) for config in candidate_configs
-        )
-    else:
-        from torch._inductor.template_heuristics.flex_gemm import (
-            candidate_gemm_configs_for_device,
-            default_gemm_config_key,
-            gemm_config_key,
-        )
-
-        default_key = default_gemm_config_key(
-            layout.device,
-            gemm_args[mat1_index].get_size()[-2],
-            gemm_args[mat2_index].get_size()[-1],
-        )
-        if outputs.local_reduce_group is not None:
-            local_reduce_axis = outputs.local_reduce_axis
-            if local_reduce_axis is None:
-                raise RuntimeError("FlexGEMM local-reduce axis must be set")
-            default_config = dict(default_key)
-            if not validate_flex_gemm_local_reduce_config(
-                default_config, outputs.local_reduce_group, local_reduce_axis
-            ):
-                candidate_config = next(
-                    (
-                        config
-                        for config in candidate_gemm_configs_for_device(layout.device)
-                        if validate_flex_gemm_local_reduce_config(
-                            config, outputs.local_reduce_group, local_reduce_axis
-                        )
-                    ),
-                    None,
-                )
-                if candidate_config is None:
-                    raise NotImplementedError(
-                        "FlexGEMM local-reduce aux outputs require a non-swap_ab "
-                        "32-lane epilogue-fragment config whose CTA tile axis is divisible by group"
-                    )
-                default_key = gemm_config_key(candidate_config)
-        quack_config_keys = (default_key,)
+    epilogue_name, epilogue_source = materialize_flex_gemm_epilogue(
+        subgraph.graph_module, gemm_op, outputs, epilogue_arg_placeholders
+    )
+    quack_config_keys = flex_gemm_config_keys_for_local_reduce(
+        layout.device,
+        gemm_args[mat1_index].get_size()[-2],
+        gemm_args[mat2_index].get_size()[-1],
+        outputs.local_reduce,
+        tuned,
+    )
     epilogue_arg_indices = tuple(
         range(
             len(gemm_input_nodes),
@@ -424,9 +371,7 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
                 epilogue_arg_indices=epilogue_arg_indices,
                 epilogue_arg_kinds=epilogue_arg_kinds,
                 aux_out_index=aux_out_index,
-                local_reduce_out_index=local_reduce_out_index,
-                local_reduce_group=outputs.local_reduce_group,
-                local_reduce_axis=outputs.local_reduce_axis,
+                local_reduce=template_local_reduce,
             ),
         )
         if error is not None:

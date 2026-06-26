@@ -7,16 +7,29 @@ from typing import Any
 import torch
 from torch._inductor import inductor_prims
 from torch._inductor.codegen.cutedsl.cutedsl_op_overrides import CuteDSLOpOverrides
+from torch._inductor.kernel.flex_gemm.constraints import (
+    grouped_reduce_dims_match,
+    LOCAL_REDUCE_EXPLICIT_DTYPE_ERROR,
+    local_reduce_grouped_tensorssa_lowering_error,
+    LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR,
+    LOCAL_REDUCE_MIXED_GROUPED_LAYOUT_ERROR,
+    LOCAL_REDUCE_MOMENT_CORRECTION_RANGE_ERROR,
+    LOCAL_REDUCE_MOMENT_DYNAMIC_CORRECTION_ERROR,
+    LOCAL_REDUCE_MOMENT_INNERMOST_GROUPED_DIM_ERROR,
+    LOCAL_REDUCE_MOMENT_PHYSICAL_COMBINE_ERROR,
+    local_reduce_partial_output_contract_error,
+    LOCAL_REDUCE_PREPARE_SOFTMAX_GROUPED_DIM_ERROR,
+    LOCAL_REDUCE_PREPARE_SOFTMAX_PHYSICAL_COMBINE_ERROR,
+    local_reduce_unsupported_physical_reduction_error,
+    local_reduce_unsupported_tensorssa_reduction_error,
+    validate_local_reduce_tensorssa_group_size,
+)
 from torch._inductor.virtualized import V
 from torch.utils._ordered_set import OrderedSet
 
 
 def normalize_shape(shape: Any) -> Any:
     return tuple(shape) if isinstance(shape, (list, tuple, torch.Size)) else shape
-
-
-def normalize_reduce_dims(dim: Any) -> tuple[Any, ...]:
-    return tuple(dim) if isinstance(dim, (list, tuple)) else (dim,)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -77,12 +90,7 @@ def _cute_op_name(target: Any) -> str | None:
 
 
 def partial_vector_reduction_error() -> NotImplementedError:
-    return NotImplementedError(
-        "unsupported FlexGEMM epilogue partial-output contract: reductions "
-        "over GEMM M/N dimensions require an explicit partial-output contract; "
-        "QuACK row/column partial reductions produce CTA-tiled partial shapes, "
-        "not final PyTorch reduction tensors"
-    )
+    return local_reduce_partial_output_contract_error()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -179,9 +187,64 @@ FLEX_GEMM_SHAPE_PRESERVING_POINTWISE_OPS = frozenset(
             "to_dtype",
             "truediv",
             "where",
+            "mx_e8m0_scale",
+            "nvfp4_e4m3_scale",
         ]
     )
 )
+
+
+def _cute_scale_expr(
+    op_name: str, source: Any, max_power: Any = 8, *, tensorssa: bool = False
+) -> str:
+    """Render scale encoders as numeric CuTeDSL expressions before output casting."""
+    if op_name == "mx_e8m0_scale":
+        if tensorssa:
+            scale_exp = f"(cute.math.floor(cute.math.log2({source})) - {max_power})"
+            return (
+                "cute.math.exp2("
+                f"cute.where({scale_exp} < -127.0, -127.0, "
+                f"cute.where({scale_exp} > 128.0, 128.0, {scale_exp}))"
+                ")"
+            )
+        exponent = (
+            f"(((cutlass.Float32({source}).bitcast(cutlass.Int32) >> 23) "
+            f"& 0xFF) - 127 - {max_power})"
+        )
+        clamped = f"cutlass.max(cutlass.min({exponent}, 128), -127)"
+        return f"cutlass.Float32(cute.math.exp2(cutlass.Float32({clamped})))"
+    scale = f"({source} / 6.0)"
+    if tensorssa:
+        return (
+            f"cute.where({scale} < 0.015625, 0.015625, "
+            f"cute.where({scale} > 448.0, 448.0, {scale}))"
+        )
+    return f"cutlass.Float32(cutlass.max(cutlass.min({scale}, 448.0), 0.015625))"
+
+
+def _cute_scale_call(
+    op_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> Any:
+    """Lower FlexGEMM scale custom ops for TensorSSA values and scalar finalizers."""
+    if len(args) != 1:
+        raise NotImplementedError(f"unsupported FlexGEMM epilogue op: {op_name}")
+    if op_name == "nvfp4_e4m3_scale" and kwargs:
+        raise NotImplementedError(f"unsupported FlexGEMM epilogue op kwargs: {op_name}")
+    max_power = kwargs.get("max_power", 8)
+    if op_name == "mx_e8m0_scale" and not isinstance(max_power, (int, float)):
+        raise NotImplementedError("FlexGEMM mx_e8m0_scale requires static max_power")
+    source = args[0]
+    cse_var = CuteDSLOpOverrides._get_cse_var(source)
+    expr = _cute_scale_expr(op_name, source, max_power, tensorssa=cse_var is not None)
+    if cse_var is None:
+        return expr
+    return V.kernel.cse.generate(
+        V.kernel.body,
+        expr,
+        bounds=cse_var.bounds,
+        dtype=cse_var.dtype,
+        shape=cse_var.shape,
+    )
 
 
 def _cute_arg(value: Any, env: dict[torch.fx.Node, Any]) -> Any:
@@ -227,12 +290,11 @@ def _cute_call(target: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> An
         "std",
         "var",
     }:
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction without a grouped "
-            f"TensorSSA lowering: {target}"
-        )
+        raise local_reduce_grouped_tensorssa_lowering_error(target)
     if op_name is None:
         raise NotImplementedError(f"unsupported FlexGEMM epilogue op: {target}")
+    if op_name in ("mx_e8m0_scale", "nvfp4_e4m3_scale"):
+        return _cute_scale_call(op_name, args, kwargs)
     try:
         op = getattr(V.get_ops_handler(), op_name)
     except AttributeError:
@@ -292,10 +354,7 @@ def propagate_grouped_tensorssa_info(
         return None
     layout = input_infos[0].layout
     if any(info.layout != layout for info in input_infos):
-        raise NotImplementedError(
-            "FlexGEMM local reductions do not support mixing grouped TensorSSA "
-            "values with different grouped layouts"
-        )
+        raise NotImplementedError(LOCAL_REDUCE_MIXED_GROUPED_LAYOUT_ERROR)
     return GroupedTensorSSAInfo(
         layout,
         (node.op == "call_method" and node.target == "abs")
@@ -312,6 +371,7 @@ def lower_view_or_reshape(
     kernel: Any,
     grouped_tensors: dict[torch.fx.Node, GroupedTensorSSAInfo],
     local_reduce_store_sources: dict[torch.fx.Node, Any],
+    preserve_value_layout: bool = False,
 ) -> Any | None:
     if node.op == "call_method" and node.target in ("view", "reshape"):
         source_node = node.args[0]
@@ -331,40 +391,25 @@ def lower_view_or_reshape(
         local_reduce_store_sources[node] = local_reduce_store_sources[source_node]
         return _cute_arg(source_node, env)
     grouped_layout = grouped_tensor_layout(shape)
-    if grouped_layout is None or not isinstance(source_node, torch.fx.Node):
+    if not isinstance(source_node, torch.fx.Node):
         return None
-    group_size = grouped_layout.group_size
-    if group_size <= 1:
-        raise NotImplementedError(
-            "FlexGEMM local reductions require group size greater than 1"
-        )
-    if grouped_layout.axis == 1:
-        if group_size > 32 and group_size % 32 != 0:
-            raise NotImplementedError(
-                "FlexGEMM local reductions larger than TensorSSA fragment width 32 require group size to be a multiple of 32"
-            )
-        if group_size <= 32 and 32 % group_size != 0:
-            raise NotImplementedError(
-                "FlexGEMM local reductions require group size to divide TensorSSA fragment width 32"
-            )
-    elif group_size > 32:
-        if group_size % 32 != 0:
-            raise NotImplementedError(
-                "FlexGEMM local reductions larger than TensorSSA fragment width 32 require group size to be a multiple of 32"
-            )
-    elif 32 % group_size != 0:
-        raise NotImplementedError(
-            "FlexGEMM local reductions require group size to divide TensorSSA fragment width 32"
-        )
+    if grouped_layout is None:
+        if source_node in grouped_tensors:
+            return _cute_arg(source_node, env)
+        return None
+    validate_local_reduce_tensorssa_group_size(
+        grouped_layout.axis, grouped_layout.group_size
+    )
     source = _cute_arg(source_node, env)
-    result = kernel.cse.generate(
+    grouped_tensors[node] = GroupedTensorSSAInfo(grouped_layout)
+    if preserve_value_layout:
+        return source
+    return kernel.cse.generate(
         kernel.body,
         f"{source}.reshape({grouped_layout.tensorssa_shape})",
         dtype=getattr(source, "dtype", None),
         shape=getattr(source, "shape", None),
     )
-    grouped_tensors[node] = GroupedTensorSSAInfo(grouped_layout)
-    return result
 
 
 def reduction_from_node(node: torch.fx.Node) -> tuple[Any, Any, Any, Any, str] | None:
@@ -572,17 +617,9 @@ def lower_prepare_softmax_online(
         raise partial_vector_reduction_error()
     info = grouped_tensors[input_node]
     if info.layout.needs_physical_combine:
-        raise NotImplementedError(
-            "unsupported FlexGEMM physical local reduction: prepare_softmax_online "
-            "needs a multi-value generated physical reducer"
-        )
-    if not OrderedSet(normalize_reduce_dims(dim)) <= OrderedSet(
-        info.layout.reduce_dims
-    ):
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: prepare_softmax_online "
-            "currently supports only the grouped dimension"
-        )
+        raise NotImplementedError(LOCAL_REDUCE_PREPARE_SOFTMAX_PHYSICAL_COMBINE_ERROR)
+    if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
+        raise NotImplementedError(LOCAL_REDUCE_PREPARE_SOFTMAX_GROUPED_DIM_ERROR)
     source = _cute_arg(input_node, env)
     max_reduced = kernel.cse.generate(
         kernel.body,
@@ -649,29 +686,16 @@ def lower_tensorssa_moment_reduce(
         raise partial_vector_reduction_error()
     info = grouped_tensors[input_node]
     if info.layout.needs_physical_combine:
-        raise NotImplementedError(
-            "unsupported FlexGEMM physical local reduction: moment reductions "
-            "need matching QuACK combine/finalize callbacks"
-        )
-    if not OrderedSet(normalize_reduce_dims(dim)) <= OrderedSet(
-        info.layout.reduce_dims
-    ):
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: moment reductions "
-            "currently support only the innermost grouped dimension"
-        )
+        raise NotImplementedError(LOCAL_REDUCE_MOMENT_PHYSICAL_COMBINE_ERROR)
+    if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
+        raise NotImplementedError(LOCAL_REDUCE_MOMENT_INNERMOST_GROUPED_DIM_ERROR)
     if correction is None:
         correction = 1
     if not isinstance(correction, (int, float)):
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: dynamic variance correction"
-        )
+        raise NotImplementedError(LOCAL_REDUCE_MOMENT_DYNAMIC_CORRECTION_ERROR)
     denominator = info.group_size - correction
     if denominator <= 0:
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: variance correction "
-            "must be smaller than the group size"
-        )
+        raise NotImplementedError(LOCAL_REDUCE_MOMENT_CORRECTION_RANGE_ERROR)
     source = _cute_arg(input_node, env)
     sum_reduced = kernel.cse.generate(
         kernel.body,
@@ -756,35 +780,22 @@ def lower_tensorssa_reduce(
         return None
     input_node, dim, keepdim, dtype, reduction_type = reduction
     if dtype is not None:
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: explicit reduction dtype"
-        )
+        raise NotImplementedError(LOCAL_REDUCE_EXPLICIT_DTYPE_ERROR)
     if not isinstance(input_node, torch.fx.Node):
         return None
     if input_node not in grouped_tensors:
         raise partial_vector_reduction_error()
     info = grouped_tensors[input_node]
-    if not OrderedSet(normalize_reduce_dims(dim)) <= OrderedSet(
-        info.layout.reduce_dims
-    ):
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: currently support only "
-            "the innermost grouped dimension"
-        )
+    if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
+        raise NotImplementedError(LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR)
     desc = FLEX_GEMM_TENSORSSA_REDUCTIONS.get(reduction_type)
     if desc is None:
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: "
-            f"reduction_type={reduction_type!r}"
-        )
+        raise local_reduce_unsupported_tensorssa_reduction_error(reduction_type)
     source = _cute_arg(input_node, env)
     if info.layout.needs_physical_combine:
         physical_reduction = FLEX_GEMM_REDUCTIONS.get(reduction_type)
         if physical_reduction is None:
-            raise NotImplementedError(
-                "unsupported FlexGEMM local reduction: "
-                f"reduction_type={reduction_type!r} needs a generated physical reducer"
-            )
+            raise local_reduce_unsupported_physical_reduction_error(reduction_type)
         if local_reduce_physical_reductions is not None:
             local_reduce_physical_reductions[node] = dataclasses.replace(
                 physical_reduction,

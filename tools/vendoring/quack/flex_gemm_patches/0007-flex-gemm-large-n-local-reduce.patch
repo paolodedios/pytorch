@@ -5,7 +5,7 @@ index c8cd84d..c601086 100644
 @@ -1104,6 +1104,28 @@ class GroupedColVecReduce(VecReduce):
      dim = 0
      epi_m_major_preference = -1
- 
+
 +    def smem_bytes(self, arg_tensor, cta_tile_shape_mnk, epi_tile, warp_shape_mnk=None):
 +        return EpiSmemBytes()
 +
@@ -215,7 +215,7 @@ index c40382b..525cd18 100644
              if key in self.concat_layout and key in d:
                  d[key] = layout_utils.concat_to_interleave(d[key], 1)
          return self.EpilogueParams(**d)
- 
+
 -    # epi_get_tma_atoms, epi_smem_bytes, epi_get_smem_struct,
 -    # epi_get_smem_tensors are all inherited from ComposableEpiMixin via _epi_ops.
 +    @classmethod
@@ -234,7 +234,7 @@ index c40382b..525cd18 100644
 +
 +    # epi_get_tma_atoms, epi_get_smem_struct, and epi_get_smem_tensors are all
 +    # inherited from ComposableEpiMixin via _epi_ops.
- 
+
      def epi_make_aux_out_copy_atom_r2s(self, params, tiled_copy_t2r):
          """Build the register-to-shared copy atom used by aux outputs."""
 @@ -804,11 +820,11 @@ def gemm_act(

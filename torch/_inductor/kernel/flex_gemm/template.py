@@ -13,12 +13,80 @@ from torch._inductor.codegen.cutedsl.cutedsl_template import (
     CuteDSLTemplate,
     CuteDSLTemplateCaller,
 )
+from torch._inductor.kernel.flex_gemm.constraints import (
+    FlexGemmLocalReduceConsumerKind,
+    LOCAL_REDUCE_AXIS_KWARG,
+    LOCAL_REDUCE_COMBINE_FN_KWARG,
+    local_reduce_combine_fn_name,
+    LOCAL_REDUCE_COMBINE_KEY_KWARG,
+    local_reduce_feeds_main,
+    LOCAL_REDUCE_FEEDS_MAIN_KWARG,
+    LOCAL_REDUCE_FINALIZE_FN_KWARG,
+    local_reduce_finalize_fn_name,
+    LOCAL_REDUCE_FINALIZE_KEY_KWARG,
+    LOCAL_REDUCE_GROUP_KWARG,
+    local_reduce_needs_physical_callbacks,
+    LOCAL_REDUCE_OUT_KWARG,
+    local_reduce_stores_compressed_aux,
+    LOCAL_REDUCE_TEMPLATE_FEED_MAIN_OUT_INDEX_ERROR,
+    LOCAL_REDUCE_TEMPLATE_OUT_INDEX_ERROR,
+    validate_local_reduce_consumer_kind,
+    validate_local_reduce_group_axis,
+    validate_local_reduce_output_binding,
+)
 from torch._inductor.kernel.flex_gemm.runtime import inductor_quack_cache_dir
 from torch._inductor.select_algorithm import PartialRender
 from torch.utils._ordered_set import OrderedSet
 
 
 log = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class FlexGemmEpilogueLocalReduceConfig:
+    """Template-time local-reduce consumer contract."""
+
+    kind: FlexGemmLocalReduceConsumerKind
+    group: int
+    axis: int
+    out_index: int | None = None
+
+    def __post_init__(self) -> None:
+        """Reject invalid consumer/index combinations at construction."""
+        validate_local_reduce_consumer_kind(self.kind)
+        validate_local_reduce_group_axis(self.group, self.axis)
+        validate_local_reduce_output_binding(
+            self.kind,
+            self.out_index is not None,
+            compressed_missing_error=LOCAL_REDUCE_TEMPLATE_OUT_INDEX_ERROR,
+            feed_main_unexpected_error=LOCAL_REDUCE_TEMPLATE_FEED_MAIN_OUT_INDEX_ERROR,
+        )
+
+    @classmethod
+    def from_output_plan(
+        cls, local_reduce: Any | None, out_index: int | None
+    ) -> "FlexGemmEpilogueLocalReduceConfig | None":
+        """Translate lowering's output-consumer plan into template metadata."""
+        if local_reduce is None:
+            return None
+        return cls(
+            kind=local_reduce.kind,
+            group=local_reduce.group,
+            axis=local_reduce.axis,
+            out_index=out_index,
+        )
+
+    @property
+    def feeds_main(self) -> bool:
+        return local_reduce_feeds_main(self.kind)
+
+    @property
+    def stores_compressed_aux(self) -> bool:
+        return local_reduce_stores_compressed_aux(self.kind)
+
+    @property
+    def needs_physical_callbacks(self) -> bool:
+        return local_reduce_needs_physical_callbacks(self.kind, self.axis, self.group)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -36,9 +104,7 @@ class FlexGemmEpilogueConfig:
         epilogue_arg_indices: Template input indices for read-only epilogue captures.
         epilogue_arg_kinds: Broadcast kind for each captured epilogue tensor.
         aux_out_index: Template input index for the single supported aux output.
-        local_reduce_out_index: Template input index for the local-reduce aux output.
-        local_reduce_group: Intra-CTA group size for generated local-reduce aux stores.
-        local_reduce_axis: Output axis compressed by the generated local-reduce aux store.
+        local_reduce: Tagged local-reduce consumer rendered into runtime kwargs.
     """
 
     epilogue_name: str
@@ -51,9 +117,7 @@ class FlexGemmEpilogueConfig:
     epilogue_arg_indices: tuple[int, ...] = ()
     epilogue_arg_kinds: tuple[str, ...] = ()
     aux_out_index: int | None = None
-    local_reduce_out_index: int | None = None
-    local_reduce_group: int | None = None
-    local_reduce_axis: int | None = None
+    local_reduce: FlexGemmEpilogueLocalReduceConfig | None = None
 
 
 class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
@@ -175,6 +239,35 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
             f"{out_dtype}"
         )
 
+    def _local_reduce_kwargs(
+        self,
+        input_args: list[str],
+        local_reduce: FlexGemmEpilogueLocalReduceConfig,
+        epilogue_name: str,
+    ) -> str:
+        """Render the generated local-reduce keyword ABI from one tagged config."""
+        kwargs = (
+            f", {LOCAL_REDUCE_GROUP_KWARG}={local_reduce.group!r}, "
+            f"{LOCAL_REDUCE_AXIS_KWARG}={local_reduce.axis!r}"
+        )
+        if local_reduce.out_index is not None:
+            kwargs = (
+                f", {LOCAL_REDUCE_OUT_KWARG}="
+                f"{input_args[local_reduce.out_index]}{kwargs}"
+            )
+        if local_reduce.feeds_main:
+            kwargs += f", {LOCAL_REDUCE_FEEDS_MAIN_KWARG}=True"
+        if local_reduce.needs_physical_callbacks:
+            combine_name = local_reduce_combine_fn_name(epilogue_name)
+            finalize_name = local_reduce_finalize_fn_name(epilogue_name)
+            kwargs += (
+                f", {LOCAL_REDUCE_COMBINE_FN_KWARG}={combine_name}, "
+                f"{LOCAL_REDUCE_COMBINE_KEY_KWARG}={combine_name!r}, "
+                f"{LOCAL_REDUCE_FINALIZE_FN_KWARG}={finalize_name}, "
+                f"{LOCAL_REDUCE_FINALIZE_KEY_KWARG}={finalize_name!r}"
+            )
+        return kwargs
+
     def _epilogue_kwargs(
         self, input_args: list[str], config: FlexGemmEpilogueConfig
     ) -> str:
@@ -188,22 +281,12 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
             )
         if config.aux_out_index is not None:
             kwargs.append(f", aux_out={input_args[config.aux_out_index]}")
-        if config.local_reduce_out_index is not None:
-            local_reduce_kwargs = (
-                f", local_reduce_out={input_args[config.local_reduce_out_index]}, "
-                f"local_reduce_group={config.local_reduce_group!r}, "
-                f"local_reduce_axis={config.local_reduce_axis!r}"
-            )
-            if config.local_reduce_axis == 0 or (
-                config.local_reduce_group is not None and config.local_reduce_group > 32
-            ):
-                local_reduce_kwargs += (
-                    f", local_reduce_combine_fn={config.epilogue_name}_local_reduce_combine_fn, "
-                    f"local_reduce_combine_key={config.epilogue_name + '_local_reduce_combine_fn'!r}, "
-                    f"local_reduce_finalize_fn={config.epilogue_name}_local_reduce_finalize_fn, "
-                    f"local_reduce_finalize_key={config.epilogue_name + '_local_reduce_finalize_fn'!r}"
+        if config.local_reduce is not None:
+            kwargs.append(
+                self._local_reduce_kwargs(
+                    input_args, config.local_reduce, config.epilogue_name
                 )
-            kwargs.append(local_reduce_kwargs)
+            )
         return "".join(kwargs)
 
 
