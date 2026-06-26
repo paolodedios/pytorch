@@ -360,6 +360,34 @@ class TestAOTCompileToPython(TestCase):
         self.assertEqual(out.a, eager.a)
         self.assertEqual(out.b, eager.b)
 
+    def test_multiple_subclass_inputs_runs_like_eager(self):
+        # Two tensor-subclass inputs make the subclass wrapper flatten/unflatten more than
+        # one subclass (each into its constituents), which the single-input subclass test
+        # above does not. NOTE: this stays a single chain wrapper -- a >= 2-link wrapper
+        # chain (e.g. subclass + functionalized-RNG) is only exercised by the order-
+        # inversion guard unit test, since a supported multi-chain-wrapper forward graph is
+        # not readily constructible (subclass+RNG hits an internal AOTAutograd assertion,
+        # duplicate subclass inputs collapse into one subclass wrapper, and plain duplicate
+        # inputs produce no captured chain wrapper).
+        from torch.testing._internal.two_tensor import TwoTensor
+
+        def f(a, b):
+            return a * 2.0 + b * 3.0
+
+        ta = TwoTensor(torch.randn(4, 4), torch.randn(4, 4))
+        tb = TwoTensor(torch.randn(4, 4), torch.randn(4, 4))
+        gm = make_fx(f, tracing_mode="real")(ta, tb)
+        src, _cache = compile_to_python(
+            gm, [ta, tb], options={"graph_partition": False}
+        )
+        _assert_composed(self, src)
+        with torch.no_grad():
+            out = _exec(src)([ta, tb])[0]
+        eager = f(ta, tb)
+        self.assertIsInstance(out, TwoTensor)
+        self.assertEqual(out.a, eager.a)
+        self.assertEqual(out.b, eager.b)
+
     def test_rejects_effectful_op(self):
         # A graph carrying an effectful op (here aten._print) is rejected up front with a
         # concrete NotImplementedError -- effect tokens thread through a calling convention
@@ -711,6 +739,16 @@ class TestAOTComposeGuards(TestCase):
             NotImplementedError, "orchestration wrapper signature"
         ):
             _compose_standalone_module("def call(args):\n    return args\n", [bad_orch])
+
+    def test_empty_capture_rejected(self):
+        # The real backstop for an incomplete capture (e.g. if a future change offloaded
+        # wrapper codegen to a worker thread so nothing was captured): the composer requires
+        # exactly one forward orchestration wrapper and rejects an empty capture rather than
+        # emitting a partial module.
+        with self.assertRaisesRegex(
+            NotImplementedError, "exactly one forward orchestration wrapper"
+        ):
+            _compose_standalone_module("def call(args):\n    return args\n", [])
 
     def test_chain_head_order_inversion_guard(self):
         # Capture order is assumed innermost-to-outermost. Feed it OUTER-first (inverted):
