@@ -666,10 +666,15 @@ def _compose_standalone_module(
     def _emit_block(
         var: str, source: str, fn_name: str, globals_dict: dict[str, object]
     ) -> str:
-        # Bind each global the wrapper closes over to a standalone expression, then
-        # embed the wrapper source via repr() -- so any delimiter inside it is safely
-        # escaped -- and re-exec it under those globals. Shared by the chain wrappers
-        # and the orchestration so the source encoding lives in exactly one place.
+        # Bind each global the wrapper closes over to a standalone expression, then embed
+        # the wrapper source and re-exec it under those globals -- each wrapper gets its
+        # own namespace, exactly as AOTAutograd does at runtime, so same-named locals in
+        # sibling wrappers cannot collide. The source is embedded as a readable
+        # triple-quoted block so the generated module reads as ordinary code rather than a
+        # one-line ``\n``-escaped blob; a source containing a ``"""`` or a backslash (which
+        # a plain triple-quoted literal could not reproduce verbatim) falls back to repr(),
+        # which escapes everything safely. Shared by the chain wrappers and the
+        # orchestration so the encoding lives in exactly one place.
         binds: list[str] = []
         for gname, gobj in globals_dict.items():
             # ``globals_dict`` is the pre-exec snapshot captured in subclass_codegen.py
@@ -682,8 +687,12 @@ def _compose_standalone_module(
                 gobj, helper_table, inner_call_id, fn_id_to_name, imports
             )
             binds.append(f"        {gname!r}: {expr},")
+        if '"""' not in source and "\\" not in source:
+            src_literal = f'"""\n{source}\n"""'
+        else:
+            src_literal = repr(source)
         return (
-            f"{var}_src = {source!r}\n"
+            f"{var}_src = {src_literal}\n"
             f"{var} = _exec_wrapper({var}_src, {fn_name!r}, {{\n"
             + "\n".join(binds)
             + "\n})\n"

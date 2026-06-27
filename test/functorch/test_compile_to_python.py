@@ -470,6 +470,19 @@ class TestAOTCompileToPython(TestCase):
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
+    def test_wrappers_emitted_as_readable_source_blocks(self):
+        # Captured runtime wrappers are embedded as readable triple-quoted source blocks
+        # (``_orchestration_src = """ ... """``), not one-line ``\n``-escaped repr strings,
+        # so the generated module reads as ordinary code. The module must still exec equal
+        # to eager (the triple-quote rendering is exec-identical to the repr form).
+        m = _Pointwise().eval()
+        x = torch.randn(8, 4)
+        src, _cache = _compose(m, x)
+        self.assertIn('_orchestration_src = """', src)
+        self.assertNotIn("_orchestration_src = 'def ", src)
+        with torch.no_grad():
+            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
     def test_functionalized_rng_runs_like_eager(self):
         # functionalize_rng_ops rewrites the RNG op into a functional form during the inner
         # AOTAutograd lowering, producing a FunctionalizedRngRuntimeWrapper that threads RNG
