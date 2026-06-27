@@ -68,7 +68,6 @@ class _ChunkViews:
     bchunk_size: int
     input_chunk: torch.Tensor
     target_chunk: torch.Tensor
-    weight_chunk: torch.Tensor | None  # None on the prob path (see prob_wt)
     logits: torch.Tensor
     input_chunk_acc: torch.Tensor
 
@@ -92,6 +91,18 @@ class _ChunkViews:
             g = ctx.loss_grad_output.narrow(0, self.bchunk_start, self.bchunk_size)
             out.mul_(g.unsqueeze(1))
         return out
+
+    @property
+    def weight_chunk(self) -> torch.Tensor:
+        # Per-row weighting, the dense analogue of the index per-row weight.
+        # Index: a read-only view of the masked, reduction-scaled
+        # ``neg_weight_target``. Prob: a FRESH row mass ``sum_v (w*t)`` --
+        # owned, so the grad loop scales it in place; the loops apply
+        # ``loss_scale`` on top. Not cached: each path reads it once.
+        ctx = self.ctx
+        if ctx.is_prob_target:
+            return self.prob_wt.sum(1, dtype=ctx.weight_chunk_dtype)
+        return ctx.neg_weight_target.narrow(0, self.bchunk_start, self.bchunk_size)
 
     @property
     def input(self) -> torch.Tensor:
@@ -650,13 +661,6 @@ class _ChunkContext:
     def bind_chunk(self, bchunk_start: int, bchunk_size: int) -> _ChunkViews:
         input_chunk = self.input.narrow(0, bchunk_start, bchunk_size)
         target_chunk = self.corrected_target.narrow(0, bchunk_start, bchunk_size)
-        # The prob loop derives its per-chunk row weighting from
-        # ``prob_wt`` instead of the per-row ``neg_weight_target``.
-        weight_chunk = (
-            None
-            if self.is_prob_target
-            else self.neg_weight_target.narrow(0, bchunk_start, bchunk_size)
-        )
         logits = self.logits_buf.narrow(0, 0, bchunk_size)
         input_chunk_acc = (
             self.input_chunk_acc_buf.narrow(0, 0, bchunk_size).copy_(input_chunk)
@@ -669,7 +673,6 @@ class _ChunkContext:
             bchunk_size=bchunk_size,
             input_chunk=input_chunk,
             target_chunk=target_chunk,
-            weight_chunk=weight_chunk,
             logits=logits,
             input_chunk_acc=input_chunk_acc,
         )
@@ -851,30 +854,37 @@ def _linear_cross_entropy_batch_chunked_accumulator(
         loss_grad_output=loss_grad_output,
     )
     dtype = ctx.dtype
-    # reduction='none' forward (no upstream grad yet): per-sample loss
-    # into an (N,) output, no gradient precompute. Index: ``weight_chunk``
-    # is the unsigned masked class weight (neg_weight_target's "none" forward
-    # form), so each row's loss is W[T[n]] * (log denom - shifted[T[n]]) =
-    # W[T[n]] * (-log_softmax). Prob: each row's loss is
-    # s_n * log denom_n - <(w*t)_n, shifted_n>, s_n = sum_v (w*t)[n, v]. The
-    # "none" backward (loss_grad_output set) routes through the grad loop below.
+    # reduction='none' forward (no upstream grad yet): per-sample loss into
+    # an (N,) output, no gradient precompute. Both targets compute the same
+    # loss, row-weight ``s_n`` times (log denom_n - mean target logit), but
+    # realize it differently. Index is the one-hot case: the per-row weight
+    # w[T[n]] factors out and the mean is the single target logit, so
+    # ``(log_denom - shifted[T[n]]) * w`` stays factored (exact, in place).
+    # Prob is general: factoring would need the weighted mean
+    # ``<(w*t)_n, shifted_n> / s_n``, so the expanded
+    # ``s_n * log_denom - <(w*t)_n, shifted_n>`` is used instead -- it cancels
+    # that division (better precision, and a clean 0 rather than 0/0 when the
+    # row mass s_n is 0). The "none" backward (loss_grad_output set) routes
+    # through the grad loop below.
     if reduction == "none" and loss_grad_output is None:
         out = torch.empty(ctx.num_batches, dtype=dtype, device=ctx.input.device)
         for chunk in ctx.chunks():
             logits = ctx.shifted_logits(chunk)
-            # Read the target term BEFORE ``sumexp_`` -- it does ``exp_()``
-            # in place, overwriting logits with exp(shifted).
+            s = chunk.weight_chunk
+            # Read the target term BEFORE ``sumexp_`` -- it ``exp_()``s
+            # logits in place, overwriting them with exp(shifted).
             if ctx.is_prob_target:
-                wt = chunk.prob_wt
-                per_row = torch.einsum("bv,bv->b", wt, logits)
-                s = wt.sum(1, dtype=ctx.weight_chunk_dtype)
+                target_logit_sum = torch.einsum("bv,bv->b", chunk.prob_wt, logits)
                 softmax_denom = ctx.sumexp_(logits, dim=1)
-                loss_chunk = softmax_denom.log_().mul_(s).sub_(per_row)
+                loss_chunk = softmax_denom.log_().mul_(s).sub_(target_logit_sum)
             else:
-                ls_target = logits.gather(1, chunk.target_chunk.unsqueeze(1)).squeeze(1)
+                # gather is the prob-branch einsum specialized to a one-hot
+                # target: with the indicator row e where e[v] = (v == T[n]),
+                # einsum("bv,bv->b", e, logits) == logits[T[n]] -- evaluated
+                # sparsely here, with no dense (B, V) indicator materialized.
+                target_logit = logits.gather(1, chunk.target_chunk[:, None]).squeeze(1)
                 softmax_denom = ctx.sumexp_(logits, dim=1)
-                loss_chunk = softmax_denom.log_().sub_(ls_target)
-                loss_chunk.mul_(chunk.weight_chunk)
+                loss_chunk = softmax_denom.log_().sub_(target_logit).mul_(s)
             out.narrow(0, chunk.bchunk_start, chunk.bchunk_size).copy_(loss_chunk)
         return (
             out,
@@ -929,8 +939,9 @@ def _linear_cross_entropy_batch_chunked_accumulator(
                 output.sub_(loss_term * loss_scale)
             else:
                 output.sub_(loss_term, alpha=loss_scale)
-            # Per-row weight mass with the reduction factor folded in.
-            s = wt.sum(1, dtype=ctx.weight_chunk_dtype).mul_(loss_scale)
+            # Per-row weight mass with the reduction factor folded in
+            # (prob ``weight_chunk`` is a fresh row-sum, scaled in place).
+            s = chunk.weight_chunk.mul_(loss_scale)
             softmax_denom = ctx.sumexp_(logits, dim=1)
             if compute_grads:
                 # logits *= s/denom      (= loss_scale * softmax(x) * s_n)
