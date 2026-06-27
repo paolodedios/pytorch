@@ -953,7 +953,7 @@ void gather(
   auto type = to_nccl_data_type(inputs);
   const auto* sendbuff = reinterpret_cast<const char*>(inputs.const_data_ptr());
 
-#if ((NCCL_MAJOR > 2) || ((NCCL_MAJOR == 2) && (NCCL_MINOR >= 28)))
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
   void* recv_ptr = nullptr;
   at::Tensor flat; // keep alive until after NCCL call
   if (cur_rank == root) {
