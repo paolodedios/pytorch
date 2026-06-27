@@ -247,8 +247,8 @@ def _assert_composed(test, src):
     # Structural markers proving this is the COMPOSED module (not just the inner inductor
     # output): the outer entry takes flat_inputs, the inner call is captured as
     # _inner_call, and the AOTAutograd orchestration is inlined as a real def that the
-    # outer call invokes directly by name. (_exec_wrapper is asserted only by the
-    # chain-wrapper tests, since it is omitted for dense graphs with no chain wrapper.)
+    # outer call invokes directly by name. (All wrappers are inlined now -- no _exec_wrapper
+    # / source-string blobs anywhere; the chain-wrapper test checks that directly.)
     test.assertIn("def call(flat_inputs):", src)
     test.assertIn("_inner_call = call", src)
     test.assertIn("def _runtime_wrapper(", src)
@@ -475,8 +475,8 @@ class TestAOTCompileToPython(TestCase):
     def test_orchestration_inlined_as_real_def(self):
         # The orchestration is spliced as a real top-level ``def _runtime_wrapper`` that the
         # outer ``call`` invokes directly by name -- no string re-exec, no ``_orchestration``
-        # alias. A dense graph has no chain wrapper, so the composed module emits no
-        # ``_exec_wrapper`` at all and reads as ordinary code; it must still exec like eager.
+        # alias. All wrappers are inlined now, so ``_exec_wrapper`` no longer exists in any
+        # composed module; the module reads as ordinary code and must still exec like eager.
         m = _Pointwise().eval()
         x = torch.randn(8, 4)
         src, _cache = _compose(m, x)
@@ -487,10 +487,11 @@ class TestAOTCompileToPython(TestCase):
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
-    def test_chain_wrapper_still_isolated_via_exec(self):
-        # A graph with a chain wrapper (tensor subclass) still re-execs that wrapper in its
-        # own globals via _exec_wrapper -- the reused inner_fn / compiled_fn names must stay
-        # isolated -- while the orchestration is inlined. Numerics must match eager.
+    def test_chain_wrapper_inlined_as_real_def(self):
+        # A graph with a chain wrapper (tensor subclass -> ``inner_fn``, which closes over
+        # the inner via a ``compiled_fn`` global) is now inlined too: the wrapper is a real
+        # top-level def with ``compiled_fn`` hoisted to a module-scope assignment, no exec /
+        # string blob anywhere. Numerics must match eager.
         from torch.testing._internal.two_tensor import TwoTensor
 
         def f(x):
@@ -499,7 +500,10 @@ class TestAOTCompileToPython(TestCase):
         tt = TwoTensor(torch.randn(4, 4), torch.randn(4, 4))
         gm = make_fx(f, tracing_mode="real")(tt)
         src, _cache = compile_to_python(gm, [tt])
-        self.assertIn("_exec_wrapper", src)
+        self.assertNotIn("_exec_wrapper", src)
+        self.assertNotIn("_src = ", src)  # no re-exec'd source-string blobs
+        self.assertIn("def inner_fn(", src)
+        self.assertIn("compiled_fn = _inner_call", src)
         self.assertIn("def _runtime_wrapper(", src)
         with torch.no_grad():
             out = _exec(src)([tt])[0]
@@ -925,7 +929,7 @@ class TestAOTComposeGuards(TestCase):
             lambda: None,
         )
         with self.assertRaisesRegex(
-            NotImplementedError, "collides with a top-level name in the inner"
+            NotImplementedError, "collides with another top-level name in the composed"
         ):
             _compose_standalone_module(inner, [orch])
 
