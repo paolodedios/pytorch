@@ -495,9 +495,9 @@ class _ChunkContext:
             )
         use_acc_dtype = dtype != acc_dtype
 
-        # Internal dtype layout. ``compact`` reuses ``balanced``'s layout;
-        # its savings come from skipping the weight_grad_chunk scratch, not dtype.
-        is_memory_like = acc_policy in {"balanced", "compact"}
+        # Internal dtype layout shared by the memory-like policy. ``compact``'s
+        # savings come from skipping the weight_grad_chunk scratch, not dtype.
+        is_memory_like = acc_policy == "compact"
         if use_acc_dtype:
             output_dtype = acc_dtype if dtype == torch.float16 else dtype
             grad_input_dtype = dtype if is_memory_like else acc_dtype
@@ -515,7 +515,7 @@ class _ChunkContext:
             )
 
         # ===== Dispatch flags =====
-        # CUDA + balanced uses cuBLAS out_dtype= directly; no cast.
+        # CUDA + compact uses cuBLAS out_dtype= directly; no cast.
         needs_linear_weight_cast = use_acc_dtype and (
             not is_cuda or (compute_input_grad and grad_input_dtype == logits_buf_dtype)
         )
@@ -916,32 +916,44 @@ def _linear_cross_entropy_batch_chunked_accumulator(
         # Signs are direct (positive ``loss_scale``), unlike the index
         # loop's negated ``neg_weight_target`` convention.
         loss_scale = ctx.loss_scale
+        # The reduction='none' backward enters this loop only for gradients --
+        # its scalar ``output`` is discarded. ``loss_needed`` skips the
+        # loss-only work (the (B, V) ``loss_term`` reduction and the two
+        # ``output`` updates), leaving the gradient path (``s``,
+        # ``softmax_denom``, the softmax scaling) untouched. The scalar
+        # mean/sum forward passes loss_grad_output=None, so it still runs them.
+        loss_needed = ctx.loss_grad_output is None
         for chunk in ctx.chunks():
             logits = ctx.shifted_logits(chunk)
             wt = chunk.prob_wt
-            # Loss target term sum_{n,c} (w*t)*x_shifted, read BEFORE
-            # ``sumexp_`` (it ``exp_``s logits in place). torch.dot returns its
-            # scalar at the operand dtype, so when the logits buffer is fp16
-            # (CUDA balanced/compact) the sum overflows fp16 (>65504) for a
-            # large batch of max-shifted (<=0) logits; a per-row einsum summed
-            # across rows in fp32 stays finite (same cost as the dot). bf16/fp32
-            # operands return a wide-enough scalar, so keep the flat dot.
-            if logits.dtype == torch.float16:
-                per_row = torch.einsum("bv,bv->b", wt, logits)
-                loss_term = per_row.sum(dtype=torch.float32)
-            else:
-                loss_term = torch.dot(wt.reshape(-1), logits.reshape(-1))
-            # ``output`` is fp16 when acc_dtype is fp16 (e.g. MPS). MPS narrows
-            # the large fp32 loss_term to fp16 (-> inf) BEFORE applying alpha,
-            # unlike the documented type-promoted in-place subtract other
-            # backends do; scale first there so the operand stays in fp16 range.
-            if output.device.type == "mps":
-                output.sub_(loss_term * loss_scale)
-            else:
-                output.sub_(loss_term, alpha=loss_scale)
-            # Per-row weight mass with the reduction factor folded in
-            # (prob ``weight_chunk`` is a fresh row-sum, scaled in place).
-            s = chunk.weight_chunk.mul_(loss_scale)
+            if loss_needed:
+                # Loss target term sum_{n,c} (w*t)*x_shifted, read BEFORE
+                # ``sumexp_`` (it ``exp_``s logits in place). torch.dot returns
+                # its scalar at the operand dtype, so when the logits buffer is
+                # fp16 the sum overflows fp16 (>65504) for a large batch of
+                # max-shifted (<=0) logits; a per-row einsum summed across rows
+                # in fp32 stays finite (same cost as the dot). bf16/fp32
+                # operands return a wide-enough scalar, so keep the flat dot.
+                if logits.dtype == torch.float16:
+                    per_row = torch.einsum("bv,bv->b", wt, logits)
+                    loss_term = per_row.sum(dtype=torch.float32)
+                else:
+                    loss_term = torch.dot(wt.reshape(-1), logits.reshape(-1))
+                # ``output`` is fp16 when acc_dtype is fp16 (e.g. MPS). MPS
+                # narrows the large fp32 loss_term to fp16 (-> inf) BEFORE
+                # applying alpha, unlike the documented type-promoted in-place
+                # subtract other backends do; scale first there so the operand
+                # stays in fp16 range.
+                if output.device.type == "mps":
+                    output.sub_(loss_term * loss_scale)
+                else:
+                    output.sub_(loss_term, alpha=loss_scale)
+            # Per-row weight mass with the reduction factor folded in (prob
+            # ``weight_chunk`` is a fresh row-sum; scale in place when needed --
+            # loss_scale is 1 for sum and the none backward).
+            s = chunk.weight_chunk
+            if loss_scale != 1.0:
+                s = s.mul_(loss_scale)
             softmax_denom = ctx.sumexp_(logits, dim=1)
             if compute_grads:
                 # logits *= s/denom      (= loss_scale * softmax(x) * s_n)
@@ -950,8 +962,9 @@ def _linear_cross_entropy_batch_chunked_accumulator(
                     ctx.div(s, softmax_denom).unsqueeze(1),
                     out=logits,
                 )
-            # output += <s, log denom>   (loss_scale already in s)
-            output.add_(s.to(softmax_denom.dtype).dot(softmax_denom.log_()))
+            if loss_needed:
+                # output += <s, log denom>   (loss_scale already in s)
+                output.add_(s.to(softmax_denom.dtype).dot(softmax_denom.log_()))
             if compute_grads:
                 # grad_logits = loss_scale * (softmax*s_n - w*t); from
                 # here every gradient is a single dense op.
