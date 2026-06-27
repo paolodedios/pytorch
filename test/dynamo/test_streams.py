@@ -899,40 +899,44 @@ class <lambda>(torch.nn.Module):
             print_graph(bw_graphs[0]),
             """\
 class GraphModule(torch.nn.Module):
-    def forward(self, getitem: "f32[2, 2]", mul: "f32[2, 2]", mul_1: "f32[2, 2]", mul_2: "f32[2, 2]", tangents_1: "f32[2, 2]", tangents_2: "f32[2, 2]"):
+    def forward(self, mul: "f32[2, 2]", getitem_1: "f32[2, 2]", mul_1: "f32[2, 2]", mul_2: "f32[2, 2]", tangents_1: "f32[2, 2]", tangents_2: "f32[2, 2]"):
         # Annotation: {'stream': 3} Backward of forward node:
         mul_3: "f32[2, 2]" = torch.ops.aten.mul.Tensor(tangents_1, mul_1);  tangents_1 = None
 
         # Annotation: {'stream': 2} Backward of forward node:
-        mul_4: "f32[2, 2]" = torch.ops.aten.mul.Tensor(tangents_2, getitem);  tangents_2 = getitem = None
+        mul_4: "f32[2, 2]" = torch.ops.aten.mul.Tensor(tangents_2, getitem_1);  tangents_2 = getitem_1 = None
 
         # No stacktrace found for following nodes
         subgraph_record_event_default = self.subgraph_record_event_default
         control_deps_2 = torch.ops.higher_order.control_deps((mul, mul_4), subgraph_record_event_default, mul, mul_4);  mul = mul_4 = subgraph_record_event_default = None
 
         # Annotation: {'stream': 2} Backward of forward node:
-        getitem_2: "f32[2, 2]" = control_deps_2[2]
+        getitem_3: "f32[2, 2]" = control_deps_2[2]
+        getitem_2: "f32[2, 2]" = control_deps_2[1]
 
         # No stacktrace found for following nodes
         subgraph_wait_event_default = self.subgraph_wait_event_default
-        control_deps_3 = torch.ops.higher_order.control_deps((control_deps_2, mul_1, mul_2, mul_3), subgraph_wait_event_default, mul_2, mul_3);  control_deps_2 = mul_1 = mul_2 = mul_3 = subgraph_wait_event_default = None
+        control_deps_3 = torch.ops.higher_order.control_deps((control_deps_2, mul_1, mul_2, mul_3, getitem_2, getitem_3), subgraph_wait_event_default, mul_2, mul_3, getitem_3);  control_deps_2 = mul_1 = mul_2 = mul_3 = getitem_2 = getitem_3 = subgraph_wait_event_default = None
+
+        # Annotation: {'stream': 2} Backward of forward node:
+        getitem_6: "f32[2, 2]" = control_deps_3[3]
 
         # Annotation: {'stream': 3} Backward of forward node:
-        getitem_4: "f32[2, 2]" = control_deps_3[2];  control_deps_3 = None
+        getitem_5: "f32[2, 2]" = control_deps_3[2];  control_deps_3 = None
 
         # Annotation: {'stream': 3} Backward of forward node:
-        add: "f32[2, 2]" = torch.ops.aten.add.Tensor(getitem_4, getitem_2);  getitem_4 = None
+        add: "f32[2, 2]" = torch.ops.aten.add.Tensor(getitem_5, getitem_6);  getitem_5 = None
 
         # No stacktrace found for following nodes
         subgraph_record_event_default_1 = self.subgraph_record_event_default_1
         control_deps_4 = torch.ops.higher_order.control_deps((add,), subgraph_record_event_default_1, add);  add = subgraph_record_event_default_1 = None
 
         # Annotation: {'stream': 3} Backward of forward node:
-        getitem_5: "f32[2, 2]" = control_deps_4[1];  control_deps_4 = None
+        getitem_7: "f32[2, 2]" = control_deps_4[1];  control_deps_4 = None
 
         # No stacktrace found for following nodes
-        sync_dealloc_default = torch.ops.streams.sync_dealloc.default(5, 2, getitem_2);  getitem_2 = sync_dealloc_default = None
-        return (getitem_5,)
+        sync_dealloc_default = torch.ops.streams.sync_dealloc.default(5, 2, getitem_6);  getitem_6 = sync_dealloc_default = None
+        return (getitem_7,)
 
     class subgraph_record_event_default(torch.nn.Module):
         def forward(self, dep_0: "f32[2, 2]", dep_1: "f32[2, 2]"):
@@ -941,10 +945,10 @@ class GraphModule(torch.nn.Module):
             return (record_event_default, dep_0, dep_1)
 
     class subgraph_wait_event_default(torch.nn.Module):
-        def forward(self, dep_0: "f32[2, 2]", dep_1: "f32[2, 2]"):
+        def forward(self, dep_0: "f32[2, 2]", dep_1: "f32[2, 2]", dep_2: "f32[2, 2]"):
             # No stacktrace found for following nodes
             wait_event_default = torch.ops.streams.wait_event.default(4, 3)
-            return (wait_event_default, dep_0, dep_1)
+            return (wait_event_default, dep_0, dep_1, dep_2)
 
     class subgraph_record_event_default_1(torch.nn.Module):
         def forward(self, dep_0: "f32[2, 2]"):
