@@ -15,7 +15,7 @@ All other PEP 517 hooks are re-exported from scikit-build-core unchanged.
 
 import os
 
-from scikit_build_core.build import (  # noqa: F401
+from scikit_build_core.build import (  # noqa: F401  # pyrefly: ignore[missing-import]
     build_editable as _build_editable,
     build_sdist,
     build_wheel as _build_wheel,
