@@ -1446,11 +1446,14 @@ with torch.cuda._DeviceGuard(0):
         raw_stream = get_raw_stream(0)
         triton_kernel.run(arg0_1, buf0, 1024, stream=raw_stream)
     with default_stream:
-        buf3 = empty_strided_cuda((1024, ), (1, ), torch.float32)
+        buf1 = empty_strided_cuda((1024, ), (1, ), torch.float32)
         raw_stream0 = get_raw_stream(0)
-        triton_kernel.run(arg0_1, buf0, buf3, 1024, stream=raw_stream0)
+        triton_kernel.run(arg0_1, buf1, 1024, stream=raw_stream0)
         torch.ops.streams.synchronize_stream.default(1)
-    return (buf3, )""",
+        buf5 = empty_strided_cuda((1024, ), (1, ), torch.float32)
+        raw_stream0 = get_raw_stream(0)
+        triton_kernel.run(buf1, buf0, buf5, 1024, stream=raw_stream0)
+    return (buf5, )""",
         )
 
     def test_codegen_structure_pipeline(self):
