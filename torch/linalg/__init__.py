@@ -2230,24 +2230,12 @@ this function returns the unique symmetric (resp. Hermitian) positive-definite m
 .. math::
     XX = A.
 
-The result is computed from the eigendecomposition :math:`A = Q \operatorname{diag}(\lambda) Q^H`
-as :math:`X = Q \operatorname{diag}(\sqrt{\lambda}) Q^H`.
-
 Supports input of float, double, cfloat and cdouble dtypes.
 Also supports batches of matrices, and if :attr:`A` is a batch of matrices then
 the output has the same batch dimensions.
 
 .. note:: Only the lower triangular part of :attr:`A` is used in the computation, and
           :attr:`A` is assumed to be symmetric (resp. Hermitian). See :func:`torch.linalg.eigh`.
-
-.. note:: :attr:`A` must be positive semi-definite. The real square root of a matrix with
-          a negative eigenvalue is complex, so this function raises a runtime error when
-          :attr:`A` has a materially negative eigenvalue.
-
-.. note:: The first-order gradient is numerically stable even when :attr:`A` has repeated
-          eigenvalues, unlike differentiating through :func:`torch.linalg.eigh`, but requires
-          :attr:`A` to be positive-definite. Higher-order derivatives differentiate through
-          :func:`torch.linalg.eigh` and are not stable at repeated eigenvalues.
 
 .. seealso::
 
