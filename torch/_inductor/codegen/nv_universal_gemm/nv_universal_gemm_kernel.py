@@ -81,6 +81,67 @@ def _make_global_compiled_key(
 _cutedsl_compile_lock = threading.Lock()
 
 
+def _get_or_compile_nvgemm(
+    global_key,
+    variant_name,
+    input_tensors,
+    out,
+    accumulator_type,
+    *,
+    kernel_obj=None,
+    kernel_name: str | None = None,
+    args_kwargs=None,
+    epilogue_args=None,
+    epilogue_source="",
+    fallback_fn=None,
+):
+    """Get or compile an NVGEMM artifact with double-checked locking.
+
+    Centralizes thread safety and the global cache hierarchy for all three
+    compile paths (autotuning, runtime, codegen precompile). All cutlass_api
+    operations run under _cutedsl_compile_lock.
+
+    kernel_obj: pre-resolved kernel (skips _lookup_gemm_kernel).
+    kernel_name: kernel name for _lookup_gemm_kernel.
+    args_kwargs: extra kwargs forwarded to _create_gemm_arguments.
+    fallback_fn: callable(kernel) -> artifact | None, called inside the lock
+        on cache miss before compiling (for disk cache).
+
+    Returns (artifact, args, kernel, was_compiled).
+    """
+    artifact = _global_compiled_cache.get(global_key)
+    was_compiled = False
+
+    with _cutedsl_compile_lock:
+        args = _create_gemm_arguments(
+            variant_name,
+            input_tensors,
+            out,
+            accumulator_type,
+            epilogue=epilogue_args,
+            **(args_kwargs or {}),
+        )
+        if kernel_obj is not None:
+            kernel = kernel_obj
+        else:
+            kernel = _lookup_gemm_kernel(
+                kernel_name,  # pyrefly: ignore[bad-argument-type]
+                epilogue_args=epilogue_args,
+                epilogue_source=epilogue_source,
+            )
+        if artifact is None:
+            artifact = _global_compiled_cache.get(global_key)
+        if artifact is None:
+            if fallback_fn is not None:
+                artifact = fallback_fn(kernel)
+            if artifact is None:
+                artifact = kernel.compile(args)
+                was_compiled = True
+            _global_compiled_cache.insert(global_key, artifact)
+
+    return artifact, args, kernel, was_compiled
+
+
 # ── Runtime helpers (imported by generated wrapper code at runtime) ───────────
 
 
@@ -275,43 +336,44 @@ def _nvgemm_run(
         epilogue_source=epilogue_source,
         has_epilogue=has_epilogue,
     )
-    artifact = compiled_cache.get(mem_key)
-    if artifact is None:
-        artifact = _global_compiled_cache.get(global_key)
 
-    with _cutedsl_compile_lock:
-        args = _create_gemm_arguments(
-            variant_name,
-            input_tensors,
-            out,
-            accumulator_type,
-            epilogue=epilogue_args,
-            **(variant_kwargs or {}),
+    def disk_fallback(kernel):
+        compiled_fn = disk_cache_get(
+            disk_fn_cache,
+            module_path,
+            disk_config_key,
+            cache_key,
+            dev_idx,
         )
-        kernel = _lookup_gemm_kernel(
-            kernel_name,
-            epilogue_args=epilogue_args,
-            epilogue_source=epilogue_source,
+        if compiled_fn is not None:
+            compiled_fn = _rewrap_efc_compiled_obj(compiled_fn, kernel)
+            return CompiledArtifact(compiled_fn, kernel)
+        return None
+
+    artifact, args, kernel, was_compiled = _get_or_compile_nvgemm(
+        global_key,
+        variant_name,
+        input_tensors,
+        out,
+        accumulator_type,
+        kernel_name=kernel_name,
+        args_kwargs=variant_kwargs,
+        epilogue_args=epilogue_args,
+        epilogue_source=epilogue_source,
+        fallback_fn=disk_fallback,
+    )
+
+    if was_compiled:
+        disk_cache_set(
+            disk_fn_cache,
+            module_path,
+            disk_config_key,
+            cache_key,
+            _unwrap_efc_compiled_obj(artifact.compiled_obj),
+            dev_idx,
         )
-        if artifact is None:
-            compiled_fn = disk_cache_get(
-                disk_fn_cache, module_path, disk_config_key, cache_key, dev_idx
-            )
-            if compiled_fn is not None:
-                compiled_fn = _rewrap_efc_compiled_obj(compiled_fn, kernel)
-                artifact = CompiledArtifact(compiled_fn, kernel)
-            else:
-                artifact = kernel.compile(args)
-                disk_cache_set(
-                    disk_fn_cache,
-                    module_path,
-                    disk_config_key,
-                    cache_key,
-                    _unwrap_efc_compiled_obj(artifact.compiled_obj),
-                    dev_idx,
-                )
-            _global_compiled_cache.insert(global_key, artifact)
-        compiled_cache[mem_key] = artifact
+
+    compiled_cache[mem_key] = artifact
 
     kernel.run(
         args,
@@ -400,19 +462,15 @@ def _nvgemm_precompile(
                 cache_key,
                 device_index,
             )
-            artifact = _global_compiled_cache.get(global_key)
-            if artifact is None:
-                with _cutedsl_compile_lock:
-                    args = _create_gemm_arguments(
-                        variant_name,
-                        input_tensors,
-                        out,
-                        accumulator_type,
-                        **(variant_kwargs or {}),
-                    )
-                    kernel = _lookup_gemm_kernel(kernel_name)
-                    artifact = kernel.compile(args)
-                _global_compiled_cache.insert(global_key, artifact)
+            artifact, _, _, _ = _get_or_compile_nvgemm(
+                global_key,
+                variant_name,
+                input_tensors,
+                out,
+                accumulator_type,
+                kernel_name=kernel_name,
+                args_kwargs=variant_kwargs,
+            )
             disk_cache_set(
                 disk_fn_cache,
                 module_path,

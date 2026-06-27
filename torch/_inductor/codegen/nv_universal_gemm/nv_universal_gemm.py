@@ -22,9 +22,8 @@ from torch._inductor.codegen.cuda.cuda_env import get_cuda_arch
 from torch._inductor.codegen.nv_universal_gemm.nv_universal_gemm_kernel import (
     _create_gemm_arguments,
     _create_gemm_cache_key,
-    _cutedsl_compile_lock,
+    _get_or_compile_nvgemm,
     _get_scaled_gemm_modes,
-    _global_compiled_cache,
     _make_global_compiled_key,
 )
 from torch._inductor.ir import Buffer, ChoiceCaller, Layout, TensorBox
@@ -78,7 +77,6 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
         super().__init__(kernel_name, input_tensor_meta, output_tensor_meta, ())
         self.kernel = kernel
         self.accumulator_type = accumulator_type
-        self._compiled_artifact = None
         self._workspace: torch.Tensor | None = None
         self.workspace_size = workspace_size
         self.variant = variant
@@ -125,48 +123,42 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
 
         _ensure_fp4_dtype_registered()
 
-        with _cutedsl_compile_lock:
-            helper_kwargs: dict[str, Any] = {}
-            if self.variant == GemmVariant.SCALED_GEMM:
-                scale_mode_a, swizzle_mode_a, scale_mode_b, swizzle_mode_b = (
-                    _get_scaled_gemm_modes(
-                        self.scale_type_a,
-                        self.swizzle_type_a,
-                        self.scale_type_b,
-                        self.swizzle_type_b,
-                    )
+        helper_kwargs: dict[str, Any] = {}
+        if self.variant == GemmVariant.SCALED_GEMM:
+            scale_mode_a, swizzle_mode_a, scale_mode_b, swizzle_mode_b = (
+                _get_scaled_gemm_modes(
+                    self.scale_type_a,
+                    self.swizzle_type_a,
+                    self.scale_type_b,
+                    self.swizzle_type_b,
                 )
-                helper_kwargs = {
-                    "scale_mode_a": scale_mode_a,
-                    "swizzle_mode_a": swizzle_mode_a,
-                    "scale_mode_b": scale_mode_b,
-                    "swizzle_mode_b": swizzle_mode_b,
-                }
-
-            args = _create_gemm_arguments(
-                self.variant.name,
-                input_tensors,
-                out,
-                self.accumulator_type,
-                **helper_kwargs,
             )
+            helper_kwargs = {
+                "scale_mode_a": scale_mode_a,
+                "swizzle_mode_a": swizzle_mode_a,
+                "scale_mode_b": scale_mode_b,
+                "swizzle_mode_b": swizzle_mode_b,
+            }
 
-            if self._compiled_artifact is None:
-                cache_key = _create_gemm_cache_key(input_tensors, out)
-                dev_idx = input_tensors[0].device.index or 0
-                global_key = _make_global_compiled_key(
-                    self.kernel.metadata.kernel_name,
-                    self.variant.name,
-                    self.accumulator_type,
-                    cache_key,
-                    dev_idx,
-                )
-                self._compiled_artifact = _global_compiled_cache.get(global_key)
-                if self._compiled_artifact is None:
-                    self._compiled_artifact = self.kernel.compile(args)
-                    _global_compiled_cache.insert(global_key, self._compiled_artifact)
-        artifact = self._compiled_artifact
-        kernel = self.kernel
+        cache_key = _create_gemm_cache_key(input_tensors, out)
+        dev_idx = input_tensors[0].device.index or 0
+        global_key = _make_global_compiled_key(
+            self.kernel.metadata.kernel_name,
+            self.variant.name,
+            self.accumulator_type,
+            cache_key,
+            dev_idx,
+        )
+
+        artifact, args, kernel, _ = _get_or_compile_nvgemm(
+            global_key,
+            self.variant.name,
+            input_tensors,
+            out,
+            self.accumulator_type,
+            kernel_obj=self.kernel,
+            args_kwargs=helper_kwargs,
+        )
 
         # Allocate workspace if needed
         if self.workspace_size > 0:
