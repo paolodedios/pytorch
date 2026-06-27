@@ -28,7 +28,11 @@ falling back to an opaque embedding.
 Contract note: the standalone ``call`` deliberately substitutes ``nullcontext`` / a
 no-op for the runtime's first-invocation context and profiler prologue, dropping the
 cold-start custom-op aliasing analysis and the profiler prologue -- both diagnostics
-with no effect on numerics (see the generated-call emission site).
+with no effect on numerics (see the generated-call emission site). One caveat: that
+dropped first-invocation custom-op aliasing analysis can itself RAISE under
+``config.error_on_custom_op_aliasing`` (default on in CI), so a graph whose custom op
+violates the aliasing contract runs SILENTLY in the standalone artifact where the
+eager / compiled path would error -- an intentional trade-off, not a numerics bug.
 """
 
 from __future__ import annotations

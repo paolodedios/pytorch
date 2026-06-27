@@ -4,6 +4,7 @@ import dataclasses
 import enum
 import functools
 import math
+import types
 
 import torch
 import torch._functorch.config as functorch_config
@@ -16,10 +17,12 @@ from torch._functorch._aot_autograd.to_standalone_python import (
     _emit_value,
     _find_effectful_op,
     _REBUILD_HELPER,
+    _resolve_global,
 )
 from torch._functorch.aot_autograd import compile_to_python
 from torch._higher_order_ops.effects import _get_effect
 from torch.fx.experimental.proxy_tensor import make_fx
+from torch.fx.experimental.symbolic_shapes import ShapeEnv, SymIntEqByExpr
 from torch.nn.utils import stateless
 from torch.testing._internal.common_utils import run_tests, TestCase
 from torch.testing._internal.triton_utils import requires_cuda_and_triton
@@ -484,6 +487,10 @@ class TestAOTCompileToPython(TestCase):
         self.assertIn("return _runtime_wrapper(", src)
         self.assertNotIn("_orchestration", src)  # redundant alias removed
         self.assertNotIn("_exec_wrapper", src)
+        # Pin the deliberate drop of the first-invocation context / profiler prologue:
+        # the orchestration is invoked with contextlib.nullcontext + a no-op in those two
+        # positional slots. A future change re-threading a real context here would fail.
+        self.assertIn(", contextlib.nullcontext, lambda: None,", src)
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
@@ -703,6 +710,79 @@ class TestAOTCompileToPythonHelpers(TestCase):
             _emit(torch.zeros(2))
         with self.assertRaisesRegex(NotImplementedError, "live UntypedStorage"):
             _emit(torch.zeros(3).untyped_storage())
+        # A TypedStorage (the legacy .storage() type) is the third arm of the same
+        # live-storage guard: baking it would embed raw bytes and need pickle.loads.
+        with self.assertRaisesRegex(NotImplementedError, "live TypedStorage"):
+            _emit(torch.zeros(2).storage())
+
+    def test_symbolic_symint_rejected(self):
+        # A SymInt with no concrete value cannot be baked: precompile specializes to
+        # static shapes, so a symbolic size has no source literal. Build an unbacked
+        # symint (maybe_as_int() is None) and confirm the static-shapes reject fires.
+        symint = ShapeEnv().create_unbacked_symint()
+        self.assertIsNone(symint.node.maybe_as_int())
+        static = "specializes to static shapes"
+        with self.assertRaisesRegex(NotImplementedError, static):
+            _emit_value(symint, set())
+
+    def test_symbolic_view_metadata_rejected(self):
+        # SymIntEqByExpr wraps a sympy expr that must be a concrete integer to bake; a
+        # symbolic one (its .val is non-Integer) hits the same static-shapes reject. The
+        # constructor coerces ints to sympy.Integer, so feed it a symbolic SymInt to get
+        # a non-Integer .val (sympy.Symbol cannot be passed directly -- it is coerced).
+        obj = SymIntEqByExpr(ShapeEnv().create_unbacked_symint())
+        self.assertFalse(getattr(obj.val, "is_Integer", False))
+        static = "specializes to static shapes"
+        with self.assertRaisesRegex(NotImplementedError, static):
+            _emit_value(obj, set())
+
+    def test_resolve_global_unwraps_single_cell_shim(self):
+        # _resolve_global unwraps a thin forwarding shim (e.g. the orchestration's
+        # _replay_aliases_ / _apply_mutations_ bound methods) to the bare inner ref it
+        # forwards to, but ONLY when it closes over exactly one recognized cell. Build a
+        # bound-method shim (the production shape) whose single closed-over cell holds a
+        # sentinel inner, and confirm it resolves to ``_inner_call``.
+        sentinel = object()
+
+        def _build_shim(captured):
+            def shim_body(self, args):
+                return captured(args)
+
+            return types.MethodType(shim_body, object())
+
+        shim = _build_shim(sentinel)
+        expr = _resolve_global(
+            shim,
+            helper_table={},
+            inner_call_id=id(sentinel),
+            fn_id_to_name={},
+            imports=set(),
+        )
+        self.assertEqual(expr, "_inner_call")
+
+    def test_resolve_global_does_not_unwrap_multi_cell_shim(self):
+        # The documented MAINTENANCE HAZARD backstop: a shim closing over a SECOND
+        # meaningful cell (one recognized inner ref plus extra state) must NOT be silently
+        # unwrapped to the bare inner ref -- that would drop the extra state. It falls
+        # through to _emit_value, which rejects the local shim function (no module/qualname).
+        sentinel = object()
+
+        def _build_shim(captured, extra_state):
+            def shim_body(args):
+                return captured(args, extra_state)
+
+            return shim_body
+
+        shim = _build_shim(sentinel, "extra")
+        self.assertEqual(len(shim.__closure__), 2)
+        with self.assertRaisesRegex(NotImplementedError, "local definition"):
+            _resolve_global(
+                shim,
+                helper_table={},
+                inner_call_id=id(sentinel),
+                fn_id_to_name={},
+                imports=set(),
+            )
 
     def test_reduce_to_load_from_bytes_rejected(self):
         # Regression: the previous guard compared the __reduce_ex__ METHOD against
