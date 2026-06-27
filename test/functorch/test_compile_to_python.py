@@ -246,13 +246,13 @@ def _compose(m, x):
 def _assert_composed(test, src):
     # Structural markers proving this is the COMPOSED module (not just the inner inductor
     # output): the outer entry takes flat_inputs, the inner call is captured as
-    # _inner_call, and the AOTAutograd orchestration is inlined as a real def and bound to
-    # _orchestration. (_exec_wrapper is asserted only by the chain-wrapper tests, since it
-    # is omitted for dense graphs that have no chain wrapper.)
+    # _inner_call, and the AOTAutograd orchestration is inlined as a real def that the
+    # outer call invokes directly by name. (_exec_wrapper is asserted only by the
+    # chain-wrapper tests, since it is omitted for dense graphs with no chain wrapper.)
     test.assertIn("def call(flat_inputs):", src)
     test.assertIn("_inner_call = call", src)
     test.assertIn("def _runtime_wrapper(", src)
-    test.assertIn("_orchestration = _runtime_wrapper", src)
+    test.assertIn("return _runtime_wrapper(", src)
     # Auditability guarantee: no pickle.loads / base64 blob in the emitted module.
     # _load_from_bytes is the storage-reduce callable that embeds raw weight bytes and
     # base64 is the only other opaque-blob encoding that could smuggle them in, so the
@@ -473,16 +473,16 @@ class TestAOTCompileToPython(TestCase):
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
     def test_orchestration_inlined_as_real_def(self):
-        # The orchestration is spliced as a real top-level ``def _runtime_wrapper`` (not a
-        # re-exec'd source string). A dense graph has no chain wrapper, so the composed
-        # module emits no ``_orchestration_src`` and no ``_exec_wrapper`` at all -- it reads
-        # as ordinary code -- and must still exec equal to eager.
+        # The orchestration is spliced as a real top-level ``def _runtime_wrapper`` that the
+        # outer ``call`` invokes directly by name -- no string re-exec, no ``_orchestration``
+        # alias. A dense graph has no chain wrapper, so the composed module emits no
+        # ``_exec_wrapper`` at all and reads as ordinary code; it must still exec like eager.
         m = _Pointwise().eval()
         x = torch.randn(8, 4)
         src, _cache = _compose(m, x)
         self.assertIn("def _runtime_wrapper(", src)
-        self.assertIn("_orchestration = _runtime_wrapper", src)
-        self.assertNotIn("_orchestration_src", src)
+        self.assertIn("return _runtime_wrapper(", src)
+        self.assertNotIn("_orchestration", src)  # redundant alias removed
         self.assertNotIn("_exec_wrapper", src)
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))

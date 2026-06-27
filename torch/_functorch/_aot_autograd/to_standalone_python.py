@@ -637,9 +637,9 @@ def _compose_standalone_module(
     orch = orchestration[0]
     non_orch = [g for g in captured if g is not orch]
 
-    # The generated ``call`` invokes the orchestration POSITIONALLY (see the bottom of
-    # this function): _orchestration(chain_head, contextlib.nullcontext, lambda: None,
-    # flat_inputs). That mapping is hardcoded to the codegen'd signature in
+    # The generated ``call`` invokes the orchestration POSITIONALLY by its own name (see
+    # the bottom of this function): _runtime_wrapper(chain_head, contextlib.nullcontext,
+    # lambda: None, flat_inputs). That mapping is hardcoded to the codegen'd signature in
     # runtime_wrappers.py (``def _runtime_wrapper(_compiled_fn_, _first_ctx_,
     # _on_before_call_, args)``). Verify the captured signature still matches so a future
     # rename/reorder fails loudly here instead of silently passing wrong arguments.
@@ -735,16 +735,15 @@ def _compose_standalone_module(
             + "\n})\n"
         )
 
-    def _emit_orchestration(
-        var: str, source: str, fn_name: str, globals_dict: dict[str, object]
-    ) -> str:
+    def _emit_orchestration(source: str, globals_dict: dict[str, object]) -> str:
         # Unlike the chain wrappers, the orchestration is spliced as a real top-level
         # ``def`` rather than re-exec'd from a string: it takes its inner chain as a
         # call-time ARG (``_compiled_fn_``), not a global, and closes only over
         # module-available names (``torch``, imported by the inner module) plus a few
-        # resolved shims, and its function name ``_runtime_wrapper`` is unique. So hoist
-        # each non-module-level global to a top-level assignment, splice the def verbatim
-        # (it reads as ordinary code), then alias ``var`` to it.
+        # resolved shims, and its function name (``_runtime_wrapper``) is unique. So hoist
+        # each non-module-level global to a top-level assignment and splice the def verbatim
+        # -- the generated ``call`` then invokes it directly by that name (orch.fn_name), no
+        # alias needed.
         hoists: list[str] = []
         for gname, expr in _resolve_globals(globals_dict):
             if gname == expr:
@@ -761,7 +760,7 @@ def _compose_standalone_module(
                     "module; inlining it would shadow that binding."
                 )
             hoists.append(f"{gname} = {expr}")
-        return "\n".join(hoists + [source, f"{var} = {fn_name}", ""])
+        return "\n".join(hoists + [source, ""])
 
     wrapper_blocks = [
         _emit_block(fn_id_to_name[id(g.fn)], g.source, g.fn_name, g.globals_dict)
@@ -770,9 +769,7 @@ def _compose_standalone_module(
     # The orchestration takes the inner chain as a call-time arg, not a global, so
     # ``compiled_fn`` is absent from its globals -- which is exactly why it can be inlined
     # as a real ``def`` (see _emit_orchestration) instead of re-exec'd like the chain.
-    orch_block = _emit_orchestration(
-        "_orchestration", orch.source, orch.fn_name, orch.globals_dict
-    )
+    orch_block = _emit_orchestration(orch.source, orch.globals_dict)
 
     # Chain head passed to the orchestration: the outermost InductorWrapper (last
     # non-orch wrapper that wraps via an inner reference), else the inner call.
@@ -899,7 +896,7 @@ def _compose_standalone_module(
         "    # error_on_custom_op_aliasing) and the profiler prologue. Neither affects",
         "    # numerics, so this is not a bug -- the standalone artifact deliberately omits",
         "    # them. (See the positional-mapping note in _compose_standalone_module.)",
-        "    return _orchestration(",
+        f"    return {orch.fn_name}(",
         f"        {chain_head}, contextlib.nullcontext, lambda: None, list(flat_inputs)",
         "    )",
         "",
