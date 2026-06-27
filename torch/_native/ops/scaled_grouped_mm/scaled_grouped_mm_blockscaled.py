@@ -1,7 +1,6 @@
 import functools
-import importlib
 from collections.abc import Sequence
-from typing import Any, cast, NamedTuple, Protocol
+from typing import cast, NamedTuple
 
 import torch
 from torch import Tensor
@@ -9,11 +8,11 @@ from torch._C import (
     _ScalingType as ScalingType,  # pyrefly: ignore [missing-module-attribute]
     _SwizzleType as SwizzleType,  # pyrefly: ignore [missing-module-attribute]
 )
-from torch._cutedsl._compile_with_safe_names import _compile_with_safe_names
-from torch._cutedsl.scaled_grouped_mm_prepare_metadata import (
+
+from ._compile_with_safe_names import _compile_with_safe_names
+from .scaled_grouped_mm_prepare_metadata import (
     _compile_scaled_grouped_mm_prepare_metadata,
 )
-from torch.library import Library
 
 
 class _KernelConfig(NamedTuple):
@@ -123,36 +122,6 @@ def _get_blockscaled_format(
         ):
             return fmt
     return None
-
-
-@functools.cache
-def _cutedsl_unavailable_reason() -> str | None:
-    deps = [
-        ("nvidia-cutlass-dsl", "cutlass"),
-        ("apache-tvm-ffi", "tvm_ffi"),
-        ("cuda-bindings", "cuda.bindings.driver"),
-    ]
-    for package_name, module_name in deps:
-        try:
-            importlib.import_module(module_name)
-        except Exception as exc:
-            return (
-                f"missing optional dependency `{package_name}` "
-                f"(import `{module_name}` failed: {exc})"
-            )
-    return None
-
-
-def assert_cutedsl_runtime_available() -> None:
-    reason = _cutedsl_unavailable_reason()
-    if reason is None:
-        return
-    raise RuntimeError(
-        "scaled_grouped_mm CuTeDSL path requires optional Python packages "
-        "`nvidia-cutlass-dsl`, `apache-tvm-ffi`, and `cuda-bindings` "
-        "(from NVIDIA cuda-python); "
-        f"{reason}"
-    )
 
 
 @functools.cache
@@ -602,9 +571,7 @@ def _compile_scaled_grouped_mm_blockscaled(
     import cutlass.cute as cute
     from cutlass.cute.runtime import make_fake_stream, make_fake_tensor
 
-    from torch._cutedsl.scaled_grouped_mm_blockscaled_kernel import (
-        Sm100GroupedBlockScaledGemmKernel,
-    )
+    from .scaled_grouped_mm_blockscaled_kernel import Sm100GroupedBlockScaledGemmKernel
 
     m = cute.sym_int()
     n = cute.sym_int(divisibility=16)
@@ -850,9 +817,7 @@ def _get_unit_global_scales(ngroups: int, device: torch.device) -> Tensor:
 
 @functools.cache
 def _alloc_tensormap(device_index: int, sm_count: int) -> Tensor:
-    from torch._cutedsl.scaled_grouped_mm_blockscaled_kernel import (
-        Sm100GroupedBlockScaledGemmKernel,
-    )
+    from .scaled_grouped_mm_blockscaled_kernel import Sm100GroupedBlockScaledGemmKernel
 
     device = torch.device("cuda", device_index)
     shape = (
@@ -915,8 +880,6 @@ def scaled_grouped_mm_blockscaled(
         raise ValueError(
             "CuTeDSL blockscaled path currently supports only MXFP8, MXFP4, and NVFP4"
         )
-
-    assert_cutedsl_runtime_available()
 
     if mat_a.device.type != "cuda":
         raise ValueError("scaled grouped MM blockscaled is only supported on CUDA")
@@ -1156,16 +1119,6 @@ def scaled_grouped_mm_blockscaled(
     return out
 
 
-_NN_LIB: Library | None = None
-
-
-class _BoxedKernel(Protocol):
-    def call_boxed(self, keyset: Any, *args: Any, **kwargs: Any) -> Any: ...
-
-
-_ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL: _BoxedKernel | None = None
-
-
 def _should_use_cutedsl_scaled_grouped_mm_blockscaled(
     mat_a: object,
     mat_b: object,
@@ -1179,8 +1132,6 @@ def _should_use_cutedsl_scaled_grouped_mm_blockscaled(
     bias: object,
     use_fast_accum: object,
 ) -> bool:
-    if _cutedsl_unavailable_reason() is not None:
-        return False
     if not isinstance(mat_a, Tensor) or not isinstance(mat_b, Tensor):
         return False
     if not isinstance(scale_a, list) or not isinstance(scale_b, list):
@@ -1228,117 +1179,7 @@ def _should_use_cutedsl_scaled_grouped_mm_blockscaled(
     return True
 
 
-def _scaled_grouped_mm_v2_conditional_cuda_impl(dispatch_keys, *args, **kwargs):
-    kernel = _ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL
-    if kernel is None:
-        raise RuntimeError(
-            "scaled_grouped_mm_blockscaled_register_kernels() must initialize "
-            "the original aten::_scaled_grouped_mm_v2 CUDA kernel first"
-        )
-    if kwargs:
-        return kernel.call_boxed(dispatch_keys, *args, **kwargs)
-    # Schema (13 args total) has trailing optional defaults:
-    # offs=None, bias=None, out_dtype=None, contraction_dim=[], use_fast_accum=False.
-    # Callers may omit some/all trailing optionals, so accept positional arity 8..13.
-    if len(args) < 8 or len(args) > 13:
-        return kernel.call_boxed(dispatch_keys, *args)
-    if len(args) < 13:
-        trailing_defaults = (None, None, None, [], False)
-        args = (*args, *trailing_defaults[len(args) - 8 :])
-
-    (
-        mat_a,
-        mat_b,
-        scale_a,
-        scale_recipe_a,
-        swizzle_a,
-        scale_b,
-        scale_recipe_b,
-        swizzle_b,
-        offs,
-        bias,
-        output_dtype,
-        contraction_dim,
-        use_fast_accum,
-    ) = args
-
-    if _should_use_cutedsl_scaled_grouped_mm_blockscaled(
-        mat_a,
-        mat_b,
-        scale_a,
-        scale_recipe_a,
-        swizzle_a,
-        scale_b,
-        scale_recipe_b,
-        swizzle_b,
-        offs,
-        bias,
-        use_fast_accum,
-    ):
-        mat_a_t = cast(Tensor, mat_a)
-        mat_b_t = cast(Tensor, mat_b)
-        scale_a_t = cast(list[Tensor], scale_a)
-        scale_b_t = cast(list[Tensor], scale_b)
-        scale_recipe_a_t = cast(list[int], scale_recipe_a)
-        scale_recipe_b_t = cast(list[int], scale_recipe_b)
-        swizzle_a_t = cast(list[int], swizzle_a)
-        swizzle_b_t = cast(list[int], swizzle_b)
-        offs_t = cast(Tensor | None, offs)
-        bias_t = cast(Tensor | None, bias)
-        output_dtype_t = cast(torch.dtype | None, output_dtype)
-        contraction_dim_t = cast(Sequence[int], contraction_dim)
-        use_fast_accum_t = cast(bool, use_fast_accum)
-
-        cutedsl_call = scaled_grouped_mm_blockscaled
-        if torch.compiler.is_compiling():
-            import torch._dynamo as torch_dynamo
-
-            cutedsl_call = torch_dynamo.disable(cutedsl_call)
-        return cutedsl_call(
-            mat_a_t,
-            mat_b_t,
-            scale_a_t,
-            scale_b_t,
-            [ScalingType(v) for v in scale_recipe_a_t],
-            [ScalingType(v) for v in scale_recipe_b_t],
-            [SwizzleType(swizzle_a_t[0])],
-            [SwizzleType(swizzle_b_t[0])],
-            offs_t,
-            output_dtype_t,
-            contraction_dim_t,
-            use_fast_accum_t,
-            bias=bias_t,
-        )
-
-    return kernel.call_boxed(dispatch_keys, *args)
-
-
-def scaled_grouped_mm_blockscaled_register_kernels() -> Library:
-    global _NN_LIB, _ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL
-    if _NN_LIB is not None:
-        return _NN_LIB
-
-    # Capture original CUDA kernel before installing override.
-    if _ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL is None:
-        dispatch_get = (
-            torch._C._dispatch_get_computed_kernel_for_dispatch_key
-        )  # pyrefly: ignore [missing-module-attribute]
-        _ORIGINAL_SCALED_GROUPED_MM_V2_KERNEL = dispatch_get(
-            "aten::_scaled_grouped_mm_v2", "CUDA"
-        )
-
-    lib = Library("aten", "IMPL", "CUDA")
-    lib.impl(
-        "_scaled_grouped_mm_v2",
-        _scaled_grouped_mm_v2_conditional_cuda_impl,
-        "CUDA",
-        with_keyset=True,
-    )
-    _NN_LIB = lib
-    return lib
-
-
 __all__ = [
     "scaled_grouped_mm_blockscaled",
-    "scaled_grouped_mm_blockscaled_register_kernels",
+    "_should_use_cutedsl_scaled_grouped_mm_blockscaled",
 ]

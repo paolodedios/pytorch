@@ -153,9 +153,9 @@ void invoke_parallel(
   std::tie(num_tasks, chunk_size) =
       internal::calc_num_tasks_and_chunk_size(begin, end, grain_size);
 
-  std::atomic_flag err_flag;
+  std::atomic_flag err_flag = ATOMIC_FLAG_INIT;
   std::exception_ptr eptr;
-  std::latch latch(num_tasks);
+  std::latch latch(static_cast<ptrdiff_t>(num_tasks));
 
   auto task = [&, f, begin, end, chunk_size](size_t task_id) {
     int64_t local_start = static_cast<int64_t>(begin + task_id * chunk_size);

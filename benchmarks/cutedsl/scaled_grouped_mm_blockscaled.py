@@ -178,10 +178,32 @@ def _run_with_cuda_profiler(fn):
 def _get_cpp_scaled_grouped_mm_v2_kernel():
     global _CPP_SCALED_GROUPED_MM_V2_KERNEL
     if _CPP_SCALED_GROUPED_MM_V2_KERNEL is None:
-        _CPP_SCALED_GROUPED_MM_V2_KERNEL = torch._C._dispatch_get_computed_kernel_for_dispatch_key(  # pyrefly: ignore [missing-module-attribute]
-            "aten::_scaled_grouped_mm_v2", "CUDA"
-        )
+        from torch._native import registry
+
+        registry.deregister_op_overrides(disable_dsl_names="cutedsl")
+        try:
+            _CPP_SCALED_GROUPED_MM_V2_KERNEL = torch._C._dispatch_get_computed_kernel_for_dispatch_key(  # pyrefly: ignore [missing-module-attribute]
+                "aten::_scaled_grouped_mm_v2", "CUDA"
+            )
+        finally:
+            registry.reenable_op_overrides(enable_dsl_names="cutedsl")
     return _CPP_SCALED_GROUPED_MM_V2_KERNEL
+
+
+def _require_cutedsl_scaled_grouped_mm_override():
+    from torch._native import cutedsl_utils as cu, registry
+
+    if not cu.runtime_available():
+        raise RuntimeError(
+            "--backend cute requested, but CuTeDSL runtime dependencies are not "
+            "available. Install nvidia-cutlass-dsl and apache-tvm-ffi."
+        )
+    if "_scaled_grouped_mm_v2" not in registry.get_dsl_operations("cutedsl"):
+        raise RuntimeError(
+            "--backend cute requested, but the CuTeDSL override for "
+            "aten::_scaled_grouped_mm_v2 is not registered. Check the CuTeDSL "
+            "version and TORCH_NATIVE_* override settings."
+        )
 
 
 def _cuda_dispatch_keyset(device_type: str):
@@ -655,6 +677,8 @@ def benchmark_scaled_grouped_mm(
     swizzle_int = [swizzle.value]
     run_cpp = backend in ("both", "cpp")
     run_cute = backend in ("both", "cute")
+    if run_cute:
+        _require_cutedsl_scaled_grouped_mm_override()
     do_correctness = run_cpp and run_cute
     all_valid = True
 
@@ -667,7 +691,7 @@ def benchmark_scaled_grouped_mm(
             return fn
 
         sgmm_mod = importlib.import_module(
-            "torch._cutedsl.scaled_grouped_mm_blockscaled"
+            "torch._native.ops.scaled_grouped_mm.scaled_grouped_mm_blockscaled"
         )
 
         def _call_with_override():

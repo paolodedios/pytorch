@@ -1,6 +1,6 @@
 import functools
 
-from torch._cutedsl._compile_with_safe_names import _compile_with_safe_names
+from ._compile_with_safe_names import _compile_with_safe_names
 
 
 @functools.cache
