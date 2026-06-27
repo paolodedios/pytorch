@@ -15232,6 +15232,22 @@ if __name__ == '__main__':
                     maximal_linear_bias_grad_err = err
                     worst_linear_bias_grad_err_kwargs = dict(module_kwargs)
 
+        if prob_target and none_reduction:
+            # TEMP calibration scaffolding (strip once caps are set): print
+            # every leg's observed maxima with NO asserts, so stepcurrent does
+            # not halt at the first failing policy and mask the others.
+            # file=sys.__stdout__ so the CI test-report artifact captures it
+            # (and it shows directly on a local A100 run).
+            import sys
+            print(
+                f"[probnone] dev={device} dt={dtype} pol={_resolved_policy} "
+                f"out={maximal_output_max_ulp_diff} "
+                f"ig={maximal_input_grad_max_ulp_diff} "
+                f"w={maximal_linear_weight_grad_max_ulp_diff} "
+                f"igerr={maximal_input_grad_err:.3e} werr={maximal_linear_weight_grad_err:.3e}",
+                file=sys.__stdout__,
+            )
+            return
         self.assertLessEqual(maximal_input_grad_err, input_grad_err_tol,
                              msg=f"worst input-grad err {maximal_input_grad_err} from kwargs={worst_input_grad_err_kwargs}")
         self.assertLessEqual(maximal_linear_weight_grad_err, feps,
@@ -15754,6 +15770,16 @@ if __name__ == '__main__':
             device=device, dtype=dtype, acc_policy=acc_policy,
             acc_dtype={torch.float16: torch.float32, torch.bfloat16: torch.float32}[dtype],
             prob_target=True, none_reduction=True)
+
+    @dtypes(torch.float32)
+    def test_linear_cross_entropy_zz_probnone_calibration_dump(self, device, dtype):
+        # TEMP calibration (strip with the [probnone] print): macOS CI does not
+        # upload the test-report artifact, so force a failure AFTER all
+        # linear_cross_entropy_* tests ("zz" sorts last) to make run_test.py
+        # dump the console log with the [probnone] prints. MPS only.
+        if "mps" not in device:
+            self.skipTest("calibration dump only needed on MPS")
+        self.fail("probnone calibration dump (TEMP)")
 
     @parametrize_test("acc_policy", ["auto", "compact", "balanced", "accurate"])
     def test_linear_cross_entropy_prob_large_vocab_fp16_denom(self, device, acc_policy):
