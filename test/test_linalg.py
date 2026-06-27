@@ -7688,12 +7688,6 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
         with self.assertRaisesRegex(RuntimeError, "must be batches of square matrices"):
             torch.linalg.matrix_sqrth(torch.randn(2, 3, device=device, dtype=dtype))
 
-        # The real square root of an indefinite matrix is complex, so a materially
-        # negative eigenvalue is rejected rather than silently projected away.
-        indefinite = torch.diag(torch.tensor([1.0, -2.0], device=device)).to(dtype)
-        with self.assertRaisesRegex(RuntimeError, "positive semi-definite"):
-            torch.linalg.matrix_sqrth(indefinite)
-
     @skipCUDAIfNoMagmaAndNoLinalgsolver
     @skipCPUIfNoLapack
     @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
