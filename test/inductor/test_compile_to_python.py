@@ -54,15 +54,20 @@ def _exec(src):
 
 
 def _extract_call(src):
-    """Return the dedented source of the module-level ``call`` entry point. The expect
-    goldens lock this runtime entry point only: the rest of the emitted module (imports,
-    the inert compile-time auto-tuning docstring, the ``# AOT ID`` global-counter
-    comment) carries build- and ordering-dependent noise that should not be goldened."""
+    """Return the dedented source of the ``call`` entry point, normalized to the flat
+    ``def call(args)`` signature. graph_partition (on by default in OSS, off in fbcode)
+    wraps the body in a ``Runner.call(self, args)`` method; the body is byte-identical
+    either way, so normalizing the signature makes the golden independent of the
+    graph_partition default. The expect goldens lock this runtime entry point only: the
+    rest of the emitted module (imports, the inert compile-time auto-tuning docstring, the
+    ``# AOT ID`` global-counter comment) carries build- and ordering-dependent noise that
+    should not be goldened."""
     mod = ast.parse(src)
     for node in ast.walk(mod):
         if isinstance(node, ast.FunctionDef) and node.name == "call":
             body = "\n".join(src.split("\n")[node.lineno - 1 : node.end_lineno])
-            return textwrap.dedent(body)
+            body = textwrap.dedent(body)
+            return body.replace("def call(self, args):", "def call(args):", 1)
     raise AssertionError("generated module has no module-level def call")
 
 
@@ -82,25 +87,16 @@ class _Softmax(torch.nn.Module):
 
 
 class TestInductorCompileToPythonCodegen(TestCase):
-    # graph_partition is pinned ON (the OSS default; fbcode defaults it off) so the
-    # goldened entry point is deterministically the ``Runner.call(self, args)`` method form
-    # across environments. Without cudagraphs this is a single inlined partition, so the
-    # extern-kernel / CPU codegen body the goldens lock is identical to the flat ``def
-    # call(args)`` form -- just wrapped as a Runner method -- and does not depend on whether
-    # torch was built with CUDA (these are CPU tensors). size_asserts / nan_asserts are
-    # pinned so the goldened assert_size_stride lines do not drift with the ambient
-    # TORCHINDUCTOR_SIZE_ASSERTS / TORCHINDUCTOR_NAN_ASSERTS env.
+    # These golden the runtime ``call`` body emitted under DEFAULT inductor config (no
+    # option overrides), so the test reflects what callers get out of the box. The
+    # extern-kernel / CPU codegen body is deterministic and build-independent (CPU tensors);
+    # assert_size_stride lines come from the default size_asserts=True (the same default the
+    # rest of the inductor golden suite relies on). ``_extract_call`` normalizes the
+    # entry-point signature, so the golden is the same whether graph_partition wraps the body
+    # in a ``Runner`` method (OSS default) or emits a flat top-level ``def call`` (fbcode).
     def _inner_call(self, m, x):
         gm = _capture(m, x)
-        src, _cache = compile_to_python(
-            gm,
-            _flat_inputs(m, x),
-            options={
-                "graph_partition": True,
-                "size_asserts": True,
-                "nan_asserts": False,
-            },
-        )
+        src, _cache = compile_to_python(gm, _flat_inputs(m, x))
         return src, _extract_call(src)
 
     def test_addmm_extern_kernel_codegen(self):
@@ -110,7 +106,7 @@ class TestInductorCompileToPythonCodegen(TestCase):
         self.assertExpectedInline(
             call_src,
             """\
-def call(self, args):
+def call(args):
     arg0_1, arg1_1, arg2_1 = args
     args.clear()
     assert_size_stride(arg1_1, (3, ), (1, ), 'input')
@@ -134,7 +130,7 @@ def call(self, args):
         self.assertExpectedInline(
             call_src,
             """\
-def call(self, args):
+def call(args):
     arg0_1, arg1_1 = args
     args.clear()
     assert_size_stride(arg1_1, (5, 4), (4, 1), 'input')
@@ -156,7 +152,7 @@ def call(self, args):
         self.assertExpectedInline(
             call_src,
             """\
-def call(self, args):
+def call(args):
     arg0_1, arg1_1, arg2_1 = args
     args.clear()
     assert_size_stride(arg1_1, (3, ), (1, ), 'input')
@@ -208,23 +204,13 @@ class TestInductorCompileToPythonCudaCodegen(TestCase):
     # live in the kernel decorator, not in ``call`` -- so it is arch-independent. The
     # hardware- and Triton-version-dependent kernel body is instead checked structurally
     # (assertIn). The device ordinal is hardcoded to 0 (these tests run on device 0, as
-    # the rest of the inductor codegen-golden suite does). graph_partition is pinned ON (the
-    # OSS default; fbcode defaults it off) so the goldened entry point is deterministically
-    # the ``Runner.call(self, args)`` form across environments; without cudagraphs it is a
-    # single inlined partition, so the goldened body is the same as the flat ``def call``
-    # form. size_asserts / nan_asserts are pinned so the goldened assert_size_stride lines
-    # do not drift with the ambient env.
+    # the rest of the inductor codegen-golden suite does). Default inductor config is used
+    # (no option overrides); ``_extract_call`` normalizes the entry-point signature so the
+    # golden is independent of the graph_partition default (Runner method in OSS, flat
+    # ``def call`` in fbcode).
     def _inner_call(self, m, x):
         gm = _capture(m, x)
-        src, _cache = compile_to_python(
-            gm,
-            _flat_inputs(m, x),
-            options={
-                "graph_partition": True,
-                "size_asserts": True,
-                "nan_asserts": False,
-            },
-        )
+        src, _cache = compile_to_python(gm, _flat_inputs(m, x))
         return src, _extract_call(src)
 
     def test_pointwise_triton_kernel_codegen(self):
@@ -234,7 +220,7 @@ class TestInductorCompileToPythonCudaCodegen(TestCase):
         self.assertExpectedInline(
             call_src,
             """\
-def call(self, args):
+def call(args):
     arg0_1, = args
     args.clear()
     assert_size_stride(arg0_1, (128, 64), (64, 1), 'input')
@@ -267,7 +253,7 @@ def call(self, args):
         self.assertExpectedInline(
             call_src,
             """\
-def call(self, args):
+def call(args):
     arg0_1, = args
     args.clear()
     assert_size_stride(arg0_1, (64, 256), (256, 1), 'input')
@@ -300,7 +286,7 @@ def call(self, args):
         self.assertExpectedInline(
             call_src,
             """\
-def call(self, args):
+def call(args):
     arg0_1, arg1_1, arg2_1 = args
     args.clear()
     assert_size_stride(arg2_1, (5, 4), (4, 1), 'input')
