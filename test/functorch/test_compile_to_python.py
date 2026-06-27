@@ -246,11 +246,13 @@ def _compose(m, x):
 def _assert_composed(test, src):
     # Structural markers proving this is the COMPOSED module (not just the inner inductor
     # output): the outer entry takes flat_inputs, the inner call is captured as
-    # _inner_call, and each wrapper is re-exec'd via _exec_wrapper / _orchestration.
+    # _inner_call, and the AOTAutograd orchestration is inlined as a real def and bound to
+    # _orchestration. (_exec_wrapper is asserted only by the chain-wrapper tests, since it
+    # is omitted for dense graphs that have no chain wrapper.)
     test.assertIn("def call(flat_inputs):", src)
     test.assertIn("_inner_call = call", src)
-    test.assertIn("def _exec_wrapper(", src)
-    test.assertIn("_orchestration", src)
+    test.assertIn("def _runtime_wrapper(", src)
+    test.assertIn("_orchestration = _runtime_wrapper", src)
     # Auditability guarantee: no pickle.loads / base64 blob in the emitted module.
     # _load_from_bytes is the storage-reduce callable that embeds raw weight bytes and
     # base64 is the only other opaque-blob encoding that could smuggle them in, so the
@@ -470,18 +472,41 @@ class TestAOTCompileToPython(TestCase):
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
-    def test_wrappers_emitted_as_readable_source_blocks(self):
-        # Captured runtime wrappers are embedded as readable triple-quoted source blocks
-        # (``_orchestration_src = """ ... """``), not one-line ``\n``-escaped repr strings,
-        # so the generated module reads as ordinary code. The module must still exec equal
-        # to eager (the triple-quote rendering is exec-identical to the repr form).
+    def test_orchestration_inlined_as_real_def(self):
+        # The orchestration is spliced as a real top-level ``def _runtime_wrapper`` (not a
+        # re-exec'd source string). A dense graph has no chain wrapper, so the composed
+        # module emits no ``_orchestration_src`` and no ``_exec_wrapper`` at all -- it reads
+        # as ordinary code -- and must still exec equal to eager.
         m = _Pointwise().eval()
         x = torch.randn(8, 4)
         src, _cache = _compose(m, x)
-        self.assertIn('_orchestration_src = """', src)
-        self.assertNotIn("_orchestration_src = 'def ", src)
+        self.assertIn("def _runtime_wrapper(", src)
+        self.assertIn("_orchestration = _runtime_wrapper", src)
+        self.assertNotIn("_orchestration_src", src)
+        self.assertNotIn("_exec_wrapper", src)
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_chain_wrapper_still_isolated_via_exec(self):
+        # A graph with a chain wrapper (tensor subclass) still re-execs that wrapper in its
+        # own globals via _exec_wrapper -- the reused inner_fn / compiled_fn names must stay
+        # isolated -- while the orchestration is inlined. Numerics must match eager.
+        from torch.testing._internal.two_tensor import TwoTensor
+
+        def f(x):
+            return x * 2.0 + 1.0
+
+        tt = TwoTensor(torch.randn(4, 4), torch.randn(4, 4))
+        gm = make_fx(f, tracing_mode="real")(tt)
+        src, _cache = compile_to_python(gm, [tt])
+        self.assertIn("_exec_wrapper", src)
+        self.assertIn("def _runtime_wrapper(", src)
+        with torch.no_grad():
+            out = _exec(src)([tt])[0]
+        eager = f(tt)
+        self.assertIsInstance(out, TwoTensor)
+        self.assertEqual(out.a, eager.a)
+        self.assertEqual(out.b, eager.b)
 
     def test_functionalized_rng_runs_like_eager(self):
         # functionalize_rng_ops rewrites the RNG op into a functional form during the inner
@@ -885,6 +910,24 @@ class TestAOTComposeGuards(TestCase):
             NotImplementedError, "exactly one forward orchestration wrapper"
         ):
             _compose_standalone_module("def call(args):\n    return args\n", [])
+
+    def test_orchestration_global_colliding_with_inner_rejected(self):
+        # The inlined orchestration hoists its globals to module scope; a hoisted name that
+        # shadows a top-level name the inner module already binds is rejected (rather than
+        # silently rebinding it). ``aten`` is a real inner top-level binding; the resolved
+        # expr (a helper) differs from the name, so it is hoisted and trips the guard.
+        inner = "aten = 1\ndef call(args):\n    return args\n"
+        orch = GeneratedSource(
+            "runtime_wrapper_orchestration",
+            "_runtime_wrapper",
+            self._ORCH_SRC,
+            {"aten": torch.autograd.graph.increment_version},
+            lambda: None,
+        )
+        with self.assertRaisesRegex(
+            NotImplementedError, "collides with a top-level name in the inner"
+        ):
+            _compose_standalone_module(inner, [orch])
 
     def test_rebuild_helper_spliced_and_runs_in_composed_module(self):
         # When a baked global reconstructs via the pickle-reduce-as-source path (_NewObjEx

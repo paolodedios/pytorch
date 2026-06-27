@@ -8,10 +8,13 @@ This is the AOT half of the backend contract behind ``torch.compiler.precompile`
 for the post-AOTAutograd dense graph). This module wraps that with the prelude /
 epilogue (input-mutation reflection, output-alias regen, subclass wrap/unwrap,
 ...) by COMPOSING AOTAutograd's own codegen'd runtime-wrapper source -- captured
-during compile -- rather than reimplementing it. Each wrapper is re-exec'd with its
-own resolved globals (exactly as AOTAutograd does at runtime), so cross-wrapper
-references, the inner ``call`` chain, public helpers, and baked metadata objects
-(reconstructed as source -- see ``_emit_value``) are wired without name collisions.
+during compile -- rather than reimplementing it. The orchestration wrapper is spliced
+as a real top-level ``def`` (its closed-over globals hoisted to module scope); the
+chain wrappers (subclass / dedup / functionalized-RNG), when present, are each embedded
+as source and re-exec'd in their own globals so their reused ``inner_fn`` /
+``compiled_fn`` names cannot collide. Cross-wrapper references, the inner ``call`` chain,
+public helpers, and baked metadata objects (reconstructed as source -- see
+``_emit_value``) are wired by name either way.
 The result is a standalone module exposing ``call(flat_inputs) -> outputs`` that
 runs on its own (JIT-compiling kernels); ``cache`` is an opaque acceleration (or
 None).
@@ -106,10 +109,12 @@ _MODULE_HEADER = """\
 # Self-contained, executable module exposing ``call(flat_inputs) -> outputs`` for
 # the post-AOTAutograd graph. The Inductor kernels JIT-compile from the inlined
 # source on first call (no cache needed). The prelude/epilogue is AOTAutograd's own
-# codegen'd runtime wrappers: each is embedded as source and re-exec'd with its
-# resolved globals (inner ``call``, sibling wrappers, public helpers, and baked
-# metadata reconstructed as source) -- not reimplemented -- so results match eager.
-# The companion opaque cache is only an acceleration; this module never reads it.
+# codegen'd runtime wrappers, not reimplemented: the orchestration is spliced as a real
+# top-level ``def`` (its globals hoisted to module scope) and any chain wrappers are
+# embedded as source and re-exec'd in their own globals (inner ``call``, sibling
+# wrappers, public helpers, and baked metadata reconstructed as source) -- so results
+# match eager. The companion opaque cache is only an acceleration; this module never
+# reads it.
 """
 
 
@@ -558,15 +563,37 @@ def _emit_via_reduce(
     return f"_rebuild({base}, {_emit_value(state, imports)})"
 
 
+def _module_level_names(tree: ast.Module) -> set[str]:
+    """Names bound at module scope by a parsed module. Used so the inlined orchestration's
+    hoisted globals cannot silently shadow a top-level name the inner Inductor module
+    already binds (the chain wrappers keep their private exec namespace and need no such
+    check)."""
+    names: set[str] = set()
+    for n in tree.body:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(n.name)
+        elif isinstance(n, ast.Assign):
+            # Walk each target so tuple/list/starred unpacking (``a, b = ...`` /
+            # ``first, *rest = ...``) is covered, not just bare-name targets.
+            for t in n.targets:
+                names.update(x.id for x in ast.walk(t) if isinstance(x, ast.Name))
+        elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
+            names.add(n.target.id)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            names.update(a.asname or a.name.split(".")[0] for a in n.names)
+    return names
+
+
 def _compose_standalone_module(
     inner_python: str, captured: list[GeneratedSource]
 ) -> str:
     """Compose the inner Inductor ``call`` with AOTAutograd's captured runtime
     wrappers into one standalone module exposing ``call(flat_inputs) -> outputs``.
 
-    Each wrapper is embedded as source and re-exec'd with its own globals dict
-    (resolved here), then chained: the orchestration is invoked with the
-    InductorWrapper chain head as its inner ``compiled_fn``.
+    The orchestration wrapper is spliced as a real top-level ``def`` (globals hoisted
+    to module scope); chain wrappers are embedded as source and re-exec'd in their own
+    globals dict (resolved here). They are chained: the orchestration is invoked with
+    the InductorWrapper chain head as its inner.
     """
     # The capture sink is duration-scoped over the inner inductor compile, with no
     # originating-graph id at install time, so a re-entrant on-thread AOTAutograd
@@ -663,30 +690,40 @@ def _compose_standalone_module(
 
     imports: set[str] = set()
 
-    def _emit_block(
-        var: str, source: str, fn_name: str, globals_dict: dict[str, object]
-    ) -> str:
-        # Bind each global the wrapper closes over to a standalone expression, then embed
-        # the wrapper source and re-exec it under those globals -- each wrapper gets its
-        # own namespace, exactly as AOTAutograd does at runtime, so same-named locals in
-        # sibling wrappers cannot collide. The source is embedded as a readable
-        # triple-quoted block so the generated module reads as ordinary code rather than a
-        # one-line ``\n``-escaped blob; a source containing a ``"""`` or a backslash (which
-        # a plain triple-quoted literal could not reproduce verbatim) falls back to repr(),
-        # which escapes everything safely. Shared by the chain wrappers and the
-        # orchestration so the encoding lives in exactly one place.
-        binds: list[str] = []
+    # Parse the inner module once: to verify it binds a module-level ``call`` (the
+    # inner-call contract, checked below) and to collect its top-level names so the
+    # inlined orchestration's hoisted globals cannot silently shadow one.
+    inner_tree = ast.parse(inner_python)
+    inner_module_names = _module_level_names(inner_tree)
+
+    def _resolve_globals(globals_dict: dict[str, object]) -> list[tuple[str, str]]:
+        # Resolve each global a wrapper closes over to a standalone source expression.
+        # ``globals_dict`` is the pre-exec snapshot from subclass_codegen.py, so the
+        # interpreter ``__builtins__`` is absent; the skip is kept defensively in case a
+        # future caller hands us a post-exec live dict.
+        out: list[tuple[str, str]] = []
         for gname, gobj in globals_dict.items():
-            # ``globals_dict`` is the pre-exec snapshot captured in subclass_codegen.py
-            # (GeneratedSource), so the interpreter ``__builtins__`` is not present. The
-            # skip is kept defensively: any future caller that hands us a post-exec
-            # live dict would otherwise try to reconstruct ``__builtins__`` as source.
             if gname == "__builtins__":
                 continue
             expr = _resolve_global(
                 gobj, helper_table, inner_call_id, fn_id_to_name, imports
             )
-            binds.append(f"        {gname!r}: {expr},")
+            out.append((gname, expr))
+        return out
+
+    def _emit_block(
+        var: str, source: str, fn_name: str, globals_dict: dict[str, object]
+    ) -> str:
+        # A CHAIN wrapper -- re-exec'd in its OWN namespace via _exec_wrapper. AOTAutograd
+        # names every runtime wrapper's function ``inner_fn`` and its inner-reference global
+        # ``compiled_fn``, so two chain wrappers spliced at module scope would clobber each
+        # other; the private exec namespace keeps each isolated. The source is embedded as a
+        # readable triple-quoted block, falling back to repr() only when it contains a
+        # ``"""`` or backslash a plain triple-quoted literal could not reproduce verbatim.
+        binds = [
+            f"        {gname!r}: {expr},"
+            for gname, expr in _resolve_globals(globals_dict)
+        ]
         if '"""' not in source and "\\" not in source:
             src_literal = f'"""\n{source}\n"""'
         else:
@@ -698,13 +735,42 @@ def _compose_standalone_module(
             + "\n})\n"
         )
 
+    def _emit_orchestration(
+        var: str, source: str, fn_name: str, globals_dict: dict[str, object]
+    ) -> str:
+        # Unlike the chain wrappers, the orchestration is spliced as a real top-level
+        # ``def`` rather than re-exec'd from a string: it takes its inner chain as a
+        # call-time ARG (``_compiled_fn_``), not a global, and closes only over
+        # module-available names (``torch``, imported by the inner module) plus a few
+        # resolved shims, and its function name ``_runtime_wrapper`` is unique. So hoist
+        # each non-module-level global to a top-level assignment, splice the def verbatim
+        # (it reads as ordinary code), then alias ``var`` to it.
+        hoists: list[str] = []
+        for gname, expr in _resolve_globals(globals_dict):
+            if gname == expr:
+                continue  # already at module scope (an import / ``torch``)
+            # Hoisting puts gname at module scope, where it would shadow a name the inner
+            # Inductor module already binds. Today's orchestration globals are unique
+            # underscore-wrapped sentinels so this never fires; guard it (rather than just
+            # assume) to match the chain / wiring / signature guards -- a future AOTAutograd
+            # global that collides must be renamed or namespaced, not silently rebound.
+            if gname in inner_module_names:
+                raise NotImplementedError(
+                    "aot_autograd.compile_to_python: orchestration global "
+                    f"{gname!r} collides with a top-level name in the inner Inductor "
+                    "module; inlining it would shadow that binding."
+                )
+            hoists.append(f"{gname} = {expr}")
+        return "\n".join(hoists + [source, f"{var} = {fn_name}", ""])
+
     wrapper_blocks = [
         _emit_block(fn_id_to_name[id(g.fn)], g.source, g.fn_name, g.globals_dict)
         for g in non_orch
     ]
     # The orchestration takes the inner chain as a call-time arg, not a global, so
-    # ``compiled_fn`` is absent from its globals.
-    orch_block = _emit_block(
+    # ``compiled_fn`` is absent from its globals -- which is exactly why it can be inlined
+    # as a real ``def`` (see _emit_orchestration) instead of re-exec'd like the chain.
+    orch_block = _emit_orchestration(
         "_orchestration", orch.source, orch.fn_name, orch.globals_dict
     )
 
@@ -763,8 +829,7 @@ def _compose_standalone_module(
     # path binds ``call = runner.call`` (Assign with a Name target). Verify one is present
     # so a future inductor codegen drift fails loudly here -- like the orchestration /
     # chain / wiring guards above -- instead of surfacing as a bare NameError at exec of
-    # the generated module.
-    inner_tree = ast.parse(inner_python)
+    # the generated module. (``inner_tree`` was parsed once up front.)
     binds_call = any(
         (isinstance(n, ast.FunctionDef) and n.name == "call")
         or (
@@ -792,14 +857,23 @@ def _compose_standalone_module(
         "",
         "",
         *(_REBUILD_HELPER if needs_rebuild else []),
-        "def _exec_wrapper(src, fn_name, glb):",
-        "    # Re-exec one AOTAutograd-codegen'd wrapper with its own globals, exactly",
-        "    # as AOTAutograd does at runtime -- avoids cross-wrapper name collisions.",
-        "    local_ns = {}",
-        "    exec(compile(src, '<aot_wrapper>', 'exec'), glb, local_ns)",
-        "    return local_ns[fn_name]",
-        "",
-        "",
+        # _exec_wrapper is only needed by the CHAIN wrappers (re-exec'd in private globals);
+        # the orchestration is inlined as a real def, so omit the helper when there is no
+        # chain wrapper (the common dense case emits no _exec_wrapper at all).
+        *(
+            [
+                "def _exec_wrapper(src, fn_name, glb):",
+                "    # Re-exec one AOTAutograd-codegen'd CHAIN wrapper in its own globals so",
+                "    # sibling wrappers' reused names (inner_fn / compiled_fn) cannot collide.",
+                "    local_ns = {}",
+                "    exec(compile(src, '<aot_wrapper>', 'exec'), glb, local_ns)",
+                "    return local_ns[fn_name]",
+                "",
+                "",
+            ]
+            if wrapper_blocks
+            else []
+        ),
         "# " + "=" * 70,
         "# Inner Inductor output code (kernels + ``call``)",
         "# " + "=" * 70,
@@ -807,7 +881,8 @@ def _compose_standalone_module(
         "_inner_call = call",
         "",
         "# " + "=" * 70,
-        "# AOTAutograd runtime wrappers (codegen'd; re-exec'd with resolved globals)",
+        "# AOTAutograd runtime wrappers: chain wrappers re-exec'd in private globals (if",
+        "# any), then the orchestration inlined as a top-level def",
         "# " + "=" * 70,
         *wrapper_blocks,
         orch_block,
