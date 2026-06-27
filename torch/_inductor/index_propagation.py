@@ -175,12 +175,18 @@ class SymPyOps:
     @staticmethod
     def minimum(x: TypedExpr, y: TypedExpr) -> TypedExpr:
         result_type = torch.promote_types(x.dtype, y.dtype)
-        return TypedExpr(Min(x.expr, y.expr), result_type)
+        try:
+            return TypedExpr(Min(x.expr, y.expr), result_type)
+        except ValueError:
+            return NotImplemented
 
     @staticmethod
     def maximum(x: TypedExpr, y: TypedExpr) -> TypedExpr:
         result_type = torch.promote_types(x.dtype, y.dtype)
-        return TypedExpr(Max(x.expr, y.expr), result_type)
+        try:
+            return TypedExpr(Max(x.expr, y.expr), result_type)
+        except ValueError:
+            return NotImplemented
 
 
 @dataclass
