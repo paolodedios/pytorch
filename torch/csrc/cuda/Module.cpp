@@ -510,7 +510,9 @@ PyObject* THCPModule_cudaSleep(PyObject* _unused, PyObject* cycles) {
   END_HANDLE_TH_ERRORS
 }
 
-PyObject* THCPModule_getStreamsPerPool(PyObject* _unused, PyObject* arg) {
+static PyObject* THCPModule_getStreamsPerPool(
+    PyObject* _unused,
+    PyObject* arg) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(
       THPUtils_checkLong(arg),

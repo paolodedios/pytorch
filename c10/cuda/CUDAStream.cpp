@@ -32,11 +32,9 @@ int max_stream_priorities;
 static_assert(
     c10::cuda::max_compile_time_stream_priorities == 4,
     "update streams_per_pool initializer");
-int streams_per_pool[c10::cuda::max_compile_time_stream_priorities] = {
-    kStreamsPerPool,
-    kStreamsPerPool,
-    kStreamsPerPool,
-    kStreamsPerPool};
+std::array<int, c10::cuda::max_compile_time_stream_priorities>
+    streams_per_pool =
+        {kStreamsPerPool, kStreamsPerPool, kStreamsPerPool, kStreamsPerPool};
 
 // Non-default streams
 // Note: the number of CUDA devices is determined at run time,
