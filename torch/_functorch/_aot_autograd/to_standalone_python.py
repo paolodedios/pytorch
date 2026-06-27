@@ -20,6 +20,11 @@ Baked metadata is emitted as plain Python source (no pickle / base64 blobs), so 
 generated module is fully auditable and exec'ing it never invokes ``pickle.loads``.
 A leaf that cannot be expressed as source raises NotImplementedError rather than
 falling back to an opaque embedding.
+
+Contract note: the standalone ``call`` deliberately substitutes ``nullcontext`` / a
+no-op for the runtime's first-invocation context and profiler prologue, dropping the
+cold-start custom-op aliasing analysis and the profiler prologue -- both diagnostics
+with no effect on numerics (see the generated-call emission site).
 """
 
 from __future__ import annotations
@@ -43,11 +48,13 @@ if TYPE_CHECKING:
 # Serializes compile_to_python: the wrapper-source capture is thread-local, but the
 # underlying standalone_compile swaps process-global cache state (see the THREADING
 # note on compile_to_python), so concurrent compiles must not overlap. An RLock (not a
-# plain Lock), mirroring inductor's ``_COMPILE_TO_PYTHON_LOCK``: a custom backend or
-# inductor pass invoked while the lock is held may re-enter this entry point on the
-# SAME thread to lower a subgraph, and a plain Lock would self-deadlock on that
-# re-entry; the capture sink and cache scope are self-contained per call, so on-thread
-# re-entry is safe.
+# plain Lock) because this entry point is re-entrant on a single thread: a custom
+# backend or inductor pass invoked while the lock is held may call back into this
+# lowering to compile a subgraph on the SAME thread, and a plain Lock would
+# self-deadlock on that re-entry. On-thread re-entry is safe here: the capture sink and
+# the cache-state swap (CacheArtifactManager.with_fresh_cache) are each self-contained
+# per call, so a nested compile neither corrupts the outer capture nor the outer cache
+# scope.
 _COMPILE_LOCK = threading.RLock()
 
 
@@ -162,6 +169,12 @@ def _resolve_global(
     # shim ONLY when it closes over exactly one cell and that cell is a captured
     # wrapper / the inner call. A shim with any extra meaningful closure state falls
     # through to _emit_value (which raises) rather than silently dropping that state.
+    # MAINTENANCE HAZARD: this check inspects closure STRUCTURE (one cell holding a
+    # recognized ref), not the shim BODY -- it cannot tell a pure forward from a shim
+    # that does extra LOGIC (rather than carrying extra state) around the same single
+    # cell. Such a logic-bearing single-cell shim would be silently replaced by the
+    # bare inner ref, dropping that logic; this case is not detected, so any new shim
+    # added to the orchestration globals must remain a pure pass-through forwarder.
     import types as _types
 
     func = obj.__func__ if isinstance(obj, _types.MethodType) else obj
@@ -735,6 +748,29 @@ def _compose_standalone_module(
                 "unrecognized; see _INNER_NAMES)."
             )
 
+    # The module splices ``_inner_call = call`` below, relying on inner_python binding a
+    # module-level ``call`` entry point. Inductor emits this in one of two forms: the
+    # flat path defines ``def call(args):`` (FunctionDef) while the graph_partition Runner
+    # path binds ``call = runner.call`` (Assign with a Name target). Verify one is present
+    # so a future inductor codegen drift fails loudly here -- like the orchestration /
+    # chain / wiring guards above -- instead of surfacing as a bare NameError at exec of
+    # the generated module.
+    inner_tree = ast.parse(inner_python)
+    binds_call = any(
+        (isinstance(n, ast.FunctionDef) and n.name == "call")
+        or (
+            isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "call" for t in n.targets)
+        )
+        for n in inner_tree.body
+    )
+    if not binds_call:
+        raise NotImplementedError(
+            "compile_to_python: inner Inductor module does not bind a module-level "
+            "'call' entry point (the inner-call contract); the standalone module "
+            "splices ``_inner_call = call`` and must be updated to match."
+        )
+
     # Only emit the _rebuild helper if a baked value actually reconstructs through it.
     needs_rebuild = (
         any("_rebuild(" in b for b in wrapper_blocks) or "_rebuild(" in orch_block
@@ -770,6 +806,15 @@ def _compose_standalone_module(
         "def call(flat_inputs):  # noqa: F811",
         "    # AOTAutograd orchestration: disables grad, invokes the inner chain,",
         "    # bumps mutated-input versions, applies the output epilogue.",
+        "    #",
+        "    # The 2nd/3rd positional args INTENTIONALLY substitute contextlib.nullcontext",
+        "    # for the runtime's first-invocation context (_FirstInvocationContext) and a",
+        "    # no-op for the profiler-prologue exit. This drops two cold-start diagnostics:",
+        "    # the first-call custom-op aliasing analysis (_AnalyzeCustomOpInputOutputMode,",
+        "    # active when check_custom_op_aliasing is set, which can even RAISE under",
+        "    # error_on_custom_op_aliasing) and the profiler prologue. Neither affects",
+        "    # numerics, so this is not a bug -- the standalone artifact deliberately omits",
+        "    # them. (See the positional-mapping note in _compose_standalone_module.)",
         "    return _orchestration(",
         f"        {chain_head}, contextlib.nullcontext, lambda: None, list(flat_inputs)",
         "    )",

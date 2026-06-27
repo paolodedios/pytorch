@@ -6,6 +6,7 @@ import functools
 import math
 
 import torch
+import torch._functorch.config as functorch_config
 import torch.fx as fx
 import torch.utils._pytree as pytree
 from torch._functorch._aot_autograd.subclass_codegen import GeneratedSource
@@ -225,6 +226,18 @@ class _BufferMutate(torch.nn.Module):
         return x + self.b
 
 
+class _MatMul(torch.nn.Module):
+    # addmm is an autocast-to-bf16 op, so a float32 input under torch.autocast engages
+    # autocast and bakes the casts into the graph -- the setup the _DisableAutocast_ test
+    # needs (a Linear's addmm behaves the same way).
+    def __init__(self):
+        super().__init__()
+        self.l = torch.nn.Linear(4, 3)
+
+    def forward(self, x):
+        return self.l(x)
+
+
 def _compose(m, x):
     gm = _capture(m, x)
     return compile_to_python(gm, _flat_inputs(m, x))
@@ -239,7 +252,12 @@ def _assert_composed(test, src):
     test.assertIn("def _exec_wrapper(", src)
     test.assertIn("_orchestration", src)
     # Auditability guarantee: no pickle.loads / base64 blob in the emitted module.
+    # _load_from_bytes is the storage-reduce callable that embeds raw weight bytes and
+    # base64 is the only other opaque-blob encoding that could smuggle them in, so the
+    # absence of all three is what makes the comment's no-blob promise actually hold.
     test.assertNotIn("pickle.loads", src)
+    test.assertNotIn("_load_from_bytes", src)
+    test.assertNotIn("base64", src)
 
 
 class TestAOTCompileToPython(TestCase):
@@ -397,6 +415,110 @@ class TestAOTCompileToPython(TestCase):
         self.assertIsInstance(out, TwoTensor)
         self.assertEqual(out.a, eager.a)
         self.assertEqual(out.b, eager.b)
+
+    def test_autocast_disable_autocast_runs_like_eager(self):
+        # disable_amp is read by AOTAutograd at compile time via _is_any_autocast_enabled,
+        # so the inner compile MUST run under autocast for the orchestration to emit
+        # _DisableAutocast_. The graph is also traced under autocast so the bf16 casts are
+        # baked in; the orchestration then disables autocast at runtime to keep the dense
+        # call from double-casting. Equivalence is checked against eager run UNDER autocast.
+        m = _MatMul().eval()
+        x = torch.randn(5, 4)
+        pb = _flat_inputs(m, x)
+
+        pnames = [n for n, _ in m.named_parameters()]
+        k = len(pnames)
+        bnames = [n for n, _ in m.named_buffers()]
+
+        def flat_fn(flat):
+            params = dict(zip(pnames, flat[:k]))
+            buffers = dict(zip(bnames, flat[k : k + len(bnames)]))
+            with stateless._reparametrize_module(
+                m, {**params, **buffers}, tie_weights=True
+            ):
+                with torch.autocast("cpu", dtype=torch.bfloat16):
+                    out = m(flat[-1])
+            return pytree.tree_flatten(out)[0]
+
+        with torch.enable_grad():
+            gm = make_fx(flat_fn, tracing_mode="real")(pb)
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            src, _cache = compile_to_python(gm, pb)
+        _assert_composed(self, src)
+        self.assertIn("_DisableAutocast_", src)
+        with torch.no_grad():
+            out = _exec(src)(pb)[0]
+        with torch.no_grad(), torch.autocast("cpu", dtype=torch.bfloat16):
+            eager = m(x)
+        self.assertEqual(out, eager)
+
+    def test_options_passthrough_runs_like_eager(self):
+        # compile_to_python forwards ``options`` straight to the inner inductor compile in a
+        # single line. Use nan_asserts=True (default False) as the probe: it is observable in
+        # the inner source as an ``isnan`` check, so the assertion below FAILS if the forward
+        # were dropped (the option would fall back to the False default and emit no isnan) --
+        # unlike an option whose value equals its default, which could not detect a dropped
+        # forward. nan_asserts only adds runtime checks, so numerics still match eager.
+        m = _Pointwise().eval()
+        x = torch.randn(8, 4)
+        gm = _capture(m, x)
+        src, _cache = compile_to_python(
+            gm, _flat_inputs(m, x), options={"nan_asserts": True}
+        )
+        _assert_composed(self, src)
+        self.assertIn("isnan", src)
+        with torch.no_grad():
+            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_graph_partition_runner_form_runs_like_eager(self):
+        # The inner Inductor module binds its entry as ``call = runner.call`` (the
+        # graph_partition Runner form) rather than a flat ``def call``. graph_partition
+        # defaults on in OSS but off in fbcode, so the other e2e tests exercise the Runner
+        # form only by default; pin it on here to cover the runner-form inner-call splice and
+        # wiring through the composer end-to-end regardless of the build's default.
+        m = _Pointwise().eval()
+        x = torch.randn(8, 4)
+        gm = _capture(m, x)
+        src, _cache = compile_to_python(
+            gm, _flat_inputs(m, x), options={"graph_partition": True}
+        )
+        _assert_composed(self, src)
+        self.assertIn("call = runner.call", src)
+        with torch.no_grad():
+            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_functionalized_rng_runs_like_eager(self):
+        # functionalize_rng_ops rewrites the RNG op into a functional form during the inner
+        # AOTAutograd lowering, producing a FunctionalizedRngRuntimeWrapper that threads RNG
+        # state via CUDARngStateHelper. ``CUDARngStateHelper`` in the source is the RNG-specific
+        # signal (it appears only under functionalize_rng_ops and exercises the helper-table
+        # rows); the wrapper's ``_compiled_fn_`` inner-name is real but not asserted here, as
+        # that token is the orchestration's first parameter and appears in every composed
+        # module. Seeded so dropout's mask is deterministic for the eager comparison.
+        class _Dropout(torch.nn.Module):
+            def forward(self, x):
+                return torch.nn.functional.dropout(x, p=0.5, training=True)
+
+        m = _Dropout()
+        x = torch.randn(8, 4)
+
+        def flat_fn(flat):
+            return pytree.tree_flatten(m(flat[-1]))[0]
+
+        with functorch_config.patch(functionalize_rng_ops=True):
+            with torch.enable_grad():
+                gm = make_fx(flat_fn, tracing_mode="real")([x])
+            src, _cache = compile_to_python(gm, [x])
+        _assert_composed(self, src)
+        self.assertIn("CUDARngStateHelper", src)
+        fn = _exec(src)
+        torch.manual_seed(123)
+        with torch.no_grad():
+            out = fn([x])[0]
+        torch.manual_seed(123)
+        with torch.no_grad():
+            eager = m(x)
+        self.assertEqual(out, eager)
 
     def test_rejects_effectful_op(self):
         # A graph carrying an effectful op (here aten._print) is rejected up front with a
@@ -829,6 +951,125 @@ class TestAOTComposeGuards(TestCase):
             _compose_standalone_module(
                 "def call(args):\n    return args\n", [outer, inner, orch]
             )
+
+    def _orch(self, origin_id=None):
+        # A valid forward orchestration wrapper whose codegen'd signature matches what the
+        # composer invokes positionally; the guard tests below pair it with a deliberately
+        # broken sibling so the SIBLING is what trips the guard, not a missing orchestration.
+        return GeneratedSource(
+            "runtime_wrapper_orchestration",
+            "_runtime_wrapper",
+            self._ORCH_SRC,
+            {},
+            lambda: None,
+            origin_id,
+        )
+
+    def test_backward_wrapper_rejected(self):
+        # A backward wrapper is out of scope for forward lowering, so it is rejected up
+        # front (before chain wiring) even when paired with a valid forward orchestration:
+        # an "in backward" artifact_name must fail loudly rather than be spliced in.
+        bwd = GeneratedSource(
+            "backward_subclass_wrapper",
+            "wrap_fn",
+            "def wrap_fn(unwrapped_outs):\n    return unwrapped_outs\n",
+            {},
+            lambda args: args,
+        )
+        with self.assertRaisesRegex(
+            NotImplementedError, "cannot yet compose these runtime"
+        ):
+            _compose_standalone_module(
+                "def call(args):\n    return args\n", [bwd, self._orch()]
+            )
+
+    def test_unwired_chain_wrapper_rejected(self):
+        # A chain wrapper that names the inner it wraps via a global NOT in _INNER_NAMES
+        # (here "mystery_inner") is invisible to chain-head/inner-call detection, so it can
+        # never be wired into the module. If _INNER_NAMES drifts out of sync with a new
+        # AOTAutograd inner-ref global this is exactly the shape that arises; reject it
+        # rather than silently emit a structurally-wrong module.
+        def chain_fn(args):
+            return args
+
+        # mystery_inner is bound to an importable module-level function so its global
+        # resolves cleanly as source -- the point under test is the UNRECOGNIZED global
+        # NAME (not in _INNER_NAMES), which is what leaves the wrapper unwired.
+        mystery = GeneratedSource(
+            "dedup_wrapper",
+            "inner_fn",
+            "def inner_fn(args):\n    return mystery_inner(args)\n",
+            {"mystery_inner": _make_holder},
+            chain_fn,
+        )
+        with self.assertRaisesRegex(NotImplementedError, "could not wire"):
+            _compose_standalone_module(
+                "def call(args):\n    return args\n", [mystery, self._orch()]
+            )
+
+    def test_multiple_orchestrations_rejected(self):
+        # Two orchestration wrappers sharing one origin_id (so the origin filter keeps both)
+        # is an impossible capture for a single forward; the composer requires exactly one
+        # and must reject the ambiguous pair rather than pick one arbitrarily.
+        with self.assertRaisesRegex(
+            NotImplementedError, "exactly one forward orchestration"
+        ):
+            _compose_standalone_module(
+                "def call(args):\n    return args\n",
+                [self._orch(origin_id=5), self._orch(origin_id=5)],
+            )
+
+    def test_foreign_origin_wrapper_filtered_out(self):
+        # The capture sink is duration-scoped, so a re-entrant on-thread lowering can append
+        # ITS wrappers (a different origin_id) during the window. The composer filters to the
+        # target origin (the last orchestration's), so a foreign-origin wrapper must be
+        # dropped from the emitted source while the target orchestration still composes.
+        def foreign_fn(args):
+            return args
+
+        foreign = GeneratedSource(
+            "dedup_wrapper",
+            "foreign_inner",
+            "def foreign_inner(args):\n    return compiled_fn(args)\n",
+            {"compiled_fn": lambda a: a},
+            foreign_fn,
+            origin_id=1,
+        )
+        src = _compose_standalone_module(
+            "def call(args):\n    return args\n", [foreign, self._orch(origin_id=2)]
+        )
+        self.assertNotIn("foreign_inner", src)
+        self.assertIn("_runtime_wrapper", src)
+
+    def test_inner_call_guard_rejects_missing_call(self):
+        # The module splices ``_inner_call = call``, so the inner Inductor source MUST bind a
+        # module-level ``call``. An inner module that binds only ``not_call`` would surface as
+        # a bare NameError at exec; the guard turns that into a clear contract error.
+        with self.assertRaisesRegex(
+            NotImplementedError, "does not bind a module-level 'call'"
+        ):
+            _compose_standalone_module(
+                "def not_call(args):\n    return args\n", [self._orch()]
+            )
+
+    def test_inner_call_guard_accepts_runner_assign(self):
+        # The other inductor codegen form binds the entry point as ``call = runner.call``
+        # (the graph_partition Runner path) rather than ``def call``. The guard must accept
+        # that Assign-with-Name-target form too, so this composes without raising.
+        runner_inner = (
+            "class _R:\n"
+            "    def call(self, args):\n"
+            "        return args\n"
+            "runner = _R()\n"
+            "call = runner.call\n"
+        )
+        src = _compose_standalone_module(runner_inner, [self._orch()])
+        # ``_inner_call = call`` is emitted for any successful compose, so it only proves the
+        # guard did not raise; assert the runner-specific binding survived into the source to
+        # pin that the Assign form (not just some ``call``) was the accepted one, then exec to
+        # confirm the spliced ``_inner_call = call`` actually resolves at runtime.
+        self.assertIn("call = runner.call", src)
+        self.assertEqual(_exec(src)([7]), [7])
 
 
 if __name__ == "__main__":
