@@ -227,7 +227,7 @@ class _BufferMutate(torch.nn.Module):
 
 def _compose(m, x):
     gm = _capture(m, x)
-    return compile_to_python(gm, _flat_inputs(m, x), options={"graph_partition": False})
+    return compile_to_python(gm, _flat_inputs(m, x))
 
 
 def _assert_composed(test, src):
@@ -292,7 +292,6 @@ class TestAOTCompileToPython(TestCase):
             gm,
             _flat_inputs(m, x),
             dynamic_shapes="from_graph",
-            options={"graph_partition": False},
         )
         _assert_composed(self, src)
         fn = _exec(src)
@@ -364,7 +363,7 @@ class TestAOTCompileToPython(TestCase):
 
         tt = TwoTensor(torch.randn(4, 4), torch.randn(4, 4))
         gm = make_fx(f, tracing_mode="real")(tt)
-        src, _cache = compile_to_python(gm, [tt], options={"graph_partition": False})
+        src, _cache = compile_to_python(gm, [tt])
         _assert_composed(self, src)
         with torch.no_grad():
             out = _exec(src)([tt])[0]
@@ -390,9 +389,7 @@ class TestAOTCompileToPython(TestCase):
         ta = TwoTensor(torch.randn(4, 4), torch.randn(4, 4))
         tb = TwoTensor(torch.randn(4, 4), torch.randn(4, 4))
         gm = make_fx(f, tracing_mode="real")(ta, tb)
-        src, _cache = compile_to_python(
-            gm, [ta, tb], options={"graph_partition": False}
-        )
+        src, _cache = compile_to_python(gm, [ta, tb])
         _assert_composed(self, src)
         with torch.no_grad():
             out = _exec(src)([ta, tb])[0]
@@ -726,7 +723,7 @@ class TestAOTCompileToPythonCuda(TestCase):
             torch.randn(4, 4, device="cuda"), torch.randn(4, 4, device="cuda")
         )
         gm = make_fx(f, tracing_mode="real")(tt)
-        src, _cache = compile_to_python(gm, [tt], options={"graph_partition": False})
+        src, _cache = compile_to_python(gm, [tt])
         _assert_composed(self, src)
         with torch.no_grad():
             out = _exec(src)([tt])[0]

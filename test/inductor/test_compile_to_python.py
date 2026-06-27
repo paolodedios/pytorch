@@ -54,15 +54,20 @@ def _exec(src):
 
 
 def _extract_call(src):
-    """Return the dedented source of the module-level ``call`` entry point. The expect
-    goldens lock this runtime entry point only: the rest of the emitted module (imports,
-    the inert compile-time auto-tuning docstring, the ``# AOT ID`` global-counter
-    comment) carries build- and ordering-dependent noise that should not be goldened."""
+    """Return the dedented source of the ``call`` entry point, normalized to the flat
+    ``def call(args)`` signature. graph_partition (on by default in OSS, off in fbcode)
+    wraps the body in a ``Runner.call(self, args)`` method; the body is byte-identical
+    either way, so normalizing the signature makes the golden independent of the
+    graph_partition default. The expect goldens lock this runtime entry point only: the
+    rest of the emitted module (imports, the inert compile-time auto-tuning docstring, the
+    ``# AOT ID`` global-counter comment) carries build- and ordering-dependent noise that
+    should not be goldened."""
     mod = ast.parse(src)
     for node in ast.walk(mod):
         if isinstance(node, ast.FunctionDef) and node.name == "call":
             body = "\n".join(src.split("\n")[node.lineno - 1 : node.end_lineno])
-            return textwrap.dedent(body)
+            body = textwrap.dedent(body)
+            return body.replace("def call(self, args):", "def call(args):", 1)
     raise AssertionError("generated module has no module-level def call")
 
 
@@ -82,23 +87,16 @@ class _Softmax(torch.nn.Module):
 
 
 class TestInductorCompileToPythonCodegen(TestCase):
-    # graph_partition is pinned off so the entry point is the stable top-level
-    # ``def call(args)`` rather than the default ``Runner.call`` method wrapper. The
-    # extern-kernel / CPU codegen the goldens lock is identical either way and does not
-    # depend on whether torch was built with CUDA (these are CPU tensors). size_asserts /
-    # nan_asserts are pinned so the goldened assert_size_stride lines do not drift with the
-    # ambient TORCHINDUCTOR_SIZE_ASSERTS / TORCHINDUCTOR_NAN_ASSERTS env.
+    # These golden the runtime ``call`` body emitted under DEFAULT inductor config (no
+    # option overrides), so the test reflects what callers get out of the box. The
+    # extern-kernel / CPU codegen body is deterministic and build-independent (CPU tensors);
+    # assert_size_stride lines come from the default size_asserts=True (the same default the
+    # rest of the inductor golden suite relies on). ``_extract_call`` normalizes the
+    # entry-point signature, so the golden is the same whether graph_partition wraps the body
+    # in a ``Runner`` method (OSS default) or emits a flat top-level ``def call`` (fbcode).
     def _inner_call(self, m, x):
         gm = _capture(m, x)
-        src, _cache = compile_to_python(
-            gm,
-            _flat_inputs(m, x),
-            options={
-                "graph_partition": False,
-                "size_asserts": True,
-                "nan_asserts": False,
-            },
-        )
+        src, _cache = compile_to_python(gm, _flat_inputs(m, x))
         return src, _extract_call(src)
 
     def test_addmm_extern_kernel_codegen(self):
@@ -206,20 +204,13 @@ class TestInductorCompileToPythonCudaCodegen(TestCase):
     # live in the kernel decorator, not in ``call`` -- so it is arch-independent. The
     # hardware- and Triton-version-dependent kernel body is instead checked structurally
     # (assertIn). The device ordinal is hardcoded to 0 (these tests run on device 0, as
-    # the rest of the inductor codegen-golden suite does). graph_partition is pinned off
-    # for a stable top-level ``def call(args)``, and size_asserts / nan_asserts are pinned
-    # so the goldened assert_size_stride lines do not drift with the ambient env.
+    # the rest of the inductor codegen-golden suite does). Default inductor config is used
+    # (no option overrides); ``_extract_call`` normalizes the entry-point signature so the
+    # golden is independent of the graph_partition default (Runner method in OSS, flat
+    # ``def call`` in fbcode).
     def _inner_call(self, m, x):
         gm = _capture(m, x)
-        src, _cache = compile_to_python(
-            gm,
-            _flat_inputs(m, x),
-            options={
-                "graph_partition": False,
-                "size_asserts": True,
-                "nan_asserts": False,
-            },
-        )
+        src, _cache = compile_to_python(gm, _flat_inputs(m, x))
         return src, _extract_call(src)
 
     def test_pointwise_triton_kernel_codegen(self):
@@ -374,7 +365,6 @@ def call(args):
                     gm,
                     _flat_inputs(m, x),
                     options={
-                        "graph_partition": False,
                         "max_autotune": True,
                         "max_autotune_gemm_backends": "TRITON",
                     },
@@ -401,19 +391,19 @@ class TestInductorCompileToPythonContract(TestCase):
     def test_pins_override_conflicting_user_options(self):
         # The benchmark_harness/cpp_wrapper pins must beat conflicting user options so the
         # captured module stays the runnable python wrapper rather than a C++ wrapper or a
-        # profiling harness.
+        # profiling harness. ``def call(`` matches both the flat ``def call(args)`` and the
+        # graph_partition ``Runner.call(self, args)`` form, so this does not pin partitioning.
         m = torch.nn.Linear(4, 3).eval()
         x = torch.randn(5, 4)
         src, _cache = compile_to_python(
             _capture(m, x),
             _flat_inputs(m, x),
             options={
-                "graph_partition": False,
                 "cpp_wrapper": True,
                 "benchmark_harness": True,
             },
         )
-        self.assertIn("def call(args):", src)
+        self.assertIn("def call(", src)
         self.assertNotIn('extern "C"', src)
         self.assertNotIn("AOTInductorModel", src)
         self.assertNotIn("benchmark_compiled_module", src)
@@ -436,9 +426,7 @@ class TestInductorCompileToPythonContract(TestCase):
             self.skipTest("requires inductor + autograd caches enabled")
         m = torch.nn.Linear(4, 3).eval()
         x = torch.randn(5, 4)
-        _src, cache = compile_to_python(
-            _capture(m, x), _flat_inputs(m, x), options={"graph_partition": False}
-        )
+        _src, cache = compile_to_python(_capture(m, x), _flat_inputs(m, x))
         self.assertIsInstance(cache, bytes)
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "artifact.bin")
@@ -458,7 +446,7 @@ class TestInductorCompileToPythonContract(TestCase):
         src, cache = compile_to_python(
             _capture(m, x),
             _flat_inputs(m, x),
-            options={"graph_partition": False, "force_disable_caches": True},
+            options={"force_disable_caches": True},
         )
         self.assertIsNone(cache)
         with torch.no_grad():
@@ -490,7 +478,6 @@ class TestInductorCompileToPythonContract(TestCase):
             gm,
             _flat_inputs(m, x),
             dynamic_shapes="from_graph",
-            options={"graph_partition": False},
         )
         call_src = _extract_call(src)
         self.assertRegex(call_src, r"\bs\d+\b")  # a symbolic size symbol is present
@@ -516,18 +503,14 @@ class TestInductorCompileToPythonContract(TestCase):
         x = torch.randn(5, 4)
         with fresh_cache():
             counters.clear()
-            src1, _ = compile_to_python(
-                _capture(m, x), _flat_inputs(m, x), options={"graph_partition": False}
-            )
+            src1, _ = compile_to_python(_capture(m, x), _flat_inputs(m, x))
             hits_after_first = counters["inductor"]["fxgraph_cache_hit"]
-            src2, _ = compile_to_python(
-                _capture(m, x), _flat_inputs(m, x), options={"graph_partition": False}
-            )
+            src2, _ = compile_to_python(_capture(m, x), _flat_inputs(m, x))
             hits_after_second = counters["inductor"]["fxgraph_cache_hit"]
         self.assertEqual(hits_after_first, 0)
         self.assertEqual(hits_after_second, 1)
-        self.assertIn("def call(args):", src1)
-        self.assertIn("def call(args):", src2)
+        self.assertIn("def call(", src1)
+        self.assertIn("def call(", src2)
         with torch.no_grad():
             self.assertEqual(_exec(src2)(_flat_inputs(m, x))[0], m(x))
 
