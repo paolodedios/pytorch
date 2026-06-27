@@ -3718,6 +3718,7 @@ make_fallback(aten.linalg_lu)
 make_fallback(aten.linalg_lu_factor_ex)
 make_fallback(aten.linalg_lu_solve)
 make_fallback(aten.linalg_matrix_exp)
+make_fallback(aten.linalg_matrix_sqrth)
 make_fallback(aten.linalg_qr)
 make_fallback(aten._linalg_slogdet)
 make_fallback(aten._linalg_solve_ex)
@@ -8725,6 +8726,13 @@ def set__source_tensor(self, source_tensor):
     self.realize()
     source_tensor.realize()
     return TensorBox.create(ir.SetSourceTensorKernel(self, source_tensor))
+
+
+@register_lowering(torch.ops.aten.shallow_copy_data_.default)
+def shallow_copy_data_(self, source_tensor):
+    self.realize()
+    source_tensor.realize()
+    return TensorBox.create(ir.ShallowCopyDataKernel(self, source_tensor))
 
 
 if hasattr(torch.ops.fsdp, "copy_"):
