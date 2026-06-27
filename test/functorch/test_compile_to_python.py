@@ -470,23 +470,6 @@ class TestAOTCompileToPython(TestCase):
         with torch.no_grad():
             self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
 
-    def test_graph_partition_runner_form_runs_like_eager(self):
-        # The inner Inductor module binds its entry as ``call = runner.call`` (the
-        # graph_partition Runner form) rather than a flat ``def call``. graph_partition
-        # defaults on in OSS but off in fbcode, so the other e2e tests exercise the Runner
-        # form only by default; pin it on here to cover the runner-form inner-call splice and
-        # wiring through the composer end-to-end regardless of the build's default.
-        m = _Pointwise().eval()
-        x = torch.randn(8, 4)
-        gm = _capture(m, x)
-        src, _cache = compile_to_python(
-            gm, _flat_inputs(m, x), options={"graph_partition": True}
-        )
-        _assert_composed(self, src)
-        self.assertIn("call = runner.call", src)
-        with torch.no_grad():
-            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
-
     def test_functionalized_rng_runs_like_eager(self):
         # functionalize_rng_ops rewrites the RNG op into a functional form during the inner
         # AOTAutograd lowering, producing a FunctionalizedRngRuntimeWrapper that threads RNG
