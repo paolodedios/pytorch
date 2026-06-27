@@ -4,8 +4,8 @@ index 5e10708ca89..85388575975 100644
 +++ b/epi_ops.py
 @@ -1098,8 +1098,46 @@ class VecReduce(EpiOp):
          return result
- 
- 
+
+
 +@cute.jit
 +def grouped_rowvec_reduce_value(gemm, tRS_rInput, row_state, combine_fn, finalize_fn):
 +    """Return same-warp grouped-M reductions broadcast to every row lane.
@@ -47,7 +47,7 @@ index 5e10708ca89..85388575975 100644
  class GroupedColVecReduce(VecReduce):
 -    """Store generated grouped local-reduce values into a compressed aux output."""
 +    """Store or broadcast generated grouped local-reduce values."""
- 
+
      dim = 0
      epi_m_major_preference = -1
 @@ -1132,6 +1165,7 @@ class GroupedColVecReduce(VecReduce):
@@ -57,7 +57,7 @@ index 5e10708ca89..85388575975 100644
 +                args.local_reduce_feeds_main,
              )
          }
- 
+
 @@ -1145,17 +1179,27 @@ class GroupedColVecReduce(VecReduce):
              tile = tile_N if const_expr(axis == 1) else tile_M
              assert group != 0 and group <= tile
@@ -81,7 +81,7 @@ index 5e10708ca89..85388575975 100644
 +                ).layout
 +                result = (cute.make_rmem_tensor(tDrReduce_layout, Float32), smem_tensor)
          return result
- 
+
      @cute.jit
      def begin_loop(self, gemm, state, epi_coord):
          result = None
@@ -118,8 +118,8 @@ index 1ab1cfa4d8c..43152b7653b 100644
  _local_reduce_finalize_fns: dict[str, Callable] = {}
 +# Feed-main must fit within grouped_rowvec_reduce_value's lane-layout M extent.
 +MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP = 16
- 
- 
+
+
  def register_tensor_epilogue_fn(
 @@ -95,6 +97,7 @@ class GemmActMixin(ComposableEpiMixin):
          ("tensor_epilogue_arg_kinds", cutlass.Constexpr, ()),
@@ -138,9 +138,9 @@ index 1ab1cfa4d8c..43152b7653b 100644
          local_reduce_axis: cutlass.Constexpr[int] = 1
          local_reduce_combine_fn: cutlass.Constexpr[Optional[Callable]] = None
 @@ -124,6 +127,16 @@ class GemmActMixin(ComposableEpiMixin):
- 
+
      # EpilogueParams auto-generated from _epi_ops + _extra_param_fields
- 
+
 +    def _filter_epi_ops(self, args):
 +        super()._filter_epi_ops(args)
 +        if args.local_reduce_feeds_main and not any(
@@ -232,7 +232,7 @@ index 1ab1cfa4d8c..43152b7653b 100644
 -        if local_reduce_dtype is not None
 -        else None
      )
- 
+
      tensor_epilogue_fn = (
 @@ -624,6 +648,7 @@ def _compile_gemm_act(
          tensor_epilogue_arg_kinds=tensor_epilogue_arg_kinds,

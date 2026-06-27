@@ -482,6 +482,14 @@ def gemm_epilogue(
         out_dtype: Optional output dtype. Defaults to ``a.dtype``.
         out: Optional preallocated output tensor with shape ``[M, N]`` or ``[B, M, N]``.
         aux_out: Optional preallocated same-shape aux tensor for tuple epilogues.
+        local_reduce_out: Optional compressed aux tensor for one local-reduce store.
+        local_reduce_group: Logical group size for the local-reduce dimension.
+        local_reduce_axis: Output axis reduced by the local-reduce group, ``0`` or ``1``.
+        local_reduce_feeds_main: Whether the local-reduce value is passed to the epilogue.
+        local_reduce_combine_fn: Generated physical reduction combiner.
+        local_reduce_combine_key: Registry key for ``local_reduce_combine_fn``.
+        local_reduce_finalize_fn: Generated physical reduction finalizer.
+        local_reduce_finalize_key: Registry key for ``local_reduce_finalize_fn``.
         epilogue_args: Optional tensor args captured by the epilogue.
         epilogue_arg_kinds: Explicit ``tile``, ``row``, or ``col`` kind per arg.
         config_key: Optional explicit QuACK config key selected by Inductor autotune.
