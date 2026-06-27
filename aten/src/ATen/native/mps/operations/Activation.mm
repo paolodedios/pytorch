@@ -262,12 +262,12 @@ TORCH_IMPL_FUNC(threshold_backward_out_mps)
 }
 
 TORCH_IMPL_FUNC(gelu_out_mps)(const Tensor& self, std::string_view approximate, const Tensor& output) {
-  GeluKernel(kMPS, *this, get_gelutype_enum(approximate));
+  
 }
 
 TORCH_IMPL_FUNC(gelu_backward_out_mps)
 (const Tensor& grad, const Tensor& self, std::string_view approximate, const Tensor& grad_input) {
-  GeluBackwardKernel(kMPS, *this, get_gelutype_enum(approximate));
+  
 }
 
 TORCH_IMPL_FUNC(glu_out_mps)(const Tensor& self, const int64_t dim, const Tensor& output) {

@@ -21,7 +21,7 @@ namespace at::mps {
 
 // Helper enum to check if a MPSGraph op is supported in a given macOS version
 enum class MacOSVersion : uint32_t {
-  MACOS_VER_14_4_PLUS = 0,
+  MACOS_VER_14_4_PLUS,
   MACOS_VER_15_0_PLUS,
   MACOS_VER_15_1_PLUS,
   MACOS_VER_15_2_PLUS,
