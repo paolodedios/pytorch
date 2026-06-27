@@ -220,9 +220,9 @@ def _branch_tensor_outputs_only(branch):
     @functools.wraps(branch)
     def wrapped(*args):
         branch_outs = branch(*args)
-        if not isinstance(branch_outs, (tuple, list)):
-            branch_outs = (branch_outs,)
-        return tuple(o for o in branch_outs if isinstance(o, torch.Tensor))
+        return tuple(
+            o for o in pytree.tree_leaves(branch_outs) if isinstance(o, torch.Tensor)
+        )
 
     return wrapped
 
@@ -270,6 +270,7 @@ class SwitchAutogradOp(torch.autograd.Function):
 
         branches_bw_gm: list[torch.fx.GraphModule] = []
         grad_input_is_tensor: list[bool] = []
+        # All branches share the same input signature (see _validate_input)
         for branch in ctx._branches:
             bw_fn = create_bw_fn(_branch_tensor_outputs_only(branch), operands)
             bw_gm, mask = materialize_bw_fn_filter_non_tensor_grads(
