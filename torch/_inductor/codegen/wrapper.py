@@ -73,6 +73,7 @@ from .common import (
     ArgName,
     CodeGen,
     DeferredLine,
+    DeviceIndexExpr,
     PythonPrinter,
     WorkspaceArg,
     WorkspaceZeroMode,
@@ -613,13 +614,13 @@ class ExitSubgraphLine(WrapperLine):
 _COOR_DEVICE_IDX_VAR = "_coor_device_idx"
 
 
-def _coor_device_idx_ref(device_idx: int) -> int | str:
+def _coor_device_idx_ref(device_idx: int) -> DeviceIndexExpr:
     """Device index to emit in the wrapper. Under compile-on-one-rank, the call()-local
     runtime current-device variable (so the wrapper is byte-identical across ranks);
     otherwise the literal compile-time index."""
     from torch.fx.experimental.proxy_tensor import _coor_enabled
 
-    return _COOR_DEVICE_IDX_VAR if _coor_enabled() else device_idx
+    return DeviceIndexExpr(_COOR_DEVICE_IDX_VAR if _coor_enabled() else str(device_idx))
 
 
 def _coor_device_type_str(device: torch.device) -> str:
@@ -667,12 +668,12 @@ class EnterDeviceContextManagerLine(WrapperLine):
                 # compile-on-one-rank: resolve the device at runtime so the wrapper is
                 # byte-identical across ranks -- a shared artifact follows each rank's
                 # current device instead of the compile-time index.
-                idx: int | str = _COOR_DEVICE_IDX_VAR
+                idx = DeviceIndexExpr(_COOR_DEVICE_IDX_VAR)
                 code.writeline(
                     f"{idx} = {V.graph.device_ops.current_device_idx_expr()}"
                 )
             else:
-                idx = self.device_idx
+                idx = DeviceIndexExpr(str(self.device_idx))
             code.writeline(f"with {V.graph.device_ops.device_guard(idx)}:")
             code.do_indent()
             code.writeline(V.graph.device_ops.set_device(idx))
@@ -1973,8 +1974,9 @@ class PythonWrapperCodegen(CodeGen):
         if config.triton.autotune_at_compile_time:
             # mimic logic of EnterDeviceContextManagerLine.codegen for the autotune code block
             self.write_triton_header_once()
+            guard_idx = DeviceIndexExpr(str(device_idx))
             self.kernel_autotune_calls.writeline(
-                f"with {V.graph.device_ops.device_guard(device_idx)}:"
+                f"with {V.graph.device_ops.device_guard(guard_idx)}:"
             )
             self.kernel_autotune_calls.do_indent()
             if is_codegen_graph_partition_subgraph(self):
@@ -3891,8 +3893,9 @@ class PythonWrapperCodegen(CodeGen):
                 all_args.append(arg_str if key is None else f"{key}={arg_str}")
 
             # Make sure kernel launch under a device guard because models don't always run on device 0
+            guard_idx = DeviceIndexExpr(str(device.index))
             self.kernel_autotune_calls.writeline(
-                f"with {V.graph.device_ops.device_guard(device.index)}:"
+                f"with {V.graph.device_ops.device_guard(guard_idx)}:"
             )
             self.kernel_autotune_calls.do_indent()
             self.kernel_autotune_calls.writeline(

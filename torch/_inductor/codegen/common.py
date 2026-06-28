@@ -15,7 +15,7 @@ import tempfile
 from abc import ABC, abstractmethod
 from enum import auto, Enum
 from itertools import chain
-from typing import Any, cast, ClassVar, Generic, NamedTuple, TYPE_CHECKING
+from typing import Any, cast, ClassVar, Generic, NamedTuple, NewType, TYPE_CHECKING
 from typing_extensions import Self, TypeVar
 
 import sympy
@@ -317,18 +317,23 @@ KernelArgType = WorkspaceArg | TensorArg | SizeArg | TMADescriptorArg | Constexp
 
 device_codegens: dict[str, DeviceCodegen] = {}
 
+# A device index rendered as the code to emit for it: either a literal index
+# (e.g. "0") or a wrapper-local expression that evaluates to one at runtime
+# (e.g. "_coor_device_idx", under compile-on-one-rank).
+DeviceIndexExpr = NewType("DeviceIndexExpr", str)
+
 
 class DeviceOpOverrides:
     def import_get_raw_stream_as(self, name: str) -> str:
         raise NotImplementedError
 
-    def set_device(self, device_idx: int | str) -> str:
+    def set_device(self, device_idx: DeviceIndexExpr) -> str:
         raise NotImplementedError
 
     def synchronize(self) -> str:
         raise NotImplementedError
 
-    def device_guard(self, device_idx: int | str) -> str:
+    def device_guard(self, device_idx: DeviceIndexExpr) -> str:
         raise NotImplementedError
 
     def current_device_idx_expr(self) -> str:

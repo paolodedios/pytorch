@@ -30,6 +30,7 @@ from ..virtualized import V
 from .common import (
     ArgName,
     ConstexprArg,
+    DeviceIndexExpr,
     IndentedBuffer,
     InplacedBuffer,
     Kernel,
@@ -1112,11 +1113,12 @@ class ComboKernel(Kernel):
         result.writelines(["\n", "\n", "def call(args):"])
         device = V.graph.get_current_device_or_throw()
         index = V.graph.get_current_device_or_throw().index
+        guard_idx = DeviceIndexExpr(str(index))
         with result.indent():
-            result.writeline(f"with {V.graph.device_ops.device_guard(index)}:")
+            result.writeline(f"with {V.graph.device_ops.device_guard(guard_idx)}:")
             with result.indent():
                 result.writeline(
-                    V.graph.device_ops.set_device(index)
+                    V.graph.device_ops.set_device(guard_idx)
                 )  # no-op to ensure context
                 stream_name = get_raw_stream_name(index)
                 result.writeline(f"{stream_name} = get_raw_stream({index})")
@@ -1127,10 +1129,10 @@ class ComboKernel(Kernel):
         # benchmark all configs
         result.writelines(["\n", "\n", "def benchmark_all_configs(args):"])
         with result.indent():
-            result.writeline(f"with {V.graph.device_ops.device_guard(index)}:")
+            result.writeline(f"with {V.graph.device_ops.device_guard(guard_idx)}:")
             with result.indent():
                 result.writeline(
-                    V.graph.device_ops.set_device(index)
+                    V.graph.device_ops.set_device(guard_idx)
                 )  # no-op to ensure context
                 result.writeline(
                     f"return {str(Placeholder.KERNEL_NAME)}.benchmark_all_configs(*args)"
