@@ -9292,7 +9292,7 @@
     XPU: masked_select_out_xpu
   tags: dynamic_output_shape
 
-- func: masked_select(Tensor self, Tensor mask) -> Tensor
+- func: masked_select(Tensor self, Tensor mask, *, SymInt? output_size=None) -> Tensor
   variants: method, function
   dispatch:
     CPU: masked_select_cpu
