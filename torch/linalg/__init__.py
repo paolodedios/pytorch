@@ -2262,6 +2262,33 @@ Examples::
 )
 
 
+matrix_sqrt = _add_docstr(
+    _linalg.linalg_matrix_sqrt,
+    r"""
+linalg.matrix_sqrt(A) -> Tensor
+
+Computes the principal square root :math:`X` (i.e. :math:`XX = A`) via the generic
+LAPACK Schur algorithm (``?gees`` + ``?trsyl``, the Bjorck-Hammarling triangular
+recurrence). This routine works for any square matrix whose Schur form is triangular.
+
+Supports input of float, double, cfloat and cdouble dtypes, and batches of
+matrices.
+
+Args:
+    A (Tensor): tensor of shape `(*, n, n)` where `*` is zero or more batch
+                dimensions. For the benchmark this is a batch of symmetric
+                (resp. Hermitian) positive-semidefinite matrices.
+
+Examples::
+
+    >>> A = torch.tensor([[2., 0.], [0., 9.]])
+    >>> torch.linalg.matrix_sqrt(A)
+    tensor([[1.4142, 0.0000],
+            [0.0000, 3.0000]])
+""",
+)
+
+
 solve = _add_docstr(
     _linalg.linalg_solve,
     r"""
