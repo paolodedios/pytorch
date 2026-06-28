@@ -12,12 +12,7 @@ from torch._functorch.utils import exposed_in
 from torch._higher_order_ops.utils import (
     _maybe_compile_and_run_fn,
     _maybe_run_with_interpreter,
-    create_bw_fn,
-    fill_none_with_masks,
-    materialize_bw_fn_filter_non_tensor_grads,
     reenter_make_fx,
-    save_values_for_backward,
-    saved_values,
     unique_graph_id,
     validate_subgraph_args_types,
 )
@@ -83,6 +78,10 @@ def switch(
           are also permitted in branch outputs and are merged across branches (an
           unbacked SymInt is introduced when ``int`` leaves differ between branches).
         - Branches cannot have in-place mutations on inputs or global variables.
+        - Autograd is not supported in this prototype: the autograd dispatch
+          key is a no-op that redispatches below autograd, so gradients will
+          not flow through ``torch.switch``. Full autograd support is planned
+          for a future release.
     """
 
     # Flatten operands so the HOP only sees a flat list of tensors.
@@ -214,90 +213,10 @@ def switch_op_dense(index, branches, operands):
     return branches[clamped_idx](*operands)
 
 
-def _branch_tensor_outputs_only(branch):
-    """Wrap a branch so it only returns its Tensor leaves."""
-
-    @functools.wraps(branch)
-    def wrapped(*args):
-        branch_outs = branch(*args)
-        return tuple(
-            o for o in pytree.tree_leaves(branch_outs) if isinstance(o, torch.Tensor)
-        )
-
-    return wrapped
-
-
-class SwitchAutogradOp(torch.autograd.Function):
-    @staticmethod
-    # pyrefly: ignore [bad-override]
-    def forward(
-        ctx,
-        index,
-        branches,
-        *operands,
-    ):
-        ctx._index = index
-        ctx._branches = list(branches)
-
-        # We snapshot the dispatch keys in forward for materializing the
-        # bw_graph in backward.
-        ctx._fw_include_key_set = torch._C._dispatch_tls_local_include_set()
-        ctx._fw_exclude_key_set = torch._C._dispatch_tls_local_exclude_set()
-        save_values_for_backward(ctx, operands)
-
-        with torch._C._AutoDispatchBelowAutograd():
-            outs = switch_op(index, branches, operands)
-
-        # Record which output slots are Tensors. Non-Tensor slots (None,
-        # int/SymInt) carry no tangent in backward and the joint is built
-        # to omit them.
-        ctx._fw_output_is_tensor = [
-            isinstance(o, torch.Tensor) for o in pytree.tree_leaves(outs)
-        ]
-        return outs
-
-    @staticmethod
-    def backward(ctx, *flat_grads):
-        operands = saved_values(ctx)
-        # Drop tangents at non-Tensor output positions so that the joint
-        # signature matches the tensor-only wrapped branches.
-        tensor_grads = tuple(
-            g for g, keep in zip(flat_grads, ctx._fw_output_is_tensor) if keep
-        )
-        args = operands + tensor_grads
-        # TODO: we need to materialize the bw graphs because dynamo is unable to
-        # trace through the joint function when torch.compile torch.autograd.grad.
-
-        branches_bw_gm: list[torch.fx.GraphModule] = []
-        grad_input_is_tensor: list[bool] = []
-        # All branches share the same input signature (see _validate_input)
-        for branch in ctx._branches:
-            bw_fn = create_bw_fn(_branch_tensor_outputs_only(branch), operands)
-            bw_gm, mask = materialize_bw_fn_filter_non_tensor_grads(
-                bw_fn,
-                args,
-                ctx._fw_include_key_set,
-                ctx._fw_exclude_key_set,
-            )
-            branches_bw_gm.append(bw_gm)
-            if not grad_input_is_tensor:
-                grad_input_is_tensor = mask
-
-        grads = switch_op(
-            ctx._index,
-            branches_bw_gm,
-            args,
-        )
-        return None, None, *fill_none_with_masks(grads, grad_input_is_tensor)
-
-
 @switch_op.py_autograd_impl
 def switch_autograd(index, branches, operands):
-    return SwitchAutogradOp.apply(
-        index,
-        branches,
-        *operands,
-    )
+    with torch._C._AutoDispatchBelowAutograd():
+        return switch_op(index, branches, operands)
 
 
 @switch_op.py_impl(ProxyTorchDispatchMode)
