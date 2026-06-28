@@ -3275,16 +3275,6 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
                 ],
             )
 
-        if len(init_vars) == 0:
-            unimplemented(
-                gb_type="torch.scan: no init leaves",
-                context="",
-                explanation="Expected init leaves.",
-                hints=[
-                    *graph_break_hints.DYNAMO_BUG,
-                ],
-            )
-
         # additional_inputs input check
         if not isinstance(additional_inputs, (ListVariable, TupleVariable)):
             unimplemented(
@@ -3307,13 +3297,19 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
                     *graph_break_hints.SUPPORTABLE,
                 ],
             )
-        _check_all_tensorvariable(init_vars)
+        # init leaves may be None (JAX convention: "no recurrent state for this slot")
+        _check_all_tensorvariable(
+            [v for v in init_vars if not v.is_python_constant()]
+        )
         _check_all_tensorvariable(xs_vars)
         _check_all_tensorvariable(additional_inputs_vars)
 
         with discard_graph_changes(tx):
             sub_args_init = [
-                ini.call_method(tx, "clone", args=[], kwargs={}) for ini in init_vars
+                ini.call_method(tx, "clone", args=[], kwargs={})
+                if not ini.is_python_constant()
+                else ini
+                for ini in init_vars
             ]
             # The sub_args_inp is a slice of original input, e.g. if input.size is (3, 4), and scan dim=0
             # the sub_args_inp shape will be (4, ).

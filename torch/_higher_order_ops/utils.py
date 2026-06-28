@@ -191,6 +191,8 @@ def check_meta_consistency(
             lhs: torch.Tensor | torch.SymInt | int,
             rhs: torch.Tensor | torch.SymInt | int,
         ) -> str:
+            if lhs is None and rhs is None:
+                return ""
             if isinstance(lhs, torch.Tensor) and isinstance(rhs, torch.Tensor):
                 return ", ".join(
                     diff_tensor_meta(

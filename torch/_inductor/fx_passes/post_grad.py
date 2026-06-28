@@ -709,6 +709,7 @@ def decompose_scan_to_while_loop(gm: torch.fx.GraphModule):
     )
     def _(match: Match, *args, **kwargs):
         from torch._higher_order_ops.scan import _extract_carry_and_out
+        from torch._higher_order_ops.utils import fill_none_with_masks
 
         if len(kwargs) != 0:
             raise AssertionError(
@@ -722,6 +723,11 @@ def decompose_scan_to_while_loop(gm: torch.fx.GraphModule):
         cur_node = match.nodes[0]
         num_init_leaves = len(fx_init)
         _, ys_outputs = _extract_carry_and_out(cur_node.meta["val"], num_init_leaves)
+        # None leaves in init/ys are structural placeholders (JAX convention).
+        # while_loop only accepts tensors, so we filter them out and re-inject after.
+        init_none_mask = [v is None for v in fx_init]
+        ys_none_mask = [v is None for v in ys_outputs]
+        ys_outputs_tensors = [v for v in ys_outputs if v is not None]
 
         def lower_to_while_loop(*args, **kwargs):
             """
@@ -761,10 +767,12 @@ def decompose_scan_to_while_loop(gm: torch.fx.GraphModule):
                     layout=ys_out.layout,
                     requires_grad=ys_out.requires_grad,
                 )
-                for ys_out in ys_outputs
+                for ys_out in ys_outputs_tensors
             ]
 
-            while_loop_operands = (loop_idx, ys_outs, init, xs)
+            # Strip None leaves from init before passing to while_loop.
+            init_tensors = [v for v, is_none in zip(init, init_none_mask) if not is_none]
+            while_loop_operands = (loop_idx, ys_outs, init_tensors, xs)
             flat_operands, operands_spec = pytree.tree_flatten(while_loop_operands)
             _, operands_and_additional_inputs_spec = pytree.tree_flatten(
                 (*while_loop_operands, additional_inputs)
@@ -778,26 +786,31 @@ def decompose_scan_to_while_loop(gm: torch.fx.GraphModule):
                 return loop_idx < scan_length  # type: ignore[has-type]
 
             def body_fn(*flat_args):
-                loop_idx, ys_outs, carry, xs, additional_inputs = pytree.tree_unflatten(
+                loop_idx, ys_outs, carry_tensors, xs, additional_inputs = pytree.tree_unflatten(
                     flat_args,
                     operands_and_additional_inputs_spec,  # type: ignore[has-type]
                 )
+                # Re-inject None leaves back into the carry for the subgraph call.
+                carry = fill_none_with_masks(list(carry_tensors), [not m for m in init_none_mask])
 
                 idx_int = loop_idx.item()
                 torch.ops.aten._assert_scalar.default(idx_int >= 0, "")
                 torch.ops.aten._assert_scalar.default(idx_int < scan_length, "")
                 sub_xs = [torch.ops.aten.select.int(x, 0, idx_int) for x in xs]
-                next_carry, ys = _extract_carry_and_out(
-                    sub_gm(*(list(carry) + sub_xs + list(additional_inputs))),
+                next_carry_all, ys_all = _extract_carry_and_out(
+                    sub_gm(*(carry + sub_xs + list(additional_inputs))),
                     num_init_leaves,
                 )
-                for y, y_out in zip(ys, ys_outs):
+                # Strip None from carry output and None-valued ys before returning.
+                next_carry_tensors = [v for v, is_none in zip(next_carry_all, init_none_mask) if not is_none]
+                ys_tensors = [v for v, is_none in zip(ys_all, ys_none_mask) if not is_none]
+                for y, y_out in zip(ys_tensors, ys_outs):
                     y_out_slice = torch.ops.aten.select.int(y_out, 0, idx_int)
                     y_out_slice.copy_(y)
-                return loop_idx + 1, *ys_outs, *next_carry, *xs
+                return loop_idx + 1, *ys_outs, *next_carry_tensors, *xs
 
             # Step 3: call the while_loop operator
-            _, ys_outs, last_carry, _ = pytree.tree_unflatten(
+            _, ys_outs, last_carry_tensors, _ = pytree.tree_unflatten(
                 torch.ops.higher_order.while_loop(
                     cond_fn,
                     body_fn,
@@ -806,7 +819,11 @@ def decompose_scan_to_while_loop(gm: torch.fx.GraphModule):
                 ),
                 operands_spec,
             )
-            return list(last_carry) + list(ys_outs)
+            # Re-inject None leaves into the carry output.
+            last_carry = fill_none_with_masks(list(last_carry_tensors), [not m for m in init_none_mask])
+            # Re-inject None leaves into ys output.
+            ys_with_nones = fill_none_with_masks(list(ys_outs), [not m for m in ys_none_mask])
+            return last_carry + ys_with_nones
 
         lower_to_while_loop_args, tree_spec = pytree.tree_flatten(
             (

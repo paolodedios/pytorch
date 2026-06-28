@@ -4269,6 +4269,231 @@ def forward(self, L_init_ : torch.Tensor, L_xs_ : torch.Tensor):
             scan(fct_carry_output_alias, init, inp, dim=0)
 
 
+    # ------------------------------------------------------------------ #
+    # None carry and None y tests                                          #
+    # ------------------------------------------------------------------ #
+
+    def test_scan_none_carry_eager(self):
+        """init=None: no recurrent state, scan produces only stacked ys."""
+        xs = torch.arange(4.0)
+
+        def body(c, x):
+            return c, (x + 1).clone()
+
+        carry, ys = scan(body, None, xs)
+        self.assertIsNone(carry)
+        self.assertEqual(ys, torch.arange(1.0, 5.0))
+        carry_f, ys_f = _fake_scan(body, None, xs)
+        self.assertIsNone(carry_f)
+        self.assertEqual(ys, ys_f)
+
+    @skipIfNoDynamoSupport
+    def test_scan_none_carry_compile(self):
+        xs = torch.arange(4.0)
+
+        @torch.compile(fullgraph=True)
+        def f(xs):
+            def body(c, x):
+                return c, (x + 1).clone()
+
+            return scan(body, None, xs)
+
+        carry, ys = f(xs)
+        self.assertIsNone(carry)
+        self.assertEqual(ys, torch.arange(1.0, 5.0))
+
+    def test_scan_none_carry_reverse(self):
+        xs = torch.arange(4.0)
+
+        def body(c, x):
+            return c, (x + 1).clone()
+
+        carry, ys = scan(body, None, xs, reverse=True)
+        carry_f, ys_f = _fake_scan(body, None, xs, reverse=True)
+        self.assertIsNone(carry)
+        self.assertIsNone(carry_f)
+        self.assertEqual(ys, ys_f)
+
+    def test_scan_none_carry_tuple_xs(self):
+        """init=None with tuple xs pytree."""
+        xs = (torch.arange(4.0), torch.ones(4))
+
+        def body(c, x):
+            return c, (x[0] + x[1]).clone()
+
+        carry, ys = scan(body, None, xs)
+        carry_f, ys_f = _fake_scan(body, None, xs)
+        self.assertIsNone(carry)
+        self.assertIsNone(carry_f)
+        self.assertEqual(ys, ys_f)
+
+    def test_scan_none_y_eager(self):
+        """Body returns None as y: scan produces only final carry."""
+        init = torch.tensor(0.0)
+        xs = torch.arange(4.0)
+
+        def body(c, x):
+            return c + x, None
+
+        carry, ys = scan(body, init, xs)
+        self.assertEqual(carry, torch.tensor(6.0))
+        self.assertIsNone(ys)
+        carry_f, ys_f = _fake_scan(body, init, xs)
+        self.assertEqual(carry, carry_f)
+        self.assertIsNone(ys_f)
+
+    @skipIfNoDynamoSupport
+    def test_scan_none_y_compile(self):
+        init = torch.tensor(0.0)
+        xs = torch.arange(4.0)
+
+        @torch.compile(fullgraph=True)
+        def f(init, xs):
+            def body(c, x):
+                return c + x, None
+
+            return scan(body, init, xs)
+
+        carry, ys = f(init, xs)
+        self.assertEqual(carry, torch.tensor(6.0))
+        self.assertIsNone(ys)
+
+    def test_scan_none_y_reverse(self):
+        init = torch.tensor(0.0)
+        xs = torch.arange(4.0)
+
+        def body(c, x):
+            return c + x, None
+
+        carry, ys = scan(body, init, xs, reverse=True)
+        carry_f, ys_f = _fake_scan(body, init, xs, reverse=True)
+        self.assertEqual(carry, carry_f)
+        self.assertIsNone(ys)
+        self.assertIsNone(ys_f)
+
+    def test_scan_none_y_no_grad(self):
+        """Scan with none_y works without autograd (no grad tensors)."""
+        init = torch.tensor(1.0)
+        xs = torch.arange(1.0, 5.0)
+
+        def body(c, x):
+            return c * x, None
+
+        carry, ys = scan(body, init, xs)
+        self.assertIsNone(ys)
+        # carry = 1 * 1 * 2 * 3 * 4 = 24
+        self.assertEqual(carry, torch.tensor(24.0))
+
+    def test_scan_mixed_pytree_carry_none_slot(self):
+        """Carry pytree with a None slot: init=(tensor, None)."""
+        xs = torch.arange(4.0)
+        init = (torch.tensor(0.0), None)
+
+        def body(c, x):
+            return (c[0] + x, None), (c[0] + x).clone()
+
+        carry, ys = scan(body, init, xs)
+        self.assertIsInstance(carry, tuple)
+        self.assertEqual(carry[0], torch.tensor(6.0))
+        self.assertIsNone(carry[1])
+        self.assertEqual(ys, torch.tensor([0.0, 1.0, 3.0, 6.0]))
+        carry_f, ys_f = _fake_scan(body, init, xs)
+        self.assertEqual(carry[0], carry_f[0])
+        self.assertIsNone(carry_f[1])
+        self.assertEqual(ys, ys_f)
+
+    @skipIfNoDynamoSupport
+    def test_scan_mixed_pytree_carry_none_slot_compile(self):
+        xs = torch.arange(4.0)
+        init = (torch.tensor(0.0), None)
+
+        @torch.compile(fullgraph=True)
+        def f(init, xs):
+            def body(c, x):
+                return (c[0] + x, None), (c[0] + x).clone()
+
+            return scan(body, init, xs)
+
+        carry, ys = f(init, xs)
+        self.assertEqual(carry[0], torch.tensor(6.0))
+        self.assertIsNone(carry[1])
+        self.assertEqual(ys, torch.tensor([0.0, 1.0, 3.0, 6.0]))
+
+    def test_scan_mixed_y_none_slot(self):
+        """Output y pytree with a None slot: body returns (carry, (tensor, None))."""
+        init = torch.tensor(0.0)
+        xs = torch.arange(4.0)
+
+        def body(c, x):
+            return c + x, ((c + x).clone(), None)
+
+        carry, ys = scan(body, init, xs)
+        self.assertEqual(carry, torch.tensor(6.0))
+        self.assertIsInstance(ys, tuple)
+        self.assertEqual(ys[0], torch.tensor([0.0, 1.0, 3.0, 6.0]))
+        self.assertIsNone(ys[1])
+        carry_f, ys_f = _fake_scan(body, init, xs)
+        self.assertEqual(carry, carry_f)
+        self.assertEqual(ys[0], ys_f[0])
+        self.assertIsNone(ys_f[1])
+
+    @skipIfNoDynamoSupport
+    def test_scan_mixed_y_none_slot_compile(self):
+        init = torch.tensor(0.0)
+        xs = torch.arange(4.0)
+
+        @torch.compile(fullgraph=True)
+        def f(init, xs):
+            def body(c, x):
+                return c + x, ((c + x).clone(), None)
+
+            return scan(body, init, xs)
+
+        carry, ys = f(init, xs)
+        self.assertEqual(carry, torch.tensor(6.0))
+        self.assertEqual(ys[0], torch.tensor([0.0, 1.0, 3.0, 6.0]))
+        self.assertIsNone(ys[1])
+
+    def test_scan_none_carry_and_none_y(self):
+        """Both init=None and body returning None as y."""
+        xs = torch.arange(4.0)
+
+        def body(c, x):
+            return c, None
+
+        carry, ys = scan(body, None, xs)
+        self.assertIsNone(carry)
+        self.assertIsNone(ys)
+        carry_f, ys_f = _fake_scan(body, None, xs)
+        self.assertIsNone(carry_f)
+        self.assertIsNone(ys_f)
+
+    def test_scan_none_carry_invalid_init_type_raises(self):
+        """Non-None, non-Tensor init leaf should still raise."""
+        xs = torch.arange(4.0)
+
+        def body(c, x):
+            return c, x.clone()
+
+        with self.assertRaisesRegex(RuntimeError, "All init leaves must be a Tensor or None"):
+            scan(body, 3.14, xs)
+
+    def test_scan_none_carry_vmap(self):
+        """init=None + vmap: scan batch rule handles None carry correctly."""
+        xs = torch.arange(12.0).reshape(3, 4)
+
+        @torch.vmap
+        def f(row):
+            def body(c, x):
+                return c, (x + 1.0).clone()
+
+            _, ys = scan(body, None, row)
+            return ys
+
+        ys = f(xs)
+        self.assertEqual(ys, xs + 1.0)
+
+
 class AssociativeScanModels:
     @staticmethod
     def get_scan_fct(compile_mode, combine_mode):
