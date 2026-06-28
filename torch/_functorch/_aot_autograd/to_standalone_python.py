@@ -86,10 +86,10 @@ _COMPILE_LOCK = threading.RLock()
 #     gen_alias_from_base, _unwrap_tensoralias, mark_dynamo_propagated_dynamic_indices,
 #     the CUDARngStateHelper staticmethods) -- ordinary importable objects;
 #   - the inner Inductor ``call`` that the chain ultimately invokes;
-#   - sibling captured wrappers -- either the next link of the runtime chain (subclass
-#     / dedup / functionalized-RNG, whose body calls the link it wraps), OR an
-#     orchestration-internal forwarder (the output-alias and mutation epilogues,
-#     reached through thin bound-method shims, not by one body calling the next);
+#   - sibling captured wrappers -- the next link of the runtime chain (subclass /
+#     dedup / functionalized-RNG, whose body calls the link it wraps), plus the
+#     orchestration's output-alias and mutation epilogue helpers, which it closes
+#     over directly by reference;
 #   - per-graph metadata baked at compile time (e.g. a ViewMetaSequence for alias
 #     regen, tensor-subclass metadata) -- live objects with no import path.
 #
@@ -113,11 +113,6 @@ _COMPILE_LOCK = threading.RLock()
 #   - inner_call_id         -> the inner ``call`` becomes ``_inner_call``
 #   - fn_id_to_name         -> a sibling wrapper's fn becomes that wrapper's own name
 #   - _known_helper_table() -> an importable helper becomes (import, expr)
-#   - a single-cell shim around one of the above (a pure bound-method forwarder, e.g.
-#     the orchestration's _replay_aliases_ / _apply_mutations_) becomes the inner /
-#     sibling ref it wraps (closure unwrap). MAINTENANCE HAZARD: this inspects the
-#     closure STRUCTURE, not the shim body, so any orchestration shim added here MUST
-#     stay a pure pass-through forwarder.
 #   - anything else: reconstruct field-by-field as source (_emit_value), or raise.
 # Recognition is by id() (object identity), not value-equality: for "is this the EXACT
 # object the wrapper closed over," == is the wrong tool (functions don't compare by
@@ -260,39 +255,7 @@ def _resolve_global(
         if import_stmt:
             imports.add(import_stmt)
         return expr
-    # Some orchestration globals are thin forwarding shims around a captured
-    # wrapper (e.g. ``_replay_aliases_`` / ``_apply_mutations_`` are bound methods
-    # that just forward to the codegen'd ``_alias_fn`` / ``_mutations_fn``). Unwrap a
-    # shim ONLY when it closes over exactly one cell and that cell is a captured
-    # wrapper / the inner call. A shim with any extra meaningful closure state falls
-    # through to _emit_value (which raises) rather than silently dropping that state.
-    # MAINTENANCE HAZARD: this check inspects closure STRUCTURE (one cell holding a
-    # recognized ref), not the shim BODY -- it cannot tell a pure forward from a shim
-    # that does extra LOGIC (rather than carrying extra state) around the same single
-    # cell. Such a logic-bearing single-cell shim would be silently replaced by the
-    # bare inner ref, dropping that logic; this case is not detected, so any new shim
-    # added to the orchestration globals must remain a pure pass-through forwarder.
-    import types as _types
-
-    func = obj.__func__ if isinstance(obj, _types.MethodType) else obj
-    closure = getattr(func, "__closure__", None)
-    if closure:
-        refs: list[str] = []
-        for cell in closure:
-            try:
-                val = cell.cell_contents
-            except ValueError:
-                continue
-            if id(val) in fn_id_to_name:
-                refs.append(fn_id_to_name[id(val)])
-            elif inner_call_id is not None and id(val) == inner_call_id:
-                refs.append("_inner_call")
-        # Require the shim to have exactly one closure cell AND that cell to be the one
-        # recognized ref; any extra cell (incl. an unreadable/empty one) forces a
-        # fall-through to _emit_value rather than silently dropping closed-over state.
-        if len(refs) == 1 and len(closure) == 1:
-            return refs[0]
-    # Not a wired reference (inner call / sibling / helper / shim): emit ``obj`` as
+    # Not a wired reference (inner call / sibling wrapper / helper): emit ``obj`` as
     # plain reconstruction source. Raises if it is not source-expressible.
     return _emit_value(obj, imports)
 
@@ -892,9 +855,10 @@ def _compose_standalone_module(
     # is captured but may never be wired into the module -- silently composing a
     # structurally-wrong result. Enforce that every captured non-orch wrapper is
     # actually referenced somewhere: as the chain head, or by name in another block
-    # (another wrapper's globals, or the orchestration's -- e.g. the ``_alias_fn`` /
-    # ``_mutations_fn`` shims wired into the orchestration). A wrapper whose name
-    # appears in no other block went unwired, so reject rather than emit a wrong module.
+    # (another wrapper's globals, or the orchestration's -- e.g. ``_alias_fn`` /
+    # ``_apply_mutations``, the epilogue helpers the orchestration closes over). A
+    # wrapper whose name appears in no other block went unwired, so reject rather than
+    # emit a wrong module.
     other_text = "\n".join(wrapper_blocks + [orch_block])
     for i, g in enumerate(non_orch):
         name = fn_id_to_name[id(g.fn)]

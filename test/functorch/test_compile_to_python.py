@@ -4,7 +4,6 @@ import dataclasses
 import enum
 import functools
 import math
-import types
 
 import torch
 import torch._functorch.config as functorch_config
@@ -17,7 +16,6 @@ from torch._functorch._aot_autograd.to_standalone_python import (
     _emit_value,
     _find_effectful_op,
     _REBUILD_HELPER,
-    _resolve_global,
 )
 from torch._functorch.aot_autograd import compile_to_python
 from torch._higher_order_ops.effects import _get_effect
@@ -358,9 +356,9 @@ class TestAOTCompileToPython(TestCase):
 
     def test_output_alias_regen_runs_like_eager(self):
         # An output that aliases an input exercises AOTAutograd's output-alias regeneration
-        # (the _alias_fn / gen_alias_from_base path, wired into the orchestration via a
-        # forwarding shim that _resolve_global must unwrap). The composed output must both
-        # equal eager AND alias the input's storage, exactly as eager's view does.
+        # (the _alias_fn / gen_alias_from_base path, which the orchestration closes over
+        # directly). The composed output must both equal eager AND alias the input's
+        # storage, exactly as eager's view does.
         m = _ViewAlias().eval()
         x = torch.randn(4, 4)
         src, _cache = _compose(m, x)
@@ -735,54 +733,6 @@ class TestAOTCompileToPythonHelpers(TestCase):
         static = "specializes to static shapes"
         with self.assertRaisesRegex(NotImplementedError, static):
             _emit_value(obj, set())
-
-    def test_resolve_global_unwraps_single_cell_shim(self):
-        # _resolve_global unwraps a thin forwarding shim (e.g. the orchestration's
-        # _replay_aliases_ / _apply_mutations_ bound methods) to the bare inner ref it
-        # forwards to, but ONLY when it closes over exactly one recognized cell. Build a
-        # bound-method shim (the production shape) whose single closed-over cell holds a
-        # sentinel inner, and confirm it resolves to ``_inner_call``.
-        sentinel = object()
-
-        def _build_shim(captured):
-            def shim_body(self, args):
-                return captured(args)
-
-            return types.MethodType(shim_body, object())
-
-        shim = _build_shim(sentinel)
-        expr = _resolve_global(
-            shim,
-            helper_table={},
-            inner_call_id=id(sentinel),
-            fn_id_to_name={},
-            imports=set(),
-        )
-        self.assertEqual(expr, "_inner_call")
-
-    def test_resolve_global_does_not_unwrap_multi_cell_shim(self):
-        # The documented MAINTENANCE HAZARD backstop: a shim closing over a SECOND
-        # meaningful cell (one recognized inner ref plus extra state) must NOT be silently
-        # unwrapped to the bare inner ref -- that would drop the extra state. It falls
-        # through to _emit_value, which rejects the local shim function (no module/qualname).
-        sentinel = object()
-
-        def _build_shim(captured, extra_state):
-            def shim_body(args):
-                return captured(args, extra_state)
-
-            return shim_body
-
-        shim = _build_shim(sentinel, "extra")
-        self.assertEqual(len(shim.__closure__), 2)
-        with self.assertRaisesRegex(NotImplementedError, "local definition"):
-            _resolve_global(
-                shim,
-                helper_table={},
-                inner_call_id=id(sentinel),
-                fn_id_to_name={},
-                imports=set(),
-            )
 
     def test_reduce_to_load_from_bytes_rejected(self):
         # Regression: the previous guard compared the __reduce_ex__ METHOD against
