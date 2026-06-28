@@ -33,6 +33,12 @@ void lapackCholeskyInverse(char uplo, int n, scalar_t *a, int lda, int *info);
 template <class scalar_t, class value_t=scalar_t>
 void lapackEig(char jobvl, char jobvr, int n, scalar_t *a, int lda, scalar_t *w, scalar_t* vl, int ldvl, scalar_t *vr, int ldvr, scalar_t *work, int lwork, value_t *rwork, int *info);
 
+template <class scalar_t, class value_t=scalar_t>
+void lapackSchur(char jobvs, int n, scalar_t *a, int lda, scalar_t *w, scalar_t *vs, int ldvs, scalar_t *work, int lwork, value_t *rwork, int *info);
+
+template <class scalar_t, class value_t=scalar_t>
+void lapackSylvester(char trana, char tranb, int isgn, int m, int n, scalar_t *a, int lda, scalar_t *b, int ldb, scalar_t *c, int ldc, value_t *scale, int *info);
+
 template <class scalar_t>
 void lapackGeqrf(int m, int n, scalar_t *a, int lda, scalar_t *tau, scalar_t *work, int lwork, int *info);
 
@@ -235,6 +241,10 @@ DECLARE_DISPATCH(cholesky_inverse_fn, cholesky_inverse_stub)
 using linalg_eig_fn = void (*)(Tensor& /*eigenvalues*/, Tensor& /*eigenvectors*/, Tensor& /*infos*/, const Tensor& /*input*/, bool /*compute_eigenvectors*/);
 
 DECLARE_DISPATCH(linalg_eig_fn, linalg_eig_stub)
+
+using linalg_matrix_sqrt_fn = void (*)(Tensor& /*schur_vectors*/, Tensor& /*tri_sqrt*/, Tensor& /*infos*/, const Tensor& /*input*/);
+
+DECLARE_DISPATCH(linalg_matrix_sqrt_fn, linalg_matrix_sqrt_stub)
 
 // Converts LAPACK's real-valued eigenvector encoding to complex eigenvectors
 TORCH_API void linalg_eig_make_complex_eigenvectors(
