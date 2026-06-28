@@ -5,6 +5,7 @@ import dataclasses
 import enum
 import functools
 import math
+import unittest
 
 import torch
 import torch._functorch.config as functorch_config
@@ -573,6 +574,11 @@ class TestAOTCompileToPython(TestCase):
         self.assertEqual(out.a, eager.a)
         self.assertEqual(out.b, eager.b)
 
+    @unittest.skipIf(
+        not torch.cuda.is_available(),
+        "functionalize_rng_ops threads CUDA RNG state via CUDARngStateHelper, which "
+        "requires a CUDA device (the graph itself lowers through the CPU backend).",
+    )
     def test_functionalized_rng_runs_like_eager(self):
         # functionalize_rng_ops rewrites the RNG op into a functional form during the inner
         # AOTAutograd lowering, producing a FunctionalizedRngRuntimeWrapper that threads RNG
