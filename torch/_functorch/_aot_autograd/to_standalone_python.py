@@ -43,7 +43,7 @@ import re
 import threading
 from typing import Any, TYPE_CHECKING
 
-from .subclass_codegen import capture_generated_sources, GeneratedSource
+from .codegen import capture_generated_sources, GeneratedSource
 
 
 if TYPE_CHECKING:
@@ -77,7 +77,7 @@ _COMPILE_LOCK = threading.RLock()
 # or each other, wrapping/unwrapping tensor subclasses, de-duplicating aliased
 # inputs, and threading functionalized RNG state. At runtime AOTAutograd emits each
 # wrapper as Python *source*, exec's it (the chokepoint is _compile_and_exec_source
-# in subclass_codegen.py), and the resulting function runs while closing over a
+# in codegen.py), and the resulting function runs while closing over a
 # globals dict supplied in-process -- i.e. a wrapper is (source text) +
 # ({local_name: live_object}).
 #
@@ -95,7 +95,7 @@ _COMPILE_LOCK = threading.RLock()
 #
 # We do NOT reimplement any of this. We CAPTURE AOTAutograd's exact codegen'd wrapper
 # source together with the (pre-exec) globals dict each wrapper closed over: a
-# thread-local sink in subclass_codegen.py records one GeneratedSource per wrapper.
+# thread-local sink in codegen.py records one GeneratedSource per wrapper.
 # The capture is triggered for free -- the inner ``inductor.compile_to_python``
 # re-enters AOTAutograd (under no_grad, the inference path), and that re-entry is what
 # emits, and so what we record, the wrappers.
@@ -817,7 +817,7 @@ def _compose_standalone_module(
 
     def _resolve_globals(globals_dict: dict[str, object]) -> list[tuple[str, str]]:
         # Resolve each global a wrapper closes over to a standalone source expression.
-        # ``globals_dict`` is the pre-exec snapshot from subclass_codegen.py, so the
+        # ``globals_dict`` is the pre-exec snapshot from codegen.py, so the
         # interpreter ``__builtins__`` is absent; the skip is kept defensively in case a
         # future caller hands us a post-exec live dict.
         out: list[tuple[str, str]] = []

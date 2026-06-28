@@ -9,7 +9,7 @@ import torch
 import torch._functorch.config as functorch_config
 import torch.fx as fx
 import torch.utils._pytree as pytree
-from torch._functorch._aot_autograd.subclass_codegen import GeneratedSource
+from torch._functorch._aot_autograd.codegen import GeneratedSource
 from torch._functorch._aot_autograd.to_standalone_python import (
     _compose_standalone_module,
     _emit_importable,
