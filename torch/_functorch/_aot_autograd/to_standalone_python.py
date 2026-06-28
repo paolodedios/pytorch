@@ -397,6 +397,25 @@ def _emit_value(
                 "specializes to static shapes."
             )
         return repr(concrete)
+    # SymBool / SymFloat get the same treatment as SymInt (bake the concrete value, reject
+    # a still-symbolic one with the static-shapes message) so all sym scalar types are
+    # handled consistently instead of falling into the reduce path with an opaque error.
+    if isinstance(obj, torch.SymBool):
+        concrete_bool = obj.node.maybe_as_bool()
+        if concrete_bool is None:
+            raise NotImplementedError(
+                "compile_to_python cannot bake a symbolic SymBool; precompile "
+                "specializes to static shapes."
+            )
+        return repr(concrete_bool)
+    if isinstance(obj, torch.SymFloat):
+        concrete_float = obj.node.maybe_as_float()
+        if concrete_float is None:
+            raise NotImplementedError(
+                "compile_to_python cannot bake a symbolic SymFloat; precompile "
+                "specializes to static shapes."
+            )
+        return repr(concrete_float)
 
     # Importable definitions: classes, functions, modules.
     if isinstance(obj, type) or inspect.isfunction(obj) or inspect.isbuiltin(obj):
@@ -657,6 +676,16 @@ def _module_level_names(tree: ast.Module) -> set[str]:
             names.add(n.target.id)
         elif isinstance(n, (ast.Import, ast.ImportFrom)):
             names.update(a.asname or a.name.split(".")[0] for a in n.names)
+        elif isinstance(n, ast.Delete):
+            # Inductor's inner module does ``async_compile = AsyncCompile()`` then
+            # ``del async_compile`` at module scope; a del'd name does not survive, so it
+            # must not be reserved (else a hoisted wrapper global of the same name would
+            # trip a spurious collision). Body order is assign-then-del, so removing here
+            # leaves only names that actually persist.
+            for t in n.targets:
+                names.difference_update(
+                    x.id for x in ast.walk(t) if isinstance(x, ast.Name)
+                )
     return names
 
 
@@ -734,7 +763,20 @@ def _compose_standalone_module(
         ),
         None,
     )
-    orch_params = [a.arg for a in orch_def.args.args] if orch_def is not None else None
+    args_node = orch_def.args if orch_def is not None else None
+    if args_node is None:
+        orch_params = None
+    else:
+        # Compare the FULL signature, not just positional params: the standalone call is
+        # purely positional, so a keyword-only / *args / **kwargs param (e.g. an added
+        # kw-only-with-default) would be silently dropped. Surface any such param so it
+        # trips this guard rather than passing.
+        orch_params = [a.arg for a in (*args_node.posonlyargs, *args_node.args)]
+        orch_params += [a.arg for a in args_node.kwonlyargs]
+        if args_node.vararg is not None:
+            orch_params.append("*" + args_node.vararg.arg)
+        if args_node.kwarg is not None:
+            orch_params.append("**" + args_node.kwarg.arg)
     if orch_params != expected_orch_params:
         raise NotImplementedError(
             "aot_autograd.compile_to_python: the orchestration wrapper signature "

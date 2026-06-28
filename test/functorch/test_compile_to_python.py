@@ -1,4 +1,5 @@
 # Owner(s): ["oncall: pt2"]
+import ast
 import collections
 import dataclasses
 import enum
@@ -15,6 +16,8 @@ from torch._functorch._aot_autograd.to_standalone_python import (
     _emit_importable,
     _emit_value,
     _find_effectful_op,
+    _known_helper_table,
+    _module_level_names,
     _REBUILD_HELPER,
 )
 from torch._functorch.aot_autograd import compile_to_python
@@ -603,6 +606,23 @@ class TestAOTCompileToPython(TestCase):
             eager = m(x)
         self.assertEqual(out, eager)
 
+    def test_helpers_imported_from_standalone_runtime_surface(self):
+        # End-to-end lock for the stability contract: a graph closing over a runtime helper
+        # (here gen_alias_from_base, via output-alias regen) must import it from the
+        # standalone_runtime surface, not its internal AOTAutograd location. A dropped or
+        # aliased _known_helper_table entry would silently fall through to the internal
+        # module. (ViewMetaSequence legitimately imports functional_utils, so this checks the
+        # specific helper expression, not the bare module name.)
+        m = _ViewAlias().eval()
+        x = torch.randn(4, 4)
+        src, _cache = _compose(m, x)
+        self.assertIn(
+            "from torch._functorch._aot_autograd.standalone_runtime import "
+            "gen_alias_from_base",
+            src,
+        )
+        self.assertNotIn("functional_utils.gen_alias_from_base", src)
+
     def test_rejects_effectful_op(self):
         # A graph carrying an effectful op (here aten._print) is rejected up front with a
         # concrete NotImplementedError -- effect tokens thread through a calling convention
@@ -667,7 +687,7 @@ class TestAOTCompileToPython(TestCase):
         for t in threads:
             t.join()
         self.assertEqual(errors, {})
-        for _i, (src, m, x) in results.items():
+        for src, m, x in results.values():
             _assert_composed(self, src)
             with torch.no_grad():
                 self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
@@ -875,6 +895,32 @@ class TestAOTCompileToPythonHelpers(TestCase):
         with self.assertRaisesRegex(NotImplementedError, static):
             _emit_value(obj, set())
 
+    def test_symbolic_symbool_symfloat_rejected(self):
+        # SymBool / SymFloat get the same static-shapes treatment as SymInt: a still-symbolic
+        # value cannot be baked and raises the clear static-shapes message (rather than
+        # falling into the reduce path with an opaque ValueRanges error).
+        shape_env = ShapeEnv()
+        static = "specializes to static shapes"
+        sym_bool = shape_env.create_unbacked_symbool()
+        self.assertIsNone(sym_bool.node.maybe_as_bool())
+        with self.assertRaisesRegex(NotImplementedError, static):
+            _emit_value(sym_bool, set())
+        sym_float = shape_env.create_unbacked_symfloat()
+        self.assertIsNone(sym_float.node.maybe_as_float())
+        with self.assertRaisesRegex(NotImplementedError, static):
+            _emit_value(sym_float, set())
+
+    def test_concrete_symbool_symfloat_baked(self):
+        # A SymBool / SymFloat that folds to a concrete value IS bakeable (mirroring SymInt),
+        # emitted as the literal -- previously these fell through and were wrongly rejected.
+        s = ShapeEnv().create_unbacked_symint()
+        sym_bool = (s - s) == 0
+        self.assertIs(sym_bool.node.maybe_as_bool(), True)
+        self.assertEqual(_roundtrip(sym_bool), True)
+        sym_float = s * 0.0 + 2.5
+        self.assertEqual(sym_float.node.maybe_as_float(), 2.5)
+        self.assertEqual(_roundtrip(sym_float), 2.5)
+
     def test_reduce_to_load_from_bytes_rejected(self):
         # Regression: the previous guard compared the __reduce_ex__ METHOD against
         # _load_from_bytes and never fired; the callable is the reduce RESULT's func.
@@ -987,6 +1033,30 @@ class TestAOTCompileToPythonHelpers(TestCase):
         # torch.add is a builtin whose __qualname__ does not round-trip via importlib.
         with self.assertRaisesRegex(NotImplementedError, "does not.*round-trip"):
             _emit_importable(torch.add, set())
+
+    def test_known_helper_table_imports_are_stable_surface(self):
+        # Stability contract: every runtime helper the composer recognizes must emit an
+        # import via the stable standalone_runtime surface (or `import torch` for public
+        # torch paths), never a deep AOTAutograd-internal module. Lock the table so a new
+        # entry pointing at an unstable location is caught.
+        for import_stmt, _expr in _known_helper_table().values():
+            self.assertTrue(
+                import_stmt == "import torch"
+                or import_stmt.startswith(
+                    "from torch._functorch._aot_autograd.standalone_runtime import "
+                ),
+                f"helper import {import_stmt!r} bypasses the standalone_runtime surface",
+            )
+
+    def test_module_level_names_excludes_deleted(self):
+        # Inductor's inner module binds then dels a name (async_compile = AsyncCompile();
+        # del async_compile) at module scope. A del'd name does not persist, so it must not
+        # be reserved -- otherwise a hoisted wrapper global of the same name would trip a
+        # spurious _reserve collision.
+        tree = ast.parse("a = 1\nb = 2\ndel a\n")
+        names = _module_level_names(tree)
+        self.assertIn("b", names)
+        self.assertNotIn("a", names)
 
     def test_find_effectful_op_top_level(self):
         g = fx.Graph()
@@ -1132,6 +1202,25 @@ class TestAOTComposeGuards(TestCase):
             NotImplementedError, "orchestration wrapper signature"
         ):
             _compose_standalone_module("def call(args):\n    return args\n", [bad_orch])
+
+    def test_orchestration_extra_kwonly_param_rejected(self):
+        # The 4 positional params are intact but a keyword-only param is added. The standalone
+        # call is purely positional, so a kw-only-with-default would be silently dropped; the
+        # guard must compare the FULL signature and reject this, not just the positional list.
+        kwonly_orch = GeneratedSource(
+            "runtime_wrapper_orchestration",
+            "_runtime_wrapper",
+            "def _runtime_wrapper(_compiled_fn_, _first_ctx_, _on_before_call_, args, "
+            "*, new_flag=None):\n    return _compiled_fn_(args)\n",
+            {},
+            lambda: None,
+        )
+        with self.assertRaisesRegex(
+            NotImplementedError, "orchestration wrapper signature"
+        ):
+            _compose_standalone_module(
+                "def call(args):\n    return args\n", [kwonly_orch]
+            )
 
     def test_empty_capture_rejected(self):
         # The real backstop for an incomplete capture (e.g. if a future change offloaded
