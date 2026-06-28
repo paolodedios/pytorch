@@ -199,6 +199,13 @@ class _ShortReduce:
         return (object,)
 
 
+class _ReduceNonTupleArgs:
+    # __reduce_ex__ returns a non-tuple args field (the generic-callable branch); must
+    # reject cleanly rather than leak a bare TypeError on iteration.
+    def __reduce_ex__(self, protocol):
+        return (list, 5)
+
+
 class TestSourceEmit(TestCase):
     # Unit coverage of the source-emission helpers: every _emit_value branch round-trips
     # (or raises on a non-source-expressible leaf), so the standalone artifact stays
@@ -527,6 +534,12 @@ class TestSourceEmit(TestCase):
         # A reduce tuple of len < 2 is an unsupported form; reject cleanly.
         with self.assertRaisesRegex(NotImplementedError, "unsupported __reduce__ form"):
             _emit(_ShortReduce())
+
+    def test_reduce_non_tuple_args_rejected(self):
+        # A reduce whose args field is not a tuple must reject cleanly (uniform with the
+        # __newobj__ / __newobj_ex__ guards) rather than leak a bare TypeError.
+        with self.assertRaisesRegex(NotImplementedError, "args field is not a tuple"):
+            _emit(_ReduceNonTupleArgs())
 
     def test_emit_importable_rejects_non_round_tripping(self):
         # torch.add is a builtin whose __qualname__ does not round-trip via importlib.
