@@ -93,6 +93,23 @@ _COMPILE_LOCK = threading.RLock()
 #   - per-graph metadata baked at compile time (e.g. a ViewMetaSequence for alias
 #     regen, tensor-subclass metadata) -- live objects with no import path.
 #
+# Concretely, the module emitted for ``x.view(-1)`` (an output aliasing its input) has
+# one of each (heavily trimmed; the (1)-(4) tags match the kinds listed above):
+#
+#     from ...standalone_runtime import gen_alias_from_base    # (1) public helper
+#     <inner Inductor kernels + ``def call(args): ...``>
+#     _inner_call = call                                       # (2) the inner call
+#     _vms_0 = ViewMetaSequence._from_parts(...)               # (4) metadata as source
+#     def _alias_fn(orig_inputs, fw_outs):                     # (3) sibling wrapper
+#         return [gen_alias_from_base(orig_inputs[0], fw_outs[0], False, _vms_0, ...)]
+#     _replay_aliases_ = _alias_fn                             # (3) orchestration's ref
+#     def _runtime_wrapper(_compiled_fn_, _first_ctx_, _on_before_call_, args):
+#         all_outs = _compiled_fn_(args)                       # (2) inner call invoked
+#         return _replay_aliases_(orig_inputs, all_outs)       # (3) sibling invoked
+#     def call(flat_inputs):
+#         return _runtime_wrapper(
+#             _inner_call, contextlib.nullcontext, lambda: None, list(flat_inputs))
+#
 # We do NOT reimplement any of this. We CAPTURE AOTAutograd's exact codegen'd wrapper
 # source together with the (pre-exec) globals dict each wrapper closed over: a
 # thread-local sink in codegen.py records one GeneratedSource per wrapper.
