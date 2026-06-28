@@ -1,6 +1,5 @@
 # Owner(s): ["module: mps"]
 # ruff: noqa: F841
-import contextlib
 import io
 import sys
 import math
@@ -1392,7 +1391,6 @@ class TestMPS(TestCaseMPS):
         tol = 1e-2 if dtype in (torch.float16, torch.bfloat16) else 1e-4
         self.assertEqual(out.cpu(), ref, atol=tol, rtol=tol)
 
-    @xfailIf(MACOS_VERSION < 15.0)
     @parametrize("dtype", [torch.float16, torch.bfloat16])
     def test_large_bmm(self, dtype):
         B, M, N = 11, 20064, 128
@@ -3530,42 +3528,40 @@ class TestMPS(TestCaseMPS):
                 r_mps = r_func(z_mps)
                 self.assertEqual(r, r_mps)
 
-        # Skip bfloat16 before MacOS15
-        if not (MACOS_VERSION < 15.0 and torch_type == torch.bfloat16):
-            # Tests for previously encountered MPS bugs
-            helper(
-                torch.randn(4, 4, dtype=torch_type),
-                lambda x: x[1],
-                lambda y: y.reshape(2, 2),
-                lambda z: z + 1
-            )
-            helper(
-                torch.randn(2, 4, dtype=torch_type),
-                lambda x: x[1],
-                lambda y: y + torch.ones(4, device=y.device)
-            )
-            helper(
-                torch.randn(4, 6, dtype=torch_type),
-                lambda x: x[1],
-                lambda y: y.reshape(3, 2).t(),
-                lambda z: z + 1
-            )
-            helper(
-                torch.arange(4, dtype=torch_type).resize(1, 2, 2),
-                lambda x: x.permute(2, 0, 1),
-                lambda y: y + 1
-            )
-            helper(
-                torch.randn(4, 8, dtype=torch_type),
-                lambda x: x.transpose(0, 1).reshape(-1),
-                lambda y: y[:2],
-                lambda z: z + 1
-            )
-            helper(
-                torch.randn(1, dtype=torch_type),
-                lambda x: x.expand(2, 3),
-                lambda y: y + torch.ones(2, 3, device=y.device)
-            )
+        # Tests for previously encountered MPS bugs
+        helper(
+            torch.randn(4, 4, dtype=torch_type),
+            lambda x: x[1],
+            lambda y: y.reshape(2, 2),
+            lambda z: z + 1
+        )
+        helper(
+            torch.randn(2, 4, dtype=torch_type),
+            lambda x: x[1],
+            lambda y: y + torch.ones(4, device=y.device)
+        )
+        helper(
+            torch.randn(4, 6, dtype=torch_type),
+            lambda x: x[1],
+            lambda y: y.reshape(3, 2).t(),
+            lambda z: z + 1
+        )
+        helper(
+            torch.arange(4, dtype=torch_type).resize(1, 2, 2),
+            lambda x: x.permute(2, 0, 1),
+            lambda y: y + 1
+        )
+        helper(
+            torch.randn(4, 8, dtype=torch_type),
+            lambda x: x.transpose(0, 1).reshape(-1),
+            lambda y: y[:2],
+            lambda z: z + 1
+        )
+        helper(
+            torch.randn(1, dtype=torch_type),
+            lambda x: x.expand(2, 3),
+            lambda y: y + torch.ones(2, 3, device=y.device)
+        )
 
     def test_slice_reshape_contiguous(self):
         x = torch.randn(4, 4)
@@ -6865,8 +6861,6 @@ class TestMPS(TestCaseMPS):
         for shape, dim in strided_cases.get(elem_size, []):
             check(make(shape)[:, ::2], dim)
 
-    # xfailIf doesn't catch the SIGABRT from MPSGraph's gather assert
-    @unittest.skipIf(MACOS_VERSION < 15.0, "MPSGraph gather > 4GB assert aborts process on macOS 14")
     @parametrize("dtype", [torch.float32, torch.int32, torch.bfloat16, torch.float16,
                            torch.int16, torch.int8, torch.uint8, torch.bool])
     @parametrize("descending", [False, True])
@@ -16049,25 +16043,17 @@ class TestMetalLibrary(TestCaseMPS):
 
     def test_metal_lambda_expressions(self):
         # Lambda expressions require Metal 3.2 (macOS 15+)
-        # Test that shaders with lambda expressions compile on macOS 15+ but fail on macOS 14
         shader_with_lambda = """
             kernel void lambda_test(device float* x, uint idx [[thread_position_in_grid]]) {
                 auto f = [](float val) { return val * 2.0; };
                 x[idx] = f(x[idx]);
             }
         """
-
-        # Expect compilation error on MacOS 14 / Sonoma
-        ctx = contextlib.nullcontext() if MACOS_VERSION >= 15.0 else self.assertRaises(SyntaxError)
-        with ctx:
-            lib = torch.mps.compile_shader(shader_with_lambda)
-
-        # Run shader on MacOS 15 and above
-        if MACOS_VERSION >= 15.0:
-            x = torch.tensor([1.0, 2.0, 3.0, 4.0], device="mps")
-            lib.lambda_test(x)
-            expected = torch.tensor([2.0, 4.0, 6.0, 8.0], device="mps")
-            self.assertEqual(x, expected)
+        lib = torch.mps.compile_shader(shader_with_lambda)
+        x = torch.tensor([1.0, 2.0, 3.0, 4.0], device="mps")
+        lib.lambda_test(x)
+        expected = torch.tensor([2.0, 4.0, 6.0, 8.0], device="mps")
+        self.assertEqual(x, expected)
 
     def test_metal_error_buffer(self):
         # Test that error_buf_idx parameter works correctly

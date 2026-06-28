@@ -60,7 +60,7 @@ class BinaryBuildWorkflow:
     is_scheduled: str = ""
     branches: str = "nightly"
     # Mainly for macos
-    macos_runner: str = "macos-14-xlarge"
+    macos_runner: str = "macos-26-xlarge"
     # Mainly used for libtorch builds
     build_variant: str = ""
     # Libtorch extraction configs: lightweight jobs that extract libtorch

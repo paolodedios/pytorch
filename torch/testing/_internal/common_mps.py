@@ -3,7 +3,6 @@ from collections.abc import Sequence
 
 import torch
 
-from .common_utils import MACOS_VERSION
 from .opinfo.core import DecorateInfo, OpInfo
 
 
@@ -346,11 +345,6 @@ if torch.backends.mps.is_available():
             "vstack",
             "where",
             "byte",
-        }
-
-        MACOS_BEFORE_14_4_XFAILLIST = {
-            # These ops work fine in 14.4 but fail in 14.2 or 13.x
-            "fft.hfft2": [torch.complex64],
         }
 
         # Those ops are not expected to work
@@ -825,19 +819,6 @@ if torch.backends.mps.is_available():
                         op,
                         DecorateInfo(unittest.expectedFailure, dtypes=xfaillist[key]),
                     )
-
-            if (
-                key in MACOS_BEFORE_14_4_XFAILLIST
-                and key not in xfail_exclusion
-                and (MACOS_VERSION < 14.4)
-            ):
-                addDecorator(
-                    op,
-                    DecorateInfo(
-                        unittest.expectedFailure,
-                        dtypes=MACOS_BEFORE_14_4_XFAILLIST[key],
-                    ),
-                )
 
             # If op is not supported for complex types, expect it to fail
             if key not in SUPPORTED_COMPLEX_OPS:
