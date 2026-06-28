@@ -1424,3 +1424,38 @@ def filter_with_masks(data: list[torch.Tensor | None], masks: list[bool]):
 def fill_none_with_masks(data: list[torch.Tensor | None], masks: list[bool]):
     data_iter = iter(data)
     return [next(data_iter) if kept else None for kept in masks]
+
+
+def materialize_bw_fn_filter_non_tensor_grads(
+    bw_fn: Callable,
+    args: tuple[Any, ...],
+    include_key_set: torch._C.DispatchKeySet,
+    exclude_key_set: torch._C.DispatchKeySet,
+) -> tuple[torch.fx.GraphModule, list[bool]]:
+    """Materialize a single-step bw_fn to a GraphModule, dropping non-Tensor
+    gradients from the output.
+
+    create_bw_fn returns one gradient per forward input. For non-differentiable
+    inputs (e.g. SymInt) the gradient is None, which the inductor codegen for
+    HOP subgraphs cannot handle uniformly. This helper traces the bw_fn once,
+    records which outputs are Tensors, and returns (gm, mask) where gm only
+    returns the Tensor-typed grads. Use fill_none_with_masks(gm_grads, mask)
+    to reconstruct the full grad list with Nones in the original slots.
+    """
+    grads_tensor_masks: list[bool] = []
+
+    @functools.wraps(bw_fn)
+    def wrapped(*inner_args):
+        nonlocal grads_tensor_masks
+        grads = bw_fn(*inner_args)
+        grads_tensor_masks = [isinstance(g, torch.Tensor) for g in grads]
+        return filter_with_masks(grads, grads_tensor_masks)
+
+    gm = materialize_as_graph(
+        wrapped,
+        args,
+        include_key_set,
+        exclude_key_set,
+        force_enable_grad=True,
+    )
+    return gm, grads_tensor_masks
