@@ -690,6 +690,17 @@ kernel void applySYRK<false>(
     uint3 tpg [[threads_per_threadgroup]],
     uint sgitg [[simdgroup_index_in_threadgroup]]);
 
+// LU factorization with partial pivoting (mirrors LAPACK sgetrf), in place on a
+// row-major fp32 (B, M, N) buffer. The host (lu_factor_panel_encode in
+// LinearAlgebra.mm) drives a blocked right-looking schedule built from:
+//   factorPanelLU / luStream* -> sgetf2 (unblocked panel, isamax pivoting)
+//   laswpGatherLU             -> slaswp (apply a block's row interchanges)
+//   trsmPanelLU               -> strsm  (unit-lower triangular solve)
+//   gemmLU / gemmSimdLU       -> sgemm  (Schur update A22 -= L21 * U12)
+//   transposeInPlaceLU        -> row-major factor to column-major LU output
+// Buffer slots: (0) A in/out, (1) pivots (1-based), (2) info, (3) dims{M,N},
+// (4) per-kernel params, (5) window descriptor, (6) streaming scratch.
+// Unblocked 32-wide panel factor; each thread owns R rows, W = 32/R columns.
 template <short R, short W>
 kernel void factorPanelLU(
     device float* A [[buffer(0)]],
@@ -734,10 +745,9 @@ kernel void factorPanelLU(
 #pragma unroll
         for (short c = 0; c < W; c += 4) {
           const float4 v = *(device const float4*)(src + c);
-          row[r][c + 0] = v.x;
-          row[r][c + 1] = v.y;
-          row[r][c + 2] = v.z;
-          row[r][c + 3] = v.w;
+          for (short ci = 0; ci < 4; ci++) {
+            row[r][c + ci] = v[ci];
+          }
         }
       } else {
 #pragma unroll
@@ -748,7 +758,7 @@ kernel void factorPanelLU(
     }
   }
 
-  const uint nwarps = G / 32;
+  const uint nwarps = G / c10::metal::simdgroup_size;
   for (uint j = 0; j < nb; j++) {
     // local first-max over owned rows, then two-level argmax reduction with
     // smallest-index tiebreak (matches LAPACK isamax)
@@ -894,8 +904,12 @@ INSTANTIATE_FACTOR_PANEL_LU(1, 32)
 INSTANTIATE_FACTOR_PANEL_LU(2, 16)
 INSTANTIATE_FACTOR_PANEL_LU(4, 8)
 
-constant constexpr uint kLUStreamNT = 256;
-
+// Streaming panel factorization for tall panels (H > kStreamMinRows): factor
+// one column at a time across many threadgroups when the register-resident
+// factorPanelLU no longer fits. luStreamUpdate applies column j's rank-1 update
+// over all rows and writes each threadgroup's local argmax partial to scratch;
+// luStreamPivot then reduces those partials to the global pivot for column j.
+[[max_total_threads_per_threadgroup(kLUStreamNT)]]
 kernel void luStreamUpdate(
     device float* A [[buffer(0)]],
     constant uint2& dims [[buffer(3)]],
@@ -920,7 +934,7 @@ kernel void luStreamUpdate(
 
   const uint rowStart = searchOnly ? j : j + 1;
   const uint sc = searchOnly ? j : j + 1; // column searched for next pivot
-  const uint base = rowStart + (tgid.x * 8 + warp_id) * RPT;
+  const uint base = rowStart + (tgid.x * kLUStreamWarpsPerTG + warp_id) * RPT;
 
   float uc = 0.0f;
   float rp = 0.0f;
@@ -961,8 +975,8 @@ kernel void luStreamUpdate(
       }
     }
   }
-  threadgroup float wv[8];
-  threadgroup uint wi[8];
+  threadgroup float wv[kLUStreamWarpsPerTG];
+  threadgroup uint wi[kLUStreamWarpsPerTG];
   const float mv = simd_max(bv);
   const uint mi = simd_min((bv == mv) ? bi : 0xffffffffu);
   if (lane == 0) {
@@ -971,8 +985,8 @@ kernel void luStreamUpdate(
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
   if (warp_id == 0) {
-    const float v2 = (lane < 8) ? wv[lane] : -1.0f;
-    const uint i2 = (lane < 8) ? wi[lane] : 0xffffffffu;
+    const float v2 = (lane < kLUStreamWarpsPerTG) ? wv[lane] : -1.0f;
+    const uint i2 = (lane < kLUStreamWarpsPerTG) ? wi[lane] : 0xffffffffu;
     const float m2 = simd_max(v2);
     const uint p2 = simd_min((v2 == m2) ? i2 : 0xffffffffu);
     if (lane == 0) {
@@ -982,6 +996,10 @@ kernel void luStreamUpdate(
   }
 }
 
+// Reduce luStreamUpdate's per-threadgroup argmax partials to the global pivot
+// for column j, record it (1-based, like LAPACK), swap the pivot row, and
+// broadcast the resulting U row back to scratch for the next update.
+[[max_total_threads_per_threadgroup(kLUStreamNT)]]
 kernel void luStreamPivot(
     device float* A [[buffer(0)]],
     device int* pivots [[buffer(1)]],
@@ -1000,7 +1018,7 @@ kernel void luStreamPivot(
   const uint npart = params.z;
   const uint minMN = min(M, N);
   const uint nb = min(32u, minMN - d0);
-  const uint tid = tid3.x; // G = 256
+  const uint tid = tid3.x; // threadgroup of kLUStreamNT threads
   device float* Ab = A + ulong(tgid.x) * M * N;
   device int* pv = pivots + ulong(tgid.x) * minMN;
   device float* scr = scratch + ulong(tgid.x) * (2 * kLUStreamNT + 32);
@@ -1010,14 +1028,14 @@ kernel void luStreamPivot(
   if (d0 == 0 && j == 0 && tid == 0) {
     info[tgid.x] = 0;
   }
-  threadgroup float wv[8];
-  threadgroup uint wi[8];
+  threadgroup float wv[kLUStreamWarpsPerTG];
+  threadgroup uint wi[kLUStreamWarpsPerTG];
   threadgroup uint sPiv[1];
 
   // first-max semantics: equal partials resolve to the smaller global row
   float bv = -1.0f;
   uint bi = 0xffffffffu;
-  for (uint i = tid; i < npart; i += 256) {
+  for (uint i = tid; i < npart; i += kLUStreamNT) {
     const float v = scr[i];
     const uint ix = sidx[i];
     if (v > bv || (v == bv && ix < bi)) {
@@ -1033,8 +1051,8 @@ kernel void luStreamPivot(
   }
   threadgroup_barrier(mem_flags::mem_threadgroup);
   if (warp_id == 0) {
-    const float v2 = (lane < 8) ? wv[lane] : -1.0f;
-    const uint i2 = (lane < 8) ? wi[lane] : 0xffffffffu;
+    const float v2 = (lane < kLUStreamWarpsPerTG) ? wv[lane] : -1.0f;
+    const uint i2 = (lane < kLUStreamWarpsPerTG) ? wi[lane] : 0xffffffffu;
     const float m2 = simd_max(v2);
     uint p2 = simd_min((v2 == m2) ? i2 : 0xffffffffu);
     if (lane == 0) {
@@ -1064,6 +1082,8 @@ kernel void luStreamPivot(
   }
 }
 
+// slaswp: apply a block's pivot interchanges as one staged gather/scatter
+// through threadgroup memory, not nb sequential row swaps.
 kernel void laswpGatherLU(
     device float* A [[buffer(0)]],
     device const int* pivots [[buffer(1)]],
@@ -1189,6 +1209,8 @@ kernel void laswpGatherLU(
   }
 }
 
+// strsm: solve unit-lower L*X = B for the panel's off-diagonal block, with L
+// staged in threadgroup memory and one thread per column of B.
 template <short TS>
 kernel void trsmPanelLU(
     device float* A [[buffer(0)]],
@@ -1276,6 +1298,8 @@ INSTANTIATE_TRSM_PANEL_LU(8)
 INSTANTIATE_TRSM_PANEL_LU(16)
 INSTANTIATE_TRSM_PANEL_LU(32)
 
+// In-place square transpose so the row-major factor matches the column-major LU
+// view; tiles with tj < ti are produced by their mirror.
 kernel void transposeInPlaceLU(
     device float* A [[buffer(0)]],
     constant uint2& dims [[buffer(3)]],
@@ -1312,6 +1336,8 @@ kernel void transposeInPlaceLU(
   }
 }
 
+// Schur-complement trailing update C -= A*B (sgemm) via simdgroup matmul;
+// fallback used when matmul2d is unavailable (cf. gemmLU).
 kernel void gemmSimdLU(
     device float* A [[buffer(0)]],
     constant uint2& dims [[buffer(3)]],
@@ -1389,6 +1415,8 @@ kernel void gemmSimdLU(
     __has_include(<MetalPerformancePrimitives/MetalPerformancePrimitives.h>)
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 
+// Same Schur update C -= A*B (sgemm) as gemmSimdLU, but via MetalPerformance-
+// Primitives matmul2d (macOS 26.2+, gated by lu_has_matmul2d()).
 template <int BM, int BN, int NSG>
 kernel void gemmLU(
     device float* A [[buffer(0)]],

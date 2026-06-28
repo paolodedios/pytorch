@@ -1,6 +1,7 @@
 //  Copyright © 2022 Apple Inc.
 
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/ceil_div.h>
 #include <ATen/mps/MPSProfiler.h>
 #include <ATen/native/BatchLinearAlgebra.h>
 #include <ATen/native/LinearAlgebra.h>
@@ -410,12 +411,12 @@ static void lu_factor_panel_encode(const Tensor& LU,
   const auto uB = static_cast<uint32_t>(B);
   const uint32_t mn = std::min(uM, uN);
   const uint32_t NBo = mn <= 1024 ? 32 : mn <= 2048 ? 64 : 128;
-  // panels taller than this use the streaming kernels (256 argmax partials
-  // and the 32-float U row per batch in scratch)
+  // panels taller than this use the streaming kernels (kLUStreamNT argmax
+  // partials and the 32-float U row per batch in scratch)
   const uint32_t kStreamMinRows = 4 * maxG;
   Tensor scratch;
   if (uM > kStreamMinRows) {
-    scratch = at::empty({B, 2 * 256 + 32}, LU.options());
+    scratch = at::empty({B, 2 * kLUStreamNT + 32}, LU.options());
   }
 
   @autoreleasepool {
@@ -493,18 +494,21 @@ static void lu_factor_panel_encode(const Tensor& LU,
             return 0;
           }
           const uint32_t n = H - rowStart;
-          const uint32_t RPT = std::max(1u, (n + 8 * 256 - 1) / (8 * 256));
-          const uint32_t nTG = (n + 8 * RPT - 1) / (8 * RPT);
+          // Each threadgroup is kLUStreamWarpsPerTG simdgroups, each factoring
+          // RPT rows. Pick RPT so the threadgroup count nTG stays within the
+          // kLUStreamNT argmax-partial slots scratch holds per batch.
+          const uint32_t RPT = std::max(1u, at::ceil_div(n, kLUStreamWarpsPerTG * kLUStreamNT));
+          const uint32_t nTG = at::ceil_div(n, kLUStreamWarpsPerTG * RPT);
           setP4(c0, j, RPT, searchOnly ? 1 : 0);
           [enc setComputePipelineState:streamUpdatePSO];
-          [enc dispatchThreadgroups:MTLSizeMake(nTG, uB, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+          [enc dispatchThreadgroups:MTLSizeMake(nTG, uB, 1) threadsPerThreadgroup:MTLSizeMake(kLUStreamNT, 1, 1)];
           return nTG;
         };
         uint32_t npart = update(0, true);
         for (uint32_t j = 0; j < nb; j++) {
           setP4(c0, j, npart, 0);
           [enc setComputePipelineState:streamPivotPSO];
-          [enc dispatchThreadgroups:MTLSizeMake(uB, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+          [enc dispatchThreadgroups:MTLSizeMake(uB, 1, 1) threadsPerThreadgroup:MTLSizeMake(kLUStreamNT, 1, 1)];
           npart = update(j, false);
         }
       };
