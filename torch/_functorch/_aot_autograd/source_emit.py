@@ -387,6 +387,14 @@ def _emit_via_reduce(
             "unsupported __reduce__ form."
         )
     func, args = reduced[0], reduced[1]
+    # The reduce protocol requires the second element to be a tuple of constructor args;
+    # validate once here so all three func branches below normalize a malformed reduce
+    # into the uniform NotImplementedError contract rather than leaking a bare TypeError.
+    if not isinstance(args, tuple):
+        raise NotImplementedError(
+            f"compile_to_python cannot reconstruct {type(obj).__qualname__}: reduce "
+            "args field is not a tuple."
+        )
     state = reduced[2] if len(reduced) > 2 else None
     listitems = reduced[3] if len(reduced) > 3 else None
     dictitems = reduced[4] if len(reduced) > 4 else None
