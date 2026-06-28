@@ -317,6 +317,8 @@ def _generate_mma_shader(
     scale,
     lse_param="",
     lse_write_code="",
+    max_param="",
+    max_write_code="",
 ):
     """Generate Metal shader using simdgroup_matrix for Q@K^T."""
 
@@ -429,7 +431,7 @@ kernel void flex_attn_fwd(
     constant {metal_dtype}* V [[buffer(3)]],
     constant int* kv_num_blocks [[buffer(4)]],
     constant int* kv_indices [[buffer(5)]],
-{full_kv_params}{captured_params}{lse_param}{scalar_params_str},
+{full_kv_params}{captured_params}{lse_param}{max_param}{scalar_params_str},
     uint3 tgpos [[threadgroup_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]]
 ) {{
@@ -502,7 +504,7 @@ kernel void flex_attn_fwd(
 
     shader += f"""
     if (active) {{
-{lse_write_code}        if (row_sum == 0.0f) row_sum = 1.0f;
+{lse_write_code}{max_write_code}        if (row_sum == 0.0f) row_sum = 1.0f;
         long out_base = b_idx * stride_oz + h_idx * stride_oh + (long)m_idx * stride_om;
         for (int d = 0; d < D_V; d++)
             out[out_base + (long)d * stride_ok] = {metal_dtype}(o_acc[d] / row_sum);
@@ -524,6 +526,7 @@ def _generate_metal_shader(
     score_captured: Sequence[tuple] = (),
     mask_captured: Sequence[tuple] = (),
     write_lse: bool = False,
+    write_max: bool = False,
 ) -> str:
     """Generate the complete Metal shader source for flex attention.
 
@@ -646,6 +649,17 @@ def _generate_metal_shader(
             " : -INFINITY;\n"
         )
 
+    max_param = ""
+    max_write_code = ""
+    if write_max:
+        max_param = f"    device float* max_scores [[buffer({buf_idx})]],\n"
+        buf_idx += 1
+        max_write_code = (
+            "        max_scores[(long)b_idx * (Hq * N_Q)"
+            " + (long)h_idx * N_Q + (long)m_idx]"
+            " = row_max * 1.44269504088896340736f;\n"
+        )
+
     scalar_params_str = f"    constant long* _params [[buffer({buf_idx})]]"
 
     score_code = _compile_subgraph_to_metal(
@@ -685,6 +699,8 @@ def _generate_metal_shader(
             scale,
             lse_param=lse_param,
             lse_write_code=lse_write_code,
+            max_param=max_param,
+            max_write_code=max_write_code,
         )
 
     # Fallback: per-thread dot product with cooperative K/V tiling.
@@ -774,7 +790,7 @@ kernel void flex_attn_fwd(
     constant {metal_dtype}* V [[buffer(3)]],
     constant int* kv_num_blocks [[buffer(4)]],
     constant int* kv_indices [[buffer(5)]],
-{full_kv_params}{captured_params}{lse_param}{scalar_params_str},
+{full_kv_params}{captured_params}{lse_param}{max_param}{scalar_params_str},
     uint3 tgpos [[threadgroup_position_in_grid]],
     uint tid [[thread_index_in_threadgroup]]
 ) {{
@@ -838,7 +854,7 @@ kernel void flex_attn_fwd(
 
     shader += f"""
     if (active) {{
-{lse_write_code}        if (row_sum == 0.0f) row_sum = 1.0f;
+{lse_write_code}{max_write_code}        if (row_sum == 0.0f) row_sum = 1.0f;
         long out_base = b_idx * stride_oz + h_idx * stride_oh + (long)m_idx * stride_om;
         for (int d = 0; d < D_V; d++) {{
             out[out_base + (long)d * stride_ok] = {metal_dtype}(o_acc[d] / row_sum);
@@ -860,7 +876,7 @@ class MetalFlexAttentionNode(ir.ExternKernelAlloc):
         scalar_args: list[Any],
         grid: tuple[Any, ...],
         block_m: int,
-        mutates_lse: bool = False,
+        num_mutated_outputs: int = 0,
     ):
         super().__init__(
             layout=layout,
@@ -871,12 +887,13 @@ class MetalFlexAttentionNode(ir.ExternKernelAlloc):
         self.scalar_args = scalar_args
         self.grid = grid
         self.block_m = block_m
-        if mutates_lse:
-            lse_buf = self.inputs[-1]
-            self.mutation_outputs = [
-                # pyrefly: ignore [bad-argument-type]
-                ir.MutationOutput(ir.NoneLayout(device=layout.device), lse_buf, self)
-            ]
+        # The last num_mutated_outputs inputs (logsumexp, max_scores) are written
+        # in place by the kernel.
+        self.mutation_outputs = [
+            # pyrefly: ignore [bad-argument-type]
+            ir.MutationOutput(ir.NoneLayout(device=layout.device), buf, self)
+            for buf in self.inputs[len(self.inputs) - num_mutated_outputs :]
+        ]
 
     def codegen(self, wrapper) -> None:
         wrapper.add_import_once(
