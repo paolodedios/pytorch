@@ -4,6 +4,7 @@
 #include <ATen/native/mps/OperationUtils.h>
 #include <ATen/ops/_mps_convolution_native.h>
 #include <ATen/ops/_mps_convolution_transpose_native.h>
+#include <ATen/ops/constant_pad_nd.h>
 #include <ATen/ops/mps_convolution_backward_native.h>
 #include <ATen/ops/mps_convolution_transpose_backward_native.h>
 #include <fmt/format.h>
@@ -152,6 +153,38 @@ static Tensor _mps_convolution_impl(const Tensor& input_t,
                                     IntArrayRef dilation,
                                     int64_t groups,
                                     std::optional<IntArrayRef> input_shape) {
+  // MPSGraph 2D convolution miscomputes the output once a filter dimension reaches 256
+  // since this is not a regular shape that would be seen in regular models, this is fine
+  // i.e. no custom metal kernel needed
+  if (input_t.dim() == 4 && (weight_t.size(2) >= 256 || weight_t.size(3) >= 256)) {
+    constexpr int64_t kChunk = 128;
+    const int64_t sH = stride[0], sW = stride[1];
+    const int64_t dH = dilation[0], dW = dilation[1];
+    const int64_t kH = weight_t.size(2), kW = weight_t.size(3);
+    const int64_t outH = (input_t.size(2) + 2 * padding[0] - dH * (kH - 1) - 1) / sH + 1;
+    const int64_t outW = (input_t.size(3) + 2 * padding[1] - dW * (kW - 1) - 1) / sW + 1;
+    // Degenerate shapes (filter larger than the padded input) fall through to the normal path's shape check.
+    if (outH >= 1 && outW >= 1) {
+      const auto padded = at::constant_pad_nd(input_t, {padding[1], padding[1], padding[0], padding[0]}, 0);
+      Tensor output_t;
+      for (int64_t hs = 0; hs < kH; hs += kChunk) {
+        const int64_t ch = std::min(kChunk, kH - hs);
+        const auto rows = padded.narrow(2, hs * dH, (outH - 1) * sH + dH * (ch - 1) + 1);
+        for (int64_t ws = 0; ws < kW; ws += kChunk) {
+          const int64_t cw = std::min(kChunk, kW - ws);
+          const auto x_chunk = rows.narrow(3, ws * dW, (outW - 1) * sW + dW * (cw - 1) + 1).contiguous();
+          const auto w_chunk = weight_t.narrow(2, hs, ch).narrow(3, ws, cw).contiguous();
+          auto part =
+              _mps_convolution_impl(x_chunk, w_chunk, std::nullopt, {0, 0}, stride, dilation, groups, std::nullopt);
+          output_t = output_t.defined() ? output_t.add(part) : std::move(part);
+        }
+      }
+      if (bias_opt && bias_opt->defined()) {
+        output_t = output_t.add(bias_opt->view({1, -1, 1, 1}));
+      }
+      return output_t;
+    }
+  }
   constexpr auto kChannelsLast = MemoryFormat::ChannelsLast;
   constexpr auto kChannelsLast3d = MemoryFormat::ChannelsLast3d;
   constexpr auto kContiguous = MemoryFormat::Contiguous;
