@@ -173,7 +173,9 @@ def scan(
         # Checks for init: leaves must be Tensors or None.
         for x in linit:
             if x is not None and not isinstance(x, torch.Tensor):
-                raise RuntimeError(f"All init leaves must be a Tensor or None but got {x}")
+                raise RuntimeError(
+                    f"All init leaves must be a Tensor or None but got {x}"
+                )
 
         # Checks for xs
         for x in lxs:
@@ -466,8 +468,10 @@ def trace_scan(
     carry, output = _extract_carry_and_out(outputs, len(init))
     # None init leaves are structural placeholders; only tensor leaves participate
     # in the meta-consistency check.
-    init_fake_tensors = [i.clone() for i in init if isinstance(i, torch.Tensor)]
-    carry_fake_tensors = [
+    init_fake_tensors: list[torch.Tensor | torch.SymInt | int] = [
+        i.clone() for i in init if isinstance(i, torch.Tensor)
+    ]
+    carry_fake_tensors: list[torch.Tensor | torch.SymInt | int] = [
         c.meta["val"] for c in carry if c is not None
     ]
     check_meta_consistency(
@@ -1138,14 +1142,16 @@ def _fake_scan(combine_fn, init, xs=None, dim=0, reverse=False):
 
     # Only tensor leaves participate in the scan loop; None leaves are structural
     # placeholders that pass through unchanged (matching JAX semantics).
-    carry = [l for l in carry_all_leaves if isinstance(l, torch.Tensor)]
+    carry_tensors: list[torch.Tensor | None] = [
+        l for l in carry_all_leaves if isinstance(l, torch.Tensor)
+    ]
     carry_tensor_mask = [isinstance(l, torch.Tensor) for l in carry_all_leaves]
 
     op = reversed if reverse else lambda x: x
 
     dummy_carry, dummy_out = combine_fn(
         pytree.tree_unflatten(
-            fill_none_with_masks(carry, carry_tensor_mask), carry_spec
+            fill_none_with_masks(carry_tensors, carry_tensor_mask), carry_spec
         ),
         pytree.tree_unflatten(
             [first_slice_copy(elem, dim) for elem in inp_leaves],
@@ -1163,27 +1169,29 @@ def _fake_scan(combine_fn, init, xs=None, dim=0, reverse=False):
 
         carry_pytree, y = combine_fn(
             pytree.tree_unflatten(
-                fill_none_with_masks(carry, carry_tensor_mask), carry_spec
+                fill_none_with_masks(carry_tensors, carry_tensor_mask), carry_spec
             ),
             pytree.tree_unflatten(x_slice, inp_spec),
         )
         carry_all, _ = pytree.tree_flatten(carry_pytree)
-        carry = [l for l in carry_all if isinstance(l, torch.Tensor)]
+        carry_tensors = [l for l in carry_all if isinstance(l, torch.Tensor)]
         y_leaves, _ = pytree.tree_flatten(y)
         result_flat.append(y_leaves)
 
     # Stack only the tensor-valued output leaves; leave None slots as None.
-    results = []
+    results: list[torch.Tensor | None] = []
     for leaf_ind in range(num_leaves):
         if out_tensor_mask[leaf_ind]:
             stacked = torch.stack([e[leaf_ind] for e in op(result_flat)])
-            results.append(torch.movedim(stacked, 0, dim) if dim < stacked.ndim else stacked)
+            results.append(
+                torch.movedim(stacked, 0, dim) if dim < stacked.ndim else stacked
+            )
         else:
             results.append(None)
 
     return (
         pytree.tree_unflatten(
-            fill_none_with_masks(carry, carry_tensor_mask), carry_spec
+            fill_none_with_masks(carry_tensors, carry_tensor_mask), carry_spec
         ),
         pytree.tree_unflatten(results, dummy_out_spec),
     )

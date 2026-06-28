@@ -3298,9 +3298,7 @@ class ScanHigherOrderVariable(TorchHigherOrderOperatorVariable):
                 ],
             )
         # init leaves may be None (JAX convention: "no recurrent state for this slot")
-        _check_all_tensorvariable(
-            [v for v in init_vars if not v.is_python_constant()]
-        )
+        _check_all_tensorvariable([v for v in init_vars if not v.is_python_constant()])
         _check_all_tensorvariable(xs_vars)
         _check_all_tensorvariable(additional_inputs_vars)
 
