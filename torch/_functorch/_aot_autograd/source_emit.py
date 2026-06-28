@@ -228,6 +228,11 @@ def _emit_value(
         if isinstance(obj, enum.Flag):
             cls = _emit_importable(type(obj), imports)
             return f"{cls}({_emit_value(obj.value, imports)})"
+        # Defensive backstop, effectively unreachable for constructible inputs: a
+        # pure-Python non-Flag enum.Enum always resolves a name in __members__ (it rejects
+        # unregistered values with ValueError) and so returns by-name above, and a pybind
+        # enum-like value only reaches here via the ``name in members`` arm that already
+        # returned. Kept so any future name-less enum-like type fails loudly, not silently.
         raise NotImplementedError(
             f"compile_to_python cannot bake enum member {obj!r}: it has no resolvable "
             "member name and is not a Flag."
