@@ -363,6 +363,37 @@ class TestSourceEmit(TestCase):
         with self.assertRaisesRegex(NotImplementedError, static):
             _emit_value(obj, set())
 
+    def test_view_meta_sequence_round_trips(self):
+        # The view-replay-recipe branches (a ViewMeta via as_tuple, the ViewMetaSequence
+        # via its _from_parts factory, and the concrete SymIntEqByExpr bake inside its
+        # MetadataKey) are the headline metadata this module reconstructs. Build a
+        # ViewMetaSequence straight from parts (no live FunctionalTensor needed) and
+        # confirm it emits a _from_parts expression that round-trips to an equal recipe.
+        from torch._C import _functionalization as _F
+        from torch._functorch._aot_autograd.functional_utils import (
+            MetadataKey,
+            ViewMetaSequence,
+        )
+
+        view_meta = _F.resize__ViewMeta((True, [3, 4, 5]))
+        meta = MetadataKey(
+            size=(SymIntEqByExpr(2),),
+            layout=torch.strided,
+            is_sparse=False,
+            stride=(SymIntEqByExpr(1),),
+            storage_offset=SymIntEqByExpr(0),
+            is_conj=False,
+            is_neg=False,
+        )
+        vms = ViewMetaSequence._from_parts([view_meta], meta)
+        expr, _imports = _emit(vms)
+        self.assertIn("ViewMetaSequence._from_parts(", expr)
+        self.assertIn("ViewMeta(", expr)
+        rt = _roundtrip(vms)
+        self.assertIsInstance(rt, ViewMetaSequence)
+        self.assertEqual(rt.metadata, meta)
+        self.assertEqual([v.as_tuple() for v in rt.sequence], [view_meta.as_tuple()])
+
     def test_symbolic_symbool_symfloat_rejected(self):
         # SymBool / SymFloat get the same static-shapes treatment as SymInt: a still-symbolic
         # value cannot be baked and raises the clear static-shapes message (rather than
