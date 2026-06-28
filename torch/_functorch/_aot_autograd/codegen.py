@@ -68,8 +68,11 @@ class GeneratedSource:
         self.fn = fn
         # Identity of the TracingContext this wrapper was codegen'd under. The capture
         # sink is duration-scoped over one inductor compile, so a re-entrant on-thread
-        # AOTAutograd lowering inside that window would append its wrappers too; the
-        # composer filters by this id to keep only the target graph's wrappers.
+        # lowering that codegen's into THIS sink during that window would append its
+        # wrappers too; the composer filters by this id, which separates such a foreign
+        # lowering when it ran under a DISTINCT TracingContext. A same-context re-entrant
+        # lowering shares this id and is caught instead by the composer's
+        # orchestration-count guard.
         self.origin_id = origin_id
 
 

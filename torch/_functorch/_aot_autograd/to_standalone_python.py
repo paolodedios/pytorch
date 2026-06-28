@@ -506,10 +506,17 @@ def _emit_value(
     # same way the rest of this module guards opaque leaves -- reject rather than emit a
     # subtly-wrong artifact -- by round-tripping through the constructor and requiring
     # the rebuilt instance to compare equal to the original. The in-scope metadata
-    # types (MetadataKey, SubclassViewMetaSequence, ...) are plain value dataclasses, so
-    # they round-trip and keep working; a type with hidden/derived state does not and
-    # raises NotImplementedError naming itself.
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+    # types (e.g. MetadataKey) are plain value dataclasses, so they round-trip and keep
+    # working; a type with hidden/derived state does not and raises NotImplementedError
+    # naming itself. This strategy needs value equality: a dataclass declared eq=False
+    # inherits object.__eq__ (identity), so rebuilt == obj is ALWAYS False even for a
+    # pure value object -- detect that and fall through to _emit_via_reduce (which has its
+    # own source-expressibility rejects) rather than spuriously rejecting it.
+    if (
+        dataclasses.is_dataclass(obj)
+        and not isinstance(obj, type)
+        and type(obj).__eq__ is not object.__eq__
+    ):
         cls = _emit_importable(type(obj), imports)
         fields = dataclasses.fields(obj)
         init_kwargs = {f.name: getattr(obj, f.name) for f in fields if f.init}
@@ -600,10 +607,25 @@ def _emit_via_reduce(
             "produced a state_setter (protocol-5 form) that _rebuild cannot apply."
         )
     if func is getattr(copyreg, "__newobj__", None):
+        if not args:
+            raise NotImplementedError(
+                f"compile_to_python cannot reconstruct {type(obj).__qualname__}: "
+                "__newobj__ reduce produced no class argument."
+            )
         cls = _emit_value(args[0], imports)
         extra = ", ".join(_emit_value(a, imports) for a in args[1:])
         base = f"{cls}.__new__({cls}{', ' + extra if extra else ''})"
     elif func is getattr(copyreg, "__newobj_ex__", None):
+        if not (
+            isinstance(args, tuple)
+            and len(args) == 3
+            and isinstance(args[1], tuple)
+            and isinstance(args[2], dict)
+        ):
+            raise NotImplementedError(
+                f"compile_to_python cannot reconstruct {type(obj).__qualname__}: "
+                "__newobj_ex__ reduce did not produce a (cls, args, kwargs) triple."
+            )
         cls_obj, new_args, new_kwargs = args
         cls = _emit_value(cls_obj, imports)
         pos = ", ".join(_emit_value(a, imports) for a in new_args)
@@ -650,13 +672,19 @@ def _compose_standalone_module(
     chain head as its inner.
     """
     # The capture sink is duration-scoped over the inner inductor compile, with no
-    # originating-graph id at install time, so a re-entrant on-thread AOTAutograd
-    # lowering inside that window would append ITS wrappers here too. Each captured
-    # wrapper is tagged at append time with its TracingContext identity (origin_id);
-    # filter to the target graph's origin before composing. The target is the origin of
-    # the LAST captured orchestration wrapper: the outer lowering emits its
-    # orchestration only after any nested lowering it triggered has fully completed
-    # (and appended), so the final orchestration is always the outer/target one.
+    # originating-graph id at install time, so a re-entrant on-thread AOTAutograd /
+    # inductor lowering during that window that codegen's wrappers into THIS sink would
+    # append ITS wrappers here too. (A nested compile_to_python installs its OWN sink via
+    # capture_generated_sources, so its wrappers go there, not here -- it is not this
+    # case.) Each captured wrapper is tagged at append time with its TracingContext
+    # identity (origin_id), which separates such a foreign lowering when it ran under a
+    # DISTINCT TracingContext. A same-context re-entrant lowering reuses the ambient
+    # TracingContext via try_get() and so shares this origin_id; that case is instead
+    # caught by the orchestration count/wiring guards below (a second orchestration trips
+    # the len() != 1 check). Filter to the target graph's origin before composing. The
+    # target is the origin of the LAST captured orchestration wrapper: a foreign lowering
+    # appends its orchestration before the outer one finishes, so the final orchestration
+    # is always the outer/target one.
     orchestrations = [
         g for g in captured if g.artifact_name == "runtime_wrapper_orchestration"
     ]

@@ -197,6 +197,53 @@ class _SlotObj:
         return isinstance(other, _SlotObj) and self.x == other.x
 
 
+@dataclasses.dataclass(eq=False)
+class _EqFalseDC:
+    # eq=False -> inherits object.__eq__ (identity), so the constructor round-trip check
+    # (rebuilt == obj) can never pass; _emit_value must fall through to _emit_via_reduce
+    # and reconstruct it rather than spuriously rejecting a pure value object.
+    a: int
+    b: str
+
+
+class _NewObjNoClass:
+    # Malformed protocol-2 reduce: copyreg.__newobj__ with an empty args tuple (no class).
+    def __reduce_ex__(self, protocol):
+        import copyreg
+
+        return (copyreg.__newobj__, ())
+
+
+class _NewObjExBadArity:
+    # Malformed protocol-2 reduce: copyreg.__newobj_ex__ whose args is not a
+    # (cls, args, kwargs) triple.
+    def __reduce_ex__(self, protocol):
+        import copyreg
+
+        return (copyreg.__newobj_ex__, (type(self),))
+
+
+class _NewObjExBadTriple:
+    # copyreg.__newobj_ex__ with a structurally-3 tuple whose kwargs slot is not a dict;
+    # the guard must reject the malformed CONTENTS, not just arity.
+    def __reduce_ex__(self, protocol):
+        import copyreg
+
+        return (copyreg.__newobj_ex__, (type(self), (), None))
+
+
+class _ReduceRaises:
+    # __reduce_ex__ itself raises -> the "no usable reduce" reject path.
+    def __reduce_ex__(self, protocol):
+        raise RuntimeError("nope")
+
+
+class _ShortReduce:
+    # __reduce_ex__ returns a 1-tuple (len < 2) -> the "unsupported __reduce__ form" reject.
+    def __reduce_ex__(self, protocol):
+        return (object,)
+
+
 class _Pointwise(torch.nn.Module):
     def forward(self, x):
         return torch.relu(x * 2.0 + 1.0)
@@ -364,6 +411,12 @@ class TestAOTCompileToPython(TestCase):
         src, _cache = _compose(m, x)
         _assert_composed(self, src)
         self.assertIn("gen_alias_from_base", src)
+        # Pin the view-replay reconstruction branches this PR adds (the new
+        # ViewMetaSequence._from_parts factory + the ViewMeta as_tuple branch). The
+        # numerics/aliasing asserts alone would not catch a wrong reconstruction on this
+        # tiny view, so assert the emission explicitly.
+        self.assertIn("ViewMetaSequence._from_parts(", src)
+        self.assertIn("ViewMeta(", src)
         xc = x.clone()
         with torch.no_grad():
             out = _exec(src)([xc])[0]
@@ -568,6 +621,94 @@ class TestAOTCompileToPython(TestCase):
         # than an opaque AttributeError.
         with self.assertRaisesRegex(TypeError, "expects a post-AOTAutograd"):
             compile_to_python("not a graph module", [])
+
+    def test_reentrant_compile_to_python_under_held_lock(self):
+        # The entry point takes a re-entrant lock (RLock) so a nested on-thread compile (a
+        # custom backend / inductor pass re-entering during compile) does not self-deadlock.
+        # Holding the lock and compiling exercises that re-entry: a plain Lock would hang
+        # here (surfacing as a CI timeout), so this pins the RLock choice behaviorally.
+        from torch._functorch._aot_autograd.to_standalone_python import _COMPILE_LOCK
+
+        m = _Pointwise().eval()
+        x = torch.randn(8, 4)
+        with _COMPILE_LOCK:
+            src, _cache = _compose(m, x)
+        _assert_composed(self, src)
+        with torch.no_grad():
+            self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_concurrent_compile_to_python_smoke(self):
+        # End-to-end concurrency smoke test: _COMPILE_LOCK serializes the entry point (the
+        # underlying cache-state swap is process-global), so two threads compiling different
+        # graphs run one-at-a-time and must each still produce their own correct module.
+        # This exercises the lock end-to-end (no deadlock, both succeed); the thread-local
+        # sink isolation it relies on is pinned by test_capture_sink_is_thread_local.
+        import threading
+
+        specs = [
+            (_Pointwise().eval(), torch.randn(8, 4)),
+            (_SumDim1().eval(), torch.randn(6, 7)),
+        ]
+        results: dict = {}
+        errors: dict = {}
+
+        def run(i, m, x):
+            try:
+                results[i] = (_compose(m, x)[0], m, x)
+            except Exception as e:
+                errors[i] = e
+
+        threads = [
+            threading.Thread(target=run, args=(i, m, x))
+            for i, (m, x) in enumerate(specs)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, {})
+        for _i, (src, m, x) in results.items():
+            _assert_composed(self, src)
+            with torch.no_grad():
+                self.assertEqual(_exec(src)(_flat_inputs(m, x))[0], m(x))
+
+    def test_capture_sink_is_thread_local(self):
+        # The capture sink MUST be thread-local: two threads forced (via a barrier) to be
+        # mid-capture simultaneously must each record ONLY their own codegen'd wrapper. A
+        # process-global sink would bleed wrappers across threads and fail this -- the direct
+        # pin for the thread-local contract that the lock-serialized smoke test above cannot
+        # exercise (the lock prevents real overlap there).
+        import threading
+
+        from torch._functorch._aot_autograd.codegen import (
+            _compile_and_exec_source,
+            capture_generated_sources,
+        )
+
+        barrier = threading.Barrier(2)
+        sinks: dict = {}
+
+        def run(key):
+            into: list = []
+            with capture_generated_sources(into):
+                barrier.wait(
+                    timeout=60
+                )  # both threads now inside their capture context
+                _compile_and_exec_source(
+                    f"def {key}_fn(args):\n    return args\n", {}, f"{key}_fn", key
+                )
+                barrier.wait(
+                    timeout=60
+                )  # hold both contexts open across the other's codegen
+            sinks[key] = [g.fn_name for g in into]
+
+        threads = [threading.Thread(target=run, args=(k,)) for k in ("a", "b")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sinks["a"], ["a_fn"])
+        self.assertEqual(sinks["b"], ["b_fn"])
 
 
 class TestAOTCompileToPythonHelpers(TestCase):
@@ -803,6 +944,45 @@ class TestAOTCompileToPythonHelpers(TestCase):
         self.assertEqual(rt, _SlotObj(5))
         self.assertEqual(rt.x, 5)
 
+    def test_eq_false_dataclass_round_trips_via_reduce(self):
+        # An eq=False dataclass has identity __eq__, so the constructor round-trip check can
+        # never pass; _emit_value must fall through to _emit_via_reduce and reconstruct it
+        # (as source) instead of rejecting a pure value object. Assert by fields, since ==
+        # is identity for this type.
+        obj = _EqFalseDC(7, "z")
+        rt = _roundtrip(obj)
+        self.assertIs(type(rt), _EqFalseDC)
+        self.assertEqual((rt.a, rt.b), (7, "z"))
+
+    def test_newobj_reduce_without_class_rejected(self):
+        # copyreg.__newobj__ with an empty args tuple has no class to construct; reject
+        # cleanly (NotImplementedError) rather than raising a bare IndexError.
+        with self.assertRaisesRegex(NotImplementedError, "no class argument"):
+            _emit(_NewObjNoClass())
+
+    def test_newobj_ex_reduce_bad_arity_rejected(self):
+        # copyreg.__newobj_ex__ whose args is not a (cls, args, kwargs) triple must reject
+        # cleanly rather than raising a bare ValueError on unpack.
+        with self.assertRaisesRegex(NotImplementedError, "cls, args, kwargs"):
+            _emit(_NewObjExBadArity())
+
+    def test_newobj_ex_reduce_bad_triple_contents_rejected(self):
+        # A structurally-3 tuple whose args/kwargs slots are the wrong types must also
+        # reject cleanly, not leak a bare AttributeError/TypeError deeper in reconstruction.
+        with self.assertRaisesRegex(NotImplementedError, "cls, args, kwargs"):
+            _emit(_NewObjExBadTriple())
+
+    def test_reduce_raises_rejected(self):
+        # When __reduce_ex__ itself raises, the object has no usable reduce; surface a clean
+        # NotImplementedError naming the cause.
+        with self.assertRaisesRegex(NotImplementedError, "no usable reduce"):
+            _emit(_ReduceRaises())
+
+    def test_short_reduce_form_rejected(self):
+        # A reduce tuple of len < 2 is an unsupported form; reject cleanly.
+        with self.assertRaisesRegex(NotImplementedError, "unsupported __reduce__ form"):
+            _emit(_ShortReduce())
+
     def test_emit_importable_rejects_non_round_tripping(self):
         # torch.add is a builtin whose __qualname__ does not round-trip via importlib.
         with self.assertRaisesRegex(NotImplementedError, "does not.*round-trip"):
@@ -909,6 +1089,24 @@ class TestAOTCompileToPythonCuda(TestCase):
         self.assertEqual(out.a, eager.a)
         self.assertEqual(out.b, eager.b)
 
+    def test_input_mutation_copy_back_runs_like_eager(self):
+        # The mutation epilogue's copy-back is the most plausibly device-sensitive wrapper
+        # path (it writes updated values back onto the passed-in CUDA tensors), so mirror
+        # the CPU mutation case on CUDA in addition to the pointwise/alias/subclass cases.
+        m = _BufferMutate().eval().cuda()
+        x = torch.randn(4, device="cuda")
+        src, _cache = _compose(m, x)
+        _assert_composed(self, src)
+
+        eager = _BufferMutate().eval().cuda()
+        eager_out = eager(x)
+
+        buf = torch.zeros(4, device="cuda")
+        with torch.no_grad():
+            composed_out = _exec(src)([buf, x])[0]
+        self.assertEqual(composed_out, eager_out)
+        self.assertEqual(buf, eager.b)
+
 
 class TestAOTComposeGuards(TestCase):
     # The composer's defensive guards (which reject rather than emit a subtly-wrong module)
@@ -962,6 +1160,17 @@ class TestAOTComposeGuards(TestCase):
             NotImplementedError, "collides with another top-level name in the composed"
         ):
             _compose_standalone_module(inner, [orch])
+
+    def test_orchestration_def_name_colliding_with_inner_rejected(self):
+        # Distinct from the hoisted-global collision above: the up-front _reserve loop
+        # reserves every wrapper DEF name before any global is hoisted, so an inner module
+        # that binds a top-level name equal to a wrapper's fn_name ("_runtime_wrapper")
+        # trips that earlier guard rather than the hoist path.
+        inner = "_runtime_wrapper = 1\ndef call(args):\n    return args\n"
+        with self.assertRaisesRegex(
+            NotImplementedError, "collides with another top-level name in the composed"
+        ):
+            _compose_standalone_module(inner, [self._orch()])
 
     def test_rebuild_helper_spliced_and_runs_in_composed_module(self):
         # When a baked global reconstructs via the pickle-reduce-as-source path (_NewObjEx
