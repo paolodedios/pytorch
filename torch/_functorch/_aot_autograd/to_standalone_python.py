@@ -66,6 +66,94 @@ if TYPE_CHECKING:
 _COMPILE_LOCK = threading.RLock()
 
 
+# ======================================================================
+# WHAT IS GOING ON HERE: composing AOTAutograd's runtime wrappers as source
+# ======================================================================
+#
+# AOTAutograd does not hand back a single flat function. The dense graph Inductor
+# compiles (the inner ``call``) is only the arithmetic core; around it AOTAutograd
+# wraps a prelude/epilogue that does what the core cannot express: reflecting input
+# mutations back onto the caller's tensors, regenerating outputs that alias an input
+# or each other, wrapping/unwrapping tensor subclasses, de-duplicating aliased
+# inputs, and threading functionalized RNG state. At runtime AOTAutograd emits each
+# wrapper as Python *source*, exec's it (the chokepoint is _compile_and_exec_source
+# in subclass_codegen.py), and the resulting function runs while closing over a
+# globals dict supplied in-process -- i.e. a wrapper is (source text) +
+# ({local_name: live_object}).
+#
+# The objects a wrapper closes over come in a few kinds:
+#   - public runtime helpers the codegen'd source references (e.g. increment_version,
+#     gen_alias_from_base, _unwrap_tensoralias, mark_dynamo_propagated_dynamic_indices,
+#     the CUDARngStateHelper staticmethods) -- ordinary importable objects;
+#   - the inner Inductor ``call`` that the chain ultimately invokes;
+#   - sibling captured wrappers -- either the next link of the runtime chain (subclass
+#     / dedup / functionalized-RNG, whose body calls the link it wraps), OR an
+#     orchestration-internal forwarder (the output-alias and mutation epilogues,
+#     reached through thin bound-method shims, not by one body calling the next);
+#   - per-graph metadata baked at compile time (e.g. a ViewMetaSequence for alias
+#     regen, tensor-subclass metadata) -- live objects with no import path.
+#
+# We do NOT reimplement any of this. We CAPTURE AOTAutograd's exact codegen'd wrapper
+# source together with the (pre-exec) globals dict each wrapper closed over: a
+# thread-local sink in subclass_codegen.py records one GeneratedSource per wrapper.
+# The capture is triggered for free -- the inner ``inductor.compile_to_python``
+# re-enters AOTAutograd (under no_grad, the inference path), and that re-entry is what
+# emits, and so what we record, the wrappers.
+#
+# THE COMPOSITION PROBLEM. To turn a captured wrapper into a real top-level ``def`` in
+# the standalone module we splice its source verbatim. But that source refers to each
+# global by the LOCAL ALIAS AOTAutograd happened to choose (e.g. ``compiled_fn`` for
+# the inner call), not by any importable name. So for each ``{name: obj}`` in the
+# captured globals dict we emit a top-level binding ``name = <source for obj>`` (see
+# _emit_inline) -- except when the resolved expression already IS that module-scope
+# name (an import, or ``torch``), which needs no binding. The hard part is the right-
+# hand side: given only a live object, produce source that reproduces it. That requires
+# RECOGNIZING what the object is, the job of _resolve_global and the id-keyed
+# structures it consults, in order:
+#   - inner_call_id         -> the inner ``call`` becomes ``_inner_call``
+#   - fn_id_to_name         -> a sibling wrapper's fn becomes that wrapper's own name
+#   - _known_helper_table() -> an importable helper becomes (import, expr)
+#   - a single-cell shim around one of the above (a pure bound-method forwarder, e.g.
+#     the orchestration's _replay_aliases_ / _apply_mutations_) becomes the inner /
+#     sibling ref it wraps (closure unwrap). MAINTENANCE HAZARD: this inspects the
+#     closure STRUCTURE, not the shim body, so any orchestration shim added here MUST
+#     stay a pure pass-through forwarder.
+#   - anything else: reconstruct field-by-field as source (_emit_value), or raise.
+# Recognition is by id() (object identity), not value-equality: for "is this the EXACT
+# object the wrapper closed over," == is the wrong tool (functions don't compare by
+# value, and an equal-but-different object would mis-resolve). Value-equality IS used,
+# but later and for a different job -- _emit_value round-trip-checks reconstructed
+# metadata (rebuilt == obj) before trusting it. Every hoisted name is _reserve'd: a
+# collision with a sibling wrapper's name or an inner-module binding fails loudly
+# rather than silently rebinding.
+#
+# WHY THIS IS SAFE ACROSS PROCESSES AND MACHINES. Every id() above is consulted ONLY
+# here, during composition, in the process that just ran the compile -- where all the
+# candidate objects (helpers, the inner call, sibling wrappers) are simultaneously
+# alive, held by the GeneratedSource records and the captured globals dicts, so no
+# address can be freed and reused mid-pass. Nothing the composer emits carries an id()
+# value, a live object, or any thread-local capture state: it emits only import lines,
+# ``name = expr`` bindings, and verbatim def source (the inner Inductor source is
+# likewise spliced as text). Grep the GENERATED module and there is no ``id(`` to
+# find. By the time the user holds the Python, all the process/thread-local state the
+# composer leaned on is gone; what ships is imports + name bindings + verbatim code.
+# Load it on another machine with the same torch version and the imports resolve by
+# name and the bindings reconstruct -- identity was a compile-time recognition device,
+# never a serialized artifact (live tensors / pickle / base64 blobs are rejected
+# outright rather than embedded).
+#
+# So the one genuine cross-machine contract is not id() but that the *names* the
+# artifact imports still resolve on load. Helpers are emitted as either ``import
+# torch`` (the torch module and stable public paths, e.g.
+# torch.autograd.graph.increment_version) or an import from the single small surface
+# standalone_runtime.py (for the AOTAutograd-area internals -- plus CUDARngStateHelper,
+# re-exported there for import-ordering -- whose locations are not themselves a stable
+# contract). That file's IDENTITY CONTRACT -- re-exports must preserve object id --
+# exists purely so the COMPOSER's id-lookup keeps matching; it is a compile-time
+# requirement, and the runtime artifact has no id dependency of its own.
+# ======================================================================
+
+
 # Global objects the codegen'd wrappers close over that are reproducible as an
 # import in the standalone module (rather than reconstructed field-by-field). Maps
 # object id -> (import_statement, expression). Built lazily to avoid import cycles.
