@@ -3879,6 +3879,22 @@ class TestUnbacked(TestCase):
         # empty dict
         self.assertEqual(list(_iterate_exprs({})), [])
 
+    def test_iterate_exprs_scalar_metadata(self):
+        """_iterate_exprs treats non-symbolic scalar metadata as having no symbols.
+
+        torch.device/dtype/memory_format/layout can appear in fx graphs (e.g.
+        coor::current_device emits a torch.device under compile-on-one-rank), so
+        free_symbols over such a graph must not raise on them.
+        """
+        for val in (
+            torch.device("cpu"),
+            torch.float32,
+            torch.contiguous_format,
+            torch.strided,
+        ):
+            self.assertEqual(list(_iterate_exprs(val)), [])
+            self.assertEqual(free_symbols(val), set())
+
     @skipIfTorchDynamo("https://github.com/pytorch/pytorch/issues/156135")
     @torch._dynamo.config.patch("capture_scalar_outputs", True)
     @parametrize("backend", ["inductor", "eager"])

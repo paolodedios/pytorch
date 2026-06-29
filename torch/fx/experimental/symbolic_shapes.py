@@ -1011,6 +1011,12 @@ def _iterate_exprs(val: IterateExprs) -> Iterator[sympy.Basic]:
         pass
     elif isinstance(val, FakeScriptObject):
         pass
+    # Non-symbolic scalar metadata (e.g. coor::current_device emits a
+    # torch.device under compile-on-one-rank) carries no free symbols.
+    elif isinstance(
+        val, (torch.device, torch.dtype, torch.memory_format, torch.layout)
+    ):
+        pass
     else:
         raise AssertionError(f"cannot extract sympy expressions from {val} {type(val)}")
 
