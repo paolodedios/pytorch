@@ -99,6 +99,7 @@ from torch.fx.experimental.symbolic_shapes import (
     DimDynamic,
     RelaxedUnspecConstraint,
     StatefulSymbolicContext,
+    StrictMinMaxConstraint,
     SubclassSymbolicContext,
     SymbolicContext,
     SymIntSymbolicContext,
@@ -111,6 +112,7 @@ from torch.utils._python_dispatch import (
     is_traceable_wrapper_subclass,
     is_traceable_wrapper_subclass_type,
 )
+from torch.utils._sympy.numbers import int_oo
 from torch.utils._sympy.value_ranges import ValueRanges
 from torch.utils.weak import TensorWeakRef
 
@@ -2842,6 +2844,7 @@ class VariableBuilder:
         if (
             not _has_spec
             and not is_static_input
+            and not hasattr(value, "_dynamo_dynamic_indices")
             and (
                 isinstance(value, torch.nn.Parameter)
                 # mark tensor attributes of nn modules static
@@ -4677,12 +4680,15 @@ def _automatic_dynamic(
                     if dim_range.min is None and dim_range.max is None:
                         constraint_size = RelaxedUnspecConstraint(warn_only=False)
                     else:
-                        from torch.fx.experimental.symbolic_shapes import (
-                            StrictMinMaxConstraint,
-                        )
-
                         constraint_size = StrictMinMaxConstraint(
-                            vr=ValueRanges(lower=dim_range.min, upper=dim_range.max),
+                            vr=ValueRanges(
+                                lower=-int_oo
+                                if dim_range.min is None
+                                else dim_range.min,
+                                upper=int_oo
+                                if dim_range.max is None
+                                else dim_range.max,
+                            ),
                             warn_only=False,
                         )
                 else:
