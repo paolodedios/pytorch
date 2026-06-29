@@ -3243,7 +3243,8 @@ Tensor linalg_matrix_sqrt(const Tensor& A) {
   }
 
   // Fortran contiguous outputs let the kernel write the column-major Schur
-  // factors directly.
+  // factors directly; ZUZ^H is computed here rather than inside the kernel
+  // to avoid calling at::matmul from within the dispatch path.
   auto fortran_like = [&]() {
     Tensor t = at::empty(A.mT().sizes(), A.options());
     t.transpose_(-2, -1);
