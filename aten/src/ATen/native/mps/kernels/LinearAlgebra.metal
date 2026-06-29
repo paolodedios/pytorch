@@ -2382,3 +2382,133 @@ kernel void eigh_jacobi(
 
 REGISTER_EIGH_JACOBI(float);
 REGISTER_EIGH_JACOBI(float2);
+
+// ---------------------------------------------------------------------------
+// LU factorization with partial pivoting (LAPACK getf2 semantics), complex64.
+// One threadgroup per batch matrix; m x n tile staged ROW-MAJOR in Atg.
+// Host guarantees A is row-major contiguous (det/slogdet column-major handled
+// host-side via a row-major scratch). v1: correctness-first -- pivot search is
+// serial on tid 0 (race-free); the O(n^2) trailing update is parallelized.
+// ---------------------------------------------------------------------------
+
+// LAPACK icamax ranks pivots by cabs1 = |re| + |im| (NOT Euclidean svd_abs2).
+inline float lu_cabs1(float z) {
+  return ::metal::abs(z);
+}
+inline float lu_cabs1(float2 z) {
+  return ::metal::abs(z.x) + ::metal::abs(z.y);
+}
+
+template <typename T>
+kernel void lu_factor(
+    device T* A [[buffer(0)]], // in-place m x n, row-major
+    device int* pivots [[buffer(1)]], // out: k 0-based pivots (host adds 1)
+    device int* info [[buffer(2)]], // out: 0 or 1-based first-zero-pivot index
+    constant LuParams& params [[buffer(3)]],
+    threadgroup T* Atg [[threadgroup(0)]],
+    uint3 thread_pos [[thread_position_in_threadgroup]],
+    uint3 tpg [[threads_per_threadgroup]],
+    uint3 tg_pos [[threadgroup_position_in_grid]]) {
+  const uint32_t tid = thread_pos.x;
+  const uint32_t group_size = tpg.x;
+  const uint32_t m = params.m;
+  const uint32_t n = params.n;
+  const uint32_t K = params.k; // min(m, n)
+  const uint32_t batch_idx = tg_pos.x;
+
+  device T* A_b = A + batch_idx * m * n;
+  device int* piv = pivots + batch_idx * K;
+
+  // threadgroup scalars must live at kernel scope (not inside the loop).
+  threadgroup uint tg_piv;
+  threadgroup int tg_info;
+
+  // Stage row-major into threadgroup memory.
+  for (uint32_t idx = tid; idx < m * n; idx += group_size) {
+    Atg[idx] = A_b[idx];
+  }
+  if (tid == 0) {
+    tg_info = 0; // 0 = success
+  }
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+
+  for (uint32_t k = 0; k < K; ++k) {
+    // (1) Pivot search: serial argmax by cabs1 over rows [k, m). v1: tid 0.
+    if (tid == 0) {
+      uint p = k;
+      float best = lu_cabs1(Atg[k * n + k]);
+      for (uint32_t i = k + 1; i < m; ++i) {
+        float v = lu_cabs1(Atg[i * n + k]);
+        if (v > best) { // first-strict-max tiebreak (matches icamax)
+          best = v;
+          p = i;
+        }
+      }
+      tg_piv = p;
+      piv[k] = int(p); // 0-based; host add_(1) -> 1-based
+      if (best == 0.0f && tg_info == 0) {
+        tg_info = int(k + 1); // first exactly-zero pivot; continue factorizing
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint p = tg_piv;
+
+    // (2) Row swap k <-> p across the FULL row [0, n) (includes L cols [0, k)).
+    if (p != k) {
+      for (uint32_t c = tid; c < n; c += group_size) {
+        T tmp = Atg[k * n + c];
+        Atg[k * n + c] = Atg[p * n + c];
+        Atg[p * n + c] = tmp;
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const T pivot = Atg[k * n + k];
+    const bool nonzero = (lu_cabs1(pivot) != 0.0f);
+
+    // (3) Scale subdiagonal of col k: A[i,k] /= pivot, i in [k+1, m). No conj.
+    if (nonzero) {
+      for (uint32_t i = k + 1 + tid; i < m; i += group_size) {
+        Atg[i * n + k] = c10::metal::div(Atg[i * n + k], pivot);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // (4) Trailing update: A[i,j] -= A[i,k]*A[k,j], i in [k+1,m), j in [k+1,n).
+    if (nonzero) {
+      const uint32_t rows = (m > k + 1) ? (m - (k + 1)) : 0;
+      const uint32_t cols = (n > k + 1) ? (n - (k + 1)) : 0;
+      const uint32_t total = rows * cols;
+      for (uint32_t t = tid; t < total; t += group_size) {
+        const uint32_t i = (k + 1) + t / cols;
+        const uint32_t j = (k + 1) + t % cols;
+        Atg[i * n + j] =
+            Atg[i * n + j] - c10::metal::mul(Atg[i * n + k], Atg[k * n + j]);
+      }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  // Writeback row-major + per-batch info.
+  for (uint32_t idx = tid; idx < m * n; idx += group_size) {
+    A_b[idx] = Atg[idx];
+  }
+  if (tid == 0) {
+    info[batch_idx] = tg_info;
+  }
+}
+
+#define REGISTER_LU(T)                                     \
+  template [[host_name("lu_factor_" #T)]]                  \
+  kernel void lu_factor<T>(                                \
+      device T * A [[buffer(0)]],                          \
+      device int* pivots [[buffer(1)]],                    \
+      device int* info [[buffer(2)]],                      \
+      constant LuParams& params [[buffer(3)]],             \
+      threadgroup T* Atg [[threadgroup(0)]],               \
+      uint3 thread_pos [[thread_position_in_threadgroup]], \
+      uint3 tpg [[threads_per_threadgroup]],               \
+      uint3 tg_pos [[threadgroup_position_in_grid]]);
+
+REGISTER_LU(float);
+REGISTER_LU(float2);

@@ -2386,9 +2386,9 @@ class TestMPS(TestCaseMPS):
         from torch.testing._internal.common_utils import make_fullrank_matrices_with_distinct_singular_values
 
         make_fullrank = make_fullrank_matrices_with_distinct_singular_values
-        make_arg = partial(make_fullrank, device="cpu", dtype=torch.float32)
 
-        def run_lu_factor_ex_test(size, *batch_dims, check_errors, atol=1e-5, rtol=1e-6):
+        def run_lu_factor_ex_test(size, *batch_dims, check_errors, dtype=torch.float32, atol=1e-5, rtol=1e-6):
+            make_arg = partial(make_fullrank, device="cpu", dtype=dtype)
             input_cpu = make_arg(*batch_dims, size, size)
             input_mps = input_cpu.to('mps')
             out_cpu = torch.linalg.lu_factor_ex(input_cpu, check_errors=check_errors)
@@ -2404,15 +2404,19 @@ class TestMPS(TestCaseMPS):
         # even/odd batch sizes
         batch_sizes = [1, 2, 4]
 
-        for check_errors in [True, False]:
-            for size in matrix_sizes:
-                for batch_size in batch_sizes:
-                    run_lu_factor_ex_test(size, batch_size, check_errors=check_errors)
-        # test >3D matrices
-        run_lu_factor_ex_test(32, 10, 10, check_errors=False)
-        run_lu_factor_ex_test(32, 2, 2, 10, 10, check_errors=True)
-        # big matrix check with batch size > 1
-        run_lu_factor_ex_test(256, 2, check_errors=False, atol=3e-5, rtol=5e-6)
+        # float32 goes through Apple's MPSMatrixDecompositionLU; complex64 goes
+        # through the native Metal kernel (the size-256 case exceeds threadgroup
+        # memory and exercises the complex64 CPU fallback).
+        for dtype in [torch.float32, torch.complex64]:
+            for check_errors in [True, False]:
+                for size in matrix_sizes:
+                    for batch_size in batch_sizes:
+                        run_lu_factor_ex_test(size, batch_size, check_errors=check_errors, dtype=dtype)
+            # test >3D matrices
+            run_lu_factor_ex_test(32, 10, 10, check_errors=False, dtype=dtype)
+            run_lu_factor_ex_test(32, 2, 2, 10, 10, check_errors=True, dtype=dtype)
+            # big matrix check with batch size > 1
+            run_lu_factor_ex_test(256, 2, check_errors=False, dtype=dtype, atol=3e-5, rtol=5e-6)
 
     def test_linalg_lu_factor_singular(self):
         # Explicit singular matrix
@@ -2420,6 +2424,17 @@ class TestMPS(TestCaseMPS):
 
         with self.assertRaisesRegex(RuntimeError, "result in a division by zero"):
             torch.linalg.lu_factor(A)
+
+        # complex64 singular matrix (row 2 == 2 * row 1)
+        Ac = torch.tensor(
+            [[1.0 + 1.0j, 2.0 + 2.0j], [2.0 + 2.0j, 4.0 + 4.0j]],
+            device="mps", dtype=torch.complex64,
+        )
+        with self.assertRaisesRegex(RuntimeError, "result in a division by zero"):
+            torch.linalg.lu_factor(Ac)
+        # lu_factor_ex must not raise and must report the zero pivot in info
+        _, _, info = torch.linalg.lu_factor_ex(Ac)
+        self.assertNotEqual(info.item(), 0)
 
     def test_linalg_solve(self):
         from torch.testing._internal.common_utils import make_fullrank_matrices_with_distinct_singular_values
@@ -2511,9 +2526,9 @@ class TestMPS(TestCaseMPS):
         from torch.testing._internal.common_utils import make_fullrank_matrices_with_distinct_singular_values
 
         make_fullrank = make_fullrank_matrices_with_distinct_singular_values
-        make_arg = partial(make_fullrank, device="cpu", dtype=torch.float32)
 
-        def run_det_test(size, *batch_dims):
+        def run_det_test(size, *batch_dims, dtype=torch.float32):
+            make_arg = partial(make_fullrank, device="cpu", dtype=dtype)
             input_cpu = make_arg(*batch_dims, size, size)
             input_mps = input_cpu.to('mps')
             out_cpu = torch.linalg.det(input_cpu)
@@ -2532,13 +2547,15 @@ class TestMPS(TestCaseMPS):
         # even/odd batch sizes
         batch_sizes = [1, 2, 4]
 
-        for size in matrix_sizes:
-            for batch_size in batch_sizes:
-                run_det_test(size, batch_size)
+        # complex64 det routes through the native Metal LU kernel.
+        for dtype in [torch.float32, torch.complex64]:
+            for size in matrix_sizes:
+                for batch_size in batch_sizes:
+                    run_det_test(size, batch_size, dtype=dtype)
 
-        # test >3D matrices
-        run_det_test(32, 10, 10)
-        run_det_test(32, 2, 2, 10, 10)
+            # test >3D matrices
+            run_det_test(32, 10, 10, dtype=dtype)
+            run_det_test(32, 2, 2, 10, 10, dtype=dtype)
 
     def test_layer_norm(self):
         def helper(input_shape, normalized_shape, eps=1e-05, elementwise_affine=True, dtype=torch.float32, non_contiguous=False):

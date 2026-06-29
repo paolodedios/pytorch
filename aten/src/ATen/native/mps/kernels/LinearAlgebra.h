@@ -49,3 +49,9 @@ struct EighParams {
   uint32_t upper; // UPLO: 1 read upper triangle, 0 read lower
   float tol;
 };
+
+struct LuParams {
+  uint32_t m; // rows of staged tile
+  uint32_t n; // cols of staged tile
+  uint32_t k; // min(m, n) -- number of elimination steps
+};

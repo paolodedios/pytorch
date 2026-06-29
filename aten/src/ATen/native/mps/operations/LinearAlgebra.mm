@@ -31,6 +31,7 @@
 #include <ATen/ops/linalg_cholesky_ex_native.h>
 #include <ATen/ops/linalg_inv_ex_native.h>
 #include <ATen/ops/linalg_lstsq_native.h>
+#include <ATen/ops/linalg_lu_factor_ex.h>
 #include <ATen/ops/linalg_lu_factor_ex_native.h>
 #include <ATen/ops/linalg_lu_factor_native.h>
 #include <ATen/ops/linalg_lu_native.h>
@@ -369,6 +370,113 @@ void map_mps_decomposition_error_code_to_blas(const Tensor& status) {
 
 } // anonymous namespace
 
+// complex64 LU via the hand-written Metal getf2 kernel (Apple's
+// MPSMatrixDecompositionLU is float-only). One threadgroup per batch matrix;
+// the m x n tile is staged row-major in threadgroup memory, so we hand the
+// kernel a row-major working copy and copy the result back into LU (which may
+// be column-major when called from det/slogdet).
+static void lu_factor_complex64_mps(const Tensor& A,
+                                    const Tensor& LU,
+                                    const Tensor& pivots,
+                                    const Tensor& info,
+                                    bool check_errors) {
+  using namespace mps;
+
+  Tensor A_t = A.contiguous(); // row-major
+  const int64_t aRows = A_t.size(-2);
+  const int64_t aCols = A_t.size(-1);
+  const int64_t numPivots = std::min(aRows, aCols);
+  const int64_t elemSize = A_t.element_size();
+
+  std::vector<int64_t> batch_sizes(A_t.sizes().begin(), A_t.sizes().end() - 2);
+  std::vector<int64_t> pivot_sizes = batch_sizes;
+  pivot_sizes.push_back(numPivots);
+  resize_output(info, batch_sizes);
+  resize_output(pivots, pivot_sizes);
+  resize_output(LU, A_t.sizes());
+
+  if (A_t.numel() == 0) {
+    info.zero_();
+    return;
+  }
+
+  id<MTLDevice> device = MPSDevice::getInstance()->device();
+  const uint64_t staging_bytes = aRows * aCols * elemSize;
+  // Matrices that don't fit in threadgroup memory fall back to CPU (mirrors the
+  // svd/eigh fallback). The staged tile is m*n*8 bytes for complex64.
+  if (staging_bytes > [device maxThreadgroupMemoryLength]) {
+    TORCH_WARN_ONCE("linalg.lu_factor(): complex64 matrix is too large for the MPS kernel; using CPU fallback.");
+    auto [LU_cpu, piv_cpu, info_cpu] = at::linalg_lu_factor_ex(A_t.cpu(), /*pivot=*/true, /*check_errors=*/false);
+    LU.copy_(LU_cpu);
+    pivots.copy_(piv_cpu);
+    info.copy_(info_cpu);
+    if (check_errors) {
+      Tensor ic = info_cpu.contiguous();
+      const int* ip = ic.data_ptr<int>();
+      for (const auto i : c10::irange(ic.numel())) {
+        TORCH_CHECK(ip[i] == 0,
+                    "torch.linalg.lu_factor: (Batch element ",
+                    i,
+                    "): U[",
+                    ip[i],
+                    ",",
+                    ip[i],
+                    "] is zero and using it would result in a division by zero.");
+      }
+    }
+    return;
+  }
+
+  // Flatten batch dims; the kernel handles one matrix per threadgroup.
+  Tensor A_flat = A_t.dim() > 2 ? A_t.flatten(0, -3) : A_t.unsqueeze(0);
+  const int64_t batchSize = A_flat.size(0);
+
+  Tensor work = A_flat.clone(); // row-major; factored in place
+  Tensor pivots_b = at::zeros({batchSize, numPivots}, A_t.options().dtype(kInt));
+  Tensor info_b = at::zeros({batchSize}, A_t.options().dtype(kInt));
+
+  LuParams params{static_cast<uint32_t>(aRows), static_cast<uint32_t>(aCols), static_cast<uint32_t>(numPivots)};
+
+  MPSStream* stream = getCurrentMPSStream();
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      id<MTLComputeCommandEncoder> enc = stream->commandEncoder();
+      auto pso = lib.getPipelineStateForFunc(fmt::format("lu_factor_{}", scalarToMetalTypeString(A_t)));
+      getMPSProfiler().beginProfileKernel(pso, "lu_factor", {A_t});
+      [enc setComputePipelineState:pso];
+      mtl_setArgs(enc, work, pivots_b, info_b, params);
+      [enc setThreadgroupMemoryLength:staging_bytes atIndex:0];
+      const NSUInteger maxThreads = pso.maxTotalThreadsPerThreadgroup;
+      const NSUInteger want = static_cast<NSUInteger>(std::min<int64_t>(aRows * aCols, 1024));
+      const NSUInteger tgs = std::max<NSUInteger>(32, std::min<NSUInteger>(maxThreads, want));
+      [enc dispatchThreads:MTLSizeMake(tgs * batchSize, 1, 1) threadsPerThreadgroup:MTLSizeMake(tgs, 1, 1)];
+      getMPSProfiler().endProfileKernel(pso);
+    }
+  });
+
+  // Copy the factorization into LU (handles a column-major LU from det/slogdet).
+  LU.copy_(work.view(A_t.sizes()));
+  pivots.copy_(pivots_b.view(pivot_sizes));
+  info.copy_(info_b.view(batch_sizes));
+  pivots.add_(1); // PyTorch pivots are 1-indexed; info already holds LAPACK info.
+
+  if (check_errors) {
+    Tensor info_cpu = info.to(kCPU).contiguous();
+    const int* ip = info_cpu.data_ptr<int>();
+    for (const auto i : c10::irange(info_cpu.numel())) {
+      TORCH_CHECK(ip[i] == 0,
+                  "torch.linalg.lu_factor: (Batch element ",
+                  i,
+                  "): The factorization could not be completed because U[",
+                  ip[i],
+                  ",",
+                  ip[i],
+                  "] is zero and using it would result in a division by zero. "
+                  "Use torch.linalg.lu_factor_ex to retrieve the info tensor instead.");
+    }
+  }
+}
+
 static void linalg_lu_factor_ex_out_mps_impl(const Tensor& A,
                                              bool pivot,
                                              const Tensor& LU,
@@ -377,9 +485,15 @@ static void linalg_lu_factor_ex_out_mps_impl(const Tensor& A,
                                              bool check_errors) {
   using namespace mps;
 
-  TORCH_CHECK(A.scalar_type() == kFloat && LU.scalar_type() == kFloat,
-              "linalg.lu_factor(): MPS doesn't support complex types.");
+  const auto st = A.scalar_type();
+  TORCH_CHECK(
+      st == kFloat || st == kComplexFloat, "linalg.lu_factor(): MPS supports float32 and complex64; got ", st, ".");
   TORCH_CHECK(pivot, "linalg.lu_factor(): MPS doesn't allow pivot == False.");
+
+  if (st == kComplexFloat) {
+    lu_factor_complex64_mps(A, LU, pivots, info, check_errors);
+    return;
+  }
 
   Tensor A_t = A.contiguous();
   uint64_t aRows = A_t.size(-2);
