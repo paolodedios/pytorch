@@ -341,13 +341,13 @@ def validate_local_reduce_selected_dim_divisible(
 
 
 def validate_local_reduce_tensorssa_group_size(axis: int, group: int) -> None:
-    """Reject grouped TensorSSA layouts that cannot map to one 32-lane fragment."""
+    """Reject grouped TensorSSA layouts that cannot map to 32-lane fragments."""
     if group <= 1:
         raise NotImplementedError(LOCAL_REDUCE_TENSORSSA_GROUP_SIZE_ERROR)
     validate_local_reduce_group_axis(group, axis)
-    if group > 32:
+    if group > 32 and group % 32 != 0:
         raise NotImplementedError(LOCAL_REDUCE_TENSORSSA_FRAGMENT_MULTIPLE_ERROR)
-    if 32 % group != 0:
+    if group <= 32 and 32 % group != 0:
         raise NotImplementedError(LOCAL_REDUCE_TENSORSSA_FRAGMENT_DIVISIBLE_ERROR)
 
 
