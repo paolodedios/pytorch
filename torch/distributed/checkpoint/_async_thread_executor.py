@@ -65,6 +65,11 @@ class _ThreadBasedAsyncCheckpointExecutor(_AsyncCheckpointExecutor):
             no_dist=no_dist,
             use_collectives=use_collectives,
         )
+        # Pin the staged dict to the future so the final decref happens on the
+        # thread that drops the future (caller / main) instead of the worker
+        # thread. Cross-thread mi_free goes onto the owner-heap's delayed-free
+        # list and isn't drained when the owner is idle (aarch64 mimalloc).
+        f._dcp_staged_dict = staging_future_or_state_dict  # type: ignore[attr-defined]
         f.add_done_callback(lambda f: self._executor.shutdown(wait=False))
 
         return f
