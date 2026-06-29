@@ -26,7 +26,7 @@ GemvConfig GemvPolicy::clamp_nt(GemvConfig cfg, int64_t align) {
 namespace {
 using AppleGPUFamily = at::mps::AppleGPUFamily;
 
-// Default config for families without a dedicated table: M1 (Apple7) and M5+ (Apple10).
+// Default config for families without a dedicated table: M5+ (Apple10).
 GemvConfig pick_t_default(c10::ScalarType dt, int64_t outlen, int64_t K) {
   int nsimd = 32;
   int vec = 2;
@@ -53,6 +53,78 @@ GemvConfig t2d(int nsimd, int kq) {
   cfg.kq = kq;
   cfg.kernel = GemvKernel::T2D;
   return cfg;
+}
+
+GemvConfig pick_t_apple7(c10::ScalarType dt, int64_t outlen, int64_t K) {
+  if (dt == at::kFloat) {
+    if (outlen <= 1024) {
+      return t2d(16, 8);
+    }
+    if (outlen <= 3072) {
+      return K <= 8192 ? t2d(16, 8) : GemvConfig{8, 1};
+    }
+    if (outlen <= 4096) {
+      return K <= 4096 ? GemvConfig{16, 2} : GemvConfig{8, 1};
+    }
+    if (outlen <= 12288) {
+      return {32, 1};
+    }
+    if (outlen <= 20000) {
+      return K <= 3072 ? GemvConfig{4, 4} : GemvConfig{2, 2};
+    }
+    if (outlen <= 40000) {
+      return {2, 4};
+    }
+    return {2, 8};
+  }
+  if (outlen <= 1024) {
+    return t2d(16, 8);
+  }
+  if (outlen <= 4096) {
+    return K <= 8192 ? t2d(16, 8) : GemvConfig{16, 1};
+  }
+  if (outlen <= 12288) {
+    if (K <= 3072) {
+      return {8, 1};
+    }
+    return K <= 4096 ? GemvConfig{32, 1} : GemvConfig{16, 1};
+  }
+  if (outlen <= 20000) {
+    return {4, 2};
+  }
+  return {4, 8};
+}
+
+GemvConfig pick_nt_apple7(c10::ScalarType dt, int64_t outlen, int64_t K) {
+  if (dt == at::kFloat) {
+    if (outlen <= 1024) {
+      return {2, 4};
+    }
+    if (outlen <= 4096) {
+      // Long reductions: one x load feeds two rows.
+      return K >= 8192 ? GemvConfig{8, 4, 2} : GemvConfig{2, 4};
+    }
+    if (outlen <= 12288) {
+      return K <= 3072 ? GemvConfig{8, 4} : GemvConfig{4, 4};
+    }
+    if (outlen <= 20000) {
+      return {2, 4};
+    }
+    return outlen > 65536 ? GemvConfig{16, 1} : GemvConfig{2, 8};
+  }
+  if (K < 512) {
+    return {4, 1};
+  }
+  if (outlen <= 1024) {
+    return {8, 8};
+  }
+  if (outlen <= 4096) {
+    return K <= 4096 ? GemvConfig{4, 4} : GemvConfig{4, 8};
+  }
+  if (outlen <= 12288 && K <= 3072) {
+    return {4, 8, 2};
+  }
+  return {4, 8};
 }
 
 GemvConfig pick_t_m3(c10::ScalarType dt, int64_t outlen, int64_t K) {
@@ -95,14 +167,7 @@ GemvConfig pick_t_m3(c10::ScalarType dt, int64_t outlen, int64_t K) {
   return {32, 2};
 }
 
-GemvConfig pick_t_for_family(c10::ScalarType dt, int64_t outlen, int64_t K, AppleGPUFamily family) {
-  if (family == AppleGPUFamily::APPLE_9_PLUS) {
-    return pick_t_m3(dt, outlen, K);
-  }
-  if (family != AppleGPUFamily::APPLE_8_PLUS) {
-    return pick_t_default(dt, outlen, K);
-  }
-
+GemvConfig pick_t_apple8(c10::ScalarType dt, int64_t outlen, int64_t K) {
   if (dt == at::kFloat) {
     if (outlen <= 512) {
       return t2d(16, 2);
@@ -185,6 +250,19 @@ GemvConfig pick_t_for_family(c10::ScalarType dt, int64_t outlen, int64_t K, Appl
   return cfg;
 }
 
+GemvConfig pick_t_for_family(c10::ScalarType dt, int64_t outlen, int64_t K, AppleGPUFamily family) {
+  switch (family) {
+    case AppleGPUFamily::APPLE_7_PLUS:
+      return pick_t_apple7(dt, outlen, K);
+    case AppleGPUFamily::APPLE_8_PLUS:
+      return pick_t_apple8(dt, outlen, K);
+    case AppleGPUFamily::APPLE_9_PLUS:
+      return pick_t_m3(dt, outlen, K);
+    default:
+      return pick_t_default(dt, outlen, K);
+  }
+}
+
 GemvConfig pick_nt_default(c10::ScalarType dt, int64_t outlen, int64_t K) {
   int nsimd, vec;
   int rows = 1;
@@ -234,13 +312,7 @@ GemvConfig pick_nt_m3(c10::ScalarType dt, int64_t outlen, int64_t K) {
   return {4, 8};
 }
 
-GemvConfig pick_nt_for_family(c10::ScalarType dt, int64_t outlen, int64_t K, AppleGPUFamily family) {
-  if (family == AppleGPUFamily::APPLE_9_PLUS) {
-    return pick_nt_m3(dt, outlen, K);
-  }
-  if (family != AppleGPUFamily::APPLE_8_PLUS) {
-    return pick_nt_default(dt, outlen, K);
-  }
+GemvConfig pick_nt_apple8(c10::ScalarType dt, int64_t outlen, int64_t K) {
   if (dt == at::kFloat) {
     if (outlen <= 512 && K >= 2048) {
       return K == 3584 ? GemvConfig{8, 4} : GemvConfig{4, 4};
@@ -302,6 +374,19 @@ GemvConfig pick_nt_for_family(c10::ScalarType dt, int64_t outlen, int64_t K, App
     return {4, 8, 2};
   }
   return {4, 8};
+}
+
+GemvConfig pick_nt_for_family(c10::ScalarType dt, int64_t outlen, int64_t K, AppleGPUFamily family) {
+  switch (family) {
+    case AppleGPUFamily::APPLE_7_PLUS:
+      return pick_nt_apple7(dt, outlen, K);
+    case AppleGPUFamily::APPLE_8_PLUS:
+      return pick_nt_apple8(dt, outlen, K);
+    case AppleGPUFamily::APPLE_9_PLUS:
+      return pick_nt_m3(dt, outlen, K);
+    default:
+      return pick_nt_default(dt, outlen, K);
+  }
 }
 
 } // namespace
