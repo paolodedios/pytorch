@@ -4,6 +4,7 @@
 #include <ATen/native/mps/OperationUtils.h>
 #include <ATen/ops/_mps_convolution_native.h>
 #include <ATen/ops/_mps_convolution_transpose_native.h>
+#include <ATen/ops/cat.h>
 #include <ATen/ops/constant_pad_nd.h>
 #include <ATen/ops/mps_convolution_backward_native.h>
 #include <ATen/ops/mps_convolution_transpose_backward_native.h>
@@ -157,6 +158,26 @@ static Tensor _mps_convolution_impl(const Tensor& input_t,
   // since this is not a regular shape that would be seen in regular models, this is fine
   // i.e. no custom metal kernel needed
   if (input_t.dim() == 4 && (weight_t.size(2) >= 256 || weight_t.size(3) >= 256)) {
+    // The MPSGraph conv's threadgroup staging grows with the batch as well as the
+    // filter size, so split the batch and recurse; each chunk then takes the
+    // sub-256 filter path below.
+    constexpr int64_t kBatchChunk = 8;
+    const int64_t N = input_t.size(0);
+    if (N > kBatchChunk) {
+      std::vector<Tensor> parts;
+      parts.reserve((N + kBatchChunk - 1) / kBatchChunk);
+      for (int64_t ns = 0; ns < N; ns += kBatchChunk) {
+        parts.push_back(_mps_convolution_impl(input_t.narrow(0, ns, std::min(kBatchChunk, N - ns)),
+                                              weight_t,
+                                              bias_opt,
+                                              padding,
+                                              stride,
+                                              dilation,
+                                              groups,
+                                              std::nullopt));
+      }
+      return at::cat(parts, 0);
+    }
     constexpr int64_t kChunk = 128;
     const int64_t sH = stride[0], sW = stride[1];
     const int64_t dH = dilation[0], dW = dilation[1];

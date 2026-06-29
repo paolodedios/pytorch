@@ -2961,7 +2961,7 @@ class TestMPS(TestCaseMPS):
             helper((N, C_in * 2, H * 2, W * 2), (C_out * 2, (C_in * 2) // groups,
                    kH + 2, kW + 2), bias_shape=(C_out * 2), groups=groups)
 
-    @parametrize("batch_size", [1, 2])
+    @parametrize("batch_size", [1, 2, 16, 32])
     @parametrize("conv_config", [
         (8, 16, 8, 256, 1),  # reported case: in/groups=1, channel multiplier 2
         (8, 8, 8, 256, 1),   # true depthwise (1->1 per group)
