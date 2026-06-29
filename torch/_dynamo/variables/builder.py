@@ -45,6 +45,7 @@ import sympy
 
 import torch
 from torch import SymInt
+from torch._custom_class_base import CustomClassBase
 from torch._dispatch.python import enable_python_dispatcher
 from torch._dynamo.graph_bytecode_inputs import (
     CURRENT_STREAM_INDEX,
@@ -62,12 +63,11 @@ from torch._guards import TracingContext
 from torch._higher_order_ops.flat_apply import flat_apply
 from torch._higher_order_ops.torchbind import call_torchbind
 from torch._library.opaque_object import (
-    is_opaque_reference_type,
+    is_opaque_constant_type,
+    is_opaque_symbolic_type,
     is_opaque_type,
-    is_opaque_value_type,
     should_hoist,
 )
-from torch._opaque_base import OpaqueBase
 from torch._ops import HigherOrderOperator, OpOverload, OpOverloadPacket
 from torch._subclasses.fake_tensor import (
     FakeTensor,
@@ -1978,11 +1978,11 @@ class VariableBuilder:
                     tx=self.tx,
                 )
 
-            if is_opaque_value_type(type(value)):
+            if is_opaque_constant_type(type(value)):
                 # Value-type: guard on equality (will use __eq__)
                 self.install_guards(GuardBuilder.CONSTANT_MATCH)
-            elif is_opaque_reference_type(type(value)):
-                # Reference-type: guard only on type, and registered guard_fn.
+            elif is_opaque_symbolic_type(type(value)):
+                # Symbolic-type: guard only on type, and registered guard_fn.
                 # Use FAKE_SCRIPT_TYPE_MATCH because at runtime the source may
                 # resolve to either a FakeScriptObject (during outer
                 # AOTAutograd tracing) or the underlying real opaque object.
@@ -2015,7 +2015,7 @@ class VariableBuilder:
             fake_script_obj = torch._library.fake_class_registry.maybe_to_fake_obj(
                 self.tx.output.fake_mode, value
             )
-            if is_opaque_value_type(type(value)) and not should_hoist(type(value)):
+            if is_opaque_constant_type(type(value)) and not should_hoist(type(value)):
                 fake_script_obj = value
                 proxy = value
 
@@ -3043,7 +3043,7 @@ class VariableBuilder:
                     inner_type = type(inner_value.real_obj)
                 if not isinstance(
                     inner_value, torch.Tensor
-                ) and not is_opaque_reference_type(inner_type):
+                ) and not is_opaque_symbolic_type(inner_type):
                     raise RuntimeError(
                         f"{type(inner_value).__name__!r} found in tensor attrs of "
                         f"{type(value).__name__}.__tensor_flatten__(). "
@@ -4070,7 +4070,7 @@ def handle_traced_output(
         )
     elif is_opaque_type(type(example_value)):
         # This is for handling opaque objects in custom ops
-        if is_opaque_value_type(type(example_value)):
+        if is_opaque_constant_type(type(example_value)):
             return TorchScriptObjectVariable.create(
                 example_value,  # pyrefly: ignore[bad-argument-type]
                 example_value,
@@ -4619,11 +4619,11 @@ def _automatic_dynamic(
                     inner_contexts[attr] = _automatic_dynamic(
                         inner_value, tx, inner_source, static_shapes
                     )
-                case OpaqueBase():
+                case CustomClassBase():
                     pass
                 case unexpected:
                     raise AssertionError(
-                        f"expected Tensor or OpaqueBase, got {type(unexpected)}"
+                        f"expected Tensor or CustomClassBase, got {type(unexpected)}"
                     )
 
         return SubclassSymbolicContext(
@@ -5124,12 +5124,12 @@ class SourcelessBuilder:
             # This is always valid to call, and useful for recursive calls.
             return value
         elif (
-            is_opaque_value_type(type(value))
+            is_opaque_constant_type(type(value))
             and not isinstance(value, enum.Enum)
             and not is_pybind11_enum_member(value)
         ):
             return TorchScriptObjectVariable.create(value, value, tx=tx)
-        elif is_opaque_reference_type(type(value)):
+        elif is_opaque_symbolic_type(type(value)):
             # This is for handling opaque objects in custom ops
             fake_script_obj = torch._library.fake_class_registry.maybe_to_fake_obj(
                 tx.output.fake_mode, value
