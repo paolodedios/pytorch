@@ -2299,8 +2299,7 @@ dimensions.
 .. seealso::
 
         :func:`torch.linalg.matrix_sqrth` computes the square root of a symmetric
-        (resp. Hermitian) positive-definite matrix. It is faster, supports CUDA, and
-        returns a symmetric (resp. Hermitian) result.
+        (resp. Hermitian) positive-definite matrix.
 
         :func:`torch.linalg.matrix_exp` computes the matrix exponential.
 
