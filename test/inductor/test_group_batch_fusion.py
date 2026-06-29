@@ -21,7 +21,7 @@ except Exception:
     has_fbgemm = False
 
 
-class _TestHighwaySelfGating(torch.nn.Module):
+class TestHighwaySelfGating(torch.nn.Module):
     def __init__(
         self,
         d_model: int,
@@ -229,7 +229,7 @@ class MyModule5(torch.nn.Module):
         return torch.sin(l1_out)
 
 
-class _TestPointwiseOps(torch.nn.Module):
+class TestPoitwiseOps(torch.nn.Module):
     def __init__(self, device, has_bias=True):
         super().__init__()
         self.device = device
@@ -249,7 +249,7 @@ class _TestPointwiseOps(torch.nn.Module):
         return torch.cat(div, dim=1)
 
 
-class _TestPointwiseOpsPostGrad(torch.nn.Module):
+class TestPoitwiseOpsPostGrad(torch.nn.Module):
     def __init__(self, device):
         super().__init__()
         self.device = device
@@ -268,7 +268,7 @@ class _TestPointwiseOpsPostGrad(torch.nn.Module):
         return torch.cat(add, dim=1)
 
 
-class _TestMathOps(torch.nn.Module):
+class TestMathOps(torch.nn.Module):
     def __init__(self, device):
         super().__init__()
         self.device = device
@@ -287,7 +287,7 @@ class _TestMathOps(torch.nn.Module):
         return torch.stack((stack_input, stack_other), dim=0)
 
 
-class _TestDropout(torch.nn.Module):
+class TestDropout(torch.nn.Module):
     def __init__(self, device):
         super().__init__()
         self.device = device
@@ -637,7 +637,7 @@ class TestGroupBatchFusion(TestCase):
     )
     def test_pointwise_op_fusion(self):
         counters.clear()
-        module = _TestPointwiseOps(GPU_TYPE)
+        module = TestPoitwiseOps(GPU_TYPE)
         input = [torch.randn(50, 1000, requires_grad=True, device=GPU_TYPE)]
         traced = torch.compile(module)
         ref = module(*input)
@@ -667,7 +667,7 @@ class TestGroupBatchFusion(TestCase):
     )
     def test_pointwise_op_fusion_post_grad(self):
         counters.clear()
-        module = _TestPointwiseOpsPostGrad(GPU_TYPE)
+        module = TestPoitwiseOpsPostGrad(GPU_TYPE)
         input = [torch.randn(50, 1000, requires_grad=True, device=GPU_TYPE)]
         traced = torch.compile(module)
         ref = module(*input)
@@ -701,7 +701,7 @@ class TestGroupBatchFusion(TestCase):
     def test_gate_fusion_post_grad(self):
         counters.clear()
         size = 20
-        module = _TestHighwaySelfGating(d_model=10, size=size, device=GPU_TYPE)
+        module = TestHighwaySelfGating(d_model=10, size=size, device=GPU_TYPE)
         input = [
             [
                 torch.randn(10, 10, requires_grad=True, device=GPU_TYPE)
@@ -738,7 +738,7 @@ class TestGroupBatchFusion(TestCase):
     )
     def test_math_op_fusion(self):
         counters.clear()
-        module = _TestMathOps(GPU_TYPE)
+        module = TestMathOps(GPU_TYPE)
         input = [
             torch.tensor(
                 [float("nan"), float("inf"), -float("inf"), 3.14], device=GPU_TYPE
@@ -766,7 +766,7 @@ class TestGroupBatchFusion(TestCase):
     )
     def test_batch_dropout_pre_grad_fusion(self):
         counters.clear()
-        module = _TestDropout(GPU_TYPE)
+        module = TestDropout(GPU_TYPE)
         input = [torch.randn(10, 100, requires_grad=True, device=GPU_TYPE)]
         traced = torch.compile(module)
         module(*input)
@@ -876,7 +876,7 @@ class TestGroupBatchFusion(TestCase):
         counters.clear()
 
 
-class _TestBMMFusionModule(torch.nn.Module):
+class TestBMMFusionModule(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.my_modules = torch.nn.ModuleList()
@@ -899,7 +899,7 @@ class _TestBMMFusionModule(torch.nn.Module):
 )
 class TestPostGradBatchLinearFusion(TestCase):
     def test_batch_linear_post_grad_fusion(self):
-        pt1_module = _TestBMMFusionModule().to(GPU_TYPE)
+        pt1_module = TestBMMFusionModule().to(GPU_TYPE)
         inputs = []
         for _ in range(10):
             inputs.append(torch.randn(10, 10).to(GPU_TYPE))
