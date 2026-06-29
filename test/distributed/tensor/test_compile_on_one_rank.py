@@ -365,6 +365,27 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
 
     @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
     @compiler_config.patch(compile_on_one_rank=True)
+    def test_coor_check_current_accelerator(self):
+        # The shared validator (used by the make_fx input check, the operand rewrite, and the
+        # benchmark-harness device renderer) must accept the current accelerator (bare or its
+        # index) and cpu, and refuse a non-current accelerator -- so a device cannot be
+        # silently re-rendered as the current one. End-to-end harness rendering (bare "cuda",
+        # no "cuda:N") is covered by test_inductor_compiles_under_coor.
+        from torch.fx.experimental.proxy_tensor import (
+            _coor_check_current_accelerator,
+            _coor_current_accelerator,
+        )
+
+        with torch.cuda.device(0):
+            cur = _coor_current_accelerator()
+            _coor_check_current_accelerator(torch.device("cuda:0"), cur)
+            _coor_check_current_accelerator(torch.device("cuda"), cur)
+            _coor_check_current_accelerator(torch.device("cpu"), cur)
+            with self.assertRaisesRegex(RuntimeError, "device-agnostic"):
+                _coor_check_current_accelerator(torch.device("cuda:1"), cur)
+
+    @unittest.skipIf(not torch.cuda.is_available(), "requires CUDA")
+    @compiler_config.patch(compile_on_one_rank=True)
     def test_factory_without_matching_input_succeeds(self):
         # Unlike provenance-following, matching the current accelerator needs no input
         # on that device: a cuda factory in a cpu-input graph is now rewritten, not
@@ -390,6 +411,22 @@ class TestCompileOnOneRankDeviceAsParameter(TestCase):
                 RuntimeError, "index differs from the current accelerator"
             ):
                 make_fx(f, tracing_mode="fake")(torch.randn(2, device="cuda:0"))
+
+    @unittest.skipIf(torch.cuda.device_count() < 2, "requires >= 2 GPUs")
+    @compiler_config.patch(compile_on_one_rank=True)
+    def test_noncurrent_device_tensor_rejected(self):
+        # CooR rejects a device *operand* that isn't the current accelerator (see
+        # test_wrong_index_raises), but its single-device invariant also requires the
+        # graph's *tensors* to be on the current device: the inductor wrapper collapses
+        # every device reference to the runtime current device (_coor_device_idx), so a
+        # cuda:1 graph would be run on cuda:0. A graph whose input is on a non-current GPU
+        # has no device operand to catch, so make_fx must reject it on the tensor device.
+        def f(x):
+            return x + 1
+
+        with torch.cuda.device(0):
+            with self.assertRaisesRegex(RuntimeError, "device-agnostic"):
+                make_fx(f, tracing_mode="fake")(torch.randn(4, device="cuda:1"))
 
     @unittest.skipIf(torch.cuda.device_count() < 2, "requires >= 2 GPUs")
     @compiler_config.patch(compile_on_one_rank=True)

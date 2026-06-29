@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-from .common import DeviceIndexExpr, DeviceOpOverrides, register_device_op_overrides
+from .common import DeviceOpOverrides, register_device_op_overrides
 
 
 class MPSDeviceOpOverrides(DeviceOpOverrides):
-    # MPS is single-device; the device index is rendered but not inspected (that
-    # invariant belongs at device selection, not in this code-formatting method).
-    def device_guard(self, device_idx: DeviceIndexExpr) -> str:
+    # MPS is single-device, so the device index is ignored.
+    def device_guard(self, device_idx: int | str) -> str:
         return "torch._ops.contextlib.nullcontext()"
 
-    def set_device(self, device_idx: DeviceIndexExpr) -> str:
+    def set_device(self, device_idx: int | str) -> str:
         return "pass  # MPS set device"
 
     def kernel_driver(self) -> str:

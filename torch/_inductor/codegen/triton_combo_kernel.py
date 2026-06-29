@@ -30,7 +30,6 @@ from ..virtualized import V
 from .common import (
     ArgName,
     ConstexprArg,
-    DeviceIndexExpr,
     IndentedBuffer,
     InplacedBuffer,
     Kernel,
@@ -579,13 +578,7 @@ class ComboKernel(Kernel):
                     grid.append(f"{tree.prefix}numel_{num}")
 
             if tree.is_reduction and sub_kernel.persistent_reduction:
-                if isinstance(simplified_tree_numel, (Integer, int)):
-                    val = int(simplified_tree_numel)
-                else:
-                    raise RuntimeError(
-                        "Dynamic shape on reduction dimension is not supported"
-                    )
-                val = next_power_of_2(val)
+                val = TritonKernel._get_persistent_RBLOCK(tree.numel)
                 code.writeline(
                     f"{tree.prefix.upper()}BLOCK_{num}: tl.constexpr = {val}"
                 )
@@ -791,13 +784,11 @@ class ComboKernel(Kernel):
         if not self.per_subkernel_blocks:
             max_persistent_rblock = max(
                 (
-                    next_power_of_2(int(simplified))
+                    TritonKernel._get_persistent_RBLOCK(tree.numel)
                     for sub in self.sub_kernels
                     if sub.persistent_reduction
                     for tree in sub.range_trees
                     if tree.is_reduction
-                    for simplified in [V.graph.sizevars.simplify(tree.numel)]
-                    if isinstance(simplified, (Integer, int))
                 ),
                 default=0,
             )
@@ -1113,12 +1104,11 @@ class ComboKernel(Kernel):
         result.writelines(["\n", "\n", "def call(args):"])
         device = V.graph.get_current_device_or_throw()
         index = V.graph.get_current_device_or_throw().index
-        guard_idx = DeviceIndexExpr(str(index))
         with result.indent():
-            result.writeline(f"with {V.graph.device_ops.device_guard(guard_idx)}:")
+            result.writeline(f"with {V.graph.device_ops.device_guard(index)}:")
             with result.indent():
                 result.writeline(
-                    V.graph.device_ops.set_device(guard_idx)
+                    V.graph.device_ops.set_device(index)
                 )  # no-op to ensure context
                 stream_name = get_raw_stream_name(index)
                 result.writeline(f"{stream_name} = get_raw_stream({index})")
@@ -1129,10 +1119,10 @@ class ComboKernel(Kernel):
         # benchmark all configs
         result.writelines(["\n", "\n", "def benchmark_all_configs(args):"])
         with result.indent():
-            result.writeline(f"with {V.graph.device_ops.device_guard(guard_idx)}:")
+            result.writeline(f"with {V.graph.device_ops.device_guard(index)}:")
             with result.indent():
                 result.writeline(
-                    V.graph.device_ops.set_device(guard_idx)
+                    V.graph.device_ops.set_device(index)
                 )  # no-op to ensure context
                 result.writeline(
                     f"return {str(Placeholder.KERNEL_NAME)}.benchmark_all_configs(*args)"

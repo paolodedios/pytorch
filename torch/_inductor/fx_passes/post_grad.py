@@ -158,7 +158,7 @@ def respecialize_current_device_nodes(graph: torch.fx.Graph) -> None:
     from torch.fx.experimental.proxy_tensor import _coor_current_device
 
     target = torch.ops.coor.current_device.default
-    nodes = [n for n in graph.nodes if n.op == "call_function" and n.target is target]
+    nodes = graph.find_nodes(op="call_function", target=target)
     if not nodes:
         return
     device = _coor_current_device()

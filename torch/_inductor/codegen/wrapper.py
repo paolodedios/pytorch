@@ -15,7 +15,7 @@ import re
 import tempfile
 from collections.abc import Callable
 from itertools import chain, count
-from typing import Any, Protocol, TYPE_CHECKING
+from typing import Any, Literal, Protocol, TYPE_CHECKING
 
 import sympy
 from sympy import Expr
@@ -30,6 +30,11 @@ from torch._inductor.codegen.multi_kernel import MultiKernelState
 from torch._inductor.runtime.runtime_utils import cache_dir
 from torch._library.opaque_object import get_opaque_obj_repr, is_opaque_value_type
 from torch._logging import trace_structured
+from torch.fx.experimental.proxy_tensor import (
+    _coor_check_current_accelerator,
+    _coor_current_accelerator,
+    _coor_enabled,
+)
 from torch.fx.experimental.symbolic_shapes import (
     CallMethodKey,
     ConvertIntKey,
@@ -73,7 +78,6 @@ from .common import (
     ArgName,
     CodeGen,
     DeferredLine,
-    DeviceIndexExpr,
     PythonPrinter,
     WorkspaceArg,
     WorkspaceZeroMode,
@@ -614,21 +618,17 @@ class ExitSubgraphLine(WrapperLine):
 _COOR_DEVICE_IDX_VAR = "_coor_device_idx"
 
 
-def _coor_device_idx_ref(device_idx: int) -> DeviceIndexExpr:
+def _coor_device_idx_ref(device_idx: int) -> int | str:
     """Device index to emit in the wrapper. Under compile-on-one-rank, the call()-local
     runtime current-device variable (so the wrapper is byte-identical across ranks);
-    otherwise the literal compile-time index."""
-    from torch.fx.experimental.proxy_tensor import _coor_enabled
+    otherwise the literal compile-time index.
 
-    return DeviceIndexExpr(_COOR_DEVICE_IDX_VAR if _coor_enabled() else str(device_idx))
-
-
-def _coor_device_type_str(device: torch.device) -> str:
-    """Render a device for the benchmark harness. Under compile-on-one-rank, the bare type
-    (no rank-specific index) so the harness is byte-identical across ranks."""
-    from torch.fx.experimental.proxy_tensor import _coor_enabled
-
-    return device.type if _coor_enabled() else str(device)
+    Safe to ignore ``device_idx`` under CooR: make_fx rejects any operand that is not the
+    current accelerator (_coor_check_current_accelerator), so every ``device_idx`` reaching
+    codegen is already the current device's index; redirecting it to the runtime variable
+    just follows each rank's own device.
+    """
+    return _COOR_DEVICE_IDX_VAR if _coor_enabled() else device_idx
 
 
 @dataclasses.dataclass
@@ -662,18 +662,16 @@ class EnterDeviceContextManagerLine(WrapperLine):
         else:
             # Note _DeviceGuard has less overhead than device, but only accepts
             # integers
-            from torch.fx.experimental.proxy_tensor import _coor_enabled
-
             if _coor_enabled():
                 # compile-on-one-rank: resolve the device at runtime so the wrapper is
                 # byte-identical across ranks -- a shared artifact follows each rank's
                 # current device instead of the compile-time index.
-                idx = DeviceIndexExpr(_COOR_DEVICE_IDX_VAR)
+                idx = _COOR_DEVICE_IDX_VAR
                 code.writeline(
                     f"{idx} = {V.graph.device_ops.current_device_idx_expr()}"
                 )
             else:
-                idx = DeviceIndexExpr(str(self.device_idx))
+                idx = self.device_idx
             code.writeline(f"with {V.graph.device_ops.device_guard(idx)}:")
             code.do_indent()
             code.writeline(V.graph.device_ops.set_device(idx))
@@ -867,11 +865,12 @@ class EnterDeviceContextManagerWithStreamInfoLine(EnterDeviceContextManagerLine)
     Attributes:
         num_streams: Number of streams (determined by user annotations on nodes).
         stream_idx_to_user_obj_idx: Maps stream_idx → user_object_index for
-            retrieving user stream objects via get_external_object_by_index.
+            retrieving user stream objects via _get_stream_by_index.
     """
 
     num_streams: int = 1
     stream_idx_to_user_obj_idx: dict[int, int] = dataclasses.field(default_factory=dict)
+    setup_stream_cache: bool = True
 
     def codegen(self, code: IndentedBuffer) -> None:
         """Generate context switching and stream retrieval code."""
@@ -879,14 +878,18 @@ class EnterDeviceContextManagerWithStreamInfoLine(EnterDeviceContextManagerLine)
             super().codegen(code)
         else:
             super().codegen(code)
-            code.writeline(f"{DEFAULT_STREAM} = {V.graph.device_ops.current_stream()}")
+
+            if self.setup_stream_cache:
+                code.writeline(
+                    f"{DEFAULT_STREAM} = {V.graph.device_ops.current_stream()}"
+                )
 
             if self.num_streams > 1:
                 for i in range(1, self.num_streams):
                     user_obj_idx = self.stream_idx_to_user_obj_idx[i]
                     code.writeline(
                         f"{STREAM_NAME_TEMPLATE.format(stream_idx=i)} "
-                        f"= get_external_object_by_index({user_obj_idx})",
+                        f"= _get_stream_by_index({user_obj_idx})",
                     )
 
 
@@ -1374,6 +1377,7 @@ class PythonWrapperCodegen(CodeGen):
 
     def __init__(self):
         super().__init__()
+        self._last_default_stream_device: int | None = None
         self._pending_input_asserts: dict[str, tuple[str, str]] = {}
         self._pending_alignment_copies: OrderedSet[str] = OrderedSet()
         self._names_iter: Iterator[int] = count()
@@ -1407,6 +1411,9 @@ class PythonWrapperCodegen(CodeGen):
         self.move_begin = "std::move(" if V.graph.cpp_wrapper else ""
         self.move_end = ")" if V.graph.cpp_wrapper else ""
         self.last_seen_device_guard_index: int | None = None
+        # [device-as-parameter] CooR harness render mode, resolved once and cached:
+        # None = unresolved, False = compile-on-one-rank off, else the current accelerator.
+        self._coor_current_accelerator: torch.device | Literal[False] | None = None
         self.supports_intermediate_hooks = True
         self.user_defined_kernel_cache: dict[
             tuple[Any, ...], tuple[str, Any, dict[str, Any]]
@@ -1952,17 +1959,19 @@ class PythonWrapperCodegen(CodeGen):
             if stream_idx_to_user_obj_idx is None:
                 raise AssertionError("expected stream_idx_to_user_obj_idx to be set")
             import_line = (
-                "from torch._dynamo.graph_bytecode_inputs import "
-                "get_external_object_by_index"
+                "from torch._dynamo.variables.streams import _get_stream_by_index"
             )
             if not self.imports.contains(import_line):
                 self.imports.writeline(import_line)
+            setup_stream_cache = self._last_default_stream_device != device_idx
+            self._last_default_stream_device = device_idx
             self.writeline(
                 EnterDeviceContextManagerWithStreamInfoLine(
                     device_idx,
                     self.last_seen_device_guard_index,
                     num_streams,
                     stream_idx_to_user_obj_idx,
+                    setup_stream_cache=setup_stream_cache,
                 ),
             )
         else:
@@ -1974,9 +1983,8 @@ class PythonWrapperCodegen(CodeGen):
         if config.triton.autotune_at_compile_time:
             # mimic logic of EnterDeviceContextManagerLine.codegen for the autotune code block
             self.write_triton_header_once()
-            guard_idx = DeviceIndexExpr(str(device_idx))
             self.kernel_autotune_calls.writeline(
-                f"with {V.graph.device_ops.device_guard(guard_idx)}:"
+                f"with {V.graph.device_ops.device_guard(device_idx)}:"
             )
             self.kernel_autotune_calls.do_indent()
             if is_codegen_graph_partition_subgraph(self):
@@ -2841,6 +2849,23 @@ class PythonWrapperCodegen(CodeGen):
         # define the variable and assign it None
         self.writeline(f"{node.get_name()} = None")
 
+    def _coor_device_type_str(self, device: torch.device) -> str:
+        """Render a device for the benchmark harness rank-agnostically: the bare device type
+        (no rank-specific index), so it is byte-identical across ranks. cpu/meta have no index
+        and pass through unchanged; a non-current accelerator violates the single-device
+        invariant and is refused. Under compile-on-one-rank the current accelerator is read
+        once per compilation and cached on the wrapper; once cached, the per-input/buffer
+        harness loops repeat neither the enabled check nor the cudaGetDevice.
+        """
+        cur = self._coor_current_accelerator
+        if cur is None:
+            cur = _coor_current_accelerator() if _coor_enabled() else False
+            self._coor_current_accelerator = cur
+        if cur is False:
+            return str(device)
+        _coor_check_current_accelerator(device, cur)
+        return device.type
+
     def benchmark_compiled_module(self, output):
         """Write out codegen for benchmarking the output code"""
 
@@ -2849,7 +2874,7 @@ class PythonWrapperCodegen(CodeGen):
                 f"{name} = rand_strided("
                 f"{self.codegen_python_shape_tuple(shape)}, "
                 f"{self.codegen_python_shape_tuple(stride)}, "
-                f"device='{_coor_device_type_str(device)}', dtype={dtype})"
+                f"device='{self._coor_device_type_str(device)}', dtype={dtype})"
             )
 
         def add_expr_input(name, val):
@@ -2927,7 +2952,7 @@ class PythonWrapperCodegen(CodeGen):
                     continue
                 numel = group.nbytes // torch._utils._element_size(group.dtype)
                 output.writeline(
-                    f"{group.buffer_name} = rand_strided(({numel},), (1,), device='{_coor_device_type_str(group.device)}', dtype={group.dtype})"
+                    f"{group.buffer_name} = rand_strided(({numel},), (1,), device='{self._coor_device_type_str(group.device)}', dtype={group.dtype})"
                 )
                 for name, (shape, stride) in group.inputs.items():
                     aliased_input_specs[name] = (group.buffer_name, shape, stride)
@@ -3893,9 +3918,8 @@ class PythonWrapperCodegen(CodeGen):
                 all_args.append(arg_str if key is None else f"{key}={arg_str}")
 
             # Make sure kernel launch under a device guard because models don't always run on device 0
-            guard_idx = DeviceIndexExpr(str(device.index))
             self.kernel_autotune_calls.writeline(
-                f"with {V.graph.device_ops.device_guard(guard_idx)}:"
+                f"with {V.graph.device_ops.device_guard(device.index)}:"
             )
             self.kernel_autotune_calls.do_indent()
             self.kernel_autotune_calls.writeline(

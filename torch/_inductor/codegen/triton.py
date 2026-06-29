@@ -99,7 +99,6 @@ from .common import (
     CSE,
     CSEVariable,
     DeferredLine,
-    DeviceIndexExpr,
     IndentedBuffer,
     InplacedBuffer,
     is_buffer_removed,
@@ -6186,12 +6185,11 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         result.writelines(["\n", "\n", "def call(args):"])
         current_device = V.graph.get_current_device_or_throw()
         index = current_device.index
-        guard_idx = DeviceIndexExpr(str(index))
         with result.indent():
-            result.writeline(f"with {V.graph.device_ops.device_guard(guard_idx)}:")
+            result.writeline(f"with {V.graph.device_ops.device_guard(index)}:")
             with result.indent():
                 result.writeline(
-                    V.graph.device_ops.set_device(guard_idx)
+                    V.graph.device_ops.set_device(index)
                 )  # no-op to ensure context
                 stream_name = get_raw_stream_name(index)
                 result.writeline(f"{stream_name} = get_raw_stream({index})")
@@ -6202,10 +6200,10 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         # benchmark all configs
         result.writelines(["\n", "\n", "def benchmark_all_configs(args):"])
         with result.indent():
-            result.writeline(f"with {V.graph.device_ops.device_guard(guard_idx)}:")
+            result.writeline(f"with {V.graph.device_ops.device_guard(index)}:")
             with result.indent():
                 result.writeline(
-                    V.graph.device_ops.set_device(guard_idx)
+                    V.graph.device_ops.set_device(index)
                 )  # no-op to ensure context
                 result.writeline(
                     f"return {str(Placeholder.KERNEL_NAME)}.benchmark_all_configs(*args)"
