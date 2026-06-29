@@ -1119,6 +1119,10 @@
   self: linalg_matrix_exp_differential(self, grad, /*adjoint*/ true)
   result: linalg_matrix_exp_differential(self_p, self_t, /*adjoint*/ false)
 
+- name: linalg_matrix_sqrt(Tensor self) -> Tensor
+  self: linalg_matrix_sqrt_differential(self, grad, /*adjoint*/ true)
+  result: linalg_matrix_sqrt_differential(self_p, self_t, /*adjoint*/ false)
+
 - name: linalg_matrix_sqrth(Tensor self) -> Tensor
   self: linalg_matrix_sqrth_differential(self, grad)
   result: linalg_matrix_sqrth_differential(self_p, self_t)
