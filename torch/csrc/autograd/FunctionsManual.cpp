@@ -4327,6 +4327,16 @@ Tensor linalg_matrix_exp_differential(
       self, grad, at::linalg_matrix_exp, /* adjoint */ adjoint);
 }
 
+Tensor linalg_matrix_sqrt_differential(
+    const Tensor& self,
+    const Tensor& grad,
+    bool adjoint) {
+  at::NoTF32Guard disable_tf32;
+
+  return differential_analytic_matrix_function(
+      self, grad, at::linalg_matrix_sqrt, /* adjoint */ adjoint);
+}
+
 // Differential of the symmetric/Hermitian matrix square root, used for both
 // reverse-mode (grad = cotangent) and forward-mode (grad = input tangent).
 // For A = Q diag(lambda) Q^H the Daleckii-Krein/Loewner derivative is
