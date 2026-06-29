@@ -1260,6 +1260,10 @@ op_db: list[OpInfo] = [
         dtypes=floating_and_complex_types(),
         sample_inputs_func=sample_inputs_linalg_matrix_sqrt,
         gradcheck_wrapper=gradcheck_wrapper_hermitian_input,
+        # Backward builds a (2n) x (2n) block matrix (like linalg.matrix_exp); batched-grad
+        # vmap cannot handle it.
+        check_batched_grad=False,
+        check_batched_gradgrad=False,
         check_batched_forward_grad=False,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
