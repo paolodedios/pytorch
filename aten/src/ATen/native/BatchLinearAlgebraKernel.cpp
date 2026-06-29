@@ -5,10 +5,16 @@
 #include <ATen/Dispatch_v2.h>
 #include <ATen/Parallel.h>
 #include <ATen/native/BatchLinearAlgebra.h>
+#include <ATen/native/CPUBlas.h>
 #include <ATen/native/LinearAlgebraUtils.h>
 #include <ATen/native/cpu/zmath.h>
 
 #include <c10/util/irange.h>
+
+#include <algorithm>
+#include <cmath>
+#include <complex>
+#include <vector>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -17,8 +23,6 @@
 #include <ATen/ops/empty.h>
 #include <ATen/ops/empty_strided.h>
 #include <ATen/ops/zeros.h>
-
-#include <algorithm>
 #endif
 namespace at::native {
 
@@ -282,6 +286,180 @@ void linalg_eig_kernel(Tensor& eigenvalues, Tensor& eigenvectors, Tensor& infos,
 
   AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(input.scalar_type(), "linalg_eig_out_cpu", [&]{
     apply_linalg_eig<scalar_t>(eigenvalues, eigenvectors, input_working_copy, infos, compute_eigenvectors);
+  });
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ matrix_sqrt ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+template <typename scalar_t, typename value_t>
+static inline scalar_t matrix_sqrt_sqrt_diag(scalar_t x) {
+  if constexpr (c10::is_complex<scalar_t>::value) {
+    return c10_complex_math::sqrt(x);
+  } else {
+    return std::sqrt(std::max(x, scalar_t(0)));
+  }
+}
+
+// Bjorck-Hammarling point recurrence for the upper-triangular square root of a
+// single m-by-m diagonal block of the (column-major, leading dim `ld`) Schur
+// form T. Writes the result into the corresponding block of U.
+template <typename scalar_t, typename value_t>
+static void matrix_sqrt_point_sqrt(const scalar_t* T, scalar_t* U, int64_t m, int64_t ld) {
+  for (const auto p : c10::irange(m)) {
+    U[p + p * ld] = matrix_sqrt_sqrt_diag<scalar_t, value_t>(T[p + p * ld]);
+  }
+  for (const auto j : c10::irange(int64_t{1}, m)) {
+    for (int64_t i = j - 1; i >= 0; --i) {
+      scalar_t s = scalar_t(0);
+      for (const auto k : c10::irange(i + 1, j)) {
+        s += U[i + k * ld] * U[k + j * ld];
+      }
+      // Denominator sqrt(l_i) + sqrt(l_j) is a sum of right-half-plane roots, so
+      // it never vanishes for the principal square root.
+      U[i + j * ld] = (T[i + j * ld] - s) / (U[i + i * ld] + U[j + j * ld]);
+    }
+  }
+}
+
+// Blocked Schur square root (Deadman-Higham-Ralha): diagonal blocks via the point
+// recurrence above, off-diagonal blocks via the triangular Sylvester solver
+// (trsyl), with the BLAS-3 update C = T_ij - sum_k U_ik U_kj done by gemm.
+// `T` (overwritten Schur form) and `U` are column-major n-by-n with leading dim n.
+template <typename scalar_t, typename value_t>
+static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
+  const int64_t ld = n;
+  if constexpr (!c10::is_complex<scalar_t>::value) {
+    // A nonzero subdiagonal marks a 2x2 block (complex-conjugate eigenpair); the
+    // real quasi-triangular recurrence for those is out of scope here.
+    for (const auto c : c10::irange(n - 1)) {
+      TORCH_CHECK(T[(c + 1) + c * ld] == scalar_t(0),
+        "linalg.matrix_sqrt: the real Schur form has a 2x2 block, i.e. ",
+        "the input has complex eigenvalues. This temporary comparator supports ",
+        "only inputs with a real spectrum (e.g. symmetric/Hermitian PSD).");
+    }
+  }
+
+  std::fill(U, U + n * n, scalar_t(0));
+
+  constexpr int64_t kBlock = 64;
+  std::vector<int64_t> starts;
+  for (int64_t s = 0; s < n; s += kBlock) {
+    starts.push_back(s);
+  }
+  starts.push_back(n);
+  const int64_t nb = static_cast<int64_t>(starts.size()) - 1;
+
+  for (const auto b : c10::irange(nb)) {
+    const int64_t s = starts[b];
+    matrix_sqrt_point_sqrt<scalar_t, value_t>(T + s + s * ld, U + s + s * ld, starts[b + 1] - s, ld);
+  }
+
+  std::vector<scalar_t> C;
+  for (const auto d : c10::irange(int64_t{1}, nb)) {
+    for (const auto bi : c10::irange(nb - d)) {
+      const int64_t bj = bi + d;
+      const int64_t si = starts[bi], mi = starts[bi + 1] - si;
+      const int64_t sj = starts[bj], nj = starts[bj + 1] - sj;
+
+      C.assign(static_cast<size_t>(mi * nj), scalar_t(0));
+      for (const auto cc : c10::irange(nj)) {
+        for (const auto rr : c10::irange(mi)) {
+          C[rr + cc * mi] = T[(si + rr) + (sj + cc) * ld];
+        }
+      }
+      for (const auto bk : c10::irange(bi + 1, bj)) {
+        const int64_t sk = starts[bk], mk = starts[bk + 1] - sk;
+        at::native::cpublas::gemm(
+            TransposeType::NoTranspose, TransposeType::NoTranspose,
+            mi, nj, mk,
+            scalar_t(-1),
+            U + si + sk * ld, ld,
+            U + sk + sj * ld, ld,
+            scalar_t(1),
+            C.data(), mi);
+      }
+
+      // Solve U_ii X + X U_jj = C for the off-diagonal block X = U_ij.
+      value_t scale = 1;
+      int info = 0;
+      lapackSylvester<scalar_t, value_t>(
+          'N', 'N', 1, static_cast<int>(mi), static_cast<int>(nj),
+          U + si + si * ld, static_cast<int>(ld),
+          U + sj + sj * ld, static_cast<int>(ld),
+          C.data(), static_cast<int>(mi), &scale, &info);
+      const scalar_t inv = scalar_t(value_t(1) / scale);
+      for (const auto cc : c10::irange(nj)) {
+        for (const auto rr : c10::irange(mi)) {
+          U[(si + rr) + (sj + cc) * ld] = C[rr + cc * mi] * inv;
+        }
+      }
+    }
+  }
+}
+
+/*
+  Computes the Schur factor Z and the triangular square root U of the Schur form
+  for each matrix in the batched input (column-major working copy). The driver
+  forms the result X = Z U Z^H. 'infos' captures per-matrix gees error codes.
+*/
+template <typename scalar_t>
+void apply_matrix_sqrt(const Tensor& schur_vectors, const Tensor& tri_sqrt, const Tensor& input, Tensor& infos) {
+#if !AT_BUILD_WITH_LAPACK()
+  TORCH_CHECK(false, "Calling torch.linalg.matrix_sqrt on a CPU tensor requires compiling ",
+    "PyTorch with LAPACK. Please use PyTorch built with LAPACK support.");
+#else
+  using value_t = typename c10::scalar_value_type<scalar_t>::type;
+
+  const auto n = input.size(-1);
+  const auto lda = std::max<int64_t>(1, n);
+  const auto batch_size = batchCount(input);
+  const auto mat_stride = matrixStride(input);
+  auto* T_data = input.data_ptr<scalar_t>();
+  auto* Z_data = schur_vectors.data_ptr<scalar_t>();
+  auto* U_data = tri_sqrt.data_ptr<scalar_t>();
+  auto* infos_data = infos.data_ptr<int>();
+
+  // gees eigenvalue scratch: 2*n reals for real types (wr, wi), n for complex.
+  Tensor w = at::empty({input.is_complex() ? n : 2 * n}, input.options());
+  auto* w_data = w.mutable_data_ptr<scalar_t>();
+
+  value_t* rwork_data = nullptr;
+  Tensor rwork;
+  if (input.is_complex()) {
+    rwork = at::empty({n}, input.options().dtype(toRealValueType(input.scalar_type())));
+    rwork_data = rwork.mutable_data_ptr<value_t>();
+  }
+
+  scalar_t work_query;
+  lapackSchur<scalar_t, value_t>('V', n, T_data, lda, w_data, Z_data, lda, &work_query, -1, rwork_data, &infos_data[0]);
+  const int lwork = lapack_work_to_int(work_query);
+  Tensor work = at::empty({lwork}, input.options());
+  auto* work_data = work.mutable_data_ptr<scalar_t>();
+
+  for (const auto i : c10::irange(batch_size)) {
+    scalar_t* T_i = &T_data[i * mat_stride];
+    scalar_t* Z_i = &Z_data[i * mat_stride];
+    scalar_t* U_i = &U_data[i * mat_stride];
+    int* info_i = &infos_data[i];
+    lapackSchur<scalar_t, value_t>('V', n, T_i, lda, w_data, Z_i, lda, work_data, lwork, rwork_data, info_i);
+    if (*info_i != 0) {
+      continue;
+    }
+    matrix_sqrt_tri_sqrt<scalar_t, value_t>(T_i, U_i, n);
+  }
+#endif
+}
+
+// Type-dispatching helper for 'apply_matrix_sqrt'.
+void matrix_sqrt_kernel(Tensor& schur_vectors, Tensor& tri_sqrt, Tensor& infos, const Tensor& input) {
+  // gees overwrites its input with the Schur form, so work on a Fortran
+  // contiguous copy; schur_vectors and tri_sqrt are likewise column-major.
+  Tensor input_working_copy = at::empty(input.mT().sizes(), input.options());
+  input_working_copy.transpose_(-2, -1);
+  input_working_copy.copy_(input);
+
+  AT_DISPATCH_FLOATING_AND_COMPLEX_TYPES(input.scalar_type(), "matrix_sqrt_cpu", [&]{
+    apply_matrix_sqrt<scalar_t>(schur_vectors, tri_sqrt, input_working_copy, infos);
   });
 }
 
@@ -1229,6 +1407,7 @@ REGISTER_ALL_CPU_DISPATCH(cholesky_stub, &cholesky_kernel)
 REGISTER_ALL_CPU_DISPATCH(cholesky_inverse_stub, &cholesky_inverse_kernel_impl)
 REGISTER_ALL_CPU_DISPATCH(linalg_eig_make_complex_eigenvectors_stub, &linalg_eig_make_complex_eigenvectors_cpu)
 REGISTER_ALL_CPU_DISPATCH(linalg_eig_stub, &linalg_eig_kernel)
+REGISTER_ALL_CPU_DISPATCH(matrix_sqrt_stub, &matrix_sqrt_kernel)
 REGISTER_ALL_CPU_DISPATCH(linalg_eigh_stub, &linalg_eigh_kernel)
 REGISTER_ALL_CPU_DISPATCH(geqrf_stub, &geqrf_kernel)
 REGISTER_ALL_CPU_DISPATCH(orgqr_stub, &orgqr_kernel_impl)
