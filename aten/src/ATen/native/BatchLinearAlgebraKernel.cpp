@@ -12,6 +12,7 @@
 #include <c10/util/irange.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <vector>
@@ -289,8 +290,6 @@ void linalg_eig_kernel(Tensor& eigenvalues, Tensor& eigenvectors, Tensor& infos,
   });
 }
 
-// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ matrix_sqrt ~~~~~~~~~~~~~~~~~~~~~~~~~
-
 template <typename scalar_t, typename value_t>
 static inline scalar_t matrix_sqrt_sqrt_diag(scalar_t x) {
   if constexpr (c10::is_complex<scalar_t>::value) {
@@ -300,66 +299,175 @@ static inline scalar_t matrix_sqrt_sqrt_diag(scalar_t x) {
   }
 }
 
-// Bjorck-Hammarling point recurrence for the upper-triangular square root of a
-// single m-by-m diagonal block of the (column-major, leading dim `ld`) Schur
-// form T. Writes the result into the corresponding block of U.
-template <typename scalar_t, typename value_t>
-static void matrix_sqrt_point_sqrt(const scalar_t* T, scalar_t* U, int64_t m, int64_t ld) {
-  for (const auto p : c10::irange(m)) {
-    U[p + p * ld] = matrix_sqrt_sqrt_diag<scalar_t, value_t>(T[p + p * ld]);
-  }
-  for (const auto j : c10::irange(int64_t{1}, m)) {
-    for (int64_t i = j - 1; i >= 0; --i) {
-      scalar_t s = scalar_t(0);
-      for (const auto k : c10::irange(i + 1, j)) {
-        s += U[i + k * ld] * U[k + j * ld];
+// Principal sqrt of a real 2x2 Schur block T (column-major, leading dim `ld`) into U. A
+// complex-conjugate eigenpair has a real root; a negative-real-axis eigenvalue is rejected.
+template <typename scalar_t>
+static void matrix_sqrt_block2(const scalar_t* T, scalar_t* U, int64_t ld, scalar_t nrm) {
+  const scalar_t a = T[0], c = T[1], b = T[ld], d = T[1 + ld];
+  const scalar_t det = a * d - b * c;
+  const scalar_t eps = std::numeric_limits<scalar_t>::epsilon();
+  // sqrt(M) = (M + sqrt(det) I) / sqrt(trace + 2 sqrt(det)).
+  TORCH_CHECK(det >= -nrm * nrm * eps,
+    "linalg.matrix_sqrt: this real input has a negative real eigenvalue, so its ",
+    "principal square root is complex. Cast the input to a complex dtype.");
+  const scalar_t s = std::sqrt(std::max(det, scalar_t(0)));
+  const scalar_t t2 = a + d + 2 * s;
+  TORCH_CHECK(t2 > nrm * std::sqrt(eps),
+    "linalg.matrix_sqrt: this real input has a negative real eigenvalue, so its ",
+    "principal square root is complex. Cast the input to a complex dtype.");
+  const scalar_t t = std::sqrt(t2);
+  U[0] = (a + s) / t;
+  U[1] = c / t;
+  U[ld] = b / t;
+  U[1 + ld] = (d + s) / t;
+}
+
+// Solves the small Sylvester equation A X + X B = C in place for X (si-by-sj, si,sj in
+// {1,2}). A, B column-major with leading dim `ld`; C column-major si-by-sj. Real 2x2 path only.
+template <typename scalar_t>
+static void matrix_sqrt_sylv_small(const scalar_t* A, int64_t si, const scalar_t* B, int64_t sj, scalar_t* C, int64_t ld) {
+  const int64_t nn = si * sj;
+  // vec(X) solves K vec(X) = vec(C) with K = I_sj (x) A + transpose(B) (x) I_si.
+  std::array<scalar_t, 16> K = {};
+  for (const auto cc : c10::irange(sj)) {
+    for (const auto rr : c10::irange(si)) {
+      const int64_t row = rr + cc * si;
+      for (const auto cp : c10::irange(sj)) {
+        for (const auto rp : c10::irange(si)) {
+          scalar_t v = scalar_t(0);
+          if (cc == cp) v += A[rr + rp * ld];
+          if (rr == rp) v += B[cp + cc * ld];
+          K[row + (rp + cp * si) * nn] = v;
+        }
       }
-      // Denominator sqrt(l_i) + sqrt(l_j) is a sum of right-half-plane roots, so
-      // it never vanishes for the principal square root.
-      U[i + j * ld] = (T[i + j * ld] - s) / (U[i + i * ld] + U[j + j * ld]);
+    }
+  }
+  for (const auto col : c10::irange(nn)) {
+    int64_t piv = col;
+    for (const auto r : c10::irange(col + 1, nn)) {
+      if (std::abs(K[r + col * nn]) > std::abs(K[piv + col * nn])) piv = r;
+    }
+    if (piv != col) {
+      for (const auto cc : c10::irange(nn)) std::swap(K[col + cc * nn], K[piv + cc * nn]);
+      std::swap(C[col], C[piv]);
+    }
+    for (const auto r : c10::irange(col + 1, nn)) {
+      const scalar_t f = K[r + col * nn] / K[col + col * nn];
+      for (const auto cc : c10::irange(col, nn)) K[r + cc * nn] -= f * K[col + cc * nn];
+      C[r] -= f * C[col];
+    }
+  }
+  for (int64_t r = nn - 1; r >= 0; --r) {
+    for (const auto cc : c10::irange(r + 1, nn)) C[r] -= K[r + cc * nn] * C[cc];
+    C[r] = C[r] / K[r + r * nn];
+  }
+}
+
+// Square root of an m-by-m upper quasi-triangular Schur block (1x1/2x2 diagonal blocks for
+// real, 1x1 for complex; column-major, leading dim `ld`) into U. Diagonal blocks are rooted
+// directly; off-diagonal blocks via the Bjorck-Hammarling recurrence (<= 2x2 Sylvester solve).
+template <typename scalar_t, typename value_t>
+static void matrix_sqrt_quasitri(const scalar_t* T, scalar_t* U, int64_t m, int64_t ld, value_t nrm) {
+  std::vector<int64_t> bs;
+  for (int64_t p = 0; p < m;) {
+    bs.push_back(p);
+    if constexpr (c10::is_complex<scalar_t>::value) {
+      p += 1;
+    } else {
+      p += (p + 1 < m && T[(p + 1) + p * ld] != scalar_t(0)) ? 2 : 1;
+    }
+  }
+  bs.push_back(m);
+  const int64_t nb = static_cast<int64_t>(bs.size()) - 1;
+
+  for (const auto b : c10::irange(nb)) {
+    const int64_t p = bs[b];
+    if (bs[b + 1] - p == 1) {
+      if constexpr (!c10::is_complex<scalar_t>::value) {
+        TORCH_CHECK(T[p + p * ld] >= -nrm * std::sqrt(std::numeric_limits<value_t>::epsilon()),
+          "linalg.matrix_sqrt: this real input has a negative real eigenvalue, so its ",
+          "principal square root is complex. Cast the input to a complex dtype.");
+      }
+      U[p + p * ld] = matrix_sqrt_sqrt_diag<scalar_t, value_t>(T[p + p * ld]);
+    } else if constexpr (!c10::is_complex<scalar_t>::value) {
+      matrix_sqrt_block2<scalar_t>(T + p + p * ld, U + p + p * ld, ld, nrm);
+    }
+  }
+
+  for (const auto bj : c10::irange(int64_t{1}, nb)) {
+    for (int64_t bi = bj - 1; bi >= 0; --bi) {
+      const int64_t pi = bs[bi], si = bs[bi + 1] - pi;
+      const int64_t pj = bs[bj], sj = bs[bj + 1] - pj;
+      std::array<scalar_t, 4> C = {};
+      for (const auto cc : c10::irange(sj)) {
+        for (const auto rr : c10::irange(si)) {
+          scalar_t acc = T[(pi + rr) + (pj + cc) * ld];
+          for (int64_t bk = bi + 1; bk < bj; ++bk) {
+            const int64_t pk = bs[bk], sk = bs[bk + 1] - pk;
+            for (const auto tt : c10::irange(sk)) {
+              acc -= U[(pi + rr) + (pk + tt) * ld] * U[(pk + tt) + (pj + cc) * ld];
+            }
+          }
+          C[rr + cc * si] = acc;
+        }
+      }
+      if (si == 1 && sj == 1) {
+        C[0] = C[0] / (U[pi + pi * ld] + U[pj + pj * ld]);
+      } else if constexpr (!c10::is_complex<scalar_t>::value) {
+        matrix_sqrt_sylv_small<scalar_t>(U + pi + pi * ld, si, U + pj + pj * ld, sj, C.data(), ld);
+      }
+      for (const auto cc : c10::irange(sj)) {
+        for (const auto rr : c10::irange(si)) {
+          U[(pi + rr) + (pj + cc) * ld] = C[rr + cc * si];
+        }
+      }
     }
   }
 }
 
-// Blocked Schur square root (Deadman-Higham-Ralha): diagonal blocks via the point
-// recurrence above, off-diagonal blocks via the triangular Sylvester solver
-// (trsyl), with the BLAS-3 update C = T_ij - sum_k U_ik U_kj done by gemm.
-// `T` (overwritten Schur form) and `U` are column-major n-by-n with leading dim n.
+// Blocked Schur square root (Deadman-Higham-Ralha): diagonal super-blocks via the
+// quasi-triangular recurrence above; off-diagonal blocks via trsyl (accepts quasi-triangular
+// factors) on the gemm update C = T_ij - sum_k U_ik U_kj. Super-block boundaries align to
+// Schur blocks so no 2x2 block is split. T (Schur form, overwritten) and U are column-major.
 template <typename scalar_t, typename value_t>
 static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
   const int64_t ld = n;
+  std::fill(U, U + n * n, scalar_t(0));
+
+  value_t nrm = 0;
   if constexpr (!c10::is_complex<scalar_t>::value) {
-    // A real matrix has a real principal square root only when its spectrum is
-    // real and non-negative. A nonzero subdiagonal is a 2x2 Schur block (complex
-    // eigenpair); a negative diagonal entry is a negative real eigenvalue. Either
-    // gives a complex root, so the input must be a complex dtype. Tiny negatives
-    // within Schur roundoff of zero are treated as zero rather than rejected.
-    value_t max_abs_eig = 0;
     for (const auto c : c10::irange(n)) {
-      max_abs_eig = std::max(max_abs_eig, std::abs(T[c + c * ld]));
-    }
-    const value_t neg_tol = -max_abs_eig * std::sqrt(std::numeric_limits<value_t>::epsilon());
-    for (const auto c : c10::irange(n)) {
-      const bool block_2x2 = c + 1 < n && T[(c + 1) + c * ld] != scalar_t(0);
-      TORCH_CHECK(!block_2x2 && T[c + c * ld] >= neg_tol,
-        "linalg.matrix_sqrt: this real input has a negative or complex eigenvalue, ",
-        "so its principal square root is complex. Cast the input to a complex dtype.");
+      nrm = std::max(nrm, std::abs(T[c + c * ld]));
     }
   }
 
-  std::fill(U, U + n * n, scalar_t(0));
+  std::vector<int64_t> bb;
+  for (int64_t p = 0; p < n;) {
+    bb.push_back(p);
+    if constexpr (c10::is_complex<scalar_t>::value) {
+      p += 1;
+    } else {
+      p += (p + 1 < n && T[(p + 1) + p * ld] != scalar_t(0)) ? 2 : 1;
+    }
+  }
+  bb.push_back(n);
 
   constexpr int64_t kBlock = 64;
   std::vector<int64_t> starts;
-  for (int64_t s = 0; s < n; s += kBlock) {
-    starts.push_back(s);
+  starts.push_back(0);
+  for (const auto k : c10::irange(size_t{1}, bb.size())) {
+    if (bb[k] - starts.back() >= kBlock) {
+      starts.push_back(bb[k]);
+    }
   }
-  starts.push_back(n);
+  if (starts.back() != n) {
+    starts.push_back(n);
+  }
   const int64_t nb = static_cast<int64_t>(starts.size()) - 1;
 
   for (const auto b : c10::irange(nb)) {
     const int64_t s = starts[b];
-    matrix_sqrt_point_sqrt<scalar_t, value_t>(T + s + s * ld, U + s + s * ld, starts[b + 1] - s, ld);
+    matrix_sqrt_quasitri<scalar_t, value_t>(T + s + s * ld, U + s + s * ld, starts[b + 1] - s, ld, nrm);
   }
 
   std::vector<scalar_t> C;
@@ -406,9 +514,8 @@ static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
 }
 
 /*
-  Computes the Schur factor Z and the triangular square root U of the Schur form
-  for each matrix in the batched input (column-major working copy). The driver
-  forms the result X = Z U Z^H. 'infos' captures per-matrix gees error codes.
+  For each matrix in the batched (column-major) input, computes the Schur factor Z and the
+  triangular square root U; the driver forms X = Z U Z^H. 'infos' holds per-matrix gees codes.
 */
 template <typename scalar_t>
 void apply_matrix_sqrt(const Tensor& schur_vectors, const Tensor& tri_sqrt, const Tensor& input, Tensor& infos) {
