@@ -93,6 +93,26 @@ def pyslice_check(obj: VariableTracker) -> bool:
     return issubclass(obj.python_type(), slice)
 
 
+def _cpython_has_simple_slice_bug() -> bool:
+    # CPython gh-120384 fixed an array-out-of-bounds crash by moving the
+    # PySequence_Fast check ahead of the step==1 branch in
+    # list_ass_subscript, which as a side effect unified the non-iterable
+    # error message for simple and extended slices. Before this landed,
+    # simple slices (step is None or 1) raised "can only assign an
+    # iterable" instead of "must assign iterable to extended slice".
+    # Verified empirically against real CPython builds: the fix shipped in
+    # 3.10.20, 3.11.15, and 3.12.5 (3.12.0 is the first 3.12 release, so
+    # 3.12.0-3.12.4 predate it); 3.13+ never had the bug.
+    v = sys.version_info
+    if v[:2] == (3, 10):
+        return v < (3, 10, 20)
+    if v[:2] == (3, 11):
+        return v < (3, 11, 15)
+    if v[:2] == (3, 12):
+        return v < (3, 12, 5)
+    return False
+
+
 class BaseListVariable(VariableTracker):
     @staticmethod
     def cls_for_instance(obj: Any) -> type["BaseListVariable"]:
@@ -1188,7 +1208,6 @@ class ListVariable(CommonListMethodsVariable):
                     ValueError, tx, args=["list modified during sort"]
                 )
             return ConstantVariable.create(None)
-
         return super().call_method(tx, name, args, kwargs)
 
     def tp_init_impl(
@@ -1197,18 +1216,21 @@ class ListVariable(CommonListMethodsVariable):
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
-        if not self.is_mutable():
-            return super().tp_init_impl(tx, args, kwargs)
-        if kwargs:
-            raise_args_mismatch(tx, "__init__", "0 kwargs", f"{len(kwargs)} kwargs")
-        if len(args) == 0:
-            return ConstantVariable.create(None)
-        elif len(args) == 1:
-            (arg,) = args
-            tx.output.side_effects.mutation(self)
-            self.items[:] = unpack_iterable(tx, arg)
-            return ConstantVariable.create(None)
-        return super().tp_init_impl(tx, args, kwargs)
+        # list___init___impl: clear the list, then extend with the optional
+        # iterable arg.
+        # https://github.com/python/cpython/blob/v3.13.0/Objects/listobject.c#L2966-L2986
+        if kwargs or len(args) > 1:
+            raise_args_mismatch(
+                tx,
+                "__init__",
+                "at most 1 args and 0 kwargs",
+                f"{len(args)} args and {len(kwargs)} kwargs",
+            )
+        tx.output.side_effects.mutation(self)
+        self.items.clear()
+        if len(args) == 1:
+            self.call_method(tx, "extend", args, {})
+        return ConstantVariable.create(None)
 
     def var_getattr(
         self, tx: "InstructionTranslatorBase", name: str
@@ -1294,7 +1316,11 @@ class ListVariable(CommonListMethodsVariable):
                 # before the step==1 branch, so this message applies to all
                 # slice forms.
                 if not vt_is_iterable(value):
-                    raise_type_error(tx, "must assign iterable to extended slice")
+                    msg = "must assign iterable to extended slice"
+                    step = key_as_const.step
+                    if step in (None, 1) and _cpython_has_simple_slice_bug():
+                        msg = "can only assign an iterable"
+                    raise_type_error(tx, msg)
 
                 value_unpack = unpack_iterable(tx, value)
                 try:
