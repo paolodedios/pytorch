@@ -197,13 +197,14 @@ static Tensor _mps_convolution_impl(const Tensor& input_t,
           const auto w_chunk = weight_t.narrow(2, hs, ch).narrow(3, ws, cw).contiguous();
           auto part =
               _mps_convolution_impl(x_chunk, w_chunk, std::nullopt, {0, 0}, stride, dilation, groups, std::nullopt);
-          output_t = output_t.defined() ? output_t.add(part) : std::move(part);
+          // accumulate in fp32 to avoid aggregating rounding errors from half types
+          output_t = output_t.defined() ? output_t.add(part) : part.to(at::kFloat);
         }
       }
       if (bias_opt && bias_opt->defined()) {
         output_t = output_t.add(bias_opt->view({1, -1, 1, 1}));
       }
-      return output_t;
+      return output_t.to(input_t.scalar_type());
     }
   }
   constexpr auto kChannelsLast = MemoryFormat::ChannelsLast;
