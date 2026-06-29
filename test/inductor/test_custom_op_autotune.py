@@ -77,9 +77,7 @@ class TestCustomOpAutoTune(TestCase):
             compiled_result = test_model(*inputs)
 
         self.assertEqual(
-            compiled_result.shape,
-            expected.shape,
-            lambda msg: f"{msg}\n{test_name} shape mismatch",
+            compiled_result.shape, expected.shape, f"{test_name} shape mismatch"
         )
         torch.testing.assert_close(
             compiled_result,
@@ -834,7 +832,7 @@ class TestCustomOpAutoTune(TestCase):
         self.assertEqual(
             len(code_with_coord),
             len(code),
-            lambda msg: f"{msg}\nExpected all {len(code)} code modules to have coordinate_descent_tuning, "
+            f"Expected all {len(code)} code modules to have coordinate_descent_tuning, "
             f"but only {len(code_with_coord)} have it",
         )
 
@@ -910,7 +908,7 @@ class TestCustomOpAutoTune(TestCase):
         self.assertEqual(
             len(ranges_hit),
             3,
-            lambda msg: f"{msg}\nExpected 3 ranges hit during benchmarking, got {ranges_hit}",
+            f"Expected 3 ranges hit during benchmarking, got {ranges_hit}",
         )
 
         # Verify tracing uses SYMBOLIC shapes in generated code
@@ -1477,7 +1475,7 @@ class TestCustomOpAutoTune(TestCase):
         self.assertEqual(
             memory_after_cleanup,
             baseline_memory,
-            lambda msg: f"{msg}\nMemory leak detected: baseline={baseline_memory}, after_cleanup={memory_after_cleanup}",
+            f"Memory leak detected: baseline={baseline_memory}, after_cleanup={memory_after_cleanup}",
         )
 
     @skipIfXpu
@@ -1516,7 +1514,7 @@ class TestCustomOpAutoTune(TestCase):
         self.assertEqual(
             memory_after_many,
             memory_after_first,
-            lambda msg: f"{msg}\nMemory leak detected: after_first={memory_after_first}, after_many={memory_after_many}",
+            f"Memory leak detected: after_first={memory_after_first}, after_many={memory_after_many}",
         )
 
 

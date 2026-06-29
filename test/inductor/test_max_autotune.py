@@ -1163,7 +1163,7 @@ class TestMaxAutotune(TestCase):
                 self.assertEqual(
                     len(kernel_events),
                     1,
-                    lambda msg: f"{msg}\nExpected exactly 1 kernel event, but got {len(kernel_events)}",
+                    f"Expected exactly 1 kernel event, but got {len(kernel_events)}",
                 )
 
                 # Check that grid size matches expected values based on carveout
@@ -1177,7 +1177,7 @@ class TestMaxAutotune(TestCase):
                 self.assertEqual(
                     kernel_events[0]["grid_size"],
                     expected_grid_size,
-                    lambda msg: f"{msg}\nGrid size {kernel_events[0]['grid_size']} doesn't match {expected_grid_size} for carveout={carveout}",
+                    f"Grid size {kernel_events[0]['grid_size']} doesn't match {expected_grid_size} for carveout={carveout}",
                 )
 
     @parametrize("dynamic", (False, True))

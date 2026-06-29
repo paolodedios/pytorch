@@ -1257,15 +1257,13 @@ class TestBasicGEMM(TestCase):
                 self.assertEqual(
                     answer,
                     expected,
-                    msg=lambda msg: f"{msg}\n{x.shape} x {y.shape} = {answer.shape}",
+                    msg=f"{x.shape} x {y.shape} = {answer.shape}",
                     atol=k * 5e-5,
                     rtol=1e-4,
                 )
             else:
                 self.assertEqual(
-                    answer,
-                    expected,
-                    msg=lambda msg: f"{msg}\n{x.shape} x {y.shape} = {answer.shape}",
+                    answer, expected, msg=f"{x.shape} x {y.shape} = {answer.shape}"
                 )
 
         # test x @ y

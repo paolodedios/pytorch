@@ -1187,7 +1187,7 @@ class TestExpandPlaceholder(TestCase):
                 self.assertEqual(
                     partial_reduce_ops,
                     {"sum", "avg"},
-                    lambda msg: f"{msg}\nFound invalid mixed partials: {partial_reduce_ops}",
+                    f"Found invalid mixed partials: {partial_reduce_ops}",
                 )
 
         # Verify that homogeneous partial strategies ARE included
@@ -1674,7 +1674,7 @@ class TestDijkstraExpandSingleDimStrategy(TestCase):
         self.assertEqual(
             missing,
             set(),
-            lambda msg: f"{msg}\nPQ search missed {len(missing)} strategies reachable by full expansion",
+            f"PQ search missed {len(missing)} strategies reachable by full expansion",
         )
 
     def test_single_dim_transition_reachability(self):
@@ -1765,7 +1765,7 @@ class TestDijkstraExpandSingleDimStrategy(TestCase):
                     self.assertEqual(
                         visited,
                         all_placements,
-                        lambda msg: f"{msg}\ninput_idx={input_idx}, mesh_dim={mesh_dim}: "
+                        f"input_idx={input_idx}, mesh_dim={mesh_dim}: "
                         f"from {start}, unreachable: {all_placements - visited}",
                     )
 

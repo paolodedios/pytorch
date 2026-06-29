@@ -153,7 +153,7 @@ class TestCompileWorker(TestCase):
         self.assertEqual(
             result.returncode,
             0,
-            lambda msg: f"{msg}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
         )
         self.assertIn("shutdown returned", result.stdout)
 

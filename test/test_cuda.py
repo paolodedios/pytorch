@@ -8442,7 +8442,7 @@ class TestMemPool(TestCase):
         self.assertEqual(
             len(mem_snapshot),
             len(tensor_ptrs),
-            lambda msg: f"{msg}\nexpected to have {len(tensor_ptrs)} segments, but actually got {len(mem_snapshot)}",
+            f"expected to have {len(tensor_ptrs)} segments, but actually got {len(mem_snapshot)}",
         )
 
         for idx, first_addr in enumerate(tensor_ptrs):
@@ -8455,7 +8455,7 @@ class TestMemPool(TestCase):
             self.assertEqual(
                 second_addr,
                 state.allocated_addrs[idx],
-                lambda msg: f"{msg}\n{second_round_tensor_ptrs[idx]=} != {state.allocated_addrs[idx]=}",  # noqa: F821
+                f"{second_round_tensor_ptrs[idx]=} != {state.allocated_addrs[idx]=}",
             )
         del pool
         del state
@@ -8556,7 +8556,7 @@ class TestMemPool(TestCase):
                 self.assertEqual(
                     new,
                     orig,
-                    lambda msg: f"{msg}\n[{label}] Block not reused after multi-stream free "
+                    f"[{label}] Block not reused after multi-stream free "
                     "-- free was likely deferred as if under graph capture",
                 )
 

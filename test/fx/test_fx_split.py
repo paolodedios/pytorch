@@ -222,7 +222,7 @@ class TestSplitByTags(TestCase):
                 "linear3": "green.linear3",
                 "linear4": "green.linear4",
             },
-            lambda msg: f"{msg}\n{orig_to_split_fqn_mapping=}",
+            f"{orig_to_split_fqn_mapping=}",
         )
 
 

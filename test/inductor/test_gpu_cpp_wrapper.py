@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import torch
 from torch._inductor import config
@@ -355,7 +355,7 @@ class TestGpuWrapper(InductorTestCase):
                 self.assertEqual(
                     xblocks,
                     [DEFAULT_COMBO_BLOCK_SIZE_1D],
-                    lambda msg: f"{msg}\n{name} got xblocks={xblocks}, "
+                    f"{name} got xblocks={xblocks}, "
                     f"expected [{DEFAULT_COMBO_BLOCK_SIZE_1D}]",
                 )
 
@@ -510,29 +510,6 @@ class TestGpuWrapper(InductorTestCase):
         opt_fn = torch.compile(fn, fullgraph=True, options={"cpp_wrapper": True})
         self.assertEqual(opt_fn(xs), expected)
 
-    def test_any_fallback_cpp_wrapper(self):
-        if not RUN_GPU:
-            self.skipTest("GPU not available")
-
-        with torch.library._scoped_library("mylib_fallback", "FRAGMENT") as m:
-            m.define("any_fallback(Tensor x, Any y) -> Tensor")
-
-            def any_fallback(x: torch.Tensor, y: Any) -> torch.Tensor:
-                torch._check(y is not None)
-                return x.clone()
-
-            m.impl("any_fallback", any_fallback, GPU_TYPE.upper())
-            m.impl("any_fallback", any_fallback, "Meta")
-
-            @torch.compile(fullgraph=True, options={"cpp_wrapper": True})
-            def test_fn(x: torch.Tensor, y: Any) -> torch.Tensor:
-                return torch.ops.mylib_fallback.any_fallback(x, y)
-
-            test_fn(
-                torch.randn(4, device=self.device), torch.randn(4, device=self.device)
-            )
-            test_fn(torch.randn(4, device=self.device), "string")
-
 
 instantiate_parametrized_tests(TestGpuWrapper)
 
@@ -602,11 +579,7 @@ class TestLazyCompileKernelCollision(InductorTestCase):
                 text=True,
                 env=env,
             )
-            self.assertEqual(
-                r1.returncode,
-                0,
-                lambda msg: f"{msg}\nCold run failed:\n{r1.stderr[-2000:]}",
-            )
+            self.assertEqual(r1.returncode, 0, f"Cold run failed:\n{r1.stderr[-2000:]}")
             # Second run: warm caches trigger the collision without the fix.
             r2 = subprocess.run(
                 [sys.executable, "-c", _LAZY_COMPILE_COLLISION_SCRIPT],
@@ -615,11 +588,7 @@ class TestLazyCompileKernelCollision(InductorTestCase):
                 text=True,
                 env=env,
             )
-            self.assertEqual(
-                r2.returncode,
-                0,
-                lambda msg: f"{msg}\nWarm run failed:\n{r2.stderr[-2000:]}",
-            )
+            self.assertEqual(r2.returncode, 0, f"Warm run failed:\n{r2.stderr[-2000:]}")
 
 
 # Helper script for test_static_init_dlopen_does_not_deadlock
@@ -680,7 +649,7 @@ class TestCppWrapperStaticInitDeadlock(InductorTestCase):
         self.assertEqual(
             r.returncode,
             0,
-            lambda msg: f"{msg}\nSubprocess failed:\nstderr:\n{r.stderr[-2000:]}\nstdout:\n{r.stdout[-2000:]}",
+            f"Subprocess failed:\nstderr:\n{r.stderr[-2000:]}\nstdout:\n{r.stdout[-2000:]}",
         )
 
 
@@ -820,7 +789,7 @@ class TestLazyTmaGlobalScratch(InductorTestCase):
         self.assertEqual(
             result.returncode,
             0,
-            lambda msg: f"{msg}\nlazy TMA scratch regression subprocess failed:\n"
+            "lazy TMA scratch regression subprocess failed:\n"
             f"returncode: {result.returncode}\n"
             f"stderr tail:\n{stderr_tail}",
         )

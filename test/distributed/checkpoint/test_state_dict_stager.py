@@ -482,14 +482,12 @@ class TestStateDictStager(TestCase):
         for dtype_name, original_tensor in tensors.items():
             cpu_tensor = cpu_state_dict[dtype_name]
             self.assertEqual(
-                cpu_tensor.device.type,
-                "cpu",
-                lambda msg: f"{msg}\nTensor {dtype_name} should be on CPU",
+                cpu_tensor.device.type, "cpu", f"Tensor {dtype_name} should be on CPU"
             )
             self.assertEqual(
                 cpu_tensor.dtype,
                 original_tensor.dtype,
-                lambda msg: f"{msg}\nTensor {dtype_name} has incorrect dtype",
+                f"Tensor {dtype_name} has incorrect dtype",
             )
             self.assertTrue(
                 torch.allclose(cpu_tensor, original_tensor.cpu()),
@@ -538,17 +536,17 @@ class TestStateDictStager(TestCase):
                     self.assertEqual(
                         cpu_tensor.device.type,
                         "cpu",
-                        lambda msg: f"{msg}\nTensor {tensor_name} should be on CPU",
+                        f"Tensor {tensor_name} should be on CPU",
                     )
                     self.assertEqual(
                         cpu_tensor.shape,
                         original_tensor.shape,
-                        lambda msg: f"{msg}\nTensor {tensor_name} has incorrect shape",
+                        f"Tensor {tensor_name} has incorrect shape",
                     )
                     self.assertEqual(
                         cpu_tensor.dtype,
                         original_tensor.dtype,
-                        lambda msg: f"{msg}\nTensor {tensor_name} has incorrect dtype",
+                        f"Tensor {tensor_name} has incorrect dtype",
                     )
 
     @unittest.skipIf(not HAS_ACCELERATOR, "No accelerator")
@@ -803,24 +801,24 @@ class TestStateDictStager(TestCase):
                 self.assertEqual(
                     cpu_tensor1.is_pinned(),
                     pin_memory,
-                    lambda msg: f"{msg}\nTensor pinned status should be {pin_memory}",
+                    f"Tensor pinned status should be {pin_memory}",
                 )
                 self.assertEqual(
                     cpu_tensor2.is_pinned(),
                     pin_memory,
-                    lambda msg: f"{msg}\nTensor pinned status should be {pin_memory}",
+                    f"Tensor pinned status should be {pin_memory}",
                 )
 
                 # Verify shared memory status
                 self.assertEqual(
                     cpu_tensor1.is_shared(),
                     share_memory,
-                    lambda msg: f"{msg}\nTensor shared status should be {share_memory}",
+                    f"Tensor shared status should be {share_memory}",
                 )
                 self.assertEqual(
                     cpu_tensor2.is_shared(),
                     share_memory,
-                    lambda msg: f"{msg}\nTensor shared status should be {share_memory}",
+                    f"Tensor shared status should be {share_memory}",
                 )
 
                 # Verify storage sharing is consistent with tensor sharing
@@ -1000,9 +998,7 @@ class TestReplicationStager(DTensorTestBase):
         def compare_tensors(actual, expected, path=""):
             if isinstance(actual, dict) and isinstance(expected, dict):
                 self.assertEqual(
-                    actual.keys(),
-                    expected.keys(),
-                    lambda msg: f"{msg}\nKeys mismatch at {path}",
+                    actual.keys(), expected.keys(), f"Keys mismatch at {path}"
                 )
                 for key in actual:
                     compare_tensors(
@@ -1012,27 +1008,19 @@ class TestReplicationStager(DTensorTestBase):
                 expected, torch.Tensor
             ):
                 self.assertEqual(
-                    actual.device.type,
-                    "cpu",
-                    lambda msg: f"{msg}\nTensor at {path} should be on CPU",
+                    actual.device.type, "cpu", f"Tensor at {path} should be on CPU"
                 )
                 self.assertEqual(
-                    actual.shape,
-                    expected.shape,
-                    lambda msg: f"{msg}\nShape mismatch at {path}",
+                    actual.shape, expected.shape, f"Shape mismatch at {path}"
                 )
                 self.assertEqual(
-                    actual.dtype,
-                    expected.dtype,
-                    lambda msg: f"{msg}\nDtype mismatch at {path}",
+                    actual.dtype, expected.dtype, f"Dtype mismatch at {path}"
                 )
                 self.assertTrue(
                     torch.equal(actual, expected), f"Values mismatch at {path}"
                 )
             else:
-                self.assertEqual(
-                    actual, expected, lambda msg: f"{msg}\nValue mismatch at {path}"
-                )
+                self.assertEqual(actual, expected, f"Value mismatch at {path}")
 
         compare_tensors(replicated_dict, expected_dict)
 
@@ -1148,7 +1136,7 @@ class TestReplicationStager(DTensorTestBase):
             self.assertEqual(
                 replicated_dict["rank_scalar"].item(),
                 float(partner_rank),
-                lambda msg: f"{msg}\nRank scalar should be {partner_rank}, got {replicated_dict['rank_scalar'].item()}",
+                f"Rank scalar should be {partner_rank}, got {replicated_dict['rank_scalar'].item()}",
             )
 
     def _create_sharded_tensor_state_dict(self, rank: int, world_size: int) -> dict:
@@ -1259,7 +1247,7 @@ class TestReplicationStager(DTensorTestBase):
             self.assertEqual(
                 replicated_dict["rank_scalar"].item(),
                 float(partner_rank),
-                lambda msg: f"{msg}\nRank scalar should be {partner_rank}, got {replicated_dict['rank_scalar'].item()}",
+                f"Rank scalar should be {partner_rank}, got {replicated_dict['rank_scalar'].item()}",
             )
 
     @with_comms
