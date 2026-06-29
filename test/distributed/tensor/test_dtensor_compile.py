@@ -2088,7 +2088,7 @@ class outer_fn(torch.nn.Module):
         self.assertEqual(
             compile_counter.frame_count,
             1,
-            lambda msg: f"{msg}\nExpected 1 compilation, got {compile_counter.frame_count}",
+            f"Expected 1 compilation, got {compile_counter.frame_count}",
         )
 
     def test_device_mesh_slice(self):
