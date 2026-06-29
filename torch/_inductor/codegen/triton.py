@@ -85,6 +85,7 @@ from ..utils import (
     sympy_dot,
     sympy_product,
     sympy_subs,
+    TMA_ALIGNMENT,
     triton_type,
     triton_version_uses_attrs_dict,
     upcast_compute_type,
@@ -3208,7 +3209,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         self.tma_min_block_sizes = dict[str, int]()
         self.host_tma_descriptor_args: dict[str, TensorDescriptorOptions] = {}
         self._host_tma_non_materializable: OrderedSet[str] = OrderedSet()
-        self._host_tma_non_materializable_buffers: set[str] | None = None
+        self._host_tma_non_materializable_buffers: OrderedSet[str] | None = None
         self._emitted_device_tma = False
         self.hint_override = hint_override
         self._load_counts: collections.Counter[str] = collections.Counter()
@@ -3314,25 +3315,23 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
     def _prescan_host_tma_materializability(self) -> None:
         """Populate _host_tma_non_materializable_buffers with buffers that
         can't be expressed as a single host-side TMA descriptor."""
-        self._host_tma_non_materializable_buffers = set()
         if not config.triton.use_tensor_descriptor:
+            # Host TMA is off; mark as scanned (no bad buffers, won't change).
+            self._host_tma_non_materializable_buffers = OrderedSet()
             return
-        if not hasattr(self, "features") or not hasattr(self.features, "node_schedule"):
-            return
+        self._host_tma_non_materializable_buffers = OrderedSet()
 
         from .simd_kernel_features import NodeScheduleMarker
 
-        range_tree_symbols = OrderedSet(
-            tree.symbol() for tree in self.range_trees
-        )
+        range_tree_symbols = OrderedSet(tree.symbol() for tree in self.range_trees)
         if not range_tree_symbols:
             return
 
         from torch.utils._sympy.functions import FloorDiv, ModularIndexing
 
-        buffer_read_indices: dict[str, list[tuple[sympy.Expr, tuple[sympy.Symbol, ...]]]] = (
-            collections.defaultdict(list)
-        )
+        buffer_read_indices: dict[
+            str, list[tuple[sympy.Expr, tuple[sympy.Symbol, ...]]]
+        ] = collections.defaultdict(list)
         for node in NodeScheduleMarker.only_nodes(self.features.node_schedule):
             for dep in node.read_writes.reads:
                 if not hasattr(dep, "var_names"):
@@ -3346,7 +3345,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 continue
 
             for index, var_names in reads:
-                dep_vars = set(var_names)
+                dep_vars = OrderedSet(var_names)
 
                 if any(symbol_is_type(s, SymT.TMP) for s in index.free_symbols):
                     self._host_tma_non_materializable_buffers.add(buf_name)
@@ -3368,30 +3367,32 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 self._host_tma_non_materializable_buffers.add(buf_name)
 
     def _check_buffer_alignment(self, name: str, var: str, dtype: torch.dtype) -> bool:
-        """Check if a buffer has a misaligned layout offset that prevents TMA use.
-
-        Returns True if the buffer is misaligned (TMA should be skipped).
+        """Whether a buffer's layout offset can't be proven TMA-aligned, so
+        host-side TMA must be skipped. The CUtensorMap alignment requirement is
+        CUDA-specific, so this only applies on CUDA; an offset that is not
+        statically known to be a multiple of TMA_ALIGNMENT is treated as
+        misaligned (conservative).
         """
         if not config.triton.use_tensor_descriptor:
             return False
-        try:
-            buf = V.graph.try_get_buffer(name)
-            if buf is None and hasattr(V.graph, "scheduler") and V.graph.scheduler:
-                real_name = V.graph.scheduler.mutation_real_name.get(name, name)
-                if real_name != name:
-                    buf = V.graph.try_get_buffer(real_name)
-            if buf is not None:
-                layout = buf.get_layout()
-                layout_offset = getattr(layout, "offset", 0)
-                if layout_offset != 0:
-                    offset_bytes = int(layout_offset) * dtype.itemsize
-                    if offset_bytes % 16 != 0:
-                        self._host_tma_non_materializable.add(var)
-                        self.host_tma_descriptor_args.pop(var, None)
-                        return True
-        except (TypeError, ValueError):
-            pass
-        return False
+        if V.graph.get_current_device_or_throw().type != "cuda":
+            return False
+        buf = V.graph.try_get_buffer(name)
+        if buf is None and hasattr(V.graph, "scheduler") and V.graph.scheduler:
+            real_name = V.graph.scheduler.mutation_real_name.get(name, name)
+            if real_name != name:
+                buf = V.graph.try_get_buffer(real_name)
+        if buf is None:
+            return False
+        layout_offset = getattr(buf.get_layout(), "offset", 0)
+        if layout_offset == 0:
+            return False
+        offset_bytes = layout_offset * dtype.itemsize
+        if V.graph.sizevars.statically_known_multiple_of(offset_bytes, TMA_ALIGNMENT):
+            return False
+        self._host_tma_non_materializable.add(var)
+        self.host_tma_descriptor_args.pop(var, None)
+        return True
 
     @property
     def has_store_with_contiguous_rdim(self) -> bool:
@@ -4044,19 +4045,22 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                     raise AssertionError(f"expected ', other=0.0', got {other!r}")
                 other = ""
 
+            # Host-side TMA: an aligned, zero-offset, materializable buffer whose
+            # descriptor can be built on the host. Register it and return early --
+            # no in-kernel tl.make_tensor_descriptor is emitted for it.
             if (
                 has_triton_stable_tma_api()
                 and config.triton.enable_host_side_tma
                 and not indexing.can_lift
                 and indexing.constant_offset == 0
                 and var not in self._host_tma_non_materializable
-                and self._is_host_tma_materializable(
-                    indexing, V.graph.get_dtype(name)
-                )
+                and self._is_host_tma_materializable(indexing, V.graph.get_dtype(name))
             ):
                 if var not in self.host_tma_descriptor_args:
                     self.host_tma_descriptor_args[var] = indexing
                 return var, other
+            # A non-zero constant offset can't be host-TMA'd: mark it
+            # non-materializable and fall through to device-side TMA below.
             elif (
                 has_triton_stable_tma_api()
                 and config.triton.enable_host_side_tma
@@ -4067,6 +4071,8 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 if var in self.host_tma_descriptor_args:
                     del self.host_tma_descriptor_args[var]
 
+            # Device-side TMA: reached for every case except the host-TMA branch
+            # above (which returned) -- emit an in-kernel tl.make_tensor_descriptor.
             self._emitted_device_tma = True
 
         else:
@@ -4378,15 +4384,15 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         if config.triton.enable_host_side_tma:
             if self._host_tma_non_materializable_buffers is None:
                 self._prescan_host_tma_materializability()
-            if name in self._host_tma_non_materializable_buffers:
+            if name in (self._host_tma_non_materializable_buffers or ()):
                 self._host_tma_non_materializable.add(var)
 
-        skip_tma = (
-            config.triton.enable_host_side_tma
-            and self._check_buffer_alignment(name, var, dtype)
+        skip_tma = config.triton.enable_host_side_tma and self._check_buffer_alignment(
+            name, var, dtype
         )
         tma_checker = (
-            None if skip_tma
+            None
+            if skip_tma
             else self.tma_compatibility_checker_cls(
                 self,
                 dtype,
