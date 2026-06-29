@@ -4,18 +4,18 @@ Note [Opaque Objects]
 Opaque objects are the way we allow custom operators to accept a user-defined
 "black box" object as an input.
 
-There are two kinds of opaque types: VALUE type and REFERENCE type.
+There are two kinds of opaque types: VALUE type and SYMBOLIC type.
 The distinction determines how torch.compile handles the object.
 
-REFERENCE TYPES (default):
+SYMBOLIC TYPES (default):
 
-Reference-typed opaque objects represent mutable stateful objects and are
+Symbolic-typed opaque objects represent mutable stateful objects and are
 treated as black boxes. In torch.compile, since torch.compile cannot optimize
 the anything (including tensors) within the object, the object must be an
 input to the graph.
 
-You can register a custom class as being a reference-based opaque object class
-through `register_opaque_type(MyClass, typ="reference")`.
+You can register a custom class as being a symbolic-typed opaque object class
+through `register_custom_class(MyClass, typ="symbolic")`.
 
 VALUE TYPES:
 
@@ -32,7 +32,7 @@ implemented before registering it as a value-typed opaque object class:
     repr_string to their corresponding types.
 
 You can register a custom class as being a reference-based opaque object class
-through `register_opaque_type(MyClass, typ="value")`.
+through `register_custom_class(MyClass, typ="value")`.
 """
 
 import logging
@@ -44,7 +44,7 @@ from typing_extensions import TypeIs
 from weakref import WeakKeyDictionary
 
 import torch
-from torch._opaque_base import OpaqueBase, OpaqueBaseMeta
+from torch._custom_class_base import CustomClassBase, CustomClassBaseMeta
 
 
 if TYPE_CHECKING:
@@ -91,7 +91,7 @@ OpaqueType = NewType("OpaqueType", torch._C.ScriptObject)
 # Should derive the object from existing graph inputs or return None to fall
 # back to get_attr.  Args: (obj, get_tracked_proxy, tracer).
 ReconstructFn: TypeAlias = Callable[
-    [OpaqueBase, Callable[[OpaqueBase], "Proxy | None"], "PythonKeyTracer"],
+    [CustomClassBase, Callable[[CustomClassBase], "Proxy | None"], "PythonKeyTracer"],
     "Proxy | None",
 ]
 
@@ -99,7 +99,7 @@ ReconstructFn: TypeAlias = Callable[
 @dataclass
 class _OpaqueTypeInfo:
     class_name: str
-    opaque_typ: Literal["reference", "value"]
+    opaque_typ: Literal["symbolic", "value"]
     guard_fn: Callable[
         [Any], list[Any]
     ]  # Callable that takes the object and returns list of values to guard on
@@ -144,12 +144,12 @@ def get_opaque_type_name(cls: Any) -> str:
     if info is None:
         raise ValueError(
             f"Class {cls} is not registered as an opaque type. "
-            f"Call register_opaque_type({cls.__name__}) first."
+            f"Call register_custom_class({cls.__name__}) first."
         )
     return info.class_name
 
 
-def register_opaque_type(
+def register_custom_class(
     cls: Any,
     *,
     typ: str,
@@ -204,8 +204,8 @@ def register_opaque_type(
         )
 
     # Value types store the real object directly during tracing (no
-    # FakeScriptObject wrapper), so they don't need OpaqueBaseMeta.
-    if typ != "value" and not isinstance(cls, OpaqueBaseMeta):
+    # FakeScriptObject wrapper), so they don't need CustomClassBaseMeta.
+    if typ != "value" and not isinstance(cls, CustomClassBaseMeta):
         raise TypeError(
             f"Opaque type {cls} must subclass torch._opaque_base.OpaqueBase "
             "or 'metaclass=torch._opaque_base.OpaqueBaseMeta'. "
@@ -214,9 +214,13 @@ def register_opaque_type(
             "during torch.compile tracing. "
         )
 
-    if typ not in ["reference", "value"]:
+    if typ == "reference":
+        log.warning("typ='reference' is deprecated, use typ='symbolic' instead")
+        typ = "symbolic"
+
+    if typ not in ["symbolic", "value"]:
         raise AssertionError(
-            f"Opaque type must be either 'reference' or 'value', got {typ!r}"
+            f"Custom class type must be either 'symbolic' or 'value', got {typ!r}"
         )
 
     if typ == "value":
@@ -268,8 +272,28 @@ def register_opaque_type(
     torch._C._register_opaque_type(name)
 
 
+def register_opaque_type(
+    cls: Any,
+    *,
+    typ: str,
+    hoist=False,
+    guard_fn: Any = None,
+    members: dict[str, MemberType] | None = None,
+    reconstruct_fn: ReconstructFn | None = None,
+) -> None:
+    log.warning("register_opaque_type is deprecated, use register_custom_class instead")
+    register_custom_class(
+        cls,
+        typ=typ,
+        hoist=hoist,
+        guard_fn=guard_fn,
+        members=members,
+        reconstruct_fn=reconstruct_fn,
+    )
+
+
 # Enums are always opaque value types.
-register_opaque_type(Enum, typ="value")
+register_custom_class(Enum, typ="value")
 
 
 def is_opaque_value(value: object) -> TypeIs[OpaqueType]:
@@ -289,7 +313,7 @@ def should_hoist(cls: Any) -> bool:
     return info.hoist
 
 
-def get_reconstruct_fn(cls: type[OpaqueBase]) -> ReconstructFn | None:
+def get_reconstruct_fn(cls: type[CustomClassBase]) -> ReconstructFn | None:
     info = _resolve_opaque_type_info(cls)
     if info is None:
         return None
@@ -348,12 +372,12 @@ def is_opaque_reference_type(cls: Any) -> bool:
         return False
 
     if isinstance(cls, str):
-        return _OPAQUE_TYPES_BY_NAME[cls].opaque_typ == "reference"
+        return _OPAQUE_TYPES_BY_NAME[cls].opaque_typ == "symbolic"
 
     info = _resolve_opaque_type_info(cls)
     if info is None:
         return False
-    return info.opaque_typ == "reference"
+    return info.opaque_typ == "symbolic"
 
 
 def get_opaque_obj_repr(obj: Any) -> tuple[str, dict[str, type]]:
