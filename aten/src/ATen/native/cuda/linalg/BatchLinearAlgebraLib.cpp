@@ -833,15 +833,18 @@ static void apply_cholesky_cusolver_potrs(Tensor& self_working_copy, const Tenso
   int* infos_ptr = infos.data_ptr<int>();
 
 #ifdef USE_CUSOLVER_64_BIT
-  // Use xpotrs (64-bit) only when dimensions require 64-bit range.
-  // hipSOLVER xpotrs produces incorrect results after 65535 sequential
-  // calls in a loop for small dimensions (2^16 - 1 overflow in internal
-  // counter), so fall back to potrs for dimensions that fit in 32 bits.
-  if (n > INT_MAX || nrhs > INT_MAX) {
+  // hipSOLVER xpotrs overflows a 16-bit internal counter after 65535 sequential
+  // calls; only use 64-bit path on ROCm when dimensions exceed int32 range.
+  // cuSOLVER does not have this bug, so always use 64-bit on CUDA.
+#if defined(USE_ROCM)
+  if (n > INT_MAX || nrhs > INT_MAX)
+#else
+  if (true)
+#endif
+  {
     cusolverDnParams_t params;
     cudaDataType datatype = at::cuda::solver::get_cusolver_datatype<scalar_t>();
     TORCH_CUSOLVER_CHECK(cusolverDnCreateParams(&params));
-
     for (int64_t i = 0; i < batch_size; i++) {
       at::cuda::solver::xpotrs(
         handle, params, uplo, n, nrhs, datatype,
@@ -852,7 +855,6 @@ static void apply_cholesky_cusolver_potrs(Tensor& self_working_copy, const Tenso
         infos_ptr
       );
     }
-
     TORCH_CUSOLVER_CHECK(cusolverDnDestroyParams(params));
   } else
 #endif // USE_CUSOLVER_64_BIT
