@@ -7635,6 +7635,76 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
                 tens.imag = torch.matrix_exp(tens.imag)
                 self.assertFalse(len(w))
 
+    @onlyCPU
+    @skipCPUIfNoLapack
+    @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
+    def test_linalg_matrix_sqrt(self, device, dtype):
+        from torch.testing._internal.common_utils import random_hermitian_pd_matrix
+
+        # Symmetric/Hermitian positive-definite inputs: real positive spectrum.
+        for n, batch in itertools.product([0, 1, 5], [(), (3,), (2, 2)]):
+            a = random_hermitian_pd_matrix(n, *batch, dtype=dtype, device=device)
+            x = torch.linalg.matrix_sqrt(a)
+            self.assertEqual(x @ x, a, atol=2e-4, rtol=2e-4)
+
+        # Non-symmetric inputs with a real positive spectrum (upper-triangular with a
+        # positive diagonal) exercise the Bjorck-Hammarling off-diagonal recurrence.
+        for n, batch in itertools.product([2, 4], [(), (3,)]):
+            diag = make_tensor((*batch, n), device=device, dtype=dtype, low=-1, high=1).abs() + 1
+            a = make_tensor((*batch, n, n), device=device, dtype=dtype, low=-1, high=1).triu(1)
+            a = a + torch.diag_embed(diag)
+            x = torch.linalg.matrix_sqrt(a)
+            self.assertEqual(x @ x, a, atol=2e-4, rtol=2e-4)
+
+    @onlyCPU
+    @skipCPUIfNoLapack
+    @dtypes(torch.double, torch.cdouble)
+    def test_linalg_matrix_sqrt_autograd(self, device, dtype):
+        from torch.testing._internal.common_utils import random_hermitian_pd_matrix
+
+        # Symmetrize so the gradcheck input stays in-domain (real positive spectrum);
+        # matrix_sqrt's backward uses the general Schur-based differential, not eigh.
+        def f(a):
+            return torch.linalg.matrix_sqrt(a + a.mH)
+
+        a = random_hermitian_pd_matrix(4, dtype=dtype, device=device).requires_grad_(True)
+        self.assertTrue(torch.autograd.gradcheck(f, (a,), check_undefined_grad=False))
+        self.assertTrue(torch.autograd.gradgradcheck(f, (a,), check_undefined_grad=False))
+
+        # A non-symmetric, well-separated real positive spectrum exercises the backward
+        # on the genuinely general path; small gradcheck perturbations keep it real.
+        tri = torch.tensor([[2.0, 0.3, 0.1], [0.0, 5.0, 0.2], [0.0, 0.0, 9.0]],
+                           device=device, dtype=dtype).requires_grad_(True)
+        self.assertTrue(torch.autograd.gradcheck(
+            torch.linalg.matrix_sqrt, (tri,), check_undefined_grad=False))
+
+    @onlyCPU
+    @skipCPUIfNoLapack
+    @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
+    def test_linalg_matrix_sqrt_errors(self, device, dtype):
+        with self.assertRaisesRegex(RuntimeError, "must be batches of square matrices"):
+            torch.linalg.matrix_sqrt(torch.randn(2, 3, device=device, dtype=dtype))
+
+        if dtype in (torch.float, torch.double):
+            cdtype = torch.complex64 if dtype == torch.float else torch.complex128
+            # A real matrix with complex eigenvalues (a rotation) has a complex sqrt.
+            rot = torch.tensor([[0.0, -1.0], [1.0, 0.0]], device=device, dtype=dtype)
+            with self.assertRaisesRegex(RuntimeError, "negative or complex eigenvalue"):
+                torch.linalg.matrix_sqrt(rot)
+            # A real matrix with a negative real eigenvalue also has a complex sqrt.
+            neg = torch.tensor([[-2.0, 0.0], [0.0, 3.0]], device=device, dtype=dtype)
+            with self.assertRaisesRegex(RuntimeError, "negative or complex eigenvalue"):
+                torch.linalg.matrix_sqrt(neg)
+            # Casting to a complex dtype makes the rotation case well-defined.
+            x = torch.linalg.matrix_sqrt(rot.to(cdtype))
+            self.assertEqual(x @ x, rot.to(cdtype), atol=2e-4, rtol=2e-4)
+
+    @onlyCPU
+    @skipCPUIfNoLapack
+    def test_linalg_matrix_sqrt_low_precision_error(self, device):
+        with self.assertRaisesRegex(RuntimeError, "Low precision dtypes not supported"):
+            torch.linalg.matrix_sqrt(torch.eye(2, device=device, dtype=torch.float16))
+
     @skipCUDAIfNoMagmaAndNoLinalgsolver
     @skipCPUIfNoLapack
     @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
