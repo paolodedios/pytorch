@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <complex>
 #include <vector>
 
 #ifndef AT_PER_OPERATOR_HEADERS
@@ -310,11 +309,13 @@ static void matrix_sqrt_block2(const scalar_t* T, scalar_t* U, int64_t ld, scala
   TORCH_CHECK(det >= -nrm * nrm * eps,
     "linalg.matrix_sqrt: this real input has a negative real eigenvalue, so its ",
     "principal square root is complex. Cast the input to a complex dtype.");
+
   const scalar_t s = std::sqrt(std::max(det, scalar_t(0)));
   const scalar_t t2 = a + d + 2 * s;
   TORCH_CHECK(t2 > nrm * std::sqrt(eps),
     "linalg.matrix_sqrt: this real input has a negative real eigenvalue, so its ",
     "principal square root is complex. Cast the input to a complex dtype.");
+
   const scalar_t t = std::sqrt(t2);
   U[0] = (a + s) / t;
   U[1] = c / t;
@@ -327,6 +328,7 @@ static void matrix_sqrt_block2(const scalar_t* T, scalar_t* U, int64_t ld, scala
 template <typename scalar_t>
 static void matrix_sqrt_sylv_small(const scalar_t* A, int64_t si, const scalar_t* B, int64_t sj, scalar_t* C, int64_t ld) {
   const int64_t nn = si * sj;
+
   // vec(X) solves K vec(X) = vec(C) with K = I_sj (x) A + transpose(B) (x) I_si.
   std::array<scalar_t, 16> K = {};
   for (const auto cc : c10::irange(sj)) {
@@ -342,6 +344,8 @@ static void matrix_sqrt_sylv_small(const scalar_t* A, int64_t si, const scalar_t
       }
     }
   }
+
+  // Forward elimination with partial pivoting.
   for (const auto col : c10::irange(nn)) {
     int64_t piv = col;
     for (const auto r : c10::irange(col + 1, nn)) {
@@ -351,12 +355,15 @@ static void matrix_sqrt_sylv_small(const scalar_t* A, int64_t si, const scalar_t
       for (const auto cc : c10::irange(nn)) std::swap(K[col + cc * nn], K[piv + cc * nn]);
       std::swap(C[col], C[piv]);
     }
+
     for (const auto r : c10::irange(col + 1, nn)) {
       const scalar_t f = K[r + col * nn] / K[col + col * nn];
       for (const auto cc : c10::irange(col, nn)) K[r + cc * nn] -= f * K[col + cc * nn];
       C[r] -= f * C[col];
     }
   }
+
+  // Back substitution.
   for (int64_t r = nn - 1; r >= 0; --r) {
     for (const auto cc : c10::irange(r + 1, nn)) C[r] -= K[r + cc * nn] * C[cc];
     C[r] = C[r] / K[r + r * nn];
@@ -411,11 +418,13 @@ static void matrix_sqrt_quasitri(const scalar_t* T, scalar_t* U, int64_t m, int6
           C[rr + cc * si] = acc;
         }
       }
+
       if (si == 1 && sj == 1) {
         C[0] = C[0] / (U[pi + pi * ld] + U[pj + pj * ld]);
       } else if constexpr (!c10::is_complex<scalar_t>::value) {
         matrix_sqrt_sylv_small<scalar_t>(U + pi + pi * ld, si, U + pj + pj * ld, sj, C.data(), ld);
       }
+
       for (const auto cc : c10::irange(sj)) {
         for (const auto rr : c10::irange(si)) {
           U[(pi + rr) + (pj + cc) * ld] = C[rr + cc * si];
@@ -483,6 +492,7 @@ static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
           C[rr + cc * mi] = T[(si + rr) + (sj + cc) * ld];
         }
       }
+
       for (const auto bk : c10::irange(bi + 1, bj)) {
         const int64_t sk = starts[bk], mk = starts[bk + 1] - sk;
         at::native::cpublas::gemm(
