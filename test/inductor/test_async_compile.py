@@ -689,16 +689,12 @@ class TestCuteDSLSubprocessCompile(TestCase):
 
     def test_cutedsl_arch_from_device_capability(self):
         from torch._inductor.async_compile import (
-            _cutlass_compile_env,
             _cutedsl_arch_from_device_capability,
+            _cutlass_compile_env,
         )
 
-        self.assertEqual(
-            _cutedsl_arch_from_device_capability((10, 3)), "sm_103a"
-        )
-        self.assertEqual(
-            _cutedsl_arch_from_device_capability((10, 0)), "sm_100a"
-        )
+        self.assertEqual(_cutedsl_arch_from_device_capability((10, 3)), "sm_103a")
+        self.assertEqual(_cutedsl_arch_from_device_capability((10, 0)), "sm_100a")
         self.assertEqual(_cutedsl_arch_from_device_capability((9, 0)), "sm_90a")
         self.assertIsNone(_cutedsl_arch_from_device_capability((8, 9)))
         self.assertIsNone(_cutedsl_arch_from_device_capability((10, 2)))
