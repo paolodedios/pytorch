@@ -7656,6 +7656,17 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
             x = torch.linalg.matrix_sqrt(a)
             self.assertEqual(x @ x, a, atol=2e-4, rtol=2e-4)
 
+        # Real matrices with complex-conjugate eigenvalues (off the negative real axis) still
+        # have a REAL principal sqrt: a 2x2 rotation, and a 2x2 block (2 +/- 3i) plus a real eig.
+        if dtype in (torch.float, torch.double):
+            rot = torch.tensor([[0.0, -1.0], [1.0, 0.0]], device=device, dtype=dtype)
+            mixed = torch.tensor([[2.0, -3.0, 0.0], [3.0, 2.0, 0.0], [0.0, 0.0, 5.0]],
+                                 device=device, dtype=dtype)
+            for a in (rot, mixed):
+                x = torch.linalg.matrix_sqrt(a)
+                self.assertFalse(x.is_complex())
+                self.assertEqual(x @ x, a, atol=2e-4, rtol=2e-4)
+
     @onlyCPU
     @skipCPUIfNoLapack
     @dtypes(torch.double, torch.cdouble)
@@ -7686,18 +7697,14 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
             torch.linalg.matrix_sqrt(torch.randn(2, 3, device=device, dtype=dtype))
 
         if dtype in (torch.float, torch.double):
-            cdtype = torch.complex64 if dtype == torch.float else torch.complex128
-            # A real matrix with complex eigenvalues (a rotation) has a complex sqrt.
-            rot = torch.tensor([[0.0, -1.0], [1.0, 0.0]], device=device, dtype=dtype)
-            with self.assertRaisesRegex(RuntimeError, "negative or complex eigenvalue"):
-                torch.linalg.matrix_sqrt(rot)
-            # A real matrix with a negative real eigenvalue also has a complex sqrt.
+            # A real matrix with a negative real eigenvalue has a complex square root.
             neg = torch.tensor([[-2.0, 0.0], [0.0, 3.0]], device=device, dtype=dtype)
-            with self.assertRaisesRegex(RuntimeError, "negative or complex eigenvalue"):
+            with self.assertRaisesRegex(RuntimeError, "negative real eigenvalue"):
                 torch.linalg.matrix_sqrt(neg)
-            # Casting to a complex dtype makes the rotation case well-defined.
-            x = torch.linalg.matrix_sqrt(rot.to(cdtype))
-            self.assertEqual(x @ x, rot.to(cdtype), atol=2e-4, rtol=2e-4)
+            # Casting to a complex dtype makes it well-defined.
+            cdtype = torch.complex64 if dtype == torch.float else torch.complex128
+            x = torch.linalg.matrix_sqrt(neg.to(cdtype))
+            self.assertEqual(x @ x, neg.to(cdtype), atol=2e-4, rtol=2e-4)
 
     @onlyCPU
     @skipCPUIfNoLapack
