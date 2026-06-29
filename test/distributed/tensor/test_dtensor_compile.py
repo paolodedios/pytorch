@@ -2734,6 +2734,35 @@ class outer_fn(torch.nn.Module):
             "the make_fx graph; disable_proxy_modes_tracing is not active",
         )
 
+    def test_stable_hash_for_caching_is_rank_specific(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/188390.
+        # _stable_hash_for_caching must include the local tensor's device so
+        # that each rank produces a unique AOTAutograd cache key.  Before the
+        # fix, the device was omitted and rank 1 incorrectly reused rank 0's
+        # compiled kernel, causing CUDA errors at runtime.
+        mesh = DeviceMesh("cpu", torch.arange(self.world_size))
+        local = torch.empty(2, 4)
+        dt = DTensor.from_local(local, mesh, [Shard(0)], run_check=False)
+        h0 = dt._stable_hash_for_caching()
+        # Swap in a local tensor on a different device to simulate a different rank.
+        # _spec is intentionally left inconsistent with _local_tensor here; this is
+        # a focused unit test of the hash, not a valid DTensor for computation.
+        dt._local_tensor = dt._local_tensor.to("meta")
+        h1 = dt._stable_hash_for_caching()
+        self.assertNotEqual(h0, h1)
+
+    @skip_if_lt_x_gpu(2)
+    def test_stable_hash_for_caching_cuda_ranks(self):
+        # Exercise the exact scenario from #188390: two DTensors with identical
+        # global specs but local tensors on cuda:0 vs cuda:1 must produce
+        # different AOTAutograd cache keys.
+        mesh = DeviceMesh("cuda", torch.arange(self.world_size))
+        local0 = torch.empty(2, 4, device="cuda:0")
+        local1 = torch.empty(2, 4, device="cuda:1")
+        dt0 = DTensor.from_local(local0, mesh, [Shard(0)], run_check=False)
+        dt1 = DTensor.from_local(local1, mesh, [Shard(0)], run_check=False)
+        self.assertNotEqual(dt0._stable_hash_for_caching(), dt1._stable_hash_for_caching())
+
 
 @instantiate_parametrized_tests
 class TestDTensorCompileE2E(DTensorTestBase):
