@@ -1945,6 +1945,9 @@ class TestTensorCreation(TestCase):
         if device_type in ('cuda', 'xpu'):
             do_test_empty_full(self, dtypes, torch.strided, None)
             do_test_empty_full(self, dtypes, torch.strided, torch_device)
+        if device_type == 'xpu':
+            do_test_empty_full(self, dtypes, torch.strided, None)
+            do_test_empty_full(self, dtypes, torch.strided, torch_device)
 
     # TODO: this test should be updated
     @suppress_warnings
@@ -2829,6 +2832,10 @@ class TestTensorCreation(TestCase):
                     with torch.get_device_module(device_type).device(device):
                         self.assertEqual(op(values.cpu()).device, torch.device('cpu'))
 
+                if self.device_type == 'xpu':
+                    with torch.xpu.device(device):
+                        self.assertEqual(op(values.cpu()).device, torch.device('cpu'))
+
         # Tests sparse ctor
         indices = torch.tensor([[0, 1, 1],
                                 [2, 0, 1],
@@ -2846,6 +2853,13 @@ class TestTensorCreation(TestCase):
                 sparse_with_dtype = torch.sparse_coo_tensor(indices.cpu(), values.cpu(),
                                                             sparse_size, dtype=torch.float64)
                 self.assertEqual(sparse_with_dtype.device, torch.device('cpu'))
+
+        if self.device_type == 'xpu':
+            with torch.xpu.device(device):
+                sparse_with_dtype = torch.sparse_coo_tensor(indices.cpu(), values.cpu(),
+                                                            sparse_size, dtype=torch.float64)
+                self.assertEqual(sparse_with_dtype.device, torch.device('xpu'))
+
 
     @onlyCUDA
     @onlyNativeDeviceTypes
@@ -4208,6 +4222,9 @@ def get_another_device(device):
 
     return acc.type if acc is not None else None
 
+def get_another_xpu_device(device):
+    return "xpu" if torch.device(device).type == "cpu" else "cpu"
+
 def identity(tensor):
     return tensor
 def to_numpy(tensor):
@@ -4406,6 +4423,13 @@ class TestAsArray(TestCase):
             with self.assertRaisesRegex(ValueError,
                                         f"from device '{device}' to '{other_device}'"):
                 torch.asarray(original, device=other_device, copy=False)
+
+        if torch.xpu.is_available():
+            other_device = get_another_xpu_device(device)
+            with self.assertRaisesRegex(ValueError,
+                                        f"from device '{device}' to '{other_device}'"):
+                torch.asarray(original, device=other_device, copy=False)
+
 
         with self.assertRaisesRegex(ValueError,
                                     "with dtype '.*' into dtype '.*'"):
