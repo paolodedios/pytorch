@@ -650,6 +650,9 @@ class TestFxGraphCache(TestCase):
         with config.patch(
             bundle_triton_into_fx_graph_cache=bundle_triton,
             use_static_triton_launcher=use_static_triton_launcher,
+            # Avoid non-deterministic pad_mm benchmarking changing numerics or
+            # the number of bundled Triton static autotuners across runs.
+            shape_padding=False,
         ):
             compiled_fn = torch.compile(fn, dynamic=dynamic)
 
@@ -5081,7 +5084,7 @@ class TestVecISACheckBuild(TestCase):
         self.assertEqual(
             value.split(os.pathsep)[0],
             torch_lib,
-            msg=f"LD_LIBRARY_PATH should be prepended with {torch_lib!r}, got {value!r}",
+            msg=lambda msg: f"{msg}\nLD_LIBRARY_PATH should be prepended with {torch_lib!r}, got {value!r}",
         )
 
 
