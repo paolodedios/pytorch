@@ -128,7 +128,7 @@ template <>
 at::vec::Vectorized<int8_t> inline convert_float_to_int8(
     at::vec::Vectorized<float> src) {
   // Convert from float32 to int32 with truncation
-  __m256i x_values_int32 = _mm256_cvttps_epi32(static_cast<__m256>(src));
+  __m256i x_values_int32 = _mm256_cvttps_epi32(src);
 
   // Convert from int32 to int16 using signed saturation
   __m256i xy_packed_v = _mm256_packs_epi32(x_values_int32, x_values_int32);

@@ -188,9 +188,7 @@ struct Vectorized {
   static constexpr size_type size() {
     return kSize;
   }
-  Vectorized() {
-    values.fill(T(0));
-  }
+  Vectorized() = default;
   Vectorized(T val) {
     values.fill(val);
   }
