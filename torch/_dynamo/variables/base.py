@@ -685,7 +685,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             gb_type="missing tp_init",
             context=f"tp_init_impl not implemented for {self.python_type_name()}",
             explanation=f"Dynamo does not know how to trace __init__ on `{self.debug_repr()}`.",
-            hints=[*graph_break_hints.SUPPORTABLE],
+            hints=[*graph_break_hints.DYNAMO_BUG],
         )
 
     def call_function(
