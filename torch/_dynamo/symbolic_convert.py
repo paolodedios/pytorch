@@ -4984,7 +4984,7 @@ class InstructionTranslatorBase(
         return global_name
 
     @property
-    def fake_mode(self) -> FakeTensorMode | None:
+    def fake_mode(self) -> FakeTensorMode | CppFakeTensorMode | None:
         return self.output.tracing_context.fake_mode
 
     @property

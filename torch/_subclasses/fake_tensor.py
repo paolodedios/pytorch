@@ -351,8 +351,7 @@ class CppFakeTensorMode:
     def create_cpp_fake_tensor_mode(
         cls, fake_tensor_converter: Any, shape_env: Any = None
     ) -> CppFakeTensorMode:
-        """Create the C++ FakeTensorMode from a converter and ShapeEnv.
-        """
+        """Create the C++ FakeTensorMode from a converter and ShapeEnv."""
         self = cls(shape_env=shape_env, fake_tensor_converter=fake_tensor_converter)
         # self is stored on the C++ mode so _get_active_cpp_fake_tensor_mode and
         # op_impl handlers (PyInterpreter.cpp) observe the same single identity.
@@ -392,6 +391,9 @@ class CppFakeTensorMode:
     def set_allow_fallback_kernels(self, allow: bool) -> None:
         # Read by op_impl handlers (e.g. workaround_stride_incorrect_op).
         self.allow_fallback_kernels = allow
+
+    def is_our_fake(self, t: object) -> bool:
+        return isinstance(t, Tensor) and torch._C._is_fake_tensor(t)
 
     def from_tensor(
         self,

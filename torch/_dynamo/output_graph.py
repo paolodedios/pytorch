@@ -838,26 +838,33 @@ class OutputGraph(OutputGraphCommon):
         # of the user marked dynamic dims
         import torch._functorch.config as _config
 
-        with _config.patch(fake_tensor_allow_unsafe_data_ptr_access=False):
-            fake_mode = torch._subclasses.FakeTensorMode(
-                shape_env=shape_env,
-                # TODO (tmanlaibaatar) Remove this once we always lift params and buffers
-                allow_non_fake_inputs=bool(self.export),
-                export=self.export,
+        self.cpp_fake_mode: CppFakeTensorMode | None
+        fake_mode: torch._subclasses.FakeTensorMode | CppFakeTensorMode
+        if config.use_cpp_fake_tensor:
+            # Under the C++ FakeTensorMode there is no Python FakeTensorMode:
+            # dispatch goes through DispatchKey::Fake. We still need a converter
+            # to wrap real tensors, so create a standalone one and hand it to the
+            # cpp mode. The cpp mode becomes the tracing context's fake_mode.
+            from torch._subclasses.fake_tensor import FakeTensorConverter
+
+            self.cpp_fake_mode = CppFakeTensorMode.create_cpp_fake_tensor_mode(
+                FakeTensorConverter(), shape_env
             )
+            fake_mode = self.cpp_fake_mode
+        else:
+            with _config.patch(fake_tensor_allow_unsafe_data_ptr_access=False):
+                fake_mode = torch._subclasses.FakeTensorMode(
+                    shape_env=shape_env,
+                    # TODO (tmanlaibaatar) Remove this once we always lift params and buffers
+                    allow_non_fake_inputs=bool(self.export),
+                    export=self.export,
+                )
+            self.cpp_fake_mode = None
         self.tracing_context: TracingContext = TracingContext(fake_mode)
         self.tracing_context.traced_code.append(f_code)
         self.tracing_context.cudagraph_annotation = self.cudagraph_annotation
         self.traced_code = self.tracing_context.traced_code
         self.dynamo_compile_id: CompileId | None = CompileContext.current_compile_id()
-
-        self.cpp_fake_mode: CppFakeTensorMode | None
-        if config.use_cpp_fake_tensor:
-            self.cpp_fake_mode = CppFakeTensorMode.create_cpp_fake_tensor_mode(
-                fake_mode.fake_tensor_converter, shape_env
-            )
-        else:
-            self.cpp_fake_mode = None
 
         self.init_ambient_guards()
 
@@ -1478,7 +1485,7 @@ class OutputGraph(OutputGraphCommon):
         return self
 
     @property
-    def fake_mode(self) -> torch._subclasses.FakeTensorMode:
+    def fake_mode(self) -> torch._subclasses.FakeTensorMode | CppFakeTensorMode:
         if self.tracing_context.fake_mode is None:
             raise AssertionError("tracing_context.fake_mode must not be None")
         return self.tracing_context.fake_mode
@@ -2991,11 +2998,9 @@ class OutputGraph(OutputGraphCommon):
                 self.tracing_context.fake_mode = backend_fake_mode
 
                 if self.cpp_fake_mode is not None:
-                    self.cpp_fake_mode = (
-                        CppFakeTensorMode.create_cpp_fake_tensor_mode(
-                            backend_fake_mode.fake_tensor_converter,
-                            backend_fake_mode.shape_env,
-                        )
+                    self.cpp_fake_mode = CppFakeTensorMode.create_cpp_fake_tensor_mode(
+                        backend_fake_mode.fake_tensor_converter,
+                        backend_fake_mode.shape_env,
                     )
 
             gm.graph.lint()
