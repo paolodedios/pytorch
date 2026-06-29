@@ -1945,9 +1945,6 @@ class TestTensorCreation(TestCase):
         if device_type in ('cuda', 'xpu'):
             do_test_empty_full(self, dtypes, torch.strided, None)
             do_test_empty_full(self, dtypes, torch.strided, torch_device)
-        if device_type == 'xpu':
-            do_test_empty_full(self, dtypes, torch.strided, None)
-            do_test_empty_full(self, dtypes, torch.strided, torch_device)
 
     # TODO: this test should be updated
     @suppress_warnings
@@ -2849,17 +2846,10 @@ class TestTensorCreation(TestCase):
         self.assertEqual(sparse_with_dtype.device, torch_device)
 
         if self.device_type in ('cuda', 'xpu'):
-            with torch.get_device_module(device_type).device(device):
+            with torch.cuda.device(device):
                 sparse_with_dtype = torch.sparse_coo_tensor(indices.cpu(), values.cpu(),
                                                             sparse_size, dtype=torch.float64)
                 self.assertEqual(sparse_with_dtype.device, torch.device('cpu'))
-
-        if self.device_type == 'xpu':
-            with torch.xpu.device(device):
-                sparse_with_dtype = torch.sparse_coo_tensor(indices.cpu(), values.cpu(),
-                                                            sparse_size, dtype=torch.float64)
-                self.assertEqual(sparse_with_dtype.device, torch.device('xpu'))
-
 
     @onlyCUDA
     @onlyNativeDeviceTypes
@@ -4214,9 +4204,6 @@ class TestFromBlob(TestCase):
 #   https://data-apis.org/array-api/latest/API_specification/creation_functions.html
 def get_another_device(device):
     return device_type if torch.device(device).type == "cpu" else "cpu"
-
-def get_another_xpu_device(device):
-    return "xpu" if torch.device(device).type == "cpu" else "cpu"
 
 def identity(tensor):
     return tensor
