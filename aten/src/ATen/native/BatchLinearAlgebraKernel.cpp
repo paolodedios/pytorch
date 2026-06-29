@@ -329,13 +329,21 @@ template <typename scalar_t, typename value_t>
 static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
   const int64_t ld = n;
   if constexpr (!c10::is_complex<scalar_t>::value) {
-    // A nonzero subdiagonal marks a 2x2 block (complex-conjugate eigenpair); the
-    // real quasi-triangular recurrence for those is out of scope here.
-    for (const auto c : c10::irange(n - 1)) {
-      TORCH_CHECK(T[(c + 1) + c * ld] == scalar_t(0),
-        "linalg.matrix_sqrt: the real Schur form has a 2x2 block, i.e. ",
-        "the input has complex eigenvalues. This temporary comparator supports ",
-        "only inputs with a real spectrum (e.g. symmetric/Hermitian PSD).");
+    // A real matrix has a real principal square root only when its spectrum is
+    // real and non-negative. A nonzero subdiagonal is a 2x2 Schur block (complex
+    // eigenpair); a negative diagonal entry is a negative real eigenvalue. Either
+    // gives a complex root, so the input must be a complex dtype. Tiny negatives
+    // within Schur roundoff of zero are treated as zero rather than rejected.
+    value_t max_abs_eig = 0;
+    for (const auto c : c10::irange(n)) {
+      max_abs_eig = std::max(max_abs_eig, std::abs(T[c + c * ld]));
+    }
+    const value_t neg_tol = -max_abs_eig * std::sqrt(std::numeric_limits<value_t>::epsilon());
+    for (const auto c : c10::irange(n)) {
+      const bool block_2x2 = c + 1 < n && T[(c + 1) + c * ld] != scalar_t(0);
+      TORCH_CHECK(!block_2x2 && T[c + c * ld] >= neg_tol,
+        "linalg.matrix_sqrt: this real input has a negative or complex eigenvalue, ",
+        "so its principal square root is complex. Cast the input to a complex dtype.");
     }
   }
 
@@ -1407,7 +1415,7 @@ REGISTER_ALL_CPU_DISPATCH(cholesky_stub, &cholesky_kernel)
 REGISTER_ALL_CPU_DISPATCH(cholesky_inverse_stub, &cholesky_inverse_kernel_impl)
 REGISTER_ALL_CPU_DISPATCH(linalg_eig_make_complex_eigenvectors_stub, &linalg_eig_make_complex_eigenvectors_cpu)
 REGISTER_ALL_CPU_DISPATCH(linalg_eig_stub, &linalg_eig_kernel)
-REGISTER_ALL_CPU_DISPATCH(matrix_sqrt_stub, &matrix_sqrt_kernel)
+REGISTER_ALL_CPU_DISPATCH(linalg_matrix_sqrt_stub, &matrix_sqrt_kernel)
 REGISTER_ALL_CPU_DISPATCH(linalg_eigh_stub, &linalg_eigh_kernel)
 REGISTER_ALL_CPU_DISPATCH(geqrf_stub, &geqrf_kernel)
 REGISTER_ALL_CPU_DISPATCH(orgqr_stub, &orgqr_kernel_impl)
