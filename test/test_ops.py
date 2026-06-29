@@ -1959,7 +1959,6 @@ class TestCompositeCompliance(TestCase):
         {
             xfail("istft"),
             xfail("narrow"),
-            xfail("native_group_norm"),
             xfail("nn.functional.gaussian_nll_loss"),
             xfail("tensor_split"),
             skip("normal", variant_name="number_mean"),
