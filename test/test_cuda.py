@@ -189,6 +189,14 @@ def get_wait_for_cpu_kernel():
     return _wait_for_cpu_kernel
 
 
+def _check_allocator_settings_on_tear_down(test_case):
+    # Regression check: no test in `test_case` should leave the runtime
+    # expandable_segments knob mismatched against the suite's env-derived
+    # baseline. This should be called in the class's `tearDown` method.
+    md = torch.cuda.memory._snapshot()["allocator_settings"]
+    test_case.assertEqual(md["expandable_segments"], EXPANDABLE_SEGMENTS)
+
+
 @unittest.skipIf(not TEST_CUDA, "CUDA not available, skipping tests")
 @torch.testing._internal.common_utils.markDynamoStrictTest
 class TestCuda(TestCase):
@@ -3718,6 +3726,44 @@ exit(2)
             torch.cuda.empty_cache()
 
     @unittest.skipIf(
+        not TEST_CUDA_GRAPH, "CUDA >= 11.0 or ROCM >= 5.3 required for graphs"
+    )
+    @unittest.skipIf(
+        TEST_CUDAMALLOCASYNC,
+        "CUDAGraph MemPool retention is specific to the native allocator",
+    )
+    def test_graph_mem_pool_arg_and_nested_use_mem_pool(self):
+        torch.cuda.empty_cache()
+
+        g_default_pool = torch.cuda.MemPool()
+        g_side_pool = torch.cuda.MemPool()
+
+        x = torch.ones((4,), device="cuda")
+        g = torch.cuda.CUDAGraph()
+        stream = torch.cuda.Stream()
+
+        with torch.cuda.graph(g, stream=stream, pool=g_default_pool):
+            y = x + 1
+            with torch.cuda.use_mem_pool(g_side_pool):
+                tmp = y + 2
+                tmp = tmp + 1
+            z = tmp + 3
+        torch.cuda.current_stream().wait_stream(stream)
+
+        self.assertEqual(g.pool(), g_default_pool.id)
+        self.assertEqual(set(g.pools()), {g_default_pool.id, g_side_pool.id})
+        self.assertEqual(g_default_pool.use_count(), 2)
+        self.assertEqual(g_side_pool.use_count(), 2)
+
+        del g_side_pool
+        gc.collect()
+        g.replay()
+        self.assertEqual(z, torch.full_like(z, 8))
+
+        g.reset()
+        self.assertEqual(g_default_pool.use_count(), 1)
+
+    @unittest.skipIf(
         (not TEST_CUDA_GRAPH) or TEST_CUDAMALLOCASYNC,
         "CUDA >= 11.0 or ROCM >= 5.3 required for graphs",
     )
@@ -5212,11 +5258,7 @@ class TestResizeStorageWithAddr(TestCase):
 class TestCudaAllocator(TestCase):
     def tearDown(self):
         super().tearDown()
-        # Regression check: no test in this class should leave the runtime
-        # expandable_segments knob mismatched against the suite's env-derived
-        # baseline. This is the only class that toggles it.
-        md = torch.cuda.memory._snapshot()["allocator_settings"]
-        self.assertEqual(md["expandable_segments"], EXPANDABLE_SEGMENTS)
+        _check_allocator_settings_on_tear_down(self)
 
     @unittest.skipIf(
         TEST_CUDAMALLOCASYNC, "setContextRecorder not supported by CUDAMallocAsync"
@@ -5979,9 +6021,28 @@ class TestCudaAllocator(TestCase):
             )
 
     def test_allocator_backend(self):
+        def subprocess_env():
+            if IS_WINDOWS:
+                # An empty env breaks Windows stdlib/CUDA extension loading (no PATH).
+                return {
+                    k: os.environ[k]
+                    for k in (
+                        "SYSTEMROOT",
+                        "SYSTEMDRIVE",
+                        "WINDIR",
+                        "COMSPEC",
+                        "PATH",
+                    )
+                    if k in os.environ
+                }
+            return {}
+
         def check_output(script: str) -> str:
+            kwargs = {"env": subprocess_env(), "text": True}
+            if IS_WINDOWS:
+                kwargs["cwd"] = tempfile.gettempdir()
             return subprocess.check_output(
-                [sys.executable, "-c", script], env={}, text=True
+                [sys.executable, "-c", script], **kwargs
             ).strip()
 
         test_script = """\
@@ -7117,6 +7178,10 @@ class TestCachingHostAllocatorCudaGraph(TestCase):
 
 @unittest.skipIf(not TEST_CUDA, "CUDA not available, skipping tests")
 class TestMemPool(TestCase):
+    def tearDown(self):
+        super().tearDown()
+        _check_allocator_settings_on_tear_down(self)
+
     def _setup_mempool_limited_memory_test(self, additional_allowed_memory_in_mb):
         device = torch.device("cuda:0")
 
@@ -8605,7 +8670,11 @@ class TestMemPool(TestCase):
             self._check_reserved_bytes_by_private_pools()
         finally:
             torch.cuda.empty_cache()
-            torch.cuda.memory._set_allocator_settings("")
+            # Test toggles expandable_segments internally; restore the
+            # suite's baseline so subsequent tests see consistent state.
+            torch.cuda.memory._set_allocator_settings(
+                f"expandable_segments:{EXPANDABLE_SEGMENTS}"
+            )
 
     @skipIfRocm(msg="cudaMallocManaged (UVM) is not supported on ROCm")
     @unittest.skipIf(
@@ -8643,6 +8712,29 @@ class TestMemPool(TestCase):
                 out.sum().backward()
         self.assertIsNotNone(model.weight.grad)
         self.assertEqual(model.weight.grad.shape, (512, 512))
+
+    @skipIfRocm(msg="cudaMallocManaged (UVM) is not supported on ROCm")
+    @unittest.skipIf(
+        not TEST_CUDA_PYTHON_BINDINGS, "requires cuda-python (cuda.bindings)"
+    )
+    def test_use_uvm_tensor_outlives_context(self):
+        # Regression test: a tensor allocated inside _use_uvm() can outlive the
+        # context, leaving its block cached in the PrivatePool until a later global
+        # empty_cache() frees it. Before the fix the alloc/free ctypes closures
+        # were GC'd by then, so the free dangled and segfaulted. Loop twice and
+        # (where available) over a second device to exercise the now-shared
+        # allocator across calls/devices.
+        devices = [None]
+        if torch.cuda.device_count() > 1:
+            devices.append(1)
+        for _ in range(2):
+            for device in devices:
+                with torch.cuda._use_uvm(device=device):
+                    x = torch.randn(256, 256, device=device or "cuda")
+                self.assertTrue(x.is_cuda)
+                del x
+                gc.collect()
+                torch.cuda.empty_cache()
 
 
 @unittest.skipIf(not TEST_CUDA, "CUDA not available, skipping tests")
