@@ -2262,7 +2262,6 @@ Examples::
 )
 
 
-
 matrix_sqrt = _add_docstr(
     _linalg.linalg_matrix_sqrt,
     r"""
@@ -2272,7 +2271,7 @@ Computes the principal square root of a square matrix.
 
 Letting :math:`\mathbb{K}` be :math:`\mathbb{R}` or :math:`\mathbb{C}`,
 for a matrix :math:`A \in \mathbb{K}^{n \times n}` none of whose eigenvalues lie on
-the closed negative real axis :math:`(-\infty, 0]`, the **principal square root** is
+the closed negative real axis :math:`(-\infty, 0]`, the principal square root is
 the unique matrix :math:`X` such that
 
 .. math::
@@ -2286,10 +2285,8 @@ condition.
 
 It is computed from the (real or complex) Schur decomposition
 :math:`A = Z T Z^{\text{H}}`, with :math:`Z` unitary and :math:`T` upper triangular,
-followed by the Bjorck-Hammarling recurrence for the square root of :math:`T` (a
-blocked Schur method whose off-diagonal blocks are obtained from a Sylvester solve).
-Unlike a definition through the eigendecomposition, this is well defined even when
-:math:`A` is not diagonalizable.
+followed by the Bjorck-Hammarling recurrence for the square root of :math:`T`.
+This is well defined when :math:`A` is not diagonalizable.
 
 Supports input of float, double, cfloat and cdouble dtypes. Also supports batches of
 matrices, and if :attr:`A` is a batch of matrices then the output has the same batch
@@ -2298,14 +2295,6 @@ dimensions.
 .. note:: This function is implemented on the CPU only. CUDA inputs are not
           supported, as there is no general (non-Hermitian) Schur decomposition
           available on the GPU.
-
-.. note:: The principal square root of a **real** matrix is itself real only when the
-          spectrum of :attr:`A` is real and non-negative. If a real :attr:`A` has a
-          negative real eigenvalue or a complex eigenvalue (a conjugate pair, which
-          appears as a :math:`2 \times 2` block of the real Schur form), the principal
-          square root is complex and this function raises an error; cast :attr:`A` to a
-          complex dtype to obtain it. A complex :attr:`A` is supported for any spectrum
-          off the closed negative real axis.
 
 .. seealso::
 
@@ -2337,7 +2326,6 @@ Examples::
     True
 """,
 )
-
 
 
 solve = _add_docstr(
