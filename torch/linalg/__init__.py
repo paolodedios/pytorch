@@ -1535,7 +1535,7 @@ Args:
     x (Tensor): tensor, flattened by default, but this behavior can be
         controlled using :attr:`dim`.  (Note: the keyword argument
         `input` can also be used as an alias for `x`.)
-    ord (int, float, inf, -inf, 'fro', 'nuc', optional): order of norm. Default: `2`
+    ord (int, float, inf, -inf, optional): order of norm. Default: `2`
     dim (int, Tuple[int], optional): dimensions over which to compute
         the norm. See above for the behavior when :attr:`dim`\ `= None`.
         Default: `None`
@@ -2262,6 +2262,7 @@ Examples::
 )
 
 
+
 matrix_sqrt = _add_docstr(
     _linalg.linalg_matrix_sqrt,
     r"""
@@ -2287,6 +2288,7 @@ Examples::
             [0.0000, 3.0000]])
 """,
 )
+
 
 
 solve = _add_docstr(
