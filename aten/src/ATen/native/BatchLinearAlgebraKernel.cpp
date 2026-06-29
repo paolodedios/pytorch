@@ -331,16 +331,19 @@ static void matrix_sqrt_sylv_small(const scalar_t* A, int64_t si, const scalar_t
 
   // vec(X) solves K vec(X) = vec(C) with K = I_sj (x) A + transpose(B) (x) I_si.
   std::array<scalar_t, 16> K = {};
-  for (const auto cc : c10::irange(sj)) {
-    for (const auto rr : c10::irange(si)) {
-      const int64_t row = rr + cc * si;
-      for (const auto cp : c10::irange(sj)) {
-        for (const auto rp : c10::irange(si)) {
-          scalar_t v = scalar_t(0);
-          if (cc == cp) v += A[rr + rp * ld];
-          if (rr == rp) v += B[cp + cc * ld];
-          K[row + (rp + cp * si) * nn] = v;
-        }
+  // I_sj (x) A: A appears on each of the sj diagonal blocks.
+  for (const auto c : c10::irange(sj)) {
+    for (const auto ri : c10::irange(si)) {
+      for (const auto rj : c10::irange(si)) {
+        K[(ri + c*si) + (rj + c*si)*nn] = A[ri + rj*ld];
+      }
+    }
+  }
+  // transpose(B) (x) I_si: B[cp,c] scales the identity on the (c,cp) block.
+  for (const auto c : c10::irange(sj)) {
+    for (const auto cp : c10::irange(sj)) {
+      for (const auto r : c10::irange(si)) {
+        K[(r + c*si) + (r + cp*si)*nn] += B[cp + c*ld];
       }
     }
   }
