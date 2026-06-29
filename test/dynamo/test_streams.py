@@ -745,6 +745,54 @@ class GraphModule(torch.nn.Module):
 """,
         )
 
+    def test_stream_event_subclass_preserved_across_graph_break(self):
+        """A graph-created torch.Stream/torch.Event subclass must be
+        reconstructed with its actual subclass type, not the base class,
+        after a graph break. Backend extensions rely on receiving their
+        own subclass (e.g. a C++ reinterpret_cast to the backend stream
+        struct); reconstructing the base class drops the type and breaks
+        them. Runs on CPU only."""
+        from contextlib import contextmanager
+
+        from torch._dynamo.variables.user_defined import UserDefinedClassVariable
+
+        class MyStream(torch.Stream):
+            pass
+
+        class MyEvent(torch.Event):
+            def wait(self, stream=None):
+                if stream is None:
+                    stream = torch.accelerator.current_stream()
+                if not isinstance(stream, MyStream):
+                    raise AssertionError(
+                        f"Expected MyStream, got {type(stream).__name__} "
+                        f"(subclass type lost during reconstruction)"
+                    )
+                return None
+
+        @contextmanager
+        def register_subclasses():
+            orig = UserDefinedClassVariable._in_graph_classes
+            UserDefinedClassVariable._in_graph_classes = staticmethod(
+                lambda: orig() | {MyStream, MyEvent}
+            )
+            try:
+                yield
+            finally:
+                UserDefinedClassVariable._in_graph_classes = orig
+
+        def fn(x):
+            s = MyStream()
+            e = MyEvent()
+            torch._dynamo.graph_break()
+            e.wait(s)
+            return x
+
+        with register_subclasses():
+            compiled = torch.compile(fn, backend="eager", fullgraph=False)
+            out = compiled(torch.ones(2, 2))
+        self.assertEqual(out, torch.ones(2, 2))
+
     @requires_cuda
     def test_event_tracing(self):
         def fn(x) -> None:
