@@ -1490,6 +1490,23 @@ print(t.is_pinned())
         self.assertEqual(pool_sizes({}), (3, 4))  # default-on, q=4
         self.assertEqual(pool_sizes({"GPU_MAX_HW_QUEUES": "8"}), (7, 8))  # override
 
+    @serialTest()
+    def test_get_streams(self):
+        # get_streams returns pairwise-distinct streams (distinct underlying
+        # hsa_queues under the ROCm cap), up to the per-priority pool size;
+        # requesting more than the pool holds raises.
+        least, greatest = torch.cuda.Stream.priority_range()
+        for priority in range(least, greatest - 1, -1):
+            pool = torch.cuda._get_stream_pool_size(priority)
+            streams = torch.cuda.get_streams(pool, priority=priority)
+            self.assertEqual(len(streams), pool)
+            ptrs = [s.cuda_stream for s in streams]
+            self.assertEqual(
+                len(set(ptrs)), pool, f"priority {priority}: streams not distinct"
+            )
+            with self.assertRaises(RuntimeError):
+                torch.cuda.get_streams(pool + 1, priority=priority)
+
     def test_stream_event_repr(self):
         s = torch.cuda.current_stream()
         self.assertTrue("torch.cuda.Stream" in s.__repr__())

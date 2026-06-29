@@ -10,6 +10,8 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <unordered_set>
+#include <vector>
 
 namespace c10::cuda {
 
@@ -430,6 +432,74 @@ int getStreamsPerPool(int priority) {
   initCUDAStreamsOnce();
   auto pri_idx = std::clamp(-priority, 0, max_stream_priorities - 1);
   return streams_per_pool[pri_idx];
+}
+
+// Returns `count` streams from the requested priority pool, guaranteed pairwise
+// distinct. On ROCm, where the pool is capped to the backing hsa_queue count,
+// distinct pool streams map to distinct hardware queues, so the returned
+// streams can run concurrently. See Note [HIP Stream Pool].
+std::vector<CUDAStream> getStreamsFromPool(
+    const int count,
+    const int priority,
+    DeviceIndex device_index) {
+  initCUDAStreamsOnce();
+  if (device_index == -1) {
+    device_index = current_device();
+    c10::cuda::SetTargetDevice();
+  }
+  check_gpu(device_index);
+  TORCH_CHECK(
+      count >= 1, "getStreamsFromPool: count must be >= 1, got ", count);
+  auto pri_idx = std::clamp(-priority, 0, max_stream_priorities - 1);
+  const int pool = streams_per_pool[pri_idx];
+#ifdef USE_ROCM
+  // Each pool entry maps 1:1 to a distinct hsa_queue, so the number of distinct
+  // streams cannot exceed the pool size. The default-priority pool is
+  // GPU_MAX_HW_QUEUES-1 (the null stream holds one queue); higher priorities
+  // are GPU_MAX_HW_QUEUES.
+  TORCH_CHECK(
+      count <= pool,
+      "Requested ",
+      count,
+      " distinct streams for priority ",
+      priority,
+      ", but the HIP stream pool for that priority holds only ",
+      pool,
+      ". Increase GPU_MAX_HW_QUEUES to at least ",
+      (pri_idx == 0 ? count + 1 : count),
+      ".");
+#else
+  TORCH_CHECK(
+      count <= pool,
+      "Requested ",
+      count,
+      " distinct streams for priority ",
+      priority,
+      ", but the stream pool for that priority holds only ",
+      pool,
+      ".");
+#endif
+  std::vector<CUDAStream> out;
+  out.reserve(count);
+  std::unordered_set<StreamId> seen;
+  // Round-robin yields distinct slots for up to `pool` consecutive calls; the
+  // dedup loop preserves the guarantee even if another thread advances the
+  // shared counter concurrently. Bounded to avoid spinning on a logic error.
+  int attempts = 0;
+  const int max_attempts = pool * 8 + 8;
+  while (static_cast<int>(out.size()) < count) {
+    auto stream = getStreamFromPool(priority, device_index);
+    if (seen.insert(stream.id()).second) {
+      out.push_back(stream);
+    }
+    TORCH_INTERNAL_ASSERT(
+        ++attempts <= max_attempts,
+        "getStreamsFromPool: failed to collect ",
+        count,
+        " distinct streams for priority ",
+        priority);
+  }
+  return out;
 }
 
 CUDAStream getStreamFromExternal(

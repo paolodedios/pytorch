@@ -522,6 +522,39 @@ static PyObject* THCPModule_getStreamsPerPool(
   END_HANDLE_TH_ERRORS
 }
 
+static PyObject* THCPModule_getStreamsFromPool(
+    PyObject* _unused,
+    PyObject* args) {
+  HANDLE_TH_ERRORS
+  int count = 0;
+  int priority = 0;
+  int device_index = -1;
+  if (!PyArg_ParseTuple(args, "i|ii", &count, &priority, &device_index)) {
+    return nullptr;
+  }
+  auto streams = c10::cuda::getStreamsFromPool(
+      count, priority, static_cast<c10::DeviceIndex>(device_index));
+  THPObjectPtr list(PyList_New(static_cast<Py_ssize_t>(streams.size())));
+  if (!list)
+    return nullptr;
+  for (const auto i : c10::irange(streams.size())) {
+    const auto& s = streams[i];
+    THPObjectPtr entry(PyTuple_New(3));
+    if (!entry)
+      return nullptr;
+    PyTuple_SetItem(
+        entry.get(), 0, THPUtils_packInt64(static_cast<int64_t>(s.id())));
+    PyTuple_SetItem(entry.get(), 1, THPUtils_packDeviceIndex(s.device_index()));
+    PyTuple_SetItem(
+        entry.get(),
+        2,
+        THPUtils_packInt64(static_cast<int64_t>(s.device_type())));
+    PyList_SetItem(list.get(), static_cast<Py_ssize_t>(i), entry.release());
+  }
+  return list.release();
+  END_HANDLE_TH_ERRORS
+}
+
 PyObject* THCPModule_hasPrimaryContext(PyObject* _unused, PyObject* arg) {
   HANDLE_TH_ERRORS
   TORCH_CHECK(
@@ -2279,6 +2312,10 @@ static struct PyMethodDef _THCPModule_methods[] = {
     {"_cuda_ipc_collect", THCPModule_cudaIPCCollect, METH_NOARGS, nullptr},
     {"_cuda_sleep", THCPModule_cudaSleep, METH_O, nullptr},
     {"_cuda_getStreamsPerPool", THCPModule_getStreamsPerPool, METH_O, nullptr},
+    {"_cuda_getStreamsFromPool",
+     THCPModule_getStreamsFromPool,
+     METH_VARARGS,
+     nullptr},
     {"_cuda_set_sync_debug_mode",
      THCPModule_cudaSetSyncDebugMode,
      METH_O,

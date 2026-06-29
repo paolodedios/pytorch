@@ -2,6 +2,8 @@
 
 #include <cuda_runtime_api.h>
 
+#include <vector>
+
 #include <c10/core/DeviceGuard.h>
 #include <c10/core/Stream.h>
 #include <c10/cuda/CUDAFunctions.h>
@@ -221,6 +223,18 @@ getStreamFromPool(const int priority, DeviceIndex device = -1);
 C10_CUDA_API int getStreamsPerPool(int priority = 0);
 
 /**
+ * Get `count` streams from the pool for the given priority, guaranteed to be
+ * pairwise distinct. On ROCm, where each per-priority pool is capped to the
+ * backing hardware-queue count, distinct streams are backed by distinct
+ * hsa_queues and can therefore run concurrently. Throws if `count` exceeds the
+ * pool size for that priority. See Note [HIP Stream Pool].
+ */
+C10_CUDA_API std::vector<CUDAStream> getStreamsFromPool(
+    const int count,
+    const int priority = 0,
+    DeviceIndex device = -1);
+
+/**
  * Get a CUDAStream from a externally allocated one.
  *
  * This is mainly for interoperability with different libraries where we
@@ -270,6 +284,7 @@ C10_CUDA_API std::ostream& operator<<(
 namespace c10::hip {
 using c10::cuda::getStreamFromExternal;
 using c10::cuda::getStreamFromPool;
+using c10::cuda::getStreamsFromPool;
 using c10::cuda::getStreamsPerPool;
 // must use inline wrappers instead of reference aliases due to default args
 inline c10::cuda::CUDAStream getDefaultHIPStream(
