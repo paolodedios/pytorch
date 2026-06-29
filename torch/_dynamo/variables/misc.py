@@ -697,12 +697,7 @@ class ExceptionVariable(VariableTracker):
                 self.__traceback__ = val
             elif name == "args":
                 # CPython coerces any iterable to a tuple (PySequence_Tuple).
-                try:
-                    self.args = val.unpack_var_sequence(tx)
-                except NotImplementedError:
-                    raise_type_error(
-                        tx, f"'{val.python_type().__name__}' object is not iterable"
-                    )
+                self.args = unpack_iterable(tx, val)
             else:
                 # Arbitrary user attribute -> store in the instance __dict__
                 # via the side effects table.
@@ -712,7 +707,14 @@ class ExceptionVariable(VariableTracker):
                 se.store_instance_dict_attr(self, name, val)
             return variables.ConstantVariable.create(None)
         elif name == "__setstate__":
+            if len(args) != 1:
+                raise_type_error(
+                    tx, f"__setstate__() takes exactly one argument ({len(args)} given)"
+                )
             [state] = args
+            # BaseException.__setstate__(None) is a documented no-op.
+            if state.is_constant_none():
+                return variables.ConstantVariable.create(None)
             if not isinstance(state, variables.ConstDictVariable):
                 raise_type_error(tx, "state is not a dictionary")
             for key, value in state.keys_as_python_constant().items():
@@ -721,6 +723,11 @@ class ExceptionVariable(VariableTracker):
                 )
             return variables.ConstantVariable.create(None)
         elif name == "with_traceback":
+            if len(args) != 1:
+                raise_type_error(
+                    tx,
+                    f"with_traceback() takes exactly one argument ({len(args)} given)",
+                )
             [tb] = args
             if not TracebackVariable.is_valid_traceback(tb):
                 raise_type_error(tx, "__traceback__ must be a traceback or None")
