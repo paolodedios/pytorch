@@ -69,6 +69,7 @@
 #include <ATen/ops/linalg_inv_ex.h>
 #include <ATen/ops/linalg_inv_ex_native.h>
 #include <ATen/ops/linalg_inv_native.h>
+#include <ATen/ops/linalg_matrix_sqrt_native.h>
 #include <ATen/ops/linalg_ldl_factor_ex.h>
 #include <ATen/ops/linalg_ldl_factor_ex_meta.h>
 #include <ATen/ops/linalg_ldl_factor_ex_native.h>
@@ -106,6 +107,7 @@
 #include <ATen/ops/lu_unpack.h>
 #include <ATen/ops/lu_unpack_meta.h>
 #include <ATen/ops/lu_unpack_native.h>
+#include <ATen/ops/matmul.h>
 #include <ATen/ops/orgqr_native.h>
 #include <ATen/ops/ormqr_native.h>
 #include <ATen/ops/qr_native.h>
@@ -387,6 +389,18 @@ extern "C" void zgeev_(char *jobvl, char *jobvr, int *n,
              std::complex<double> *work, int *lwork,
              double *rwork,
              int *info);
+
+// gees
+extern "C" void dgees_(char *jobvs, char *sort, int (*select)(const double*, const double*), int *n, double *a, int *lda, int *sdim, double *wr, double *wi, double *vs, int *ldvs, double *work, int *lwork, int *bwork, int *info);
+extern "C" void sgees_(char *jobvs, char *sort, int (*select)(const float*, const float*), int *n, float *a, int *lda, int *sdim, float *wr, float *wi, float *vs, int *ldvs, float *work, int *lwork, int *bwork, int *info);
+extern "C" void zgees_(char *jobvs, char *sort, int (*select)(const std::complex<double>*), int *n, std::complex<double> *a, int *lda, int *sdim, std::complex<double> *w, std::complex<double> *vs, int *ldvs, std::complex<double> *work, int *lwork, double *rwork, int *bwork, int *info);
+extern "C" void cgees_(char *jobvs, char *sort, int (*select)(const std::complex<float>*), int *n, std::complex<float> *a, int *lda, int *sdim, std::complex<float> *w, std::complex<float> *vs, int *ldvs, std::complex<float> *work, int *lwork, float *rwork, int *bwork, int *info);
+
+// trsyl
+extern "C" void dtrsyl_(char *trana, char *tranb, int *isgn, int *m, int *n, double *a, int *lda, double *b, int *ldb, double *c, int *ldc, double *scale, int *info);
+extern "C" void strsyl_(char *trana, char *tranb, int *isgn, int *m, int *n, float *a, int *lda, float *b, int *ldb, float *c, int *ldc, float *scale, int *info);
+extern "C" void ztrsyl_(char *trana, char *tranb, int *isgn, int *m, int *n, std::complex<double> *a, int *lda, std::complex<double> *b, int *ldb, std::complex<double> *c, int *ldc, double *scale, int *info);
+extern "C" void ctrsyl_(char *trana, char *tranb, int *isgn, int *m, int *n, std::complex<float> *a, int *lda, std::complex<float> *b, int *ldb, std::complex<float> *c, int *ldc, float *scale, int *info);
 
 // gesdd
 extern "C" void zgesdd_(char *jobz, int *m, int *n, std::complex<double> *a, int *lda,
@@ -1071,6 +1085,71 @@ template<> void lapackEig<c10::complex<float>, float>(char jobvl, char jobvr, in
          reinterpret_cast<std::complex<float>*>(vr), &ldvr,
          reinterpret_cast<std::complex<float>*>(work), &lwork,
          rwork, info);
+}
+
+template<> void lapackSchur<double>(char jobvs, int n, double *a, int lda, double *w, double *vs, int ldvs, double *work, int lwork, double *rwork, int *info) {
+  // [sd]gees wants separate real/imag eigenvalue arrays; w must hold 2*n reals.
+  char sort = 'N';
+  int sdim = 0;
+  double *wr = w;
+  double *wi = w ? w + n : nullptr;
+  (void)rwork; // unused for real
+  dgees_(&jobvs, &sort, nullptr, &n, a, &lda, &sdim, wr, wi, vs, &ldvs, work, &lwork, nullptr, info);
+}
+
+template<> void lapackSchur<float>(char jobvs, int n, float *a, int lda, float *w, float *vs, int ldvs, float *work, int lwork, float *rwork, int *info) {
+  char sort = 'N';
+  int sdim = 0;
+  float *wr = w;
+  float *wi = w ? w + n : nullptr;
+  (void)rwork; // unused for real
+  sgees_(&jobvs, &sort, nullptr, &n, a, &lda, &sdim, wr, wi, vs, &ldvs, work, &lwork, nullptr, info);
+}
+
+template<> void lapackSchur<c10::complex<double>, double>(char jobvs, int n, c10::complex<double> *a, int lda, c10::complex<double> *w, c10::complex<double> *vs, int ldvs, c10::complex<double> *work, int lwork, double *rwork, int *info) {
+  char sort = 'N';
+  int sdim = 0;
+  zgees_(&jobvs, &sort, nullptr, &n,
+         reinterpret_cast<std::complex<double>*>(a), &lda, &sdim,
+         reinterpret_cast<std::complex<double>*>(w),
+         reinterpret_cast<std::complex<double>*>(vs), &ldvs,
+         reinterpret_cast<std::complex<double>*>(work), &lwork,
+         rwork, nullptr, info);
+}
+
+template<> void lapackSchur<c10::complex<float>, float>(char jobvs, int n, c10::complex<float> *a, int lda, c10::complex<float> *w, c10::complex<float> *vs, int ldvs, c10::complex<float> *work, int lwork, float *rwork, int *info) {
+  char sort = 'N';
+  int sdim = 0;
+  cgees_(&jobvs, &sort, nullptr, &n,
+         reinterpret_cast<std::complex<float>*>(a), &lda, &sdim,
+         reinterpret_cast<std::complex<float>*>(w),
+         reinterpret_cast<std::complex<float>*>(vs), &ldvs,
+         reinterpret_cast<std::complex<float>*>(work), &lwork,
+         rwork, nullptr, info);
+}
+
+template<> void lapackSylvester<double>(char trana, char tranb, int isgn, int m, int n, double *a, int lda, double *b, int ldb, double *c, int ldc, double *scale, int *info) {
+  dtrsyl_(&trana, &tranb, &isgn, &m, &n, a, &lda, b, &ldb, c, &ldc, scale, info);
+}
+
+template<> void lapackSylvester<float>(char trana, char tranb, int isgn, int m, int n, float *a, int lda, float *b, int ldb, float *c, int ldc, float *scale, int *info) {
+  strsyl_(&trana, &tranb, &isgn, &m, &n, a, &lda, b, &ldb, c, &ldc, scale, info);
+}
+
+template<> void lapackSylvester<c10::complex<double>, double>(char trana, char tranb, int isgn, int m, int n, c10::complex<double> *a, int lda, c10::complex<double> *b, int ldb, c10::complex<double> *c, int ldc, double *scale, int *info) {
+  ztrsyl_(&trana, &tranb, &isgn, &m, &n,
+          reinterpret_cast<std::complex<double>*>(a), &lda,
+          reinterpret_cast<std::complex<double>*>(b), &ldb,
+          reinterpret_cast<std::complex<double>*>(c), &ldc,
+          scale, info);
+}
+
+template<> void lapackSylvester<c10::complex<float>, float>(char trana, char tranb, int isgn, int m, int n, c10::complex<float> *a, int lda, c10::complex<float> *b, int ldb, c10::complex<float> *c, int ldc, float *scale, int *info) {
+  ctrsyl_(&trana, &tranb, &isgn, &m, &n,
+          reinterpret_cast<std::complex<float>*>(a), &lda,
+          reinterpret_cast<std::complex<float>*>(b), &ldb,
+          reinterpret_cast<std::complex<float>*>(c), &ldc,
+          scale, info);
 }
 
 template<> void lapackSvd<c10::complex<double>, double>(char jobz, int m, int n, c10::complex<double> *a, int lda,
@@ -3149,6 +3228,36 @@ Tensor _linalg_eigvals(const Tensor& input) {
   Tensor values = at::empty({0}, input.options().dtype(complex_dtype));
   linalg_eigvals_out(input, values);
   return values;
+}
+
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ matrix_sqrt ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+DEFINE_DISPATCH(linalg_matrix_sqrt_stub);
+
+Tensor linalg_matrix_sqrt(const Tensor& A) {
+  squareCheckInputs(A, "linalg.matrix_sqrt");
+  checkFloatingOrComplex(A, "linalg.matrix_sqrt", /*allow_low_precision_dtypes=*/false);
+
+  if (A.sym_size(-1) == 0) {
+    return A.clone();
+  }
+
+  // Fortran contiguous outputs let the kernel write the column-major Schur
+  // factors directly.
+  auto fortran_like = [&]() {
+    Tensor t = at::empty(A.mT().sizes(), A.options());
+    t.transpose_(-2, -1);
+    return t;
+  };
+  Tensor schur_vectors = fortran_like();
+  Tensor tri_sqrt = fortran_like();
+  Tensor infos = at::zeros({std::max<int64_t>(1, batchCount(A))}, A.options().dtype(kInt));
+
+  linalg_matrix_sqrt_stub(A.device().type(), schur_vectors, tri_sqrt, infos, A);
+  at::_linalg_check_errors(infos, "linalg.matrix_sqrt", A.dim() == 2);
+
+  // X = Z U Z^H, where Z is the (unitary) Schur basis and U U = Z^H A Z.
+  return at::matmul(at::matmul(schur_vectors, tri_sqrt), schur_vectors.mH());
 }
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ linalg_svd ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
