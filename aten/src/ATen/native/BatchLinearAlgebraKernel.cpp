@@ -305,6 +305,7 @@ static void matrix_sqrt_block2(const scalar_t* T, scalar_t* U, int64_t ld, scala
   const scalar_t a = T[0], c = T[1], b = T[ld], d = T[1 + ld];
   const scalar_t det = a * d - b * c;
   const scalar_t eps = std::numeric_limits<scalar_t>::epsilon();
+
   // sqrt(M) = (M + sqrt(det) I) / sqrt(trace + 2 sqrt(det)).
   TORCH_CHECK(det >= -nrm * nrm * eps,
     "linalg.matrix_sqrt: this real input has a negative real eigenvalue, so its ",
@@ -312,6 +313,7 @@ static void matrix_sqrt_block2(const scalar_t* T, scalar_t* U, int64_t ld, scala
 
   const scalar_t s = std::sqrt(std::max(det, scalar_t(0)));
   const scalar_t t2 = a + d + 2 * s;
+
   TORCH_CHECK(t2 > nrm * std::sqrt(eps),
     "linalg.matrix_sqrt: this real input has a negative real eigenvalue, so its ",
     "principal square root is complex. Cast the input to a complex dtype.");
@@ -351,9 +353,11 @@ static void matrix_sqrt_sylv_small(const scalar_t* A, int64_t si, const scalar_t
   // Forward elimination with partial pivoting.
   for (const auto col : c10::irange(nn)) {
     int64_t piv = col;
+
     for (const auto r : c10::irange(col + 1, nn)) {
       if (std::abs(K[r + col * nn]) > std::abs(K[piv + col * nn])) piv = r;
     }
+
     if (piv != col) {
       for (const auto cc : c10::irange(nn)) std::swap(K[col + cc * nn], K[piv + cc * nn]);
       std::swap(C[col], C[piv]);
@@ -381,17 +385,20 @@ static void matrix_sqrt_quasitri(const scalar_t* T, scalar_t* U, int64_t m, int6
   std::vector<int64_t> bs;
   for (int64_t p = 0; p < m;) {
     bs.push_back(p);
+
     if constexpr (c10::is_complex<scalar_t>::value) {
       p += 1;
     } else {
       p += (p + 1 < m && T[(p + 1) + p * ld] != scalar_t(0)) ? 2 : 1;
     }
   }
+
   bs.push_back(m);
   const int64_t nb = static_cast<int64_t>(bs.size()) - 1;
 
   for (const auto b : c10::irange(nb)) {
     const int64_t p = bs[b];
+
     if (bs[b + 1] - p == 1) {
       if constexpr (!c10::is_complex<scalar_t>::value) {
         TORCH_CHECK(T[p + p * ld] >= -nrm * std::sqrt(std::numeric_limits<value_t>::epsilon()),
@@ -399,6 +406,7 @@ static void matrix_sqrt_quasitri(const scalar_t* T, scalar_t* U, int64_t m, int6
           "principal square root is complex. Cast the input to a complex dtype.");
       }
       U[p + p * ld] = matrix_sqrt_sqrt_diag<scalar_t, value_t>(T[p + p * ld]);
+
     } else if constexpr (!c10::is_complex<scalar_t>::value) {
       matrix_sqrt_block2<scalar_t>(T + p + p * ld, U + p + p * ld, ld, nrm);
     }
@@ -409,11 +417,14 @@ static void matrix_sqrt_quasitri(const scalar_t* T, scalar_t* U, int64_t m, int6
       const int64_t pi = bs[bi], si = bs[bi + 1] - pi;
       const int64_t pj = bs[bj], sj = bs[bj + 1] - pj;
       std::array<scalar_t, 4> C = {};
+
       for (const auto cc : c10::irange(sj)) {
         for (const auto rr : c10::irange(si)) {
           scalar_t acc = T[(pi + rr) + (pj + cc) * ld];
+
           for (int64_t bk = bi + 1; bk < bj; ++bk) {
             const int64_t pk = bs[bk], sk = bs[bk + 1] - pk;
+
             for (const auto tt : c10::irange(sk)) {
               acc -= U[(pi + rr) + (pk + tt) * ld] * U[(pk + tt) + (pj + cc) * ld];
             }
@@ -447,6 +458,7 @@ static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
   std::fill(U, U + n * n, scalar_t(0));
 
   value_t nrm = 0;
+
   if constexpr (!c10::is_complex<scalar_t>::value) {
     for (const auto c : c10::irange(n)) {
       nrm = std::max(nrm, std::abs(T[c + c * ld]));
@@ -454,6 +466,7 @@ static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
   }
 
   std::vector<int64_t> bb;
+
   for (int64_t p = 0; p < n;) {
     bb.push_back(p);
     if constexpr (c10::is_complex<scalar_t>::value) {
@@ -466,15 +479,19 @@ static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
 
   constexpr int64_t kBlock = 64;
   std::vector<int64_t> starts;
+
   starts.push_back(0);
+
   for (const auto k : c10::irange(size_t{1}, bb.size())) {
     if (bb[k] - starts.back() >= kBlock) {
       starts.push_back(bb[k]);
     }
   }
+
   if (starts.back() != n) {
     starts.push_back(n);
   }
+
   const int64_t nb = static_cast<int64_t>(starts.size()) - 1;
 
   for (const auto b : c10::irange(nb)) {
@@ -516,7 +533,9 @@ static void matrix_sqrt_tri_sqrt(scalar_t* T, scalar_t* U, int64_t n) {
           U + si + si * ld, static_cast<int>(ld),
           U + sj + sj * ld, static_cast<int>(ld),
           C.data(), static_cast<int>(mi), &scale, &info);
+
       const scalar_t inv = scalar_t(value_t(1) / scale);
+      
       for (const auto cc : c10::irange(nj)) {
         for (const auto rr : c10::irange(mi)) {
           U[(si + rr) + (sj + cc) * ld] = C[rr + cc * mi] * inv;
