@@ -2268,17 +2268,55 @@ matrix_sqrt = _add_docstr(
     r"""
 linalg.matrix_sqrt(A) -> Tensor
 
-Computes the principal square root :math:`X` (i.e. :math:`XX = A`) via the generic
-LAPACK Schur algorithm (``?gees`` + ``?trsyl``, the Bjorck-Hammarling triangular
-recurrence). This routine works for any square matrix whose Schur form is triangular.
+Computes the principal square root of a square matrix.
 
-Supports input of float, double, cfloat and cdouble dtypes, and batches of
-matrices.
+Letting :math:`\mathbb{K}` be :math:`\mathbb{R}` or :math:`\mathbb{C}`,
+for a matrix :math:`A \in \mathbb{K}^{n \times n}` none of whose eigenvalues lie on
+the closed negative real axis :math:`(-\infty, 0]`, the **principal square root** is
+the unique matrix :math:`X` such that
+
+.. math::
+
+    XX = A,
+
+with every eigenvalue of :math:`X` in the open right half-plane
+:math:`\{z \in \mathbb{C} : \operatorname{Re}(z) > 0\}`. The square root of a general
+matrix is not unique; this is the distinguished root selected by that eigenvalue
+condition.
+
+It is computed from the (real or complex) Schur decomposition
+:math:`A = Z T Z^{\text{H}}`, with :math:`Z` unitary and :math:`T` upper triangular,
+followed by the Bjorck-Hammarling recurrence for the square root of :math:`T` (a
+blocked Schur method whose off-diagonal blocks are obtained from a Sylvester solve).
+Unlike a definition through the eigendecomposition, this is well defined even when
+:math:`A` is not diagonalizable.
+
+Supports input of float, double, cfloat and cdouble dtypes. Also supports batches of
+matrices, and if :attr:`A` is a batch of matrices then the output has the same batch
+dimensions.
+
+.. note:: This function is implemented on the CPU only. CUDA inputs are not
+          supported, as there is no general (non-Hermitian) Schur decomposition
+          available on the GPU.
+
+.. note:: The principal square root of a **real** matrix is itself real only when the
+          spectrum of :attr:`A` is real and non-negative. If a real :attr:`A` has a
+          negative real eigenvalue or a complex eigenvalue (a conjugate pair, which
+          appears as a :math:`2 \times 2` block of the real Schur form), the principal
+          square root is complex and this function raises an error; cast :attr:`A` to a
+          complex dtype to obtain it. A complex :attr:`A` is supported for any spectrum
+          off the closed negative real axis.
+
+.. seealso::
+
+        :func:`torch.linalg.matrix_sqrth` computes the square root of a symmetric
+        (resp. Hermitian) positive-definite matrix. It is faster, supports CUDA, and
+        returns a symmetric (resp. Hermitian) result.
+
+        :func:`torch.linalg.matrix_exp` computes the matrix exponential.
 
 Args:
-    A (Tensor): tensor of shape `(*, n, n)` where `*` is zero or more batch
-                dimensions. For the benchmark this is a batch of symmetric
-                (resp. Hermitian) positive-semidefinite matrices.
+    A (Tensor): tensor of shape `(*, n, n)` where `*` is zero or more batch dimensions.
 
 Examples::
 
@@ -2286,6 +2324,17 @@ Examples::
     >>> torch.linalg.matrix_sqrt(A)
     tensor([[1.4142, 0.0000],
             [0.0000, 3.0000]])
+
+    >>> A = torch.tensor([[5., 4.], [0., 9.]])  # nonsymmetric, real positive spectrum
+    >>> X = torch.linalg.matrix_sqrt(A)
+    >>> torch.allclose(X @ X, A)
+    True
+
+    >>> A = torch.randn(2, 3, 3)
+    >>> A = A @ A.mT + 3 * torch.eye(3)  # batch of symmetric positive-definite matrices
+    >>> X = torch.linalg.matrix_sqrt(A)
+    >>> torch.allclose(X @ X, A, atol=1e-5)
+    True
 """,
 )
 
