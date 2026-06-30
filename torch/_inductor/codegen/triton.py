@@ -14,7 +14,7 @@ import operator
 import os
 import textwrap
 from abc import abstractmethod
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from functools import lru_cache
 from typing import Any, cast, TYPE_CHECKING, TypeVar
 
@@ -913,7 +913,8 @@ class TritonPrinter(PythonPrinter):  # noqa: docstring_linter
 
     @staticmethod
     def _value_expr_symbol_cast_dtype(expr: sympy.Symbol) -> str | None:
-        if not V.kernel.codegen_value_expr_symbol_casts:
+        emitted_index_dtype = getattr(V.kernel, "_value_expr_symbol_source_dtype", None)
+        if emitted_index_dtype is None:
             return None
 
         index_dtype = V.kernel.get_index_dtype_as_torch_dtype()
@@ -921,7 +922,6 @@ class TritonPrinter(PythonPrinter):  # noqa: docstring_linter
             return None
 
         cast_dtype = V.kernel.dtype_to_str(index_dtype)
-        emitted_index_dtype = V.kernel.codegen_value_expr_symbol_source_dtype
 
         if emitted_index_dtype not in ("tl.int32", "tl.int64"):
             raise AssertionError(f"unexpected index dtype: {emitted_index_dtype}")
@@ -2465,10 +2465,13 @@ class TritonKernelOverrides(TritonOverrides):
         return cls._shaped_constant(value, dtype, shape=shape)
 
     @classmethod
-    def index_expr(cls, expr, dtype):
+    def index_expr(cls, expr, dtype, *, value_expr_symbol_source_dtype=None):
         expr = _materialize_trunc_to_float_expr(expr, dtype)
         indexing = V.kernel.indexing(
-            expr, block_ptr=False, tma_compatibility_checker=None
+            expr,
+            block_ptr=False,
+            tma_compatibility_checker=None,
+            value_expr_symbol_source_dtype=value_expr_symbol_source_dtype,
         )
         if not isinstance(indexing, IndexingOptions):
             raise AssertionError(f"expected IndexingOptions, got {type(indexing)}")
@@ -2511,25 +2514,14 @@ class TritonKernelOverrides(TritonOverrides):
         index dtype before emitting, casting range symbols before integer
         arithmetic, and casting the result if needed.
         """
-        real_index_dtype = V.kernel._index_dtype
-        real_codegen_value_expr_symbol_casts = V.kernel.codegen_value_expr_symbol_casts
-        real_codegen_value_expr_symbol_source_dtype = (
-            V.kernel.codegen_value_expr_symbol_source_dtype
+        value_expr_symbol_source_dtype = (
+            V.kernel.index_dtype if dtype in (torch.int32, torch.int64) else None
         )
-        V.kernel.codegen_value_expr_symbol_source_dtype = V.kernel.index_dtype
-        V.kernel._index_dtype = (
-            dtype if dtype in (torch.int32, torch.int64) else torch.int64
-        )
-        V.kernel.codegen_value_expr_symbol_casts = dtype in (torch.int32, torch.int64)
-        try:
-            var = cls.index_expr(expr, dtype)
-        finally:
-            V.kernel._index_dtype = real_index_dtype
-            V.kernel.codegen_value_expr_symbol_casts = (
-                real_codegen_value_expr_symbol_casts
-            )
-            V.kernel.codegen_value_expr_symbol_source_dtype = (
-                real_codegen_value_expr_symbol_source_dtype
+        with V.kernel.value_expr_index_dtype(dtype):
+            var = cls.index_expr(
+                expr,
+                dtype,
+                value_expr_symbol_source_dtype=value_expr_symbol_source_dtype,
             )
         if var.dtype != dtype:
             var = V.kernel.cse.generate(
@@ -3134,6 +3126,38 @@ class TMACompatibilityChecker:
                     )
                     return False
 
+                # When no_x_dim is True, XBLOCK is fixed at 1. TMA cannot
+                # be used if the innermost block is XBLOCK and the minimum
+                # required size exceeds 1.
+                if (
+                    self.kernel.no_x_dim
+                    and innermost_block_symt == SymT.XBLOCK
+                    and min_block_size > 1
+                ):
+                    log.debug(
+                        "%s no_x_dim kernel has XBLOCK fixed at 1 but TMA requires min block size %d",
+                        self.failed_debug_prefix,
+                        min_block_size,
+                    )
+                    return False
+
+                # In combo kernels without per-subkernel blocks, XBLOCK is
+                # shared and may be forced to 1 by a sibling sub-kernel.
+                # Reject TMA when the innermost block is XBLOCK since we
+                # cannot guarantee it will meet the 16-byte minimum.
+                if (
+                    self.kernel.is_combo_kernel
+                    and not self.kernel.per_subkernel_blocks
+                    and innermost_block_symt == SymT.XBLOCK
+                    and min_block_size > 1
+                ):
+                    log.debug(
+                        "%s combo kernel with shared XBLOCK cannot guarantee TMA min block size %d",
+                        self.failed_debug_prefix,
+                        min_block_size,
+                    )
+                    return False
+
                 block_type_str = self.kernel.index_to_str(innermost_block_type)
                 # Check block sizes if the user has provided a fixed triton config
                 if self.kernel.fixed_config:
@@ -3210,6 +3234,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         self.is_combo_kernel: bool = is_combo_kernel
         self.per_subkernel_blocks: bool = per_subkernel_blocks
         super().__init__(tiling, **kwargs)
+        self._value_expr_symbol_source_dtype: str | None = None
         self.cse = TritonCSE(self.newvar_prefix, self.suffix)
         # Cache of values that can be reused for the prologue.
         self.prologue_cache: dict[str, str] = {}
@@ -3316,6 +3341,30 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
 
     def dtype_to_str(self, dtype: torch.dtype) -> str:
         return triton_type(dtype)
+
+    @contextlib.contextmanager
+    def value_expr_index_dtype(self, dtype: torch.dtype) -> Iterator[None]:
+        """
+        Temporarily emit a value-producing index expression with the requested
+        integer dtype.
+        """
+        prior_index_dtype = self._index_dtype
+        self._index_dtype = (
+            dtype if dtype in (torch.int32, torch.int64) else torch.int64
+        )
+        try:
+            yield
+        finally:
+            self._index_dtype = prior_index_dtype
+
+    @contextlib.contextmanager
+    def _value_expr_symbol_casts(self, source_dtype: str | None) -> Iterator[None]:
+        prior_symbol_source_dtype = self._value_expr_symbol_source_dtype
+        self._value_expr_symbol_source_dtype = source_dtype
+        try:
+            yield
+        finally:
+            self._value_expr_symbol_source_dtype = prior_symbol_source_dtype
 
     def should_use_cooperative_reduction(self) -> bool:
         return self.inside_reduction and V.choices.should_use_cooperative_reduction(
@@ -3445,6 +3494,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         block_ptr=False,
         tma_compatibility_checker: TMACompatibilityChecker | None = None,
         mask_constant_index=False,
+        value_expr_symbol_source_dtype: str | None = None,
     ):
         """
         Compute the index and mask to pass to tl.load() or tl.store()
@@ -3786,7 +3836,8 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 return options
         expand_str = None
         expand_shape: BlockShapeType = None
-        index_str = self.index_to_str(index)
+        with self._value_expr_symbol_casts(value_expr_symbol_source_dtype):
+            index_str = self.index_to_str(index)
 
         def _get_expand_str():
             if copy_shape:
@@ -6668,9 +6719,17 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         if torch.version.hip is not None and (
             self.atomic_add_found or not config.triton.emit_pointer_range_32
         ):
-            triton_meta["configs"] = [config_of(signature, pointer_range_override=())]
+            triton_meta["configs"] = [
+                config_of(
+                    signature,
+                    pointer_range_override=(),
+                    skip_cpp_wrapper_input_tensor_alignment=True,
+                )
+            ]
         else:
-            triton_meta["configs"] = [config_of(signature)]
+            triton_meta["configs"] = [
+                config_of(signature, skip_cpp_wrapper_input_tensor_alignment=True)
+            ]
 
         for helper in self.helper_functions:
             code.writeline("")
@@ -7278,7 +7337,10 @@ class FusedUserDefinedTritonKernel(TritonKernel):
                 shape=value.shape,
             )
         else:
-            super().store(name, index, value, mode)
+            raise AssertionError(
+                f"Epilogue attempted to store to '{name}'. "
+                "Inductor indexing variables are not defined in user kernel scope. "
+            )
 
     # returns a str which is the src code of a modified version of the user kernel that includes the epilogues
     def codegen(self) -> str:
