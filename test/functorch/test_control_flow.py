@@ -4,7 +4,6 @@ import functools
 import unittest
 
 import torch
-import torch._dynamo.config
 import torch.utils._pytree as pytree
 from functorch.experimental import control_flow
 from functorch.experimental.control_flow import cond
