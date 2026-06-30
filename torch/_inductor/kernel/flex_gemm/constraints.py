@@ -1,4 +1,6 @@
 # mypy: allow-untyped-defs
+"""Shared FlexGEMM local-reduce constants, contracts, and validation helpers."""
+
 import dataclasses
 from collections.abc import Sequence
 from typing import Any, Final, Literal, TypeAlias
