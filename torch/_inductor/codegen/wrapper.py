@@ -1900,6 +1900,11 @@ class PythonWrapperCodegen(CodeGen):
                 self._pending_alignment_copies.discard(name)
                 self.writeline(f"{name} = copy_if_misaligned({name})")
             elif name in self._multistream_alignment_copies:
+                # TODO: if the same input is read again on a stream after an
+                # intervening different stream (e.g. s1, s2, s1) this re-clones
+                # on the second s1 use -- correct, but an extra copy.  Tracking
+                # stream joins / per-(name, stream) clone names would let the
+                # later same-stream use reuse the earlier clone.
                 if self._alignment_aligned_stream.get(name) == stream:
                     continue
                 if name not in self._alignment_orig_saved:
