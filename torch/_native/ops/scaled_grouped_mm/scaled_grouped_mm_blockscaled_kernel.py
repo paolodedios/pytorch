@@ -19,9 +19,8 @@ class ClcGroupedGemmTileSchedulerHelper(utils.StaticPersistentGroupTileScheduler
     `delinearize_z(cta_tile_coord, problem_shape)` on a tile coordinate that
     comes from CLC dispatch instead of the base class's own iteration state.
 
-    Only the mainload warp uses this (post single-warp metadata broadcast);
-    the result is written to the `tile_meta` smem region and read by mma /
-    epilog warps after `tile_metadata_ready_barrier`.
+    For groups with non-uniform M/N, mainload broadcasts the result through
+    `tile_meta`. Uniform-M/N groups use direct arithmetic in each consumer.
 
     The base class constructor requires per-iteration state we don't use
     (num_persistent_clusters, current_work_linear_idx, cta_id_in_cluster,
@@ -122,6 +121,36 @@ class ClcGroupedGemmTileSchedulerHelper(utils.StaticPersistentGroupTileScheduler
             cluster_count_k,
         )
 
+    def delinearize_uniform_mn(self, cta_tile_coord, problem_shape_mnkl):
+        linear_idx = cta_tile_coord[2]
+        first_problem = self._get_problem_for_group(
+            problem_shape_mnkl, cutlass.Int32(0)
+        )
+        cluster_count_m, cluster_count_n, _ = cute.ceil_div(
+            (first_problem[0], first_problem[1], first_problem[2]),
+            self.cluster_tile_shape_mnk,
+        )
+        clusters_per_group = cluster_count_m * cluster_count_n
+        group_idx = linear_idx // clusters_per_group
+        cluster_tile_idx = linear_idx - group_idx * clusters_per_group
+        problem_mnkl = self._get_problem_for_group(problem_shape_mnkl, group_idx)
+        cluster_count_k = cute.ceil_div(problem_mnkl[2], self.cluster_tile_shape_mnk[2])
+        cta_tile_idx_m, cta_tile_idx_n = self._compute_cta_tile_coord(
+            cluster_tile_idx,
+            cta_tile_coord,
+            cluster_count_m,
+            cluster_count_n,
+        )
+        return utils.GroupSearchResult(
+            group_idx,
+            cta_tile_idx_m,
+            cta_tile_idx_n,
+            problem_mnkl[0],
+            problem_mnkl[1],
+            problem_mnkl[2],
+            cluster_count_k,
+        )
+
 
 class Sm100GroupedBlockScaledGemmKernel:
     """This example demonstrates an implementation of grouped blockscaled GEMM using a TMA plus Blackwell SM100 TensorCore
@@ -176,6 +205,7 @@ class Sm100GroupedBlockScaledGemmKernel:
         mma_tiler_mn: tuple[int, int],
         cluster_shape_mn: tuple[int, int],
         transpose_ab: bool = False,
+        uniform_mn_groups: bool = False,
     ):
         """Initializes the configuration for a Blackwell grouped blockscaled GEMM kernel.
 
@@ -195,6 +225,7 @@ class Sm100GroupedBlockScaledGemmKernel:
         self.use_2cta_instrs = mma_tiler_mn[0] == 256
         self.cluster_shape_mn = cluster_shape_mn
         self.transpose_ab = transpose_ab
+        self.uniform_mn_groups = uniform_mn_groups
         # K dimension is deferred in _setup_attributes
         self.mma_tiler = (*mma_tiler_mn, 1)
 
@@ -1214,10 +1245,16 @@ class Sm100GroupedBlockScaledGemmKernel:
 
             while work_tile.is_valid_tile:
                 cur_tile_coord = work_tile.tile_idx
-                grouped_gemm_cta_tile_info = group_gemm_ts_helper.delinearize_z(
-                    cur_tile_coord,
-                    problem_sizes_mnkl,
-                )
+                if cutlass.const_expr(self.uniform_mn_groups):
+                    grouped_gemm_cta_tile_info = (
+                        group_gemm_ts_helper.delinearize_uniform_mn(
+                            cur_tile_coord, problem_sizes_mnkl
+                        )
+                    )
+                else:
+                    grouped_gemm_cta_tile_info = group_gemm_ts_helper.delinearize_z(
+                        cur_tile_coord, problem_sizes_mnkl
+                    )
                 cur_k_tile_cnt = grouped_gemm_cta_tile_info.cta_tile_count_k
                 cur_group_idx = grouped_gemm_cta_tile_info.group_idx
                 # First-iteration handshake with MMA's tensormap init MUST
@@ -1229,19 +1266,16 @@ class Sm100GroupedBlockScaledGemmKernel:
                 if not tensormap_init_done:
                     self.tensormap_ab_init_barrier.arrive_and_wait()
                     tensormap_init_done = True
-                # Broadcast the per-tile metadata to mma + epilog warps via
-                # smem; they read after tile_metadata_ready_barrier instead
-                # of redoing delinearize_z in each warp. One thread writes,
-                # the named barrier provides the cross-warp visibility.
-                with cute.arch.elect_one():
-                    tile_meta_smem[0] = cur_group_idx
-                    tile_meta_smem[1] = grouped_gemm_cta_tile_info.cta_tile_idx_m
-                    tile_meta_smem[2] = grouped_gemm_cta_tile_info.cta_tile_idx_n
-                    tile_meta_smem[3] = cur_k_tile_cnt
-                    tile_meta_smem[4] = grouped_gemm_cta_tile_info.problem_shape_m
-                    tile_meta_smem[5] = grouped_gemm_cta_tile_info.problem_shape_n
-                    tile_meta_smem[6] = grouped_gemm_cta_tile_info.problem_shape_k
-                self.tile_metadata_ready_barrier.arrive_and_wait()
+                if cutlass.const_expr(not self.uniform_mn_groups):
+                    with cute.arch.elect_one():
+                        tile_meta_smem[0] = cur_group_idx
+                        tile_meta_smem[1] = grouped_gemm_cta_tile_info.cta_tile_idx_m
+                        tile_meta_smem[2] = grouped_gemm_cta_tile_info.cta_tile_idx_n
+                        tile_meta_smem[3] = cur_k_tile_cnt
+                        tile_meta_smem[4] = grouped_gemm_cta_tile_info.problem_shape_m
+                        tile_meta_smem[5] = grouped_gemm_cta_tile_info.problem_shape_n
+                        tile_meta_smem[6] = grouped_gemm_cta_tile_info.problem_shape_k
+                    self.tile_metadata_ready_barrier.arrive_and_wait()
                 is_group_changed = cur_group_idx != last_group_idx
                 # skip tensormap update if we're working on the same group
                 if is_group_changed:
@@ -1504,6 +1538,12 @@ class Sm100GroupedBlockScaledGemmKernel:
             #
             # Persistent tile scheduling loop — CLC-driven
             #
+            group_gemm_ts_helper = ClcGroupedGemmTileSchedulerHelper.create_for_clc(
+                group_count,
+                tile_sched_params,
+                self.cluster_tile_shape_mnk,
+                problem_sizes_mnkl,
+            )
             work_tile = clc_state.initial_work_tile_info(total_num_clusters[0])
             ab_consumer_state = pipeline.make_pipeline_state(
                 pipeline.PipelineUserType.Consumer, self.num_ab_stage
@@ -1512,11 +1552,16 @@ class Sm100GroupedBlockScaledGemmKernel:
                 pipeline.PipelineUserType.Producer, self.num_acc_stage
             )
             while work_tile.is_valid_tile:
-                # MMA warp only needs cta_tile_count_k for this tile; read
-                # the value broadcast by the mainload warp via tile_meta
-                # smem (slot [3]) after the metadata-ready barrier.
-                self.tile_metadata_ready_barrier.arrive_and_wait()
-                cur_k_tile_cnt = tile_meta_smem[3]
+                if cutlass.const_expr(self.uniform_mn_groups):
+                    grouped_gemm_cta_tile_info = (
+                        group_gemm_ts_helper.delinearize_uniform_mn(
+                            work_tile.tile_idx, problem_sizes_mnkl
+                        )
+                    )
+                    cur_k_tile_cnt = grouped_gemm_cta_tile_info.cta_tile_count_k
+                else:
+                    self.tile_metadata_ready_barrier.arrive_and_wait()
+                    cur_k_tile_cnt = tile_meta_smem[3]
 
                 # (MMA, MMA_M, MMA_N)
                 tCtAcc = tCtAcc_base[(None, None, None, acc_producer_state.index)]
@@ -1692,11 +1737,14 @@ class Sm100GroupedBlockScaledGemmKernel:
             )
 
             #
-            # Persistent tile scheduling loop. Per-tile group/coord info is
-            # broadcast by the mainload warp via the tile_meta smem region
-            # and consumed here after tile_metadata_ready_barrier; no
-            # per-warp delinearize_z is needed.
+            # Persistent tile scheduling loop.
             #
+            group_gemm_ts_helper = ClcGroupedGemmTileSchedulerHelper.create_for_clc(
+                group_count,
+                tile_sched_params,
+                self.cluster_tile_shape_mnk,
+                problem_sizes_mnkl,
+            )
             work_tile = clc_state.initial_work_tile_info(total_num_clusters[0])
             # Count tiles consumed by this warp; replaces tile_sched.num_tiles_executed.
             # Each iteration produces subtile_cnt subtiles; num_prev_subtiles is used
@@ -1728,21 +1776,27 @@ class Sm100GroupedBlockScaledGemmKernel:
             last_group_idx = cutlass.Int32(-1)
 
             while work_tile.is_valid_tile:
-                # Wait for the mainload warp's metadata broadcast and read
-                # ALL values into locals immediately. `tile_meta` is single-
-                # buffered, and mainload's next-iteration write begins as
-                # soon as it passes barrier-N + finishes its tensormap/TMA
-                # work — well before the epilog finishes the subtile loop
-                # below. Reading any tile_meta entry later in the iteration
-                # (e.g., inside the conditional tensormap-update branch)
-                # would race against that next-iteration overwrite.
-                self.tile_metadata_ready_barrier.arrive_and_wait()
-                cur_group_idx = tile_meta_smem[0]
-                cta_tile_idx_m = tile_meta_smem[1]
-                cta_tile_idx_n = tile_meta_smem[2]
-                problem_shape_m = tile_meta_smem[4]
-                problem_shape_n = tile_meta_smem[5]
-                problem_shape_k = tile_meta_smem[6]
+                if cutlass.const_expr(self.uniform_mn_groups):
+                    grouped_gemm_cta_tile_info = (
+                        group_gemm_ts_helper.delinearize_uniform_mn(
+                            work_tile.tile_idx, problem_sizes_mnkl
+                        )
+                    )
+                    cur_group_idx = grouped_gemm_cta_tile_info.group_idx
+                    cta_tile_idx_m = grouped_gemm_cta_tile_info.cta_tile_idx_m
+                    cta_tile_idx_n = grouped_gemm_cta_tile_info.cta_tile_idx_n
+                    problem_shape_m = grouped_gemm_cta_tile_info.problem_shape_m
+                    problem_shape_n = grouped_gemm_cta_tile_info.problem_shape_n
+                    problem_shape_k = grouped_gemm_cta_tile_info.problem_shape_k
+                else:
+                    # Read all values immediately because tile_meta is single-buffered.
+                    self.tile_metadata_ready_barrier.arrive_and_wait()
+                    cur_group_idx = tile_meta_smem[0]
+                    cta_tile_idx_m = tile_meta_smem[1]
+                    cta_tile_idx_n = tile_meta_smem[2]
+                    problem_shape_m = tile_meta_smem[4]
+                    problem_shape_n = tile_meta_smem[5]
+                    problem_shape_k = tile_meta_smem[6]
                 is_group_changed = cur_group_idx != last_group_idx
                 if is_group_changed and warp_idx == self.epilog_warp_id[0]:
                     # Inline C tensormap update; replaces the cross-warp

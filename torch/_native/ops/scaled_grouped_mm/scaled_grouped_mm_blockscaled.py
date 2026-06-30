@@ -559,6 +559,7 @@ def _allocate_output(
 def _compile_scaled_grouped_mm_blockscaled(
     sm_count: int,
     max_active_clusters: int,
+    uniform_mn_groups: bool,
     mma_tile_mn: tuple[int, int],
     cluster_shape_mn: tuple[int, int],
     transpose_ab: bool,
@@ -654,6 +655,7 @@ def _compile_scaled_grouped_mm_blockscaled(
         mma_tiler_mn=mma_tile_mn,
         cluster_shape_mn=cluster_shape_mn,
         transpose_ab=transpose_ab,
+        uniform_mn_groups=uniform_mn_groups,
     )
 
     compiled = _compile_with_safe_names(
@@ -983,6 +985,7 @@ def scaled_grouped_mm_blockscaled(
         _compile_scaled_grouped_mm_blockscaled(
             sm_count,
             max_active_clusters,
+            b_is_2d,
             config.mma_tile_mn,
             config.cluster_shape_mn,
             config.transpose_ab,
