@@ -47,9 +47,8 @@ class Stream(torch._C._CudaStreamBase):
         # setting device manager is expensive, so we avoid it unless necessary
         if device is None or ("stream_id" in kwargs and "device_index" in kwargs):
             return super().__new__(cls, priority=priority, reserve=reserve, **kwargs)
-        else:
-            with torch.cuda.device(device):
-                return super().__new__(cls, priority=priority, reserve=reserve, **kwargs)
+        with torch.cuda.device(device):
+            return super().__new__(cls, priority=priority, reserve=reserve, **kwargs)
 
     def wait_event(self, event: Event | torch.Event) -> None:
         r"""Make all future work submitted to the stream wait for an event.
