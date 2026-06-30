@@ -1404,6 +1404,36 @@ class TestGeneratorClose(GeneratorTestsBase):
         self.assertEqual(y, t.sin() + ref)
         self.assertEqual(z, 1)
 
+    def test_close_open_generator_fast_path(self):
+        # An open generator whose only pending work is a finally block must be
+        # closed at compile_subgraph time even when the frame is eligible for
+        # the fast path (single frame, all-tensor stack, empty side effects).
+        # Returning an input tensor keeps side effects empty -- a freshly
+        # produced tensor (e.g. t.sin()) is tracked as a new mutation and would
+        # divert to the slow path, which closes generators unconditionally.
+        # The fast-path guard `not self.local_generators` at output_graph.py is
+        # what forces close_local_generators to run here so the finally fires.
+        z = 0
+
+        def whoo(t):
+            nonlocal z
+            try:
+                yield t
+                yield t
+            finally:
+                z += 1
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(t):
+            gen = whoo(t)
+            next(gen)  # start generator; finally now pending
+            return t  # return input tensor -> fast-path eligible
+
+        t = torch.randn(2)
+        y = fn(t)
+        self.assertEqual(y, t)
+        self.assertEqual(z, 1)
+
 
 class TestGeneratorThrow(GeneratorTestsBase):
     def test_throw(self):
