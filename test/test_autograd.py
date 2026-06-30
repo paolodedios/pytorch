@@ -29,7 +29,6 @@ from operator import mul
 from typing import TYPE_CHECKING
 
 import torch
-import torch._dynamo.config
 import torch.autograd._functions
 import torch.autograd.forward_ad as fwAD
 from torch import inf, nan, nn
