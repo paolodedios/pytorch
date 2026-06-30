@@ -1477,15 +1477,21 @@ VECTORIZED_SUPPORT_SCALARS_FOR_BINARY_FUNC(interleave2)
 #undef VECTORIZED_SUPPORT_SCALARS_FOR_BINARY_OP
 #undef VECTORIZED_SUPPORT_SCALARS_FOR_TERNARY_FUNC
 
+// Precondition: `src` and `dst` must not overlap. The `__restrict`
+// qualifiers let the compiler auto-vectorize the loop by assuming the
+// buffers do not alias; this always holds for a type conversion between
+// distinct source and destination buffers. Passing overlapping buffers is
+// undefined behavior.
 template <typename src_T, typename dst_T>
-inline void convert(const src_T* src, dst_T* dst, int64_t n) {
+inline void convert(
+    const src_T* __restrict src,
+    dst_T* __restrict dst,
+    int64_t n) {
 #ifndef _MSC_VER
 #pragma unroll
 #endif
-  for ([[maybe_unused]] const auto i : c10::irange(n)) {
-    *dst = c10::convert<dst_T>(c10::load(src));
-    src++;
-    dst++;
+  for (const auto i : c10::irange(n)) {
+    dst[i] = c10::convert<dst_T>(c10::load(src + i));
   }
 }
 
