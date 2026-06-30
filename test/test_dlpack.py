@@ -917,13 +917,17 @@ class TestReadOnlyDLPack(TestCase):
         self.assertTrue(torch._C._is_cow_tensor(base))
         self.assertTrue(torch._C._is_cow_tensor(clone))
 
-        data_before = torch._C._data_address(clone)
+        # const_data_ptr() is the pointer the read-only export actually hands
+        # out (storage base + view offset) and does not materialize COW, so it
+        # is the right thing to compare against. _data_address would only match
+        # when storage_offset() == 0.
+        data_before = clone.const_data_ptr()
         clone.__dlpack__(max_version=(1, 0), read_only=True)
 
         # Still copy-on-write, same data pointer, source untouched too.
         self.assertTrue(torch._C._is_cow_tensor(clone))
         self.assertTrue(torch._C._is_cow_tensor(base))
-        self.assertEqual(torch._C._data_address(clone), data_before)
+        self.assertEqual(clone.const_data_ptr(), data_before)
 
     def test_writable_export_materializes_cow(self):
         # Control: the default (writable) export goes through data_ptr(), which

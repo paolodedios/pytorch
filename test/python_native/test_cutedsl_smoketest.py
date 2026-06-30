@@ -823,8 +823,10 @@ class TestCuteDSLReadOnlyWrapper(TestCase):
         b_cow = b._lazy_clone()
         self.assertTrue(torch._C._is_cow_tensor(a_cow))
         self.assertTrue(torch._C._is_cow_tensor(b_cow))
-        a_addr = torch._C._data_address(a_cow)
-        b_addr = torch._C._data_address(b_cow)
+        # const_data_ptr() is the exported pointer and does not materialize COW;
+        # _data_address would only match when storage_offset() == 0.
+        a_addr = a_cow.const_data_ptr()
+        b_addr = b_cow.const_data_ptr()
 
         a_cute = from_dlpack(
             ReadOnlyTensorWrapper(a_cow), enable_tvm_ffi=True
@@ -837,8 +839,8 @@ class TestCuteDSLReadOnlyWrapper(TestCase):
         # Wrapping read-only inputs must not materialize the COW tensors.
         self.assertTrue(torch._C._is_cow_tensor(a_cow))
         self.assertTrue(torch._C._is_cow_tensor(b_cow))
-        self.assertEqual(torch._C._data_address(a_cow), a_addr)
-        self.assertEqual(torch._C._data_address(b_cow), b_addr)
+        self.assertEqual(a_cow.const_data_ptr(), a_addr)
+        self.assertEqual(b_cow.const_data_ptr(), b_addr)
 
         compiled = cute.compile(_host, a_cute, b_cute, c_cute)
         compiled(a_cute, b_cute, c_cute)
@@ -849,8 +851,8 @@ class TestCuteDSLReadOnlyWrapper(TestCase):
         # And still copy-on-write after the launch (kernel reads device memory).
         self.assertTrue(torch._C._is_cow_tensor(a_cow))
         self.assertTrue(torch._C._is_cow_tensor(b_cow))
-        self.assertEqual(torch._C._data_address(a_cow), a_addr)
-        self.assertEqual(torch._C._data_address(b_cow), b_addr)
+        self.assertEqual(a_cow.const_data_ptr(), a_addr)
+        self.assertEqual(b_cow.const_data_ptr(), b_addr)
 
     @unittest.skipIf(not SM80OrLater, "SM80+ required")
     def test_readonly_wrapper_routes_to_const_exchange_api(self):
@@ -894,13 +896,13 @@ class TestCuteDSLReadOnlyWrapper(TestCase):
         a = torch.randn(8, device="cuda", dtype=torch.float32)
         a_cow = a._lazy_clone()
         self.assertTrue(torch._C._is_cow_tensor(a_cow))
-        addr = torch._C._data_address(a_cow)
+        addr = a_cow.const_data_ptr()
 
         # This is exactly the call cuteDSL's bare path makes: __dlpack__(stream=-1).
         back = torch.from_dlpack(ReadOnlyTensorWrapper(a_cow))
 
         self.assertTrue(torch._C._is_cow_tensor(a_cow))
-        self.assertEqual(torch._C._data_address(a_cow), addr)
+        self.assertEqual(a_cow.const_data_ptr(), addr)
         torch.testing.assert_close(back, a)
 
 
