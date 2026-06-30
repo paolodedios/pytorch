@@ -903,6 +903,13 @@ instantiate_device_type_tests(
 )
 
 
+# ReadOnlyTensorWrapper is an eager, runtime-only export shim that rejects all
+# ops except the DLPack protocol; Dynamo tracing probes it (e.g. descriptor
+# __get__) and trips that rejection, and __dlpack__ does not work under Dynamo
+# anyway (see skips above). These tests are eager-only.
+@skipIfTorchDynamo(
+    "ReadOnlyTensorWrapper is eager-only; __dlpack__ unsupported in dynamo"
+)
 class TestReadOnlyDLPack(TestCase):
     # These tests exercise the read-only DLPack export path and the
     # ReadOnlyTensorWrapper subclass. The behavior (const_data_ptr export, the
