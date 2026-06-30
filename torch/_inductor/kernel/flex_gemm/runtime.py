@@ -15,7 +15,6 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     local_reduce_compressed_shape,
     local_reduce_default_combine_key,
     local_reduce_default_finalize_key,
-    LOCAL_REDUCE_FEEDS_MAIN_KWARG,
     LOCAL_REDUCE_FINALIZE_KEY_KWARG,
     LOCAL_REDUCE_GROUP_KWARG,
     LOCAL_REDUCE_OUT_KWARG,
