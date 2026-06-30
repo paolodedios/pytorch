@@ -142,6 +142,13 @@ decomps_to_exclude: list[torch._ops.OpOverload | torch._ops.OpOverloadPacket] = 
     aten._foreach_addcdiv_,
     aten.lerp,
     aten.lerp_,
+    # log_sigmoid_forward: for float32 x >= ~87.3, exp(-x) is a subnormal (~6e-39).
+    # Triton kernels run with FTZ enabled (disable_ftz: False in triton_meta); libdevice
+    # inlines log1pf as a polynomial of fma.rn.ftz.f32 instructions, and the final fma
+    # that would return ~exp(-x) (subnormal) is FTZ-flushed to 0.  This makes the result
+    # 0 instead of the correct negative subnormal, flipping signbit (gh-188541).
+    # The lowering in lowering.py routes CUDA through the native ATen kernel.
+    aten.log_sigmoid_forward,
 ]
 
 remove_decompositions(decompositions, decomps_to_exclude)

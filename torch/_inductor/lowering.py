@@ -2975,6 +2975,34 @@ make_fallback(aten.randn_like, override_decomp=True)
 make_fallback(aten.randint_like, override_decomp=True)
 make_fallback(aten.rrelu_with_noise_functional)
 
+
+@register_lowering(aten.log_sigmoid_forward.default, type_promotion_kind=None)
+def log_sigmoid_forward(self):
+    # For float32 x >= ~87.3, exp(-x) is a subnormal (~6e-39).  Triton kernels run
+    # with FTZ enabled (disable_ftz: False in triton_meta).  libdevice inlines
+    # log1pf as a polynomial of fma.rn.ftz.f32 instructions; for subnormal input
+    # exp(-x), the final fma that would return ~exp(-x) (subnormal) is FTZ-flushed
+    # to 0, making the result 0 instead of the correct negative subnormal and
+    # flipping signbit (gh-188541).  The native CUDA ATen kernel avoids this.
+    if self.get_device().type == "cuda":
+        return pytree.tree_map(
+            TensorBox.create,
+            ir.FallbackKernel.create(aten.log_sigmoid_forward.default, self),
+        )
+    # CPU and other non-CUDA backends: the standard-library log1p correctly
+    # handles subnormal inputs; apply the decomposition inline for fusion.
+    zero = full([], 0.0, dtype=self.get_dtype(), device=self.get_device())
+    min_ = minimum(zero, self)
+    z = exp(neg(abs(self)))
+    # Match upstream buffer semantics: XPU has a native backward kernel and
+    # doesn't need the intermediate z; CPU and others save it for backward.
+    if self.get_device().type == "xpu":
+        buffer = full([0], 0.0, dtype=self.get_dtype(), device=self.get_device())
+    else:
+        buffer = z
+    return [sub(min_, log1p(z)), buffer]
+
+
 # TODO: mlazos reevaluate if we want to codegen something different
 make_fallback(torch.ops.streams.record_event.default)
 make_fallback(torch.ops.streams.wait_event.default)
@@ -8348,7 +8376,7 @@ register_lowering(
     aten.special_erf, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.INT_TO_FLOAT
 )(erf)
 
-register_pointwise_numeric(aten.log1p)
+log1p = register_pointwise_numeric(aten.log1p)
 register_pointwise_numeric(aten.tan)
 register_pointwise_numeric(aten.tanh)
 register_pointwise_numeric_ldf64(aten.log)
