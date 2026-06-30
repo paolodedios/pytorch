@@ -1205,7 +1205,7 @@ class TestUnbackedSymints(InductorTestCase):
         with V.set_graph_handler(graph):
             wrapper.codegen_inputs()
         code = wrapper.prefix.getvalue()
-        self.assertIn("arg0_1_size_0 = arg0_1_size[0]", code)
+        self.assertNotIn("arg0_1_size_0 = arg0_1_size[0]", code)
         self.assertIn("s3 = arg1_1_size[0]", code)
 
         cpp_wrapper = CppWrapperCpu.__new__(CppWrapperCpu)
@@ -1214,7 +1214,7 @@ class TestUnbackedSymints(InductorTestCase):
         with V.set_graph_handler(graph):
             cpp_wrapper.codegen_inputs()
         cpp_code = cpp_wrapper.prefix.getvalue()
-        self.assertIn("int64_t arg0_1_size_0 = arg0_1_size[0];", cpp_code)
+        self.assertNotIn("int64_t arg0_1_size_0 = arg0_1_size[0];", cpp_code)
         self.assertIn("int64_t s3 = arg1_1_size[0];", cpp_code)
 
         s4 = sympy.Symbol("s4", integer=True)

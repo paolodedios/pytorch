@@ -814,11 +814,12 @@ class EnterDeviceContextManagerWithStreamInfoLine(EnterDeviceContextManagerLine)
     Attributes:
         num_streams: Number of streams (determined by user annotations on nodes).
         stream_idx_to_user_obj_idx: Maps stream_idx → user_object_index for
-            retrieving user stream objects via get_external_object_by_index.
+            retrieving user stream objects via _get_stream_by_index.
     """
 
     num_streams: int = 1
     stream_idx_to_user_obj_idx: dict[int, int] = dataclasses.field(default_factory=dict)
+    setup_stream_cache: bool = True
 
     def codegen(self, code: IndentedBuffer) -> None:
         """Generate context switching and stream retrieval code."""
@@ -826,14 +827,18 @@ class EnterDeviceContextManagerWithStreamInfoLine(EnterDeviceContextManagerLine)
             super().codegen(code)
         else:
             super().codegen(code)
-            code.writeline(f"{DEFAULT_STREAM} = {V.graph.device_ops.current_stream()}")
+
+            if self.setup_stream_cache:
+                code.writeline(
+                    f"{DEFAULT_STREAM} = {V.graph.device_ops.current_stream()}"
+                )
 
             if self.num_streams > 1:
                 for i in range(1, self.num_streams):
                     user_obj_idx = self.stream_idx_to_user_obj_idx[i]
                     code.writeline(
                         f"{STREAM_NAME_TEMPLATE.format(stream_idx=i)} "
-                        f"= get_external_object_by_index({user_obj_idx})",
+                        f"= _get_stream_by_index({user_obj_idx})",
                     )
 
 
@@ -1321,6 +1326,7 @@ class PythonWrapperCodegen(CodeGen):
 
     def __init__(self):
         super().__init__()
+        self._last_default_stream_device: int | None = None
         self._pending_input_asserts: dict[str, tuple[str, str]] = {}
         self._pending_alignment_copies: OrderedSet[str] = OrderedSet()
         self._names_iter: Iterator[int] = count()
@@ -1899,17 +1905,19 @@ class PythonWrapperCodegen(CodeGen):
             if stream_idx_to_user_obj_idx is None:
                 raise AssertionError("expected stream_idx_to_user_obj_idx to be set")
             import_line = (
-                "from torch._dynamo.graph_bytecode_inputs import "
-                "get_external_object_by_index"
+                "from torch._dynamo.variables.streams import _get_stream_by_index"
             )
             if not self.imports.contains(import_line):
                 self.imports.writeline(import_line)
+            setup_stream_cache = self._last_default_stream_device != device_idx
+            self._last_default_stream_device = device_idx
             self.writeline(
                 EnterDeviceContextManagerWithStreamInfoLine(
                     device_idx,
                     self.last_seen_device_guard_index,
                     num_streams,
                     stream_idx_to_user_obj_idx,
+                    setup_stream_cache=setup_stream_cache,
                 ),
             )
         else:
@@ -2463,7 +2471,7 @@ class PythonWrapperCodegen(CodeGen):
     def codegen_input_symbol_assignment(
         self,
         name: str,
-        value: ir.TensorBox,
+        value: ir.TensorBox | sympy.Expr,
         bound_vars: OrderedSet[sympy.Symbol],
         deferred_symbol_assignments=None,
     ):
@@ -2484,7 +2492,6 @@ class PythonWrapperCodegen(CodeGen):
             # Deferred runtime asserts and graph input metadata can reference
             # either side of a backed-symbol replacement. Emit aliases so both
             # the pre-replacement and canonical names are defined.
-            from torch.utils._sympy.symbol import symbol_is_type, SymT
 
             def is_backed_symbol(s: sympy.Symbol) -> bool:
                 return not symbol_is_type(s, (SymT.UNBACKED_INT, SymT.UNBACKED_FLOAT))
@@ -2550,11 +2557,11 @@ class PythonWrapperCodegen(CodeGen):
                 free_symbol = undefined_symbols.pop()
                 base_size_or_stride = name_fn(base_name)
                 dim_value = sympy.Symbol(f"{base_size_or_stride}_{dim}", integer=True)
-                code.writeline(f"{dim_value} = {base_size_or_stride}[{dim}]")
                 solution = try_solve(sympy.Eq(sym_or_exp, dim_value), free_symbol)
                 if solution is None:
                     return False
 
+                code.writeline(f"{dim_value} = {base_size_or_stride}[{dim}]")
                 expr = _rewrite_symbol_solution_for_int_codegen(solution[1])
                 code.writeline(f"{free_symbol} = {pexpr(expr)}")
                 bound_vars.add(free_symbol)
@@ -3078,6 +3085,7 @@ class PythonWrapperCodegen(CodeGen):
         reset_to_zero_args,
         grids: list[list[int | sympy.Expr]],
         epilogue_fusion: tuple[ir.ComputedBuffer, str] | None,
+        launch_kwargs: tuple[str, ...],
     ):
         """Codegen a user-defined Triton kernel and return its cache entry.
 
@@ -3088,6 +3096,10 @@ class PythonWrapperCodegen(CodeGen):
         inductor_meta, extra_launcher_call_args)``; subsequent calls with the
         same ``cache_key`` reuse the previously assigned name.
         """
+        from torch._dynamo.device_interface import get_interface_for_device
+
+        from ..runtime.triton_compat import GPUTarget
+        from ..runtime.triton_helpers import try_filter_backend_options_for_target
         from ..runtime.triton_heuristics import (
             config_to_dict,
             FixedGrid,
@@ -3215,9 +3227,11 @@ class PythonWrapperCodegen(CodeGen):
             indices=arg_indices,
             argdefs=[ArgName(x) for x in kernel.arg_names],
         )
+        device = V.graph.get_current_device_or_throw()
+        device_props = DeviceProperties.create(device)
         triton_meta: dict[str, Any] = {
             "signature": triton_signature,
-            "device": DeviceProperties.create(V.graph.get_current_device_or_throw()),
+            "device": device_props,
             # Triton compiler includes equal_to_1 args into constants even
             # when they are not constexpr. otherwise there may be a segfault
             # during launching the Inductor-compiled Triton kernel.
@@ -3243,6 +3257,29 @@ class PythonWrapperCodegen(CodeGen):
 
         if reset_to_zero_args:
             triton_meta["reset_to_zero"] = tuple(reset_to_zero_args)
+
+        backend_option_candidates = {
+            name: kwargs[name] for name in launch_kwargs if name in kwargs
+        }
+        if backend_option_candidates:
+            get_interface_for_device(device).raise_if_triton_unavailable(device)
+            assert GPUTarget is not None  # noqa: S101
+            target = GPUTarget(
+                device_props.type,
+                device_props.cc,
+                device_props.warp_size_or_default,
+            )
+            # HOP capture deliberately keeps an over-approximation of launch kwargs so
+            # a concrete kwarg can still have Triton's direct-call dual meaning:
+            # kernel parameter plus backend option. Once the target backend is known,
+            # only names accepted by parse_options() should be serialized into
+            # triton_meta["backend_options"]. Names that are neither kernel parameters
+            # nor backend options are invalid launch kwargs, matching eager Triton.
+            filtered_backend_options = try_filter_backend_options_for_target(
+                target, backend_option_candidates, kernel.arg_names
+            )
+            if filtered_backend_options:
+                triton_meta["backend_options"] = filtered_backend_options
 
         if len(grids) == 1:
             # compute the grid in the wrapper and pass it in as an arg
