@@ -1,13 +1,15 @@
 # mypy: allow-untyped-defs
 """Lower FlexGEMM grouped local reductions into QuACK/CuTeDSL epilogues.
 
-FlexGEMM epilogue FX graphs can reshape the accumulator into grouped M/N
-TensorSSA views such as ``view(m, -1, group)`` and reduce within each group.
-This module recognizes those grouped layouts, propagates the layout through
-pointwise expressions, emits in-fragment TensorSSA reductions when possible, and
-records the physical combine/finalize callbacks QuACK needs for reductions that
-cross TensorSSA fragments. Inductor owns the semantic pattern matching and output
-contracts; these helpers only describe the supported physical lowering shape.
+FlexGEMM recognizes a narrow local-reduction contract inside the GEMM output
+tile: an epilogue reshapes the accumulator to expose contiguous groups along M
+or N, then reduces only that grouped dimension. N-axis groups that fit in one
+32-lane TensorSSA fragment lower as ordinary in-fragment TensorSSA reductions;
+larger N groups produce TensorSSA partials that QuACK combines physically.
+M-axis groups currently always use QuACK's physical row-lane/warp combine path,
+even when the group is small enough to fit in one fragment. Inductor owns the
+FX pattern matching and output contracts; these helpers describe the supported
+TensorSSA shapes and generated combine/finalize expressions QuACK needs.
 """
 
 import dataclasses
