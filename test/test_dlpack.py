@@ -1007,21 +1007,27 @@ class TestReadOnlyDLPack(TestCase):
             with self.assertRaisesRegex(RuntimeError, "only supports DLPack export"):
                 op()
 
-    def test_wrapper_numpy_export_is_read_only(self):
-        # NumPy 2.x honors DLPACK_FLAG_BITMASK_READ_ONLY: a wrapped tensor
-        # exported to NumPy must be non-writeable, while a plain tensor is
-        # writeable.
+    def _require_numpy_versioned_dlpack(self):
+        # Read-only export requires the versioned (DLPack 1.0) protocol. NumPy
+        # only consumes versioned capsules from 2.1 onwards; older NumPy has
+        # from_dlpack but errors on a versioned capsule ("PyCapsule_GetPointer
+        # called with incorrect name"). Return the numpy module or skip.
         np = __import__("numpy")
-        if not hasattr(np, "from_dlpack"):
-            self.skipTest("numpy too old for from_dlpack")
+        version = tuple(int(p) for p in np.__version__.split(".")[:2])
+        if version < (2, 1):
+            self.skipTest("numpy too old to consume versioned DLPack capsules")
+        return np
+
+    def test_wrapper_numpy_export_is_read_only(self):
+        # NumPy honors DLPACK_FLAG_BITMASK_READ_ONLY: a wrapped tensor exported
+        # to NumPy must be non-writeable, while a plain tensor is writeable.
+        np = self._require_numpy_versioned_dlpack()
         x = torch.arange(8, dtype=torch.float32)
         self.assertTrue(np.from_dlpack(x).flags.writeable)
         self.assertFalse(np.from_dlpack(ReadOnlyTensorWrapper(x)).flags.writeable)
 
     def test_wrapper_numpy_export_does_not_materialize_cow(self):
-        np = __import__("numpy")
-        if not hasattr(np, "from_dlpack"):
-            self.skipTest("numpy too old for from_dlpack")
+        np = self._require_numpy_versioned_dlpack()
         base = torch.arange(8, dtype=torch.float32)
         clone = base._lazy_clone()
         self.assertTrue(torch._C._is_cow_tensor(clone))
