@@ -778,9 +778,9 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     def assertFlexGemmGeneratedCode(self, code, *checks):
         file_check = (
             FileCheck()
-            .check(
-                "from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue as flex_gemm_epilogue"
-            )
+            .check("from torch._inductor.kernel.flex_gemm.runtime import (")
+            .check("FlexGemmRuntimeLocalReducePlan")
+            .check("gemm_epilogue as flex_gemm_epilogue")
             .check("flex_gemm_epilogue(")
         )
         for check in checks:
@@ -1286,10 +1286,12 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
         self.assertEqual(code.count("flex_gemm_epilogue("), 2)
-        self.assertIn("local_reduce_out=", code)
-        self.assertIn(f"local_reduce_group={group}", code)
-        self.assertIn("local_reduce_axis=1", code)
-        self.assertIn("local_reduce_combine_fn", code)
+        self.assertIn("local_reduce=FlexGemmRuntimeLocalReducePlan", code)
+        self.assertIn(
+            f"FlexGemmLocalReduceSpec(kind='compressed_aux', group={group}, axis=1)",
+            code,
+        )
+        self.assertIn("combine_fn=", code)
         self.assertIn("epilogue_arg_kinds=('row',)", code)
         self.assertIn("epilogue_arg_kinds=('col',)", code)
         self.assertNotIn("local_reduce_feeds_main=True", code)

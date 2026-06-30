@@ -1,4 +1,15 @@
 # mypy: allow-untyped-defs
+"""Lower FlexGEMM grouped local reductions into QuACK/CuTeDSL epilogues.
+
+FlexGEMM epilogue FX graphs can reshape the accumulator into grouped M/N
+TensorSSA views such as ``view(m, -1, group)`` and reduce within each group.
+This module recognizes those grouped layouts, propagates the layout through
+pointwise expressions, emits in-fragment TensorSSA reductions when possible, and
+records the physical combine/finalize callbacks QuACK needs for reductions that
+cross TensorSSA fragments. Inductor owns the semantic pattern matching and output
+contracts; these helpers only describe the supported physical lowering shape.
+"""
+
 import dataclasses
 import math
 import operator
@@ -10,20 +21,12 @@ from torch._inductor.codegen.cutedsl.cutedsl_op_overrides import CuteDSLOpOverri
 from torch._inductor.kernel.flex_gemm.constraints import (
     grouped_reduce_dims_match,
     LOCAL_REDUCE_EXPLICIT_DTYPE_ERROR,
-    local_reduce_grouped_tensorssa_lowering_error,
     LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR,
     LOCAL_REDUCE_MIXED_GROUPED_LAYOUT_ERROR,
-    LOCAL_REDUCE_MOMENT_CORRECTION_RANGE_ERROR,
-    LOCAL_REDUCE_MOMENT_DYNAMIC_CORRECTION_ERROR,
-    LOCAL_REDUCE_MOMENT_INNERMOST_GROUPED_DIM_ERROR,
-    LOCAL_REDUCE_MOMENT_PHYSICAL_COMBINE_ERROR,
     local_reduce_partial_output_contract_error,
-    LOCAL_REDUCE_PREPARE_SOFTMAX_GROUPED_DIM_ERROR,
-    LOCAL_REDUCE_PREPARE_SOFTMAX_PHYSICAL_COMBINE_ERROR,
-    local_reduce_unsupported_physical_reduction_error,
-    local_reduce_unsupported_tensorssa_reduction_error,
     validate_local_reduce_tensorssa_group_size,
 )
+from torch._inductor.shape_propagation import get_broadcasted_shape
 from torch._inductor.virtualized import V
 from torch.utils._ordered_set import OrderedSet
 
@@ -34,6 +37,13 @@ def normalize_shape(shape: Any) -> Any:
 
 @dataclasses.dataclass(frozen=True)
 class GroupedTensorSSALayout:
+    """Describe a grouped M/N TensorSSA view inside the generated epilogue.
+
+    Attributes:
+        axis: GEMM output dimension being grouped: 0 for M, 1 for N.
+        group_size: Number of contiguous output elements reduced as one group.
+    """
+
     axis: int
     group_size: int
 
@@ -69,6 +79,7 @@ class GroupedTensorSSALayout:
 
 
 def grouped_tensor_layout(shape: Any) -> GroupedTensorSSALayout | None:
+    """Recognize reshapes that encode a grouped M/N local-reduction domain."""
     shape = normalize_shape(shape)
     if not isinstance(shape, tuple) or len(shape) not in (3, 4):
         return None
@@ -95,8 +106,13 @@ def partial_vector_reduction_error() -> NotImplementedError:
 
 @dataclasses.dataclass(frozen=True)
 class GroupedTensorSSAInfo:
+    """Carry grouped-layout provenance for an FX node during lowering.
+
+    Attributes:
+        layout: TensorSSA grouping that still applies to the node's value.
+    """
+
     layout: GroupedTensorSSALayout
-    nonnegative: bool = False
 
     @property
     def axis(self) -> int:
@@ -109,7 +125,16 @@ class GroupedTensorSSAInfo:
 
 @dataclasses.dataclass(frozen=True)
 class FlexGemmReductionSpec:
-    reduction_type: str
+    """Store the CuTe/QuACK code-generation recipe for a local reduction.
+
+    Attributes:
+        cute_op: CuTe reduction enum used for in-fragment TensorSSA reductions.
+        init_val: Initial value expression for the TensorSSA reducer.
+        combine_expr: QuACK physical-combine expression using ``lhs`` and ``rhs``.
+        scale_by_group_size: Whether TensorSSA-only reductions divide by group size.
+        finalize_expr: QuACK finalizer expression using ``value`` after combining.
+    """
+
     cute_op: str
     init_val: str
     combine_expr: str
@@ -121,74 +146,52 @@ FlexGemmPhysicalReduction = FlexGemmReductionSpec
 
 
 FLEX_GEMM_REDUCTIONS = {
-    "sum": FlexGemmReductionSpec("sum", "cute.ReductionOp.ADD", "0.0", "lhs + rhs"),
+    "sum": FlexGemmReductionSpec("cute.ReductionOp.ADD", "0.0", "lhs + rhs"),
     "mean": FlexGemmReductionSpec(
-        "mean",
         "cute.ReductionOp.ADD",
         "0.0",
         "lhs + rhs",
         scale_by_group_size=True,
         finalize_expr="value / {group_size}.0",
     ),
-    "prod": FlexGemmReductionSpec("prod", "cute.ReductionOp.MUL", "1.0", "lhs * rhs"),
+    "prod": FlexGemmReductionSpec("cute.ReductionOp.MUL", "1.0", "lhs * rhs"),
     "max": FlexGemmReductionSpec(
-        "max", "cute.ReductionOp.MAX", 'float("-inf")', "cute.arch.fmax(lhs, rhs)"
+        "cute.ReductionOp.MAX", 'float("-inf")', "cute.arch.fmax(lhs, rhs)"
     ),
     "min": FlexGemmReductionSpec(
-        "min", "cute.ReductionOp.MIN", 'float("inf")', "cute.arch.fmin(lhs, rhs)"
+        "cute.ReductionOp.MIN", 'float("inf")', "cute.arch.fmin(lhs, rhs)"
     ),
 }
 
 
-FLEX_GEMM_TENSORSSA_REDUCTIONS = FLEX_GEMM_REDUCTIONS
-
-
-FLEX_GEMM_SHAPE_PRESERVING_POINTWISE_OPS = frozenset(
+FLEX_GEMM_POINTWISE_OP_NAMES = frozenset(
     OrderedSet(
         [
             "_to_copy",
-            "abs",
-            "add",
             "clamp",
             "clamp_max",
             "clamp_min",
             "convert_element_type",
-            "cos",
-            "div",
-            "eq",
-            "exp",
-            "exp2",
-            "ge",
-            "gt",
-            "le",
-            "log",
-            "log10",
-            "log2",
-            "logical_and",
-            "logical_not",
-            "logical_or",
-            "logical_xor",
-            "lt",
-            "maximum",
-            "minimum",
-            "mul",
-            "ne",
-            "neg",
-            "pow",
-            "reciprocal",
-            "relu",
-            "rsqrt",
-            "sigmoid",
-            "sin",
-            "sqrt",
-            "square",
-            "sub",
-            "tanh",
-            "to_dtype",
-            "truediv",
-            "where",
             "mx_e8m0_scale",
             "nvfp4_e4m3_scale",
+        ]
+    )
+)
+
+PYTHON_POINTWISE_TARGETS = frozenset(
+    OrderedSet(
+        [
+            operator.add,
+            operator.sub,
+            operator.mul,
+            operator.truediv,
+            operator.neg,
+            operator.eq,
+            operator.ne,
+            operator.lt,
+            operator.le,
+            operator.gt,
+            operator.ge,
         ]
     )
 )
@@ -316,7 +319,10 @@ def _cute_call(target: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> An
         "std",
         "var",
     }:
-        raise local_reduce_grouped_tensorssa_lowering_error(target)
+        raise NotImplementedError(
+            "unsupported FlexGEMM epilogue local reduction without a grouped "
+            f"TensorSSA lowering: {target}"
+        )
     if op_name is None:
         raise NotImplementedError(f"unsupported FlexGEMM epilogue op: {target}")
     if op_name in ("mx_e8m0_scale", "nvfp4_e4m3_scale"):
@@ -352,8 +358,75 @@ def has_local_reduce_store_source(
     return False
 
 
+def tensor_meta_shape(node: torch.fx.Node) -> tuple[Any, ...] | None:
+    """Return fake-tensor shape metadata when the FX value is tensor-like."""
+    meta = node.meta.get("val")
+    if isinstance(meta, torch.Tensor):
+        return tuple(meta.shape)
+    return None
+
+
+def canonical_shape(shape: tuple[Any, ...]) -> tuple[str, ...]:
+    """Canonicalize tensor metadata shapes for symbolic broadcast comparisons."""
+    return tuple(str(dim) for dim in shape)
+
+
+def shapes_match(lhs: tuple[Any, ...], rhs: tuple[Any, ...]) -> bool:
+    """Compare shape metadata using Inductor's symbolic-shape string convention."""
+    return canonical_shape(lhs) == canonical_shape(rhs)
+
+
+def is_broadcastable_to_shape(
+    shape: tuple[Any, ...], output_shape: tuple[Any, ...]
+) -> bool:
+    """Return whether Inductor shape propagation expands a tensor to output shape."""
+    canonical_output_shape = canonical_shape(output_shape)
+    try:
+        broadcast_shape = get_broadcasted_shape(
+            canonical_shape(shape), canonical_output_shape
+        )
+    except AssertionError:
+        return False
+    if broadcast_shape is None:
+        return False
+    return tuple(broadcast_shape) == canonical_output_shape
+
+
+def node_preserves_tensor_shapes(node: torch.fx.Node) -> bool:
+    """Reject pointwise broadcasts that cannot preserve a grouped TensorSSA input."""
+    output_shape = tensor_meta_shape(node)
+    if output_shape is None:
+        return False
+    has_matching_tensor_input = False
+    for input_node in iter_fx_node_inputs((node.args, node.kwargs)):
+        input_shape = tensor_meta_shape(input_node)
+        if not input_shape:
+            continue
+        if shapes_match(input_shape, output_shape):
+            has_matching_tensor_input = True
+        elif not is_broadcastable_to_shape(input_shape, output_shape):
+            return False
+    return has_matching_tensor_input
+
+
+def is_pointwise_node(node: torch.fx.Node) -> bool:
+    if node.op == "call_method":
+        return True
+    if node.op != "call_function":
+        return False
+    if isinstance(node.target, torch._ops.OpOverload):
+        return (
+            torch.Tag.pointwise in node.target.tags
+            or _cute_op_name(node.target) in FLEX_GEMM_POINTWISE_OP_NAMES
+        )
+    return (
+        node.target in PYTHON_POINTWISE_TARGETS
+        or _cute_op_name(node.target) in FLEX_GEMM_POINTWISE_OP_NAMES
+    )
+
+
 def is_shape_preserving_pointwise_node(node: torch.fx.Node) -> bool:
-    return _cute_op_name(node.target) in FLEX_GEMM_SHAPE_PRESERVING_POINTWISE_OPS
+    return is_pointwise_node(node) and node_preserves_tensor_shapes(node)
 
 
 def iter_fx_node_inputs(value: Any):
@@ -381,14 +454,7 @@ def propagate_grouped_tensorssa_info(
     layout = input_infos[0].layout
     if any(info.layout != layout for info in input_infos):
         raise NotImplementedError(LOCAL_REDUCE_MIXED_GROUPED_LAYOUT_ERROR)
-    return GroupedTensorSSAInfo(
-        layout,
-        (node.op == "call_method" and node.target == "abs")
-        or (
-            node.op == "call_function"
-            and node.target in (torch.ops.aten.abs.default, torch.abs)
-        ),
-    )
+    return GroupedTensorSSAInfo(layout)
 
 
 def lower_view_or_reshape(
@@ -640,9 +706,15 @@ def lower_prepare_softmax_online(
         raise partial_vector_reduction_error()
     info = grouped_tensors[input_node]
     if info.layout.needs_physical_combine:
-        raise NotImplementedError(LOCAL_REDUCE_PREPARE_SOFTMAX_PHYSICAL_COMBINE_ERROR)
+        raise NotImplementedError(
+            "unsupported FlexGEMM physical local reduction: prepare_softmax_online "
+            "needs a multi-value generated physical reducer"
+        )
     if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
-        raise NotImplementedError(LOCAL_REDUCE_PREPARE_SOFTMAX_GROUPED_DIM_ERROR)
+        raise NotImplementedError(
+            "unsupported FlexGEMM epilogue local reduction: prepare_softmax_online "
+            "currently supports only the grouped dimension"
+        )
     source = _cute_arg(input_node, env)
     max_reduced = _generate_like(
         kernel,
@@ -680,16 +752,27 @@ def lower_tensorssa_moment_reduce(
         raise partial_vector_reduction_error()
     info = grouped_tensors[input_node]
     if info.layout.needs_physical_combine:
-        raise NotImplementedError(LOCAL_REDUCE_MOMENT_PHYSICAL_COMBINE_ERROR)
+        raise NotImplementedError(
+            "unsupported FlexGEMM physical local reduction: moment reductions "
+            "need matching QuACK combine/finalize callbacks"
+        )
     if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
-        raise NotImplementedError(LOCAL_REDUCE_MOMENT_INNERMOST_GROUPED_DIM_ERROR)
+        raise NotImplementedError(
+            "unsupported FlexGEMM epilogue local reduction: moment reductions "
+            "currently support only the innermost grouped dimension"
+        )
     if correction is None:
         correction = 1
     if not isinstance(correction, (int, float)):
-        raise NotImplementedError(LOCAL_REDUCE_MOMENT_DYNAMIC_CORRECTION_ERROR)
+        raise NotImplementedError(
+            "unsupported FlexGEMM epilogue local reduction: dynamic variance correction"
+        )
     denominator = info.group_size - correction
     if denominator <= 0:
-        raise NotImplementedError(LOCAL_REDUCE_MOMENT_CORRECTION_RANGE_ERROR)
+        raise NotImplementedError(
+            "unsupported FlexGEMM epilogue local reduction: variance correction "
+            "must be smaller than the group size"
+        )
     source = _cute_arg(input_node, env)
     sum_reduced = _generate_like(
         kernel,
@@ -742,20 +825,18 @@ def lower_tensorssa_reduce(
     info = grouped_tensors[input_node]
     if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
         raise NotImplementedError(LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR)
-    desc = FLEX_GEMM_TENSORSSA_REDUCTIONS.get(reduction_type)
+    desc = FLEX_GEMM_REDUCTIONS.get(reduction_type)
     if desc is None:
-        raise local_reduce_unsupported_tensorssa_reduction_error(reduction_type)
+        raise NotImplementedError(
+            "unsupported FlexGEMM epilogue local reduction: "
+            f"reduction_type={reduction_type!r}"
+        )
     source = _cute_arg(input_node, env)
     if info.layout.needs_physical_combine:
-        physical_reduction = FLEX_GEMM_REDUCTIONS.get(reduction_type)
-        if physical_reduction is None:
-            raise local_reduce_unsupported_physical_reduction_error(reduction_type)
         if local_reduce_physical_reductions is not None:
             local_reduce_physical_reductions[node] = dataclasses.replace(
-                physical_reduction,
-                finalize_expr=physical_reduction.finalize_expr.format(
-                    group_size=info.group_size
-                ),
+                desc,
+                finalize_expr=desc.finalize_expr.format(group_size=info.group_size),
             )
         if info.axis == 0:
             local_reduce_store_sources[node] = source
