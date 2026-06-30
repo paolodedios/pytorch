@@ -792,7 +792,7 @@ Tensor cumprod_backward(const Tensor& grad, const Tensor& input, int64_t dim, co
             grad_slice = grad_slice + at::sum(grad.slice(dim, k + 1) * omitted_products_tail, dim);
           }
         }
-        grad_inputs.push_back(grad_slice);
+        grad_inputs.push_back(std::move(grad_slice));
         continue;
       }
 
