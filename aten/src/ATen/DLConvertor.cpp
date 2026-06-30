@@ -417,14 +417,20 @@ T* toDLPackImpl(const Tensor& src, bool read_only) {
   atDLMTensor->handle = src;
   atDLMTensor->tensor.manager_ctx = atDLMTensor.get();
   atDLMTensor->tensor.deleter = &deleter<T>;
+  // DLTensor::data is a plain void*, so the read-only path const_casts away the
+  // const from const_data_ptr(). This is safe: const_data_ptr() does not
+  // materialize a copy-on-write tensor, and DLPACK_FLAG_BITMASK_READ_ONLY is
+  // set on the versioned struct (see fillVersion) so the consumer is told not
+  // to write through the pointer. The mutable path uses mutable_data_ptr().
   if (src.device().type()  == kMPS) {
       atDLMTensor->tensor.dl_tensor.data = read_only
           ? const_cast<void*>(src.storage().data())
           : src.storage().mutable_data();
       atDLMTensor->tensor.dl_tensor.byte_offset = src.storage_offset() * c10::elementSize(src.scalar_type());
   } else {
-      atDLMTensor->tensor.dl_tensor.data =
-          read_only ? const_cast<void*>(src.const_data_ptr()) : src.data_ptr();
+      atDLMTensor->tensor.dl_tensor.data = read_only
+          ? const_cast<void*>(src.const_data_ptr())
+          : src.mutable_data_ptr();
       atDLMTensor->tensor.dl_tensor.byte_offset = 0;
   }
   atDLMTensor->tensor.dl_tensor.device = torchDeviceToDLDevice(src.device());
@@ -487,8 +493,9 @@ void toDLPackNonOwning(const Tensor& src, DLTensor* out, bool read_only) {
   // Fill in the pre-allocated DLTensor struct with direct pointers
   // This is a non-owning conversion - the caller owns the tensor
   // and must keep it alive for the duration of DLTensor usage
-  out->data =
-      read_only ? const_cast<void*>(src.const_data_ptr()) : src.data_ptr();
+  // See toDLPackImpl for why the read-only const_cast is safe.
+  out->data = read_only ? const_cast<void*>(src.const_data_ptr())
+                        : src.mutable_data_ptr();
   out->device = torchDeviceToDLDevice(src.device());
   out->ndim = static_cast<int32_t>(src.dim());
   out->dtype = getDLDataType(src);
