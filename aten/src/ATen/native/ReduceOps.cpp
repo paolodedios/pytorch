@@ -643,15 +643,15 @@ Tensor cumprod_backward(const Tensor& grad, const Tensor& input, int64_t dim, co
   auto output_conj = output.conj();
 
   // For Composite Compliance, we always choose the slower but composite compliant path.
-  bool are_inputs_tensors_sublcass = areAnyTensorSubclassLike({input, grad, output});
+  bool are_inputs_tensors_subclass = areAnyTensorSubclassLike({input, grad, output});
   auto make_subclass_aware_zeros = [&](c10::SymIntArrayRef sizes) {
-    return are_inputs_tensors_sublcass ? grad.new_zeros_symint(sizes)
-                                       : at::zeros_symint(sizes, grad.options());
+    return are_inputs_tensors_subclass ? grad.new_zeros_symint(sizes)
+        : at::zeros_symint(sizes, grad.options());
   };
 
   const auto w = output_conj * grad;
   const auto is_zero = input == 0;
-  if (!are_inputs_tensors_sublcass) {
+  if (!are_inputs_tensors_subclass) {
     if (is_zero.any().item<uint8_t>() == 0) {
       return reversed_cumsum(w, dim).div(input_conj);
     }
@@ -693,7 +693,7 @@ Tensor cumprod_backward(const Tensor& grad, const Tensor& input, int64_t dim, co
     // Compute gradient for positions before the first zero
     // Using at::where instead of masked_scatter_ for composite compliance
     auto grad_before_first_zero = reversed_cumsum(w.masked_fill(~mask, 0.), dim);
-    if (!are_inputs_tensors_sublcass) {
+    if (!are_inputs_tensors_subclass) {
       grad_before_first_zero = grad_before_first_zero.div_(input_conj);
     } else {
       grad_before_first_zero = grad_before_first_zero.div(input_conj);
@@ -726,7 +726,7 @@ Tensor cumprod_backward(const Tensor& grad, const Tensor& input, int64_t dim, co
     const auto grad_masked = grad.masked_fill(cumsum != 1, 0.);
     const auto output_before_zero = at::gather(output_conj, dim, (first_zero_index - 1).relu_())
                                       .masked_fill_(first_zero_index == 0, 1.);
-    if (!are_inputs_tensors_sublcass) {
+    if (!are_inputs_tensors_subclass) {
       grad_at_first_zero = grad_at_first_zero.mul_(grad_masked)
                              .sum(dim, /*keepdim*/true)
                              .mul_(output_before_zero);
@@ -763,7 +763,7 @@ Tensor cumprod_backward(const Tensor& grad, const Tensor& input, int64_t dim, co
     // For Composite Compliance, we will use
     // at::stack on the grad slices, hence the vector.
     std::vector<Tensor> grad_inputs;
-    if (are_inputs_tensors_sublcass) {
+    if (are_inputs_tensors_subclass) {
       grad_inputs.reserve(dim_size);
     } else {
       grad_input = make_subclass_aware_zeros(input.sym_sizes());
@@ -774,7 +774,7 @@ Tensor cumprod_backward(const Tensor& grad, const Tensor& input, int64_t dim, co
     Tensor prods_from_k_plus_1;
     Tensor omitted_products;
     for (const auto k : c10::irange(dim_size)) {
-      if (are_inputs_tensors_sublcass) {
+      if (are_inputs_tensors_subclass) {
         Tensor grad_slice;
         if (k == 0) {
           prods_from_k_plus_1 = at::cumprod(input_conj.slice(dim, k + 1), dim);
@@ -818,7 +818,7 @@ Tensor cumprod_backward(const Tensor& grad, const Tensor& input, int64_t dim, co
       grad_input.select(dim, k).copy_(grad_slice);
     }
 
-    return are_inputs_tensors_sublcass ? at::stack(grad_inputs, dim) : std::move(grad_input);
+    return are_inputs_tensors_subclass ? at::stack(grad_inputs, dim) : std::move(grad_input);
   }
 }
 
