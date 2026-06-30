@@ -207,8 +207,8 @@ def register_opaque_type(
     # FakeScriptObject wrapper), so they don't need CustomClassBaseMeta.
     if typ != "value" and not isinstance(cls, CustomClassBaseMeta):
         raise TypeError(
-            f"Opaque type {cls} must subclass torch._opaque_base.OpaqueBase "
-            "or 'metaclass=torch._opaque_base.OpaqueBaseMeta'. "
+            f"Custom class {cls} must subclass torch._custom_class_base.CustomClassBase "
+            "or 'metaclass=torch._custom_class_base.CustomClassBaseMeta'. "
             "This is required so that FakeScriptObject can be registered "
             "as a virtual subclass, allowing isinstance() checks to work "
             "during torch.compile tracing. "
