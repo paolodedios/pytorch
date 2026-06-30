@@ -9952,6 +9952,67 @@ class TestBinaryDispatchRouting(TestCaseMPS):
             self._probe(a, b, out=out, natural=torch.bool),
             "probe_dense_bool_float")
 
+    def test_dense_scalar_kernels_pass_metal_validation(self):
+        # The binary_dense_scalar* kernel templates in c10/metal/indexing.h
+        # bind a CPU scalar via setBytes:, which Metal treats as read-only
+        # memory. Before the fix declared those parameters as `constant T*`
+        # (vs `device T*`), the Metal Validation Layer aborted with:
+        #
+        #     Compute Function (...): Read-only bytes are being bound at
+        #     index N to a shader argument with write access enabled
+        #
+        # Spawn a subprocess with MTL_DEBUG_LAYER=1 + MTL_SHADER_VALIDATION=1
+        # and exercise every affected kernel template: the plain
+        # dense_scalar pair (RHS and LHS), the _cast pair (int tensor + float
+        # scalar), and the four _alpha counterparts that add a third operand.
+        # If validation rejects any of them the subprocess aborts on assertion
+        # and the test fails.
+        snippet = """
+import torch
+mps = torch.device('mps')
+
+f = torch.randn(8, device=mps)
+h = torch.randn(8, device=mps, dtype=torch.float16)
+i = torch.randint(0, 10, (8,), device=mps, dtype=torch.int32)
+
+# binary_dense_scalar + binary_dense_scalar_lhs (float and half)
+for x in (f, h):
+    _ = x + 1.5
+    _ = 1.5 + x
+    _ = x * 2.0
+    _ = 2.0 * x
+    _ = x / 3.0
+    _ = 3.0 / x
+    _ = x - 1.0
+    _ = 1.0 - x
+
+# binary_dense_scalar_cast + binary_dense_scalar_lhs_cast (int + float scalar)
+_ = i + 1.5
+_ = 1.5 + i
+
+# binary_alpha_dense_scalar + _lhs + _cast + _lhs_cast (alpha != 1)
+for x in (f, i):
+    _ = torch.add(x, 1.0, alpha=2.0)
+    _ = torch.sub(x, 1.0, alpha=2.0)
+
+torch.mps.synchronize()
+"""
+        env = {**os.environ,
+               "MTL_DEBUG_LAYER": "1",
+               "MTL_SHADER_VALIDATION": "1"}
+        proc = subprocess.run([sys.executable, "-c", snippet], env=env,
+                              capture_output=True, text=True, timeout=60)
+        tail = proc.stderr[-2000:]
+        self.assertEqual(
+            proc.returncode, 0,
+            f"Metal Validation rejected a binary_dense_scalar kernel "
+            f"(exit {proc.returncode}). stderr tail:\n{tail}",
+        )
+        self.assertNotIn(
+            "failed assertion", proc.stderr,
+            f"Metal Validation flagged a kernel:\n{tail}",
+        )
+
 
 class TestLargeTensors(TestCaseMPS):
     @serialTest()
