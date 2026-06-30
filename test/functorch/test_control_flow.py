@@ -9811,35 +9811,36 @@ class GraphModule(torch.nn.Module):
                 """\
 class GraphModule(torch.nn.Module):
     def forward(self, x):
-        x: "f32[s6, 3]";
+        x: "f32[s77, 3]";
 
         x, = fx_pytree.tree_flatten_spec(([x], {}), self._in_spec)
         _guards_fn = self._guards_fn(x);  _guards_fn = None
-        sym_size_int_1: "Sym(s6)" = torch.ops.aten.sym_size.int(x, 0)
 
-        sin: "f32[s6, 3]" = torch.ops.aten.sin.default(x);  x = None
+        sym_size_int: "Sym(s77)" = torch.ops.aten.sym_size.int(x, 0)
+
+        sin: "f32[s77, 3]" = torch.ops.aten.sin.default(x);  x = None
 
         while_loop_cond_graph_0 = self.while_loop_cond_graph_0
         while_loop_body_graph_0 = self.while_loop_body_graph_0
-        while_loop = torch.ops.higher_order.while_loop(while_loop_cond_graph_0, while_loop_body_graph_0, (sym_size_int_1, 3, 2, 2, 3, sin), ());  while_loop_cond_graph_0 = while_loop_body_graph_0 = sym_size_int_1 = sin = None
+        while_loop = torch.ops.higher_order.while_loop(while_loop_cond_graph_0, while_loop_body_graph_0, (sym_size_int, 3, 2, 2, 3, sin), ());  while_loop_cond_graph_0 = while_loop_body_graph_0 = sym_size_int = sin = None
         getitem_6: "Sym(u10)" = while_loop[0]
         getitem_7: "Sym(u11)" = while_loop[1]
         getitem_8: "Sym(u12)" = while_loop[2]
         getitem_9: "Sym(u13)" = while_loop[3]
         getitem_10: "Sym(u14)" = while_loop[4]
-        getitem_5: "f32[s6, 3]" = while_loop[5];  while_loop = None
+        getitem_5: "f32[s77, 3]" = while_loop[5];  while_loop = None
 
         add: "Sym(u12 + 1)" = getitem_8 + 1
         add_1: "Sym(u13 + 1)" = getitem_9 + 1
         add_2: "Sym(u14 + 1)" = getitem_10 + 1
 
-        add_3: "f32[s6, 3]" = torch.ops.aten.add.Tensor(getitem_5, getitem_8);  getitem_8 = None
-        add_4: "f32[s6, 3]" = torch.ops.aten.add.Tensor(getitem_5, getitem_9);  getitem_9 = None
-        add_5: "f32[s6, 3]" = torch.ops.aten.add.Tensor(getitem_5, getitem_10);  getitem_10 = None
+        add_3: "f32[s77, 3]" = torch.ops.aten.add.Tensor(getitem_5, getitem_8);  getitem_8 = None
+        add_4: "f32[s77, 3]" = torch.ops.aten.add.Tensor(getitem_5, getitem_9);  getitem_9 = None
+        add_5: "f32[s77, 3]" = torch.ops.aten.add.Tensor(getitem_5, getitem_10);  getitem_10 = None
         return pytree.tree_unflatten((getitem_6, getitem_7, add, add_1, add_2, add_3, add_4, add_5, getitem_5), self._out_spec)
 
     class while_loop_cond_graph_0(torch.nn.Module):
-        def forward(self, arg0_1: "Sym(u15)", arg1_1: "Sym(u16)", arg2_1: "Sym(u17)", arg3_1: "Sym(u18)", arg4_1: "Sym(u19)", arg5_1: "f32[s6, 3]"):
+        def forward(self, arg0_1: "Sym(u15)", arg1_1: "Sym(u16)", arg2_1: "Sym(u17)", arg3_1: "Sym(u18)", arg4_1: "Sym(u19)", arg5_1: "f32[s77, 3]"):
             mul: "Sym(u17*u18)" = arg2_1 * arg3_1;  arg2_1 = arg3_1 = None
             mul_1: "Sym(u17*u18*u19)" = mul * arg4_1;  mul = arg4_1 = None
             mul_2: "Sym(u15*u16)" = arg0_1 * arg1_1;  arg0_1 = arg1_1 = None
@@ -9847,7 +9848,7 @@ class GraphModule(torch.nn.Module):
             return lt
 
     class while_loop_body_graph_0(torch.nn.Module):
-        def forward(self, arg0_1: "Sym(u15)", arg1_1: "Sym(u16)", arg2_1: "Sym(u17)", arg3_1: "Sym(u18)", arg4_1: "Sym(u19)", arg5_1: "f32[s6, 3]"):
+        def forward(self, arg0_1: "Sym(u15)", arg1_1: "Sym(u16)", arg2_1: "Sym(u17)", arg3_1: "Sym(u18)", arg4_1: "Sym(u19)", arg5_1: "f32[s77, 3]"):
             add: "Sym(u15 + 1)" = arg0_1 + 1;  arg0_1 = None
             add_1: "Sym(u16 + 1)" = arg1_1 + 1;  arg1_1 = None
 
@@ -9855,7 +9856,7 @@ class GraphModule(torch.nn.Module):
             add_3: "Sym(u18 + 1)" = arg3_1 + 1;  arg3_1 = None
             add_4: "Sym(u19 + 1)" = arg4_1 + 1;  arg4_1 = None
 
-            add_5: "f32[s6, 3]" = torch.ops.aten.add.Tensor(arg5_1, 1);  arg5_1 = None
+            add_5: "f32[s77, 3]" = torch.ops.aten.add.Tensor(arg5_1, 1);  arg5_1 = None
             return (add, add_1, add_2, add_3, add_4, add_5)
 """,
             )
@@ -10033,6 +10034,7 @@ class GraphModule(torch.nn.Module):
         while_loop_stack_output = torch.ops.higher_order.while_loop_stack_output(while_loop_cond_graph_0, while_loop_body_graph_0, (primals_1,), (primals_3, primals_2));  while_loop_cond_graph_0 = while_loop_body_graph_0 = None
         getitem: "f32[u2, 3, 3]" = while_loop_stack_output[0];  while_loop_stack_output = None
         select: "f32[3, 3]" = torch.ops.aten.select.int(getitem, 0, -1)
+
         unsqueeze: "f32[1, 3, 3]" = torch.ops.aten.unsqueeze.default(primals_1, 0);  primals_1 = None
         slice_1: "f32[u2 - 1, 3, 3]" = torch.ops.aten.slice.Tensor(getitem, 0, 0, -1);  getitem = None
         cat: "f32[u2, 3, 3]" = torch.ops.aten.cat.default([unsqueeze, slice_1]);  unsqueeze = slice_1 = None
@@ -11077,11 +11079,12 @@ class <lambda>(torch.nn.Module):
         """Stripped-down version of self.check that runs eager + aot_eager
         but NOT inductor.
 
-        scan currently only has Steps 1-3 (gen_schema, py_functionalize_impl,
+        Used by HOP input-mutation tests (scan, map, ...). These HOPs
+        currently only have Steps 1-3 (gen_schema, py_functionalize_impl,
         Dynamo) wired for input mutation. Step 4 (Inductor MutationOutput
         emission) is a follow-up; until then the Inductor arm of the full
-        check() helper trips on the un-tracked mutation. This helper exercises
-        everything that IS in place for scan.
+        check() helper trips on the un-tracked mutation. This helper
+        exercises everything that IS in place.
         """
         args = pytree.tree_map(lambda t: t.to(device=device), args)
 
@@ -11265,6 +11268,124 @@ class <lambda>(torch.nn.Module):
             r"Higher Order Operator: torch\.ops\.higher_order\.scan",
         ):
             scan(combine_fn, init, xs, dim=0)
+
+    @skipIfTorchDynamo()
+    @parametrize("dynamic", [True, False])
+    def test_map_auto_functionalize_xs_mutation(self, dynamic):
+        device = "cpu"
+
+        class M(torch.nn.Module):
+            def forward(self, xs):
+                def body_fn(x):
+                    x.add_(1)
+                    return x * 2 + x.sum()
+
+                return control_flow.map(body_fn, xs)
+
+        xs = torch.arange(20, dtype=torch.float32).reshape(5, 4)
+        fw_gm = self._check_eager_and_aot_eager_only(M, (xs,), device, dynamic)
+        graph_str = fw_gm.print_readable(print_output=False)
+        self.assertIn("auto_functionalized_v2", graph_str)
+        self.assertIn("torch.ops.higher_order.map_impl", graph_str)
+
+    @skipIfTorchDynamo()
+    @parametrize("dynamic", [True, False])
+    def test_map_auto_functionalize_multiple_xs_mutation(self, dynamic):
+        device = "cpu"
+
+        class M(torch.nn.Module):
+            def forward(self, xs1, xs2):
+                def body_fn(xs):
+                    x1, x2 = xs
+                    x1.add_(1)
+                    x2.sub_(1)
+                    return x1 + x2, x1 * x2
+
+                return control_flow.map(body_fn, (xs1, xs2))
+
+        xs1 = torch.arange(20, dtype=torch.float32).reshape(5, 4)
+        xs2 = torch.arange(20, dtype=torch.float32).reshape(5, 4) + 100
+        fw_gm = self._check_eager_and_aot_eager_only(M, (xs1, xs2), device, dynamic)
+        graph_str = fw_gm.print_readable(print_output=False)
+        self.assertIn("auto_functionalized_v2", graph_str)
+
+    def test_map_pos_args_mutation_graph_breaks(self):
+        def body_fn(x, buf):
+            buf.add_(x)  # mutating pos_args is disallowed
+            return x * 2
+
+        xs = torch.arange(20, dtype=torch.float32).reshape(5, 4)
+        buf = torch.zeros(4)
+
+        def fn(xs, buf):
+            return control_flow.map(body_fn, xs, buf)
+
+        torch._dynamo.reset()
+        with torch.no_grad():
+            with self.assertRaisesRegex(
+                torch._dynamo.exc.UncapturedHigherOrderOpError,
+                r"Higher Order Operator: torch\.ops\.higher_order\.map_impl",
+            ):
+                torch.compile(fn, backend="eager", fullgraph=True)(xs, buf)
+
+    def test_map_captured_tensor_mutation_graph_breaks(self):
+        y = torch.ones(4)
+
+        def body_fn(x):
+            y.add_(-1)  # mutating a captured (loop-invariant) tensor is disallowed
+            return x * 2 + y.sum()
+
+        xs = torch.arange(20, dtype=torch.float32).reshape(5, 4)
+
+        def fn(xs):
+            return control_flow.map(body_fn, xs)
+
+        torch._dynamo.reset()
+        with torch.no_grad():
+            with self.assertRaisesRegex(
+                torch._dynamo.exc.UncapturedHigherOrderOpError,
+                r"Higher Order Operator: torch\.ops\.higher_order\.map_impl",
+            ):
+                torch.compile(fn, backend="eager", fullgraph=True)(xs)
+
+    @skipIfTorchDynamo()
+    @parametrize("dynamic", [True, False])
+    def test_map_auto_functionalize_partial_xs_mutation(self, dynamic):
+        device = "cpu"
+
+        class M(torch.nn.Module):
+            def forward(self, xs0, xs1, xs2):
+                def body_fn(xs):
+                    x0, x1, x2 = xs
+                    # Skip x1 to make a non-contiguous mutation set.
+                    x0.add_(1)
+                    x2.add_(1)
+                    return x0 * 2 + x1.sum() + x2.sum()
+
+                return control_flow.map(body_fn, (xs0, xs1, xs2))
+
+        xs0 = torch.zeros(5, 4)
+        xs1 = torch.zeros(5, 4)
+        xs2 = torch.zeros(5, 4)
+        fw_gm = self._check_eager_and_aot_eager_only(
+            M, (xs0, xs1, xs2), device, dynamic
+        )
+        graph_str = fw_gm.print_readable(print_output=False)
+        self.assertIn("auto_functionalized_v2", graph_str)
+
+    def test_map_eager_pos_args_mutation_raises(self):
+        def body_fn(x, buf):
+            buf.add_(x)
+            return x * 2
+
+        xs = torch.arange(20, dtype=torch.float32).reshape(5, 4)
+        buf = torch.zeros(4)
+
+        with self.assertRaisesRegex(
+            torch._dynamo.exc.UncapturedHigherOrderOpError,
+            r"Higher Order Operator: torch\.ops\.higher_order\.map_impl",
+        ):
+            control_flow.map(body_fn, xs, buf)
 
 
 _hop_schema_test_schema_types = [
@@ -11674,67 +11795,37 @@ class TestHopSchema(TestCase):
             """map_impl(Any f, Tensor xs0, Tensor xs1) -> (Tensor, Tensor)""",
         )
 
-    def test_map_gen_schema_with_xs_mutation(self):
+    def test_map_gen_schema_with_mutated_arg_indices_kwarg(self):
         def body_fn(x):
-            x.add_(1)
             return x * 2
 
         schema = torch.ops.higher_order.map_impl.gen_schema(
             body_fn,
             (torch.randn(5, 3, 4),),
             (),
+            "0",
         )
         self.assertExpectedInline(
             str(schema),
             """map_impl(Any f, Tensor(a1!) xs0) -> ((Tensor))""",
         )
 
-    def test_map_gen_schema_with_multiple_xs_mutation(self):
-        def body_fn(x1, x2):
-            x1.add_(1)
-            x2.sub_(1)
-            return x1 + x2, x1 * x2
+    def test_map_gen_schema_multiple_xs_mutation_via_kwarg(self):
+        def body_fn(x0, x1, x2):
+            x0.add_(1)
+            x2.add_(1)
+            return x0 + x1 + x2
 
         schema = torch.ops.higher_order.map_impl.gen_schema(
             body_fn,
-            (torch.randn(5, 3, 4), torch.randn(5, 3, 4)),
+            (torch.randn(5, 3, 4), torch.randn(5, 3, 4), torch.randn(5, 3, 4)),
             (),
+            "0,2",
         )
         self.assertExpectedInline(
             str(schema),
-            """map_impl(Any f, Tensor(a1!) xs0, Tensor(a2!) xs1) -> (Tensor, Tensor)""",
+            """map_impl(Any f, Tensor(a1!) xs0, Tensor xs1, Tensor(a3!) xs2) -> ((Tensor))""",
         )
-
-    def test_map_gen_schema_pos_args_mutation_raises(self):
-        def body_fn(x, buf):
-            buf.add_(x)
-            return x * 2
-
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "For map, f cannot mutate pos_args inputs",
-        ):
-            torch.ops.higher_order.map_impl.gen_schema(
-                body_fn,
-                (torch.randn(5, 3, 4),),
-                (torch.randn(3, 4),),
-            )
-
-    def test_map_gen_schema_xs_and_pos_args_mutation_raises(self):
-        def body_fn(x1, x2, buf):
-            x1.add_(1)
-            buf.sub_(x2)
-            return x1 + x2, x1 * x2
-
-        with self.assertRaisesRegex(
-            RuntimeError,
-            "For map, f cannot mutate pos_args inputs",
-        ):
-            torch.ops.higher_order.map_impl.gen_schema(
-                body_fn,
-                (torch.randn(5, 3, 4), torch.randn(5, 3, 4)),
-                (torch.randn(3, 4),),
-            )
 
 
 class DynamicCondModel(torch.nn.Module):

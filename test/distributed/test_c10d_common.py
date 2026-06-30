@@ -1587,7 +1587,7 @@ class AbstractLargeCommTest:
         self.assertEqual(
             ranks_in,
             dist.get_process_group_ranks(new_pg),
-            f"expecting {ranks_in} but got {dist.get_process_group_ranks(new_pg)}",
+            lambda msg: f"{msg}\nexpecting {ranks_in} but got {dist.get_process_group_ranks(new_pg)}",
         )
 
     def _test_new_group_local_sync_sanity_check(self, backend):
@@ -1742,7 +1742,7 @@ class CommTest(AbstractCommTest, MultiProcessTestCase):
             self.assertEqual(
                 set_debug_mode,
                 mapping[mode],
-                f"Expected {mode} to map to {mapping[mode]} but got {set_debug_mode}",
+                lambda msg: f"{msg}\nExpected {mode} to map to {mapping[mode]} but got {set_debug_mode}",
             )
 
         for mode in invalid_debug_modes:
@@ -2029,33 +2029,51 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
     def test_parse_backend_string(self):
         from torch.distributed.distributed_c10d import _parse_backend_string
 
-        # Simple form maps to device(s) where the backend is the registered default.
-        self.assertEqual(_parse_backend_string("nccl"), {"cuda": "nccl"})
-        self.assertEqual(_parse_backend_string("NCCL"), {"cuda": "nccl"})
-        # gloo is the default for both cpu and mps in default_device_backend_map.
-        self.assertEqual(_parse_backend_string("gloo"), {"cpu": "gloo", "mps": "gloo"})
+        all_devices = {"cpu", "cuda", "xpu", "mps"}
 
-        # Merged form returns exactly what was named, no synthesized defaults.
+        # Simple form maps to device(s) where the backend is the registered default.
         self.assertEqual(
-            _parse_backend_string("cpu:gloo,cuda:nccl"),
+            _parse_backend_string("nccl", available_devices=all_devices),
+            {"cuda": "nccl"},
+        )
+        self.assertEqual(
+            _parse_backend_string("NCCL", available_devices=all_devices),
+            {"cuda": "nccl"},
+        )
+        # gloo is the default for both cpu and mps in default_device_backend_map.
+        self.assertEqual(
+            _parse_backend_string("gloo", available_devices=all_devices),
+            {"cpu": "gloo", "mps": "gloo"},
+        )
+
+        # Merged form returns exactly what was named, filtered by available_devices.
+        self.assertEqual(
+            _parse_backend_string("cpu:gloo,cuda:nccl", available_devices=all_devices),
             {"cpu": "gloo", "cuda": "nccl"},
         )
         self.assertEqual(
-            _parse_backend_string("CPU:GLOO , CUDA:NCCL"),
+            _parse_backend_string(
+                "CPU:GLOO , CUDA:NCCL", available_devices=all_devices
+            ),
             {"cpu": "gloo", "cuda": "nccl"},
         )
         # Unknown device types in merged form are accepted (no validation here).
-        self.assertEqual(_parse_backend_string("xpu:nccl"), {"xpu": "nccl"})
+        self.assertEqual(
+            _parse_backend_string("xpu:nccl", available_devices=all_devices),
+            {"xpu": "nccl"},
+        )
 
         # Errors.
         with self.assertRaisesRegex(ValueError, "Unknown backend"):
-            _parse_backend_string("definitely_not_a_backend")
+            _parse_backend_string(
+                "definitely_not_a_backend", available_devices=all_devices
+            )
         with self.assertRaisesRegex(ValueError, "Invalid device:backend pairing"):
-            _parse_backend_string("cpu:gloo:extra")
+            _parse_backend_string("cpu:gloo:extra", available_devices=all_devices)
         with self.assertRaisesRegex(ValueError, "Invalid device:backend pairing"):
-            _parse_backend_string("cpu:gloo,bare")
+            _parse_backend_string("cpu:gloo,bare", available_devices=all_devices)
         with self.assertRaisesRegex(ValueError, "Duplicate device type"):
-            _parse_backend_string("cpu:gloo,cpu:dummy")
+            _parse_backend_string("cpu:gloo,cpu:dummy", available_devices=all_devices)
 
     def test_init_process_group_with_multiple_backends(self):
         dist.Backend.register_backend(
@@ -2202,19 +2220,22 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
 
         new_group_called = False
         new_group_ranks = None
+        new_group_backend = None
 
         class _DelegatingPG(DummyProcessGroup):
             def new_group(
                 self,
                 ranks,
                 timeout=None,
+                backend=None,
                 pg_options=None,
                 group_name=None,
                 group_desc=None,
             ):
-                nonlocal new_group_called, new_group_ranks
+                nonlocal new_group_called, new_group_ranks, new_group_backend
                 new_group_called = True
                 new_group_ranks = list(ranks)
+                new_group_backend = backend
                 my_rank = self.rank()
                 if my_rank not in ranks:
                     return None
@@ -2238,6 +2259,7 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
             sub_pg = dist.new_group(ranks=[0])
             self.assertTrue(new_group_called)
             self.assertEqual(new_group_ranks, [0])
+            self.assertEqual(new_group_backend, "delegating")
 
             if self.rank == 0:
                 self.assertIsNotNone(sub_pg)
@@ -2249,6 +2271,54 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
                     sub_pg is None
                     or sub_pg == dist.distributed_c10d.GroupMember.NON_GROUP_MEMBER
                 )
+        finally:
+            dist.destroy_process_group()
+
+    def test_new_group_delegates_to_pg_explicit_backend(self):
+        """dist.new_group forwards an explicit multi-backend string to the
+        delegated default_pg.new_group."""
+
+        new_group_called = False
+        new_group_backend = None
+
+        class _DelegatingPG(DummyProcessGroup):
+            def new_group(
+                self,
+                ranks,
+                timeout=None,
+                backend=None,
+                pg_options=None,
+                group_name=None,
+                group_desc=None,
+            ):
+                nonlocal new_group_called, new_group_backend
+                new_group_called = True
+                new_group_backend = backend
+                my_rank = self.rank()
+                if my_rank not in ranks:
+                    return None
+                return DummyProcessGroup(ranks.index(my_rank), len(ranks))
+
+        dist.Backend.register_backend(
+            "delegating",
+            lambda *args, **kwargs: _DelegatingPG(
+                args[0].group_rank, args[0].group_size
+            ),
+            extended_api=True,
+            devices=["cpu", "cuda"],
+        )
+
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "6789"
+        dist.init_process_group(
+            "delegating", rank=self.rank, world_size=self.world_size
+        )
+
+        try:
+            backend = "cpu:delegating,cuda:delegating"
+            dist.new_group(ranks=[0], backend=backend)
+            self.assertTrue(new_group_called)
+            self.assertEqual(new_group_backend, backend)
         finally:
             dist.destroy_process_group()
 

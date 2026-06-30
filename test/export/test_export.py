@@ -11779,7 +11779,6 @@ def forward(self, p_conv_weight, p_conv_bias, p_conv1d_weight, p_conv1d_bias, c_
             # expected >= 3, but got 2
             ep.module()(*test_inp)
 
-    @testing.expectedFailureStrictV2
     def test_nested_module(self):
         class M1(torch.nn.Module):
             def forward(self, x):
@@ -11817,7 +11816,6 @@ graph():
         unflattened = unflatten(ep)
         self.assertTrue(torch.allclose(unflattened(*inps), M2()(*inps)))
 
-    @testing.expectedFailureStrictV2
     def test_nested_module_with_init_buffer(self):
         class M1(torch.nn.Module):
             def __init__(self) -> None:
