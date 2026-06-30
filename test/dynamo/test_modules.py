@@ -2939,7 +2939,7 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
             self.assertGreater(len(input_nodes), 0)
             for input_node in input_nodes:
                 self.assertEqual(
-                    input_node.meta["tensor_dict"]["_dynamo_static_input_type"],
+                    input_node.meta["tensor_dict"]["_dynamo_static_type"],
                     "unguarded",
                 )
 
@@ -2984,7 +2984,7 @@ class OptimizedModuleTest(torch._dynamo.test_case.TestCase):
             self.assertGreater(len(input_nodes), 0)
             for input_node in input_nodes:
                 self.assertEqual(
-                    input_node.meta["tensor_dict"]["_dynamo_static_input_type"],
+                    input_node.meta["tensor_dict"]["_dynamo_static_type"],
                     "unguarded",
                 )
 
