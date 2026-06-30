@@ -19,7 +19,7 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     grouped_reduce_dims_match,
     LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR,
     LOCAL_REDUCE_AUX_TENSORSSA_ERROR,
-    local_reduce_combine_fn_name,
+    LOCAL_REDUCE_COMBINE_FN_SUFFIX,
     LOCAL_REDUCE_COMPRESSED_AUX,
     local_reduce_compressed_shape,
     LOCAL_REDUCE_CONTRACT_NODE_ERROR,
@@ -27,7 +27,7 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     LOCAL_REDUCE_FEED_MAIN,
     LOCAL_REDUCE_FEED_MAIN_ARG_NAME,
     LOCAL_REDUCE_FEED_MAIN_MIXED_CONTRACT_ERROR,
-    local_reduce_finalize_fn_name,
+    LOCAL_REDUCE_FINALIZE_FN_SUFFIX,
     LOCAL_REDUCE_FINALIZE_SCALAR_ONLY_ERROR,
     LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR,
     LOCAL_REDUCE_MIXED_CONTRACT_ERROR,
@@ -1141,9 +1141,9 @@ def materialize_flex_gemm_epilogue(
     local_reduce_source = ""
     if physical_reduction is not None:
         local_reduce_source = (
-            f"@cute.jit\ndef {local_reduce_combine_fn_name(name)}(lhs, rhs):\n"
+            f"@cute.jit\ndef {name}{LOCAL_REDUCE_COMBINE_FN_SUFFIX}(lhs, rhs):\n"
             f"    return {physical_reduction.combine_expr}\n\n"
-            f"@cute.jit\ndef {local_reduce_finalize_fn_name(name)}(value):\n"
+            f"@cute.jit\ndef {name}{LOCAL_REDUCE_FINALIZE_FN_SUFFIX}(value):\n"
             f"    return {physical_reduction.finalize_expr}\n\n"
         )
     return (

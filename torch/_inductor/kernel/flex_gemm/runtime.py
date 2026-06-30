@@ -11,19 +11,19 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     FlexGemmLocalReduceConsumerKind,
     FlexGemmLocalReduceSpec,
     LOCAL_REDUCE_AXIS_KWARG,
+    LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR,
     LOCAL_REDUCE_COMBINE_KEY_KWARG,
+    LOCAL_REDUCE_COMBINE_KEY_SUFFIX,
     local_reduce_compressed_shape,
-    local_reduce_default_combine_key,
-    local_reduce_default_finalize_key,
     LOCAL_REDUCE_FEEDS_MAIN_KWARG,
     LOCAL_REDUCE_FINALIZE_KEY_KWARG,
+    LOCAL_REDUCE_FINALIZE_KEY_SUFFIX,
     LOCAL_REDUCE_GROUP_KWARG,
     LOCAL_REDUCE_OUT_KWARG,
     LOCAL_REDUCE_RETURNS_KWARG,
     LOCAL_REDUCE_RUNTIME_FEED_MAIN_OUT_ERROR,
     LOCAL_REDUCE_RUNTIME_OUT_ERROR,
     LOCAL_REDUCE_SWAP_AB_ERROR,
-    validate_local_reduce_callbacks,
     validate_local_reduce_feed_main_capability,
     validate_local_reduce_no_aux_out_composition,
     validate_local_reduce_no_c_alpha_beta,
@@ -272,16 +272,17 @@ def register_runtime_local_reduce_callbacks(
     """Register generated physical callbacks and return a keyed runtime plan."""
     if local_reduce is None or not local_reduce.needs_physical_callbacks:
         return local_reduce
-    validate_local_reduce_callbacks(local_reduce.combine_fn, local_reduce.finalize_fn)
+    if local_reduce.combine_fn is None or local_reduce.finalize_fn is None:
+        raise RuntimeError(LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR)
     local_reduce_combine_key = (
         local_reduce.combine_key
         if local_reduce.combine_key is not None
-        else local_reduce_default_combine_key(epilogue_key)
+        else f"{epilogue_key}{LOCAL_REDUCE_COMBINE_KEY_SUFFIX}"
     )
     local_reduce_finalize_key = (
         local_reduce.finalize_key
         if local_reduce.finalize_key is not None
-        else local_reduce_default_finalize_key(epilogue_key)
+        else f"{epilogue_key}{LOCAL_REDUCE_FINALIZE_KEY_SUFFIX}"
     )
     from torch._vendor.quack.gemm_act import register_local_reduce_fns
 
