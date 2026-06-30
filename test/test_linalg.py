@@ -7692,6 +7692,38 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
     @onlyCPU
     @skipCPUIfNoLapack
     @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
+    def test_linalg_matrix_sqrt_nonsymmetric(self, device, dtype):
+        torch.manual_seed(42)
+        real_dtype = torch.float if dtype == torch.cfloat else torch.double
+        for n, batch in itertools.product([1, 3, 5], [(), (2,), (2, 3)]):
+            shape = (*batch, n, n)
+            d = make_tensor((*batch, n), dtype=real_dtype, device=device, low=1, high=5)
+            D = torch.diag_embed(d.to(dtype))
+            P = torch.eye(n, dtype=dtype, device=device).expand(shape).clone()
+            P = P + 0.3 * make_tensor(shape, dtype=dtype, device=device, low=-1, high=1)
+            A = P @ D @ torch.linalg.inv(P)
+            x = torch.linalg.matrix_sqrt(A)
+            self.assertEqual(x @ x, A, atol=1e-3, rtol=1e-3)
+            if not dtype.is_complex:
+                self.assertFalse(x.is_complex())
+
+    @onlyCPU
+    @skipCPUIfNoLapack
+    @dtypes(torch.double, torch.cdouble)
+    def test_linalg_matrix_sqrt_nonsymmetric_autograd(self, device, dtype):
+        torch.manual_seed(42)
+        n = 3
+        d = torch.tensor([4.0, 9.0, 16.0], dtype=dtype, device=device)
+        P = torch.eye(n, dtype=dtype, device=device) + 0.2 * torch.randn(n, n, dtype=dtype, device=device)
+        A = (P @ torch.diag(d) @ torch.linalg.inv(P)).requires_grad_(True)
+        self.assertTrue(torch.autograd.gradcheck(
+            torch.linalg.matrix_sqrt, (A,), check_undefined_grad=False))
+        self.assertTrue(torch.autograd.gradgradcheck(
+            torch.linalg.matrix_sqrt, (A,), check_undefined_grad=False))
+
+    @onlyCPU
+    @skipCPUIfNoLapack
+    @dtypes(torch.float, torch.double, torch.cfloat, torch.cdouble)
     def test_linalg_matrix_sqrt_errors(self, device, dtype):
         with self.assertRaisesRegex(RuntimeError, "must be batches of square matrices"):
             torch.linalg.matrix_sqrt(torch.randn(2, 3, device=device, dtype=dtype))
