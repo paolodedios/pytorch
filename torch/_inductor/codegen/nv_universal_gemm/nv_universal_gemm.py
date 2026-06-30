@@ -20,11 +20,13 @@ from torch._inductor.autotune_process import (
 )
 from torch._inductor.codegen.cuda.cuda_env import get_cuda_arch
 from torch._inductor.codegen.nv_universal_gemm.nv_universal_gemm_kernel import (
+    _compile_nvgemm,
     _create_gemm_arguments,
     _create_gemm_cache_key,
-    _get_or_compile_nvgemm,
     _get_scaled_gemm_modes,
-    _make_global_compiled_key,
+    _make_disk_config_key,
+    _rewrap_efc_compiled_obj,
+    _unwrap_efc_compiled_obj,
 )
 from torch._inductor.ir import Buffer, ChoiceCaller, Layout, TensorBox
 from torch._inductor.kernel_inputs import MMKernelInputs
@@ -78,6 +80,7 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
         self.kernel = kernel
         self.accumulator_type = accumulator_type
         self._workspace: torch.Tensor | None = None
+        self._disk_fn_cache: dict = {}
         self.workspace_size = workspace_size
         self.variant = variant
         self.scale_type_a = scale_type_a
@@ -119,6 +122,9 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
 
     def make_run_fn(self, *input_tensors: torch.Tensor, out: torch.Tensor):
         """Create a function to run the NVIDIA Universal GEMM kernel."""
+        from cutlass_api.artifact import CompiledArtifact
+
+        from torch._inductor.runtime.cutedsl_cache import disk_cache_get, disk_cache_set
         from torch._inductor.utils import _ensure_fp4_dtype_registered
 
         _ensure_fp4_dtype_registered()
@@ -142,23 +148,51 @@ class NVUniversalGemmBenchmarkRequest(GPUDeviceBenchmarkMixin, BenchmarkRequest)
 
         cache_key = _create_gemm_cache_key(input_tensors, out)
         dev_idx = input_tensors[0].device.index or 0
-        global_key = _make_global_compiled_key(
-            self.kernel.metadata.kernel_name,
+        kernel_name = self.kernel.metadata.kernel_name
+        disk_config_key = _make_disk_config_key(
+            kernel_name,
             self.variant.name,
             self.accumulator_type,
-            cache_key,
-            dev_idx,
+            self.scale_type_a,
+            self.scale_type_b,
+            self.swizzle_type_a,
+            self.swizzle_type_b,
         )
 
-        artifact, args, kernel, _ = _get_or_compile_nvgemm(
-            global_key,
+        def disk_fallback(kernel):
+            compiled_fn = disk_cache_get(
+                self._disk_fn_cache,
+                kernel_name,
+                disk_config_key,
+                cache_key,
+                dev_idx,
+            )
+            if compiled_fn is not None:
+                compiled_fn = _rewrap_efc_compiled_obj(compiled_fn, kernel)
+            if compiled_fn is not None:
+                return CompiledArtifact(compiled_fn, kernel)
+            return None
+
+        artifact, args, kernel, was_compiled = _compile_nvgemm(
             self.variant.name,
             input_tensors,
             out,
             self.accumulator_type,
             kernel_obj=self.kernel,
             args_kwargs=helper_kwargs,
+            fallback_fn=disk_fallback,
         )
+
+        if was_compiled:
+            obj = _unwrap_efc_compiled_obj(artifact.compiled_obj)
+            disk_cache_set(
+                self._disk_fn_cache,
+                kernel_name,
+                disk_config_key,
+                cache_key,
+                obj,
+                dev_idx,
+            )
 
         # Allocate workspace if needed
         if self.workspace_size > 0:
