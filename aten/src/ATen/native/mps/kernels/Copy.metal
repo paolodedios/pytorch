@@ -97,3 +97,20 @@ kernel void inner_contiguous_copy(
   constant uchar* in = input + in_base + pos;
   copy_bytes_aligned(o, in, min(16u, inner_bytes - pos));
 }
+
+// Fully contiguous same-dtype copy: a flat byte run, so no outer offsets to
+// compute. The host issues one dispatch per <=2GB chunk (base is the chunk's
+// byte offset, chunk_bytes its size), matching the blit path's chunking.
+kernel void contiguous_byte_copy(
+    device uchar* out [[buffer(0)]],
+    constant uchar* in [[buffer(1)]],
+    constant uint& chunk_bytes [[buffer(2)]],
+    constant ulong& base [[buffer(3)]],
+    uint tid [[thread_position_in_grid]]) {
+  const uint pos = tid * 16;
+  if (pos >= chunk_bytes) {
+    return;
+  }
+  copy_bytes_aligned(
+      out + base + pos, in + base + pos, min(16u, chunk_bytes - pos));
+}
