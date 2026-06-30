@@ -778,9 +778,9 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     def assertFlexGemmGeneratedCode(self, code, *checks):
         file_check = (
             FileCheck()
-            .check(
-                "from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue as flex_gemm_epilogue"
-            )
+            .check("from torch._inductor.kernel.flex_gemm.runtime import (")
+            .check("FlexGemmRuntimeLocalReducePlan")
+            .check("gemm_epilogue as flex_gemm_epilogue")
             .check("flex_gemm_epilogue(")
         )
         for check in checks:
