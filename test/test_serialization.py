@@ -26,7 +26,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import torch
-import torch._dynamo.config
 from torch.utils.serialization import config as serialization_config
 from torch._subclasses.fake_tensor import FakeTensorMode, FakeTensorConverter
 from torch._utils import _rebuild_tensor
