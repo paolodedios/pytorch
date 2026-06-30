@@ -15,6 +15,7 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     FLEX_GEMM_OUTPUT_PLAN_NODE_ERROR,
     FLEX_GEMM_OUTPUT_TENSOR_ERROR,
     FlexGemmLocalReduceConsumerKind,
+    FlexGemmLocalReduceSpec,
     grouped_reduce_dims_match,
     LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR,
     LOCAL_REDUCE_AUX_TENSORSSA_ERROR,
@@ -26,7 +27,6 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     LOCAL_REDUCE_FEED_MAIN,
     LOCAL_REDUCE_FEED_MAIN_ARG_NAME,
     LOCAL_REDUCE_FEED_MAIN_MIXED_CONTRACT_ERROR,
-    local_reduce_feeds_main,
     local_reduce_finalize_fn_name,
     LOCAL_REDUCE_FINALIZE_SCALAR_ONLY_ERROR,
     LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR,
@@ -36,9 +36,7 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     LOCAL_REDUCE_POST_POINTWISE_FINALIZE_ERROR,
     LOCAL_REDUCE_SINGLE_PHYSICAL_FINALIZE_ERROR,
     LOCAL_REDUCE_SOURCE_EXPRESSION_ERROR,
-    local_reduce_stores_compressed_aux,
     local_reduce_unsupported_tensorssa_error,
-    validate_local_reduce_consumer_kind,
     validate_local_reduce_feed_main_capability,
     validate_local_reduce_group_axis,
 )
@@ -151,25 +149,44 @@ class FlexGemmCuteDSLOpOverrides(CuteDSLOpOverrides):
 class FlexGemmOutputLocalReducePlan:
     """Tie a local-reduce contract to the output consumer that needs it."""
 
-    kind: FlexGemmLocalReduceConsumerKind
+    spec: FlexGemmLocalReduceSpec
     node: torch.fx.Node
-    group: int
-    axis: int
 
     def __post_init__(self) -> None:
-        """Reject invalid local-reduce consumer tags, nodes, and geometry."""
-        validate_local_reduce_consumer_kind(self.kind)
-        validate_local_reduce_group_axis(self.group, self.axis)
+        """Reject invalid local-reduce output nodes."""
         if not isinstance(self.node, torch.fx.Node):
             raise RuntimeError(LOCAL_REDUCE_OUTPUT_PLAN_NODE_ERROR)
 
+    @classmethod
+    def from_parts(
+        cls,
+        kind: FlexGemmLocalReduceConsumerKind,
+        node: torch.fx.Node,
+        group: int,
+        axis: int,
+    ) -> "FlexGemmOutputLocalReducePlan":
+        """Build the output plan from the semantic local-reduce fields."""
+        return cls(FlexGemmLocalReduceSpec(kind, group, axis), node)
+
+    @property
+    def kind(self) -> FlexGemmLocalReduceConsumerKind:
+        return self.spec.kind
+
+    @property
+    def group(self) -> int:
+        return self.spec.group
+
+    @property
+    def axis(self) -> int:
+        return self.spec.axis
+
     @property
     def feeds_main(self) -> bool:
-        return local_reduce_feeds_main(self.kind)
+        return self.spec.feeds_main
 
     @property
     def stores_compressed_aux(self) -> bool:
-        return local_reduce_stores_compressed_aux(self.kind)
+        return self.spec.stores_compressed_aux
 
 
 @dataclasses.dataclass(frozen=True)
@@ -212,7 +229,7 @@ class FlexGemmLocalReduceContract:
         node: torch.fx.Node | None = None,
     ) -> FlexGemmOutputLocalReducePlan:
         """Bind a discovered reduction contract to the output consumer kind."""
-        return FlexGemmOutputLocalReducePlan(
+        return FlexGemmOutputLocalReducePlan.from_parts(
             kind, self.aux if node is None else node, self.group, self.axis
         )
 
@@ -648,14 +665,15 @@ def compose_physical_reduction_finalize(
     local_reduce_physical_reductions: dict[torch.fx.Node, FlexGemmPhysicalReduction],
 ) -> Any | None:
     """Fold post-reduction pointwise nodes into the generated physical finalizer."""
-    physical_inputs = [
-        arg
-        for arg in iter_fx_node_inputs((node.args, node.kwargs))
-        if arg in local_reduce_physical_reductions
-    ]
+    physical_inputs = list(
+        OrderedSet(
+            arg
+            for arg in iter_fx_node_inputs((node.args, node.kwargs))
+            if arg in local_reduce_physical_reductions
+        )
+    )
     if not physical_inputs:
         return None
-    physical_inputs = list(OrderedSet(physical_inputs))
     if len(physical_inputs) > 1:
         raise NotImplementedError(LOCAL_REDUCE_SINGLE_PHYSICAL_FINALIZE_ERROR)
     base = physical_inputs[0]
