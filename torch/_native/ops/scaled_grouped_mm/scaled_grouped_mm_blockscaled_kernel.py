@@ -20,7 +20,7 @@ class ClcGroupedGemmTileSchedulerHelper(utils.StaticPersistentGroupTileScheduler
     comes from CLC dispatch instead of the base class's own iteration state.
 
     For groups with non-uniform M/N, mainload broadcasts the result through
-    `tile_meta`. Uniform-M/N groups use direct arithmetic in each consumer.
+    `tile_meta`. Uniform-M/N groups receive direct (M, N, group) CLC coordinates.
 
     The base class constructor requires per-iteration state we don't use
     (num_persistent_clusters, current_work_linear_idx, cta_id_in_cluster,
@@ -122,29 +122,13 @@ class ClcGroupedGemmTileSchedulerHelper(utils.StaticPersistentGroupTileScheduler
         )
 
     def delinearize_uniform_mn(self, cta_tile_coord, problem_shape_mnkl):
-        linear_idx = cta_tile_coord[2]
-        first_problem = self._get_problem_for_group(
-            problem_shape_mnkl, cutlass.Int32(0)
-        )
-        cluster_count_m, cluster_count_n, _ = cute.ceil_div(
-            (first_problem[0], first_problem[1], first_problem[2]),
-            self.cluster_tile_shape_mnk,
-        )
-        clusters_per_group = cluster_count_m * cluster_count_n
-        group_idx = linear_idx // clusters_per_group
-        cluster_tile_idx = linear_idx - group_idx * clusters_per_group
+        group_idx = cta_tile_coord[2]
         problem_mnkl = self._get_problem_for_group(problem_shape_mnkl, group_idx)
         cluster_count_k = cute.ceil_div(problem_mnkl[2], self.cluster_tile_shape_mnk[2])
-        cta_tile_idx_m, cta_tile_idx_n = self._compute_cta_tile_coord(
-            cluster_tile_idx,
-            cta_tile_coord,
-            cluster_count_m,
-            cluster_count_n,
-        )
         return utils.GroupSearchResult(
             group_idx,
-            cta_tile_idx_m,
-            cta_tile_idx_n,
+            cta_tile_coord[0],
+            cta_tile_coord[1],
             problem_mnkl[0],
             problem_mnkl[1],
             problem_mnkl[2],
@@ -682,11 +666,30 @@ class Sm100GroupedBlockScaledGemmKernel:
             self.epi_tile,
         )
 
-        estimate_tile_sched_params = make_clc_problem_shape(
-            self.cluster_shape_mn,
-            estimate_total_num_clusters,
-            swizzle_size=self.CLC_SWIZZLE_SIZE,
-        )
+        direct_problem_shape_mnl = (0, 0, 0)
+        if cutlass.const_expr(self.uniform_mn_groups):
+            cluster_count_m, cluster_count_n = cute.ceil_div(
+                (tensor_a.shape[0], tensor_b.shape[0]),
+                self.cluster_tile_shape_mnk[:2],
+            )
+            direct_problem_shape_mnl = (
+                cluster_count_m * self.cluster_shape_mn[0],
+                cluster_count_n * self.cluster_shape_mn[1],
+                group_count,
+            )
+        if cutlass.const_expr(self.uniform_mn_groups):
+            estimate_tile_sched_params = make_clc_problem_shape(
+                self.cluster_shape_mn,
+                estimate_total_num_clusters,
+                problem_shape_ntile_mnl=direct_problem_shape_mnl,
+                swizzle_size=self.CLC_SWIZZLE_SIZE,
+            )
+        else:
+            estimate_tile_sched_params = make_clc_problem_shape(
+                self.cluster_shape_mn,
+                estimate_total_num_clusters,
+                swizzle_size=self.CLC_SWIZZLE_SIZE,
+            )
         grid = utils.ClcDynamicPersistentTileScheduler.get_grid_shape(
             estimate_tile_sched_params
         )
@@ -793,6 +796,7 @@ class Sm100GroupedBlockScaledGemmKernel:
             tensor_address_abc,
             tensor_address_sfasfb,
             tensormap_cute_tensor,
+            direct_problem_shape_mnl,
         ).launch(
             grid=grid,
             block=[32 * Sm100GroupedBlockScaledGemmKernel.NUM_WARPS_PER_CTA, 1, 1],
@@ -835,6 +839,7 @@ class Sm100GroupedBlockScaledGemmKernel:
         ptrs_abc: cute.Tensor,
         ptrs_sfasfb: cute.Tensor,
         tensormaps: cute.Tensor,
+        direct_problem_shape_mnl,
     ):
         """
         GPU device kernel performing the grouped GEMM computation.
@@ -1162,11 +1167,19 @@ class Sm100GroupedBlockScaledGemmKernel:
             cluster_size=cluster_size,
             cta_layout_vmnk=cluster_layout_vmnk,
         )
-        clc_problem_shape = make_clc_problem_shape(
-            self.cluster_shape_mn,
-            total_num_clusters[0],
-            swizzle_size=self.CLC_SWIZZLE_SIZE,
-        )
+        if cutlass.const_expr(self.uniform_mn_groups):
+            clc_problem_shape = make_clc_problem_shape(
+                self.cluster_shape_mn,
+                total_num_clusters[0],
+                problem_shape_ntile_mnl=direct_problem_shape_mnl,
+                swizzle_size=self.CLC_SWIZZLE_SIZE,
+            )
+        else:
+            clc_problem_shape = make_clc_problem_shape(
+                self.cluster_shape_mn,
+                total_num_clusters[0],
+                swizzle_size=self.CLC_SWIZZLE_SIZE,
+            )
         clc_state = ClcState.create(
             hw_scheduler=utils.ClcDynamicPersistentTileScheduler.create(
                 clc_problem_shape,

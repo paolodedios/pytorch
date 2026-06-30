@@ -151,27 +151,26 @@ class ClcState:
 def make_clc_problem_shape(
     cluster_shape_mn: tuple[int, int],
     total_num_clusters,
+    problem_shape_ntile_mnl=None,
     swizzle_size: int = 1,
     raster_along_m: bool = True,
 ) -> ClcDynamicPersistentTileSchedulerParams:
-    """Build ClcDynamicPersistentTileSchedulerParams that match what our
-    static persistent scheduler uses (PersistentTileSchedulerParams with
-    problem_shape_ntile_mnl=(cluster_m, cluster_n, total_num_clusters)).
+    """Build CLC scheduler parameters for either flattened or direct work.
 
-    CLC dispatches tiles into the (m, n, l) coord space; consumer warps then
-    feed l_idx into delinearize_z (same as today) to recover the per-group
-    coordinates.
+    The default layout flattens grouped work into L. Uniform-M/N problems can
+    instead provide their CTA-space (M, N, group) shape directly.
 
     `swizzle_size`/`raster_along_m` (v4.5.2 CLC scheduler) control the
     dispatch order across the (M, N) cluster grid; defaults give the
     pre-v4.5.2 pass-through behavior. Useful as an L2-locality tuning knob
     when problem_shape has multi-axis cluster work.
     """
-    problem_shape_ntile_mnl = (
-        cluster_shape_mn[0],
-        cluster_shape_mn[1],
-        cutlass.Int32(total_num_clusters),
-    )
+    if problem_shape_ntile_mnl is None:
+        problem_shape_ntile_mnl = (
+            cluster_shape_mn[0],
+            cluster_shape_mn[1],
+            cutlass.Int32(total_num_clusters),
+        )
     cluster_shape_mnk = (*cluster_shape_mn, 1)
     return ClcDynamicPersistentTileSchedulerParams(
         problem_shape_ntile_mnl=problem_shape_ntile_mnl,
