@@ -22,7 +22,7 @@ from .constraints import (
     LOCAL_REDUCE_AUX_OUTPUT_CONTRACT_ERROR,
     LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR,
     LOCAL_REDUCE_DENSE_MM_SCOPE_ERROR,
-    local_reduce_partial_output_contract_error,
+    LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR,
     validate_flex_gemm_local_reduce_config,
 )
 
@@ -116,7 +116,7 @@ def validate_flex_gemm_aux_outputs(
         aux_size = ir.convert_shape_to_inductor(aux_meta.shape)
         if aux_size != output_size:
             if is_flex_gemm_partial_reduction_shape(aux_size, output_size):
-                raise local_reduce_partial_output_contract_error()
+                raise NotImplementedError(LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR)
             raise NotImplementedError(LOCAL_REDUCE_AUX_OUTPUT_CONTRACT_ERROR)
         aux_metas.append(aux_meta)
     return tuple(aux_metas)
