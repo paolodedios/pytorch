@@ -2,7 +2,6 @@
 # ruff: noqa: F841
 
 import torch
-import torch._dynamo.config
 
 if __name__ == '__main__':
     from torch.testing._internal.common_utils import parse_cmd_line_args
@@ -7614,7 +7613,7 @@ dedent """
             self.assertEqual(
                 cu.func(),
                 scope['func'](),
-                msg=f"Failed with op: {op}, lhs: {args[0]}, rhs: {args[1]}"
+                msg=lambda msg: f"{msg}\nFailed with op: {op}, lhs: {args[0]}, rhs: {args[1]}"
             )
 
         ops = ['is', 'is not']
@@ -7696,7 +7695,7 @@ dedent """
             self.assertEqual(
                 cu.func(inp),
                 scope['func'](inp),
-                msg=f"Failed with typ: {typ}"
+                msg=lambda msg: f"{msg}\nFailed with typ: {typ}"
             )
 
         inputs = [True, 1, 1.0, torch.tensor(1), [1, 2], (1.0,), [1, 2], 1]
