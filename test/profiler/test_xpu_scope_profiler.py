@@ -8,7 +8,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import torch
-from torch._C._profiler import _ExperimentalConfig
 from torch.testing._internal.common_utils import run_tests, TEST_XPU, TestCase
 
 
@@ -39,9 +38,14 @@ class XpuScopeProfilerTest(TestCase):
         rev_counter = defaultdict(int)
 
         for metric_name_in_json in counter:
+            # Kineto emits the metric either bare (counter "C" events) or with a
+            # unit suffix. The scope profiler's per-kernel metadata uses
+            # "<name>::<unit>" (e.g. "GpuTime::ns"); some loggers use "<name> [..]".
             metric_name_in_json_valid = sum(
                 metric_name_in_json == metric_name
-                or metric_name_in_json.startswith(metric_name + " [")
+                or metric_name_in_json.startswith(
+                    (metric_name + "::", metric_name + " [")
+                )
                 for metric_name in self.metrics_names
             )
             self.assertTrue(metric_name_in_json_valid <= 1)
@@ -141,15 +145,14 @@ class XpuScopeProfilerTest(TestCase):
 
         a = torch.rand([100, 200]).to("xpu")
         b = torch.rand([200, 300]).to("xpu")
+        # Hardware metrics are requested through the fine-grained activity dict:
+        # {ProfilerActivity.XPU: [<metric names>]} enables the XPUPTI scope
+        # profiler and forwards the metric names to it.
         with torch.profiler.profile(
             activities=[
                 torch.profiler.ProfilerActivity.CPU,
-                torch.profiler.ProfilerActivity.XPU,
+                {torch.profiler.ProfilerActivity.XPU: self.metrics_names},
             ],
-            experimental_config=_ExperimentalConfig(
-                profiler_metrics=self.metrics_names,
-                profiler_measure_per_kernel=True,
-            ),
         ) as p:
             r1 = torch.matmul(a, b)
             r2 = torch.add(r1, 1.0)
@@ -172,6 +175,27 @@ class XpuScopeProfilerTest(TestCase):
             event.key.startswith("metrics: ") for event in p.key_averages()
         )
         self.assertTrue(count_metrics > 0)
+
+    @unittest.skipIf(not TEST_XPU, "test requires XPU")
+    def test_activity_type_filter_does_not_enable_scope_profiler(self):
+        """A fine-grained XPU dict that lists only activity type names (no
+        hardware metric names) filters activities as in #176351 and must not
+        turn on the per-kernel scope profiler. Needs no metrics hardware."""
+        a = torch.rand([100, 200]).to("xpu")
+        b = torch.rand([200, 300]).to("xpu")
+        with torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                {torch.profiler.ProfilerActivity.XPU: ["CONCURRENT_KERNEL"]},
+            ],
+        ) as p:
+            result = torch.matmul(a, b)
+
+        self.assertTrue(result.numel() > 0)
+        count_metrics = sum(
+            event.key.startswith("metrics: ") for event in p.key_averages()
+        )
+        self.assertEqual(count_metrics, 0)
 
 
 if __name__ == "__main__":
