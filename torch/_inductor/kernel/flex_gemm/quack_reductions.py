@@ -25,7 +25,7 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     LOCAL_REDUCE_EXPLICIT_DTYPE_ERROR,
     LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR,
     LOCAL_REDUCE_MIXED_GROUPED_LAYOUT_ERROR,
-    local_reduce_partial_output_contract_error,
+    LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR,
     validate_local_reduce_tensorssa_group_size,
 )
 from torch._inductor.shape_propagation import get_broadcasted_shape
@@ -103,7 +103,7 @@ def _cute_op_name(target: Any) -> str | None:
 
 
 def partial_vector_reduction_error() -> NotImplementedError:
-    return local_reduce_partial_output_contract_error()
+    return NotImplementedError(LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR)
 
 
 @dataclasses.dataclass(frozen=True)
