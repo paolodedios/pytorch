@@ -10,8 +10,6 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
-#include <unordered_set>
-#include <vector>
 
 namespace c10::cuda {
 
@@ -57,6 +55,16 @@ std::array<
     std::array<std::atomic<uint32_t>, C10_COMPILE_TIME_MAX_GPUS>,
     c10::cuda::max_compile_time_stream_priorities>
     priority_counters;
+
+// Per priority, per device: bitmask of reserved pool slots (bit i set => slot i
+// is reserved and excluded from the round-robin in get_idx). Reservations are
+// taken by reserveStreamFromPool and ref-counted down by releaseReservedStream;
+// the underlying stream is never destroyed, so a stale bit only affects which
+// slot round-robin hands out, never correctness. See Note [HIP Stream Pool].
+std::array<
+    std::array<std::atomic<uint32_t>, C10_COMPILE_TIME_MAX_GPUS>,
+    c10::cuda::max_compile_time_stream_priorities>
+    reserved_slots;
 
 std::array<
     std::array<
@@ -321,9 +329,36 @@ inline void check_gpu(DeviceIndex device_index) {
 
 // Helper to determine the index of the stream to return
 // Note: Streams are returned round-robin (see note in CUDAStream.h)
-uint32_t get_idx(std::atomic<uint32_t>& counter, int pri_idx) {
+uint32_t get_idx(
+    std::atomic<uint32_t>& counter,
+    int pri_idx,
+    DeviceIndex device_index) {
   auto raw_idx = counter++;
-  return raw_idx % streams_per_pool[pri_idx];
+  const int pool = streams_per_pool[pri_idx];
+  const uint32_t reserved =
+      reserved_slots[pri_idx][device_index].load(std::memory_order_relaxed);
+  // Round-robin over the slots not currently reserved; if every slot is
+  // reserved fall back to the full pool (degrade to sharing rather than fail).
+  int free_count = 0;
+  for (const auto i : c10::irange(pool)) {
+    if (!((reserved >> i) & 1u)) {
+      free_count++;
+    }
+  }
+  if (free_count == 0) {
+    return raw_idx % pool;
+  }
+  uint32_t target = raw_idx % static_cast<uint32_t>(free_count);
+  uint32_t seen = 0;
+  for (const auto i : c10::irange(pool)) {
+    if (!((reserved >> i) & 1u)) {
+      if (seen == target) {
+        return static_cast<uint32_t>(i);
+      }
+      seen++;
+    }
+  }
+  return raw_idx % pool; // unreachable
 }
 
 CUDAStream CUDAStreamForId(DeviceIndex device_index, StreamId stream_id) {
@@ -417,7 +452,8 @@ CUDAStream getStreamFromPool(const int priority, DeviceIndex device_index) {
   c10::call_once(
       device_flags[device_index], initDeviceStreamState, device_index);
   auto pri_idx = std::clamp(-priority, 0, max_stream_priorities - 1);
-  const auto idx = get_idx(priority_counters[pri_idx][device_index], pri_idx);
+  const auto idx =
+      get_idx(priority_counters[pri_idx][device_index], pri_idx, device_index);
   StreamIdType id_type = StreamIdType(pri_idx + 1);
   return CUDAStreamForId(device_index, makeStreamId(id_type, idx));
 }
@@ -434,72 +470,84 @@ int getStreamsPerPool(int priority) {
   return streams_per_pool[pri_idx];
 }
 
-// Returns `count` streams from the requested priority pool, guaranteed pairwise
-// distinct. On ROCm, where the pool is capped to the backing hsa_queue count,
-// distinct pool streams map to distinct hardware queues, so the returned
-// streams can run concurrently. See Note [HIP Stream Pool].
-std::vector<CUDAStream> getStreamsFromPool(
-    const int count,
-    const int priority,
-    DeviceIndex device_index) {
+// Reserve a stream from the requested priority pool. The returned stream is
+// excluded from the round-robin getStreamFromPool until releaseReservedStream
+// is called for it, so reserving distinct streams (or reserving against
+// transient ones) guarantees they do not share a slot. On ROCm each slot is a
+// distinct hsa_queue, so reserved streams run concurrently. See Note [HIP
+// Stream Pool].
+CUDAStream reserveStreamFromPool(const int priority, DeviceIndex device_index) {
   initCUDAStreamsOnce();
   if (device_index == -1) {
     device_index = current_device();
     c10::cuda::SetTargetDevice();
   }
   check_gpu(device_index);
-  TORCH_CHECK(
-      count >= 1, "getStreamsFromPool: count must be >= 1, got ", count);
+  // See Note [HIP Stream Pool]: reservations index into the eagerly created
+  // pool.
+  c10::call_once(
+      device_flags[device_index], initDeviceStreamState, device_index);
   auto pri_idx = std::clamp(-priority, 0, max_stream_priorities - 1);
   const int pool = streams_per_pool[pri_idx];
-#ifdef USE_ROCM
-  // Each pool entry maps 1:1 to a distinct hsa_queue, so the number of distinct
-  // streams cannot exceed the pool size. The default-priority pool is
-  // GPU_MAX_HW_QUEUES-1 (the null stream holds one queue); higher priorities
-  // are GPU_MAX_HW_QUEUES.
-  TORCH_CHECK(
-      count <= pool,
-      "Requested ",
-      count,
-      " distinct streams for priority ",
-      priority,
-      ", but the HIP stream pool for that priority holds only ",
-      pool,
-      ". Increase GPU_MAX_HW_QUEUES to at least ",
-      (pri_idx == 0 ? count + 1 : count),
-      ".");
-#else
-  TORCH_CHECK(
-      count <= pool,
-      "Requested ",
-      count,
-      " distinct streams for priority ",
-      priority,
-      ", but the stream pool for that priority holds only ",
-      pool,
-      ".");
-#endif
-  std::vector<CUDAStream> out;
-  out.reserve(count);
-  std::unordered_set<StreamId> seen;
-  // Round-robin yields distinct slots for up to `pool` consecutive calls; the
-  // dedup loop preserves the guarantee even if another thread advances the
-  // shared counter concurrently. Bounded to avoid spinning on a logic error.
-  int attempts = 0;
-  const int max_attempts = pool * 8 + 8;
-  while (static_cast<int>(out.size()) < count) {
-    auto stream = getStreamFromPool(priority, device_index);
-    if (seen.insert(stream.id()).second) {
-      out.push_back(stream);
+  auto& slots = reserved_slots[pri_idx][device_index];
+  uint32_t cur = slots.load(std::memory_order_relaxed);
+  while (true) {
+    int slot = -1;
+    for (const auto i : c10::irange(pool)) {
+      if (!((cur >> i) & 1u)) {
+        slot = i;
+        break;
+      }
     }
-    TORCH_INTERNAL_ASSERT(
-        ++attempts <= max_attempts,
-        "getStreamsFromPool: failed to collect ",
-        count,
-        " distinct streams for priority ",
-        priority);
+    if (slot < 0) {
+#ifdef USE_ROCM
+      TORCH_CHECK(
+          false,
+          "Cannot reserve another priority ",
+          priority,
+          " stream; all ",
+          pool,
+          " HIP queues for that priority are already reserved. Increase "
+          "GPU_MAX_HW_QUEUES to at least ",
+          (pri_idx == 0 ? pool + 2 : pool + 1),
+          ".");
+#else
+      TORCH_CHECK(
+          false,
+          "Cannot reserve another priority ",
+          priority,
+          " stream; all ",
+          pool,
+          " pool streams for that priority are already reserved.");
+#endif
+    }
+    uint32_t desired = cur | (1u << slot);
+    if (slots.compare_exchange_weak(cur, desired, std::memory_order_acq_rel)) {
+      StreamIdType id_type = StreamIdType(pri_idx + 1);
+      return CUDAStreamForId(device_index, makeStreamId(id_type, slot));
+    }
+    // compare_exchange_weak reloaded `cur`; retry with the fresh value.
   }
-  return out;
+}
+
+// Drop a reservation taken by reserveStreamFromPool, returning the slot to the
+// round-robin pool. Idempotent for non-pool streams (default/external) and safe
+// to over-call: it only clears a bit, never destroys the underlying stream.
+void releaseReservedStream(CUDAStream stream) {
+  StreamId id = stream.id();
+  StreamIdType st = streamIdType(id);
+  if (st.isDefault() || st.isExt()) {
+    return;
+  }
+  int pri_idx = st.getStreamType() - 1;
+  auto device_index = stream.device_index();
+  if (pri_idx < 0 || pri_idx >= max_stream_priorities || device_index < 0 ||
+      device_index >= num_gpus) {
+    return;
+  }
+  size_t si = streamIdIndex(id);
+  reserved_slots[pri_idx][device_index].fetch_and(
+      ~(1u << si), std::memory_order_acq_rel);
 }
 
 CUDAStream getStreamFromExternal(

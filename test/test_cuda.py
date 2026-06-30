@@ -1491,21 +1491,37 @@ print(t.is_pinned())
         self.assertEqual(pool_sizes({"GPU_MAX_HW_QUEUES": "8"}), (7, 8))  # override
 
     @serialTest()
-    def test_get_streams(self):
-        # get_streams returns pairwise-distinct streams (distinct underlying
-        # hsa_queues under the ROCm cap), up to the per-priority pool size;
-        # requesting more than the pool holds raises.
+    def test_reserved_streams(self):
+        # Stream(reserve=True) hands out a dedicated pool slot excluded from the
+        # round-robin until released. Reserving the whole pool yields pairwise
+        # distinct streams; one more raises; transient Stream() avoids reserved
+        # slots; and the reservation is released when the object is dropped.
         least, greatest = torch.cuda.Stream.priority_range()
         for priority in range(least, greatest - 1, -1):
             pool = torch.cuda._get_stream_pool_size(priority)
-            streams = torch.cuda.get_streams(pool, priority=priority)
-            self.assertEqual(len(streams), pool)
-            ptrs = [s.cuda_stream for s in streams]
+            # Reserving the whole pool yields pairwise-distinct streams.
+            reserved = [
+                torch.cuda.Stream(priority=priority, reserve=True) for _ in range(pool)
+            ]
+            rptrs = {s.cuda_stream for s in reserved}
             self.assertEqual(
-                len(set(ptrs)), pool, f"priority {priority}: streams not distinct"
+                len(rptrs), pool, f"priority {priority}: reserved not distinct"
             )
+            # Pool exhausted -> reserving one more raises.
             with self.assertRaises(RuntimeError):
-                torch.cuda.get_streams(pool + 1, priority=priority)
+                torch.cuda.Stream(priority=priority, reserve=True)
+            # Dropping one reservation returns exactly that slot to the pool.
+            freed = reserved.pop().cuda_stream
+            gc.collect()
+            # Now pool-1 slots are reserved and one is free; transient streams
+            # must skip the reserved slots and only ever use the freed one.
+            got = {
+                torch.cuda.Stream(priority=priority).cuda_stream
+                for _ in range(pool * 4 + 4)
+            }
+            self.assertEqual(
+                got, {freed}, f"priority {priority}: transient hit a reserved slot"
+            )
 
     def test_stream_event_repr(self):
         s = torch.cuda.current_stream()

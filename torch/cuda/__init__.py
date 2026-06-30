@@ -253,30 +253,6 @@ def _get_stream_pool_size(priority: int = 0) -> int:
     return torch._C._cuda_getStreamsPerPool(priority)
 
 
-def get_streams(
-    num_streams: int, priority: int = 0, device: "Device" = None
-) -> list["Stream"]:
-    r"""Return ``num_streams`` streams from the pool, guaranteed pairwise distinct.
-
-    On ROCm, where each per-priority stream pool is capped to the backing
-    hardware-queue count (``GPU_MAX_HW_QUEUES``), distinct streams are backed by
-    distinct hardware queues, so kernels enqueued on them can run concurrently
-    rather than serializing on a shared queue. This is the recommended way to
-    obtain a set of streams that must overlap (e.g. separate compute and
-    communication streams), instead of calling :class:`Stream` repeatedly, which
-    round-robins and may hand back the same underlying stream.
-
-    Raises a ``RuntimeError`` if ``num_streams`` exceeds the pool size for
-    ``priority``; on ROCm the error reports the ``GPU_MAX_HW_QUEUES`` value needed.
-    """
-    _lazy_init()
-    device_index = _get_device_index(device, optional=True)
-    return [
-        Stream(stream_id=s[0], device_index=s[1], device_type=s[2])
-        for s in torch._C._cuda_getStreamsFromPool(num_streams, priority, device_index)
-    ]
-
-
 def _extract_arch_version(arch_string: str) -> int:
     """Extracts the architecture string from a CUDA version"""
     base = arch_string.split("_", maxsplit=2)[1]
@@ -2188,7 +2164,6 @@ __all__ = [
     "get_rng_state",
     "get_rng_state_all",
     "get_stream_from_external",
-    "get_streams",
     "get_sync_debug_mode",
     "graph",
     "graph_pool_handle",
