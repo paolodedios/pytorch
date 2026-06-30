@@ -10075,6 +10075,22 @@ class TestInnerContiguous(TestCaseMPS):
         # whole-buffer compare also proves the copy leaves neighbors untouched
         self.assertEqual(dst_dev.cpu(), dst_cpu)
 
+    @parametrize("dtype", [torch.int8, torch.int16, torch.float32, torch.complex64])
+    @parametrize("offset", [0, 1, 2, 4])
+    def test_contiguous_copy(self, device, dtype, offset):
+        # Fully contiguous same-dtype clone hits contiguous_byte_copy; offset varies the
+        # base byte alignment and n spans sub-16B totals through the vectorized path.
+        torch.manual_seed(0)
+        for n in (1, 7, 16, 17, 1000):
+            if dtype.is_complex:
+                full = torch.randn(offset + n, dtype=dtype)
+            elif dtype.is_floating_point:
+                full = torch.randn(offset + n).to(dtype)
+            else:
+                full = torch.randint(-100, 100, (offset + n,), dtype=dtype)
+            dev = full.to(device)
+            self.assertEqual(dev[offset:].clone().cpu(), full[offset:])
+
 
 class TestLargeTensors(TestCaseMPS):
     @serialTest()
