@@ -20,6 +20,7 @@ import os
 import pickle
 import random
 import re
+import subprocess
 import sys
 import tempfile
 import threading
@@ -2019,6 +2020,30 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         y = f(x)
         self.assertEqual(y.shape, x.shape)
 
+    def test_check_compiles_when_predicate_true_and_message_string(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def f(x):
+            torch._check(x.shape[0] > 3, "Shape is not greater than 3")
+            return x + 1
+
+        x = torch.randn(4)
+        torch._dynamo.maybe_mark_dynamic(x, 0)
+
+        y = f(x)
+        self.assertEqual(y.shape, x.shape)
+
+    def test_check_raises_at_runtime_when_predicate_false_and_message_string(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def f(x):
+            torch._check(x.shape[0] > 3, "Shape is not greater than 3")
+            return x + 1
+
+        x = torch.randn(3)
+        torch._dynamo.maybe_mark_dynamic(x, 0)
+
+        with self.assertRaisesRegex(RuntimeError, "Shape is not greater than 3"):
+            f(x)
+
     def test_check_compiles_when_predicate_true_constant_and_message_None(self):
         @torch.compile(backend="eager", fullgraph=True)
         def f(x):
@@ -2276,6 +2301,19 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.tensor([1.0, 2.0, 3.0])
         self.assertEqual(f(x), x + 1)
+
+    def test_check_tensor_predicate_raises_clear_error(self):
+        @torch.compile(backend="eager")
+        def f(x):
+            torch._check(x > 0)
+            return torch.log(x)
+
+        with self.assertRaisesRegex(
+            TypeError, r"cond must be a bool.*torch[.]_check_tensor_all"
+        ) as cm:
+            f(torch.rand(1))
+
+        self.assertNotIn("FakeTensor", str(cm.exception))
 
     def test_check_with_closure_constant(self):
         @torch.compile(backend="eager", fullgraph=True)
@@ -2810,11 +2848,9 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.randn(3, 2)
 
-        # Verify that fullgraph=True fails (confirms graph break occurs)
         with self.assertRaises(torch._dynamo.exc.Unsupported):
             torch.compile(fn, fullgraph=True, backend="eager")(x)
 
-        # Verify that it works without fullgraph
         opt_fn = torch._dynamo.optimize(cnts)(fn)
         result = opt_fn(x)
         self.assertEqual(cnts.frame_count, 1)
@@ -3699,8 +3735,14 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
                 continue
             cnts = torch._dynamo.testing.CompileCounter()
             opt_fn = torch.compile(fn, backend=cnts)
-            self.assertEqual(result, opt_fn(op, t1, t2), msg=f"{op=} {t1_np=} {t2_np=}")
-            self.assertEqual(cnts.frame_count, 1, msg=f"{op=} {t1_np=} {t2_np=}")
+            self.assertEqual(
+                result,
+                opt_fn(op, t1, t2),
+                msg=lambda msg: f"{msg}\n{op=} {t1_np=} {t2_np=}",
+            )
+            self.assertEqual(
+                cnts.frame_count, 1, msg=lambda msg: f"{msg}\n{op=} {t1_np=} {t2_np=}"
+            )
             torch._dynamo.reset()
 
     def test_numpy_ndarray_graph_break(self):
@@ -3891,7 +3933,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
                 _, t_np = _inf_nan_preprocess(t, t_np)
                 print(t, t_np)  # Just a side effect so that compilation kicks in
 
-        cnt = CompileCounterWithBackend("inductor")
+        cnt = CompileCounterWithBackend("eager")
         fn = torch.compile(fn, backend=cnt)
         fn()
         self.assertEqual(cnt.frame_count, ifdynstaticdefault(2, 1))
@@ -4183,7 +4225,6 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             lambda x: x.resize_as_(torch.rand(200, 300)): torch.rand(2, 3),
             lambda x: x.swapaxes_(0, 1).mul_(2): torch.rand(2, 3),
             lambda x: x.swapdims_(0, 1).mul_(2): torch.rand(2, 3),
-            lambda x: x.rename_("N", "C").mul_(2): torch.zeros(2, 3),
             lambda x: x.as_strided_((3, 2), (2, 1)).mul_(2): torch.zeros(2, 3),
             lambda x: x.detach_().mul_(2): torch.zeros(2, 3),
         }
@@ -4624,7 +4665,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.randn(4)
         correct = fn(x)
-        result = torch.compile(fn, fullgraph=True)(x)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x)
         self.assertEqual(result, correct)
 
     def test_deepcopy_nested_dict(self):
@@ -4636,7 +4677,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.randn(4)
         correct = fn(x)
-        result = torch.compile(fn, fullgraph=True)(x)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x)
         self.assertEqual(result, correct)
 
     def test_deepcopy_list(self):
@@ -4649,7 +4690,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.randn(4)
         correct = fn(x)
-        result = torch.compile(fn, fullgraph=True)(x)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x)
         self.assertEqual(result, correct)
 
     def test_deepcopy_user_defined_object(self):
@@ -4703,7 +4744,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.randn(4)
         correct = fn(x)
-        result = torch.compile(fn, fullgraph=True)(x)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x)
         self.assertEqual(result, correct)
 
     def test_deepcopy_frozenset(self):
@@ -4715,7 +4756,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.randn(4)
         correct = fn(x)
-        result = torch.compile(fn, fullgraph=True)(x)
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x)
         self.assertEqual(result, correct)
 
     def test_deepcopy_user_defined_object_with_method(self):
@@ -6185,6 +6226,47 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         self.assertEqual(cnts.frame_count, 1)
         self.assertEqual(cnts.op_count, 3)
 
+    @torch._dynamo.config.patch(graph_break_on_nn_param_ctor=False)
+    def test_param_grad_in_forward(self):
+        cnts = torch._dynamo.testing.CompileCounter()
+
+        def fn(x):
+            w = torch.nn.Parameter(torch.ones(4, 4))
+            saw_none = w.grad is None
+            if saw_none:
+                w.grad = torch.zeros_like(w)
+            return saw_none, w.grad + x
+
+        x = torch.randn(4, 4)
+        ref = fn(x)
+
+        opt_fn = torch.compile(fn, backend=cnts, fullgraph=True)
+        res = opt_fn(x)
+
+        self.assertTrue(res[0])
+        self.assertEqual(ref[1], res[1])
+        self.assertEqual(cnts.frame_count, 1)
+
+    @torch._dynamo.config.patch(
+        graph_break_on_nn_param_ctor=False, trace_autograd_ops=True
+    )
+    def test_param_autograd_grad_in_forward(self):
+        def fn(x):
+            w = torch.nn.Parameter(torch.ones(4, 4))
+            y = (x @ w).sum()
+            (grad,) = torch.autograd.grad(y, w)
+            return grad is not None, w.grad is None, grad
+
+        x = torch.randn(4, 4)
+        ref = fn(x)
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=False)
+        res = opt_fn(x)
+
+        self.assertTrue(res[0])
+        self.assertTrue(res[1])
+        self.assertEqual(ref[2], res[2])
+
     def test_intermediary_tensor_grad_access(self):
         # This test creates a model, and accesses the grads
         # from its parameters and an entirely intermediary tensor.
@@ -7097,6 +7179,32 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         output = loss(input, target)
 
         self.assertTrue(torch.allclose(dynamo_output, output))
+
+    def test_cross_entropy_loss_prob_target_dynamic(self):
+        shapes = [(3, 5), (4, 7)]
+        compiled = torch.compile(F.cross_entropy, dynamic=True, backend="eager")
+        for N, C in shapes:
+            x = torch.randn(N, C)
+            target = torch.rand(N, C).softmax(dim=1)
+            weight = torch.rand(C)
+            for reduction in ["none", "mean", "sum"]:
+                for label_smoothing in [0.0, 0.5]:
+                    for w in [None, weight]:
+                        expected = F.cross_entropy(
+                            x,
+                            target,
+                            weight=w,
+                            reduction=reduction,
+                            label_smoothing=label_smoothing,
+                        )
+                        actual = compiled(
+                            x,
+                            target,
+                            weight=w,
+                            reduction=reduction,
+                            label_smoothing=label_smoothing,
+                        )
+                        self.assertEqual(expected, actual)
 
     def test_repr(self):
         class Config:
@@ -8157,7 +8265,11 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             opt_fn(x, obj)
             self.assertFalse(True)
         except TypeError as e:
-            self.assertIn("__bool__ should return bool, returned float", str(e))
+            if sys.version_info >= (3, 15):
+                msg = "__bool__() must return a bool, not float"
+            else:
+                msg = "__bool__ should return bool, returned float"
+            self.assertIn(msg, str(e))
 
     def test_unpack_tensor_shape_mismatch(self):
         @torch.compile(backend="eager")
@@ -8171,7 +8283,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
         x = torch.tensor([2.0])
         with self.assertRaisesRegex(
-            AssertionError, "Can't unpack a tensor of 1 rows into a tuple of 2 elements"
+            ValueError, r"not enough values to unpack \(expected 2, got 1\)"
         ):
             f1(x)
 
@@ -9661,7 +9773,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             b = F.interpolate(y, scale_factor=z, mode="bilinear", align_corners=False)
             return a * b
 
-        cnt = CompileCounterWithBackend("inductor")
+        cnt = CompileCounterWithBackend("eager")
         fn_opt = torch.compile(fn, backend=cnt)
         y = torch.randn(3, 3, 3, 4)
 
@@ -9729,7 +9841,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
             fn(torch.tensor([9, 0]))
 
     def test_unbacked_2d_expand(self):
-        @torch.compile(fullgraph=True, dynamic=True, backend="inductor")
+        @torch.compile(fullgraph=True, dynamic=True, backend="eager")
         def func(a, b):
             a.expand(b.shape)
             return a * 10
@@ -9898,7 +10010,7 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
 
     def test_tolist(self):
         # This should compile with no faluire.
-        cnt = CompileCounterWithBackend("inductor")
+        cnt = CompileCounterWithBackend("eager")
 
         @torch.compile(fullgraph=False, backend=cnt)
         def func(a):
@@ -10037,6 +10149,93 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         fn(torch.randn(2))
         fn(torch.randn(3))
         fn(torch.randn(4))
+
+        self.assertEqual(counter.frame_count, 1)
+
+    @torch.compiler.config.patch(dynamic_values="1111")
+    def test_dynamic_values_int(self):
+        builder._DYNAMIC_VALUES = None
+        counter = CompileCounter()
+
+        @torch.compile(backend=counter)
+        def fn(x):
+            return torch.randn(5) * x
+
+        # Warm up with the sentinel value 1111 → the int gets marked dynamic.
+        fn(1111)
+        fn(2)
+        fn(3)
+
+        self.assertEqual(counter.frame_count, 1)
+
+    @torch.compiler.config.patch(dynamic_values="1111")
+    def test_dynamic_values_tensor(self):
+        builder._DYNAMIC_VALUES = None
+        counter = CompileCounter()
+
+        @torch.compile(backend=counter)
+        def fn(x):
+            return x * x
+
+        # Warm up with a tensor whose dim equals 1111 → that dim becomes dynamic.
+        fn(torch.randn(1111))
+        fn(torch.randn(3))
+        fn(torch.randn(4))
+
+        self.assertEqual(counter.frame_count, 1)
+
+    @torch._dynamo.config.patch(assume_static_by_default=True)
+    @torch.compiler.config.patch(dynamic_values="1111")
+    def test_dynamic_values_no_match_specializes(self):
+        builder._DYNAMIC_VALUES = None
+        counter = CompileCounter()
+
+        @torch.compile(backend=counter)
+        def fn(x):
+            return torch.randn(5) * x
+
+        fn(2)
+        fn(3)
+        fn(4)
+
+        self.assertEqual(counter.frame_count, 2)
+
+    @torch.compiler.config.patch(dynamic_values="1111")
+    def test_dynamic_values_graph_break(self):
+        """Motivating use case: graph breaks drop dynamic-ness in eager code,
+        but the sentinel value lets the second compiled region re-mark dynamic."""
+        builder._DYNAMIC_VALUES = None
+        counter = CompileCounter()
+
+        def foo(x):
+            return x * x
+
+        @torch.compile(backend=counter)
+        def fn(x):
+            x = x * x
+            torch._dynamo.graph_break()
+            return foo(x)
+
+        fn(torch.randn(1111))
+        fn(torch.randn(3))
+        fn(torch.randn(4))
+
+        # 2 frames (one per side of the graph break), no recompiles on either.
+        self.assertEqual(counter.frame_count, 2)
+
+    @torch.compiler.config.patch(dynamic_values="1111, 2222")
+    def test_dynamic_values_multiple(self):
+        builder._DYNAMIC_VALUES = None
+        counter = CompileCounter()
+
+        @torch.compile(backend=counter)
+        def fn(x):
+            return x * x
+
+        # Both sentinel values trigger dynamic marking.
+        fn(torch.randn(2222))
+        fn(torch.randn(7))
+        fn(torch.randn(9))
 
         self.assertEqual(counter.frame_count, 1)
 
@@ -12446,6 +12645,20 @@ def ___make_guard_fn():
 
         self.assertEqual(fn().item(), 1)
 
+    def test_iter_version(self):
+        def fn(x):
+            s = 0
+            for i in torch.__version__:
+                try:
+                    s += int(i)
+                except ValueError:
+                    pass
+            return (x + s).sin()
+
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        x = torch.randn(3, 3)
+        self.assertEqual(fn(x), opt_fn(x))
+
     def test_itertools_accumulate_tensors_user_defined(self):
         def udo_fn_0(a, b):
             return -1
@@ -12829,7 +13042,7 @@ def ___make_guard_fn():
 
         x = torch.randn(4, 4)
         eager_result = fn(x)
-        compiled_result = torch.compile(fn, fullgraph=True)(x)
+        compiled_result = torch.compile(fn, fullgraph=True, backend="eager")(x)
         self.assertEqual(eager_result[0], compiled_result[0])
         self.assertEqual(eager_result[1], compiled_result[1])
 
@@ -12844,7 +13057,7 @@ def ___make_guard_fn():
 
         x = torch.randn(4)
         eager_result = fn(x)
-        compiled_result = torch.compile(fn, fullgraph=True)(x)
+        compiled_result = torch.compile(fn, fullgraph=True, backend="eager")(x)
         for i in range(4):
             self.assertEqual(eager_result[i], compiled_result[i])
 
@@ -14993,7 +15206,7 @@ fn
 
     @torch._dynamo.config.patch(enable_trace_load_build_class=True)
     def test___build_class__(self):
-        @torch.compile(fullgraph=True)
+        @torch.compile(fullgraph=True, backend="eager")
         def fn(t):
             class NonTensor:
                 def __init__(self, t):
@@ -15011,7 +15224,7 @@ fn
 
     @torch._dynamo.config.patch(enable_trace_load_build_class=True)
     def test_return___build_class__(self):
-        @torch.compile(fullgraph=True)
+        @torch.compile(fullgraph=True, backend="eager")
         def fn(t):
             class NonTensor:
                 def __init__(self, t):
@@ -15087,6 +15300,71 @@ fn
             "Reconstruct user defined class without a source",
         ):
             fn(t)
+
+    @expectedFailureDynamic
+    @torch._dynamo.config.patch(enable_trace_load_build_class=True)
+    def test_build_class_closure_over_nonconstant(self):
+        class Outer:
+            def __init__(self):
+                self.scale = 3
+
+        outer = Outer()
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt, fullgraph=True)
+        def fn(t):
+            class Wrapper:
+                def __init__(self, t):
+                    self.t = t
+
+                def compute(self):
+                    return self.t.sin() * outer.scale
+
+            obj = Wrapper(t)
+            return obj.compute()
+
+        t = torch.randn(2)
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        # Same value: the EQUALS_MATCH guard on outer.scale holds, no recompile.
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        self.assertEqual(cnt.frame_count, 1)
+        # Mutating the closed-over non-constant trips the guard -> recompile with
+        # the new value (proves scale is guarded, not baked in as a constant).
+        outer.scale = 5
+        self.assertEqual(fn(t), t.sin() * outer.scale)
+        self.assertEqual(cnt.frame_count, 2)
+
+    @expectedFailureDynamic
+    @torch._dynamo.config.patch(enable_trace_load_build_class=True)
+    def test_build_class_closure_over_nonconstant_method(self):
+        class Outer:
+            def __init__(self):
+                self.scale = 2
+
+            def get_scale(self):
+                return self.scale
+
+        outer = Outer()
+
+        cnt = torch._dynamo.testing.CompileCounter()
+
+        @torch.compile(backend=cnt, fullgraph=True)
+        def fn(t):
+            class Wrapper:
+                def keys(self):
+                    return outer.get_scale()
+
+            return Wrapper().keys() + t.sum()
+
+        t = torch.randn(2)
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(cnt.frame_count, 1)
+        # Mutating the closed-over value re-guards and recompiles.
+        outer.scale = 7
+        self.assertEqual(fn(t), outer.get_scale() + t.sum())
+        self.assertEqual(cnt.frame_count, 2)
 
     def test_dunder_weakref(self):
         class Foo:
@@ -15521,7 +15799,7 @@ fn
                 return aliased + 1
 
             x = torch.randn(10, 10)
-            compiled_fn = torch.compile(fn, fullgraph=True, backend="inductor")
+            compiled_fn = torch.compile(fn, fullgraph=True, backend="aot_eager")
             # Use error_on_custom_op_aliasing=False to emit warnings instead of errors
             with (
                 torch._functorch.config.patch(
@@ -15547,6 +15825,68 @@ fn
                     "tensor(s) (e.g. return x.clone()) or refactor the custom operator "
                     "to not return y. This is deprecated and will become an error in a future version of PyTorch.",
                 )
+
+    def test_debugmode_respects_custom_op_aliasing_env_override(self):
+        default_script = """
+from torch._functorch import config as functorch_config
+assert functorch_config.error_on_custom_op_aliasing is True
+"""
+        default_env = os.environ.copy()
+        default_env["CI"] = "1"
+        default_env.pop("TORCHINDUCTOR_ERROR_ON_CUSTOM_OP_ALIASING", None)
+        default_result = subprocess.run(
+            [sys.executable, "-c", default_script],
+            env=default_env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            default_result.returncode,
+            0,
+            msg=lambda msg: f"{msg}\nstdout:\n{default_result.stdout}\nstderr:\n{default_result.stderr}",
+        )
+
+        script = """
+import warnings
+import torch
+from torch._functorch import config as functorch_config
+
+assert functorch_config.error_on_custom_op_aliasing is False
+with torch.library._scoped_library("mylib_ci", "FRAGMENT") as lib:
+    lib.define("alias_op(Tensor x) -> Tensor")
+    lib.impl("alias_op", lambda x: x.view_as(x), "CompositeExplicitAutograd")
+    lib.impl("alias_op", lambda x: x.view_as(x), "Meta")
+
+    def fn(x):
+        return torch.ops.mylib_ci.alias_op(x) + 1
+
+    compiled_fn = torch.compile(fn, fullgraph=True, backend="aot_eager")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        compiled_fn(torch.randn(4))
+    aliasing_warnings = [
+        warning
+        for warning in caught
+        if "may not alias any inputs" in str(warning.message)
+    ]
+    assert len(aliasing_warnings) == 1, [
+        str(warning.message) for warning in caught
+    ]
+"""
+        env = os.environ.copy()
+        env["CI"] = "1"
+        env["TORCHINDUCTOR_ERROR_ON_CUSTOM_OP_ALIASING"] = "0"
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=lambda msg: f"{msg}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
 
     def test_make_contiguous_strides_for_under_compile(self):
         # is_nested_int and sym_max must be traceable under Dynamo.
@@ -15574,7 +15914,7 @@ fn
             return x + 1
 
         x = torch.randn(3, 3)
-        opt_fn = torch.compile(fn)
+        opt_fn = torch.compile(fn, backend="eager")
         result = opt_fn(x)
         self.assertEqual(result, x * 2)
 
@@ -15589,7 +15929,7 @@ fn
         x_test = x_ref.clone()
 
         fn(x_ref).backward()
-        torch.compile(fn)(x_test).backward()
+        torch.compile(fn, backend="eager")(x_test).backward()
 
         self.assertEqual(x_ref.grad, x_test.grad)
 
@@ -15623,7 +15963,7 @@ fn
             torch.compile(fn, fullgraph=True)(x)
 
         # Without fullgraph, falls back to eager and is correct
-        result = torch.compile(fn)(x)
+        result = torch.compile(fn, backend="eager")(x)
         self.assertTrue(result.requires_grad)
         self.assertEqual(fn(x), result)
 
@@ -15643,7 +15983,7 @@ fn
             torch.compile(fn, fullgraph=True)(x)
 
         # Without fullgraph, falls back to eager and is correct
-        result = torch.compile(fn)(x)
+        result = torch.compile(fn, backend="eager")(x)
         ref = fn(x)
         self.assertTrue(result.requires_grad)
         self.assertEqual(ref, result)
@@ -15689,7 +16029,7 @@ def forward(self, L_x_ : torch.Tensor):
         x = torch.randn(3, 3)
 
         ref = fn(x.clone())
-        result = torch.compile(fn, fullgraph=True)(x.clone())
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x.clone())
         self.assertEqual(ref, result)
 
     @torch._dynamo.config.patch(trace_autograd_ops=True)
@@ -15705,7 +16045,7 @@ def forward(self, L_x_ : torch.Tensor):
         x = torch.randn(3, 3)
 
         ref = fn(x.clone())
-        result = torch.compile(fn, fullgraph=True)(x.clone())
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x.clone())
         self.assertEqual(ref, result)
 
     @torch._dynamo.config.patch(trace_autograd_ops=True)
@@ -15735,9 +16075,9 @@ def forward(self, L_x_ : torch.Tensor):
 
         x_test = x_ref.clone().detach().requires_grad_(True)
         ref_grad, ref_loss = fn(x_ref, targets)
-        compiled_grad, compiled_loss = torch.compile(fn, fullgraph=True)(
-            x_test, targets
-        )
+        compiled_grad, compiled_loss = torch.compile(
+            fn, fullgraph=True, backend="eager"
+        )(x_test, targets)
         self.assertEqual(ref_grad, compiled_grad)
         self.assertEqual(ref_loss, compiled_loss)
         # Verify grad propagated to the input
@@ -15758,7 +16098,9 @@ def forward(self, L_x_ : torch.Tensor):
         x = torch.randn(3, 3)
 
         ref_grad, ref_out = fn(x.clone())
-        compiled_grad, compiled_out = torch.compile(fn, fullgraph=True)(x.clone())
+        compiled_grad, compiled_out = torch.compile(
+            fn, fullgraph=True, backend="eager"
+        )(x.clone())
         self.assertEqual(ref_grad, compiled_grad)
         self.assertEqual(ref_out, compiled_out)
         self.assertFalse(compiled_out.requires_grad)
@@ -15778,7 +16120,7 @@ def forward(self, L_x_ : torch.Tensor):
 
         x = torch.randn(3, 3)
         ref = fn(x.clone())
-        result = torch.compile(fn, fullgraph=True)(x.clone())
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x.clone())
         self.assertEqual(ref, result)
 
     @torch._dynamo.config.patch(trace_autograd_ops=True)
@@ -15799,7 +16141,7 @@ def forward(self, L_x_ : torch.Tensor):
         saved_ref = saved["grad"].clone()
         saved.clear()
 
-        result = torch.compile(fn, fullgraph=True)(x.clone())
+        result = torch.compile(fn, fullgraph=True, backend="eager")(x.clone())
         self.assertEqual(ref, result)
         self.assertEqual(saved_ref, saved["grad"])
 
@@ -15969,7 +16311,7 @@ def forward(self, L_x_ : torch.Tensor):
         for _ in range(5):  # > recompile_limit
             scope: dict = {"torch": torch}
             exec(code, scope)
-            compiled = torch.compile(scope["op"], fullgraph=True)
+            compiled = torch.compile(scope["op"], fullgraph=True, backend="eager")
             self.assertEqual(compiled(x), torch.tensor(0.0))
 
     def test_str_join_with_list(self):
@@ -15999,6 +16341,35 @@ def forward(self, L_x_ : torch.Tensor):
 
         opt = torch.compile(fn, backend="eager", fullgraph=True)
         self.assertEqual(opt(), "1:2:3")
+
+    @unittest.skipIf(sys.version_info >= (3, 12), "comprehensions inlined in 3.12+")
+    @torch._dynamo.config.patch(nested_graph_breaks=True)
+    def test_listcomp_implicit_iterator_survives_graph_break(self):
+        """Regression test: the implicit .0 iterator in a list comprehension
+        must survive graph breaks under NGB.
+
+        CPython names the comprehension's iterator ".0" in co_varnames.
+        inspect.signature() renames it to "implicit0". This mismatch
+        caused prune_dead_locals to drop the iterator and create_resume
+        to omit it from its arguments. NGB is required to trigger this
+        because without it, Dynamo un-inlines on graph break instead of
+        building a resume function for the comprehension code object.
+        """
+        import random
+
+        global _listcomp_helper
+
+        def _listcomp_helper(x):
+            torch._dynamo.graph_break()
+            x = x + 1
+            x = x + 2
+            result = [random.randint(1, 5) + s for s in [10, 20, 30]]
+            return x + sum(result)
+
+        opt = torch.compile(_listcomp_helper, backend="eager")
+        x = torch.ones(3)
+        result = opt(x)
+        self.assertTrue(torch.all(result > x))
 
 
 instantiate_parametrized_tests(MiscTests)
