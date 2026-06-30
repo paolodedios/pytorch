@@ -1587,7 +1587,7 @@ class AbstractLargeCommTest:
         self.assertEqual(
             ranks_in,
             dist.get_process_group_ranks(new_pg),
-            f"expecting {ranks_in} but got {dist.get_process_group_ranks(new_pg)}",
+            lambda msg: f"{msg}\nexpecting {ranks_in} but got {dist.get_process_group_ranks(new_pg)}",
         )
 
     def _test_new_group_local_sync_sanity_check(self, backend):
@@ -1742,7 +1742,7 @@ class CommTest(AbstractCommTest, MultiProcessTestCase):
             self.assertEqual(
                 set_debug_mode,
                 mapping[mode],
-                f"Expected {mode} to map to {mapping[mode]} but got {set_debug_mode}",
+                lambda msg: f"{msg}\nExpected {mode} to map to {mapping[mode]} but got {set_debug_mode}",
             )
 
         for mode in invalid_debug_modes:
@@ -2220,19 +2220,22 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
 
         new_group_called = False
         new_group_ranks = None
+        new_group_backend = None
 
         class _DelegatingPG(DummyProcessGroup):
             def new_group(
                 self,
                 ranks,
                 timeout=None,
+                backend=None,
                 pg_options=None,
                 group_name=None,
                 group_desc=None,
             ):
-                nonlocal new_group_called, new_group_ranks
+                nonlocal new_group_called, new_group_ranks, new_group_backend
                 new_group_called = True
                 new_group_ranks = list(ranks)
+                new_group_backend = backend
                 my_rank = self.rank()
                 if my_rank not in ranks:
                     return None
@@ -2256,6 +2259,7 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
             sub_pg = dist.new_group(ranks=[0])
             self.assertTrue(new_group_called)
             self.assertEqual(new_group_ranks, [0])
+            self.assertEqual(new_group_backend, "delegating")
 
             if self.rank == 0:
                 self.assertIsNotNone(sub_pg)
@@ -2267,6 +2271,54 @@ class PythonProcessGroupExtensionTest(MultiProcessTestCase):
                     sub_pg is None
                     or sub_pg == dist.distributed_c10d.GroupMember.NON_GROUP_MEMBER
                 )
+        finally:
+            dist.destroy_process_group()
+
+    def test_new_group_delegates_to_pg_explicit_backend(self):
+        """dist.new_group forwards an explicit multi-backend string to the
+        delegated default_pg.new_group."""
+
+        new_group_called = False
+        new_group_backend = None
+
+        class _DelegatingPG(DummyProcessGroup):
+            def new_group(
+                self,
+                ranks,
+                timeout=None,
+                backend=None,
+                pg_options=None,
+                group_name=None,
+                group_desc=None,
+            ):
+                nonlocal new_group_called, new_group_backend
+                new_group_called = True
+                new_group_backend = backend
+                my_rank = self.rank()
+                if my_rank not in ranks:
+                    return None
+                return DummyProcessGroup(ranks.index(my_rank), len(ranks))
+
+        dist.Backend.register_backend(
+            "delegating",
+            lambda *args, **kwargs: _DelegatingPG(
+                args[0].group_rank, args[0].group_size
+            ),
+            extended_api=True,
+            devices=["cpu", "cuda"],
+        )
+
+        os.environ["MASTER_ADDR"] = "localhost"
+        os.environ["MASTER_PORT"] = "6789"
+        dist.init_process_group(
+            "delegating", rank=self.rank, world_size=self.world_size
+        )
+
+        try:
+            backend = "cpu:delegating,cuda:delegating"
+            dist.new_group(ranks=[0], backend=backend)
+            self.assertTrue(new_group_called)
+            self.assertEqual(new_group_backend, backend)
         finally:
             dist.destroy_process_group()
 
