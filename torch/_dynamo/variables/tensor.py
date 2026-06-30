@@ -26,6 +26,7 @@ from contextlib import nullcontext
 from itertools import chain
 from types import NoneType
 from typing import Any, NoReturn, Optional, TYPE_CHECKING
+from typing_extensions import NotRequired, TypedDict
 
 import sympy
 
@@ -175,6 +176,26 @@ def _tensor_debug_repr(value: torch.Tensor, type_name: str = "Tensor") -> str:
         unwrapped = torch._C._functorch.get_unwrapped(value)
         return f"FunctionalTensor(lvl={level}, value={_tensor_debug_repr(unwrapped)})"
     return f"{type_name}(shape={tuple(value.shape)}, dtype={value.dtype})"
+
+
+class TensorSpecializedProps(TypedDict):
+    """Static tensor metadata produced by TensorVariable.specialize; the keys
+    map 1:1 to the corresponding TensorVariable.__init__ kwargs. The size,
+    stride and contiguity keys are only populated for fully static shapes."""
+
+    dtype: torch.dtype
+    device: torch.device
+    layout: torch.layout
+    ndim: int
+    requires_grad: bool
+    is_nested: bool
+    is_quantized: bool
+    is_sparse: bool
+    class_type: type
+    has_grad_fn: bool
+    _size: NotRequired[tuple[Any, ...]]
+    stride: NotRequired[tuple[Any, ...]]
+    is_contiguous: NotRequired[tuple[torch.memory_format, ...] | None]
 
 
 class TensorVariable(VariableTracker):
@@ -351,8 +372,15 @@ class TensorVariable(VariableTracker):
         return wrap_fx_proxy_cls(type(self), tx, proxy)
 
     @staticmethod
-    def specialize(value: torch.Tensor) -> dict[str, Any]:
-        props: dict[str, Any] = {
+    def specialize(value: torch.Tensor) -> TensorSpecializedProps:
+        try:
+            has_grad_fn = value.grad_fn is not None
+        except Exception:
+            # Workaround for issues with create_parameter_op in Dynamo. Reading
+            # grad_fn should never cause an issue.
+            has_grad_fn = False
+
+        props: TensorSpecializedProps = {
             "dtype": value.dtype,
             "device": value.device,
             "layout": value.layout,
@@ -362,13 +390,8 @@ class TensorVariable(VariableTracker):
             "is_quantized": value.is_quantized,
             "is_sparse": value.is_sparse,
             "class_type": type(value),
+            "has_grad_fn": has_grad_fn,
         }
-        try:
-            props["has_grad_fn"] = value.grad_fn is not None
-        except Exception:
-            # Workaround for issues with create_parameter_op in Dynamo. Reading
-            # grad_fn should never cause an issue.
-            props["has_grad_fn"] = False
 
         if is_sparse_any(value) and not has_free_symbols(value):
             props["_size"] = tuple(
