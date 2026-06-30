@@ -2,6 +2,7 @@
 
 import contextlib
 import dataclasses
+import operator
 import sys
 
 import torch
@@ -128,7 +129,7 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
                 x = torch.sigmoid(x)
                 try:
                     x = torch.cos(x)
-                    raise AssertionError  # noqa: B904
+                    raise AssertionError
                 except AssertionError:
                     x = torch.cos(x)
 
@@ -150,6 +151,143 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
         ref = fn(x)
         opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
         res = opt_fn(x)
+        self.assertEqual(ref, res)
+
+    def test_vars_too_many_args_type_error(self):
+        def fn(x):
+            return x + 1, vars(1, 2)
+
+        opt_fn = torch.compile(fn, backend="eager")
+        with self.assertRaisesRegex(
+            TypeError, "vars expected at most 1 argument, got 2"
+        ):
+            opt_fn(torch.ones(1))
+
+    def test_vars_keyword_args_type_error(self):
+        def fn(x):
+            try:
+                vars(obj=x)
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        x = torch.randn(4)
+        ref = fn(x)
+        opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        res = opt_fn(x)
+        self.assertEqual(ref, res)
+
+    def test_range_too_many_args_type_error(self):
+        def fn(x):
+            return x + 1, range(1, 2, 3, 4, 5, 6)
+
+        opt_fn = torch.compile(fn, backend="eager")
+        with self.assertRaisesRegex(
+            TypeError, "range expected at most 3 arguments, got 6"
+        ):
+            opt_fn(torch.ones(1))
+
+    def test_builtin_arg_count_type_errors(self):
+        def check(fn):
+            x = torch.randn(4)
+            opt_fn = torch.compile(fn, backend="eager", fullgraph=True)
+            self.assertEqual(fn(x), opt_fn(x))
+
+        def len_no_args(x):
+            try:
+                len()
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def len_too_many_args(x):
+            try:
+                len(x, x)
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def getitem_too_few_args(x):
+            try:
+                operator.getitem(x)
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def getitem_no_args(x):
+            try:
+                operator.getitem()
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def getitem_too_many_args(x):
+            try:
+                operator.getitem(x, 0, 1)
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def getitem_keyword_args(x):
+            try:
+                operator.getitem(a=x, b=0)
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def next_no_args(x):
+            try:
+                next()
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def next_too_many_args(x):
+            try:
+                next(iter([x]), x, x)
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def range_no_args(x):
+            try:
+                range()
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        def range_too_many_args(x):
+            try:
+                range(1, 2, 3, 4, 5, 6)
+                raise RuntimeError("Should not be raised")
+            except TypeError:
+                return x.sin()
+
+        check(len_no_args)
+        check(len_too_many_args)
+        check(getitem_no_args)
+        check(getitem_too_few_args)
+        check(getitem_too_many_args)
+        check(getitem_keyword_args)
+        check(next_no_args)
+        check(next_too_many_args)
+        check(range_no_args)
+        check(range_too_many_args)
+
+    def test_user_class_as_tensor_method_arg(self):
+        class MyClass:
+            pass
+
+        def fn(x):
+            try:
+                y = x.new_full(MyClass, 3.14)
+            except TypeError:
+                y = x + 1.0
+            return y
+
+        x = torch.ones(4)
+        ref = fn(x)
+        res = torch.compile(fn, backend="eager")(x)
         self.assertEqual(ref, res)
 
     def test_autocast_with_exception(self):
@@ -188,7 +326,7 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
         def cm():
             try:
                 yield
-            except BaseException:  # noqa: B036
+            except BaseException:
                 raise ValueError  # noqa: B904
 
         @contextlib.contextmanager
@@ -266,7 +404,7 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
                 for x, y in args:
                     try:
                         fn(x, y)
-                    except BaseException:  # noqa: B036
+                    except BaseException:
                         new_exc = sys.exc_info()
                         fix_exc_context(frame_exc[1], new_exc[1], prev_exc[1])
                         prev_exc = new_exc
@@ -274,7 +412,7 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
                 try:
                     fixed_ctx = prev_exc[1].__context__
                     raise prev_exc[1]
-                except BaseException:  # noqa: B036
+                except BaseException:
                     prev_exc[1].__context__ = fixed_ctx
                     raise
 
@@ -527,6 +665,30 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
         metrics = torch._dynamo.utils.get_compilation_metrics()
         self.assertIn("Observed exception", metrics[0].fail_reason)
 
+    def test_observed_exception_formats_fstring_message(self):
+        from torch.utils._pytree import tree_map_with_path
+
+        def check_tensor(path, x):
+            if not isinstance(x, torch.Tensor):
+                raise ValueError(f"Expected Tensor at {path=}")
+            return x * 2
+
+        def fn(tree):
+            return tree_map_with_path(check_tensor, tree)
+
+        tree = {"a": torch.randn(10), "b": 5}
+
+        compiled_fn = torch.compile(fn, backend="eager", fullgraph=True)
+        with self.assertRaises(Unsupported) as compiled_ctx:
+            compiled_fn(tree)
+
+        exc_str = str(compiled_ctx.exception)
+        self.assertIn("Observed exception", exc_str)
+        self.assertIn("Expected Tensor at path=(MappingKey(key='b'),)", exc_str)
+        self.assertNotIn("Failed to trace builtin operator", exc_str)
+        self.assertNotIn("StringFormatVariable", exc_str)
+        self.assertNotIn("ConstantVariable(", exc_str)
+
     def test_key_error(self):
         def fn(x, d):
             try:
@@ -650,7 +812,7 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
                 raise ZeroDivisionError
             except ZeroDivisionError:
                 try:
-                    raise ValueError  # noqa: B904
+                    raise ValueError
                 except ValueError:
                     pass
                 raise
@@ -700,7 +862,7 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
                 yield 1
             except ValueError:
                 try:
-                    raise TypeError  # noqa: B904
+                    raise TypeError
                 finally:
                     pass
 
@@ -730,7 +892,7 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
                 raise ValueError
             except ValueError:
                 try:
-                    raise TypeError  # noqa: B904
+                    raise TypeError
                 finally:
                     pass
 
@@ -783,7 +945,7 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
                 raise GeneratorExit
             except Exception:
                 return t.sin()
-            except BaseException:  # noqa: B036
+            except BaseException:
                 return t.cos()
 
         t = torch.randn(2)
@@ -1026,6 +1188,48 @@ class ExceptionTests(torch._dynamo.test_case.TestCase):
         # The error should point to 'raise Exception("Invalid")' in g()
         self.assertIn("in g", str(ctx.exception))
         self.assertIn('raise Exception("Invalid")', str(ctx.exception))
+
+    def test_str_repr_exception_no_args(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(t):
+            try:
+                raise ValueError
+            except ValueError as e:
+                return t.sin(), str(e), repr(e)
+
+        t = torch.randn(2)
+        y, s, r = fn(t)
+        self.assertEqual(y, t.sin())
+        self.assertEqual(s, "")
+        self.assertEqual(r, "ValueError()")
+
+    def test_str_repr_exception_single_arg(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(t):
+            try:
+                raise ValueError("test error")
+            except ValueError as e:
+                return t.sin(), str(e), repr(e)
+
+        t = torch.randn(2)
+        y, s, r = fn(t)
+        self.assertEqual(y, t.sin())
+        self.assertEqual(s, "test error")
+        self.assertEqual(r, "ValueError('test error')")
+
+    def test_str_repr_exception_multi_args(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def fn(t):
+            try:
+                raise ValueError("hello", 42)
+            except ValueError as e:
+                return t.sin(), str(e), repr(e)
+
+        t = torch.randn(2)
+        y, s, r = fn(t)
+        self.assertEqual(y, t.sin())
+        self.assertEqual(s, str(("hello", 42)))
+        self.assertEqual(r, "ValueError('hello', 42)")
 
     def test_frozen_dataclass_setattr_raises(self):
         @dataclasses.dataclass(frozen=True)

@@ -742,7 +742,7 @@ def apply_in_graph_mutations(
     # There are 3 cases:
     # (1) We mutate inp *after* the set_() call. other is a graph intermediate.
     #     In this case, we're not really mutating the input storage of "inp";
-    #     we're mutating the storage of an intermdiate value (other),
+    #     we're mutating the storage of an intermediate value (other),
     #     and slamming that storage into the input tensor. So no data mutation is necessary.
     # (2) We mutate inp *after* the set_() call. other is a graph *input*.
     #     In this case, the data mutation will be properly handled in the runtime
@@ -752,8 +752,11 @@ def apply_in_graph_mutations(
     if input_info.mutates_storage_metadata:
         if mcs is None or mcs.mc_storage > applied_mcs.mc_storage:  # type: ignore[union-attr]
             with torch.no_grad():
-                # pyrefly: ignore[no-matching-overload]
-                inpt_old.set_(inpt_new)
+                if input_info.mutation_is_shallow_copy_data:
+                    torch.ops.aten.shallow_copy_data_(inpt_old, inpt_new)
+                else:
+                    # pyrefly: ignore [bad-argument-type, no-matching-overload]
+                    inpt_old.set_(inpt_new)
 
     # Note [Ordering of resize_() and set_()]
     # Importantly: the common usage in FSDP is that we have a dummy parameter
@@ -1090,6 +1093,7 @@ def create_functionalized_fn(
                         ):
                             apply_in_graph_mutations(
                                 inpt_info,
+                                # pyrefly: ignore [bad-argument-type]
                                 before,
                                 after,
                                 f_inpt,
@@ -1293,7 +1297,7 @@ def handle_effect_tokens_fn(
     return inner_fn, args, args_descs
 
 
-# Given a function operating on Subclass -> Subclass, returns an function that operates on Tensor -> Tensor
+# Given a function operating on Subclass -> Subclass, returns a function that operates on Tensor -> Tensor
 # Also returns:
 # - the new set of arguments to pass into this function (now that tensor subclasses have been eliminated)
 # - the updated ViewAndMutationMeta for this dense -> dense function.

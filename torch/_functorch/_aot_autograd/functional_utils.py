@@ -214,6 +214,16 @@ def was_inductor_storage_resized(t: object) -> bool:
         return torch._functionalize_was_inductor_storage_resized(t.elem)
 
 
+def was_shallow_copy_data(t: object) -> bool:
+    if is_traceable_wrapper_subclass(t):
+        return False
+    if not isinstance(t, torch.Tensor):
+        return False
+    if not isinstance(t, FunctionalTensor):
+        raise AssertionError(f"expected FunctionalTensor, got {type(t)}")
+    return torch._functionalize_was_shallow_copy_data(t.elem)  # type: ignore[attr-defined]
+
+
 # f_arg here is either
 # (1) A FunctionalTensor(_to_functional_tensor(FakeTensor))
 # (2) A traceable tensor subclass that holds a FunctionalTensor
@@ -266,7 +276,7 @@ def has_metadata_mutation(
         # However, multiple set_() calls can cancel out. So we also check whether the
         # storage of the tensor has changed.
         # Note: if an input experienced two set_() calls that cancel out, **and**
-        # it experiences an data mutation, we pessimistically think that the set_()
+        # it experiences a data mutation, we pessimistically think that the set_()
         # call is necessary here. We could in theory fix this, but this will
         # hopefully never happen in user code, and is not needed for fsdp.
         if is_sparse_any(arg):
@@ -561,6 +571,7 @@ def _is_functional_graph(fx_g: torch.fx.Graph) -> tuple[str | None, int]:
     allowed_mutation_ops = [
         torch.ops.aten.copy_.default,
         torch.ops.aten.set_.source_Tensor,
+        torch.ops.aten.shallow_copy_data_.default,
     ]
     if hasattr(torch.ops.fsdp, "copy_"):
         allowed_mutation_ops.append(torch.ops.fsdp.copy_.default)

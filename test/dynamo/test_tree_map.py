@@ -7,12 +7,11 @@ from typing import NamedTuple
 import torch
 import torch._dynamo
 import torch.utils._pytree as python_pytree
+from torch._dynamo.test_case import run_tests, TestCase
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
-    run_tests,
     subtest,
-    TestCase,
 )
 
 
@@ -964,7 +963,7 @@ class TreeMapCompileTests(TestCase):
             self.assertEqual(
                 len(fallback_messages),
                 0,
-                f"Fallback was triggered unexpectedly: {fallback_messages}",
+                lambda msg: f"{msg}\nFallback was triggered unexpectedly: {fallback_messages}",
             )
         finally:
             logger.removeHandler(handler)
