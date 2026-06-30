@@ -16,8 +16,8 @@ from torch._inductor.codegen.cutedsl.cutedsl_template import (
 from torch._inductor.kernel.flex_gemm.constraints import (
     FlexGemmLocalReduceConsumerKind,
     FlexGemmLocalReduceSpec,
-    local_reduce_combine_fn_name,
-    local_reduce_finalize_fn_name,
+    LOCAL_REDUCE_COMBINE_FN_SUFFIX,
+    LOCAL_REDUCE_FINALIZE_FN_SUFFIX,
     LOCAL_REDUCE_TEMPLATE_FEED_MAIN_OUT_INDEX_ERROR,
     LOCAL_REDUCE_TEMPLATE_OUT_INDEX_ERROR,
     validate_local_reduce_output_binding,
@@ -241,8 +241,8 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
         if local_reduce.out_index is not None:
             plan += f", out={input_args[local_reduce.out_index]}"
         if local_reduce.needs_physical_callbacks:
-            combine_name = local_reduce_combine_fn_name(epilogue_name)
-            finalize_name = local_reduce_finalize_fn_name(epilogue_name)
+            combine_name = f"{epilogue_name}{LOCAL_REDUCE_COMBINE_FN_SUFFIX}"
+            finalize_name = f"{epilogue_name}{LOCAL_REDUCE_FINALIZE_FN_SUFFIX}"
             plan += (
                 f", combine_fn={combine_name}, combine_key={combine_name!r}, "
                 f"finalize_fn={finalize_name}, finalize_key={finalize_name!r}"
