@@ -108,9 +108,9 @@ class _OpaqueTypeInfo:
     reconstruct_fn: ReconstructFn | None
 
 
-# Mapping of type -> (string name, reference/value type)
+# Mapping of type -> (string name, symbolic/value type)
 _OPAQUE_TYPES: WeakKeyDictionary[Any, _OpaqueTypeInfo] = WeakKeyDictionary()
-# Mapping of class_name -> (type, reference/value type)
+# Mapping of class_name -> (type, symbolic/value type)
 _OPAQUE_TYPES_BY_NAME: dict[str, _OpaqueTypeInfo] = {}
 
 
@@ -167,7 +167,7 @@ def register_custom_class(
 
     Args:
         cls (type): The class to register as an opaque type.
-        typ (str): Either "reference" or "value". See Note [Opaque Objects] for
+        typ (str): Either "symbolic" or "value". See Note [Opaque Objects] for
             more details.
         hoist (bool): Only applies to value types. A hoist=True value type
             object is lifted as an input to the torch.compile'd graph, instead
@@ -175,11 +175,11 @@ def register_custom_class(
             improve compilation times in hierarchical compilation
             (e.g., change your custom ops to use hoisted strings to avoid
             baking the string into the Dynamo/AOTAutograd/FX graphs).
-            This flag does nothing for reference types.
+            This flag does nothing for symbolic types.
         guard_fn (callable | None): A function that takes an instance of the opaque
             object and returns a list of values to guard on. These values will be compared
             for equality on each function call, triggering recompilation if they change.
-            Only applicable for reference types.
+            Only applicable for symbolic types.
             Example: lambda obj: [obj.x, obj.y]
         members (dict[str, MemberType] | None): Dictionary mapping member names
             (attributes, properties, or methods) to their MemberType, which controls
@@ -207,8 +207,8 @@ def register_custom_class(
     # FakeScriptObject wrapper), so they don't need CustomClassBaseMeta.
     if typ != "value" and not isinstance(cls, CustomClassBaseMeta):
         raise TypeError(
-            f"Opaque type {cls} must subclass torch._opaque_base.OpaqueBase "
-            "or 'metaclass=torch._opaque_base.OpaqueBaseMeta'. "
+            f"Custom class {cls} must subclass torch._custom_class_base.CustomClassBase "
+            "or 'metaclass=torch._custom_class_base.CustomClassBaseMeta'. "
             "This is required so that FakeScriptObject can be registered "
             "as a virtual subclass, allowing isinstance() checks to work "
             "during torch.compile tracing. "
