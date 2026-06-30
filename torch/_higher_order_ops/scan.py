@@ -466,13 +466,12 @@ def trace_scan(
         raise AssertionError("no output node found in combine_graph")
 
     carry, output = _extract_carry_and_out(outputs, len(init))
-    # None init leaves are structural placeholders; only tensor leaves participate
-    # in the meta-consistency check.
-    init_fake_tensors: list[torch.Tensor | torch.SymInt | int] = [
-        i.clone() for i in init if isinstance(i, torch.Tensor)
+    # Keep None placeholders in both lists so check_meta_consistency compares slot-by-slot.
+    init_fake_tensors: list[torch.Tensor | torch.SymInt | int | None] = [
+        i.clone() if isinstance(i, torch.Tensor) else None for i in init
     ]
-    carry_fake_tensors: list[torch.Tensor | torch.SymInt | int] = [
-        c.meta["val"] for c in carry if c is not None
+    carry_fake_tensors: list[torch.Tensor | torch.SymInt | int | None] = [
+        c.meta["val"] if c is not None else None for c in carry
     ]
     check_meta_consistency(
         init_fake_tensors, carry_fake_tensors, "init", "carry", include_contiguity=False
@@ -1142,10 +1141,10 @@ def _fake_scan(combine_fn, init, xs=None, dim=0, reverse=False):
 
     # Only tensor leaves participate in the scan loop; None leaves are structural
     # placeholders that pass through unchanged (matching JAX semantics).
-    carry_tensors: list[torch.Tensor | None] = [
-        l for l in carry_all_leaves if isinstance(l, torch.Tensor)
-    ]
-    carry_tensor_mask = [isinstance(l, torch.Tensor) for l in carry_all_leaves]
+    carry_tensor_mask = get_tensor_mask(carry_all_leaves)
+    carry_tensors: list[torch.Tensor | None] = mask_list(
+        carry_tensor_mask, carry_all_leaves
+    )
 
     op = reversed if reverse else lambda x: x
 
@@ -1159,8 +1158,7 @@ def _fake_scan(combine_fn, init, xs=None, dim=0, reverse=False):
         ),
     )
     dummy_out_leaves, dummy_out_spec = pytree.tree_flatten(dummy_out)
-    # Build a mask of which output leaves are tensors (vs structural Nones).
-    out_tensor_mask = [isinstance(l, torch.Tensor) for l in dummy_out_leaves]
+    out_tensor_mask = get_tensor_mask(dummy_out_leaves)
     num_leaves = len(dummy_out_leaves)
 
     result_flat = []
@@ -1174,7 +1172,14 @@ def _fake_scan(combine_fn, init, xs=None, dim=0, reverse=False):
             pytree.tree_unflatten(x_slice, inp_spec),
         )
         carry_all, _ = pytree.tree_flatten(carry_pytree)
-        carry_tensors = [l for l in carry_all if isinstance(l, torch.Tensor)]
+        new_carry_mask = get_tensor_mask(carry_all)
+
+        if new_carry_mask != carry_tensor_mask:
+            raise RuntimeError(
+                f"combine_fn returned a carry whose None/Tensor structure differs from init. "
+                f"Expected mask {carry_tensor_mask} but got {new_carry_mask} at step {ind}."
+            )
+        carry_tensors = mask_list(carry_tensor_mask, carry_all)
         y_leaves, _ = pytree.tree_flatten(y)
         result_flat.append(y_leaves)
 
