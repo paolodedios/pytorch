@@ -1039,8 +1039,8 @@ def materialize_flex_gemm_epilogue(
                             env[node] = CuteDSLCSEVariable(
                                 LOCAL_REDUCE_FEED_MAIN_ARG_NAME,
                                 ValueRanges.unknown(),
-                                dtype=getattr(lowered_reduce, "dtype", torch.float32),
-                                shape=getattr(lowered_reduce, "shape", (1,)),
+                                dtype=lowered_reduce.dtype,
+                                shape=lowered_reduce.shape,
                             )
                             if (
                                 local_reduce_feed_main_input is not None

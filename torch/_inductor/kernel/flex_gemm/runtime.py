@@ -13,7 +13,6 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     LOCAL_REDUCE_AXIS_KWARG,
     LOCAL_REDUCE_COMBINE_KEY_KWARG,
     local_reduce_compressed_shape,
-    local_reduce_consumer_kind,
     local_reduce_default_combine_key,
     local_reduce_default_finalize_key,
     LOCAL_REDUCE_FEEDS_MAIN_KWARG,
@@ -24,7 +23,6 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     LOCAL_REDUCE_RUNTIME_FEED_MAIN_OUT_ERROR,
     LOCAL_REDUCE_RUNTIME_OUT_ERROR,
     LOCAL_REDUCE_SWAP_AB_ERROR,
-    require_local_reduce_group_axis,
     validate_local_reduce_callbacks,
     validate_local_reduce_feed_main_capability,
     validate_local_reduce_no_aux_out_composition,
@@ -237,53 +235,6 @@ class FlexGemmRuntimeLocalReducePlan:
         return self.spec.needs_physical_callbacks
 
 
-def runtime_local_reduce_plan(
-    local_reduce: FlexGemmRuntimeLocalReducePlan | None,
-    local_reduce_out: torch.Tensor | None,
-    local_reduce_group: int | None,
-    local_reduce_axis: int | None,
-    local_reduce_feeds_main: bool,
-    local_reduce_combine_fn: Any,
-    local_reduce_combine_key: str | None,
-    local_reduce_finalize_fn: Any,
-    local_reduce_finalize_key: str | None,
-) -> FlexGemmRuntimeLocalReducePlan | None:
-    """Normalize generated or legacy local-reduce kwargs into one runtime plan."""
-    legacy_kwargs_set = (
-        local_reduce_out is not None
-        or local_reduce_group is not None
-        or local_reduce_axis is not None
-        or local_reduce_feeds_main
-        or local_reduce_combine_fn is not None
-        or local_reduce_combine_key is not None
-        or local_reduce_finalize_fn is not None
-        or local_reduce_finalize_key is not None
-    )
-    if local_reduce is not None:
-        if legacy_kwargs_set:
-            raise RuntimeError(
-                "local_reduce cannot be combined with legacy local_reduce_* kwargs"
-            )
-        return local_reduce
-    if local_reduce_out is None and not local_reduce_feeds_main:
-        return None
-    local_reduce_group, local_reduce_axis = require_local_reduce_group_axis(
-        local_reduce_group, local_reduce_axis
-    )
-    return FlexGemmRuntimeLocalReducePlan(
-        FlexGemmLocalReduceSpec(
-            local_reduce_consumer_kind(feeds_main=local_reduce_feeds_main),
-            local_reduce_group,
-            local_reduce_axis,
-        ),
-        out=local_reduce_out,
-        combine_fn=local_reduce_combine_fn,
-        combine_key=local_reduce_combine_key,
-        finalize_fn=local_reduce_finalize_fn,
-        finalize_key=local_reduce_finalize_key,
-    )
-
-
 def validate_runtime_local_reduce(
     plan: FlexGemmRuntimeLocalReducePlan | None,
     a: torch.Tensor,
@@ -478,14 +429,6 @@ def gemm_epilogue(
     out: torch.Tensor | None = None,
     aux_out: torch.Tensor | None = None,
     local_reduce: FlexGemmRuntimeLocalReducePlan | None = None,
-    local_reduce_out: torch.Tensor | None = None,
-    local_reduce_group: int | None = None,
-    local_reduce_axis: int | None = None,
-    local_reduce_feeds_main: bool = False,
-    local_reduce_combine_fn=None,
-    local_reduce_combine_key: str | None = None,
-    local_reduce_finalize_fn=None,
-    local_reduce_finalize_key: str | None = None,
     epilogue_args: tuple[torch.Tensor, ...] = (),
     epilogue_arg_kinds: tuple[str, ...] = (),
     config_key: GemmConfigKey | None = None,
@@ -507,14 +450,6 @@ def gemm_epilogue(
         out: Optional preallocated output tensor with shape ``[M, N]`` or ``[B, M, N]``.
         aux_out: Optional preallocated same-shape aux tensor for tuple epilogues.
         local_reduce: Optional structural local-reduce plan from generated code.
-        local_reduce_out: Optional compressed aux tensor for one local-reduce store.
-        local_reduce_group: Logical group size for the local-reduce dimension.
-        local_reduce_axis: Output axis reduced by the local-reduce group, ``0`` or ``1``.
-        local_reduce_feeds_main: Whether the local-reduce value is passed to the epilogue.
-        local_reduce_combine_fn: Generated physical reduction combiner.
-        local_reduce_combine_key: Registry key for ``local_reduce_combine_fn``.
-        local_reduce_finalize_fn: Generated physical reduction finalizer.
-        local_reduce_finalize_key: Registry key for ``local_reduce_finalize_fn``.
         epilogue_args: Optional tensor args captured by the epilogue.
         epilogue_arg_kinds: Explicit ``tile``, ``row``, or ``col`` kind per arg.
         config_key: Optional explicit QuACK config key selected by Inductor autotune.
@@ -540,17 +475,6 @@ def gemm_epilogue(
     expected_shape = (*a.shape[:-2], a.shape[-2], b.shape[-1])
     expected_dtype = a.dtype if out_dtype is None else out_dtype
     effective_C = normalize_c(C, expected_shape, beta)
-    local_reduce_plan = runtime_local_reduce_plan(
-        local_reduce,
-        local_reduce_out,
-        local_reduce_group,
-        local_reduce_axis,
-        local_reduce_feeds_main,
-        local_reduce_combine_fn,
-        local_reduce_combine_key,
-        local_reduce_finalize_fn,
-        local_reduce_finalize_key,
-    )
     if out is not None:
         check_matrix("out", out)
         check_matrix_major_layout("out", out)
@@ -576,7 +500,7 @@ def gemm_epilogue(
                 f"aux_out shape must be {expected_shape}, got {tuple(aux_out.shape)}"
             )
     validate_runtime_local_reduce(
-        local_reduce_plan,
+        local_reduce,
         a,
         expected_shape,
         aux_out,
@@ -598,7 +522,7 @@ def gemm_epilogue(
         C,
         out,
         aux_out,
-        None if local_reduce_plan is None else local_reduce_plan.out,
+        None if local_reduce is None else local_reduce.out,
         *epilogue_args,
     )
     check_same_device(a, b, *(tensor for tensor in tensors if tensor is not None))
@@ -614,8 +538,8 @@ def gemm_epilogue(
     from torch._vendor.quack.gemm_act import register_tensor_epilogue_fn
 
     register_tensor_epilogue_fn(epilogue_key, epilogue_fn)
-    local_reduce_plan = register_runtime_local_reduce_callbacks(
-        local_reduce_plan,
+    local_reduce = register_runtime_local_reduce_callbacks(
+        local_reduce,
         epilogue_key,
     )
     out = (
@@ -635,7 +559,7 @@ def gemm_epilogue(
             effective_C,
             out,
             aux_out,
-            local_reduce_plan,
+            local_reduce,
             epilogue_key,
             inferred_arg_kinds,
             row_args,

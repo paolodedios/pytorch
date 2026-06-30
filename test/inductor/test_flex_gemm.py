@@ -39,7 +39,7 @@ if cute is not None:
         return cute.where(acc > cute.full_like(acc, 0), acc, cute.full_like(acc, 0))
 
     @cute.jit
-    def captured_affine_epilogue(acc, col_bias, row_scale, tile_bias):
+    def affine_aux_epilogue(acc, col_bias, row_scale, tile_bias):
         value = (acc + col_bias) * row_scale + tile_bias
         return cute.where(
             value > cute.full_like(value, 0), value, cute.full_like(value, 0)
@@ -277,7 +277,13 @@ class FlexGemmTestCase(TestCase):
         self.assertLessEqual(
             actual_error.item(),
             eager_error.item() + rounding_atol,
-            msg="actual error exceeded low precision eager error",
+            msg=(
+                f"actual error {actual_error.item()} exceeded low precision eager "
+                f"error {eager_error.item()} with fp32_accumulation_eps="
+                f"{fp32_accumulation_eps}, result_rounding_eps="
+                f"{result_rounding_eps}, output_scale={output_scale}, "
+                f"and atol={rounding_atol}"
+            ),
         )
 
     def assertTupleAuxMatchesReference(self, actual, aux, a, b, epilogue_fn):
@@ -338,28 +344,27 @@ class FlexGemmTestCase(TestCase):
             "local_reduce_group="
         ).check_not("local_reduce_axis=").check_not("local_reduce_op").run(code)
 
-    def legacyRuntimeLocalReducePlan(
+    def runtimeLocalReducePlan(
         self,
         out=None,
-        group=None,
-        axis=None,
+        group=8,
+        axis=0,
         feeds_main=False,
         combine_key=None,
         finalize_key=None,
     ):
-        """Build a runtime plan through the legacy public kwargs path."""
-        from torch._inductor.kernel.flex_gemm.runtime import runtime_local_reduce_plan
+        """Build the structural local-reduce runtime plan used by generated code."""
+        from torch._inductor.kernel.flex_gemm.constraints import FlexGemmLocalReduceSpec
+        from torch._inductor.kernel.flex_gemm.runtime import (
+            FlexGemmRuntimeLocalReducePlan,
+        )
 
-        return runtime_local_reduce_plan(
-            None,
-            out,
-            group,
-            axis,
-            feeds_main,
-            None,
-            combine_key,
-            None,
-            finalize_key,
+        kind = "feed_main" if feeds_main else "compressed_aux"
+        return FlexGemmRuntimeLocalReducePlan(
+            FlexGemmLocalReduceSpec(kind, group, axis),
+            out=out,
+            combine_key=combine_key,
+            finalize_key=finalize_key,
         )
 
     def assertMatchesEpilogue(
@@ -426,7 +431,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.relu_epilogue = staticmethod(relu_epilogue)
-        cls.captured_affine_epilogue = staticmethod(captured_affine_epilogue)
+        cls.affine_aux_epilogue = staticmethod(affine_aux_epilogue)
         cls.row_scale_epilogue = staticmethod(row_scale_epilogue)
         cls.captured_tuple_aux_epilogue = staticmethod(captured_tuple_aux_epilogue)
         cls.tuple_aux_epilogue = staticmethod(tuple_aux_epilogue)
@@ -530,7 +535,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         )
 
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_mm_epilogue_infers_captured_arg_kinds(self):
+    def test_mm_epilogue_infers_captured_aux_arg_kinds(self):
         from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue
 
         torch.manual_seed(4)
@@ -544,8 +549,8 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         out = gemm_epilogue(
             a,
             b,
-            self.captured_affine_epilogue,
-            "test_flex_gemm_infer_captured_args",
+            self.affine_aux_epilogue,
+            "test_flex_gemm_infer_aux",
             out_dtype=torch.float32,
             epilogue_args=(col_bias, row_scale, tile_bias),
         )
@@ -631,7 +636,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             validate_runtime_local_reduce,
         )
 
-        plan = self.legacyRuntimeLocalReducePlan(
+        plan = self.runtimeLocalReducePlan(
             group=group,
             axis=0,
             feeds_main=True,
@@ -657,7 +662,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             validate_runtime_local_reduce,
         )
 
-        plan = self.legacyRuntimeLocalReducePlan(
+        plan = self.runtimeLocalReducePlan(
             group=8,
             axis=1,
             feeds_main=True,
@@ -680,7 +685,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             validate_runtime_local_reduce,
         )
 
-        plan = self.legacyRuntimeLocalReducePlan(
+        plan = self.runtimeLocalReducePlan(
             group=8,
             axis=0,
             feeds_main=True,
@@ -706,7 +711,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             validate_runtime_local_reduce,
         )
 
-        compressed_plan = self.legacyRuntimeLocalReducePlan(
+        compressed_plan = self.runtimeLocalReducePlan(
             out=torch.empty(128, 8), group=8, axis=1
         )
         with self.assertRaisesRegex(NotImplementedError, "2-D aten.mm"):
@@ -727,10 +732,10 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             validate_runtime_local_reduce,
         )
 
-        compressed_plan = self.legacyRuntimeLocalReducePlan(
+        compressed_plan = self.runtimeLocalReducePlan(
             out=torch.empty(128, 8), group=8, axis=1
         )
-        feed_main_plan = self.legacyRuntimeLocalReducePlan(
+        feed_main_plan = self.runtimeLocalReducePlan(
             group=8,
             axis=0,
             feeds_main=True,
@@ -852,25 +857,13 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             ):
                 make_plan(8, 2)
 
-    def test_runtime_local_reduce_plan_rejects_missing_runtime_state(self):
+    def test_runtime_local_reduce_plan_rejects_missing_callbacks(self):
         from torch._inductor.kernel.flex_gemm.constraints import FlexGemmLocalReduceSpec
         from torch._inductor.kernel.flex_gemm.runtime import (
             FlexGemmRuntimeLocalReducePlan,
             register_runtime_local_reduce_callbacks,
-            runtime_local_reduce_plan,
         )
 
-        self.assertIsNone(
-            runtime_local_reduce_plan(
-                None, None, None, None, False, None, None, None, None
-            )
-        )
-        with self.assertRaisesRegex(RuntimeError, "group and local_reduce_axis"):
-            runtime_local_reduce_plan(
-                None, torch.empty(1), None, 0, False, None, None, None, None
-            )
-        with self.assertRaisesRegex(RuntimeError, "group and local_reduce_axis"):
-            runtime_local_reduce_plan(None, None, 8, None, True, None, None, None, None)
         with self.assertRaisesRegex(RuntimeError, "generated local-reduce callbacks"):
             register_runtime_local_reduce_callbacks(
                 FlexGemmRuntimeLocalReducePlan(
@@ -1060,7 +1053,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         )
 
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_swap_ab_captured_args_matches_non_swap(self):
+    def test_swap_ab_captured_aux_matches_non_swap(self):
         from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue
 
         m, n, k = 128, 384, 256
@@ -1075,7 +1068,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             return gemm_epilogue(
                 a,
                 b,
-                self.captured_affine_epilogue,
+                self.affine_aux_epilogue,
                 name,
                 out_dtype=torch.float32,
                 epilogue_args=(col_bias, row_scale, tile_bias),
@@ -1083,8 +1076,8 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 config_key=config_key,
             )
 
-        swapped = run("test_flex_gemm_swap_ab_captured_args", swap_key)
-        non_swapped = run("test_flex_gemm_non_swap_ab_captured_args", non_swap_key)
+        swapped = run("test_flex_gemm_swap_ab_aux", swap_key)
+        non_swapped = run("test_flex_gemm_non_swap_ab_aux", non_swap_key)
         # Swapped row/col broadcast roles must reproduce the non-swapped result.
         self.assertEqual(swapped, non_swapped)
         high_precision_expected = (
@@ -1142,7 +1135,11 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
 
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
     def test_swap_ab_rejects_local_reduce_aux(self):
-        from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue
+        from torch._inductor.kernel.flex_gemm.constraints import FlexGemmLocalReduceSpec
+        from torch._inductor.kernel.flex_gemm.runtime import (
+            FlexGemmRuntimeLocalReducePlan,
+            gemm_epilogue,
+        )
 
         m, n, k = 128, 128, 64
         group = 16
@@ -1160,9 +1157,10 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 self.relu_epilogue,
                 "test_flex_gemm_swap_ab_local_reduce_rejects",
                 out_dtype=torch.float32,
-                local_reduce_out=local_reduce_out,
-                local_reduce_group=group,
-                local_reduce_axis=1,
+                local_reduce=FlexGemmRuntimeLocalReducePlan(
+                    FlexGemmLocalReduceSpec("compressed_aux", group, 1),
+                    out=local_reduce_out,
+                ),
                 config_key=swap_key,
             )
 
@@ -1181,7 +1179,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         out = gemm_epilogue(
             a,
             b,
-            self.captured_affine_epilogue,
+            self.affine_aux_epilogue,
             "test_flex_gemm_affine_aux",
             out_dtype=torch.float32,
             epilogue_args=(col_bias, row_scale, tile_bias),
