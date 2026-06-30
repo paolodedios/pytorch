@@ -17,13 +17,19 @@ import time
 from pathlib import Path
 
 
-# NumPy build-time pin selected by Python version (3.14 -> 2.3.4,
-# 3.13 -> 2.1.0, everything else -> 2.0.2).
-NUMPY_PINS: list[tuple[str, str]] = [
-    ("cp314", "2.3.4"),
-    ("cp313", "2.1.0"),
-]
-DEFAULT_NUMPY = "2.0.2"
+# NumPy build-time pin per supported CPython version, mirroring the legacy
+# .ci/wheel/build_wheel.sh table. Listed explicitly (rather than a prefix match
+# with a default) so an unsupported version fails loudly instead of silently
+# picking a fallback -- enabling a new Python here forces a deliberate pin
+# choice. Freethreaded builds (e.g. 3.14t) share their base version's pin, since
+# sys.version_info does not distinguish them.
+NUMPY_PINS: dict[str, str] = {
+    "3.10": "2.0.2",
+    "3.11": "2.0.2",
+    "3.12": "2.0.2",
+    "3.13": "2.1.0",
+    "3.14": "2.3.4",
+}
 
 OMP_PREFIX = Path("/opt/llvm-openmp")
 
@@ -46,11 +52,14 @@ def pip_install(*args: str) -> None:
 
 
 def numpy_pin() -> str:
-    tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
-    for prefix, version in NUMPY_PINS:
-        if tag.startswith(prefix):
-            return version
-    return DEFAULT_NUMPY
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    pin = NUMPY_PINS.get(version)
+    if pin is None:
+        sys.exit(
+            f"Unsupported Python version {version}: add a numpy pin to "
+            "NUMPY_PINS in .ci/macwheel/build_install_deps.py"
+        )
+    return pin
 
 
 def main() -> None:
