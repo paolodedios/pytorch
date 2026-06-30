@@ -78,6 +78,7 @@ from .ir import (
     MultiOutput,
     MultiOutputLayout,
     NoneLayout,
+    OrderingBarrier,
 )
 from .loop_body import LoopBody
 from .memory import MemoryPlanningInfoForBuffer, MemoryPlanningInfoForNode
@@ -4714,7 +4715,7 @@ class Scheduler:
                     )
                 for alt_name in buf.get_mutations():
                     alt_name = rename(alt_name)
-                    is_ordering_only = getattr(buf, "ordering_only", False)
+                    is_ordering_only = isinstance(buf.node, OrderingBarrier)
                     if is_ordering_only:
                         add_user(alt_name, node, is_weak=True)
                         node.add_fake_dep(
