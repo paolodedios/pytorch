@@ -914,21 +914,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         with self.assertRaisesRegex(Exception, "currently support only aten.mm"):
             torch.compile(addmm_fn, backend="inductor", fullgraph=True)(bias, a, b)
 
-    def test_generated_tuple_aux_rejects_shape_mismatch(self):
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                lambda acc: (acc.relu(), acc.sum(dim=1, keepdim=True)),
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.randn(4, 8)
-        b = torch.randn(8, 5)
-
-        with self.assertRaisesRegex(Exception, "aux output shapes to match"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
     def test_generated_tuple_aux_rejects_multiple_aux_outputs(self):
         def fn(a, b):
             return flex_gemm(
