@@ -320,6 +320,48 @@ class FlexGemmTestCase(TestCase):
             a.shape[-1],
         )
 
+    def localReduceSpecPattern(self, kind, group, axis):
+        """Return the generated structural local-reduce spec pattern."""
+        return f"FlexGemmLocalReduceSpec(kind={kind!r}, group={group}, axis={axis})"
+
+    def assertLocalReduceAuxCode(self, code, group, axis=1, callbacks=False):
+        """Check generated code passes a structural compressed-aux plan."""
+        file_check = (
+            FileCheck()
+            .check("local_reduce=FlexGemmRuntimeLocalReducePlan")
+            .check(self.localReduceSpecPattern("compressed_aux", group, axis))
+            .check("out=")
+        )
+        if callbacks:
+            file_check = file_check.check("combine_fn=")
+        file_check.check_not("local_reduce_out=").check_not(
+            "local_reduce_group="
+        ).check_not("local_reduce_axis=").check_not("local_reduce_op").run(code)
+
+    def legacyRuntimeLocalReducePlan(
+        self,
+        out=None,
+        group=None,
+        axis=None,
+        feeds_main=False,
+        combine_key=None,
+        finalize_key=None,
+    ):
+        """Build a runtime plan through the legacy public kwargs path."""
+        from torch._inductor.kernel.flex_gemm.runtime import runtime_local_reduce_plan
+
+        return runtime_local_reduce_plan(
+            None,
+            out,
+            group,
+            axis,
+            feeds_main,
+            None,
+            combine_key,
+            None,
+            finalize_key,
+        )
+
     def assertMatchesEpilogue(
         self, actual, expected, high_precision_expected, reduction_size
     ):
@@ -362,14 +404,18 @@ class FlexGemmTestCase(TestCase):
 
     def assertPhysicalFeedMainCode(self, code, group=None):
         """Check generated code uses the current physical feed-main ABI."""
-        file_check = FileCheck()
-        if group is not None:
-            file_check = file_check.check(f"local_reduce_group={group}")
-        file_check.check("local_reduce_axis=0").check(
+        file_check = FileCheck().check("local_reduce=FlexGemmRuntimeLocalReducePlan")
+        if group is None:
+            file_check = file_check.check(
+                "FlexGemmLocalReduceSpec(kind='feed_main', group="
+            ).check("axis=0)")
+        else:
+            file_check = file_check.check(
+                self.localReduceSpecPattern("feed_main", group, 0)
+            )
+        file_check.check("combine_fn=").check_not("local_reduce_out=").check_not(
             "local_reduce_feeds_main=True"
-        ).check("local_reduce_combine_fn").check_not("local_reduce_out=").check_not(
-            "local_reduce_op"
-        ).run(code)
+        ).check_not("local_reduce_op").run(code)
 
 
 @skipIfNoCuteDSL
@@ -582,11 +628,16 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
     @parametrize("group", (17, 32))
     def test_runtime_validation_rejects_cross_warp_feed_main_group(self, group):
         from torch._inductor.kernel.flex_gemm.runtime import (
-            runtime_local_reduce_plan,
             validate_runtime_local_reduce,
         )
 
-        plan = runtime_local_reduce_plan(None, group, 0, True, "combine", "finalize")
+        plan = self.legacyRuntimeLocalReducePlan(
+            group=group,
+            axis=0,
+            feeds_main=True,
+            combine_key="combine",
+            finalize_key="finalize",
+        )
         expected_shape = (group * 8, 64)
         with self.assertRaisesRegex(
             NotImplementedError, "same-warp axis-0 groups <= 16"
@@ -603,11 +654,16 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
 
     def test_runtime_validation_rejects_axis_one_feed_main(self):
         from torch._inductor.kernel.flex_gemm.runtime import (
-            runtime_local_reduce_plan,
             validate_runtime_local_reduce,
         )
 
-        plan = runtime_local_reduce_plan(None, 8, 1, True, "combine", "finalize")
+        plan = self.legacyRuntimeLocalReducePlan(
+            group=8,
+            axis=1,
+            feeds_main=True,
+            combine_key="combine",
+            finalize_key="finalize",
+        )
         with self.assertRaisesRegex(NotImplementedError, "supports only axis 0"):
             validate_runtime_local_reduce(
                 plan,
@@ -621,11 +677,16 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
 
     def test_runtime_validation_rejects_non_divisible_local_reduce_group(self):
         from torch._inductor.kernel.flex_gemm.runtime import (
-            runtime_local_reduce_plan,
             validate_runtime_local_reduce,
         )
 
-        plan = runtime_local_reduce_plan(None, 8, 0, True, "combine", "finalize")
+        plan = self.legacyRuntimeLocalReducePlan(
+            group=8,
+            axis=0,
+            feeds_main=True,
+            combine_key="combine",
+            finalize_key="finalize",
+        )
         with self.assertRaisesRegex(RuntimeError, "must divide"):
             validate_runtime_local_reduce(
                 plan,
@@ -642,12 +703,11 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             validate_local_reduce_out_shape,
         )
         from torch._inductor.kernel.flex_gemm.runtime import (
-            runtime_local_reduce_plan,
             validate_runtime_local_reduce,
         )
 
-        compressed_plan = runtime_local_reduce_plan(
-            torch.empty(128, 8), 8, 1, False, None, None
+        compressed_plan = self.legacyRuntimeLocalReducePlan(
+            out=torch.empty(128, 8), group=8, axis=1
         )
         with self.assertRaisesRegex(NotImplementedError, "2-D aten.mm"):
             validate_runtime_local_reduce(
@@ -664,15 +724,18 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
 
     def test_runtime_validation_rejects_local_reduce_with_c_alpha_beta(self):
         from torch._inductor.kernel.flex_gemm.runtime import (
-            runtime_local_reduce_plan,
             validate_runtime_local_reduce,
         )
 
-        compressed_plan = runtime_local_reduce_plan(
-            torch.empty(128, 8), 8, 1, False, None, None
+        compressed_plan = self.legacyRuntimeLocalReducePlan(
+            out=torch.empty(128, 8), group=8, axis=1
         )
-        feed_main_plan = runtime_local_reduce_plan(
-            None, 8, 0, True, "combine", "finalize"
+        feed_main_plan = self.legacyRuntimeLocalReducePlan(
+            group=8,
+            axis=0,
+            feeds_main=True,
+            combine_key="combine",
+            finalize_key="finalize",
         )
         with self.assertRaisesRegex(NotImplementedError, "aux_out"):
             validate_runtime_local_reduce(
@@ -764,46 +827,20 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             )
 
     def test_local_reduce_plan_rejects_invalid_consumer_kind(self):
-        from torch._inductor.kernel.flex_gemm.epilogue import (
-            FlexGemmOutputLocalReducePlan,
-        )
-        from torch._inductor.kernel.flex_gemm.runtime import (
-            FlexGemmRuntimeLocalReducePlan,
-        )
-        from torch._inductor.kernel.flex_gemm.template import (
-            FlexGemmEpilogueLocalReduceConfig,
-        )
+        from torch._inductor.kernel.flex_gemm.constraints import FlexGemmLocalReduceSpec
 
         with self.assertRaisesRegex(RuntimeError, "invalid local-reduce consumer kind"):
-            FlexGemmOutputLocalReducePlan("bad", object(), 8, 0)
-        with self.assertRaisesRegex(RuntimeError, "invalid local-reduce consumer kind"):
-            FlexGemmRuntimeLocalReducePlan("bad", 8, 0)
-        with self.assertRaisesRegex(RuntimeError, "invalid local-reduce consumer kind"):
-            FlexGemmEpilogueLocalReduceConfig("bad", 8, 0)
+            FlexGemmLocalReduceSpec("bad", 8, 0)
 
     def test_local_reduce_plan_rejects_invalid_group_axis(self):
+        from torch._inductor.kernel.flex_gemm.constraints import FlexGemmLocalReduceSpec
         from torch._inductor.kernel.flex_gemm.epilogue import (
             FlexGemmLocalReduceContract,
-            FlexGemmOutputLocalReducePlan,
-        )
-        from torch._inductor.kernel.flex_gemm.runtime import (
-            FlexGemmRuntimeLocalReducePlan,
-        )
-        from torch._inductor.kernel.flex_gemm.template import (
-            FlexGemmEpilogueLocalReduceConfig,
         )
 
         plan_classes = (
             lambda group, axis: FlexGemmLocalReduceContract(object(), group, axis),
-            lambda group, axis: FlexGemmOutputLocalReducePlan(
-                "feed_main", object(), group, axis
-            ),
-            lambda group, axis: FlexGemmRuntimeLocalReducePlan(
-                "feed_main", group, axis
-            ),
-            lambda group, axis: FlexGemmEpilogueLocalReduceConfig(
-                "feed_main", group, axis
-            ),
+            lambda group, axis: FlexGemmLocalReduceSpec("feed_main", group, axis),
         )
         for make_plan in plan_classes:
             with self.assertRaisesRegex(
@@ -816,6 +853,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 make_plan(8, 2)
 
     def test_runtime_local_reduce_plan_rejects_missing_runtime_state(self):
+        from torch._inductor.kernel.flex_gemm.constraints import FlexGemmLocalReduceSpec
         from torch._inductor.kernel.flex_gemm.runtime import (
             FlexGemmRuntimeLocalReducePlan,
             register_runtime_local_reduce_callbacks,
@@ -823,21 +861,26 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         )
 
         self.assertIsNone(
-            runtime_local_reduce_plan(None, None, None, False, None, None)
+            runtime_local_reduce_plan(
+                None, None, None, None, False, None, None, None, None
+            )
         )
         with self.assertRaisesRegex(RuntimeError, "group and local_reduce_axis"):
-            runtime_local_reduce_plan(torch.empty(1), None, 0, False, None, None)
+            runtime_local_reduce_plan(
+                None, torch.empty(1), None, 0, False, None, None, None, None
+            )
         with self.assertRaisesRegex(RuntimeError, "group and local_reduce_axis"):
-            runtime_local_reduce_plan(None, 8, None, True, None, None)
+            runtime_local_reduce_plan(None, None, 8, None, True, None, None, None, None)
         with self.assertRaisesRegex(RuntimeError, "generated local-reduce callbacks"):
             register_runtime_local_reduce_callbacks(
-                FlexGemmRuntimeLocalReducePlan("feed_main", 8, 0),
+                FlexGemmRuntimeLocalReducePlan(
+                    FlexGemmLocalReduceSpec("feed_main", 8, 0)
+                ),
                 "test_missing_callbacks",
-                None,
-                lambda value: value,
             )
 
     def test_local_reduce_plan_rejects_invalid_output_binding(self):
+        from torch._inductor.kernel.flex_gemm.constraints import FlexGemmLocalReduceSpec
         from torch._inductor.kernel.flex_gemm.runtime import (
             FlexGemmRuntimeLocalReducePlan,
         )
@@ -845,16 +888,19 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             FlexGemmEpilogueLocalReduceConfig,
         )
 
+        compressed_spec = FlexGemmLocalReduceSpec("compressed_aux", 8, 0)
+        feed_main_spec = FlexGemmLocalReduceSpec("feed_main", 8, 0)
         with self.assertRaisesRegex(RuntimeError, "local_reduce_out"):
-            FlexGemmRuntimeLocalReducePlan("compressed_aux", 8, 0)
+            FlexGemmRuntimeLocalReducePlan(compressed_spec)
         with self.assertRaisesRegex(RuntimeError, "cannot store local_reduce_out"):
-            FlexGemmRuntimeLocalReducePlan("feed_main", 8, 0, torch.empty(1))
+            FlexGemmRuntimeLocalReducePlan(feed_main_spec, out=torch.empty(1))
         with self.assertRaisesRegex(RuntimeError, "require out_index"):
-            FlexGemmEpilogueLocalReduceConfig("compressed_aux", 8, 0)
+            FlexGemmEpilogueLocalReduceConfig(compressed_spec)
         with self.assertRaisesRegex(RuntimeError, "cannot have out_index"):
-            FlexGemmEpilogueLocalReduceConfig("feed_main", 8, 0, 0)
+            FlexGemmEpilogueLocalReduceConfig(feed_main_spec, out_index=0)
 
     def test_output_plan_rejects_invalid_state(self):
+        from torch._inductor.kernel.flex_gemm.constraints import FlexGemmLocalReduceSpec
         from torch._inductor.kernel.flex_gemm.epilogue import (
             FlexGemmLocalReduceContract,
             FlexGemmOutputLocalReducePlan,
@@ -872,16 +918,22 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         with self.assertRaisesRegex(RuntimeError, "tensor nodes"):
             FlexGemmLocalReduceContract(object(), 8, 0)
         with self.assertRaisesRegex(RuntimeError, "tensor nodes"):
-            FlexGemmOutputLocalReducePlan("feed_main", object(), 8, 0)
+            FlexGemmOutputLocalReducePlan(
+                FlexGemmLocalReduceSpec("feed_main", 8, 0), object()
+            )
         with self.assertRaisesRegex(NotImplementedError, "tensor outputs"):
             tuple_output_plan(object(), ())
         with self.assertRaisesRegex(NotImplementedError, "tensor outputs"):
             tuple_output_plan(node, (object(),))
-        compressed = FlexGemmOutputLocalReducePlan("compressed_aux", aux, 8, 0)
+        compressed = FlexGemmOutputLocalReducePlan.from_parts(
+            "compressed_aux", aux, 8, 0
+        )
         with self.assertRaisesRegex(NotImplementedError, "same-shape aux outputs"):
             FlexGemmOutputPlan(node, (aux,), compressed)
         FlexGemmOutputPlan(
-            node, (aux,), FlexGemmOutputLocalReducePlan("feed_main", aux, 8, 0)
+            node,
+            (aux,),
+            FlexGemmOutputLocalReducePlan.from_parts("feed_main", aux, 8, 0),
         )
 
     def test_local_reduce_feed_main_binary_candidates_support_method_nodes(self):
@@ -1181,9 +1233,9 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     def assertFlexGemmGeneratedCode(self, code, *checks):
         file_check = (
             FileCheck()
-            .check(
-                "from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue as flex_gemm_epilogue"
-            )
+            .check("from torch._inductor.kernel.flex_gemm.runtime import (")
+            .check("FlexGemmRuntimeLocalReducePlan")
+            .check("gemm_epilogue as flex_gemm_epilogue")
             .check("flex_gemm_epilogue(")
         )
         for check in checks:
@@ -2007,9 +2059,8 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             )
 
             self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
-            FileCheck().check(cute_op).check("local_reduce_out=").check(
-                f"local_reduce_group={group}"
-            ).check_not("local_reduce_op").run(code)
+            FileCheck().check(cute_op).run(code)
+            self.assertLocalReduceAuxCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2051,9 +2102,8 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         )
 
         self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
-        FileCheck().check(code_check).check("local_reduce_out=").check(
-            f"local_reduce_group={group}, local_reduce_axis=0"
-        ).check_not("local_reduce_op").run(code)
+        FileCheck().check(code_check).run(code)
+        self.assertLocalReduceAuxCode(code, group, axis=0, callbacks=True)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2083,8 +2133,9 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         FileCheck().check("cute.arch.fmax").check("cute.math.sqrt").check(
-            "local_reduce_out="
-        ).check("local_reduce_finalize_fn").check_not("local_reduce_op").run(code)
+            "local_reduce_finalize_fn"
+        ).run(code)
+        self.assertLocalReduceAuxCode(code, group, axis=0, callbacks=True)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2150,9 +2201,8 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         expected, expected_aux = epilogue_fn(a @ b)
         torch.testing.assert_close(actual, expected)
         torch.testing.assert_close(aux.float(), expected_aux.float())
-        FileCheck().check(code_check).check("local_reduce_out=").check(
-            f"local_reduce_group={group}"
-        ).check("local_reduce_finalize_fn").check_not("local_reduce_op").run(code)
+        FileCheck().check(code_check).check("local_reduce_finalize_fn").run(code)
+        self.assertLocalReduceAuxCode(code, group, callbacks=True)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2192,9 +2242,8 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         )
 
         self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
-        FileCheck().check(code_check).check("local_reduce_out=").check(
-            f"local_reduce_group={group}, local_reduce_axis=0"
-        ).check_not("local_reduce_op").run(code)
+        FileCheck().check(code_check).run(code)
+        self.assertLocalReduceAuxCode(code, group, axis=0, callbacks=True)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2302,9 +2351,8 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         )
 
         self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
-        FileCheck().check("cute.ReductionOp.ADD").check("local_reduce_out=").check(
-            f"local_reduce_group={group}"
-        ).check_not("local_reduce_op").run(code)
+        FileCheck().check("cute.ReductionOp.ADD").run(code)
+        self.assertLocalReduceAuxCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -2343,9 +2391,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         self.assertIn(code_check, code)
-        self.assertIn("local_reduce_combine_fn", code)
-        self.assertIn("local_reduce_out=", code)
-        self.assertIn(f"local_reduce_group={group}", code)
+        self.assertLocalReduceAuxCode(code, group, callbacks=True)
         self.assertNotIn("local_reduce_strategy", code)
 
     @skipIfNoCuteDSL
@@ -2384,7 +2430,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         torch.testing.assert_close(
             aux, epilogue_fn(high_precision_acc)[1].float(), atol=1e-3, rtol=1e-3
         )
-        self.assertIn(f"local_reduce_group={group}", code)
+        self.assertLocalReduceAuxCode(code, group, callbacks=True)
         self.assertIn("cluster_n', 1", code)
 
     @skipIfNoCuteDSL
@@ -2477,9 +2523,8 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         if checks_max:
             file_check = file_check.check("cute.ReductionOp.MAX")
         file_check.check("cute.ReductionOp.ADD").check(generated_check)
-        file_check.check("local_reduce_out=").check(
-            f"local_reduce_group={group}"
-        ).check_not("local_reduce_op").run(code)
+        file_check.run(code)
+        self.assertLocalReduceAuxCode(code, group)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -3274,10 +3319,12 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
         self.assertEqual(code.count("flex_gemm_epilogue("), 2)
-        self.assertIn("local_reduce_out=", code)
-        self.assertIn(f"local_reduce_group={group}", code)
-        self.assertIn("local_reduce_axis=1", code)
-        self.assertIn("local_reduce_combine_fn", code)
+        self.assertIn("local_reduce=FlexGemmRuntimeLocalReducePlan", code)
+        self.assertIn(
+            f"FlexGemmLocalReduceSpec(kind='compressed_aux', group={group}, axis=1)",
+            code,
+        )
+        self.assertIn("combine_fn=", code)
         self.assertIn("epilogue_arg_kinds=('row',)", code)
         self.assertIn("epilogue_arg_kinds=('col',)", code)
         self.assertNotIn("local_reduce_feeds_main=True", code)
