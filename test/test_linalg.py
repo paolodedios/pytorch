@@ -7673,14 +7673,12 @@ scipy_lobpcg  | {eq_err_scipy:10.2e}  | {eq_err_general_scipy:10.2e}  | {iters2:
     def test_linalg_matrix_sqrt_autograd(self, device, dtype):
         from torch.testing._internal.common_utils import random_hermitian_pd_matrix
 
-        # Symmetrize so the gradcheck input stays in-domain (real positive spectrum);
-        # matrix_sqrt's backward uses the general Schur-based differential, not eigh.
-        def f(a):
-            return torch.linalg.matrix_sqrt(a + a.mH)
-
+        # HPD inputs have positive eigenvalues; gradcheck perturbations stay in-domain.
         a = random_hermitian_pd_matrix(4, dtype=dtype, device=device).requires_grad_(True)
-        self.assertTrue(torch.autograd.gradcheck(f, (a,), check_undefined_grad=False))
-        self.assertTrue(torch.autograd.gradgradcheck(f, (a,), check_undefined_grad=False))
+        self.assertTrue(torch.autograd.gradcheck(
+            torch.linalg.matrix_sqrt, (a,), check_undefined_grad=False))
+        self.assertTrue(torch.autograd.gradgradcheck(
+            torch.linalg.matrix_sqrt, (a,), check_undefined_grad=False))
 
         # A non-symmetric, well-separated real positive spectrum exercises the backward
         # on the genuinely general path; small gradcheck perturbations keep it real.
