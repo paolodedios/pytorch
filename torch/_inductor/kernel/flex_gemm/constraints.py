@@ -407,7 +407,7 @@ def local_reduce_needs_physical_callbacks(
     kind: FlexGemmLocalReduceConsumerKind, axis: int, group: int
 ) -> bool:
     """Identify reductions whose value crosses a TensorSSA fragment boundary."""
-    return kind == LOCAL_REDUCE_FEED_MAIN or axis == 0 or group > 32
+    return kind == LOCAL_REDUCE_FEED_MAIN or axis == 0 or group > 16
 
 
 @dataclasses.dataclass(frozen=True)
