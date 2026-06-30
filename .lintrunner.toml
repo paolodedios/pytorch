@@ -579,7 +579,6 @@ exclude_patterns = [
     'test/cpp/**',
     'test/cpp_extensions/**',
     'third_party/concurrentqueue/**',
-    'third_party/kineto/**',
     'tools/autograd/**',
     'torch/csrc/*.cpp',
     'torch/csrc/*.h',
