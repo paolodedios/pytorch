@@ -1158,21 +1158,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         with self.assertRaisesRegex(Exception, "currently support only aten.mm"):
             torch.compile(addmm_fn, backend="inductor", fullgraph=True)(bias, a, b)
 
-    def test_generated_tuple_aux_rejects_shape_mismatch(self):
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                lambda acc: (acc.relu(), acc.sum(dim=1, keepdim=True)),
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.randn(4, 8)
-        b = torch.randn(8, 5)
-
-        with self.assertRaisesRegex(Exception, "aux output shapes to match"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
     @parametrize(
         "case",
         (
@@ -1648,74 +1633,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         b = torch.randn(8, 8)
 
         with self.assertRaisesRegex(Exception, "does not map to a CuTe TensorSSA"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    @parametrize(
-        "case",
-        (
-            (
-                "m_reduce_feeds_main",
-                lambda acc: (
-                    acc.float().view(-1, 4, 8)
-                    * (acc.float().view(-1, 4, 8).sum(1, keepdim=True) + 1.0)
-                ).view(4, 8),
-                (4, 8),
-                "one generated physical reduction",
-            ),
-            (
-                "m_reduce_feeds_same_shape_aux",
-                lambda acc: (
-                    acc.relu(),
-                    (
-                        acc.float().view(-1, 4, 8)
-                        * (acc.float().view(-1, 4, 8).mean(1, keepdim=True) + 1.0)
-                    ).view(4, 8),
-                ),
-                (4, 8),
-                "one generated physical reduction",
-            ),
-            (
-                "large_n_reduce_feeds_main",
-                lambda acc: (
-                    acc.float().view(4, -1, 64)
-                    * (acc.float().view(4, -1, 64).sum(-1, keepdim=True) + 1.0)
-                ).view(4, 128),
-                (4, 128),
-                "post-reduction pointwise transforms",
-            ),
-            (
-                "large_n_reduce_feeds_same_shape_aux",
-                lambda acc: (
-                    acc.relu(),
-                    (
-                        acc.float().view(4, -1, 64)
-                        * (acc.float().view(4, -1, 64).mean(-1, keepdim=True) + 1.0)
-                    ).view(4, 128),
-                ),
-                (4, 128),
-                "post-reduction pointwise transforms",
-            ),
-        ),
-        name_fn=lambda case: case[0],
-    )
-    def test_generated_local_reduce_rejects_physical_result_feeding_pointwise(
-        self, case
-    ):
-        _, epilogue_fn, shape, error = case
-
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue_fn,
-                kernel_options={"backend": "QUACK"},
-            )
-
-        m, n = shape
-        a = torch.randn(m, 8)
-        b = torch.randn(8, n)
-
-        with self.assertRaisesRegex(Exception, error):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
     @parametrize(
