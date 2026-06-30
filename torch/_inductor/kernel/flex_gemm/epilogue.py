@@ -14,17 +14,14 @@ from torch._inductor.codegen.cutedsl.cutedsl_op_overrides import (
 from torch._inductor.kernel.flex_gemm.constraints import (
     FLEX_GEMM_OUTPUT_PLAN_NODE_ERROR,
     FLEX_GEMM_OUTPUT_TENSOR_ERROR,
-    FlexGemmLocalReduceConsumerKind,
-    FlexGemmLocalReduceSpec,
+    FlexGemmLocalReduceGeometry,
     grouped_reduce_dims_match,
     LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR,
     LOCAL_REDUCE_AUX_TENSORSSA_ERROR,
     LOCAL_REDUCE_COMBINE_FN_SUFFIX,
-    LOCAL_REDUCE_COMPRESSED_AUX,
     local_reduce_compressed_shape,
     LOCAL_REDUCE_CONTRACT_NODE_ERROR,
     LOCAL_REDUCE_EXPLICIT_DTYPE_ERROR,
-    LOCAL_REDUCE_FEED_MAIN,
     LOCAL_REDUCE_FEED_MAIN_ARG_NAME,
     LOCAL_REDUCE_FEED_MAIN_MIXED_CONTRACT_ERROR,
     LOCAL_REDUCE_FINALIZE_FN_SUFFIX,
@@ -147,9 +144,9 @@ class FlexGemmCuteDSLOpOverrides(CuteDSLOpOverrides):
 
 @dataclasses.dataclass(frozen=True)
 class FlexGemmOutputLocalReducePlan:
-    """Tie a local-reduce contract to the output consumer that needs it."""
+    """Base output-plan data shared by concrete local-reduce consumers."""
 
-    spec: FlexGemmLocalReduceSpec
+    geometry: FlexGemmLocalReduceGeometry
     node: torch.fx.Node
 
     def __post_init__(self) -> None:
@@ -157,36 +154,25 @@ class FlexGemmOutputLocalReducePlan:
         if not isinstance(self.node, torch.fx.Node):
             raise RuntimeError(LOCAL_REDUCE_OUTPUT_PLAN_NODE_ERROR)
 
-    @classmethod
-    def from_parts(
-        cls,
-        kind: FlexGemmLocalReduceConsumerKind,
-        node: torch.fx.Node,
-        group: int,
-        axis: int,
-    ) -> "FlexGemmOutputLocalReducePlan":
-        """Build the output plan from the semantic local-reduce fields."""
-        return cls(FlexGemmLocalReduceSpec(kind, group, axis), node)
-
-    @property
-    def kind(self) -> FlexGemmLocalReduceConsumerKind:
-        return self.spec.kind
-
     @property
     def group(self) -> int:
-        return self.spec.group
+        return self.geometry.group
 
     @property
     def axis(self) -> int:
-        return self.spec.axis
+        return self.geometry.axis
 
     @property
-    def feeds_main(self) -> bool:
-        return self.spec.feeds_main
+    def needs_physical_callbacks(self) -> bool:
+        return self.geometry.needs_physical_callbacks
 
-    @property
-    def stores_compressed_aux(self) -> bool:
-        return self.spec.stores_compressed_aux
+
+class FlexGemmOutputCompressedLocalReducePlan(FlexGemmOutputLocalReducePlan):
+    """Local reduction whose value is stored as a compressed aux output."""
+
+
+class FlexGemmOutputFeedMainLocalReducePlan(FlexGemmOutputLocalReducePlan):
+    """Local reduction whose value is fed back into the main epilogue."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -204,8 +190,7 @@ class FlexGemmOutputPlan:
         ):
             raise RuntimeError(FLEX_GEMM_OUTPUT_PLAN_NODE_ERROR)
         if (
-            self.local_reduce is not None
-            and self.local_reduce.stores_compressed_aux
+            isinstance(self.local_reduce, FlexGemmOutputCompressedLocalReducePlan)
             and self.aux_outputs
         ):
             raise NotImplementedError(LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR)
@@ -223,14 +208,18 @@ class FlexGemmLocalReduceContract:
         if not isinstance(self.aux, torch.fx.Node):
             raise RuntimeError(LOCAL_REDUCE_CONTRACT_NODE_ERROR)
 
-    def to_output_plan(
-        self,
-        kind: FlexGemmLocalReduceConsumerKind,
-        node: torch.fx.Node | None = None,
-    ) -> FlexGemmOutputLocalReducePlan:
-        """Bind a discovered reduction contract to the output consumer kind."""
-        return FlexGemmOutputLocalReducePlan.from_parts(
-            kind, self.aux if node is None else node, self.group, self.axis
+    def to_compressed_aux_plan(
+        self, node: torch.fx.Node
+    ) -> FlexGemmOutputCompressedLocalReducePlan:
+        """Bind this reduction contract to a compressed aux output."""
+        return FlexGemmOutputCompressedLocalReducePlan(
+            FlexGemmLocalReduceGeometry(self.group, self.axis), node
+        )
+
+    def to_feed_main_plan(self) -> FlexGemmOutputFeedMainLocalReducePlan:
+        """Bind this reduction contract to the main epilogue consumer."""
+        return FlexGemmOutputFeedMainLocalReducePlan(
+            FlexGemmLocalReduceGeometry(self.group, self.axis), self.aux
         )
 
 
@@ -827,7 +816,7 @@ def local_reduce_compressed_aux_plan(
     )
     if expected_aux_shape != tuple(aux_meta.shape):
         return None
-    return contract.to_output_plan(LOCAL_REDUCE_COMPRESSED_AUX, aux)
+    return contract.to_compressed_aux_plan(aux)
 
 
 def local_reduce_feed_main_output_plan(
@@ -841,7 +830,7 @@ def local_reduce_feed_main_output_plan(
     return FlexGemmOutputPlan(
         output,
         aux_outputs,
-        feed_contract.to_output_plan(LOCAL_REDUCE_FEED_MAIN),
+        feed_contract.to_feed_main_plan(),
     )
 
 
@@ -938,19 +927,12 @@ def materialize_flex_gemm_epilogue(
     local_reduce_feed_main = None
     local_reduce_aux = None
     local_reduce_feed_main_input = None
-    if local_reduce is not None:
-        if local_reduce.feeds_main:
-            local_reduce_feed_main = local_reduce.node
-            reduction = reduction_from_node(local_reduce.node)
-            local_reduce_feed_main_input = (
-                reduction[0] if reduction is not None else None
-            )
-        elif local_reduce.stores_compressed_aux:
-            local_reduce_aux = local_reduce.node
-        else:
-            raise AssertionError(
-                f"unhandled local-reduce consumer kind: {local_reduce.kind}"
-            )
+    if isinstance(local_reduce, FlexGemmOutputFeedMainLocalReducePlan):
+        local_reduce_feed_main = local_reduce.node
+        reduction = reduction_from_node(local_reduce.node)
+        local_reduce_feed_main_input = reduction[0] if reduction is not None else None
+    elif isinstance(local_reduce, FlexGemmOutputCompressedLocalReducePlan):
+        local_reduce_aux = local_reduce.node
     with V.set_kernel_handler(kernel), V.set_ops_handler(FlexGemmCuteDSLOpOverrides()):
         for index, node in enumerate(epilogue_arg_placeholders):
             epilogue_arg_meta = node.meta["val"]
