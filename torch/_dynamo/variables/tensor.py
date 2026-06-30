@@ -253,7 +253,7 @@ class TensorVariable(VariableTracker):
         has_grad_fn: bool,
         _size: tuple[Any, ...] | None = None,
         stride: tuple[Any, ...] | None = None,
-        is_contiguous: bool | None = None,
+        is_contiguous: tuple[torch.memory_format, ...] | None = None,
         _is_name_set: bool | None = None,
         **kwargs: Any,
     ) -> None:

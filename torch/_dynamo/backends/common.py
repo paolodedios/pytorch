@@ -66,6 +66,7 @@ class AotAutogradKwargs(TypedDict, total=False):
     keep_inference_input_mutations: bool
     compiler_config_extra: CompilerConfigExtra | None
     ignore_shape_env: bool
+    disable_functionalization: bool
     pre_grad_passes: Callable[..., Any] | None
     compile_region_name: str | None
 
