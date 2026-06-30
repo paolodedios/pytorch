@@ -39,7 +39,7 @@ if cute is not None:
         return cute.where(acc > cute.full_like(acc, 0), acc, cute.full_like(acc, 0))
 
     @cute.jit
-    def affine_aux_epilogue(acc, col_bias, row_scale, tile_bias):
+    def captured_affine_epilogue(acc, col_bias, row_scale, tile_bias):
         value = (acc + col_bias) * row_scale + tile_bias
         return cute.where(
             value > cute.full_like(value, 0), value, cute.full_like(value, 0)
@@ -277,13 +277,7 @@ class FlexGemmTestCase(TestCase):
         self.assertLessEqual(
             actual_error.item(),
             eager_error.item() + rounding_atol,
-            msg=(
-                f"actual error {actual_error.item()} exceeded low precision eager "
-                f"error {eager_error.item()} with fp32_accumulation_eps="
-                f"{fp32_accumulation_eps}, result_rounding_eps="
-                f"{result_rounding_eps}, output_scale={output_scale}, "
-                f"and atol={rounding_atol}"
-            ),
+            msg="actual error exceeded low precision eager error",
         )
 
     def assertTupleAuxMatchesReference(self, actual, aux, a, b, epilogue_fn):
@@ -431,7 +425,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.relu_epilogue = staticmethod(relu_epilogue)
-        cls.affine_aux_epilogue = staticmethod(affine_aux_epilogue)
+        cls.captured_affine_epilogue = staticmethod(captured_affine_epilogue)
         cls.row_scale_epilogue = staticmethod(row_scale_epilogue)
         cls.captured_tuple_aux_epilogue = staticmethod(captured_tuple_aux_epilogue)
         cls.tuple_aux_epilogue = staticmethod(tuple_aux_epilogue)
@@ -535,7 +529,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         )
 
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_mm_epilogue_infers_captured_aux_arg_kinds(self):
+    def test_mm_epilogue_infers_captured_arg_kinds(self):
         from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue
 
         torch.manual_seed(4)
@@ -549,8 +543,8 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         out = gemm_epilogue(
             a,
             b,
-            self.affine_aux_epilogue,
-            "test_flex_gemm_infer_aux",
+            self.captured_affine_epilogue,
+            "test_flex_gemm_infer_captured_args",
             out_dtype=torch.float32,
             epilogue_args=(col_bias, row_scale, tile_bias),
         )
@@ -1053,7 +1047,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         )
 
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_swap_ab_captured_aux_matches_non_swap(self):
+    def test_swap_ab_captured_args_matches_non_swap(self):
         from torch._inductor.kernel.flex_gemm.runtime import gemm_epilogue
 
         m, n, k = 128, 384, 256
@@ -1068,7 +1062,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             return gemm_epilogue(
                 a,
                 b,
-                self.affine_aux_epilogue,
+                self.captured_affine_epilogue,
                 name,
                 out_dtype=torch.float32,
                 epilogue_args=(col_bias, row_scale, tile_bias),
@@ -1076,8 +1070,8 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 config_key=config_key,
             )
 
-        swapped = run("test_flex_gemm_swap_ab_aux", swap_key)
-        non_swapped = run("test_flex_gemm_non_swap_ab_aux", non_swap_key)
+        swapped = run("test_flex_gemm_swap_ab_captured_args", swap_key)
+        non_swapped = run("test_flex_gemm_non_swap_ab_captured_args", non_swap_key)
         # Swapped row/col broadcast roles must reproduce the non-swapped result.
         self.assertEqual(swapped, non_swapped)
         high_precision_expected = (
@@ -1179,7 +1173,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         out = gemm_epilogue(
             a,
             b,
-            self.affine_aux_epilogue,
+            self.captured_affine_epilogue,
             "test_flex_gemm_affine_aux",
             out_dtype=torch.float32,
             epilogue_args=(col_bias, row_scale, tile_bias),
