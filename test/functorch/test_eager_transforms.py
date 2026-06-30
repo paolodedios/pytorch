@@ -20,7 +20,6 @@ from common_utils import expectedFailureIf
 
 import functorch
 import torch
-import torch._dynamo.config
 import torch.autograd.forward_ad as fwAD
 import torch.nn as nn
 import torch.nn.functional as F
