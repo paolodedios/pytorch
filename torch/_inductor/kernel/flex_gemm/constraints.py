@@ -147,44 +147,23 @@ LOCAL_REDUCE_TEMPLATE_OUT_INDEX_ERROR = (
 LOCAL_REDUCE_TEMPLATE_FEED_MAIN_OUT_INDEX_ERROR = (
     "feed-main local reductions cannot have out_index"
 )
-LOCAL_REDUCE_GROUP_AXIS_REQUIRED_ERROR = (
-    "local_reduce_group and local_reduce_axis must be set"
-)
 LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR = (
     "physical local reductions require generated local-reduce callbacks"
 )
-LOCAL_REDUCE_CONSUMER_KINDS = (LOCAL_REDUCE_COMPRESSED_AUX, LOCAL_REDUCE_FEED_MAIN)
-
-
-def local_reduce_combine_fn_name(epilogue_name: str) -> str:
-    """Return the generated CuTeDSL callback name for physical reduction combine."""
-    return f"{epilogue_name}{LOCAL_REDUCE_COMBINE_FN_SUFFIX}"
-
-
-def local_reduce_finalize_fn_name(epilogue_name: str) -> str:
-    """Return the generated CuTeDSL callback name for physical reduction finalize."""
-    return f"{epilogue_name}{LOCAL_REDUCE_FINALIZE_FN_SUFFIX}"
-
-
-def local_reduce_default_combine_key(epilogue_key: str) -> str:
-    """Return the runtime cache key for an unnamed generated combine callback."""
-    return f"{epilogue_key}{LOCAL_REDUCE_COMBINE_KEY_SUFFIX}"
-
-
-def local_reduce_default_finalize_key(epilogue_key: str) -> str:
-    """Return the runtime cache key for an unnamed generated finalize callback."""
-    return f"{epilogue_key}{LOCAL_REDUCE_FINALIZE_KEY_SUFFIX}"
-
-
-def local_reduce_partial_output_contract_error() -> NotImplementedError:
-    """Build the shared error for reductions that need partial-output contracts."""
-    return NotImplementedError(LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR)
 
 
 def is_flex_gemm_partial_reduction_shape(
     aux_size: Sequence[Any], output_size: Sequence[Any]
 ) -> bool:
-    """Recognize final M/N reductions that are not QuACK partial outputs."""
+    """Recognize aux shapes that imply a final PyTorch reduction, not local reduce.
+
+    FlexGEMM's generic aux-output path supports one same-shape aux tensor beside
+    the main output. Reduced shapes such as ``[]``, ``[M]``, ``[N]``, ``[M, 1]``,
+    ``[1, N]``, or exact 2-D divisors of ``[M, N]`` mean the epilogue tried to
+    return a final PyTorch reduction/block reduction. Those are different from
+    QuACK local-reduce aux outputs, which are only accepted after the epilogue
+    exposes an explicit grouped view such as ``acc.view(M, -1, group).sum(-1)``.
+    """
     if len(output_size) != 2:
         return False
     aux_shape = list(aux_size)
@@ -210,57 +189,26 @@ def is_flex_gemm_partial_reduction_shape(
 def local_reduce_unsupported_tensorssa_error(
     reduction: Any, *, value_only: bool = False
 ) -> NotImplementedError:
-    """Build the shared error for reductions that lack a TensorSSA lowering."""
+    """Explain why a grouped reduction is outside the current TensorSSA subset."""
     suffix = " value-only reduction" if value_only else ""
     return NotImplementedError(
         "unsupported FlexGEMM epilogue local reduction: "
-        f"{reduction} does not map to a CuTe TensorSSA{suffix}"
+        f"{reduction} does not map to a CuTe TensorSSA{suffix}. "
+        "Supported direct grouped reductions are sum, mean, prod, amax, and amin; "
+        "var/std lower through the moment-reduction path, and logsumexp-style "
+        "composites are accepted after decomposition into max/sum pointwise chains. "
+        "Common unsupported reductions include all, any, argmax, and argmin because "
+        "they need boolean/index or multi-value semantics rather than one numeric "
+        "TensorSSA value."
     )
 
 
-def validate_local_reduce_consumer_kind(kind: str) -> None:
-    """Reject unknown local-reduce consumer tags."""
-    if kind not in LOCAL_REDUCE_CONSUMER_KINDS:
-        raise RuntimeError(f"{LOCAL_REDUCE_CONSUMER_KIND_ERROR}: {kind}")
-
-
-def local_reduce_feeds_main(kind: FlexGemmLocalReduceConsumerKind) -> bool:
-    """Return whether a local-reduce consumer feeds the generated main epilogue."""
-    return kind == LOCAL_REDUCE_FEED_MAIN
-
-
-def local_reduce_stores_compressed_aux(kind: FlexGemmLocalReduceConsumerKind) -> bool:
-    """Return whether a local-reduce consumer stores a compressed aux output."""
-    return kind == LOCAL_REDUCE_COMPRESSED_AUX
-
-
-def local_reduce_consumer_kind(*, feeds_main: bool) -> FlexGemmLocalReduceConsumerKind:
-    """Map runtime feed-main intent to the tagged local-reduce consumer kind."""
-    return LOCAL_REDUCE_FEED_MAIN if feeds_main else LOCAL_REDUCE_COMPRESSED_AUX
-
-
 def validate_local_reduce_group_axis(group: int, axis: int) -> None:
-    """Reject invalid local-reduce geometry common to all plan layers."""
+    """Keep local-reduce specs inside the GEMM tile's M/N grouping model."""
     if group <= 0:
         raise RuntimeError(LOCAL_REDUCE_GROUP_POSITIVE_ERROR)
     if axis not in (0, 1):
         raise RuntimeError(LOCAL_REDUCE_AXIS_ERROR)
-
-
-def require_local_reduce_group_axis(
-    group: int | None, axis: int | None
-) -> tuple[int, int]:
-    """Normalize optional runtime local-reduce geometry into validated integers."""
-    if group is None or axis is None:
-        raise RuntimeError(LOCAL_REDUCE_GROUP_AXIS_REQUIRED_ERROR)
-    validate_local_reduce_group_axis(group, axis)
-    return group, axis
-
-
-def validate_local_reduce_callbacks(combine_fn: Any, finalize_fn: Any) -> None:
-    """Require generated callbacks whenever QuACK needs physical reduction code."""
-    if combine_fn is None or finalize_fn is None:
-        raise RuntimeError(LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR)
 
 
 def validate_local_reduce_output_binding(
@@ -270,24 +218,35 @@ def validate_local_reduce_output_binding(
     compressed_missing_error: str,
     feed_main_unexpected_error: str,
 ) -> None:
-    """Reject consumer/output binding combinations shared across plan layers."""
-    if local_reduce_stores_compressed_aux(kind) and not has_output_binding:
+    """Enforce the one-consumer ABI before template/runtime state diverges.
+
+    Compressed-aux reductions materialize a separate reduced-domain output, while
+    feed-main reductions are transient epilogue inputs and must not reserve an
+    output slot. Checking this where plan objects are built keeps later generated
+    wrappers from representing impossible consumer/output combinations.
+    """
+    if kind == LOCAL_REDUCE_COMPRESSED_AUX and not has_output_binding:
         raise RuntimeError(compressed_missing_error)
-    if local_reduce_feeds_main(kind) and has_output_binding:
+    if kind == LOCAL_REDUCE_FEED_MAIN and has_output_binding:
         raise RuntimeError(feed_main_unexpected_error)
 
 
 def validate_local_reduce_selected_dim_divisible(
     shape: Sequence[Any], group: int, axis: int
 ) -> None:
-    """Reject grouped reductions that cannot evenly compress the selected dimension."""
+    """Require the selected M/N dimension to have an integral compressed shape."""
     validate_local_reduce_group_axis(group, axis)
     if shape[axis - 2] % group != 0:
         raise RuntimeError(LOCAL_REDUCE_DIVISIBLE_SHAPE_ERROR)
 
 
 def validate_local_reduce_tensorssa_group_size(axis: int, group: int) -> None:
-    """Reject grouped TensorSSA layouts that cannot map to one 32-lane fragment."""
+    """Mirror the initial one-fragment TensorSSA tiling constraint.
+
+    At this layer in the stack, grouped reductions must fit in one 32-lane
+    TensorSSA fragment, and the group size must divide that fragment width so
+    the generated TensorSSA reshape is exact.
+    """
     if group <= 1:
         raise NotImplementedError(LOCAL_REDUCE_TENSORSSA_GROUP_SIZE_ERROR)
     validate_local_reduce_group_axis(group, axis)
@@ -300,7 +259,12 @@ def validate_local_reduce_tensorssa_group_size(axis: int, group: int) -> None:
 def validate_local_reduce_runtime_dense_mm(
     kind: FlexGemmLocalReduceConsumerKind, ndim: int
 ) -> None:
-    """Keep runtime local-reduce dispatch scoped to dense 2-D GEMMs."""
+    """Keep runtime wrappers on the only layout QuACK currently contracts for.
+
+    Local-reduce group/axis semantics are defined relative to dense ``mm`` output
+    dimensions. Batched or vectorized matmul layouts would need separate shape
+    compression and epilogue argument mapping rules before the same ABI is valid.
+    """
     if ndim != 2:
         raise NotImplementedError(LOCAL_REDUCE_RUNTIME_DENSE_MM_ERROR.format(kind=kind))
 
@@ -308,7 +272,13 @@ def validate_local_reduce_runtime_dense_mm(
 def validate_local_reduce_out_shape(
     actual_shape: Sequence[Any], expected_shape: Sequence[Any]
 ) -> None:
-    """Reject compressed local-reduce outputs with the wrong runtime shape."""
+    """Ensure caller-provided aux storage matches the structural reduce plan.
+
+    Runtime cannot reinterpret an arbitrary aux tensor as the compressed local-
+    reduce domain: QuACK writes exactly the shape produced by dividing the chosen
+    GEMM output dimension by the group size, so mismatches would corrupt memory
+    or silently expose the wrong logical tensor.
+    """
     actual = tuple(actual_shape)
     expected = tuple(expected_shape)
     if actual != expected:
@@ -318,7 +288,12 @@ def validate_local_reduce_out_shape(
 
 
 def validate_local_reduce_feed_main_capability(axis: int, group: int) -> None:
-    """Raise the public error for unsupported current physical feed-main cases."""
+    """Limit feed-main reducers to the physical path QuACK can re-inject today.
+
+    Feeding a reduction back into the main epilogue needs the physical row-lane
+    combine result to be available as a scalar value for each output element.
+    That is currently implemented only for same-warp M-axis groups.
+    """
     if axis != 0:
         raise NotImplementedError(LOCAL_REDUCE_FEED_MAIN_AXIS_ERROR)
     if group > MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP:
@@ -328,7 +303,7 @@ def validate_local_reduce_feed_main_capability(axis: int, group: int) -> None:
 def local_reduce_compressed_shape(
     shape: Sequence[Any], group: int, axis: int
 ) -> tuple[Any, ...]:
-    """Return the output shape after compressing the selected GEMM dimension."""
+    """Compute the explicit aux shape that mirrors QuACK's grouped store."""
     validate_local_reduce_group_axis(group, axis)
     result = list(shape)
     result[axis - 2] //= group
@@ -431,8 +406,8 @@ def flex_gemm_local_reduce_config_error(
 def local_reduce_needs_physical_callbacks(
     kind: FlexGemmLocalReduceConsumerKind, axis: int, group: int
 ) -> bool:
-    """Return whether QuACK needs generated combine/finalize callbacks."""
-    return local_reduce_feeds_main(kind) or axis == 0 or group > 32
+    """Identify reductions whose value crosses a TensorSSA fragment boundary."""
+    return kind == LOCAL_REDUCE_FEED_MAIN or axis == 0 or group > 32
 
 
 @dataclasses.dataclass(frozen=True)
@@ -444,17 +419,18 @@ class FlexGemmLocalReduceSpec:
     axis: int
 
     def __post_init__(self) -> None:
-        """Reject invalid local-reduce consumer tags and geometry."""
-        validate_local_reduce_consumer_kind(self.kind)
+        """Reject specs that cannot map to a known local-reduce consumer."""
+        if self.kind not in (LOCAL_REDUCE_COMPRESSED_AUX, LOCAL_REDUCE_FEED_MAIN):
+            raise RuntimeError(f"{LOCAL_REDUCE_CONSUMER_KIND_ERROR}: {self.kind}")
         validate_local_reduce_group_axis(self.group, self.axis)
 
     @property
     def feeds_main(self) -> bool:
-        return local_reduce_feeds_main(self.kind)
+        return self.kind == LOCAL_REDUCE_FEED_MAIN
 
     @property
     def stores_compressed_aux(self) -> bool:
-        return local_reduce_stores_compressed_aux(self.kind)
+        return self.kind == LOCAL_REDUCE_COMPRESSED_AUX
 
     @property
     def needs_physical_callbacks(self) -> bool:
