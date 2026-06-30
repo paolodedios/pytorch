@@ -177,15 +177,15 @@ def _maybe_reenter_make_fx(fn, subgraph_decomp_table=None):
 
 
 def check_meta_consistency(
-    lhs_list: list[torch.Tensor | torch.SymInt | int | None],
-    rhs_list: list[torch.Tensor | torch.SymInt | int | None],
+    lhs_list: Sequence[torch.Tensor | torch.SymInt | int | None],
+    rhs_list: Sequence[torch.Tensor | torch.SymInt | int | None],
     lhs_name: str,
     rhs_name: str,
     include_contiguity: bool = True,
 ) -> None:
     def diff_meta_pairs(
-        lhs_list: list[torch.Tensor | torch.SymInt | int | None],
-        rhs_list: list[torch.Tensor | torch.SymInt | int | None],
+        lhs_list: Sequence[torch.Tensor | torch.SymInt | int | None],
+        rhs_list: Sequence[torch.Tensor | torch.SymInt | int | None],
     ) -> list[str]:
         def diff_meta(
             lhs: torch.Tensor | torch.SymInt | int | None,
