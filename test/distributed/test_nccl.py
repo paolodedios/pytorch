@@ -343,6 +343,30 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
 
     @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
     @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
+    @requires_nccl_version((2, 27), "NCCL Symmetric Memory support from nccl 2.27")
+    @skip_if_lt_x_gpu(2)
+    def test_nccl_symmem_barrier(self):
+        symm_mem.set_backend("NCCL")
+        torch.cuda.set_device(self.rank)
+        c10d.all_reduce(torch.ones(1, device=self.device))
+        group_name = c10d.group.WORLD.group_name
+
+        numel = 64
+        t = symm_mem.empty(numel, dtype=torch.float32, device=self.device).fill_(
+            self.rank
+        )
+        handle = symm_mem.rendezvous(t, group=group_name)
+        self.assertEqual(handle.rank, self.rank)
+        self.assertEqual(handle.world_size, self.world_size)
+
+        handle.barrier()
+        for peer in range(self.world_size):
+            buf = handle.get_buffer(peer, (numel,), torch.float32)
+            self.assertTrue(buf.eq(peer).all())
+        handle.barrier()
+
+    @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
+    @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
     @skip_if_lt_x_gpu(2)
     def test_nccl_symmem_rendezvous_subgroup(self):
         symm_mem.set_backend("NCCL")
@@ -698,7 +722,7 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
             self.assertEqual(
                 out[j],
                 torch.full_like(out[j], expected),
-                msg=f"rank {self.rank}: out[{j}] should contain the reduced sum",
+                msg=lambda msg: f"{msg}\nrank {self.rank}: out[{j}] should contain the reduced sum",
             )
         # Source buffer must be unmodified.
         for i in range(n_experts):
@@ -714,7 +738,7 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
                     dtype=torch.float,
                     device=self.device,
                 ),
-                msg=f"rank {self.rank}: source buffer block {i} should be unchanged",
+                msg=lambda msg: f"{msg}\nrank {self.rank}: source buffer block {i} should be unchanged",
             )
 
     @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
@@ -783,7 +807,7 @@ class NCCLSymmetricMemoryTest(MultiProcContinuousTest):
             self.assertEqual(
                 out[j],
                 torch.full_like(out[j], expected),
-                msg=f"rank {self.rank}: out[{j}] should contain the reduced sum",
+                msg=lambda msg: f"{msg}\nrank {self.rank}: out[{j}] should contain the reduced sum",
             )
 
     @skip_but_pass_in_sandcastle_if(TEST_WITH_ROCM, "Skip NCCL tests for ROCm")
@@ -1107,6 +1131,14 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
         )
         self.assertTrue(first_seg["is_expandable"])
         symm_mem.rendezvous(first, group=group_name)
+        # Run a collective over `first` before freeing it, so the smaller
+        # allocation also goes through the full register -> collective -> free
+        # -> recycle path (not just window registration) before its virtual
+        # address is recycled by the larger allocation below.
+        torch.ops.symm_mem.one_shot_all_reduce(
+            first.fill_(self.rank), "sum", group_name
+        )
+        torch.cuda.synchronize()
         del first
 
         large = symm_mem.empty(large_numel, dtype=dtype, device=self.device)
@@ -1147,7 +1179,7 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
             large_numel * self.world_size, dtype=dtype, device=self.device
         )
         symm_mem.rendezvous(gathered, group=group_name)
-        c10d.all_gather_into_tensor(gathered, large)
+        c10d.all_gather_single(gathered, large)
         torch.cuda.synchronize()
         expected = gathered.new_empty(large_numel * self.world_size)
         for r in range(self.world_size):
@@ -1162,6 +1194,61 @@ class NCCLSymmemExpandableSegmentsTest(MultiProcContinuousTest):
         buf = handle.get_buffer(peer_rank, (large_numel,), dtype)
         self.assertTrue(buf.eq(peer_rank).all())
         c10d.barrier()
+
+    @skip_but_pass_in_sandcastle_if(
+        TEST_WITH_ROCM, "expandable_segments is not supported on ROCm"
+    )
+    @skip_but_pass_in_sandcastle_if(IS_WINDOWS, "NCCL doesn't support Windows")
+    @requires_nccl_version(
+        (2, 30), "NCCL multi-segment symmetric memory support from nccl 2.30"
+    )
+    @skip_if_lt_x_gpu(2)
+    def test_nccl_symmem_address_reuse_shrink(self):
+        # Shrinking counterpart of test_nccl_symmem_address_reuse_grow: allocate
+        # a LARGE multi-chunk buffer, run a collective over it, free it, then
+        # allocate a SMALLER buffer that recycles the same base virtual address
+        # and run a collective over it. Both allocations are in the large pool
+        # so the base VA is recycled (the smaller one reuses the head of the
+        # freed segment). This exercises the full register -> collective -> free
+        # -> recycle -> register path in the shrinking direction; if the larger
+        # allocation's window/teardown state is not cleaned up before its VA is
+        # recycled, the smaller allocation's collective corrupts or faults.
+        group_name = self._setup_group()
+        dtype = torch.float
+        large_numel = 8 * 1024 * 1024  # 32 MiB, large pool, multi-chunk
+        small_numel = 2 * 1024 * 1024  # 8 MiB, large pool (so the VA recycles)
+
+        large = symm_mem.empty(large_numel, dtype=dtype, device=self.device)
+        large_ptr = large.data_ptr()
+        large_seg = self._segment_for_ptr(large_ptr)
+        self.assertIsNotNone(
+            large_seg,
+            "symm_mem tensor is not backed by a caching-allocator segment; "
+            "expected the expandable_segments raw_alloc path.",
+        )
+        self.assertTrue(large_seg["is_expandable"])
+        symm_mem.rendezvous(large, group=group_name)
+        torch.ops.symm_mem.one_shot_all_reduce(
+            large.fill_(self.rank), "sum", group_name
+        )
+        torch.cuda.synchronize()
+        del large
+
+        small = symm_mem.empty(small_numel, dtype=dtype, device=self.device)
+        small_ptr = small.data_ptr()
+        # The smaller allocation recycles the head of the freed large segment.
+        self.assertEqual(large_ptr, small_ptr)
+        small_seg = self._segment_for_ptr(small_ptr)
+        self.assertIsNotNone(small_seg)
+        self.assertTrue(small_seg["is_expandable"])
+        symm_mem.rendezvous(small, group=group_name)
+        result = torch.ops.symm_mem.one_shot_all_reduce(
+            small.fill_(self.rank), "sum", group_name
+        )
+        self.assertEqual(
+            result,
+            torch.full_like(result, (self.world_size - 1) * self.world_size / 2),
+        )
 
 
 instantiate_device_type_tests(TestNCCL, globals(), only_for="cuda")

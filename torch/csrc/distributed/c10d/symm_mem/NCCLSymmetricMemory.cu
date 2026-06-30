@@ -41,7 +41,14 @@ struct NCCLAllocation {
   //   [round_up(buffer_size, 16), round_up(buffer_size, 16) + signal_pad_size)
   //                                                             - signal pad
   // Total allocation size is round_up(buffer_size, 16) + signal_pad_size.
+  // User-visible, granularity-aligned buffer base. For the expandable path
+  // this is `alloc_base` rounded up to the allocation granularity; for the
+  // ncclMemAlloc path it equals `alloc_base`.
   void* ptr;
+  // Raw allocation base. For the expandable path this is the pointer returned
+  // by raw_alloc (which must be the argument to raw_delete); otherwise it is
+  // the ncclMemAlloc pointer.
+  void* alloc_base;
   // Size of the user-visible data buffer in bytes, as requested by the
   // caller of `alloc()`.
   size_t buffer_size;
@@ -55,11 +62,13 @@ struct NCCLAllocation {
 
   NCCLAllocation(
       void* ptr,
+      void* alloc_base,
       size_t buffer_size,
       size_t signal_pad_size,
       int device_idx,
       bool use_expandable_segments)
       : ptr(ptr),
+        alloc_base(alloc_base),
         buffer_size(buffer_size),
         signal_pad_size(signal_pad_size),
         device_idx(device_idx),
@@ -75,7 +84,8 @@ struct NCCLAllocation {
     // via expandable segments, free via raw_delete; otherwise free via
     // ncclMemFree.
     if (use_expandable_segments_) {
-      c10::cuda::CUDACachingAllocator::raw_delete(ptr);
+      // Free the raw allocation, not the aligned buffer base.
+      c10::cuda::CUDACachingAllocator::raw_delete(alloc_base);
     } else {
       ncclResult_t res = ncclMemFree(ptr);
       if (res != ncclSuccess) {
@@ -87,6 +97,22 @@ struct NCCLAllocation {
 };
 
 namespace {
+
+#if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
+// Recommended cuMem allocation granularity for the device. NCCL's window
+// registration requires the registered base pointer to be aligned to this
+// (the same value ncclMemAlloc aligns to). Granularity is a power of two.
+size_t get_alloc_granularity(int device_idx) {
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = device_idx;
+  size_t granularity = 0;
+  C10_CUDA_DRIVER_CHECK(c10::cuda::DriverAPI::get()->cuMemGetAllocationGranularity_(
+      &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_RECOMMENDED));
+  return granularity;
+}
+#endif
 
 // Base allocation ptr -> owning NCCL allocation metadata.
 using NCCLAllocMap = ska::flat_hash_map<void*, std::unique_ptr<NCCLAllocation>>;
@@ -389,7 +415,28 @@ void* NCCLSymmetricMemory::get_multicast_ptr() {
 }
 
 void NCCLSymmetricMemory::barrier(int channel, size_t timeout_ms) {
+#ifdef NCCL_HAS_SYMMEM_DEVICE_SUPPORT
+  TORCH_CHECK(
+      pai_->signal_pads_dev_ != nullptr,
+      "NCCLSymmetricMemory::barrier requires peer signal pad pointers, which "
+      "are only populated when peers are accessible over the symmetric-memory "
+      "(LSA/NVLink) domain.");
+  check_channel(channel, world_size_, get_signal_pad_size());
+  c10::cuda::CUDAGuard device_guard(device_idx_);
+  barrier_kernel<<<
+      1,
+      std::max(at::cuda::warp_size(), world_size_),
+      0,
+      at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<uint32_t**>(pai_->signal_pads_dev_),
+      channel,
+      rank_,
+      world_size_,
+      timeout_ms);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+#else
   TORCH_CHECK(false, "NYI");
+#endif
 }
 
 void NCCLSymmetricMemory::put_signal(int dst_rank, int channel, size_t timeout_ms) {
@@ -492,6 +539,7 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
         c10::cuda::CUDACachingAllocator::CUDAAllocatorConfig::
             expandable_segments();
     void* ptr = nullptr;
+    void* alloc_base = nullptr;
     if (use_expandable_segments) {
       // With expandable_segments we allocate via the caching allocator's
       // expandable-segment path. This is incompatible with symmetric memory's
@@ -510,19 +558,46 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
       in_expandable_alloc = true;
       auto reset_in_expandable_alloc =
           c10::make_scope_exit([&]() { in_expandable_alloc = false; });
-      // cuMemMap-backed expandable segments are granularity-aligned by the CUDA
-      // driver, satisfying NCCL's window-registration alignment requirement
-      // (same guarantee ncclMemAlloc provides for the non-expandable path).
-      ptr = c10::cuda::CUDACachingAllocator::raw_alloc(total_size);
+      // raw_alloc returns a block from the shared default pool; only segment
+      // bases are granularity-aligned, not individual sub-allocations, so a
+      // block placed after a live allocation is not aligned. NCCL window
+      // registration requires the base pointer to be granularity-aligned, so
+      // over-allocate by one granularity and align the buffer base (matching
+      // the guarantee ncclMemAlloc gives on the non-expandable path). The raw
+      // pointer is retained as alloc_base for raw_delete.
+#if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
+      const size_t gran = get_alloc_granularity(device_idx);
+      alloc_base = c10::cuda::CUDACachingAllocator::raw_alloc(total_size + gran);
+      ptr = reinterpret_cast<void*>(
+          (reinterpret_cast<uintptr_t>(alloc_base) + gran - 1) & ~(gran - 1));
+#else
+      alloc_base = c10::cuda::CUDACachingAllocator::raw_alloc(total_size);
+      ptr = alloc_base;
+#endif
     } else {
       C10D_NCCL_CHECK(ncclMemAlloc(&ptr, total_size), "ncclMemAlloc");
+      alloc_base = ptr;
     }
+    // Zero the signal-pad region. The device-side collective handshake
+    // (sync_remote_blocks) claims each slot with cas(addr, 0, 1), so it
+    // requires the signal pad to start at zero. Under expandable_segments the
+    // caching allocator can recycle a virtual address whose signal-pad location
+    // overlaps a previously freed (larger) buffer's data, which is non-zero;
+    // without this memset the handshake spins forever. ncclMemAlloc memory is
+    // fresh, but zeroing unconditionally keeps both paths correct and is cheap.
+    C10_CUDA_CHECK(cudaMemset(
+        static_cast<char*>(ptr) + at::round_up(size, 16UL), 0, signal_pad_size));
     {
       std::lock_guard<std::mutex> lock(mutex_);
       allocations_.emplace(
           ptr,
           std::make_unique<NCCLAllocation>(
-              ptr, size, signal_pad_size, device_idx, use_expandable_segments));
+              ptr,
+              alloc_base,
+              size,
+              signal_pad_size,
+              device_idx,
+              use_expandable_segments));
     }
     return ptr;
   }
