@@ -230,6 +230,10 @@ C10_CUDA_API int getStreamsPerPool(int priority = 0);
  */
 C10_CUDA_API CUDAStream
 reserveStreamFromPool(const int priority = 0, DeviceIndex device = -1);
+// Convenience overload mirroring getStreamFromPool(bool); no default arg to
+// disambiguate from the priority overload.
+C10_CUDA_API CUDAStream
+reserveStreamFromPool(const bool isHighPriority, DeviceIndex device = -1);
 
 /**
  * Release a reservation taken by reserveStreamFromPool, returning the slot to

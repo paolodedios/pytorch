@@ -530,6 +530,14 @@ CUDAStream reserveStreamFromPool(const int priority, DeviceIndex device_index) {
   }
 }
 
+CUDAStream reserveStreamFromPool(
+    const bool isHighPriority,
+    DeviceIndex device) {
+  initCUDAStreamsOnce();
+  int priority = isHighPriority ? -max_stream_priorities + 1 : 0;
+  return reserveStreamFromPool(priority, device);
+}
+
 // Drop a reservation taken by reserveStreamFromPool, returning the slot to the
 // round-robin pool. Idempotent for non-pool streams (default/external) and safe
 // to over-call: it only clears a bit, never destroys the underlying stream.
