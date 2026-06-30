@@ -9727,18 +9727,26 @@ class Scheduler:
         # emitted per consuming stream (not once at the first reader by line
         # order, which would place the only copy inside one branch's stream and
         # race the others).  Reclassify those inputs here.
+        multistream_last_reader: dict[str, BaseSchedulerNode] = {}
         if self._has_multi_stream_nodes():
             pending = V.graph.wrapper_code._pending_alignment_copies
             if pending:
                 input_streams: dict[str, OrderedSet[int]] = {}
+                last_reader: dict[str, BaseSchedulerNode] = {}
                 for n in nodes:
                     s = self.node_to_stream.get(n, 0)
                     for dep in n.read_writes.reads:
                         if dep.name in pending:
                             input_streams.setdefault(dep.name, OrderedSet()).add(s)
+                            last_reader[dep.name] = n
                 multi = [name for name, ss in input_streams.items() if len(ss) > 1]
                 if multi:
                     V.graph.wrapper_code.mark_multistream_alignment(multi)
+                    # Record each multistream input's last reader so its
+                    # preserved original ({name}_orig) can be freed right after.
+                    multistream_last_reader = {
+                        name: last_reader[name] for name in multi
+                    }
 
         for node in nodes:
             if log.isEnabledFor(logging.DEBUG):
@@ -9811,6 +9819,16 @@ class Scheduler:
                 (dep.name for dep in node.read_writes.reads),
                 self.node_to_stream.get(node, 0),
             )
+            # free a multistream input's preserved original as soon as its last
+            # reader has been emitted
+            if multistream_last_reader:
+                done = [
+                    dep.name
+                    for dep in node.read_writes.reads
+                    if multistream_last_reader.get(dep.name) is node
+                ]
+                if done:
+                    V.graph.wrapper_code.codegen_alignment_orig_dealloc(done)
 
             self.current_node = node
             self.buffer_names_to_free.update(node.last_usage)

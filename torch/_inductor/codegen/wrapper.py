@@ -1925,6 +1925,19 @@ class PythonWrapperCodegen(CodeGen):
                 self._pending_alignment_copies.discard(name)
                 self._multistream_alignment_copies.add(name)
 
+    def codegen_alignment_orig_dealloc(self, input_names: Iterable[str]) -> None:
+        """Free the preserved original (``{name}_orig``) of a multistream
+        alignment input once its last reader has been emitted, so it does not
+        pin the input tensor for the rest of the call.  Mirrors the single-stream
+        path, which drops the original the moment its one copy is made
+        (``name = copy_if_misaligned(name)``)."""
+        if V.graph.cpp_wrapper:
+            return
+        for name in input_names:
+            if name in self._alignment_orig_saved:
+                self._alignment_orig_saved.discard(name)
+                self.writeline(f"del {name}_orig")
+
     # this function (and below) takes the graph name as input so
     # that stream caching happens per graph instance. this
     # is important for nested subgraph codegening.
