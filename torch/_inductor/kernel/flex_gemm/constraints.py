@@ -1,4 +1,5 @@
 # mypy: allow-untyped-defs
+import dataclasses
 from collections.abc import Sequence
 from typing import Any, Final, Literal, TypeAlias
 
@@ -24,14 +25,10 @@ LOCAL_REDUCE_FINALIZE_KEY_KWARG: Final = "local_reduce_finalize_key"
 FlexGemmLocalReduceConsumerKind: TypeAlias = Literal["compressed_aux", "feed_main"]
 
 
-def normalize_reduce_dims(dim: Any) -> tuple[Any, ...]:
-    """Normalize scalar and tuple/list reduction dims for grouped-domain checks."""
-    return tuple(dim) if isinstance(dim, (list, tuple)) else (dim,)
-
-
 def grouped_reduce_dims_match(dim: Any, reduce_dims: Sequence[Any]) -> bool:
     """Treat equivalent grouped-dimension spellings as one reduction domain."""
-    return all(item in reduce_dims for item in normalize_reduce_dims(dim))
+    dims = tuple(dim) if isinstance(dim, (list, tuple)) else (dim,)
+    return all(item in reduce_dims for item in dims)
 
 
 # Feed-main currently reduces only within one lane-layout M group; cross-warp M
@@ -94,9 +91,6 @@ LOCAL_REDUCE_AUX_OUTPUT_CONTRACT_ERROR = (
     "to match the GEMM output shape; compressed or block reductions across GEMM "
     "M/N dimensions require an explicit local-reduce output contract"
 )
-LOCAL_REDUCE_GROUPED_TENSORSSA_LOWERING_ERROR = (
-    "unsupported FlexGEMM epilogue local reduction without a grouped TensorSSA lowering"
-)
 LOCAL_REDUCE_ONE_PHYSICAL_VALUE_ERROR = (
     "FlexGEMM local-reduce broadcast values support one generated physical reduction"
 )
@@ -125,29 +119,6 @@ LOCAL_REDUCE_EXPLICIT_DTYPE_ERROR = (
 LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR = (
     "unsupported FlexGEMM epilogue local reduction: currently support only "
     "the innermost grouped dimension"
-)
-LOCAL_REDUCE_MOMENT_PHYSICAL_COMBINE_ERROR = (
-    "unsupported FlexGEMM physical local reduction: moment reductions "
-    "need matching QuACK combine/finalize callbacks"
-)
-LOCAL_REDUCE_MOMENT_INNERMOST_GROUPED_DIM_ERROR = (
-    "unsupported FlexGEMM epilogue local reduction: moment reductions "
-    "currently support only the innermost grouped dimension"
-)
-LOCAL_REDUCE_MOMENT_DYNAMIC_CORRECTION_ERROR = (
-    "unsupported FlexGEMM epilogue local reduction: dynamic variance correction"
-)
-LOCAL_REDUCE_MOMENT_CORRECTION_RANGE_ERROR = (
-    "unsupported FlexGEMM epilogue local reduction: variance correction "
-    "must be smaller than the group size"
-)
-LOCAL_REDUCE_PREPARE_SOFTMAX_PHYSICAL_COMBINE_ERROR = (
-    "unsupported FlexGEMM physical local reduction: prepare_softmax_online "
-    "needs a multi-value generated physical reducer"
-)
-LOCAL_REDUCE_PREPARE_SOFTMAX_GROUPED_DIM_ERROR = (
-    "unsupported FlexGEMM epilogue local reduction: prepare_softmax_online "
-    "currently supports only the grouped dimension"
 )
 LOCAL_REDUCE_MIXED_CONTRACT_ERROR = (
     "FlexGEMM local reductions do not support mixing different local-reduce contracts"
@@ -234,13 +205,6 @@ def is_flex_gemm_partial_reduction_shape(
     )
 
 
-def local_reduce_grouped_tensorssa_lowering_error(target: Any) -> NotImplementedError:
-    """Build the shared fallback error for reductions that reached scalar lowering."""
-    return NotImplementedError(
-        f"{LOCAL_REDUCE_GROUPED_TENSORSSA_LOWERING_ERROR}: {target}"
-    )
-
-
 def local_reduce_unsupported_tensorssa_error(
     reduction: Any, *, value_only: bool = False
 ) -> NotImplementedError:
@@ -249,26 +213,6 @@ def local_reduce_unsupported_tensorssa_error(
     return NotImplementedError(
         "unsupported FlexGEMM epilogue local reduction: "
         f"{reduction} does not map to a CuTe TensorSSA{suffix}"
-    )
-
-
-def local_reduce_unsupported_tensorssa_reduction_error(
-    reduction_type: Any,
-) -> NotImplementedError:
-    """Build the shared fallback for reductions without a TensorSSA lowering."""
-    return NotImplementedError(
-        "unsupported FlexGEMM epilogue local reduction: "
-        f"reduction_type={reduction_type!r}"
-    )
-
-
-def local_reduce_unsupported_physical_reduction_error(
-    reduction_type: Any,
-) -> NotImplementedError:
-    """Build the shared fallback for reductions without physical combine support."""
-    return NotImplementedError(
-        "unsupported FlexGEMM local reduction: "
-        f"reduction_type={reduction_type!r} needs a generated physical reducer"
     )
 
 
@@ -371,17 +315,12 @@ def validate_local_reduce_out_shape(
         )
 
 
-def validate_local_reduce_feed_main_same_warp_group(group: int) -> None:
-    """Gate current feed-main value availability to same-warp grouped-M cases."""
-    if group > MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP:
-        raise NotImplementedError(LOCAL_REDUCE_FEED_MAIN_SAME_WARP_ERROR)
-
-
 def validate_local_reduce_feed_main_capability(axis: int, group: int) -> None:
     """Raise the public error for unsupported current physical feed-main cases."""
     if axis != 0:
         raise NotImplementedError(LOCAL_REDUCE_FEED_MAIN_AXIS_ERROR)
-    validate_local_reduce_feed_main_same_warp_group(group)
+    if group > MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP:
+        raise NotImplementedError(LOCAL_REDUCE_FEED_MAIN_SAME_WARP_ERROR)
 
 
 def local_reduce_compressed_shape(
@@ -492,3 +431,29 @@ def local_reduce_needs_physical_callbacks(
 ) -> bool:
     """Return whether QuACK needs generated combine/finalize callbacks."""
     return local_reduce_feeds_main(kind) or axis == 0 or group > 32
+
+
+@dataclasses.dataclass(frozen=True)
+class FlexGemmLocalReduceSpec:
+    """Describe the semantic local-reduce consumer shared across plan layers."""
+
+    kind: FlexGemmLocalReduceConsumerKind
+    group: int
+    axis: int
+
+    def __post_init__(self) -> None:
+        """Reject invalid local-reduce consumer tags and geometry."""
+        validate_local_reduce_consumer_kind(self.kind)
+        validate_local_reduce_group_axis(self.group, self.axis)
+
+    @property
+    def feeds_main(self) -> bool:
+        return local_reduce_feeds_main(self.kind)
+
+    @property
+    def stores_compressed_aux(self) -> bool:
+        return local_reduce_stores_compressed_aux(self.kind)
+
+    @property
+    def needs_physical_callbacks(self) -> bool:
+        return local_reduce_needs_physical_callbacks(self.kind, self.axis, self.group)
