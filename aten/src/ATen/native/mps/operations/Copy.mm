@@ -62,11 +62,12 @@ static void copy_cast_kernel_mps(at::Tensor& dst, const at::Tensor& src) {
 }
 
 // Byte-erased compute copy, not a blit: faster at small sizes and avoids the encoder switch.
-// One dispatch per <=2GB chunk keeps chunk_bytes in uint.
+// One dispatch per <=2GB chunk keeps chunk_bytes in uint. Callers must pass contiguous src and
+// dst with equal nbytes (both are treated as flat byte runs).
 static void contiguous_copy_kernel_mps(at::Tensor& dst, const at::Tensor& src, bool non_blocking) {
   uint64_t profile_id = getMPSProfiler().beginProfileCopy(
       getMTLBufferStorage(src), getMTLBufferStorage(dst), src, dst, src.nbytes(), non_blocking, /*usesBlitter=*/false);
-  auto kernel = lib.getKernelFunction("contiguous_byte_copy");
+  auto* kernel = lib.getCachedKernelFunctionPtr("contiguous_byte_copy");
   constexpr size_t max_chunk = 0x80000000; // 2GB
   const size_t total = src.nbytes();
   kernel->runCommandBlock([&] {
