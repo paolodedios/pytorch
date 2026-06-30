@@ -10060,10 +10060,11 @@ class TestInnerContiguous(TestCaseMPS):
 
     @parametrize("dtype", [torch.int8, torch.int16, torch.float32])
     @parametrize("offset", [0, 1, 2, 4, 8])
-    @parametrize("inner", [17, 31, 48])
+    @parametrize("inner", [17, 20, 24, 28, 31, 48])
     def test_byte_copy(self, device, dtype, offset, inner):
         # offset varies the per-row base alignment to exercise the ladder, and
-        # odd inner extents make inner_bytes % 16 != 0 for narrow dtypes.
+        # the inner extents span final-chunk byte remainders (inner_bytes % 16)
+        # across 0, [4,8) and [8,16) so the partial-tail vector paths are hit.
         torch.manual_seed(0)
         R, full_w = 24, offset + inner + 8
         src = _conformance_make_tensor((R, inner), dtype)
