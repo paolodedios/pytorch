@@ -908,9 +908,9 @@ def sample_inputs_linalg_matrix_sqrth(
 def sample_inputs_linalg_matrix_sqrt(
     op_info, device, dtype, requires_grad=False, **kwargs
 ):
-    """Real-spectrum inputs for torch.linalg.matrix_sqrt. Hermitian positive-definite
-    matrices keep gradcheck (via gradcheck_wrapper_hermitian_input) inside the
-    principal-square-root domain; the non-Hermitian path is covered by test_linalg.py."""
+    """Hermitian positive-definite inputs for torch.linalg.matrix_sqrt. HPD matrices
+    have positive eigenvalues, so gradcheck perturbations stay in-domain without
+    any symmetrization wrapper."""
     from torch.testing._internal.common_utils import random_hermitian_pd_matrix
 
     for batch, n in product([(), (0,), (2,), (1, 1)], [5, 0]):
@@ -1259,7 +1259,6 @@ op_db: list[OpInfo] = [
         aten_name="linalg_matrix_sqrt",
         dtypes=floating_and_complex_types(),
         sample_inputs_func=sample_inputs_linalg_matrix_sqrt,
-        gradcheck_wrapper=gradcheck_wrapper_hermitian_input,
         # Backward builds a (2n) x (2n) block matrix (like linalg.matrix_exp); batched-grad
         # vmap cannot handle it.
         check_batched_grad=False,
