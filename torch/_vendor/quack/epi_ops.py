@@ -1204,13 +1204,13 @@ class GroupedColVecReduce(VecReduce):
                 tile_M,
             )
             limit_n = min(cute.size(param_tensor, mode=[2]) - tile_coord_mnkl[1] * tile_N, tile_N)
-            if const_expr(axis == 1 and group > 32):
+            if const_expr(axis == 1):
+                local_fragment_n = const_expr(cute.size(tDrReduce_cur.shape, mode=[0]))
+            if const_expr(axis == 1 and group > local_fragment_n):
                 assert combine_fn is not None
                 assert finalize_fn is not None
-                fragment_n = const_expr(cute.size(epi_tile[1]))
-                assert fragment_n == 32
-                assert group % fragment_n == 0
-                fragments_per_group = const_expr(group // fragment_n)
+                assert group % local_fragment_n == 0
+                fragments_per_group = const_expr(group // local_fragment_n)
                 if const_expr((epi_coord[1] + 1) % fragments_per_group == 0):
                     group_start_epi_n = const_expr(epi_coord[1] + 1 - fragments_per_group)
                     limit_groups = (
@@ -1254,7 +1254,7 @@ class GroupedColVecReduce(VecReduce):
                         if const_expr(param_tensor.element_type != Float32):
                             group_value = group_value.to(param_tensor.element_type)
                         if (
-                            n_idx % group == group - fragment_n
+                            n_idx % group == group - local_fragment_n
                             and row_idx < limit_m
                             and global_group_idx < limit_groups
                         ):
@@ -1377,7 +1377,7 @@ class GroupedColVecReduce(VecReduce):
                     else tile_coord_mnkl[0] * groups_per_cta + group_idx
                 )
                 group_value = tDrReduce_flt[i]
-                if const_expr(axis == 0):
+                if const_expr(axis == 0 or finalize_fn is not None):
                     group_value = finalize_fn(group_value)
                 if const_expr(param_tensor.element_type != Float32):
                     group_value = group_value.to(param_tensor.element_type)
