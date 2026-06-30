@@ -637,6 +637,8 @@ def _is_torch_namespace_tensor_related_callable(
 ) -> bool:
     if not callable(value) or not attr_chain:
         return False
+    if _is_torch_storage_class(value):
+        return False
     if attr_chain[0] in {"_dynamo", "compiler"}:
         return False
     module_name = getattr(value, "__module__", "")
@@ -646,9 +648,20 @@ def _is_torch_namespace_tensor_related_callable(
 def _is_torch_tensor_related_callable(value: object) -> bool:
     if not callable(value) or getattr(value, "__module__", None) != "torch":
         return False
+    if _is_torch_storage_class(value):
+        return False
     if not inspect.isclass(value):
         return True
     return issubclass(value, torch.Tensor) or value.__name__.endswith("Tensor")
+
+
+def _is_torch_storage_class(value: object) -> bool:
+    if not inspect.isclass(value):
+        return False
+    try:
+        return issubclass(value, (torch.storage.TypedStorage, torch.UntypedStorage))
+    except TypeError:
+        return False
 
 
 def _contains_tensor_related_value(value: object, seen: set[int] | None = None) -> bool:

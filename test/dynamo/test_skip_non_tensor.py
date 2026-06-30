@@ -638,6 +638,26 @@ class SkipNonTensorTests(torch._dynamo.test_case.TestCase):
                 self.assertIn("TypedStorage is deprecated", str(w[0].message))
                 self.assertEqual(sum(counters["unimplemented"].values()), 1)
 
+    def test_condition_dependent_skip_ignores_storage_class_attr(self):
+        def fn(n):
+            if n == 0:
+                try:
+                    torch._dynamo.graph_break()
+                finally:
+                    pass
+            return torch.FloatStorage.dtype
+
+        opt_fn = torch.compile(fn, backend="eager", dynamic=False)
+
+        with AlwaysWarnTypedStorageRemoval(True):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.resetwarnings()
+                counters.clear()
+                opt_fn(0)
+                self.assertEqual(len(w), 1, msg=str([str(a) for a in w]))
+                self.assertIn("TypedStorage is deprecated", str(w[0].message))
+                self.assertEqual(sum(counters["unimplemented"].values()), 1)
+
     def test_condition_dependent_skip_with_sequence_length_guard(self):
         def fn(xs):
             if len(xs) == 0:

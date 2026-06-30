@@ -24,6 +24,13 @@ def get_field(csv: pd.DataFrame, model_name: str, field: str) -> Any | None:
         return None
 
 
+def is_non_rocm_expected_file(expected_filename: str, filename: str) -> bool:
+    expected_filename = os.path.normpath(expected_filename)
+    return os.path.basename(
+        expected_filename
+    ) == filename and "rocm" not in expected_filename.split(os.sep)
+
+
 def check_graph_breaks(
     actual_csv: pd.DataFrame, expected_csv: pd.DataFrame, expected_filename: str
 ) -> tuple[list[str], str]:
@@ -66,11 +73,15 @@ def check_graph_breaks(
         )
 
     scoped_flaky_models = set(flaky_models)
-    if expected_filename.endswith("inductor_timm_training.csv"):
+    if is_non_rocm_expected_file(expected_filename, "inductor_timm_training.csv"):
         # Accuracy can fail before Dynamo runs, which makes graph-break counts
         # noisy for this CUDA AMP TIMM training case.
         # https://github.com/pytorch/pytorch/pull/186003#issuecomment-4607459927
         scoped_flaky_models.add("mobilenetv2_100")
+    if is_non_rocm_expected_file(expected_filename, "inductor_torchbench_training.csv"):
+        # Accuracy can fail before Dynamo runs, which makes graph-break counts
+        # noisy for these CUDA AMP TorchBench training cases.
+        scoped_flaky_models.update({"mnasnet1_0", "mobilenet_v2", "shufflenet_v2_x1_0"})
 
     for model in actual_csv["name"]:
         num_graphs = get_field(actual_csv, model, "unique_graphs")
