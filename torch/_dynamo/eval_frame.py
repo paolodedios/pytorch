@@ -44,7 +44,7 @@ from collections.abc import Generator, Sized
 from dataclasses import dataclass
 from enum import Enum
 from os.path import dirname, join
-from typing import Any, cast, Literal, NamedTuple, TYPE_CHECKING
+from typing import Any, NamedTuple, TYPE_CHECKING
 from unittest.mock import patch
 
 import sympy
@@ -70,13 +70,7 @@ from torch._C._dynamo.eval_frame import (  # noqa: F401
     unsupported,
 )
 from torch._dispatch.python import enable_python_dispatcher
-from torch._dynamo.types import (
-    CompilerConfig,
-    CompilerConfigProvider,
-    ConvertFrameReturn,
-    FrameAction,
-    FrameExecStrategy,
-)
+from torch._dynamo.types import ConvertFrameReturn, FrameAction, FrameExecStrategy
 from torch._export.utils import _compiling_state_context
 from torch._library.opaque_object import is_opaque_type
 from torch._subclasses.fake_tensor import unset_fake_temporarily
@@ -185,22 +179,9 @@ else:
             return set_eval_frame(callback)
 
 
-# The set of valid stance strings accepted by torch.compiler.set_stance. Kept as
-# a shared alias so producers (set_stance) and the exhaustive consumer
-# (_callback_from_stance) stay in sync at type-check time.
-StanceStr = Literal[
-    "default",
-    "eager_then_compile",
-    "aot_eager_then_compile",
-    "force_eager",
-    "eager_on_recompile",
-    "fail_on_recompile",
-]
-
-
 @dataclass
 class DynamoStance:
-    stance: StanceStr = "default"
+    stance: str = "default"
     skip_guard_eval_unsafe: bool = False
     backend: str | Callable[..., Any] | None = None
 
@@ -358,7 +339,7 @@ def _get_or_add_example_inputs(frame: DynamoFrameType) -> list[Any]:
 
 
 def _create_delayed_compile_callback(
-    callback: DynamoCallback, stance: StanceStr
+    callback: DynamoCallback, stance: str
 ) -> Callable[..., Any]:
     def callback_fn(*args: Any, **kwargs: Any) -> convert_frame.ConvertFrameReturn:
         frame = args[0]
@@ -457,7 +438,7 @@ class OptimizedModule(torch.nn.Module):
     """
 
     _torchdynamo_orig_callable: Callable[..., Any]
-    get_compiler_config: Callable[[], CompilerConfig | None]
+    get_compiler_config: Callable[[], Any]
 
     _opt_mod_attributes = {
         "_orig_mod",
@@ -834,7 +815,7 @@ class _TorchDynamoContext:
         error_on_graph_break: bool | None = None,
         export: bool = False,
         dynamic: bool | None = None,
-        compiler_config: CompilerConfig | None = None,
+        compiler_config: Any | None = None,
         package: CompilePackage | None = None,
         hooks: Hooks | None = None,
         isolate_recompiles: bool = False,
@@ -935,7 +916,7 @@ class _TorchDynamoContext:
 
     def __call__(self, fn: Any) -> Any:
         # public api for compiler config/options
-        def get_compiler_config() -> CompilerConfig | None:
+        def get_compiler_config() -> Any:
             return self.compiler_config
 
         from .package import DynamoCache
@@ -1323,7 +1304,7 @@ class OptimizeContext(_TorchDynamoContext):
         error_on_graph_break: bool | None = None,
         export: bool = False,
         dynamic: bool | None = None,
-        compiler_config: CompilerConfig | None = None,
+        compiler_config: Any | None = None,
         rebuild_ctx: Callable[[], OptimizeContext | _NullDecorator] | None = None,
         package: CompilePackage | None = None,
         hooks: Hooks | None = None,
@@ -1505,7 +1486,7 @@ def _optimize_catch_errors(
     error_on_graph_break: bool | None = None,
     export: bool = False,
     dynamic: bool | None = None,
-    compiler_config: CompilerConfig | None = None,
+    compiler_config: Any | None = None,
     rebuild_ctx: Callable[[], OptimizeContext | _NullDecorator] | None = None,
     package: CompilePackage | None = None,
     isolate_recompiles: bool = False,
@@ -1818,7 +1799,7 @@ def _optimize(
         and not config.debug_force_graph_break_on_leaf_return,
         dynamic=dynamic,
         compiler_config=(
-            cast(CompilerConfigProvider, backend).get_compiler_config()
+            backend.get_compiler_config()
             if hasattr(backend, "get_compiler_config")
             else None
         ),

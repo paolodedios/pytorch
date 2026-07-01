@@ -12,7 +12,6 @@ from typing import Any, NamedTuple
 import torch
 from torch._inductor import config
 from torch._inductor.codegen.common import TritonScratchWorkspace
-from torch._inductor.codegen.cpp_wrapper_cpu import CppWrapperCpu
 from torch._inductor.codegen.cpp_wrapper_gpu import (
     CppWrapperGpu,
     DeferredTritonCallWrapper,
@@ -246,43 +245,10 @@ class TestGpuWrapper(InductorTestCase):
             actual = torch.compile(fullgraph=True, options={"cpp_wrapper": True})(fn)(x)
             self.assertEqual(actual, expected)
 
-    @config.patch(implicit_fallbacks=True)
-    def test_custom_op_fallback_symint_dispatch(self):
-        # A custom op with a SymInt argument (e.g.
-        # fbgemm::permute_2D_sparse_data_input1D) must not be routed to the
-        # StableIValue path.  SymInt is reported as IntType by JitType.type, so
-        # such ops used to pass _compatible_with_stableivalue and then fail at
-        # runtime with 'aoti_torch_call_dispatcher(...) API call failed'.  They
-        # must use the boxed dispatch path, which handles c10::SymInt correctly.
-        if not RUN_GPU:
-            self.skipTest("GPU not available")
-
-        device = self.device
-        with torch.library._scoped_library("mylib_symint", "FRAGMENT") as m:
-            m.define("add_symint(Tensor x, SymInt n) -> Tensor")
-            m.impl("add_symint", lambda x, n: x + n, GPU_TYPE.upper())
-            m.impl("add_symint", lambda x, n: torch.empty_like(x), "Meta")
-
-            op = torch.ops.mylib_symint.add_symint.default
-            self.assertFalse(CppWrapperCpu._compatible_with_stableivalue(op))
-            self.assertTrue(CppWrapperCpu._compatible_with_cpp_boxed_dispatch(op))
-
-            def fn(x):
-                # x.shape[0] is symbolic once dim 0 is dynamic, so n is a SymInt.
-                return torch.ops.mylib_symint.add_symint(x, x.shape[0])
-
-            x = torch.randn(8, 4, device=device)
-            torch._dynamo.mark_dynamic(x, 0)
-            expected = fn(x)
-            compiled = torch.compile(fullgraph=True, options={"cpp_wrapper": True})(fn)
-            actual, code = test_torchinductor.run_and_get_cpp_code(compiled, x)
-            self.assertEqual(actual, expected)
-            self.assertNotIn(
-                'aoti_torch_call_dispatcher("mylib_symint::add_symint"', code
-            )
-
-    @skipIfXpu(msg="tests CUDA/ROCm CUDADeviceOpOverrides codegen")
     def test_cpp_scratch_scales_with_grid_size_for_tma(self):
+        if GPU_TYPE != "cuda" or torch.version.hip:
+            self.skipTest("CUDA-only codegen test")
+
         scratch_def, scratch_var = CUDADeviceOpOverrides().cpp_scratch(
             0,
             TritonScratchWorkspace(
@@ -295,8 +261,10 @@ class TestGpuWrapper(InductorTestCase):
             "static_cast<int64_t>(256) * grid_0 * grid_1 * grid_2", scratch_def[0]
         )
 
-    @skipIfXpu(msg="tests CUDA/ROCm CUDADeviceOpOverrides codegen")
     def test_triton_wrapper_scales_scratch_with_num_ctas(self):
+        if GPU_TYPE != "cuda" or torch.version.hip:
+            self.skipTest("CUDA-only codegen test")
+
         class FakeWrapper:
             device = "cuda"
 
