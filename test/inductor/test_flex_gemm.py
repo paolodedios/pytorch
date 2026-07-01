@@ -10,7 +10,11 @@ from unittest import mock
 
 import torch
 from torch._higher_order_ops import flex_gemm
-from torch._higher_order_ops.flex_gemm import _SUPPORTED_FLEX_GEMM_OP_NAMES
+from torch._higher_order_ops.flex_gemm import (
+    _SUPPORTED_FLEX_GEMM_OP_NAMES,
+    mx_e8m0_scale,
+    nvfp4_e4m3_scale,
+)
 from torch._inductor.utils import run_and_get_code
 from torch.testing import FileCheck
 from torch.testing._internal.common_cuda import SM100OrLater, TEST_CUDA
@@ -2231,6 +2235,48 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         b = torch.randn(64, n, device="cuda", dtype=torch.bfloat16)
         with self.assertRaisesRegex(Exception, "single physical local reduction"):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
+
+    @skipIfNoCuteDSL
+    @unittest.skipIf(not TEST_CUDA, "CUDA required")
+    @unittest.skipIf(not SM100OrLater, "SM100+ required")
+    @parametrize(
+        "case",
+        (
+            ("mx", mx_e8m0_scale, "bitcast"),
+            ("nvfp4", nvfp4_e4m3_scale, " / 6.0"),
+        ),
+        name_fn=lambda case: case[0],
+    )
+    def test_mm_tuple_aux_large_n_local_reduce_supports_scale_finalizer(self, case):
+        _, scale_fn, code_check = case
+        m = 64
+        n = 128
+        k = 64
+        group = 64
+
+        def epilogue_fn(acc):
+            x = acc.float().view(m, -1, group)
+            return acc.relu(), scale_fn(x.abs().amax(-1))
+
+        def fn(a, b):
+            return flex_gemm(
+                torch.mm,
+                (a, b),
+                epilogue_fn,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.ones(m, k, device="cuda", dtype=torch.bfloat16)
+        b = torch.ones(k, n, device="cuda", dtype=torch.bfloat16)
+        (actual, aux), (code,) = run_and_get_code(
+            torch.compile(fn, backend="inductor", fullgraph=True), a, b
+        )
+
+        expected, expected_aux = epilogue_fn(a @ b)
+        torch.testing.assert_close(actual, expected)
+        torch.testing.assert_close(aux.float(), expected_aux.float())
+        FileCheck().check(code_check).check("local_reduce_finalize_fn").run(code)
+        self.assertLocalReduceAuxCode(code, group, callbacks=True)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
