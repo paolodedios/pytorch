@@ -718,9 +718,10 @@ class VariableTracker(metaclass=VariableTrackerMeta):
     ) -> ConstantVariable:
         """Dynamo's hasattr(): try getattro_impl, catch AttributeError.
 
-        Mirrors CPython's PyObject_HasAttr: call PyObject_GetAttr (full
-        attribute access including descriptors/__getattr__), suppress
-        AttributeError, return True/False.
+        Mirrors CPython's PyObject_HasAttr (via PyObject_GetOptionalAttr):
+        call tp_getattro, suppress AttributeError via PyErr_Clear, return
+        True/False.
+        https://github.com/python/cpython/blob/848cb25624ab44c9fef2966c777419376b65af1b/Objects/object.c#L1346
         """
         result = self._hasattr_check_side_effects(tx, name)
         if result is not None:
@@ -758,6 +759,20 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             context=f"tp_iter_impl not implemented for {self.python_type_name()}",
             explanation=f"Dynamo does not know how to iterate over `{self.debug_repr()}`.",
             hints=[*graph_break_hints.SUPPORTABLE],
+        )
+
+    def tp_init_impl(
+        self,
+        tx: InstructionTranslatorBase,
+        args: list[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        """tp_init slot (__init__). VTs override to initialize instances."""
+        unimplemented(
+            gb_type="missing tp_init",
+            context=f"tp_init_impl not implemented for {self.python_type_name()}",
+            explanation=f"Dynamo does not know how to trace __init__ on `{self.debug_repr()}`.",
+            hints=[*graph_break_hints.DYNAMO_BUG],
         )
 
     def call_function(
@@ -950,6 +965,8 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             return self.tp_iter_impl(tx)
         elif name == "__next__" and not args and not kwargs:
             return self.tp_iternext_impl(tx)
+        elif name == "__init__":
+            return self.tp_init_impl(tx, args, kwargs)
         elif name == "__call__":
             return self.call_function(tx, args, kwargs)
         elif name == "__contains__" and not kwargs:
