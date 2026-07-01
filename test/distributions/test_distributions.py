@@ -114,6 +114,7 @@ from torch.testing._internal.common_device_type import (
     dtypesIfMPS,
     dtypesIfXPU,
     expectedFailureMPS,
+    expectedFailureMPSPre15,
     instantiate_device_type_tests,
     skipMPS,
 )
@@ -1680,7 +1681,6 @@ class TestDistributions(DistributionsTestCase):
     test_binomial_bfloat16 = set_default_dtype(torch.bfloat16)(test_binomial)
 
     @unittest.skipIf(not TEST_NUMPY, "NumPy not found")
-    @expectedFailureMPS
     def test_binomial_sample(self):
         set_rng_seed(0)  # see Note [Randomized statistical tests]
         for prob in [0.01, 0.1, 0.5, 0.8, 0.9]:
@@ -1832,7 +1832,6 @@ class TestDistributions(DistributionsTestCase):
             ).logpmf(sample.cpu().numpy())
             self.assertEqual(log_prob, expected, atol=1e-4, rtol=0)
 
-    @expectedFailureMPS
     def test_zero_excluded_binomial(self):
         vals = Binomial(
             total_count=torch.tensor(1.0),
@@ -1860,7 +1859,6 @@ class TestDistributions(DistributionsTestCase):
                 f"Expected (vals == 1.0).sum() > 4000, got {ones_count}"
             )
 
-    @expectedFailureMPS
     def test_torch_binomial_dtype_errors(self):
         dtypes = [torch.int, torch.long, torch.short]
 
@@ -2688,7 +2686,6 @@ class TestDistributions(DistributionsTestCase):
         )
 
     @unittest.skipIf(not TEST_NUMPY, "Numpy not found")
-    @expectedFailureMPS
     def test_mixture_same_family_binomial_log_prob(self):
         max_count = 20
         probs = torch.rand(10, 5).softmax(dim=-1)
@@ -3337,7 +3334,7 @@ class TestDistributions(DistributionsTestCase):
         Wishart(torch.tensor(ndim), precision_matrix=P)
 
     @unittest.skipIf(not TEST_NUMPY, "Numpy not found")
-    @expectedFailureMPS
+    @expectedFailureMPSPre15
     @set_default_dtype_if_supported(torch.double)
     def test_wishart_log_prob(self):
         set_rng_seed(0)  # see Note [Randomized statistical tests]
