@@ -3133,23 +3133,20 @@ class TestProfilerDevice(TestCase):
             self.assertEqual(gpu_dict["GPU " + str(i)], 1)
 
     def _is_secondary_profiler_event(self, traceEvent):
-        # On a device build (e.g. XPU) the trace contains, in addition to the
-        # "PyTorch Profiler (0)" instance, a secondary profiler instance such as
+        # On an XPU build the trace contains, in addition to the
+        # "PyTorch Profiler (0)" instance, the XPU profiler instance
         # "__xpu_profiler__ (N)" plus its own "Iteration Start: __xpu_profiler__"
         # marker. These are emitted regardless of which activities are requested
         # and are not bounded by the PyTorch profiler window, so they must be
         # ignored when validating the trace.
         name = traceEvent.get("name", "")
-        return name.startswith("__") and "_profiler__" in name or name.startswith(
-            "Iteration Start: __"
+        return name.startswith("__xpu_profiler__") or name.startswith(
+            "Iteration Start: __xpu_profiler__"
         )
 
     def _validate_basic_json(self, traceEvents, device_available=False):
         MAX_GPU_COUNT = 8
 
-        # Locate the PyTorch profiler markers by name rather than by fixed
-        # negative offsets: a device build appends a secondary profiler instance
-        # to the trace, which shifts the previously assumed -4/-2/-1 positions.
         def _find_event(name):
             for event in traceEvents:
                 if event.get("name") == name:
