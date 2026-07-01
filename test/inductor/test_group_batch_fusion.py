@@ -1731,6 +1731,51 @@ class TestCatLinearFusion(TestCase):
             self.assertEqual(ref, res, rtol=1.6e-2, atol=1e-2)
             counters.clear()
 
+    @requires_gpu()
+    def test_cat_linear_numerics_backward(self):
+        # forward is not enough: the rewrite has to keep the backward correct too.
+        # grads reach the shared weight through the differentiable slices (one
+        # slice per piece), and the bias grad flows only through out_0 since bias
+        # rides on the first piece. Compare W.grad, bias.grad, and the per-part
+        # input grads eager-vs-compiled at the same bf16 tol as the fwd test.
+        from unittest import mock
+
+        from torch._inductor.fx_passes import group_batch_fusion as gbf
+
+        for has_bias in [True, False]:
+            counters.clear()
+            torch._dynamo.reset()
+            module = CatLinearMod(
+                [176, 176], 64, has_bias=has_bias, device=GPU_TYPE
+            ).to(torch.bfloat16)
+            base = [
+                torch.randn(64, 176, device=GPU_TYPE, dtype=torch.bfloat16),
+                torch.randn(64, 176, device=GPU_TYPE, dtype=torch.bfloat16),
+            ]
+
+            def run(compiled):
+                module.zero_grad(set_to_none=True)
+                parts = [p.detach().clone().requires_grad_(True) for p in base]
+                fn = torch.compile(module) if compiled else module
+                fn(parts).sum().backward()
+                return (
+                    module.lin.weight.grad.detach().clone(),
+                    module.lin.bias.grad.detach().clone() if has_bias else None,
+                    [p.grad.detach().clone() for p in parts],
+                )
+
+            w_ref, b_ref, in_ref = run(False)
+            with mock.patch.object(gbf, "CAT_LINEAR_CAT_TRAFFIC_FLOOR_BYTES", 0):
+                w_res, b_res, in_res = run(True)
+
+            self.assertEqual(counters["inductor"]["cat_linear"], 1)
+            self.assertEqual(w_ref, w_res, rtol=1.6e-2, atol=1e-2)
+            if has_bias:
+                self.assertEqual(b_ref, b_res, rtol=1.6e-2, atol=1e-2)
+            for gr, gs in zip(in_ref, in_res):
+                self.assertEqual(gr, gs, rtol=1.6e-2, atol=1e-2)
+            counters.clear()
+
     def test_cat_linear_numerics_cpu(self):
         from unittest import mock
 
@@ -1746,6 +1791,46 @@ class TestCatLinearFusion(TestCase):
                 res = torch.compile(module)(parts)
             self.assertEqual(counters["inductor"]["cat_linear"], 1)
             self.assertEqual(ref, res)
+            counters.clear()
+
+    def test_cat_linear_numerics_backward_cpu(self):
+        # fp32 pin for the backward. forward alone can't catch a wrong weight
+        # column offset or a misplaced bias, both only show up in the grads:
+        # the shared weight grad comes through the differentiable slices (one
+        # per piece) and the bias grad flows only through out_0 since the bias
+        # rides the first piece. fp32 at the default (tight) tol so a subtle
+        # slice/bias error can't hide under a loose bf16 tolerance.
+        from unittest import mock
+
+        from torch._inductor.fx_passes import group_batch_fusion as gbf
+
+        for has_bias in [True, False]:
+            counters.clear()
+            torch._dynamo.reset()
+            module = CatLinearMod([24, 24], 32, has_bias=has_bias)
+            base = [torch.randn(8, 24), torch.randn(8, 24)]
+
+            def run(compiled):
+                module.zero_grad(set_to_none=True)
+                parts = [p.detach().clone().requires_grad_(True) for p in base]
+                fn = torch.compile(module) if compiled else module
+                fn(parts).sum().backward()
+                return (
+                    module.lin.weight.grad.detach().clone(),
+                    module.lin.bias.grad.detach().clone() if has_bias else None,
+                    [p.grad.detach().clone() for p in parts],
+                )
+
+            w_ref, b_ref, in_ref = run(False)
+            with mock.patch.object(gbf, "CAT_LINEAR_CAT_TRAFFIC_FLOOR_BYTES", 0):
+                w_res, b_res, in_res = run(True)
+
+            self.assertEqual(counters["inductor"]["cat_linear"], 1)
+            self.assertEqual(w_ref, w_res)
+            if has_bias:
+                self.assertEqual(b_ref, b_res)
+            for gr, gs in zip(in_ref, in_res):
+                self.assertEqual(gr, gs)
             counters.clear()
 
 

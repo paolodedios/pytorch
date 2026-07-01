@@ -753,8 +753,6 @@ CAT_LINEAR_MAX_OUTPUT_WIDTH = 96
 # cover the per-piece launch + reduce. Bytes, so fp32 trips it at half the bf16
 # element count.
 CAT_LINEAR_CAT_TRAFFIC_FLOOR_BYTES = 512 * 1024 * 1024
-# Width isn't the profit lever (every win has K_total >= 512); kept as a backstop.
-CAT_LINEAR_MAX_TOTAL_WIDTH = 1 << 30
 # Skip slivers: a piece this thin is a launch-bound matmul with no upside.
 CAT_LINEAR_MIN_PIECE_WIDTH = 8
 # More parts means more launches and reduce-adds; >3 lost in the sweep.
@@ -830,8 +828,6 @@ def match_cat_linear(node: torch.fx.Node):
         return None
 
     k_total = int(cat_shape[-1])
-    if k_total > CAT_LINEAR_MAX_TOTAL_WIDTH:
-        return None
 
     offsets = [0]
     for p in parts:
@@ -887,6 +883,11 @@ class CatLinearFusion(BatchFusion):
             **self.graph_search_options,
             "min_fuse_set_size": 1,
         }
+        # Dedup hoisted weight slices across the several fuse() calls this rule
+        # makes on one graph (weight-tied blocks match at multiple sites). A fresh
+        # rule instance is built per compile in generate_fusion_from_config and
+        # only ever runs on a single graph, so an instance-level cache is safe.
+        self._piece_cache: dict = {}
 
     def match(self, node: torch.fx.Node):
         if not CallFunctionVarArgs(
@@ -895,32 +896,27 @@ class CatLinearFusion(BatchFusion):
             return None
         if not is_node_meta_valid(node):
             return None
-        matched = match_cat_linear(node)
-        if matched is None:
+        # match() runs on every linear during the candidate BFS, including nodes
+        # that never fuse, so keep it side-effect-free: recompute in fuse() rather
+        # than stashing on node.meta (which would leave stale meta behind).
+        if match_cat_linear(node) is None:
             return None
-        # stash so fuse() doesn't recompute the whole match per candidate; the
-        # same node object is what apply_group_batch_fusion hands back to fuse.
-        node.meta["cat_linear_match"] = matched
         return ("cat_linear", node)
 
     def fuse(self, graph: torch.fx.GraphModule, subset: list[torch.fx.Node]):
-        # Slice+clone each weight once per graph and hoist to entry, so a weight
-        # matched by several cat_linears (weight-tied blocks) isn't re-sliced at
-        # every site. Keyed per graph: the fusion object is reused across compiles.
-        if getattr(self, "_piece_gid", None) != id(graph):
-            self._piece_gid = id(graph)
-            self._piece_cache = {}
+        # Slice+clone each weight once and hoist to entry, so a weight matched by
+        # several cat_linears (weight-tied blocks) isn't re-sliced at every site.
         cache = self._piece_cache
 
         for node in subset:
-            matched = node.meta.pop("cat_linear_match", None)
-            if matched is None:
-                matched = match_cat_linear(node)
+            matched = match_cat_linear(node)
             if matched is None:
                 continue
             parts, weight, bias, offsets = matched
-            node_val = node.meta.get("example_value", node.meta.get("val"))
             weight_val = weight.meta.get("example_value", weight.meta.get("val"))
+            bias_val = None
+            if bias is not None:
+                bias_val = bias.meta.get("example_value", bias.meta.get("val"))
             anchor = _weight_hoist_anchor(graph, weight)
 
             with graph.inserting_before(node):  # type: ignore[operator]
@@ -958,15 +954,27 @@ class CatLinearFusion(BatchFusion):
                         torch.nn.functional.linear,
                         args=(part, w_cont, bias if i == 0 else None),
                     )
-                    if node_val is not None:
-                        out_i.meta["example_value"] = node_val
+                    # Each synthesized node gets its own fake val computed from its
+                    # own operands, the way BatchLinearLHSFusion does. The old code
+                    # aliased the whole linear's fake tensor onto every piece and
+                    # every reduce-add, sharing one FakeTensor object across
+                    # distinct nodes.
+                    part_val = part.meta.get("example_value", part.meta.get("val"))
+                    w_cont_val = w_cont.meta.get("example_value")
+                    if part_val is not None and w_cont_val is not None:
+                        out_i.meta["example_value"] = torch.nn.functional.linear(
+                            part_val, w_cont_val, bias_val if i == 0 else None
+                        )
                     partials.append(out_i)
 
                 acc = partials[0]
                 for out_i in partials[1:]:
-                    acc = graph.call_function(operator.add, args=(acc, out_i))  # type: ignore[operator]
-                    if node_val is not None:
-                        acc.meta["example_value"] = node_val
+                    prev = acc
+                    acc = graph.call_function(operator.add, args=(prev, out_i))  # type: ignore[operator]
+                    prev_val = prev.meta.get("example_value")
+                    out_val = out_i.meta.get("example_value")
+                    if prev_val is not None and out_val is not None:
+                        acc.meta["example_value"] = torch.add(prev_val, out_val)
 
             node.replace_all_uses_with(acc)
             graph.erase_node(node)  # type: ignore[operator]
