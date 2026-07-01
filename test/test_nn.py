@@ -13762,7 +13762,7 @@ if __name__ == '__main__':
         with self.assertRaisesRegex(RuntimeError, "Lower bound should be less than or equal to the upper bound"):
             F.rrelu(x, lower=0.5, upper=0.3)
 
-    @onlyCPU
+
     def test_rrelu_eval_mode_noise_and_output(self, device):
         """Test that RReLU in eval mode correctly fills noise tensor and produces
         expected output using the fixed midpoint slope (lower + upper) / 2."""
