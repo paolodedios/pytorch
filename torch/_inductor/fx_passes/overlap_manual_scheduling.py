@@ -295,6 +295,54 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
             elif n is new_start:
                 self.bucketed_node_types[n] = node_type
 
+    def _split_independent_collectives(
+        self, coll_nodes: OrderedSet[fx.Node], scope_nodes: list[fx.Node]
+    ) -> list[list[fx.Node]]:
+        """Partition same-key collectives so no bucket contains a collective that
+        depends on another member's result.
+
+        Bucketing fuses collectives into one op: inputs are concatenated before
+        the fused collective and outputs split after. If collective B's input
+        depends on collective A's output (A's wait), fusing A and B makes the
+        merged collective's input depend on its own output -- a graph cycle that
+        later fails region topological sort. This arises e.g. in loss-parallel
+        cross-entropy, which emits a sumexp and a result sum-all_reduce on the
+        same (group, reduce_op, dtype) key where result depends on sumexp.
+
+        Each collective is placed in the bucket equal to the longest chain of
+        same-key collectives ending at it (its Mirsky level). Collectives at the
+        same level are mutually independent, so grouping by level gives the
+        minimum number of dependency-free buckets. Levels are computed with a
+        single topological forward pass over ``scope_nodes`` that propagates,
+        along real graph edges, the deepest same-key chain reaching each node --
+        O(len(scope_nodes)) rather than O(len(coll_nodes)^2) pairwise ancestor
+        queries. This is exact because same-key collectives in one bucketing
+        scope depend on each other only through in-scope nodes.
+        """
+        wait_to_start = {self.collective_info[c].wait_node: c for c in coll_nodes}
+
+        # ``reach[node]`` = deepest same-key collective chain in node's cone;
+        # ``level[c]`` = that chain length including c (its bucket index + 1).
+        reach: dict[fx.Node, int] = {}
+        level: dict[fx.Node, int] = {}
+        for node in sorted(scope_nodes, key=lambda n: self.node_idx[n]):
+            incoming = max(
+                (reach.get(inp, 0) for inp in node.all_input_nodes), default=0
+            )
+            node_reach = incoming
+            if node in coll_nodes:
+                level[node] = incoming + 1
+            # A collective's chain becomes reachable through its wait (its result).
+            start = wait_to_start.get(node)
+            if start is not None:
+                node_reach = max(node_reach, level[start])
+            reach[node] = node_reach
+
+        buckets: dict[int, list[fx.Node]] = defaultdict(list)
+        for c in coll_nodes:
+            buckets[level[c]].append(c)
+        return [buckets[lvl] for lvl in sorted(buckets)]
+
     def manual_bucket_collectives(self, nodes: list[fx.Node]) -> None:
         """
         Bucket all all-gather/reduce-scatter nodes from nodes into one all-gather/reduce-scatter.
@@ -315,8 +363,14 @@ class ManualOverlapPreservingBucketer(OverlapPreservingBucketer):
             if key is not None:
                 grouped_collectives[key].add(node)
 
-        for key, nodes in grouped_collectives.items():  # type: ignore[arg-type]
-            self._bucket_group(list(nodes))
+        # Split each key-group into dependency-free sub-buckets so fusing never
+        # makes a bucketed collective's input depend on its own output.
+        sub_buckets: list[list[fx.Node]] = []
+        for key, key_nodes in grouped_collectives.items():
+            sub_buckets.extend(self._split_independent_collectives(key_nodes, nodes))
+
+        for sub_bucket in sub_buckets:
+            self._bucket_group(sub_bucket)
 
 
 class ManualOverlapScheduler(OverlapScheduler):
