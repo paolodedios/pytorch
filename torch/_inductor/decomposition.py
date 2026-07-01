@@ -1327,7 +1327,9 @@ def rrelu_with_noise_functional(
     else:
         negative_slope = (lower + upper) / 2
         output = aten.leaky_relu(self, negative_slope)
-        noise_out = torch.where(self <= 0, negative_slope, 1.0)
+        noise_out = torch.where(
+            self <= 0, self.new_full((), negative_slope), self.new_full((), 1.0)
+        )
         return output, noise_out
 
 
