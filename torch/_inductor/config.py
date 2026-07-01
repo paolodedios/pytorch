@@ -373,6 +373,14 @@ post_grad_fusion_options: dict[str, dict[str, Any]] = {}
 # enable reordering pass for improving memory locality
 reorder_for_locality = True
 
+# Also run reorder_for_locality (a semantics-preserving pass; see
+# reorder_for_locality in fx_passes/post_grad.py for the cases it guards) on
+# training graphs, not just inference. Default off. Gated by reorder_for_locality
+# above: enabling this while that is False does nothing.
+reorder_for_locality_in_training = (
+    os.environ.get("TORCHINDUCTOR_REORDER_LOCALITY_TRAINING", "0") == "1"
+)
+
 # Scale down Rn_BLOCK for better occupancy
 dynamic_scale_rblock = os.environ.get("TORCHINDUCTOR_DYNAMIC_SCALE_RBLOCK", "1") == "1"
 
@@ -1828,11 +1836,6 @@ class triton:
     """
     Config specific to codegen/triton.py
     """
-
-    # Select the two-pass variance algorithm for CUDA inputs whose total input
-    # working set is no larger than this fraction of the device L2 cache.
-    # Set to 0 to disable the L2-aware heuristic.
-    two_pass_variance_l2_fraction = 0.5
 
     # Use cudagraphs on output code
     cudagraphs = os.environ.get("TORCHINDUCTOR_CUDAGRAPHS") == "1"
