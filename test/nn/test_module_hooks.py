@@ -12,7 +12,6 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 
 import torch
-import torch._dynamo.config
 import torch.nn as nn
 from torch.testing._internal.common_nn import _create_basic_net, NNTestCase
 from torch.testing._internal.common_utils import (
@@ -187,15 +186,6 @@ class DummyContextManager:
 
 
 class TestModuleHooks(TestCase):
-    def setUp(self):
-        super().setUp()
-        self._prior_ngb = torch._dynamo.config.nested_graph_breaks
-        torch._dynamo.config.nested_graph_breaks = False
-
-    def tearDown(self):
-        torch._dynamo.config.nested_graph_breaks = self._prior_ngb
-        super().tearDown()
-
     @parametrize_test("named_tuple", (True, False))
     def test_forward_hooks(self, named_tuple):
         fired_hooks: list[int] = []
@@ -380,6 +370,7 @@ class TestModuleHooks(TestCase):
         out = model(x, bias=bias)
         self.assertEqual(out, x + 2 * bias, rtol=0, atol=1e-5)
 
+    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_remove_kwarg_hooks(self):
         # test forward pre and forward hooks
         fired_hooks: list[int] = []
@@ -423,6 +414,7 @@ class TestModuleHooks(TestCase):
             forward_pre_hook_handle.id in model._forward_pre_hooks_with_kwargs
         )
 
+    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_always_called_forward_hooks(self):
         x: torch.Tensor = torch.ones(10, 10)
         model = FailsInForwardModel()
@@ -1267,15 +1259,6 @@ class TestModuleHookNN(NNTestCase):
     _do_cuda_memory_leak_check = True
     _do_cuda_non_default_stream = True
 
-    def setUp(self):
-        super().setUp()
-        self._prior_ngb = torch._dynamo.config.nested_graph_breaks
-        torch._dynamo.config.nested_graph_breaks = False
-
-    def tearDown(self):
-        torch._dynamo.config.nested_graph_breaks = self._prior_ngb
-        super().tearDown()
-
     def _test_hooks(self, backward_register_fn):
         module = nn.Sigmoid()
         input = torch.ones(5, 5, requires_grad=True)
@@ -1403,6 +1386,7 @@ class TestModuleHookNN(NNTestCase):
         module(t).sum().backward()
         self.assertEqual(cnt["backward_cnt"], 2)
 
+    @torch._dynamo.config.patch(nested_graph_breaks=False)
     def test_hook_invalid_outputs(self):
         module = nn.Sigmoid()
         input = torch.randn(5, 5, requires_grad=True)
