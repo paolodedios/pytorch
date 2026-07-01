@@ -45,15 +45,76 @@ case ${DOCKER_TAG_PREFIX} in
     ;;
 esac
 
+export DOCKER_BUILDKIT=1
+TOPDIR=$(git rev-parse --show-toplevel)
+tmp_tag=$(basename "$(mktemp -u)" | tr '[:upper:]' '[:lower:]')
+
+# On a remote buildkit builder (OSDC) there is no local Docker daemon, so build
+# with `docker buildx` and push straight to the registry. Locally we keep using
+# the host daemon (`docker build`) and load the image for the post-build checks.
+# The caller passes the target tag(s) as trailing `-t ...` args ("$@").
+if [[ -n "${REMOTE_BUILDKIT:-}" ]]; then
+  # No host daemon to tweak / restart on remote buildkit.
+  output_flag=""
+  # WITH_PUSH gates whether we publish: push events publish, PRs only validate
+  # the build (remote driver with no output keeps the result in the build cache).
+  if [[ "${WITH_PUSH:-false}" == "true" ]]; then
+    output_flag="--push"
+  fi
+
+  build_image() {
+    docker buildx build \
+      --target final \
+      --progress plain \
+      --build-arg "BASE_TARGET=${BASE_TARGET}" \
+      --build-arg "DEVTOOLSET_VERSION=13" \
+      ${EXTRA_BUILD_ARGS} \
+      ${output_flag} \
+      "$@" \
+      -f "${TOPDIR}/.ci/docker/almalinux/Dockerfile" \
+      "${TOPDIR}/.ci/docker/"
+  }
+
+  # The autoscaled buildkit pool may be cold / at capacity at start, where
+  # buildx's ~20s connect (gRPC default) fails before scale-up. Retry connection
+  # failures (not build errors) for ~2h so a capacity-limited build waits for a
+  # free pod instead of hard-failing — still within the job timeout. Mirrors the
+  # retry loop in .ci/docker/build.sh.
+  attempts="${REMOTE_BUILDKIT_CONNECT_ATTEMPTS:-360}"
+  delay="${REMOTE_BUILDKIT_CONNECT_DELAY:-15}"
+  for attempt in $(seq 1 "${attempts}"); do
+    build_log="$(mktemp)"
+    set +e
+    build_image "$@" 2>&1 | tee "${build_log}"
+    rc="${PIPESTATUS[0]}"
+    set -e
+    if [[ "${rc}" -eq 0 ]]; then
+      rm -f "${build_log}"
+      break
+    fi
+    if [[ "${attempt}" -lt "${attempts}" ]] && grep -qiE \
+      "waiting for connection|context deadline exceeded|server preface|failed to (dial|list workers)|connection (refused|reset)|no such host|transport: Error|i/o timeout|use of closed network connection|EOF" \
+      "${build_log}"; then
+      echo "Remote BuildKit not ready yet (attempt ${attempt}/${attempts}); retrying in ${delay}s..." >&2
+      rm -f "${build_log}"
+      sleep "${delay}"
+      continue
+    fi
+    rm -f "${build_log}"
+    exit "${rc}"
+  done
+
+  # The image was pushed (not loaded), so it is not present in any local daemon;
+  # skip the local `docker run` sanity check.
+  echo "REMOTE_BUILDKIT set: skipping local nvcc sanity check (image was pushed, not loaded)."
+  exit 0
+fi
+
 # TODO: Remove LimitNOFILE=1048576 patch once https://github.com/pytorch/test-infra/issues/5712
 # is resolved. This patch is required in order to fix timing out of Docker build on Amazon Linux 2023.
 sudo sed -i s/LimitNOFILE=infinity/LimitNOFILE=1048576/ /usr/lib/systemd/system/docker.service
 sudo systemctl daemon-reload
 sudo systemctl restart docker
-
-export DOCKER_BUILDKIT=1
-TOPDIR=$(git rev-parse --show-toplevel)
-tmp_tag=$(basename "$(mktemp -u)" | tr '[:upper:]' '[:lower:]')
 
 docker build \
   --target final \
