@@ -19,9 +19,7 @@ from torch.testing._internal.common_utils import (
 
 # Closing a leftover generator at scope exit (which runs its finally blocks) is
 # not simulated on 3.10; the relevant bytecode was reworked in 3.11+.
-xfailIfPy310 = (
-    unittest.expectedFailure if sys.version_info < (3, 11) else lambda f: f
-)
+xfailIfPy310 = unittest.expectedFailure if sys.version_info < (3, 11) else lambda f: f
 
 
 class GeneratorTestsBase(torch._dynamo.test_case.TestCase):

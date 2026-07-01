@@ -147,6 +147,7 @@ from .utils import (
     istype,
     LazyString,
     proxy_args_kwargs,
+    PySendResult,
     unpack_iterable,
 )
 from .variables.base import SourceLocation, typestr, ValueMutationNew, VariableTracker
@@ -192,6 +193,7 @@ from .variables.object_protocol import (
     generic_contains,
     generic_getiter,
     pyiter_check,
+    pyiter_send,
 )
 from .variables.sets import SetVariable
 from .variables.streams import SymbolicStreamState
@@ -1266,6 +1268,13 @@ def pyexception_instance_check(val: VariableTracker) -> TypeIs[ExceptionVals]:
     return isinstance(
         val, (variables.ExceptionVariable, UserDefinedExceptionObjectVariable)
     )
+
+
+def pygen_fetch_stopiteration_value(val: ExceptionVals) -> VariableTracker:
+    # Mirror's CPython PyGen_FetchStopIterationValue
+    if issubclass(val.exc_type, StopIteration):
+        return val.args[0] if val.args else ConstantVariable.create(None)
+    return ConstantVariable.create(None)
 
 
 @dataclasses.dataclass
@@ -6462,51 +6471,48 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
         return super().RETURN_CONST(inst)
 
     def YIELD_FROM(self, inst: Instruction) -> None:
+        # https://github.com/python/cpython/blob/1790e584142b5db070b74bc64777ad14e26608c2/Python/ceval.c#L2581
+        if not sys.version_info[:2] == (3, 10):
+            raise AssertionError("Python 3.10 specific")
+
         if not (len(self.stack) >= 2):
             raise AssertionError("expected len(self.stack) >= 2 to be true")
         val = self.pop()
-        tos = self.stack[-1]
-        if not val.is_constant_none():
-            # invoke send
-            # Unreachable code - if you hit this, you are implementing generator support and have
-            # lifted the `unimplemented("generator")` in frame conversion. This codepath handles
-            # subgenerator and lines up with this line in Python 3.10
-            # https://github.com/python/cpython/blob/3.10/Python/ceval.c#L2599
-            unimplemented(
-                gb_type="Unreachable sub-generator code",
-                context="",
-                explanation="Should only be encountered while implementing generator support.",
-                hints=[],
-            )
+        receiver = self.stack[-1]
 
+        gen_status = None
         try:
-            val = tos.next_variable(self)
-        except (StopIteration, exc.ObservedUserStopIteration) as ex:
-            if isinstance(ex, exc.ObservedUserStopIteration):
-                # `yield from` evaluates to the subgenerator's return value,
-                # which rides on the raised StopIteration's args. Read it off
-                # the exception stack before clearing (mirrors SEND); the
-                # Python-level `ex.value` only holds a debug message.
-                raised = self.exn_vt_stack.get_raised_exception()
-                result = raised.args[0] if raised.args else ConstantVariable.create(None)
-                exc.handle_observed_exception(self)
-            else:
-                result = ConstantVariable.create(ex.value)
+            result = pyiter_send(self, receiver, val)
+        except exc.ObservedUserStopIteration:
+            gen_status = PySendResult.PYGEN_RETURN
+            raised = self.exn_vt_stack.get_raised_exception()
+            result = pygen_fetch_stopiteration_value(raised)
+            exc.handle_observed_exception(self)
+        except exc.ObservedException:
+            # PYGEN_ERROR
+            gen_status = PySendResult.PYGEN_ERROR
+            raise
+        else:
+            # PYGEN_NEXT
+            gen_status = PySendResult.PYGEN_NEXT
 
-            # The iterator is exhausted. Stop the loop and return.
+        if gen_status == PySendResult.PYGEN_RETURN:
             self.pop()
             self.push(result)
         else:
+            # gen_status == PYGEN_NEXT
             # Repeat the YIELD_FROM instruction in the next eval loop
-            if not isinstance(self.instruction_pointer, int):
+            if isinstance(self.instruction_pointer, int):
+                if not (self.instruction_pointer > 0):
+                    raise AssertionError(
+                        "expected self.instruction_pointer > 0 to be true"
+                    )
+                self.instruction_pointer -= 1
+            else:
                 raise AssertionError(
                     "expected isinstance(self.instruction_pointer, int) to be true"
                 )
-            if not (self.instruction_pointer > 0):
-                raise AssertionError("expected self.instruction_pointer > 0 to be true")
-            self.instruction_pointer -= 1
-
-            self.push(val)
+            self.push(result)
             # Add the value to yield into generated_items and replace the top of the stack with None
             self.YIELD_VALUE(inst)
 
@@ -6521,11 +6527,7 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
             receiver = self.stack[-1]
 
         try:
-            receiver_T = receiver.python_type()
-            if val.is_constant_none() and pyiter_check(receiver_T):
-                val = receiver.tp_iternext_impl(self)
-            else:
-                val = receiver.call_method(self, "send", [val], {})
+            val = pyiter_send(self, receiver, val)
         except exc.ObservedUserStopIteration:
             # To implement SEND, we have to look at the implementation
             # when the iterator returns StopIteration. This translates to this code
@@ -6534,9 +6536,8 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
             # The implementation is different in 3.11 and 3.12. In 3.12, we rely
             # on END_SEND to clean up. In 3.11, SEND does the cleanup as well.
             ex = self.exn_vt_stack.get_raised_exception()
+            val = pygen_fetch_stopiteration_value(ex)
             self.exn_vt_stack.clear_current_exception()
-
-            val = ex.args[0] if ex.args else ConstantVariable.create(None)
             if sys.version_info < (3, 12):
                 self.pop()  # Python 3.12 uses new opcode END_SEND
             self.push(val)
