@@ -1081,11 +1081,12 @@ def break_graph_if_unsupported(
     ) -> Callable[[InstructionTranslatorBase, Instruction], None]:
         @functools.wraps(inner_fn)
         def wrapper(self: InstructionTranslatorBase, inst: Instruction) -> None:
+            if not self.should_compile_partial_graph():
+                return inner_fn(self, inst)
             prev_push = self.current_instruction_push
             self.current_instruction_push = push
             speculation = self.speculate()
             if speculation.failed(self):
-                # no need to restore current_instruction_push if speculation failed
                 if speculation.reason is None:
                     raise AssertionError(
                         "expected speculation.reason is not None to be true"
@@ -3173,11 +3174,14 @@ class InstructionTranslatorBase(
         )
 
     def _load_attr(self, attr: Any) -> None:
-        # Python-constant objects with unresolvable descriptors (e.g.
-        # C extension member_descriptors) are handled by const_getattr
-        # inside the base getattro_impl, so no fallback is needed here.
         obj = self.pop().realize()
-        result = generic_getattr(self, obj, attr)
+        try:
+            result = generic_getattr(self, obj, attr)
+        except Unsupported:
+            if not obj.is_python_constant():
+                raise
+            source = AttrSource(obj.source, attr) if obj.source else None
+            result = VariableTracker.build(self, getattr(obj.as_python_constant(), attr), source=source)
         self.push(result)
 
     def LOAD_ATTR(self, inst: Instruction) -> None:
