@@ -357,7 +357,9 @@ class Vectorized<float> {
 
     const float32x4_t inv_ln2 =
         vdupq_n_f32(static_cast<float>(1 / c10::ln_2<double>));
-    constexpr auto ln2_hi = c10::ln_2<float>;
+    // The difference from std::numbers::ln2_v<float> is intentional.
+    // NOLINTNEXTLINE(modernize-use-std-numbers)
+    constexpr float ln2_hi = 0x1.62e4p-1f;
     constexpr float ln2_lo = 0x1.7f7d1cp-20f;
     constexpr float c0 = 0x1.0e4020p-7f;
     constexpr float c2 = 0x1.555e66p-3f;
