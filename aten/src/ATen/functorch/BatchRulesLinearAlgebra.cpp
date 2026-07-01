@@ -480,6 +480,33 @@ pinv_batch_rule(
   return atol_rtol_tensor_batch_rule(ATEN_FN2(linalg_pinv, atol_rtol_tensor), input, input_bdim, atol, atol_bdim, rtol, rtol_bdim, hermitian, "linalg.pinv");
 }
 
+Tensor flatten_sdpa_attn_bias_for_vmap(
+    const Tensor& attn_bias,
+    std::optional<int64_t> attn_bias_bdim,
+    const c10::SymInt& batch_size) {
+  auto attn_bias_ = moveBatchDimToFront(attn_bias, attn_bias_bdim);
+  attn_bias_ = ensure_has_bdim(attn_bias_, attn_bias_bdim.has_value(), batch_size);
+  return attn_bias_.flatten(0, 1);
+}
+
+template <int alignment>
+bool sdpa_attn_bias_has_aligned_strides(const Tensor& attn_bias) {
+  for (const auto i : c10::irange(attn_bias.dim() - 1)) {
+    if (attn_bias.stride(i) % alignment != 0) {
+      return false;
+    }
+  }
+  return attn_bias.stride(attn_bias.dim() - 1) == 1;
+}
+
+template <int alignment>
+Tensor pad_sdpa_attn_bias(const Tensor& attn_bias) {
+  auto last_dim_size = attn_bias.sym_size(-1);
+  auto pad_count = c10::SymInt(alignment) - (last_dim_size % alignment);
+  auto padded_bias = at::pad_symint(attn_bias, {c10::SymInt(0), pad_count});
+  return padded_bias.slice_symint(-1, 0, last_dim_size);
+}
+
 std::tuple<Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>, SymInt, SymInt, Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>>
 _scaled_dot_product_flash_attention_batch_rule(
   const Tensor& query, std::optional<int64_t> query_bdim,
@@ -619,9 +646,13 @@ fourOutputs _scaled_dot_product_efficient_attention_batch_rule(
     auto maybe_layer = maybeCurrentDynamicLayer();
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     RandomnessType randomness = maybe_layer->randomness();
-    check_randomness(randomness, query_bdim.has_value() || key_bdim.has_value() || value_bdim.has_value());
+    auto any_tensor_batched = query_bdim.has_value() || key_bdim.has_value() ||
+        value_bdim.has_value() || attn_bias_bdim.has_value();
+    check_randomness(randomness, any_tensor_batched);
   }
-  auto batch_size = get_bdim_size3(query, query_bdim, key, key_bdim, value, value_bdim);
+  auto batch_size = attn_bias.has_value() && attn_bias->defined()
+      ? get_bdim_size4(query, query_bdim, key, key_bdim, value, value_bdim, *attn_bias, attn_bias_bdim)
+      : get_bdim_size3(query, query_bdim, key, key_bdim, value, value_bdim);
   auto query_ = moveBatchDimToFront(query, query_bdim);
   auto key_ = moveBatchDimToFront(key, key_bdim);
   auto value_ = moveBatchDimToFront(value, value_bdim);
@@ -635,7 +666,11 @@ fourOutputs _scaled_dot_product_efficient_attention_batch_rule(
 
   std::optional<Tensor> attn_bias_;
   if (attn_bias.has_value() && attn_bias->defined()) {
-    attn_bias_ = attn_bias_bdim.has_value() ? reshape_dim_into(*attn_bias_bdim, 0, attn_bias.value()) : attn_bias.value();
+    constexpr int mem_eff_alignment = 8;
+    attn_bias_ = flatten_sdpa_attn_bias_for_vmap(*attn_bias, attn_bias_bdim, batch_size);
+    if (!sdpa_attn_bias_has_aligned_strides<mem_eff_alignment>(*attn_bias_)) {
+      attn_bias_ = pad_sdpa_attn_bias<mem_eff_alignment>(*attn_bias_);
+    }
   }
   auto [res0, res1, res2, res3] = at::_scaled_dot_product_efficient_attention(
       query_, key_, value_, attn_bias_, compute_log_sumexp, dropout_p, is_causal, scale);
@@ -662,9 +697,13 @@ _scaled_dot_product_cudnn_attention_batch_rule(
     auto maybe_layer = maybeCurrentDynamicLayer();
     // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
     RandomnessType randomness = maybe_layer->randomness();
-    check_randomness(randomness, query_bdim.has_value() || key_bdim.has_value() || value_bdim.has_value());
+    auto any_tensor_batched = query_bdim.has_value() || key_bdim.has_value() ||
+        value_bdim.has_value() || attn_bias_bdim.has_value();
+    check_randomness(randomness, any_tensor_batched);
   }
-  auto batch_size = get_bdim_size3(query, query_bdim, key, key_bdim, value, value_bdim);
+  auto batch_size = attn_bias.has_value() && attn_bias->defined()
+      ? get_bdim_size4(query, query_bdim, key, key_bdim, value, value_bdim, *attn_bias, attn_bias_bdim)
+      : get_bdim_size3(query, query_bdim, key, key_bdim, value, value_bdim);
   auto query_ = moveBatchDimToFront(query, query_bdim);
   auto key_ = moveBatchDimToFront(key, key_bdim);
   auto value_ = moveBatchDimToFront(value, value_bdim);
@@ -677,7 +716,7 @@ _scaled_dot_product_cudnn_attention_batch_rule(
 
   std::optional<Tensor> attn_bias_;
   if (attn_bias.has_value() && attn_bias->defined()) {
-    attn_bias_ = attn_bias_bdim.has_value() ? reshape_dim_into(*attn_bias_bdim, 0, attn_bias.value()) : attn_bias.value();
+    attn_bias_ = flatten_sdpa_attn_bias_for_vmap(*attn_bias, attn_bias_bdim, batch_size);
   }
 
   auto [res0, res1, res2, res3, res4, res5, res6, res7, res8] = at::_scaled_dot_product_cudnn_attention(
