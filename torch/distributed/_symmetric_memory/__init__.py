@@ -1973,6 +1973,9 @@ def empty(  # type: ignore[misc]
     else:
         device = torch.device(device)
 
+    if device.type == "cuda" and not device.index:
+        device = torch.device(device.type, torch.cuda.current_device())
+
     stride = torch._prims_common.make_contiguous_strides_for(size)
 
     if _should_use_implicit_mempool() and device.type == "cuda":
@@ -1981,7 +1984,7 @@ def empty(  # type: ignore[misc]
         mempool = get_mem_pool(device)
         # TODO: this path can be made device-agnostic if `use_mem_pool` is
         # elevated from torch.cuda to torch accelerator.
-        with torch.cuda.use_mem_pool(mempool):
+        with torch.cuda.use_mem_pool(mempool, device=device):
             return torch.empty_strided(size, stride, dtype=dtype, device=device)
     else:
         return _SymmetricMemory.empty_strided_p2p(size, stride, dtype, device)
