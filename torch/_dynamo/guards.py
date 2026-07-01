@@ -189,6 +189,7 @@ from .utils import (
     normalize_count_iter,
     normalize_range_iter,
     orig_code_map,
+    set_getitem,
     tuple_iterator_getitem,
     tuple_iterator_len,
     verify_guard_fn_signature,
@@ -227,8 +228,30 @@ recompiles_verbose_log = torch._logging.getArtifactLogger(
 verbose_guards_log = torch._logging.getArtifactLogger(__name__, "verbose_guards")
 
 
-def _is_cow_tensor(value: torch.Tensor) -> bool:
+def _sequence_length(value: Any) -> int:
+    if isinstance(value, set):
+        return set.__len__(value)
+    if isinstance(value, frozenset):
+        return frozenset.__len__(value)
+    return len(value)
+
+
+_COW_TENSOR_UNSUPPORTED = object()
+
+
+def _try_is_cow_tensor(value: Any) -> bool | object:
+    if not isinstance(value, torch.Tensor):
+        return _COW_TENSOR_UNSUPPORTED
+    if torch._C._dispatch_keys(value).has(torch._C.DispatchKey.Python):
+        return _COW_TENSOR_UNSUPPORTED
     return torch._C._is_cow_tensor(value)  # pyrefly: ignore[missing-attribute]
+
+
+def _cow_tensor_matches(value: Any, expected: Any) -> bool:
+    if not isinstance(expected, bool):
+        return False
+    actual = _try_is_cow_tensor(value)
+    return actual is not _COW_TENSOR_UNSUPPORTED and actual == expected
 
 
 dunder_attrs_assumed_constants = (
@@ -777,6 +800,7 @@ def _get_closure_vars() -> dict[str, object]:
             "___normalize_count_iter": normalize_count_iter,
             "___normalize_range_iter": normalize_range_iter,
             "___tuple_iterator_getitem": tuple_iterator_getitem,
+            "___set_getitem": set_getitem,
             "___dataclass_fields": dataclass_fields,
             "___namedtuple_fields": lambda x: x._fields,
             "___get_torch_function_mode_stack_at": get_torch_function_mode_stack_at,
@@ -2428,14 +2452,16 @@ class GuardBuilder(GuardBuilderBase):
             )
 
     @register_guard_check_spec(
-        get_metadata_fn=lambda guard, value: _is_cow_tensor(value),
-        eval_fn=lambda value, metadata: _is_cow_tensor(value) == metadata,
+        get_metadata_fn=lambda guard, value: _try_is_cow_tensor(value),
+        eval_fn=lambda value, metadata: _cow_tensor_matches(value, metadata),
     )
     def COW_TENSOR_MATCH(self, guard: Guard) -> None:
-        expected = _is_cow_tensor(self.get(guard))
+        expected = _try_is_cow_tensor(self.get(guard))
+        if not isinstance(expected, bool):
+            raise AssertionError("COW_TENSOR_MATCH requires a plain Tensor")
 
         def guard_fn(x: Any) -> bool:
-            return _is_cow_tensor(x) == expected
+            return _cow_tensor_matches(x, expected)
 
         code = f"torch._C._is_cow_tensor({self.arg_ref(guard)}) == {expected!r}"
         self._set_guard_export_info(guard, [code])
@@ -2957,35 +2983,40 @@ class GuardBuilder(GuardBuilderBase):
         return self.id_match_unchecked(guard)
 
     @register_guard_check_spec(
-        get_metadata_fn=lambda guard, value: len(value),
-        eval_fn=lambda value, metadata: len(value) == metadata,
+        get_metadata_fn=lambda guard, value: _sequence_length(value),
+        eval_fn=lambda value, metadata: _sequence_length(value) == metadata,
     )
     def SEQUENCE_LENGTH(self, guard: Guard) -> None:
         # This guard is used to check length of PySequence objects like list,
         # tuple, collections.deque etc
         ref = self.arg_ref(guard)
         value = self.get(guard)
+        length = _sequence_length(value)
 
         if not isinstance(value, dict):
             # C++ DICT_LENGTH checks for type
             self.TYPE_MATCH(guard)
 
         code = []
-        if len(value) == 0:
+        if isinstance(value, set):
+            code.append(f"set.__len__({ref}) == {length}")
+        elif isinstance(value, frozenset):
+            code.append(f"frozenset.__len__({ref}) == {length}")
+        elif length == 0:
             code.append(f"not {ref}")
         else:
-            code.append(f"len({ref}) == {len(value)}")
+            code.append(f"len({ref}) == {length}")
 
         self._set_guard_export_info(guard, code)
         if isinstance(value, dict):
             self.get_guard_manager(guard).add_dict_length_check_guard(
-                len(value),
+                length,
                 get_verbose_code_parts(code, guard),
                 guard.user_stack,
             )
         else:
             self.get_guard_manager(guard).add_length_check_guard(
-                len(value),
+                length,
                 get_verbose_code_parts(code, guard),
                 guard.user_stack,
             )

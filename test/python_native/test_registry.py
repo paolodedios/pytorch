@@ -497,6 +497,42 @@ class TestRegistryRuntime(TestCase):
 
         self.assertFalse(fn(torch._lazy_clone(torch.tensor([2.0, 3.0]))))
 
+    def test_dynamo_graph_breaks_after_lazy_clone_changes_cow_state(self):
+        @torch.compile(backend="inductor")
+        def fn(a):
+            clone = a._lazy_clone()
+            return torch._C._is_cow_tensor(a), torch._C._is_cow_tensor(clone)
+
+        self.assertEqual(
+            fn(torch.tensor([2.0, 3.0])),
+            (True, True),
+        )
+
+    def test_dynamo_graph_breaks_after_lazy_clone_view_changes_cow_state(self):
+        @torch.compile(backend="eager")
+        def fn(a):
+            view = a.view(-1)
+            clone = view._lazy_clone()
+            return (
+                torch._C._is_cow_tensor(a),
+                torch._C._is_cow_tensor(view),
+                torch._C._is_cow_tensor(clone),
+            )
+
+        self.assertEqual(
+            fn(torch.tensor([2.0, 3.0])),
+            (True, True, True),
+        )
+
+    def test_cow_guard_misses_on_fake_tensor(self):
+        from torch._dynamo.guards import _cow_tensor_matches
+
+        with FakeTensorMode():
+            fake = torch.empty(2)
+
+        self.assertFalse(_cow_tensor_matches(fake, False))
+        self.assertFalse(_cow_tensor_matches(fake, True))
+
     def test_dynamo_allows_previously_mutated_cow_state(self):
         @torch.compile(backend="eager", fullgraph=True)
         def fn(a):

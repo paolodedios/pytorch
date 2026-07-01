@@ -97,6 +97,7 @@ from .functions import (
     bind_args_cached,
     ClosureConversionError,
     NestedUserFunctionVariable,
+    UserFunctionVariable,
 )
 from .lists import ListVariable, TupleVariable
 from .object_protocol import vt_is_iterable
@@ -603,7 +604,7 @@ class BaseTorchVariable(VariableTracker):
             return VariableTracker.build(tx, NotImplemented)
         return VariableTracker.build(tx, result)
 
-    def hash_impl(self, tx: Any) -> tuple[int, bool]:
+    def hash_impl(self, tx: "InstructionTranslatorBase") -> tuple[int, bool]:
         return hash(self.value), False
 
     def richcompare_impl(
@@ -1458,6 +1459,16 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 raise AssertionError(
                     f"_is_cow_tensor expects a tensor, got {arg.python_type_name()}"
                 )
+
+            def has_prior_cow_state_changing_op() -> bool:
+                if not isinstance(arg, TensorVariable):
+                    return False
+                graph = arg.as_proxy().node.graph
+                return any(
+                    node.op == "call_method" and node.target == "_lazy_clone"
+                    for node in graph.nodes
+                )
+
             if arg.source is None:
                 unimplemented(
                     gb_type="source-less COW tensor check",
@@ -1471,7 +1482,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                         "torch.compile regions.",
                     ],
                 )
-            install_guard(arg.source.make_guard(GuardBuilder.COW_TENSOR_MATCH))
             if tx.output.current_tracer.is_export or torch.compiler._is_exporting_flag:
                 unimplemented(
                     gb_type="COW tensor check during export",
@@ -1485,7 +1495,6 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                         "Avoid checking COW state inside torch.export regions.",
                     ],
                 )
-            real_value = arg.get_real_value()  # pyrefly: ignore[missing-attribute]
             fake_version = arg._get_fake_version()  # pyrefly: ignore[missing-attribute]
             if fake_version is not None and fake_version > 0:
                 unimplemented(
@@ -1501,6 +1510,21 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                         "outside the torch.compile region.",
                     ],
                 )
+            if has_prior_cow_state_changing_op():
+                unimplemented(
+                    gb_type="COW tensor check after COW-state-changing op",
+                    context="torch._C._is_cow_tensor after _lazy_clone",
+                    explanation=(
+                        "Dynamo cannot safely fold a COW state check after "
+                        "an op in the current graph may have changed that "
+                        "tensor's COW state."
+                    ),
+                    hints=[
+                        "Move the COW state check before _lazy_clone or outside "
+                        "the torch.compile region.",
+                    ],
+                )
+            real_value = arg.get_real_value()  # pyrefly: ignore[missing-attribute]
             if isinstance(real_value, torch._subclasses.fake_tensor.FakeTensor):
                 unimplemented(
                     gb_type="COW tensor check on FakeTensor",
@@ -1511,9 +1535,11 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                         "FakeTensor metadata."
                     ),
                     hints=[
-                        "Avoid checking COW state inside torch.export regions.",
+                        "Avoid checking COW state on FakeTensors inside "
+                        "torch.compile regions.",
                     ],
                 )
+            install_guard(arg.source.make_guard(GuardBuilder.COW_TENSOR_MATCH))
             return VariableTracker.build(
                 tx,
                 torch._C._is_cow_tensor(  # pyrefly: ignore[missing-attribute]
@@ -2610,46 +2636,68 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 )
 
             message_eager = None
-            message_graph_proxy = None
+            message_graph_arg = None
+            # Realize a possible LazyVariableTracker so the exact-type checks
+            # below see the underlying VariableTracker rather than the wrapper.
             if message_vt is not None:
-                if not isinstance(message_vt, NestedUserFunctionVariable):
+                message_vt = message_vt.realize()
+            match message_vt:
+                case None:
+                    pass
+                case NestedUserFunctionVariable() | UserFunctionVariable() if type(
+                    message_vt
+                ) in (NestedUserFunctionVariable, UserFunctionVariable):
+                    # These report is_python_constant() True (as_python_constant
+                    # returns the underlying fn), so this arm must precede the
+                    # constant arm below. Restrict to exact types: other
+                    # function-VT subclasses (e.g. bound methods, whose
+                    # get_function drops the receiver) cannot be faithfully
+                    # reconstructed as a zero-arg message callable, so they fall
+                    # through to the graph-break arm.
+                    try:
+                        message_eager = message_vt.get_function()
+                    except ClosureConversionError:
+                        unimplemented(
+                            gb_type="Can't convert torch._check*() message closure",
+                            context=str(message_vt),
+                            explanation=(
+                                "The message argument of torch._check*() must be a function "
+                                "whose closure variables are Python constants."
+                            ),
+                            hints=[
+                                "Remove closure variables that reference non-constant values, e.g. "
+                                "remove references to tensor `x` in `lambda: f'{x} failed check'`",
+                                *graph_break_hints.SUPPORTABLE,
+                            ],
+                        )
+
+                    message_graph_arg = tx.output.register_static_attr_and_return_proxy(
+                        "_check_message", message_eager
+                    )
+                case _ if message_vt.is_python_constant():
+                    # Mirror eager torch._check, which accepts any constant and
+                    # stringifies it; None means "use the default message".
+                    message_eager = message_vt.as_python_constant()
+                    if message_eager is not None:
+                        message_graph_arg = str(message_eager)
+                case _:
                     unimplemented(
                         gb_type="Can't extract message from torch._check*()",
                         context=str(message_vt),
                         explanation=(
-                            "The message argument of torch._check*() must be a function "
-                            "defined within the torch.compile region."
+                            "The message argument of torch._check*() must be a string, None, "
+                            "or a function."
                         ),
                         hints=[
                             *graph_break_hints.SUPPORTABLE,
                         ],
                     )
-                try:
-                    message_eager = message_vt.get_function()
-                except ClosureConversionError:
-                    unimplemented(
-                        gb_type="Can't convert torch._check*() message closure",
-                        context=str(message_vt),
-                        explanation=(
-                            "The message argument of torch._check*() must be a function "
-                            "whose closure variables are Python constants."
-                        ),
-                        hints=[
-                            "Remove closure variables that reference non-constant values, e.g. "
-                            "remove references to tensor `x` in `lambda: f'{x} failed check'`",
-                            *graph_break_hints.SUPPORTABLE,
-                        ],
-                    )
-
-                message_graph_proxy = tx.output.register_static_attr_and_return_proxy(
-                    "_check_message", message_eager
-                )
 
             if predicate_vt.is_python_constant():
                 if predicate_vt.as_python_constant():
                     return ConstantVariable.create(None)
                 msg = (
-                    message_eager()
+                    str(message_eager() if callable(message_eager) else message_eager)
                     if message_eager is not None
                     else ("Expected cond to be True, but got False.")
                 )
@@ -2658,10 +2706,10 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
             predicate_proxy = predicate_vt.as_proxy()
 
             proxy_args: tuple[Any, ...]
-            if message_graph_proxy is None:
+            if message_graph_arg is None:
                 proxy_args = (predicate_proxy,)
             else:
-                proxy_args = (predicate_proxy, message_graph_proxy)
+                proxy_args = (predicate_proxy, message_graph_arg)
 
             return wrap_fx_proxy(
                 tx=tx,
