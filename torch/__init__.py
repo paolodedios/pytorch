@@ -2976,6 +2976,54 @@ class _TorchCompileWrapper:
             self.compiler_fn.reset()
 
 
+class _MakeFxTracerWrapper:
+    """Tracer backend for ``torch.compile(tracer="make_fx")``.
+
+    Rather than routing frames through TorchDynamo, this lazily traces ``model``
+    with ``make_fx`` on the first invocation using the real call arguments,
+    hands the resulting ATen-level ``GraphModule`` to the configured backend
+    (e.g. inductor), and caches the compiled callable. There are no guards or
+    recompilation: the graph captured on the first call is reused for every
+    subsequent call, so callers are responsible for shape stability.
+    """
+
+    def __init__(
+        self,
+        model: _Callable[..., _Any],
+        backend: _Any,
+        tracing_mode: str,
+    ) -> None:
+        self.model = model
+        self.backend = backend
+        self.tracing_mode = tracing_mode
+        self.compiled_fn: _Callable[..., _Any] | None = None
+
+    def __call__(self, *args: _Any, **kwargs: _Any) -> _Any:
+        from torch.fx.experimental.proxy_tensor import make_fx
+        from torch.utils._pytree import tree_flatten, tree_unflatten
+
+        flat_args, in_spec = tree_flatten((args, kwargs))
+
+        if self.compiled_fn is None:
+
+            def flat_model(*flat: _Any) -> _Any:
+                fn_args, fn_kwargs = tree_unflatten(list(flat), in_spec)
+                return self.model(*fn_args, **fn_kwargs)
+
+            gm = make_fx(flat_model, tracing_mode=self.tracing_mode)(*flat_args)
+            if self.tracing_mode == "symbolic":
+                # Hand the backend the fake placeholder tensors that carry the
+                # symbolic shape env, so it emits one dynamic kernel instead of
+                # re-specializing on the concrete trace-time shapes.
+                placeholders = [n for n in gm.graph.nodes if n.op == "placeholder"]
+                example_inputs = [n.meta["val"] for n in placeholders]
+            else:
+                example_inputs = list(flat_args)
+            self.compiled_fn = self.backend(gm, example_inputs)
+
+        return self.compiled_fn(*flat_args)
+
+
 _InputT = _ParamSpec("_InputT")
 _RetT = _TypeVar("_RetT")
 
@@ -2992,6 +3040,7 @@ def compile(
     | None = None,
     name: str | None = None,
     disable: builtins.bool = False,
+    tracer: str = "dynamo",
     dynamic_shapes: _Any = None,
 ) -> _Callable[_InputT, _RetT]: ...
 
@@ -3008,6 +3057,7 @@ def compile(
     | None = None,
     name: str | None = None,
     disable: builtins.bool = False,
+    tracer: str = "dynamo",
     dynamic_shapes: _Any = None,
 ) -> _Callable[[_Callable[_InputT, _RetT]], _Callable[_InputT, _RetT]]: ...
 
@@ -3025,6 +3075,7 @@ def compile(
     disable: builtins.bool = False,
     recompile_limit: builtins.int | None = None,
     isolate_recompiles: builtins.bool = False,
+    tracer: str = "dynamo",
     dynamic_shapes: _Any = None,
 ) -> (
     _Callable[[_Callable[_InputT, _RetT]], _Callable[_InputT, _RetT]]
@@ -3137,6 +3188,19 @@ def compile(
         by a non-isolated region hitting its recompile limit does NOT bleed
         into isolated regions — each region manages its own RUN_ONLY state.
         Default False.
+       tracer (str): Which mechanism captures the graph that ``backend`` compiles.
+
+        - "dynamo" (default) uses TorchDynamo, i.e. bytecode analysis with guards,
+          graph breaks and automatic recompilation.
+
+        - "make_fx" bypasses TorchDynamo and traces the function with
+          ``torch.fx.experimental.proxy_tensor.make_fx`` on its first call using
+          the real arguments, then hands the resulting ATen-level graph to
+          ``backend``. This is experimental: there are no guards or
+          recompilation, so the graph captured on the first call is reused for
+          every subsequent call, and ``fullgraph`` is ignored. ``dynamic=True``
+          traces with symbolic shapes and produces a single dynamic kernel;
+          otherwise shapes are specialized to the first call.
 
     Example::
 
@@ -3158,6 +3222,11 @@ def compile(
         raise RuntimeError(
             "torch.compile is not supported on Python < 3.13.3 built with GIL disabled. "
             "Please use Python 3.13.3+."
+        )
+
+    if tracer not in ("dynamo", "make_fx"):
+        raise RuntimeError(
+            f'Unknown tracer {tracer!r}, expected one of "dynamo" or "make_fx".'
         )
 
     if backend is None:
@@ -3196,6 +3265,7 @@ def compile(
                 disable=disable,
                 recompile_limit=recompile_limit,
                 isolate_recompiles=isolate_recompiles,
+                tracer=tracer,
                 dynamic_shapes=dynamic_shapes,
             )
 
@@ -3246,6 +3316,12 @@ def compile(
             backend = _TorchCompileInductorWrapper(mode, options, dynamic, name)
     else:
         backend = _TorchCompileWrapper(backend, mode, options, dynamic)
+
+    if tracer == "make_fx":
+        if disable:
+            return model
+        tracing_mode = "symbolic" if dynamic else "real"
+        return _MakeFxTracerWrapper(model, backend, tracing_mode=tracing_mode)
 
     return torch._dynamo.optimize(
         backend=backend,
