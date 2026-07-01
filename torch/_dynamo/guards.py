@@ -189,7 +189,6 @@ from .utils import (
     normalize_count_iter,
     normalize_range_iter,
     orig_code_map,
-    set_getitem,
     tuple_iterator_getitem,
     tuple_iterator_len,
     verify_guard_fn_signature,
@@ -226,14 +225,6 @@ recompiles_verbose_log = torch._logging.getArtifactLogger(
     __name__, "recompiles_verbose"
 )
 verbose_guards_log = torch._logging.getArtifactLogger(__name__, "verbose_guards")
-
-
-def _sequence_length(value: Any) -> int:
-    if isinstance(value, set):
-        return set.__len__(value)
-    if isinstance(value, frozenset):
-        return frozenset.__len__(value)
-    return len(value)
 
 
 dunder_attrs_assumed_constants = (
@@ -782,7 +773,6 @@ def _get_closure_vars() -> dict[str, object]:
             "___normalize_count_iter": normalize_count_iter,
             "___normalize_range_iter": normalize_range_iter,
             "___tuple_iterator_getitem": tuple_iterator_getitem,
-            "___set_getitem": set_getitem,
             "___dataclass_fields": dataclass_fields,
             "___namedtuple_fields": lambda x: x._fields,
             "___get_torch_function_mode_stack_at": get_torch_function_mode_stack_at,
@@ -2945,40 +2935,35 @@ class GuardBuilder(GuardBuilderBase):
         return self.id_match_unchecked(guard)
 
     @register_guard_check_spec(
-        get_metadata_fn=lambda guard, value: _sequence_length(value),
-        eval_fn=lambda value, metadata: _sequence_length(value) == metadata,
+        get_metadata_fn=lambda guard, value: len(value),
+        eval_fn=lambda value, metadata: len(value) == metadata,
     )
     def SEQUENCE_LENGTH(self, guard: Guard) -> None:
         # This guard is used to check length of PySequence objects like list,
         # tuple, collections.deque etc
         ref = self.arg_ref(guard)
         value = self.get(guard)
-        length = _sequence_length(value)
 
         if not isinstance(value, dict):
             # C++ DICT_LENGTH checks for type
             self.TYPE_MATCH(guard)
 
         code = []
-        if isinstance(value, set):
-            code.append(f"set.__len__({ref}) == {length}")
-        elif isinstance(value, frozenset):
-            code.append(f"frozenset.__len__({ref}) == {length}")
-        elif length == 0:
+        if len(value) == 0:
             code.append(f"not {ref}")
         else:
-            code.append(f"len({ref}) == {length}")
+            code.append(f"len({ref}) == {len(value)}")
 
         self._set_guard_export_info(guard, code)
         if isinstance(value, dict):
             self.get_guard_manager(guard).add_dict_length_check_guard(
-                length,
+                len(value),
                 get_verbose_code_parts(code, guard),
                 guard.user_stack,
             )
         else:
             self.get_guard_manager(guard).add_length_check_guard(
-                length,
+                len(value),
                 get_verbose_code_parts(code, guard),
                 guard.user_stack,
             )
