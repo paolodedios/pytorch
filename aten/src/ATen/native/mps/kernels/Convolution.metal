@@ -75,20 +75,20 @@ kernel void conv2d(
   }
 }
 
-#define REGISTER_CONV2D_OP(DTYPE, ITYPE, INAME, R)                    \
+#define REGISTER_CONV2D_OP(DTYPE, ITYPE, INAME, R)                       \
   template [[host_name("conv2d_r" #R "_" INAME "_" #DTYPE)]] kernel void \
-  conv2d<DTYPE, ITYPE, R>(                                            \
-      constant DTYPE * input [[buffer(0)]],                           \
-      constant DTYPE * weight [[buffer(1)]],                          \
-      constant DTYPE * bias [[buffer(2)]],                            \
-      device DTYPE * output [[buffer(3)]],                            \
-      constant Conv2DParams & p [[buffer(4)]],                        \
+  conv2d<DTYPE, ITYPE, R>(                                               \
+      constant DTYPE * input [[buffer(0)]],                              \
+      constant DTYPE * weight [[buffer(1)]],                             \
+      constant DTYPE * bias [[buffer(2)]],                               \
+      device DTYPE * output [[buffer(3)]],                               \
+      constant Conv2DParams & p [[buffer(4)]],                           \
       uint tid [[thread_position_in_grid]]);
 
-#define REGISTER_CONV2D_DTYPE(DTYPE)          \
-  REGISTER_CONV2D_OP(DTYPE, int, "i32", 1);   \
-  REGISTER_CONV2D_OP(DTYPE, int, "i32", 4);   \
-  REGISTER_CONV2D_OP(DTYPE, long, "i64", 1);  \
+#define REGISTER_CONV2D_DTYPE(DTYPE)         \
+  REGISTER_CONV2D_OP(DTYPE, int, "i32", 1);  \
+  REGISTER_CONV2D_OP(DTYPE, int, "i32", 4);  \
+  REGISTER_CONV2D_OP(DTYPE, long, "i64", 1); \
   REGISTER_CONV2D_OP(DTYPE, long, "i64", 4);
 
 REGISTER_CONV2D_DTYPE(float);
