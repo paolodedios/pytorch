@@ -6483,11 +6483,19 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
             val = tos.next_variable(self)
         except (StopIteration, exc.ObservedUserStopIteration) as ex:
             if isinstance(ex, exc.ObservedUserStopIteration):
+                # `yield from` evaluates to the subgenerator's return value,
+                # which rides on the raised StopIteration's args. Read it off
+                # the exception stack before clearing (mirrors SEND); the
+                # Python-level `ex.value` only holds a debug message.
+                raised = self.exn_vt_stack.get_raised_exception()
+                result = raised.args[0] if raised.args else ConstantVariable.create(None)
                 exc.handle_observed_exception(self)
+            else:
+                result = ConstantVariable.create(ex.value)
 
             # The iterator is exhausted. Stop the loop and return.
             self.pop()
-            self.push(ConstantVariable.create(ex.value))
+            self.push(result)
         else:
             # Repeat the YIELD_FROM instruction in the next eval loop
             if not isinstance(self.instruction_pointer, int):
