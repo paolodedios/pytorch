@@ -1865,9 +1865,6 @@ op_db: list[OpInfo] = [
                 "test_out_warning",
                 device_type="mps",
             ),
-            DecorateInfo(
-                unittest.expectedFailure, "TestCommon", "test_out", device_type="mps"
-            ),
         ),
     ),
     OpInfo(
