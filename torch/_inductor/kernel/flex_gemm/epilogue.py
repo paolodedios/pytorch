@@ -143,22 +143,24 @@ class FlexGemmCuteDSLOpOverrides(CuteDSLOpOverrides):
 
 @dataclasses.dataclass(frozen=True)
 class FlexGemmOutputLocalReducePlan:
-    """Bind one local-reduce value to either compressed output or feed-main."""
+    """Bind one physical local-reduce value to store and/or feed consumers."""
 
     geometry: FlexGemmLocalReduceGeometry
-    node: torch.fx.Node
-    out_node: torch.fx.Node | None = None
+    value_node: torch.fx.Node
+    store_node: torch.fx.Node | None = None
+    feeds_main: bool = False
 
     def __post_init__(self) -> None:
         """Reject invalid local-reduce output nodes."""
-        if not isinstance(self.node, torch.fx.Node) or (
-            self.out_node is not None and not isinstance(self.out_node, torch.fx.Node)
+        if (
+            not isinstance(self.value_node, torch.fx.Node)
+            or (
+                self.store_node is not None
+                and not isinstance(self.store_node, torch.fx.Node)
+            )
+            or (self.store_node is None and not self.feeds_main)
         ):
             raise RuntimeError(LOCAL_REDUCE_OUTPUT_PLAN_NODE_ERROR)
-
-    @property
-    def feeds_main(self) -> bool:
-        return self.out_node is None
 
     @property
     def group(self) -> int:
@@ -201,18 +203,15 @@ class FlexGemmLocalReduceContract:
         if not isinstance(self.aux, torch.fx.Node):
             raise RuntimeError(LOCAL_REDUCE_CONTRACT_NODE_ERROR)
 
-    def to_compressed_aux_plan(
-        self, node: torch.fx.Node
+    def to_plan(
+        self, *, store_node: torch.fx.Node | None = None, feeds_main: bool = False
     ) -> FlexGemmOutputLocalReducePlan:
-        """Bind this reduction contract to a compressed aux output."""
+        """Bind this reduction value to the requested local-reduce consumers."""
         return FlexGemmOutputLocalReducePlan(
-            FlexGemmLocalReduceGeometry(self.group, self.axis), node, out_node=node
-        )
-
-    def to_feed_main_plan(self) -> FlexGemmOutputLocalReducePlan:
-        """Bind this reduction contract to the main epilogue consumer."""
-        return FlexGemmOutputLocalReducePlan(
-            FlexGemmLocalReduceGeometry(self.group, self.axis), self.aux
+            FlexGemmLocalReduceGeometry(self.group, self.axis),
+            self.aux,
+            store_node=store_node,
+            feeds_main=feeds_main,
         )
 
 
@@ -809,7 +808,7 @@ def local_reduce_compressed_aux_plan(
     )
     if expected_aux_shape != tuple(aux_meta.shape):
         return None
-    return contract.to_compressed_aux_plan(aux)
+    return contract.to_plan(store_node=aux)
 
 
 def local_reduce_feed_main_output_plan(
@@ -823,7 +822,7 @@ def local_reduce_feed_main_output_plan(
     return FlexGemmOutputPlan(
         output,
         aux_outputs,
-        feed_contract.to_feed_main_plan(),
+        feed_contract.to_plan(feeds_main=True),
     )
 
 
@@ -845,17 +844,27 @@ def tuple_output_plan(
         isinstance(aux_output, torch.fx.Node) for aux_output in aux_outputs
     ):
         raise NotImplementedError(FLEX_GEMM_OUTPUT_TENSOR_ERROR)
+    feed_contract = common_local_reduce_feed_main_contract((output, *aux_outputs))
     if analysis is not None:
         compressed_aux_plans = tuple(
-            (index, plan)
+            (index, contract, plan)
             for index, aux_output in enumerate(aux_outputs)
+            if (contract := analysis.contract_for(aux_output)) is not None
             if (plan := local_reduce_compressed_aux_plan(analysis, output, aux_output))
             is not None
         )
         if len(compressed_aux_plans) > 1:
             raise NotImplementedError(LOCAL_REDUCE_MIXED_CONTRACT_ERROR)
         if compressed_aux_plans:
-            local_reduce_index, compressed_aux_plan = compressed_aux_plans[0]
+            local_reduce_index, compressed_contract, compressed_aux_plan = (
+                compressed_aux_plans[0]
+            )
+            if feed_contract is not None:
+                if feed_contract.aux is not compressed_contract.aux:
+                    raise NotImplementedError(LOCAL_REDUCE_ONE_PHYSICAL_VALUE_ERROR)
+                compressed_aux_plan = feed_contract.to_plan(
+                    store_node=aux_outputs[local_reduce_index], feeds_main=True
+                )
             return FlexGemmOutputPlan(
                 output,
                 tuple(
@@ -934,13 +943,12 @@ def materialize_flex_gemm_epilogue(
     local_reduce_feed_main_input = None
     if local_reduce is not None:
         if local_reduce.feeds_main:
-            local_reduce_feed_main = local_reduce.node
-            reduction = reduction_from_node(local_reduce.node)
+            local_reduce_feed_main = local_reduce.value_node
+            reduction = reduction_from_node(local_reduce.value_node)
             local_reduce_feed_main_input = (
                 reduction[0] if reduction is not None else None
             )
-        else:
-            local_reduce_aux = local_reduce.out_node
+        local_reduce_aux = local_reduce.store_node
     with V.set_kernel_handler(kernel), V.set_ops_handler(FlexGemmCuteDSLOpOverrides()):
         for index, node in enumerate(epilogue_arg_placeholders):
             epilogue_arg_meta = node.meta["val"]
@@ -1120,7 +1128,9 @@ def materialize_flex_gemm_epilogue(
         result = f"({', '.join(str(item) for item in tuple_items)})"
     physical_reduction = None
     if local_reduce is not None:
-        physical_reduction = local_reduce_physical_reductions.get(local_reduce.node)
+        physical_reduction = local_reduce_physical_reductions.get(
+            local_reduce.value_node
+        )
     physical_reduction_payload = (
         ""
         if physical_reduction is None

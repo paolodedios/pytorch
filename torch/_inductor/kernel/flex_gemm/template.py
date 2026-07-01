@@ -29,10 +29,11 @@ log = logging.getLogger(__name__)
 
 @dataclasses.dataclass(frozen=True)
 class FlexGemmEpilogueLocalReduceConfig:
-    """Base template-time local-reduce metadata shared by concrete consumers."""
+    """Template-time local-reduce metadata for output and/or feed-main consumers."""
 
     geometry: FlexGemmLocalReduceGeometry
     out_index: int | None = None
+    feeds_main: bool = False
 
     @classmethod
     def from_output_plan(
@@ -41,13 +42,19 @@ class FlexGemmEpilogueLocalReduceConfig:
         """Translate lowering's output-consumer plan into template metadata."""
         if local_reduce is None:
             return None
-        if local_reduce.out_node is None:
+        if local_reduce.store_node is None:
             if out_index is not None:
                 raise RuntimeError("feed-main local reductions cannot have out_index")
-            return FlexGemmEpilogueLocalReduceConfig(local_reduce.geometry)
+            if not local_reduce.feeds_main:
+                raise RuntimeError(LOCAL_REDUCE_TEMPLATE_OUT_INDEX_ERROR)
+            return FlexGemmEpilogueLocalReduceConfig(
+                local_reduce.geometry, feeds_main=True
+            )
         if out_index is None:
             raise RuntimeError(LOCAL_REDUCE_TEMPLATE_OUT_INDEX_ERROR)
-        return FlexGemmEpilogueLocalReduceConfig(local_reduce.geometry, out_index)
+        return FlexGemmEpilogueLocalReduceConfig(
+            local_reduce.geometry, out_index, local_reduce.feeds_main
+        )
 
     @property
     def group(self) -> int:
@@ -60,10 +67,6 @@ class FlexGemmEpilogueLocalReduceConfig:
     @property
     def needs_physical_callbacks(self) -> bool:
         return self.geometry.needs_physical_callbacks
-
-    @property
-    def feeds_main(self) -> bool:
-        return self.out_index is None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -252,6 +255,8 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
         plan = f"FlexGemmRuntimeLocalReducePlan({geometry}"
         if local_reduce.out_index is not None:
             plan += f", out={input_args[local_reduce.out_index]}"
+        if local_reduce.feeds_main:
+            plan += ", feeds_main=True"
         if local_reduce.feeds_main or local_reduce.needs_physical_callbacks:
             plan += f", callbacks={self._local_reduce_callbacks(epilogue_name)}"
         return f", local_reduce={plan})"

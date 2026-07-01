@@ -390,10 +390,14 @@ class GemmActMixin(ComposableEpiMixin):
                     aux_results.append(tRS_rAuxOut)
                 if const_expr(params.tensor_epilogue_returns_local_reduce):
                     tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
+                    if const_expr(params.local_reduce_feeds_main):
+                        tDrColVecReduce = tDrColVecReduce[1]
                     tDrColVecReduce.store(epilogue_result[len(params.mAuxOut) + 1])
                 tRS_rAuxOut = tuple(aux_results)
             elif const_expr(params.tensor_epilogue_returns_local_reduce):
                 tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
+                if const_expr(params.local_reduce_feeds_main):
+                    tDrColVecReduce = tDrColVecReduce[1]
                 tRS_rD.store(epilogue_result[0])
                 tDrColVecReduce.store(epilogue_result[1])
                 tRS_rAuxOut = cute.make_rmem_tensor(
@@ -708,7 +712,8 @@ def _compile_gemm_act(
         local_reduce_shape = None
     mColVecReduce = (
         None
-        if local_reduce_feeds_main or local_reduce_dtype is None
+        if local_reduce_dtype is None
+        or (local_reduce_feeds_main and local_reduce_ndim == 0)
         else fake_tensor(
             local_reduce_dtype,
             local_reduce_shape,
@@ -959,8 +964,6 @@ def gemm_act(
             "tensor_epilogue_returns_local_reduce requires local_reduce_out and vice versa"
         )
     if local_reduce_feeds_main:
-        if local_reduce_out is not None:
-            raise RuntimeError("local_reduce_feeds_main cannot store local_reduce_out")
         if local_reduce_axis != 0:
             raise NotImplementedError("local_reduce_feeds_main currently supports only axis 0")
         if local_reduce_group <= 0:

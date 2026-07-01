@@ -193,24 +193,23 @@ def normalize_c(
 
 @dataclasses.dataclass(frozen=True)
 class FlexGemmRuntimeLocalReducePlan:
-    """Runtime plan for one local reduction and its optional output binding."""
+    """Runtime plan for one local reduction and its output/feed-main consumers."""
 
     geometry: FlexGemmLocalReduceGeometry
     out: torch.Tensor | None = None
     callbacks: FlexGemmLocalReduceCallbacks | None = None
+    feeds_main: bool = False
 
     def __post_init__(self) -> None:
         """Reject plans without the output/callback state required by their consumer."""
+        if self.out is None and not self.feeds_main:
+            raise RuntimeError(LOCAL_REDUCE_RUNTIME_OUT_ERROR)
         if self.feeds_main:
             if self.callbacks is None:
                 raise RuntimeError(LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR)
             validate_local_reduce_feed_main_capability(self.axis, self.group)
         elif self.geometry.needs_physical_callbacks and self.callbacks is None:
             raise RuntimeError(LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR)
-
-    @property
-    def feeds_main(self) -> bool:
-        return self.out is None
 
     @property
     def group(self) -> int:
@@ -238,16 +237,15 @@ def validate_runtime_local_reduce(
     validate_local_reduce_no_c_alpha_beta(effective_C, alpha, beta)
     if plan.feeds_main:
         validate_local_reduce_feed_main_capability(plan.axis, plan.group)
-        return
     local_reduce_out = plan.out
     if local_reduce_out is None:
-        raise RuntimeError(LOCAL_REDUCE_RUNTIME_OUT_ERROR)
+        return
     check_matrix("local_reduce_out", local_reduce_out)
     check_matrix_major_layout("local_reduce_out", local_reduce_out)
-    expected_local_reduce_shape = local_reduce_compressed_shape(
-        expected_shape, plan.group, plan.axis
+    validate_local_reduce_out_shape(
+        local_reduce_out.shape,
+        local_reduce_compressed_shape(expected_shape, plan.group, plan.axis),
     )
-    validate_local_reduce_out_shape(local_reduce_out.shape, expected_local_reduce_shape)
 
 
 def local_reduce_callback_key(callback: Any, fallback_key: str) -> str:

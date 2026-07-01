@@ -362,8 +362,9 @@ class FlexGemmTestCase(TestCase):
             )
         return FlexGemmRuntimeLocalReducePlan(
             FlexGemmLocalReduceGeometry(group, axis),
-            out=None if feeds_main else out,
+            out=out,
             callbacks=callbacks,
+            feeds_main=feeds_main,
         )
 
     def assertMatchesEpilogue(
@@ -839,14 +840,18 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             FlexGemmRuntimeLocalReducePlan,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "generated local-reduce callbacks"):
+        with self.assertRaisesRegex(RuntimeError, "local_reduce_out"):
             FlexGemmRuntimeLocalReducePlan(FlexGemmLocalReduceGeometry(8, 0))
         with self.assertRaisesRegex(RuntimeError, "generated local-reduce callbacks"):
             FlexGemmRuntimeLocalReducePlan(
                 FlexGemmLocalReduceGeometry(8, 0), out=torch.empty(1)
             )
+        with self.assertRaisesRegex(RuntimeError, "generated local-reduce callbacks"):
+            FlexGemmRuntimeLocalReducePlan(
+                FlexGemmLocalReduceGeometry(8, 0), feeds_main=True
+            )
 
-    def test_local_reduce_plan_uses_output_binding_as_consumer(self):
+    def test_local_reduce_plan_uses_explicit_consumers(self):
         from torch._inductor.kernel.flex_gemm.constraints import (
             FlexGemmLocalReduceCallbacks,
             FlexGemmLocalReduceGeometry,
@@ -863,14 +868,31 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         )
         geometry = FlexGemmLocalReduceGeometry(8, 0)
         self.assertTrue(
-            FlexGemmRuntimeLocalReducePlan(geometry, callbacks=callbacks).feeds_main
+            FlexGemmRuntimeLocalReducePlan(
+                geometry, callbacks=callbacks, feeds_main=True
+            ).feeds_main
+        )
+        self.assertTrue(
+            FlexGemmRuntimeLocalReducePlan(
+                geometry,
+                out=torch.empty(1),
+                callbacks=callbacks,
+                feeds_main=True,
+            ).feeds_main
         )
         self.assertFalse(
             FlexGemmRuntimeLocalReducePlan(
                 geometry, out=torch.empty(1), callbacks=callbacks
             ).feeds_main
         )
-        self.assertTrue(FlexGemmEpilogueLocalReduceConfig(geometry).feeds_main)
+        self.assertTrue(
+            FlexGemmEpilogueLocalReduceConfig(geometry, feeds_main=True).feeds_main
+        )
+        self.assertTrue(
+            FlexGemmEpilogueLocalReduceConfig(
+                geometry, out_index=0, feeds_main=True
+            ).feeds_main
+        )
         self.assertFalse(
             FlexGemmEpilogueLocalReduceConfig(geometry, out_index=0).feeds_main
         )
@@ -905,13 +927,15 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             node,
             (aux,),
             FlexGemmOutputLocalReducePlan(
-                FlexGemmLocalReduceGeometry(8, 0), aux, out_node=aux
+                FlexGemmLocalReduceGeometry(8, 0), aux, store_node=aux
             ),
         )
         FlexGemmOutputPlan(
             node,
             (aux,),
-            FlexGemmOutputLocalReducePlan(FlexGemmLocalReduceGeometry(8, 0), aux),
+            FlexGemmOutputLocalReducePlan(
+                FlexGemmLocalReduceGeometry(8, 0), aux, feeds_main=True
+            ),
         )
 
     def test_local_reduce_feed_main_binary_candidates_support_method_nodes(self):
@@ -2652,6 +2676,55 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             a.shape[1],
         )
         self.assertPhysicalFeedMainCode(code, group)
+
+    @skipIfNoCuteDSL
+    @unittest.skipIf(not TEST_CUDA, "CUDA required")
+    @unittest.skipIf(not SM100OrLater, "SM100+ required")
+    def test_mm_local_m_reduce_feeds_main_and_returns_scale(self):
+        m = 128
+        n = 64
+        group = 8
+
+        def epilogue_fn(acc):
+            x = acc.float().view(-1, group, n)
+            scale = x.sum(1, keepdim=True)
+            return (x * scale.reciprocal()).view(m, n), scale.squeeze(1)
+
+        def fn(a, b):
+            return flex_gemm(
+                torch.mm,
+                (a, b),
+                epilogue_fn,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.rand(m, 64, device="cuda", dtype=torch.bfloat16)
+        b = torch.rand(64, n, device="cuda", dtype=torch.bfloat16)
+        (actual, scale), (code,) = run_and_get_code(
+            torch.compile(fn, backend="inductor", fullgraph=True), a, b
+        )
+
+        expected, expected_scale = epilogue_fn(a @ b)
+        high_precision_expected, high_precision_scale = epilogue_fn(
+            a.double() @ b.double()
+        )
+        self.assertMatchesLowPrecisionEager(
+            actual,
+            expected,
+            high_precision_expected,
+            a.shape[1],
+        )
+        torch.testing.assert_close(
+            scale,
+            high_precision_scale.float(),
+            atol=1e-3,
+            rtol=1e-3,
+        )
+        FileCheck().check("local_reduce=FlexGemmRuntimeLocalReducePlan").check(
+            self.localReduceGeometryPattern(group, 0)
+        ).check("out=").check("feeds_main=True").check(
+            "callbacks=FlexGemmLocalReduceCallbacks"
+        ).check_not("local_reduce_group=").check_not("local_reduce_op").run(code)
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")

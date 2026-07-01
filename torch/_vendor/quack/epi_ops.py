@@ -1233,7 +1233,18 @@ class GroupedColVecReduce(VecReduce):
                 lane_layout_MN, _ = _get_lane_warp_layouts(
                     tiled_copy, ctx.tiled_copy_t2r is None
                 )
-                result = (lane_layout_MN,)
+                if const_expr(param[0] is None):
+                    result = (lane_layout_MN,)
+                else:
+                    vec_mma_layout = cute.make_layout((ctx.tile_M, ctx.tile_N))
+                    tDrReduce_layout = ctx.partition_for_epilogue_fn(
+                        cute.make_rmem_tensor(vec_mma_layout, Float32)
+                    ).layout
+                    result = (
+                        lane_layout_MN,
+                        cute.make_rmem_tensor(tDrReduce_layout, Float32),
+                        smem_tensor,
+                    )
             else:
                 vec_mma_layout = cute.make_layout((ctx.tile_M, ctx.tile_N))
                 tDrReduce_layout = ctx.partition_for_epilogue_fn(
@@ -1247,7 +1258,12 @@ class GroupedColVecReduce(VecReduce):
         result = None
         if const_expr(state is not None):
             if const_expr(gemm.local_reduce_feeds_main):
-                return state
+                if const_expr(len(state) == 1):
+                    return state
+                tDrReduce = state[1]
+                tDrReduce_cur = tDrReduce[None, None, None, epi_coord[0], epi_coord[1]]
+                cute.filter_zeros(tDrReduce_cur).fill(0.0)
+                return (state[0], tDrReduce_cur)
             tDrReduce = state[0]
             result = tDrReduce[None, None, None, epi_coord[0], epi_coord[1]]
             cute.filter_zeros(result).fill(0.0)
@@ -1268,14 +1284,14 @@ class GroupedColVecReduce(VecReduce):
         tidx,
     ):
         if const_expr(param is not None):
-            if const_expr(param[3]):
+            if const_expr(param[3] and param[0] is None):
                 return
             param_tensor = param[0]
             combine_fn = const_expr(param[1])
             finalize_fn = const_expr(param[2])
             group = const_expr(gemm.local_reduce_group)
             axis = const_expr(gemm.local_reduce_axis)
-            tDrReduce = state[0]
+            tDrReduce = state[1] if const_expr(param[3]) else state[0]
             tDrReduce_cur = tDrReduce[None, None, None, epi_coord[0], epi_coord[1]]
             tiled_copy = tiled_copy_t2r if tiled_copy_t2r is not None else tiled_copy_r2s
             partition_for_epilogue_fn = partial(
