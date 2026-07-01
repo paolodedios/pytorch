@@ -7691,6 +7691,25 @@ for dtype in (torch.int32, torch.int64):
 
         self.assertEqual(o1, o2)
 
+    def test_view_as_complex_non_contiguous(self):
+        # A transposed tensor can still be a valid view_as_complex input.
+        # Inductor should compile it without forcing the input fully
+        # contiguous.
+        def fn(x):
+            return torch.view_as_complex(x)
+
+        inp = (
+            torch.arange(8, dtype=torch.float32)
+            .reshape(2, 2, 2)
+            .transpose(0, 1)
+            .to(self.device)
+        )
+
+        o1 = fn(inp)
+        o2 = torch.compile(fn)(inp)
+
+        self.assertEqual(o1, o2)
+
     def test_view_as_real(self):
         def fn(x):
             y = torch.view_as_real(x)
