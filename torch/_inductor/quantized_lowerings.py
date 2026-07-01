@@ -178,3 +178,7 @@ def register_woq_mm_ops() -> None:
 
     lowering.make_fallback(aten._dyn_quant_matmul_4bit)
     lowering.make_fallback(aten._dyn_quant_pack_4bit_weight)
+
+
+register_quantized_ops()
+register_woq_mm_ops()
