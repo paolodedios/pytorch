@@ -50,10 +50,8 @@ from torch._inductor.kernel.flex_gemm.quack_reductions import (
     lower_getitem,
     lower_prepare_softmax_online,
     lower_squeeze,
-    lower_tensorssa_moment_reduce,
     lower_tensorssa_reduce,
     lower_view_or_reshape,
-    moment_reduction_from_node,
     propagate_grouped_tensorssa_info,
     reduction_from_node,
     unsupported_reduction_from_node,
@@ -382,14 +380,6 @@ def local_reduce_feed_value_contract(
         ):
             raise NotImplementedError(LOCAL_REDUCE_ONE_PHYSICAL_VALUE_ERROR)
         return FlexGemmLocalReduceContract(value, layout.group_size, layout.axis)
-    moment_reduction = moment_reduction_from_node(value)
-    if moment_reduction is not None:
-        input_node = moment_reduction[0]
-        if isinstance(input_node, torch.fx.Node) and fx_node_depends_on(
-            input_node, grouped_source
-        ):
-            raise NotImplementedError(LOCAL_REDUCE_SOURCE_EXPRESSION_ERROR)
-        raise NotImplementedError(LOCAL_REDUCE_ONE_PHYSICAL_VALUE_ERROR)
     if not is_shape_preserving_pointwise_node(value):
         return None
     contracts = [
@@ -475,9 +465,6 @@ def validate_feed_main_source_reductions(
     reduction = reduction_from_node(value)
     if reduction is not None:
         validate_hidden_feed_main_reduction_input(reduction[0], grouped_source)
-    moment_reduction = moment_reduction_from_node(value)
-    if moment_reduction is not None:
-        validate_hidden_feed_main_reduction_input(moment_reduction[0], grouped_source)
     for arg in iter_fx_node_inputs((value.args, value.kwargs)):
         validate_feed_main_source_reductions(
             arg, grouped_source, selected_reduction, seen
@@ -759,11 +746,6 @@ def local_reduce_analysis(
                 node, input_node, dim, raise_invalid_dims=False
             ):
                 continue
-        moment_reduction = moment_reduction_from_node(node)
-        if moment_reduction is not None:
-            input_node, dim, _, _, _ = moment_reduction
-            if analysis.bind_grouped_reduction(node, input_node, dim):
-                continue
         unsupported_reduction = unsupported_reduction_from_node(node)
         if unsupported_reduction is not None:
             input_node = node.args[0]
@@ -1014,12 +996,6 @@ def materialize_flex_gemm_epilogue(
                     )
                     if lowered_view is not None:
                         env[node] = lowered_view
-                        continue
-                    lowered_moment_reduce = lower_tensorssa_moment_reduce(
-                        node, env, kernel, grouped_tensors, local_reduce_store_sources
-                    )
-                    if lowered_moment_reduce is not None:
-                        env[node] = lowered_moment_reduce
                         continue
                     lowered_reduce = lower_tensorssa_reduce(
                         node,

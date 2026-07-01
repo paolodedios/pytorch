@@ -10,11 +10,7 @@ from unittest import mock
 
 import torch
 from torch._higher_order_ops import flex_gemm
-from torch._higher_order_ops.flex_gemm import (
-    _SUPPORTED_FLEX_GEMM_OP_NAMES,
-    mx_e8m0_scale,
-    nvfp4_e4m3_scale,
-)
+from torch._higher_order_ops.flex_gemm import _SUPPORTED_FLEX_GEMM_OP_NAMES
 from torch._inductor.utils import run_and_get_code
 from torch.testing import FileCheck
 from torch.testing._internal.common_cuda import SM100OrLater, TEST_CUDA
@@ -2239,48 +2235,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    @parametrize(
-        "case",
-        (
-            ("mx", mx_e8m0_scale, "bitcast"),
-            ("nvfp4", nvfp4_e4m3_scale, " / 6.0"),
-        ),
-        name_fn=lambda case: case[0],
-    )
-    def test_mm_tuple_aux_large_n_local_reduce_supports_scale_finalizer(self, case):
-        _, scale_fn, code_check = case
-        m = 64
-        n = 128
-        k = 64
-        group = 64
-
-        def epilogue_fn(acc):
-            x = acc.float().view(m, -1, group)
-            return acc.relu(), scale_fn(x.abs().amax(-1))
-
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                epilogue_fn,
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.ones(m, k, device="cuda", dtype=torch.bfloat16)
-        b = torch.ones(k, n, device="cuda", dtype=torch.bfloat16)
-        (actual, aux), (code,) = run_and_get_code(
-            torch.compile(fn, backend="inductor", fullgraph=True), a, b
-        )
-
-        expected, expected_aux = epilogue_fn(a @ b)
-        torch.testing.assert_close(actual, expected)
-        torch.testing.assert_close(aux.float(), expected_aux.float())
-        FileCheck().check(code_check).check("local_reduce_finalize_fn").run(code)
-        self.assertLocalReduceAuxCode(code, group, callbacks=True)
-
-    @skipIfNoCuteDSL
-    @unittest.skipIf(not TEST_CUDA, "CUDA required")
-    @unittest.skipIf(not SM100OrLater, "SM100+ required")
     @parametrize("group", (64, 128))
     @parametrize(
         "case",
@@ -2376,7 +2330,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_mm_tuple_aux_local_m_reduce_rejects_moment_reduction(self):
+    def test_mm_tuple_aux_local_m_reduce_rejects_var_reduction(self):
         m = 128
         n = 128
         group = 16
@@ -2395,7 +2349,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         a = torch.randn(m, 64, device="cuda", dtype=torch.bfloat16)
         b = torch.randn(64, n, device="cuda", dtype=torch.bfloat16)
-        with self.assertRaisesRegex(Exception, "moment reductions"):
+        with self.assertRaisesRegex(Exception, "does not map to a CuTe TensorSSA"):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
     @skipIfNoCuteDSL
@@ -2518,30 +2472,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                 lambda x: ((x - x.mean(-1, keepdim=True)).square()).mean(-1) * 0.5
                 + 1.0,
                 " / 4.0",
-                False,
-            ),
-            (
-                "var_direct",
-                lambda x: x.var(-1, correction=0),
-                " / 4.0",
-                False,
-            ),
-            (
-                "var_positional_unbiased_false",
-                lambda x: x.var(-1, False),
-                " / 4.0",
-                False,
-            ),
-            (
-                "std_direct",
-                lambda x: x.std(-1, correction=0),
-                "cute.math.sqrt",
-                False,
-            ),
-            (
-                "std_positional_keepdim",
-                lambda x: x.std(-1, False, True).view(x.shape[0], -1),
-                "cute.math.sqrt",
                 False,
             ),
             (
@@ -3311,10 +3241,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    @parametrize("hidden", ("sum", "var"))
-    def test_mm_local_m_reduce_feed_main_rejects_hidden_physical_reduction(
-        self, hidden
-    ):
+    def test_mm_local_m_reduce_feed_main_rejects_hidden_physical_reduction(self):
         m = 128
         n = 64
         group = 8
@@ -3323,11 +3250,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             x = acc.float().view(-1, group, n)
             y = acc.float().relu().view(-1, group, n)
             scaled = x / (x.sum(1, keepdim=True) + 1.0)
-            if hidden == "sum":
-                hidden_value = y.sum(1, keepdim=True)
-            else:
-                hidden_value = y.var(1, unbiased=False, keepdim=True)
-            return (scaled + hidden_value).view(m, n)
+            return (scaled + y.sum(1, keepdim=True)).view(m, n)
 
         def fn(a, b):
             return flex_gemm(
@@ -3347,7 +3270,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
     @parametrize(
         "case",
-        ("rms_main", "rms_aux", "centered", "moment"),
+        ("rms_main", "rms_aux", "centered"),
     )
     def test_mm_local_m_reduce_feed_main_rejects_source_expression(self, case):
         m = 128
@@ -3360,9 +3283,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                 mean = x.mean(1, keepdim=True)
                 rstd = (x.square().mean(1, keepdim=True) + 1e-5).rsqrt()
                 return ((x - mean) * rstd).view(m, n)
-            if case == "moment":
-                rstd = (x.var(1, unbiased=False, keepdim=True) + 1e-5).rsqrt()
-                return (x * rstd).view(m, n)
             rstd = (x.square().mean(1, keepdim=True) + 1e-5).rsqrt()
             normalized = (x * rstd).view(m, n)
             if case == "rms_main":
