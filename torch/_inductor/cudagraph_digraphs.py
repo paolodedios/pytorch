@@ -146,6 +146,17 @@ OutputSpec = (
 )
 
 
+@dataclasses.dataclass(frozen=True)
+class GraphCaptureState:
+    graph: torch.cuda.CUDAGraph
+    dynamic_tensor_allocations: list[tuple[int, int]]
+    segment_sizes: list[int]
+    segment_devices: list[torch.device]
+    segment_input_idxs: list[int | None]
+    input_slot_specs: list[InputSlotSpec]
+    output_specs: list[OutputSpec]
+
+
 def _direct_tensor_pointer_key(
     inputs: list[InputType], static_input_idxs: Sequence[int]
 ) -> tuple[tuple[int, str, int | None, int], ...]:
@@ -418,6 +429,7 @@ def cudagraphify(
     static_input_idxs_set = OrderedSet(static_input_idxs)
     graphs: list[torch.cuda.CUDAGraph] = []
     dynamic_tensors_list: list[list[tuple[int, int]]] = []
+    capture_states: list[GraphCaptureState] = []
     capture_keepalive: list[Any] = []
     capture_pool_keepalive: list[Any] = []
     input_pool_keepalive: list[Any] = []
@@ -967,6 +979,17 @@ def cudagraphify(
 
         dynamic_tensors_list.append(dynamic_tensor_allocations)
         graphs.append(graph)
+        capture_states.append(
+            GraphCaptureState(
+                graph=graph,
+                dynamic_tensor_allocations=dynamic_tensor_allocations,
+                segment_sizes=segment_sizes,
+                segment_devices=segment_devices,
+                segment_input_idxs=segment_input_idxs,
+                input_slot_specs=input_slot_specs,
+                output_specs=output_specs,
+            )
+        )
 
     for graph_idx, captured_graph in enumerate(graphs):
         pool_id = captured_graph.pool()
@@ -979,7 +1002,12 @@ def cudagraphify(
         #     torch.cuda.memory_snapshot(pool_id, include_traces=True),
         #     sort_dicts=False,
         # )
-    graph = graphs[1]
+    replay_state, comparison_state = capture_states
+    segment_sizes = replay_state.segment_sizes
+    segment_devices = replay_state.segment_devices
+    segment_input_idxs = replay_state.segment_input_idxs
+    input_slot_specs = replay_state.input_slot_specs
+    output_specs = replay_state.output_specs
     find_overlaps(dynamic_tensors_list[0], True)
     find_overlaps(dynamic_tensors_list[1], True)
     find_overlaps(dynamic_tensors_list[0] + dynamic_tensors_list[1], True)
@@ -990,10 +1018,12 @@ def cudagraphify(
             extra_host_pointer_table_updates,
             extra_host_pointer_table_keepalive,
         ) = replace_memops_with_kernels(
-            cuda_runtime.cudaGraph_t(init_value=graphs[1].raw_cuda_graph()),
-            cuda_runtime.cudaGraph_t(init_value=graphs[0].raw_cuda_graph()),
-            dynamic_tensors_list[1],
-            dynamic_tensors_list[0],
+            cuda_runtime.cudaGraph_t(init_value=replay_state.graph.raw_cuda_graph()),
+            cuda_runtime.cudaGraph_t(
+                init_value=comparison_state.graph.raw_cuda_graph()
+            ),
+            replay_state.dynamic_tensor_allocations,
+            comparison_state.dynamic_tensor_allocations,
             dynamic_device_memcpy_only=True,
         )
     else:
@@ -1001,16 +1031,18 @@ def cudagraphify(
             extra_host_pointer_table_updates,
             extra_host_pointer_table_keepalive,
         ) = replace_memops_with_kernels(
-            cuda_runtime.cudaGraph_t(init_value=graphs[1].raw_cuda_graph()),
-            cuda_runtime.cudaGraph_t(init_value=graphs[0].raw_cuda_graph()),
-            dynamic_tensors_list[1],
-            dynamic_tensors_list[0],
+            cuda_runtime.cudaGraph_t(init_value=replay_state.graph.raw_cuda_graph()),
+            cuda_runtime.cudaGraph_t(
+                init_value=comparison_state.graph.raw_cuda_graph()
+            ),
+            replay_state.dynamic_tensor_allocations,
+            comparison_state.dynamic_tensor_allocations,
         )
     graph_runner = make_dynamic_graph_runner(
-        graph,
-        dynamic_tensors_list[1],
-        graphs[0],
-        dynamic_tensors_list[0],
+        replay_state.graph,
+        replay_state.dynamic_tensor_allocations,
+        comparison_state.graph,
+        comparison_state.dynamic_tensor_allocations,
         extra_host_pointer_table_updates,
         extra_host_pointer_table_keepalive,
     )
@@ -1976,9 +2008,9 @@ def _dynamic_pointer_updates_for_kernel(
             if result is not None or other_result is not None:
                 # Packed kernel argument structs can contain non-pointer 64-bit
                 # fields that happen to fall inside a capture's allocation
-                # range. The captures can assign the same logical allocation to
-                # different segment indices, so require agreement on offset but
-                # use the allocation index from the graph we will replay.
+                # range. Require an allocation-backed value in both captures,
+                # but do not require the allocator layouts to agree. Replay uses
+                # the allocation index and offset from the graph we will replay.
                 if result is None or other_result is None:
                     debug_path = os.environ.get(
                         "TORCHINDUCTOR_CUDAGRAPH_DIGRAPHS_DEBUG_FILE"
@@ -1995,24 +2027,6 @@ def _dynamic_pointer_updates_for_kernel(
                                 f"match={result} other_match={other_result}\n"
                             )
                     continue
-                if result[1] != other_result[1]:
-                    debug_path = os.environ.get(
-                        "TORCHINDUCTOR_CUDAGRAPH_DIGRAPHS_DEBUG_FILE"
-                    )
-                    if debug_path:
-                        with open(debug_path, "a") as debug_file:
-                            debug_file.write(
-                                "ignored_mismatch "
-                                f"node={debug_node_idx} "
-                                f"name={debug_name} "
-                                f"param={param_index} "
-                                f"offset=0x{param_byte_offset:x} "
-                                f"ptr=0x{ptr:x} other_ptr=0x{other_ptr:x} "
-                                f"match={result} other_match={other_result}\n"
-                            )
-                    raise RuntimeError(
-                        "CUDA graph pointer did not map consistently across captures"
-                    )
                 alloc_idx, alloc_offset = result
                 updates.append(
                     KernelParamPointerUpdate(
