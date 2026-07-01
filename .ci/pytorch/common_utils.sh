@@ -373,6 +373,32 @@ function install_cutlass_api() {
   pushd cutlass-build
   git checkout "${cutlass_commit}"
 
+  # Keep cutlass_api compatible with the pinned nvidia-cutlass-dsl wheel.
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+path = Path(
+    "python/cutlass_api/cutlass_api/providers/cutedsl/gemm/implementations/"
+    "sm100_static_persistent_impl.py"
+)
+text = path.read_text()
+pattern = re.compile(
+    r"(?P<indent>[ \t]*)cute\.arch\.fence_proxy\(\n"
+    r"(?P=indent)[ \t]*cute\.arch\.ProxyKind\.async_shared,\n"
+    r"(?P=indent)[ \t]*space=cute\.arch\.SharedSpace\.shared_cta,\n"
+    r"(?P=indent)\)"
+)
+text, count = pattern.subn(
+    r'\g<indent>cute.arch.fence_proxy("async.shared", space="cta")',
+    text,
+    count=1,
+)
+if count != 1:
+    raise RuntimeError(f"Expected deprecated CUTLASS API pattern not found in {path}")
+path.write_text(text)
+PY
+
   # Install cutlass_api with torch extras
   pip_install "python/cutlass_api[torch]"
   popd
