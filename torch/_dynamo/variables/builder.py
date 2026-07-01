@@ -296,6 +296,7 @@ from .tensor import (
     NumpyNdarrayVariable,
     supported_const_comparison_op_values,
     SymNodeVariable,
+    TensorSpecializedProps,
     TensorSubclassVariable,
     TensorVariable,
     UnspecializedPythonVariable,
@@ -4175,7 +4176,7 @@ def get_specialized_props(
     tx: "InstructionTranslatorBase",
     example_value: Any,
     subclass_type: type | None,
-) -> dict[str, Any]:
+) -> TensorSpecializedProps:
     specialized_props = target_cls.specialize(example_value)
     # TODO: not sure about this fake mode test
     if (
