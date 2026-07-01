@@ -30,7 +30,6 @@ from torch._inductor.kernel.flex_gemm.constraints import (
 )
 from torch._inductor.shape_propagation import get_broadcasted_shape
 from torch._inductor.virtualized import V
-from torch.utils._ordered_set import OrderedSet
 
 
 def normalize_shape(shape: Any) -> Any:
@@ -102,10 +101,6 @@ def _cute_op_name(target: Any) -> str | None:
     return "truediv" if op_name == "div" else op_name
 
 
-def partial_vector_reduction_error() -> NotImplementedError:
-    return NotImplementedError(LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR)
-
-
 @dataclasses.dataclass(frozen=True)
 class GroupedTensorSSAInfo:
     """Carry grouped-layout provenance for an FX node during lowering.
@@ -167,89 +162,44 @@ FLEX_GEMM_REDUCTIONS = {
 
 
 FLEX_GEMM_POINTWISE_OP_NAMES = frozenset(
-    OrderedSet(
-        [
-            "_to_copy",
-            "clamp",
-            "clamp_max",
-            "clamp_min",
-            "convert_element_type",
-            "mx_e8m0_scale",
-            "nvfp4_e4m3_scale",
-        ]
+    (
+        "_to_copy",
+        "clamp",
+        "clamp_max",
+        "clamp_min",
+        "convert_element_type",
     )
 )
 
 PYTHON_POINTWISE_TARGETS = frozenset(
-    OrderedSet(
-        [
-            operator.add,
-            operator.sub,
-            operator.mul,
-            operator.truediv,
-            operator.neg,
-            operator.eq,
-            operator.ne,
-            operator.lt,
-            operator.le,
-            operator.gt,
-            operator.ge,
-        ]
+    (
+        operator.add,
+        operator.sub,
+        operator.mul,
+        operator.truediv,
+        operator.neg,
+        operator.eq,
+        operator.ne,
+        operator.lt,
+        operator.le,
+        operator.gt,
+        operator.ge,
     )
 )
 
-
-def _cute_scale_expr(
-    op_name: str, source: Any, max_power: Any = 8, *, tensorssa: bool = False
-) -> str:
-    """Render scale encoders as numeric CuTeDSL expressions before output casting."""
-    if op_name == "mx_e8m0_scale":
-        if tensorssa:
-            scale_exp = f"(cute.math.floor(cute.math.log2({source})) - {max_power})"
-            return (
-                "cute.math.exp2("
-                f"cute.where({scale_exp} < -127.0, -127.0, "
-                f"cute.where({scale_exp} > 128.0, 128.0, {scale_exp}))"
-                ")"
-            )
-        exponent = (
-            f"(((cutlass.Float32({source}).bitcast(cutlass.Int32) >> 23) "
-            f"& 0xFF) - 127 - {max_power})"
-        )
-        clamped = f"cutlass.max(cutlass.min({exponent}, 128), -127)"
-        return f"cutlass.Float32(cute.math.exp2(cutlass.Float32({clamped})))"
-    scale = f"({source} / 6.0)"
-    if tensorssa:
-        return (
-            f"cute.where({scale} < 0.015625, 0.015625, "
-            f"cute.where({scale} > 448.0, 448.0, {scale}))"
-        )
-    return f"cutlass.Float32(cutlass.max(cutlass.min({scale}, 448.0), 0.015625))"
-
-
-def _cute_scale_call(
-    op_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]
-) -> Any:
-    """Lower FlexGEMM scale custom ops for TensorSSA values and scalar finalizers."""
-    if len(args) != 1:
-        raise NotImplementedError(f"unsupported FlexGEMM epilogue op: {op_name}")
-    if op_name == "nvfp4_e4m3_scale" and kwargs:
-        raise NotImplementedError(f"unsupported FlexGEMM epilogue op kwargs: {op_name}")
-    max_power = kwargs.get("max_power", 8)
-    if op_name == "mx_e8m0_scale" and not isinstance(max_power, (int, float)):
-        raise NotImplementedError("FlexGEMM mx_e8m0_scale requires static max_power")
-    source = args[0]
-    cse_var = CuteDSLOpOverrides._get_cse_var(source)
-    expr = _cute_scale_expr(op_name, source, max_power, tensorssa=cse_var is not None)
-    if cse_var is None:
-        return expr
-    return V.kernel.cse.generate(
-        V.kernel.body,
-        expr,
-        bounds=cse_var.bounds,
-        dtype=cse_var.dtype,
-        shape=cse_var.shape,
+METHOD_POINTWISE_TARGETS = frozenset(
+    (
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "clamp",
+        "clamp_max",
+        "clamp_min",
+        "to",
+        "type",
     )
+)
 
 
 def _cute_arg(value: Any, env: dict[torch.fx.Node, Any]) -> Any:
@@ -327,8 +277,6 @@ def _cute_call(target: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> An
         )
     if op_name is None:
         raise NotImplementedError(f"unsupported FlexGEMM epilogue op: {target}")
-    if op_name in ("mx_e8m0_scale", "nvfp4_e4m3_scale"):
-        return _cute_scale_call(op_name, args, kwargs)
     try:
         op = getattr(V.get_ops_handler(), op_name)
     except AttributeError:
@@ -402,7 +350,7 @@ def node_preserves_tensor_shapes(node: torch.fx.Node) -> bool:
     has_matching_tensor_input = False
     for input_node in iter_fx_node_inputs((node.args, node.kwargs)):
         input_shape = tensor_meta_shape(input_node)
-        if not input_shape:
+        if input_shape is None:
             continue
         if shapes_match(input_shape, output_shape):
             has_matching_tensor_input = True
@@ -413,7 +361,7 @@ def node_preserves_tensor_shapes(node: torch.fx.Node) -> bool:
 
 def is_pointwise_node(node: torch.fx.Node) -> bool:
     if node.op == "call_method":
-        return True
+        return node.target in METHOD_POINTWISE_TARGETS
     if node.op != "call_function":
         return False
     if isinstance(node.target, torch._ops.OpOverload):
@@ -433,14 +381,9 @@ def is_shape_preserving_pointwise_node(node: torch.fx.Node) -> bool:
 
 def iter_fx_node_inputs(value: Any):
     """Yield FX node inputs nested in args/kwargs-style containers."""
-    if isinstance(value, torch.fx.Node):
-        yield value
-    elif isinstance(value, (tuple, list)):
-        for item in value:
-            yield from iter_fx_node_inputs(item)
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from iter_fx_node_inputs(item)
+    result: list[torch.fx.Node] = []
+    torch.fx.map_arg(value, lambda node: result.append(node))
+    yield from result
 
 
 def propagate_grouped_tensorssa_info(
@@ -565,55 +508,6 @@ def reduction_from_node(node: torch.fx.Node) -> tuple[Any, Any, Any, Any, str] |
     return None
 
 
-def moment_reduction_from_node(
-    node: torch.fx.Node,
-) -> tuple[Any, Any, Any, Any, str] | None:
-    if node.op == "call_method" and node.target in ("var", "std"):
-        input_node = node.args[0]
-        dim = node.args[1] if len(node.args) > 1 else node.kwargs.get("dim")
-        if "correction" in node.kwargs:
-            correction = node.kwargs["correction"]
-        elif len(node.args) > 2:
-            correction = 1 if node.args[2] else 0
-        else:
-            correction = 1 if node.kwargs.get("unbiased", True) else 0
-        keepdim = (
-            node.args[3] if len(node.args) > 3 else node.kwargs.get("keepdim", False)
-        )
-        return input_node, dim, correction, keepdim, node.target
-    if node.op == "call_function" and node.target in (
-        torch.ops.aten.var.dim,
-        torch.ops.aten.std.dim,
-    ):
-        input_node = node.args[0]
-        dim = node.args[1] if len(node.args) > 1 else node.kwargs.get("dim")
-        unbiased = (
-            node.args[2] if len(node.args) > 2 else node.kwargs.get("unbiased", True)
-        )
-        keepdim = (
-            node.args[3] if len(node.args) > 3 else node.kwargs.get("keepdim", False)
-        )
-        reduction_type = "std" if node.target is torch.ops.aten.std.dim else "var"
-        return input_node, dim, 1 if unbiased else 0, keepdim, reduction_type
-    if node.op == "call_function" and node.target in (
-        torch.ops.aten.var.correction,
-        torch.ops.aten.std.correction,
-    ):
-        input_node = node.args[0]
-        dim = node.args[1] if len(node.args) > 1 else node.kwargs.get("dim")
-        correction = node.kwargs.get(
-            "correction", node.args[2] if len(node.args) > 2 else 1
-        )
-        keepdim = node.kwargs.get(
-            "keepdim", node.args[3] if len(node.args) > 3 else False
-        )
-        reduction_type = (
-            "std" if node.target is torch.ops.aten.std.correction else "var"
-        )
-        return input_node, dim, correction, keepdim, reduction_type
-    return None
-
-
 def unsupported_reduction_from_node(node: torch.fx.Node) -> str | None:
     target = node.target
     if node.op == "call_method" and node.target in (
@@ -621,6 +515,8 @@ def unsupported_reduction_from_node(node: torch.fx.Node) -> str | None:
         "any",
         "argmax",
         "argmin",
+        "std",
+        "var",
     ):
         return str(node.target)
     if node.op == "call_function" and target in (
@@ -632,6 +528,10 @@ def unsupported_reduction_from_node(node: torch.fx.Node) -> str | None:
         torch.ops.aten.any.default,
         torch.ops.aten.argmax.default,
         torch.ops.aten.argmin.default,
+        torch.ops.aten.std.correction,
+        torch.ops.aten.std.dim,
+        torch.ops.aten.var.correction,
+        torch.ops.aten.var.dim,
     ):
         return str(target)
     return None
@@ -661,13 +561,11 @@ def lower_squeeze(
         source_node = node.args[0]
     else:
         return None
-    if (
-        isinstance(source_node, torch.fx.Node)
-        and source_node in local_reduce_store_sources
-    ):
+    if not isinstance(source_node, torch.fx.Node) or source_node not in env:
+        return None
+    if source_node in local_reduce_store_sources:
         local_reduce_store_sources[node] = local_reduce_store_sources[source_node]
-        return _cute_arg(source_node, env)
-    return None
+    return _cute_arg(source_node, env)
 
 
 def lower_getitem(
@@ -705,7 +603,7 @@ def lower_prepare_softmax_online(
     if not isinstance(input_node, torch.fx.Node):
         return None
     if input_node not in grouped_tensors:
-        raise partial_vector_reduction_error()
+        raise NotImplementedError(LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR)
     info = grouped_tensors[input_node]
     if info.layout.needs_physical_combine:
         raise NotImplementedError(
@@ -736,74 +634,6 @@ def lower_prepare_softmax_online(
     return max_store, sum_store
 
 
-def lower_tensorssa_moment_reduce(
-    node: torch.fx.Node,
-    env: dict[torch.fx.Node, Any],
-    kernel: Any,
-    grouped_tensors: dict[torch.fx.Node, GroupedTensorSSAInfo],
-    local_reduce_store_sources: dict[torch.fx.Node, Any],
-) -> Any | None:
-    """Lower grouped var/std as generated mean plus squared residual reductions."""
-    reduction = moment_reduction_from_node(node)
-    if reduction is None:
-        return None
-    input_node, dim, correction, keepdim, reduction_type = reduction
-    if not isinstance(input_node, torch.fx.Node):
-        return None
-    if input_node not in grouped_tensors:
-        raise partial_vector_reduction_error()
-    info = grouped_tensors[input_node]
-    if info.layout.needs_physical_combine:
-        raise NotImplementedError(
-            "unsupported FlexGEMM physical local reduction: moment reductions "
-            "need matching QuACK combine/finalize callbacks"
-        )
-    if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: moment reductions "
-            "currently support only the innermost grouped dimension"
-        )
-    if correction is None:
-        correction = 1
-    if not isinstance(correction, (int, float)):
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: dynamic variance correction"
-        )
-    denominator = info.group_size - correction
-    if denominator <= 0:
-        raise NotImplementedError(
-            "unsupported FlexGEMM epilogue local reduction: variance correction "
-            "must be smaller than the group size"
-        )
-    source = _cute_arg(input_node, env)
-    sum_reduced = _generate_like(
-        kernel,
-        f"{source}.reduce(cute.ReductionOp.ADD, init_val=0.0, reduction_profile={info.layout.reduction_profile})",
-        source,
-    )
-    mean_reduced = _generate_like(
-        kernel, f"{sum_reduced} / {float(info.group_size)!r}", sum_reduced
-    )
-    _, mean_store = _keepdim_and_broadcast(kernel, mean_reduced, info, source)
-    centered = _generate_like(kernel, f"({source} - {mean_store})", source)
-    squared = _generate_like(kernel, f"({centered} * {centered})", centered)
-    var_reduced = _generate_like(
-        kernel,
-        f"{squared}.reduce(cute.ReductionOp.ADD, init_val=0.0, reduction_profile={info.layout.reduction_profile}) / {float(denominator)!r}",
-        squared,
-    )
-    if reduction_type == "std":
-        result = _generate_like(kernel, f"cute.math.sqrt({var_reduced})", var_reduced)
-    else:
-        result = var_reduced
-    keepdim_source, local_reduce_store_sources[node] = _keepdim_and_broadcast(
-        kernel, result, info, source
-    )
-    if keepdim:
-        return keepdim_source
-    return result
-
-
 def lower_tensorssa_reduce(
     node: torch.fx.Node,
     env: dict[torch.fx.Node, Any],
@@ -823,7 +653,7 @@ def lower_tensorssa_reduce(
     if not isinstance(input_node, torch.fx.Node):
         return None
     if input_node not in grouped_tensors:
-        raise partial_vector_reduction_error()
+        raise NotImplementedError(LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR)
     info = grouped_tensors[input_node]
     if not grouped_reduce_dims_match(dim, info.layout.reduce_dims):
         raise NotImplementedError(LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR)
