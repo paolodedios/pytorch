@@ -430,14 +430,17 @@ class MinGpuFilterPlugin:
             config.hook.pytest_deselected(items=deselected)
             items[:] = kept
 
-    def pytest_report_collectionfinish(self) -> list[str]:
+    def pytest_report_collectionfinish(self, config: Config) -> list[str]:
         total = self._kept_count + len(self._deselected_ids)
         lines = [
             f"MinGpuFilter (PYTORCH_TEST_MIN_GPU={self.threshold}): kept "
             f"{self._kept_count}/{total}, deselected {len(self._deselected_ids)} "
             f"test(s) needing <{self.threshold} accelerators"
         ]
-        lines += [f"  deselected: {nodeid}" for nodeid in self._deselected_ids]
+        # The per-node-id dump is verbose; only emit it at non-negative
+        # verbosity, mirroring StepcurrentPlugin.pytest_report_collectionfinish.
+        if config.getoption("verbose") >= 0:
+            lines += [f"  deselected: {nodeid}" for nodeid in self._deselected_ids]
         return lines
 
     def _required_gpus(self, item: Any) -> int:
@@ -492,7 +495,10 @@ class MinGpuFilterPlugin:
     def _probe_attr(self, cls: Any, name: str) -> Any:
         # Read a class attribute / constant-returning ``@property`` without
         # running ``__init__`` (which spawns/initializes processes at runtime,
-        # not at collection). Returns None when the value cannot be obtained.
+        # not at collection). This is side-effect-free only insofar as the
+        # probed ``world_size`` / ``device`` / ``device_type`` properties are
+        # pure; the distributed base classes define them that way. Returns None
+        # when the value cannot be obtained.
         try:
             probe = cls.__new__(cls)
         except Exception:
@@ -505,9 +511,16 @@ class MinGpuFilterPlugin:
     def _world_size(self, cls: Any) -> int:
         val = self._probe_attr(cls, "world_size")
         try:
-            return int(val)
+            resolved = int(val)
         except (TypeError, ValueError):
             return self._default_world_size
+        # A non-positive value means the world size is unresolved: e.g.
+        # MultiProcContinuousTest declares ``world_size: int = -2`` as an unset
+        # sentinel populated only at runtime. Treat it like the None case and
+        # fall back to the default so genuine multi-GPU tests are not dropped.
+        if resolved <= 0:
+            return self._default_world_size
+        return resolved
 
     def _id_targets_accelerator(self, item: Any) -> bool:
         if not self._accel_tokens:

@@ -7,6 +7,7 @@ import unittest
 
 import torch
 from torch.testing._internal.common_distributed import (
+    MultiProcContinuousTest,
     MultiProcessTestCase,
     MultiThreadedTestCase,
 )
@@ -68,6 +69,20 @@ class _MPbroken(MultiProcessTestCase):
     @property
     def world_size(self):
         raise RuntimeError("world_size not resolvable at collection time")
+
+
+# MultiProcContinuousTest declares ``world_size: int = -2`` as an unset sentinel
+# populated only at runtime, so an undecorated subclass probes as -2. ``device``
+# is not defined on it and ``device_type`` is a classmethod, matching how the
+# real class exposes them.
+class _MPCunset(MultiProcContinuousTest):
+    @classmethod
+    def device_type(cls):
+        return "cuda"
+
+
+class _MPCunsetCpu(MultiProcContinuousTest):
+    pass
 
 
 class _MTTws4(MultiThreadedTestCase):
@@ -179,6 +194,21 @@ class TestMinGpuFilter(TestCase):
         # world_size property raises -> default world size (4) on an
         # accelerator-backed module keeps the test.
         item = _item(cls=_MPbroken, module_name="test_c10d_nccl")
+        self.assertTrue(self._keep(item))
+
+    # --- process-based: MultiProcContinuousTest -2 unset sentinel ---
+    def test_continuous_unset_world_size_accelerator_kept(self):
+        # world_size left at the -2 unset sentinel resolves to the default world
+        # size; on an accelerator-reporting class the test is kept.
+        item = _item(cls=_MPCunset, module_name="test_c10d_nccl")
+        self.assertTrue(self._keep(item))
+
+    def test_continuous_unset_world_size_decorator_kept(self):
+        # Even when the class reports as CPU (device_type default), an explicit
+        # >= threshold decorator keeps a MultiProcContinuousTest test.
+        item = _item(
+            cls=_MPCunsetCpu, obj=_func(min_gpus=4), module_name="test_c10d_nccl"
+        )
         self.assertTrue(self._keep(item))
 
     # --- thread-based (MultiThreadedTestCase) ---

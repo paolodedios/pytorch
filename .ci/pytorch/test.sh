@@ -2204,18 +2204,18 @@ elif [[ "$TEST_CONFIG" == 'quantization' ]]; then
 elif [[ "${BUILD_ENVIRONMENT}" == *libtorch* ]]; then
   # TODO: run some C++ tests
   echo "no-op at the moment"
-elif [[ "$TEST_CONFIG" == distributed ]]; then
+elif [[ "$TEST_CONFIG" == distributed || "$TEST_CONFIG" == distributed_4gpu ]]; then
   install_torchcomms
   install_spmd_types
-  test_distributed
-  # Only run RPC C++ tests on the first shard
-  if [[ "${SHARD_NUMBER}" == 1 ]]; then
-    test_rpc
+  if [[ "$TEST_CONFIG" == distributed_4gpu ]]; then
+    test_distributed_4gpu
+  else
+    test_distributed
+    # Only run RPC C++ tests on the first shard
+    if [[ "${SHARD_NUMBER}" == 1 ]]; then
+      test_rpc
+    fi
   fi
-elif [[ "$TEST_CONFIG" == distributed_4gpu ]]; then
-  install_torchcomms
-  install_spmd_types
-  test_distributed_4gpu
 elif [[ "${TEST_CONFIG}" == *operator_benchmark* ]]; then
   TEST_MODE="short"
 
