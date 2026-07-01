@@ -108,7 +108,7 @@ class TestUnaryUfuncs(TestCase):
                     result.item(),
                     float("nan"),
                     msg=(
-                        f"input of {lower_tensor.item()} outside lower domain boundary"
+                        lambda msg: f"{msg}\ninput of {lower_tensor.item()} outside lower domain boundary"
                         f" {low} produced {result.item()}, not nan!"
                     ),
                 )
@@ -127,7 +127,7 @@ class TestUnaryUfuncs(TestCase):
                     result.item(),
                     float("nan"),
                     msg=(
-                        f"input of {higher_tensor.item()} outside upper domain boundary"
+                        lambda msg: f"{msg}\ninput of {higher_tensor.item()} outside upper domain boundary"
                         f" {high} produced {result.item()}, not nan!"
                     ),
                 )
@@ -925,13 +925,13 @@ class TestUnaryUfuncs(TestCase):
             ("sin", doubles, True, True, "cpu"),
             ("sin", doubles, True, True, "cuda"),
             ("sinh", doubles, True, True, "cpu"),
-            ("sinh", doubles, False, True, "cuda"),
+            ("sinh", doubles, True, True, "cuda"),
             ("sigmoid", doubles, True, True, "cpu"),
             ("sigmoid", doubles, True, True, "cuda"),
             ("logit", doubles, True, True, "cpu"),
             ("logit", doubles, True, True, "cuda"),
             ("sqrt", doubles, True, True, "cpu"),
-            ("sqrt", doubles, False, True, "cuda"),
+            ("sqrt", doubles, True, True, "cuda"),
             ("tan", doubles, True, True, "cpu"),
             ("tan", doubles, True, True, "cuda"),
             ("tanh", doubles, True, True, "cpu"),
@@ -947,7 +947,7 @@ class TestUnaryUfuncs(TestCase):
             has_internal_mem_overlap_check,
             dev,
         ) in unary_mem_overlap_cases:
-            if dev != device:
+            if dev != self.device_type:
                 continue
             out_fn = getattr(torch, fn)
             in_fn = getattr(torch.Tensor, fn + "_")

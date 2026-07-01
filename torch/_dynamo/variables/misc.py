@@ -16,6 +16,7 @@ Key classes include:
 """
 
 import builtins
+import contextvars
 import dataclasses
 import enum
 import functools
@@ -75,6 +76,7 @@ from ..utils import (
 from .base import AsPythonConstantNotImplementedError, NO_SUCH_SUBOBJ, VariableTracker
 from .constant import ConstantVariable
 from .functions import NestedUserFunctionVariable, UserFunctionVariable
+from .object_protocol import generic_str
 from .user_defined import call_random_fn, is_standard_setattr, UserDefinedObjectVariable
 
 
@@ -728,6 +730,18 @@ class ExceptionVariable(VariableTracker):
                 source=self.source and AttrSource(self.source, "args"),
             )
         return super().var_getattr(tx, name)
+
+    def str_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/exceptions.c#L118-L129
+        if len(self.args) == 0:
+            return VariableTracker.build(tx, "")
+        elif len(self.args) == 1:
+            return generic_str(tx, self.args[0])
+        else:
+            from . import TupleVariable
+
+            tuple_var = TupleVariable(list(self.args))
+            return generic_str(tx, tuple_var)
 
     def __str__(self) -> str:
         return f"{self.__class__.__name__}({self.exc_type})"
@@ -1469,7 +1483,7 @@ class GetAttrVariable(VariableTracker):
         except AttributeError:
             raise NotImplementedError(f"{self} is not a constant") from None
 
-    def hash_impl(self, tx: Any) -> tuple[int, bool]:
+    def hash_impl(self, tx: "InstructionTranslatorBase") -> tuple[int, bool]:
         # GetAttrVariable can wrap various types (bound methods, descriptors,
         # etc.) with different C tp_hash.  Resolve to the actual value and hash.
         try:
@@ -1704,7 +1718,7 @@ class TypingVariable(VariableTracker):
     def as_python_constant(self) -> Any:
         return self.value
 
-    def hash_impl(self, tx: Any) -> tuple[int, bool]:
+    def hash_impl(self, tx: "InstructionTranslatorBase") -> tuple[int, bool]:
         return hash(self.value), False
 
     def get_real_python_backed_value(self) -> Any:
@@ -2351,6 +2365,117 @@ np_constant_collections_map = {
 }
 
 
+class ContextVarVariable(VariableTracker):
+    """Wraps a contextvars.ContextVar for Dynamo tracing.
+
+    .get() is resolved at trace time with a guard that re-checks at cache time.
+    .set() and .reset() graph-break in Phase 1.
+    """
+
+    _nonvar_fields = {
+        "cv_obj",
+        *VariableTracker._nonvar_fields,
+    }
+
+    def __init__(self, cv_obj: contextvars.ContextVar[Any], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.cv_obj = cv_obj
+
+    def python_type(self) -> type:
+        return contextvars.ContextVar
+
+    def call_method(
+        self,
+        tx: "InstructionTranslatorBase",
+        name: str,
+        args: "list[VariableTracker]",
+        kwargs: "dict[str, VariableTracker]",
+    ) -> "VariableTracker":
+        if name == "get":
+            return self._handle_get(tx, args, kwargs)
+        elif name in ("set", "reset"):
+            unimplemented(
+                gb_type="ContextVar mutation not supported",
+                context=f"ContextVar('{self.cv_obj.name}').{name}()",
+                explanation=(
+                    f"ContextVar.{name}() is not yet supported inside "
+                    f"torch.compile. Move the .{name}() call outside the "
+                    f"compiled region."
+                ),
+                hints=[*graph_break_hints.SUPPORTABLE],
+            )
+        return super().call_method(tx, name, args, kwargs)
+
+    def _handle_get(
+        self,
+        tx: "InstructionTranslatorBase",
+        args: "list[VariableTracker]",
+        kwargs: "dict[str, VariableTracker]",
+    ) -> "VariableTracker":
+        from ..source import ContextVarGetSource
+        from ..utils import is_safe_constant
+        from .base import NO_SUCH_SUBOBJ
+
+        if kwargs:
+            raise_observed_exception(
+                TypeError, tx, args=["ContextVar.get() takes no keyword arguments"]
+            )
+        if len(args) > 1:
+            raise_observed_exception(
+                TypeError,
+                tx,
+                args=[f"get expected at most 1 argument, got {len(args)}"],
+            )
+
+        default_var = args[0] if args else None
+        has_default = default_var is not None
+        default_value = None
+
+        if has_default:
+            default_value = default_var.get_real_python_backed_value()
+            if default_value is NO_SUCH_SUBOBJ or not is_safe_constant(default_value):
+                unimplemented(
+                    gb_type="ContextVar.get() with non-constant default",
+                    context=f"ContextVar('{self.cv_obj.name}').get(...)",
+                    explanation=(
+                        "ContextVar.get() default argument must be a "
+                        "compile-time constant inside torch.compile."
+                    ),
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                )
+
+        value = self._get_value(tx, has_default, default_value)
+
+        if not self.source:
+            raise AssertionError("ContextVarVariable requires a source for .get()")
+        value_source = ContextVarGetSource(
+            base=self.source,
+            has_default=has_default,
+            default_value=default_value,
+        )
+        return VariableTracker.build(tx, value, source=value_source)
+
+    def _get_value(
+        self,
+        tx: "InstructionTranslatorBase",
+        has_default: bool,
+        default_value: Any,
+    ) -> Any:
+        if has_default:
+            return self.cv_obj.get(default_value)
+        try:
+            return self.cv_obj.get()
+        except LookupError:
+            raise_observed_exception(LookupError, tx, args=[f"{self.cv_obj!r}"])
+
+    def var_getattr(
+        self, tx: "InstructionTranslatorBase", name: str
+    ) -> "VariableTracker":
+        if name == "name":
+            return ConstantVariable.create(self.cv_obj.name)
+        return super().var_getattr(tx, name)
+
+
 class RandomClassVariable(VariableTracker):
     """random.Random"""
 
@@ -2630,7 +2755,7 @@ class WeakRefVariable(VariableTracker):
         codegen(self.callback_vt)
         codegen.extend_output(create_call_function(2, False))
 
-    def hash_impl(self, tx: Any) -> tuple[int, bool]:
+    def hash_impl(self, tx: "InstructionTranslatorBase") -> tuple[int, bool]:
         # CPython weakref_hash: hash(referent)
         # https://github.com/python/cpython/blob/e76aa128fe/Objects/weakrefobject.c#L186
         from .object_protocol import generic_hash_impl
