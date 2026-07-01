@@ -2083,6 +2083,7 @@ class ProcessGroupOpaqueTypeTest(TestCase):
             "group_name",
             "group_desc",
             "__eq__",
+            "__ne__",
         ]
         for member_name in registered_members:
             self.assertIsNotNone(
@@ -2100,22 +2101,31 @@ class ProcessGroupOpaqueTypeTest(TestCase):
 
     def test_fake_process_group_gets_registered_members(self):
         from torch._library.fake_class_registry import maybe_to_fake_obj
-        from torch._library.opaque_object import get_opaque_obj_info
         from torch.distributed.device_mesh import _register_distributed_opaque_types
 
         _register_distributed_opaque_types()
-        opaque_info = get_opaque_obj_info(ProcessGroup)
-        self.assertIsNotNone(opaque_info)
-        original_members = opaque_info.members
+
+        already_initialized = dist.is_initialized()
+        if already_initialized:
+            process_group = dist.group.WORLD
+        else:
+            dist.init_process_group("fake", store=FakeStore(), rank=0, world_size=1)
+            process_group = dist.group.WORLD
+
         try:
-            opaque_info.members = {
-                name: original_members[name] for name in ("size", "rank")
-            }
-            fake_pg = maybe_to_fake_obj(FakeTensorMode(), ProcessGroup(0, 1))
-            self.assertEqual(fake_pg.size(), 1)
-            self.assertEqual(fake_pg.rank(), 0)
+            fake_pg = maybe_to_fake_obj(FakeTensorMode(), process_group)
+            self.assertEqual(fake_pg.size(), process_group.size())
+            self.assertEqual(fake_pg.rank(), process_group.rank())
+            self.assertEqual(
+                fake_pg._get_backend_name(), process_group._get_backend_name()
+            )
+            self.assertEqual(fake_pg.group_name, process_group.group_name)
+            self.assertEqual(fake_pg.group_desc, process_group.group_desc)
+            self.assertEqual(fake_pg, process_group)
+            self.assertFalse(fake_pg != process_group)
         finally:
-            opaque_info.members = original_members
+            if not already_initialized:
+                dist.destroy_process_group()
 
 
 if __name__ == "__main__":
