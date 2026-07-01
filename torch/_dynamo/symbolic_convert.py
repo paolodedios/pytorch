@@ -6429,7 +6429,10 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
     def YIELD_VALUE(self, inst: Instruction) -> None:
         top = self.pop()
         self.generated_items.append(top)
-        self.frame_state = FrameState.FRAME_SUSPENDED
+        if inst.argval == 1:
+            self.frame_state = FrameState.FRAME_SUSPENDED_YIELD_FROM
+        else:
+            self.frame_state = FrameState.FRAME_SUSPENDED
         if len(self.generated_items) > MAX_ITERATOR_LIMIT:
             raise exc.InfiniteGeneratorError
         if (
