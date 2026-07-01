@@ -350,6 +350,8 @@ WeakTensorKeyDictionary = WeakIdKeyDictionary
 class TensorWeakRef(weakref.ref):
     """Wrapper around a weak ref of a Tensor that handles the _fix_weakref() call required when unwrapping a Tensor weakref."""
 
+    # Keep .ref visible to BC tooling while implementing it as a property below
+    # to avoid the self-reference cycle that storing self.ref = self would create.
     ref: WeakRef[Tensor]
 
     __slots__ = ["_id"]

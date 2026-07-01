@@ -45,6 +45,10 @@ def swap_tensors(t1, t2):
     from torch.utils.weak import TensorWeakRef
 
     def has_unsafe_weakrefs(t):
+        # TensorWeakRef is the internal tensor-only weakref used by Dynamo and
+        # Inductor; it has no user callback and fixes the tensor weakref before
+        # returning it. Keep other weakref types, including WeakIdRef-backed
+        # caches, on the conservative path.
         return any(not isinstance(wr, TensorWeakRef) for wr in weakref.getweakrefs(t))
 
     if has_unsafe_weakrefs(t1):
