@@ -52,7 +52,12 @@ from ..source import (
     TypeSource,
 )
 from ..utils import istype
-from .base import AttrMutationKind, NO_SUCH_SUBOBJ, VariableTracker
+from .base import (
+    AttributeMutationNew,
+    AttrMutationKind,
+    NO_SUCH_SUBOBJ,
+    VariableTracker,
+)
 from .constant import ConstantVariable
 
 
@@ -92,6 +97,20 @@ def vt_identity_compare(
 
         if getattr(cls, name) is value:
             return value
+        return NO_SUCH_SUBOBJ
+
+    def stable_metaclass_attr_value(cls: type[object], name: str) -> object:
+        metacls = type(cls)
+        if metacls is type or "__getattribute__" in metacls.__dict__:
+            return NO_SUCH_SUBOBJ
+
+        value = inspect.getattr_static(metacls, name, NO_SUCH_SUBOBJ)
+        if value is NO_SUCH_SUBOBJ or type(value) is not property:
+            return NO_SUCH_SUBOBJ
+
+        resolved = getattr(cls, name)
+        if getattr(cls, name) is resolved:
+            return resolved
         return NO_SUCH_SUBOBJ
 
     def resolve_source_value(source: Source) -> object:
@@ -136,7 +155,10 @@ def vt_identity_compare(
             if base is NO_SUCH_SUBOBJ:
                 return NO_SUCH_SUBOBJ
             if isinstance(base, type):
-                return stable_class_attr_value(base, source.member)
+                value = stable_class_attr_value(base, source.member)
+                if value is not NO_SUCH_SUBOBJ:
+                    return value
+                return stable_metaclass_attr_value(base, source.member)
             if source.member in ("__func__", "__name__", "__objclass__"):
                 base_value = source_identity_value_from_source(source.base)
                 if base_value is not NO_SUCH_SUBOBJ:
@@ -307,7 +329,6 @@ def vt_identity_compare(
             not is_fresh_bound_builtin_method(var)
             and isinstance(var.obj, UserDefinedObjectVariable)
             and var.obj.source is None
-            and var.obj.cls_source is not None
             and not tx.output.side_effects.has_pending_mutation_of_attr(
                 var.obj,
                 name,
@@ -321,16 +342,26 @@ def vt_identity_compare(
                 or name not in var.obj.value.__dict__
             )
         ):
-            class_attr_source = AttrSource(var.obj.cls_source, name)
-            if resolve_source_value(class_attr_source) is not var.descriptor:
+            if var.obj.cls_source is not None:
+                class_attr_source = AttrSource(var.obj.cls_source, name)
+                if resolve_source_value(class_attr_source) is not var.descriptor:
+                    return False
+                descriptor_source = var.obj.get_source_by_walking_mro(tx, name)
+                if resolve_source_value(descriptor_source) is not var.descriptor:
+                    return False
+                try:
+                    install_guard(class_attr_source.make_guard(GuardBuilder.ID_MATCH))
+                    install_guard(descriptor_source.make_guard(GuardBuilder.ID_MATCH))
+                except NotImplementedError:
+                    return False
+                return True
+
+            if not isinstance(var.obj.mutation_type, AttributeMutationNew):
                 return False
-            descriptor_source = var.obj.get_source_by_walking_mro(tx, name)
-            if resolve_source_value(descriptor_source) is not var.descriptor:
-                return False
-            try:
-                install_guard(class_attr_source.make_guard(GuardBuilder.ID_MATCH))
-                install_guard(descriptor_source.make_guard(GuardBuilder.ID_MATCH))
-            except NotImplementedError:
+            if (
+                inspect.getattr_static(var.obj.value_type, name, NO_SUCH_SUBOBJ)
+                is not var.descriptor
+            ):
                 return False
             return True
 
@@ -983,17 +1014,24 @@ def generic_str(
 
     Resolution order: str identity check -> tp_str (str_impl) -> tp_repr fallback.
     """
+    from ..exc import TorchDynamoException
+
     if maybe_get_python_type(obj) is str:
         return obj
 
     obj_type = maybe_get_python_type(obj)
-    if (
-        type_implements_tp_str(obj_type)
-        and type(obj).str_impl is not VariableTracker.str_impl
-    ):
-        result = obj.str_impl(tx)
-    else:
-        result = generic_repr(tx, obj)
+    try:
+        if (
+            type_implements_tp_str(obj_type)
+            and type(obj).str_impl is not VariableTracker.str_impl
+        ):
+            result = obj.str_impl(tx)
+        else:
+            result = generic_repr(tx, obj)
+    except TorchDynamoException:
+        raise
+    except Exception as exc:
+        raise_observed_exception(type(exc), tx, args=list(exc.args))
 
     result_type = maybe_get_python_type(result)
     if not issubclass(result_type, str):

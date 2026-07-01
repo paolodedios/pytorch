@@ -4721,6 +4721,49 @@ class ReproTests(torch._dynamo.test_case.TestCase):
         self.assertEqual(x1.data, x2.data)
         self.assertEqual(y1, y2)
 
+    @requires_cuda
+    def test_tensor_set_data_cross_device(self):
+        def func(x):
+            x.data = x.data.to("cuda")
+            return x + 1
+
+        x_eager = torch.randn(4, device="cpu")
+        x_compiled = x_eager.clone()
+
+        out_eager = func(x_eager)
+        out_compiled = torch.compile(func, backend="eager", fullgraph=True)(x_compiled)
+
+        self.assertEqual(out_eager, out_compiled)
+        self.assertEqual(x_eager.device, x_compiled.device)
+
+    @requires_cuda
+    def test_tensor_set_data_cross_device_shape_mismatch_graphbreaks(self):
+        def func(x):
+            x.data = torch.randn(8, device="cuda")
+            return x + 1
+
+        x = torch.randn(4, device="cpu")
+        with self.assertRaises(torch._dynamo.exc.Unsupported):
+            torch.compile(func, backend="eager", fullgraph=True)(x)
+
+    @requires_cuda
+    def test_tensor_set_data_cross_device_placeholder_metadata(self):
+        backend = torch._dynamo.testing.EagerAndRecordGraphs()
+
+        def func(x):
+            x.data = x.data.to("cuda")
+            return x + 1
+
+        x = torch.randn(4, device="cpu")
+        torch.compile(func, backend=backend, fullgraph=True)(x)
+
+        gm = backend.graphs[0]
+        for node in gm.graph.nodes:
+            if node.op == "placeholder":
+                ev = node.meta.get("example_value")
+                if isinstance(ev, torch.Tensor):
+                    self.assertEqual(ev.device.type, "cpu")
+
     def test_user_ctor_ctx_manager(self):
         class UserCtxManager:
             def __enter__(self):
@@ -8217,6 +8260,35 @@ SavedForBackwardsAOTOutput(idx=5)""",
         self.assertEqual(result.item(), 2.0)
         self.assertEqual(counter.frame_count, 2)
 
+    def test_is_with_metaclass_property_source(self):
+        sentinel = object()
+        other = object()
+
+        class Meta(type):
+            @property
+            def marker(cls):
+                return cls._marker
+
+        class Holder(metaclass=Meta):
+            pass
+
+        Holder._marker = sentinel
+        counter = CompileCounter()
+
+        @torch.compile(backend=counter, fullgraph=True)
+        def f(x):
+            if Holder.marker is sentinel:
+                return x + 1.0
+            return x + 2.0
+
+        result = f(torch.tensor(0.0))
+        self.assertEqual(result.item(), 1.0)
+
+        Holder._marker = other
+        result = f(torch.tensor(0.0))
+        self.assertEqual(result.item(), 2.0)
+        self.assertEqual(counter.frame_count, 2)
+
     def test_is_with_fresh_bound_builtin_method_source(self):
         class Foo:
             pass
@@ -8309,6 +8381,37 @@ SavedForBackwardsAOTOutput(idx=5)""",
 
         result = shadows_reductor(torch.tensor(0.0))
         self.assertEqual(result.item(), 2.0)
+
+    @torch._dynamo.config.patch(enable_trace_load_build_class=True)
+    def test_is_with_new_class_bound_builtin_method(self):
+        @torch.compile(backend="eager", fullgraph=True)
+        def has_reductor(x):
+            class Node:
+                pass
+
+            obj = Node()
+            reductor = getattr(obj, "__reduce_ex__", None)
+            if reductor is not None:
+                return x + 1.0
+            return x + 2.0
+
+        result = has_reductor(torch.tensor(0.0))
+        self.assertEqual(result.item(), 1.0)
+
+        @torch.compile(backend="eager", fullgraph=True)
+        def deepcopy_recursive(x):
+            class Node:
+                pass
+
+            a = Node()
+            b = Node()
+            a.b = b
+            b.a = a
+            copy.deepcopy(a)
+            return x + 1.0
+
+        result = deepcopy_recursive(torch.tensor(0.0))
+        self.assertEqual(result.item(), 1.0)
 
     def test_is_with_sourceless_container_and_dunder_dict(self):
         class Holder:
@@ -10027,7 +10130,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         self.assertEqual(
             a_stride,
             cloned_stride,
-            f"Strides should match in eager: {a_stride} against {cloned_stride}",
+            lambda msg: f"{msg}\nStrides should match in eager: {a_stride} against {cloned_stride}",
         )
 
         compiled_a_stride, compiled_cloned_stride = torch.compile(fn, backend="eager")(
@@ -10036,7 +10139,7 @@ class ReproTestsDevice(torch._dynamo.test_case.TestCase):
         self.assertEqual(
             compiled_a_stride,
             compiled_cloned_stride,
-            f"Strides should match in eager: {compiled_a_stride} against {compiled_cloned_stride}",
+            lambda msg: f"{msg}\nStrides should match in eager: {compiled_a_stride} against {compiled_cloned_stride}",
         )
 
 
