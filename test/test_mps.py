@@ -2971,7 +2971,7 @@ class TestMPS(TestCaseMPS):
         (8, 8, 8, 3, 256),
     ])
     def test_conv2d_filter_dim_ge_256(self, conv_config, batch_size):
-        # Regression: MPSGraph 2D conv miscomputes output once a filter dim reaches 256 (split into sub-256 chunks).
+        # Regression: MPSGraph 2D conv miscomputes output once a filter dim reaches 256 (routed to a Metal kernel).
         in_channels, out_channels, groups, kH, kW = conv_config
         H = kH if kH >= 256 else kH + 70
         W = kW if kW >= 256 else kW + 70

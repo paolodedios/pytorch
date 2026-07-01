@@ -1,16 +1,22 @@
 //  Copyright © 2022 Apple Inc.
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
+#include <ATen/native/CanUse32BitIndexMath.h>
 #include <ATen/native/ConvUtils.h>
 #include <ATen/native/mps/OperationUtils.h>
+#include <ATen/native/mps/kernels/Convolution.h>
 #include <ATen/ops/_mps_convolution_native.h>
 #include <ATen/ops/_mps_convolution_transpose_native.h>
-#include <ATen/ops/cat.h>
-#include <ATen/ops/constant_pad_nd.h>
 #include <ATen/ops/mps_convolution_backward_native.h>
 #include <ATen/ops/mps_convolution_transpose_backward_native.h>
 #include <fmt/format.h>
 
 namespace at::native {
+
+#ifndef PYTORCH_JIT_COMPILE_SHADERS
+static auto& lib = mps::MetalShaderLibrary::getBundledLibrary();
+#else
+#include <ATen/native/mps/Convolution_metallib.h>
+#endif
 
 // `memory_format` selects NDHWC vs NCDHW; `use_dhwio` selects DHWIO vs OIDHW
 // (caller must insert the matching in-graph weight transpose).
@@ -146,6 +152,66 @@ static void fill_conv_desc(MPSGraphConvolution2DOpDescriptor* descriptor_,
   descriptor_.groups = groups;
 }
 
+// Forward-only Metal conv for filter dims >= 256 (MPSGraph miscomputes those); backward is unaffected.
+static Tensor mps_convolution_2d_large_kernel(const Tensor& input_t,
+                                              const Tensor& weight_t,
+                                              const std::optional<Tensor>& bias_opt,
+                                              IntArrayRef padding,
+                                              IntArrayRef stride,
+                                              IntArrayRef dilation,
+                                              int64_t groups) {
+  using namespace mps;
+  const auto input = input_t.contiguous();
+  const auto weight = weight_t.contiguous();
+  const bool has_bias = bias_opt && bias_opt->defined();
+  const auto bias = has_bias ? bias_opt->contiguous() : Tensor();
+
+  auto output = at::empty(conv_output_size(input.sizes(), weight.sizes(), padding, stride, dilation), input.options());
+  if (output.numel() == 0) {
+    return output;
+  }
+
+  Conv2DParams params;
+  params.N = static_cast<int32_t>(input.size(0));
+  params.C_in = static_cast<int32_t>(input.size(1));
+  params.C_out = static_cast<int32_t>(weight.size(0));
+  params.H = static_cast<int32_t>(input.size(2));
+  params.W = static_cast<int32_t>(input.size(3));
+  params.outH = static_cast<int32_t>(output.size(2));
+  params.outW = static_cast<int32_t>(output.size(3));
+  params.kH = static_cast<int32_t>(weight.size(2));
+  params.kW = static_cast<int32_t>(weight.size(3));
+  params.sH = static_cast<int32_t>(stride[0]);
+  params.sW = static_cast<int32_t>(stride[1]);
+  params.padH = static_cast<int32_t>(padding[0]);
+  params.padW = static_cast<int32_t>(padding[1]);
+  params.dH = static_cast<int32_t>(dilation[0]);
+  params.dW = static_cast<int32_t>(dilation[1]);
+  params.C_in_per_group = static_cast<int32_t>(weight.size(1));
+  params.C_out_per_group = params.C_out / static_cast<int32_t>(groups);
+  params.has_bias = has_bias;
+
+  // ow-blocking quarters the thread count; only use it when the grid still saturates the GPU.
+  const auto outRows = output.numel() / output.size(3);
+  const auto blockedThreads = outRows * ((output.size(3) + 3) / 4);
+  const bool blocked = blockedThreads >= 32768;
+  const auto nThreads = blocked ? blockedThreads : output.numel();
+  const bool i32 = canUse32BitIndexMath(input) && canUse32BitIndexMath(weight) && canUse32BitIndexMath(output);
+
+  MPSStream* stream = getCurrentMPSStream();
+  dispatch_sync_with_rethrow(stream->queue(), ^() {
+    @autoreleasepool {
+      auto computeEncoder = stream->commandEncoder();
+      auto PSO = lib.getPipelineStateForFunc(
+          fmt::format("conv2d_r{}_{}_{}", blocked ? 4 : 1, i32 ? "i32" : "i64", scalarToMetalTypeString(input)));
+      [computeEncoder setComputePipelineState:PSO];
+      mtl_setArgs(computeEncoder, input, weight, has_bias ? std::optional<Tensor>(bias) : std::nullopt, output, params);
+      mtl_dispatch1DJob(computeEncoder, PSO, nThreads);
+    }
+  });
+  return output;
+}
+
 static Tensor _mps_convolution_impl(const Tensor& input_t,
                                     const Tensor& weight_t,
                                     const std::optional<Tensor>& bias_opt,
@@ -154,57 +220,13 @@ static Tensor _mps_convolution_impl(const Tensor& input_t,
                                     IntArrayRef dilation,
                                     int64_t groups,
                                     std::optional<IntArrayRef> input_shape) {
-  // MPSGraph 2D convolution miscomputes the output once a filter dimension reaches 256
-  // since this is not a regular shape that would be seen in regular models, this is fine
-  // i.e. no custom metal kernel needed
+  // MPSGraph 2D conv miscomputes the output once a filter spatial dim reaches 256; use a Metal kernel instead.
   if (input_t.dim() == 4 && (weight_t.size(2) >= 256 || weight_t.size(3) >= 256)) {
-    // The MPSGraph conv's threadgroup staging grows with the batch as well as the
-    // filter size, so split the batch and recurse; each chunk then takes the
-    // sub-256 filter path below.
-    constexpr int64_t kBatchChunk = 8;
-    const int64_t N = input_t.size(0);
-    if (N > kBatchChunk) {
-      std::vector<Tensor> parts;
-      parts.reserve((N + kBatchChunk - 1) / kBatchChunk);
-      for (int64_t ns = 0; ns < N; ns += kBatchChunk) {
-        parts.push_back(_mps_convolution_impl(input_t.narrow(0, ns, std::min(kBatchChunk, N - ns)),
-                                              weight_t,
-                                              bias_opt,
-                                              padding,
-                                              stride,
-                                              dilation,
-                                              groups,
-                                              std::nullopt));
-      }
-      return at::cat(parts, 0);
-    }
-    constexpr int64_t kChunk = 128;
-    const int64_t sH = stride[0], sW = stride[1];
-    const int64_t dH = dilation[0], dW = dilation[1];
-    const int64_t kH = weight_t.size(2), kW = weight_t.size(3);
-    const int64_t outH = (input_t.size(2) + 2 * padding[0] - dH * (kH - 1) - 1) / sH + 1;
-    const int64_t outW = (input_t.size(3) + 2 * padding[1] - dW * (kW - 1) - 1) / sW + 1;
-    // Degenerate shapes (filter larger than the padded input) fall through to the normal path's shape check.
+    const auto outH = (input_t.size(2) + 2 * padding[0] - dilation[0] * (weight_t.size(2) - 1) - 1) / stride[0] + 1;
+    const auto outW = (input_t.size(3) + 2 * padding[1] - dilation[1] * (weight_t.size(3) - 1) - 1) / stride[1] + 1;
+    // Degenerate shapes fall through to the normal path's shape check.
     if (outH >= 1 && outW >= 1) {
-      const auto padded = at::constant_pad_nd(input_t, {padding[1], padding[1], padding[0], padding[0]}, 0);
-      Tensor output_t;
-      for (int64_t hs = 0; hs < kH; hs += kChunk) {
-        const int64_t ch = std::min(kChunk, kH - hs);
-        const auto rows = padded.narrow(2, hs * dH, (outH - 1) * sH + dH * (ch - 1) + 1);
-        for (int64_t ws = 0; ws < kW; ws += kChunk) {
-          const int64_t cw = std::min(kChunk, kW - ws);
-          const auto x_chunk = rows.narrow(3, ws * dW, (outW - 1) * sW + dW * (cw - 1) + 1).contiguous();
-          const auto w_chunk = weight_t.narrow(2, hs, ch).narrow(3, ws, cw).contiguous();
-          auto part =
-              _mps_convolution_impl(x_chunk, w_chunk, std::nullopt, {0, 0}, stride, dilation, groups, std::nullopt);
-          // accumulate in fp32 to avoid aggregating rounding errors from half types
-          output_t = output_t.defined() ? output_t.add(part) : part.to(at::kFloat);
-        }
-      }
-      if (bias_opt && bias_opt->defined()) {
-        output_t = output_t.add(bias_opt->view({1, -1, 1, 1}));
-      }
-      return output_t.to(input_t.scalar_type());
+      return mps_convolution_2d_large_kernel(input_t, weight_t, bias_opt, padding, stride, dilation, groups);
     }
   }
   constexpr auto kChannelsLast = MemoryFormat::ChannelsLast;
