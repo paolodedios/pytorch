@@ -521,8 +521,14 @@ def _decompose_and_get_gm_with_new_signature_constants(
                     ep.graph_signature, new_graph_signature
                 )
 
-                constants = _materialize_and_lift_constants(
-                    gm, new_graph_signature, new_fake_constant_attrs
+                constants = {
+                    **ep.constants,
+                    **aten_export_artifact.constants,
+                }
+                constants.update(
+                    _materialize_and_lift_constants(
+                        gm, new_graph_signature, new_fake_constant_attrs
+                    )
                 )
 
                 placeholder_naming_pass(
@@ -571,7 +577,7 @@ def _decompose_and_get_gm_with_new_signature_constants(
                 if name not in unwrapped_params_buffers:
                     new_state_dict.pop(name)
 
-        return gm, new_graph_signature, new_state_dict
+        return gm, new_graph_signature, new_state_dict, constants
 
     old_placeholders = [
         node for node in ep.graph_module.graph.nodes if node.op == "placeholder"
@@ -812,7 +818,7 @@ def _decompose_and_get_gm_with_new_signature_constants(
         ):
             for k, v in old_node.meta.items():
                 new_node.meta[k] = v
-    return gm, new_graph_signature, ep.state_dict
+    return gm, new_graph_signature, ep.state_dict, ep.constants
 
 
 def _remove_unnecessary_copy_op_pass(
@@ -874,6 +880,8 @@ def _common_getitem_elimination_pass(
 def _normalize_exported_sym_not(
     gm: torch.fx.GraphModule, graph_signature, module_call_graph
 ) -> None:
+    # The dim_order(ambiguity_check=...) torch-function path can emit SymBool
+    # negation as a __sym_not__ method node; exported programs expect sym_not.
     with gm._set_replace_hook(graph_signature.get_replace_hook()):
         for module in gm.modules():
             if not isinstance(module, torch.fx.GraphModule):
@@ -1044,6 +1052,7 @@ def _decompose_exported_program(
         gm,
         new_graph_signature,
         state_dict,
+        constants,
     ) = _decompose_and_get_gm_with_new_signature_constants(
         ep,
         cia_to_decomp=cia_to_decomp,
@@ -1082,7 +1091,7 @@ def _decompose_exported_program(
         range_constraints=new_range_constraints,
         module_call_graph=new_module_call_graph,
         example_inputs=ep.example_inputs,
-        constants=ep.constants,
+        constants=constants,
     )
     return exported_program
 

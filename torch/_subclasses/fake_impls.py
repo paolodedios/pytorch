@@ -76,6 +76,8 @@ aten = torch._ops.ops.aten
 
 
 def _mkldnn_strides_for(shape: Sequence[IntLikeType]) -> tuple[IntLikeType, ...]:
+    # Mkldnn layouts do not have meaningful dense strides, but their backing
+    # meta tensors still need internal placeholder strides for fake kernels.
     if not shape:
         return ()
     return (1, *([0] * (len(shape) - 1)))
@@ -1426,13 +1428,17 @@ def _mkldnn_max_pool2d_with_indices(
     )
     input_ = new_kwargs["self"] if "self" in new_kwargs else new_kwargs["input"]
     if input_.is_mkldnn:
-        stride = new_kwargs["stride"]
+        try:
+            stride = tuple(new_kwargs["stride"])
+        except TypeError:
+            stride = (new_kwargs["stride"],)
         if any(s == 0 for s in stride):
             raise RuntimeError("stride should not be zero")
         if any(s <= 0 for s in stride):
+            dH = stride[0] if len(stride) > 0 else None
+            dW = stride[1] if len(stride) > 1 else None
             raise RuntimeError(
-                "stride should be greater than zero, "
-                f"but got dH: {stride[0]} dW: {stride[1]}"
+                f"stride should be greater than zero, but got dH: {dH} dW: {dW}"
             )
         raise RuntimeError(
             "'memory_format' argument is incompatible with mkldnn tensor"
@@ -2083,6 +2089,20 @@ def multi_device_op_default(
     fake_mode: FakeTensorMode, func: OpOverload, *args: Any, **kwargs: Any
 ) -> FakeTensor:
     return run_and_return_new_tensor_of_input_device(fake_mode, func, args, kwargs)
+
+
+@register_op_impl(aten.shallow_copy_data_.default)
+def _(
+    fake_mode: FakeTensorMode, func: OpOverload, *args: Any, **kwargs: Any
+) -> FakeTensor:
+    _, new_kwargs = _normalize_function_or_error(
+        func, args=args, kwargs=kwargs, normalize_to_only_use_kwargs=True
+    )
+    source_device = new_kwargs["source"].device
+    with in_kernel_invocation_manager(fake_mode):
+        func(*args, **kwargs)
+    new_kwargs["input"].fake_device = source_device
+    return new_kwargs["input"]
 
 
 # same with multi_device_op_default, but return the input
