@@ -886,6 +886,14 @@ partial_fn = functools.partial(fn, scale=2)
         return d
 
     @make_test
+    def test_deque_reinit_resets_maxlen(a, b):
+        # deque.__init__ resets maxlen; re-init with more items than the old
+        # maxlen must not be clamped to the old maxlen.
+        d = collections.deque([a, b], maxlen=2)
+        d.__init__([a, b, a + 1, b + 1])
+        return d, d.maxlen
+
+    @make_test
     def test_slice1(a):
         return a[5]
 
@@ -3441,15 +3449,15 @@ class GraphModule(torch.nn.Module):
                 """\
 class GraphModule(torch.nn.Module):
     def forward(self, args_list):
-        s11 = args_list[0]
-        L_torch_dynamo_resume_args_4_keywords_y_ = args_list[1]
+        L_torch_dynamo_resume_args_4_keywords_y_ = args_list[0]
+        s11 = args_list[1]
         args_list.clear()
         l_torch_dynamo_resume_args_4_keywords_y_ = L_torch_dynamo_resume_args_4_keywords_y_
         L_torch_dynamo_resume_args_4_keywords_y_ = None
 
-        mul: "f32[s11, s11]" = l_torch_dynamo_resume_args_4_keywords_y_ * l_torch_dynamo_resume_args_4_keywords_y_
+        add: "f32[s11, s11]" = l_torch_dynamo_resume_args_4_keywords_y_ + l_torch_dynamo_resume_args_4_keywords_y_
 
-        add: "f32[s11, s11]" = l_torch_dynamo_resume_args_4_keywords_y_ + l_torch_dynamo_resume_args_4_keywords_y_;  l_torch_dynamo_resume_args_4_keywords_y_ = None
+        mul: "f32[s11, s11]" = l_torch_dynamo_resume_args_4_keywords_y_ * l_torch_dynamo_resume_args_4_keywords_y_;  l_torch_dynamo_resume_args_4_keywords_y_ = None
 
         mul_1: "f32[s11, s11]" = torch.mul(mul, add);  mul = add = None
         return (mul_1,)
