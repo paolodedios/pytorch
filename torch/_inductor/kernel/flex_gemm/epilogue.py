@@ -17,7 +17,6 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     FlexGemmLocalReduceConsumerKind,
     FlexGemmLocalReduceSpec,
     grouped_reduce_dims_match,
-    LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR,
     LOCAL_REDUCE_AUX_TENSORSSA_ERROR,
     LOCAL_REDUCE_COMBINE_FN_SUFFIX,
     LOCAL_REDUCE_COMPRESSED_AUX,
@@ -203,12 +202,6 @@ class FlexGemmOutputPlan:
             isinstance(aux_output, torch.fx.Node) for aux_output in self.aux_outputs
         ):
             raise RuntimeError(FLEX_GEMM_OUTPUT_PLAN_NODE_ERROR)
-        if (
-            self.local_reduce is not None
-            and self.local_reduce.stores_compressed_aux
-            and self.aux_outputs
-        ):
-            raise NotImplementedError(LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -860,12 +853,29 @@ def tuple_output_plan(
         isinstance(aux_output, torch.fx.Node) for aux_output in aux_outputs
     ):
         raise NotImplementedError(FLEX_GEMM_OUTPUT_TENSOR_ERROR)
-    if analysis is not None and len(aux_outputs) == 1:
-        compressed_aux_plan = local_reduce_compressed_aux_plan(
-            analysis, output, aux_outputs[0]
+    if analysis is not None:
+        compressed_aux_plans = tuple(
+            (index, plan)
+            for index, aux_output in enumerate(aux_outputs)
+            if (plan := local_reduce_compressed_aux_plan(analysis, output, aux_output))
+            is not None
         )
-        if compressed_aux_plan is not None:
-            return FlexGemmOutputPlan(output, local_reduce=compressed_aux_plan)
+        if len(compressed_aux_plans) > 1:
+            raise NotImplementedError(LOCAL_REDUCE_MIXED_CONTRACT_ERROR)
+        if compressed_aux_plans:
+            local_reduce_index, compressed_aux_plan = compressed_aux_plans[0]
+            return FlexGemmOutputPlan(
+                output,
+                tuple(
+                    aux_output
+                    for index, aux_output in enumerate(aux_outputs)
+                    if index != local_reduce_index
+                ),
+                local_reduce=compressed_aux_plan,
+            )
+    feed_main_plan = local_reduce_feed_main_output_plan(output, aux_outputs)
+    if feed_main_plan is not None:
+        return feed_main_plan
     return FlexGemmOutputPlan(output, aux_outputs)
 
 
@@ -884,10 +894,8 @@ def output_plan(
             output, *aux_outputs = output_value
             aux_outputs = tuple(aux_outputs)
             analysis = None
-            if (
-                isinstance(output, torch.fx.Node)
-                and len(aux_outputs) == 1
-                and isinstance(aux_outputs[0], torch.fx.Node)
+            if isinstance(output, torch.fx.Node) and all(
+                isinstance(aux_output, torch.fx.Node) for aux_output in aux_outputs
             ):
                 analysis = local_reduce_analysis(graph_module)
             return tuple_output_plan(output, aux_outputs, analysis)
@@ -1114,11 +1122,14 @@ def materialize_flex_gemm_epilogue(
     epilogue_params = ", ".join(["acc", *aux_args, *local_reduce_args])
     result = _cute_arg(outputs.output, env)
     aux_result = local_reduce_aux_result(local_reduce_aux, local_reduce_store_sources)
-    if aux_result is not None:
-        result = f"({result}, {aux_result})"
-    elif outputs.aux_outputs:
-        aux_results = [_cute_arg(aux_output, env) for aux_output in outputs.aux_outputs]
-        result = f"({', '.join(str(item) for item in (result, *aux_results))})"
+    if outputs.aux_outputs or aux_result is not None:
+        tuple_items = [result]
+        tuple_items.extend(
+            _cute_arg(aux_output, env) for aux_output in outputs.aux_outputs
+        )
+        if aux_result is not None:
+            tuple_items.append(aux_result)
+        result = f"({', '.join(str(item) for item in tuple_items)})"
     physical_reduction = None
     if local_reduce is not None:
         physical_reduction = local_reduce_physical_reductions.get(local_reduce.node)
