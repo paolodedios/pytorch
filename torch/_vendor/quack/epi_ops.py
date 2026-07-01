@@ -589,10 +589,20 @@ class TileStore(EpiOp):
         ]
 
     def to_params(self, gemm, args):
-        tensor = getattr(args, self.name)
+        tensors = getattr(args, self.name)
         epi_tile = self.epi_tile_fn(gemm, gemm.epi_tile) if self.epi_tile_fn else None
+        if isinstance(tensors, tuple):
+            prepared = tuple(
+                setup_epi_tensor(gemm, tensor, epi_tile=epi_tile) for tensor in tensors
+            )
+            return {
+                self._tma_atom_key(): tuple(item[0] for item in prepared),
+                self.name: tuple(item[1] for item in prepared),
+                self._smem_layout_key(): tuple(item[2] for item in prepared),
+                self._epi_tile_key(): tuple(item[3] for item in prepared),
+            }
         tma_atom, tma_tensor, smem_layout, epi_tile_out = setup_epi_tensor(
-            gemm, tensor, epi_tile=epi_tile
+            gemm, tensors, epi_tile=epi_tile
         )
         return {
             self._tma_atom_key(): tma_atom,
@@ -606,12 +616,35 @@ class TileStore(EpiOp):
             epi_tile = self.epi_tile_fn(None, epi_tile)
         # epi_tile may contain Layout entries (from SM100's compute_epilogue_tile_shape
         # fixup path), so extract the int shape first.
+        if isinstance(arg_tensor, tuple):
+            return sum(
+                (
+                    EpiSmemBytes(
+                        d_stage=cute.size(cute.shape(epi_tile))
+                        * (tensor.element_type.width // 8)
+                    )
+                    for tensor in arg_tensor
+                ),
+                EpiSmemBytes(),
+            )
         return EpiSmemBytes(
             d_stage=cute.size(cute.shape(epi_tile)) * (arg_tensor.element_type.width // 8)
         )
 
     def smem_struct_field(self, gemm, params):
         smem_layout = getattr(params, self._smem_layout_key())
+        if isinstance(smem_layout, tuple):
+            annotations = {}
+            for i, layout in enumerate(smem_layout):
+                annotations[f"v{i}"] = cute.struct.Align[
+                    cute.struct.MemRange[
+                        gemm.aux_out_dtypes[i],
+                        cute.cosize(layout),
+                    ],
+                    gemm.buffer_align_bytes,
+                ]
+            storage = type(f"{self.name}Storage", (), {"__annotations__": annotations})
+            return (f"s_{self.name}", cute.struct(storage))
         return (
             f"s_{self.name}",
             cute.struct.Align[
@@ -625,13 +658,23 @@ class TileStore(EpiOp):
 
     def get_smem_tensor(self, gemm, params, storage_epi):
         smem_layout = getattr(params, self._smem_layout_key())
-        return getattr(storage_epi, f"s_{self.name}").get_tensor(
+        storage = getattr(storage_epi, f"s_{self.name}")
+        if isinstance(smem_layout, tuple):
+            return tuple(
+                getattr(storage, f"v{i}").get_tensor(
+                    layout.outer,
+                    swizzle=layout.inner,
+                )
+                for i, layout in enumerate(smem_layout)
+            )
+        return storage.get_tensor(
             smem_layout.outer,
             swizzle=smem_layout.inner,
         )
 
     def tma_atoms(self, gemm, params):
-        return [getattr(params, self._tma_atom_key())]
+        tma_atom = getattr(params, self._tma_atom_key())
+        return list(tma_atom) if isinstance(tma_atom, tuple) else [tma_atom]
 
 
 class _TileLoadState(NamedTuple):
