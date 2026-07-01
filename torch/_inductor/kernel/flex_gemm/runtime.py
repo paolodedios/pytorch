@@ -192,19 +192,25 @@ def normalize_c(
 
 
 @dataclasses.dataclass(frozen=True)
-class FlexGemmRuntimeCompressedLocalReducePlan:
-    """Runtime plan for a local reduction stored as compressed aux output."""
+class FlexGemmRuntimeLocalReducePlan:
+    """Runtime plan for one local reduction and its optional output binding."""
 
     geometry: FlexGemmLocalReduceGeometry
-    out: torch.Tensor
+    out: torch.Tensor | None = None
     callbacks: FlexGemmLocalReduceCallbacks | None = None
 
     def __post_init__(self) -> None:
-        """Reject compressed plans without required output/callback state."""
-        if self.out is None:
-            raise RuntimeError(LOCAL_REDUCE_RUNTIME_OUT_ERROR)
-        if self.geometry.needs_physical_callbacks and self.callbacks is None:
+        """Reject plans without the output/callback state required by their consumer."""
+        if self.feeds_main:
+            if self.callbacks is None:
+                raise RuntimeError(LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR)
+            validate_local_reduce_feed_main_capability(self.axis, self.group)
+        elif self.geometry.needs_physical_callbacks and self.callbacks is None:
             raise RuntimeError(LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR)
+
+    @property
+    def feeds_main(self) -> bool:
+        return self.out is None
 
     @property
     def group(self) -> int:
@@ -213,37 +219,6 @@ class FlexGemmRuntimeCompressedLocalReducePlan:
     @property
     def axis(self) -> int:
         return self.geometry.axis
-
-
-@dataclasses.dataclass(frozen=True)
-class FlexGemmRuntimeFeedMainLocalReducePlan:
-    """Runtime plan for a local reduction fed into the main epilogue."""
-
-    geometry: FlexGemmLocalReduceGeometry
-    callbacks: FlexGemmLocalReduceCallbacks
-
-    def __post_init__(self) -> None:
-        """Reject feed-main plans QuACK cannot inject into the epilogue."""
-        if self.callbacks is None:
-            raise RuntimeError(LOCAL_REDUCE_CALLBACKS_REQUIRED_ERROR)
-        validate_local_reduce_feed_main_capability(self.axis, self.group)
-
-    @property
-    def out(self) -> None:
-        return None
-
-    @property
-    def group(self) -> int:
-        return self.geometry.group
-
-    @property
-    def axis(self) -> int:
-        return self.geometry.axis
-
-
-FlexGemmRuntimeLocalReducePlan: TypeAlias = (
-    FlexGemmRuntimeCompressedLocalReducePlan | FlexGemmRuntimeFeedMainLocalReducePlan
-)
 
 
 def validate_runtime_local_reduce(
@@ -261,15 +236,18 @@ def validate_runtime_local_reduce(
     validate_local_reduce_runtime_dense_mm(a.ndim)
     validate_local_reduce_selected_dim_divisible(expected_shape, plan.group, plan.axis)
     validate_local_reduce_no_c_alpha_beta(effective_C, alpha, beta)
-    if isinstance(plan, FlexGemmRuntimeFeedMainLocalReducePlan):
+    if plan.feeds_main:
         validate_local_reduce_feed_main_capability(plan.axis, plan.group)
         return
-    check_matrix("local_reduce_out", plan.out)
-    check_matrix_major_layout("local_reduce_out", plan.out)
+    local_reduce_out = plan.out
+    if local_reduce_out is None:
+        raise RuntimeError(LOCAL_REDUCE_RUNTIME_OUT_ERROR)
+    check_matrix("local_reduce_out", local_reduce_out)
+    check_matrix_major_layout("local_reduce_out", local_reduce_out)
     expected_local_reduce_shape = local_reduce_compressed_shape(
         expected_shape, plan.group, plan.axis
     )
-    validate_local_reduce_out_shape(plan.out.shape, expected_local_reduce_shape)
+    validate_local_reduce_out_shape(local_reduce_out.shape, expected_local_reduce_shape)
 
 
 def local_reduce_callback_key(callback: Any, fallback_key: str) -> str:
@@ -319,9 +297,7 @@ def local_reduce_gemm_act_kwargs(
     local_reduce_combine_key, local_reduce_finalize_key = callback_keys
     return {
         LOCAL_REDUCE_RETURNS_KWARG: local_reduce_out is not None,
-        LOCAL_REDUCE_FEEDS_MAIN_KWARG: isinstance(
-            local_reduce, FlexGemmRuntimeFeedMainLocalReducePlan
-        ),
+        LOCAL_REDUCE_FEEDS_MAIN_KWARG: local_reduce.feeds_main,
         LOCAL_REDUCE_OUT_KWARG: local_reduce_out,
         LOCAL_REDUCE_GROUP_KWARG: local_reduce.group,
         LOCAL_REDUCE_AXIS_KWARG: local_reduce.axis,

@@ -328,7 +328,7 @@ class FlexGemmTestCase(TestCase):
         """Check generated code passes a structural compressed-aux plan."""
         file_check = (
             FileCheck()
-            .check("local_reduce=FlexGemmRuntimeCompressedLocalReducePlan")
+            .check("local_reduce=FlexGemmRuntimeLocalReducePlan")
             .check(self.localReduceGeometryPattern(group, axis))
             .check("out=")
         )
@@ -351,8 +351,7 @@ class FlexGemmTestCase(TestCase):
             FlexGemmLocalReduceGeometry,
         )
         from torch._inductor.kernel.flex_gemm.runtime import (
-            FlexGemmRuntimeCompressedLocalReducePlan,
-            FlexGemmRuntimeFeedMainLocalReducePlan,
+            FlexGemmRuntimeLocalReducePlan,
         )
 
         callbacks = None
@@ -361,12 +360,9 @@ class FlexGemmTestCase(TestCase):
                 combine_fn=lambda lhs, rhs: lhs,
                 finalize_fn=lambda value: value,
             )
-        geometry = FlexGemmLocalReduceGeometry(group, axis)
-        if feeds_main:
-            return FlexGemmRuntimeFeedMainLocalReducePlan(geometry, callbacks)
-        return FlexGemmRuntimeCompressedLocalReducePlan(
-            geometry,
-            out=out,
+        return FlexGemmRuntimeLocalReducePlan(
+            FlexGemmLocalReduceGeometry(group, axis),
+            out=None if feeds_main else out,
             callbacks=callbacks,
         )
 
@@ -412,9 +408,7 @@ class FlexGemmTestCase(TestCase):
 
     def assertPhysicalFeedMainCode(self, code, group=None):
         """Check generated code uses the current physical feed-main ABI."""
-        file_check = FileCheck().check(
-            "local_reduce=FlexGemmRuntimeFeedMainLocalReducePlan"
-        )
+        file_check = FileCheck().check("local_reduce=FlexGemmRuntimeLocalReducePlan")
         if group is None:
             file_check = file_check.check("FlexGemmLocalReduceGeometry(group=").check(
                 "axis=0)"
@@ -842,35 +836,44 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             FlexGemmLocalReduceGeometry,
         )
         from torch._inductor.kernel.flex_gemm.runtime import (
-            FlexGemmRuntimeCompressedLocalReducePlan,
-            FlexGemmRuntimeFeedMainLocalReducePlan,
+            FlexGemmRuntimeLocalReducePlan,
         )
 
         with self.assertRaisesRegex(RuntimeError, "generated local-reduce callbacks"):
-            FlexGemmRuntimeFeedMainLocalReducePlan(
-                FlexGemmLocalReduceGeometry(8, 0), None
-            )
+            FlexGemmRuntimeLocalReducePlan(FlexGemmLocalReduceGeometry(8, 0))
         with self.assertRaisesRegex(RuntimeError, "generated local-reduce callbacks"):
-            FlexGemmRuntimeCompressedLocalReducePlan(
+            FlexGemmRuntimeLocalReducePlan(
                 FlexGemmLocalReduceGeometry(8, 0), out=torch.empty(1)
             )
 
-    def test_local_reduce_plan_rejects_missing_compressed_output_binding(self):
+    def test_local_reduce_plan_uses_output_binding_as_consumer(self):
         from torch._inductor.kernel.flex_gemm.constraints import (
+            FlexGemmLocalReduceCallbacks,
             FlexGemmLocalReduceGeometry,
         )
         from torch._inductor.kernel.flex_gemm.runtime import (
-            FlexGemmRuntimeCompressedLocalReducePlan,
+            FlexGemmRuntimeLocalReducePlan,
         )
         from torch._inductor.kernel.flex_gemm.template import (
-            FlexGemmEpilogueCompressedLocalReduceConfig,
+            FlexGemmEpilogueLocalReduceConfig,
         )
 
-        geometry = FlexGemmLocalReduceGeometry(8, 1)
-        with self.assertRaisesRegex(RuntimeError, "local_reduce_out"):
-            FlexGemmRuntimeCompressedLocalReducePlan(geometry, out=None)
-        with self.assertRaisesRegex(RuntimeError, "require out_index"):
-            FlexGemmEpilogueCompressedLocalReduceConfig(geometry, out_index=None)
+        callbacks = FlexGemmLocalReduceCallbacks(
+            lambda lhs, rhs: lhs, lambda value: value
+        )
+        geometry = FlexGemmLocalReduceGeometry(8, 0)
+        self.assertTrue(
+            FlexGemmRuntimeLocalReducePlan(geometry, callbacks=callbacks).feeds_main
+        )
+        self.assertFalse(
+            FlexGemmRuntimeLocalReducePlan(
+                geometry, out=torch.empty(1), callbacks=callbacks
+            ).feeds_main
+        )
+        self.assertTrue(FlexGemmEpilogueLocalReduceConfig(geometry).feeds_main)
+        self.assertFalse(
+            FlexGemmEpilogueLocalReduceConfig(geometry, out_index=0).feeds_main
+        )
 
     def test_output_plan_rejects_invalid_state(self):
         from torch._inductor.kernel.flex_gemm.constraints import (
@@ -878,8 +881,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         )
         from torch._inductor.kernel.flex_gemm.epilogue import (
             FlexGemmLocalReduceContract,
-            FlexGemmOutputCompressedLocalReducePlan,
-            FlexGemmOutputFeedMainLocalReducePlan,
+            FlexGemmOutputLocalReducePlan,
             FlexGemmOutputPlan,
             tuple_output_plan,
         )
@@ -894,9 +896,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         with self.assertRaisesRegex(RuntimeError, "tensor nodes"):
             FlexGemmLocalReduceContract(object(), 8, 0)
         with self.assertRaisesRegex(RuntimeError, "tensor nodes"):
-            FlexGemmOutputFeedMainLocalReducePlan(
-                FlexGemmLocalReduceGeometry(8, 0), object()
-            )
+            FlexGemmOutputLocalReducePlan(FlexGemmLocalReduceGeometry(8, 0), object())
         with self.assertRaisesRegex(NotImplementedError, "tensor outputs"):
             tuple_output_plan(object(), ())
         with self.assertRaisesRegex(NotImplementedError, "tensor outputs"):
@@ -904,16 +904,14 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
         FlexGemmOutputPlan(
             node,
             (aux,),
-            FlexGemmOutputCompressedLocalReducePlan(
-                FlexGemmLocalReduceGeometry(8, 0), aux
+            FlexGemmOutputLocalReducePlan(
+                FlexGemmLocalReduceGeometry(8, 0), aux, out_node=aux
             ),
         )
         FlexGemmOutputPlan(
             node,
             (aux,),
-            FlexGemmOutputFeedMainLocalReducePlan(
-                FlexGemmLocalReduceGeometry(8, 0), aux
-            ),
+            FlexGemmOutputLocalReducePlan(FlexGemmLocalReduceGeometry(8, 0), aux),
         )
 
     def test_local_reduce_feed_main_binary_candidates_support_method_nodes(self):
@@ -1126,7 +1124,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             FlexGemmLocalReduceGeometry,
         )
         from torch._inductor.kernel.flex_gemm.runtime import (
-            FlexGemmRuntimeCompressedLocalReducePlan,
+            FlexGemmRuntimeLocalReducePlan,
             gemm_epilogue,
         )
 
@@ -1146,7 +1144,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 self.relu_epilogue,
                 "test_flex_gemm_swap_ab_local_reduce_rejects",
                 out_dtype=torch.float32,
-                local_reduce=FlexGemmRuntimeCompressedLocalReducePlan(
+                local_reduce=FlexGemmRuntimeLocalReducePlan(
                     FlexGemmLocalReduceGeometry(group, 1),
                     out=local_reduce_out,
                 ),
@@ -1221,7 +1219,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         file_check = (
             FileCheck()
             .check("from torch._inductor.kernel.flex_gemm.runtime import (")
-            .check("FlexGemmRuntimeCompressedLocalReducePlan")
+            .check("FlexGemmRuntimeLocalReducePlan")
             .check("gemm_epilogue as flex_gemm_epilogue")
             .check("flex_gemm_epilogue(")
         )
@@ -3369,7 +3367,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         torch.testing.assert_close(actual, expected, atol=1e-2, rtol=1e-2)
         self.assertEqual(code.count("flex_gemm_epilogue("), 2)
-        self.assertIn("local_reduce=FlexGemmRuntimeCompressedLocalReducePlan", code)
+        self.assertIn("local_reduce=FlexGemmRuntimeLocalReducePlan", code)
         self.assertIn(
             f"FlexGemmLocalReduceGeometry(group={group}, axis=1)",
             code,

@@ -148,13 +148,9 @@ def flex_gemm_local_reduce_metas(
 ) -> tuple[Any, ...]:
     """Return local-reduce output metadata after validating consumer compatibility."""
     validate_flex_gemm_local_reduce_scope(gemm_op, local_reduce)
-    from torch._inductor.kernel.flex_gemm.epilogue import (
-        FlexGemmOutputCompressedLocalReducePlan,
-    )
-
-    if not isinstance(local_reduce, FlexGemmOutputCompressedLocalReducePlan):
+    if local_reduce is None or local_reduce.out_node is None:
         return ()
-    local_reduce_meta = local_reduce.node.meta.get("val")
+    local_reduce_meta = local_reduce.out_node.meta.get("val")
     if local_reduce_meta is None:
         raise NotImplementedError(LOCAL_REDUCE_AUX_METADATA_ERROR)
     return (local_reduce_meta,)
