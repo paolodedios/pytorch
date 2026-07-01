@@ -86,7 +86,7 @@ class FlexGemmEpilogueConfig:
         quack_config_key: Lossless key for the selected QuACK GEMM config.
         epilogue_arg_indices: Template input indices for read-only epilogue captures.
         epilogue_arg_kinds: Broadcast kind for each captured epilogue tensor.
-        aux_out_index: Template input index for the single supported aux output.
+        aux_out_indices: Template input indices for same-shape aux outputs.
         local_reduce: Tagged local-reduce consumer rendered into runtime kwargs.
     """
 
@@ -99,7 +99,7 @@ class FlexGemmEpilogueConfig:
     quack_config_key: tuple[Any, ...] | None = None
     epilogue_arg_indices: tuple[int, ...] = ()
     epilogue_arg_kinds: tuple[str, ...] = ()
-    aux_out_index: int | None = None
+    aux_out_indices: tuple[int, ...] = ()
     local_reduce: FlexGemmEpilogueLocalReduceConfig | None = None
 
 
@@ -260,8 +260,9 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
                 f", epilogue_args=({', '.join(epilogue_args)},), "
                 f"epilogue_arg_kinds={config.epilogue_arg_kinds!r}"
             )
-        if config.aux_out_index is not None:
-            kwargs.append(f", aux_out={input_args[config.aux_out_index]}")
+        if config.aux_out_indices:
+            aux_outs = ", ".join(input_args[index] for index in config.aux_out_indices)
+            kwargs.append(f", aux_outs=({aux_outs},)")
         if config.local_reduce is not None:
             kwargs.append(
                 self._local_reduce_kwargs(
