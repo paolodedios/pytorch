@@ -60,7 +60,7 @@ _tensor_epilogue_fns: dict[str, Callable] = {}
 _local_reduce_combine_fns: dict[str, Callable] = {}
 _local_reduce_finalize_fns: dict[str, Callable] = {}
 # Feed-main must fit within grouped_rowvec_reduce_value's lane-layout M extent.
-MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP = 16
+MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP = 32
 
 
 def register_tensor_epilogue_fn(

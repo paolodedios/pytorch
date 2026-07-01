@@ -32,7 +32,7 @@ def grouped_reduce_dims_match(dim: Any, reduce_dims: Sequence[Any]) -> bool:
 
 # Feed-main currently reduces only within one lane-layout M group; cross-warp M
 # stitching needs the two-phase/replay path used by compressed aux reductions.
-MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP = 16
+MAX_SAME_WARP_LOCAL_REDUCE_FEED_MAIN_GROUP = 32
 LOCAL_REDUCE_FEED_MAIN_AXIS_ERROR = (
     "FlexGEMM local-reduce feed-main currently supports only axis 0"
 )

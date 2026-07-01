@@ -635,10 +635,10 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 out=bad_out_layout,
             )
 
-    @parametrize("group", (17, 32))
+    @parametrize("group", (33, 64))
     def test_runtime_plan_rejects_cross_warp_feed_main_group(self, group):
         with self.assertRaisesRegex(
-            NotImplementedError, "same-warp axis-0 groups <= 16"
+            NotImplementedError, "same-warp axis-0 groups <= 32"
         ):
             self.runtimeLocalReducePlan(
                 group=group,
@@ -2621,7 +2621,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    @parametrize("group", (2, 4, 8, 16))
+    @parametrize("group", (2, 4, 8, 16, 32))
     def test_mm_local_m_reduce_result_feeds_main_output(self, group):
         m = 128
         n = 64
@@ -2906,24 +2906,22 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    @parametrize("case", ("cross_warp", "boundary"))
+    @parametrize(
+        "case",
+        (
+            ("cross_warp", 128, 64, "same-warp axis-0 groups <= 32"),
+            ("boundary", 136, 17, "fragment width 32"),
+        ),
+        name_fn=lambda case: case[0],
+    )
     def test_mm_local_m_reduce_feed_main_rejects_unsupported_group(self, case):
+        _, m, group, error = case
         n = 64
-        if case == "cross_warp":
-            m = 128
 
-            def epilogue_fn(acc):
-                x = acc.float().view(-1, 32, n)
-                scale = x.sum(1, keepdim=True)
-                return (x * scale.reciprocal()).view(128, n)
-
-        else:
-            m = 136
-
-            def epilogue_fn(acc):
-                x = acc.float().view(-1, 17, n)
-                scale = x.sum(1, keepdim=True)
-                return (x * scale.reciprocal()).view(136, n)
+        def epilogue_fn(acc, group=group, m=m, n=n):
+            x = acc.float().view(-1, group, n)
+            scale = x.sum(1, keepdim=True)
+            return (x * scale.reciprocal()).view(m, n)
 
         def fn(a, b):
             return flex_gemm(
@@ -2935,7 +2933,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         a = torch.rand(m, 64, device="cuda", dtype=torch.bfloat16)
         b = torch.rand(64, n, device="cuda", dtype=torch.bfloat16)
-        with self.assertRaisesRegex(Exception, "same-warp axis-0 groups <= 16"):
+        with self.assertRaisesRegex(Exception, error):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
     @skipIfNoCuteDSL
