@@ -542,19 +542,6 @@ class ConstDictVariable(VariableTracker):
             tx.output.guard_on_key_order.add(self.source)
         return DictIterator(self.items.keys())
 
-    def tp_init_impl(
-        self,
-        tx: "InstructionTranslatorBase",
-        args: list[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        from . import DictBuiltinVariable
-
-        temp_dict_vt = DictBuiltinVariable.call_custom_dict(tx, dict, *args, **kwargs)
-        tx.output.side_effects.mutation(self)
-        self.items.update(temp_dict_vt.items)  # type: ignore[attr-defined]
-        return ConstantVariable.create(None)
-
     def call_method(
         self,
         tx: "InstructionTranslatorBase",
@@ -569,9 +556,18 @@ class ConstDictVariable(VariableTracker):
         # corresponding value VT. For __contains__, we add a DICT_CONTAINS
         # guard. But for all the other methods, we insert the DICT_KEYS_MATCH
         # guard to be conservative.
+        from . import DictBuiltinVariable
+
         Hashable = HashableTracker
 
-        if name == "items":
+        if name == "__init__":
+            temp_dict_vt = DictBuiltinVariable.call_custom_dict(
+                tx, dict, *args, **kwargs
+            )
+            tx.output.side_effects.mutation(self)
+            self.items.update(temp_dict_vt.items)  # type: ignore[attr-defined]
+            return ConstantVariable.create(None)
+        elif name == "items":
             if args or kwargs:
                 raise_args_mismatch(
                     tx,
@@ -774,7 +770,7 @@ class ConstDictVariable(VariableTracker):
 
     def nb_or_impl(
         self,
-        tx: "InstructionTranslatorBase",
+        tx: Any,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -788,7 +784,7 @@ class ConstDictVariable(VariableTracker):
 
     def nb_inplace_or_impl(
         self,
-        tx: "InstructionTranslatorBase",
+        tx: Any,
         other: VariableTracker,
     ) -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/3.13/Objects/dictobject.c#L4660-L4667
