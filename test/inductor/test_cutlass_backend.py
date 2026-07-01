@@ -631,6 +631,54 @@ class TestCutlassBackend(TestCase):
 
             torch.testing.assert_close(actual, expected)
 
+    @unittest.skipIf(torch.version.hip is not None, "ROCm not supported")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @parametrize("dtype", (torch.float16, torch.bfloat16))
+    @parametrize("num_gemms", (1, 2))
+    @mock.patch.dict(os.environ, {"PATH": _get_path_without_sccache()})
+    def test_max_autotune_cutlass_backend_cpp_wrapper(
+        self,
+        dtype: torch.dtype,
+        num_gemms: int,
+    ):
+        """
+        Verify that CUTLASS GEMM templates work under JIT cpp_wrapper mode.
+        ``num_gemms=2`` chains a second GEMM of a different shape so the
+        wrapper has to link against multiple distinct .so files.
+        """
+        M, N, K = 128, 128, 16
+
+        class MyModel(torch.nn.Module):
+            def forward(self, a, b, c):
+                out = a @ b
+                if num_gemms > 1:
+                    out = out @ c
+                return out
+
+        model = MyModel().to(GPU_TYPE)
+        a = torch.randn(M, K, device=GPU_TYPE, dtype=dtype)
+        b = torch.randn(K, N, device=GPU_TYPE, dtype=dtype)
+        c = torch.randn(N, N // 2, device=GPU_TYPE, dtype=dtype)
+        expected = model(a, b, c)
+
+        with config.patch(
+            {
+                "max_autotune": True,
+                "max_autotune_gemm_backends": "CUTLASS",
+                "cutlass.cutlass_max_profiling_configs": 2,
+                "cpp_wrapper": True,
+            }
+        ):
+            from torch._inductor.utils import run_and_get_code
+
+            compiled = torch.compile(model, fullgraph=True)
+            actual, codes = run_and_get_code(compiled, a, b, c)
+            torch.testing.assert_close(actual, expected)
+            # JIT path must call the bare extern "C" symbol, not via the
+            # AOT-only `kernels.` member.
+            FileCheck().check("cutlass_").check_not("kernels.cutlass_").run(codes[0])
+
     @skipXPUIf(True, "XPU SYCL-TLA has not supported fp8 yet")
     @skipCUDAIf(not SM90OrLater, "need sm_90")
     @xfailIfSM120OrLater
@@ -2305,8 +2353,8 @@ class TestCutlassBackend(TestCase):
 
         M = 1024
         N = 512
-        a = torch.ones(M, N).to(GPU_TYPE).half()
-        b = torch.ones(N, N).to(GPU_TYPE).half().t()
+        a = torch.randn(M, N).to(GPU_TYPE).half()
+        b = torch.randn(N, N).to(GPU_TYPE).half().t()
         extra_args = gen_args(op, (M, N))
         model = TestModel().to(GPU_TYPE)
 
@@ -2317,7 +2365,137 @@ class TestCutlassBackend(TestCase):
             torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
             1,
         )
-        torch.testing.assert_close(result, ref_result)
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
+
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @use_evt_config
+    def test_evt_scalar_constant(self):
+        # Python scalar literals in the epilogue (e.g. * 0.5, - 1.0) are lowered
+        # by the CUTLASS EVT frontend into immediate-constant ("imm_*") nodes.
+        # These are not input buffers, so EVT arg rendering must recover the
+        # constant value and emit it as a scalar (see get_constant_value /
+        # constant handling in evt_extensions.py); without it the renderer
+        # raises KeyError on the imm_ name. The negative literal additionally
+        # exercises the name-parsing fallback for signed immediates.
+        class TestModel(torch.nn.Module):
+            def forward(self, a, b):
+                return (a @ b) * 0.5 - 1.0
+
+        M = 1024
+        N = 512
+        a = torch.randn(M, N).to(GPU_TYPE).half()
+        b = torch.randn(N, N).to(GPU_TYPE).half().t()
+        model = TestModel().to(GPU_TYPE)
+
+        result = torch.compile(model)(a, b)
+        ref_result = model(a, b)
+
+        self.assertEqual(
+            torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
+            1,
+        )
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
+
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @use_evt_config
+    def test_evt_gelu(self):
+        # gelu is decomposed by Inductor into x * 0.5 * (1 + erf(x / sqrt(2)));
+        # the EVT codegen re-folds this back into the native CUTLASS GELU
+        # functor (see _fuse_activations in python_evt.py).
+        class TestModel(torch.nn.Module):
+            def forward(self, a, b):
+                return torch.nn.functional.gelu(a @ b)
+
+        M = 1024
+        N = 512
+        a = torch.randn(M, N).to(GPU_TYPE).half()
+        b = torch.randn(N, N).to(GPU_TYPE).half().t()
+        model = TestModel().to(GPU_TYPE)
+
+        result = torch.compile(model)(a, b)
+        ref_result = model(a, b)
+
+        self.assertEqual(
+            torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
+            1,
+        )
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
+
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @use_evt_config
+    def test_evt_silu_fusion(self):
+        """Test that SiLU activation can be fused into GEMM epilogue via EVT."""
+
+        class TestModel(torch.nn.Module):
+            def forward(self, a, b):
+                return torch.nn.functional.silu(a @ b)
+
+        M, N = 1024, 512
+        a = torch.randn(M, N, device=GPU_TYPE, dtype=torch.float16)
+        b = torch.randn(N, N, device=GPU_TYPE, dtype=torch.float16).t()
+        model = TestModel().to(GPU_TYPE)
+
+        result = torch.compile(model)(a, b)
+        ref_result = model(a, b)
+
+        self.assertEqual(
+            torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
+            1,
+        )
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
+
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @use_evt_config
+    def test_evt_llama_mlp_pattern(self):
+        """Test the Llama MLP pattern: silu(x @ gate.T) * (x @ up.T)."""
+
+        class LlamaMLP(torch.nn.Module):
+            def forward(self, x, gate_w, up_w):
+                return torch.nn.functional.silu(x @ gate_w.t()) * (x @ up_w.t())
+
+        M, K, N = 256, 256, 256
+        x = torch.randn(M, K, device=GPU_TYPE, dtype=torch.float16)
+        gate_w = torch.randn(N, K, device=GPU_TYPE, dtype=torch.float16)
+        up_w = torch.randn(N, K, device=GPU_TYPE, dtype=torch.float16)
+        model = LlamaMLP().to(GPU_TYPE)
+
+        ref_result = model(x, gate_w, up_w)
+        result = torch.compile(model)(x, gate_w, up_w)
+
+        self.assertGreaterEqual(
+            torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
+            1,
+        )
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
+
+    @skipXPUIf(not Xe2_Or_Later, "")
+    @skipCUDAIf(not SM90OrLater, "need sm_90")
+    @use_evt_config
+    def test_evt_aux_load_mul(self):
+        """Test that multiplying GEMM output with an external buffer uses AuxLoad."""
+
+        class TestModel(torch.nn.Module):
+            def forward(self, a, b, aux):
+                return (a @ b) * aux
+
+        M, N, K = 256, 256, 256
+        a = torch.randn(M, K, device=GPU_TYPE, dtype=torch.float16)
+        b = torch.randn(K, N, device=GPU_TYPE, dtype=torch.float16)
+        aux = torch.randn(M, N, device=GPU_TYPE, dtype=torch.float16)
+        model = TestModel().to(GPU_TYPE)
+
+        result = torch.compile(model)(a, b, aux)
+        ref_result = model(a, b, aux)
+
+        self.assertEqual(
+            torch._dynamo.utils.counters["inductor"]["cutlass_epilogue_fusion_counter"],
+            1,
+        )
+        torch.testing.assert_close(result, ref_result, atol=1e-2, rtol=1e-2)
 
     @skipXPUIf(not Xe2_Or_Later, "")
     @skipCUDAIf(not SM90OrLater, "need sm_90")

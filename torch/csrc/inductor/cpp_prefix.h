@@ -1097,14 +1097,15 @@ template <
     int NI,
     int NV,
     typename mask_t,
+    int NM,
     std::enable_if_t<std::is_same_v<T, bool>, int> = 0>
 void atomic_add_vec(
     T* addr,
     at::vec::VectorizedN<int64_t, NI> index,
-    at::vec::VecMask<mask_t, NV> offset,
+    at::vec::VecMask<mask_t, NM> offset,
     std::optional<int64_t> tail_size = std::nullopt) {
   constexpr int len = at::vec::VectorizedN<int64_t, NI>::size();
-  static_assert(len <= at::vec::VecMask<mask_t, NV>::size());
+  static_assert(len <= at::vec::VecMask<mask_t, NM>::size());
   __at_align__ std::array<bool, len> tmpbuf;
   __at_align__ std::array<int64_t, len> tmpidx;
   offset.store(tmpbuf.data(), len);
