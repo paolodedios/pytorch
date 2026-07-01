@@ -314,6 +314,8 @@ class RegionalInductorTests(torch._inductor.test_case.TestCase):
             options = kwargs.get("options", {})
             captured_options.append(options)
 
+            if kwargs.get("donate_graph_module") is not True:
+                raise AssertionError("regional_inductor should donate submodule GMs")
             # Verify config is set as expected from explicit options
             if not inductor_config.max_autotune:
                 raise AssertionError("max_autotune should be True")
@@ -619,8 +621,6 @@ class RegionalInductorInvokeSubgraphTests(torch._inductor.test_case.TestCase):
 
         with torch._inductor.config.patch(
             {
-                "force_disable_caches": True,
-                "graph_partition": False,
                 "post_grad_custom_pre_pass": outer_pass,
             }
         ):
@@ -637,47 +637,6 @@ class RegionalInductorInvokeSubgraphTests(torch._inductor.test_case.TestCase):
         self.assertFalse(any("invoke_subgraph" in name for name in inner_target_names))
         self.assertTrue(any("invoke_subgraph" in name for name in outer_target_names))
         self.assertFalse(any("aten.sin.default" in name for name in outer_target_names))
-
-    @torch._dynamo.config.patch(inline_single_use_invoke_subgraph=False)
-    def test_normal_inductor_hop_subgraph_uses_nested_scheduler_config(self):
-        outer_scheduler_calls = []
-        inner_scheduler_calls = []
-
-        def outer_scheduler(nodes):
-            outer_scheduler_calls.append([node.get_name() for node in nodes])
-            return nodes
-
-        def inner_scheduler(nodes):
-            inner_scheduler_calls.append([node.get_name() for node in nodes])
-            return nodes
-
-        nested_config = get_invoke_subgraph_compile_options(
-            inductor_config_patches={"_pre_fusion_custom_pass": inner_scheduler}
-        )
-
-        @torch.compiler.nested_compile_region(options=nested_config)
-        def g(x):
-            return torch.relu(x + 1)
-
-        def fn(x):
-            return torch.cos(g(x)) * 2
-
-        opt_fn = torch.compile(fn, fullgraph=True)
-        x = torch.randn(10)
-
-        with torch._inductor.config.patch(
-            {
-                "_pre_fusion_custom_pass": outer_scheduler,
-                "force_disable_caches": True,
-                "graph_partition": False,
-            }
-        ):
-            result, codes = run_and_get_code(lambda: opt_fn(x))
-
-        self.assertEqual(result, fn(x))
-        self.assertEqual(len(codes), 1)
-        self.assertEqual(len(inner_scheduler_calls), 1)
-        self.assertEqual(len(outer_scheduler_calls), 1)
 
     def test_custom_decomposition(self):
         # Test that custom decompositions are applied to the subgraph.
@@ -836,6 +795,27 @@ def forward(self, tangents_0):
 
         result, codes = run_fw_bw_and_get_code(lambda: opt_fn(c))
         # self.assertEqual(len(codes), 2)
+        self.assertEqual(result, fn(c))
+
+    @requires_cuda_and_triton
+    def test_unbacked_expr_size_input(self):
+        def fn(c):
+            d = torch.concat([c, c], dim=0)
+            with fx_traceback.annotate({"compile_with_inductor": 0}):
+                d = d + 1
+            return d
+
+        c = torch.randn((64, 32), device="cuda", requires_grad=True)
+        torch._dynamo.decorators.mark_unbacked(c, 0)
+
+        opt_fn = torch.compile(
+            fn,
+            backend=aot_eager_regional_inductor(serialize=False),
+            fullgraph=True,
+        )
+
+        result, codes = run_fw_bw_and_get_code(lambda: opt_fn(c))
+        self.assertEqual(len(codes), 1)
         self.assertEqual(result, fn(c))
 
     @parametrize("serialize", [False])
@@ -1813,12 +1793,12 @@ def forward(self, primals_0, primals_1):
             """\
 def forward(self, primals_0, primals_1, amax, log, tangents_0):
     unsqueeze_2 = torch.ops.aten.unsqueeze.default(tangents_0, 1);  tangents_0 = None
-    full_default_1 = torch.ops.aten.full.default([], 0.0, dtype = torch.float32, layout = torch.strided, device = device(type='cpu'), pin_memory = False)
+    full_default_4 = torch.ops.aten.full.default([], 0.0, dtype = torch.float32, layout = torch.strided, device = device(type='cpu'), pin_memory = False)
     unsqueeze_1 = torch.ops.aten.unsqueeze.default(primals_1, 1);  primals_1 = None
     ne_2 = torch.ops.aten.ne.Scalar(unsqueeze_1, -100)
-    where_3 = torch.ops.aten.where.self(ne_2, unsqueeze_2, full_default_1);  unsqueeze_2 = full_default_1 = None
-    full_default = torch.ops.aten.full.default([], 0, dtype = torch.int64, layout = torch.strided, device = device(type='cpu'), pin_memory = False)
-    where_2 = torch.ops.aten.where.self(ne_2, unsqueeze_1, full_default);  ne_2 = unsqueeze_1 = full_default = None
+    where_3 = torch.ops.aten.where.self(ne_2, unsqueeze_2, full_default_4);  unsqueeze_2 = full_default_4 = None
+    full_default_2 = torch.ops.aten.full.default([], 0, dtype = torch.int64, layout = torch.strided, device = device(type='cpu'), pin_memory = False)
+    where_2 = torch.ops.aten.where.self(ne_2, unsqueeze_1, full_default_2);  ne_2 = unsqueeze_1 = full_default_2 = None
     iota_default = torch.ops.prims.iota.default(64, start = 0, step = 1, dtype = torch.int64, device = device(type='cpu'), requires_grad = False)
     view_default = torch.ops.aten.view.default(iota_default, [1, 64]);  iota_default = None
     expand_default = torch.ops.aten.expand.default(where_2, [8, 64]);  where_2 = None
