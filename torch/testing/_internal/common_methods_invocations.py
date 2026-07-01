@@ -9366,19 +9366,21 @@ def sample_inputs_scaled_dot_product_attention(op_info, device, dtype, requires_
 
     broadcast_tuple = ((num_heads, seq_q, head_dim), (batch, num_heads, seq_kv, head_dim))
 
-    qkv_shapes = [(dim_3_q_shape, dim_3_kv_shape), (dim_4_q_shape, dim_4_kv_shape), broadcast_tuple]
     samples = []
+    qkv_shapes = [(dim_3_q_shape, dim_3_kv_shape), (dim_4_q_shape, dim_4_kv_shape), broadcast_tuple]
+    dropout_ps = [0.0, 0.5]
     gqa_options = [True, False]
     causal_options = [True, False]
-    for qkv_shape, is_causal, dropout_p, _enable_gqa in product(
-            qkv_shapes, causal_options, [0.0, 0.5], gqa_options):
+    for qkv_shape, is_causal, dropout_p, enable_gqa in product(
+            qkv_shapes, causal_options, dropout_ps, gqa_options):
         shape_q, shape_kv = qkv_shape
         samples.append(SampleInput(
             make(shape_q),
             make(shape_kv),
             make(shape_kv),
             is_causal=is_causal,
-            dropout_p=dropout_p
+            dropout_p=dropout_p,
+            enable_gqa=enable_gqa
         ))
 
     # Add non standard shapes
@@ -9402,6 +9404,40 @@ def sample_inputs_scaled_dot_product_attention(op_info, device, dtype, requires_
             dropout_p=0.0)
     )
 
+    yield from samples
+
+def sample_inputs_scaled_dot_product_flash_attention_for_cpu(op_info, device, dtype, requires_grad, **kwargs):
+    make = partial(make_tensor, device=device, dtype=dtype, requires_grad=requires_grad)
+    batch, seq_q, seq_kv, num_heads, head_dim = 4, 3, 6, 4, 8
+
+    dim_4_q_shape = (batch, num_heads, seq_q, head_dim)
+    dim_4_kv_shape = (batch, num_heads, seq_kv, head_dim)
+
+    samples = []
+    qkv_shapes = [(dim_4_q_shape, dim_4_kv_shape)]
+    dropout_ps = [0.0]
+    causal_options = [True, False]
+    for qkv_shape, is_causal, dropout_p in product(
+            qkv_shapes, causal_options, dropout_ps):
+        shape_q, shape_kv = qkv_shape
+        samples.append(SampleInput(
+            make(shape_q),
+            make(shape_kv),
+            make(shape_kv),
+            is_causal=is_causal,
+            dropout_p=dropout_p,
+        ))
+
+    # Add an attn_mask
+    samples.append(
+        SampleInput(
+            make((batch, num_heads, seq_q, head_dim)),
+            make((batch, num_heads, seq_kv, head_dim)),
+            make((batch, num_heads, seq_kv, head_dim)),
+            attn_mask=make_tensor((seq_q, seq_kv), device=device, dtype=dtype, requires_grad=False),
+            is_causal=False,
+            dropout_p=0.0)
+    )
     yield from samples
 
 def sample_inputs_efficient_attention_forward(op_info, device, dtype, requires_grad, **kwargs):
@@ -17128,6 +17164,21 @@ op_db: list[OpInfo] = [
         )
     ),
     OpInfo(
+        'torch.ops.aten._scaled_dot_product_flash_attention_for_cpu',
+        sample_inputs_func=sample_inputs_scaled_dot_product_flash_attention_for_cpu,
+        dtypes=floating_types_and(torch.float16, torch.bfloat16),
+        supports_out=False,
+        has_nondeterministic_output=False,
+        supports_autograd=True,
+        supports_gradgrad=False,
+        supports_fwgrad_bwgrad=False,
+        supports_forward_ad=False,
+        supports_scripting=False,
+        check_batched_forward_grad=False,
+        supports_cow_input_no_materialize_forward=False,
+        decorators=[onlyCPU],
+    ),
+    OpInfo(
         'torch.ops.aten._efficient_attention_forward',
         sample_inputs_func=sample_inputs_efficient_attention_forward,
         dtypes=empty_types(),
@@ -22376,10 +22427,6 @@ DecorateInfo(unittest.skip("Skipped!"), 'TestDecomp', 'test_quick'),
             DecorateInfo(unittest.skip("Fails with ASAN"),
                          'TestProxyTensorOpInfo',
                          'test_make_fx_fake_exhaustive', active_if=TEST_WITH_ASAN),
-            # NotImplementedError: The operator 'aten::_ctc_loss_backward' is not currently implemented for the MPS device
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_variant_consistency_eager', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_dtypes', device_type='mps'),
-            DecorateInfo(unittest.expectedFailure, 'TestCommon', 'test_noncontiguous_samples', device_type='mps'),
         ),
     ),
     OpInfo(
