@@ -38,6 +38,7 @@
 #include <c10/util/BFloat16.h>
 #include <c10/util/Half.h>
 #include <c10/util/Load.h>
+#include <c10/util/MathConstants.h>
 #include <c10/util/TypeCast.h>
 #include <c10/util/copysign.h>
 #include <c10/util/irange.h>
@@ -198,7 +199,7 @@ struct Vectorized {
   Vectorized(Args... vals) : values{vals...} {}
   // These next two constructors could be unified with std::span in C++20.
   Vectorized(const T (&arr)[kSize]) { // NOLINT(*-avoid-c-arrays)
-    std::memcpy(values.data(), arr, sizeof(values));
+    std::copy(std::begin(arr), std::end(arr), values.begin());
   }
   Vectorized(const std::array<T, kSize>& arr) : values{arr} {}
   // This also implies const T& operator[](int idx) const
@@ -239,7 +240,7 @@ struct Vectorized {
       const Vectorized<T>& b,
       const Vectorized<T>& mask) {
     Vectorized vector;
-    std::array<int_same_size_t<T>, size()> buffer;
+    std::array<int_same_size_t<T>, size()> buffer{};
     mask.store(buffer.data());
     for (const auto i : c10::irange(size())) {
       if (buffer[i] & 0x01) {
@@ -594,7 +595,7 @@ struct Vectorized {
     // complex_t_log2 is for SFINAE and clarity. Make sure it is not changed.
     static_assert(
         std::is_same_v<complex_t_log2, T>, "complex_t_log2 must be T");
-    const T log_2 = T(std::log(2.0)); // NOLINT(modernize-use-std-numbers)
+    constexpr auto log_2 = c10::ln_2<T>;
     return Vectorized(map(std::log)) / Vectorized(log_2);
   }
   Vectorized<T> ceil() const {
@@ -1370,9 +1371,9 @@ inline Vectorized<IntType> convert_to_int_of_same_size(
   static_assert(sizeof(T) == sizeof(IntType));
   static constexpr int size = Vectorized<T>::size();
 
-  std::array<T, size> src_arr = {};
+  std::array<T, size> src_arr{};
   src.store(static_cast<void*>(src_arr.data()));
-  std::array<IntType, size> buffer;
+  std::array<IntType, size> buffer{};
   std::transform(
       src_arr.cbegin(), src_arr.cend(), buffer.begin(), [](const T& x) {
         return static_cast<IntType>(x);
@@ -1386,9 +1387,9 @@ inline Vectorized<T> convert_to_fp_of_same_size(
   static_assert(sizeof(T) == sizeof(IntType));
   static constexpr int size = Vectorized<T>::size();
 
-  std::array<IntType, size> src_arr;
+  std::array<IntType, size> src_arr{};
   src.store(static_cast<void*>(src_arr.data()));
-  std::array<T, size> buffer;
+  std::array<T, size> buffer{};
   std::transform(
       src_arr.cbegin(), src_arr.cend(), buffer.begin(), [](const IntType& x) {
         return static_cast<T>(x);
