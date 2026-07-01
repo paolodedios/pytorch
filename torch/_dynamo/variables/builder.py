@@ -20,6 +20,7 @@ VariableTracker instances based on their type and usage context.
 import abc
 import collections
 import contextlib
+import contextvars
 import copy
 import dataclasses
 import enum
@@ -189,6 +190,7 @@ from ..utils import (
     odict_values,
     proxy_args_kwargs,
     range_iterator,
+    set_base_iter,
     set_example_value,
     tensor_always_has_static_shape,
     tuple_iterator,
@@ -244,6 +246,7 @@ from .iter import CountIteratorVariable, ItertoolsVariable
 from .lazy import LazyConstantVariable, LazyVariableTracker
 from .lists import (
     BaseListVariable,
+    DequeVariable,
     ListIteratorVariable,
     ListVariable,
     RangeVariable,
@@ -320,6 +323,7 @@ from .user_defined import (
     SourcelessGraphModuleVariable,
     UserDefinedClassVariable,
     UserDefinedConstantVariable,
+    UserDefinedDequeVariable,
     UserDefinedDictVariable,
     UserDefinedExceptionClassVariable,
     UserDefinedListVariable,
@@ -1265,7 +1269,7 @@ class VariableBuilder:
             # on the Python hash and it is not related to object ordering inside
             # the set object. The order being incorrect at runtime will lead to
             # a recompilation.
-            L = list(value)
+            L = list(value) if istype(value, OrderedSet) else list(set_base_iter(value))
             items = [
                 LazyVariableTracker.create(
                     v,
@@ -1852,6 +1856,14 @@ class VariableBuilder:
             ]
             genfn = LocalGeneratorFunctionVariable(VariableTracker.build(self.tx, fn))
             return genfn.call_function(self.tx, args, {})
+        elif isinstance(value, contextvars.ContextVar):
+            from .misc import ContextVarVariable
+
+            self.install_guards(GuardBuilder.ID_MATCH)
+            return ContextVarVariable(
+                cv_obj=value,
+                source=self.source,
+            )
         elif isinstance(value, types.GetSetDescriptorType):
             # GetSet descriptors are C functions attached to an attribute lookup
             # using PyGetSetDef. Python, on attribute lookup, can decide to
@@ -2166,11 +2178,39 @@ class VariableBuilder:
             )
             result = UserDefinedListVariable(value, list_vt=list_vt, source=self.source)
             return self.tx.output.side_effects.track_object_existing(value, result)
+        elif isinstance(value, collections.deque):
+            self.install_guards(GuardBuilder.TYPE_MATCH)
+            self.install_guards(GuardBuilder.SEQUENCE_LENGTH)
+            # maxlen is baked into the DequeVariable as a constant, so guard on
+            # it to recompile if a same-typed deque with a different maxlen
+            # appears.
+            install_guard(
+                AttrSource(self.source, "maxlen").make_guard(GuardBuilder.EQUALS_MATCH)
+            )
+
+            output = [
+                LazyVariableTracker.create(
+                    collections.deque.__getitem__(value, i),
+                    source=GetItemSource(self.get_source(), i),
+                    tx=self.tx,
+                )
+                for i in range(collections.deque.__len__(value))
+            ]
+            deque_vt = DequeVariable(
+                output,  # type: ignore[arg-type]
+                maxlen=ConstantVariable.create(value.maxlen),
+                source=self.source,
+                mutation_type=ValueMutationExisting(),
+            )
+            result = UserDefinedDequeVariable(
+                value, deque_vt=deque_vt, source=self.source
+            )
+            return self.tx.output.side_effects.track_object_existing(value, result)
         elif isinstance(value, (set, frozenset)):
             self.install_guards(GuardBuilder.TYPE_MATCH)
             self.install_guards(GuardBuilder.SEQUENCE_LENGTH)
 
-            L = list(dict.fromkeys(value))
+            L = list(set_base_iter(value))
             output = [
                 LazyVariableTracker.create(
                     list.__getitem__(L, i),
