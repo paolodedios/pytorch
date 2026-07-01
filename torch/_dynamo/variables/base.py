@@ -735,27 +735,24 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         if result is not None:
             return result
 
-        saved_exc = tx.exn_vt_stack.fetch_current_exception()
         try:
-            try:
-                self.getattro_impl(tx, name)
-                return variables.ConstantVariable.create(True)
-            except ObservedAttributeError:
-                return variables.ConstantVariable.create(False)
-            except (NotImplementedError, Unsupported):
-                pass
+            self.getattro_impl(tx, name)
+            return variables.ConstantVariable.create(True)
+        except ObservedAttributeError:
+            tx.exn_vt_stack.clear_current_exception()
+            return variables.ConstantVariable.create(False)
+        except (NotImplementedError, Unsupported):
+            pass
 
-            unimplemented(
-                gb_type="Unsupported hasattr call",
-                context=f"call_obj_hasattr {self} {name}",
-                explanation=f"Dynamo does not know how to trace the function `{self.debug_repr()}`",
-                hints=[
-                    f"Avoid calling `hasattr({self.__class__.__name__}, {name})` in your code.",
-                    *graph_break_hints.SUPPORTABLE,
-                ],
-            )
-        finally:
-            tx.exn_vt_stack.restore_current_exception(saved_exc)
+        unimplemented(
+            gb_type="Unsupported hasattr call",
+            context=f"call_obj_hasattr {self} {name}",
+            explanation=f"Dynamo does not know how to trace the function `{self.debug_repr()}`",
+            hints=[
+                f"Avoid calling `hasattr({self.__class__.__name__}, {name})` in your code.",
+                *graph_break_hints.SUPPORTABLE,
+            ],
+        )
 
     def tp_iter_impl(self, tx: InstructionTranslatorBase) -> VariableTracker:
         """
