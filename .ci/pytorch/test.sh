@@ -1575,11 +1575,18 @@ test_vulkan() {
   fi
 }
 
-test_distributed() {
-  echo "Testing distributed python tests"
+_test_distributed_python() {
+  # Run the sharded distributed python suite. When the caller exports
+  # PYTORCH_TEST_MIN_GPU, the collection-time filter in test/conftest.py
+  # (MinGpuFilterPlugin) keeps only tests needing at least that many accelerators.
   # shellcheck disable=SC2086
   time python test/run_test.py --distributed-tests --shard "$SHARD_NUMBER" "$NUM_TEST_SHARDS" $INCLUDE_CLAUSE --verbose
   assert_git_not_dirty
+}
+
+test_distributed() {
+  echo "Testing distributed python tests"
+  _test_distributed_python
 
   if [[ ("$BUILD_ENVIRONMENT" == *cuda* || "$BUILD_ENVIRONMENT" == *rocm*) && "$SHARD_NUMBER" == 1 ]]; then
     echo "Testing distributed C++ tests"
@@ -1623,10 +1630,7 @@ test_distributed_4gpu() {
   # automatically with no list to maintain.
   export PYTORCH_TEST_MIN_GPU=4
   echo "Testing distributed python tests that require 4 GPUs"
-  # shellcheck disable=SC2086
-  time python test/run_test.py --distributed-tests \
-    --shard "$SHARD_NUMBER" "$NUM_TEST_SHARDS" $INCLUDE_CLAUSE --verbose
-  assert_git_not_dirty
+  _test_distributed_python
 }
 
 test_quantization() {

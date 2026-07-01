@@ -370,6 +370,19 @@ class StepcurrentPlugin:
             self.cache.set(self.made_failing_xml_location, True)
 
 
+def _get_decorator_attr(func: object | None, attr: str, default: int = 0) -> int:
+    """Read ``attr`` from ``func`` or any function in its ``__wrapped__`` chain."""
+    while func is not None:
+        val = getattr(func, attr, None)
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+        func = getattr(func, "__wrapped__", None)
+    return default
+
+
 class MinGpuFilterPlugin:
     """Deselect tests whose resolved accelerator requirement is below
     ``PYTORCH_TEST_MIN_GPU`` so a CI job (e.g. a 4-GPU-only distributed job) can
@@ -387,12 +400,11 @@ class MinGpuFilterPlugin:
     requirement cannot be determined the test is kept (favor coverage).
     """
 
-    # File basenames whose distributed backend is CPU-only (no accelerator).
-    _CPU_BACKEND_MODULES = ("gloo", "mpi", "ucc")
-
     def __init__(self, threshold: int) -> None:
         import torch
+        from torch.distributed.distributed_c10d import Backend
         from torch.testing._internal.common_distributed import (
+            ACCELERATOR_DIST_BACKENDS,
             DEFAULT_WORLD_SIZE,
             MultiProcContinuousTest,
             MultiProcessTestCase,
@@ -405,6 +417,17 @@ class MinGpuFilterPlugin:
         self._process_based = (MultiProcessTestCase, MultiProcContinuousTest)
         self._thread_based = MultiThreadedTestCase
         self._default_world_size = int(DEFAULT_WORLD_SIZE)
+        # Backend names whose test modules use a non-accelerator (CPU) backend,
+        # derived from the registered backend list so no hand-maintained list can
+        # drift. gloo/mpi/ucc can drive CUDA too, but their dedicated test
+        # modules (e.g. test_c10d_gloo) exercise the CPU path, so a module whose
+        # basename names one of these is treated as CPU-backed.
+        self._non_accel_backends = tuple(
+            b
+            for b in Backend.backend_list
+            if b not in ACCELERATOR_DIST_BACKENDS
+            and b not in (Backend.UNDEFINED, Backend.FAKE)
+        )
         tokens = []
         if TEST_CUDA:
             tokens.append("cuda")
@@ -417,6 +440,7 @@ class MinGpuFilterPlugin:
         self._deselected_ids: list[str] = []
 
     def pytest_collection_modifyitems(self, config: Config, items: list[Any]) -> None:
+        """Mutate ``items`` in-place to keep only tests meeting the GPU threshold."""
         deselected = []
         kept = []
         for item in items:
@@ -454,8 +478,8 @@ class MinGpuFilterPlugin:
     def _resolve(self, item: Any) -> int:
         func = getattr(item, "obj", None)
         dec = max(
-            int(getattr(func, "_min_gpus_required", 0) or 0),
-            int(getattr(func, "_required_world_size", 0) or 0),
+            _get_decorator_attr(func, "_min_gpus_required"),
+            _get_decorator_attr(func, "_required_world_size"),
         )
         cls = getattr(item, "cls", None)
         if cls is None:
@@ -540,7 +564,7 @@ class MinGpuFilterPlugin:
     def _module_is_cpu(self, item: Any) -> bool:
         module = getattr(item, "module", None)
         base = (getattr(module, "__name__", "") or "").rsplit(".", 1)[-1].lower()
-        if any(b in base for b in self._CPU_BACKEND_MODULES):
+        if any(b in base for b in self._non_accel_backends):
             return True
         return base.endswith("_cpu")
 
