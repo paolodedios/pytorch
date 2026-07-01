@@ -1151,7 +1151,6 @@ class LocalGeneratorObjectVariable(VariableTracker):
         self.code = code
         self.f_globals = f_globals
         self.inline_tracer = inline_tracer
-        inline_tracer.output.track_generator(self)
 
     def get_code(self) -> types.CodeType:
         return self.code
