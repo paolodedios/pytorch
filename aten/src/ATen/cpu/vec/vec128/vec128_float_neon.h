@@ -5,6 +5,7 @@
 
 #include <ATen/cpu/vec/intrinsics.h>
 #include <ATen/cpu/vec/vec_base.h>
+#include <c10/util/MathConstants.h>
 #include <c10/util/irange.h>
 #include <array>
 
@@ -354,9 +355,9 @@ class Vectorized<float> {
       return exp();
     }
 
-    // NOLINTNEXTLINE(modernize-use-std-numbers)
-    const float32x4_t inv_ln2 = vdupq_n_f32(0x1.715476p+0f);
-    constexpr float ln2_hi = 0x1.62e4p-1f; // NOLINT(modernize-use-std-numbers)
+    const float32x4_t inv_ln2 =
+        vdupq_n_f32(static_cast<float>(1 / c10::ln_2<double>));
+    constexpr auto ln2_hi = c10::ln_2<float>;
     constexpr float ln2_lo = 0x1.7f7d1cp-20f;
     constexpr float c0 = 0x1.0e4020p-7f;
     constexpr float c2 = 0x1.555e66p-3f;
@@ -419,9 +420,9 @@ class Vectorized<float> {
 
     const float32x4_t lower_bound = vdupq_n_f32(-0x1.5ebb82p+6f);
     const float32x4_t upper_bound = vdupq_n_f32(0x1.61814ap+6f);
-    // NOLINTNEXTLINE(modernize-use-std-numbers)
-    const float32x4_t inv_ln2 = vdupq_n_f32(0x1.715476p+0f);
-    constexpr float ln2 = 0x1.62e43p-1f; // NOLINT(modernize-use-std-numbers)
+    const float32x4_t inv_ln2 =
+        vdupq_n_f32(static_cast<float>(1 / c10::ln_2<double>));
+    constexpr auto ln2 = c10::ln_2<float>;
     constexpr float c2 = 0x1.5592ecp-3f;
     const float32x4_t c3 = vdupq_n_f32(0x1.017d34p-1f);
     const uint32x4_t lt_lower = vcltq_f32(values, lower_bound);
