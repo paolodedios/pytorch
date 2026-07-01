@@ -922,7 +922,7 @@ class TestUnbackedSymints(InductorTestCase):
             return torch.ops.aten.slice_scatter.default(x, src, 0, 0, end.item(), 1)
 
         compiled_fn = torch.compile(fn, fullgraph=True, dynamic=True)
-        for src_len in (2, 4):
+        for src_len in (1, 2, 4):
             x = torch.arange(5, dtype=torch.float32, device=device)
             src = torch.ones(src_len, dtype=torch.float32, device=device)
             end = torch.tensor(3, dtype=torch.int64, device=device)

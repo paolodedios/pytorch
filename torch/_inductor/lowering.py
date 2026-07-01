@@ -3733,6 +3733,7 @@ make_fallback(aten.linalg_lu)
 make_fallback(aten.linalg_lu_factor_ex)
 make_fallback(aten.linalg_lu_solve)
 make_fallback(aten.linalg_matrix_exp)
+make_fallback(aten.linalg_matrix_sqrth)
 make_fallback(aten.linalg_qr)
 make_fallback(aten._linalg_slogdet)
 make_fallback(aten._linalg_solve_ex)
@@ -4021,28 +4022,38 @@ def select_scatter(x, src, dim: int, index: int):
 
 @register_lowering(aten.slice_scatter, type_promotion_kind=None)
 def slice_scatter(x, src, dim=0, start=None, end=None, step=1):
-    """Lower slice_scatter when bounds are resolved."""
+    """Lower slice_scatter with exact source shape checks."""
     src = to_dtype(src, x.get_dtype())
     x_loader = x.make_loader()
     dim = _validate_dim(x, dim, 0)
     dim_size = x.get_size()[dim]
 
-    start_index = _compute_slice_index(start, dim_size, 0)
-    if end is not None and V.graph.sizevars.statically_known_equals(end, sys.maxsize):
-        end_index = dim_size
+    if any(free_unbacked_symbols(x) for x in (start, end, dim_size)):
+        start_index = _compute_slice_index(start, dim_size, 0)
+        if end is not None and V.graph.sizevars.statically_known_equals(
+            end, sys.maxsize
+        ):
+            end_index = dim_size
+        else:
+            end_index = _compute_slice_index(end, dim_size, dim_size)
+
+        if start_index is None or end_index is None:
+            return fallback_handler(aten.slice_scatter.default)(
+                x, src, dim, start, end, step
+            )
+
+        start = start_index
+        end = _clamp_slice_end_to_start(end_index, start)
     else:
-        end_index = _compute_slice_index(end, dim_size, dim_size)
-
-    if start_index is None or end_index is None:
-        return fallback_handler(aten.slice_scatter.default)(
-            x, src, dim, start, end, step
-        )
-
-    start = start_index
-    end = _clamp_slice_end_to_start(end_index, start)
+        # pyrefly: ignore [bad-argument-type]
+        start, end = ir.SliceView.normalize_start_end(x, dim, start, end)
 
     src_size = list(x.get_size())
     src_size[dim] = FloorDiv(end - start + (step - 1), step)
+    if len(src.get_size()) != len(src_size):
+        raise AssertionError("expected src and slice to have the same rank")
+    for actual, expected in zip(src.get_size(), src_size):
+        V.graph.sizevars.check_equals(actual, expected)
     src = expand(src, src_size)
     src_loader = src.make_loader()
 
@@ -7289,10 +7300,8 @@ def use_two_step_variance(x, axis, keepdim, input_dtype):
     # Welford does more work per element. Preserve the old tiny-reduction
     # two-step path, keep Welford for the rest of the small reductions where
     # the speedup is limited and training gradients are more sensitive to the
-    # different accumulation order. It is also faster for L2-sized CUDA inputs,
-    # where the second pass usually reloads from L2 instead of DRAM. Keep
-    # Welford for split reductions where avoiding another full pass over the
-    # data is profitable.
+    # different accumulation order, and keep Welford for larger or split
+    # reductions where avoiding another full pass over the data is profitable.
     axis = _validate_reduction_axis(x, axis)
     kwargs = _make_reduction_inner(
         x, axis=axis, keepdims=keepdim, dtype=None, override_return_dtype=None
@@ -7301,56 +7310,32 @@ def use_two_step_variance(x, axis, keepdim, input_dtype):
     ranges = kwargs["ranges"]
     reduction_numel = sympy_product(kwargs["reduction_ranges"])
     device = x.get_device()
-    has_multiple_outputs = sympy_product(ranges) != 1
-    if not (isinstance(reduction_numel, sympy.Integer) and has_multiple_outputs):
-        return False
-
-    reduction_numel = int(reduction_numel)
+    check_for_split = False
+    min_numel = 0
+    is_cuda_two_step_dtype = input_dtype in (torch.bfloat16, torch.float16)
     if device and device.type == "cpu":
         # 1024 is a default value to pass all the UTs about accuracy.
         # A larger threshold can still get performance benefits.
         threshold = config.cpp.use_two_step_variance_threshold
-        return reduction_numel <= threshold
+    elif device and device.type == "cuda" and is_triton(x) and is_cuda_two_step_dtype:
+        min_numel = config.triton.use_two_step_variance_min_numel
+        threshold = config.triton.use_two_step_variance_threshold
+        check_for_split = True
+    else:
+        threshold = config.unroll_reductions_threshold
 
-    if reduction_numel <= config.unroll_reductions_threshold:
+    if not isinstance(reduction_numel, sympy.Integer):
+        return False
+
+    reduction_numel = int(reduction_numel)
+    if reduction_numel > threshold or sympy_product(ranges) == 1:
+        return False
+
+    if min_numel and config.unroll_reductions_threshold < reduction_numel < min_numel:
+        return False
+
+    if not check_for_split:
         return True
-
-    if not (device and device.type == "cuda" and is_triton(x)):
-        return False
-
-    is_cuda_two_step_dtype = input_dtype in (torch.bfloat16, torch.float16)
-    threshold = config.triton.use_two_step_variance_threshold
-    min_numel = config.triton.use_two_step_variance_min_numel
-    small_lowp_reduction = (
-        is_cuda_two_step_dtype
-        and config.unroll_reductions_threshold < reduction_numel < min_numel
-    )
-    use_two_step_cuda_threshold = (
-        is_cuda_two_step_dtype
-        and reduction_numel <= threshold
-        and not small_lowp_reduction
-    )
-
-    use_two_step_l2 = False
-    if (
-        config.triton.two_pass_variance_l2_fraction
-        and not small_lowp_reduction
-        and torch.version.hip is None
-    ):
-        input_numel = x.get_numel()
-        if isinstance(input_numel, sympy.Integer):
-            device_idx = (
-                device.index
-                if device.index is not None
-                else torch.cuda.current_device()
-            )
-            input_dtype = input_dtype or x.get_dtype()
-            l2_cache_size = torch.cuda.get_device_properties(device_idx).L2_cache_size
-            l2_threshold = l2_cache_size * config.triton.two_pass_variance_l2_fraction
-            use_two_step_l2 = int(input_numel) * input_dtype.itemsize <= l2_threshold
-
-    if not (use_two_step_cuda_threshold or use_two_step_l2):
-        return False
 
     _, split = ir.Reduction.num_splits(
         reduction_numel=reduction_numel,
@@ -8754,6 +8739,13 @@ def set__source_tensor(self, source_tensor):
     return TensorBox.create(ir.SetSourceTensorKernel(self, source_tensor))
 
 
+@register_lowering(torch.ops.aten.shallow_copy_data_.default)
+def shallow_copy_data_(self, source_tensor):
+    self.realize()
+    source_tensor.realize()
+    return TensorBox.create(ir.ShallowCopyDataKernel(self, source_tensor))
+
+
 if hasattr(torch.ops.fsdp, "copy_"):
 
     @register_lowering(torch.ops.fsdp.copy_.default)
@@ -8974,7 +8966,7 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
     if not (isinstance(original_dep_nodes, tuple)):
         raise AssertionError("expected: isinstance(original_dep_nodes, tuple)")
 
-    dep_names = []
+    dep_names: list[str] = []
     for dep, orig_node in zip(additional_deps, original_dep_nodes, strict=True):
         dep_ir_nodes = [
             dep_leaf
@@ -9037,53 +9029,36 @@ def control_deps_op_lowering(additional_deps, subgraph_fn, *args):
     # b = control_deps(a, mm, ...)
     # c = control_deps(b, wait, ...)
     # if c == a, then you have a cycle.
-    for op in new_ops:
+    subgraph_ops = V.graph.operations[operation_len:]
+    for op in subgraph_ops:
         for dep_name in dep_names:
             op_name = op.operation_name
             if op_name is None:
                 raise AssertionError("expected: op_name is not None")
             V.graph.additional_buffer_deps[op_name].add(dep_name)
 
-    # For void ops (e.g. wait_stream) that don't produce tensor outputs,
-    # passthrough args returned by control_deps are the same IR nodes as
-    # their inputs. This means downstream consumers have no scheduling
-    # dependency on the void op. Create MutationOutput entries to force
-    # the scheduler to order subsequent readers after the void op.
-    # Only apply this for wait_stream, which needs forward ordering on the
-    # waiting stream. Other sync ops (synchronize_stream, record_event) are
-    # full barriers or have event-based cross-sync tracking.
-    void_ops = [
-        op
-        for op in new_ops
-        if isinstance(op, ir.Buffer)
-        and op.name is not None
-        and isinstance(op.layout, ir.NoneLayout)
-        and not isinstance(op, ir.MutationOutput)
-    ]
-    if void_ops and args:
-        # Check if the subgraph contains a wait_stream call
-        has_wait_stream = any(
-            n.op == "call_function"
-            and n.target is torch.ops.streams.wait_stream.default
-            for n in subgraph_fn.graph_module.graph.nodes
-        )
-        if has_wait_stream:
-            for void_op in void_ops:
-                if not isinstance(void_op, ir.ExternKernel):
-                    raise AssertionError(
-                        f"expected void_op to be ir.ExternKernel, got {type(void_op)}"
-                    )
-                for arg in args:
-                    for arg_leaf in pytree.tree_leaves(arg):
-                        if not isinstance(arg_leaf, IRNode):
-                            continue
-                        device = arg_leaf.get_device()
-                        if device is None:
-                            continue
-                        mut_out = ir.MutationOutput(
-                            ir.NoneLayout(device=device), arg_leaf, void_op
-                        )
-                        void_op.mutation_outputs.append(mut_out)
+    # Pass-through versioning: inputs that are also outputs get an
+    # OrderingOutput so future readers are ordered after all subgraph ops.
+    # TODO: if control_deps ever wraps ops that truly mutate a pass-through
+    # (not just ordering), this needs MutationOutput instead of OrderingOutput.
+    input_names = OrderedSet()
+    for a in args:
+        if isinstance(a, IRNode):
+            a.realize()
+            input_names.add(a.get_name())
+    output_leaves = list(pytree.tree_leaves(output)) if output is not None else []
+    passthrough_vals = []
+    for v in output_leaves:
+        if isinstance(v, IRNode):
+            v.realize()
+            if v.get_name() in input_names:
+                passthrough_vals.append(v)
+    for val in passthrough_vals:
+        barrier = ir.OrderingBarrier(val)
+        for op in subgraph_ops:
+            op_name = op.operation_name
+            if op_name is not None:
+                V.graph.additional_buffer_deps[barrier.get_name()].add(op_name)
 
     return output
 
