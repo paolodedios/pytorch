@@ -1643,6 +1643,28 @@ class NestedGraphBreakTests(torch._dynamo.test_case.TestCase):
         result = fn(inp)
         self.assertEqual(result, inp + 3)
 
+    def test_generator_star_unpack_with_graph_break(self):
+        """Generator unpacked as *args must survive two-pass codegen.
+
+        reconstruct() is called twice during compile_subgraph (pass1 for use
+        counting, pass2 for actual codegen). The remaining items from the
+        generator must be cached so the second call doesn't see an empty
+        generator. CALL_FUNCTION_EX with *generator + **kwargs triggers a
+        graph break, putting the unconsumed generator on the stack.
+        """
+
+        def my_generator(n):
+            for i in range(n):
+                yield i + 1
+
+        @torch.compile(backend="eager")
+        def fn():
+            shape = my_generator(2)
+            return torch.randn(*shape, requires_grad=True)
+
+        result = fn()
+        self.assertEqual(result.shape, torch.Size([1, 2]))
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
