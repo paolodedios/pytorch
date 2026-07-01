@@ -1277,16 +1277,6 @@ class ExceptionStack:
     def clear_current_exception(self) -> None:
         self._current_exception = None
 
-    def fetch_current_exception(self) -> ExceptionVals | None:
-        # PyErr_Fetch: atomically read and clear the error indicator.
-        saved = self._current_exception
-        self._current_exception = None
-        return saved
-
-    def restore_current_exception(self, saved: ExceptionVals | None) -> None:
-        # PyErr_Restore: set the error indicator to a previously fetched value.
-        self._current_exception = saved
-
     def set_current_exception(
         self, val: ExceptionVals, set_context: bool = True
     ) -> None:
@@ -3183,19 +3173,11 @@ class InstructionTranslatorBase(
         )
 
     def _load_attr(self, attr: Any) -> None:
+        # Python-constant objects with unresolvable descriptors (e.g.
+        # C extension member_descriptors) are handled by const_getattr
+        # inside the base getattro_impl, so no fallback is needed here.
         obj = self.pop().realize()
-        try:
-            result = generic_getattr(self, obj, attr)
-        except Unsupported:
-            if not obj.is_python_constant():
-                raise
-            try:
-                value = getattr(obj.as_python_constant(), attr)
-            except AttributeError:
-                exc.raise_observed_exception(AttributeError, self)
-            except Exception as e:
-                exc.raise_observed_exception(type(e), self, args=list(e.args))
-            result = VariableTracker.build(self, value)
+        result = generic_getattr(self, obj, attr)
         self.push(result)
 
     def LOAD_ATTR(self, inst: Instruction) -> None:
