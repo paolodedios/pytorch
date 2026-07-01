@@ -1840,30 +1840,12 @@ op_db: list[OpInfo] = [
         check_batched_forward_grad=False,
         supports_fwgrad_bwgrad=True,
         skips=(
-            # NotImplementedError: The operator 'aten::_linalg_svd.U' is not currently implemented for the MPS device
+            # [NEW] Skips specifically for sample inputs at zero
             DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_variant_consistency_eager",
-                device_type="mps",
+                unittest.expectedFailure, "TestFwdGradients", "test_fn_fwgrad_bwgrad"
             ),
             DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_python_ref",
-                device_type="mps",
-            ),
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_python_ref_torch_fallback",
-                device_type="mps",
-            ),
-            DecorateInfo(
-                unittest.expectedFailure,
-                "TestCommon",
-                "test_out_warning",
-                device_type="mps",
+                unittest.expectedFailure, "TestFwdGradients", "test_forward_mode_AD"
             ),
         ),
     ),
