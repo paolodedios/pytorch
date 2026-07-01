@@ -147,7 +147,9 @@ decomps_to_exclude: list[torch._ops.OpOverload | torch._ops.OpOverloadPacket] = 
     # inlines log1pf as a polynomial of fma.rn.ftz.f32 instructions, and the final fma
     # that would return ~exp(-x) (subnormal) is FTZ-flushed to 0.  This makes the result
     # 0 instead of the correct negative subnormal, flipping signbit (gh-188541).
-    # The lowering in lowering.py routes CUDA through the native ATen kernel.
+    # The lowering in lowering.py routes CUDA float32 through the native ATen kernel;
+    # other dtypes use the inline decomposition (float64 is FTZ-safe, float16 already
+    # underflows to zero at these magnitudes).
     aten.log_sigmoid_forward,
 ]
 

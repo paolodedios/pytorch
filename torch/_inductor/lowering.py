@@ -2984,7 +2984,12 @@ def log_sigmoid_forward(self):
     # exp(-x), the final fma that would return ~exp(-x) (subnormal) is FTZ-flushed
     # to 0, making the result 0 instead of the correct negative subnormal and
     # flipping signbit (gh-188541).  The native CUDA ATen kernel avoids this.
-    if self.get_device().type == "cuda":
+    # FTZ applies only to float32 PTX instructions; float64 subnormals are
+    # preserved by CUDA hardware regardless of the FTZ kernel flag, and float16
+    # logsigmoid outputs at large x already underflow to zero in float16 precision
+    # (min float16 subnormal ~6e-8 >> exp(-88) ~6e-39), so only float32 needs the
+    # fallback.
+    if self.get_device().type == "cuda" and self.get_dtype() == torch.float32:
         return pytree.tree_map(
             TensorBox.create,
             ir.FallbackKernel.create(aten.log_sigmoid_forward.default, self),
