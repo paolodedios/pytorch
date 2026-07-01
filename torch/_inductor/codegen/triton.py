@@ -1573,18 +1573,12 @@ class TritonOverrides(OpOverrides):
     @staticmethod
     # pyrefly: ignore [bad-override]
     def minimum(a, b):
-        if torch.version.hip:
-            return f"tl.minimum({a}, {b}, tl.PropagateNan.ALL)"
-        else:
-            return f"triton_helpers.minimum({a}, {b})"
+        return f"tl.minimum({a}, {b}, tl.PropagateNan.ALL)"
 
     @staticmethod
     # pyrefly: ignore [bad-override]
     def maximum(a, b):
-        if torch.version.hip:
-            return f"tl.maximum({a}, {b}, tl.PropagateNan.ALL)"
-        else:
-            return f"triton_helpers.maximum({a}, {b})"
+        return f"tl.maximum({a}, {b}, tl.PropagateNan.ALL)"
 
     @staticmethod
     # pyrefly: ignore [bad-override]
@@ -3086,6 +3080,38 @@ class TMACompatibilityChecker:
                         "%s the minimum block size to satisfy expression %s is too large: %d",
                         self.failed_debug_prefix,
                         solve_expr_simplified,
+                        min_block_size,
+                    )
+                    return False
+
+                # When no_x_dim is True, XBLOCK is fixed at 1. TMA cannot
+                # be used if the innermost block is XBLOCK and the minimum
+                # required size exceeds 1.
+                if (
+                    self.kernel.no_x_dim
+                    and innermost_block_symt == SymT.XBLOCK
+                    and min_block_size > 1
+                ):
+                    log.debug(
+                        "%s no_x_dim kernel has XBLOCK fixed at 1 but TMA requires min block size %d",
+                        self.failed_debug_prefix,
+                        min_block_size,
+                    )
+                    return False
+
+                # In combo kernels without per-subkernel blocks, XBLOCK is
+                # shared and may be forced to 1 by a sibling sub-kernel.
+                # Reject TMA when the innermost block is XBLOCK since we
+                # cannot guarantee it will meet the 16-byte minimum.
+                if (
+                    self.kernel.is_combo_kernel
+                    and not self.kernel.per_subkernel_blocks
+                    and innermost_block_symt == SymT.XBLOCK
+                    and min_block_size > 1
+                ):
+                    log.debug(
+                        "%s combo kernel with shared XBLOCK cannot guarantee TMA min block size %d",
+                        self.failed_debug_prefix,
                         min_block_size,
                     )
                     return False
@@ -6421,7 +6447,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
                 and "x" in tiling_scores
                 and "r0_" in tiling_scores
             ):
-                # large rblock inhibits xblock size, dont attempt if there is a decent amount of
+                # large rblock inhibits xblock size, don't attempt if there is a decent amount of
                 # reads coalesced by xblock
                 r_coalesce_ratio = tiling_scores["r0_"] / max(tiling_scores["x"], 1)
                 contiguous_red = r_coalesce_ratio >= INNER_REDUCTION_RATIO_THRESHOLD
@@ -6624,9 +6650,17 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         if torch.version.hip is not None and (
             self.atomic_add_found or not config.triton.emit_pointer_range_32
         ):
-            triton_meta["configs"] = [config_of(signature, pointer_range_override=())]
+            triton_meta["configs"] = [
+                config_of(
+                    signature,
+                    pointer_range_override=(),
+                    skip_cpp_wrapper_input_tensor_alignment=True,
+                )
+            ]
         else:
-            triton_meta["configs"] = [config_of(signature)]
+            triton_meta["configs"] = [
+                config_of(signature, skip_cpp_wrapper_input_tensor_alignment=True)
+            ]
 
         for helper in self.helper_functions:
             code.writeline("")
@@ -7234,7 +7268,10 @@ class FusedUserDefinedTritonKernel(TritonKernel):
                 shape=value.shape,
             )
         else:
-            super().store(name, index, value, mode)
+            raise AssertionError(
+                f"Epilogue attempted to store to '{name}'. "
+                "Inductor indexing variables are not defined in user kernel scope. "
+            )
 
     # returns a str which is the src code of a modified version of the user kernel that includes the epilogues
     def codegen(self) -> str:

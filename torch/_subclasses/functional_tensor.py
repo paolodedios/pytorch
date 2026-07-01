@@ -6,7 +6,7 @@ import warnings
 import weakref
 from abc import ABC, abstractmethod
 from contextlib import AbstractContextManager
-from typing import Any, TYPE_CHECKING
+from typing import Any, cast, TYPE_CHECKING
 from typing_extensions import Self
 
 
@@ -116,7 +116,7 @@ def maybe_get_inner_functional_tensor_view_base(
 def can_replay_functional_tensor_view_with_unsafe_view(
     inner: torch.Tensor, view: torch.Tensor
 ) -> bool:
-    return (
+    return bool(
         inner.is_contiguous()
         and view.is_contiguous()
         and inner.numel() == view.numel()
@@ -501,8 +501,9 @@ class FunctionalTensorMode(TorchDispatchMode):
                 return _get_dispatch_mode_pre_dispatch(
                     torch._C._TorchDispatchModeKey.FUNCTIONAL
                 )
-            return torch._C._get_dispatch_mode(
-                torch._C._TorchDispatchModeKey.FUNCTIONAL
+            return cast(
+                "FunctionalTensorMode | None",
+                torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FUNCTIONAL),
             )
 
         if _get_prev_mode() is None:
@@ -744,6 +745,7 @@ class FunctionalTensorMode(TorchDispatchMode):
                     continue
                 unwrapped = torch._from_functional_tensor(a.elem)
                 try:
+                    # pyrefly: ignore[missing-attribute]
                     tracker_entry = m.tracer.tensor_tracker[unwrapped]
                 except KeyError:
                     # A tensor constant lifted from a nested HOP subgraph
