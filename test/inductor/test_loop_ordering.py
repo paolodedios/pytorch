@@ -243,6 +243,87 @@ class LoopOrderingTest(TestCase):
         super().setUp()
         metrics.reset()
 
+    @staticmethod
+    def _rotate_every_two(x):
+        return torch.stack((-x[..., 1::2], x[..., 0::2]), dim=-1).flatten(-2)
+
+    def _transpose_contiguous_clone_reindexing_case(self):
+        def f(token_ids, embedding_weight, norm_weight, cos, sin):
+            x = F.embedding(token_ids, embedding_weight)
+            inv_rms = torch.rsqrt(torch.mean(x * x, dim=-1, keepdim=True) + 1e-6)
+            x = x * inv_rms * norm_weight
+            x = (x * cos) + (self._rotate_every_two(x) * sin)
+            x = x.view(token_ids.shape[0], token_ids.shape[1], 4, 8)
+            return x.transpose(1, 2).contiguous()
+
+        bsz, seq, vocab, hidden = 2, 16, 128, 32
+        torch.manual_seed(0)
+        token_ids = torch.randint(0, vocab, (bsz, seq), device=GPU_TYPE)
+        embedding_weight = torch.randn(vocab, hidden, device=GPU_TYPE)
+        norm_weight = torch.randn(hidden, device=GPU_TYPE)
+        pos = torch.arange(seq, device=GPU_TYPE, dtype=torch.float32)[:, None]
+        dim = torch.arange(hidden, device=GPU_TYPE, dtype=torch.float32)[None, :]
+        freqs = pos / (10000.0 ** (dim / hidden))
+        cos = torch.cos(freqs)[None, :, :]
+        sin = torch.sin(freqs)[None, :, :]
+        return f, (token_ids, embedding_weight, norm_weight, cos, sin)
+
+    @contextlib.contextmanager
+    def _record_transpose_contiguous_clone_reindex_scores(self):
+        import torch._inductor.scheduler as inductor_scheduler
+
+        scores = []
+        orig_reindex = (
+            inductor_scheduler.Scheduler._try_reindex_transpose_contiguous_clone
+        )
+
+        def wrapped_reindex(*args, **kwargs):
+            score = orig_reindex(*args, **kwargs)
+            if score > -1:
+                scores.append(score)
+            return score
+
+        with unittest.mock.patch.object(
+            inductor_scheduler.Scheduler,
+            "_try_reindex_transpose_contiguous_clone",
+            wrapped_reindex,
+        ):
+            yield scores
+
+    @contextlib.contextmanager
+    def _force_transpose_contiguous_clone_reindex_rollback(self):
+        import torch._inductor.scheduler as inductor_scheduler
+
+        results = []
+        orig_reindex = (
+            inductor_scheduler.Scheduler._try_reindex_transpose_contiguous_clone
+        )
+
+        def wrapped_reindex(scheduler, *args, **kwargs):
+            score_call_count = 0
+
+            def force_no_score_gain(*score_args, **score_kwargs):
+                nonlocal score_call_count
+                score_call_count += 1
+                return 0
+
+            with unittest.mock.patch.object(
+                inductor_scheduler.Scheduler,
+                "score_fusion_memory",
+                force_no_score_gain,
+            ):
+                result = orig_reindex(scheduler, *args, **kwargs)
+            if score_call_count:
+                results.append(result)
+            return result
+
+        with unittest.mock.patch.object(
+            inductor_scheduler.Scheduler,
+            "_try_reindex_transpose_contiguous_clone",
+            wrapped_reindex,
+        ):
+            yield results
+
     def test_for_reordering_reindex(self):
         """
         ComputedBuffer.iter_reoredering_reindex can cause some fusion
@@ -504,6 +585,75 @@ class LoopOrderingTest(TestCase):
         actual = torch.compile(f)(x)
         torch.testing.assert_close(actual, ref, atol=1e-2, rtol=1e-2)
         self.assertEqual(1, metrics.generated_kernel_count)
+
+    @skipUnless(HAS_GPU, "requires GPU")
+    def test_transpose_contiguous_clone_reindexing(self):
+        """
+        A producer writes [B, S, H], then a view + transpose + contiguous clone
+        changes the layout to [B, heads, S, D]. Reindexing the clone to the
+        producer iteration domain should let vertical fusion remove the copy
+        kernel and write the final layout directly.
+        """
+
+        f, args = self._transpose_contiguous_clone_reindexing_case()
+        ref = f(*args)
+        with self._record_transpose_contiguous_clone_reindex_scores() as scores:
+            actual, code = run_and_get_code(
+                torch.compile(f),
+                *args,
+            )
+
+        torch.testing.assert_close(actual, ref)
+        self.assertEqual(actual.stride(), (512, 128, 8, 1))
+        self.assertGreaterEqual(len(scores), 1)
+        FileCheck().check_count("@triton.jit", 1, exactly=True).check_not(
+            "triton_poi_fused_clone"
+        ).run(code[0])
+
+    @skipUnless(HAS_GPU, "requires GPU")
+    def test_transpose_contiguous_clone_reindexing_rolls_back_without_score_gain(
+        self,
+    ):
+        """
+        If the targeted clone reindex does not improve the fusion score, the
+        speculative loop mutation should be rolled back and the normal clone
+        kernel should remain.
+        """
+
+        f, args = self._transpose_contiguous_clone_reindexing_case()
+        ref = f(*args)
+        with self._force_transpose_contiguous_clone_reindex_rollback() as results:
+            actual, code = run_and_get_code(
+                torch.compile(f),
+                *args,
+            )
+
+        torch.testing.assert_close(actual, ref)
+        self.assertTrue(results)
+        self.assertFalse(any(result > 0 for result in results))
+        FileCheck().check("triton_poi_fused_clone").run(code[0])
+
+    @skipUnless(HAS_GPU, "requires GPU")
+    def test_transpose_contiguous_clone_reindexing_rejects_other_permute(self):
+        """
+        A different permute + contiguous copy should not be rewritten by the
+        targeted [B, S, H] -> [B, heads, S, D] clone reindexing path.
+        """
+
+        def f(x):
+            y = torch.sin(x)
+            y = y.view(2, 16, 4, 8)
+            return y.permute(0, 2, 3, 1).contiguous()
+
+        torch.manual_seed(0)
+        x = torch.randn(2, 16, 32, device=GPU_TYPE)
+        ref = f(x)
+        with self._record_transpose_contiguous_clone_reindex_scores() as scores:
+            actual = torch.compile(f)(x)
+
+        torch.testing.assert_close(actual, ref)
+        self.assertEqual(actual.stride(), (512, 128, 16, 1))
+        self.assertEqual(scores, [])
 
     def test_reindex_unfusable_write_read_dep(self):
         """
