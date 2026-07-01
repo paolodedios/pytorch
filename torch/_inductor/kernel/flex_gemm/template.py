@@ -250,8 +250,7 @@ class FlexGemmEpilogueKernel(CuteDSLTemplateKernel):
         finalize_name = f"{epilogue_name}{LOCAL_REDUCE_FINALIZE_FN_SUFFIX}"
         return (
             "FlexGemmLocalReduceCallbacks("
-            f"combine_fn={combine_name}, combine_key={combine_name!r}, "
-            f"finalize_fn={finalize_name}, finalize_key={finalize_name!r})"
+            f"combine_fn={combine_name}, finalize_fn={finalize_name})"
         )
 
     def _local_reduce_geometry(

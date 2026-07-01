@@ -389,12 +389,10 @@ class FlexGemmLocalReduceGeometry:
 
 @dataclasses.dataclass(frozen=True)
 class FlexGemmLocalReduceCallbacks:
-    """Carry generated physical combine/finalize functions and cache keys."""
+    """Carry generated physical combine/finalize functions."""
 
     combine_fn: Any
     finalize_fn: Any
-    combine_key: str | None = None
-    finalize_key: str | None = None
 
     def __post_init__(self) -> None:
         """Keep physical reducers from existing without their generated code."""

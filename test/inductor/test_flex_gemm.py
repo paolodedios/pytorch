@@ -344,8 +344,6 @@ class FlexGemmTestCase(TestCase):
         group=8,
         axis=0,
         feeds_main=False,
-        combine_key=None,
-        finalize_key=None,
     ):
         """Build the structural local-reduce runtime plan used by generated code."""
         from torch._inductor.kernel.flex_gemm.constraints import (
@@ -358,12 +356,10 @@ class FlexGemmTestCase(TestCase):
         )
 
         callbacks = None
-        if feeds_main or axis == 0 or group > 16 or combine_key or finalize_key:
+        if feeds_main or axis == 0 or group > 16:
             callbacks = FlexGemmLocalReduceCallbacks(
                 combine_fn=lambda lhs, rhs: lhs,
-                combine_key=combine_key,
                 finalize_fn=lambda value: value,
-                finalize_key=finalize_key,
             )
         geometry = FlexGemmLocalReduceGeometry(group, axis)
         if feeds_main:
@@ -648,8 +644,6 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 group=group,
                 axis=0,
                 feeds_main=True,
-                combine_key="combine",
-                finalize_key="finalize",
             )
 
     def test_runtime_plan_rejects_axis_one_feed_main(self):
@@ -658,8 +652,6 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 group=8,
                 axis=1,
                 feeds_main=True,
-                combine_key="combine",
-                finalize_key="finalize",
             )
 
     def test_runtime_validation_rejects_non_divisible_local_reduce_group(self):
@@ -671,8 +663,6 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             group=8,
             axis=0,
             feeds_main=True,
-            combine_key="combine",
-            finalize_key="finalize",
         )
         with self.assertRaisesRegex(RuntimeError, "must divide"):
             validate_runtime_local_reduce(
@@ -721,8 +711,6 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             group=8,
             axis=0,
             feeds_main=True,
-            combine_key="combine",
-            finalize_key="finalize",
         )
         with self.assertRaisesRegex(NotImplementedError, "aux_out"):
             validate_runtime_local_reduce(
@@ -822,6 +810,20 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             FlexGemmLocalReduceCallbacks(None, lambda value: value)
         with self.assertRaisesRegex(RuntimeError, "generated local-reduce callbacks"):
             FlexGemmLocalReduceCallbacks(lambda lhs, rhs: lhs, None)
+
+    def test_local_reduce_callbacks_use_generated_cache_keys(self):
+        from torch._inductor.kernel.flex_gemm.runtime import local_reduce_callback_key
+
+        def combine(lhs, rhs):
+            return lhs
+
+        combine.__cache_key__ = lambda: "combine-cache-key"
+        self.assertEqual(
+            local_reduce_callback_key(combine, "fallback"), "combine-cache-key"
+        )
+        self.assertEqual(
+            local_reduce_callback_key(lambda value: value, "fallback"), "fallback"
+        )
 
     def test_local_reduce_plan_rejects_invalid_group_axis(self):
         from torch._inductor.kernel.flex_gemm.constraints import (

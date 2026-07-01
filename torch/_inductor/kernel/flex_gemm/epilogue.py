@@ -1122,11 +1122,15 @@ def materialize_flex_gemm_epilogue(
     name = f"flex_gemm_epilogue_{key}"
     local_reduce_source = ""
     if physical_reduction is not None:
+        combine_name = f"{name}{LOCAL_REDUCE_COMBINE_FN_SUFFIX}"
+        finalize_name = f"{name}{LOCAL_REDUCE_FINALIZE_FN_SUFFIX}"
         local_reduce_source = (
-            f"@cute.jit\ndef {name}{LOCAL_REDUCE_COMBINE_FN_SUFFIX}(lhs, rhs):\n"
-            f"    return {physical_reduction.combine_expr}\n\n"
-            f"@cute.jit\ndef {name}{LOCAL_REDUCE_FINALIZE_FN_SUFFIX}(value):\n"
-            f"    return {physical_reduction.finalize_expr}\n\n"
+            f"@cute.jit\ndef {combine_name}(lhs, rhs):\n"
+            f"    return {physical_reduction.combine_expr}\n"
+            f"{combine_name}.__cache_key__ = lambda: {combine_name!r}\n\n"
+            f"@cute.jit\ndef {finalize_name}(value):\n"
+            f"    return {physical_reduction.finalize_expr}\n"
+            f"{finalize_name}.__cache_key__ = lambda: {finalize_name!r}\n\n"
         )
     return (
         name,

@@ -274,23 +274,30 @@ def validate_runtime_local_reduce(
     validate_local_reduce_out_shape(plan.out.shape, expected_local_reduce_shape)
 
 
+def local_reduce_callback_key(callback: Any, fallback_key: str) -> str:
+    """Use a generated callback cache key when present, otherwise its caller key."""
+    cache_key = getattr(callback, "__cache_key__", None)
+    if cache_key is None:
+        return fallback_key
+    key = cache_key() if callable(cache_key) else cache_key
+    if not isinstance(key, str):
+        raise RuntimeError("local-reduce callback __cache_key__ must return a string")
+    return key
+
+
 def register_runtime_local_reduce_callbacks(
     local_reduce: FlexGemmRuntimeLocalReducePlan | None,
     epilogue_key: str,
-) -> FlexGemmRuntimeLocalReducePlan | None:
-    """Register generated physical callbacks and return a keyed runtime plan."""
+) -> tuple[str | None, str | None]:
+    """Register generated physical callbacks and return QuACK registry keys."""
     if local_reduce is None or local_reduce.callbacks is None:
-        return local_reduce
+        return None, None
     callbacks = local_reduce.callbacks
-    local_reduce_combine_key = (
-        callbacks.combine_key
-        if callbacks.combine_key is not None
-        else f"{epilogue_key}{LOCAL_REDUCE_COMBINE_KEY_SUFFIX}"
+    local_reduce_combine_key = local_reduce_callback_key(
+        callbacks.combine_fn, f"{epilogue_key}{LOCAL_REDUCE_COMBINE_KEY_SUFFIX}"
     )
-    local_reduce_finalize_key = (
-        callbacks.finalize_key
-        if callbacks.finalize_key is not None
-        else f"{epilogue_key}{LOCAL_REDUCE_FINALIZE_KEY_SUFFIX}"
+    local_reduce_finalize_key = local_reduce_callback_key(
+        callbacks.finalize_fn, f"{epilogue_key}{LOCAL_REDUCE_FINALIZE_KEY_SUFFIX}"
     )
     from torch._vendor.quack.gemm_act import register_local_reduce_fns
 
@@ -300,24 +307,18 @@ def register_runtime_local_reduce_callbacks(
         local_reduce_finalize_key,
         callbacks.finalize_fn,
     )
-    return dataclasses.replace(
-        local_reduce,
-        callbacks=dataclasses.replace(
-            callbacks,
-            combine_key=local_reduce_combine_key,
-            finalize_key=local_reduce_finalize_key,
-        ),
-    )
+    return local_reduce_combine_key, local_reduce_finalize_key
 
 
 def local_reduce_gemm_act_kwargs(
     local_reduce: FlexGemmRuntimeLocalReducePlan | None,
     local_reduce_out: torch.Tensor | None,
+    callback_keys: tuple[str | None, str | None],
 ) -> dict[str, Any]:
     """Map a concrete runtime plan onto QuACK's public local-reduce kwargs."""
     if local_reduce is None:
         return {}
-    callbacks = local_reduce.callbacks
+    local_reduce_combine_key, local_reduce_finalize_key = callback_keys
     return {
         LOCAL_REDUCE_RETURNS_KWARG: local_reduce_out is not None,
         LOCAL_REDUCE_FEEDS_MAIN_KWARG: isinstance(
@@ -326,12 +327,8 @@ def local_reduce_gemm_act_kwargs(
         LOCAL_REDUCE_OUT_KWARG: local_reduce_out,
         LOCAL_REDUCE_GROUP_KWARG: local_reduce.group,
         LOCAL_REDUCE_AXIS_KWARG: local_reduce.axis,
-        LOCAL_REDUCE_COMBINE_KEY_KWARG: None
-        if callbacks is None
-        else callbacks.combine_key,
-        LOCAL_REDUCE_FINALIZE_KEY_KWARG: None
-        if callbacks is None
-        else callbacks.finalize_key,
+        LOCAL_REDUCE_COMBINE_KEY_KWARG: local_reduce_combine_key,
+        LOCAL_REDUCE_FINALIZE_KEY_KWARG: local_reduce_finalize_key,
     }
 
 
@@ -342,6 +339,7 @@ def dispatch_gemm_act(
     out: torch.Tensor,
     aux_out: torch.Tensor | None,
     local_reduce: FlexGemmRuntimeLocalReducePlan | None,
+    local_reduce_callback_keys: tuple[str | None, str | None],
     epilogue_key: str,
     epilogue_arg_kinds: tuple[str, ...],
     row_args: tuple[torch.Tensor, ...],
@@ -402,7 +400,7 @@ def dispatch_gemm_act(
     quack_d = quack_out if returns_aux else None
     quack_postact = quack_aux_out if returns_aux else quack_out
     local_reduce_kwargs = local_reduce_gemm_act_kwargs(
-        local_reduce, quack_local_reduce_out
+        local_reduce, quack_local_reduce_out, local_reduce_callback_keys
     )
 
     gemm_act_dispatch(
@@ -557,7 +555,7 @@ def gemm_epilogue(
     from torch._vendor.quack.gemm_act import register_tensor_epilogue_fn
 
     register_tensor_epilogue_fn(epilogue_key, epilogue_fn)
-    local_reduce = register_runtime_local_reduce_callbacks(
+    local_reduce_callback_keys = register_runtime_local_reduce_callbacks(
         local_reduce,
         epilogue_key,
     )
@@ -579,6 +577,7 @@ def gemm_epilogue(
             out,
             aux_out,
             local_reduce,
+            local_reduce_callback_keys,
             epilogue_key,
             inferred_arg_kinds,
             row_args,
