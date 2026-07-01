@@ -300,23 +300,7 @@ CUDA 13.1 or newer.
 Install instructions for `cuda.bindings` can be found here:
 https://nvidia.github.io/cuda-python/
 
-Create streams from the green context and use them like other custom CUDA
-streams:
-
-```python
-ctx = GreenContext(...)
-stream = ctx.Stream()
-with torch.cuda.stream(stream):
-    # torch operations here are using resources from `ctx`
-    pass
-```
-
-Synchronization between green-context streams and other streams is the user's
-responsibility. Use CUDA events to order work, just as you would for any other
-custom stream.
-
-The `GreenContext.set_context()` and `GreenContext.pop_context()` methods are
-deprecated compatibility APIs.
+See the docs for {class}`~torch.cuda.green_contexts.GreenContext` for an example of how to use these.
 
 ```{eval-rst}
 .. currentmodule:: torch.cuda.green_contexts

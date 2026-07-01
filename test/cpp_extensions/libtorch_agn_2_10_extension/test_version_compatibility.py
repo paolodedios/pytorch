@@ -24,7 +24,6 @@ from pathlib import Path
 from torch.testing._internal.common_utils import IS_WINDOWS, run_tests, TestCase
 from torch.utils.cpp_extension import (
     CUDA_HOME,
-    get_cxx_compiler,
     include_paths as torch_include_paths,
     ROCM_HOME,
 )
@@ -84,7 +83,7 @@ if not IS_WINDOWS:
             torch_version_2_9 = "0x0209000000000000"
 
             cmd = [
-                get_cxx_compiler(),
+                "g++",
                 "-c",
                 "-std=c++20",
                 f"-DTORCH_TARGET_VERSION={torch_version_2_9}",
