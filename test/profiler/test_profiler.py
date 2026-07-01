@@ -3140,8 +3140,8 @@ class TestProfilerDevice(TestCase):
         # and are not bounded by the PyTorch profiler window, so they must be
         # ignored when validating the trace.
         name = traceEvent.get("name", "")
-        return name.startswith("__xpu_profiler__") or name.startswith(
-            "Iteration Start: __xpu_profiler__"
+        return name.startswith(
+            ("__xpu_profiler__", "Iteration Start: __xpu_profiler__")
         )
 
     def _validate_basic_json(self, traceEvents, device_available=False):
