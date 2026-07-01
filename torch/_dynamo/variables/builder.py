@@ -189,6 +189,7 @@ from ..utils import (
     odict_values,
     proxy_args_kwargs,
     range_iterator,
+    set_base_iter,
     set_example_value,
     tensor_always_has_static_shape,
     tuple_iterator,
@@ -295,6 +296,7 @@ from .tensor import (
     NumpyNdarrayVariable,
     supported_const_comparison_op_values,
     SymNodeVariable,
+    TensorSpecializedProps,
     TensorSubclassVariable,
     TensorVariable,
     UnspecializedPythonVariable,
@@ -1267,7 +1269,7 @@ class VariableBuilder:
             # on the Python hash and it is not related to object ordering inside
             # the set object. The order being incorrect at runtime will lead to
             # a recompilation.
-            L = list(value)
+            L = list(value) if istype(value, OrderedSet) else list(set_base_iter(value))
             items = [
                 LazyVariableTracker.create(
                     v,
@@ -2200,7 +2202,7 @@ class VariableBuilder:
             self.install_guards(GuardBuilder.TYPE_MATCH)
             self.install_guards(GuardBuilder.SEQUENCE_LENGTH)
 
-            L = list(dict.fromkeys(value))
+            L = list(set_base_iter(value))
             output = [
                 LazyVariableTracker.create(
                     list.__getitem__(L, i),
@@ -4176,7 +4178,7 @@ def get_specialized_props(
     tx: "InstructionTranslatorBase",
     example_value: Any,
     subclass_type: type | None,
-) -> dict[str, Any]:
+) -> TensorSpecializedProps:
     specialized_props = target_cls.specialize(example_value)
     # TODO: not sure about this fake mode test
     if (
