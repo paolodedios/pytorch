@@ -1545,7 +1545,7 @@ TorchDynamo attempted to trace the following frames: [
     @torch._inductor.config.patch("force_disable_caches", True)
     @make_logging_test(autotuning_inputs=True)
     def test_autotuning_inputs(self, records):
-        @torch.compile(mode="max-autotune")
+        @torch.compile(mode="max-autotune")  # noqa: UNSPECIFIED_BACKEND
         def f(x):
             return (x * 2.0 + 1.0).sum(dim=1)
 
@@ -1564,7 +1564,7 @@ TorchDynamo attempted to trace the following frames: [
     @make_logging_test(inductor=logging.DEBUG)
     def test_autotuning_inputs_off_by_default(self, records):
         # off_by_default: must stay silent even with the parent inductor log at DEBUG
-        @torch.compile(mode="max-autotune")
+        @torch.compile(mode="max-autotune")  # noqa: UNSPECIFIED_BACKEND
         def f(x):
             return (x * 2.0 + 1.0).sum(dim=1)
 
