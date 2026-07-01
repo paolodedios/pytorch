@@ -50,7 +50,7 @@ class PyProcessGroup : public ProcessGroup {
         pybind11::get_override(static_cast<const cname*>(this), #name); \
     if (override) {                                                     \
       auto o = override(__VA_ARGS__);                                   \
-      return c10::make_intrusive<PyWorkHolder>(o);                      \
+      return c10::make_intrusive<PyWorkHolder>(std::move(o));           \
     }                                                                   \
     return cname::name(__VA_ARGS__);                                    \
   } while (false)
@@ -195,6 +195,18 @@ class PyProcessGroup : public ProcessGroup {
         opts);
   }
 
+  c10::intrusive_ptr<Work> all_gather_single(
+      at::Tensor& outputBuffer,
+      at::Tensor& inputBuffer,
+      const AllgatherOptions& opts = AllgatherOptions()) override {
+    WORK_OVERRIDE(
+        ProcessGroup, /* Parent class */
+        all_gather_single, /* Name of function in C++ */
+        outputBuffer,
+        inputBuffer,
+        opts);
+  }
+
   c10::intrusive_ptr<Work> all_gather_single_coalesced(
       std::vector<at::Tensor>& outputTensors,
       std::vector<at::Tensor>& inputTensors,
@@ -294,6 +306,18 @@ class PyProcessGroup : public ProcessGroup {
         opts);
   }
 
+  c10::intrusive_ptr<Work> reduce_scatter_single(
+      at::Tensor& outputBuffer,
+      at::Tensor& inputBuffer,
+      const ReduceScatterOptions& opts = ReduceScatterOptions()) override {
+    WORK_OVERRIDE(
+        ProcessGroup, /* Parent class */
+        reduce_scatter_single, /* Name of function in C++ */
+        outputBuffer,
+        inputBuffer,
+        opts);
+  }
+
   c10::intrusive_ptr<Work> reduce_scatter_single_coalesced(
       std::vector<at::Tensor>& outputTensors,
       std::vector<at::Tensor>& inputTensors,
@@ -340,6 +364,35 @@ class PyProcessGroup : public ProcessGroup {
         tensors,
         srcRank,
         tag);
+  }
+
+  // startCoalescing/endCoalescing dispatch into the Python ProcessGroup so a
+  // C++ caller (e.g. functional collectives in Functional.cpp) and the Python
+  // _start_coalescing/_end_coalescing bindings both reach the Python
+  // start_coalescing/end_coalescing overrides; without them the base
+  // ProcessGroup routes through getBackend(), which a backend-less Python PG
+  // does not have. The override is passed a c10::Device (torch.device) rather
+  // than the bare DeviceType, matching the device the bindings accept.
+  void startCoalescing(c10::DeviceType deviceType) override {
+    pybind11::gil_scoped_acquire gil;
+    pybind11::function override = pybind11::get_override(
+        static_cast<const ProcessGroup*>(this), "start_coalescing");
+    if (override) {
+      override(c10::Device(deviceType));
+      return;
+    }
+    return ProcessGroup::startCoalescing(deviceType);
+  }
+
+  c10::intrusive_ptr<Work> endCoalescing(c10::DeviceType deviceType) override {
+    pybind11::gil_scoped_acquire gil;
+    pybind11::function override = pybind11::get_override(
+        static_cast<const ProcessGroup*>(this), "end_coalescing");
+    if (override) {
+      auto o = override(c10::Device(deviceType));
+      return c10::make_intrusive<PyWorkHolder>(o);
+    }
+    return ProcessGroup::endCoalescing(deviceType);
   }
 };
 

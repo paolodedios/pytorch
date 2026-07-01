@@ -70,6 +70,7 @@ from tools.testing.target_determination.heuristics.utils import get_pr_number
 from tools.testing.test_run import TestRun
 from tools.testing.test_selections import (
     calculate_shards,
+    get_job_base_name,
     get_test_case_configs,
     NUM_PROCS,
     ShardedTest,
@@ -1733,6 +1734,7 @@ def get_selected_tests(options) -> list[str]:
             "nn/test_pooling",
             "test_view_ops",
             "test_nn",
+            "distributions/test_distributions",
             "inductor/test_mps_basic",
             "inductor/test_torchinductor",
             "inductor/test_aot_inductor",
@@ -1922,7 +1924,7 @@ def load_test_times_from_file(file: str) -> dict[str, Any]:
         # If job name isn't available, use build environment as a backup
         job_name = build_env
     else:
-        job_name = job_name.split(" / test (")[0]
+        job_name = get_job_base_name(job_name)
     test_config = os.environ.get("TEST_CONFIG")
     print_to_stderr(f"JOB_NAME={raw_job_name}")
     print_to_stderr(f"BUILD_ENVIRONMENT={build_env}")
