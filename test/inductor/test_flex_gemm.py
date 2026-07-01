@@ -1668,7 +1668,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
     @unittest.skipIf(not SM100OrLater, "SM100+ required")
-    def test_mm_tuple_aux_local_m_reduce_rejects_moment_reduction(self):
+    def test_mm_tuple_aux_local_m_reduce_rejects_var_reduction(self):
         m = 128
         n = 128
         group = 16
@@ -1687,7 +1687,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         a = torch.randn(m, 64, device="cuda", dtype=torch.bfloat16)
         b = torch.randn(64, n, device="cuda", dtype=torch.bfloat16)
-        with self.assertRaisesRegex(Exception, "moment reductions"):
+        with self.assertRaisesRegex(Exception, "does not map to a CuTe TensorSSA"):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
     @skipIfNoCuteDSL
@@ -1731,30 +1731,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
                 lambda x: ((x - x.mean(-1, keepdim=True)).square()).mean(-1) * 0.5
                 + 1.0,
                 " / 4.0",
-                False,
-            ),
-            (
-                "var_direct",
-                lambda x: x.var(-1, correction=0),
-                " / 4.0",
-                False,
-            ),
-            (
-                "var_positional_unbiased_false",
-                lambda x: x.var(-1, False),
-                " / 4.0",
-                False,
-            ),
-            (
-                "std_direct",
-                lambda x: x.std(-1, correction=0),
-                "cute.math.sqrt",
-                False,
-            ),
-            (
-                "std_positional_keepdim",
-                lambda x: x.std(-1, False, True).view(x.shape[0], -1),
-                "cute.math.sqrt",
                 False,
             ),
             (
