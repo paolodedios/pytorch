@@ -1098,7 +1098,9 @@ class TestCustomOp(CustomOpTestCaseBase):
 
                     op = self.get_op(f"{self.test_ns}::foo")
                     result = op(torch.randn([]))
-                    self.assertEqual(result, example, msg=f"{typ} {example}")
+                    self.assertEqual(
+                        result, example, msg=lambda msg: f"{msg}\n{typ} {example}"
+                    )
                 finally:
                     custom_ops._destroy(f"{self.test_ns}::foo")
 
@@ -1118,7 +1120,9 @@ class TestCustomOp(CustomOpTestCaseBase):
                     op = self.get_op(f"{self.test_ns}::foo")
                     result = op(torch.randn([]))
                     expected = (example, example)
-                    self.assertEqual(result, expected, msg=f"{typ} {example}")
+                    self.assertEqual(
+                        result, expected, msg=lambda msg: f"{msg}\n{typ} {example}"
+                    )
                 finally:
                     custom_ops._destroy(f"{self.test_ns}::foo")
 
@@ -1141,7 +1145,9 @@ class TestCustomOp(CustomOpTestCaseBase):
                 for example in self._generate_examples(typ):
                     op = self.get_op(f"{self.test_ns}::foo")
                     op(torch.randn([]), example)
-                    self.assertEqual(yeet, example, msg=f"{typ} {example}")
+                    self.assertEqual(
+                        yeet, example, msg=lambda msg: f"{msg}\n{typ} {example}"
+                    )
                     yeet = None
             finally:
                 custom_ops._destroy(f"{TestCustomOp.test_ns}::foo")
