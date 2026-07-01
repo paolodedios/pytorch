@@ -74,10 +74,6 @@ LOCAL_REDUCE_C_ALPHA_BETA_ERROR = (
 LOCAL_REDUCE_SWAP_AB_ERROR = (
     "FlexGEMM local reductions do not support swap_ab configs yet"
 )
-LOCAL_REDUCE_AUX_OUT_COMPOSITION_ERROR = (
-    "FlexGEMM local-reduce aux outputs cannot be combined with aux_out yet"
-)
-LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR = "FlexGEMM local-reduce aux outputs cannot be combined with same-shape aux outputs yet"
 LOCAL_REDUCE_AUX_METADATA_ERROR = (
     "FlexGEMM local-reduce aux outputs require aux output metadata"
 )
@@ -284,12 +280,6 @@ def validate_local_reduce_no_c_alpha_beta(
     """Reject C/alpha/beta composition until local-reduce ordering is explicit."""
     if effective_C is not None or alpha != 1.0 or beta != 1.0:
         raise NotImplementedError(LOCAL_REDUCE_C_ALPHA_BETA_ERROR)
-
-
-def validate_local_reduce_no_aux_out_composition(aux_out: Any | None) -> None:
-    """Reject mixing compressed local-reduce aux stores with same-shape aux stores."""
-    if aux_out is not None:
-        raise NotImplementedError(LOCAL_REDUCE_AUX_OUT_COMPOSITION_ERROR)
 
 
 def flex_gemm_local_reduce_config_fields(

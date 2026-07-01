@@ -20,7 +20,6 @@ from .constraints import (
     is_flex_gemm_partial_reduction_shape,
     LOCAL_REDUCE_AUX_METADATA_ERROR,
     LOCAL_REDUCE_AUX_OUTPUT_CONTRACT_ERROR,
-    LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR,
     LOCAL_REDUCE_DENSE_MM_SCOPE_ERROR,
     LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR,
     validate_flex_gemm_local_reduce_config,
@@ -98,10 +97,6 @@ def validate_flex_gemm_aux_outputs(
     """Validate QUACK aux-output support and return fake tensor metadata."""
     if not aux_outputs:
         return ()
-    if len(aux_outputs) > 1:
-        raise NotImplementedError(
-            "FlexGEMM QUACK backend currently supports at most one aux output"
-        )
     if gemm_op is not torch.ops.aten.mm.default:
         raise NotImplementedError(
             "FlexGEMM generic aux tuple epilogues currently support only aten.mm"
@@ -150,7 +145,6 @@ def validate_flex_gemm_local_reduce_scope(
 def flex_gemm_local_reduce_metas(
     gemm_op: torch._ops.OpOverload,
     local_reduce,
-    aux_metas: tuple[Any, ...],
 ) -> tuple[Any, ...]:
     """Return local-reduce output metadata after validating consumer compatibility."""
     validate_flex_gemm_local_reduce_scope(gemm_op, local_reduce)
@@ -160,8 +154,6 @@ def flex_gemm_local_reduce_metas(
 
     if not isinstance(local_reduce, FlexGemmOutputCompressedLocalReducePlan):
         return ()
-    if aux_metas:
-        raise NotImplementedError(LOCAL_REDUCE_AUX_SAME_SHAPE_COMPOSITION_ERROR)
     local_reduce_meta = local_reduce.node.meta.get("val")
     if local_reduce_meta is None:
         raise NotImplementedError(LOCAL_REDUCE_AUX_METADATA_ERROR)
@@ -308,9 +300,7 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
     aux_metas = validate_flex_gemm_aux_outputs(
         gemm_op, outputs.aux_outputs, output_size
     )
-    local_reduce_metas = flex_gemm_local_reduce_metas(
-        gemm_op, outputs.local_reduce, aux_metas
-    )
+    local_reduce_metas = flex_gemm_local_reduce_metas(gemm_op, outputs.local_reduce)
     layout = ir.FixedLayout(
         gemm_args[mat1_index].get_device_or_error(),
         output_meta.dtype,
@@ -340,13 +330,11 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
         *aux_input_nodes,
         *local_reduce_input_nodes,
     ]
-    aux_out_index = (
-        len(gemm_input_nodes) + len(epilogue_input_nodes) if aux_input_nodes else None
-    )
+    mutated_input_nodes = aux_input_nodes + local_reduce_input_nodes
+    aux_out_start = len(gemm_input_nodes) + len(epilogue_input_nodes)
+    aux_out_indices = tuple(range(aux_out_start, aux_out_start + len(aux_input_nodes)))
     local_reduce_out_index = (
-        len(gemm_input_nodes) + len(epilogue_input_nodes) + len(aux_input_nodes)
-        if local_reduce_input_nodes
-        else None
+        aux_out_start + len(aux_input_nodes) if local_reduce_input_nodes else None
     )
     epilogue_arg_kinds = infer_flex_gemm_epilogue_arg_kinds(
         gemm_op, epilogue_input_nodes, output_size
@@ -376,7 +364,7 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
             choices,
             input_nodes=input_nodes,
             layout=layout,
-            mutated_inputs=aux_input_nodes + local_reduce_input_nodes or None,
+            mutated_inputs=mutated_input_nodes or None,
             config=FlexGemmEpilogueConfig(
                 epilogue_name=epilogue_name,
                 epilogue_source=epilogue_source,
@@ -387,7 +375,7 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
                 quack_config_key=quack_config_key,
                 epilogue_arg_indices=epilogue_arg_indices,
                 epilogue_arg_kinds=epilogue_arg_kinds,
-                aux_out_index=aux_out_index,
+                aux_out_indices=aux_out_indices,
                 local_reduce=template_local_reduce,
             ),
         )
@@ -396,8 +384,4 @@ def flex_gemm_lowering(gemm_op, subgraph, args, gemm_kwargs, kernel_options):
     result, _ = autotune_select_algorithm(
         "flex_gemm_epilogue", choices, input_nodes, layout
     )
-    if aux_outs:
-        return (result, *aux_outs)
-    if local_reduce_outs:
-        return (result, *local_reduce_outs)
-    return (result,)
+    return (result, *aux_outs, *local_reduce_outs)

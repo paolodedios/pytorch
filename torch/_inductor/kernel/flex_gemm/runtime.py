@@ -24,7 +24,6 @@ from torch._inductor.kernel.flex_gemm.constraints import (
     LOCAL_REDUCE_RUNTIME_OUT_ERROR,
     LOCAL_REDUCE_SWAP_AB_ERROR,
     validate_local_reduce_feed_main_capability,
-    validate_local_reduce_no_aux_out_composition,
     validate_local_reduce_no_c_alpha_beta,
     validate_local_reduce_out_shape,
     validate_local_reduce_runtime_dense_mm,
@@ -251,7 +250,7 @@ def validate_runtime_local_reduce(
     plan: FlexGemmRuntimeLocalReducePlan | None,
     a: torch.Tensor,
     expected_shape: tuple[int, ...],
-    aux_out: torch.Tensor | None,
+    aux_outs: tuple[torch.Tensor, ...],
     effective_C: torch.Tensor | None,
     alpha: float,
     beta: float,
@@ -265,7 +264,6 @@ def validate_runtime_local_reduce(
     if isinstance(plan, FlexGemmRuntimeFeedMainLocalReducePlan):
         validate_local_reduce_feed_main_capability(plan.axis, plan.group)
         return
-    validate_local_reduce_no_aux_out_composition(aux_out)
     check_matrix("local_reduce_out", plan.out)
     check_matrix_major_layout("local_reduce_out", plan.out)
     expected_local_reduce_shape = local_reduce_compressed_shape(
@@ -337,7 +335,7 @@ def dispatch_gemm_act(
     b: torch.Tensor,
     C: torch.Tensor | None,
     out: torch.Tensor,
-    aux_out: torch.Tensor | None,
+    aux_outs: tuple[torch.Tensor, ...],
     local_reduce: FlexGemmRuntimeLocalReducePlan | None,
     local_reduce_callback_keys: tuple[str | None, str | None],
     epilogue_key: str,
@@ -354,18 +352,18 @@ def dispatch_gemm_act(
 
     ``config.swap_ab`` dispatches the transposed problem (only the tile schedule
     changes, not numerics): it swaps the A/B operands, writes through transposed
-    ``out``/``C``/``aux_out`` views, and swaps the row/col broadcast roles of
+    ``out``/``C``/``aux_outs`` views, and swaps the row/col broadcast roles of
     captured epilogue tensors so each still aligns with the transposed accumulator.
-    Tuple epilogues route the main result through QuACK ``D`` and aux through
+    Tuple epilogues route the main result through QuACK ``D`` and aux outputs through
     ``PostAct``/``mAuxOut``.
     """
     from torch._vendor.quack.gemm_act import gemm_act as gemm_act_dispatch
 
     # QuACK consumes A as (l, m, k) and B as (l, n, k); b is (k, n) so b.mT is (n, k).
     quack_a, quack_b = a, b.mT
-    quack_out, quack_aux_out, quack_local_reduce_out, quack_c = (
+    quack_out, quack_aux_outs, quack_local_reduce_out, quack_c = (
         out,
-        aux_out,
+        aux_outs,
         None if local_reduce is None else local_reduce.out,
         C,
     )
@@ -374,7 +372,7 @@ def dispatch_gemm_act(
         quack_out = out.mT
         if local_reduce is not None:
             raise NotImplementedError(LOCAL_REDUCE_SWAP_AB_ERROR)
-        quack_aux_out = None if aux_out is None else aux_out.mT
+        quack_aux_outs = tuple(aux_out.mT for aux_out in aux_outs)
         quack_local_reduce_out = None
         quack_c = None if C is None else C.mT
         row_args, col_args = col_args, row_args
@@ -387,18 +385,19 @@ def dispatch_gemm_act(
     quack_a = quack_a.unsqueeze(0) if quack_a.ndim == 2 else quack_a
     quack_b = quack_b.unsqueeze(0) if quack_b.ndim == 2 else quack_b
     quack_out = quack_out.unsqueeze(0) if quack_out.ndim == 2 else quack_out
-    if quack_aux_out is not None and quack_aux_out.dtype is torch.bool:
-        quack_aux_out = quack_aux_out.view(torch.uint8)
-    if quack_aux_out is not None and quack_aux_out.ndim == 2:
-        quack_aux_out = quack_aux_out.unsqueeze(0)
+    quack_aux_outs = tuple(quack_epilogue_arg(aux_out) for aux_out in quack_aux_outs)
+    quack_aux_outs = tuple(
+        aux_out.unsqueeze(0) if aux_out.ndim == 2 else aux_out
+        for aux_out in quack_aux_outs
+    )
     if quack_local_reduce_out is not None and quack_local_reduce_out.ndim == 2:
         quack_local_reduce_out = quack_local_reduce_out.unsqueeze(0)
     if quack_c is not None and quack_c.ndim == 2:
         quack_c = quack_c.unsqueeze(0)
 
-    returns_aux = quack_aux_out is not None
+    returns_aux = bool(quack_aux_outs)
     quack_d = quack_out if returns_aux else None
-    quack_postact = quack_aux_out if returns_aux else quack_out
+    quack_postact = quack_aux_outs if returns_aux else quack_out
     local_reduce_kwargs = local_reduce_gemm_act_kwargs(
         local_reduce, quack_local_reduce_out, local_reduce_callback_keys
     )
@@ -444,7 +443,7 @@ def gemm_epilogue(
     beta: float = 1.0,
     out_dtype: torch.dtype | None = None,
     out: torch.Tensor | None = None,
-    aux_out: torch.Tensor | None = None,
+    aux_outs: tuple[torch.Tensor, ...] = (),
     local_reduce: FlexGemmRuntimeLocalReducePlan | None = None,
     epilogue_args: tuple[torch.Tensor, ...] = (),
     epilogue_arg_kinds: tuple[str, ...] = (),
@@ -465,7 +464,7 @@ def gemm_epilogue(
         beta: Scale applied to ``C`` when ``C`` is present.
         out_dtype: Optional output dtype. Defaults to ``a.dtype``.
         out: Optional preallocated output tensor with shape ``[M, N]`` or ``[B, M, N]``.
-        aux_out: Optional preallocated same-shape aux tensor for tuple epilogues.
+        aux_outs: Preallocated same-shape aux tensors for tuple epilogues.
         local_reduce: Optional structural local-reduce plan from generated code.
         epilogue_args: Optional tensor args captured by the epilogue.
         epilogue_arg_kinds: Explicit ``tile``, ``row``, or ``col`` kind per arg.
@@ -501,7 +500,7 @@ def gemm_epilogue(
             )
         if out.dtype != expected_dtype:
             raise RuntimeError(f"out dtype must be {expected_dtype}, got {out.dtype}")
-    if aux_out is not None:
+    if aux_outs:
         if a.ndim != 2:
             raise NotImplementedError(
                 "FlexGEMM generic aux tuple epilogues currently support only 2-D aten.mm"
@@ -510,17 +509,18 @@ def gemm_epilogue(
             raise NotImplementedError(
                 "FlexGEMM generic aux tuple epilogues cannot be combined with C/alpha/beta yet"
             )
-        check_matrix("aux_out", aux_out)
-        check_matrix_major_layout("aux_out", aux_out)
-        if tuple(aux_out.shape) != expected_shape:
-            raise RuntimeError(
-                f"aux_out shape must be {expected_shape}, got {tuple(aux_out.shape)}"
-            )
+        for index, aux_out in enumerate(aux_outs):
+            check_matrix(f"aux_outs[{index}]", aux_out)
+            check_matrix_major_layout(f"aux_outs[{index}]", aux_out)
+            if tuple(aux_out.shape) != expected_shape:
+                raise RuntimeError(
+                    f"aux_outs[{index}] shape must be {expected_shape}, got {tuple(aux_out.shape)}"
+                )
     validate_runtime_local_reduce(
         local_reduce,
         a,
         expected_shape,
-        aux_out,
+        aux_outs,
         effective_C,
         alpha,
         beta,
@@ -538,7 +538,7 @@ def gemm_epilogue(
     tensors = (
         C,
         out,
-        aux_out,
+        *aux_outs,
         None if local_reduce is None else local_reduce.out,
         *epilogue_args,
     )
@@ -575,7 +575,7 @@ def gemm_epilogue(
             b,
             effective_C,
             out,
-            aux_out,
+            aux_outs,
             local_reduce,
             local_reduce_callback_keys,
             epilogue_key,

@@ -205,9 +205,9 @@ index 1ab1cfa4d8c..43152b7653b 100644
 +            epilogue_result = params.tensor_epilogue_fn(
 +                tRS_rEpilogueIn.load(), *tuple(epilogue_aux_values)
 +            )
-             if const_expr(params.tensor_epilogue_returns_local_reduce):
-                 tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
+             if const_expr(params.tensor_epilogue_returns_aux):
                  tRS_rD.store(epilogue_result[0])
+                 aux_results = []
 @@ -479,6 +502,7 @@ def _compile_gemm_act(
      tensor_epilogue_arg_kinds,
      tensor_epilogue_returns_aux,
@@ -250,7 +250,7 @@ index 1ab1cfa4d8c..43152b7653b 100644
      tensor_epilogue_arg_kinds: tuple[str, ...] = (),
      tensor_epilogue_rowvec_biases: tuple[Tensor, ...] = (),
      tensor_epilogue_colvec_biases: tuple[Tensor, ...] = (),
-@@ -803,13 +829,36 @@ def gemm_act(
+@@ -803,12 +829,35 @@ def gemm_act(
      alpha_mode = 2 if isinstance(alpha, Tensor) else (1 if alpha != 1.0 else 0)
      beta_mode = 2 if isinstance(beta, Tensor) else (1 if beta != 1.0 else 0)
 -    if tensor_epilogue_arg_kinds and (C is not None or alpha_mode != 0 or beta_mode != 0):
@@ -288,9 +288,8 @@ index 1ab1cfa4d8c..43152b7653b 100644
 +            raise RuntimeError(
 +                "local_reduce_feeds_main requires generated local-reduce callback keys"
 +            )
-     if local_reduce_out is not None and (
-         (tensor_epilogue_fn is None and tensor_epilogue_key is None)
-         or tensor_epilogue_returns_aux
+     if local_reduce_out is not None and tensor_epilogue_fn is None and tensor_epilogue_key is None:
+         raise RuntimeError("local_reduce_out requires tensor_epilogue_fn")
 @@ -849,12 +886,17 @@ def gemm_act(
          tensor_epilogue_arg_kind_codes,
          tensor_epilogue_returns_aux,

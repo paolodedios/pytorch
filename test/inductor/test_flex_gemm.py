@@ -712,16 +712,6 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             axis=0,
             feeds_main=True,
         )
-        with self.assertRaisesRegex(NotImplementedError, "aux_out"):
-            validate_runtime_local_reduce(
-                compressed_plan,
-                torch.empty(128, 64),
-                (128, 64),
-                torch.empty(128, 64),
-                None,
-                1.0,
-                1.0,
-            )
         for plan in (compressed_plan, feed_main_plan):
             for effective_C, alpha, beta in (
                 (torch.empty(128, 64), 1.0, 1.0),
@@ -733,7 +723,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                         plan,
                         torch.empty(128, 64),
                         (128, 64),
-                        None,
+                        (),
                         effective_C,
                         alpha,
                         beta,
@@ -911,11 +901,13 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             tuple_output_plan(object(), ())
         with self.assertRaisesRegex(NotImplementedError, "tensor outputs"):
             tuple_output_plan(node, (object(),))
-        compressed = FlexGemmOutputCompressedLocalReducePlan(
-            FlexGemmLocalReduceGeometry(8, 0), aux
+        FlexGemmOutputPlan(
+            node,
+            (aux,),
+            FlexGemmOutputCompressedLocalReducePlan(
+                FlexGemmLocalReduceGeometry(8, 0), aux
+            ),
         )
-        with self.assertRaisesRegex(NotImplementedError, "same-shape aux outputs"):
-            FlexGemmOutputPlan(node, (aux,), compressed)
         FlexGemmOutputPlan(
             node,
             (aux,),
@@ -1108,7 +1100,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
                 self.captured_tuple_aux_epilogue,
                 name,
                 out=out,
-                aux_out=aux,
+                aux_outs=(aux,),
                 epilogue_args=(col_bias, row_scale, tile_bias),
                 epilogue_arg_kinds=("col", "row", "tile"),
                 config_key=config_key,
@@ -1216,7 +1208,7 @@ class TestFlexGemmRuntime(FlexGemmTestCase):
             "test_flex_gemm_tuple_aux",
             out_dtype=torch.float32,
             out=out,
-            aux_out=aux,
+            aux_outs=(aux,),
         )
 
         self.assertIs(actual, out)
@@ -1407,21 +1399,6 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         b = torch.randn(8, 5)
 
         with self.assertRaisesRegex(Exception, "partial-output contract"):
-            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
-
-    def test_generated_tuple_aux_rejects_multiple_aux_outputs(self):
-        def fn(a, b):
-            return flex_gemm(
-                torch.mm,
-                (a, b),
-                lambda acc: (acc.relu(), acc + 1, acc * 2),
-                kernel_options={"backend": "QUACK"},
-            )
-
-        a = torch.randn(4, 8)
-        b = torch.randn(8, 5)
-
-        with self.assertRaisesRegex(Exception, "at most one aux output"):
             torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
 
     def test_generated_local_reduce_aux_rejects_addmm_scope(self):
@@ -2098,6 +2075,86 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         FileCheck().check(code_check).run(code)
+        self.assertLocalReduceAuxCode(code, group, axis=0, callbacks=True)
+
+    @skipIfNoCuteDSL
+    @unittest.skipIf(not TEST_CUDA, "CUDA required")
+    @unittest.skipIf(not SM100OrLater, "SM100+ required")
+    def test_mm_tuple_aux_supports_multiple_same_shape_outputs(self):
+        m = 128
+        n = 128
+
+        def epilogue_fn(acc):
+            acc_f = acc.float()
+            return acc.relu(), acc_f + 1, acc_f * 2
+
+        def fn(a, b):
+            return flex_gemm(
+                torch.mm,
+                (a, b),
+                epilogue_fn,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(m, 64, device="cuda", dtype=torch.bfloat16)
+        b = torch.randn(64, n, device="cuda", dtype=torch.bfloat16)
+        (actual, aux0, aux1), (code,) = run_and_get_code(
+            torch.compile(fn, backend="inductor", fullgraph=True), a, b
+        )
+
+        self.assertMatchesEpilogue(
+            (actual, aux0, aux1),
+            epilogue_fn(a @ b),
+            epilogue_fn(a.double() @ b.double()),
+            a.shape[1],
+        )
+        FileCheck().check("aux_outs=(").check(",)").run(code)
+
+    @skipIfNoCuteDSL
+    @unittest.skipIf(not TEST_CUDA, "CUDA required")
+    @unittest.skipIf(not SM100OrLater, "SM100+ required")
+    def test_mm_tuple_aux_combines_same_shape_and_compressed_local_reduce(self):
+        m = 128
+        n = 128
+        group = 16
+
+        def epilogue_fn(acc):
+            x = acc.float().view(-1, group, n)
+            return acc.relu(), (x * 0.5).view(m, n), x.sum(1)
+
+        def fn(a, b):
+            return flex_gemm(
+                torch.mm,
+                (a, b),
+                epilogue_fn,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(m, 64, device="cuda", dtype=torch.bfloat16)
+        b = torch.randn(64, n, device="cuda", dtype=torch.bfloat16)
+        (actual, same_shape_aux, local_reduce_aux), (code,) = run_and_get_code(
+            torch.compile(fn, backend="inductor", fullgraph=True), a, b
+        )
+        expected_actual, expected_aux, _ = epilogue_fn(a @ b)
+        (
+            high_precision_actual,
+            high_precision_aux,
+            high_precision_local_reduce_aux,
+        ) = epilogue_fn(a.double() @ b.double())
+
+        self.assertMatchesLowPrecisionEager(
+            actual, expected_actual, high_precision_actual, a.shape[1]
+        )
+        self.assertMatchesLowPrecisionEager(
+            same_shape_aux, expected_aux, high_precision_aux, a.shape[1]
+        )
+        torch.testing.assert_close(
+            local_reduce_aux,
+            high_precision_local_reduce_aux.float(),
+            atol=1e-3,
+            rtol=1e-3,
+        )
+        FileCheck().check("aux_outs=").run(code)
         self.assertLocalReduceAuxCode(code, group, axis=0, callbacks=True)
 
     @skipIfNoCuteDSL
@@ -3436,7 +3493,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             a.shape[1],
         )
         torch.testing.assert_close(aux, expected_aux)
-        self.assertFlexGemmGeneratedCode(code, "aux_out=")
+        self.assertFlexGemmGeneratedCode(code, "aux_outs=")
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
@@ -3647,7 +3704,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             code,
             "epilogue_args=",
             "epilogue_arg_kinds=('col', 'row', 'tile')",
-            "aux_out=",
+            "aux_outs=",
         )
 
     @skipIfNoCuteDSL
@@ -3723,7 +3780,7 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
             )
 
         self.assertTupleAuxMatchesReference(actual, aux, a, b, epilogue_fn)
-        self.assertFlexGemmGeneratedCode(code, "aux_out=")
+        self.assertFlexGemmGeneratedCode(code, "aux_outs=")
 
     @skipIfNoCuteDSL
     @unittest.skipIf(not TEST_CUDA, "CUDA required")
