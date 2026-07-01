@@ -234,6 +234,7 @@ else:
 if sys.platform == "win32":
 
     def _load_dll_libraries() -> None:
+        import importlib.util
         import sysconfig
 
         from torch.version import cuda as cuda_version
@@ -241,6 +242,13 @@ if sys.platform == "win32":
         pfiles_path = os.getenv("ProgramFiles", r"C:\Program Files")
         py_dll_path = os.path.join(sys.exec_prefix, "Library", "bin")
         th_dll_path = os.path.join(os.path.dirname(__file__), "lib")
+        # Anchor the DLL dir on the compiled _C extension rather than __file__:
+        # editable installs (e.g. scikit-build-core) run this __init__ from the
+        # source tree, whose lib/ is empty, while _C and its dependent DLLs live
+        # in the installed tree. In a wheel install both resolve to the same dir.
+        _spec = importlib.util.find_spec("torch._C")
+        if _spec is not None and _spec.origin:
+            th_dll_path = os.path.join(os.path.dirname(_spec.origin), "lib")
         usebase_path = os.path.join(
             sysconfig.get_config_var("userbase"), "Library", "bin"
         )
