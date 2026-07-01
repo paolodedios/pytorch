@@ -4,6 +4,7 @@ import functools
 import itertools
 import math
 import operator
+import os
 import sys
 from functools import reduce
 from typing import Any, cast as typing_cast, TYPE_CHECKING, TypeVar
@@ -65,6 +66,8 @@ __all__ = [
 op_implementations_dict = {}
 # pyrefly: ignore [implicit-any]
 op_implementations_checks = []
+
+CPP_FAKETENSOR = os.environ.get("CPP_FAKETENSOR", "0") == "1"
 
 
 aten = torch._ops.ops.aten
@@ -185,6 +188,11 @@ def register_op_impl(
             if run_impl_check in op_implementations_dict:
                 raise AssertionError(f"duplicate registration: {run_impl_check}")
             op_implementations_dict[run_impl_check] = op_impl
+            if CPP_FAKETENSOR:
+                schema = run_impl_check._schema
+                torch._C._fake_dispatch_register_op_impl(
+                    schema.name, schema.overload_name
+                )
         elif isinstance(run_impl_check, (list, tuple)):
             for op in run_impl_check:
                 register_op_impl(op)(op_impl)
@@ -205,7 +213,12 @@ def _is_op_registered_to_fake_rule(op: OpOverload) -> bool:
 
 
 def _deregister_op_impl(op: OpOverload) -> None:
-    op_implementations_dict.pop(op, None)
+    if op in op_implementations_dict:
+        op_implementations_dict.pop(op, None)
+        if CPP_FAKETENSOR:
+            torch._C._fake_dispatch_deregister_op_impl(
+                op._schema.name, op._schema.overload_name
+            )
     for check, impl in op_implementations_checks:
         if check is op:
             op_implementations_checks.remove((check, impl))

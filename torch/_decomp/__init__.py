@@ -1,5 +1,6 @@
 # mypy: allow-untyped-defs
 import inspect
+import os
 import typing
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -42,6 +43,8 @@ global_decomposition_table: dict[str, dict[torch._ops.OperatorBase, Callable]] =
 decomposition_table = global_decomposition_table["post_autograd"]
 pre_autograd_decomposition_table = global_decomposition_table["pre_autograd"]
 meta_table = global_decomposition_table["meta"]
+
+CPP_FAKETENSOR = os.environ.get("CPP_FAKETENSOR", "0") == "1"
 
 
 def _should_decompose_because_unsafe_op(op: torch._ops.OperatorBase) -> bool:
@@ -89,6 +92,16 @@ def _add_op_to_registry(registry, op, fn):
         # to filter those out, e.g aten.add.float_int
         if torch._C._dispatch_has_kernel(op_overload.name()):
             registry[op_overload] = fn
+            if CPP_FAKETENSOR:
+                schema = op_overload._schema
+                if registry is decomposition_table:
+                    torch._C._fake_dispatch_register_decomp(
+                        schema.name, schema.overload_name
+                    )
+                elif registry is meta_table:
+                    torch._C._fake_dispatch_register_meta(
+                        schema.name, schema.overload_name
+                    )
 
 
 def _convert_out_params(f):

@@ -1,5 +1,6 @@
 # mypy: allow-untyped-defs
 import operator
+import os
 from collections.abc import Callable, Sequence
 from enum import Enum
 from functools import partial, reduce
@@ -39,6 +40,8 @@ prim_impl = torch.library.Library("prims", "IMPL", "CompositeExplicitAutograd")
 prim_backend_select_impl = torch.library.Library("prims", "IMPL", "BackendSelect")
 prim_autograd_impl = torch.library.Library("prims", "IMPL", "Autograd")
 prim_meta_impl = torch.library.Library("prims", "IMPL", "Meta")
+
+CPP_FAKETENSOR = os.environ.get("CPP_FAKETENSOR", "0") == "1"
 
 # Experimental module containing prototype "primitive" operations.
 
@@ -382,6 +385,11 @@ def _make_prim(
         p.prim_impl = _prim_impl
         p.prim_meta_impl = meta
         p.impl_aten = impl_aten
+
+    if CPP_FAKETENSOR:
+        torch._C._fake_dispatch_register_prim_meta(
+            _prim._schema.name, _prim._schema.overload_name
+        )
 
     return _prim
 
