@@ -849,8 +849,6 @@ std::tuple<Tensor&, Tensor&> cummax_out(const Tensor& self, int64_t dim, Tensor&
   check_scalar_type_device_layout_equal(indices, at::empty({0}, self.options().dtype(at::kLong)));
   if (self.dim() == 0) {
     at::native::zero_numel_check_dims(self, dim, "cummax()");
-  } else {
-    dim = maybe_wrap_dim(dim, self.dim());
   }
 
   {
@@ -860,6 +858,7 @@ std::tuple<Tensor&, Tensor&> cummax_out(const Tensor& self, int64_t dim, Tensor&
       values.fill_(self);
       indices.fill_(0);
     } else if(self.numel() != 0) {
+      dim = maybe_wrap_dim(dim, self.dim());
       at::_cummax_helper(self, values, indices, dim);
     }
   }
@@ -886,8 +885,6 @@ std::tuple<Tensor&, Tensor&> cummin_out(const Tensor& self, int64_t dim, Tensor&
   check_scalar_type_device_layout_equal(indices, at::empty({0}, self.options().dtype(at::kLong)));
   if (self.dim() == 0) {
     at::native::zero_numel_check_dims(self, dim, "cummin()");
-  } else {
-    dim = maybe_wrap_dim(dim, self.dim());
   }
 
   {
@@ -897,6 +894,7 @@ std::tuple<Tensor&, Tensor&> cummin_out(const Tensor& self, int64_t dim, Tensor&
       values.fill_(self);
       indices.fill_(0);
     } else if(self.numel() != 0) {
+      dim = maybe_wrap_dim(dim, self.dim());
       at::_cummin_helper(self, values, indices, dim);
     }
   }
