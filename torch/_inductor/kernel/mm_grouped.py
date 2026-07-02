@@ -142,6 +142,7 @@ cutedsl_grouped_mm_template = CuteDSLTemplate(
     source=load_kernel_template("cutedsl_mm_grouped"),
 )
 
+
 def has_grouped_mm_triton_support() -> bool:
     if not torch.cuda.is_available():
         return False
@@ -174,7 +175,9 @@ def has_scaled_grouped_mm_triton_support(mat_a: TensorBox, mat_b: TensorBox) -> 
     ).gcnArchName.split(":", 1)[0]
     # Match ATen's ROCm rowwise scaled grouped GEMM contract: gfx94 uses the
     # FNUZ FP8 encoding, while newer FP8-capable arches use OCP FP8.
-    expected_dtype = torch.float8_e4m3fnuz if arch.startswith("gfx94") else torch.float8_e4m3fn
+    expected_dtype = (
+        torch.float8_e4m3fnuz if arch.startswith("gfx94") else torch.float8_e4m3fn
+    )
     return mat_a.get_dtype() == expected_dtype and mat_b.get_dtype() == expected_dtype
 
 
