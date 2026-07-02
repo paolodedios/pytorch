@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#if TORCH_FEATURE_VERSION >= TORCH_VERSION_2_13_0
+#if TORCH_FEATURE_VERSION >= TORCH_VERSION_2_14_0
 
 // Wrap a Python torch.Tensor as a new AtenTensorHandle that shares the
 // underlying TensorImpl with the input.
@@ -32,7 +32,7 @@ AOTI_TORCH_EXPORT AOTITorchError torch_tensor_to_pyobject(
     void* py_type,
     void** ret); // returns new reference
 
-#endif // TORCH_FEATURE_VERSION >= TORCH_VERSION_2_13_0
+#endif // TORCH_FEATURE_VERSION >= TORCH_VERSION_2_14_0
 
 #ifdef __cplusplus
 } // extern "C"
