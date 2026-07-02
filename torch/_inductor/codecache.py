@@ -257,7 +257,8 @@ def _cuda_fatbin_command(
     fatbinary: str | None,
     current_arch: str | None = None,
 ) -> list[str]:
-    current_arch = current_arch or cuda_compile_utils._nvcc_arch_as_compile_option()
+    if not current_arch:
+        current_arch = cuda_compile_utils._nvcc_arch_as_compile_option_or_raise()
     gencode_options = cuda_compile_utils._cuda_multi_arch_gencode_options(current_arch)
     if (
         fatbinary is not None
@@ -383,6 +384,10 @@ class CacheBase:
             system_hash = CacheBase._empty_system()["hash"]
             return Path(os.path.join(cache_dir(), "cache", system_hash))
         return CacheBase._get_local_cache_path_cached()
+
+    get_local_cache_path.__func__.cache_clear = (  # type: ignore[attr-defined]
+        _get_local_cache_path_cached.__func__.cache_clear
+    )
 
     def __init__(self) -> None:
         self.system = CacheBase.get_system()

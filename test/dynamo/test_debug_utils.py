@@ -860,7 +860,7 @@ class TestInductorConfigOverrideIntegration(TestCase):
                 self.assertEqual(
                     configs_at_compile[(gid, is_bw)],
                     expected,
-                    f"graph {gid} {phase}: config mismatch",
+                    lambda msg: f"{msg}\ngraph {gid} {phase}: config mismatch",
                 )
 
         self.assertIsNotNone(x.grad)

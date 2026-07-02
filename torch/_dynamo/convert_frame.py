@@ -914,7 +914,7 @@ def trace_frame(
     from torch.fx.experimental.validator import bisect, translation_validation_enabled
 
     if (
-        torch.cuda.is_available()
+        torch.cuda.is_initialized()
         and hasattr(torch._C, "_cuda_isCurrentStreamCapturing")
         and not isinstance(torch._C._cuda_isCurrentStreamCapturing, type)
         and torch.cuda.is_current_stream_capturing()
