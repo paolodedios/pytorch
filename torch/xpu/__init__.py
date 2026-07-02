@@ -1050,16 +1050,21 @@ def _get_zes_power_handle(device: Device = None) -> c_void_p:
             pyzes.zesPowerGetProperties(pwr_handle, byref(pwr_props)),
             "Can't get Level Zero Sysman power properties.",
         )
-        if ext_pwr_props.domain != pyzes.ZES_POWER_DOMAIN_CARD:
+        if ext_pwr_props.domain not in (
+            pyzes.ZES_POWER_DOMAIN_CARD,
+            pyzes.ZES_POWER_DOMAIN_PACKAGE,
+        ):
             continue
         if subdevice_id is not None:
             if pwr_props.onSubdevice and pwr_props.subdeviceId == subdevice_id:
                 power_handle = pwr_handle
-                break
+                if ext_pwr_props.domain == pyzes.ZES_POWER_DOMAIN_CARD:
+                    break
         else:
             if not pwr_props.onSubdevice:
                 power_handle = pwr_handle
-                break
+                if ext_pwr_props.domain == pyzes.ZES_POWER_DOMAIN_CARD:
+                    break
 
     if power_handle is None:
         raise RuntimeError("No Level Zero Sysman GPU power handle found.")
@@ -1083,7 +1088,8 @@ def power_draw(device: Device = None) -> float:
 
     .. note:: This API may require elevated privileges (e.g. ``sudo``) to access GPU power information.
 
-    .. note:: This API is currently only supported on Intel Xe2 and newer GPUs.
+    .. note:: On Intel Xe2 and newer GPUs, card-level power is reported directly. On older GPUs,
+        package-level power is used as a fallback and may not reflect the full card power draw.
     """
     power_handle = _get_zes_power_handle(device)
 
