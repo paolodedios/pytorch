@@ -54,6 +54,7 @@ from torch._inductor.kernel.flex_gemm.quack_reductions import (
     lower_view_or_reshape,
     propagate_grouped_tensorssa_info,
     reduction_from_node,
+    tensor_meta_shape,
     unsupported_reduction_from_node,
 )
 from torch._inductor.virtualized import V
@@ -226,7 +227,10 @@ class FlexGemmLocalReduceAnalysis:
 
     def bind_grouped_layout(self, node: torch.fx.Node, shape: Any, source: Any) -> bool:
         """Record reshapes that introduce grouped TensorSSA provenance."""
-        layout = grouped_tensor_layout(shape)
+        source_shape = (
+            tensor_meta_shape(source) if isinstance(source, torch.fx.Node) else None
+        )
+        layout = grouped_tensor_layout(shape, source_shape)
         if layout is None or not isinstance(source, torch.fx.Node):
             return False
         self.grouped_tensors[node] = GroupedTensorSSAInfo(layout)
@@ -419,7 +423,13 @@ def has_physical_grouped_input(
     seen.add(value)
     shape = view_or_reshape_shape(value)
     if shape is not None:
-        layout = grouped_tensor_layout(shape)
+        source_node = value.args[0]
+        source_shape = (
+            tensor_meta_shape(source_node)
+            if isinstance(source_node, torch.fx.Node)
+            else None
+        )
+        layout = grouped_tensor_layout(shape, source_shape)
         if layout is not None and layout.needs_physical_combine:
             return True
     return any(
@@ -529,13 +539,13 @@ def local_reduce_feed_main_candidate_contract(
     input_shape = view_or_reshape_shape(grouped_source)
     if input_shape is None:
         return None
-    layout = grouped_tensor_layout(input_shape)
-    if layout is None or layout.axis != 0:
-        return None
-    validate_local_reduce_feed_main_capability(layout.axis, layout.group_size)
     source_node = grouped_source.args[0]
     if not isinstance(source_node, torch.fx.Node):
         return None
+    layout = grouped_tensor_layout(input_shape, tensor_meta_shape(source_node))
+    if layout is None or layout.axis != 0:
+        return None
+    validate_local_reduce_feed_main_capability(layout.axis, layout.group_size)
     source_meta = source_node.meta.get("val")
     if output_meta is not None and source_meta is not None:
         if tuple(output_meta.shape) != tuple(source_meta.shape):
