@@ -843,10 +843,9 @@ c10::intrusive_ptr<CUDAPeerAllocInfo> make_peer_alloc_info(
 
 } // namespace
 
-
 bool cache_entry_matches_storage(const c10::StorageImpl* storage_impl, const Block::RendezvousCacheEntry& entry) {
   if (storage_impl == nullptr) {
-    return true;
+    return false;
   }
   if (!entry.storage.has_value()) {
     return false;
@@ -854,6 +853,7 @@ bool cache_entry_matches_storage(const c10::StorageImpl* storage_impl, const Blo
   auto cached_storage = entry.storage->lock();
   return cached_storage != nullptr && cached_storage.get() == storage_impl;
 }
+
 c10::intrusive_ptr<SymmetricMemory> CUDASymmetricMemoryAllocator::rendezvous(
     void* ptr,
     const std::optional<std::string>& group_name) {
