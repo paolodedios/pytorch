@@ -418,27 +418,6 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
 
   void free(void* ptr) override {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = allocations_.find(ptr);
-    if (it != allocations_.end()) {
-      // Purge cached rendezvous handles that point into this allocation's data
-      // range. nvshmem_free can hand this address back to a later allocation of
-      // a different size; without this, rendezvous() would return a stale
-      // handle (wrong buffer_size/offset) from symm_mems_, keyed by an address
-      // that now belongs to the new allocation.
-      const auto lo = reinterpret_cast<uintptr_t>(it->second->alloc_base) +
-          it->second->buffer_offset;
-      const auto hi = lo + it->second->buffer_size;
-      std::vector<SymmMemKey> stale;
-      for (const auto& kv : symm_mems_) {
-        auto k = reinterpret_cast<uintptr_t>(kv.first.first);
-        if (k >= lo && k < hi) {
-          stale.push_back(kv.first);
-        }
-      }
-      for (auto& key : stale) {
-        symm_mems_.erase(key);
-      }
-    }
     allocations_.erase(ptr);
   };
 
@@ -470,10 +449,11 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
         allocations_.begin(), allocations_.end(), [&](const auto& pair) {
           auto& allocation = pair.second;
           auto ptr_int = reinterpret_cast<uintptr_t>(ptr);
-          auto data_base = reinterpret_cast<uintptr_t>(allocation->alloc_base) +
+          auto buffer_ptr =
+              reinterpret_cast<uintptr_t>(allocation->alloc_base) +
               allocation->buffer_offset;
-          return ptr_int >= data_base &&
-              ptr_int < data_base + allocation->buffer_size;
+          return ptr_int >= buffer_ptr &&
+              ptr_int < buffer_ptr + allocation->buffer_size;
         });
     TORCH_CHECK(
         alloc_it != allocations_.end(),
@@ -483,11 +463,11 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     auto& allocation = alloc_it->second;
     // Data buffer base (the pointer alloc() returned). Offsets are relative to
     // it, and it is the key used to cache this allocation's base rendezvous.
-    void* data_base =
+    void* buffer_ptr =
         static_cast<char*>(allocation->alloc_base) + allocation->buffer_offset;
 
     // Search again using the data buffer base ptr (the caching key)
-    auto it = symm_mems_.find(SymmMemKey{data_base, *group_name});
+    auto it = symm_mems_.find(SymmMemKey{buffer_ptr, *group_name});
     c10::intrusive_ptr<NVSHMEMSymmetricMemory> symm_mem;
     if (it != symm_mems_.end()) {
       // Base allocation has been rendezvoused
@@ -499,20 +479,20 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     }
 
     // Cache rendezvous using the data buffer base address as key
-    symm_mems_[SymmMemKey{data_base, *group_name}] = symm_mem;
+    symm_mems_[SymmMemKey{buffer_ptr, *group_name}] = symm_mem;
 
     // TODO: change the `ptr` below to `tensor.data_ptr()` when adding support
     // for user slice/view operations. For MemPool support,
     // `tensor.storage().data_ptr()` is fine (today's `ptr`).
 
     // If the tensor's ptr happens to be the data buffer base
-    if (ptr == data_base) {
+    if (ptr == buffer_ptr) {
       return symm_mem;
     } else {
       // Return a copy of the SymmetricMemory with an offset. This is a
       // "shallow" copy adjusting the offset field in the handle.
       return c10::make_intrusive<NVSHMEMSymmetricMemory>(
-          *symm_mem, (uintptr_t)ptr - (uintptr_t)data_base);
+          *symm_mem, (uintptr_t)ptr - (uintptr_t)buffer_ptr);
     }
   };
 
@@ -525,11 +505,11 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     auto alloc_it = std::find_if(
         allocations_.begin(), allocations_.end(), [&](const auto& pair) {
           auto ptr_int = reinterpret_cast<uintptr_t>(ptr);
-          auto data_base =
+          auto buffer_ptr =
               reinterpret_cast<uintptr_t>(pair.second->alloc_base) +
               pair.second->buffer_offset;
-          return ptr_int >= data_base &&
-              ptr_int < data_base + pair.second->buffer_size;
+          return ptr_int >= buffer_ptr &&
+              ptr_int < buffer_ptr + pair.second->buffer_size;
         });
     return alloc_it != allocations_.end();
   }

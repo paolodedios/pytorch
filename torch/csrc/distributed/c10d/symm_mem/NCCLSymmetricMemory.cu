@@ -94,9 +94,9 @@ bool pointer_in_allocation(void* ptr, const NCCLAllocation& allocation) {
   auto ptr_int = reinterpret_cast<uintptr_t>(ptr);
   // The data buffer starts `buffer_offset` bytes into the allocation (past the
   // signal pad); only data-region pointers belong to this allocation.
-  auto data_base = reinterpret_cast<uintptr_t>(allocation.alloc_base) +
+  auto buffer_ptr = reinterpret_cast<uintptr_t>(allocation.alloc_base) +
       allocation.buffer_offset;
-  return ptr_int >= data_base && ptr_int < data_base + allocation.buffer_size;
+  return ptr_int >= buffer_ptr && ptr_int < buffer_ptr + allocation.buffer_size;
 }
 
 NCCLAllocMap::iterator find_allocation_covering_linear(
@@ -113,27 +113,19 @@ NCCLAllocMap::iterator find_allocation_covering_linear(
 NCCLAllocMap::iterator find_allocation_covering(
     void* ptr,
     NCCLAllocMap& allocations) {
-  // Fast path: `allocations` is keyed by the data pointer returned from
-  // alloc(), so a whole-buffer tensor matches exactly.
   auto alloc_it = allocations.find(ptr);
   if (alloc_it != allocations.end()) {
     return alloc_it;
   }
 #if !defined(USE_ROCM) && defined(PYTORCH_C10_DRIVER_API_SUPPORTED)
-  // Interior pointer (e.g. a MemPool sub-allocation): recover the ncclMemAlloc
-  // base via the driver, add the signal-pad offset to reconstruct the data
-  // pointer used as the map key, and look it up directly -- O(1) instead of a
-  // linear scan. buffer_offset equals the signal pad size; if that was
-  // reconfigured between allocations this lookup misses and the linear scan
-  // below covers it.
   auto driver_api = c10::cuda::DriverAPI::get();
   CUdeviceptr base_ptr = 0;
   if (driver_api->cuMemGetAddressRange_(
           &base_ptr, nullptr, reinterpret_cast<CUdeviceptr>(ptr)) ==
       CUDA_SUCCESS) {
-    auto data_ptr = reinterpret_cast<void*>(
+    auto buffer_ptr = reinterpret_cast<void*>(
         static_cast<uintptr_t>(base_ptr) + get_signal_pad_size());
-    alloc_it = allocations.find(data_ptr);
+    alloc_it = allocations.find(buffer_ptr);
     if (alloc_it != allocations.end()) {
       return alloc_it;
     }
@@ -598,10 +590,10 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
       pai = c10::make_intrusive<NCCLPeerAllocInfo>(allocation, *group_name);
     }
     // Offset is relative to the data buffer base (past the signal pad).
-    const uintptr_t data_base = reinterpret_cast<uintptr_t>(
-                                    allocation->alloc_base) +
+    const uintptr_t buffer_ptr =
+        reinterpret_cast<uintptr_t>(allocation->alloc_base) +
         allocation->buffer_offset;
-    size_t offset = reinterpret_cast<uintptr_t>(ptr) - data_base;
+    size_t offset = reinterpret_cast<uintptr_t>(ptr) - buffer_ptr;
     // Create the SymmetricMemory handle.
     auto symm_mem = c10::make_intrusive<NCCLSymmetricMemory>(pai, offset);
     {
@@ -619,7 +611,7 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
       // There is no more use of `key`; we can move it into the per-allocation
       // key set to avoid an extra copy. Key by the data pointer (the value
       // returned by alloc()), matching the lookup done in free().
-      symm_mem_keys_by_alloc_[reinterpret_cast<void*>(data_base)].insert(
+      symm_mem_keys_by_alloc_[reinterpret_cast<void*>(buffer_ptr)].insert(
           std::move(key));
     }
     return symm_mem;
