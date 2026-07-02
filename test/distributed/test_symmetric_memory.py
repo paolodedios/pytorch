@@ -251,7 +251,6 @@ class SymmetricMemoryTest(MultiProcContinuousTest):
     )
     @requires_cuda
     def test_allow_overlapping_devices(self) -> None:
-        self._init_process()
         os.environ["TORCH_SYMM_MEM_ALLOW_OVERLAPPING_DEVICES"] = "1"
         t = symm_mem.empty(64, device="cuda:0")
         symm_mem_hdl = symm_mem.rendezvous(t, group=dist.group.WORLD)
