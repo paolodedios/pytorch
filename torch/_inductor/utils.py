@@ -117,9 +117,14 @@ def get_gpu_type() -> str:
 
 @functools.cache
 def get_triton_type() -> str | None:
+    """Get a device type that supports generating Triton code as a backend, or
+    ``None`` if there aren't any. Note that the returned device may not
+    currently be configured to generate Triton.
+
+    Will prefer to return any other device type before CPU."""
     from torch.utils._triton import devices_supporting_triton
 
-    candidates: list[str] = list(devices_supporting_triton())
+    candidates: list[str] = devices_supporting_triton()
 
     if len(candidates) == 0:
         return None
@@ -4201,6 +4206,13 @@ def get_current_backend(device_type: str | None = None) -> str:
 
 
 def set_current_backend(value: str, device_type: str | None = None) -> bool:
+    """Set the current Inductor codegen backend for the given device.
+
+    If ``device_type`` is ``None``, will try and get it from the current graph.
+
+    :returns: Whether we were able to set the backend for ``device_type`` to
+              ``value``.
+    """
     from torch._inductor.virtualized import V
 
     if not device_type:
@@ -4226,6 +4238,7 @@ def set_current_backend(value: str, device_type: str | None = None) -> bool:
 def with_device_backend(
     value: str, device_type: str | None = None
 ) -> Generator[None, None, None]:
+    """Context manager for setting the codegen backend for the given device."""
     from torch._inductor.virtualized import V
 
     if not device_type:
