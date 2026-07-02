@@ -362,9 +362,9 @@ class ScheduleTest(TestCase):
             target_mbs = list(torch.tensor_split(target, num_microbatches))
             pre_split_losses = []
             pre_split_out = pre_split_schedule.step(
-                arg_mbs,
-                kwargs=kwarg_mbs,
-                target=target_mbs,
+                arg_mbs=arg_mbs,
+                kwarg_mbs=kwarg_mbs,
+                target_mbs=target_mbs,
                 losses=pre_split_losses,
                 pre_split_args_kwargs=True,
             )
@@ -399,33 +399,55 @@ class ScheduleTest(TestCase):
             stage = PipelineStage(torch.nn.Identity(), 0, 1, device)
             schedule = ScheduleGPipe(stage, 2)
 
+            for name, value in (
+                ("arg_mbs", [(x0,), (x1,)]),
+                ("kwarg_mbs", [{"input": x0}, {"input": x1}]),
+                ("target_mbs", [x0, x1]),
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"{name} can only be passed when pre_split_args_kwargs=True",
+                ):
+                    schedule.step(**{name: value})
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "pass pre-split positional inputs through arg_mbs",
+            ):
+                schedule.step([(x0,), (x1,)], pre_split_args_kwargs=True)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "Unexpected keyword arguments when pre_split_args_kwargs=True: y",
+            ):
+                schedule.step(y=x0, pre_split_args_kwargs=True)
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "pass pre-split targets through target_mbs",
+            ):
+                schedule.step(target=[x0, x1], pre_split_args_kwargs=True)
+
             with self.assertRaisesRegex(TypeError, "arg_mbs must be a list"):
-                schedule.step((x0,), pre_split_args_kwargs=True)
+                schedule.step(arg_mbs=(x0,), pre_split_args_kwargs=True)
 
             with self.assertRaisesRegex(ValueError, "Expecting 2 arg_mbs"):
-                schedule.step([(x0,)], pre_split_args_kwargs=True)
-
-            with self.assertRaisesRegex(ValueError, "Unexpected keyword arguments.*y"):
-                schedule.step(
-                    [(x0,), (x1,)],
-                    y=[x0, x1],
-                    pre_split_args_kwargs=True,
-                )
+                schedule.step(arg_mbs=[(x0,)], pre_split_args_kwargs=True)
 
             with self.assertRaisesRegex(TypeError, "kwarg_mbs must be a list"):
                 schedule.step(
-                    [(x0,), (x1,)],
-                    kwargs={"y": x0},
+                    arg_mbs=[(x0,), (x1,)],
+                    kwarg_mbs={"y": x0},
                     pre_split_args_kwargs=True,
                 )
 
             with self.assertRaisesRegex(TypeError, "arg_mbs must be a list of tuples"):
-                schedule.step([x0, x1], pre_split_args_kwargs=True)
+                schedule.step(arg_mbs=[x0, x1], pre_split_args_kwargs=True)
 
             with self.assertRaisesRegex(ValueError, "Expecting 2 target_mbs"):
                 schedule.step(
-                    [(x0,), (x1,)],
-                    target=[x0],
+                    arg_mbs=[(x0,), (x1,)],
+                    target_mbs=[x0],
                     pre_split_args_kwargs=True,
                 )
         finally:
@@ -726,7 +748,11 @@ class TestScheduleCsv(TestCase):
 
         for rank in sch_ref:
             for timestep, (a, b) in enumerate(zip(sch[rank], sch_ref[rank])):
-                self.assertEqual(a, b, f"Mismatch at {timestep=}, {a=}, expected {b}")
+                self.assertEqual(
+                    a,
+                    b,
+                    lambda msg: f"{msg}\nMismatch at {timestep=}, {a=}, expected {b}",
+                )
 
 
 instantiate_parametrized_tests(TestScheduleCsv)
@@ -798,7 +824,7 @@ class TestScheduleLowering(TestCase):
                 expected,
                 actual,
                 (
-                    f"Mismatch: expected action {expected} but found {actual}."
+                    lambda msg: f"{msg}\nMismatch: expected action {expected} but found {actual}."
                     f"\nWhole Schedule: {comms_sch}"
                 ),
             )
@@ -837,7 +863,7 @@ class TestScheduleLowering(TestCase):
                 expected,
                 actual,
                 (
-                    f"Mismatch: expected action {expected} but found {actual}."
+                    lambda msg: f"{msg}\nMismatch: expected action {expected} but found {actual}."
                     f"\nWhole Schedule: {comms_sch}"
                 ),
             )
@@ -872,7 +898,7 @@ class TestScheduleLowering(TestCase):
                 expected,
                 actual,
                 (
-                    f"Mismatch: expected action {expected} but found {actual}."
+                    lambda msg: f"{msg}\nMismatch: expected action {expected} but found {actual}."
                     f"\nWhole Schedule: {merged_sch}"
                 ),
             )
@@ -1023,7 +1049,7 @@ class TestScheduleLowering(TestCase):
                     expected,
                     actual,
                     (
-                        f"Mismatch on rank {rank} at position {i}."
+                        lambda msg: f"{msg}\nMismatch on rank {rank} at position {i}."
                         f"\nExpected: {expected_comms_sch[rank]}"
                         f"\nActual:   {comms_sch[rank]}"
                     ),
@@ -1377,7 +1403,7 @@ class TestScheduleLowering(TestCase):
                     expected,
                     actual,
                     (
-                        f"Mismatch on rank {rank} at position {i}."
+                        lambda msg: f"{msg}\nMismatch on rank {rank} at position {i}."
                         f"\nExpected: {expected_sch[rank]}"
                         f"\nActual:   {result_sch[rank]}"
                     ),
@@ -1543,7 +1569,11 @@ class TestScheduleLowering(TestCase):
 
         for rank in sch_ref:
             for timestep, (a, b) in enumerate(zip(comms_sch[rank], sch_ref[rank])):
-                self.assertEqual(a, b, f"Mismatch at {timestep=}, {a=}, expected {b}")
+                self.assertEqual(
+                    a,
+                    b,
+                    lambda msg: f"{msg}\nMismatch at {timestep=}, {a=}, expected {b}",
+                )
 
         simulated_schedule = _simulate_comms_compute(
             comms_sch,

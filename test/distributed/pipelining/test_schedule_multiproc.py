@@ -34,6 +34,7 @@ from torch.distributed.pipelining import (
     ScheduleLoopedBFS,
     ScheduleZBVZeroBubble,
 )
+from torch.distributed.pipelining.microbatch import split_args_kwargs_into_chunks
 from torch.distributed.pipelining.schedules import (
     _Action,
     _PipelineContext,
@@ -43,6 +44,7 @@ from torch.distributed.pipelining.schedules import (
     OVERLAP_F_B,
 )
 from torch.distributed.pipelining.stage import _PipelineStageBase  # noqa: TC002
+from torch.nn.attention.flex_attention import create_block_mask, flex_attention
 from torch.nn.modules.loss import MSELoss
 from torch.testing._internal.common_distributed import (
     MultiProcContinuousTest,
@@ -51,6 +53,7 @@ from torch.testing._internal.common_distributed import (
 )
 from torch.testing._internal.common_utils import (
     check_leaked_tensors,
+    DeterministicGuard,
     instantiate_parametrized_tests,
     parametrize,
     run_tests,
@@ -59,6 +62,13 @@ from torch.testing._internal.common_utils import (
 )
 
 
+compiled_flex_attention = torch.compile(flex_attention)
+flex_attention_kernel_options = {
+    "BACKEND": "TRITON",
+    "PRESCALE_QK": False,
+    "ROWS_GUARANTEED_SAFE": True,
+    "BLOCKS_ARE_CONTIGUOUS": True,
+}
 logger = logging.getLogger(__name__)
 
 d_hid = 512
@@ -253,6 +263,104 @@ def run_none_grad_reference(ref_mod, x, flag, target) -> None:
         strict=True,
     ):
         none_grad_loss(ref_mod(x_mb, flag_mb), target_mb).backward()
+
+
+def step_with_optional_pre_split(
+    schedule,
+    num_microbatches,
+    args=(),
+    kwargs=None,
+    target=None,
+    losses=None,
+    return_outputs=True,
+    pre_split_args_kwargs=False,
+):
+    kwargs = kwargs or {}
+    if not pre_split_args_kwargs:
+        return schedule.step(
+            *args,
+            target=target,
+            losses=losses,
+            return_outputs=return_outputs,
+            **kwargs,
+        )
+
+    step_kwargs = {
+        "losses": losses,
+        "return_outputs": return_outputs,
+        "pre_split_args_kwargs": True,
+    }
+    if args or kwargs:
+        arg_mbs, kwarg_mbs = split_args_kwargs_into_chunks(
+            args,
+            kwargs,
+            num_microbatches,
+        )
+        if args:
+            step_kwargs["arg_mbs"] = arg_mbs
+        if kwargs:
+            step_kwargs["kwarg_mbs"] = kwarg_mbs
+    if target is not None:
+        step_kwargs["target_mbs"] = list(torch.tensor_split(target, num_microbatches))
+
+    return schedule.step(**step_kwargs)
+
+
+class FlexAttentionBlock(torch.nn.Module):
+    def __init__(self, dim, use_flex_attention=False):
+        super().__init__()
+        self.use_flex_attention = use_flex_attention
+        self.q_proj = torch.nn.Linear(dim, dim)
+        self.k_proj = torch.nn.Linear(dim, dim)
+        self.v_proj = torch.nn.Linear(dim, dim)
+        self.out_proj = torch.nn.Linear(dim, dim)
+        self.linear = torch.nn.Linear(dim, dim)
+
+    def forward(self, x, block_mask=None):
+        if not self.use_flex_attention:
+            return torch.relu(self.linear(x))
+        if block_mask is None:
+            raise RuntimeError("block_mask is required")
+        out = compiled_flex_attention(
+            self.q_proj(x),
+            self.k_proj(x),
+            self.v_proj(x),
+            block_mask=block_mask,
+            kernel_options=flex_attention_kernel_options,
+        )
+        return self.out_proj(out)
+
+
+class FlexAttentionStack(torch.nn.Module):
+    def __init__(self, dim, n_layers):
+        super().__init__()
+        self.layers = torch.nn.ModuleList(
+            [
+                FlexAttentionBlock(dim, use_flex_attention=(i == 0))
+                for i in range(n_layers)
+            ]
+        )
+
+    def forward(self, x, block_mask):
+        for layer in self.layers:
+            x = layer(x, block_mask=block_mask)
+        return x
+
+
+def create_causal_block_mask(batch, heads, seq_len, device):
+    def causal_mask(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    return create_block_mask(
+        causal_mask,
+        B=batch,
+        H=heads,
+        Q_LEN=seq_len,
+        KV_LEN=seq_len,
+        device=device,
+        compute_dq_write_order=True,
+        dq_kv_order=True,
+    )
 
 
 class ScheduleTest(MultiProcContinuousTest):
@@ -481,8 +589,9 @@ class ScheduleTest(MultiProcContinuousTest):
         not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize("ScheduleClass", [ScheduleGPipe, Schedule1F1B])
+    @parametrize("pre_split_args_kwargs", [False, True])
     @skip_if_lt_x_gpu(4)
-    def test_kwargs_with_tracer(self, ScheduleClass):
+    def test_kwargs_with_tracer(self, ScheduleClass, pre_split_args_kwargs):
         mod = ModelWithKwargs(d_hid, splits=self.world_size)
         mod.to(self.device)
 
@@ -513,11 +622,27 @@ class ScheduleTest(MultiProcContinuousTest):
         out = None
         losses = []
         if self.rank == 0:
-            schedule.step(x, y=y)
+            step_with_optional_pre_split(
+                schedule,
+                chunks,
+                args=(x,),
+                kwargs={"y": y},
+                pre_split_args_kwargs=pre_split_args_kwargs,
+            )
         elif self.rank == self.world_size - 1:
-            out = schedule.step(target=target, losses=losses)
+            out = step_with_optional_pre_split(
+                schedule,
+                chunks,
+                target=target,
+                losses=losses,
+                pre_split_args_kwargs=pre_split_args_kwargs,
+            )
         else:
-            schedule.step()
+            step_with_optional_pre_split(
+                schedule,
+                chunks,
+                pre_split_args_kwargs=pre_split_args_kwargs,
+            )
 
         dist.barrier(device_ids=[self.rank])
 
@@ -534,8 +659,9 @@ class ScheduleTest(MultiProcContinuousTest):
         not TEST_MULTIACCELERATOR, f"{backend} test requires 2+ GPUs"
     )
     @parametrize("ScheduleClass", [ScheduleGPipe, Schedule1F1B])
+    @parametrize("pre_split_args_kwargs", [False, True])
     @skip_if_lt_x_gpu(4)
-    def test_grad_with_tracer(self, ScheduleClass):
+    def test_grad_with_tracer(self, ScheduleClass, pre_split_args_kwargs):
         mod, ref_mod, x, target, loss_fn = setup_models_and_data(self.config)
 
         # Run reference
@@ -554,11 +680,26 @@ class ScheduleTest(MultiProcContinuousTest):
         for _ in range(2):
             zero_gradients(stage_module)
             if self.rank == 0:
-                schedule.step(x)
+                step_with_optional_pre_split(
+                    schedule,
+                    chunks,
+                    args=(x,),
+                    pre_split_args_kwargs=pre_split_args_kwargs,
+                )
             elif self.rank == self.world_size - 1:
-                out = schedule.step(target=target, losses=losses)
+                out = step_with_optional_pre_split(
+                    schedule,
+                    chunks,
+                    target=target,
+                    losses=losses,
+                    pre_split_args_kwargs=pre_split_args_kwargs,
+                )
             else:
-                schedule.step()
+                step_with_optional_pre_split(
+                    schedule,
+                    chunks,
+                    pre_split_args_kwargs=pre_split_args_kwargs,
+                )
 
         dist.barrier(device_ids=[self.rank])
 
@@ -645,8 +786,9 @@ class ScheduleTest(MultiProcContinuousTest):
             ScheduleInterleavedZeroBubble,
         ],
     )
+    @parametrize("pre_split_args_kwargs", [False, True])
     @skip_if_lt_x_gpu(4)
-    def test_grad_with_manual_interleaved(self, ScheduleClass):
+    def test_grad_with_manual_interleaved(self, ScheduleClass, pre_split_args_kwargs):
         stages_per_rank = 2
         n_stages = stages_per_rank * self.world_size
         mod, ref_mod, x, target, loss_fn = setup_models_and_data(
@@ -680,11 +822,26 @@ class ScheduleTest(MultiProcContinuousTest):
             for _ in range(2):
                 zero_gradients(stage_modules)
                 if self.rank == 0:
-                    schedule.step(x)
+                    step_with_optional_pre_split(
+                        schedule,
+                        num_microbatches,
+                        args=(x,),
+                        pre_split_args_kwargs=pre_split_args_kwargs,
+                    )
                 elif self.rank == self.world_size - 1:
-                    out = schedule.step(target=target, losses=losses)
+                    out = step_with_optional_pre_split(
+                        schedule,
+                        num_microbatches,
+                        target=target,
+                        losses=losses,
+                        pre_split_args_kwargs=pre_split_args_kwargs,
+                    )
                 else:
-                    schedule.step()
+                    step_with_optional_pre_split(
+                        schedule,
+                        num_microbatches,
+                        pre_split_args_kwargs=pre_split_args_kwargs,
+                    )
 
         self.assertEqual(
             len(garbage_tensors),
@@ -704,6 +861,124 @@ class ScheduleTest(MultiProcContinuousTest):
         check_gradients(
             self.config, stage_modules, ref_mod, submod_names, rtol=5e-3, atol=5e-3
         )
+
+    @requires_accelerator_dist_backend(["nccl"])
+    @skip_but_pass_in_sandcastle_if(
+        device_type != "cuda" or not TEST_MULTIACCELERATOR,
+        "CUDA/NCCL flex attention test requires 4+ GPUs",
+    )
+    @skip_if_lt_x_gpu(4)
+    def test_interleaved_1f1b_pre_split_flex_attention(self):
+        stages_per_rank = 2
+        n_stages = stages_per_rank * self.world_size
+        num_microbatches = 8
+        batch = 8
+        heads = 1
+        seq_len = 64
+        dim = 16
+
+        auto_mod = FlexAttentionStack(dim, n_stages).to(self.device)
+        pre_split_mod = copy.deepcopy(auto_mod)
+        x = torch.randn(batch, heads, seq_len, dim, device=self.device)
+        target = torch.randn_like(x)
+        block_mask = create_causal_block_mask(batch, heads, seq_len, self.device)
+        loss_fn = torch.nn.MSELoss(reduction="sum")
+
+        auto_stages, auto_stage_modules, _ = create_multi_stage_pipeline(
+            self.config, auto_mod, stages_per_rank, n_stages
+        )
+        pre_split_stages, pre_split_stage_modules, _ = create_multi_stage_pipeline(
+            self.config, pre_split_mod, stages_per_rank, n_stages
+        )
+        auto_schedule = ScheduleInterleaved1F1B(
+            auto_stages,
+            num_microbatches,
+            loss_fn=loss_fn,
+            scale_grads=False,
+        )
+        pre_split_schedule = ScheduleInterleaved1F1B(
+            pre_split_stages,
+            num_microbatches,
+            loss_fn=loss_fn,
+            scale_grads=False,
+        )
+
+        auto_out = None
+        auto_losses = []
+        pre_split_out = None
+        pre_split_losses = []
+        with DeterministicGuard(True):
+            zero_gradients(auto_stage_modules)
+            if self.rank == 0:
+                step_with_optional_pre_split(
+                    auto_schedule,
+                    num_microbatches,
+                    args=(x,),
+                    kwargs={"block_mask": block_mask},
+                    pre_split_args_kwargs=False,
+                )
+            elif self.rank == self.world_size - 1:
+                auto_out = step_with_optional_pre_split(
+                    auto_schedule,
+                    num_microbatches,
+                    target=target,
+                    losses=auto_losses,
+                    pre_split_args_kwargs=False,
+                )
+            else:
+                step_with_optional_pre_split(
+                    auto_schedule,
+                    num_microbatches,
+                    pre_split_args_kwargs=False,
+                )
+
+            dist.barrier()
+
+            zero_gradients(pre_split_stage_modules)
+            if self.rank == 0:
+                step_with_optional_pre_split(
+                    pre_split_schedule,
+                    num_microbatches,
+                    args=(x,),
+                    kwargs={"block_mask": block_mask},
+                    pre_split_args_kwargs=True,
+                )
+            elif self.rank == self.world_size - 1:
+                pre_split_out = step_with_optional_pre_split(
+                    pre_split_schedule,
+                    num_microbatches,
+                    target=target,
+                    losses=pre_split_losses,
+                    pre_split_args_kwargs=True,
+                )
+            else:
+                step_with_optional_pre_split(
+                    pre_split_schedule,
+                    num_microbatches,
+                    pre_split_args_kwargs=True,
+                )
+
+            dist.barrier()
+
+        if self.rank == self.world_size - 1:
+            self.assertEqual(pre_split_out, auto_out)
+            self.assertEqual(
+                torch.stack(pre_split_losses),
+                torch.stack(auto_losses),
+            )
+
+        for auto_stage_module, pre_split_stage_module in zip(
+            auto_stage_modules,
+            pre_split_stage_modules,
+            strict=True,
+        ):
+            for (auto_name, auto_param), (pre_split_name, pre_split_param) in zip(
+                auto_stage_module.named_parameters(),
+                pre_split_stage_module.named_parameters(),
+                strict=True,
+            ):
+                self.assertEqual(auto_name, pre_split_name)
+                self.assertEqual(pre_split_param.grad, auto_param.grad)
 
     @requires_accelerator_dist_backend(["nccl", "xccl"])
     @skip_but_pass_in_sandcastle_if(

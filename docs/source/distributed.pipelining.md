@@ -119,9 +119,9 @@ kwarg_mbs = [{"mask": mask0}, {"mask": mask1}]
 target_mbs = [target0, target1]
 
 schedule.step(
-    arg_mbs,
-    kwargs=kwarg_mbs,
-    target=target_mbs,
+    arg_mbs=arg_mbs,
+    kwarg_mbs=kwarg_mbs,
+    target_mbs=target_mbs,
     pre_split_args_kwargs=True,
 )
 ```
