@@ -119,6 +119,9 @@ LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR = (
     "FlexGEMM local reductions currently support only reductions over the "
     "innermost grouped dimension"
 )
+LOCAL_REDUCE_GROUPED_RESHAPE_ERROR = (
+    "FlexGEMM local-reduce grouped reshape must split exactly one GEMM output dimension"
+)
 LOCAL_REDUCE_MIXED_CONTRACT_ERROR = (
     "FlexGEMM local reductions do not support mixing different local-reduce contracts"
 )
@@ -338,7 +341,7 @@ def validate_flex_gemm_local_reduce_config(config: Any, group: int, axis: int) -
     swap_ab, tile_m, tile_n, cluster_m, cluster_n = (
         flex_gemm_local_reduce_config_fields(config)
     )
-    if axis not in (0, 1) or swap_ab:
+    if group <= 0 or axis not in (0, 1) or swap_ab:
         return False
     if tile_n < 128 or tile_n % 64 != 0:
         return False
