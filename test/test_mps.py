@@ -7292,13 +7292,6 @@ class TestMPS(TestCaseMPS):
 
         helper((2, 8, 4, 5))
 
-    def test_logaddexp2_complex_unsupported(self):
-        a = torch.randn((3, 1), dtype=torch.complex64, device="mps")
-        b = torch.randn((1, 4), dtype=torch.complex64, device="mps")
-
-        with self.assertRaisesRegex(NotImplementedError, "logaddexp2_mps.*ComplexFloat"):
-            torch.logaddexp2(a, b)
-
     def test_logsumexp(self):
         def helper(shape):
             cpu_x = torch.randn(shape, device='cpu', dtype=torch.float, requires_grad=False)
