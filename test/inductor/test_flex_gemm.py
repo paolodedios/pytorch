@@ -6,11 +6,13 @@ import math
 import sys
 import unittest
 from types import SimpleNamespace
+from typing import get_args
 from unittest import mock
 
 import torch
 from torch._higher_order_ops import flex_gemm
 from torch._higher_order_ops.flex_gemm import _SUPPORTED_FLEX_GEMM_OP_NAMES
+from torch._inductor.ops_handler import ReductionType
 from torch._inductor.utils import run_and_get_code
 from torch.testing import FileCheck
 from torch.testing._internal.common_cuda import SM100OrLater, TEST_CUDA
@@ -68,7 +70,49 @@ class TestFlexGemmRuntimeImport(TestCase):
         self.assertNotIn("quack", sys.modules)
 
 
+@instantiate_parametrized_tests
 class TestFlexGemmRuntimeHelpers(TestCase):
+    @parametrize(
+        "reduction_type",
+        get_args(ReductionType),
+        name_fn=lambda reduction_type: reduction_type,
+    )
+    def test_tensorssa_reduction_table_covers_inductor_vocabulary(self, reduction_type):
+        from torch._inductor.codegen.cutedsl.cutedsl_op_overrides import (
+            tensorssa_reduction,
+            TENSORSSA_REDUCTIONS,
+        )
+
+        expected = {
+            "sum": ("cute.ReductionOp.ADD", "0.0", "lhs + rhs"),
+            "prod": ("cute.ReductionOp.MUL", "1.0", "lhs * rhs"),
+            "max": (
+                "cute.ReductionOp.MAX",
+                'float("-inf")',
+                "cute.arch.fmax(lhs, rhs)",
+            ),
+            "min": (
+                "cute.ReductionOp.MIN",
+                'float("inf")',
+                "cute.arch.fmin(lhs, rhs)",
+            ),
+        }
+        self.assertEqual(set(TENSORSSA_REDUCTIONS), set(expected))
+        if reduction_type not in expected:
+            with self.assertRaisesRegex(
+                NotImplementedError,
+                f"{reduction_type} does not map to a CuTe TensorSSA reduction",
+            ):
+                tensorssa_reduction(reduction_type)
+            return
+
+        actual = tensorssa_reduction(reduction_type)
+        self.assertIs(actual, TENSORSSA_REDUCTIONS[reduction_type])
+        self.assertEqual(
+            (actual.cute_op, actual.init_val, actual.combine_expr),
+            expected[reduction_type],
+        )
+
     def test_dense_config_selection_is_explicit_and_sm110_reuses_sm100(self):
         from torch._inductor.template_heuristics import (
             flex_gemm as flex_gemm_heuristics,
@@ -1223,6 +1267,25 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
         with self.assertRaisesRegex(Exception, "currently support only aten.mm"):
             torch.compile(fn, backend="inductor", fullgraph=True)(bias, a, b)
 
+    def test_generated_local_reduce_rejects_empty_dim_list(self):
+        def fn(a, b):
+            def epilogue(acc):
+                x = acc.float().view(4, -1, 4)
+                return acc.relu(), torch.ops.aten.sum.dim_IntList(x, [], False)
+
+            return flex_gemm(
+                torch.mm,
+                (a, b),
+                epilogue,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(4, 8)
+        b = torch.randn(8, 8)
+
+        with self.assertRaisesRegex(Exception, "innermost grouped dimension"):
+            torch.compile(fn, backend="inductor", fullgraph=True)(a, b)
+
     def test_generated_local_reduce_rejects_bmm_scope(self):
         def fn(a, b):
             def epilogue(acc):
@@ -1718,6 +1781,35 @@ class TestFlexGemmEpilogueHOP(FlexGemmTestCase):
 
         self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         FileCheck().check("cute.ReductionOp.ADD").run(code)
+        self.assertLocalReduceAuxCode(code, group)
+
+    @skipIfNoCuteDSL
+    @unittest.skipIf(not TEST_CUDA, "CUDA required")
+    @unittest.skipIf(not SM100OrLater, "SM100+ required")
+    def test_mm_tuple_aux_local_reduce_supports_tuple_shape_reshape(self):
+        m = 128
+        n = 128
+        group = 16
+
+        def epilogue_fn(acc):
+            x = acc.float().reshape((m, -1, group))
+            return acc.relu(), x.sum(-1)
+
+        def fn(a, b):
+            return flex_gemm(
+                torch.mm,
+                (a, b),
+                epilogue_fn,
+                kernel_options={"backend": "QUACK"},
+            )
+
+        a = torch.randn(m, 64, device="cuda", dtype=torch.bfloat16)
+        b = torch.randn(64, n, device="cuda", dtype=torch.bfloat16)
+        (actual, aux), (code,) = run_and_get_code(
+            torch.compile(fn, backend="inductor", fullgraph=True), a, b
+        )
+
+        self.assertLocalReduceAuxMatches(actual, aux, a, b, epilogue_fn)
         self.assertLocalReduceAuxCode(code, group)
 
     @skipIfNoCuteDSL
