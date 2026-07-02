@@ -1973,7 +1973,7 @@ def empty(  # type: ignore[misc]
     else:
         device = torch.device(device)
 
-    if device.type == "cuda" and not device.index:
+    if device.type == "cuda" and device.index is None:
         device = torch.device(device.type, torch.cuda.current_device())
 
     stride = torch._prims_common.make_contiguous_strides_for(size)
