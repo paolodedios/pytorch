@@ -36,6 +36,7 @@ from typing import (
 )
 from typing_extensions import (
     deprecated as _deprecated,
+    LiteralString as _LiteralString,
     Never as _Never,
     ParamSpec as _ParamSpec,
     Self as _Self,
@@ -43,9 +44,10 @@ from typing_extensions import (
 )
 
 
-# In scikit-build-core editable installs (redirect mode with rebuild=true),
-# the meta path finder triggers a cmake rebuild for every import of a
-# wheel-only file (e.g. torch/version.py which is cmake-generated).
+# In scikit-build-core editable installs with rebuild-on-import enabled
+# (redirect mode, opt-in via SKBUILD_EDITABLE_REBUILD=true), the meta path
+# finder triggers a cmake rebuild for every import of a wheel-only file
+# (e.g. torch/version.py which is cmake-generated).
 # rebuild() sets SKBUILD_EDITABLE_SKIP only in the subprocess env, so every
 # wheel-file import in the same process starts a fresh cmake cycle (cascade).
 # Also, pytest --capture=sys replaces sys.stderr with a capture object that
@@ -2155,7 +2157,7 @@ def is_warn_always_enabled() -> builtins.bool:
 def _check_with(
     error_type: type[BaseException],
     cond: builtins.bool | SymBool,
-    message: str | _Callable[[], object] | None,
+    message: _LiteralString | _Callable[[], object] | None,
 ) -> None:
     if not isinstance(cond, (builtins.bool, SymBool)):
         if isinstance(cond, torch.Tensor):
@@ -2193,7 +2195,8 @@ def _check_with(
 
 
 def _check(
-    cond: builtins.bool | SymBool, message: str | _Callable[[], object] | None = None
+    cond: builtins.bool | SymBool,
+    message: _LiteralString | _Callable[[], object] | None = None,
 ) -> None:
     r"""Throws error containing an optional message if the specified condition
     is False.
@@ -2205,9 +2208,10 @@ def _check(
     Args:
         cond (:class:`bool`): If False, throw error
 
-        message (str or Callable, optional): A string, or a callable that
-            returns a string or an object with a ``__str__()`` method, to be
-            used as the error message. Default: ``None``
+        message (LiteralString or Callable, optional): A literal string, or a
+            callable that returns a string or an object with a ``__str__()``
+            method, to be used as the error message. Use the callable form for a
+            dynamically constructed message. Default: ``None``
     """
     _check_with(RuntimeError, cond, message)
 
@@ -2219,7 +2223,7 @@ def _check(
 )
 def _check_is_size(
     i: "IntLikeType",
-    message: str | _Callable[[], object] | None = None,
+    message: _LiteralString | _Callable[[], object] | None = None,
     *,
     max: "IntLikeType | None" = None,
 ) -> None:
@@ -2254,7 +2258,8 @@ def _check_is_size(
 
 
 def _check_index(
-    cond: builtins.bool | SymBool, message: str | _Callable[[], object] | None = None
+    cond: builtins.bool | SymBool,
+    message: _LiteralString | _Callable[[], object] | None = None,
 ) -> None:
     r"""Throws error containing an optional message if the specified condition
     is False.
@@ -2266,15 +2271,17 @@ def _check_index(
     Args:
         cond (:class:`bool`): If False, throw error
 
-        message (str or Callable, optional): A string, or a callable that
-            returns a string or an object with a ``__str__()`` method, to be
-            used as the error message. Default: ``None``
+        message (LiteralString or Callable, optional): A literal string, or a
+            callable that returns a string or an object with a ``__str__()``
+            method, to be used as the error message. Use the callable form for a
+            dynamically constructed message. Default: ``None``
     """
     _check_with(IndexError, cond, message)
 
 
 def _check_value(
-    cond: builtins.bool | SymBool, message: str | _Callable[[], object] | None = None
+    cond: builtins.bool | SymBool,
+    message: _LiteralString | _Callable[[], object] | None = None,
 ) -> None:
     r"""Throws error containing an optional message if the specified condition
     is False.
@@ -2286,15 +2293,17 @@ def _check_value(
     Args:
         cond (:class:`bool`): If False, throw error
 
-        message (str or Callable, optional): A string, or a callable that
-            returns a string or an object with a ``__str__()`` method, to be
-            used as the error message. Default: ``None``
+        message (LiteralString or Callable, optional): A literal string, or a
+            callable that returns a string or an object with a ``__str__()``
+            method, to be used as the error message. Use the callable form for a
+            dynamically constructed message. Default: ``None``
     """
     _check_with(ValueError, cond, message)
 
 
 def _check_type(
-    cond: builtins.bool | SymBool, message: str | _Callable[[], object] | None = None
+    cond: builtins.bool | SymBool,
+    message: _LiteralString | _Callable[[], object] | None = None,
 ) -> None:
     r"""Throws error containing an optional message if the specified condition
     is False.
@@ -2306,15 +2315,17 @@ def _check_type(
     Args:
         cond (:class:`bool`): If False, throw error
 
-        message (str or Callable, optional): A string, or a callable that
-            returns a string or an object with a ``__str__()`` method, to be
-            used as the error message. Default: ``None``
+        message (LiteralString or Callable, optional): A literal string, or a
+            callable that returns a string or an object with a ``__str__()``
+            method, to be used as the error message. Use the callable form for a
+            dynamically constructed message. Default: ``None``
     """
     _check_with(TypeError, cond, message)
 
 
 def _check_not_implemented(
-    cond: builtins.bool | SymBool, message: str | _Callable[[], object] | None = None
+    cond: builtins.bool | SymBool,
+    message: _LiteralString | _Callable[[], object] | None = None,
 ) -> None:
     r"""Throws error containing an optional message if the specified condition
     is False.
@@ -2326,9 +2337,10 @@ def _check_not_implemented(
     Args:
         cond (:class:`bool`): If False, throw error
 
-        message (str or Callable, optional): A string, or a callable that
-            returns a string or an object with a ``__str__()`` method, to be
-            used as the error message. Default: ``None``
+        message (LiteralString or Callable, optional): A literal string, or a
+            callable that returns a string or an object with a ``__str__()``
+            method, to be used as the error message. Use the callable form for a
+            dynamically constructed message. Default: ``None``
     """
     _check_with(NotImplementedError, cond, message)
 
@@ -2336,7 +2348,7 @@ def _check_not_implemented(
 def _check_tensor_all_with(
     error_type: type[BaseException],
     cond: "torch.Tensor",
-    message: str | _Callable[[], object] | None = None,
+    message: _LiteralString | _Callable[[], object] | None = None,
 ) -> None:
     if not is_tensor(cond):
         raise TypeError(f"cond must be a tensor, but got {type(cond)}")
@@ -2349,7 +2361,8 @@ def _check_tensor_all_with(
 
 # C++ equivalent: `TORCH_CHECK_TENSOR_ALL`
 def _check_tensor_all(
-    cond: "torch.Tensor", message: str | _Callable[[], object] | None = None
+    cond: "torch.Tensor",
+    message: _LiteralString | _Callable[[], object] | None = None,
 ) -> None:
     r"""Throws error containing an optional message if the specified condition
     is False.
@@ -2362,9 +2375,10 @@ def _check_tensor_all(
         cond (:class:`torch.Tensor`): Tensor of dtype ``torch.bool``. If any
             element is ``False``, throw error
 
-        message (str or Callable, optional): A string, or a callable that
-            returns a string or an object with a ``__str__()`` method, to be
-            used as the error message. Default: ``None``
+        message (LiteralString or Callable, optional): A literal string, or a
+            callable that returns a string or an object with a ``__str__()``
+            method, to be used as the error message. Use the callable form for a
+            dynamically constructed message. Default: ``None``
     """
     _check_tensor_all_with(RuntimeError, cond, message)
 
