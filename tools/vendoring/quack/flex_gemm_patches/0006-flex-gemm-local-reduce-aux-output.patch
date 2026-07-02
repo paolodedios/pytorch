@@ -9,11 +9,11 @@ diff --git a/epi_ops.py b/epi_ops.py
 index 2ed67a1a0ed..61b9592259a 100644
 --- a/epi_ops.py
 +++ b/epi_ops.py
-@@ -1098,6 +1098,159 @@ class VecReduce(EpiOp):
+@@ -1098,6 +1098,221 @@ class VecReduce(EpiOp):
          return result
 
 
-+class GroupedColVecReduce(VecReduce):
++class GroupedLocalReduce(VecReduce):
 +    """Store generated grouped local-reduce values into a compressed aux output."""
 +
 +    dim = 0
@@ -135,6 +135,68 @@ index 2ed67a1a0ed..61b9592259a 100644
 +                    param_tensor[None, None],
 +                )
 +            gReduce = cute.local_tile(mReduce, tile_shape, tile_coord)
++            if const_expr(
++                axis == 0
++                and param_tensor.element_type == Float32
++                and cute.size(tDrReduce_flt) % 4 == 0
++                and tile_N % 4 == 0
++            ):
++                store_vec = const_expr(4)
++                for chunk in cutlass.range(
++                    cute.size(tDrReduce_flt) // store_vec, unroll_full=True
++                ):
++                    i = chunk * store_vec
++                    row_idx = tDcD_flt[i][0]
++                    n_idx = tDcD_flt[i][1]
++                    group_idx = row_idx // group
++                    global_group_idx = tile_coord_mnkl[0] * groups_per_cta + group_idx
++                    can_store_vec = (
++                        row_idx % group == 0
++                        and n_idx % store_vec == 0
++                        and cute.size(param_tensor, mode=[2]) % store_vec == 0
++                        and n_idx + store_vec <= limit_n
++                        and global_group_idx < limit_groups
++                    )
++                    for vec_idx in cutlass.range_constexpr(1, store_vec):
++                        can_store_vec = (
++                            can_store_vec
++                            and tDcD_flt[i + vec_idx][0] == row_idx
++                            and tDcD_flt[i + vec_idx][1] == n_idx + vec_idx
++                        )
++                    if can_store_vec:
++                        tDrStore = cute.make_rmem_tensor(store_vec, Float32)
++                        for vec_idx in cutlass.range_constexpr(store_vec):
++                            tDrStore[vec_idx] = finalize_fn(tDrReduce_flt[i + vec_idx])
++                        gReduce_vec_ptr = cute.domain_offset(
++                            (group_idx, n_idx), gReduce
++                        ).iterator
++                        gReduce_vec = cute.make_tensor(
++                            cute.make_ptr(
++                                gReduce_vec_ptr.dtype,
++                                gReduce_vec_ptr.toint(),
++                                gReduce_vec_ptr.memspace,
++                                assumed_align=16,
++                            ),
++                            cute.make_layout(store_vec),
++                        )
++                        cute.autovec_copy(tDrStore, gReduce_vec)
++                    else:
++                        for vec_idx in cutlass.range_constexpr(store_vec):
++                            row_idx_cur = tDcD_flt[i + vec_idx][0]
++                            n_idx_cur = tDcD_flt[i + vec_idx][1]
++                            group_idx_cur = row_idx_cur // group
++                            global_group_idx_cur = (
++                                tile_coord_mnkl[0] * groups_per_cta + group_idx_cur
++                            )
++                            if (
++                                row_idx_cur % group == 0
++                                and n_idx_cur < limit_n
++                                and global_group_idx_cur < limit_groups
++                            ):
++                                gReduce[group_idx_cur, n_idx_cur] = finalize_fn(
++                                    tDrReduce_flt[i + vec_idx]
++                                )
++                return
 +            for i in cutlass.range(cute.size(tDrReduce_flt), unroll_full=True):
 +                row_idx = tDcD_flt[i][0]
 +                n_idx = tDcD_flt[i][1]
@@ -177,7 +239,7 @@ index 2d83846f77a..c40382b93a1 100644
      RowVecLoad,
      RowVecTupleLoad,
      ColVecTupleLoad,
-+    GroupedColVecReduce,
++    GroupedLocalReduce,
      Scalar,
      TileTupleLoad,
      TileStore,
@@ -211,7 +273,7 @@ index 2d83846f77a..c40382b93a1 100644
          RowVecTupleLoad("mTensorEpilogueRowVecBroadcasts"),
          ColVecTupleLoad("mTensorEpilogueColVecBroadcasts"),
          TileTupleLoad("mTensorEpilogueTiles"),
-+        GroupedColVecReduce("mColVecReduce"),
++        GroupedLocalReduce("mLocalReduce"),
          TileStore("mAuxOut"),
      )
      _extra_param_fields = (
@@ -241,7 +303,7 @@ index 2d83846f77a..c40382b93a1 100644
          mTensorEpilogueRowVecBroadcasts: Optional[tuple[cute.Tensor, ...]] = None
          mTensorEpilogueColVecBroadcasts: Optional[tuple[cute.Tensor, ...]] = None
          mTensorEpilogueTiles: Optional[tuple[cute.Tensor, ...]] = None
-+        mColVecReduce: Optional[cute.Tensor] = None
++        mLocalReduce: Optional[cute.Tensor] = None
          rounding_mode: cutlass.Constexpr[int] = RoundingMode.RN
          sr_seed: Optional[Int32 | cute.Tensor] = None
 
@@ -279,13 +341,13 @@ index 2d83846f77a..c40382b93a1 100644
 +                    tRS_rAuxOut.store(aux_result)
 +                    aux_results.append(tRS_rAuxOut)
 +                if const_expr(params.tensor_epilogue_returns_local_reduce):
-+                    tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
-+                    tDrColVecReduce.store(epilogue_result[len(params.mAuxOut) + 1])
++                    tDrLocalReduce = epi_loop_tensors.get("mLocalReduce")
++                    tDrLocalReduce.store(epilogue_result[len(params.mAuxOut) + 1])
 +                tRS_rAuxOut = tuple(aux_results)
 +            elif const_expr(params.tensor_epilogue_returns_local_reduce):
-+                tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
++                tDrLocalReduce = epi_loop_tensors.get("mLocalReduce")
 +                tRS_rD.store(epilogue_result[0])
-+                tDrColVecReduce.store(epilogue_result[1])
++                tDrLocalReduce.store(epilogue_result[1])
 +                tRS_rAuxOut = cute.make_rmem_tensor(
 +                    epilogue_result[0].shape, self.acc_dtype
 +                )
@@ -313,7 +375,7 @@ index 2d83846f77a..c40382b93a1 100644
      alpha_mode,
      beta_mode,
      rowvec_dtype,
-@@ -511,12 +554,42 @@ def _compile_gemm_act(
+@@ -511,12 +554,48 @@ def _compile_gemm_act(
          )
          for dtype, ndim in zip(tensor_epilogue_colvec_dtypes, tensor_epilogue_colvec_ndims)
      ) or None
@@ -327,16 +389,22 @@ index 2d83846f77a..c40382b93a1 100644
 +        )
 +    else:
 +        local_reduce_shape = None
-+    mColVecReduce = (
-+        fake_tensor(
++    if local_reduce_dtype is None:
++        mLocalReduce = None
++    else:
++        local_reduce_leading_dim = 2 if local_reduce_ndim == 3 else 1
++        local_reduce_stride = tuple(
++            1
++            if i == local_reduce_leading_dim
++            else cute.sym_int64(divisibility=1)
++            for i in range(local_reduce_ndim)
++        )
++        mLocalReduce = cute.runtime.make_fake_tensor(
 +            local_reduce_dtype,
 +            local_reduce_shape,
-+            leading_dim=2 if local_reduce_ndim == 3 else 1,
-+            divisibility=1,
++            stride=local_reduce_stride,
++            assumed_align=16,
 +        )
-+        if local_reduce_dtype is not None
-+        else None
-+    )
 
      tensor_epilogue_fn = (
          _tensor_epilogue_fns[tensor_epilogue_key]
@@ -380,7 +448,7 @@ index 2d83846f77a..c40382b93a1 100644
          mTensorEpilogueRowVecBroadcasts=mTensorEpilogueRowVecs,
          mTensorEpilogueColVecBroadcasts=mTensorEpilogueColVecs,
          mTensorEpilogueTiles=mTensorEpilogueTiles,
-+        mColVecReduce=mColVecReduce,
++        mLocalReduce=mLocalReduce,
          rounding_mode=rounding_mode,
          sr_seed=fake_scalar(sr_seed_mode),
      )
@@ -470,7 +538,7 @@ index 2d83846f77a..c40382b93a1 100644
          mTensorEpilogueRowVecBroadcasts=tensor_epilogue_rowvec_biases or None,
          mTensorEpilogueColVecBroadcasts=tensor_epilogue_colvec_biases or None,
          mTensorEpilogueTiles=tensor_epilogue_tile_biases_p or None,
-+        mColVecReduce=local_reduce_out,
++        mLocalReduce=local_reduce_out,
          rounding_mode=None,  # Constexpr, pass None at call time
          sr_seed=scalar_arg(sr_seed, sr_seed_mode),
      )
