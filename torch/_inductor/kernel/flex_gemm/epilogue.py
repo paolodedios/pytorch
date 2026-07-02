@@ -142,7 +142,7 @@ class FlexGemmCuteDSLOpOverrides(CuteDSLOpOverrides):
 
 @dataclasses.dataclass(frozen=True)
 class FlexGemmOutputLocalReducePlan:
-    """Bind one physical local-reduce value to store and/or feed consumers."""
+    """Bind one local-reduce value to store and/or feed consumers."""
 
     geometry: FlexGemmLocalReduceGeometry
     value_node: torch.fx.Node
@@ -203,7 +203,7 @@ class FlexGemmLocalReduceContract:
             raise RuntimeError(LOCAL_REDUCE_CONTRACT_NODE_ERROR)
 
     def to_plan(
-        self, *, store_node: torch.fx.Node | None = None, feeds_main: bool = False
+        self, *, store_node: torch.fx.Node | None, feeds_main: bool
     ) -> FlexGemmOutputLocalReducePlan:
         """Bind this reduction value to the requested local-reduce consumers."""
         return FlexGemmOutputLocalReducePlan(
@@ -800,7 +800,7 @@ def local_reduce_compressed_aux_plan(
     )
     if expected_aux_shape != tuple(aux_meta.shape):
         return None
-    return contract.to_plan(store_node=aux)
+    return contract.to_plan(store_node=aux, feeds_main=False)
 
 
 def local_reduce_feed_main_output_plan(
@@ -814,7 +814,7 @@ def local_reduce_feed_main_output_plan(
     return FlexGemmOutputPlan(
         output,
         aux_outputs,
-        feed_contract.to_plan(feeds_main=True),
+        feed_contract.to_plan(store_node=None, feeds_main=True),
     )
 
 
