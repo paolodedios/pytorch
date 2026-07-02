@@ -178,14 +178,14 @@ jobs:
     runs-on: "${{ needs.get-label-type.outputs.label-type }}linux.arm64.r7g.12xlarge.memory"
     timeout-minutes: 420
     container:
-      image: pytorch/manylinuxaarch64-builder:cuda12.6${{ needs.get-docker-tag.outputs.docker_image_suffix }}
+      image: pytorch/manylinux2_28_aarch64-builder:cuda12.6${{ needs.get-docker-tag.outputs.docker_image_suffix }}
     env:
       PYTORCH_ROOT: ${{ github.workspace }}
       PACKAGE_TYPE: manywheel
       DESIRED_CUDA: cu126
       GPU_ARCH_VERSION: "12.6-aarch64"
       GPU_ARCH_TYPE: cuda-aarch64
-      DOCKER_IMAGE: pytorch/manylinuxaarch64-builder:cuda12.6${{ needs.get-docker-tag.outputs.docker_image_suffix }}
+      DOCKER_IMAGE: pytorch/manylinux2_28_aarch64-builder:cuda12.6${{ needs.get-docker-tag.outputs.docker_image_suffix }}
       SKIP_ALL_TESTS: 1
       DESIRED_PYTHONS: "3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t"
       BUILD_NAME_PREFIX: "manywheel-py"
@@ -267,14 +267,14 @@ jobs:
     runs-on: "${{ needs.get-label-type.outputs.label-type }}linux.arm64.r7g.12xlarge.memory"
     timeout-minutes: 420
     container:
-      image: pytorch/manylinuxaarch64-builder:cuda13.0${{ needs.get-docker-tag.outputs.docker_image_suffix }}
+      image: pytorch/manylinux2_28_aarch64-builder:cuda13.0${{ needs.get-docker-tag.outputs.docker_image_suffix }}
     env:
       PYTORCH_ROOT: ${{ github.workspace }}
       PACKAGE_TYPE: manywheel
       DESIRED_CUDA: cu130
       GPU_ARCH_VERSION: "13.0-aarch64"
       GPU_ARCH_TYPE: cuda-aarch64
-      DOCKER_IMAGE: pytorch/manylinuxaarch64-builder:cuda13.0${{ needs.get-docker-tag.outputs.docker_image_suffix }}
+      DOCKER_IMAGE: pytorch/manylinux2_28_aarch64-builder:cuda13.0${{ needs.get-docker-tag.outputs.docker_image_suffix }}
       SKIP_ALL_TESTS: 1
       DESIRED_PYTHONS: "3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t"
       BUILD_NAME_PREFIX: "manywheel-py"
@@ -356,14 +356,14 @@ jobs:
     runs-on: "${{ needs.get-label-type.outputs.label-type }}linux.arm64.r7g.12xlarge.memory"
     timeout-minutes: 420
     container:
-      image: pytorch/manylinuxaarch64-builder:cuda13.2${{ needs.get-docker-tag.outputs.docker_image_suffix }}
+      image: pytorch/manylinux2_28_aarch64-builder:cuda13.2${{ needs.get-docker-tag.outputs.docker_image_suffix }}
     env:
       PYTORCH_ROOT: ${{ github.workspace }}
       PACKAGE_TYPE: manywheel
       DESIRED_CUDA: cu132
       GPU_ARCH_VERSION: "13.2-aarch64"
       GPU_ARCH_TYPE: cuda-aarch64
-      DOCKER_IMAGE: pytorch/manylinuxaarch64-builder:cuda13.2${{ needs.get-docker-tag.outputs.docker_image_suffix }}
+      DOCKER_IMAGE: pytorch/manylinux2_28_aarch64-builder:cuda13.2${{ needs.get-docker-tag.outputs.docker_image_suffix }}
       SKIP_ALL_TESTS: 1
       DESIRED_PYTHONS: "3.10 3.11 3.12 3.13 3.14 3.14t 3.15 3.15t"
       BUILD_NAME_PREFIX: "manywheel-py"
