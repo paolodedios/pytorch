@@ -1141,7 +1141,7 @@ class VecReduce(EpiOp):
         return result
 
 
-class GroupedColVecReduce(VecReduce):
+class GroupedLocalReduce(VecReduce):
     """Store generated grouped local-reduce values into a compressed aux output."""
 
     dim = 0
@@ -1263,6 +1263,68 @@ class GroupedColVecReduce(VecReduce):
                     param_tensor[None, None],
                 )
             gReduce = cute.local_tile(mReduce, tile_shape, tile_coord)
+            if const_expr(
+                axis == 0
+                and param_tensor.element_type == Float32
+                and cute.size(tDrReduce_flt) % 4 == 0
+                and tile_N % 4 == 0
+            ):
+                store_vec = const_expr(4)
+                for chunk in cutlass.range(
+                    cute.size(tDrReduce_flt) // store_vec, unroll_full=True
+                ):
+                    i = chunk * store_vec
+                    row_idx = tDcD_flt[i][0]
+                    n_idx = tDcD_flt[i][1]
+                    group_idx = row_idx // group
+                    global_group_idx = tile_coord_mnkl[0] * groups_per_cta + group_idx
+                    can_store_vec = (
+                        row_idx % group == 0
+                        and n_idx % store_vec == 0
+                        and cute.size(param_tensor, mode=[2]) % store_vec == 0
+                        and n_idx + store_vec <= limit_n
+                        and global_group_idx < limit_groups
+                    )
+                    for vec_idx in cutlass.range_constexpr(1, store_vec):
+                        can_store_vec = (
+                            can_store_vec
+                            and tDcD_flt[i + vec_idx][0] == row_idx
+                            and tDcD_flt[i + vec_idx][1] == n_idx + vec_idx
+                        )
+                    if can_store_vec:
+                        tDrStore = cute.make_rmem_tensor(store_vec, Float32)
+                        for vec_idx in cutlass.range_constexpr(store_vec):
+                            tDrStore[vec_idx] = finalize_fn(tDrReduce_flt[i + vec_idx])
+                        gReduce_vec_ptr = cute.domain_offset(
+                            (group_idx, n_idx), gReduce
+                        ).iterator
+                        gReduce_vec = cute.make_tensor(
+                            cute.make_ptr(
+                                gReduce_vec_ptr.dtype,
+                                gReduce_vec_ptr.toint(),
+                                gReduce_vec_ptr.memspace,
+                                assumed_align=16,
+                            ),
+                            cute.make_layout(store_vec),
+                        )
+                        cute.autovec_copy(tDrStore, gReduce_vec)
+                    else:
+                        for vec_idx in cutlass.range_constexpr(store_vec):
+                            row_idx_cur = tDcD_flt[i + vec_idx][0]
+                            n_idx_cur = tDcD_flt[i + vec_idx][1]
+                            group_idx_cur = row_idx_cur // group
+                            global_group_idx_cur = (
+                                tile_coord_mnkl[0] * groups_per_cta + group_idx_cur
+                            )
+                            if (
+                                row_idx_cur % group == 0
+                                and n_idx_cur < limit_n
+                                and global_group_idx_cur < limit_groups
+                            ):
+                                gReduce[group_idx_cur, n_idx_cur] = finalize_fn(
+                                    tDrReduce_flt[i + vec_idx]
+                                )
+                return
             for i in cutlass.range(cute.size(tDrReduce_flt), unroll_full=True):
                 row_idx = tDcD_flt[i][0]
                 n_idx = tDcD_flt[i][1]
