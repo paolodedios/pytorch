@@ -376,7 +376,7 @@ class KernelTests(torch._inductor.test_case.TestCase):
                     side_stream.synchronize()
                     self.assertEqual(actual, expected)
                     stream_code = "\n".join(stream_codes)
-                    self.assertIn("stream1 = get_external_object_by_index", stream_code)
+                    self.assertIn("with stream1:", stream_code)
                     self.assertIn(".record_stream(stream1)", stream_code)
             elif GPU_TYPE == "cuda":
                 sync_fn = (
@@ -2650,16 +2650,24 @@ def forward(self, arg0_1, arg1_1):
         if backend == "inductor":
             log_stream, ctx = logs_to_string("torch._inductor.debug", "ir_post_fusion")
             with ctx():
-                compiled_out = torch.compile(
-                    f,
-                    fullgraph=True,
-                    backend=backend,
-                    dynamic=dynamic,
-                )(a, b)
+                compiled_out, codes = run_and_get_code(
+                    torch.compile(
+                        f,
+                        fullgraph=True,
+                        backend=backend,
+                        dynamic=dynamic,
+                    ),
+                    a,
+                    b,
+                )
 
             FileCheck().check("op4.unmet_dependencies").check(
                 "WeakDep(name='buf3', mutating_buf='buf4', is_fake=False)"
             ).run(log_stream.getvalue())
+            if tma_version == "old":
+                code = "\n".join(codes)
+                self.assertNotIn("torch.ops.prims._data_ptr.default", code)
+                self.assertNotIn("data_ptr() exposes", code)
         else:
             compiled_out = torch.compile(
                 f,
