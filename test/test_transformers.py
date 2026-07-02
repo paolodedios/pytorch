@@ -3506,10 +3506,7 @@ class TestSDPAGpuOnly(NNTestCase):
         self.assertEqual(actual.contiguous(), math_ref.contiguous(), atol=2e-3, rtol=1e-2)
 
     @unittest.skipIf(not PLATFORM_SUPPORTS_FUSED_ATTENTION, "Fused SDPA was not built for this system")
-    @parametrize("type", [
-        subtest("dense"),
-        subtest("nested", decorators=[skipIfXpu(msg="https://github.com/intel/torch-xpu-ops/issues/3132")]),
-    ])
+    @parametrize("type", ["dense",] if TEST_XPU else ["dense", "nested"])  # https://github.com/intel/torch-xpu-ops/issues/3132
     @parametrize("fused_kernel", [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION] if
                  PLATFORM_SUPPORTS_FLASH_ATTENTION else [SDPBackend.EFFICIENT_ATTENTION])
     def test_scaled_dot_product_attention_fused_kernels_packed_accuracy(self, device, type: str, fused_kernel: str):
