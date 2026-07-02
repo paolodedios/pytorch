@@ -643,7 +643,9 @@ class VariableTracker(metaclass=VariableTrackerMeta):
     def reconstruct_pycode(self, codegen: PyCodegen) -> str:
         raise NotImplementedError(f"reconstruct_pycode not implemented for {self}")
 
-    def unpack_var_sequence(self, tx: Any) -> list[VariableTracker]:
+    def unpack_var_sequence(
+        self, tx: InstructionTranslatorBase
+    ) -> list[VariableTracker]:
         raise NotImplementedError
 
     def call_obj_hasattr(
@@ -674,9 +676,23 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             hints=[*graph_break_hints.SUPPORTABLE],
         )
 
+    def tp_init_impl(
+        self,
+        tx: InstructionTranslatorBase,
+        args: list[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        """tp_init slot (__init__). VTs override to initialize instances."""
+        unimplemented(
+            gb_type="missing tp_init",
+            context=f"tp_init_impl not implemented for {self.python_type_name()}",
+            explanation=f"Dynamo does not know how to trace __init__ on `{self.debug_repr()}`.",
+            hints=[*graph_break_hints.DYNAMO_BUG],
+        )
+
     def call_function(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
     ) -> VariableTracker:
@@ -702,7 +718,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             ],
         )
 
-    def sq_length(self, tx: Any) -> VariableTracker:
+    def sq_length(self, tx: InstructionTranslatorBase) -> VariableTracker:
         """Called when sq_length is not implemented."""
         raise_observed_exception(
             TypeError,
@@ -710,7 +726,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             args=[f"object of type '{self.python_type_name()}' has no len()"],
         )
 
-    def mp_length(self, tx: Any) -> VariableTracker:
+    def mp_length(self, tx: InstructionTranslatorBase) -> VariableTracker:
         """Called when mp_length is not implemented."""
         raise_observed_exception(
             TypeError,
@@ -749,7 +765,9 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             hints=[],
         )
 
-    def sq_contains(self, tx: Any, item: VariableTracker) -> VariableTracker:
+    def sq_contains(
+        self, tx: InstructionTranslatorBase, item: VariableTracker
+    ) -> VariableTracker:
         """Called when sq_contains is not implemented."""
         unimplemented(
             gb_type="missing sq_contains",
@@ -812,7 +830,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def call_method(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         name: str,
         args: list[VariableTracker],
         kwargs: dict[str, VariableTracker],
@@ -864,6 +882,8 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             return self.tp_iter_impl(tx)
         elif name == "__next__" and not args and not kwargs:
             return self.tp_iternext_impl(tx)
+        elif name == "__init__":
+            return self.tp_init_impl(tx, args, kwargs)
         elif name == "__call__":
             return self.call_function(tx, args, kwargs)
         elif name == "__contains__" and not kwargs:
@@ -1073,7 +1093,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def call_tree_map(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         tree_map_fn: UserFunctionVariable,
         map_fn: VariableTracker,
         rest: list[VariableTracker],
@@ -1106,7 +1126,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def call_tree_map_branch(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         tree_map_fn: UserFunctionVariable,
         map_fn: VariableTracker,
         rest: list[VariableTracker],
@@ -1123,7 +1143,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def _tree_map_fallback(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         tree_map_fn: UserFunctionVariable,
         map_fn: VariableTracker,
         rest: list[VariableTracker],
@@ -1145,7 +1165,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def call_tree_map_with_path(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         tree_map_fn: UserFunctionVariable,
         map_fn: VariableTracker,
         rest: list[VariableTracker],
@@ -1184,7 +1204,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def call_tree_map_with_path_branch(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         tree_map_fn: UserFunctionVariable,
         map_fn: VariableTracker,
         rest: list[VariableTracker],
@@ -1199,7 +1219,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def _tree_map_with_path_fallback(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         tree_map_fn: UserFunctionVariable,
         map_fn: VariableTracker,
         rest: list[VariableTracker],
@@ -1239,7 +1259,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
         """Used by LazyVariableTracker to indicate an unrealized node"""
         return True
 
-    def tp_iternext_impl(self, tx: Any) -> VariableTracker:
+    def tp_iternext_impl(self, tx: InstructionTranslatorBase) -> VariableTracker:
         """
         Implements tp_iternext slot semantics.
         Subclasses override this to support next(). Reaching this base is a
@@ -1255,10 +1275,10 @@ class VariableTracker(metaclass=VariableTrackerMeta):
             hints=[*graph_break_hints.SUPPORTABLE],
         )
 
-    def next_variable(self, tx: Any) -> VariableTracker:
+    def next_variable(self, tx: InstructionTranslatorBase) -> VariableTracker:
         return self.tp_iternext_impl(tx)
 
-    def is_strict_mode(self, tx: Any) -> bool:
+    def is_strict_mode(self, tx: InstructionTranslatorBase) -> bool:
         return bool(tx.strict_checks_fn and tx.strict_checks_fn(self))
 
     def is_mutable(self) -> bool:
@@ -1271,7 +1291,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     @staticmethod
     def build(
-        tx: Any,
+        tx: InstructionTranslatorBase,
         value: Any,
         source: Source | None = None,
         realize: bool = False,
@@ -1321,7 +1341,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_index_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Mirrors CPython's PyNumber_Index / nb_index slot.
 
@@ -1340,7 +1360,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def repr_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Mirrors CPython's tp_repr slot.
 
@@ -1359,7 +1379,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def str_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Dynamo hook for VariableTrackers with dedicated str behavior.
         Subclasses override this for the per-type str result; generic_str()
@@ -1375,7 +1395,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_int_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Mirrors CPython's tp_as_number->nb_int slot.
 
@@ -1392,7 +1412,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_float_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Mirrors CPython's tp_as_number->nb_float slot.
 
@@ -1422,7 +1442,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_lshift_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1435,7 +1455,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_lshift_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_lshift slot. Default: returns NotImplemented."""
@@ -1443,7 +1463,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_rshift_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1456,7 +1476,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_rshift_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_rshift slot. Default: returns NotImplemented."""
@@ -1464,7 +1484,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_and_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1477,7 +1497,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_and_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_and slot. Default: returns NotImplemented."""
@@ -1485,7 +1505,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_xor_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1498,7 +1518,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_xor_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_xor slot. Default: returns NotImplemented."""
@@ -1506,7 +1526,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_floor_divide_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1519,7 +1539,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_floor_divide_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_floor_divide slot. Default: returns NotImplemented."""
@@ -1527,7 +1547,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_true_divide_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1540,7 +1560,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_true_divide_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_true_divide slot. Default: returns NotImplemented."""
@@ -1548,7 +1568,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_remainder_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1561,7 +1581,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_remainder_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_remainder slot. Default: returns NotImplemented."""
@@ -1569,7 +1589,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_divmod_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1667,7 +1687,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_or_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1680,7 +1700,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_or_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_or slot. Default: returns NotImplemented."""
@@ -1688,7 +1708,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_negative_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Mirrors CPython's tp_as_number->nb_negative slot.
 
@@ -1705,7 +1725,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_positive_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Mirrors CPython's tp_as_number->nb_positive slot.
 
@@ -1722,7 +1742,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_add_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1736,7 +1756,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_add_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_add slot. Default: graph break."""
@@ -1745,7 +1765,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_subtract_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
         reverse: bool = False,
     ) -> VariableTracker:
@@ -1758,7 +1778,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_inplace_subtract_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
         other: VariableTracker,
     ) -> VariableTracker:
         """tp_as_number->nb_inplace_subtract slot. Default: graph break."""
@@ -1766,7 +1786,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_absolute_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Mirrors CPython's tp_as_number->nb_absolute slot.
 
@@ -1783,7 +1803,7 @@ class VariableTracker(metaclass=VariableTrackerMeta):
 
     def nb_invert_impl(
         self,
-        tx: Any,
+        tx: InstructionTranslatorBase,
     ) -> VariableTracker:
         """Mirrors CPython's tp_as_number->nb_invert slot.
 
