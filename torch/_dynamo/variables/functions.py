@@ -420,7 +420,7 @@ class BaseUserFunctionVariable(VariableTracker):
             self.dict_vt = variables.DunderDictVariable.create(tx, self)
         return self.dict_vt
 
-    def repr_impl(self, tx: Any) -> "VariableTracker":
+    def repr_impl(self, tx: "InstructionTranslatorBase") -> "VariableTracker":
         # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/funcobject.c
         return VariableTracker.build(tx, repr(self.as_python_constant()))
 
@@ -1636,7 +1636,7 @@ class UserMethodVariable(UserFunctionVariable):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.fn}, {self.obj})"
 
-    def hash_impl(self, tx: Any) -> tuple[int, bool]:
+    def hash_impl(self, tx: "InstructionTranslatorBase") -> tuple[int, bool]:
         # CPython method_hash: hash(self) ^ hash(func)
         # https://github.com/python/cpython/blob/e76aa128fe/Objects/classobject.c#L304
         if self.source:
@@ -1896,7 +1896,7 @@ class NestedUserFunctionVariable(BaseUserFunctionVariable):
     def as_python_constant(self) -> types.FunctionType:
         return self.get_function()
 
-    def repr_impl(self, tx: Any) -> "VariableTracker":
+    def repr_impl(self, tx: "InstructionTranslatorBase") -> "VariableTracker":
         try:
             return super().repr_impl(tx)
         except ClosureConversionError as e:
@@ -4059,7 +4059,7 @@ class MethodWrapperVariable(VariableTracker):
         codegen(self.obj)
         codegen.extend_output(codegen.create_load_attrs(self.descriptor.__name__))
 
-    def hash_impl(self, tx: Any) -> tuple[int, bool]:
+    def hash_impl(self, tx: "InstructionTranslatorBase") -> tuple[int, bool]:
         try:
             # CPython wrapper_hash:
             # https://github.com/python/cpython/blob/3.13/Objects/descrobject.c#L1347
