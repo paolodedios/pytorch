@@ -26,7 +26,7 @@ from .epi_ops import (
     RowVecTupleLoad,
     ColVecTupleLoad,
     EpiSmemBytes,
-    GroupedColVecReduce,
+    GroupedLocalReduce,
     Scalar,
     TileTupleLoad,
     TileStore,
@@ -86,7 +86,7 @@ class GemmActMixin(ComposableEpiMixin):
         RowVecTupleLoad("mTensorEpilogueRowVecBroadcasts"),
         ColVecTupleLoad("mTensorEpilogueColVecBroadcasts"),
         TileTupleLoad("mTensorEpilogueTiles"),
-        GroupedColVecReduce("mColVecReduce"),
+        GroupedLocalReduce("mLocalReduce"),
         TileStore("mAuxOut"),
     )
     _extra_param_fields = (
@@ -118,7 +118,7 @@ class GemmActMixin(ComposableEpiMixin):
         mTensorEpilogueRowVecBroadcasts: Optional[tuple[cute.Tensor, ...]] = None
         mTensorEpilogueColVecBroadcasts: Optional[tuple[cute.Tensor, ...]] = None
         mTensorEpilogueTiles: Optional[tuple[cute.Tensor, ...]] = None
-        mColVecReduce: Optional[cute.Tensor] = None
+        mLocalReduce: Optional[cute.Tensor] = None
         rounding_mode: cutlass.Constexpr[int] = RoundingMode.RN
         sr_seed: Optional[Int32 | cute.Tensor] = None
 
@@ -154,7 +154,7 @@ class GemmActMixin(ComposableEpiMixin):
     def epi_smem_bytes(cls, args, cta_tile_shape_mnk, epi_tile, warp_shape_mnk=None):
         result = super().epi_smem_bytes(args, cta_tile_shape_mnk, epi_tile, warp_shape_mnk)
         if (
-            args.mColVecReduce is not None
+            args.mLocalReduce is not None
             and args.local_reduce_axis == 0
             and args.local_reduce_group > 32
         ):
@@ -364,13 +364,13 @@ class GemmActMixin(ComposableEpiMixin):
                     tRS_rAuxOut.store(aux_result)
                     aux_results.append(tRS_rAuxOut)
                 if const_expr(params.tensor_epilogue_returns_local_reduce):
-                    tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
-                    tDrColVecReduce.store(epilogue_result[len(params.mAuxOut) + 1])
+                    tDrLocalReduce = epi_loop_tensors.get("mLocalReduce")
+                    tDrLocalReduce.store(epilogue_result[len(params.mAuxOut) + 1])
                 tRS_rAuxOut = tuple(aux_results)
             elif const_expr(params.tensor_epilogue_returns_local_reduce):
-                tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
+                tDrLocalReduce = epi_loop_tensors.get("mLocalReduce")
                 tRS_rD.store(epilogue_result[0])
-                tDrColVecReduce.store(epilogue_result[1])
+                tDrLocalReduce.store(epilogue_result[1])
                 tRS_rAuxOut = cute.make_rmem_tensor(
                     epilogue_result[0].shape, self.acc_dtype
                 )
@@ -680,16 +680,22 @@ def _compile_gemm_act(
         )
     else:
         local_reduce_shape = None
-    mColVecReduce = (
-        fake_tensor(
+    if local_reduce_dtype is None:
+        mLocalReduce = None
+    else:
+        local_reduce_leading_dim = 2 if local_reduce_ndim == 3 else 1
+        local_reduce_stride = tuple(
+            1
+            if i == local_reduce_leading_dim
+            else cute.sym_int64(divisibility=1)
+            for i in range(local_reduce_ndim)
+        )
+        mLocalReduce = cute.runtime.make_fake_tensor(
             local_reduce_dtype,
             local_reduce_shape,
-            leading_dim=2 if local_reduce_ndim == 3 else 1,
-            divisibility=1,
+            stride=local_reduce_stride,
+            assumed_align=16,
         )
-        if local_reduce_dtype is not None
-        else None
-    )
 
     tensor_epilogue_fn = (
         _tensor_epilogue_fns[tensor_epilogue_key]
@@ -736,7 +742,7 @@ def _compile_gemm_act(
         mTensorEpilogueRowVecBroadcasts=mTensorEpilogueRowVecs,
         mTensorEpilogueColVecBroadcasts=mTensorEpilogueColVecs,
         mTensorEpilogueTiles=mTensorEpilogueTiles,
-        mColVecReduce=mColVecReduce,
+        mLocalReduce=mLocalReduce,
         rounding_mode=rounding_mode,
         sr_seed=fake_scalar(sr_seed_mode),
     )
@@ -1023,7 +1029,7 @@ def gemm_act(
         mTensorEpilogueRowVecBroadcasts=tensor_epilogue_rowvec_biases or None,
         mTensorEpilogueColVecBroadcasts=tensor_epilogue_colvec_biases or None,
         mTensorEpilogueTiles=tensor_epilogue_tile_biases_p or None,
-        mColVecReduce=local_reduce_out,
+        mLocalReduce=local_reduce_out,
         rounding_mode=None,  # Constexpr, pass None at call time
         sr_seed=scalar_arg(sr_seed, sr_seed_mode),
     )

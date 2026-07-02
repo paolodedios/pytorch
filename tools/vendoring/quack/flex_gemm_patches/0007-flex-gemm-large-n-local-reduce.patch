@@ -2,7 +2,7 @@ diff --git a/epi_ops.py b/epi_ops.py
 index c8cd84dcfba..5e10708ca89 100644
 --- a/epi_ops.py
 +++ b/epi_ops.py
-@@ -1104,6 +1104,28 @@ class GroupedColVecReduce(VecReduce):
+@@ -1104,6 +1104,28 @@ class GroupedLocalReduce(VecReduce):
      dim = 0
      epi_m_major_preference = -1
 
@@ -31,7 +31,7 @@ index c8cd84dcfba..5e10708ca89 100644
      def to_params(self, gemm, args):
          return {
              self.name: (
-@@ -1176,19 +1198,88 @@ class GroupedColVecReduce(VecReduce):
+@@ -1176,19 +1198,88 @@ class GroupedLocalReduce(VecReduce):
              tDcD_cur = tDcD[None, None, None, epi_coord[0], epi_coord[1]]
              tDrReduce_flt = cute.filter_zeros(tDrReduce_cur)
              tDcD_flt = cute.filter_zeros(tDcD_cur)
@@ -125,7 +125,7 @@ index c8cd84dcfba..5e10708ca89 100644
                          while reduction_rows > 0:
                              tDrReduce_flt[i] = combine_fn(
                                  tDrReduce_flt[i],
-@@ -1198,12 +1289,67 @@ class GroupedColVecReduce(VecReduce):
+@@ -1198,12 +1289,67 @@ class GroupedLocalReduce(VecReduce):
                                  ),
                              )
                              reduction_rows = reduction_rows // 2
@@ -199,7 +199,7 @@ index c8cd84dcfba..5e10708ca89 100644
              if const_expr(axis == 1):
                  limit_groups = param_tensor.shape[2] if not varlen_manager.varlen_m else param_tensor.shape[1]
                  tile_shape = (tile_M, groups_per_cta)
-@@ -1265,6 +1411,6 @@ class GroupedColVecReduce(VecReduce):
+@@ -1265,6 +1411,6 @@ class GroupedLocalReduce(VecReduce):
                  )
                  group_value = tDrReduce_flt[i]
 -                if const_expr(axis == 0):
@@ -216,7 +216,7 @@ index bce0a1a5492..1ab1cfa4d8c 100644
      RowVecTupleLoad,
      ColVecTupleLoad,
 +    EpiSmemBytes,
-     GroupedColVecReduce,
+     GroupedLocalReduce,
      Scalar,
      TileTupleLoad,
 @@ -143,8 +144,22 @@ class GemmActMixin(ComposableEpiMixin):
@@ -229,7 +229,7 @@ index bce0a1a5492..1ab1cfa4d8c 100644
 +    def epi_smem_bytes(cls, args, cta_tile_shape_mnk, epi_tile, warp_shape_mnk=None):
 +        result = super().epi_smem_bytes(args, cta_tile_shape_mnk, epi_tile, warp_shape_mnk)
 +        if (
-+            args.mColVecReduce is not None
++            args.mLocalReduce is not None
 +            and args.local_reduce_axis == 0
 +            and args.local_reduce_group > 32
 +        ):
