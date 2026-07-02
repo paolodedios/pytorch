@@ -275,11 +275,12 @@ exclude = [
 
 [tool.scikit-build.editable]
 # Editable installs use redirect mode: Python files come from the source tree,
-# CMake-built artifacts from the build tree. Auto-rebuild-on-import is left OFF
-# here: scikit-build-core's redirect finder otherwise re-runs cmake/ninja on
-# every import (~7x, ~25s per `import torch` with no source change, plus build
-# chatter on captured stderr). It is turned on in the follow-up that adds the
-# rebuild-once guard in torch/__init__.py; until then, rebuild explicitly.
+# CMake-built artifacts from the build tree. Auto-rebuild-on-import is left OFF:
+# scikit-build-core's redirect finder otherwise re-runs cmake/ninja on every
+# import (~7x, ~25s per `import torch` with no source change, plus build chatter
+# on captured stderr). Rebuild explicitly instead; rebuild-on-import can be
+# opted into per-install with SKBUILD_EDITABLE_REBUILD=true (or
+# -C editable.rebuild=true).
 mode = "redirect"
 rebuild = false
 
