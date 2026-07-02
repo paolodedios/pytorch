@@ -330,9 +330,9 @@ class TestFFT(TestCase):
     def test_fft_half_and_bfloat16_errors(self, device, dtype, op):
         # TODO: Remove torch.half error when complex32 is fully implemented
         # bfloat16 is supported on CUDA/XPU via promotion to float32, so
-        # only expect an error on other device types (e.g. CPU).
+        # only expect an error on other device types (e.g. CPU, ROCm).
         device_type = torch.device(device).type
-        if dtype is torch.bfloat16 and device_type in ('cuda', 'xpu'):
+        if dtype is torch.bfloat16 and device_type in ('cuda', 'xpu') and not TEST_WITH_ROCM:
             return
         sample = first_sample(self, op.sample_inputs(device, dtype))
         default_msg = "Unsupported dtype"
@@ -349,7 +349,10 @@ class TestFFT(TestCase):
     def test_fft_bfloat16_promoted_on_cuda(self, device, dtype, op):
         # bfloat16 inputs should be silently promoted to float32 on CUDA/XPU,
         # producing complex64 output without raising an error.
+        # ROCm/hipFFT does not support bfloat16, so skip this test on ROCm.
         # See: promote_type_fft() in SpectralOps.cpp
+        if TEST_WITH_ROCM:
+            self.skipTest("bfloat16 FFT not supported on ROCm")
         sample = first_sample(self, op.sample_inputs(device, dtype))
         result = op(sample.input, *sample.args, **sample.kwargs)
         # Output must be complex64 (bfloat16 -> float32 -> complex64)
