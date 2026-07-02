@@ -1230,7 +1230,6 @@ class LocalGeneratorObjectVariable(VariableTracker):
             raise_value_error(tx, "generator already executing")
 
         if self._frame_state_finished():
-            # TODO(guilhermeleobas): Implement this!
             raise_observed_exception(StopIteration, tx)
 
         tracer.frame_state = FrameState.FRAME_EXECUTING
@@ -1269,7 +1268,7 @@ class LocalGeneratorObjectVariable(VariableTracker):
         except ObservedException:
             # An exception propagating out of the generator frame finishes it,
             # mirroring CPython setting gi_frame_state = FRAME_CLEARED.
-            tracer.frame_state = FrameState.FRAME_COMPLETED
+            tracer.frame_state = FrameState.FRAME_CLEARED
             raise
         except InfiniteGeneratorError:
             # test/dynamo/test_misc.py::test_iterator_limit
@@ -1311,7 +1310,6 @@ class LocalGeneratorObjectVariable(VariableTracker):
                 raise_observed_exception(StopIteration, tx)
             else:
                 raise_observed_exception(StopIteration, tx, args=[result])
-        return result
 
     def tp_iternext_impl(self, tx: "InstructionTranslatorBase") -> VariableTracker:
         # ref: https://github.com/python/cpython/blob/v3.13.3/Objects/genobject.c#L832
