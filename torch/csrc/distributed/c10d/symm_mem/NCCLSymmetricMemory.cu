@@ -37,14 +37,14 @@ struct NCCLAllocation {
   // Combined ncclMemAlloc region. Layout (signal pad first):
   //   [0, buffer_offset)                            - signal pad
   //   [buffer_offset, buffer_offset + buffer_size)  - user data buffer
-  // buffer_offset equals the signal pad size (already 16-aligned). `ptr` is the
-  // ncclMemAlloc base (== signal pad base); alloc() hands back
-  // `ptr + buffer_offset` (the data buffer).
-  void* ptr;
+  // buffer_offset equals the signal pad size (already 16-aligned). alloc_base is
+  // the ncclMemAlloc base (== signal pad base); alloc() hands back
+  // `alloc_base + buffer_offset` (the data buffer).
+  void* alloc_base;
   // Size of the user-visible data buffer in bytes, as requested by alloc().
   size_t buffer_size;
-  // Offset of the data buffer from `ptr`; the signal pad occupies
-  // [0, buffer_offset).
+  // Byte offset from alloc_base to the start of the user buffer; the signal pad
+  // occupies [0, buffer_offset).
   size_t buffer_offset;
   int device_idx;
   std::mutex mutex;
@@ -53,11 +53,11 @@ struct NCCLAllocation {
       peer_alloc_infos_;
 
   NCCLAllocation(
-      void* ptr,
+      void* alloc_base,
       size_t buffer_size,
       size_t buffer_offset,
       int device_idx)
-      : ptr(ptr),
+      : alloc_base(alloc_base),
         buffer_size(buffer_size),
         buffer_offset(buffer_offset),
         device_idx(device_idx) {}
@@ -69,7 +69,7 @@ struct NCCLAllocation {
     }
     c10::cuda::CUDAGuard guard(device_idx);
     // Single free for the combined buffer + signal pad region.
-    ncclResult_t res = ncclMemFree(ptr);
+    ncclResult_t res = ncclMemFree(alloc_base);
     if (res != ncclSuccess) {
         LOG(WARNING) << "ncclMemFree failed in NCCLAllocation dtor: "
                       << ncclGetErrorString(res);
@@ -94,8 +94,8 @@ bool pointer_in_allocation(void* ptr, const NCCLAllocation& allocation) {
   auto ptr_int = reinterpret_cast<uintptr_t>(ptr);
   // The data buffer starts `buffer_offset` bytes into the allocation (past the
   // signal pad); only data-region pointers belong to this allocation.
-  auto data_base =
-      reinterpret_cast<uintptr_t>(allocation.ptr) + allocation.buffer_offset;
+  auto data_base = reinterpret_cast<uintptr_t>(allocation.alloc_base) +
+      allocation.buffer_offset;
   return ptr_int >= data_base && ptr_int < data_base + allocation.buffer_size;
 }
 
@@ -138,6 +138,8 @@ NCCLAllocMap::iterator find_allocation_covering(
       return alloc_it;
     }
   }
+#else
+  // No driver API support here, so fall through to the linear scan below.
 #endif
   return find_allocation_covering_linear(ptr, allocations);
 }
@@ -211,10 +213,10 @@ class NCCLPeerAllocInfo : public c10::intrusive_ptr_target {
     const size_t aligned_buffer_size = at::round_up(buffer_size_, 16UL);
     const size_t total_size = buffer_offset_ + aligned_buffer_size;
     C10D_NCCL_CHECK(
-      ncclCommWindowRegister(comm_, allocation->ptr, total_size, &combined_win_, NCCL_WIN_COLL_SYMMETRIC),
+      ncclCommWindowRegister(comm_, allocation->alloc_base, total_size, &combined_win_, NCCL_WIN_COLL_SYMMETRIC),
       c10::str(
           "Failed to window register segment with ptr ",
-          allocation->ptr,
+          allocation->alloc_base,
           ", size ",
           total_size,
           " on rank ",
@@ -325,8 +327,8 @@ class NCCLPeerAllocInfo : public c10::intrusive_ptr_target {
 
  private:
   size_t buffer_size_;
-  // Offset of the data buffer from the allocation base; the signal pad sits at
-  // [0, buffer_offset_) and the data buffer at [buffer_offset_, ...).
+  // Byte offset from the allocation base to the start of the user buffer; the
+  // signal pad occupies [0, buffer_offset_).
   size_t buffer_offset_;
   int device_idx_;
   int rank_;
@@ -517,20 +519,21 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     const size_t buffer_offset = get_signal_pad_size();
     const size_t aligned_buffer_size = at::round_up(size, 16UL);
     const size_t total_size = buffer_offset + aligned_buffer_size;
-    void* ptr;
-    C10D_NCCL_CHECK(ncclMemAlloc(&ptr, total_size), "ncclMemAlloc");
+    void* alloc_base;
+    C10D_NCCL_CHECK(ncclMemAlloc(&alloc_base, total_size), "ncclMemAlloc");
     // ncclMemAlloc does not zero memory. Zero the signal pad (the first
     // buffer_offset bytes) so the CAS-based barrier() protocol starts from a
     // known all-zero state on first use.
-    C10_CUDA_CHECK(cudaMemset(ptr, 0, buffer_offset));
+    C10_CUDA_CHECK(cudaMemset(alloc_base, 0, buffer_offset));
     // Hand back the data buffer pointer; the signal pad stays hidden in front.
-    void* buffer_ptr = static_cast<char*>(ptr) + buffer_offset;
+    void* buffer_ptr = static_cast<char*>(alloc_base) + buffer_offset;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       // Key by the data pointer we return (that's what `free()` receives).
       allocations_.emplace(
           buffer_ptr,
-          std::make_unique<NCCLAllocation>(ptr, size, buffer_offset, device_idx));
+          std::make_unique<NCCLAllocation>(
+              alloc_base, size, buffer_offset, device_idx));
     }
     return buffer_ptr;
   }
@@ -595,8 +598,9 @@ class NCCLSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
       pai = c10::make_intrusive<NCCLPeerAllocInfo>(allocation, *group_name);
     }
     // Offset is relative to the data buffer base (past the signal pad).
-    const uintptr_t data_base =
-        reinterpret_cast<uintptr_t>(allocation->ptr) + allocation->buffer_offset;
+    const uintptr_t data_base = reinterpret_cast<uintptr_t>(
+                                    allocation->alloc_base) +
+        allocation->buffer_offset;
     size_t offset = reinterpret_cast<uintptr_t>(ptr) - data_base;
     // Create the SymmetricMemory handle.
     auto symm_mem = c10::make_intrusive<NCCLSymmetricMemory>(pai, offset);

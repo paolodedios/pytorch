@@ -405,18 +405,18 @@ void* CUDASymmetricMemoryAllocator::alloc(
   TORCH_CHECK(
       false, "CUDASymmetricMemory requires PYTORCH_C10_DRIVER_API_SUPPORTED");
 #endif
-  void* ptr = nullptr;
-  map_block(&ptr, handle, block_size, device_idx);
+  void* alloc_base = nullptr;
+  map_block(&alloc_base, handle, block_size, device_idx);
 
   // Zero the whole block; this initializes the signal pad (at the front) for
   // the CAS-based barrier() protocol.
-  AT_CUDA_CHECK(cudaMemset(ptr, 0, block_size));
+  AT_CUDA_CHECK(cudaMemset(alloc_base, 0, block_size));
 
   // Hand back the data buffer pointer; the signal pad stays hidden in front.
-  void* buffer_ptr = static_cast<char*>(ptr) + buffer_offset;
+  void* buffer_ptr = static_cast<char*>(alloc_base) + buffer_offset;
 
-  auto alloc_ref =
-      c10::make_intrusive<AllocationRef>(ptr, handle, block_size, device_idx);
+  auto alloc_ref = c10::make_intrusive<AllocationRef>(
+      alloc_base, handle, block_size, device_idx);
   auto block = c10::make_intrusive<Block>(
       std::move(alloc_ref),
       device_idx,

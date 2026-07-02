@@ -113,8 +113,8 @@ struct Block : public c10::intrusive_ptr_target {
   int device_idx;
   size_t block_size;
   size_t buffer_size;
-  // Offset of the data buffer from the allocation base. The signal pad sits at
-  // [0, buffer_offset) and the data buffer at [buffer_offset, ...).
+  // Byte offset from the allocation base (alloc_ref->ptr) to the start of the
+  // user buffer; the signal pad occupies [0, buffer_offset).
   size_t buffer_offset;
   std::optional<std::string> default_group_name;
   std::map<std::string, c10::intrusive_ptr<CUDAPeerAllocInfo>> symm_mems;

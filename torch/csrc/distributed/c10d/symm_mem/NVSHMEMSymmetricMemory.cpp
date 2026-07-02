@@ -36,19 +36,19 @@ struct NVSHMEMAllocation {
   // Layout (signal pad first):
   //   [0, signal_pad_size)                          - signal pad
   //   [buffer_offset, buffer_offset + buffer_size)  - user data buffer
-  // `ptr` is the nvshmem_malloc base (== signal pad base); alloc() hands back
-  // `ptr + buffer_offset` (the data buffer).
-  void* ptr;
+  // alloc_base is the nvshmem_malloc base (== signal pad base); alloc() hands
+  // back `alloc_base + buffer_offset` (the data buffer).
+  void* alloc_base;
   size_t buffer_size;
   size_t buffer_offset;
   int device_idx;
 
   NVSHMEMAllocation(
-      void* ptr,
+      void* alloc_base,
       size_t buffer_size,
       size_t buffer_offset,
       int device_idx)
-      : ptr(ptr),
+      : alloc_base(alloc_base),
         buffer_size(buffer_size),
         buffer_offset(buffer_offset),
         device_idx(device_idx) {}
@@ -65,7 +65,7 @@ struct NVSHMEMAllocation {
       return;
     }
     c10::cuda::CUDAGuard guard(device_idx);
-    nvshmem_free(ptr); // nvshmem_free has no return value
+    nvshmem_free(alloc_base); // nvshmem_free has no return value
   }
 };
 
@@ -86,8 +86,10 @@ class NVSHMEMPeerAllocInfo : public c10::intrusive_ptr_target {
   NVSHMEMPeerAllocInfo(
       NVSHMEMAllocation* allocation,
       const std::string& group_name)
-      : base_ptr_(allocation->ptr), buffer_size_(allocation->buffer_size) {
-    // Offset of the data buffer from base_ptr_; only needed during setup below.
+      : base_ptr_(allocation->alloc_base),
+        buffer_size_(allocation->buffer_size) {
+    // Byte offset from base_ptr_ to the start of the user buffer; only needed
+    // during setup below.
     const size_t buffer_offset = allocation->buffer_offset;
     // For logging only
     static int exchanged_n_times = 0;
@@ -398,18 +400,18 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     const size_t signal_pad_size = get_signal_pad_size();
     const size_t buffer_offset = signal_pad_size;
     const size_t total_size = buffer_offset + at::round_up(size, 16UL);
-    auto ptr = nvshmem_malloc(total_size);
-    TORCH_CHECK(ptr != nullptr, "nvshmem_malloc failed");
+    auto alloc_base = nvshmem_malloc(total_size);
+    TORCH_CHECK(alloc_base != nullptr, "nvshmem_malloc failed");
     // Zero the signal pad (at the front) for the signaling protocol.
-    AT_CUDA_CHECK(cudaMemset(ptr, 0, signal_pad_size));
+    AT_CUDA_CHECK(cudaMemset(alloc_base, 0, signal_pad_size));
     // Hand back the data buffer pointer; the signal pad stays hidden in front.
-    void* buffer_ptr = static_cast<char*>(ptr) + buffer_offset;
+    void* buffer_ptr = static_cast<char*>(alloc_base) + buffer_offset;
     {
       std::lock_guard<std::mutex> lock(mutex_);
       allocations_.try_emplace(
           buffer_ptr,
           std::make_unique<NVSHMEMAllocation>(
-              ptr, size, buffer_offset, device_idx));
+              alloc_base, size, buffer_offset, device_idx));
     }
     return buffer_ptr;
   }
@@ -423,7 +425,7 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
       // a different size; without this, rendezvous() would return a stale
       // handle (wrong buffer_size/offset) from symm_mems_, keyed by an address
       // that now belongs to the new allocation.
-      const auto lo = reinterpret_cast<uintptr_t>(it->second->ptr) +
+      const auto lo = reinterpret_cast<uintptr_t>(it->second->alloc_base) +
           it->second->buffer_offset;
       const auto hi = lo + it->second->buffer_size;
       std::vector<SymmMemKey> stale;
@@ -468,7 +470,7 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
         allocations_.begin(), allocations_.end(), [&](const auto& pair) {
           auto& allocation = pair.second;
           auto ptr_int = reinterpret_cast<uintptr_t>(ptr);
-          auto data_base = reinterpret_cast<uintptr_t>(allocation->ptr) +
+          auto data_base = reinterpret_cast<uintptr_t>(allocation->alloc_base) +
               allocation->buffer_offset;
           return ptr_int >= data_base &&
               ptr_int < data_base + allocation->buffer_size;
@@ -482,7 +484,7 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     // Data buffer base (the pointer alloc() returned). Offsets are relative to
     // it, and it is the key used to cache this allocation's base rendezvous.
     void* data_base =
-        static_cast<char*>(allocation->ptr) + allocation->buffer_offset;
+        static_cast<char*>(allocation->alloc_base) + allocation->buffer_offset;
 
     // Search again using the data buffer base ptr (the caching key)
     auto it = symm_mems_.find(SymmMemKey{data_base, *group_name});
@@ -523,7 +525,8 @@ class NVSHMEMSymmetricMemoryAllocator : public SymmetricMemoryAllocator {
     auto alloc_it = std::find_if(
         allocations_.begin(), allocations_.end(), [&](const auto& pair) {
           auto ptr_int = reinterpret_cast<uintptr_t>(ptr);
-          auto data_base = reinterpret_cast<uintptr_t>(pair.second->ptr) +
+          auto data_base =
+              reinterpret_cast<uintptr_t>(pair.second->alloc_base) +
               pair.second->buffer_offset;
           return ptr_int >= data_base &&
               ptr_int < data_base + pair.second->buffer_size;
