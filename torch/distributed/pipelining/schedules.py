@@ -535,13 +535,76 @@ class _PipelineSchedule(ABC):
         pre_split_args_kwargs: bool = False,
         **kwargs,
     ):
-        """
-        Run one iteration of the pipeline schedule, calling forward only.
+        r"""eval(
+            *args,
+            target=None,
+            losses=None,
+            arg_mbs=None,
+            kwarg_mbs=None,
+            target_mbs=None,
+            pre_split_args_kwargs=False,
+            **kwargs,
+        ) -> Any | None
 
-        By default, positional and keyword arguments are whole-batch model
-        inputs that are split into microbatches. With
-        ``pre_split_args_kwargs=True``, pass already-split inputs through
+        Run one forward-only iteration of the pipeline schedule.
+
+        ``eval`` uses the same input contract as :meth:`step`, but temporarily
+        disables backward execution. By default, ``args``, ``kwargs``, and
+        ``target`` are full-batch values that the schedule splits into
+        microbatches. Set ``pre_split_args_kwargs=True`` when the caller has
+        already split inputs into microbatches, and pass them through
         ``arg_mbs``, ``kwarg_mbs``, and ``target_mbs`` instead.
+
+        Args:
+            *args (Any): Whole-batch positional root inputs when this rank owns
+                the first pipeline stage. These are split into microbatches
+                unless ``pre_split_args_kwargs=True``. Do not pass positional
+                inputs when ``pre_split_args_kwargs=True``.
+            target (Any, optional): Whole-batch target for loss computation.
+                It is split into microbatches unless
+                ``pre_split_args_kwargs=True``. When
+                ``pre_split_args_kwargs=True``, pass targets through
+                ``target_mbs`` instead. Default: ``None``.
+            losses (list, optional): Mutable list populated with one loss per
+                microbatch when this schedule owns the last stage and a
+                ``loss_fn`` was configured. Default: ``None``.
+            arg_mbs (list[tuple], optional): Pre-split positional inputs, one
+                tuple per microbatch. Only valid when
+                ``pre_split_args_kwargs=True``. Default: ``None``.
+            kwarg_mbs (list[dict], optional): Pre-split keyword inputs, one
+                dict per microbatch. Only valid when
+                ``pre_split_args_kwargs=True``. Default: ``None``.
+            target_mbs (list, optional): Pre-split targets, one entry per
+                microbatch. Only valid when ``pre_split_args_kwargs=True``.
+                Default: ``None``.
+            pre_split_args_kwargs (bool, optional): If ``False``, split
+                whole-batch ``args``, ``kwargs``, and ``target`` inside the
+                schedule. If ``True``, consume ``arg_mbs``, ``kwarg_mbs``, and
+                ``target_mbs`` directly. Default: ``False``.
+            **kwargs (Any): Whole-batch keyword root inputs when this rank owns
+                the first pipeline stage. These are split into microbatches
+                unless ``pre_split_args_kwargs=True``. Do not pass keyword
+                inputs when ``pre_split_args_kwargs=True``.
+
+        Returns:
+            Any or None: The merged output from the last stage when this rank
+                owns the last stage; otherwise ``None``.
+
+        Raises:
+            TypeError: If a pre-split microbatch container has the wrong type.
+            ValueError: If whole-batch and pre-split inputs are mixed, or if a
+                pre-split container does not have one entry per microbatch.
+
+        Examples::
+
+            >>> output = schedule.eval(x, mask=mask)
+            >>> arg_mbs = [(x0,), (x1,)]
+            >>> kwarg_mbs = [{"mask": mask0}, {"mask": mask1}]
+            >>> output = schedule.eval(
+            ...     arg_mbs=arg_mbs,
+            ...     kwarg_mbs=kwarg_mbs,
+            ...     pre_split_args_kwargs=True,
+            ... )
         """
         # Save the original has_backward state
         original_has_backward = self._has_backward
