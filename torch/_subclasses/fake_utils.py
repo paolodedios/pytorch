@@ -12,6 +12,7 @@ from torch._subclasses.fake_tensor import (
     MetadataMismatchError,
     tree_flatten_only,
     UnsupportedFakeTensorException,
+    is_fake_tensor,
 )
 from torch.utils._python_dispatch import TorchDispatchMode
 
@@ -125,7 +126,7 @@ def try_convert_fake_to_real(
     """
 
     fake_tensor = next(
-        (item for item in ten_list if isinstance(item, FakeTensor)), None
+        (item for item in ten_list if is_fake_tensor(item)), None
     )
     if fake_tensor is None:
         return ten_list
@@ -138,7 +139,7 @@ def try_convert_fake_to_real(
     key_to_real_storage = {v: k for k, v in desc.lookup_storage.items()}
     out = []
     for t in ten_list:
-        if not isinstance(t, FakeTensor) or t.layout != torch.strided:
+        if not is_fake_tensor(t) or t.layout != torch.strided:
             out.append(t)
             continue
 

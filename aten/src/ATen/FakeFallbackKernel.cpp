@@ -1,3 +1,4 @@
+#include <ATen/FakeTensorDispatchTables.h>
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <ATen/ops/empty_strided.h>
 #include <ATen/ops/zeros_like.h>
@@ -516,10 +517,9 @@ bool _is_tensor_constructor(const c10::FunctionSchema& schema) {
 
 bool may_have_op_impl(
     const c10::OperatorHandle& op,
-    const c10::FunctionSchema& schema,
-    const std::string& op_key,
-    const std::shared_ptr<c10::FakeTensorMode>& mode) {
-  if (mode && mode->op_impl_ops_.count(op_key)) {
+    const c10::FunctionSchema& schema) {
+  if (at::impl::fakeDispatchTableContains(
+          at::impl::FakeDispatchCategory::OpImpl, op.operator_name())) {
     return true;
   }
   if (op.hasTag(at::Tag::dynamic_output_shape) ||
@@ -798,14 +798,6 @@ void fakeFallback(
 
   auto* interp = c10::impl::getGlobalPyInterpreter();
 
-  std::optional<std::string> op_key_cache;
-  auto fake_op_key = [&]() -> const std::string& {
-    if (!op_key_cache.has_value()) {
-      op_key_cache = c10::toString(op.operator_name());
-    }
-    return *op_key_cache;
-  };
-
   if (has_symints && mode && interp) {
     if ((*interp)->fake_try_fast_op_impls(
             op,
@@ -816,9 +808,16 @@ void fakeFallback(
   }
 
   // for ops with symbolic sizes, try decompositions before the meta kernel.
+  // Skip ops with a Python meta registration; those match on the meta kernel,
+  // matching Python FakeTensorMode's `op not in meta_table` decomp gating.
   if (has_symints && !cpp_meta_supports_symint(op) &&
-      !_unbacked_special_fake_handling_ops().contains(op) && mode) {
-    if (interp && mode->decomp_ops_.count(fake_op_key())) {
+      !_unbacked_special_fake_handling_ops().contains(op) &&
+      !at::impl::fakeDispatchTableContains(
+          at::impl::FakeDispatchCategory::Meta, op.operator_name()) &&
+      mode) {
+    if (interp &&
+        at::impl::fakeDispatchTableContains(
+            at::impl::FakeDispatchCategory::Decomp, op.operator_name())) {
       if ((*interp)->fake_try_decomp(op, stack)) {
         wrap_meta_outputs_with_default_device_logic();
         return;
@@ -843,7 +842,8 @@ void fakeFallback(
   // because Fake remains in TLS.
   auto op_ns = op.operator_name().getNamespace();
   if (op_ns.has_value() && *op_ns == "prims" && mode && interp &&
-      mode->prim_meta_ops_.count(fake_op_key())) {
+      at::impl::fakeDispatchTableContains(
+          at::impl::FakeDispatchCategory::PrimMeta, op.operator_name())) {
     // In Python, scalar args stay as Python floats/ints. In C++, the
     // dispatcher wraps them as tensors with default dtypes (float64 for
     // floats, int64 for ints), causing dtype mismatches in prim_meta_impl.
@@ -882,7 +882,12 @@ void fakeFallback(
           arguments_begin,
           num_arguments,
           [&](const at::Tensor& t) -> std::optional<at::Tensor> {
+            // Skip wrapped-number (scalar) tensors: they are weak-typed in
+            // promotion, so prim_meta_impl handles their dtype without a cast,
+            // and casting a symbolic scalar dispatches _to_copy on a SymFloat,
+            // which its decomposition rejects.
             if (t.defined() && t.scalar_type() != c10::ScalarType::Bool &&
+                !t.unsafeGetTensorImpl()->is_wrapped_number() &&
                 t.scalar_type() != *target_dtype) {
               return t.to(*target_dtype);
             }
@@ -907,7 +912,7 @@ void fakeFallback(
         stack, arguments_begin, num_arguments, schema, /*rewrite_to_meta=*/false);
   }
 
-  if (mode && interp && may_have_op_impl(op, schema, fake_op_key(), mode)) {
+  if (mode && interp && may_have_op_impl(op, schema)) {
     bool op_impl_handled = (*interp)->fake_try_op_impl(
         op, stack, common_device.value_or(c10::Device(c10::DeviceType::CPU)));
     if (op_impl_handled) {

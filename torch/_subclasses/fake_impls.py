@@ -4,6 +4,7 @@ import functools
 import itertools
 import math
 import operator
+import os
 import sys
 from functools import reduce
 from typing import Any, cast as typing_cast, TYPE_CHECKING, TypeVar
@@ -67,6 +68,8 @@ __all__ = [
 op_implementations_dict = {}
 # pyrefly: ignore [implicit-any]
 op_implementations_checks = []
+
+CPP_FAKETENSOR = os.environ.get("CPP_FAKETENSOR", "0") == "1"
 
 
 def in_kernel_invocation_manager(fake_mode):  # type: ignore[no-untyped-def]
@@ -202,6 +205,11 @@ def register_op_impl(
             if run_impl_check in op_implementations_dict:
                 raise AssertionError(f"duplicate registration: {run_impl_check}")
             op_implementations_dict[run_impl_check] = op_impl
+            if CPP_FAKETENSOR:
+                schema = run_impl_check._schema
+                torch._C._fake_dispatch_register_op_impl(
+                    schema.name, schema.overload_name
+                )
         elif isinstance(run_impl_check, (list, tuple)):
             for op in run_impl_check:
                 register_op_impl(op)(op_impl)
@@ -222,48 +230,16 @@ def _is_op_registered_to_fake_rule(op: OpOverload) -> bool:
 
 
 def _deregister_op_impl(op: OpOverload) -> None:
-    op_implementations_dict.pop(op, None)
+    if op in op_implementations_dict:
+        op_implementations_dict.pop(op, None)
+        if CPP_FAKETENSOR:
+            torch._C._fake_dispatch_deregister_op_impl(
+                op._schema.name, op._schema.overload_name
+            )
     for check, impl in op_implementations_checks:
         if check is op:
             op_implementations_checks.remove((check, impl))
             break
-
-
-def _fake_dispatch_op_key(op: OpOverload) -> str:
-    # Canonical "name.overload" form, matching c10::toString(OperatorName) on
-    # the C++ side (see fakeFallback).
-    return op._name
-
-
-def _cpp_fake_dispatch_op_keys() -> tuple[list[str], list[str], list[str]]:
-    """get decomp table + prims keys + op_impl dict keys
-
-    The op_impl keys cover only the exact-identity (dict) tier of
-    op_implementations_checks.
-    """
-    from torch._decomp import decomposition_table, meta_table
-
-    decomp_keys = [
-        _fake_dispatch_op_key(op)
-        for op in decomposition_table
-        if isinstance(op, OpOverload) and op not in meta_table
-    ]
-
-    prim_meta_keys = []
-    for packet_name in torch.ops.prims:
-        packet = getattr(torch.ops.prims, packet_name)
-        for overload in packet.overloads():
-            op = getattr(packet, overload)
-            if hasattr(op, "prim_meta_impl"):
-                prim_meta_keys.append(_fake_dispatch_op_key(op))
-
-    op_impl_keys = [
-        _fake_dispatch_op_key(op)
-        for op in op_implementations_dict
-        if isinstance(op, OpOverload)
-    ]
-
-    return decomp_keys, prim_meta_keys, op_impl_keys
 
 
 @register_op_impl(op_implementations_dict.__contains__)
@@ -397,7 +373,7 @@ def workaround_stride_incorrect_op(
     # This is a workaround for meta implementations with incorrect strides
 
     def is_symbolic(x: object) -> bool:
-        if isinstance(x, FakeTensor):
+        if isinstance(x, FakeTensor):  # noqa-isinstance-fake: op impl
             return x._has_symbolic_sizes_strides
         if isinstance(x, (torch.SymInt, torch.SymFloat, torch.SymBool)):
             return True
@@ -445,10 +421,10 @@ def _spdiags_static_offsets(offsets: FakeTensorLike) -> list[int] | None:
     if constant is None:
         constant = getattr(offsets, "real_tensor", None)
     cpp_mode = None
-    if constant is None and is_fake(offsets) and not isinstance(offsets, FakeTensor):
+    if constant is None and is_fake(offsets) and not isinstance(offsets, FakeTensor):  # noqa-isinstance-fake: op impl
         cpp_mode = CppFakeTensorMode._get_active_cpp_fake_tensor_mode()
         constant = torch._C._get_fake_constant(offsets)
-    if isinstance(constant, FakeTensor):
+    if isinstance(constant, FakeTensor):  # noqa-isinstance-fake: op impl
         return None
     if constant is None or constant.device.type != "cpu":
         return None
@@ -1317,7 +1293,7 @@ def local_scalar_dense(
 ) -> int | float | bool | torch.SymInt | torch.SymFloat | torch.SymBool:
     from torch._subclasses.fake_tensor import FakeTensor
 
-    if isinstance(arg, FakeTensor):
+    if isinstance(arg, FakeTensor):  # noqa-isinstance-fake: memo
         if (r := arg.item_memo) is not None:
             return r
 
@@ -1335,7 +1311,7 @@ def local_scalar_dense(
     else:
         raise NotImplementedError(f"local_scalar_dense/item NYI for {arg.dtype}")
 
-    if isinstance(arg, FakeTensor):
+    if isinstance(arg, FakeTensor):  # noqa-isinstance-fake: memo
         arg.item_memo = r
     return r
 

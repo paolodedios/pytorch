@@ -15,6 +15,7 @@
 #include <ATen/CachedTensorUtils.h>
 #include <ATen/DLConvertor.h>
 #include <ATen/ExpandUtils.h>
+#include <ATen/FakeTensorDispatchTables.h>
 #include <ATen/FunctionalTensorWrapper.h>
 #include <ATen/LegacyVmapMode.h>
 #include <ATen/LinalgBackend.h>
@@ -3274,6 +3275,13 @@ Call this whenever a new thread is created in order to propagate values from
     return py::cast(*constant);
   });
 
+  // C++ FakeTensors do not carry a real tensor yet (propagate_real_tensors is
+  // not implemented in C++), so this always returns None. It mirrors the other
+  // fake-attribute accessors so Python can query real_tensor uniformly.
+  py_module.def("_get_fake_real_tensor", [](const at::Tensor& t) -> py::object {
+    return py::none();
+  });
+
   py_module.def(
       "_set_fake_constant",
       [](const at::Tensor& fake, const at::Tensor& constant) {
@@ -3311,19 +3319,6 @@ Call this whenever a new thread is created in order to propagate values from
           mode->prefer_device_type = prefer.cast<std::string>();
         }
 
-        auto keys = py::module::import("torch._subclasses.fake_impls")
-                        .attr("_cpp_fake_dispatch_op_keys")()
-                        .cast<py::tuple>();
-        for (auto k : keys[0]) {
-          mode->decomp_ops_.insert(k.cast<std::string>());
-        }
-        for (auto k : keys[1]) {
-          mode->prim_meta_ops_.insert(k.cast<std::string>());
-        }
-        for (auto k : keys[2]) {
-          mode->op_impl_ops_.insert(k.cast<std::string>());
-        }
-
         // Store the Python CppFakeTensorMode object on the mode so op_impl
         // handlers (PyInterpreter.cpp) and _get_active_cpp_fake_tensor_mode
         // observe the same single identity.
@@ -3337,6 +3332,31 @@ Call this whenever a new thread is created in order to propagate values from
       py::arg("converter"),
       py::arg("shape_env") = py::none(),
       py::arg("mode_pyobj") = py::none());
+
+  using at::impl::FakeDispatchCategory;
+  auto register_fake_dispatch = [](FakeDispatchCategory category) {
+    return [category](const std::string& name, const std::string& overload) {
+      at::impl::fakeDispatchTableAdd(category, c10::OperatorName(name, overload));
+    };
+  };
+  py_module.def(
+      "_fake_dispatch_register_decomp",
+      register_fake_dispatch(FakeDispatchCategory::Decomp));
+  py_module.def(
+      "_fake_dispatch_register_meta",
+      register_fake_dispatch(FakeDispatchCategory::Meta));
+  py_module.def(
+      "_fake_dispatch_register_op_impl",
+      register_fake_dispatch(FakeDispatchCategory::OpImpl));
+  py_module.def(
+      "_fake_dispatch_register_prim_meta",
+      register_fake_dispatch(FakeDispatchCategory::PrimMeta));
+  py_module.def(
+      "_fake_dispatch_deregister_op_impl",
+      [](const std::string& name, const std::string& overload) {
+        at::impl::fakeDispatchTableRemove(
+            FakeDispatchCategory::OpImpl, c10::OperatorName(name, overload));
+      });
 
   py_module.def("_activate_cpp_fake_tensor_mode", []() {
     c10::impl::FakeTensorModeTLS::activate();

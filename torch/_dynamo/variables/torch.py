@@ -108,6 +108,7 @@ from .torch_function import (
     TorchFunctionModeStackVariable,
 )
 from .user_defined import UserDefinedTupleVariable
+from torch._subclasses.fake_tensor import is_fake_tensor
 
 
 try:
@@ -400,7 +401,7 @@ def _collect_tensors_with_sources(
     Used by handle_autograd_grad to collect tensors from the outputs and inputs
     arguments for grad_fn reachability analysis.
     """
-    from torch._subclasses.fake_tensor import is_fake
+    from torch._subclasses.fake_tensor import is_fake_tensor
     from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
     from .dicts import ConstDictVariable
@@ -415,7 +416,7 @@ def _collect_tensors_with_sources(
             raise AssertionError(
                 f"Expected fake_tensor to be a torch.Tensor, got {type(fake_tensor)}"
             )
-        if is_fake(fake_tensor):
+        if is_fake_tensor(fake_tensor):
             pass
         elif is_traceable_wrapper_subclass(fake_tensor):
             # For tensor subclasses (e.g. DTensor), verify the inner tensors
@@ -427,7 +428,7 @@ def _collect_tensors_with_sources(
                 out=plain,  # pyrefly: ignore[bad-argument-type]
             )
             if not all(
-                is_fake(t) for t in plain if isinstance(t, torch.Tensor)
+                is_fake_tensor(t) for t in plain if isinstance(t, torch.Tensor)
             ):
                 raise AssertionError(
                     f"Expected all plain tensors to be FakeTensors, got {[type(t) for t in plain]}"
@@ -988,7 +989,7 @@ class TorchInGraphFunctionVariable(BaseTorchVariable):
                 # This should only be done if the example_value is a FakeTensor.
                 # However, if tensor subclasses are present,
                 # it is reasonable for Python to remain in the dispatch key set.
-                if isinstance(example_value, torch._subclasses.FakeTensor):
+                if is_fake_tensor(example_value):
                     dks = (
                         dks
                         - torch._C.DispatchKeySet(torch._C.DispatchKey.Python)

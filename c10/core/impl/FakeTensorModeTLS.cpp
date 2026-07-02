@@ -20,12 +20,14 @@ void FakeTensorModeTLS::create_state(std::shared_ptr<FakeTensorMode> state) {
 }
 
 void FakeTensorModeTLS::activate() {
-  if (fakeTensorModeState) {
-    tls_set_dispatch_key_included(DispatchKey::Fake, true);
-  }
+  TORCH_INTERNAL_ASSERT(
+      fakeTensorModeState, "activate() called with no FakeTensorMode state");
+  tls_set_dispatch_key_included(DispatchKey::Fake, true);
 }
 
 void FakeTensorModeTLS::deactivate() {
+  TORCH_INTERNAL_ASSERT(
+      fakeTensorModeState, "deactivate() called with no FakeTensorMode state");
   tls_set_dispatch_key_included(DispatchKey::Fake, false);
 }
 

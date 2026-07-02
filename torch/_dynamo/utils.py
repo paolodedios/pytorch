@@ -156,6 +156,7 @@ try:
         FakeTensor,
         is_fake,
         maybe_get_fake_mode,
+        is_fake_tensor,
     )
 except ImportError:
     pass
@@ -3554,9 +3555,9 @@ def same(
             raise AssertionError(f"elements mismatch {set(ref)} == {set(res)}")
         return True
     elif isinstance(ref, (torch.Tensor, float)):
-        if isinstance(ref, torch._subclasses.FakeTensor):
+        if is_fake_tensor(ref):
             raise AssertionError("ref should not be a FakeTensor")
-        if isinstance(res, torch._subclasses.FakeTensor):
+        if is_fake_tensor(res):
             raise AssertionError("res should not be a FakeTensor")
 
         def to_tensor(t: Any) -> torch.Tensor:
@@ -4792,7 +4793,7 @@ def numpy_wrapper_cache_key(obj: Any) -> tuple[str, str] | None:
 
 
 def defake(x: Any) -> Any:
-    if not isinstance(x, FakeTensor):
+    if not is_fake_tensor(x):
         return x
     size: torch._prims_common.ShapeType
     stride: torch._prims_common.StrideType

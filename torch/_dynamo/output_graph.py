@@ -70,7 +70,7 @@ from torch._guards import (
 )
 from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.opaque_object import is_opaque_type
-from torch._subclasses.fake_tensor import CppFakeTensorMode, FakeTensor
+from torch._subclasses.fake_tensor import CppFakeTensorMode, FakeTensor, is_fake_tensor
 from torch._utils_internal import signpost_event
 from torch.export.dynamic_shapes import _ConstraintTarget
 from torch.fx._lazy_graph_module import _make_graph_module  # type: ignore[attr-defined]
@@ -2617,7 +2617,7 @@ class OutputGraph(OutputGraphCommon):
         ret: dict[str, list[int | str]] = {}
         for node in self.graph.nodes:
             example_value = node.meta.get("example_value", None)
-            if torch._subclasses.fake_tensor.is_fake(example_value):
+            if torch._subclasses.fake_tensor.is_fake_tensor(example_value):
                 size = example_value.shape
                 ret[node.name] = [s if isinstance(s, int) else repr(s) for s in size]
         return ret
@@ -2627,7 +2627,7 @@ class OutputGraph(OutputGraphCommon):
         graph_sizes_str += f"===== {name} =====\n"
         for node in self.graph.nodes:
             example_value = node.meta.get("example_value", None)
-            if torch._subclasses.fake_tensor.is_fake(example_value):
+            if torch._subclasses.fake_tensor.is_fake_tensor(example_value):
                 size = example_value.shape
                 graph_sizes_str += f"{node.name}: {tuple(size)}\n"
                 concrete_size = []
@@ -2726,7 +2726,7 @@ class OutputGraph(OutputGraphCommon):
                 continue
 
             fake_tensor = var.as_proxy().node.meta.get("example_value")
-            if not torch._subclasses.fake_tensor.is_fake(fake_tensor):
+            if not torch._subclasses.fake_tensor.is_fake_tensor(fake_tensor):
                 raise AssertionError(
                     f"expected example_value to be a FakeTensor, got {type(fake_tensor)}"
                 )
@@ -3490,7 +3490,7 @@ class OutputGraph(OutputGraphCommon):
         for node in self.graph.nodes:
             example_value = node.meta.get("example_value")
             if (
-                isinstance(example_value, FakeTensor)
+                isinstance(example_value, torch._subclasses.fake_tensor.FakeTensor)  # noqa-isinstance-fake: memo
                 and example_value.item_memo is not None
                 and hasattr(example_value.item_memo.node._expr, "name")
                 and all(u.target == "item" for u in node.users)

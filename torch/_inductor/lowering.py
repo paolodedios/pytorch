@@ -32,7 +32,7 @@ from torch._higher_order_ops.triton_kernel_wrap import triton_kernel_wrapper_mut
 from torch._library.fake_class_registry import FakeScriptObject
 from torch._library.opaque_object import is_opaque_value
 from torch._library.utils import get_layout_constraint_tag
-from torch._subclasses.fake_tensor import is_fake
+from torch._subclasses.fake_tensor import is_fake_tensor
 from torch._prims_common import (
     canonicalize_dim,
     canonicalize_dims,
@@ -2788,7 +2788,7 @@ def fallback_node_due_to_unsupported_type(node: torch.fx.Node, allow_cpu_inputs=
             return False
 
         for meta in pytree.tree_leaves(inp_out_node.meta["val"]):
-            if not is_fake(meta):
+            if not is_fake_tensor(meta):
                 continue
 
             if is_output:

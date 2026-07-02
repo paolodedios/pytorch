@@ -239,14 +239,6 @@ struct C10_API FakeTensorMode {
   std::shared_ptr<c10::SafePyObject> fake_tensor_converter_;
   std::shared_ptr<c10::SafePyObject> fake_mode_pyobj_;
 
-  // Operator keys ("<qualified_name>/<overload_name>") that have a Python
-  // decomposition or prim meta impl, snapshotted at mode creation. Used to gate
-  // the Python callbacks in fakeFallback so we don't pay for a GIL acquisition
-  // for ops that have no registration. See _cpp_fake_dispatch_op_keys.
-  std::unordered_set<std::string> decomp_ops_;
-  std::unordered_set<std::string> prim_meta_ops_;
-  std::unordered_set<std::string> op_impl_ops_;
-
   bool allow_meta_ = true;
 
   std::optional<std::string> prefer_device_type = std::nullopt;

@@ -70,11 +70,15 @@ from torch._library.opaque_object import (
 from torch._opaque_base import OpaqueBase
 from torch._ops import HigherOrderOperator, OpOverload, OpOverloadPacket
 from torch._subclasses.fake_tensor import (
+    maybe_get_fake_mode,
+    is_fake_tensor,
     CppFakeTensorMode,
     FakeTensor,
     FakeTensorMode,
     is_fake,
+    is_fake_tensor,
     maybe_get_fake_mode,
+    is_fake_tensor,
 )
 from torch._subclasses.meta_utils import is_sparse_any, safe_grad
 from torch._utils_internal import justknobs_check
@@ -3439,8 +3443,8 @@ class VariableBuilder:
         fake_tensor_value = example_value
         # type: ignore[attr-defined]
         if (
-            isinstance(fake_tensor_value, FakeTensor)
-            and fake_tensor_value.fake_mode is not self.tx.fake_mode
+            is_fake_tensor(fake_tensor_value)
+            and maybe_get_fake_mode(fake_tensor_value) is not self.tx.fake_mode
         ):
             raise AssertionError(
                 f"fake mode ({fake_tensor_value.fake_mode}) from fake tensor metadata doesn't match mode"
@@ -3537,8 +3541,8 @@ class VariableBuilder:
             fake_tensor_value = example_value
             # type: ignore[attr-defined]
             if (
-                isinstance(fake_tensor_value, FakeTensor)
-                and fake_tensor_value.fake_mode is not self.tx.fake_mode
+                is_fake_tensor(fake_tensor_value)
+                and maybe_get_fake_mode(fake_tensor_value) is not self.tx.fake_mode
             ):
                 raise AssertionError(
                     f"fake mode ({fake_tensor_value.fake_mode}) from fake tensor metadata doesn't match mode"
@@ -3586,7 +3590,7 @@ def _clone_input(value: Any, fake_mode: FakeTensorMode | None) -> Any:
     if isinstance(value, torch.Tensor):
         # tensor subclasses will not be converted to FakeTensors and need to be cloned
         if not (
-            is_fake(value)
+            is_fake_tensor(value)
             or (
                 # Is functional tensor fakeified by this instance of Dynamo
                 torch._is_functional_tensor(value)
@@ -4850,7 +4854,7 @@ def _wrap_to_fake_tensor_and_record_impl(
             _wire_tensor_spec_dims(tensor_spec, fake_e)
         if (
             source is not None
-            and isinstance(fake_e, FakeTensor)
+            and isinstance(fake_e, FakeTensor)  # noqa-isinstance-fake: memo
             and (sym_val := fake_e.item_memo) is not None
         ):
             # Match the peephole in FakeTensorConverter.from_real_tensor that

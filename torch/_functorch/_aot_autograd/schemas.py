@@ -18,7 +18,7 @@ import torch.utils._pytree as pytree
 from torch import SymInt, Tensor
 from torch._opaque_base import OpaqueBase
 from torch._subclasses import FakeTensor, FakeTensorMode
-from torch._subclasses.fake_tensor import is_fake
+from torch._subclasses.fake_tensor import is_fake, is_fake_tensor
 from torch.fx.experimental._backward_state import BackwardState
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
 
@@ -685,7 +685,7 @@ class ViewAndMutationMeta:
         # Eventually, we should kill this and replace with real backward guards.
         # (we want to precompute the "runtime" types, so replace FakeTensor with torch.Tensor)
         self.output_types = [
-            torch.Tensor if isinstance(x, FakeTensor) else type(x)
+            torch.Tensor if is_fake_tensor(x) else type(x)
             for x in self.traced_tangents
         ]
 

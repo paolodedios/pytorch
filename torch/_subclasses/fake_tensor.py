@@ -250,14 +250,54 @@ def get_plain_tensors(
     return out
 
 
+def is_fake_tensor(x: object) -> TypeGuard[Tensor]:
+    # True if x is itself a fake tensor: a Python FakeTensor, or a C++ fake -- a
+    # plain torch.Tensor carrying DispatchKey::Fake, not an instance of the
+    # Python FakeTensor subclass. Does NOT look through subclass/functional/
+    # functorch wrappers; use is_fake() for that.
+    if isinstance(x, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
+        return True
+    return isinstance(x, Tensor) and torch._C._is_fake_tensor(x)
+
+
+def maybe_get_real_tensor(x: object) -> Tensor | None:
+    # The real tensor backing a fake, populated only under propagate_real_tensors.
+    # Python FakeTensors store it on .real_tensor; C++ fakes never carry one
+    # (propagate_real_tensors is not implemented in C++), so this returns None.
+    if isinstance(x, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
+        return x.real_tensor
+    if isinstance(x, Tensor) and torch._C._is_fake_tensor(x):
+        return torch._C._get_fake_real_tensor(x)
+    return None
+
+
+def maybe_get_fake_device(x: object) -> torch.device | None:
+    # The fake device of a fake tensor, for Python or C++ fakes. Returns None
+    # when there is no fake device set (a C++ fake need not carry one), matching
+    # the pre-C++ behavior where non-FakeTensor inputs were simply skipped.
+    if isinstance(x, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
+        return x.fake_device
+    if isinstance(x, Tensor) and torch._C._is_fake_tensor(x):
+        try:
+            return torch._C._fake_tensor_device(x)
+        except RuntimeError:
+            return None
+    return None
+
+
+def maybe_get_fake_constant(x: object) -> Tensor | None:
+    # The constant a fake tensor was created from, for Python or C++ fakes.
+    if isinstance(x, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
+        return x.constant
+    if isinstance(x, Tensor) and torch._C._is_fake_tensor(x):
+        return torch._C._get_fake_constant(x)
+    return None
+
+
 def is_fake(x: object) -> TypeGuard[Tensor]:
     from torch._subclasses.functional_tensor import FunctionalTensor
 
-    if isinstance(x, FakeTensor):
-        return True
-    # C++ FakeTensors are plain torch.Tensor with the Fake dispatch key, so they
-    # are not instances of the Python FakeTensor subclass.
-    if isinstance(x, Tensor) and torch._C._is_fake_tensor(x):
+    if is_fake_tensor(x):
         return True
     if is_traceable_wrapper_subclass(x):
         attrs, _ = type(x).__tensor_flatten__(x)
@@ -292,7 +332,7 @@ def is_fake(x: object) -> TypeGuard[Tensor]:
 def maybe_get_fake_mode(t: object) -> FakeTensorMode | CppFakeTensorMode | None:
     from torch._subclasses.functional_tensor import FunctionalTensor
 
-    if isinstance(t, FakeTensor):
+    if isinstance(t, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
         return t.fake_mode
     if is_traceable_wrapper_subclass(t):
         inner_tensor_names, _ = t.__tensor_flatten__()
@@ -508,7 +548,7 @@ class FakeTensorConverter:
         # when you have a constant, aliased tensor:
         # const_tensor.add_(torch.rand([1]))
         # all aliases of it must become no longer const
-        if not isinstance(fake_tensor, FakeTensor) or fake_tensor.constant is None:
+        if not isinstance(fake_tensor, FakeTensor) or fake_tensor.constant is None:  # noqa-isinstance-fake: python faketensor internals
             raise AssertionError("fake_tensor must be a FakeTensor with a constant")
         weak_st = StorageWeakRef(fake_tensor.constant._typed_storage())
 
@@ -520,7 +560,7 @@ class FakeTensorConverter:
         self.constant_storage_mapping[weak_st].append(weakref.ref(fake_tensor))
 
     def invalidate_constant_aliases(self, tensor: Tensor) -> None:
-        if isinstance(tensor, FakeTensor):
+        if isinstance(tensor, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
             raise AssertionError("Expected a real tensor, not a FakeTensor")
 
         weak_st = StorageWeakRef(tensor._typed_storage())
@@ -1145,7 +1185,7 @@ class FakeTensor(Tensor):
         self.constant = constant
         self.pytype = pytype
         self.dispatch_keys = dispatch_keys
-        if isinstance(real_tensor, FakeTensor):
+        if isinstance(real_tensor, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
             raise AssertionError("real_tensor must not be a FakeTensor")
         self.real_tensor = real_tensor
         self.nonzero_memo = None
@@ -1203,7 +1243,7 @@ class FakeTensor(Tensor):
         # need to handle here to avoid infinite recursion
         # see [in_kernel_invocation]
         if func is torch.ops.prim.device.default:
-            if len(args) != 1 or not isinstance(args[0], FakeTensor):
+            if len(args) != 1 or not isinstance(args[0], FakeTensor):  # noqa-isinstance-fake: python faketensor internals
                 raise AssertionError(
                     "Expected exactly one FakeTensor argument for prim.device.default"
                 )
@@ -1240,7 +1280,7 @@ class FakeTensor(Tensor):
 
         fake_mode = None
         for arg in pytree.arg_tree_leaves(*args, **kwargs):
-            if isinstance(arg, FakeTensor):
+            if isinstance(arg, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
                 fake_mode = arg.fake_mode
                 break
 
@@ -1312,7 +1352,7 @@ class FakeTensor(Tensor):
         def merge_devices(t: object) -> None:
             nonlocal common_device
             nonlocal is_cpu_zero_dim
-            if not isinstance(t, FakeTensor):
+            if not isinstance(t, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
                 return
 
             if common_device is None:
@@ -1742,7 +1782,7 @@ class FakeTensorMode(TorchDispatchMode):
     # to distinguish between our fake tensor and other fake tensors.  That's
     # what this function does.
     def is_our_fake(self, t: object) -> TypeGuard[FakeTensor]:
-        return isinstance(t, FakeTensor) and t.fake_mode is self
+        return isinstance(t, FakeTensor) and t.fake_mode is self  # noqa-isinstance-fake: python faketensor internals
 
     # If we should avoid device init. This changes the behavior of various APIs:
     # - We avoid constant-prop on Tensors with ops that move them to another device
@@ -2109,7 +2149,7 @@ class FakeTensorMode(TorchDispatchMode):
             return
 
         for arg in args:
-            if isinstance(arg, FakeTensor):
+            if isinstance(arg, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
                 if not self.is_our_fake(arg):
                     raise _BypassDispatchCache("not our fake")
                 if arg.constant is not None:
@@ -2169,7 +2209,7 @@ class FakeTensorMode(TorchDispatchMode):
 
         # Some ops return tuples of Tensors, but it's rare, so avoid
         # the complexity of caching other types.
-        if not isinstance(output, FakeTensor):
+        if not isinstance(output, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
             raise _BypassDispatchCache("non-FakeTensor output")
 
         # Avoid caching FakeTensors with constants attached since those
@@ -2395,7 +2435,7 @@ class FakeTensorMode(TorchDispatchMode):
         if entry.inplace_idx is not None:
             # This is an in-place op; return the aliased arg.
             inplace_arg = args[entry.inplace_idx]
-            if not isinstance(inplace_arg, FakeTensor):
+            if not isinstance(inplace_arg, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
                 raise AssertionError("inplace_arg must be a FakeTensor")
             return inplace_arg
 
@@ -2449,7 +2489,7 @@ class FakeTensorMode(TorchDispatchMode):
         if isinstance(func, torch._ops.OpOverload) and func.is_view:
             # For view ops, the storage should be the same as the tensor input.
             view_arg = args[cast(int, entry.view_idx)]
-            if not isinstance(view_arg, FakeTensor):
+            if not isinstance(view_arg, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
                 raise AssertionError("view_arg must be a FakeTensor")
             storage = view_arg.untyped_storage()
             with in_kernel_invocation_manager(self), maybe_suppress():
@@ -2947,7 +2987,7 @@ class FakeTensorMode(TorchDispatchMode):
         def maybe_to_real_tensor(
             t: T,
         ) -> T | Tensor | torch._C.ScriptObject | None:
-            if isinstance(t, FakeTensor):
+            if isinstance(t, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
                 return t.real_tensor
             elif isinstance(t, py_sym_types):
                 if self.shape_env is None:
@@ -3037,7 +3077,7 @@ class FakeTensorMode(TorchDispatchMode):
             log.debug("maybe_propagate_real_tensors %s", func)
 
             def go(t: object, real_t: Tensor) -> None:
-                if isinstance(t, FakeTensor):
+                if isinstance(t, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
                     # NB: unconditionally overwrite
                     log.debug(
                         "maybe_propagate_real_tensors %s -> %s", id(t), id(real_t)
@@ -3334,7 +3374,7 @@ class FakeTensorMode(TorchDispatchMode):
                     else fake_tensor_tls.allow_non_fake_inputs_override
                 )
                 if not allow_non_fake_inputs:
-                    if isinstance(x, FakeTensor) and x.fake_mode is not self:
+                    if isinstance(x, FakeTensor) and x.fake_mode is not self:  # noqa-isinstance-fake: python faketensor internals
                         raise AssertionError(
                             f"Mixing fake modes NYI x.fake_mode={x.fake_mode} vs self={self}"
                         )
@@ -3445,6 +3485,12 @@ class FakeTensorMode(TorchDispatchMode):
         aten.view_as_complex.default,
         aten.set_.source_Storage_storage_offset,
         aten._sparse_coo_tensor_with_dims_and_tensors.default,
+        aten.cat.default,
+        aten.cat.out,
+        aten.stack.default,
+        aten.arange.default,
+        aten.arange.start,
+        aten.arange.start_step,
     )
 
     _unbacked_special_fake_handling_ops = ordered_set(
@@ -3503,7 +3549,7 @@ class FakeTensorMode(TorchDispatchMode):
         trace: bool = True,
     ) -> FakeTensor:
         if (
-            isinstance(tensor, FakeTensor)
+            isinstance(tensor, FakeTensor)  # noqa-isinstance-fake: python faketensor internals
             and tensor.fake_mode is self
             and static_shapes is None
             and source is None
@@ -3725,7 +3771,7 @@ def _device_handler(args: Sequence[object]) -> torch.device:
     # to return NotImplemented here, in which case the FakeTensor
     # handler on args[0] would handle it, but we're being nice and
     # short-circuiting quickly.
-    if len(args) != 1 or not isinstance(args[0], FakeTensor):
+    if len(args) != 1 or not isinstance(args[0], FakeTensor):  # noqa-isinstance-fake: python faketensor internals
         raise AssertionError(
             "Expected exactly one FakeTensor argument for _device_handler"
         )
@@ -3750,7 +3796,7 @@ def _check_for_subclass(flat_args: Sequence[object]) -> bool:
 
 
 def _check_for_subclass_arg(x: object) -> bool:
-    if isinstance(x, FakeTensor):
+    if isinstance(x, FakeTensor):  # noqa-isinstance-fake: python faketensor internals
         return False
     if not isinstance(x, Tensor):
         return False

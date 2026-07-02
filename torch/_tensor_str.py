@@ -463,7 +463,7 @@ def _str_intern(inp, *, tensor_contents=None):
         suffixes.append("size=" + str(tuple(self.shape)))
         from torch._subclasses.fake_tensor import FakeTensor
 
-        is_meta = self.is_meta or isinstance(self, FakeTensor)
+        is_meta = self.is_meta or is_fake_tensor(self)
         if not is_meta:
             suffixes.append("nnz=" + str(self._nnz()))
         if not has_default_dtype:
@@ -503,7 +503,7 @@ def _str_intern(inp, *, tensor_contents=None):
         from torch._subclasses.fake_tensor import FakeTensor
 
         suffixes.append("size=" + str(tuple(self.shape)))
-        is_meta = self.is_meta or isinstance(self, FakeTensor)
+        is_meta = self.is_meta or is_fake_tensor(self)
         if not is_meta:
             suffixes.append("nnz=" + str(self._nnz()))
         if not has_default_dtype:
@@ -599,9 +599,9 @@ def _str_intern(inp, *, tensor_contents=None):
         tensor_str = repr(torch._from_functional_tensor(self))
     else:
         # Circular import problem, so we import it here
-        from torch._subclasses.fake_tensor import is_fake
+        from torch._subclasses.fake_tensor import is_fake_tensor
 
-        if self.is_meta or is_fake(self):
+        if self.is_meta or is_fake_tensor(self):
             suffixes.append("size=" + str(tuple(self.shape)))
             if self.dtype != torch.get_default_dtype():
                 suffixes.append("dtype=" + str(self.dtype))

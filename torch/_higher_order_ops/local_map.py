@@ -22,7 +22,7 @@ from torch._higher_order_ops.utils import (
     saved_values,
 )
 from torch._ops import HigherOrderOperator
-from torch._subclasses.fake_tensor import FakeTensor
+from torch._subclasses.fake_tensor import FakeTensor, is_fake_tensor
 from torch._subclasses.functional_tensor import FunctionalTensor
 from torch.fx import GraphModule
 from torch.fx.experimental.proxy_tensor import ProxyTorchDispatchMode, track_tensor_tree
@@ -105,7 +105,7 @@ def _redistribute(
 
             new_args = tuple(new_args)
             if not all(
-                isinstance(t, (FakeTensor, int, torch.SymInt, type(None)))
+                (is_fake_tensor(t) or isinstance(t, (int, torch.SymInt, type(None))))
                 for t in new_args
             ):
                 raise AssertionError(f"Unexpected element in {args=}")
@@ -266,7 +266,7 @@ def create_hop_fw_bw(
                     )
 
             if not all(
-                isinstance(t, (FakeTensor, int, torch.SymInt)) for t in fw_inputs
+                (is_fake_tensor(t) or isinstance(t, (int, torch.SymInt))) for t in fw_inputs
             ):
                 raise AssertionError(f"Unexpected element in {fw_inputs=}")
 

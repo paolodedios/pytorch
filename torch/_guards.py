@@ -1528,11 +1528,14 @@ def detect_fake_mode(
           have to be flattened)
     """
     from torch._subclasses.fake_tensor import (
+        maybe_get_fake_mode,
+        is_fake_tensor,
         cpp_fake_tensor_mode_active,
         CppFakeTensorMode,
         FakeTensor,
         FakeTensorMode,
         get_plain_tensors,
+        is_fake_tensor,
     )
 
     if cpp_fake_tensor_mode_active():
@@ -1556,13 +1559,13 @@ def detect_fake_mode(
 
     flat_inputs = pytree.tree_leaves(inputs)
     for i, flat_input in enumerate(flat_inputs):
-        if isinstance(flat_input, FakeTensor):
-            fake_modes.append((flat_input.fake_mode, "fake tensor input", i))
+        if is_fake_tensor(flat_input):
+            fake_modes.append((maybe_get_fake_mode(flat_input), "fake tensor input", i))
         if is_traceable_wrapper_subclass(flat_input):
             out: list[torch.Tensor | int | torch.SymInt] = []
             get_plain_tensors(flat_input, out=out)  # type: ignore[arg-type]
             fake_tensors: list[FakeTensor] = [
-                x for x in out if isinstance(x, FakeTensor)
+                x for x in out if is_fake_tensor(x)
             ]
             fake_modes.extend(
                 [

@@ -30,6 +30,7 @@ from torch._inductor.codecache import resolve_pre_grad_pass_timing
 
 # Runtime annotation consumers still resolve BoxedBool from module globals.
 from torch._subclasses import CppFakeTensorMode, FakeTensor, FakeTensorMode
+from torch._subclasses.fake_tensor import is_fake_tensor, maybe_get_fake_mode
 from torch.export._tree_utils import reorder_kwargs
 from torch.fx.experimental.proxy_tensor import make_fx
 
@@ -1021,8 +1022,8 @@ def prepare_aot_config(
 
     dynamic_shapes = False
     for x in full_args:
-        if isinstance(x, FakeTensor):
-            dynamic_shapes = x.fake_mode.shape_env is not None
+        if is_fake_tensor(x):
+            dynamic_shapes = maybe_get_fake_mode(x).shape_env is not None
             break
         if isinstance(x, torch.Tensor) and torch._C._is_fake_tensor(x):
             if tracing_context := torch._guards.TracingContext.try_get():

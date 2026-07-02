@@ -53,12 +53,15 @@ from torch._logging import trace_structured
 from torch._ops import HigherOrderOperator, OpOverload
 from torch._subclasses.fake_impls import fast_detach
 from torch._subclasses.fake_tensor import (
+    maybe_get_fake_mode,
+    is_fake_tensor,
     cpp_fake_tensor_mode_active,
     CppFakeTensorMode,
     FakeTensor,
     FakeTensorMode,
     get_plain_tensors,
     is_fake,
+    is_fake_tensor,
     unset_fake_temporarily,
 )
 
@@ -695,8 +698,8 @@ def snapshot_fake(val: Tensor, include_real: bool = False) -> Tensor | None:
     # val.detach() will also eventually call fast_detach(),
     # but this saves us a full trip into __torch_dispatch__
     # (snapshot_fake is called a lot)
-    if isinstance(val, FakeTensor):
-        return fast_detach(val.fake_mode, val, include_real)
+    if is_fake_tensor(val):
+        return fast_detach(maybe_get_fake_mode(val), val, include_real)
     else:
         # C++ fake tensors are plain Tensors — detach is sufficient
         return val.detach()
@@ -1730,7 +1733,7 @@ class PythonKeyTracer(Tracer):
             val = v.meta["val"]
             # other subclasses like FunctionalTensor error on `extract_val`
             # "Attempting to use FunctionalTensor on its own." just store FakeTensors for now
-            if isinstance(val, torch.Tensor) and not is_fake(val):
+            if isinstance(val, torch.Tensor) and not is_fake_tensor(val):
                 return None
             return extract_val(v.meta["val"])
 
