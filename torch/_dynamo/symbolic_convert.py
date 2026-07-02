@@ -1269,6 +1269,15 @@ def pyexception_instance_check(val: VariableTracker) -> TypeIs[ExceptionVals]:
     )
 
 
+def pyerr_given_exception_match(err: VariableTracker, exc: type[BaseException]) -> bool:
+    # Mirror's PyErr_GivenExceptionMatch
+    if pyexception_class_check(err):
+        return issubclass(err.fn, exc)
+    if pyexception_instance_check(err):
+        return issubclass(err.exc_type, exc)
+    return False
+
+
 def pygen_fetch_stopiteration_value(val: ExceptionVals) -> VariableTracker:
     # Mirror's CPython PyGen_FetchStopIterationValue
     if issubclass(val.exc_type, StopIteration):
@@ -6445,6 +6454,15 @@ class InliningGeneratorInstructionTranslator(InliningInstructionTranslator):
             yield
         finally:
             self.exn_vt_stack.pop_segment()
+
+    @contextlib.contextmanager
+    def temporarily_set_frame_state(self, state: FrameState):
+        saved_frame_state = self.frame_state
+        try:
+            self.frame_state = state
+            yield
+        finally:
+            self.frame_state = saved_frame_state
 
     def inline_call_(self) -> VariableTracker:
         with profile_inline_call(self.output, self.f_code, lambda: self.inline_depth):
