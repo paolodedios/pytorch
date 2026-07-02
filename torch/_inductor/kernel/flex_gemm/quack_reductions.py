@@ -26,9 +26,11 @@ from torch._inductor.codegen.cutedsl.cutedsl_op_overrides import (
 from torch._inductor.kernel.flex_gemm.constraints import (
     grouped_reduce_dims_match,
     LOCAL_REDUCE_EXPLICIT_DTYPE_ERROR,
+    LOCAL_REDUCE_GROUPED_RESHAPE_ERROR,
     LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR,
     LOCAL_REDUCE_MIXED_GROUPED_LAYOUT_ERROR,
     LOCAL_REDUCE_PARTIAL_OUTPUT_CONTRACT_ERROR,
+    statically_known_equal,
     validate_local_reduce_tensorssa_group_size,
 )
 from torch._inductor.ops_handler import ReductionType
@@ -83,13 +85,10 @@ class GroupedTensorSSALayout:
         return "((1, None, None), 1, 1)"
 
 
-def grouped_tensor_layout(shape: Any) -> GroupedTensorSSALayout | None:
-    """Recognize reshapes that encode a grouped M/N local-reduction domain."""
-    shape = normalize_shape(shape)
-    if not isinstance(shape, tuple):
-        return None
-    if len(shape) == 1 and isinstance(shape[0], (list, tuple, torch.Size)):
-        shape = normalize_shape(shape[0])
+def _syntactic_grouped_tensor_layout(
+    shape: tuple[Any, ...],
+) -> GroupedTensorSSALayout | None:
+    """Match grouped-reshape syntax before validating source geometry."""
     if len(shape) not in (3, 4):
         return None
     if isinstance(shape[-1], int) and shape[-1] > 0 and shape[-2] == -1:
@@ -97,6 +96,59 @@ def grouped_tensor_layout(shape: Any) -> GroupedTensorSSALayout | None:
     if shape[-3] == -1 and isinstance(shape[-2], int) and shape[-2] > 0:
         return GroupedTensorSSALayout(axis=0, group_size=shape[-2])
     return None
+
+
+def _dimension_matches(actual: Any, expected: Any) -> bool:
+    return statically_known_equal(actual, expected)
+
+
+def _explicit_split_matches(dim: Any, selected_size: Any, group: int) -> bool:
+    """Accept inferred splits and validate explicit grouped split sizes."""
+    if dim == -1:
+        return True
+    return statically_known_equal(dim * group, selected_size)
+
+
+def _grouped_layout_matches_source_shape(
+    shape: tuple[Any, ...],
+    source_shape: tuple[Any, ...],
+    layout: GroupedTensorSSALayout,
+) -> bool:
+    """Require the grouped reshape to split exactly M or N, not flattened MxN."""
+    if len(source_shape) != 2:
+        return True
+    if len(shape) != 3:
+        return False
+    m, n = source_shape
+    if layout.axis == 1:
+        return _dimension_matches(shape[0], m) and _explicit_split_matches(
+            shape[1], n, layout.group_size
+        )
+    return _dimension_matches(shape[2], n) and _explicit_split_matches(
+        shape[0], m, layout.group_size
+    )
+
+
+def grouped_tensor_layout(
+    shape: Any, source_shape: Any | None = None
+) -> GroupedTensorSSALayout | None:
+    """Recognize exact grouped M/N reshapes for the local-reduction contract."""
+    shape = normalize_shape(shape)
+    if not isinstance(shape, tuple):
+        return None
+    if len(shape) == 1 and isinstance(shape[0], (list, tuple, torch.Size)):
+        shape = normalize_shape(shape[0])
+    layout = _syntactic_grouped_tensor_layout(shape)
+    if layout is None:
+        return None
+    if source_shape is None:
+        return layout
+    source_shape = normalize_shape(source_shape)
+    if not isinstance(source_shape, tuple):
+        return layout
+    if not _grouped_layout_matches_source_shape(shape, source_shape, layout):
+        raise NotImplementedError(LOCAL_REDUCE_GROUPED_RESHAPE_ERROR)
+    return layout
 
 
 def _cute_op_name(target: Any) -> str | None:
@@ -387,9 +439,9 @@ def lower_view_or_reshape(
     ):
         local_reduce_store_sources[node] = local_reduce_store_sources[source_node]
         return _cute_arg(source_node, env)
-    grouped_layout = grouped_tensor_layout(shape)
     if not isinstance(source_node, torch.fx.Node):
         return None
+    grouped_layout = grouped_tensor_layout(shape, tensor_meta_shape(source_node))
     if grouped_layout is None:
         if source_node in grouped_tensors:
             return _cute_arg(source_node, env)
