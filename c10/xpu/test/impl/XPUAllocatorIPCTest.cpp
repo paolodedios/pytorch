@@ -3,7 +3,6 @@
 #include <c10/xpu/XPUCachingAllocator.h>
 #include <c10/xpu/test/impl/XPUTest.h>
 
-
 TEST(XPUAllocatorIPCTest, ShareAndGetRoundTrip) {
   c10::xpu::XPUCachingAllocator::emptyCache();
   auto* allocator = c10::xpu::XPUCachingAllocator::get();
@@ -89,9 +88,15 @@ TEST(XPUAllocatorIPCTest, SameProcessRoundTrip) {
   auto dev_ptr_ipc = c10::xpu::XPUCachingAllocator::getIpcDevPtr(sh.handle);
   void* ipc_addr = static_cast<char*>(dev_ptr_ipc.get()) + sh.offset;
 
-  c10::xpu::getCurrentXPUStream().queue().memcpy(ipc_addr, hostData.data(), _4mb).wait();
+  c10::xpu::getCurrentXPUStream()
+      .queue()
+      .memcpy(ipc_addr, hostData.data(), _4mb)
+      .wait();
   clearHostData(hostData.data(), numel);
-  c10::xpu::getCurrentXPUStream().queue().memcpy(hostData.data(), dev_ptr, _4mb).wait();
+  c10::xpu::getCurrentXPUStream()
+      .queue()
+      .memcpy(hostData.data(), dev_ptr, _4mb)
+      .wait();
 
   validateHostData(hostData.data(), numel);
 }

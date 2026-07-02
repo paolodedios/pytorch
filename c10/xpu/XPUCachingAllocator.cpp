@@ -1838,11 +1838,12 @@ class NativeCachingAllocator : public XPUAllocator {
       TORCH_CHECK(
           type == SHAREABLE_XPU_MALLOC,
           "unexpected or illformed shareable handle type");
-      auto handle_size = ss.get();
-      std::vector<std::byte> handle_data_buffer(handle_size);
-      ss.read(reinterpret_cast<char*>(handle_data_buffer.data()), handle_size);
+      auto handle_size = static_cast<size_t>(ss.get());
       sycl::ext::oneapi::experimental::ipc_memory::handle_data_t handle_data(
-          handle_data_buffer.begin(), handle_data_buffer.end());
+          handle_size);
+      ss.read(
+          reinterpret_cast<char*>(handle_data.data()),
+          static_cast<std::streamsize>(handle_size));
 
       xpu_ipc_ptr = sycl::ext::oneapi::experimental::ipc_memory::open(
           handle_data,
