@@ -68,7 +68,8 @@ constexpr bool is_saturating_float_to_signed_int_source_v =
     std::is_same_v<scalar_value_type_t<T>, c10::BFloat16>;
 
 template <typename src_t>
-C10_HOST_DEVICE static inline auto signed_int_compare_value(src_t src) {
+C10_HOST_DEVICE static inline constexpr auto signed_int_compare_value(
+    src_t src) {
   if constexpr (std::is_floating_point_v<scalar_value_type_t<src_t>>) {
     return src;
   } else {
@@ -84,13 +85,14 @@ C10_HOST_DEVICE static inline auto signed_int_compare_value(src_t src) {
 // Suppress UBSan only here, so the dispatching template below stays
 // UBSan-clean.
 template <typename dest_t, typename src_t>
-C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline dest_t
+C10_HOST_DEVICE __ubsan_ignore_undefined__ static inline constexpr dest_t
 unchecked_cast_to_int(src_t src) {
   return static_cast<dest_t>(src);
 }
 
 template <typename dest_t, typename src_t>
-C10_HOST_DEVICE static inline dest_t saturated_cast_to_signed_int(src_t src) {
+C10_HOST_DEVICE static inline constexpr dest_t saturated_cast_to_signed_int(
+    src_t src) {
   static_assert(is_saturating_float_to_signed_int_source_v<src_t>);
   static_assert(std::is_integral_v<dest_t>);
   static_assert(std::is_signed_v<dest_t>);
