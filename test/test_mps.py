@@ -10106,6 +10106,21 @@ class TestLargeTensors(TestCaseMPS):
         torch.mps.empty_cache()
 
     @serialTest()
+    @parametrize("C,O", [(65536, 8), (8, 65536)])  # input-plane / output-plane overflow
+    def test_conv3d_int32_overflow(self, C, O):
+        if torch.mps.recommended_max_memory() < 16_000_000_000:
+            raise unittest.SkipTest("Needs at least 16Gb of RAM")
+        x = torch.randn(1, C, 1, 182, 181, dtype=torch.float16, device='mps')
+        w = torch.randn(O, C, 1, 1, 1, dtype=torch.float16, device='mps') * 0.01
+        y = F.conv3d(x, w)
+        hs, ws = [0, 91, 181], [0, 90, 180]
+        ref = w.view(O, C).float().cpu() @ x[0, :, 0, hs, ws].float().cpu()
+        self.assertEqual(y[0, :, 0, hs, ws].float().cpu(), ref, atol=2e-2, rtol=2e-2)
+        del x, w, y
+        gc.collect()
+        torch.mps.empty_cache()
+
+    @serialTest()
     def test_64bit_index_copy(self):
         if torch.mps.recommended_max_memory() < 16_000_000_000:
             raise unittest.SkipTest("Needs at least 16Gb of RAM")
@@ -16235,6 +16250,7 @@ instantiate_parametrized_tests(TestSDPA)
 instantiate_parametrized_tests(TestSmoothL1Loss)
 instantiate_parametrized_tests(TestMetalLibrary)
 instantiate_parametrized_tests(TestConv3dChannelsLast3dMPS)
+instantiate_parametrized_tests(TestLargeTensors)
 
 if __name__ == "__main__":
     run_tests()

@@ -134,6 +134,11 @@ class MetalShaderLibrary {
       const std::initializer_list<std::string>& params) {
     return getLibraryPipelineState(getLibrary(params), fname).first;
   }
+  // JIT for kernel templates whose parameter space can't be enumerated at
+  // build time: compiles shaderSource + `instantiation`, cached per string.
+  MTLComputePipelineState_t getPipelineStateForTemplateInstantiation(
+      const std::string& fname,
+      const std::string& instantiation);
   inline MTLFunction_t getMTLFunction(const std::string& fname) {
     return getLibraryPipelineState(getLibrary(), fname).second;
   }
