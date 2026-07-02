@@ -44,13 +44,13 @@ index 26fe87e..79b69de 100644
 +    return result
 +
 +
- class GroupedColVecReduce(VecReduce):
+ class GroupedLocalReduce(VecReduce):
 -    """Store generated grouped local-reduce values into a compressed aux output."""
 +    """Store or broadcast generated grouped local-reduce values."""
 
      dim = 0
      epi_m_major_preference = -1
-@@ -1175,6 +1213,7 @@ class GroupedColVecReduce(VecReduce):
+@@ -1175,6 +1213,7 @@ class GroupedLocalReduce(VecReduce):
                  assume_stride_divisibility(getattr(args, self.name)),
                  args.local_reduce_combine_fn,
                  args.local_reduce_finalize_fn,
@@ -58,7 +58,7 @@ index 26fe87e..79b69de 100644
              )
          }
 
-@@ -1188,17 +1227,43 @@ class GroupedColVecReduce(VecReduce):
+@@ -1188,17 +1227,43 @@ class GroupedLocalReduce(VecReduce):
              tile = tile_N if const_expr(axis == 1) else tile_M
              assert group != 0 and group <= tile
              assert tile % group == 0
@@ -107,7 +107,7 @@ index 26fe87e..79b69de 100644
              tDrReduce = state[0]
              result = tDrReduce[None, None, None, epi_coord[0], epi_coord[1]]
              cute.filter_zeros(result).fill(0.0)
-@@ -1219,12 +1284,14 @@ class GroupedColVecReduce(VecReduce):
+@@ -1219,12 +1284,14 @@ class GroupedLocalReduce(VecReduce):
          tidx,
      ):
          if const_expr(param is not None):
@@ -129,7 +129,7 @@ index 692b821..7b482fc 100644
 +++ b/gemm_act.py
 @@ -28,6 +28,7 @@ from .epi_ops import (
      EpiSmemBytes,
-     GroupedColVecReduce,
+     GroupedLocalReduce,
      Scalar,
 +    grouped_rowvec_reduce_value,
      TileTupleLoad,
@@ -167,10 +167,10 @@ index 692b821..7b482fc 100644
 +    def _filter_epi_ops(self, args):
 +        super()._filter_epi_ops(args)
 +        if args.local_reduce_feeds_main and not any(
-+            op.name == "mColVecReduce" for op in self._epi_ops
++            op.name == "mLocalReduce" for op in self._epi_ops
 +        ):
 +            reduce_ops = tuple(
-+                op for op in type(self)._epi_ops if op.name == "mColVecReduce"
++                op for op in type(self)._epi_ops if op.name == "mLocalReduce"
 +            )
 +            self._epi_ops = (*self._epi_ops, *reduce_ops)
 +
@@ -194,11 +194,11 @@ index 692b821..7b482fc 100644
      ) -> Optional[cute.Tensor]:
 +        tDrLocalReduceValue = None
 +        if const_expr(params.local_reduce_feeds_main):
-+            tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
-+            combine_fn = const_expr(params.mColVecReduce[1])
-+            finalize_fn = const_expr(params.mColVecReduce[2])
++            tDrLocalReduce = epi_loop_tensors.get("mLocalReduce")
++            combine_fn = const_expr(params.mLocalReduce[1])
++            finalize_fn = const_expr(params.mLocalReduce[2])
 +            tDrLocalReduceValue = grouped_rowvec_reduce_value(
-+                self, tRS_rD, tDrColVecReduce, combine_fn, finalize_fn
++                self, tRS_rD, tDrLocalReduce, combine_fn, finalize_fn
 +            )
          if const_expr(params.tensor_epilogue_fn is None or not params.tensor_epilogue_arg_kinds):
              GemmDefaultEpiMixin.epi_visit_subtile(self, params, epi_loop_tensors, tRS_rD, tRS_rC)
@@ -234,17 +234,17 @@ index 692b821..7b482fc 100644
 @@ -365,10 +390,14 @@ class GemmActMixin(ComposableEpiMixin):
                      aux_results.append(tRS_rAuxOut)
                  if const_expr(params.tensor_epilogue_returns_local_reduce):
-                     tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
+                     tDrLocalReduce = epi_loop_tensors.get("mLocalReduce")
 +                    if const_expr(params.local_reduce_feeds_main):
-+                        tDrColVecReduce = tDrColVecReduce[1]
-                     tDrColVecReduce.store(epilogue_result[len(params.mAuxOut) + 1])
++                        tDrLocalReduce = tDrLocalReduce[1]
+                     tDrLocalReduce.store(epilogue_result[len(params.mAuxOut) + 1])
                  tRS_rAuxOut = tuple(aux_results)
              elif const_expr(params.tensor_epilogue_returns_local_reduce):
-                 tDrColVecReduce = epi_loop_tensors.get("mColVecReduce")
+                 tDrLocalReduce = epi_loop_tensors.get("mLocalReduce")
 +                if const_expr(params.local_reduce_feeds_main):
-+                    tDrColVecReduce = tDrColVecReduce[1]
++                    tDrLocalReduce = tDrLocalReduce[1]
                  tRS_rD.store(epilogue_result[0])
-                 tDrColVecReduce.store(epilogue_result[1])
+                 tDrLocalReduce.store(epilogue_result[1])
                  tRS_rAuxOut = cute.make_rmem_tensor(
 @@ -565,6 +594,7 @@ def _compile_gemm_act(
      tensor_epilogue_arg_kinds,
@@ -254,25 +254,16 @@ index 692b821..7b482fc 100644
      tensor_epilogue_rowvec_dtypes,
      tensor_epilogue_colvec_dtypes,
      tensor_epilogue_colvec_ndims,
-@@ -681,14 +711,15 @@ def _compile_gemm_act(
+@@ -711,5 +742,8 @@ def _compile_gemm_act(
      else:
          local_reduce_shape = None
-     mColVecReduce = (
--        fake_tensor(
-+        None
-+        if local_reduce_dtype is None
+-    if local_reduce_dtype is None:
++    if (
++        local_reduce_dtype is None
 +        or (local_reduce_feeds_main and local_reduce_ndim == 0)
-+        else fake_tensor(
-             local_reduce_dtype,
-             local_reduce_shape,
-             leading_dim=2 if local_reduce_ndim == 3 else 1,
-             divisibility=1,
-         )
--        if local_reduce_dtype is not None
--        else None
-     )
-
-     tensor_epilogue_fn = (
++    ):
+         mLocalReduce = None
+     else:
 @@ -725,6 +756,7 @@ def _compile_gemm_act(
          tensor_epilogue_arg_kinds=tensor_epilogue_arg_kinds,
          tensor_epilogue_returns_aux=tensor_epilogue_returns_aux,
