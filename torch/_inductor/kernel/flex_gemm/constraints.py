@@ -130,6 +130,9 @@ LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR = (
     "FlexGEMM local reductions currently support only reductions over the "
     "innermost grouped dimension"
 )
+LOCAL_REDUCE_GROUPED_RESHAPE_ERROR = (
+    "FlexGEMM local-reduce grouped reshape must split exactly one GEMM output dimension"
+)
 LOCAL_REDUCE_MIXED_CONTRACT_ERROR = (
     "FlexGEMM local reductions do not support mixing different local-reduce contracts"
 )
