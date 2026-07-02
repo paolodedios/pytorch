@@ -34,9 +34,9 @@ FlexGemmLocalReduceConsumerKind: TypeAlias = Literal["compressed_aux", "feed_mai
 
 
 def grouped_reduce_dims_match(dim: Any, reduce_dims: Sequence[Any]) -> bool:
-    """Treat equivalent grouped-dimension spellings as one reduction domain."""
+    """Treat equivalent single grouped-dimension spellings as one reduction domain."""
     dims = tuple(dim) if isinstance(dim, (list, tuple)) else (dim,)
-    return all(item in reduce_dims for item in dims)
+    return len(dims) == 1 and dims[0] in reduce_dims
 
 
 # Feed-main currently reduces only within one lane-layout M group; cross-warp M
