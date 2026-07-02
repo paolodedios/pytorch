@@ -123,6 +123,9 @@ LOCAL_REDUCE_INNERMOST_GROUPED_DIM_ERROR = (
     "FlexGEMM local reductions currently support only reductions over the "
     "innermost grouped dimension"
 )
+LOCAL_REDUCE_GROUPED_RESHAPE_ERROR = (
+    "FlexGEMM local-reduce grouped reshape must split exactly one GEMM output dimension"
+)
 LOCAL_REDUCE_MIXED_CONTRACT_ERROR = (
     "FlexGEMM local reductions do not support mixing different local-reduce contracts"
 )
@@ -343,14 +346,34 @@ def validate_local_reduce_no_aux_out_composition(aux_out: Any | None) -> None:
         raise NotImplementedError(LOCAL_REDUCE_AUX_OUT_COMPOSITION_ERROR)
 
 
+def flex_gemm_local_reduce_config_fields(
+    config: Any,
+) -> tuple[bool, int, int, int, int]:
+    """Normalize config objects and keys for local-reduce capability checks."""
+    if isinstance(config, dict):
+        return (
+            config["swap_ab"],
+            config["tile_m"],
+            config["tile_n"],
+            config["cluster_m"],
+            config["cluster_n"],
+        )
+    return (
+        config.swap_ab,
+        config.tile_m,
+        config.tile_n,
+        config.cluster_m,
+        config.cluster_n,
+    )
+
+
 def validate_flex_gemm_local_reduce_config(config: Any, group: int, axis: int) -> bool:
     """Return whether a QuACK config can keep grouped reductions inside one CTA."""
-    if group <= 0 or axis not in (0, 1) or config.swap_ab:
+    swap_ab, tile_m, tile_n, cluster_m, cluster_n = (
+        flex_gemm_local_reduce_config_fields(config)
+    )
+    if group <= 0 or axis not in (0, 1) or swap_ab:
         return False
-    tile_m = config.tile_m
-    tile_n = config.tile_n
-    cluster_m = config.cluster_m
-    cluster_n = config.cluster_n
     if tile_n < 128 or tile_n % 64 != 0:
         return False
     tile = tile_n if axis == 1 else tile_m
@@ -373,13 +396,10 @@ def max_flex_gemm_local_reduce_group_for_configs(
     """Return the largest group accepted by the current local-reduce config gate."""
     candidates: OrderedSet[int] = OrderedSet()
     for config in configs:
-        if axis not in (0, 1):
-            continue
-        tile_m = config.tile_m
-        tile_n = config.tile_n
-        cluster_m = config.cluster_m
-        cluster_n = config.cluster_n
-        if config.swap_ab or tile_n < 128 or tile_n % 64 != 0:
+        swap_ab, tile_m, tile_n, cluster_m, cluster_n = (
+            flex_gemm_local_reduce_config_fields(config)
+        )
+        if axis not in (0, 1) or swap_ab or tile_n < 128 or tile_n % 64 != 0:
             continue
         tile = tile_n if axis == 1 else tile_m
         for group in (2, 4, 8, 16, 32):

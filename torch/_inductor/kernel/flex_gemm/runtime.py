@@ -247,7 +247,7 @@ def validate_runtime_local_reduce(
     """Validate local-reduce runtime tensor shapes and unsupported consumers."""
     if plan is None:
         return
-    validate_local_reduce_runtime_dense_mm(plan.kind, a.ndim)
+    validate_local_reduce_runtime_dense_mm(a.ndim)
     validate_local_reduce_selected_dim_divisible(expected_shape, plan.group, plan.axis)
     validate_local_reduce_no_c_alpha_beta(effective_C, alpha, beta)
     if plan.feeds_main:
