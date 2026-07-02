@@ -535,20 +535,9 @@ class _PipelineSchedule(ABC):
         pre_split_args_kwargs: bool = False,
         **kwargs,
     ):
-        r"""eval(
-            *args,
-            target=None,
-            losses=None,
-            arg_mbs=None,
-            kwarg_mbs=None,
-            target_mbs=None,
-            pre_split_args_kwargs=False,
-            **kwargs,
-        ) -> Any | None
+        r"""Run one forward-only iteration of the pipeline schedule.
 
-        Run one forward-only iteration of the pipeline schedule.
-
-        ``eval`` uses the same input contract as :meth:`step`, but temporarily
+        ``eval`` uses the same input contract as ``step``, but temporarily
         disables backward execution. By default, ``args``, ``kwargs``, and
         ``target`` are full-batch values that the schedule splits into
         microbatches. Set ``pre_split_args_kwargs=True`` when the caller has
@@ -556,7 +545,7 @@ class _PipelineSchedule(ABC):
         ``arg_mbs``, ``kwarg_mbs``, and ``target_mbs`` instead.
 
         Args:
-            *args (Any): Whole-batch positional root inputs when this rank owns
+            \*args (Any): Whole-batch positional root inputs when this rank owns
                 the first pipeline stage. These are split into microbatches
                 unless ``pre_split_args_kwargs=True``. Do not pass positional
                 inputs when ``pre_split_args_kwargs=True``.
@@ -581,7 +570,7 @@ class _PipelineSchedule(ABC):
                 whole-batch ``args``, ``kwargs``, and ``target`` inside the
                 schedule. If ``True``, consume ``arg_mbs``, ``kwarg_mbs``, and
                 ``target_mbs`` directly. Default: ``False``.
-            **kwargs (Any): Whole-batch keyword root inputs when this rank owns
+            \*\*kwargs (Any): Whole-batch keyword root inputs when this rank owns
                 the first pipeline stage. These are split into microbatches
                 unless ``pre_split_args_kwargs=True``. Do not pass keyword
                 inputs when ``pre_split_args_kwargs=True``.
@@ -597,6 +586,7 @@ class _PipelineSchedule(ABC):
 
         Examples::
 
+            >>> # xdoctest: +SKIP("requires a constructed distributed pipeline schedule")
             >>> output = schedule.eval(x, mask=mask)
             >>> arg_mbs = [(x0,), (x1,)]
             >>> kwarg_mbs = [{"mask": mask0}, {"mask": mask1}]
@@ -919,20 +909,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
         pre_split_args_kwargs: bool = False,
         **kwargs,
     ):
-        r"""step(
-            *args,
-            target=None,
-            losses=None,
-            return_outputs=True,
-            loss_kwargs=None,
-            arg_mbs=None,
-            kwarg_mbs=None,
-            target_mbs=None,
-            pre_split_args_kwargs=False,
-            **kwargs,
-        ) -> Any | None
-
-        Run one training iteration of a single-stage pipeline schedule.
+        r"""Run one training iteration of a single-stage pipeline schedule.
 
         By default, ``args``, ``kwargs``, and ``target`` are full-batch values
         that the schedule splits into microbatches. Set
@@ -941,7 +918,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
         and ``target_mbs`` instead.
 
         Args:
-            *args (Any): Whole-batch positional inputs for the first pipeline
+            \*args (Any): Whole-batch positional inputs for the first pipeline
                 stage. These are split into microbatches unless
                 ``pre_split_args_kwargs=True``. Do not pass positional inputs
                 when ``pre_split_args_kwargs=True``.
@@ -970,7 +947,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
                 whole-batch ``args``, ``kwargs``, and ``target`` inside the
                 schedule. If ``True``, consume ``arg_mbs``, ``kwarg_mbs``, and
                 ``target_mbs`` directly. Default: ``False``.
-            **kwargs (Any): Whole-batch keyword inputs for the first pipeline
+            \*\*kwargs (Any): Whole-batch keyword inputs for the first pipeline
                 stage. These are split into microbatches unless
                 ``pre_split_args_kwargs=True``. Do not pass keyword inputs when
                 ``pre_split_args_kwargs=True``.
@@ -990,6 +967,7 @@ class PipelineScheduleSingle(_PipelineSchedule):
 
         Examples::
 
+            >>> # xdoctest: +SKIP("requires a constructed distributed pipeline schedule")
             >>> output = schedule.step(x, mask=mask, target=target)
             >>> arg_mbs = [(x0,), (x1,)]
             >>> kwarg_mbs = [{"mask": mask0}, {"mask": mask1}]
@@ -2187,20 +2165,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
         pre_split_args_kwargs: bool = False,
         **kwargs,
     ):
-        r"""step(
-            *args,
-            target=None,
-            losses=None,
-            return_outputs=True,
-            loss_kwargs=None,
-            arg_mbs=None,
-            kwarg_mbs=None,
-            target_mbs=None,
-            pre_split_args_kwargs=False,
-            **kwargs,
-        ) -> Any | None
-
-        Run one training iteration of a multi-stage pipeline schedule.
+        r"""Run one training iteration of a multi-stage pipeline schedule.
 
         By default, ``args``, ``kwargs``, and ``target`` are full-batch values
         that the schedule splits into microbatches. Set
@@ -2209,7 +2174,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
         and ``target_mbs`` instead.
 
         Args:
-            *args (Any): Whole-batch positional root inputs when this rank owns
+            \*args (Any): Whole-batch positional root inputs when this rank owns
                 the first pipeline stage. These are split into microbatches
                 unless ``pre_split_args_kwargs=True``. Do not pass positional
                 inputs when ``pre_split_args_kwargs=True``.
@@ -2238,7 +2203,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
                 whole-batch ``args``, ``kwargs``, and ``target`` inside the
                 schedule. If ``True``, consume ``arg_mbs``, ``kwarg_mbs``, and
                 ``target_mbs`` directly. Default: ``False``.
-            **kwargs (Any): Whole-batch keyword root inputs when this rank owns
+            \*\*kwargs (Any): Whole-batch keyword root inputs when this rank owns
                 the first pipeline stage. These are split into microbatches
                 unless ``pre_split_args_kwargs=True``. Do not pass keyword
                 inputs when ``pre_split_args_kwargs=True``.
@@ -2258,6 +2223,7 @@ class PipelineScheduleMulti(_PipelineSchedule):
 
         Examples::
 
+            >>> # xdoctest: +SKIP("requires a constructed distributed pipeline schedule")
             >>> output = schedule.step(x, mask=mask, target=target)
             >>> arg_mbs = [(x0,), (x1,)]
             >>> kwarg_mbs = [{"mask": mask0}, {"mask": mask1}]
