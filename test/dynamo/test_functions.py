@@ -886,6 +886,14 @@ partial_fn = functools.partial(fn, scale=2)
         return d
 
     @make_test
+    def test_deque_reinit_resets_maxlen(a, b):
+        # deque.__init__ resets maxlen; re-init with more items than the old
+        # maxlen must not be clamped to the old maxlen.
+        d = collections.deque([a, b], maxlen=2)
+        d.__init__([a, b, a + 1, b + 1])
+        return d, d.maxlen
+
+    @make_test
     def test_slice1(a):
         return a[5]
 
@@ -3527,14 +3535,14 @@ class GraphModule(torch.nn.Module):
                 normalize_gm(backend.graphs[0].print_readable(print_output=False)),
                 """\
 class GraphModule(torch.nn.Module):
-    def forward(self, s77: "Sym(s77)", s27: "Sym(s27)", L_x_: "f32[s77, s27]"):
+    def forward(self, L_x_: "f32[s77, s27]", s77: "Sym(s77)", s27: "Sym(s27)"):
         l_x_ = L_x_
 
         mul: "f32[s77, s27]" = l_x_ * 4
-        mul_1: "f32[s77, s27]" = mul * l_x_;  mul = None
-        mul_2: "f32[s77, s27]" = 20 * l_x_;  l_x_ = None
+        mul_1: "f32[s77, s27]" = 20 * l_x_
+        mul_2: "f32[s77, s27]" = mul * l_x_;  mul = l_x_ = None
 
-        mul_3: "f32[s77, s27]" = torch.mul(mul_1, mul_2);  mul_1 = mul_2 = None
+        mul_3: "f32[s77, s27]" = torch.mul(mul_2, mul_1);  mul_2 = mul_1 = None
         return (mul_3,)
 """,
             )
