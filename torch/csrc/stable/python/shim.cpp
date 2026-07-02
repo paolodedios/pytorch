@@ -1,4 +1,4 @@
-#include <torch/csrc/stable/c/python_shim.h>
+#include <torch/csrc/stable/python/c/shim.h>
 
 #include <torch/csrc/Exceptions.h>
 #include <torch/csrc/autograd/python_variable.h>

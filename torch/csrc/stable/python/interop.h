@@ -1,6 +1,6 @@
 #pragma once
 
-#include <torch/csrc/stable/c/python_shim.h>
+#include <torch/csrc/stable/python/c/shim.h>
 #include <torch/csrc/stable/macros.h>
 #include <torch/csrc/stable/tensor_struct.h>
 #include <torch/headeronly/macros/Macros.h>
