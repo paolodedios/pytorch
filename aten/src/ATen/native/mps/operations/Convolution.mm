@@ -300,16 +300,6 @@ static bool conv3d_autotune_enabled() {
   return on;
 }
 
-// Testing hook: exercise the pre-Metal-4 simdgroup kernel on machines that
-// would otherwise take the MPP path.
-static bool conv3d_force_simdgroup() {
-  static const bool on = []() {
-    auto v = c10::utils::get_env("PYTORCH_MPS_CONV_FORCE_SIMDGROUP");
-    return v.has_value() && v.value() == "1";
-  }();
-  return on;
-}
-
 // cudnn.benchmark-style tuning: the first ncands * kConv3dTuneSamples calls
 // round-robin the tiles, timed async via GPU timestamps; winner serves on.
 constexpr int kConv3dTuneSamples = 5;
@@ -433,7 +423,7 @@ static void conv3d_metal_forward(const Tensor& input_t,
   const int64_t CG_check = C / groups;
   TORCH_CHECK(weight_t.size(2) * weight_t.size(3) * weight_t.size(4) * CG_check <= i32max,
               "conv3d: kernel volume times channels per group exceeds int32");
-  const bool use_mpp = !huge_plane && is_macos_at_least(MacOSVersion::MACOS_26_0) && !conv3d_force_simdgroup();
+  const bool use_mpp = !huge_plane && is_macos_at_least(MacOSVersion::MACOS_26_0);
 
   const auto act = conv3d_to_ndhwc(input_t); // NDHWC
   const auto wts = weight_t.permute({2, 3, 4, 1, 0}).contiguous(); // DHWIO
