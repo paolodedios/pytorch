@@ -489,23 +489,6 @@ Tensor flatten_sdpa_attn_bias_for_vmap(
   return attn_bias_.flatten(0, 1);
 }
 
-template <int alignment>
-bool sdpa_attn_bias_has_aligned_strides(const Tensor& attn_bias) {
-  for (const auto i : c10::irange(attn_bias.dim() - 1)) {
-    if (attn_bias.stride(i) % alignment != 0) {
-      return false;
-    }
-  }
-  return attn_bias.stride(attn_bias.dim() - 1) == 1;
-}
-
-template <int alignment>
-Tensor pad_sdpa_attn_bias(const Tensor& attn_bias) {
-  auto last_dim_size = attn_bias.sym_size(-1);
-  auto pad_count = c10::SymInt(alignment) - (last_dim_size % alignment);
-  auto padded_bias = at::pad_symint(attn_bias, {c10::SymInt(0), pad_count});
-  return padded_bias.slice_symint(-1, 0, last_dim_size);
-}
 
 std::tuple<Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>, SymInt, SymInt, Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>, Tensor, std::optional<int64_t>>
 _scaled_dot_product_flash_attention_batch_rule(
@@ -666,11 +649,7 @@ fourOutputs _scaled_dot_product_efficient_attention_batch_rule(
 
   std::optional<Tensor> attn_bias_;
   if (attn_bias.has_value() && attn_bias->defined()) {
-    constexpr int mem_eff_alignment = 8;
     attn_bias_ = flatten_sdpa_attn_bias_for_vmap(*attn_bias, attn_bias_bdim, batch_size);
-    if (!sdpa_attn_bias_has_aligned_strides<mem_eff_alignment>(*attn_bias_)) {
-      attn_bias_ = pad_sdpa_attn_bias<mem_eff_alignment>(*attn_bias_);
-    }
   }
   auto [res0, res1, res2, res3] = at::_scaled_dot_product_efficient_attention(
       query_, key_, value_, attn_bias_, compute_log_sumexp, dropout_p, is_causal, scale);

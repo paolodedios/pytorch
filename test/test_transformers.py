@@ -3523,7 +3523,7 @@ class TestSDPACudaOnly(NNTestCase):
     @parametrize("mask_factory", ["ones", "new_ones"])
     def test_mem_efficient_attention_vmap_attn_mask(self, device, mask_factory: str):
         """Exercise vmap masking through the fused memory-efficient SDPA batch rule."""
-        batch, vmap_batch, num_heads, seq_len, embed_dim = 2, 8, 2, 2, 64
+        batch, vmap_batch, num_heads, seq_len, embed_dim = 2, 8, 2, 4, 64
         x = torch.randn(batch, vmap_batch, seq_len, embed_dim, device=device)
 
         def run_attention(x):
@@ -3543,7 +3543,7 @@ class TestSDPACudaOnly(NNTestCase):
     @unittest.skipIf(not PLATFORM_SUPPORTS_MEM_EFF_ATTENTION, "Fused SDPA was not built for this system")
     def test_mem_efficient_attention_vmap_attn_mask_only(self, device):
         """Exercise vmap when only the SDPA attention mask is batched."""
-        vmap_batch, batch, num_heads, seq_len, head_dim = 8, 2, 2, 2, 32
+        vmap_batch, batch, num_heads, seq_len, head_dim = 8, 2, 2, 4, 32
         query = torch.randn(batch, num_heads, seq_len, head_dim, device=device)
         attn_masks = torch.ones(vmap_batch, seq_len, seq_len, device=device, dtype=torch.bool)
 
