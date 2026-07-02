@@ -34,7 +34,7 @@ import typing
 import uuid
 from importlib import import_module
 from tempfile import TemporaryFile
-from typing import Any, IO, TYPE_CHECKING
+from typing import Any, IO, TYPE_CHECKING, TypedDict
 from typing_extensions import Unpack
 
 import sympy
@@ -146,9 +146,14 @@ log = logging.getLogger(__name__)
 inductor_config = import_module("torch._inductor.config")
 
 
+class GroupInfo(TypedDict):
+    size: int
+    rank: int
+
+
 def _extract_distributed_info(
     gm: torch.fx.GraphModule,
-) -> dict[str, dict[str, int]]:
+) -> dict[str, GroupInfo]:
     """
     Extract process group information from distributed ops in the graph.
 
@@ -158,7 +163,7 @@ def _extract_distributed_info(
     from torch.distributed import GroupName
     from torch.fx.operator_schemas import normalize_function
 
-    group_info: dict[str, dict[str, int]] = {}
+    group_info: dict[str, GroupInfo] = {}
 
     for node in gm.graph.nodes:
         if node.op != "call_function":
@@ -200,7 +205,7 @@ def _extract_distributed_info(
 
 
 def setup_fake_process_groups(
-    group_info: dict[str, dict[str, int]],
+    group_info: dict[str, GroupInfo],
 ) -> None:
     """
     Set up fake process groups for repro execution.
@@ -682,7 +687,9 @@ if "__compile_source__" in globals():
     if len(kernel_side_table.constant_args) > 0:
         model_str += f"{kernel_side_table_prefix}.constant_args={kernel_side_table.constant_args}\n"
 
-    model_str += NNModuleToString.convert(gm)
+    # This string is also emitted as a best-effort trace artifact during
+    # normal compilation, so unsupported modules must not mask compile errors.
+    model_str += NNModuleToString.convert(gm, allow_unsafe_repr=True)
 
     writer = InputWriter(save_dir, stable_hash=stable_hash)
     # pyrefly: ignore [implicit-any]
