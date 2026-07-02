@@ -623,7 +623,13 @@ def _clear_torch_ops_cache(op_defs):
     # recomputed to point at the right collection of overloads.
     cleared_packets = set()
     for qualname in op_defs:
-        ns, name_with_overload = qualname.split("::")
+        splits = qualname.split("::")
+        if len(splits) != 2:
+            # Defense-in-depth: this runs in a shutdown-time finalizer that must
+            # never raise, so tolerate any qualname that isn't a clean
+            # "namespace::name" instead of unpacking blindly.
+            continue
+        ns, name_with_overload = splits
         name = name_with_overload.split(".")[0]
         if (ns, name) in cleared_packets:
             continue

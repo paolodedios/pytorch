@@ -7,10 +7,27 @@
 #include <c10/util/irange.h>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 
 namespace c10 {
 using SymIntArrayRef = ArrayRef<SymInt>;
+
+inline bool symIntArrayRefElementIsHeapAllocated(
+    c10::SymIntArrayRef ar,
+    size_t index) {
+  // SymIntArrayRef can be a view over IntArrayRef storage through
+  // fromIntArrayRefSlow. In that case the bytes use SymInt's inline
+  // representation, but no SymInt objects are alive, so validation must inspect
+  // the shared one-word representation instead of calling SymInt methods.
+  static_assert(sizeof(SymInt) == sizeof(int64_t));
+  int64_t raw_data = 0;
+  std::memcpy(
+      &raw_data,
+      reinterpret_cast<const char*>(ar.data()) + index * sizeof(raw_data),
+      sizeof(raw_data));
+  return !SymInt::check_range(raw_data);
+}
 
 [[noreturn]] inline void reportSymIntArrayRefToIntArrayRefError(
     c10::SymIntArrayRef ar,
@@ -60,8 +77,8 @@ inline at::IntArrayRef asIntArrayRefUnchecked(c10::SymIntArrayRef ar) {
 
 inline std::optional<at::IntArrayRef> asIntArrayRefSlowOpt(
     c10::SymIntArrayRef ar) {
-  for (const c10::SymInt& sci : ar) {
-    if (sci.is_heap_allocated()) {
+  for (const auto i : c10::irange(ar.size())) {
+    if (symIntArrayRefElementIsHeapAllocated(ar, i)) {
       return std::nullopt;
     }
   }
@@ -74,7 +91,7 @@ inline at::IntArrayRef asIntArrayRefSlow(
     const char* file,
     int64_t line) {
   for (const auto i : c10::irange(ar.size())) {
-    if (C10_UNLIKELY(ar[i].is_heap_allocated())) {
+    if (C10_UNLIKELY(symIntArrayRefElementIsHeapAllocated(ar, i))) {
       reportSymIntArrayRefToIntArrayRefError(ar, i, file, line);
     }
   }

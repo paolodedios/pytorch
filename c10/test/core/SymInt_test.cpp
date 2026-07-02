@@ -50,6 +50,15 @@ TEST(SymIntTest, SymIntArrayRefErrorDistinguishesHeapAllocatedConcrete) {
   }
 }
 
+TEST(SymIntTest, SymIntArrayRefAcceptsConcreteIntArrayRefBridge) {
+  const std::vector<int64_t> values{2, -1, SymInt::min_representable_int()};
+  const auto sym_values = c10::fromIntArrayRefSlow(values);
+  const auto int_values =
+      c10::asIntArrayRefSlow(sym_values, __FILE__, __LINE__);
+
+  EXPECT_EQ(int_values, at::IntArrayRef(values));
+}
+
 #if !C10_UBSAN_ENABLED
 // This test fails signed-integer-overflow UBSAN check
 TEST(SymIntTest, Overflows) {
