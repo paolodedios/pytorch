@@ -2427,12 +2427,17 @@ np_constant_collections_map = {
     tnp.dtype: NumpyDTypeVariable,
 }
 
+_mutated_context_vars: set[int] = set()
+
 
 class ContextVarVariable(VariableTracker):
     """Wraps a contextvars.ContextVar for Dynamo tracing.
 
     .get() is resolved at trace time with a guard that re-checks at cache time.
-    .set() and .reset() graph-break in Phase 1.
+    .set() and .reset() graph-break in Phase 1. If a CV has been .set() during
+    any prior compilation, .get() also graph-breaks to avoid stale baked-in
+    values across resume frames (Phase 2 will replace this with side-effect
+    tracking).
     """
 
     _nonvar_fields = {
@@ -2455,8 +2460,20 @@ class ContextVarVariable(VariableTracker):
         kwargs: "dict[str, VariableTracker]",
     ) -> "VariableTracker":
         if name == "get":
+            if id(self.cv_obj) in _mutated_context_vars:
+                unimplemented(
+                    gb_type="ContextVar.get() after mutation",
+                    context=f"ContextVar('{self.cv_obj.name}').get()",
+                    explanation=(
+                        "ContextVar.get() on a var that was previously "
+                        ".set() inside torch.compile is not yet supported. "
+                        "Phase 2 will add full .set()/.get() support."
+                    ),
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                )
             return self._handle_get(tx, args, kwargs)
         elif name in ("set", "reset"):
+            _mutated_context_vars.add(id(self.cv_obj))
             unimplemented(
                 gb_type="ContextVar mutation not supported",
                 context=f"ContextVar('{self.cv_obj.name}').{name}()",

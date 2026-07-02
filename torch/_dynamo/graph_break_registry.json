@@ -2707,6 +2707,16 @@
       ]
     }
   ],
+  "GB3080": [
+    {
+      "Gb_type": "ContextVar.get() after mutation",
+      "Context": "ContextVar('{self.cv_obj.name}').get()",
+      "Explanation": "ContextVar.get() on a var that was previously .set() inside torch.compile is not yet supported. Phase 2 will add full .set()/.get() support.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
   "GB7489": [
     {
       "Gb_type": "Unsupported argument type in tensor method call",
@@ -4055,6 +4065,16 @@
       "Gb_type": "non-constant key in object __dict__",
       "Context": "key={key.vt}",
       "Explanation": "Dynamo expects object __dict__ replacement keys to be constants.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
+  "GB8760": [
+    {
+      "Gb_type": "Unsupported ContextVar attribute",
+      "Context": "ContextVar('{self.cv_obj.name}').{name}",
+      "Explanation": "Attribute '{name}' on ContextVar is not supported inside torch.compile.",
       "Hints": [
         "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
       ]

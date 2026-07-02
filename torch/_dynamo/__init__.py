@@ -170,6 +170,10 @@ def reset() -> None:
         torch._dynamo.utils.warn_once_cache.clear()
         torch._C._autograd._saved_tensors_hooks_set_tracing(False)
 
+        from .variables.misc import _mutated_context_vars
+
+        _mutated_context_vars.clear()
+
         # Reset cudagraph trees unconditionally since they are global state
         # not tied to a specific backend instance
         from torch._higher_order_ops.triton_kernel_wrap import kernel_side_table

@@ -17,7 +17,7 @@ from torch.testing._internal import (
     fake_config_module2 as config2,
     fake_config_module3 as config3,
 )
-from torch.testing._internal.common_utils import run_tests, TestCase
+from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
 from torch.utils._config_module import _ConfigEntry, _UNSET_SENTINEL, Config
 
 
@@ -704,6 +704,7 @@ torch.testing._internal.fake_config_module3.e_func = _warnings.warn""",
         self.assertEqual(d_all2["e_string"], "changed")
         self.assertEqual(d_filtered2["e_string"], "changed")
 
+    @skipIfTorchDynamo("config module ContextVar with mutable set mutated in-place")
     def test_get_dict_readonly_values_full_dirty_clears_cache(self):
         """Exceeding the dirty keys cap should trigger a full cache rebuild."""
         config._get_dict(readonly_values=True)
@@ -793,6 +794,7 @@ torch.testing._internal.fake_config_module3.e_func = _warnings.warn""",
         # The child thread should have gotten a different hash
         self.assertNotEqual(thread_hash[0], base_hash)
 
+    @skipIfTorchDynamo("config module ContextVar with mutable set mutated in-place")
     def test_hash_dirty_on_setattr(self):
         """Direct config assignment should mark the hash dirty."""
         config.get_hash()

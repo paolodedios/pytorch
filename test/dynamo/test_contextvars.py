@@ -378,6 +378,76 @@ class TestContextVars(TestCase):
         self.assertEqual(results[0], x + 2)
         self.assertEqual(cnt.frame_count, 2)
 
+    def test_get_after_set_graph_breaks(self):
+        """After .set() graph-breaks, subsequent .get() on the same CV should
+        also graph-break to avoid stale baked-in values across resume frames."""
+        cv = contextvars.ContextVar("volatile_cv", default="initial")
+        cnt = CompileCounter()
+
+        @torch.compile(backend=cnt)
+        def fn(x):
+            x = x + 1
+            cv.set("mutated")
+            val = cv.get()
+            if val == "mutated":
+                x = x + 10
+            return x
+
+        x = torch.randn(4)
+        result = fn(x)
+        self.assertEqual(result, x + 11)
+        self.assertGreaterEqual(cnt.frame_count, 2)
+
+    def test_get_on_unmutated_cv_still_traces(self):
+        """Volatile tracking only affects CVs that were .set(); other CVs
+        should still trace normally."""
+        mutated_cv = contextvars.ContextVar("mutated", default="a")
+        clean_cv = contextvars.ContextVar("clean", default="b")
+        cnt = CompileCounter()
+
+        @torch.compile(backend=cnt)
+        def fn(x):
+            x = x + 1
+            mutated_cv.set("changed")
+            val = clean_cv.get()
+            if val == "b":
+                x = x + 5
+            return x
+
+        x = torch.randn(4)
+        result = fn(x)
+        self.assertEqual(result, x + 6)
+        self.assertEqual(cnt.frame_count, 2)
+
+    def test_mutation_does_not_leak_across_reset(self):
+        """After torch._dynamo.reset(), volatile tracking is cleared so
+        previously-mutated CVs can be traced again."""
+        cv = contextvars.ContextVar("reset_test", default="orig")
+        cnt = CompileCounter()
+
+        @torch.compile(backend=cnt)
+        def fn1(x):
+            x = x + 1
+            cv.set("new")
+            return x
+
+        fn1(torch.randn(4))
+
+        torch._dynamo.reset()
+        cnt2 = CompileCounter()
+
+        @torch.compile(backend=cnt2, fullgraph=True)
+        def fn2(x):
+            val = cv.get()
+            if val == "new":
+                return x + 10
+            return x
+
+        x = torch.randn(4)
+        result = fn2(x)
+        self.assertEqual(result, x + 10)
+        self.assertEqual(cnt2.frame_count, 1)
+
 
 if __name__ == "__main__":
     run_tests()
