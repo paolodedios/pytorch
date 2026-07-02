@@ -1296,6 +1296,25 @@ def _pytorch_cpu_vec_intrinsics_contract_addcmul() -> bool:
     return has_gcc_without_clang and has_x86_vector_capability
 
 
+@functools.cache
+def _pytorch_cpu_scalar_expr_contract_addcmul() -> bool:
+    # ATen's CPU addcmul scalar path is a single C++ expression:
+    # self + value * t1 * t2. GCC and clang builds contract the final
+    # multiply-add in that expression; Windows/MSVC builds do not.
+    build_config = torch.__config__.show()
+    compiler_lines = [
+        line.removeprefix("  - ")
+        for line in build_config.splitlines()
+        if line.startswith("  - ")
+    ]
+    if any(line == "MSVC" or line.startswith("MSVC ") for line in compiler_lines):
+        return False
+    return any(
+        line in ("GCC", "clang") or line.startswith(("GCC ", "clang "))
+        for line in compiler_lines
+    )
+
+
 def _addcmul_no_fma(self_value: str, value_times_tensor1: str, tensor2: str) -> str:
     return (
         "([&] {\n"
@@ -1314,10 +1333,11 @@ def _addcmul_no_fma(self_value: str, value_times_tensor1: str, tensor2: str) -> 
 def _addcmul_aten_cppvec(
     self_value: str, value_times_tensor1: str, tensor2: str
 ) -> str:
-    if (
-        getattr(V.kernel, "tail_size", None) is not None
-        or _pytorch_cpu_vec_intrinsics_contract_addcmul()
-    ):
+    if getattr(V.kernel, "tail_size", None) is not None:
+        if _pytorch_cpu_scalar_expr_contract_addcmul():
+            return f"fmadd({value_times_tensor1}, {tensor2}, {self_value})"
+        return _addcmul_no_fma(self_value, value_times_tensor1, tensor2)
+    if _pytorch_cpu_vec_intrinsics_contract_addcmul():
         return f"fmadd({value_times_tensor1}, {tensor2}, {self_value})"
     return _addcmul_no_fma(self_value, value_times_tensor1, tensor2)
 
@@ -1383,7 +1403,7 @@ pointwise_overrides_data: dict[str, OverridesData] = dict(
         type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT,
         cpp=lambda self_value, value_times_tensor1, tensor2: (
             f"std::fma({value_times_tensor1}, {tensor2}, {self_value})"
-            if _pytorch_cpu_vec_intrinsics_contract_addcmul()
+            if _pytorch_cpu_scalar_expr_contract_addcmul()
             else _addcmul_no_fma(self_value, value_times_tensor1, tensor2)
         ),
         cppvec=_addcmul_aten_cppvec,

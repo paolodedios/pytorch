@@ -3,7 +3,10 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from torch._inductor.codegen.common import _pytorch_cpu_vec_intrinsics_contract_addcmul
+from torch._inductor.codegen.common import (
+    _pytorch_cpu_scalar_expr_contract_addcmul,
+    _pytorch_cpu_vec_intrinsics_contract_addcmul,
+)
 from torch._inductor.codegen.cpp import CppOverrides, CppVecOverrides
 from torch._inductor.codegen.halide import HalideOverrides
 from torch._inductor.codegen.mps import MetalOverrides
@@ -37,7 +40,11 @@ class TestOpCompleteness(TestCase):
         self.verify_ops_handler_completeness(CppVecOverrides)
 
     def test_cpp_vec_addcmul_aten_codegen(self):
-        _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
+        def clear_addcmul_caches():
+            _pytorch_cpu_scalar_expr_contract_addcmul.cache_clear()
+            _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
+
+        clear_addcmul_caches()
         with patch(
             "torch.__config__.show",
             return_value=(
@@ -48,8 +55,12 @@ class TestOpCompleteness(TestCase):
                 CppVecOverrides.addcmul_aten("self", "value_times_t1", "t2"),
                 "fmadd(value_times_t1, t2, self)",
             )
+            self.assertEqual(
+                CppOverrides.addcmul_aten("self", "value_times_t1", "t2"),
+                "std::fma(value_times_t1, t2, self)",
+            )
 
-        _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
+        clear_addcmul_caches()
         with patch(
             "torch.__config__.show",
             return_value=(
@@ -63,8 +74,12 @@ class TestOpCompleteness(TestCase):
             self.assertIn('asm volatile("" : "+m"(product));', code)
             self.assertIn("return self + product;", code)
             self.assertNotIn("fmadd", code)
+            self.assertEqual(
+                CppOverrides.addcmul_aten("self", "value_times_t1", "t2"),
+                "std::fma(value_times_t1, t2, self)",
+            )
 
-        _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
+        clear_addcmul_caches()
         with patch(
             "torch.__config__.show",
             return_value=(
@@ -75,20 +90,29 @@ class TestOpCompleteness(TestCase):
             self.assertIn('asm volatile("" : "+m"(product));', code)
             self.assertIn("return self + product;", code)
             self.assertNotIn("fmadd", code)
+            self.assertEqual(
+                CppOverrides.addcmul_aten("self", "value_times_t1", "t2"),
+                "std::fma(value_times_t1, t2, self)",
+            )
 
-        _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
+        clear_addcmul_caches()
         with patch(
             "torch.__config__.show",
             return_value=(
                 "PyTorch built with:\n  - MSVC 19.44\n  - CPU capability usage: AVX2\n"
             ),
         ):
+            code = CppVecOverrides.addcmul_aten("self", "value_times_t1", "t2")
+            self.assertIn("reinterpret_cast<const volatile char*>(&product);", code)
+            self.assertIn("return self + product;", code)
+            self.assertNotIn("fmadd", code)
+
             code = CppOverrides.addcmul_aten("self", "value_times_t1", "t2")
             self.assertIn("reinterpret_cast<const volatile char*>(&product);", code)
             self.assertIn("return self + product;", code)
             self.assertNotIn("std::fma", code)
 
-        _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
+        clear_addcmul_caches()
         with (
             patch(
                 "torch.__config__.show",
@@ -105,8 +129,8 @@ class TestOpCompleteness(TestCase):
                 "fmadd(value_times_t1, t2, self)",
             )
 
-        _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
-        non_contracting_configs = (
+        clear_addcmul_caches()
+        scalar_contracting_tail_configs = (
             (
                 "PyTorch built with:\n"
                 "  - GCC 4.2\n"
@@ -114,10 +138,9 @@ class TestOpCompleteness(TestCase):
                 "  - CPU capability usage: AVX512\n"
             ),
             "PyTorch built with:\n  - GCC 11.5\n  - CPU capability usage: NEON\n",
-            "PyTorch built with:\n  - MSVC 19.44\n  - CPU capability usage: AVX2\n",
         )
-        for config in non_contracting_configs:
-            _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
+        for config in scalar_contracting_tail_configs:
+            clear_addcmul_caches()
             with (
                 patch("torch.__config__.show", return_value=config),
                 V.set_kernel_handler(SimpleNamespace(tail_size=3)),
@@ -126,7 +149,25 @@ class TestOpCompleteness(TestCase):
                     CppVecOverrides.addcmul_aten("self", "value_times_t1", "t2"),
                     "fmadd(value_times_t1, t2, self)",
                 )
-        _pytorch_cpu_vec_intrinsics_contract_addcmul.cache_clear()
+
+        clear_addcmul_caches()
+        with (
+            patch(
+                "torch.__config__.show",
+                return_value=(
+                    "PyTorch built with:\n"
+                    "  - MSVC 19.44\n"
+                    "  - CPU capability usage: AVX2\n"
+                ),
+            ),
+            V.set_kernel_handler(SimpleNamespace(tail_size=3)),
+        ):
+            code = CppVecOverrides.addcmul_aten("self", "value_times_t1", "t2")
+            self.assertIn("reinterpret_cast<const volatile char*>(&product);", code)
+            self.assertIn("return self + product;", code)
+            self.assertNotIn("fmadd", code)
+
+        clear_addcmul_caches()
 
     def test_halide_overrides(self):
         self.verify_ops_handler_completeness(HalideOverrides)
