@@ -943,12 +943,8 @@ def trace_frame(
     )
 
     def run_tracer() -> None:
-        # cpp_fake_mode is set (to a CppFakeTensorMode) iff use_cpp_fake_tensor.
-        cpp_fake_mode = tracer.output.cpp_fake_mode
         try:
             tracer.output.mark_bytecode_tracing_start()
-            if cpp_fake_mode is not None:
-                cpp_fake_mode.activate()
             with tracing(tracer.output.tracing_context), tracer.set_current_tx():
                 tracer.run()
         except exc.UnspecializeRestartAnalysis:
@@ -965,8 +961,6 @@ def trace_frame(
                 bisect(tracer.output.shape_env)
             raise
         finally:
-            if cpp_fake_mode is not None:
-                cpp_fake_mode.deactivate()
             tracer.output.call_cleanup_hooks()
             tracer.f_locals = {}
 

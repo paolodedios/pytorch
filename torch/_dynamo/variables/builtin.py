@@ -261,8 +261,6 @@ _MISSING_SENTINEL = object()
 
 
 def populate_builtin_to_tensor_fn_map() -> None:
-    from torch._subclasses.fake_tensor import unset_fake_temporarily
-
     global BUILTIN_TO_TENSOR_FN_MAP
     if len(BUILTIN_TO_TENSOR_FN_MAP) > 0:
         # Only populate once; after there are elements present no need to
@@ -288,50 +286,49 @@ def populate_builtin_to_tensor_fn_map() -> None:
             most_recent_func = func
             return func(*args, **kwargs)
 
-    with unset_fake_temporarily():
-        inp0 = torch.ones(1)
-        inp1 = torch.ones(1)
-        inp0_int = torch.ones(1, dtype=torch.int32)
-        inp1_int = torch.ones(1, dtype=torch.int32)
-        with GetMethodMode():
-            setups_and_oplists: list[tuple[Callable[..., Any], Iterable[Any]]] = [
-                (lambda o: o(inp0), un_ops),
-                (lambda o: o(inp0_int), un_int_ops),
-                (lambda o: o(inp0, inp1), bin_ops),
-                (lambda o: o(inp0_int, inp1_int), bin_int_ops),
-                (lambda o: o(inp0_int, 0), tensor_and_int_ops),
-            ]
-            for setup_fn, op_list in setups_and_oplists:
-                for op in op_list:
-                    setup_fn(op)
-                    if most_recent_func is None:
-                        raise AssertionError(
-                            f"most_recent_func is None after setup for op {op}"
-                        )
-                    BUILTIN_TO_TENSOR_FN_MAP[op] = most_recent_func
+    inp0 = torch.ones(1)
+    inp1 = torch.ones(1)
+    inp0_int = torch.ones(1, dtype=torch.int32)
+    inp1_int = torch.ones(1, dtype=torch.int32)
+    with GetMethodMode():
+        setups_and_oplists: list[tuple[Callable[..., Any], Iterable[Any]]] = [
+            (lambda o: o(inp0), un_ops),
+            (lambda o: o(inp0_int), un_int_ops),
+            (lambda o: o(inp0, inp1), bin_ops),
+            (lambda o: o(inp0_int, inp1_int), bin_int_ops),
+            (lambda o: o(inp0_int, 0), tensor_and_int_ops),
+        ]
+        for setup_fn, op_list in setups_and_oplists:
+            for op in op_list:
+                setup_fn(op)
+                if most_recent_func is None:
+                    raise AssertionError(
+                        f"most_recent_func is None after setup for op {op}"
+                    )
+                BUILTIN_TO_TENSOR_FN_MAP[op] = most_recent_func
 
-            # gather the reverse functions
-            rsetups_and_oplists: list[tuple[Callable[..., Any], Iterable[Any]]] = [
-                (
-                    lambda o: o(1, inp1),
-                    bin_ops,
-                ),  # Get r* ops, (ex. __sub__(int, Tensor) -> __rsub__(Tensor, int))
-                (lambda o: o(1, inp1_int), bin_int_ops),
-                (lambda o: o(0, inp0_int), tensor_and_int_ops),
-            ]
+        # gather the reverse functions
+        rsetups_and_oplists: list[tuple[Callable[..., Any], Iterable[Any]]] = [
+            (
+                lambda o: o(1, inp1),
+                bin_ops,
+            ),  # Get r* ops, (ex. __sub__(int, Tensor) -> __rsub__(Tensor, int))
+            (lambda o: o(1, inp1_int), bin_int_ops),
+            (lambda o: o(0, inp0_int), tensor_and_int_ops),
+        ]
 
-            rskips = {operator.matmul, operator.imatmul, operator.getitem}
-            for setup_fn, op_list in rsetups_and_oplists:
-                for op in op_list:
-                    if op in rskips:
-                        continue
-                    setup_fn(op)
-                    if most_recent_func is None:
-                        raise AssertionError(
-                            f"most_recent_func is None after setup for reverse op {op}"
-                        )
-                    if most_recent_func != BUILTIN_TO_TENSOR_FN_MAP[op]:
-                        BUILTIN_TO_TENSOR_RFN_MAP[op] = most_recent_func
+        rskips = {operator.matmul, operator.imatmul, operator.getitem}
+        for setup_fn, op_list in rsetups_and_oplists:
+            for op in op_list:
+                if op in rskips:
+                    continue
+                setup_fn(op)
+                if most_recent_func is None:
+                    raise AssertionError(
+                        f"most_recent_func is None after setup for reverse op {op}"
+                    )
+                if most_recent_func != BUILTIN_TO_TENSOR_FN_MAP[op]:
+                    BUILTIN_TO_TENSOR_RFN_MAP[op] = most_recent_func
 
 
 class BaseBuiltinVariable(VariableTracker):

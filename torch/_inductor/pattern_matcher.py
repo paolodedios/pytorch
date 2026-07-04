@@ -61,7 +61,7 @@ import torch.utils._pytree as pytree
 from torch._dispatch.python import enable_python_dispatcher
 from torch._dynamo.utils import counters
 from torch._prims_common import is_integer_dtype
-from torch._subclasses.fake_tensor import CppFakeTensorMode, unset_fake_temporarily, is_fake_tensor, maybe_get_fake_constant
+from torch._subclasses.fake_tensor import unset_fake_temporarily, is_fake_tensor, maybe_get_fake_constant
 from torch.fx.experimental.proxy_tensor import make_fx
 from torch.fx.experimental.symbolic_shapes import guard_or_false, statically_known_true
 from torch.fx.graph_module import _get_attr
@@ -77,7 +77,6 @@ from .._subclasses import FakeTensor, FakeTensorMode
 from ..fx import Transformer
 from . import config
 from .decomposition import select_decomp_table
-from .utils import fake_mode_context
 from .lowering import fallback_node_due_to_unsupported_type
 
 
@@ -287,9 +286,7 @@ class Match:
         """
         from torch._inductor.virtualized import NullHandler, V
 
-        if CppFakeTensorMode._get_active_cpp_fake_tensor_mode() is not None:
-            context = fake_mode_context(V.fake_mode)
-        elif not isinstance(V.fake_mode, NullHandler) or (V.fake_mode is None):
+        if not isinstance(V.fake_mode, NullHandler) or (V.fake_mode is None):
             context = V.fake_mode
         else:
             context = contextlib.nullcontext()
@@ -1692,7 +1689,7 @@ def register_replacement(
 
         if fake_mode is None:
             raise AssertionError("fake_mode is None")
-        with fake_mode_context(fake_mode):
+        with fake_mode:
             invalid_args = False
             requires_grad_values = iter(pytree.tree_leaves(requires_grad))
 

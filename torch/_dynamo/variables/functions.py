@@ -1854,15 +1854,9 @@ def invoke_and_store_as_constant(
                 ],
             )
 
-    # python FakeTensorMode is inactive here, but the C++ fake
-    # mode keeps the Fake dispatch key in TLS for the whole trace
-    # need to fisable fake mode for the whole computation
-    from torch._subclasses.fake_tensor import unset_fake_temporarily
-
-    with unset_fake_temporarily():
-        args = [convert(x) for x in args]
-        kwargs = {k: convert(v) for k, v in kwargs.items()}
-        res = fn(*args, **kwargs)
+    args = [convert(x) for x in args]
+    kwargs = {k: convert(v) for k, v in kwargs.items()}
+    res = fn(*args, **kwargs)
     return tx.output.register_attr_or_module(
         res,
         name,

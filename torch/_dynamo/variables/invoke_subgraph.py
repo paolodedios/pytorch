@@ -992,7 +992,7 @@ def stamp_out_subgraph(
             vt = VariableBuilder(tx, new_source)(value)
             new_lifted_args.append(vt.as_proxy())
 
-    fake_mode = tx.cpp_fake_mode or tx.fake_mode
+    fake_mode = tx.fake_mode
     if fake_mode is None:
         raise AssertionError("fake_mode must not be None for stamp_out_subgraph")
     with fake_mode:

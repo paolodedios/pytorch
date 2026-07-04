@@ -72,7 +72,7 @@ def _add_op_to_registry(registry, op, fn):
     If op is OpOverload, it will be added to the registry directly.
     If op is OpOverloadPacket, all the valid overload_ops in the packet will be added to the registry.
     """
-    overloads: list[torch._ops.OperatorBase] = []
+    overloads: list[torch._ops.OpOverload] = []
     if isinstance(op, HigherOrderOperator):
         # There's no concept of overloads for HigherOrderOperator
         registry[op] = fn

@@ -5277,18 +5277,14 @@ class AlgorithmSelectorCache(PersistentCache):
         hint_override: int | None = None,
         is_collective=False,
     ) -> dict[ChoiceCaller, float]:
-        from torch._subclasses.fake_tensor import unset_fake_temporarily
-
-        # need to manually deactivate C++ FakeTensorMode here
-        with unset_fake_temporarily():
-            inputs = cls.get_inputs(
-                choices, input_nodes, layout, input_gen_fns, hint_override=hint_override
-            )
-            return cls.benchmark_choices(
-                choices,
-                inputs,
-                is_collective=is_collective,
-            )
+        inputs = cls.get_inputs(
+            choices, input_nodes, layout, input_gen_fns, hint_override=hint_override
+        )
+        return cls.benchmark_choices(
+            choices,
+            inputs,
+            is_collective=is_collective,
+        )
 
     @classmethod
     def benchmark_in_sub_process(

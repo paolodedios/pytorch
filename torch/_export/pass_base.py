@@ -84,7 +84,7 @@ class _ExportPassBaseDeprecatedDoNotUse(PassBase):
             elif is_fake_tensor(a):
                 if maybe_get_fake_constant(a) is None:
                     raise ExportPassBaseError(f"Cannot add {a} to graph.")
-                a = a.constant
+                a = maybe_get_fake_constant(a)
             node = super().create_arg(a)
             if (
                 isinstance(a, torch.Tensor)
@@ -480,7 +480,7 @@ class _ExportPassBaseDeprecatedDoNotUse(PassBase):
             if is_fake_tensor(i):
                 if fake_tensor_mode is not None and fake_tensor_mode is not maybe_get_fake_mode(i):
                     raise AssertionError("Multiple fake tensor mode detected.")
-                fake_tensor_mode = i.fake_mode
+                fake_tensor_mode = maybe_get_fake_mode(i)
         if fake_tensor_mode is None:
             self.tracer.fake_tensor_mode = FakeTensorMode(allow_non_fake_inputs=True)
             fake_tensor_mode = nullcontext()  # type: ignore[assignment]

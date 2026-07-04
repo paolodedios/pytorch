@@ -2786,7 +2786,7 @@ class VariableBuilder:
         return LazyConstantVariable.create(value, source=self.source)
 
     def assert_not_wrapped_by_this_graph(self, value: torch.Tensor) -> None:
-        if maybe_get_fake_mode(value) is (self.tx.cpp_fake_mode or self.tx.fake_mode):
+        if maybe_get_fake_mode(value) is self.tx.fake_mode:
             raise InternalTorchDynamoError(
                 "Cannot wrap a Tensor that has already been",
                 "wrapped by this instance of Dynamo",
@@ -3087,9 +3087,7 @@ class VariableBuilder:
         # Note: this information is conveyed via subclass_type now
         # type: ignore[attr-defined]
         fake_tensor_value = tensor_variable.proxy.node.meta["example_value"]
-        if maybe_get_fake_mode(fake_tensor_value) is not (
-            self.tx.cpp_fake_mode or self.tx.fake_mode
-        ):
+        if maybe_get_fake_mode(fake_tensor_value) is not self.tx.fake_mode:
             raise InternalTorchDynamoError("Wrapped Tensor must be this graph's fake")
 
         grapharg = GraphArg(source, value, False, fake_tensor_value)
@@ -3764,7 +3762,7 @@ def _wrap_fx_preexisting_tensor(
     # See NOTE: [Deferring tensor pack/unpack hooks until runtime]
     with torch._dynamo.utils._disable_saved_tensors_hooks_during_tracing():
         # Handle recursive calls here
-        if maybe_get_fake_mode(tensor) is (tx.cpp_fake_mode or tx.fake_mode):
+        if maybe_get_fake_mode(tensor) is tx.fake_mode:
             pass
         else:
             cache_real_value_when_export(tx, proxy, tensor)
@@ -3793,8 +3791,9 @@ def _wrap_fx_preexisting_tensor(
             # pyrefly: ignore [missing-argument]
             tensor = wrap_to_fake_tensor_and_record(tensor, tx=tx, **kwargs)
 
-        if tensor.device.type != "meta" and maybe_get_fake_mode(tensor) is not (
-            tx.cpp_fake_mode or tx.fake_mode
+        if (
+            tensor.device.type != "meta"
+            and maybe_get_fake_mode(tensor) is not tx.fake_mode
         ):
             raise InternalTorchDynamoError(
                 "`tensor` needs to be a `FakeTensor`"
@@ -4167,7 +4166,7 @@ def get_specialized_props(
 ) -> dict[str, Any]:
     specialized_props = target_cls.specialize(example_value)
     # TODO: not sure about this fake mode test
-    if maybe_get_fake_mode(example_value) is (tx.cpp_fake_mode or tx.fake_mode):
+    if maybe_get_fake_mode(example_value) is tx.fake_mode:
         if subclass_type:
             tensor_type = subclass_type
         elif isinstance(example_value, torch.nn.Parameter):

@@ -92,10 +92,10 @@ from torch._inductor.utils import (
     count_tangents,
     fresh_cache,
     get_all_devices,
+    get_fake_mode,
     get_static_bw_input_idxs,
     InputType,
     is_gpu,
-    fake_mode_context,
     should_assume_input_aligned,
     should_use_remote_fx_graph_cache,
     tensor_is_aligned,
@@ -732,7 +732,7 @@ def fake_tensor_prop(
     with enable_python_dispatcher():
         fake_mode = detect_fake_mode(example_inputs)
         if not fake_mode:
-            fake_mode = torch._subclasses.FakeTensorMode(allow_non_fake_inputs=True)
+            fake_mode = get_fake_mode(allow_non_fake_inputs=True)
             FakeTensorProp(gm, mode=fake_mode).propagate(*example_inputs)
         else:
             ctx = (
@@ -1397,6 +1397,11 @@ class _InProcessFxCompile(FxCompile):
             # .view() call.
             view_to_reshape(gm)
 
+            prev_cpp_fake_mode = (
+                CppFakeTensorMode._get_active_cpp_fake_tensor_mode()
+                if config.use_cpp_fake_tensor
+                else None
+            )
             with dynamo_timed(
                 "additional_fake_tensor_prop", log_pt2_compile_event=True
             ):
@@ -1409,15 +1414,8 @@ class _InProcessFxCompile(FxCompile):
 
             if config.use_cpp_fake_tensor:
                 cpp_fake_mode = CppFakeTensorMode._get_active_cpp_fake_tensor_mode()
-                if cpp_fake_mode is None:
-                    cpp_fake_mode = CppFakeTensorMode.create_cpp_fake_tensor_mode(
-                        fake_mode.fake_tensor_converter, fake_mode.shape_env
-                    )
-                    cpp_fake_mode.set_allow_fallback_kernels(
-                        fake_mode.allow_fallback_kernels
-                    )
+                if cpp_fake_mode is not None and cpp_fake_mode is not prev_cpp_fake_mode:
                     cpp_fake_stack.callback(torch._C._exit_fake_tensor_mode)
-                cpp_fake_stack.enter_context(cpp_fake_mode.activated())
 
             _recursive_record_original_output_strides(gm)
 
@@ -3197,7 +3195,7 @@ def _compile_fx_main(
                         fake_mode.allow_fallback_kernels
                     )
                     cpp_fake_stack.callback(torch._C._exit_fake_tensor_mode)
-                cpp_fake_stack.enter_context(cpp_fake_mode.activated())
+                fake_mode = cpp_fake_mode
 
             with (
                 V.set_fake_mode(fake_mode),

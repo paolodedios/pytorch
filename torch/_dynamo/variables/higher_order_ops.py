@@ -5357,7 +5357,7 @@ class AutogradFunctionApplyVariable(VariableTracker):
         # Since there can be other ops like Triton kernels, which depends on python dispatcher, we have to enable it.
         # TODO - revisit if we need the python dispatcher
         with enable_python_dispatcher():
-            with tx.output.cpp_fake_mode or tx.output.fake_mode:
+            with tx.output.fake_mode:
                 fwd_freevars_args = [_get_fake_value(arg) for arg in fwd_freevars]
 
                 example_value = autograd_function_apply(
