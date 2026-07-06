@@ -17765,6 +17765,22 @@ class DynamoOpPromotionTests(torch._dynamo.test_case.TestCase):
         result = compiled(torch.randn(1024), 256)
         self.assertEqual(result, 4)
 
+    def test_variable_tracker_tp_name(self):
+        """Test VariableTracker.tp_name mirrors CPython's tp_name."""
+        from torch._dynamo.variables.constant import ConstantVariable
+
+        # Basic types - tp_name should match type.__name__
+        test_cases = [
+            (42, "int"),
+            ("hello", "str"),
+            (None, "NoneType"),
+            (..., "ellipsis"),
+        ]
+
+        for value, expected_tp_name in test_cases:
+            vt = ConstantVariable(value)
+            self.assertEqual(vt.tp_name, expected_tp_name)
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
