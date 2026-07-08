@@ -13,6 +13,7 @@ from numpy import inf
 import torch
 from torch.testing import make_tensor
 
+
 _ROCM_VERSION = (
     tuple(int(v) for v in torch.version.hip.split(".")[:2])
     if torch.version.hip
@@ -1255,7 +1256,11 @@ op_db: list[OpInfo] = [
         supports_fwgrad_bwgrad=True,
         # autogen .out exists but is not exercised here (mirrors linalg.matrix_exp).
         supports_out=False,
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         skips=(
             # The operator 'aten::linalg_matrix_sqrth' is not implemented for MPS.
             DecorateInfo(unittest.expectedFailure, "TestCommon", device_type="mps"),
@@ -1355,7 +1360,11 @@ op_db: list[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         gradcheck_nondet_tol=GRADCHECK_NONDET_TOL,
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         skips=(
             DecorateInfo(
                 unittest.skip("Skipped!"),
@@ -1420,7 +1429,11 @@ op_db: list[OpInfo] = [
                 active_if=TEST_WITH_ROCM and _ROCM_VERSION < (7, 14),
             ),
         ),
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
     ),
     OpInfo(
         "linalg.eigvals",
@@ -1476,7 +1489,11 @@ op_db: list[OpInfo] = [
         check_batched_gradgrad=False,
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         skips=(
             DecorateInfo(
                 unittest.skip("Skipped!"),
@@ -1732,7 +1749,11 @@ op_db: list[OpInfo] = [
         supports_forward_ad=True,
         supports_fwgrad_bwgrad=True,
         check_batched_grad=False,
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         skips=(
             DecorateInfo(
                 toleranceOverride({torch.float32: tol(atol=8e-5, rtol=2e-6)}),
@@ -1816,7 +1837,11 @@ op_db: list[OpInfo] = [
         aten_name="linalg_norm",
         op=torch.linalg.norm,
         dtypes=floating_and_complex_types_and(torch.float16, torch.bfloat16),
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         sample_inputs_func=sample_inputs_linalg_norm,
         supports_forward_ad=True,
         check_batched_forward_grad=False,
@@ -1848,7 +1873,11 @@ op_db: list[OpInfo] = [
         op=torch.linalg.norm,
         variant_test_name="subgradients_at_zero",
         dtypes=floating_and_complex_types_and(torch.float16, torch.bfloat16),
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         sample_inputs_func=partial(
             sample_inputs_linalg_norm, variant="subgradient_at_zero"
         ),
@@ -1881,7 +1910,11 @@ op_db: list[OpInfo] = [
         check_batched_forward_grad=False,
         check_batched_gradgrad=False,
         supports_fwgrad_bwgrad=True,
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         sample_inputs_func=sample_inputs_linalg_matrix_norm,
         skips=(
             DecorateInfo(
@@ -2563,7 +2596,11 @@ op_db: list[OpInfo] = [
         check_batched_grad=False,
         check_batched_gradgrad=False,
         sample_inputs_func=sample_inputs_svd,
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         skips=(
             DecorateInfo(
                 unittest.skip("Skipped!"),
@@ -2595,7 +2632,11 @@ op_db: list[OpInfo] = [
         # We're using at::allclose, which does not have a batching rule
         check_batched_gradgrad=False,
         sample_inputs_func=sample_inputs_linalg_svdvals,
-        decorators=[skipCUDAIfNoMagmaAndNoLinalgsolver, skipCPUIfNoLapack, with_tf32_off],
+        decorators=[
+            skipCUDAIfNoMagmaAndNoLinalgsolver,
+            skipCPUIfNoLapack,
+            with_tf32_off,
+        ],
         skips=(
             DecorateInfo(
                 unittest.skip("Skipped!"),
