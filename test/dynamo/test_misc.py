@@ -8851,6 +8851,22 @@ not ___dict_contains('cccccccc', G['sys'].modules)""",
         self.assertEqual(result.shape, expected.shape)
         self.assertEqual(result, expected)
 
+    def test_python_type_name_mirrors_cpython_tp_name(self):
+        """Test python_type_name() mirrors CPython's tp_name slot."""
+        from torch._dynamo.variables.constant import ConstantVariable
+
+        # python_type_name() should return CPython's tp_name string
+        test_cases = [
+            (42, "int"),
+            ("hello", "str"),
+            (None, "NoneType"),
+            (..., "ellipsis"),
+        ]
+
+        for value, expected_tp_name in test_cases:
+            vt = ConstantVariable(value)
+            self.assertEqual(vt.python_type_name(), expected_tp_name)
+
     def test_guard_failure_fn(self):
         def fn(x, y, k):
             x = x + 1
@@ -17764,22 +17780,6 @@ class DynamoOpPromotionTests(torch._dynamo.test_case.TestCase):
         compiled = torch.compile(fn, backend="eager", dynamic=True, fullgraph=True)
         result = compiled(torch.randn(1024), 256)
         self.assertEqual(result, 4)
-
-    def test_variable_tracker_tp_name(self):
-        """Test VariableTracker.tp_name mirrors CPython's tp_name."""
-        from torch._dynamo.variables.constant import ConstantVariable
-
-        # Basic types - tp_name should match type.__name__
-        test_cases = [
-            (42, "int"),
-            ("hello", "str"),
-            (None, "NoneType"),
-            (..., "ellipsis"),
-        ]
-
-        for value, expected_tp_name in test_cases:
-            vt = ConstantVariable(value)
-            self.assertEqual(vt.tp_name, expected_tp_name)
 
 
 if __name__ == "__main__":
