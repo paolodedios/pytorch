@@ -1686,8 +1686,8 @@ class TestMPS(TestCaseMPS):
 
         self.assertEqual(out_cpu, out_mps)
 
-    @parametrize("shape", [(65537, 2, 32), (2, 65537, 2, 32), (257, 256, 2, 32)])
-    @parametrize("bias_shape", [None, (64,), (2, 64)])
+    @parametrize("shape", [(65537, 17, 32), (2, 65537, 17, 32), (257, 256, 2, 32)])
+    @parametrize("bias_shape", [None, (64,), (1, 64)])
     def test_linear_large_batch(self, shape, bias_shape):
         # Regression test for https://github.com/pytorch/pytorch/issues/189495
         # The fused matmul+bias kernel truncates the innermost batch-dim index to

@@ -143,9 +143,10 @@ Tensor _mps_linear(const Tensor& input, const Tensor& weight_arg, const std::opt
     // See https://github.com/pytorch/pytorch/issues/189495
     const auto mat_numel = input.dim() > 2 ? input.size(-1) * input.size(-2) : 0;
     const bool batch_exceeds_u16 = mat_numel > 0 && input.numel() / mat_numel > 65536;
-    const bool add_bias_after = is_bias_defined && (decompose_bias || (batch_exceeds_u16 && bias.dim() > 1));
+    const bool needs_flatten = needs_nd_workaround(input) || batch_exceeds_u16;
+    const bool add_bias_after = is_bias_defined && (decompose_bias || (needs_flatten && bias.dim() > 1));
     const Tensor kernel_bias = add_bias_after ? Tensor() : bias;
-    if ((needs_nd_workaround(input) || batch_exceeds_u16) && (!kernel_bias.defined() || kernel_bias.dim() <= 1)) {
+    if (needs_flatten) {
       auto input2d = input.flatten(0, -2);
       auto output2d = output.flatten(0, -2);
       _mps_linear_nograph(input2d, weight, kernel_bias, output2d);
