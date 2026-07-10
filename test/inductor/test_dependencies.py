@@ -7,6 +7,7 @@ from torch._inductor.dependencies import MemoryDep
 from torch._inductor.graph import GraphLowering
 from torch._inductor.ir import (
     Buffer,
+    DtypeView,
     ExternKernel,
     FixedLayout,
     Pointwise,
@@ -42,6 +43,20 @@ class TestDependencies(InductorTestCase):
     def tearDown(self):
         self._stack.close()
         super().tearDown()
+
+    def test_dtype_view_make_indexer_preserves_underlying_indexing(self):
+        base = Buffer(
+            name="base",
+            layout=FixedLayout(
+                torch.device(GPU_TYPE), torch.uint8, size=[2, 3], stride=[3, 1]
+            ),
+        )
+        dtype_view = DtypeView(data=base, target_dtype=torch.float8_e8m0fnu)
+        i0 = sympy_index_symbol("i0")
+        i1 = sympy_index_symbol("i1")
+
+        self.assertEqual(dtype_view.make_reindexer()([i0, i1]), [i0, i1])
+        self.assertEqual(dtype_view.make_indexer()([i0, i1]), 3 * i0 + i1)
 
     def test_bucketize_dependencies_no_sorter(self):
         offsets = self._create_buffer("offsets", (1025,), torch.int32)
