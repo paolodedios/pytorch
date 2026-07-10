@@ -80,7 +80,12 @@ from ..utils import (
     tensortype_to_dtype,
     unpack_iterable,
 )
-from .base import AsPythonConstantNotImplementedError, ValueMutationNew, VariableTracker
+from .base import (
+    AsPythonConstantNotImplementedError,
+    NO_SUCH_SUBOBJ,
+    ValueMutationNew,
+    VariableTracker,
+)
 from .constant import ConstantVariable, FakeIdVariable
 from .dicts import (
     ConstDictVariable,
@@ -130,7 +135,11 @@ from .tensor import (
     TensorVariable,
     UnspecializedPythonVariable,
 )
-from .user_defined import UserDefinedObjectVariable, UserDefinedVariable
+from .user_defined import (
+    is_standard_setattr,
+    UserDefinedObjectVariable,
+    UserDefinedVariable,
+)
 
 
 if TYPE_CHECKING:
@@ -139,6 +148,13 @@ if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslatorBase
 
 log = logging.getLogger(__name__)
+
+_GENERIC_STORE_ATTR_SAFE_SETATTRS = (
+    type.__setattr__,
+    types.ModuleType.__setattr__,
+    torch.nn.Module.__setattr__,
+    torch.Tensor.__setattr__,
+)
 
 
 IN_PLACE_DESUGARING_MAP = {
@@ -3340,6 +3356,25 @@ class SetAttrBuiltinVariable(BaseBuiltinVariable):
             and name_var.is_python_constant()
         ):
             name = name_var.as_python_constant()
+            real_obj = obj.get_real_python_backed_value()
+            real_setattr = inspect.getattr_static(type(real_obj), "__setattr__", None)
+            if (
+                real_obj is not NO_SUCH_SUBOBJ
+                and not is_standard_setattr(real_setattr)
+                and real_setattr not in _GENERIC_STORE_ATTR_SAFE_SETATTRS
+            ):
+                unimplemented(
+                    gb_type="setattr() on object with custom __setattr__",
+                    context=f"setattr({obj}, {name}, {val})",
+                    explanation=(
+                        "Dynamo does not yet support tracing setattr() on "
+                        "objects that override __setattr__."
+                    ),
+                    hints=[
+                        "Move the setattr() call outside the torch.compile region.",
+                        *graph_break_hints.SUPPORTABLE,
+                    ],
+                )
             if obj.is_tensor():
                 from .builder import wrap_fx_proxy
 

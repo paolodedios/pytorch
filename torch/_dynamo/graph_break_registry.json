@@ -3609,6 +3609,17 @@
       ]
     }
   ],
+  "GB6818": [
+    {
+      "Gb_type": "setattr() on object with custom __setattr__",
+      "Context": "setattr({obj}, {name}, {val})",
+      "Explanation": "Dynamo does not yet support tracing setattr() on objects that override __setattr__.",
+      "Hints": [
+        "Move the setattr() call outside the torch.compile region.",
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
   "GB0239": [
     {
       "Gb_type": "Invalid use of pytree_flatten with nonstrict_trace-ed function",
@@ -4989,6 +5000,26 @@
       "Explanation": "Expected xs to be a list/tuple but got {xs.python_type()}",
       "Hints": [
         "This is likely to be a Dynamo bug. Please report an issue to PyTorch."
+      ]
+    }
+  ],
+  "GB6815": [
+    {
+      "Gb_type": "ContextVar mutation not supported",
+      "Context": "ContextVar('{self.cv_obj.name}').{name}()",
+      "Explanation": "ContextVar.{name}() is not yet supported inside torch.compile. Move the .{name}() call outside the compiled region.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
+      ]
+    }
+  ],
+  "GB6066": [
+    {
+      "Gb_type": "ContextVar.get() with non-constant default",
+      "Context": "ContextVar('{self.cv_obj.name}').get(...)",
+      "Explanation": "ContextVar.get() default argument must be a compile-time constant inside torch.compile.",
+      "Hints": [
+        "It may be possible to write Dynamo tracing rules for this code. Please report an issue to PyTorch if you encounter this graph break often and it is causing performance issues."
       ]
     }
   ],
