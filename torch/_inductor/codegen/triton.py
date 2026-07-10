@@ -6454,13 +6454,19 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         return result
 
     def imports_for_benchmark_kernel(self):
+        # dedent the template BEFORE substituting get_raw_stream: on backends
+        # whose import_get_raw_stream_as returns a multi-line snippet (e.g. the
+        # CPU override, which MTIA uses since it lowers with device='cpu', emits
+        # `def get_raw_stream(_):\n    return 0`), formatting first would inject a
+        # column-0 line that collapses textwrap.dedent's common prefix to 0,
+        # leaving the surrounding imports indented and raising IndentationError.
         return textwrap.dedent(
             """
             from torch._dynamo.testing import rand_strided
             {}
             import torch
-        """.format(V.graph.device_ops.import_get_raw_stream_as("get_raw_stream"))
-        )
+            """
+        ).format(V.graph.device_ops.import_get_raw_stream_as("get_raw_stream"))
 
     def _get_heuristic(self):
         if self.fixed_config:
