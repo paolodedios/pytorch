@@ -78,7 +78,7 @@ jobs:
     name: manywheel-cpu-build
     if: ${{ !failure() && !cancelled() && github.repository_owner == 'pytorch' }}
     needs: get-docker-tag
-    runs-on: "linux.12xlarge.memory.ephemeral"
+    runs-on: "mt-rel-l-x86iavx512-44-340"
     timeout-minutes: 280
     container:
       image: pytorch/manylinux2_28-builder:cpu${{ needs.get-docker-tag.outputs.docker_image_suffix }}
@@ -166,7 +166,7 @@ jobs:
     name: manywheel-cuda-cu126-build
     if: ${{ !failure() && !cancelled() && github.repository_owner == 'pytorch' }}
     needs: get-docker-tag
-    runs-on: "linux.12xlarge.memory.ephemeral"
+    runs-on: "mt-rel-l-x86iavx512-44-340"
     timeout-minutes: 280
     container:
       image: pytorch/manylinux2_28-builder:cuda12.6${{ needs.get-docker-tag.outputs.docker_image_suffix }}
@@ -255,7 +255,7 @@ jobs:
     name: manywheel-cuda-cu130-build
     if: ${{ !failure() && !cancelled() && github.repository_owner == 'pytorch' }}
     needs: get-docker-tag
-    runs-on: "linux.12xlarge.memory.ephemeral"
+    runs-on: "mt-rel-l-x86iavx512-44-340"
     timeout-minutes: 280
     container:
       image: pytorch/manylinux2_28-builder:cuda13.0${{ needs.get-docker-tag.outputs.docker_image_suffix }}
@@ -344,7 +344,7 @@ jobs:
     name: manywheel-cuda-cu132-build
     if: ${{ !failure() && !cancelled() && github.repository_owner == 'pytorch' }}
     needs: get-docker-tag
-    runs-on: "linux.12xlarge.memory.ephemeral"
+    runs-on: "mt-rel-l-x86iavx512-44-340"
     timeout-minutes: 280
     container:
       image: pytorch/manylinux2_28-builder:cuda13.2${{ needs.get-docker-tag.outputs.docker_image_suffix }}
@@ -664,7 +664,7 @@ jobs:
       DOCKER_IMAGE_TAG_PREFIX: ${{ matrix.docker_image_tag_prefix }}${{ needs.get-docker-tag.outputs.docker_image_suffix }}
       DESIRED_PYTHON: ${{ matrix.desired_python }}
       runner_prefix: ""
-      runs_on: linux.12xlarge.memory.ephemeral
+      runs_on: mt-rel-l-x86iavx512-44-340
       use_container_directive: true
       ALPINE_IMAGE: "308535385114.dkr.ecr.us-east-1.amazonaws.com/tool/alpine"
       PYTORCH_EXTRA_INSTALL_REQUIREMENTS: ${{ matrix.pytorch_extra_install_requirements }}
@@ -690,7 +690,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cpu"
             build_name: "manywheel-py3_10-cpu"
-            runs_on: "linux.4xlarge"
+            runs_on: "mt-l-x86iavx512-16-128"
           - desired_python: "3.10"
             desired_cuda: "cu126"
             gpu_arch_version: "12.6"
@@ -698,7 +698,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda12.6"
             build_name: "manywheel-py3_10-cuda12_6"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.10"
             desired_cuda: "cu130"
             gpu_arch_version: "13.0"
@@ -706,7 +706,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.0"
             build_name: "manywheel-py3_10-cuda13_0"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.10"
             desired_cuda: "cu132"
             gpu_arch_version: "13.2"
@@ -714,7 +714,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.2"
             build_name: "manywheel-py3_10-cuda13_2"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.11"
             desired_cuda: "cpu"
             gpu_arch_version: ""
@@ -722,7 +722,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cpu"
             build_name: "manywheel-py3_11-cpu"
-            runs_on: "linux.4xlarge"
+            runs_on: "mt-l-x86iavx512-16-128"
           - desired_python: "3.11"
             desired_cuda: "cu126"
             gpu_arch_version: "12.6"
@@ -730,7 +730,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda12.6"
             build_name: "manywheel-py3_11-cuda12_6"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.11"
             desired_cuda: "cu130"
             gpu_arch_version: "13.0"
@@ -738,7 +738,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.0"
             build_name: "manywheel-py3_11-cuda13_0"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.11"
             desired_cuda: "cu132"
             gpu_arch_version: "13.2"
@@ -746,7 +746,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.2"
             build_name: "manywheel-py3_11-cuda13_2"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.12"
             desired_cuda: "cpu"
             gpu_arch_version: ""
@@ -754,7 +754,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cpu"
             build_name: "manywheel-py3_12-cpu"
-            runs_on: "linux.4xlarge"
+            runs_on: "mt-l-x86iavx512-16-128"
           - desired_python: "3.12"
             desired_cuda: "cu126"
             gpu_arch_version: "12.6"
@@ -762,7 +762,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda12.6"
             build_name: "manywheel-py3_12-cuda12_6"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.12"
             desired_cuda: "cu130"
             gpu_arch_version: "13.0"
@@ -770,7 +770,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.0"
             build_name: "manywheel-py3_12-cuda13_0"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.12"
             desired_cuda: "cu132"
             gpu_arch_version: "13.2"
@@ -778,7 +778,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.2"
             build_name: "manywheel-py3_12-cuda13_2"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.13"
             desired_cuda: "cpu"
             gpu_arch_version: ""
@@ -786,7 +786,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cpu"
             build_name: "manywheel-py3_13-cpu"
-            runs_on: "linux.4xlarge"
+            runs_on: "mt-l-x86iavx512-16-128"
           - desired_python: "3.13"
             desired_cuda: "cu126"
             gpu_arch_version: "12.6"
@@ -794,7 +794,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda12.6"
             build_name: "manywheel-py3_13-cuda12_6"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.13"
             desired_cuda: "cu130"
             gpu_arch_version: "13.0"
@@ -802,7 +802,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.0"
             build_name: "manywheel-py3_13-cuda13_0"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.13"
             desired_cuda: "cu132"
             gpu_arch_version: "13.2"
@@ -810,7 +810,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.2"
             build_name: "manywheel-py3_13-cuda13_2"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.14"
             desired_cuda: "cpu"
             gpu_arch_version: ""
@@ -818,7 +818,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cpu"
             build_name: "manywheel-py3_14-cpu"
-            runs_on: "linux.4xlarge"
+            runs_on: "mt-l-x86iavx512-16-128"
           - desired_python: "3.14"
             desired_cuda: "cu126"
             gpu_arch_version: "12.6"
@@ -826,7 +826,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda12.6"
             build_name: "manywheel-py3_14-cuda12_6"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.14"
             desired_cuda: "cu130"
             gpu_arch_version: "13.0"
@@ -834,7 +834,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.0"
             build_name: "manywheel-py3_14-cuda13_0"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.14"
             desired_cuda: "cu132"
             gpu_arch_version: "13.2"
@@ -842,7 +842,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.2"
             build_name: "manywheel-py3_14-cuda13_2"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.14t"
             desired_cuda: "cpu"
             gpu_arch_version: ""
@@ -850,7 +850,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cpu"
             build_name: "manywheel-py3_14t-cpu"
-            runs_on: "linux.4xlarge"
+            runs_on: "mt-l-x86iavx512-16-128"
           - desired_python: "3.14t"
             desired_cuda: "cu126"
             gpu_arch_version: "12.6"
@@ -858,7 +858,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda12.6"
             build_name: "manywheel-py3_14t-cuda12_6"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.14t"
             desired_cuda: "cu130"
             gpu_arch_version: "13.0"
@@ -866,7 +866,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.0"
             build_name: "manywheel-py3_14t-cuda13_0"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.14t"
             desired_cuda: "cu132"
             gpu_arch_version: "13.2"
@@ -874,7 +874,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.2"
             build_name: "manywheel-py3_14t-cuda13_2"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.15"
             desired_cuda: "cpu"
             gpu_arch_version: ""
@@ -882,7 +882,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cpu"
             build_name: "manywheel-py3_15-cpu"
-            runs_on: "linux.4xlarge"
+            runs_on: "mt-l-x86iavx512-16-128"
           - desired_python: "3.15"
             desired_cuda: "cu126"
             gpu_arch_version: "12.6"
@@ -890,7 +890,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda12.6"
             build_name: "manywheel-py3_15-cuda12_6"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.15"
             desired_cuda: "cu130"
             gpu_arch_version: "13.0"
@@ -898,7 +898,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.0"
             build_name: "manywheel-py3_15-cuda13_0"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.15"
             desired_cuda: "cu132"
             gpu_arch_version: "13.2"
@@ -906,7 +906,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.2"
             build_name: "manywheel-py3_15-cuda13_2"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.15t"
             desired_cuda: "cpu"
             gpu_arch_version: ""
@@ -914,7 +914,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cpu"
             build_name: "manywheel-py3_15t-cpu"
-            runs_on: "linux.4xlarge"
+            runs_on: "mt-l-x86iavx512-16-128"
           - desired_python: "3.15t"
             desired_cuda: "cu126"
             gpu_arch_version: "12.6"
@@ -922,7 +922,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda12.6"
             build_name: "manywheel-py3_15t-cuda12_6"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.15t"
             desired_cuda: "cu130"
             gpu_arch_version: "13.0"
@@ -930,7 +930,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.0"
             build_name: "manywheel-py3_15t-cuda13_0"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
           - desired_python: "3.15t"
             desired_cuda: "cu132"
             gpu_arch_version: "13.2"
@@ -938,7 +938,7 @@ jobs:
             docker_image: "manylinux2_28-builder"
             docker_image_tag_prefix: "cuda13.2"
             build_name: "manywheel-py3_15t-cuda13_2"
-            runs_on: "linux.g4dn.4xlarge.nvidia.gpu"
+            runs_on: "mt-l-x86iavx512-29-115-t4"
     with:
       PYTORCH_ROOT: /pytorch
       PACKAGE_TYPE: manywheel
