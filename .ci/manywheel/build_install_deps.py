@@ -43,6 +43,9 @@ def pip_install(*args: str) -> None:
 
 def numpy_pin() -> str:
     tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+    # ROCm's manylinux image ships numpy 2.5.0 prebuilt for cp315 (no cp315 wheel).
+    if tag == "cp315" and "rocm" in os.environ.get("DESIRED_CUDA", ""):
+        return "2.5.0"
     for prefix, version in NUMPY_PINS:
         if tag.startswith(prefix):
             return version
@@ -55,7 +58,11 @@ def main() -> None:
     args = parser.parse_args()
 
     os.chdir(args.package_dir)
-    pip_install("-qU", "-r", "requirements-build.txt")
+    reqs = ["-qU", "-r", "requirements-build.txt"]
+    # Pin numpy on ROCm cp315 so the -U upgrade can't pull a wheel-less release.
+    if numpy_pin() == "2.5.0":
+        reqs.append("numpy==2.5.0")
+    pip_install(*reqs)
     # The CUPTI field-id codegen (tools/gen_cupti_stubs.py) parses cupti_activity.h with
     # libclang's python bindings. Install libclang only when a sufficiently-new CUPTI header
     # is actually resolvable (find_cupti_header applies the CUPTI_API_VERSION floor) -- so
