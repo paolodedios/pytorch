@@ -2263,6 +2263,14 @@ def cat(inputs, dim=0):
         inputs = valid_inputs
 
     dim = _validate_dim(inputs[0], dim, 0)
+
+    if config.fallback_dynamic_cat and any(
+        isinstance(s, sympy.Expr) and s.free_symbols
+        for inp in inputs
+        for s in inp.get_size()[1:]
+    ):
+        return fallback_handler(aten.cat.default)(inputs, dim)
+
     dtype = get_promoted_dtype(
         *inputs, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
     )
