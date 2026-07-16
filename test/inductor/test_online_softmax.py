@@ -123,6 +123,39 @@ class TestOnlineSoftmax(TestCase):
         wrapper_code = self.get_softmax_wrapper(1024)
         self.assertEqual(wrapper_code.count("for r0_offset in"), 0)
 
+    @inductor_config.patch(
+        {
+            "triton.persistent_reductions": False,
+            "split_reductions": False,
+            "triton.scalar_reduction_accumulators": True,
+        }
+    )
+    def test_scalar_acc_reduction_codegen(self):
+        """
+        A simple associative reduction (sum) over a long row with few loads
+        takes the scalar-accumulator path: the accumulator is [XBLOCK]-shaped
+        (not [XBLOCK, R0_BLOCK]) and the reduction happens inside the loop
+        (tl.sum(..., 1)) rather than once over the full tile after the loop.
+        Numerics must still match eager.
+        """
+
+        def f(x):
+            return x.sum(dim=-1)
+
+        # long reduction dim, single load -> num_load <= 3
+        x = torch.randn(1024, 8192, dtype=torch.float32, device=GPU_TYPE)
+        opt_f = torch.compile(f)
+        act, (code,) = run_and_get_code(opt_f, x)
+
+        self.assertTrue(same(f(x), act, tol=1e-3))
+        self.assertEqual(code.count("for r0_offset in"), 1)
+        # scalar accumulator is per-x-element only (no R0_BLOCK dim kept alive)
+        self.assertIn("tl.full([XBLOCK]", code)
+        self.assertNotIn("tl.full([XBLOCK, R0_BLOCK]", code)
+        # the reduction is folded into the loop; there is no post-loop
+        # tl.sum over the full accumulator tile
+        self.assertNotIn("tl.sum(_tmp", code)
+
     @inductor_config.patch("triton.persistent_reductions", False)
     def test_sdpa(self):
         """

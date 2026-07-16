@@ -37,6 +37,21 @@ def _get_tiling_scores(
     return inductor_meta.get("tiling_scores") or dict.fromkeys(size_hints, 1)
 
 
+def _scalar_acc_configs_without_cd(inductor_meta: dict[str, Any]) -> bool:
+    """
+    Whether large-R0_BLOCK reduction configs for scalar-accumulator kernels are
+    included in the default autotune candidate set (instead of only under
+    coordinate descent tuning).  Prefer the value recorded in inductor_meta if
+    present; otherwise read the live config (env-overridable via
+    TORCHINDUCTOR_SCALAR_ACC_CONFIGS_WITHOUT_CD).
+    """
+    if "scalar_acc_configs_without_cd" in inductor_meta:
+        return bool(inductor_meta["scalar_acc_configs_without_cd"])
+    from torch._inductor import config as inductor_config
+
+    return bool(getattr(inductor_config, "scalar_acc_configs_without_cd", True))
+
+
 def _match_target_block_product(
     size_hints,
     tiling_scores,
@@ -210,7 +225,41 @@ class ReductionHeuristic(CodegenConfigHeuristics):
 
         device_major = triton_meta["device"].major
         warp_size = triton_meta["device"].warp_size_or_default
-        MAX_R0_BLOCK = 1024 if device_major is not None and device_major >= 10 else 2048
+
+        # Scalar reduction accumulators (see config.triton.scalar_reduction_accumulators
+        # and the codegen in codegen/triton.py) keep only [XBLOCK]-sized state
+        # across the reduction loop instead of the full [XBLOCK, R0_BLOCK] tile.
+        # With that low register pressure we can afford a larger R0_BLOCK to cut
+        # the number of loop iterations, which is a large win for online softmax
+        # over long rows.  A kernel benefits when it has few loads+reductions or
+        # is an online softmax.
+        has_online_softmax = inductor_meta.get("has_online_softmax", False)
+        has_scalar_acc = loads_and_red <= 3 or has_online_softmax
+        scalar_acc_without_cd = _scalar_acc_configs_without_cd(inductor_meta)
+        if scalar_acc_without_cd:
+            # Large-R0_BLOCK configs are in the DEFAULT autotune candidate set.
+            # The old CD-gate and 131072 rnumel ceiling were calibrated against
+            # the pre-fast-combine online softmax cost model; with the cheap
+            # combine, large-R0 wins outright on large-rnumel rows (measured on
+            # B200: softmax/cross-entropy over 256K-element rows ~1.9x faster
+            # than the R0_BLOCK<=1024 default, and it still wins at 512K/1M).
+            scalar_acc_rnumel_max = 1048576
+        else:
+            # Legacy: only consider large-R0_BLOCK configs under coordinate
+            # descent tuning, capped at rnumel <= 131072 to avoid interfering
+            # with split reduction heuristics for very large reductions.
+            has_scalar_acc = has_scalar_acc and inductor_meta.get(
+                "coordinate_descent_tuning", False
+            )
+            scalar_acc_rnumel_max = 131072
+
+        if has_scalar_acc and 8192 <= rnumel <= scalar_acc_rnumel_max:
+            MAX_R0_BLOCK = 4096
+        elif device_major is not None and device_major >= 10:
+            # Prefer smaller MAX_R0_BLOCK for Blackwell by default
+            MAX_R0_BLOCK = 1024
+        else:
+            MAX_R0_BLOCK = 2048
         if size_hints["x"] >= 1024 and loads_and_red >= 10:
             MAX_R0_BLOCK = 1024
             register_intensive = True
@@ -290,6 +339,25 @@ class ReductionHeuristic(CodegenConfigHeuristics):
             register_intensive,
         )
 
+        # Extra large-R0_BLOCK candidates for scalar-accumulator kernels.  With
+        # the fast online-softmax combine, looped reductions over long
+        # contiguous rows are fastest with very large R0_BLOCK and moderate
+        # warp counts (measured on B200, rnumel=262144: R0=16384/8 warps and
+        # R0=8192/4 warps beat the R0=4096/16 warps starting point).  Without
+        # these candidates the default (non-CD) autotune can never reach them
+        # since the ReductionHint.INNER path returns a single config.
+        scalar_acc_configs: list[Config] = []
+        if (
+            scalar_acc_without_cd
+            and has_scalar_acc
+            and 8192 <= rnumel <= scalar_acc_rnumel_max
+            and "y" not in size_hints
+        ):
+            scalar_acc_configs = [
+                make_config(1, min(rnumel, 8192), num_warps=4),
+                make_config(1, min(rnumel, 16384), num_warps=8),
+            ]
+
         configs: list[Config] = []
 
         if inductor_meta.get("add_persistent_rblock") and loads_and_red <= 8:
@@ -308,20 +376,24 @@ class ReductionHeuristic(CodegenConfigHeuristics):
         elif max_autotune_enabled:
             pass
         elif reduction_hint == ReductionHint.INNER:
-            return configs + [contiguous_config]
+            return configs + [contiguous_config] + scalar_acc_configs
         elif reduction_hint == ReductionHint.OUTER:
             return configs + [outer_config]
         elif reduction_hint == ReductionHint.OUTER_TINY:
             return configs + [tiny_config]
 
-        result_configs = configs + [
-            contiguous_config,
-            outer_config,
-            tiny_config,
-            make_config(64, 64),
-            make_config(8, 512),
-            make_config(64, 4, num_warps=8),
-        ]
+        result_configs = (
+            configs
+            + [
+                contiguous_config,
+                outer_config,
+                tiny_config,
+                make_config(64, 64),
+                make_config(8, 512),
+                make_config(64, 4, num_warps=8),
+            ]
+            + scalar_acc_configs
+        )
 
         return self._finalize_configs(
             result_configs, make_config, size_hints, inductor_meta
