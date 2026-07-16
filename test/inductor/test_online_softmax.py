@@ -156,6 +156,36 @@ class TestOnlineSoftmax(TestCase):
         # tl.sum over the full accumulator tile
         self.assertNotIn("tl.sum(_tmp", code)
 
+    @inductor_config.patch(
+        {
+            "triton.persistent_reductions": False,
+            "split_reductions": False,
+            "triton.scalar_reduction_accumulators": True,
+        }
+    )
+    def test_scalar_acc_reduction_num_load_gate(self):
+        """
+        The scalar accumulator path is gated on num_load <= 3.  A reduction
+        with many loads falls back to the vector accumulator ([XBLOCK, R0_BLOCK]
+        with a post-loop tl.sum) so bandwidth-bound kernels don't pay the
+        per-iteration cross-warp sync.  Numerics must match either way.
+        """
+
+        def f(a, b, c, d, e):
+            return (a + b + c + d + e).sum(dim=-1)
+
+        args = [
+            torch.randn(1024, 8192, dtype=torch.float32, device=GPU_TYPE)
+            for _ in range(5)
+        ]
+        opt_f = torch.compile(f)
+        act, (code,) = run_and_get_code(opt_f, *args)
+
+        self.assertTrue(same(f(*args), act, tol=1e-3))
+        # num_load == 5 > 3: vector accumulator, reduced once after the loop
+        self.assertIn("tl.full([XBLOCK, R0_BLOCK]", code)
+        self.assertIn("tl.sum(_tmp", code)
+
     @inductor_config.patch("triton.persistent_reductions", False)
     def test_sdpa(self):
         """
