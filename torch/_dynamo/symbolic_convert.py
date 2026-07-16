@@ -6025,15 +6025,8 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
         try:
             sub_locals = func.bind_args(parent, args, kwargs)
         except TypeError as e:
-            unimplemented(
-                gb_type="failed to bind arguments when attempting to inline",
-                context=f"func='{func.get_name()}' {func.get_filename()}:{func.get_code().co_firstlineno}; "
-                f"args = {[arg.python_type() for arg in args]}; kwargs = {kwargs}",
-                explanation=f"Argument mismatch when attempting to trace function {func.get_name()}.",
-                hints=[
-                    *graph_break_hints.USER_ERROR,
-                ],
-                from_exc=e,
+            exc.raise_observed_exception(
+                TypeError, parent, args=[ConstantVariable.create(arg) for arg in e.args]
             )
 
         if sub_locals is None:
