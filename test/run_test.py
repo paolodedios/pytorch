@@ -468,12 +468,15 @@ TESTS_NOT_USING_GRADCHECK = [
     "test_ops",
     "test_ops_jit",
     "dynamo/test_recompile_ux",
+    "dynamo/test_misc",
     "inductor/test_compiled_optimizers",
     "inductor/test_cutlass_backend",
     "inductor/test_max_autotune",
     "inductor/test_select_algorithm",
     "inductor/test_smoke",
     "test_quantization",
+    "test_dataloader",
+    "test_autocast",
 ]
 
 
