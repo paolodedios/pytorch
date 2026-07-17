@@ -791,18 +791,6 @@ collective_benchmark_timeout = float(
 coordinate_descent_tuning = (
     os.environ.get("TORCHINDUCTOR_COORDINATE_DESCENT_TUNING") == "1"
 )
-
-# Include large-R0_BLOCK reduction configs for kernels with scalar accumulators
-# (low register pressure: few loads/reductions, or online softmax) in the
-# DEFAULT autotune candidate set, instead of only when coordinate descent
-# tuning is enabled. Also raises the rnumel ceiling for these configs.
-# Historically this knowledge was gated on coordinate_descent_tuning because
-# the pre-fast-combine cost model punished large R0_BLOCK; with the online
-# softmax fast-combine, large-R0 configs win outright on large-rnumel
-# reductions (e.g. softmax/cross-entropy over 256K-element rows).
-scalar_acc_configs_without_cd = (
-    os.environ.get("TORCHINDUCTOR_SCALAR_ACC_CONFIGS_WITHOUT_CD", "1") == "1"
-)
 coordinate_descent_check_all_directions = (
     os.environ.get("TORCHINDUCTOR_COORDINATE_DESCENT_CHECK_ALL_DIRECTIONS") == "1"
 )
@@ -2152,12 +2140,8 @@ class triton:
     # We should revisit this once we understand more of the source of register spills.
     spill_threshold: int = 32 if torch.version.hip else 16
 
-    # Use scalar accumulators for simple associative reductions (sum, max,
-    # min, prod, xor_sum, any) and for online softmax in non-persistent
-    # reduction loops.  This reduces register pressure by accumulating into a
-    # scalar per x-element instead of keeping the full R0_BLOCK tile alive
-    # across iterations, which enables much larger R0_BLOCK configs
-    # (2048/4096) without register spilling.
+    # Use scalar accumulators for simple associative reductions and online
+    # softmax in non-persistent CUDA reduction loops.
     scalar_reduction_accumulators = (
         os.environ.get("TORCHINDUCTOR_SCALAR_REDUCTION_ACCUMULATORS", "1") == "1"
     )

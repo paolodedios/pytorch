@@ -127,34 +127,31 @@ class TestOnlineSoftmax(TestCase):
         {
             "triton.persistent_reductions": False,
             "split_reductions": False,
-            "triton.scalar_reduction_accumulators": True,
         }
     )
-    def test_scalar_acc_reduction_codegen(self):
-        """
-        A simple associative reduction (sum) over a long row with few loads
-        takes the scalar-accumulator path: the accumulator is [XBLOCK]-shaped
-        (not [XBLOCK, R0_BLOCK]) and the reduction happens inside the loop
-        (tl.sum(..., 1)) rather than once over the full tile after the loop.
-        Numerics must still match eager.
-        """
+    @parametrize("scalar_accumulators", [False, True])
+    def test_scalar_acc_reduction_codegen(self, scalar_accumulators):
+        if GPU_TYPE != "cuda" or torch.version.hip is not None:
+            self.skipTest("scalar reduction accumulators are CUDA-only")
 
         def f(x):
             return x.sum(dim=-1)
 
-        # long reduction dim, single load -> num_load <= 3
         x = torch.randn(1024, 8192, dtype=torch.float32, device=GPU_TYPE)
-        opt_f = torch.compile(f)
-        act, (code,) = run_and_get_code(opt_f, x)
+        with inductor_config.patch(
+            "triton.scalar_reduction_accumulators", scalar_accumulators
+        ):
+            act, (code,) = run_and_get_code(torch.compile(f), x)
 
         self.assertTrue(same(f(x), act, tol=1e-3))
         self.assertEqual(code.count("for r0_offset in"), 1)
-        # scalar accumulator is per-x-element only (no R0_BLOCK dim kept alive)
-        self.assertIn("tl.full([XBLOCK]", code)
-        self.assertNotIn("tl.full([XBLOCK, R0_BLOCK]", code)
-        # the reduction is folded into the loop; there is no post-loop
-        # tl.sum over the full accumulator tile
-        self.assertNotIn("tl.sum(_tmp", code)
+        if scalar_accumulators:
+            self.assertIn("tl.full([XBLOCK]", code)
+            self.assertNotIn("tl.full([XBLOCK, R0_BLOCK]", code)
+            self.assertNotIn("tl.sum(_tmp", code)
+        else:
+            self.assertIn("tl.full([XBLOCK, R0_BLOCK]", code)
+            self.assertIn("tl.sum(_tmp", code)
 
     @inductor_config.patch(
         {
@@ -164,12 +161,8 @@ class TestOnlineSoftmax(TestCase):
         }
     )
     def test_scalar_acc_reduction_num_load_gate(self):
-        """
-        The scalar accumulator path is gated on num_load <= 3.  A reduction
-        with many loads falls back to the vector accumulator ([XBLOCK, R0_BLOCK]
-        with a post-loop tl.sum) so bandwidth-bound kernels don't pay the
-        per-iteration cross-warp sync.  Numerics must match either way.
-        """
+        if GPU_TYPE != "cuda" or torch.version.hip is not None:
+            self.skipTest("scalar reduction accumulators are CUDA-only")
 
         def f(a, b, c, d, e):
             return (a + b + c + d + e).sum(dim=-1)
@@ -182,9 +175,48 @@ class TestOnlineSoftmax(TestCase):
         act, (code,) = run_and_get_code(opt_f, *args)
 
         self.assertTrue(same(f(*args), act, tol=1e-3))
-        # num_load == 5 > 3: vector accumulator, reduced once after the loop
         self.assertIn("tl.full([XBLOCK, R0_BLOCK]", code)
         self.assertIn("tl.sum(_tmp", code)
+
+    @inductor_config.patch(
+        {
+            "triton.persistent_reductions": False,
+            "split_reductions": False,
+            "triton.scalar_reduction_accumulators": True,
+        }
+    )
+    def test_scalar_acc_reduction_without_outer_dim(self):
+        if GPU_TYPE != "cuda" or torch.version.hip is not None:
+            self.skipTest("scalar reduction accumulators are CUDA-only")
+
+        def f(x):
+            return x.amax()
+
+        x = torch.randn(8192, dtype=torch.float32, device=GPU_TYPE)
+        act, (code,) = run_and_get_code(torch.compile(f), x)
+
+        self.assertEqual(f(x), act)
+        self.assertIn('tl.full([XBLOCK], float("-inf")', code)
+        self.assertNotIn("tl.full([XBLOCK, R0_BLOCK]", code)
+
+    @inductor_config.patch(
+        {
+            "triton.persistent_reductions": False,
+            "triton.prefer_nd_tiling": True,
+            "triton.scalar_reduction_accumulators": True,
+            "triton.tile_reductions": True,
+        }
+    )
+    def test_scalar_acc_reduction_multiple_reduction_dims(self):
+        def f(x):
+            return x.sum(dim=(1, 2))
+
+        x = torch.randn(32, 16, 64, device=GPU_TYPE).permute(1, 0, 2)
+        act, (code,) = run_and_get_code(torch.compile(f), x)
+
+        self.assertEqual(f(x), act)
+        self.assertIn("R1_BLOCK", code)
+        self.assertIn("tl.full([XBLOCK, R0_BLOCK, R1_BLOCK]", code)
 
     @inductor_config.patch("triton.persistent_reductions", False)
     def test_sdpa(self):
@@ -347,6 +379,7 @@ class TestOnlineSoftmax(TestCase):
             current["saved_activation_bytes"],
         )
 
+    @inductor_config.patch("triton.persistent_reductions", False)
     def test_split_reduction(self):
         """
         Split online_softmax_reduce into partial max/sum tuples and combine
