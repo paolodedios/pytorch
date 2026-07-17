@@ -2286,13 +2286,6 @@ def cat(inputs, dim=0):
 
     dim = _validate_dim(inputs[0], dim, 0)
 
-    if config.fallback_dynamic_cat and any(
-        isinstance(s, sympy.Expr) and s.free_symbols
-        for inp in inputs
-        for s in inp.get_size()[1:]
-    ):
-        return fallback_handler(aten.cat.default)(inputs, dim)
-
     dtype = get_promoted_dtype(
         *inputs, type_promotion_kind=ELEMENTWISE_TYPE_PROMOTION_KIND.DEFAULT
     )
@@ -2355,6 +2348,14 @@ def cat(inputs, dim=0):
     # TODO: We observed negative performance impact of pointwise_cat optimization on CPU so disabled it.
     #             We will revisit this later after enabling vectorization on index_expr.
     if cpu_device:
+        return TensorBox(ir.ConcatKernel.create(inputs, dim))
+
+    # GPU Fallback: Avoid slow symint div/mod in Triton by using ATen's extern kernel
+    if config.fallback_dynamic_cat and any(
+        isinstance(s, sympy.Expr) and s.free_symbols
+        for inp in inputs
+        for s in inp.get_size()[1:]
+    ):
         return TensorBox(ir.ConcatKernel.create(inputs, dim))
 
     def op_count(x):
