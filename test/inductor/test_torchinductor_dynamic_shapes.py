@@ -1494,7 +1494,7 @@ class TestInductorDynamic(DynamicShapesTestCase):
         actual = compiled_fn(*inputs)
 
         self.assertEqual(actual, expected)
-        
+
     @torch._dynamo.config.patch(capture_dynamic_output_shape_ops=True)
     def test_combinations_dynamic(self):
         def f(x):
