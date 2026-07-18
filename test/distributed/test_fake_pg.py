@@ -813,6 +813,58 @@ class TestFakePG(TestCase):
         self.assertIsNotNone(new_pg)
         self.assertEqual(new_pg.size(), 2)
 
+    @skipIfHpu
+    @unittest.skipIf(not HAS_ACCELERATOR, "No accelerator")
+    @parametrize("rank", [0, 1, 2, 3])
+    def test_split_group_consistent_naming_after_partial_split(self, rank):
+        # Regression test for https://github.com/pytorch/pytorch/issues/190396.
+        #
+        # _hash_ranks_to_str previously used len(_world.pg_names) as the
+        # uniqueness suffix. Non-member ranks of a partial split don't register
+        # the PG, so their counter stayed lower than member ranks. Subsequent
+        # splits then computed different names for the same communicator on
+        # different ranks, causing inconsistent teardown ordering.
+        #
+        # The fix increments _world.split_count at the start of every
+        # split_group call, before any rank-local divergence. This test verifies
+        # the counter advances consistently for all ranks (including non-members)
+        # and that PG names are computed from it correctly.
+        world_size = 4
+        store = FakeStore()
+        dist.init_process_group(
+            backend="fake",
+            rank=rank,
+            world_size=world_size,
+            store=store,
+            device_id=torch.device(device_type, 0),
+        )
+        from torch.distributed import distributed_c10d
+
+        self.assertEqual(distributed_c10d._world.split_count, 0)
+
+        # Partial split: ranks 0,1,2 are members; rank 3 gets None.
+        partial = dist.split_group(split_ranks=[[0, 1, 2]])
+
+        # split_count must advance on ALL ranks, including non-member rank 3.
+        self.assertEqual(distributed_c10d._world.split_count, 1)
+        if rank == 3:
+            self.assertIsNone(partial)
+        else:
+            self.assertIsNotNone(partial)
+
+        # Full split: all ranks are members.
+        full = dist.split_group(split_ranks=[[0, 2], [1, 3]])
+        self.assertEqual(distributed_c10d._world.split_count, 2)
+        self.assertIsNotNone(full)
+
+        # PG name must use split_count=1 (the second split) as suffix.
+        # Co-participants of [0,2] and [1,3] each compute the same name
+        # because split_count is consistent across all ranks.
+        pg_name = distributed_c10d._world.pg_names[full]
+        my_group = [0, 2] if rank in [0, 2] else [1, 3]
+        expected = distributed_c10d._hash_ranks_to_str(my_group, split_count=1)
+        self.assertEqual(pg_name, expected)
+
 
 instantiate_parametrized_tests(TestFakePG)
 

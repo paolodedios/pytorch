@@ -1058,6 +1058,7 @@ _pg_group_ranks: dict[ProcessGroup, dict[int, int]] = {}
 # For a pg, it is a map from ProcessGroup to BackendConfig
 _pg_backend_config: dict[ProcessGroup, str] = {}
 _group_count = 0
+_split_count = 0
 _tags_to_pg: dict[str, list[ProcessGroup]] = {}
 _pg_to_tag: dict[ProcessGroup, str] = {}
 _backend: str | None = None
@@ -1150,6 +1151,17 @@ class _World:
         """Use to compute the name of ProcessGroups when using global synchronization."""
         global _group_count
         _group_count = value
+
+    @property
+    def split_count(self) -> int:
+        """Counter incremented once per split_group call, used for consistent PG naming."""
+        global _split_count
+        return _split_count
+
+    @split_count.setter
+    def split_count(self, value: int) -> None:
+        global _split_count
+        _split_count = value
 
     @property
     def tags_to_pg(self) -> dict[str, list[ProcessGroup]]:
@@ -2831,6 +2843,7 @@ def destroy_process_group(group: ProcessGroup | None = None):
         # We only reset this when WORLD is being destroyed because if this
         # process group is in good state, we aren't dealing with failures.
         _world.group_count = 0
+        _world.split_count = 0
     else:
         if _TORCHCOMM_AVAILABLE:
             for device_type in pg._device_types:
@@ -2936,6 +2949,7 @@ def _abort_process_group(group: ProcessGroup | None = None):
         # We only reset this when WORLD is being destroyed because if this
         # process group is in good state, we aren't dealing with failures.
         _world.group_count = 0
+        _world.split_count = 0
     else:
         pg.abort()
         del _world.pg_map[pg]
@@ -5927,10 +5941,13 @@ def _create_process_group_wrapper(
 
 
 # helper function for hashing a list of ranks to a unique string
-def _hash_ranks_to_str(ranks: list[int]) -> str:
+def _hash_ranks_to_str(ranks: list[int], split_count: int | None = None) -> str:
     rank_join: str = "_".join(map(str, ranks))
-    # In case there is already a PG with the same rank composition
-    unique_str = "_".join([rank_join, str(len(_world.pg_names))])
+    # Use split_count when provided so the suffix is consistent across all ranks
+    # (split_group is collective, so all ranks see the same split_count value).
+    # Fall back to len(pg_names) for callers that don't supply a split_count.
+    suffix = str(split_count) if split_count is not None else str(len(_world.pg_names))
+    unique_str = "_".join([rank_join, suffix])
     return hashlib.sha1(bytes(unique_str, "utf-8"), usedforsecurity=False).hexdigest()
 
 
@@ -5949,11 +5966,13 @@ def _process_group_color(ranks: list[int]) -> int:
     return color
 
 
-def _process_group_name(ranks, use_hashed_name) -> GroupName:
+def _process_group_name(
+    ranks, use_hashed_name, split_count: int | None = None
+) -> GroupName:
     # Create name for a process group.
     global _world
     if use_hashed_name:
-        pg_name = GroupName(_hash_ranks_to_str(ranks))
+        pg_name = GroupName(_hash_ranks_to_str(ranks, split_count))
     else:
         pg_name = GroupName(str(_world.group_count))
         _world.group_count += 1
@@ -6160,7 +6179,20 @@ def split_group(
     # This is needed as some backends (e.g. Gloo) use the group name as a
     # PrefixStore prefix for initialization of splits. Thus, names have to be
     # unique to avoid key collisions.
-    group_name = _process_group_name(my_group, use_hashed_name=True)
+    #
+    # Pass split_count so _hash_ranks_to_str uses a globally consistent suffix.
+    # _world.split_count is incremented once per split_group call (just below),
+    # before any rank-local divergence. Because split_group is collective (all
+    # ranks in the parent group must enter it), every rank sees the same value,
+    # regardless of whether it ends up as a group member. This avoids the
+    # len(pg_names) divergence that occurs when partial splits leave non-member
+    # ranks with a lower count, causing co-participants to compute different
+    # hash names for the same communicator and deadlock during teardown.
+    split_count = _world.split_count
+    _world.split_count += 1
+    group_name = _process_group_name(
+        my_group, use_hashed_name=True, split_count=split_count
+    )
     split_pg = parent_pg.split_group(
         my_group,
         timeout=timeout,

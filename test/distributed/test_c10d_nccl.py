@@ -7413,6 +7413,41 @@ class ProcessGroupNCCLLargerScaleTest(MultiProcessTestCase):
         torch.cuda.synchronize()
         dist.destroy_process_group()
 
+    @requires_nccl_version((2, 18), "Need NCCL 2.18+ for ncclCommSplit")
+    @skip_if_lt_x_gpu(8)
+    def test_split_group_partial_then_2d_teardown(self):
+        # Regression test for https://github.com/pytorch/pytorch/issues/190396.
+        # destroy_process_group() used to hang when collectives were run on child
+        # groups created by a partial split followed by a 2-D mesh split.
+        # Root cause: _hash_ranks_to_str used len(_world.pg_names) as a uniqueness
+        # suffix, which diverges between ranks for partial splits (some ranks don't
+        # register the PG). This caused co-participants in the same NCCL communicator
+        # to compute different pg_names, producing inconsistent teardown orderings
+        # and circular waits in ncclCommFinalize.
+        store = c10d.FileStore(self.file_name, self.world_size)
+        device = torch.device(f"cuda:{self.rank}")
+        pg = self._create_process_group_nccl(store, self.opts(), device_id=device)
+
+        # Pattern 'a': partial 5-rank group (ranks 5,6,7 are non-members).
+        partial = c10d.split_group(pg, [[0, 1, 2, 3, 4]])
+        if partial is not None:
+            dist.all_reduce(torch.ones(1, device=device), group=partial)
+
+        # Pattern 'b': 4 rank-pairs, all 8 ranks are members of some subgroup.
+        pairs = c10d.split_group(pg, [[0, 4], [1, 5], [2, 6], [3, 7]])
+        if pairs is not None:
+            dist.all_reduce(torch.ones(1, device=device), group=pairs)
+
+        # Pattern 'c': 2-D split, all 8 ranks are members of some subgroup.
+        half = c10d.split_group(pg, [[0, 1, 2, 3], [4, 5, 6, 7]])
+        if half is not None:
+            dist.all_reduce(torch.ones(1, device=device), group=half)
+
+        dist.barrier(pg)
+        torch.cuda.synchronize()
+        # This must not hang.
+        dist.destroy_process_group()
+
 
 if __name__ == "__main__":
     if torch.cuda._initialized:
