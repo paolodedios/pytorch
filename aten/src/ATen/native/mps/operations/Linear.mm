@@ -136,14 +136,11 @@ Tensor _mps_linear(const Tensor& input, const Tensor& weight_arg, const std::opt
     static const bool decompose_bias = is_apple_family_or_newer(AppleGPUFamily::APPLE_7_PLUS) &&
         !is_apple_family_or_newer(AppleGPUFamily::APPLE_8_PLUS) && is_macos_at_least(MacOSVersion::MACOS_26_0) &&
         !is_macos_at_least(MacOSVersion::MACOS_27_0);
-    // The fused 3-source (A@B+C) kernel truncates the innermost batch-dim index to 16 bits, silently writing
-    // batch b to b mod 2^16 when input.size(-3) > 2^16 (outer batch dims are unaffected). Flatten to 2D to
-    // avoid it; guard on the total batch-matrix count to be robust to the truncation surfacing on other dims.
+    // linear's leading dims are a fake batch (weight is shared), so a >2D input is one 2D GEMM.
+    // Passing it as a batched NDArray instead triggers a 2^16 batch-index wraparound (#189495) and
+    // a small-batch GEMV perf cliff (#189847); flatten to 2D (a free view here) to avoid both.
     // A multi-dim bias cannot be flattened, so run the bias-free kernel there and add the bias afterwards.
-    // See https://github.com/pytorch/pytorch/issues/189495
-    const auto mat_numel = input.dim() > 2 ? input.size(-1) * input.size(-2) : 0;
-    const bool batch_exceeds_u16 = mat_numel > 0 && input.numel() / mat_numel > 65536;
-    const bool needs_flatten = needs_nd_workaround(input) || batch_exceeds_u16;
+    const bool needs_flatten = input.dim() > 2;
     const bool add_bias_after = is_bias_defined && (decompose_bias || (needs_flatten && bias.dim() > 1));
     const Tensor kernel_bias = add_bias_after ? Tensor() : bias;
     if (needs_flatten) {

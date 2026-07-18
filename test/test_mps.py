@@ -1686,14 +1686,15 @@ class TestMPS(TestCaseMPS):
 
         self.assertEqual(out_cpu, out_mps)
 
-    @parametrize("shape", [(65537, 17, 32), (2, 65537, 17, 32), (257, 256, 2, 32)])
+    @parametrize("shape", [(65537, 17, 32), (2, 65537, 17, 32), (257, 256, 2, 32), (3, 1, 32)])
     @parametrize("bias_shape", [None, (64,), (1, 64)])
     def test_linear_large_batch(self, shape, bias_shape):
         # Regression test for https://github.com/pytorch/pytorch/issues/189495
         # The fused matmul+bias kernel truncates the innermost batch-dim index to
-        # 16 bits, corrupting outputs when size(-3) > 65536. The last shape passes
-        # on stock but exercises the widened total-batch-count flatten path, and
-        # the multi-dim bias exercises the decomposed bias-add path.
+        # 16 bits, corrupting outputs when size(-3) > 65536. Any >2D input now
+        # flattens to a single 2D GEMM, so the shapes cover the wraparound cases,
+        # a total-batch-count case, and a seq=1 decode case (#189847); the
+        # multi-dim bias exercises the decomposed bias-add path.
         x_cpu = torch.randn(shape, device='cpu')
         w_cpu = torch.randn(64, 32, device='cpu')
         b_cpu = torch.randn(bias_shape, device='cpu') if bias_shape is not None else None
