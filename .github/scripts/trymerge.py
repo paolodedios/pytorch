@@ -41,6 +41,7 @@ from label_utils import (
     gh_remove_label,
     has_required_labels,
     LABEL_ERR_MSG,
+    NOT_USER_FACING_LABEL,
 )
 from trymerge_explainer import get_revert_message, TryMergeExplainer
 
@@ -669,6 +670,42 @@ def can_skip_internal_checks(pr: GitHubPR, comment_id: int | None = None) -> boo
         return True
     # facebook-github-tools is a GitHub App; identify by its app URL.
     return comment.author_url == "https://github.com/apps/facebook-github-tools"
+
+
+def is_bot_initiated_codev_merge(pr: GitHubPR, comment_id: int | None) -> bool:
+    # A co-dev merge is initiated by facebook-github-bot once the internal
+    # Phabricator diff has landed. Such a PR always carries a "Differential
+    # Revision:" line (get_diff_revision); the local check runs first so a human
+    # merge does not pay a comment fetch just to be rejected.
+    return pr.get_diff_revision() is not None and can_skip_internal_checks(
+        pr, comment_id
+    )
+
+
+def ensure_mergeable_labels(
+    pr: GitHubPR, comment_id: int | None, dry_run: bool
+) -> None:
+    if has_required_labels(pr):
+        return
+    # A co-dev merge runs after the internal diff already landed, so the author
+    # can no longer act on a missing release-notes label. Auto-apply
+    # "topic: not user facing" to unblock (as maintainers do manually today) and
+    # leave a comment so the choice is auditable and can be corrected if the
+    # change is in fact user facing. Human-initiated merges still fail.
+    if is_bot_initiated_codev_merge(pr, comment_id):
+        gh_add_labels(pr.org, pr.project, pr.pr_num, [NOT_USER_FACING_LABEL], dry_run)
+        gh_post_pr_comment(
+            pr.org,
+            pr.project,
+            pr.pr_num,
+            f"Automatically added the `{NOT_USER_FACING_LABEL}` label: this co-dev "
+            "PR was merged after its internal diff landed without a release-notes "
+            "label. If this change is user facing, please replace it with the "
+            "appropriate `release notes: ...` label.",
+            dry_run,
+        )
+    else:
+        raise RuntimeError(LABEL_ERR_MSG.lstrip(" #"))
 
 
 def _revlist_to_prs(
@@ -2415,8 +2452,7 @@ def merge(
     # Check for approvals
     find_matching_merge_rule(pr, repo, skip_mandatory_checks=True)
 
-    if not has_required_labels(pr):
-        raise RuntimeError(LABEL_ERR_MSG.lstrip(" #"))
+    ensure_mergeable_labels(pr, comment_id, dry_run)
 
     if ignore_current:
         checks = pr.get_checkrun_conclusions()

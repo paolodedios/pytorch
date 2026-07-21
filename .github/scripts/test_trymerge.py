@@ -26,11 +26,13 @@ from trymerge import (
     _revlist_to_prs,
     categorize_checks,
     DRCI_CHECKRUN_NAME,
+    ensure_mergeable_labels,
     find_matching_merge_rule,
     get_classifications,
     get_drci_classifications,
     gh_get_team_members,
     GitHubPR,
+    is_bot_initiated_codev_merge,
     iter_issue_timeline_until_comment,
     JobCheckState,
     main as trymerge_main,
@@ -315,6 +317,69 @@ class TestTryMerge(TestCase):
         "Without negative patterns, behavior matches the positive-only case."
         files = [".ci/test.sh", "torch/foo.py"]
         self.assertEqual(_find_non_matching_files([".ci/**"], files), ["torch/foo.py"])
+
+    @mock.patch("trymerge.can_skip_internal_checks", return_value=True)
+    def test_is_bot_initiated_codev_merge_true(self, *args: Any) -> None:
+        "A bot-initiated merge on a PR with an internal diff is a co-dev merge."
+        pr = mock.MagicMock()
+        pr.get_diff_revision.return_value = "D123456"
+        self.assertTrue(is_bot_initiated_codev_merge(pr, 123))
+
+    @mock.patch("trymerge.can_skip_internal_checks", return_value=True)
+    def test_is_bot_initiated_codev_merge_false_without_diff(self, *args: Any) -> None:
+        "A bot-initiated merge without an internal diff is not a co-dev merge."
+        pr = mock.MagicMock()
+        pr.get_diff_revision.return_value = None
+        self.assertFalse(is_bot_initiated_codev_merge(pr, 123))
+
+    @mock.patch("trymerge.can_skip_internal_checks", return_value=False)
+    def test_is_bot_initiated_codev_merge_false_when_human(self, *args: Any) -> None:
+        "A human-initiated merge is never treated as a co-dev merge."
+        pr = mock.MagicMock()
+        pr.get_diff_revision.return_value = "D123456"
+        self.assertFalse(is_bot_initiated_codev_merge(pr, 123))
+
+    @mock.patch("trymerge.gh_post_pr_comment")
+    @mock.patch("trymerge.gh_add_labels")
+    @mock.patch("trymerge.is_bot_initiated_codev_merge", return_value=True)
+    @mock.patch("trymerge.has_required_labels", return_value=False)
+    def test_ensure_mergeable_labels_autolabels_codev_merge(
+        self,
+        mock_labels: Any,
+        mock_codev: Any,
+        mock_add: Any,
+        mock_comment: Any,
+        *args: Any,
+    ) -> None:
+        "An unlabeled co-dev merge is auto-labeled instead of raising."
+        pr = mock.MagicMock(org="pytorch", project="pytorch", pr_num=123)
+        ensure_mergeable_labels(pr, 456, dry_run=False)
+        mock_add.assert_called_once_with(
+            "pytorch", "pytorch", 123, ["topic: not user facing"], False
+        )
+        mock_comment.assert_called_once()
+
+    @mock.patch("trymerge.gh_add_labels")
+    @mock.patch("trymerge.is_bot_initiated_codev_merge", return_value=False)
+    @mock.patch("trymerge.has_required_labels", return_value=False)
+    def test_ensure_mergeable_labels_raises_for_human_merge(
+        self, mock_labels: Any, mock_codev: Any, mock_add: Any, *args: Any
+    ) -> None:
+        "An unlabeled human-initiated merge still fails the label check."
+        pr = mock.MagicMock(org="pytorch", project="pytorch", pr_num=123)
+        with self.assertRaises(RuntimeError):
+            ensure_mergeable_labels(pr, 456, dry_run=False)
+        mock_add.assert_not_called()
+
+    @mock.patch("trymerge.gh_add_labels")
+    @mock.patch("trymerge.has_required_labels", return_value=True)
+    def test_ensure_mergeable_labels_noop_when_labeled(
+        self, mock_labels: Any, mock_add: Any, *args: Any
+    ) -> None:
+        "A PR that already has a required label is left untouched."
+        pr = mock.MagicMock(org="pytorch", project="pytorch", pr_num=123)
+        ensure_mergeable_labels(pr, 456, dry_run=False)
+        mock_add.assert_not_called()
 
     @mock.patch("trymerge.read_merge_rules", side_effect=mocked_read_merge_rules)
     def test_match_rules(self, *args: Any) -> None:
