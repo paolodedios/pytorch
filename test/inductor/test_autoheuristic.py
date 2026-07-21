@@ -10,6 +10,7 @@ from torch._inductor.autoheuristic.autoheuristic_utils import AHContext
 from torch._inductor.runtime.runtime_utils import cache_dir
 from torch._inductor.test_case import run_tests, TestCase
 from torch._inductor.utils import get_gpu_shared_memory
+from torch.testing._internal.common_device_type import instantiate_device_type_tests
 from torch.testing._internal.common_utils import skipIfXpu
 from torch.testing._internal.inductor_utils import GPU_TYPE, HAS_GPU, IS_A100, IS_H100
 
@@ -106,7 +107,7 @@ class AutoHeuristicTest(TestCase):
         self.assertEqual(num_lines, 5)
 
         shared_memory = get_gpu_shared_memory()
-        device_capa = list(torch.cuda.get_device_capability())
+        device_capa = list(torch.accelerator.get_device_capability())
 
         with open(path) as file:
             lines = file.readlines()
@@ -212,7 +213,7 @@ class AutoHeuristicTest(TestCase):
         """pad_mm set to None; with deterministic=True, use_autoheuristic should return True."""
         self.assertTrue(inductor_config.use_autoheuristic("pad_mm"))
 
-    def test_autoheuristic_init_no_cuda(self):
+    def test_autoheuristic_init_no_accel(self):
         """AutoHeuristic.__init__ must not crash in non-CUDA environments."""
 
         def fallback():
@@ -222,16 +223,18 @@ class AutoHeuristicTest(TestCase):
         context.add_feature("x", 1)
 
         with (
-            patch("torch.cuda.is_available", return_value=False),
+            patch("torch.accelerator.is_available", return_value=False),
             patch(
                 "torch._inductor.autoheuristic.autoheuristic.get_gpu_shared_memory",
                 return_value=0,
             ),
         ):
-            ah = AutoHeuristic(fallback, ["a", "b"], None, context, "test_no_cuda")
+            ah = AutoHeuristic(fallback, ["a", "b"], None, context, "test_no_accel")
 
         self.assertEqual(ah.metadata.device_capa, (0, 0))
 
+
+instantiate_device_type_tests(AutoHeuristicTest, globals())
 
 if __name__ == "__main__":
     if HAS_GPU:
