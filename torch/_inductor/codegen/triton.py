@@ -154,6 +154,10 @@ fusion_log = torch._logging.getArtifactLogger(__name__, "fusion")
 async_compile = AsyncCompile()
 
 
+# Padding option emitted on a block_ptr load whose OOB elements are zero-padded.
+BLOCK_PTR_ZERO_PADDING_OPTION = "padding_option='zero'"
+
+
 def get_triton_reduction_function(reduction_type):
     use_helper = reduction_type in ("any", "max", "min", "prod", "fmax")
     module = "triton_helpers" if use_helper else "tl"
@@ -4279,7 +4283,7 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             elif other:
                 if other != ", other=0.0":
                     raise AssertionError(f"expected ', other=0.0', got {other!r}")
-                other = f", boundary_check={check!r}, padding_option='zero'"
+                other = f", boundary_check={check!r}, {BLOCK_PTR_ZERO_PADDING_OPTION}"
             else:
                 other = f", boundary_check={check!r}"
 
@@ -4685,6 +4689,12 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
 
         append_broadcast = None
         shape: BlockShapeType = None
+        # Set when the block_ptr load is boundary-padded with zero, so OOB
+        # elements load as 0. Recorded as identity_padding below so a reduction
+        # over this load can skip its accumulator mask when 0 is the reduction
+        # identity (e.g. sum); for min/max (identity +/-inf) the check below
+        # leaves the mask in place since 0 != the identity.
+        block_ptr_zero_padded = False
 
         if should_unwrap_unspec_arg(name):
             line = var
@@ -4699,10 +4709,16 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
 
         else:
             if isinstance(indexing, (BlockPtrOptions, TensorDescriptorOptions)):
+                # A zero `other` default plus a boundary_check makes
+                # codegen_block_ptr zero-pad OOB elements. Detect that from those
+                # two structured signals rather than matching the formatted load
+                # string (which a kwargs/quoting refactor could silently break).
+                zero_default = other == ", other=0.0"
                 block_descriptor, other = self.codegen_block_ptr(
                     name, var, indexing, other
                 )
                 if isinstance(indexing, BlockPtrOptions):
+                    block_ptr_zero_padded = zero_default and indexing.has_mask()
                     line = f"tl.load({block_descriptor}{other}{ep}{cachemod})"
                 else:
                     line = self.codegen_descriptor_load_line(block_descriptor, indexing)
@@ -4790,6 +4806,9 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
 
         if not self.inside_reduction or (not indexing.has_rmask() and not has_rindex):
             self.outside_loop_vars.add(result_var)
+
+        if block_ptr_zero_padded:
+            V.kernel._identity_padding_values[str(result_var)] = 0.0
 
         return result_var
 
@@ -5045,6 +5064,14 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
         do_upcast = pytree.tree_any(lambda v: should_upcast(v.dtype), value)
         original_dtype = dtype
         original_src_dtype = src_dtype
+
+        # Look up per-load identity padding
+        identity_padding = (
+            self._identity_padding_values.get(str(value))
+            if isinstance(value, CSEVariable)
+            else None
+        )
+
         if do_upcast:
             # Only promote FB16/BF16; do not promote other integer/boolean dtypes
             value = pytree.tree_map(maybe_upcast, value)
@@ -5248,8 +5275,19 @@ class TritonKernel(SIMDKernel[TritonCSEVariable]):
             result_var.mask_vars = result_mask_vars
         cond = " & ".join(masks)
 
+        # Skip the per-iteration accumulator mask when the load already padded
+        # OOB lanes with the reduction identity (identity_padding == acc_default):
+        # combining the identity is a no-op, so the mask is redundant even for
+        # uneven tiles (OOB lanes are inert, not garbage).
+        acc_default = ir.Reduction.default_accumulator(reduction_type, src_dtype)
+        skip_accumulator_masking = (
+            not isinstance(acc_default, tuple)
+            and identity_padding is not None
+            and acc_default == identity_padding
+        )
+
         def where_cond(tval, fval):
-            if not cond:
+            if not cond or skip_accumulator_masking:
                 return tval
             return TritonKernelOverrides.where(cond, tval, fval)
 

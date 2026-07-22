@@ -1382,6 +1382,14 @@ def get_reduction_combine_fn(
 
 @ir_dataclass
 class Reduction(Loops):
+    """IR node for a reduction over ``reduction_ranges`` producing ``ranges``.
+
+    Extends :class:`Loops` with the reduced dimensions (``reduction_ranges``),
+    the reduction operation (``reduction_type``), the source dtype before the
+    reduction (``src_dtype``), and a hint that guides how the reduction is
+    scheduled and lowered (``reduction_hint``).
+    """
+
     reduction_ranges: Sequence[_IntLike]
     reduction_type: ReductionType
     # self.dtype represents the dst dtype
@@ -1509,10 +1517,18 @@ class Reduction(Loops):
         min_elements_per_thread = 32
         if should_split:
             inner_reduction_splits: Callable[[int, int], int] = functools.partial(
-                V.choices.reduction_split_factor, device, inner_reduction=True
+                V.choices.reduction_split_factor,
+                device,
+                inner_reduction=True,
+                ranges=ranges,
+                reduction_ranges=reduction_ranges,
             )
             outer_reduction_splits: Callable[[int, int], int] = functools.partial(
-                V.choices.reduction_split_factor, device, inner_reduction=False
+                V.choices.reduction_split_factor,
+                device,
+                inner_reduction=False,
+                ranges=ranges,
+                reduction_ranges=reduction_ranges,
             )
         else:
 
@@ -2046,6 +2062,7 @@ class Reduction(Loops):
         block_size: _IntLike,
         default: _NumLike | Sequence[_NumLike],
         input_node: IRNode | None = None,
+        src_dtype: torch.dtype = torch.float32,
     ) -> Callable[..., object]:
         dense_index = cls.check_for_split_dense_dim_reindexing(
             reduction_numel, input_node
@@ -2073,7 +2090,14 @@ class Reduction(Loops):
                     ops.index_expr(indices, index_dtype),
                     ops.index_expr(reduction_numel, index_dtype),
                 )
-                return ops.masked(mask, body, default)
+                if config.triton.use_block_ptr and isinstance(default, (int, float)):
+                    result = body()
+                    result = ops.where(mask, result, ops.constant(default, src_dtype))
+                else:
+                    result = ops.masked(mask, body, default)
+                if isinstance(default, (int, float)):
+                    V.kernel._identity_padding_values[str(result)] = default
+                return result
             else:
                 return body()
 
@@ -2206,6 +2230,7 @@ class Reduction(Loops):
             block_size,
             default,
             input_node,
+            src_dtype,
         )
 
         return cls.create_multilayer_helper(
@@ -2834,6 +2859,7 @@ class WelfordReduction(MultiOutputReduction):
                     split,
                     block_size,
                     default=0,
+                    src_dtype=dtype,
                 )
                 for loader in inner_fns
             ),
