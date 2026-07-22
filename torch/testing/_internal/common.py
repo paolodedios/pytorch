@@ -159,7 +159,7 @@ def tf32_on_and_off(tf32_precision=1e-5, *, only_if=True):
             cuda_tf32 = torch.cuda.is_tf32_supported()
             xpu_tf32 = (
                 torch.xpu.is_tf32_supported()
-                if hasattr(torch.xpu, "is_tf32_supported")
+                if hasattr(torch, "xpu") and hasattr(torch.xpu, "is_tf32_supported")
                 else False
             )
             cond = (cuda_tf32 or xpu_tf32) and only_if
