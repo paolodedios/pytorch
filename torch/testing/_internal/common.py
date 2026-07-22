@@ -10,6 +10,7 @@ common_cuda.py) so that existing import sites need not change.
 import contextlib
 import functools
 import inspect
+import threading
 
 import torch
 
@@ -18,28 +19,59 @@ import torch
 # TF32 context managers
 # ---------------------------------------------------------------------------
 
+_tf32_off_lock = threading.Lock()
+_tf32_off_depth = 0
+_tf32_off_saved_cuda_precision = None
+_tf32_off_saved_mkldnn_precision = None
+_tf32_off_backend_contexts = None
+
 
 @contextlib.contextmanager
 def tf32_off():
     """Context manager that disables TF32 for both CUDA (cuBLAS/cuDNN) and
     XPU (oneDNN/mkldnn) for the duration of the ``with`` block."""
-    old_cuda_precision = torch.backends.cuda.matmul.fp32_precision
-    old_mkldnn_precision = torch.backends.mkldnn.fp32_precision
-    try:
-        torch.backends.cuda.matmul.allow_tf32 = False
-        with torch.backends.cudnn.flags(
-            enabled=None, benchmark=None, deterministic=None, allow_tf32=False
-        ):
-            with torch.backends.mkldnn.flags(
+    global _tf32_off_depth
+    global _tf32_off_saved_cuda_precision
+    global _tf32_off_saved_mkldnn_precision
+    global _tf32_off_backend_contexts
+    with _tf32_off_lock:
+        if _tf32_off_depth == 0:
+            _tf32_off_saved_cuda_precision = (
+                torch.backends.cuda.matmul.fp32_precision
+            )
+            _tf32_off_saved_mkldnn_precision = torch.backends.mkldnn.fp32_precision
+            cudnn_context = torch.backends.cudnn.flags(
+                enabled=None, benchmark=None, deterministic=None, allow_tf32=False
+            )
+            mkldnn_context = torch.backends.mkldnn.flags(
                 enabled=None,
                 deterministic=None,
                 allow_tf32=False,
                 fp32_precision=None,
-            ):
-                yield
+            )
+            cudnn_context.__enter__()
+            mkldnn_context.__enter__()
+            _tf32_off_backend_contexts = (cudnn_context, mkldnn_context)
+            torch.backends.cuda.matmul.allow_tf32 = False
+        _tf32_off_depth += 1
+    try:
+        yield
     finally:
-        torch.backends.cuda.matmul.fp32_precision = old_cuda_precision
-        torch.backends.mkldnn.fp32_precision = old_mkldnn_precision
+        with _tf32_off_lock:
+            _tf32_off_depth -= 1
+            if _tf32_off_depth == 0:
+                cudnn_context, mkldnn_context = _tf32_off_backend_contexts
+                mkldnn_context.__exit__(None, None, None)
+                cudnn_context.__exit__(None, None, None)
+                _tf32_off_backend_contexts = None
+                torch.backends.cuda.matmul.fp32_precision = (
+                    _tf32_off_saved_cuda_precision
+                )
+                torch.backends.mkldnn.fp32_precision = (
+                    _tf32_off_saved_mkldnn_precision
+                )
+                _tf32_off_saved_cuda_precision = None
+                _tf32_off_saved_mkldnn_precision = None
 
 
 @contextlib.contextmanager
