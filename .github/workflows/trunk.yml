@@ -21,6 +21,11 @@ on:
         required: false
         default: ""
         type: string
+      collect-test-dependencies:
+        description: "Run the CUDA 13 test matrix on Python 3.12 and upload merged TD tracer output"
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: 29 8 * * *  # about 1:29am PDT
 
@@ -40,20 +45,21 @@ jobs:
     name: job-filter
     uses: ./.github/workflows/job-filter.yml
     with:
-      jobs-to-include: ${{ github.event.inputs.jobs-to-include || '' }}
+      jobs-to-include: ${{ (inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) && 'linux-jammy-cuda13.0-py3.10-gcc11' || (github.event.inputs.jobs-to-include || '') }}
 
   dynamo-unittest:
-    if: github.repository_owner == 'pytorch'
+    if: github.repository_owner == 'pytorch' && !(inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/'))
     name: dynamo-unittest
     uses: ./.github/workflows/dynamo-unittest.yml
     secrets: inherit
 
   llm-td:
-    if: github.repository_owner == 'pytorch'
+    if: github.repository_owner == 'pytorch' && !(inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/'))
     name: before-test
     uses: ./.github/workflows/llm_td_retrieval.yml
 
   target-determination:
+    if: ${{ !(inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) }}
     name: before-test
     uses: ./.github/workflows/target_determination.yml
     needs: llm-td
@@ -104,8 +110,8 @@ jobs:
       - job-filter
     with:
       runner_prefix: "${{ needs.get-label-type.outputs.label-type }}"
-      build-environment: linux-jammy-cuda13.0-py3.10-gcc11
-      docker-image-name: ci-image:pytorch-linux-jammy-cuda13.0-cudnn9-py3-gcc11
+      build-environment: ${{ (inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) && 'linux-jammy-cuda13.0-py3.12-gcc11-td' || 'linux-jammy-cuda13.0-py3.10-gcc11' }}
+      docker-image-name: ${{ (inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) && 'ci-image:pytorch-linux-jammy-cuda13.0-cudnn9-py3.12-gcc11' || 'ci-image:pytorch-linux-jammy-cuda13.0-cudnn9-py3-gcc11' }}
       ci-docker-hash: ${{ needs.get-label-type.outputs.ci-docker-hash }}
       cuda-arch-list: '7.5 8.9'
       test-matrix: |
@@ -120,13 +126,14 @@ jobs:
           { config: "distributed", shard: 3, num_shards: 3, runner: "${{ needs.get-label-type.outputs.label-type }}linux.g4dn.12xlarge.nvidia.gpu" },
           { config: "pr_time_benchmarks", shard: 1, num_shards: 1, runner: "${{ needs.get-label-type.outputs.label-type }}linux.g4dn.metal.nvidia.gpu" },
         ]}
-      python-version: "3.10"
+      selected-test-configs: ${{ (inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) && 'default,distributed' || '' }}
+      python-version: ${{ (inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) && '3.12' || '3.10' }}
       compiler: gcc11
       cuda-version: "13.0"
     secrets: inherit
 
   linux-jammy-cuda13_0-py3_10-gcc11-test:
-    if: ${{ needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-cuda13.0-py3.10-gcc11 ') }}
+    if: ${{ always() && !cancelled() && (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' linux-jammy-cuda13.0-py3.10-gcc11 ')) && needs.linux-jammy-cuda13_0-py3_10-gcc11-build.result == 'success' && needs.job-filter.result == 'success' && needs.get-label-type.result == 'success' && (inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/') || needs.target-determination.result == 'success') }}
     name: linux-jammy-cuda13.0-py3.10-gcc11
     uses: ./.github/workflows/_linux-test.yml
     needs:
@@ -136,20 +143,81 @@ jobs:
       - get-label-type
     with:
       timeout-minutes: 360
-      build-environment: linux-jammy-cuda13.0-py3.10-gcc11
+      build-environment: ${{ needs.linux-jammy-cuda13_0-py3_10-gcc11-build.outputs.build-environment }}
       docker-image: ${{ needs.linux-jammy-cuda13_0-py3_10-gcc11-build.outputs.docker-image }}
       test-matrix: ${{ needs.linux-jammy-cuda13_0-py3_10-gcc11-build.outputs.test-matrix }}
       tests-to-include: ${{ github.event.inputs.tests-to-include || '' }}
-      python-version: "3.10"
+      python-version: ${{ (inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) && '3.12' || '3.10' }}
       compiler: gcc11
       cuda-version: "13.0"
+      collect-test-dependencies: ${{ inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/') }}
     secrets: inherit
+
+  td-tracer-aggregate:
+    if: ${{ always() && github.repository_owner == 'pytorch' && (inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) && needs.linux-jammy-cuda13_0-py3_10-gcc11-test.result != 'skipped' }}
+    name: td-tracer-aggregate
+    needs: linux-jammy-cuda13_0-py3_10-gcc11-test
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout PyTorch
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Download TD tracer shards
+        continue-on-error: true
+        uses: actions/download-artifact@65a9edc5881444af0b9093a5e628f2fe47ea3b2e # v4.1.7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.run_id }}
+          pattern: td-tracer-runattempt*-linux-jammy-cuda13.0-py3.12-gcc11-td-*
+          path: td-tracer-shards
+          merge-multiple: false
+
+      - name: Merge TD tracer shards
+        run: |
+          python3 tools/testing/merge_td_tracer.py \
+            --input-dir td-tracer-shards \
+            --output td_result.json \
+            --run-id "${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --workflow-run-id "${GITHUB_RUN_ID}" \
+            --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --test-workflow-result "${{ needs.linux-jammy-cuda13_0-py3_10-gcc11-test.result }}" \
+            --expected-shard default-1 \
+            --expected-shard default-2 \
+            --expected-shard default-3 \
+            --expected-shard default-4 \
+            --expected-shard default-5 \
+            --expected-shard distributed-1 \
+            --expected-shard distributed-2 \
+            --expected-shard distributed-3
+
+      - name: Upload merged TD tracer output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: td-test-dependencies-runattempt${{ github.run_attempt }}
+          path: td_result.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Check merged TD tracer output
+        run: |
+          python3 - <<'PY'
+          import json
+
+          with open("td_result.json", encoding="utf-8") as input_file:
+              output = json.load(input_file)
+          if not output["usable"]:
+              raise SystemExit("TD tracer output is incomplete or contains failures")
+          print(f'Collected dependencies for {len(output["coverage_by_test"])} tests')
+          PY
 
   # Test cross-compiled models with Windows libs extracted from wheel (CUDA 13.0).
   # Independent of the main cuda13 test job so its other shards don't wait on the
   # Windows build.
   cross-compile-linux-test-cuda13:
-    if: ${{ needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' cross-compile-linux-test-cuda13 ') }}
+    if: ${{ !(inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) && (needs.job-filter.outputs.jobs == '' || contains(needs.job-filter.outputs.jobs, ' cross-compile-linux-test-cuda13 ')) }}
     name: cross-compile-linux-test-cuda13
     uses: ./.github/workflows/_linux-test.yml
     needs:
@@ -287,6 +355,7 @@ jobs:
     secrets: inherit
 
   linux-jammy-rocm-py3_10-build:
+    if: ${{ !(inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) }}
     name: linux-jammy-rocm-py3.10-mi350
     uses: ./.github/workflows/_linux-build.yml
     needs:
@@ -319,6 +388,7 @@ jobs:
     secrets: inherit
 
   linux-jammy-rocm-py3_10-test:
+    if: ${{ !(inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) }}
     name: linux-jammy-rocm-py3.10-mi350
     uses: ./.github/workflows/_rocm-test.yml
     needs:
@@ -406,6 +476,7 @@ jobs:
     secrets: inherit
 
   linux-jammy-aarch64-py3_10-gcc13-build:
+    if: ${{ !(inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) }}
     name: linux-jammy-aarch64-py3.10
     uses: ./.github/workflows/_linux-build.yml
     needs: get-label-type
@@ -429,6 +500,7 @@ jobs:
     secrets: inherit
 
   linux-jammy-aarch64-py3_10-gcc13-test:
+    if: ${{ !(inputs.collect-test-dependencies || startsWith(github.ref, 'refs/tags/ciflow/trunk/')) }}
     name: linux-jammy-aarch64-py3.10
     uses: ./.github/workflows/_linux-test.yml
     needs:
