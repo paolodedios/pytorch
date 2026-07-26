@@ -2525,6 +2525,22 @@ class CPUReproTests(TestCase):
         if not same(x2, x3):
             raise AssertionError("x2 and x3 are not the same")
 
+    def test_signed_int_overflow_wraps(self):
+        def add(x, y):
+            return (x + y).sum(-1)
+
+        def sub(x, y):
+            return (x - y).sum(-1)
+
+        def mul(x, y):
+            return (x * y).sum(-1)
+
+        for dtype in (torch.int8, torch.int16, torch.int32, torch.int64):
+            info = torch.iinfo(dtype)
+            two = torch.tensor([[2]], dtype=dtype)
+            for fn, x in ((add, info.max), (sub, info.min), (mul, info.max)):
+                self.common(fn, (torch.tensor([[x]], dtype=dtype), two))
+
     def test_int_div(self):
         def fn(x, y):
             s3 = x.size(1)

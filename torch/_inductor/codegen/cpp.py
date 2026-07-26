@@ -640,20 +640,34 @@ def decltype_promoted(*args):
         return f"decltype({args[0]})"
 
 
+def arith_promoted(op, a, b):
+    cpp_type = decltype_promoted(a, b)
+    if get_promote_dtype((a, b)) in (
+        torch.int8,
+        torch.int16,
+        torch.int32,
+        torch.int64,
+    ):
+        # signed overflow is UB in C++, so wrap in the unsigned type to match eager
+        cast = f"static_cast<std::make_unsigned_t<{cpp_type}>>"
+        return f"{cpp_type}({cast}({a}) {op} {cast}({b}))"
+    return f"{cpp_type}({a} {op} {b})"
+
+
 class CppOverrides(OpOverrides):
     """Map element-wise ops to C++"""
 
     @staticmethod
     def add(a, b):
-        return f"{decltype_promoted(a, b)}({a} + {b})"
+        return arith_promoted("+", a, b)
 
     @staticmethod
     def sub(a, b):
-        return f"{decltype_promoted(a, b)}({a} - {b})"
+        return arith_promoted("-", a, b)
 
     @staticmethod
     def mul(a, b):
-        return f"{decltype_promoted(a, b)}({a} * {b})"
+        return arith_promoted("*", a, b)
 
     @staticmethod
     def to_dtype(x, dtype, src_dtype=None, use_compute_types=True):
