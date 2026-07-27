@@ -17605,6 +17605,33 @@ def forward(self, arg0_1: "Sym(s77)", arg1_1: "Sym(s27)", arg2_1: "Sym(s53)", ar
                 r"raise RuntimeError\('u.* >= 0'\)"
             ).run(code[0])
 
+    @torch._dynamo.config.patch(capture_scalar_outputs=True)
+    def test_lite_mode_item(self):
+        # aten._local_scalar_dense (`.item()`) returns a Scalar, which cannot be
+        # serialized as a generic fallback kernel. skip_fallback_due_to_dynamic_shape
+        # routes it to its dedicated DynamicScalar lowering instead, so lite mode
+        # does not hit the "Unsupported return type torch.NumberType" wall.
+        def f(x):
+            n = x.sum().to(torch.int64).item()
+            return x + n
+
+        opt_f = torch.compile(f, mode="lite")
+        x = torch.randn(64, device=self.device)
+
+        result, code = run_and_get_code(opt_f, x)
+        self.assertEqual(result, f(x))
+
+        if config.cpp_wrapper:
+            # `.item()` is lowered to DynamicScalar (aoti_torch_item_*), not a
+            # fallback kernel, while the surrounding ops still fall back.
+            FileCheck().check("aoti_torch_call_dispatcher(").check("aten::sum").check(
+                "aoti_torch_item_int64("
+            ).run(code[0])
+        else:
+            FileCheck().check("torch.ops.aten.sum").check(".item()").run(code[0])
+            # `.item()` took the DynamicScalar lowering, not a generic fallback kernel
+            self.assertNotIn("_local_scalar_dense", code[0])
+
     @lowering.force_fallback(aten.sort.default)
     def test_size_asserts_for_multi_output_fallback(self):
         @torch.compile
