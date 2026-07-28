@@ -150,6 +150,53 @@ class P2PIpcTest(MultiProcContinuousTest):
                 consumer_prealloc=False,
             )
 
+    @unittest.skipIf(
+        TEST_WITH_ROCM, "expandable_segments mode is not supported on ROCm"
+    )
+    def test_p2p_ipc_expandable_segments_producer_cleanup(self) -> None:
+        """
+        Regression guard for #190860: freeing a fabric expandable segment that
+        has been IPC-shared must not throw.
+
+        The producer shares a segment, the single consumer imports and releases
+        it, then the producer frees it -> ExpandableSegment::unmapHandles runs
+        on the exported fabric shareable_handle. Pre-fix,
+        close(std::get<int>(*h.shareable_handle)) threw "std::get: wrong index
+        for variant" for fabric handles (fabric-only; posix-fd stores an int,
+        harmless no-op).
+
+        A single consumer keeps the IPC ref-counter exact (1 -> 0 on release)
+        so the producer can reclaim and free the segment.
+        """
+        consumer = 1  # sole consumer; other ranks only join the collectives
+        with _scoped_env("TORCH_CUDA_EXPANDABLE_SEGMENTS_IPC", "1"):
+            torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+            torch.cuda.empty_cache()
+            numel = 2 * 1024 * 1024  # 8MB > 2MB default -> forces a segment
+            self._init_device(allocate=(self.rank == 0))
+
+            if self.rank == 0:
+                tensor = torch.ones(numel, device=self.device)
+                tensor_meta = reduce_tensor(tensor)
+                torch.distributed.broadcast_object_list([tensor_meta], src=0)
+                torch.distributed.barrier()  # consumer imported + released
+                del tensor_meta, tensor
+                torch.cuda.ipc_collect()
+                torch.cuda.empty_cache()  # -> ExpandableSegment::unmapHandles
+            else:
+                recv_list = [None]
+                torch.distributed.broadcast_object_list(recv_list, src=0)
+                if self.rank == consumer:
+                    func, args = recv_list[0]
+                    args = list(args)
+                    args[6] = self.rank
+                    tensor = func(*args)
+                    self.assertEqual(tensor, torch.ones_like(tensor))
+                    del tensor  # release import: ref-counter 1 -> 0
+                    device_module.synchronize()
+                torch.distributed.barrier()  # consumer imported + released
+            torch.distributed.barrier()  # producer freed
+
     @classmethod
     def tearDownClass(cls):
         torch.cuda.memory._set_allocator_settings("expandable_segments:False")
