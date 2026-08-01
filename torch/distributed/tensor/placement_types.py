@@ -636,6 +636,37 @@ class Shard(torch._C._distributed.Shard):
             clone=True,
         )
 
+    def _to_partial_tensor(
+        self,
+        local_tensor: torch.Tensor,
+        mesh: DeviceMesh,
+        mesh_dim: int,
+        current_logical_shape: Sequence[IntLikeType],
+    ) -> torch.Tensor:
+        """Embed a local shard in a zero-filled tensor pending sum reduction."""
+        num_chunks = mesh.size(mesh_dim=mesh_dim)
+        logical_dim_size = current_logical_shape[self.dim]
+        local_shard_size, local_offset = self.local_shard_size_and_offset(
+            logical_dim_size,
+            num_chunks,
+            mesh._sym_get_coordinate(mesh_dim),
+        )
+        torch._check(local_tensor.size(self.dim) == local_shard_size)
+        prefix_shape: list[IntLikeType] = list(local_tensor.shape)
+        prefix_shape[self.dim] = local_offset
+        suffix_shape: list[IntLikeType] = list(local_tensor.shape)
+        suffix_shape[self.dim] = (
+            logical_dim_size - local_offset - local_shard_size
+        )
+        return torch.cat(
+            [
+                local_tensor.new_zeros(prefix_shape),
+                local_tensor,
+                local_tensor.new_zeros(suffix_shape),
+            ],
+            dim=self.dim,
+        )
+
     @staticmethod
     @maybe_run_for_local_tensor
     def _get_shard_pad_size(
@@ -1766,8 +1797,9 @@ class Partial(torch._C._distributed.Partial):
             * ``"bor"``: Bitwise OR across all ranks (integer tensors only).
             * ``"bxor"``: Bitwise XOR across all ranks (integer tensors only).
 
-    .. note:: The ``Partial`` placement can be generated as a result of the DTensor operators,
-        and can only be used by the ``DTensor.from_local`` API.
+    .. note:: The ``Partial`` placement can be generated as a result of DTensor
+        operators, by ``DTensor.from_local``, or by redistributing a ``Shard``
+        placement to ``Partial("sum")``.
     """
 
     def _reduce_value(
