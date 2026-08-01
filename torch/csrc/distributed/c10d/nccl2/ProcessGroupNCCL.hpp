@@ -16,6 +16,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -115,6 +116,24 @@ class TORCH_API ProcessGroupNCCL : public ::c10d::Backend {
       return c10::make_intrusive<Options>(is_high_priority_stream);
     }
 
+    c10::intrusive_ptr<::c10d::Backend::Options> clone() const override {
+      auto copy = c10::make_intrusive<Options>(*this);
+      copy->config = cloneNcclConfig(config);
+      if (copy->config.netName != nullptr) {
+        // cloneNcclConfig strdup'ed netName and ncclConfig_t records no owner,
+        // so tie the allocation to the Options that made it: splitting or
+        // merging clones the parent's Options into a temporary, which used to
+        // drop the string on the floor. Copies of this Options share the
+        // allocation and free it once, when the last of them goes away. A
+        // netName from anywhere else -- a plain base Options, the NCCLConfig
+        // pybind, a config also handed to NCCL -- is untracked and untouched.
+        copy->owned_net_name_ = std::shared_ptr<const char>(
+            copy->config.netName,
+            [](const char* p) { std::free(const_cast<char*>(p)); });
+      }
+      return copy;
+    }
+
     // Whether a watchdog-detected collective timeout or NCCL async error
     // terminates the process with ::abort() (after running the abort hooks).
     // When false the communicator is still aborted, but the process survives:
@@ -122,6 +141,10 @@ class TORCH_API ProcessGroupNCCL : public ::c10d::Backend {
     // Has no effect on a user-initiated abort()/shutdown(), which never
     // terminate the process.
     bool abort_process_on_timeout_or_error{true};
+
+   private:
+    // Keeps clone()'s strdup'ed config.netName alive; see clone().
+    std::shared_ptr<const char> owned_net_name_;
   };
 
   // Returns `options` unchanged if it already is an nccl2 Options, otherwise a
