@@ -320,6 +320,42 @@ class TestCustomBackendAPI(torch._dynamo.test_case.TestCase):
         opt_f(torch.randn(3, 3))
         self.assertTrue(backend_run)
 
+    def test_dynamo_backend_init(self):
+        init_called = False
+
+        def my_backend(gm, example_inputs):
+            return gm.forward
+
+        def my_backend_init():
+            nonlocal init_called
+            init_called = True
+
+        my_backend._dynamo_backend_init = my_backend_init
+
+        @torch.compile(backend=my_backend)
+        def fn(x):
+            return x + 1
+
+        self.assertTrue(init_called)
+
+    def test_dynamo_backend_init_fullgraph(self):
+        init_called = False
+
+        def my_backend(gm, example_inputs):
+            return gm.forward
+
+        def my_backend_init():
+            nonlocal init_called
+            init_called = True
+
+        my_backend._dynamo_backend_init = my_backend_init
+
+        @torch.compile(backend=my_backend, fullgraph=True)
+        def fn(x):
+            return x + 1
+
+        self.assertTrue(init_called)
+
     def test_aot_autograd_api(self):
         from functorch.compile import make_boxed_func
         from torch._dynamo.backends.common import aot_autograd

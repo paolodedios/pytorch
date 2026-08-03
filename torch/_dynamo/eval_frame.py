@@ -1874,6 +1874,12 @@ def _optimize(
 
     backend = get_compiler_fn(backend)
 
+    # Allow backends to perform eager initialization (e.g., load native
+    # libraries, initialize device contexts) before the first invocation.
+    backend_init = getattr(backend, "_dynamo_backend_init", None)
+    if backend_init is not None:
+        backend_init()
+
     # Find if backend has any extra context manager
     backend_ctx_ctor = getattr(backend, "backend_ctx_ctor", null_context)
 
@@ -2817,6 +2823,12 @@ def _optimize_assert(
     symbolic_convert.error_on_graph_break. Can also be used for testing.
     """
     backend = get_compiler_fn(backend)
+
+    # Allow backends to perform eager initialization (e.g., load native
+    # libraries, initialize device contexts) before the first invocation.
+    backend_init = getattr(backend, "_dynamo_backend_init", None)
+    if backend_init is not None:
+        backend_init()
 
     # Find if backend has any extra context manager
     backend_ctx_ctor = getattr(backend, "backend_ctx_ctor", null_context)
