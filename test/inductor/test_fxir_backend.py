@@ -1373,6 +1373,77 @@ def forward(self, arg0_1, arg1_1, arg2_1):
 
         self.check(TestModule(), (data, offsets))
 
+    def test_compound_symint_graph_input(self):
+        """A compound symbolic graph input binds to a single placeholder.
+
+        Checks _generate_graph_inputs' output, not a full lowering: the cond
+        subgraph hits an unrelated kernel-conversion limit further on.
+        """
+        DYNAMIC = torch.export.Dim.DYNAMIC
+
+        class M(torch.nn.Module):
+            def forward(self, x, y):
+                a = 2 * y.shape[0] + 1  # compound SymInt, closed over below
+
+                def true_fn(t):
+                    return t + a
+
+                def false_fn(t):
+                    return t + a
+
+                return torch.cond(x.shape[0] > 5, true_fn, false_fn, (x,))
+
+        inp = (torch.randn(8), torch.randn(4))
+        ds = {"x": {0: DYNAMIC}, "y": {0: DYNAMIC}}
+
+        def is_compound(v):
+            return isinstance(v, sympy.Expr) and not isinstance(
+                v, (sympy.Symbol, sympy.Integer, sympy.Float)
+            )
+
+        def compile_with(spy):
+            ep = torch.export.export(M(), inp, dynamic_shapes=ds, strict=False)
+            with unittest.mock.patch.object(
+                FxConverter, "_generate_graph_inputs", spy
+            ):
+                try:
+                    torch._inductor.aot_compile(
+                        ep.module(), inp, options={"fx_wrapper": True, **test_config}
+                    )
+                except Exception as e:  # noqa: BLE001
+                    return str(e)
+            return ""
+
+        orig = FxConverter._generate_graph_inputs
+        captured: dict = {}
+
+        def good_spy(conv, _c=captured, _o=orig):
+            _o(conv)
+            for name, value in conv.graph_inputs.items():
+                if is_compound(value):
+                    (ph,) = [
+                        p
+                        for p in conv.gm.graph.find_nodes(op="placeholder")
+                        if p.name == name
+                    ]
+                    _c["name"], _c["expr"], _c["val"] = name, value, ph.meta.get("val")
+
+        err = compile_with(good_spy)
+        self.assertNotIn("Unable to extract buffer from node", err)
+        self.assertIn("name", captured, "no compound sympy.Expr graph input produced")
+        self.assertIsInstance(captured["val"], torch.SymInt)
+        # The placeholder carries the whole expression, not a recomputed one.
+        self.assertEqual(captured["val"].node.expr, captured["expr"])
+
+        def bad_spy(conv, _o=orig):
+            for name, value in list(conv.graph_inputs.items()):
+                if is_compound(value):
+                    conv.graph_inputs[name] = value + sympy.Rational(1, 2)
+            return _o(conv)
+
+        err = compile_with(bad_spy)
+        self.assertIn("non-integer symbolic graph input", err)
+
 
 class TestReplaceFloorDiv(InductorTestCase):
     """

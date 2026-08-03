@@ -410,6 +410,26 @@ class FxConverter:
                 self.gm.graph.placeholder(name)
                 continue
 
+            # A compound symbolic input (e.g. s0 + s1 + 600) is a runtime
+            # argument but not a single Symbol, so it cannot be a SymbolBuffer.
+            # Bind the whole expression: recomputing it is unsafe here, as its
+            # symbols may not be defined until _generate_graph_input_shapes runs.
+            if isinstance(ir_node, sympy.Expr) and not isinstance(
+                ir_node, (sympy.Symbol, sympy.Integer, sympy.Float)
+            ):
+                # convert_to_symint below builds a SymInt, as the single-symbol
+                # path also does, so a float-valued expression would yield a
+                # SymInt that is not an integer. Reject it instead.
+                if ir_node.is_integer is not True:
+                    raise NotImplementedError(
+                        f"Unsupported non-integer symbolic graph input: {ir_node}"
+                    )
+                placeholder_node = self.gm.graph.placeholder(name)
+                placeholder_node.meta["val"] = convert_to_symint(ir_node)
+                self.buffer_to_node[name] = placeholder_node
+                self._generate_size_proxy(placeholder_node, ir_node)
+                continue
+
             # Introduce a new symbol for constant inputs.
             is_constant = isinstance(ir_node, (int, float, sympy.Integer, sympy.Float))
             buffer = (
