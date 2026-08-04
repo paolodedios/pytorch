@@ -3327,12 +3327,11 @@ class TritonCompileResult(CompileResult[CompiledKernel]):
 
 def _find_names(obj):
     import gc
-    import inspect
 
-    frame = inspect.currentframe()
-    while frame is not None:
-        frame.f_locals
-        frame = frame.f_back
+    # Only namespace dicts are searched. Walking the stack to expose frame
+    # locals as well would report this function's own `obj` and the caller's
+    # `self`, which is how an unbound kernel used to end up named "self"
+    # instead of falling back to inductor_meta["kernel_name"].
     obj_names = []
     for referrer in gc.get_referrers(obj):
         if isinstance(referrer, dict):
