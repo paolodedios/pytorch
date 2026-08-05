@@ -7,13 +7,15 @@ import os
 import sys
 import unittest
 from functools import partial
+from unittest.mock import patch as mock_patch
 
 import torch
+import torch._guards
 import torch.library
 from torch._dynamo.testing import CompileCounterWithBackend, make_test_cls_with_patches
 from torch._dynamo.utils import counters
 from torch._functorch._aot_autograd.autograd_cache import AOTAutogradCache
-from torch._inductor import config, metrics
+from torch._inductor import config, metrics, output_code
 from torch._inductor.choices import InductorChoices
 from torch._inductor.codegen.wrapper import PythonWrapperCodegen
 from torch._inductor.test_case import TestCase
@@ -369,6 +371,53 @@ class TestInductorDynamic(DynamicShapesTestCase):
             [], dtype=torch.float32, device=device, requires_grad=False
         )
         self.assertEqual(fn(arg0_test, arg1_test), compiled_fn(arg0_test, arg1_test))
+
+    def test_saved_activation_symbolic_stride_backward(self, device):
+        # The permuted view saved for backward has an outer stride that depends
+        # on a dynamic dim, so the stride inductor records for the forward is a
+        # symbolic expression. Resolving it to a concrete int here bakes the
+        # first input's hint into the backward graph's saved-activation
+        # placeholder, which is then wrong at every other size.
+        recorded_strides = []
+        orig_set_strides = output_code.set_tracing_context_output_strides
+
+        def spy(example_inputs, compiled_graph):
+            orig_set_strides(example_inputs, compiled_graph)
+            ctx = torch._guards.TracingContext.try_get()
+            if ctx is not None and ctx.output_strides:
+                recorded_strides.extend(s for s in ctx.output_strides if s)
+
+        def fn(x, w):
+            return (x.permute(0, 2, 1) @ w).sum()
+
+        cfn = self.compile_fn(fn)
+        with mock_patch.object(
+            output_code, "set_tracing_context_output_strides", spy
+        ):
+            for n in (8, 12):
+                x = torch.randn(2, n, 4, device=device, requires_grad=True)
+                w = torch.randn(2, n, 3, device=device, requires_grad=True)
+                x_ref = x.detach().clone().requires_grad_()
+                w_ref = w.detach().clone().requires_grad_()
+
+                cfn(x, w).backward()
+                fn(x_ref, w_ref).backward()
+
+                self.assertEqual(x.grad, x_ref.grad)
+                self.assertEqual(w.grad, w_ref.grad)
+
+        # This is the regression: the saved activation's stride depends on a
+        # dynamic dim, so at least one recorded stride must still be a SymInt.
+        # Without the fix every entry is evaluated against the first input's
+        # hint (n=8) and comes back a plain int.
+        self.assertTrue(
+            any(
+                isinstance(s, torch.SymInt)
+                for strides in recorded_strides
+                for s in strides
+            ),
+            f"expected a symbolic saved-activation stride, got {recorded_strides}",
+        )
 
     def test_arange_dynamic(self, device):
         def fn(a):

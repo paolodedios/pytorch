@@ -3841,16 +3841,17 @@ def set_tracing_context_output_strides(
             if exprs is None:
                 context.output_strides.append(None)
             else:
-                fakify_first_call = False
-                if ctx := torch._guards.TracingContext.try_get():
-                    fakify_first_call = ctx.fakify_first_call
-
                 def map_expr(e: Any) -> float | int | SymInt | SymFloat | SymBool:
                     if shape_env is None:
                         return int(e)
-                    if fakify_first_call:
-                        return shape_env.deserialize_symexpr(e)
-                    return shape_env.evaluate_symexpr(e)
+                    # Keep symbolic strides symbolic. deserialize_symexpr returns a
+                    # concrete value for constant exprs and a SymInt otherwise, so a
+                    # stride like 208*s stays symbolic instead of being collapsed to
+                    # the hint from the first example input. Collapsing it here is
+                    # what lets a stale constant get frozen into the backward graph's
+                    # saved-activation placeholder, which is then wrong for every
+                    # later input with a different dynamic size.
+                    return shape_env.deserialize_symexpr(e)
 
                 context.output_strides.append(
                     tuple(map_expr(e) for e in exprs)  # type: ignore[misc]
