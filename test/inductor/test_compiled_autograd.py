@@ -5694,6 +5694,12 @@ skipped_tests.add("test_needs_input_grad_setter_roundtrip_num_inputs_25")
 # DTensor backward calls a skipped global-shape helper under compiled autograd.
 skipped_tests.add("test_compile_dtensor_local_tensor_act_backward_passthrough")
 
+# grad_dtype is not supported in compile. These two record the grad dtype they
+# observe by setattr-ing on the Function class, which dynamo cannot trace when
+# compiled autograd inlines the backward.
+skipped_tests.add("test_ctx_output_grad_dtype_declared3_float64")
+skipped_tests.add("test_ctx_output_grad_dtype_accumulation")
+
 test_autograd = load_test_module("test_autograd")
 test_custom_ops = load_test_module("test_custom_ops")
 test_higher_order_ops = load_test_module("dynamo/test_higher_order_ops")
