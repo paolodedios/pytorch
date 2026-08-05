@@ -91,7 +91,13 @@ from .dicts import (
     OrderedDictVariable,
 )
 from .hashable import is_hashable
-from .lists import BaseListVariable, ListVariable, TupleIteratorVariable, TupleVariable
+from .lists import (
+    BaseListVariable,
+    ByteArrayVariable,
+    ListVariable,
+    TupleIteratorVariable,
+    TupleVariable,
+)
 from .misc import CellVariable, NullVariable, StringFormatVariable
 from .object_protocol import (
     _NO_DEFAULT,
@@ -3757,6 +3763,96 @@ class ListBuiltinVariable(BaseBuiltinVariable):
                 )
 
         return super().call_method(tx, name, args, kwargs)
+
+
+class ByteArrayBuiltinVariable(BaseBuiltinVariable):
+    """Variable tracker for the `bytearray` builtin constructor."""
+
+    _fn = bytearray
+
+    def __init__(self, value: type = bytearray, **kwargs: Any) -> None:
+        if value is not bytearray:
+            raise AssertionError(
+                f"ByteArrayBuiltinVariable value must be bytearray, got {value}"
+            )
+        super().__init__(**kwargs)
+
+    def __repr__(self) -> str:
+        return "ByteArrayBuiltinVariable()"
+
+    def call_function(
+        self,
+        tx: "InstructionTranslatorBase",
+        args: list[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        # ref: https://github.com/python/cpython/blob/3.13/Objects/bytearrayobject.c
+        # bytearray() -- empty
+        # bytearray(int) -- zero-filled
+        # bytearray(iterable_of_ints) -- from iterable
+        # bytearray(bytes) -- copy of bytes
+        # bytearray(string, encoding[, errors]) -- encoded string
+        from .constant import ConstantVariable
+
+        if len(args) == 0 and not kwargs:
+            return ByteArrayVariable([], mutation_type=ValueMutationNew())
+
+        if kwargs or len(args) > 3:
+            if not all(isinstance(a, ConstantVariable) for a in args):
+                unimplemented(
+                    gb_type="bytearray constructor with non-constant args",
+                    context=f"args={args}, kwargs={kwargs}",
+                    explanation="Dynamo cannot trace bytearray() with non-constant keyword arguments.",
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                )
+            all_args = [a.as_python_constant() for a in args]
+            all_kwargs = {k: v.as_python_constant() for k, v in kwargs.items()}
+            result = bytearray(*all_args, **all_kwargs)
+            items = [ConstantVariable.create(b) for b in result]
+            return ByteArrayVariable(items, mutation_type=ValueMutationNew())
+
+        arg = args[0]
+
+        if len(args) >= 2:
+            if not all(isinstance(a, ConstantVariable) for a in args):
+                unimplemented(
+                    gb_type="bytearray(string, encoding) with non-constant args",
+                    context=f"args={args}",
+                    explanation="Dynamo cannot trace bytearray(string, encoding) with non-constant arguments.",
+                    hints=[*graph_break_hints.SUPPORTABLE],
+                )
+            all_args = [a.as_python_constant() for a in args]
+            result = bytearray(*all_args)
+            items = [ConstantVariable.create(b) for b in result]
+            return ByteArrayVariable(items, mutation_type=ValueMutationNew())
+
+        if isinstance(arg, ConstantVariable):
+            val = arg.as_python_constant()
+            if isinstance(val, int):
+                items = [ConstantVariable.create(0) for _ in range(val)]
+                return ByteArrayVariable(items, mutation_type=ValueMutationNew())
+            if isinstance(val, (bytes, bytearray)):
+                items = [ConstantVariable.create(b) for b in val]
+                return ByteArrayVariable(items, mutation_type=ValueMutationNew())
+
+        if arg.is_python_constant():
+            result = bytearray(arg.as_python_constant())
+            items = [ConstantVariable.create(b) for b in result]
+            return ByteArrayVariable(items, mutation_type=ValueMutationNew())
+
+        try:
+            unpacked = arg.unpack_var_sequence(tx)
+            items = [ConstantVariable.create(v.as_python_constant()) for v in unpacked]
+            return ByteArrayVariable(items, mutation_type=ValueMutationNew())
+        except NotImplementedError:
+            pass
+
+        unimplemented(
+            gb_type="bytearray constructor",
+            context=f"arg type: {type(arg).__name__}",
+            explanation="Dynamo cannot trace bytearray() with this argument type.",
+            hints=[*graph_break_hints.SUPPORTABLE],
+        )
 
 
 # pyrefly: ignore [deprecated]

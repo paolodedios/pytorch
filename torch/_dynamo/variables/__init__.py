@@ -20,6 +20,7 @@ from .base import VariableTracker
 from .builtin import (
     BaseBuiltinVariable,
     BuiltinVariable,
+    ByteArrayBuiltinVariable,
     DictBuiltinVariable,
     GetAttrBuiltinVariable,
     HasAttrBuiltinVariable,
@@ -121,6 +122,7 @@ from .iter import (
 from .lazy import LazyConstantVariable, LazyVariableTracker
 from .lists import (
     BaseListVariable,
+    ByteArrayVariable,
     DequeVariable,
     ListIteratorVariable,
     ListVariable,
@@ -254,6 +256,7 @@ __all__ = [
     "LambdaVariable",
     "LazyConstantVariable",
     "LazyVariableTracker",
+    "ByteArrayBuiltinVariable",
     "ListBuiltinVariable",
     "ListIteratorVariable",
     "ListVariable",
@@ -302,4 +305,5 @@ __all__ = [
     "WithExitFunctionVariable",
     "XPUDeviceVariable",
     "ZipLongestVariable",
+    "ByteArrayVariable",
 ]
