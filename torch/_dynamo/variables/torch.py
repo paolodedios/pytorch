@@ -197,6 +197,22 @@ supported_ctx_manager_classes = dict.fromkeys(
 )
 
 
+def _get_device_autocast_classes() -> dict[type, str]:
+    """Autocast classes registered by out-of-tree DeviceInterfaces.
+
+    Not cached: device interfaces may be registered lazily, so we
+    query each time.
+    """
+    from ..device_interface import get_registered_device_interfaces
+
+    result: dict[type, str] = {}
+    for _, iface in get_registered_device_interfaces():
+        ac = getattr(iface, "autocast_classes", None)
+        if ac:
+            result.update(ac)
+    return result
+
+
 REWRITE_OPS_TO_TENSOR_SIZE_METHOD = dict.fromkeys(
     [
         torch._shape_as_tensor,
@@ -689,7 +705,15 @@ class TorchCtxManagerClassVariable(BaseTorchVariable):
             callable(value)
             and (
                 hashable(value)  # accesses value.__hash__()
-                and value in supported_ctx_manager_classes
+                and (
+                    value in supported_ctx_manager_classes
+                    or value in _get_device_autocast_classes()
+                    or (
+                        isinstance(value, type)
+                        and issubclass(value, torch.amp.autocast_mode.autocast)
+                        and value is not torch.amp.autocast_mode.autocast
+                    )
+                )
             )
         )
 
@@ -812,6 +836,20 @@ class TorchCtxManagerClassVariable(BaseTorchVariable):
             torch.cuda.amp.autocast,
             torch.cpu.amp.autocast,
         ):
+            # pyrefly: ignore [bad-argument-type]
+            return AutocastModeVariable.create(self.value, args, kwargs)
+        elif self.value in _get_device_autocast_classes():
+            # Autocast classes registered via DeviceInterface
+            # pyrefly: ignore [bad-argument-type]
+            return AutocastModeVariable.create(self.value, args, kwargs)
+        elif (
+            isinstance(self.value, type)
+            and issubclass(self.value, torch.amp.autocast_mode.autocast)
+            and self.value is not torch.amp.autocast_mode.autocast
+        ):
+            # Autocast subclass from an out-of-tree device whose class
+            # object was loaded through a different import path than
+            # the DeviceInterface registered reference.
             # pyrefly: ignore [bad-argument-type]
             return AutocastModeVariable.create(self.value, args, kwargs)
         elif self.value in (
