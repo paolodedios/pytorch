@@ -49,6 +49,13 @@ C10_METAL_CONSTEXPR uint32_t OUTER_SPLIT_MIN_SEG_LEN = 512;
 C10_METAL_CONSTEXPR uint32_t OUTER_SPLIT_MAX_TGS = 2048;
 C10_METAL_CONSTEXPR uint32_t OUTER_SPLIT_STRIDED_TARGET_TGS = 256;
 
+// Non-adjacent reduced dims are reduced one at a time, largest first: that
+// leaves the smallest partial and the least work for the later passes
+// (select_reduction_plan in ReduceOps.mm). A reduced last dim of at least this
+// size goes first instead: the innermost kernel reads it contiguously and its
+// partial is already at most 1/128 of the input elements.
+C10_METAL_CONSTEXPR uint32_t PEEL_LAST_DIM_MIN_SIZE = 128;
+
 // argmax/argmin inner split-K thresholds (select_inner_reduction in
 // ReduceOps.mm). The arg inner kernel keeps one compare chain per lane (no
 // NCHAINS ILP), so it saturates the GPU later than the value kernels and
